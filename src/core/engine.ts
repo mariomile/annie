@@ -30,6 +30,11 @@ export interface EngineSession {
 	submit(threadKey: string, text: string, requestId?: string): Promise<{ submissionId: string }>;
 	/** Continue whatever a previous process left unfinished; replies arrive through `onReply`. */
 	resume(): Promise<{ pending: number }>;
+	/**
+	 * Deliver through `onReply` the outcome of a submission this storage admitted earlier,
+	 * also when it has already settled. At most once per session. false: unknown submission.
+	 */
+	reattach(submissionId: string, threadKey: string): Promise<boolean>;
 	onReply(listener: (reply: EngineReply) => void): () => void;
 	/** Resolves when no work is running or pending. */
 	idle(): Promise<void>;

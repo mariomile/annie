@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChannelAdapter, OutboundMessage } from "../src/channels/types.ts";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { AnnieRuntime, type OutboxEntry } from "../src/core/index.ts";
+import { AnnieRuntime, type DurableEngine, type EngineSession, type OutboxEntry } from "../src/core/index.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 import { kill9, spawnFixture, type Worker } from "./processes.ts";
@@ -85,7 +85,7 @@ describe("reply outbox (in process)", () => {
 		const next = new AnnieRuntime({ dataDir, engine: piDurableEngine });
 		const working = testChannel(async () => {});
 		connectChannel(next, working, { tenantId: "acme", instanceId: "ops" });
-		expect(await next.resume("acme", "ops")).toEqual({ pending: 0, undelivered: 1 });
+		expect(await next.resume("acme", "ops")).toEqual({ pending: 0, undelivered: 1, reattached: 0 });
 		await waitFor(() => outboxEntries(dataDir)[0]?.deliveredAt !== undefined);
 		// A second resume in the same process, and the engine's own replies, send nothing more.
 		await next.resume("acme", "ops");
@@ -93,6 +93,110 @@ describe("reply outbox (in process)", () => {
 		expect(working.sent).toEqual([expect.objectContaining({ threadId: "t1", text: ANSWER, idempotencyKey: failing.sent[0]?.idempotencyKey })]);
 		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ attempts: 2 })]);
 		await next.close();
+	});
+});
+
+/** Pi Durable whose replies never reach the core: the state a crash right after Pi settles leaves on disk. */
+const deafEngine: DurableEngine = {
+	async open(options) {
+		const session = await piDurableEngine.open(options);
+		return { ...bind(session), onReply: () => () => {} };
+	},
+};
+
+function bind(session: EngineSession): EngineSession {
+	return {
+		submit: (...args) => session.submit(...args),
+		resume: () => session.resume(),
+		reattach: (...args) => session.reattach(...args),
+		onReply: (listener) => session.onReply(listener),
+		idle: () => session.idle(),
+		close: () => session.close(),
+	};
+}
+
+describe("reply outbox: review regressions", () => {
+	it("a reply Pi settled but the outbox never received is reattached by ID and sent once on resume", async () => {
+		const setup = await runtimeWithInstance({});
+		await setup.runtime.close();
+		const deaf = new AnnieRuntime({ dataDir: setup.dataDir, engine: deafEngine });
+		await deaf.submit(hello);
+		await (await deaf.openInstance("acme", "ops")).idle();
+		await deaf.close();
+		// Admitted and answered in Pi, but the outbox only knows the admission.
+		expect(outboxEntries(setup.dataDir)).toEqual([expect.objectContaining({ channel: "test", threadId: "t1", attempts: 0 })]);
+		expect(outboxEntries(setup.dataDir)[0]?.reply).toBeUndefined();
+
+		const next = new AnnieRuntime({ dataDir: setup.dataDir, engine: piDurableEngine });
+		const channel = testChannel(async () => {});
+		connectChannel(next, channel, { tenantId: "acme", instanceId: "ops" });
+		expect(await next.resume("acme", "ops")).toEqual({ pending: 0, undelivered: 0, reattached: 1 });
+		await waitFor(() => outboxEntries(setup.dataDir)[0]?.deliveredAt !== undefined);
+		await next.resume("acme", "ops");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(channel.sent).toEqual([expect.objectContaining({ threadId: "t1", text: ANSWER })]);
+		await next.close();
+	});
+
+	it("concurrent resumes hand each undelivered reply to the channel once", async () => {
+		const { runtime, dataDir } = await runtimeWithInstance({});
+		connectChannel(runtime, testChannel(async () => {
+			throw new Error("channel down");
+		}), { tenantId: "acme", instanceId: "ops" }, () => {});
+		await runtime.submit(hello);
+		await runtime.submit({ ...hello, threadId: "t2", messageId: "m2" });
+		await waitFor(() => outboxEntries(dataDir).filter((e) => e.attempts === 1).length === 2);
+		await runtime.close();
+
+		const next = new AnnieRuntime({ dataDir, engine: piDurableEngine });
+		const channel = testChannel(async () => {});
+		connectChannel(next, channel, { tenantId: "acme", instanceId: "ops" });
+		await Promise.all([next.resume("acme", "ops"), next.resume("acme", "ops"), next.resume("acme", "ops")]);
+		await waitFor(() => outboxEntries(dataDir).every((e) => e.deliveredAt !== undefined));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(channel.sent.map((m) => m.threadId).sort()).toEqual(["t1", "t2"]);
+		expect(outboxEntries(dataDir).map((e) => e.attempts)).toEqual([2, 2]);
+		await next.close();
+	});
+
+	it("a send that completes after close() does not reopen the instance; the reply stays for the next process", async () => {
+		const { runtime, dataDir } = await runtimeWithInstance({});
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const logs: string[] = [];
+		const slow = testChannel(() => gate);
+		connectChannel(runtime, slow, { tenantId: "acme", instanceId: "ops" }, (line) => logs.push(line));
+		await runtime.submit(hello);
+		await waitFor(() => slow.sent.length === 1);
+		await runtime.close();
+		release();
+		await waitFor(() => logs.length === 1);
+		expect(logs[0]).toContain("not confirmed in the outbox: Instance acme/ops is not open");
+
+		// The lock is free (nothing reopened it), and the reply goes out again, flagged.
+		const next = new AnnieRuntime({ dataDir, engine: piDurableEngine });
+		const channel = testChannel(async () => {});
+		connectChannel(next, channel, { tenantId: "acme", instanceId: "ops" });
+		expect(await next.resume("acme", "ops")).toMatchObject({ undelivered: 1 });
+		await waitFor(() => outboxEntries(dataDir)[0]?.deliveredAt !== undefined);
+		expect(channel.sent).toHaveLength(1);
+		await next.close();
+	});
+
+	it("idempotency keys name the tenant and instance, so two tenants never share one", async () => {
+		const { runtime } = await runtimeWithInstance({});
+		await runtime.registry.createTenant({ id: "globex", name: "globex" });
+		await runtime.registry.createInstance("globex", { id: "ops", name: "ops", model: { provider: "faux", modelId: "annie-dev" }, egress: { modelProviders: ["faux"], channels: ["test"] }, allowedUsers: { test: ["u"] } });
+		const channel = testChannel(async () => {});
+		connectChannel(runtime, channel, { tenantId: "acme", instanceId: "ops" });
+		connectChannel(runtime, channel, { tenantId: "globex", instanceId: "ops" });
+		await runtime.submit(hello);
+		await runtime.submit({ ...hello, tenantId: "globex" });
+		await waitFor(() => channel.sent.length === 2);
+		const keys = channel.sent.map((m) => m.idempotencyKey).sort();
+		expect(keys[0]).toMatch(/^reply:acme\/ops\//);
+		expect(keys[1]).toMatch(/^reply:globex\/ops\//);
+		await runtime.close();
 	});
 });
 
@@ -127,13 +231,13 @@ describe("reply outbox across a SIGKILL (real child processes, fake Telegram)", 
 		expect(sendMessages(callsFile)).toEqual([]);
 
 		const second = worker("resume", dataDir, callsFile, "ok");
-		expect(await second.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":1}');
+		expect(await second.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":1,"reattached":0}');
 		await second.waitForLine("DELIVERED");
 		expect(await second.exited).toBe(0);
 
 		// A third start finds nothing to send.
 		const third = worker("resume", dataDir, callsFile, "ok");
-		expect(await third.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":0}');
+		expect(await third.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":0,"reattached":0}');
 		expect(await third.exited).toBe(0);
 
 		expect(sendMessages(callsFile)).toEqual([{ pid: second.child.pid, method: "sendMessage", body: { chat_id: "42", text: ANSWER } }]);
@@ -150,7 +254,7 @@ describe("reply outbox across a SIGKILL (real child processes, fake Telegram)", 
 		expect(outboxEntries(dataDir)[0]?.deliveredAt).toBeUndefined();
 
 		const second = worker("resume", dataDir, callsFile, "ok");
-		expect(await second.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":1}');
+		expect(await second.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":1,"reattached":0}');
 		await second.waitForLine("DELIVERED");
 		expect(await second.exited).toBe(0);
 

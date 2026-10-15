@@ -4,14 +4,17 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 
 /**
- * A reply waiting to be delivered, or already delivered. `key` is the idempotency key:
- * one entry per engine submission, so the same answer is never queued twice.
+ * One engine submission and its reply. Written when the submission is admitted (no `reply`
+ * yet), filled with the reply before any channel sees it, marked once the channel accepts
+ * it. `key` is the reply's idempotency key, so the same answer is never queued twice.
  */
 export type OutboxEntry = {
 	readonly key: string;
+	readonly submissionId: string;
 	readonly channel: string;
 	readonly threadId: string;
-	readonly reply: { readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string };
+	/** Undefined while the engine has not answered (as far as this outbox knows). */
+	readonly reply?: { readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string };
 	readonly createdAt: string;
 	/** Times the entry was handed to a channel. Above 1, the user may have received it before. */
 	readonly attempts: number;
@@ -40,8 +43,8 @@ export class Outbox {
 		return writeFileAtomic(this.file(entry.key), `${JSON.stringify(entry)}\n`);
 	}
 
-	/** Entries not yet delivered, oldest first. */
-	async undelivered(): Promise<OutboxEntry[]> {
+	/** All entries, oldest first. */
+	async list(): Promise<OutboxEntry[]> {
 		let names: string[];
 		try {
 			names = await readdir(this.dir);
@@ -52,7 +55,7 @@ export class Outbox {
 		const entries = await Promise.all(
 			names.filter((name) => name.endsWith(".json") && !name.startsWith(".")).map(async (name) => JSON.parse(await readFile(join(this.dir, name), "utf8")) as OutboxEntry),
 		);
-		return entries.filter((entry) => entry.deliveredAt === undefined).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 	}
 
 	private file(key: string): string {

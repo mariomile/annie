@@ -83,13 +83,18 @@ export class AnnieRuntime {
 	 * Resume one instance: hand undelivered replies of earlier processes to the channels
 	 * again, then continue unfinished engine work. Connect channels before calling it.
 	 */
-	async resume(tenant: string, instance: string): Promise<{ pending: number; undelivered: number }> {
+	async resume(tenant: string, instance: string): Promise<{ pending: number; undelivered: number; reattached: number }> {
 		return (await this.openInstance(tenant, instance)).resume();
 	}
 
-	/** The channel accepted `reply`: record it in the outbox so it is never sent again. */
+	/**
+	 * The channel accepted `reply`: record it in the outbox so it is never sent again. Never
+	 * opens the instance: after close() the reply stays in the outbox for the next process.
+	 */
 	async markDelivered(reply: Pick<Reply, "tenantId" | "instanceId" | "deliveryId">): Promise<void> {
-		await (await this.openInstance(reply.tenantId, reply.instanceId)).markDelivered(reply.deliveryId);
+		const opening = this.instances.get(`${reply.tenantId}/${reply.instanceId}`);
+		if (opening === undefined) throw new Error(`Instance ${reply.tenantId}/${reply.instanceId} is not open; the reply stays in the outbox`);
+		await (await opening).markDelivered(reply.deliveryId);
 	}
 
 	onReply(listener: (reply: Reply) => void): () => void {
@@ -100,7 +105,9 @@ export class AnnieRuntime {
 	async close(): Promise<void> {
 		const opened = await Promise.allSettled(this.instances.values());
 		this.instances.clear();
-		for (const result of opened) if (result.status === "fulfilled") await result.value.close();
+		const closed = await Promise.allSettled(opened.map((result) => (result.status === "fulfilled" ? result.value.close() : undefined)));
+		const failed = closed.find((result) => result.status === "rejected");
+		if (failed !== undefined) throw failed.reason;
 	}
 
 	private async open(tenant: string, instance: string): Promise<AnnieInstance> {
@@ -134,7 +141,12 @@ export class AnnieRuntime {
 			lock.release();
 			throw error;
 		}
-		await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
+		try {
+			await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
+		} catch (error) {
+			await session.close().finally(() => lock.release());
+			throw error;
+		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		return new AnnieInstance(record, session, lock, outbox, audit, (reply) => {
 			for (const listener of this.listeners) {
@@ -149,8 +161,11 @@ export class AnnieRuntime {
 }
 
 export class AnnieInstance {
-	/** Outbox keys handed to the channels by this process and not yet confirmed. */
-	private readonly inFlight = new Set<string>();
+	/** Outbox keys this process has handed to the channels. Each at most once per process. */
+	private readonly handedOff = new Set<string>();
+	/** Outbox operations on the same key run one after the other. */
+	private readonly chains = new Map<string, Promise<void>>();
+	private closed = false;
 
 	constructor(
 		readonly record: InstanceRecord,
@@ -203,38 +218,64 @@ export class AnnieInstance {
 			chars: request.text.length,
 		});
 		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
-		return this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId);
+		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId);
+		// Record the admitted submission in the outbox: if the process dies after the engine
+		// has answered and before the reply is in the outbox, resume() reattaches it by ID.
+		const key = this.replyKey(submissionId);
+		await this.serial(key, async () => {
+			if ((await this.outbox.get(key)) !== undefined) return;
+			await this.outbox.put({ key, submissionId, channel: request.channel, threadId: request.threadId, createdAt: new Date().toISOString(), attempts: 0 });
+		});
+		return { submissionId };
 	}
 
-	async resume(): Promise<{ pending: number; undelivered: number }> {
-		// Replies first: they were answered before anything the engine is about to resume.
-		const undelivered = await this.outbox.undelivered();
-		for (const entry of undelivered) await this.handOff(entry);
+	/**
+	 * Hand undelivered replies to the channels again, reattach admitted submissions that have
+	 * no reply in the outbox yet, then continue unfinished engine work.
+	 */
+	async resume(): Promise<{ pending: number; undelivered: number; reattached: number }> {
+		let undelivered = 0;
+		let reattached = 0;
+		for (const entry of await this.outbox.list()) {
+			if (entry.deliveredAt !== undefined) continue;
+			if (entry.reply === undefined) {
+				if (await this.session.reattach(entry.submissionId, threadKey(entry.channel, entry.threadId))) reattached++;
+				continue;
+			}
+			undelivered++;
+			await this.serial(entry.key, async () => {
+				// Re-read under the key's chain: the snapshot above may be stale by now.
+				const current = await this.outbox.get(entry.key);
+				if (current?.reply !== undefined && current.deliveredAt === undefined) await this.handOff(current);
+			});
+		}
 		const { pending } = await this.session.resume();
-		await this.audit.append({ type: "instance.resumed", instanceId: this.record.id, pending, undelivered: undelivered.length });
-		return { pending, undelivered: undelivered.length };
+		await this.audit.append({ type: "instance.resumed", instanceId: this.record.id, pending, undelivered, reattached });
+		return { pending, undelivered, reattached };
 	}
 
 	async markDelivered(deliveryId: string): Promise<void> {
-		const entry = await this.outbox.get(deliveryId);
-		if (entry === undefined) throw new NotFound(`No outbox entry "${deliveryId}" in ${this.record.tenantId}/${this.record.id}`);
-		if (entry.deliveredAt !== undefined) return;
-		await this.outbox.put({ ...entry, deliveredAt: new Date().toISOString() });
-		this.inFlight.delete(deliveryId);
-		await this.audit.append({
-			type: "reply.delivered",
-			instanceId: this.record.id,
-			channel: entry.channel,
-			threadId: entry.threadId,
-			deliveryId,
-			attempts: entry.attempts,
-			possibleDuplicate: entry.attempts > 1,
+		if (this.closed) throw new Error(`Instance ${this.record.tenantId}/${this.record.id} is closed; the reply stays in the outbox`);
+		await this.serial(deliveryId, async () => {
+			const entry = await this.outbox.get(deliveryId);
+			if (entry === undefined) throw new NotFound(`No outbox entry "${deliveryId}" in ${this.record.tenantId}/${this.record.id}`);
+			if (entry.deliveredAt !== undefined) return;
+			await this.outbox.put({ ...entry, deliveredAt: new Date().toISOString() });
+			await this.audit.append({
+				type: "reply.delivered",
+				instanceId: this.record.id,
+				channel: entry.channel,
+				threadId: entry.threadId,
+				deliveryId,
+				attempts: entry.attempts,
+				possibleDuplicate: entry.attempts > 1,
+			});
 		});
 	}
 
 	/** Replies not yet confirmed by their channel, oldest first. */
-	undelivered(): Promise<OutboxEntry[]> {
-		return this.outbox.undelivered();
+	async undelivered(): Promise<OutboxEntry[]> {
+		return (await this.outbox.list()).filter((entry) => entry.reply !== undefined && entry.deliveredAt === undefined);
 	}
 
 	idle(): Promise<void> {
@@ -242,48 +283,54 @@ export class AnnieInstance {
 	}
 
 	async close(): Promise<void> {
+		// Replies that settle from now on are left to the next process (resume() reattaches them).
+		this.closed = true;
 		try {
 			await this.session.close();
+			await Promise.allSettled(this.chains.values());
 		} finally {
 			this.lock.release();
 		}
 	}
 
 	private async deliver(engineReply: EngineReply): Promise<void> {
+		if (this.closed) return;
 		const { channel, threadId } = parseThreadKey(engineReply.threadKey);
-		// One outbox entry per submission: the idempotency key of the reply.
-		const key = `reply:${engineReply.submissionId}`;
-		const existing = await this.outbox.get(key);
-		if (existing?.deliveredAt !== undefined) return;
-		await this.handOff(
-			existing ?? {
-				key,
-				channel,
-				threadId,
-				reply: engineReply.status === "answered" ? { status: "answered", text: engineReply.text } : { status: "unanswered", reason: engineReply.reason },
-				createdAt: new Date().toISOString(),
-				attempts: 0,
-			},
-		);
+		const key = this.replyKey(engineReply.submissionId);
+		const reply: OutboxEntry["reply"] =
+			engineReply.status === "answered" ? { status: "answered", text: engineReply.text } : { status: "unanswered", reason: engineReply.reason };
+		await this.serial(key, async () => {
+			const existing = await this.outbox.get(key);
+			if (existing?.deliveredAt !== undefined) return;
+			await this.handOff(
+				existing === undefined
+					? { key, submissionId: engineReply.submissionId, channel, threadId, reply, createdAt: new Date().toISOString(), attempts: 0 }
+					: { ...existing, reply: existing.reply ?? reply },
+			);
+		});
 	}
 
-	/** Write the entry to the outbox, durably, then give it to the channels. At most once per process. */
+	/**
+	 * Write the entry to the outbox, durably, then give it to the channels. Call only inside
+	 * `serial(entry.key)`, with an entry just read or built there.
+	 */
 	private async handOff(entry: OutboxEntry): Promise<void> {
-		if (this.inFlight.has(entry.key)) return;
+		const reply = entry.reply;
+		if (reply === undefined || this.handedOff.has(entry.key)) return;
 		// Replies leave through a channel: check egress again, the policy is the last word.
 		if (!this.record.egress.channels.includes(entry.channel)) {
 			await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: "channel", target: entry.channel });
 			return;
 		}
-		this.inFlight.add(entry.key);
+		this.handedOff.add(entry.key);
 		const attempts = entry.attempts + 1;
 		try {
 			await this.outbox.put({ ...entry, attempts });
 		} catch (error) {
-			this.inFlight.delete(entry.key);
+			this.handedOff.delete(entry.key);
 			throw error;
 		}
-		const { channel, threadId, reply } = entry;
+		const { channel, threadId } = entry;
 		await this.audit.append({
 			type: "reply.emitted",
 			instanceId: this.record.id,
@@ -296,6 +343,21 @@ export class AnnieInstance {
 		});
 		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key };
 		this.emit(reply.status === "answered" ? { ...base, status: "answered", text: reply.text } : { ...base, status: "unanswered", reason: reply.reason });
+	}
+
+	/** Idempotency key of a submission's reply; unique across tenants and instances. */
+	private replyKey(submissionId: string): string {
+		return `reply:${this.record.tenantId}/${this.record.id}/${submissionId}`;
+	}
+
+	private serial(key: string, work: () => Promise<void>): Promise<void> {
+		const run = (this.chains.get(key) ?? Promise.resolve()).then(work);
+		const tail = run.catch(() => {});
+		this.chains.set(key, tail);
+		void tail.then(() => {
+			if (this.chains.get(key) === tail) this.chains.delete(key);
+		});
+		return run;
 	}
 }
 

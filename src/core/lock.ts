@@ -29,7 +29,12 @@ export class InstanceLock {
 			throw error;
 		}
 		const owner: Owner = { pid: process.pid, host: hostname(), since: new Date().toISOString() };
-		writeFileSync(ownerFile(file), `${JSON.stringify(owner)}\n`);
+		try {
+			writeFileSync(ownerFile(file), `${JSON.stringify(owner)}\n`);
+		} catch (error) {
+			db.close();
+			throw error;
+		}
 		return new InstanceLock(db);
 	}
 

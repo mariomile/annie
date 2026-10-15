@@ -16,6 +16,7 @@ function countingEngine(submits: string[]): DurableEngine {
 					return session.submit(threadKey, text, requestId);
 				},
 				resume: () => session.resume(),
+				reattach: (submissionId, threadKey) => session.reattach(submissionId, threadKey),
 				onReply: (listener) => session.onReply(listener),
 				idle: () => session.idle(),
 				close: () => session.close(),
