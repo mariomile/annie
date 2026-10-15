@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { type AnnieTool, AnnieRuntime, createSlowCounter, type InstanceRecord } from "../src/core/index.ts";
+import { AnnieRuntime, createSlowCounter, type InstanceRecord, type ToolSet } from "../src/core/index.ts";
 import { FAUX_MODEL, tempDataDir, waitFor } from "./helpers.ts";
 
 const ask = (instanceId: string, messageId: string) => ({ tenantId: "acme", instanceId, channel: "test", threadId: "t", userId: "u", text: "conta fino a 2", messageId });
 
-async function setup(tools: (record: InstanceRecord) => Promise<readonly AnnieTool[]>) {
+async function setup(tools: (record: InstanceRecord) => Promise<ToolSet>) {
 	const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine: piDurableEngine, tools });
 	await runtime.registry.createTenant({ id: "acme", name: "acme" });
 	for (const id of ["a", "b"]) {
@@ -25,6 +25,16 @@ describe("tools per instance", () => {
 		expect(replies.a![0]).toBe("Fatto. Ho contato fino a 2.");
 		expect(replies.b![0]).not.toContain("Ho contato");
 		await runtime.close();
+	});
+
+	it("what a tool set holds open is released when its instance closes or reopens", async () => {
+		const closed: string[] = [];
+		const { runtime } = await setup(async (record) => ({ tools: [], close: async () => void closed.push(record.id) }));
+		await runtime.openInstance("acme", "a");
+		await runtime.reopen("acme", "a");
+		expect(closed).toEqual(["a"]);
+		await runtime.close();
+		expect(closed).toEqual(["a", "a"]);
 	});
 
 	it("reopen applies a changed tool list; the instance keeps its conversations", async () => {

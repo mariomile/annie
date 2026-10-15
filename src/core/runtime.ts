@@ -47,6 +47,9 @@ export type Reply = {
 	| { readonly status: "file"; readonly path: string; readonly caption?: string }
 );
 
+/** Tools of an instance, with what to release when it closes (connector connections). */
+export type ToolSet = readonly AnnieTool[] | { readonly tools: readonly AnnieTool[]; readonly close: () => Promise<void> };
+
 export type RuntimeOptions = {
 	readonly dataDir: string;
 	readonly engine: DurableEngine;
@@ -54,7 +57,7 @@ export type RuntimeOptions = {
 	 * Tools of an instance: the same list for all, or computed from the instance's record
 	 * when it is opened (connectors, approved tools). A changed list applies on `reopen`.
 	 */
-	readonly tools?: readonly AnnieTool[] | ((record: InstanceRecord) => Promise<readonly AnnieTool[]>);
+	readonly tools?: readonly AnnieTool[] | ((record: InstanceRecord) => Promise<ToolSet>);
 };
 
 /**
@@ -181,28 +184,35 @@ export class AnnieRuntime {
 		// Before anything touches the instance's storage: one process per instance.
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
+		let toolSet: ToolSet = [];
 		try {
+			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
 				storageDir,
 				model: record.model,
 				// Only this tenant's secrets, and only for providers the policy allows.
 				apiKey: async (provider) =>
 					record.egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined,
-				tools: typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []),
+				tools: "tools" in toolSet ? toolSet.tools : toolSet,
 				...(record.instructions === undefined ? {} : { instructions: record.instructions }),
 			});
 		} catch (error) {
+			if ("close" in toolSet) await toolSet.close().catch(() => {});
 			lock.release();
 			throw error;
 		}
 		try {
 			await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
 		} catch (error) {
-			await session.close().finally(() => lock.release());
+			await session
+				.close()
+				.then(() => ("close" in toolSet ? toolSet.close() : undefined))
+				.finally(() => lock.release());
 			throw error;
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
-		return new AnnieInstance(record, session, lock, outbox, audit, (reply) => {
+		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -227,6 +237,7 @@ export class AnnieInstance {
 		private readonly lock: InstanceLock,
 		private readonly outbox: Outbox,
 		private readonly audit: AuditLog,
+		private readonly releaseTools: () => Promise<void>,
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -385,6 +396,7 @@ export class AnnieInstance {
 		try {
 			await this.session.close();
 			await Promise.allSettled(this.chains.values());
+			await this.releaseTools().catch((error: unknown) => console.error(`annie: releasing tools of ${this.record.tenantId}/${this.record.id} failed: ${String(error)}`));
 		} finally {
 			this.lock.release();
 		}
