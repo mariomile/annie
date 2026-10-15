@@ -29,6 +29,12 @@ export type OutboundMessage = {
 	readonly channel: string;
 	readonly threadId: string;
 	readonly text: string;
+	/**
+	 * Same value every time this reply is sent, also after a restart. Channels whose
+	 * remote end deduplicates (an HTTP API with an Idempotency-Key) should pass it on;
+	 * Telegram cannot, so a resend there can show the reply twice.
+	 */
+	readonly idempotencyKey: string;
 };
 
 export interface ChannelAdapter {
@@ -39,5 +45,6 @@ export interface ChannelAdapter {
 	stop(): Promise<void>;
 	/** Register the handler for inbound messages. One handler per adapter. */
 	onInbound(handler: (message: InboundMessage) => Promise<void>): void;
+	/** Resolves once the channel has accepted the whole message; rejects otherwise. */
 	send(message: OutboundMessage): Promise<void>;
 }

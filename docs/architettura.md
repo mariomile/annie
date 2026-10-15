@@ -2,7 +2,7 @@
 
 Annie è un agente sempre attivo, sul modello di Hermes Agent, pensato per aziende attente a privacy e controllo dei processi: self-host o on-prem, multi-tenant, nessun dato in uscita senza una configurazione esplicita. Il runtime durevole è Pi Durable (`@earendil-works/pi-durable`, MIT, sperimentale), nascosto dietro un'interfaccia nostra.
 
-Stato: settimana 1. Questo documento descrive cosa c'è nel codice oggi e cosa è solo progettato. Dove una cosa non è ancora implementata è scritto esplicitamente.
+Stato: settimana 2 (allowlist utenti, lock per istanza, outbox delle risposte). Questo documento descrive cosa c'è nel codice oggi e cosa è solo progettato. Dove una cosa non è ancora implementata è scritto esplicitamente.
 
 ## 1. Mappa
 
@@ -16,7 +16,10 @@ Stato: settimana 1. Questo documento descrive cosa c'è nel codice oggi e cosa �
    │   ├─ TenantSecrets    secrets.json (0600) per tenant           │
    │   ├─ AuditLog         audit.jsonl append-only per tenant       │
    │   ├─ EgressPolicy     default deny: provider modello + canali  │
+   │   ├─ AllowedUsers     default deny: utenti per canale          │
    │   └─ AnnieInstance ──► DurableEngine (interfaccia)             │
+   │        ├─ InstanceLock  un solo processo per istanza           │
+   │        └─ Outbox        risposte fino alla conferma del canale │
    │                           ▲                                    │
    │        src/core/adapters/pi-durable*.ts (unico import di Pi)   │
    └────────────────────────────────────────────────────────────────┘
@@ -50,8 +53,11 @@ data/
     secrets.json                 mode 0600
     audit.jsonl                  append-only
     instances/<instanceId>/
-      instance.json              modello, egress policy, istruzioni
+      instance.json              modello, egress policy, utenti consentiti, istruzioni
+      instance.lock              lock del processo che ha aperto l'istanza
+      instance.lock.owner        pid, host e ora del proprietario (solo per il messaggio d'errore)
       engine/pi-durable.sqlite   storage Pi Durable dedicato (WAL)
+      outbox/<hash>.json         una voce per submission ammessa, con la risposta quando arriva; mode 0600
 ```
 
 Gli ID di tenant e istanza diventano nomi di directory, quindi sono validati (`a-z0-9_-`, max 63 caratteri, niente punti né separatori): un ID come `../altro` viene rifiutato (testato).
@@ -67,15 +73,23 @@ class AnnieRuntime {
   audit(tenantId): AuditLog;                      // legato a un solo tenant
   openInstance(tenantId, instanceId): Promise<AnnieInstance>;
   submit(req: SubmitRequest): Promise<{ submissionId }>;
-  resume(tenantId, instanceId): Promise<{ pending }>;
+  resume(tenantId, instanceId): Promise<{ pending, undelivered, reattached }>;
   onReply(listener: (reply: Reply) => void): () => void;
+  markDelivered(reply): Promise<void>;           // il canale ha accettato la risposta
   close(): Promise<void>;
 }
 
 type SubmitRequest = { tenantId, instanceId, channel, threadId, userId, text, messageId? };
-type Reply = { tenantId, instanceId, channel, threadId } &
+type Reply = { tenantId, instanceId, channel, threadId, deliveryId } &
   ({ status: "answered"; text } | { status: "unanswered"; reason });
+
+// instance.json
+type InstanceRecord = { id, tenantId, name, model, egress, allowedUsers, instructions?, createdAt };
+type AllowedUsers = Record<channel, userId[]>;   // canale assente o lista vuota = nessuno
+registry.setAllowedUsers(tenantId, instanceId, channel, userIds);   // vale dalla prossima apertura
 ```
+
+`deliveryId` è la chiave di idempotenza della risposta (`reply:<tenantId>/<instanceId>/<submissionId>`), stabile tra i riavvii e unica tra tenant e istanze.
 
 `SubmitRequest` ha la stessa forma di `InboundMessage` dei canali, ma è definito nel nucleo: il nucleo non dipende dai canali, il gateway passa l'uno all'altro.
 
@@ -95,6 +109,7 @@ type EngineOpenOptions = {
 interface EngineSession {
   submit(threadKey, text, requestId?): Promise<{ submissionId }>;  // ammesso in modo durevole
   resume(): Promise<{ pending }>;
+  reattach(submissionId, threadKey): Promise<boolean>;   // riemette l'esito di una submission già ammessa, anche chiusa
   onReply(listener): () => void;
   idle(): Promise<void>;
   close(): Promise<void>;
@@ -117,11 +132,13 @@ interface ChannelAdapter {
   start(): Promise<void>;
   stop(): Promise<void>;
   onInbound(handler: (m: InboundMessage) => Promise<void>): void;
-  send(m: OutboundMessage): Promise<void>;
+  send(m: OutboundMessage): Promise<void>;   // risolve solo quando il canale ha accettato tutto
 }
 type InboundMessage  = { tenantId, instanceId, channel, threadId, userId, text, messageId? };
-type OutboundMessage = { tenantId, instanceId, channel, threadId, text };
+type OutboundMessage = { tenantId, instanceId, channel, threadId, text, idempotencyKey };
 ```
+
+`idempotencyKey` è il `deliveryId`: un canale il cui destinatario deduplica (API HTTP con header `Idempotency-Key`) lo deve inoltrare. Telegram non ha un meccanismo equivalente e lo ignora.
 
 ## 4. Flussi
 
@@ -131,14 +148,20 @@ type OutboundMessage = { tenantId, instanceId, channel, threadId, text };
 Telegram getUpdates ─► TelegramAdapter ─► InboundMessage
   ─► gateway ─► AnnieRuntime.submit
        ├─ egress: il canale è consentito?        no ─► EgressDenied + audit "egress.denied"
+       ├─ allowlist: l'utente è consentito su questo canale?
+       │                                         no ─► UserNotAllowed + audit "user.denied", nessuna risposta
        ├─ audit "message.received" (solo metadati: canale, thread, utente, lunghezza)
-       └─ EngineSession.submit(threadKey = "telegram:<chatId>", text, requestId = "telegram:<chatId>:<messageId>")
-            ├─ conversazione Pi per threadKey (creata al primo messaggio, mappa salvata nello stesso commit)
-            └─ conversation.submit(): ammissione durevole, poi generazione e tool come task Pi
-  ◄─ onReply ◄─ submission.wait() ◄─ risposta del modello
+       ├─ EngineSession.submit(threadKey = "telegram:<chatId>", text, requestId = "telegram:<chatId>:<messageId>")
+       │    ├─ conversazione Pi per threadKey (creata al primo messaggio, mappa salvata nello stesso commit)
+       │    └─ conversation.submit(): ammissione durevole, poi generazione e tool come task Pi
+       └─ outbox: voce per la submission, ancora senza risposta
+  ◄─ submission.wait() ◄─ risposta del modello
+       ├─ outbox: chiave reply:<tenant>/<istanza>/<submissionId> già consegnata? sì ─► niente
        ├─ egress: il canale è ancora consentito? (secondo controllo, in uscita)
-       └─ audit "reply.emitted"
+       ├─ outbox: scrittura atomica e fsync della voce (attempts + 1)
+       └─ audit "reply.emitted" ─► onReply
   ─► gateway ─► TelegramAdapter.send ─► sendMessage (spezzato a 4096 caratteri)
+       └─ ok del canale ─► runtime.markDelivered ─► outbox: deliveredAt ─► audit "reply.delivered"
 ```
 
 Un messaggio riconsegnato da Telegram (stesso `message_id`, es. dopo un crash prima della conferma dell'offset) produce lo stesso `requestId`: Pi Durable lo riconosce e non c'è una seconda risposta (testato).
@@ -153,7 +176,44 @@ processo B: openInstance ─► Harness.open(stesso SQLite) ─► resume()
             il tool riparte: step 1-3 letti dai memo, step 4-6 eseguiti ─► risposta ─► onReply
 ```
 
-Verificato da `test/crash-resume.test.ts` con due processi figli reali e `SIGKILL`. Garanzia: at-least-once per step. Uno step il cui lavoro è finito ma il cui memo non è stato ancora scritto al momento del crash viene rieseguito; i tool con effetti esterni devono quindi essere idempotenti anche dentro lo step (es. chiave di idempotenza verso il CRM).
+Verificato da `test/crash-resume.test.ts` con due processi figli reali e `SIGKILL`. Il processo B riesce ad aprire l'istanza perché il lock di A è sparito con A (sezione 5). Garanzia: at-least-once per step. Uno step il cui lavoro è finito ma il cui memo non è stato ancora scritto al momento del crash viene rieseguito; i tool con effetti esterni devono quindi essere idempotenti anche dentro lo step (es. chiave di idempotenza verso il CRM).
+
+### Consegna delle risposte (outbox)
+
+Ogni risposta passa dall'outbox dell'istanza prima di arrivare a un canale:
+
+1. Quando il motore ammette un messaggio, il nucleo scrive nell'outbox una voce per quella submission, senza risposta.
+2. Quando il motore risponde, il nucleo riempie la voce (testo o motivo, `attempts + 1`) e la scrive in `outbox/<hash>.json`: file temporaneo, `fsync`, `rename`, `fsync` della directory. Solo dopo la emette ai listener. Se la voce risulta già consegnata, si ferma.
+3. Il gateway chiama `adapter.send`; quando risolve, chiama `runtime.markDelivered`, che riscrive la voce con `deliveredAt` e scrive `reply.delivered` nell'audit.
+4. Se `send` fallisce, la voce resta non consegnata.
+5. `resume()` all'avvio, prima di riprendere il motore, rimanda ogni voce con risposta non consegnata e chiede al motore di riemettere (`reattach`) l'esito di ogni voce ancora senza risposta, anche se in Pi la submission è già chiusa.
+
+Le operazioni sulla stessa voce sono serializzate e rileggono il file prima di agire; ogni voce è affidata ai canali al massimo una volta per processo, anche con più `resume()` concorrenti o se il motore riemette la stessa risposta. Dopo `close()` le risposte che arrivano e le conferme tardive del canale non toccano più l'outbox: restano per il processo successivo.
+
+Garanzia: **at-least-once**, non exactly-once.
+
+| Crash | Cosa succede | Test |
+|---|---|---|
+| dopo la scrittura nell'outbox, prima dell'invio | il processo successivo invia una volta | `outbox.test.ts`, SIGKILL reale: un solo `sendMessage` in tutto |
+| dopo che Telegram ha ricevuto il messaggio, prima della marcatura | il processo successivo invia di nuovo: l'utente lo vede due volte | `outbox.test.ts`, SIGKILL reale: due `sendMessage`, audit `possibleDuplicate: true` |
+| dopo che Pi ha chiuso la submission, prima che la risposta sia nell'outbox | il processo successivo la riaggancia per ID e la invia una volta | `outbox.test.ts`, simulato con un motore che non inoltra le risposte |
+| dopo l'ammissione in Pi, prima della voce senza risposta | se la submission è ancora aperta, la ripresa di Pi la trova; se Pi l'ha già chiusa (servono millisecondi, possibile solo con il modello locale) la risposta non parte | non coperto |
+
+Exactly-once non è possibile con Telegram: `sendMessage` non accetta una chiave di idempotenza, e dopo un crash non si può sapere se il messaggio è partito. Mitigazioni in atto:
+
+- La finestra è minima: la marcatura avviene subito dopo l'ok del canale.
+- `attempts` è salvato prima di ogni consegna: con `attempts > 1` l'audit registra `possibleDuplicate: true`, quindi i doppioni sono contabili.
+- `OutboundMessage.idempotencyKey` porta la chiave fino al canale: per i canali API/webhook futuri il destinatario può deduplicare, e lì la consegna diventa effectively-once.
+
+Limiti:
+
+- **Nessun nuovo tentativo nello stesso processo**: un invio fallito riparte solo al prossimo avvio.
+- **Messaggi lunghi**: una risposta oltre 4096 caratteri sono più `sendMessage`; un crash a metà rimanda tutti i pezzi.
+- **L'outbox cresce**: le voci consegnate restano su disco (servono a riconoscere i doppioni). Nessuna pulizia automatica.
+- **Canale tolto dalla policy**: una voce verso un canale non più consentito resta non consegnata e a ogni avvio produce di nuovo `egress.denied`.
+- **File illeggibile**: un file dell'outbox corrotto da fuori (le scritture di Annie sono atomiche) fa fallire `resume()` con l'errore di parsing invece di saltarlo.
+- **Reset parziale**: cancellare `engine/` e tenere `outbox/` fa ripartire gli ID di Pi; voci vecchie con lo stesso ID verrebbero prese per già consegnate. Si cancellano insieme.
+- **macOS**: `fsync` non forza la cache del disco (serve `F_FULLFSYNC`); su Linux sì. Un crash del processo è coperto, un'interruzione di corrente su macOS no.
 
 ## 5. Isolamento ed egress
 
@@ -165,9 +225,37 @@ Verificato da `test/crash-resume.test.ts` con due processi figli reali e `SIGKIL
 | Segreti | `TenantSecrets` è costruito per un solo tenant e legge solo il suo file (0600) | stesso test |
 | Chiavi modello | l'engine riceve solo una funzione `apiKey` che legge i segreti del tenant dell'istanza | `isolation.test.ts`: acme riceve la sua chiave, mai quella di globex |
 | Audit | un `audit.jsonl` per tenant; ogni record porta il `tenantId` | stesso test |
+| Risposte in uscita | outbox sotto la directory dell'istanza; contiene testo, quindi file 0600 e mai nell'audit | `outbox.test.ts` |
 | Memoria | per ora la memoria è il transcript Pi dell'istanza, quindi segue lo storage | |
 
 L'isolamento oggi è di processo condiviso: più tenant possono girare nello stesso processo Node, separati da file e API. Per clienti che lo richiedono, il deployment consigliato è un processo (o container) per tenant, con lo stesso layout. Con un container per tenant l'isolamento diventa anche di sistema operativo.
+
+### Un processo per istanza (lock)
+
+`AnnieRuntime` apre un'istanza solo dopo aver preso il lock `instance.lock`, prima di toccare lo storage di Pi o l'outbox, e lo rilascia in `close()`. Un secondo processo (o un secondo `AnnieRuntime` nello stesso processo) riceve subito:
+
+```text
+InstanceLocked: Instance acme/ops is already open in another process (pid 4242 on host-a, since 2026-10-15T21:00:00.000Z).
+An instance runs in one process at a time: stop the other one first.
+```
+
+Il lock è una transazione SQLite `BEGIN EXCLUSIVE` tenuta aperta, cioè un lock POSIX gestito dal kernel. Quando il proprietario muore, in qualunque modo (SIGKILL, OOM, crash), il kernel lo rilascia: non esistono lock "stale" da riconoscere. Scartato il classico file con PID: un PID riusato da un altro processo terrebbe il lock bloccato, e due processi che recuperano insieme un lock stale possono entrambi credere di averlo. `instance.lock.owner` (pid, host, ora) serve solo al messaggio d'errore e può restare indietro dopo un crash senza effetti.
+
+Testato con processi figli reali (`test/lock.test.ts`): il secondo processo fallisce con il pid del primo, il primo viene ucciso con SIGKILL, un terzo apre l'istanza; chiudere l'istanza libera il lock anche se il processo resta vivo.
+
+Limite: i lock POSIX non sono affidabili su filesystem di rete (NFS, SMB). `data/` deve stare su disco locale o su un volume a blocchi del container.
+
+### Utenti consentiti (allowlist)
+
+Ogni istanza ha `allowedUsers` in `instance.json`: per canale, gli ID utente nativi del canale (per Telegram lo user ID numerico). Default: nessuno. Il controllo sta nel nucleo, in `AnnieInstance.submit`, dopo il controllo egress del canale e prima di qualunque altra cosa: vale per ogni canale presente e futuro, non solo per Telegram.
+
+Un messaggio da un utente non consentito:
+
+- non arriva al motore durevole né al modello (testato con un motore che conta le `submit`);
+- non riceve risposta. Scelta: silenzio invece di una frase fissa, perché rispondere conferma a uno sconosciuto che il bot esiste e apre un canale in uscita verso chi non è autorizzato;
+- è registrato nell'audit del tenant come `user.denied` con `channel`, `userId`, `threadId` e `reason` (`no_users_allowed_on_channel` o `user_not_in_allowlist`), mai il testo.
+
+`registry.setAllowedUsers()` riscrive `instance.json` in modo atomico e registra `instance.allowlist.updated`; come la egress policy, vale dalla prossima apertura dell'istanza. `pnpm dev:telegram` la imposta all'avvio da `ANNIE_TELEGRAM_ALLOWED_USERS`.
 
 ### Egress policy (default deny)
 
@@ -207,7 +295,7 @@ Due estensioni previste dell'interfaccia, da fare quando arriva il primo canale 
 |---|---|
 | API che cambia senza preavviso tra release (README: "Experimental") | versione pinnata esatta (`1.3.0`, anche `pi-ai` e `chord`); tutto il codice Pi in un adapter (~280 righe in due file); `DurableEngine` è nostra; test di confine che impedisce import di Pi altrove |
 | Formato dello storage che cambia tra versioni | un upgrade va provato su una copia di `data/`; test crash-resume come gate di upgrade. Nessuna migrazione automatica per ora |
-| Un solo processo per storage, nessun lock tra processi (README Pi) | un'istanza deve girare in un solo processo. Non c'è ancora un lock file nostro: due processi sulla stessa istanza corromperebbero lo stato. Da aggiungere prima del deploy |
+| Un solo processo per storage, nessun lock tra processi (README Pi) | lock nostro per istanza, preso prima di aprire Pi e rilasciato dal kernel se il processo muore (sezione 5) |
 | `node:sqlite` è sperimentale in Node 22 (warning a runtime) | Node 22.19+ richiesto dal pacchetto; valutare Node 24 LTS |
 | Replay dei tool: at-least-once, non exactly-once | `replaySafe` esplicito per tool; i tool con effetti esterni devono essere idempotenti; i tool non ripetibili (invio email) restano `replaySafe: false` e il modello riceve un risultato "interrupted" |
 | Comportamento di `resume()`: lo scheduler riparte anche al primo `submit` | `resume()` di Annie va chiamato all'avvio prima di accettare messaggi, per riagganciare le risposte in sospeso ai canali |

@@ -1,21 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { AnnieRuntime, type Reply } from "../src/core/index.ts";
+import { AnnieRuntime, type DurableEngine, type Reply } from "../src/core/index.ts";
 import { runtimeWithInstance, waitFor } from "./helpers.ts";
+
+/** Pi Durable whose session stops right after admitting a submission: admitted, never run. */
+const stopAfterAdmission: DurableEngine = {
+	async open(options) {
+		const session = await piDurableEngine.open(options);
+		let closed: Promise<void> | undefined;
+		const close = () => (closed ??= session.close());
+		return {
+			submit: async (threadKey, text, requestId) => {
+				const result = await session.submit(threadKey, text, requestId);
+				await close();
+				return result;
+			},
+			resume: () => session.resume(),
+			reattach: (submissionId, threadKey) => session.reattach(submissionId, threadKey),
+			onReply: (listener) => session.onReply(listener),
+			idle: () => session.idle(),
+			close,
+		};
+	},
+};
 
 describe("resume with a fast model", () => {
 	it("replies to work a previous process admitted but never ran, even when it finishes instantly", async () => {
 		const first = await runtimeWithInstance({});
-		// Admitted durably, then the process goes away before the run happens.
-		const instance = await first.runtime.openInstance("acme", "ops");
-		await instance.submit({ channel: "test", threadId: "1", userId: "u", text: "ciao", messageId: "m1" });
 		await first.runtime.close();
-		expect(first.replies).toEqual([]);
+		const stopping = new AnnieRuntime({ dataDir: first.dataDir, engine: stopAfterAdmission });
+		const stoppedReplies: Reply[] = [];
+		stopping.onReply((reply) => stoppedReplies.push(reply));
+		const instance = await stopping.openInstance("acme", "ops");
+		await instance.submit({ channel: "test", threadId: "1", userId: "u", text: "ciao", messageId: "m1" });
+		await stopping.close();
+		expect(stoppedReplies).toEqual([]);
 
 		const second = new AnnieRuntime({ dataDir: first.dataDir, engine: piDurableEngine });
 		const replies: Reply[] = [];
 		second.onReply((reply) => replies.push(reply));
-		expect(await second.resume("acme", "ops")).toEqual({ pending: 1 });
+		expect(await second.resume("acme", "ops")).toEqual({ pending: 1, undelivered: 0, reattached: 1 });
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ threadId: "1", status: "answered", text: "Annie (modello locale di sviluppo): hai scritto «ciao»" });
 

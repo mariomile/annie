@@ -4,6 +4,7 @@ Piattaforma agenti open source di Buildrs: un agente sempre attivo, sul modello 
 
 - Architettura: [`docs/architettura.md`](docs/architettura.md)
 - Stato della settimana 1: [`docs/week1.md`](docs/week1.md)
+- Stato della settimana 2 (allowlist, lock, outbox): [`docs/week2.md`](docs/week2.md)
 - Piano iniziale: [`docs/piano-iniziale.md`](docs/piano-iniziale.md)
 
 ## Requisiti
@@ -24,7 +25,8 @@ pnpm build         # compila in dist/
 
 ```bash
 cp .env.example .env
-# compila TELEGRAM_BOT_TOKEN (da @BotFather) e ANTHROPIC_API_KEY
+# compila TELEGRAM_BOT_TOKEN (da @BotFather), ANTHROPIC_API_KEY
+# e ANNIE_TELEGRAM_ALLOWED_USERS (i tuoi user ID Telegram, separati da virgola)
 pnpm dev:telegram
 ```
 
@@ -50,6 +52,7 @@ Per provare senza chiave del modello: `ANNIE_MODEL_PROVIDER=faux` usa il modello
 | `ANNIE_DATA_DIR` | no | `data` |
 | `ANNIE_TENANT_ID` | no | `default` |
 | `ANNIE_INSTANCE_ID` | no | `telegram` |
+| `ANNIE_TELEGRAM_ALLOWED_USERS` | no, ma senza nessuno può scrivere al bot | nessuno (default deny) |
 
 ## Struttura
 
@@ -62,5 +65,5 @@ src/channels/types.ts         interfaccia ChannelAdapter
 src/channels/telegram.ts      adapter Telegram (long polling, fetch)
 src/gateway.ts                collega canali e nucleo
 src/main/telegram.ts          entry point di pnpm dev:telegram
-test/                         crash-resume, isolamento, egress, Telegram, confini dei moduli
+test/                         crash-resume, isolamento, egress, Telegram, confini, allowlist, lock, outbox
 ```

@@ -102,6 +102,13 @@ class PiDurableSession implements EngineSession {
 		return { pending: await this.recover() };
 	}
 
+	async reattach(submissionId: string, threadKey: string): Promise<boolean> {
+		const submission = await this.harness.submission(Number(submissionId) as SubmissionId, context);
+		if (submission === undefined) return false;
+		this.track(submission, threadKey);
+		return true;
+	}
+
 	/**
 	 * Once per session: attach a waiter to every unsettled submission while the scheduler is
 	 * still paused (Harness.open leaves it paused), then start it. Starting first would let a

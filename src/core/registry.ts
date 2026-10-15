@@ -4,7 +4,8 @@ import { AuditLog } from "./audit.ts";
 import { NotFound } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { instanceFile, tenantDir, tenantFile } from "./paths.ts";
-import { DENY_ALL, type EgressPolicy } from "./policy.ts";
+import { writeFileAtomic } from "./atomic-file.ts";
+import { type AllowedUsers, CHANNEL_PATTERN, DENY_ALL, type EgressPolicy } from "./policy.ts";
 
 export type ModelSelection = {
 	/** pi-ai provider ID, e.g. "anthropic". Must also be allowed by the egress policy. */
@@ -24,6 +25,8 @@ export type InstanceRecord = {
 	readonly name: string;
 	readonly model: ModelSelection;
 	readonly egress: EgressPolicy;
+	/** Channel → user IDs allowed to talk to this instance. Missing channel: nobody. */
+	readonly allowedUsers: AllowedUsers;
 	readonly instructions?: string;
 	readonly createdAt: string;
 };
@@ -34,6 +37,8 @@ export type CreateInstanceInput = {
 	readonly model: ModelSelection;
 	/** Omitted: deny everything. */
 	readonly egress?: EgressPolicy;
+	/** Omitted: nobody may talk to the instance on any channel. */
+	readonly allowedUsers?: AllowedUsers;
 	readonly instructions?: string;
 };
 
@@ -73,6 +78,7 @@ export class TenantRegistry {
 			name: input.name,
 			model: input.model,
 			egress: input.egress ?? DENY_ALL,
+			allowedUsers: input.allowedUsers ?? {},
 			...(input.instructions === undefined ? {} : { instructions: input.instructions }),
 			createdAt: new Date().toISOString(),
 		};
@@ -92,6 +98,21 @@ export class TenantRegistry {
 		const i = instanceId(id);
 		const record = await readJson<InstanceRecord>(instanceFile(this.dataDir, t, i));
 		if (record === undefined) throw new NotFound(`Instance "${i}" not found in tenant "${t}"`);
+		return record;
+	}
+
+	/** Replace the users allowed on one channel. Takes effect the next time the instance is opened. */
+	async setAllowedUsers(tenant: string, id: string, channel: string, userIds: readonly string[]): Promise<InstanceRecord> {
+		if (!CHANNEL_PATTERN.test(channel)) throw new Error(`Invalid channel name "${channel}"`);
+		const current = await this.getInstance(tenant, id);
+		const record: InstanceRecord = { ...current, allowedUsers: { ...current.allowedUsers, [channel]: [...new Set(userIds)] } };
+		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		await new AuditLog(this.dataDir, record.tenantId).append({
+			type: "instance.allowlist.updated",
+			instanceId: record.id,
+			channel,
+			users: record.allowedUsers[channel]?.length ?? 0,
+		});
 		return record;
 	}
 

@@ -87,6 +87,7 @@ describe("model credentials", () => {
 			name: "Ops",
 			model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
 			egress: { modelProviders: ["anthropic"], channels: ["test"] },
+			allowedUsers: { test: ["u"] },
 		});
 		const replies: Reply[] = [];
 		runtime.onReply((reply) => replies.push(reply));

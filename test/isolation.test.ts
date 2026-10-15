@@ -13,6 +13,7 @@ function recordingEngine(opened: EngineOpenOptions[]): DurableEngine {
 			return {
 				submit: async () => ({ submissionId: "0" }),
 				resume: async () => ({ pending: 0 }),
+				reattach: async () => false,
 				onReply: () => () => {},
 				idle: async () => {},
 				close: async () => {},
@@ -33,7 +34,7 @@ describe("tenant isolation", () => {
 		const runtime = new AnnieRuntime({ dataDir, engine: piDurableEngine });
 		for (const tenant of ["acme", "globex"]) {
 			await runtime.registry.createTenant({ id: tenant, name: tenant });
-			await runtime.registry.createInstance(tenant, { id: "ops", name: "ops", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["test"] } });
+			await runtime.registry.createInstance(tenant, { id: "ops", name: "ops", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["test"] }, allowedUsers: { test: ["u"] } });
 		}
 		await runtime.secrets("acme").set(modelApiKeySecret("anthropic"), "acme-secret-key");
 		await runtime.secrets("globex").set(modelApiKeySecret("anthropic"), "globex-secret-key");

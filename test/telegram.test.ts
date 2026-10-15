@@ -58,7 +58,7 @@ describe("Telegram adapter (mocked fetch)", () => {
 	it("sends replies with sendMessage, split at Telegram's length limit", async () => {
 		const api = fakeTelegram([]);
 		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
-		await adapter.send({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", text: "x".repeat(TELEGRAM_MAX_TEXT + 1) });
+		await adapter.send({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", text: "x".repeat(TELEGRAM_MAX_TEXT + 1), idempotencyKey: "reply:1" });
 		expect(api.calls.map((c) => [c.method, c.body.chat_id, String(c.body.text).length])).toEqual([
 			["sendMessage", "42", TELEGRAM_MAX_TEXT],
 			["sendMessage", "42", 1],
@@ -113,7 +113,7 @@ describe("gateway with several tenants", () => {
 	it("sends each reply only through the bot of the tenant and instance that answered", async () => {
 		const { runtime, dataDir } = await runtimeWithInstance({ tenant: "acme", egress: { modelProviders: ["faux"], channels: ["telegram"] } });
 		await runtime.registry.createTenant({ id: "globex", name: "globex" });
-		await runtime.registry.createInstance("globex", { id: "ops", name: "ops", model: { provider: "faux", modelId: "annie-dev" }, egress: { modelProviders: ["faux"], channels: ["telegram"] } });
+		await runtime.registry.createInstance("globex", { id: "ops", name: "ops", model: { provider: "faux", modelId: "annie-dev" }, egress: { modelProviders: ["faux"], channels: ["telegram"] }, allowedUsers: { telegram: ["7"] } });
 		expect(dataDir).toBeTruthy();
 
 		// The same user (private chat 42) talks to both bots.
@@ -152,5 +152,12 @@ describe("dev:telegram configuration", () => {
 			instanceId: "telegram",
 		});
 		expect(loadTelegramConfig({ TELEGRAM_BOT_TOKEN: "t", ANNIE_MODEL_PROVIDER: "faux" })).toMatchObject({ modelProvider: "faux", modelId: "annie-dev", modelApiKey: undefined });
+	});
+
+	it("reads the Telegram allowlist as numeric user IDs", () => {
+		const base = { TELEGRAM_BOT_TOKEN: "t", ANNIE_MODEL_PROVIDER: "faux" };
+		expect(loadTelegramConfig(base).telegramAllowedUsers).toBeUndefined();
+		expect(loadTelegramConfig({ ...base, ANNIE_TELEGRAM_ALLOWED_USERS: " 12, 34 ,," }).telegramAllowedUsers).toEqual(["12", "34"]);
+		expect(() => loadTelegramConfig({ ...base, ANNIE_TELEGRAM_ALLOWED_USERS: "12,@mario" })).toThrow("invalid: @mario");
 	});
 });

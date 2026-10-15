@@ -7,6 +7,8 @@ export type TelegramConfig = {
 	readonly dataDir: string;
 	readonly tenantId: string;
 	readonly instanceId: string;
+	/** Telegram user IDs allowed to talk to the bot; undefined leaves the instance's list as it is. */
+	readonly telegramAllowedUsers: readonly string[] | undefined;
 };
 
 export const DEFAULT_MODEL_PROVIDER = "anthropic";
@@ -41,6 +43,13 @@ export function loadTelegramConfig(env: Readonly<Record<string, string | undefin
 		if (modelApiKey === undefined) missing.push(keyEnv);
 	}
 
+	const allowedRaw = nonEmpty(env.ANNIE_TELEGRAM_ALLOWED_USERS);
+	const telegramAllowedUsers = allowedRaw?.split(",").map((id) => id.trim()).filter((id) => id !== "");
+	const invalid = telegramAllowedUsers?.filter((id) => !/^\d+$/.test(id)) ?? [];
+	if (invalid.length > 0) {
+		throw new ConfigError(`ANNIE_TELEGRAM_ALLOWED_USERS must be a comma-separated list of numeric Telegram user IDs; invalid: ${invalid.join(", ")}`);
+	}
+
 	if (missing.length > 0) {
 		throw new ConfigError(
 			`Missing environment variable${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. Set ${missing.length > 1 ? "them" : "it"} in .env (see .env.example).`,
@@ -54,6 +63,7 @@ export function loadTelegramConfig(env: Readonly<Record<string, string | undefin
 		dataDir: nonEmpty(env.ANNIE_DATA_DIR) ?? "data",
 		tenantId: nonEmpty(env.ANNIE_TENANT_ID) ?? "default",
 		instanceId: nonEmpty(env.ANNIE_INSTANCE_ID) ?? "telegram",
+		telegramAllowedUsers,
 	};
 }
 

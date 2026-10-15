@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { type AnnieTool, AnnieRuntime, type EgressPolicy, type Reply } from "../src/core/index.ts";
+import { type AllowedUsers, type AnnieTool, AnnieRuntime, type EgressPolicy, type Reply } from "../src/core/index.ts";
 
 export function tempDataDir(): string {
 	return mkdtempSync(join(tmpdir(), "annie-test-"));
@@ -16,6 +16,7 @@ export async function runtimeWithInstance(options: {
 	tenant?: string;
 	instance?: string;
 	egress?: EgressPolicy;
+	allowedUsers?: AllowedUsers;
 	tools?: AnnieTool[];
 }): Promise<{ runtime: AnnieRuntime; dataDir: string; replies: Reply[] }> {
 	const dataDir = options.dataDir ?? tempDataDir();
@@ -28,6 +29,8 @@ export async function runtimeWithInstance(options: {
 		name: instance,
 		model: FAUX_MODEL,
 		egress: options.egress ?? { modelProviders: ["faux"], channels: ["test"] },
+		// The users the tests send as: "u" on the test channel, Telegram user 7 (see textUpdate).
+		allowedUsers: options.allowedUsers ?? { test: ["u"], telegram: ["7"] },
 	});
 	const replies: Reply[] = [];
 	runtime.onReply((reply) => replies.push(reply));

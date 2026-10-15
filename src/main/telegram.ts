@@ -75,6 +75,13 @@ async function bootstrap(runtime: AnnieRuntime, config: TelegramConfig): Promise
 			egress: { modelProviders: [config.modelProvider], channels: ["telegram"] },
 		});
 	}
+	if (config.telegramAllowedUsers !== undefined) {
+		await runtime.registry.setAllowedUsers(config.tenantId, config.instanceId, "telegram", config.telegramAllowedUsers);
+	}
+	const instance = await runtime.registry.getInstance(config.tenantId, config.instanceId);
+	if ((instance.allowedUsers.telegram ?? []).length === 0) {
+		console.error("annie: no Telegram user is allowed, every message will be rejected. Set ANNIE_TELEGRAM_ALLOWED_USERS in .env.");
+	}
 	if (config.modelApiKey !== undefined) {
 		await runtime.secrets(config.tenantId).set(modelApiKeySecret(config.modelProvider), config.modelApiKey);
 	}
