@@ -6,7 +6,7 @@ import { writeFileAtomic } from "../core/atomic-file.ts";
 import type { AuditLog } from "../core/audit.ts";
 import type { ModelClient } from "../core/completion.ts";
 import type { ModelRoles } from "../core/model-routing.ts";
-import { callbackData, PracticeStore, type TenantSegreteriaConfig } from "../core/practice.ts";
+import { callbackData, type Pratica, PracticeStore, type TenantSegreteriaConfig } from "../core/practice.ts";
 import { romeDayKey, TELEGRAM_HARD_CAP, type UsageLedger } from "../core/usage.ts";
 import { type CallbackDeps, handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "./callbacks.ts";
 import type { ChecksConfig } from "./checks.ts";
@@ -115,6 +115,7 @@ export class SegreteriaService {
 			try {
 				const result = await processInboundMail(this.pipelineDeps(), mail);
 				if (result.action !== "noop_duplicate") processed++;
+				else await this.ensureCard(result.pratica);
 				delete state.failures[mail.messageId];
 			} catch (error) {
 				if (errorText(error) === "hard_cap") {
@@ -149,6 +150,22 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 			buttons: [],
 			praticaId: "mail",
 			draftVersion: 0,
+		});
+	}
+
+	/**
+	 * A mail read again is one whose round never finished. If the process died after saving
+	 * its pratica and before writing the card, the sales people never got it: send it now.
+	 */
+	private async ensureCard(pratica: Pratica): Promise<void> {
+		const waitsForTap = pratica.status === "draft_ready" || (pratica.status === "classified_skip" && pratica.classification === "spam");
+		if (!waitsForTap || (await this.notifications.hasCard(pratica.praticaId, pratica.draftVersion))) return;
+		await this.options.audit.append({ type: "card.recovered", instanceId: this.options.instanceId, praticaId: pratica.praticaId, draftVersion: pratica.draftVersion });
+		await this.notify({
+			text: pratica.status === "draft_ready" ? `${copy.newRequestNotice(pratica)}\n\n${copy.leadCardAndDraft(pratica)}` : copy.spamNotice(pratica),
+			buttons: [...copy.BUTTONS],
+			praticaId: pratica.praticaId,
+			draftVersion: pratica.draftVersion,
 		});
 	}
 

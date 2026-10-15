@@ -28,7 +28,6 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 ### Settimana 5 (proposta)
 
-- [ ] Chiudere la finestra tra salvataggio della pratica e scrittura della scheda
 - [ ] Ritentativi nello stesso processo, con backoff, per risposte e schede
 - [ ] Pulizia delle outbox
 - [ ] Docker Compose e backup, dal piano iniziale (pacchetto vendibile)

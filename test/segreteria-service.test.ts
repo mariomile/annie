@@ -10,6 +10,7 @@ import { AuditLog } from "../src/core/audit.ts";
 import { tenantId } from "../src/core/ids.ts";
 import { FAUX_MODEL_ROLES } from "../src/core/model-routing.ts";
 import { UsageLedger } from "../src/core/usage.ts";
+import { processInboundMail } from "../src/segreteria/pipeline.ts";
 import { SegreteriaService } from "../src/segreteria/service.ts";
 
 type Sent = { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } };
@@ -147,6 +148,25 @@ describe("segreteria service (fake mailbox, fake Telegram)", () => {
 		const third = setup(first.dataDir, { mail: first.mail, crm: first.crm });
 		await third.service.recoverNow();
 		expect(third.telegram.sent).toHaveLength(0);
+	});
+
+	it("a crash after the pratica was saved and before its card was written: the card goes out on the next round", async () => {
+		const h = setup();
+		h.mail.seed([request()]);
+		// The pipeline ran to the end except the card (the process died in between): no card, cursor not moved.
+		await processInboundMail(
+			{ tenantId: "acme", instanceId: "segreteria", practices: h.service.practices, mail: h.mail, crm: h.crm, audit: h.audit, usage: new UsageLedger(join(h.dataDir, "x")), roles: FAUX_MODEL_ROLES, notify: async () => {} },
+			request(),
+		);
+		expect(h.telegram.sent).toHaveLength(0);
+		await h.service.pollOnce();
+		const card = h.telegram.sent.at(-1);
+		expect(card?.text).toContain("Nuova richiesta di preventivo");
+		expect(buttonsOf(card)).toEqual(["Approva", "Modifica", "Scarta"]);
+		// Only once: the card is marked now.
+		await h.service.pollOnce();
+		expect(h.telegram.sent).toHaveLength(1);
+		expect((await h.audit.read()).filter((e) => e.type === "card.recovered")).toHaveLength(1);
 	});
 
 	it("over the hard spend cap: one notice a day, no pratica, mails read again once the cap resets", async () => {

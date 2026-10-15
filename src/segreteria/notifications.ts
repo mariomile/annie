@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readdir, readFile, unlink } from "node:fs/promises";
+import { access, readdir, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 
@@ -33,7 +33,17 @@ export class NotificationOutbox {
 		const id = `${Date.now().toString(36).padStart(10, "0")}-${randomBytes(4).toString("hex")}`;
 		const entry: NotificationEntry = { ...notification, id, createdAt: new Date().toISOString(), pending: [...chats], attempts: {} };
 		await this.write(entry);
+		// A card (a message with buttons) leaves a mark that outlives the entry: see hasCard.
+		if (notification.buttons.length > 0) await writeFileAtomic(this.cardMark(notification.praticaId, notification.draftVersion), `${id}\n`);
 		return entry;
+	}
+
+	/** Has a card for this pratica and draft version ever been put in the outbox? */
+	async hasCard(praticaId: string, draftVersion: number): Promise<boolean> {
+		return access(this.cardMark(praticaId, draftVersion)).then(
+			() => true,
+			() => false,
+		);
 	}
 
 	/** Record a send to `chat` as started; returns the attempt number. */
@@ -65,6 +75,10 @@ export class NotificationOutbox {
 
 	private write(entry: NotificationEntry): Promise<void> {
 		return writeFileAtomic(this.file(entry.id), `${JSON.stringify(entry)}\n`);
+	}
+
+	private cardMark(praticaId: string, draftVersion: number): string {
+		return join(this.dir, "cards", `${praticaId.replace(/[^\w-]/g, "_")}.${draftVersion}`);
 	}
 
 	private file(id: string): string {
