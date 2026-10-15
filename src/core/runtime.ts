@@ -5,7 +5,8 @@ import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
-import { engineDir, lockFile, outboxDir, workspaceDir } from "./paths.ts";
+import { engineDir, lockFile, outboxDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { ScheduleStore } from "./schedules.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
@@ -74,6 +75,11 @@ export class AnnieRuntime {
 		return new TenantSecrets(this.options.dataDir, tenantId(tenant));
 	}
 
+	/** The tasks programmati of an instance. */
+	schedules(tenant: string, instance: string): ScheduleStore {
+		return new ScheduleStore(schedulesDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
 	/** The files of an instance. Reading them needs no open instance. */
 	workspace(tenant: string, instance: string): Workspace {
 		return new Workspace(workspaceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
@@ -107,6 +113,10 @@ export class AnnieRuntime {
 
 	async submit(request: SubmitRequest): Promise<{ submissionId: string }> {
 		return (await this.openInstance(request.tenantId, request.instanceId)).submit(request);
+	}
+
+	async submitScheduled(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string }): Promise<{ submissionId: string }> {
+		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
 
 	/**
@@ -261,6 +271,29 @@ export class AnnieInstance {
 			userId: request.userId,
 			chars: request.text.length,
 		});
+		return this.admit(request);
+	}
+
+	/**
+	 * A task programmato firing: it comes from the instance's own schedule, not from a person,
+	 * so the allowlist does not apply (only allowed users can create schedules). The channel
+	 * must still be allowed. `messageId` makes a refire after a crash idempotent.
+	 */
+	async submitScheduled(request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string }): Promise<{ submissionId: string }> {
+		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
+		try {
+			assertChannelAllowed(this.record.egress, request.channel);
+		} catch (error) {
+			if (error instanceof EgressDenied) {
+				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });
+			}
+			throw error;
+		}
+		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId });
+		return this.admit(request);
+	}
+
+	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }): Promise<{ submissionId: string }> {
 		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
 		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId);
 		// Record the admitted submission in the outbox: if the process dies after the engine

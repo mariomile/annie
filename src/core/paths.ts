@@ -44,6 +44,10 @@ export function lockFile(dataDir: string, tenant: TenantId, instance: InstanceId
 	return join(instanceDir(dataDir, tenant, instance), "instance.lock");
 }
 
+export function schedulesDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "schedules");
+}
+
 export function workspaceDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
 	return join(instanceDir(dataDir, tenant, instance), "workspace");
 }
