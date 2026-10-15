@@ -55,7 +55,7 @@ describe("Gmail adapter (mocked fetch)", () => {
 					: Response.json({ messages: [{ id: "m1" }, { id: "old" }] }),
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages/m1": () => Response.json(gmailMessage("m1", t0 + 1000, "Buongiorno, vorrei un preventivo per un forno.")),
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages/m2": () => Response.json(gmailMessage("m2", t0 + 5000, "Seconda mail")),
-			"GET gmail.googleapis.com/gmail/v1/users/me/messages/old": () => Response.json(gmailMessage("old", t0 - 1, "già vista")),
+			"GET gmail.googleapis.com/gmail/v1/users/me/messages/old": () => Response.json(gmailMessage("old", t0 - 11 * 60_000, "fuori dalla finestra")),
 		});
 		const gmail = new GmailMailAdapter({ credentials: creds, fetch: api.fetch, now: () => t0 });
 
@@ -74,12 +74,41 @@ describe("Gmail adapter (mocked fetch)", () => {
 			receivedAt: new Date(t0 + 1000).toISOString(),
 		});
 		expect(nextCursor).toBe(String(t0 + 5000));
+		// Each poll looks 10 minutes back: search can index a mail after a newer one.
 		const list = api.calls.find((c) => c.url.pathname.endsWith("/messages"));
-		expect(list?.url.searchParams.get("q")).toBe(`in:inbox -from:me after:${t0 / 1000}`);
+		expect(list?.url.searchParams.get("q")).toBe(`in:inbox -from:me after:${t0 / 1000 - 600}`);
 		// One token refresh for the whole poll, sent as a Bearer header.
 		expect(api.calls.filter((c) => c.url.host === "oauth2.googleapis.com")).toHaveLength(1);
 		expect(api.calls[0]?.body).toEqual({ client_id: "cid", client_secret: "csecret", refresh_token: "rtoken", grant_type: "refresh_token" });
 		expect(api.calls[1]?.headers.authorization).toBe("Bearer at-1");
+	});
+
+	it("works through a backlog oldest first and never skips mail beyond the per-poll limit", async () => {
+		const t0 = Date.UTC(2026, 9, 15, 9, 0, 0);
+		// Five new mails, newest first as Gmail lists them; two per poll.
+		const all = [5, 4, 3, 2, 1].map((n) => ({ id: `n${n}`, at: t0 + n * 1000 }));
+		const api = fakeApi({
+			"POST oauth2.googleapis.com/token": token,
+			"GET gmail.googleapis.com/gmail/v1/users/me/messages": (c) => {
+				const after = Number(/after:(\d+)/.exec(c.url.searchParams.get("q") ?? "")?.[1]) * 1000;
+				return Response.json({ messages: all.filter((m) => m.at >= after).map((m) => ({ id: m.id })) });
+			},
+			...Object.fromEntries(all.map((m) => [`GET gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}`, () => Response.json(gmailMessage(m.id, m.at, m.id))])),
+		});
+		const gmail = new GmailMailAdapter({ credentials: creds, fetch: api.fetch, now: () => t0 + 60_000, maxPerPoll: 2 });
+		const seen: string[] = [];
+		let cursor = String(t0);
+		for (let i = 0; i < 4; i++) {
+			const page = await gmail.listNewRequests("acme", cursor, { isKnown: async (id) => seen.includes(id) });
+			for (const m of page.messages) if (!seen.includes(m.messageId)) seen.push(m.messageId);
+			cursor = page.nextCursor;
+		}
+		expect(seen).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+	});
+
+	it("refuses line breaks in mail headers (no injected Bcc from model or mail text)", () => {
+		expect(() => buildMime({ from: "a@x", to: "b@y", subject: "Re: x\r\nBcc: victim@evil.example", bodyText: "x", messageId: "<m@x>" })).toThrow("line break in the subject header");
+		expect(() => buildMime({ from: "a@x", to: "b@y\nCc: c@z", subject: "s", bodyText: "x", messageId: "<m@x>" })).toThrow("to header");
 	});
 
 	it("falls back to the HTML body without tags", () => {
@@ -234,5 +263,19 @@ describe("connector egress", () => {
 		// Policies from before week 4 have no connectors: nothing is allowed.
 		const legacy = egressFetch("gmail", ["gmail.googleapis.com"], () => ({ modelProviders: [], channels: [] }), ok);
 		await expect(legacy("https://gmail.googleapis.com/x")).rejects.toThrow(EgressDenied);
+	});
+
+	it("re-reads the policy on every request and never follows redirects", async () => {
+		let policy = { modelProviders: [], channels: [], connectors: ["gmail"] };
+		const inits: (RequestInit | undefined)[] = [];
+		const base = (async (_: string | URL | Request, init?: RequestInit) => {
+			inits.push(init);
+			return Response.json({});
+		}) as typeof fetch;
+		const guarded = egressFetch("gmail", ["gmail.googleapis.com"], async () => policy, base);
+		await guarded("https://gmail.googleapis.com/a");
+		expect(inits[0]?.redirect).toBe("error");
+		policy = { modelProviders: [], channels: [], connectors: [] };
+		await expect(guarded("https://gmail.googleapis.com/a")).rejects.toThrow(EgressDenied);
 	});
 });

@@ -54,7 +54,8 @@ try {
 
 const secrets = runtime.secrets(config.tenantId);
 const record = await runtime.registry.getInstance(config.tenantId, config.instanceId);
-const policy = () => record.egress;
+// Read on every request: an owner who removes a connector stops it without a restart.
+const policy = async () => (await runtime.registry.getInstance(config.tenantId, config.instanceId)).egress;
 const log = (message: string) => console.error(message);
 
 const mail = new GmailMailAdapter({
@@ -70,7 +71,7 @@ const model =
 	config.modelProvider === "faux"
 		? undefined
 		: {
-				client: createPiCompletionClient({ apiKey: (provider) => secrets.get(modelApiKeySecret(provider)), assertAllowed: (provider) => assertModelProviderAllowed(record.egress, provider) }),
+				client: createPiCompletionClient({ apiKey: (provider) => secrets.get(modelApiKeySecret(provider)), assertAllowed: async (provider) => assertModelProviderAllowed(await policy(), provider) }),
 				checks: await loadChecks(join(import.meta.dirname, "..", "..", "evals", "segreteria")),
 			};
 
@@ -117,9 +118,17 @@ async function bootstrap(runtime: AnnieRuntime, config: SegreteriaConfig): Promi
 		await runtime.registry.createTenant({ id: config.tenantId, name: config.tenantId });
 	}
 	try {
+		// An existing policy is the owner's: never widen it at startup, say what is missing.
 		const instance = await runtime.registry.getInstance(config.tenantId, config.instanceId);
-		const same = JSON.stringify(instance.egress) === JSON.stringify(egress);
-		if (!same) await runtime.registry.setEgress(config.tenantId, config.instanceId, egress);
+		const missing = [
+			...egress.modelProviders.filter((p) => !instance.egress.modelProviders.includes(p)).map((p) => `model provider "${p}"`),
+			...egress.channels.filter((c) => !instance.egress.channels.includes(c)).map((c) => `channel "${c}"`),
+			...(egress.connectors ?? []).filter((c) => !(instance.egress.connectors ?? []).includes(c)).map((c) => `connector "${c}"`),
+		];
+		if (missing.length > 0) {
+			console.error(`annie: instance ${config.tenantId}/${config.instanceId} does not allow ${missing.join(", ")}. Update its egress policy (data/.../instance.json) or use another ANNIE_SEGRETERIA_INSTANCE_ID.`);
+			process.exit(1);
+		}
 	} catch (error) {
 		if (!(error instanceof NotFound)) throw error;
 		const roles = config.modelProvider === "faux" ? FAUX_MODEL_ROLES : DEFAULT_MODEL_ROLES;

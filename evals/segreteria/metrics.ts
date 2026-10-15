@@ -3,15 +3,18 @@
  * against the gold lead, and parsing of the judge's verdict. Thresholds: spec §7.2.
  */
 
-/** Fields compared with the gold lead. Free-text ones match on word overlap. */
-export const LEAD_FIELDS = ["fullName", "title", "company", "email", "phone", "productOrService", "quantity", "urgency", "vatNumber", "originalLanguage"] as const;
+/**
+ * Fields compared with the gold lead. Free-text ones match on word overlap. Not `email`:
+ * it comes from the From header, not from the model.
+ */
+export const LEAD_FIELDS = ["fullName", "title", "company", "phone", "productOrService", "quantity", "urgency", "vatNumber", "originalLanguage"] as const;
 const FREE_TEXT = new Set<string>(["productOrService", "urgency"]);
 
 export type FieldCounts = { tp: number; fp: number; fn: number };
 
 function normalize(value: unknown): string | null {
 	if (value === null || value === undefined) return null;
-	const text = String(value).toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^\p{L}\p{N}@.+ ]/gu, " ").replace(/\s+/g, " ").trim();
+	const text = String(value).toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\p{L}\p{N}@.+ ]/gu, " ").replace(/\s+/g, " ").trim();
 	return text === "" ? null : text;
 }
 

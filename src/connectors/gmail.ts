@@ -34,6 +34,10 @@ type MessagePart = { mimeType?: string; headers?: Header[]; body?: { data?: stri
 type GmailMessage = { id: string; threadId: string; internalDate?: string; labelIds?: string[]; payload?: MessagePart };
 
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
+/** How far before the cursor each poll looks again (search indexing lag). */
+const OVERLAP_MS = 10 * 60_000;
+/** Upper bound of IDs listed per poll. */
+const MAX_LISTED = 2000;
 
 /**
  * Gmail over its REST API with plain fetch.
@@ -56,34 +60,46 @@ export class GmailMailAdapter implements MailAdapter {
 		this.now = options.now ?? Date.now;
 	}
 
-	async listNewRequests(_tenantId: string, sinceCursor: string): Promise<{ messages: InboundMail[]; nextCursor: string }> {
+	async listNewRequests(
+		_tenantId: string,
+		sinceCursor: string,
+		options: { isKnown?: (messageId: string) => Promise<boolean> } = {},
+	): Promise<{ messages: InboundMail[]; nextCursor: string }> {
 		if (sinceCursor === "") return { messages: [], nextCursor: String(this.now()) };
 		const since = Number(sinceCursor);
 		if (!Number.isFinite(since)) throw new Error(`Gmail cursor is not a timestamp: ${sinceCursor}`);
-		const q = `in:inbox -from:me after:${Math.floor(since / 1000)}`;
+		// Search is eventually consistent: a mail can be indexed after a newer one. Each poll
+		// looks back OVERLAP_MS before the cursor; the pipeline drops mails it already has.
+		const from = since - OVERLAP_MS;
+		const q = `in:inbox -from:me after:${Math.floor(from / 1000)}`;
 		const max = this.options.maxPerPoll ?? 200;
+		// The list comes newest first: read every page (bounded), then keep the oldest `max`,
+		// so a backlog is worked through in order over several polls and never skipped.
 		const ids: string[] = [];
 		let pageToken: string | undefined;
 		do {
-			const params = new URLSearchParams({ q, maxResults: String(Math.min(100, max)) });
+			const params = new URLSearchParams({ q, maxResults: "100" });
 			if (pageToken !== undefined) params.set("pageToken", pageToken);
 			const page = await this.api<{ messages?: { id: string }[]; nextPageToken?: string }>("messages.list", `${API}/messages?${params}`, { retries: 2 });
 			ids.push(...(page.messages ?? []).map((m) => m.id));
 			pageToken = page.nextPageToken;
-		} while (pageToken !== undefined && ids.length < max);
+		} while (pageToken !== undefined && ids.length < MAX_LISTED);
+		const unknown: string[] = [];
+		for (const id of ids) if (!(await options.isKnown?.(id))) unknown.push(id);
+		const backlog = unknown.length > max;
+		const chosen = unknown.slice(-max).reverse();
 
 		const messages: InboundMail[] = [];
-		let newest = since;
-		for (const id of ids.slice(0, max)) {
+		for (const id of chosen) {
 			const message = await this.api<GmailMessage>("messages.get", `${API}/messages/${encodeURIComponent(id)}?format=full`, { retries: 2 });
-			const receivedMs = Number(message.internalDate ?? "0");
-			if (receivedMs < since) continue;
-			newest = Math.max(newest, receivedMs);
+			if (Number(message.internalDate ?? "0") < from) continue;
 			messages.push(toInboundMail(message));
 		}
 		// Oldest first, the order the mails arrived in.
 		messages.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
-		return { messages, nextCursor: String(newest) };
+		const newestRead = messages.reduce((n, m) => Math.max(n, Date.parse(m.receivedAt)), since);
+		// With a backlog the cursor stops at the newest mail read; otherwise it moves to now.
+		return { messages, nextCursor: String(backlog ? newestRead : Math.max(newestRead, this.now() - OVERLAP_MS)) };
 	}
 
 	async sendReply(
@@ -227,6 +243,10 @@ function htmlToText(html: string): string {
 
 /** RFC 2822 text/plain message, UTF-8, base64url-encoded for messages.send. */
 export function buildMime(m: { from: string; to: string; subject: string; bodyText: string; messageId: string; inReplyTo?: string; references?: string }): string {
+	// A line break in a header value would let text from the model or a mail add headers (Bcc, To).
+	for (const [name, value] of Object.entries({ from: m.from, to: m.to, subject: m.subject, messageId: m.messageId, inReplyTo: m.inReplyTo, references: m.references })) {
+		if (value !== undefined && /[\r\n]/.test(value)) throw new Error(`Gmail: line break in the ${name} header`);
+	}
 	const subject = /^re:/i.test(m.subject) || m.inReplyTo === undefined ? m.subject : `Re: ${m.subject}`;
 	const lines = [
 		`From: ${m.from}`,

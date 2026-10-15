@@ -16,11 +16,14 @@ describe("nightly eval metrics", () => {
 	it("counts a wrong value as one false positive and one false negative", () => {
 		const gold = { fullName: "Giulia Ferraresi", title: null, company: "Tornerie Valdorme Srl", email: "g@x.example", phone: null, productOrService: "tornio CNC", quantity: "2", urgency: null, vatNumber: null, originalLanguage: "it" };
 		const right = compareLead({ ...gold }, gold);
-		expect(right).toEqual({ counts: { tp: 6, fp: 0, fn: 0 }, exact: true, mismatches: [] });
+		expect(right).toEqual({ counts: { tp: 5, fp: 0, fn: 0 }, exact: true, mismatches: [] });
 		const wrong = compareLead({ ...gold, company: "Valdorme Spa", phone: "333", quantity: null }, gold);
-		expect(wrong.counts).toEqual({ tp: 4, fp: 2, fn: 2 });
+		expect(wrong.counts).toEqual({ tp: 3, fp: 2, fn: 2 });
 		expect(wrong.mismatches).toEqual(["company", "phone", "quantity"]);
-		expect(microF1([right.counts, wrong.counts])).toBeCloseTo((2 * (10 / 12) * (10 / 12)) / (20 / 12), 6);
+		// tp 8, fp 2, fn 2: precision = recall = 0.8.
+		expect(microF1([right.counts, wrong.counts])).toBeCloseTo(0.8, 6);
+		// email is not scored: it comes from the From header.
+		expect(compareLead({ ...gold, email: "other@x.example" }, gold).exact).toBe(true);
 		expect(microF1([])).toBe(0);
 	});
 

@@ -22,12 +22,28 @@ La settimana 4 è quindi diventata «segreteria funzionante end-to-end», con de
 - **`pnpm dev:segreteria`** (`src/main/segreteria.ts`). Crea tenant e istanza `segreteria` (egress: provider del modello, `telegram`, `gmail`, `hubspot`), salva le credenziali nel secret store del tenant, prende il lock dell'istanza e avvia il servizio. Configurazione verificata dai test (`test/telegram.test.ts`).
 - **Giudice notturno** (`evals/segreteria/judge.ts`, metriche in `metrics.ts` testate in `test/eval-metrics.test.ts`). Fa girare la pipeline vera sui 35 casi, misura classificazione (accuratezza, nessuno spam preso per preventivo), estrazione (micro-F1 sui campi, lead esatti), applica i controlli deterministici con i vincoli del gold, fa giudicare ogni bozza a Sonnet con la rubrica, scrive `last-report/judge.json` ed esce con 1 se un gate fallisce (soglie §7.2). Il workflow notturno carica il report come artifact.
 
+## Review indipendente
+
+Un revisore separato ha trovato 13 problemi sul branch. Corretti tutti quelli con uno scenario reale:
+
+- **Alta.** Un tap Approva riconsegnato da Telegram dopo un crash a metà invio poteva rimandare la mail senza un nuovo tap. Ora la pratica salva l'ID del tap prima dell'invio: lo stesso tap viene riconosciuto (`tap.redelivered` nell'audit) e solo un tap nuovo sulla scheda di ripresa può inviare.
+- **Alta.** Un crash durante CRM o bozza lasciava una pratica `received` senza scheda, per sempre. Ora la pratica di un preventivo viene salvata solo con la bozza pronta: dopo un crash la mail è ancora nuova e viene riletta da capo.
+- **Media.** Una scheda rifiutata da Telegram ripartiva solo al riavvio: ora a ogni giro, senza la riga doppione se Telegram l'aveva rifiutata esplicitamente.
+- **Media.** Un a capo nell'oggetto generato dal modello poteva aggiungere header alla mail (un `Bcc`). Ora `buildMime` rifiuta a capo in ogni header e l'oggetto della bozza è sempre su una riga.
+- **Media.** Con più di 200 mail arretrate il cursore Gmail saltava le più vecchie, e una mail indicizzata in ritardo poteva sfuggire. Ora ogni giro guarda 10 minuti indietro, scarica solo le mail che il servizio non conosce e smaltisce l'arretrato dal più vecchio.
+- **Media.** All'avvio `dev:segreteria` riscriveva la egress policy dell'istanza, riabilitando connettori tolti dall'owner. Ora la imposta solo alla creazione e, se manca qualcosa, si ferma dicendo cosa. La policy si rilegge a ogni richiesta.
+- **Media.** Una risposta nello stesso thread di una pratica già inviata non si poteva più inviare. Ora l'invio precedente va in `sentHistory` e la nuova bozza è approvabile.
+- **Media.** Approva su una scheda spam provava a inviare a `null`. Ora prepara lead e bozza e mostra la scheda, che va approvata a sua volta.
+- **Media.** Il testo di modifica finiva sulla pratica in modifica più recente, di chiunque. Ora va alla pratica su cui quella persona ha toccato Modifica, entro 30 minuti.
+- **Bassa.** Un tap il cui handler falliva andava perso: ora Telegram lo riconsegna, fino a tre volte. Un redirect poteva portare un connettore su un host non controllato: ora i redirect sono rifiutati.
+- **Bassa.** Il giudice gonfiava le metriche: ora fa girare `processInboundMail` vero, esclude dall'accuratezza le mail scartate prima del modello, conta come errore ogni spam non riconosciuto, mette un tetto del 10% ai ripieghi sul template e non conta l'email nella F1.
+
 ## Verifica
 
 Eseguita su questo branch, Node 22.22.0, Linux:
 
 - `pnpm typecheck`: nessun errore. `pnpm build`: ok.
-- `pnpm test`: 15 file, 88 test, 0 fallimenti (erano 51 a inizio settimana).
+- `pnpm test`: 15 file, 98 test, 0 fallimenti (erano 51 a inizio settimana).
 - `pnpm eval:segreteria`: 35 casi, 0 fallimenti.
 - Mutazioni: togliendo la ricerca `rfc822msgid:` prima dell'invio Gmail, il ripiego su nota quando HubSpot rifiuta `hs_lead_status`, la riga doppione delle schede o il limite di un avviso al giorno sul tetto di spesa, i test corrispondenti falliscono.
 - Avvio reale di `dev:segreteria` con credenziali finte: bootstrap, lock e policy ok; la richiesta di refresh OAuth arriva a Google, che risponde `invalid_client` (client inesistente), quindi endpoint e formato sono quelli giusti. Telegram non è raggiungibile da questo ambiente.
@@ -38,14 +54,14 @@ Eseguita su questo branch, Node 22.22.0, Linux:
 | Cosa | Garanzia | Limite |
 |---|---|---|
 | Invio mail | solo dopo Approva di un utente in allowlist | |
-| Doppio invio mail dopo un crash | Approva di nuovo trova l'invio precedente via `rfc822msgid:` | regge solo se Gmail conserva il `Message-ID` che impostiamo: da verificare sulla casella vera |
+| Doppio invio mail dopo un crash | il tap riconsegnato non reinvia mai; un tap nuovo sulla scheda di ripresa trova l'invio precedente via `rfc822msgid:` | la seconda difesa regge solo se Gmail conserva il `Message-ID` che impostiamo: da verificare sulla casella vera |
 | Schede Telegram | at-least-once, mai perse: un crash tra il salvataggio della pratica e la scrittura della scheda viene recuperato al giro successivo (la mail viene riletta, la scheda manca, riparte) | un crash nel mezzo della scrittura della scheda può produrre due schede uguali |
 | Avviso doppioni | ogni reinvio dopo un crash è segnalato | scatta anche se il primo tentativo è morto prima di arrivare a Telegram: falso allarme possibile, doppione silenzioso mai |
 | Estrazione | email sempre dall'header, campi fuori dagli insiemi ammessi scartati | qualità del modello non ancora misurata dal vivo |
 | Bozza | passa sempre i controlli deterministici (modello o template) | i controlli sono regex: un prezzo scritto in lettere passa |
 | Contatti HubSpot senza email | creati | un crash tra creazione e salvataggio può creare un secondo contatto |
 | `hs_lead_status` | mappa sovrascrivibile | i valori interni di default non sono confermati dalla documentazione HubSpot |
-| Posta in arrivo | nessuna mail persa tra un giro e l'altro (cursore per `internalDate`, sovrapposizione deduplicata) | al primo avvio la posta già presente viene ignorata |
+| Posta in arrivo | nessuna mail persa tra un giro e l'altro (10 minuti di sovrapposizione, arretrato smaltito dal più vecchio) | al primo avvio la posta già presente viene ignorata; una mail indicizzata con più di 10 minuti di ritardo sfugge |
 
 ## Decisioni
 

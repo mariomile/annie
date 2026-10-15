@@ -1,6 +1,7 @@
 /**
  * Nightly eval of the segreteria with the real models (spec §7.2). For each case it runs
- * what production runs: Haiku reads the mail, Sonnet drafts the reply under the CI checks.
+ * what production runs, processInboundMail with a fake mailbox and CRM: Haiku reads the
+ * mail, Sonnet drafts the reply under the CI checks, with the production fallbacks.
  * Then it measures:
  *   - classification against the gold (accuracy, and no spam taken for a quote request);
  *   - extraction: micro-F1 over the lead fields and exact-match leads;
@@ -10,7 +11,8 @@
  *
  * PR CI never runs this. Without ANNIE_JUDGE_MODEL_KEY (an Anthropic key) it skips.
  */
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InboundMail } from "../../src/connectors/types.ts";
@@ -19,8 +21,14 @@ import type { ModelClient } from "../../src/core/completion.ts";
 import { EgressDenied } from "../../src/core/errors.ts";
 import { DEFAULT_MODEL_ROLES } from "../../src/core/model-routing.ts";
 import { loadChecks, runDeterministicChecks } from "../../src/segreteria/checks.ts";
-import { isValidSender } from "../../src/segreteria/classify.ts";
-import { analyzeMail, draftReply, parseJsonObject } from "../../src/segreteria/model.ts";
+import { FakeCrmAdapter } from "../../src/connectors/crm-fake.ts";
+import { FakeMailAdapter } from "../../src/connectors/mail-fake.ts";
+import { AuditLog } from "../../src/core/audit.ts";
+import { tenantId } from "../../src/core/ids.ts";
+import { PracticeStore } from "../../src/core/practice.ts";
+import { estimateUsd, UsageLedger } from "../../src/core/usage.ts";
+import { parseJsonObject } from "../../src/segreteria/model.ts";
+import { processInboundMail } from "../../src/segreteria/pipeline.ts";
 import { compareLead, type FieldCounts, hardFail, type JudgeVerdict, meanScore, microF1, parseVerdict } from "./metrics.ts";
 
 const key = process.env.ANNIE_JUDGE_MODEL_KEY;
@@ -29,7 +37,7 @@ if (!key) {
 	process.exit(0);
 }
 
-const GATES = { classificationAccuracy: 0.95, microF1: 0.85, exactMatch: 0.6, judgeMean: 3.5 };
+const GATES = { classificationAccuracy: 0.95, microF1: 0.85, exactMatch: 0.6, judgeMean: 3.5, maxTemplateFallbackShare: 0.1 };
 const root = dirname(fileURLToPath(import.meta.url));
 const only = process.argv.slice(2).filter((a) => !a.startsWith("-"));
 
@@ -52,6 +60,7 @@ type GoldRow = {
 		piiCheck?: boolean;
 	};
 	tenantConfig?: { requireVatNumber?: boolean };
+	flow?: { praticaAction?: string };
 };
 
 const jsonl = async <T>(path: string): Promise<T[]> =>
@@ -71,16 +80,16 @@ const client: ModelClient = createPiCompletionClient({
 		if (provider !== "anthropic") throw new EgressDenied("model_provider", provider);
 	},
 });
-const { extract: haiku, draft: sonnet } = DEFAULT_MODEL_ROLES;
-let usd = 0;
-const track = async (call: { result: { inputTokens: number; outputTokens: number; costUsd?: number } }) => {
-	usd += call.result.costUsd ?? 0;
-};
+const { draft: sonnet } = DEFAULT_MODEL_ROLES;
+// One ledger for the run, caps out of the way; the judge's own calls are counted apart.
+const usage = new UsageLedger(await mkdtemp(join(tmpdir(), "annie-judge-usage-")), { softUsdPerDay: 1e9, hardUsdPerDay: 1e9 });
+let judgeUsd = 0;
 
 const JUDGE_SYSTEM = `You are a strict reviewer of reply drafts written for an Italian SME's sales team. Apply this rubric exactly and return ONLY the JSON object it describes, no prose, no code fences.\n\n${rubric}`;
 
 type CaseResult = {
 	id: string;
+	droppedBeforeModel?: boolean;
 	classification: { gold: string; predicted: string; ok: boolean };
 	extraction?: { counts: FieldCounts; exact: boolean; mismatches: string[]; missingFields: { gold: string[]; predicted: string[] } };
 	draft?: { source: "model" | "template"; checkFailures: { check: string; detail: string }[]; verdict?: JudgeVerdict; judgeError?: string; subject: string; body: string };
@@ -100,25 +109,50 @@ async function runCase(c: CaseRow): Promise<CaseResult> {
 		receivedAt: c.email.receivedAt,
 		...(c.email.inReplyTo === undefined ? {} : { inReplyTo: c.email.inReplyTo }),
 	};
-	// The pipeline drops invalid senders before any model call.
-	if (!isValidSender(mail)) return { id: c.id, classification: { gold: g.classification, predicted: g.classification, ok: true } };
+	// What production runs: the whole pipeline, with a fake mailbox and CRM.
+	const dir = await mkdtemp(join(tmpdir(), "annie-judge-"));
+	const audit = new AuditLog(dir, tenantId("judge"));
+	const notifications: string[] = [];
+	const result0 = await processInboundMail(
+		{
+			tenantId: "judge",
+			instanceId: "segreteria",
+			practices: new PracticeStore(join(dir, "instance")),
+			mail: new FakeMailAdapter(),
+			crm: new FakeCrmAdapter(),
+			audit,
+			usage,
+			roles: DEFAULT_MODEL_ROLES,
+			model: { client, checks },
+			...(g.tenantConfig === undefined ? {} : { tenantConfig: g.tenantConfig }),
+			notify: async (n) => {
+				notifications.push(n.text);
+			},
+		},
+		mail,
+	);
+	const pratica = result0.pratica;
+	const events = await audit.read();
+	if (events.some((e) => e.type === "model.failed")) throw new Error(`model failed: ${events.filter((e) => e.type === "model.failed").map((e) => e.error).join("; ")}`);
+	// Invalid senders are dropped before any model call: not a classification result.
+	if (result0.action === "log_only") return { id: c.id, droppedBeforeModel: true, classification: { gold: g.classification, predicted: "dropped", ok: g.flow?.praticaAction === "log_only" } };
 
-	const analysis = await analyzeMail(client, haiku, mail, g.tenantConfig, track);
-	const result: CaseResult = { id: c.id, classification: { gold: g.classification, predicted: analysis.classification, ok: analysis.classification === g.classification } };
-	if (g.lead !== null) {
+	const predicted = pratica.classification ?? "richiesta_preventivo";
+	const result: CaseResult = { id: c.id, classification: { gold: g.classification, predicted, ok: predicted === g.classification } };
+	if (g.lead !== null && pratica.status === "draft_ready") {
 		result.extraction = {
-			...compareLead(analysis.lead as unknown as Record<string, unknown>, g.lead),
-			missingFields: { gold: [...((g.lead.missingFields as string[]) ?? [])].sort(), predicted: [...analysis.lead.missingFields].sort() },
+			...compareLead(pratica.lead as unknown as Record<string, unknown>, g.lead),
+			missingFields: { gold: [...((g.lead.missingFields as string[]) ?? [])].sort(), predicted: [...pratica.missingFields].sort() },
 		};
 	}
-	if (g.draft === null) return result;
+	if (g.draft === null || pratica.status !== "draft_ready") return result;
 
-	const draft = await draftReply(client, sonnet, { mail, lead: analysis.lead, requests: analysis.requests, checks }, track);
+	const fallback = events.some((e) => e.type === "draft.fallback");
 	const requestCount = g.requests?.length ?? 0;
 	const checkFailures = runDeterministicChecks(checks, {
-		subject: draft.subject,
-		body: draft.body,
-		language: g.draft.language ?? draft.language,
+		subject: pratica.draftSubject,
+		body: pratica.draftBody,
+		language: g.draft.language ?? (pratica.lead.originalLanguage === "en" ? "en" : "it"),
 		mustAsk: g.draft.mustAsk,
 		mustNotAskVatNumber: g.draft.mustNotAskVatNumber,
 		mustNotInventPrices: g.draft.mustNotInventPrices ?? true,
@@ -131,15 +165,15 @@ async function runCase(c: CaseRow): Promise<CaseResult> {
 		customerEmail: (g.lead?.email as string | null) ?? null,
 		piiCheck: g.draft.piiCheck ?? true,
 	});
-	result.draft = { source: draft.source, checkFailures, subject: draft.subject, body: draft.body };
+	result.draft = { source: fallback ? "template" : "model", checkFailures, subject: pratica.draftSubject, body: pratica.draftBody };
 	try {
 		const answer = await client.complete({
 			model: sonnet,
 			system: JUDGE_SYSTEM,
-			user: `Original email:\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n${mail.bodyText}\n\nGold expectations for the draft:\n${JSON.stringify({ ...g.draft, requests: g.requests, lead: g.lead }, null, 2)}\n\nDraft to review:\nSubject: ${draft.subject}\n\n${draft.body}`,
+			user: `Original email:\nFrom: ${mail.from}\nSubject: ${mail.subject}\n\n${mail.bodyText}\n\nGold expectations for the draft:\n${JSON.stringify({ ...g.draft, requests: g.requests, lead: g.lead }, null, 2)}\n\nDraft to review:\nSubject: ${pratica.draftSubject}\n\n${pratica.draftBody}`,
 			maxTokens: 800,
 		});
-		await track({ result: answer });
+		judgeUsd += answer.costUsd ?? estimateUsd(sonnet.modelId, answer.inputTokens, answer.outputTokens);
 		result.draft.verdict = parseVerdict(parseJsonObject(answer.text));
 	} catch (error) {
 		result.draft.judgeError = error instanceof Error ? error.message : String(error);
@@ -170,7 +204,7 @@ async function runAll(rows: CaseRow[], concurrency = 4): Promise<CaseResult[]> {
 }
 
 const results = await runAll(cases);
-const scored = results.filter((r) => r.error === undefined);
+const scored = results.filter((r) => r.error === undefined && r.droppedBeforeModel !== true);
 const extractions = scored.flatMap((r) => (r.extraction === undefined ? [] : [r.extraction]));
 const drafts = scored.flatMap((r) => (r.draft === undefined ? [] : [{ id: r.id, ...r.draft }]));
 const verdicts = drafts.flatMap((d) => (d.verdict === undefined ? [] : [{ id: d.id, verdict: d.verdict }]));
@@ -179,7 +213,9 @@ const summary = {
 	cases: results.length,
 	errors: results.filter((r) => r.error !== undefined).map((r) => ({ id: r.id, error: r.error })),
 	classificationAccuracy: scored.length === 0 ? 0 : scored.filter((r) => r.classification.ok).length / scored.length,
-	spamTakenForQuote: scored.filter((r) => r.classification.gold === "spam" && r.classification.predicted === "richiesta_preventivo").map((r) => r.id),
+	// Spam read as a quote or a thread reply would both produce a draft and a CRM lead.
+	spamTakenForQuote: scored.filter((r) => r.classification.gold === "spam" && r.classification.predicted !== "spam" && r.classification.predicted !== "non_commerciale").map((r) => r.id),
+	droppedBeforeModel: results.filter((r) => r.droppedBeforeModel === true).map((r) => ({ id: r.id, expected: r.classification.ok })),
 	microF1: microF1(extractions.map((e) => e.counts)),
 	exactMatch: extractions.length === 0 ? 0 : extractions.filter((e) => e.exact).length / extractions.length,
 	missingFieldsExact: extractions.length === 0 ? 0 : extractions.filter((e) => e.missingFields.gold.join() === e.missingFields.predicted.join()).length / extractions.length,
@@ -188,7 +224,7 @@ const summary = {
 	judgeMean: verdicts.length === 0 ? 0 : verdicts.reduce((n, v) => n + meanScore(v.verdict), 0) / verdicts.length,
 	judgeHardFails: verdicts.filter((v) => hardFail(v.verdict)).map((v) => ({ id: v.id, scores: v.verdict.scores, rationale: v.verdict.rationale })),
 	judgeErrors: drafts.filter((d) => d.judgeError !== undefined).map((d) => ({ id: d.id, error: d.judgeError })),
-	costUsd: Number(usd.toFixed(4)),
+	costUsd: Number(((await usage.todaySpent()) + judgeUsd).toFixed(4)),
 };
 
 const failedGates = [
@@ -198,6 +234,9 @@ const failedGates = [
 	summary.microF1 < GATES.microF1 && `extraction micro-F1 ${summary.microF1.toFixed(2)} < ${GATES.microF1}`,
 	summary.exactMatch < GATES.exactMatch && `exact-match leads ${summary.exactMatch.toFixed(2)} < ${GATES.exactMatch}`,
 	summary.draftCheckFailures.length > 0 && `${summary.draftCheckFailures.length} draft(s) fail the deterministic checks`,
+	drafts.length > 0 && summary.templateFallbacks.length / drafts.length > GATES.maxTemplateFallbackShare &&
+		`${summary.templateFallbacks.length}/${drafts.length} drafts fell back to the template (model drafts failing the checks)`,
+	summary.droppedBeforeModel.some((d) => !d.expected) && "a valid sender was dropped before the model",
 	summary.judgeMean < GATES.judgeMean && `judge mean ${summary.judgeMean.toFixed(2)} < ${GATES.judgeMean}`,
 	summary.judgeHardFails.length > 0 && `${summary.judgeHardFails.length} draft(s) with factual/noHallucination/pii = 1`,
 	summary.judgeErrors.length > 0 && `${summary.judgeErrors.length} verdict(s) unreadable`,

@@ -113,7 +113,9 @@ export class SegreteriaService {
 		// Cards Telegram refused earlier (rate limit, network): try them again every round.
 		for (const entry of await this.notifications.list()) await this.deliver(entry);
 		const state = await this.readCursor();
-		const { messages, nextCursor } = await this.options.mail.listNewRequests(this.options.tenantId, state.cursor);
+		const { messages, nextCursor } = await this.options.mail.listNewRequests(this.options.tenantId, state.cursor, {
+			isKnown: async (id) => state.skipped.includes(id) || (await this.practices.findByMailMessageId(id)) !== undefined,
+		});
 		let processed = 0;
 		for (const mail of messages) {
 			if (state.skipped.includes(mail.messageId)) continue;

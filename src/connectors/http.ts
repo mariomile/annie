@@ -23,12 +23,18 @@ export class ConnectorHttpError extends Error {
  * A fetch that only reaches `hosts`, and only if the instance's egress policy lists
  * `connector`. The policy is checked on every request: it is the last word.
  */
-export function egressFetch(connector: string, hosts: readonly string[], policy: () => EgressPolicy, base: typeof fetch = fetch): typeof fetch {
+export function egressFetch(
+	connector: string,
+	hosts: readonly string[],
+	policy: () => EgressPolicy | Promise<EgressPolicy>,
+	base: typeof fetch = fetch,
+): typeof fetch {
 	return (async (input: string | URL | Request, init?: RequestInit) => {
-		assertConnectorAllowed(policy(), connector);
+		assertConnectorAllowed(await policy(), connector);
 		const url = new URL(input instanceof Request ? input.url : String(input));
 		if (url.protocol !== "https:" || !hosts.includes(url.hostname)) throw new EgressDenied("connector", `${connector}@${url.hostname}`);
-		return base(input, init);
+		// A redirect would reach a host that was never checked.
+		return base(input, { ...init, redirect: "error" });
 	}) as typeof fetch;
 }
 

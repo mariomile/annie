@@ -12,7 +12,7 @@ export type PiCompletionOptions = {
 	/** The only source of model credentials (the tenant's secret store). */
 	readonly apiKey: (provider: string) => Promise<string | undefined>;
 	/** Throws if the provider is not allowed (the instance's egress policy). */
-	readonly assertAllowed: (provider: string) => void;
+	readonly assertAllowed: (provider: string) => void | Promise<void>;
 	/** For tests: build the provider (default: the adapter's own providers). */
 	readonly createProvider?: typeof createProvider;
 };
@@ -48,7 +48,7 @@ export function createPiCompletionClient(options: PiCompletionOptions): ModelCli
 
 	return {
 		async complete(request: CompletionRequest): Promise<CompletionResult> {
-			options.assertAllowed(request.model.provider);
+			await options.assertAllowed(request.model.provider);
 			const models = modelsFor(request.model.provider);
 			const model = models.getModel(request.model.provider, request.model.modelId);
 			if (model === undefined) throw new Error(`Unknown model ${request.model.provider}/${request.model.modelId}`);

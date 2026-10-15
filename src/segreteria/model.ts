@@ -182,7 +182,8 @@ export async function draftReply(
 		try {
 			const raw = parseJsonObject(result.text);
 			if (typeof raw.subject !== "string" || typeof raw.body !== "string" || raw.body.trim() === "") throw new Error("missing subject or body");
-			parsed = { subject: raw.subject.trim(), body: scrubPii(raw.body.trim(), lead) };
+			// One line only: the subject becomes a mail header.
+			parsed = { subject: raw.subject.replace(/[\r\n]+/g, " ").trim(), body: scrubPii(raw.body.trim(), lead) };
 		} catch (error) {
 			failures = [{ check: "format", detail: error instanceof Error ? error.message : String(error) }];
 			continue;
