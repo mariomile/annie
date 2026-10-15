@@ -1,0 +1,8 @@
+node_modules
+data
+dist
+.env
+.git
+.annie-run
+*.log
+evals/segreteria/last-report

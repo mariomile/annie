@@ -19,6 +19,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Web console syntax
+        run: node --check src/web/ui/app.js
       - run: pnpm test
       - name: Deterministic segreteria evals (incl. PII checks)
         run: pnpm eval:segreteria
