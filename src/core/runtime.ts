@@ -43,8 +43,11 @@ export type Reply = {
 export type RuntimeOptions = {
 	readonly dataDir: string;
 	readonly engine: DurableEngine;
-	/** Tools every instance gets. */
-	readonly tools?: readonly AnnieTool[];
+	/**
+	 * Tools of an instance: the same list for all, or computed from the instance's record
+	 * when it is opened (connectors, approved tools). A changed list applies on `reopen`.
+	 */
+	readonly tools?: readonly AnnieTool[] | ((record: InstanceRecord) => Promise<readonly AnnieTool[]>);
 };
 
 /**
@@ -103,6 +106,20 @@ export class AnnieRuntime {
 		await (await opening).markDelivered(reply.deliveryId);
 	}
 
+	/**
+	 * Close an open instance and open it again, so a changed record or tool list applies.
+	 * Work in flight resumes as after a restart: unsent replies go out from the outbox.
+	 */
+	async reopen(tenant: string, instance: string): Promise<{ pending: number; undelivered: number; reattached: number }> {
+		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		const opening = this.instances.get(key);
+		if (opening !== undefined) {
+			this.instances.delete(key);
+			await (await opening.catch(() => undefined))?.close();
+		}
+		return this.resume(tenant, instance);
+	}
+
 	onReply(listener: (reply: Reply) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -140,7 +157,7 @@ export class AnnieRuntime {
 				// Only this tenant's secrets, and only for providers the policy allows.
 				apiKey: async (provider) =>
 					record.egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined,
-				tools: this.options.tools ?? [],
+				tools: typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []),
 				...(record.instructions === undefined ? {} : { instructions: record.instructions }),
 			});
 		} catch (error) {
