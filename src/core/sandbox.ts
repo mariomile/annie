@@ -36,13 +36,24 @@ export class SandboxError extends Error {
 
 const MAX_OUTPUT = 100_000;
 const MAX_FETCH_BYTES = 10 * 1024 * 1024;
+const MAX_CONCURRENT_FETCHES = 4;
 
 const RUNNER = `// Annie sandbox runner. Written by Annie; do not edit.
 import { registerHooks } from "node:module";
-const BLOCKED = new Set(["net","http","https","tls","dgram","dns","http2","undici","worker_threads","child_process","cluster","inspector","vm","module","process","v8","wasi","repl","trace_events"].flatMap((m) => [m, "node:" + m]));
-registerHooks({ resolve(specifier, context, next) { if (BLOCKED.has(specifier)) throw new Error("Module not allowed in the sandbox: " + specifier); return next(specifier, context); } });
+// Only the standard library without network, processes or native access. Anything else,
+// including internal modules (_http_agent, _tls_wrap), sqlite and file: URLs, is refused.
+const ALLOW = new Set(["fs", "fs/promises", "path", "path/posix", "path/win32", "url", "buffer", "crypto", "util", "util/types", "stream", "stream/promises", "stream/web", "events", "string_decoder", "zlib", "timers", "timers/promises", "querystring", "assert", "assert/strict"]);
+const allowed = (specifier) => ALLOW.has(String(specifier).replace(/^node:/, ""));
+const refuse = (specifier) => { throw new Error("Module not allowed in the sandbox: " + specifier); };
+registerHooks({ resolve(specifier, context, next) { if (specifier.startsWith("data:") || allowed(specifier)) return next(specifier, context); return refuse(specifier); } });
 const builtin = process.getBuiltinModule;
-process.getBuiltinModule = (id) => { if (BLOCKED.has(id) || BLOCKED.has("node:" + id)) throw new Error("Module not allowed in the sandbox: " + id); return builtin(id); };
+const lock = (name, value) => Object.defineProperty(process, name, { value, writable: false, configurable: false, enumerable: false });
+lock("getBuiltinModule", (id) => (allowed(id) ? builtin(id) : refuse(id)));
+// The permission model does not cover signals: no way to reach another process, Annie included.
+for (const name of ["kill", "_kill", "_debugProcess", "_debugEnd", "dlopen", "binding", "_linkedBinding", "setuid", "setgid", "seteuid", "setegid", "setgroups", "initgroups"]) {
+  lock(name, () => { throw new Error("process." + name + " is not allowed in the sandbox"); });
+}
+Object.defineProperty(process, "ppid", { get: () => undefined, configurable: false });
 for (const name of ["fetch", "WebSocket", "EventSource", "XMLHttpRequest"]) { try { delete globalThis[name]; } catch {} }
 let seq = 0;
 const pending = new Map();
@@ -95,9 +106,14 @@ export async function runSandboxed(run: SandboxRun): Promise<string> {
 	});
 	return new Promise<string>((resolve, reject) => {
 		let settled = false;
+		let inFlight = 0;
+		// Aborted when the run ends: a tool's requests never outlive it.
+		const requests = new AbortController();
+		run.signal?.addEventListener("abort", () => requests.abort(), { once: true });
 		const finish = (error: Error | undefined, value?: string) => {
 			if (settled) return;
 			settled = true;
+			requests.abort();
 			clearTimeout(timer);
 			run.signal?.removeEventListener("abort", onAbort);
 			child.kill("SIGKILL");
@@ -114,14 +130,30 @@ export async function runSandboxed(run: SandboxRun): Promise<string> {
 			if (msg.type === "result") return finish(undefined, msg.value);
 			if (msg.type === "error") return finish(new SandboxError(msg.message ?? "Tool failed"));
 			if (msg.type === "fetch") {
+				if (inFlight >= MAX_CONCURRENT_FETCHES) {
+					child.send({ type: "fetchResult", id: msg.id, error: `At most ${MAX_CONCURRENT_FETCHES} requests at a time` });
+					return;
+				}
+				inFlight++;
 				void (async () => {
 					try {
-						const response = await run.fetch(String(msg.url), { method: msg.method ?? "GET", headers: msg.headers ?? {}, ...(msg.body === undefined ? {} : { body: msg.body }), ...(run.signal === undefined ? {} : { signal: run.signal }) });
-						const bytes = Buffer.from(await response.arrayBuffer());
-						if (bytes.length > MAX_FETCH_BYTES) throw new Error(`Response over ${MAX_FETCH_BYTES} bytes`);
-						child.send({ type: "fetchResult", id: msg.id, status: response.status, headers: Object.fromEntries(response.headers), body: bytes.toString("base64") });
+						const response = await run.fetch(String(msg.url), { method: msg.method ?? "GET", headers: msg.headers ?? {}, ...(msg.body === undefined ? {} : { body: msg.body }), signal: requests.signal });
+						// Read with a cap: a huge body never reaches memory in full.
+						const chunks: Buffer[] = [];
+						let size = 0;
+						for await (const chunk of response.body ?? []) {
+							size += (chunk as Uint8Array).length;
+							if (size > MAX_FETCH_BYTES) {
+								await response.body?.cancel().catch(() => {});
+								throw new Error(`Response over ${MAX_FETCH_BYTES} bytes`);
+							}
+							chunks.push(Buffer.from(chunk as Uint8Array));
+						}
+						if (!settled) child.send({ type: "fetchResult", id: msg.id, status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.concat(chunks).toString("base64") });
 					} catch (error) {
-						child.send({ type: "fetchResult", id: msg.id, error: error instanceof Error ? error.message : String(error) });
+						if (!settled) child.send({ type: "fetchResult", id: msg.id, error: error instanceof Error ? error.message : String(error) });
+					} finally {
+						inFlight--;
 					}
 				})();
 			}
