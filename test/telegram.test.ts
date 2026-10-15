@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DUPLICATE_NOTICE, splitText, TELEGRAM_MAX_TEXT, TelegramAdapter } from "../src/channels/telegram.ts";
-import type { InboundMessage } from "../src/channels/types.ts";
+import type { InboundAction, InboundMessage } from "../src/channels/types.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { ConfigError, loadTelegramConfig } from "../src/main/config.ts";
 import { runtimeWithInstance, waitFor } from "./helpers.ts";
@@ -26,6 +26,7 @@ function fakeTelegram(batches: unknown[][]) {
 			return Response.json({ ok: true, result: batch ?? [] });
 		}
 		if (method === "sendMessage") return Response.json({ ok: true, result: { message_id: calls.length } });
+		if (method === "answerCallbackQuery") return Response.json({ ok: true, result: true });
 		return Response.json({ ok: false, error_code: 404, description: "Not Found" });
 	});
 	return { calls, fetch: fetchMock as unknown as typeof fetch };
@@ -80,6 +81,64 @@ describe("Telegram adapter (mocked fetch)", () => {
 		expect(texts.slice(2).map((t) => t.length)).toEqual([TELEGRAM_MAX_TEXT, DUPLICATE_NOTICE.length + 2]);
 		expect(texts[2]?.startsWith(DUPLICATE_NOTICE)).toBe(true);
 		expect(texts[3]?.includes(DUPLICATE_NOTICE)).toBe(false);
+	});
+
+	it("puts the buttons, as one row of an inline keyboard, on the last piece only", async () => {
+		const api = fakeTelegram([]);
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
+		const buttons = [
+			{ label: "Approva", data: "annie:abcd:1:approve" },
+			{ label: "Scarta", data: "annie:abcd:1:discard" },
+		];
+		await adapter.send({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", text: "x".repeat(TELEGRAM_MAX_TEXT + 1), idempotencyKey: "k", buttons });
+		expect(api.calls[0]?.body.reply_markup).toBeUndefined();
+		expect(api.calls[1]?.body.reply_markup).toEqual({
+			inline_keyboard: [[{ text: "Approva", callback_data: "annie:abcd:1:approve" }, { text: "Scarta", callback_data: "annie:abcd:1:discard" }]],
+		});
+		// Telegram rejects callback_data over 64 bytes: fail before sending anything.
+		const before = api.calls.length;
+		await expect(adapter.send({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", text: "t", idempotencyKey: "k", buttons: [{ label: "x", data: "é".repeat(33) }] })).rejects.toThrow("64 bytes");
+		expect(api.calls.length).toBe(before);
+	});
+
+	it("turns button taps into actions, answers each tap, and asks for taps only when someone handles them", async () => {
+		const tap = { update_id: 20, callback_query: { id: "cq1", from: { id: 7 }, message: { message_id: 9, chat: { id: 42 } }, data: "annie:abcd:1:approve" } };
+		const plain = fakeTelegram([[tap], []]);
+		const textOnly = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: plain.fetch });
+		textOnly.onInbound(async () => {});
+		await textOnly.pollOnce();
+		expect(plain.calls[0]?.body.allowed_updates).toEqual(["message"]);
+
+		const api = fakeTelegram([[tap]]);
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
+		const actions: InboundAction[] = [];
+		adapter.onAction(async (action) => {
+			actions.push(action);
+		});
+		expect(await adapter.pollOnce()).toBe(1);
+		expect(api.calls[0]?.body.allowed_updates).toEqual(["message", "callback_query"]);
+		expect(actions).toEqual([{ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", userId: "7", data: "annie:abcd:1:approve", actionId: "cq1" }]);
+		// Answered before the handler runs, so the spinner stops even if the handler is slow.
+		expect(api.calls.map((c) => c.method)).toEqual(["getUpdates", "answerCallbackQuery"]);
+		expect(api.calls[1]?.body).toEqual({ callback_query_id: "cq1" });
+	});
+
+	it("a failed answer to a tap (e.g. a redelivered, expired query) does not drop the action", async () => {
+		const tap = { update_id: 21, callback_query: { id: "old", from: { id: 7 }, message: { message_id: 9, chat: { id: 42 } }, data: "annie:abcd:1:edit" } };
+		const fetchMock = vi.fn(async (url: string | URL | Request) => {
+			const method = String(url).slice(String(url).lastIndexOf("/") + 1);
+			if (method === "getUpdates") return Response.json({ ok: true, result: [tap] });
+			return Response.json({ ok: false, error_code: 400, description: "Bad Request: query is too old" });
+		});
+		const logs: string[] = [];
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: fetchMock as unknown as typeof fetch, log: (l) => logs.push(l) });
+		const actions: InboundAction[] = [];
+		adapter.onAction(async (action) => {
+			actions.push(action);
+		});
+		await adapter.pollOnce();
+		expect(actions).toHaveLength(1);
+		expect(logs[0]).toContain("query is too old");
 	});
 
 	it("reports API errors without leaking the bot token", async () => {

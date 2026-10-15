@@ -1,4 +1,4 @@
-import type { ChannelAdapter, InboundMessage, OutboundMessage } from "./types.ts";
+import type { ActionButton, ChannelAdapter, InboundAction, InboundMessage, OutboundMessage } from "./types.ts";
 
 export type TelegramAdapterOptions = {
 	readonly token: string;
@@ -18,6 +18,9 @@ export type TelegramAdapterOptions = {
 /** Telegram's limit for one message's text. */
 export const TELEGRAM_MAX_TEXT = 4096;
 
+/** Telegram's limit for a button's callback_data, in bytes. */
+export const TELEGRAM_MAX_CALLBACK_DATA = 64;
+
 /** First line of a reply resent after a crash: sendMessage has no idempotency key. */
 export const DUPLICATE_NOTICE = "Possibile doppione: mi sono riavviata mentre ti inviavo questa risposta. Se l'hai già ricevuta, ignora questa.";
 
@@ -29,6 +32,12 @@ type TelegramUpdate = {
 		from?: { id: number };
 		text?: string;
 	};
+	callback_query?: {
+		id: string;
+		from: { id: number };
+		message?: { message_id: number; chat: { id: number } };
+		data?: string;
+	};
 };
 
 type TelegramResponse<T> = { ok: true; result: T } | { ok: false; description?: string; error_code?: number };
@@ -37,6 +46,7 @@ type TelegramResponse<T> = { ok: true; result: T } | { ok: false; description?: 
 export class TelegramAdapter implements ChannelAdapter {
 	readonly name = "telegram";
 	private handler: ((message: InboundMessage) => Promise<void>) | undefined;
+	private actionHandler: ((action: InboundAction) => Promise<void>) | undefined;
 	private abort: AbortController | undefined;
 	private loop: Promise<void> | undefined;
 	private offset: number | undefined;
@@ -50,6 +60,10 @@ export class TelegramAdapter implements ChannelAdapter {
 
 	onInbound(handler: (message: InboundMessage) => Promise<void>): void {
 		this.handler = handler;
+	}
+
+	onAction(handler: (action: InboundAction) => Promise<void>): void {
+		this.actionHandler = handler;
 	}
 
 	async start(): Promise<void> {
@@ -66,8 +80,11 @@ export class TelegramAdapter implements ChannelAdapter {
 
 	async send(message: OutboundMessage): Promise<void> {
 		const text = message.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
-		for (const chunk of splitText(text)) {
-			await this.call("sendMessage", { chat_id: message.threadId, text: chunk });
+		const markup = message.buttons === undefined || message.buttons.length === 0 ? undefined : inlineKeyboard(message.buttons);
+		const chunks = splitText(text);
+		for (const [i, chunk] of chunks.entries()) {
+			const last = i === chunks.length - 1;
+			await this.call("sendMessage", { chat_id: message.threadId, text: chunk, ...(last && markup !== undefined ? { reply_markup: markup } : {}) });
 		}
 	}
 
@@ -77,7 +94,8 @@ export class TelegramAdapter implements ChannelAdapter {
 			"getUpdates",
 			{
 				timeout: this.options.pollTimeoutSec ?? 30,
-				allowed_updates: ["message"],
+				// Taps are requested only when someone handles them: otherwise they would be dropped.
+				allowed_updates: this.actionHandler === undefined ? ["message"] : ["message", "callback_query"],
 				...(this.offset === undefined ? {} : { offset: this.offset }),
 			},
 			signal,
@@ -86,6 +104,10 @@ export class TelegramAdapter implements ChannelAdapter {
 			// Confirmed on the next getUpdates. A redelivery after a crash carries the same
 			// message ID, which the core turns into an idempotent request.
 			this.offset = update.update_id + 1;
+			if (update.callback_query !== undefined) {
+				await this.handleTap(update.callback_query);
+				continue;
+			}
 			const message = update.message;
 			if (message?.text === undefined || this.handler === undefined) continue;
 			await this.handler({
@@ -99,6 +121,24 @@ export class TelegramAdapter implements ChannelAdapter {
 			});
 		}
 		return updates.length;
+	}
+
+	private async handleTap(tap: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
+		// Answer first, so the button stops spinning even if the handler takes a while. A tap
+		// redelivered after a crash is often too old to answer: log it and handle it anyway.
+		await this.call("answerCallbackQuery", { callback_query_id: tap.id }).catch((error: unknown) => {
+			this.options.log?.(`telegram: answerCallbackQuery failed: ${error instanceof Error ? error.message : String(error)}`);
+		});
+		if (this.actionHandler === undefined || tap.data === undefined || tap.message === undefined) return;
+		await this.actionHandler({
+			tenantId: this.options.tenantId,
+			instanceId: this.options.instanceId,
+			channel: this.name,
+			threadId: String(tap.message.chat.id),
+			userId: String(tap.from.id),
+			data: tap.data,
+			actionId: tap.id,
+		});
 	}
 
 	private async poll(signal: AbortSignal): Promise<void> {
@@ -132,6 +172,15 @@ export function splitText(text: string, max = TELEGRAM_MAX_TEXT): string[] {
 	const chunks: string[] = [];
 	for (let i = 0; i < text.length; i += max) chunks.push(text.slice(i, i + max));
 	return chunks;
+}
+
+function inlineKeyboard(buttons: readonly ActionButton[]): { inline_keyboard: { text: string; callback_data: string }[][] } {
+	for (const button of buttons) {
+		if (Buffer.byteLength(button.data, "utf8") > TELEGRAM_MAX_CALLBACK_DATA) {
+			throw new Error(`Telegram button "${button.label}": callback data over ${TELEGRAM_MAX_CALLBACK_DATA} bytes`);
+		}
+	}
+	return { inline_keyboard: [buttons.map((button) => ({ text: button.label, callback_data: button.data }))] };
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
