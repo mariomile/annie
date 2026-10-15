@@ -5,6 +5,9 @@ Piattaforma agenti open source di Buildrs: un agente sempre attivo, sul modello 
 - Architettura: [`docs/architettura.md`](docs/architettura.md)
 - Stato della settimana 1: [`docs/week1.md`](docs/week1.md)
 - Stato della settimana 2 (allowlist, lock, outbox): [`docs/week2.md`](docs/week2.md)
+- Stato della settimana 3 (segreteria commerciale): [`docs/week3.md`](docs/week3.md)
+- **Stato del progetto e cose da fare: [`docs/stato-e-todo.md`](docs/stato-e-todo.md)**
+- Come contribuire: [`docs/contributing.md`](docs/contributing.md)
 - Piano iniziale: [`docs/piano-iniziale.md`](docs/piano-iniziale.md)
 
 ## Requisiti
