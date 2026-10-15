@@ -12,7 +12,12 @@ function sourceFiles(dir: string): string[] {
 
 function importsOf(file: string): string[] {
 	const text = readFileSync(join(ROOT, file), "utf8");
-	return [...text.matchAll(/(?:import|export)[^;]*?from\s+["']([^"']+)["']/g)].map((m) => m[1] as string);
+	const patterns = [
+		/(?:import|export)[^;]*?from\s+["']([^"']+)["']/g, // import x from "y", export { x } from "y"
+		/import\s+["']([^"']+)["']/g, // import "y"
+		/import\s*\(\s*["']([^"']+)["']\s*\)/g, // import("y")
+	];
+	return patterns.flatMap((pattern) => [...text.matchAll(pattern)].map((m) => m[1] as string));
 }
 
 describe("module boundaries", () => {

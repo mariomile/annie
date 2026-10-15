@@ -2,11 +2,16 @@ import type { ChannelAdapter } from "./channels/types.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
 /**
- * Connects channel adapters to the core: inbound messages become submissions, replies
- * go back out through the adapter whose name matches the reply's channel. The only
- * module that knows both sides.
+ * Connects a channel adapter, bound to one instance, to the core: inbound messages become
+ * submissions; replies of that instance on that channel go back out through it, and only
+ * through it. The only module that knows both sides.
  */
-export function connectChannel(runtime: AnnieRuntime, adapter: ChannelAdapter, log: (message: string) => void = console.error): () => void {
+export function connectChannel(
+	runtime: AnnieRuntime,
+	adapter: ChannelAdapter,
+	instance: { readonly tenantId: string; readonly instanceId: string },
+	log: (message: string) => void = console.error,
+): () => void {
 	adapter.onInbound(async (message) => {
 		try {
 			await runtime.submit(message);
@@ -15,7 +20,7 @@ export function connectChannel(runtime: AnnieRuntime, adapter: ChannelAdapter, l
 		}
 	});
 	return runtime.onReply((reply) => {
-		if (reply.channel !== adapter.name) return;
+		if (reply.channel !== adapter.name || reply.tenantId !== instance.tenantId || reply.instanceId !== instance.instanceId) return;
 		const text = reply.status === "answered" ? reply.text : "Non sono riuscita a rispondere. Riprova tra poco.";
 		if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
 		adapter

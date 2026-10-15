@@ -95,7 +95,7 @@ describe("Telegram adapter (mocked fetch)", () => {
 		// The same message delivered twice (as Telegram does after a crash before the offset is confirmed).
 		const api = fakeTelegram([[textUpdate(1, 42, 5, "ciao annie")], [textUpdate(1, 42, 5, "ciao annie")]]);
 		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
-		connectChannel(runtime, adapter);
+		connectChannel(runtime, adapter, { tenantId: "acme", instanceId: "ops" });
 
 		await adapter.pollOnce();
 		await waitFor(() => api.calls.some((c) => c.method === "sendMessage"));
@@ -105,6 +105,31 @@ describe("Telegram adapter (mocked fetch)", () => {
 
 		const sent = api.calls.filter((c) => c.method === "sendMessage");
 		expect(sent).toEqual([{ method: "sendMessage", body: { chat_id: "42", text: "Annie (modello locale di sviluppo): hai scritto «ciao annie»" } }]);
+		await runtime.close();
+	});
+});
+
+describe("gateway with several tenants", () => {
+	it("sends each reply only through the bot of the tenant and instance that answered", async () => {
+		const { runtime, dataDir } = await runtimeWithInstance({ tenant: "acme", egress: { modelProviders: ["faux"], channels: ["telegram"] } });
+		await runtime.registry.createTenant({ id: "globex", name: "globex" });
+		await runtime.registry.createInstance("globex", { id: "ops", name: "ops", model: { provider: "faux", modelId: "annie-dev" }, egress: { modelProviders: ["faux"], channels: ["telegram"] } });
+		expect(dataDir).toBeTruthy();
+
+		// The same user (private chat 42) talks to both bots.
+		const acmeApi = fakeTelegram([[textUpdate(1, 42, 1, "per acme")]]);
+		const globexApi = fakeTelegram([]);
+		const acmeBot = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: acmeApi.fetch });
+		const globexBot = new TelegramAdapter({ token: TOKEN, tenantId: "globex", instanceId: "ops", fetch: globexApi.fetch });
+		connectChannel(runtime, acmeBot, { tenantId: "acme", instanceId: "ops" });
+		connectChannel(runtime, globexBot, { tenantId: "globex", instanceId: "ops" });
+
+		await acmeBot.pollOnce();
+		await waitFor(() => acmeApi.calls.some((c) => c.method === "sendMessage"));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		expect(acmeApi.calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+		expect(globexApi.calls).toEqual([]);
 		await runtime.close();
 	});
 });

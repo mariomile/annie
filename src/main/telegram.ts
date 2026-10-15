@@ -32,7 +32,7 @@ const adapter = new TelegramAdapter({
 	instanceId: config.instanceId,
 	log: (message) => console.error(message),
 });
-connectChannel(runtime, adapter);
+connectChannel(runtime, adapter, { tenantId: config.tenantId, instanceId: config.instanceId });
 
 const { pending } = await runtime.resume(config.tenantId, config.instanceId);
 await adapter.start();
