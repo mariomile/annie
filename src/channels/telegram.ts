@@ -13,6 +13,8 @@ export type TelegramAdapterOptions = {
 	/** Wait after a failed poll before the next one. */
 	readonly retryDelayMs?: number;
 	readonly log?: (message: string) => void;
+	/** May this user's files be downloaded? Default: yes. Files of strangers should not. */
+	readonly mayDownload?: (userId: string) => Promise<boolean>;
 };
 
 /** Telegram's limit for one message's text. */
@@ -151,7 +153,8 @@ export class TelegramAdapter implements ChannelAdapter {
 		if (message === undefined || this.handler === undefined) return;
 		const text = message.text ?? message.caption ?? "";
 		if (message.text === undefined && message.document === undefined) return;
-		const attachments = message.document === undefined ? [] : [await this.download(message.document)];
+		const userId = String(message.from?.id ?? message.chat.id);
+		const attachments = message.document === undefined || !((await this.options.mayDownload?.(userId)) ?? true) ? [] : [await this.download(message.document)];
 		await this.handler({
 			tenantId: this.options.tenantId,
 			instanceId: this.options.instanceId,
@@ -172,7 +175,18 @@ export class TelegramAdapter implements ChannelAdapter {
 		const response = await this.fetch(`${this.apiBase}/file/bot${this.options.token}/${file.file_path}`);
 		// Never include the URL in errors: it contains the bot token.
 		if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
-		return { name: document.file_name ?? file.file_path.split("/").at(-1) ?? "file", data: new Uint8Array(await response.arrayBuffer()) };
+		// file_size can be missing: count while reading.
+		const chunks: Uint8Array[] = [];
+		let size = 0;
+		for await (const chunk of response.body ?? []) {
+			size += (chunk as Uint8Array).length;
+			if (size > TELEGRAM_MAX_DOWNLOAD) {
+				await response.body?.cancel().catch(() => {});
+				throw new ChannelRefused(`Telegram file too large to download: over ${TELEGRAM_MAX_DOWNLOAD} bytes`);
+			}
+			chunks.push(chunk as Uint8Array);
+		}
+		return { name: document.file_name ?? file.file_path.split("/").at(-1) ?? "file", data: new Uint8Array(Buffer.concat(chunks)) };
 	}
 
 	private async handleTap(tap: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {

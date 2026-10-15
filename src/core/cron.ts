@@ -69,6 +69,28 @@ function local(date: Date, timeZone: string): Local {
 	return { month: Number(parts.month), day: Number(parts.day), hour: Number(parts.hour), minute: Number(parts.minute), weekday: WEEKDAYS[parts.weekday as string] ?? 0 };
 }
 
+const keyFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** The local wall-clock minute of `date` in `timeZone`, e.g. "2026-10-25 02:30". */
+export function localMinute(date: Date, timeZone: string): string {
+	let f = keyFormatters.get(timeZone);
+	if (f === undefined) {
+		f = new Intl.DateTimeFormat("en-CA", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+		keyFormatters.set(timeZone, f);
+	}
+	return f.format(date);
+}
+
+/**
+ * The next run after `from` that is not the same local wall-clock minute as `previous`: when
+ * clocks go back, 02:30 happens twice, and a daily 02:30 must run once.
+ */
+export function nextDistinctRun(cron: Cron, from: Date, timeZone: string, previous: Date | undefined): Date {
+	let next = nextRun(cron, from, timeZone);
+	if (previous !== undefined && localMinute(next, timeZone) === localMinute(previous, timeZone)) next = nextRun(cron, next, timeZone);
+	return next;
+}
+
 /** Throws for an unknown time zone. */
 export function assertTimeZone(timeZone: string): void {
 	local(new Date(), timeZone);

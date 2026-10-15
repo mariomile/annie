@@ -58,6 +58,20 @@ describe("workspace tools (faux model, fake Telegram)", () => {
 });
 
 describe("files people send on Telegram", () => {
+	it("a stranger's document is never downloaded", async () => {
+		const calls: string[] = [];
+		const fetchImpl = (async (url: string | URL | Request) => {
+			calls.push(String(url).split("/").pop() ?? "");
+			return Response.json({ ok: true, result: [{ update_id: 1, message: { message_id: 1, chat: { id: 66 }, from: { id: 66 }, document: { file_id: "F", file_name: "x.csv" } } }] });
+		}) as typeof fetch;
+		const bot = new TelegramAdapter({ token: "1:T", tenantId: "acme", instanceId: "ops", fetch: fetchImpl, mayDownload: async (id) => id === "7" });
+		const seen: unknown[] = [];
+		bot.onInbound(async (m) => void seen.push(m.attachments));
+		await bot.pollOnce();
+		expect(calls.filter((c) => c === "getFile")).toEqual([]);
+		expect(seen).toEqual([undefined]);
+	});
+
 	it("an allowed user's document lands in uploads/ and the instance is told where; a stranger's never touches the disk", async () => {
 		const dataDir = tempDataDir();
 		const runtime = new AnnieRuntime({ dataDir, engine: piDurableEngine });

@@ -15,10 +15,11 @@ Per chi installa Annie presso un cliente (owner). Un'installazione = un tenant =
 git clone <repo> annie && cd annie
 cp .env.example .env          # compila almeno ANTHROPIC_API_KEY e ANNIE_PUBLIC_URL
 docker compose up -d --build
-docker compose logs annie | grep -A2 "login link"
+docker compose exec annie cat /data/owner-login-link.txt
+docker compose exec annie rm /data/owner-login-link.txt
 ```
 
-Al primo avvio Annie crea il tenant, l'istanza `annie` e l'owner, e stampa **una sola volta** il link d'accesso dell'owner. Aprilo nel browser: entri nella console come owner.
+Al primo avvio Annie crea il tenant, l'istanza `annie` e l'owner, e scrive il link d'accesso dell'owner in `owner-login-link.txt` nella cartella dati (permessi 0600; non finisce nei log). Aprilo nel browser, poi cancella il file.
 
 La porta 8080 è esposta solo su `127.0.0.1`. Esempio Caddy:
 
@@ -36,6 +37,7 @@ Con `ANNIE_PUBLIC_URL=https://annie.cliente.it` i cookie di sessione sono `Secur
 pnpm install --prod --frozen-lockfile
 cp .env.example .env
 pnpm start                    # oppure un servizio systemd che lancia questo comando
+cat data/owner-login-link.txt && rm data/owner-login-link.txt   # primo avvio
 ```
 
 ## 4. Persone e accessi

@@ -137,7 +137,11 @@ export class AnnieRuntime {
 		return (await this.openInstance(request.tenantId, request.instanceId)).submit(request);
 	}
 
-	async submitScheduled(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string }): Promise<{ submissionId: string }> {
+	async submitScheduled(
+		tenant: string,
+		instance: string,
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined },
+	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
 
@@ -321,10 +325,25 @@ export class AnnieInstance {
 	 * so the allowlist does not apply (only allowed users can create schedules). The channel
 	 * must still be allowed. `messageId` makes a refire after a crash idempotent.
 	 */
-	async submitScheduled(request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string }): Promise<{ submissionId: string }> {
+	async submitScheduled(request: {
+		channel: string;
+		threadId: string;
+		text: string;
+		messageId: string;
+		scheduleId: string;
+		/** The person it acts for: must still be allowed, or the run is refused. */
+		onBehalfOf: { channel: string; userId: string } | undefined;
+	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
+		const record = await this.fresh();
+		const person = request.onBehalfOf;
+		const allowed = person !== undefined && (record.allowedUsers[person.channel] ?? []).includes(person.userId);
+		if (!allowed) {
+			await this.audit.append({ type: "user.denied", instanceId: this.record.id, channel: person?.channel ?? request.channel, userId: person?.userId ?? "(none)", threadId: request.threadId, reason: "schedule_person_not_allowed", scheduleId: request.scheduleId });
+			throw new UserNotAllowed(person?.channel ?? request.channel, person?.userId ?? "(none)", request.threadId, "user_not_in_allowlist");
+		}
 		try {
-			assertChannelAllowed(this.record.egress, request.channel);
+			assertChannelAllowed(record.egress, request.channel);
 		} catch (error) {
 			if (error instanceof EgressDenied) {
 				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });

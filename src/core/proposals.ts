@@ -43,6 +43,9 @@ export function customToolName(name: string): string {
 	return `custom_${name}`;
 }
 
+/** Decisions in flight, per proposal ID (one process owns an instance). */
+const DECIDING = new Map<string, Promise<unknown>>();
+
 export class ProposalStore {
 	constructor(private readonly dir: string) {}
 
@@ -87,12 +90,24 @@ export class ProposalStore {
 	/** Approved tools, the latest approval of each name winning. */
 	async approved(): Promise<ToolProposal[]> {
 		const byName = new Map<string, ToolProposal>();
-		for (const p of await this.list()) if (p.status === "approved") byName.set(p.name, p);
+		const approved = (await this.list()).filter((p) => p.status === "approved").sort((a, b) => (a.decidedAt ?? "").localeCompare(b.decidedAt ?? ""));
+		for (const p of approved) byName.set(p.name, p);
 		return [...byName.values()];
 	}
 
 	/** Only a pending proposal can be decided; deciding twice returns the first decision. */
-	async decide(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, now = new Date()): Promise<{ proposal: ToolProposal; changed: boolean }> {
+	decide(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, now = new Date()): Promise<{ proposal: ToolProposal; changed: boolean }> {
+		// One decision at a time per proposal: two concurrent taps cannot both "win".
+		const run = (DECIDING.get(id) ?? Promise.resolve()).then(() => this.decideNow(id, decision, by, now));
+		const tail = run.catch(() => {});
+		DECIDING.set(id, tail);
+		void tail.then(() => {
+			if (DECIDING.get(id) === tail) DECIDING.delete(id);
+		});
+		return run;
+	}
+
+	private async decideNow(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, now: Date): Promise<{ proposal: ToolProposal; changed: boolean }> {
 		const current = await this.get(id);
 		if (current === undefined) throw new ProposalError(`No proposal ${id}`);
 		if (current.status !== "pending") return { proposal: current, changed: false };

@@ -3,6 +3,7 @@
  * what is missing on first start and prints the owner's login link once.
  */
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { startAnnie } from "../app.ts";
 import { InstanceLocked } from "../core/errors.ts";
 import { SegreteriaConfigError } from "../segreteria/boot.ts";
@@ -29,7 +30,10 @@ try {
 			`web=${url}${config.telegram === undefined ? "" : " telegram=on"}${annie.segreteria === undefined ? "" : ` segreteria=${annie.segreteria.instanceId}`}`,
 	);
 	if (annie.ownerLink !== undefined) {
-		console.error(`annie: first start. Owner login link (shown once; keep it private):\n\n  ${annie.ownerLink}\n\nNew links: pnpm annie person link <id>`);
+		// Not in the logs (docker compose logs keeps them): only on a terminal, and in a 0600 file.
+		const file = join(config.dataDir, "owner-login-link.txt");
+		if (process.stderr.isTTY) console.error(`annie: first start. Owner login link (keep it private):\n\n  ${annie.ownerLink}\n`);
+		console.error(`annie: first start. The owner's login link is in ${file} (read it, then delete the file). New links: pnpm annie person link <id>`);
 	}
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.once(signal, () => {

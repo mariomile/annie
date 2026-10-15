@@ -6,7 +6,7 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, UserNotAllowed } from "../core/errors.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
-import { ScheduleError } from "../core/schedules.ts";
+import { type Schedule, ScheduleError, schedulePerson } from "../core/schedules.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
 import { WorkspaceError } from "../core/workspace.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
@@ -215,8 +215,11 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	// --- tasks programmati ---
 	route("GET", "/api/instances/:id/schedules", "person", async ({ person, params }) => {
-		await instanceAccess(person as Person, params[0] as string);
-		return { schedules: await runtime.schedules(tenantId, params[0] as string).list() };
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const all = await runtime.schedules(tenantId, params[0] as string).list();
+		// A member sees the tasks that act for them; the owner sees all.
+		return { schedules: p.role === "owner" ? all : all.filter((s) => mine(s, p)) };
 	});
 	route("POST", "/api/instances/:id/schedules", "person", async ({ person, params, req }) => {
 		const p = person as Person;
@@ -239,8 +242,12 @@ export function createWebApp(options: WebAppOptions): Server {
 		}
 	});
 	route("DELETE", "/api/instances/:id/schedules/:sid", "person", async ({ person, params }) => {
-		await instanceAccess(person as Person, params[0] as string);
-		return { removed: await runtime.schedules(tenantId, params[0] as string).remove(params[1] as string) };
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const store = runtime.schedules(tenantId, params[0] as string);
+		const schedule = await store.get(params[1] as string);
+		if (schedule === undefined || (p.role !== "owner" && !mine(schedule, p))) throw new HttpError(404, "No such task");
+		return { removed: await store.remove(schedule.id) };
 	});
 
 	// --- tools proposti ---
@@ -431,6 +438,12 @@ export function createWebApp(options: WebAppOptions): Server {
 }
 
 const STREAMED = Symbol("streamed");
+
+/** A task that acts for this person on the web (they created it, or it writes to their thread). */
+function mine(schedule: Schedule, person: Person): boolean {
+	const who = schedulePerson(schedule);
+	return who?.channel === "web" && who.userId === person.id;
+}
 
 function securityHeaders(res: ServerResponse): void {
 	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");

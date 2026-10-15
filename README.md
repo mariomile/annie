@@ -22,10 +22,10 @@ Documenti: [prodotto e checklist](docs/prodotto.md) · [runbook](docs/runbook.md
 ```bash
 cp .env.example .env     # basta ANTHROPIC_API_KEY
 pnpm install
-pnpm start               # stampa al primo avvio il link d'accesso dell'owner
+pnpm start               # al primo avvio il link dell'owner è in data/owner-login-link.txt
 ```
 
-Con Docker: `docker compose up -d --build`, poi `docker compose logs annie | grep -A2 "login link"`. Installazione, persone, Telegram, segreteria, connettori, backup e aggiornamenti: [`docs/runbook.md`](docs/runbook.md).
+Con Docker: `docker compose up -d --build`, poi `docker compose exec annie cat /data/owner-login-link.txt`. Installazione, persone, Telegram, segreteria, connettori, backup e aggiornamenti: [`docs/runbook.md`](docs/runbook.md).
 
 Per provare senza chiave: `ANNIE_MODEL_PROVIDER=faux pnpm start` usa un modello locale deterministico (eco; `/tool <nome> <json>` chiama un tool).
 

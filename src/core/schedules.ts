@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readdir, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
-import { assertTimeZone, nextRun, parseCron } from "./cron.ts";
+import { assertTimeZone, nextDistinctRun, nextRun, parseCron } from "./cron.ts";
 
 /** A task programmato: an instruction the instance runs by itself, delivered to a thread. */
 export type Schedule = {
@@ -14,6 +14,8 @@ export type Schedule = {
 	/** Next time it fires; null once a one-off has run. */
 	readonly nextRunAt: string | null;
 	readonly lastRunAt?: string;
+	/** Why it stopped firing by itself (its person is no longer allowed). */
+	readonly disabledReason?: string;
 	readonly createdBy: { readonly kind: "person"; readonly channel: string; readonly userId: string } | { readonly kind: "instance" };
 	readonly createdAt: string;
 };
@@ -89,8 +91,15 @@ export class ScheduleStore {
 	 * to its first run after `now`, so a long downtime gives one catch-up run, not many.
 	 */
 	async advance(schedule: Schedule, ranFor: string, now: Date): Promise<Schedule> {
-		const next = "at" in schedule.when ? null : nextRun(parseCron(schedule.when.cron), now, schedule.when.timeZone).toISOString();
+		const next = "at" in schedule.when ? null : nextDistinctRun(parseCron(schedule.when.cron), now, schedule.when.timeZone, new Date(ranFor)).toISOString();
 		const updated: Schedule = { ...schedule, nextRunAt: next, lastRunAt: ranFor };
+		await this.save(updated);
+		return updated;
+	}
+
+	/** Stop it for good, keeping it visible with the reason. */
+	async disable(schedule: Schedule, reason: string): Promise<Schedule> {
+		const updated: Schedule = { ...schedule, nextRunAt: null, disabledReason: reason };
 		await this.save(updated);
 		return updated;
 	}
@@ -102,6 +111,18 @@ export class ScheduleStore {
 	private file(id: string): string {
 		return join(this.dir, `${id}.json`);
 	}
+}
+
+/**
+ * The person a schedule acts for: its creator, or else the person whose conversation it
+ * writes to (a Telegram private chat, a web thread). Undefined: nobody to answer for it.
+ */
+export function schedulePerson(schedule: Schedule): { channel: string; userId: string } | undefined {
+	if (schedule.createdBy.kind === "person") return { channel: schedule.createdBy.channel, userId: schedule.createdBy.userId };
+	if (schedule.channel === "telegram" && /^\d+$/.test(schedule.threadId)) return { channel: "telegram", userId: schedule.threadId };
+	const owner = schedule.threadId.split(".")[0] ?? "";
+	if (schedule.channel === "web" && /^p_[0-9a-f]{12}$/.test(owner)) return { channel: "web", userId: owner };
+	return undefined;
 }
 
 function firstRun(when: Schedule["when"], now: Date): string {
@@ -122,10 +143,20 @@ function firstRun(when: Schedule["when"], now: Date): string {
 	} catch (error) {
 		throw new ScheduleError(error instanceof Error ? error.message : String(error));
 	}
-	const first = nextRun(cron, now, when.timeZone);
-	const second = nextRun(cron, first, when.timeZone);
-	if (second.getTime() - first.getTime() < SCHEDULE_LIMITS.minIntervalMinutes * 60_000) {
-		throw new ScheduleError(`Runs more often than every ${SCHEDULE_LIMITS.minIntervalMinutes} minutes`);
+	let first: Date;
+	try {
+		first = nextRun(cron, now, when.timeZone);
+	} catch (error) {
+		throw new ScheduleError(error instanceof Error ? error.message : String(error));
+	}
+	// Every gap over a week, not just the first: "0,59 0,23 * * *" runs at 23:59 and 00:00.
+	const minGap = SCHEDULE_LIMITS.minIntervalMinutes * 60_000;
+	const horizon = first.getTime() + 7 * 24 * 60 * 60_000;
+	let previous = first;
+	for (let i = 0; i < 3000 && previous.getTime() < horizon; i++) {
+		const next = nextDistinctRun(cron, previous, when.timeZone, previous);
+		if (next.getTime() - previous.getTime() < minGap) throw new ScheduleError(`Runs more often than every ${SCHEDULE_LIMITS.minIntervalMinutes} minutes`);
+		previous = next;
 	}
 	return first.toISOString();
 }

@@ -76,6 +76,24 @@ describe("pnpm start (startAnnie)", () => {
 		await until(async () => (await entries()).some((e) => e.text === "Fatto. 42"));
 	});
 
+	it("a proposal whose code does not fit the Telegram card can only be approved from the console", async () => {
+		const { annie, base, telegram } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		const thread = (await api("/api/instances/annie/threads", {})).thread;
+		const code = `// ${"riempitivo innocuo ".repeat(120)}\nexport default async () => "payload"`;
+		const proposal = { name: "lungo", description: "Codice lungo", parameters: { type: "object" }, code, hosts: [] };
+		await api(`/api/instances/annie/threads/${thread.id}/messages`, { text: `/tool tool_propose ${JSON.stringify(proposal)}` });
+		await waitFor(() => telegram.sent.some((m) => m.chat_id === "9"));
+		const card = telegram.sent.find((m) => m.chat_id === "9");
+		expect(card?.text).toContain("leggilo tutto e decidi nella console web");
+		expect(card?.reply_markup?.inline_keyboard[0]?.map((b) => b.text)).toEqual(["Rifiuta"]);
+		// A forged approve tap is ignored.
+		const id = (await annie.runtime.proposals("default", "annie").list())[0]!.id;
+		telegram.updates.push([{ update_id: 2, callback_query: { id: "cq2", from: { id: 9 }, message: { message_id: 5, chat: { id: 9 } }, data: `tool:${id}:approved` } }]);
+		await new Promise((r) => setTimeout(r, 300));
+		expect((await annie.runtime.proposals("default", "annie").get(id))?.status).toBe("pending");
+	});
+
 	it("a task programmato created from the web delivers into its web thread; a restart keeps the owner", async () => {
 		const dataDir = tempDataDir();
 		const first = await boot(dataDir);

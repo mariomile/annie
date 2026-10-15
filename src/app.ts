@@ -6,6 +6,7 @@
  */
 import type { Server } from "node:http";
 import { join } from "node:path";
+import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
 import type { InboundAction } from "./channels/types.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
@@ -121,6 +122,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		const record = await runtime.registry.getInstance(tenant, config.instanceId);
 		await runtime.registry.setAllowedUsers(tenant, config.instanceId, "web", [...(record.allowedUsers.web ?? []), person.id]);
 		ownerLink = `${config.web.publicUrl ?? `http://${config.web.host === "0.0.0.0" ? "localhost" : config.web.host}:${config.web.port}`}/login#${token}`;
+		// Kept out of the logs: in a 0600 file the owner reads once and deletes.
+		await writeFileAtomic(join(config.dataDir, "owner-login-link.txt"), `${ownerLink}\n`);
 	}
 
 	// --- channels ---
@@ -132,7 +135,15 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		webChannels.set(record.id, channel);
 	}
 	if (config.telegram !== undefined) {
-		const bot = new TelegramAdapter({ token: config.telegram.token, tenantId: tenant, instanceId: config.instanceId, log, ...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }) });
+		const bot = new TelegramAdapter({
+			token: config.telegram.token,
+			tenantId: tenant,
+			instanceId: config.instanceId,
+			log,
+			// Files from strangers are never downloaded.
+			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, config.instanceId)).allowedUsers.telegram ?? []).includes(userId),
+			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
+		});
 		connectChannel(runtime, bot, { tenantId: tenant, instanceId: config.instanceId }, log, (action) => onTelegramTap(config.instanceId, bot, action));
 		telegrams.set(config.instanceId, bot);
 	}
@@ -143,7 +154,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		if (bot === undefined) return;
 		for (const chat of record.approvers?.telegram ?? []) {
 			if ((proposal.notified ?? []).includes(`telegram:${chat}`)) continue;
-			const code = proposal.code.length > 1500 ? `${proposal.code.slice(0, 1500)}\n[... codice completo nella console web]` : proposal.code;
+			// An approver approves what they read: with the code cut, no button, only the console.
+			const truncated = proposal.code.length > 1500;
+			const code = truncated ? `${proposal.code.slice(0, 1500)}\n[...]` : proposal.code;
 			try {
 				await bot.send({
 					tenantId: tenant,
@@ -151,11 +164,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					channel: "telegram",
 					threadId: chat,
 					idempotencyKey: `proposal:${proposal.id}:${chat}`,
-					text: `Nuovo tool da approvare · ${customToolName(proposal.name)}\n\n${proposal.description}\n\nHost raggiungibili: ${proposal.hosts.length > 0 ? proposal.hosts.join(", ") : "nessuno"}\n\nCodice:\n${code}`,
-					buttons: [
-						{ label: "Approva", data: `tool:${proposal.id}:approved` },
-						{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` },
-					],
+					text: `Nuovo tool da approvare · ${customToolName(proposal.name)}\n\n${proposal.description}\n\nHost raggiungibili: ${proposal.hosts.length > 0 ? proposal.hosts.join(", ") : "nessuno"}\n\nCodice:\n${code}${truncated ? `\n\nIl codice è lungo ${proposal.code.length} caratteri: leggilo tutto e decidi nella console web (Approvazioni).` : ""}`,
+					buttons: truncated
+						? [{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` }]
+						: [
+								{ label: "Approva", data: `tool:${proposal.id}:approved` },
+								{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` },
+							],
 				});
 				await runtime.proposals(tenant, instance).markNotified(proposal.id, `telegram:${chat}`);
 			} catch (error) {
@@ -167,6 +182,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	async function onTelegramTap(instance: string, bot: TelegramAdapter, action: InboundAction): Promise<void> {
 		const m = /^tool:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
 		if (m === null) return;
+		if (m[2] === "approved" && ((await runtime.proposals(tenant, instance).get(m[1] as string))?.code.length ?? 0) > 1500) return; // only from the console
 		try {
 			const proposal = await decideToolProposal(runtime, tenant, instance, m[1] as string, m[2] as "approved" | "rejected", { channel: "telegram", userId: action.userId });
 			await bot.send({

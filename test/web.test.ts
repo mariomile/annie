@@ -155,6 +155,20 @@ describe("web console", () => {
 		expect((await anna("/api/instances/ops/files/raw?path=../../people.json")).status).toBe(400);
 	});
 
+	it("a member sees and deletes only the tasks that act for them", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const luca = await h.as(h.luca.token);
+		const thread = (await anna("/api/instances/ops/threads", { method: "POST", body: "{}" })).body.thread;
+		const at = new Date(Date.now() + 3_600_000).toISOString();
+		const task = (await anna("/api/instances/ops/schedules", { method: "POST", body: JSON.stringify({ instruction: "Privato di Anna", at, threadId: thread.id }) })).body.schedule;
+		expect((await luca("/api/instances/ops/schedules")).body.schedules).toEqual([]);
+		expect((await luca(`/api/instances/ops/schedules/${task.id}`, { method: "DELETE" })).status).toBe(404);
+		expect((await anna("/api/instances/ops/schedules")).body.schedules.map((s: { id: string }) => s.id)).toEqual([task.id]);
+		const owner = await h.as(h.owner.token);
+		expect((await owner("/api/instances/ops/schedules")).body.schedules).toHaveLength(1);
+	});
+
 	it("only approvers decide on tools proposti", async () => {
 		const h = await setup();
 		const p = await h.runtime.proposals("acme", "ops").propose({ name: "double", description: "x2", parameters: { type: "object" }, code: "export default async () => 1", hosts: [] });

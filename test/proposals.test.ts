@@ -73,6 +73,20 @@ describe("tools proposti", () => {
 		await h.runtime.close();
 	});
 
+	it("the most recently approved version of a name is the one that runs", async () => {
+		const h = await setup();
+		const store = h.runtime.proposals("acme", "ops");
+		const older = await store.propose({ ...PROPOSAL, code: "export default async () => 'old'" }, new Date("2026-10-15T08:00:00Z"));
+		const newer = await store.propose({ ...PROPOSAL, code: "export default async () => 'new'" }, new Date("2026-10-15T09:00:00Z"));
+		await store.decide(newer.id, "approved", OWNER, new Date("2026-10-15T10:00:00Z"));
+		await store.decide(older.id, "approved", OWNER, new Date("2026-10-15T11:00:00Z"));
+		expect((await store.approved()).map((p) => p.id)).toEqual([older.id]);
+		const [a, b] = await Promise.all([store.decide((await store.propose({ ...PROPOSAL, name: "race" })).id, "approved", OWNER), Promise.resolve()]);
+		expect(a.changed).toBe(true);
+		void b;
+		await h.runtime.close();
+	});
+
 	it("rejects proposals it cannot run safely", async () => {
 		const h = await setup();
 		const store = h.runtime.proposals("acme", "ops");

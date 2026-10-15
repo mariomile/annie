@@ -1,4 +1,4 @@
-# docker compose up -d   ·   first start: docker compose logs annie | grep login
+# docker compose up -d   ·   first start: docker compose exec annie cat /data/owner-login-link.txt
 services:
   annie:
     build: .
