@@ -60,14 +60,15 @@ export function sendingNotice(pratica: Pratica): string {
 Bozza v${pratica.draftVersion} approvata da te. Sto inviando la mail a ${pratica.lead.email}.`;
 }
 
-export function sentNotice(pratica: Pratica): string {
+/** `crmError`: the mail went out but the CRM could not record it. */
+export function sentNotice(pratica: Pratica, crmError?: string): string {
 	const id = shortPraticaId(pratica.praticaId);
 	return `Inviata · Pratica #${id}
 
 A: ${pratica.lead.fullName ?? ""} <${pratica.lead.email}>
 Oggetto: ${pratica.draftSubject}
 Ora: ${formatReceivedAt(pratica.approvedAt ?? new Date().toISOString())}
-CRM: esito «risposta inviata» registrato sul lead.`;
+${crmError === undefined ? "CRM: esito «risposta inviata» registrato sul lead." : `CRM non aggiornato (${crmError}): la mail è partita, segna l'esito sul lead a mano.`}`;
 }
 
 export function alreadyClosed(status: string): string {
@@ -82,11 +83,11 @@ Scrivi qui sotto come vuoi cambiare la bozza (tono, contenuti, dati mancanti). P
 Per annullare senza cambiare nulla, scrivi: annulla modifica`;
 }
 
-export function discardedNotice(pratica: Pratica): string {
+export function discardedNotice(pratica: Pratica, crmError?: string): string {
 	const id = shortPraticaId(pratica.praticaId);
 	return `Scartata · Pratica #${id}
 
-Nessuna mail è stata inviata. Sul CRM il lead resta aperto con esito «scartata da commerciale».
+Nessuna mail è stata inviata. ${crmError === undefined ? "Sul CRM il lead resta aperto con esito «scartata da commerciale»." : `CRM non aggiornato (${crmError}): segna l'esito sul lead a mano.`}
 Se era un errore, crea una nuova pratica dalla mail originale (non si «riapre» questa).`;
 }
 

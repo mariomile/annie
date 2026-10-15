@@ -74,11 +74,9 @@ export async function handleTelegramCallback(
 	if (parsed.action === "discard") {
 		pratica.status = "discarded";
 		await deps.practices.save(pratica);
-		if (pratica.crmLeadId) {
-			await deps.crm.updateLeadStatus(deps.tenantId, pratica.crmLeadId, "discarded", "scartata da commerciale");
-		}
+		const crmError = pratica.crmLeadId ? await crmStatus(deps, pratica, "discarded", "scartata da commerciale") : undefined;
 		await deps.notify({
-			text: copy.discardedNotice(pratica),
+			text: copy.discardedNotice(pratica, crmError),
 			buttons: [],
 			praticaId: pratica.praticaId,
 			draftVersion: pratica.draftVersion,
@@ -157,16 +155,6 @@ export async function handleTelegramCallback(
 		pratica.sentMessageId = result.sentMessageId;
 		pratica.status = "sent";
 		await deps.practices.save(pratica);
-		if (pratica.crmLeadId) {
-			await deps.crm.updateLeadStatus(deps.tenantId, pratica.crmLeadId, "replied");
-		}
-		await deps.notify({
-			text: copy.sentNotice(pratica),
-			buttons: [],
-			praticaId: pratica.praticaId,
-			draftVersion: pratica.draftVersion,
-		});
-		return { kind: "handled", pratica, sent: true };
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		pratica.status = "failed";
@@ -179,6 +167,29 @@ export async function handleTelegramCallback(
 			draftVersion: pratica.draftVersion,
 		});
 		return { kind: "handled", pratica, sent: false };
+	}
+	// The mail is out: from here on nothing may turn the pratica into a failed send.
+	const crmError = pratica.crmLeadId ? await crmStatus(deps, pratica, "replied") : undefined;
+	await deps.notify({
+		text: copy.sentNotice(pratica, crmError),
+		buttons: [],
+		praticaId: pratica.praticaId,
+		draftVersion: pratica.draftVersion,
+	});
+	return { kind: "handled", pratica, sent: true };
+}
+
+/** Record the outcome on the CRM; on failure keep the pratica as is and return the reason. */
+async function crmStatus(deps: CallbackDeps, pratica: Pratica, status: "replied" | "discarded", note?: string): Promise<string | undefined> {
+	try {
+		await deps.crm.updateLeadStatus(deps.tenantId, pratica.crmLeadId as string, status, note);
+		return undefined;
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		pratica.lastError = { code: "crm_update_failed", message: reason, at: new Date().toISOString() };
+		await deps.practices.save(pratica);
+		await deps.audit.append({ type: "crm.update_failed", instanceId: deps.instanceId, praticaId: pratica.praticaId, status, error: reason });
+		return reason;
 	}
 }
 

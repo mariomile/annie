@@ -82,6 +82,37 @@ describe("segreteria pipeline", () => {
 		expect(a2.kind).toBe("handled");
 	});
 
+	it("a CRM failure after the mail went out keeps the pratica sent and says the CRM was not updated", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		h.crm.updateLeadStatus = async () => {
+			throw new Error("CRM timeout");
+		};
+		h.notifications.length = 0;
+		const res = await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve") });
+		expect(res).toMatchObject({ kind: "handled", sent: true });
+		expect(h.mail.sent).toHaveLength(1);
+		const after = await h.practices.get(r.pratica.praticaId);
+		expect(after?.status).toBe("sent");
+		expect(after?.lastError?.code).toBe("crm_update_failed");
+		const texts = h.notifications.map((n) => n.text).join("\n---\n");
+		expect(texts).toContain("Inviata");
+		expect(texts).toContain("CRM non aggiornato");
+		expect(texts).not.toContain("Invio non riuscito");
+		expect(h.notifications.every((n) => n.buttons.length === 0)).toBe(true);
+	});
+
+	it("a CRM failure on Scarta still discards and tells the sales person", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		h.crm.updateLeadStatus = async () => {
+			throw new Error("CRM timeout");
+		};
+		await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "discard") });
+		expect((await h.practices.get(r.pratica.praticaId))?.status).toBe("discarded");
+		expect(h.notifications.at(-1)?.text).toContain("CRM non aggiornato");
+	});
+
 	it("Scarta does not send", async () => {
 		const h = harness();
 		const r = await processInboundMail(h.deps, sampleMail());
