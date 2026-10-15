@@ -8,7 +8,7 @@ Annie è «pronta al 100%» quando ognuna di queste voci è vera e verificata da
 
 - [x] `pnpm start` avvia tutto per un tenant: istanze, Telegram, interfaccia web, task programmati, segreteria se configurata.
 - [x] Configurazione da `.env` per il bootstrap; il resto (connettori, task, persone) dalla console web o dalla riga di comando.
-- [x] Docker Compose con volume dati, healthcheck e riavvio automatico. *(Build dell'immagine non provata: nell'ambiente di sviluppo non c'è il daemon Docker. Verificato l'avvio con le sole dipendenze di produzione.)*
+- [x] Docker Compose con volume dati, healthcheck e riavvio automatico. *(Verificato: immagine costruita e avviata; healthcheck `healthy`, utente non privilegiato, link dell'owner in un file 0600; login, chat, file, tool proposto approvato ed eseguito in sandbox, CLI; tutto persiste dopo un riavvio del container.)*
 
 ## 2. Agente generale
 

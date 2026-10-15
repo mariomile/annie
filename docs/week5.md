@@ -35,7 +35,8 @@ Eseguita su questo branch, Node 22.22.0, Linux:
 - Console: giro completo in Chromium headless (login con link, chat con file e proposta di tool, approvazione con timbro, task, file, segreteria, persone, impostazioni, connettori, attività; tema scuro; telefono 390 px senza scorrimento orizzontale). Nessun errore in console oltre al 401 atteso senza sessione.
 - `pnpm start` con le sole dipendenze di produzione: avvio, `/healthz`, console servita.
 - Sandbox: provata su Node 22.22 (filesystem fuori cartella, processi, segnali, moduli interni di rete, sqlite, `getBuiltinModule`, ambiente: tutto bloccato; fetch solo agli host dichiarati, con tetto).
-- Non verificati: la build dell'immagine Docker (in questo ambiente non c'è il daemon) e Telegram dal vivo (host non raggiungibile da qui).
+- Docker: immagine costruita e avviata (in questo ambiente solo aggiungendo la CA del proxy locale, come fa ogni rete con proxy TLS); healthcheck `healthy`, utente `node`, link dell'owner in un file 0600; login, chat, file, tool proposto approvato ed eseguito in sandbox, CLI; storico, file e tool approvato restano dopo `docker restart`. `docker compose config` valido.
+- Non verificati: Telegram dal vivo, Gmail, HubSpot e i modelli veri (servono i segreti di Mario).
 
 ## Garanzie e limiti
 
