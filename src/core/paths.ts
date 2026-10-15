@@ -10,6 +10,7 @@ import type { InstanceId, TenantId } from "./ids.ts";
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/instance.json
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/instance.lock (held while a process has it open)
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/engine/   (durable engine storage)
+ *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/outbox/   (replies until their channel confirms them)
  */
 export function tenantDir(dataDir: string, tenant: TenantId): string {
 	return join(dataDir, "tenants", tenant);
@@ -41,4 +42,8 @@ export function engineDir(dataDir: string, tenant: TenantId, instance: InstanceI
 
 export function lockFile(dataDir: string, tenant: TenantId, instance: InstanceId): string {
 	return join(instanceDir(dataDir, tenant, instance), "instance.lock");
+}
+
+export function outboxDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "outbox");
 }

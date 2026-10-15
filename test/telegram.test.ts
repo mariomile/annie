@@ -58,7 +58,7 @@ describe("Telegram adapter (mocked fetch)", () => {
 	it("sends replies with sendMessage, split at Telegram's length limit", async () => {
 		const api = fakeTelegram([]);
 		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
-		await adapter.send({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", text: "x".repeat(TELEGRAM_MAX_TEXT + 1) });
+		await adapter.send({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", text: "x".repeat(TELEGRAM_MAX_TEXT + 1), idempotencyKey: "reply:1" });
 		expect(api.calls.map((c) => [c.method, c.body.chat_id, String(c.body.text).length])).toEqual([
 			["sendMessage", "42", TELEGRAM_MAX_TEXT],
 			["sendMessage", "42", 1],

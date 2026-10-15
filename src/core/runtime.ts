@@ -1,10 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
 import type { AnnieTool, DurableEngine, EngineReply, EngineSession } from "./engine.ts";
-import { EgressDenied, UserNotAllowed } from "./errors.ts";
+import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
-import { engineDir, lockFile } from "./paths.ts";
+import { Outbox, type OutboxEntry } from "./outbox.ts";
+import { engineDir, lockFile, outboxDir } from "./paths.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
@@ -26,6 +27,11 @@ export type Reply = {
 	readonly instanceId: InstanceId;
 	readonly channel: string;
 	readonly threadId: string;
+	/**
+	 * Idempotency key of this reply, stable across restarts. Pass it to `markDelivered` once
+	 * the channel has accepted the reply; until then it is sent again after a restart.
+	 */
+	readonly deliveryId: string;
 } & ({ readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string });
 
 export type RuntimeOptions = {
@@ -73,9 +79,17 @@ export class AnnieRuntime {
 		return (await this.openInstance(request.tenantId, request.instanceId)).submit(request);
 	}
 
-	/** Resume unfinished work of one instance. */
-	async resume(tenant: string, instance: string): Promise<{ pending: number }> {
+	/**
+	 * Resume one instance: hand undelivered replies of earlier processes to the channels
+	 * again, then continue unfinished engine work. Connect channels before calling it.
+	 */
+	async resume(tenant: string, instance: string): Promise<{ pending: number; undelivered: number }> {
 		return (await this.openInstance(tenant, instance)).resume();
+	}
+
+	/** The channel accepted `reply`: record it in the outbox so it is never sent again. */
+	async markDelivered(reply: Pick<Reply, "tenantId" | "instanceId" | "deliveryId">): Promise<void> {
+		await (await this.openInstance(reply.tenantId, reply.instanceId)).markDelivered(reply.deliveryId);
 	}
 
 	onReply(listener: (reply: Reply) => void): () => void {
@@ -121,7 +135,8 @@ export class AnnieRuntime {
 			throw error;
 		}
 		await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
-		return new AnnieInstance(record, session, lock, audit, (reply) => {
+		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
+		return new AnnieInstance(record, session, lock, outbox, audit, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -134,15 +149,19 @@ export class AnnieRuntime {
 }
 
 export class AnnieInstance {
+	/** Outbox keys handed to the channels by this process and not yet confirmed. */
+	private readonly inFlight = new Set<string>();
+
 	constructor(
 		readonly record: InstanceRecord,
 		private readonly session: EngineSession,
 		private readonly lock: InstanceLock,
+		private readonly outbox: Outbox,
 		private readonly audit: AuditLog,
-		emit: (reply: Reply) => void,
+		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
-			this.deliver(engineReply, emit).catch((error: unknown) => {
+			this.deliver(engineReply).catch((error: unknown) => {
 				console.error(`annie: delivering a reply of ${record.tenantId}/${record.id} failed: ${String(error)}`);
 			});
 		});
@@ -187,10 +206,35 @@ export class AnnieInstance {
 		return this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId);
 	}
 
-	async resume(): Promise<{ pending: number }> {
-		const result = await this.session.resume();
-		await this.audit.append({ type: "instance.resumed", instanceId: this.record.id, pending: result.pending });
-		return result;
+	async resume(): Promise<{ pending: number; undelivered: number }> {
+		// Replies first: they were answered before anything the engine is about to resume.
+		const undelivered = await this.outbox.undelivered();
+		for (const entry of undelivered) await this.handOff(entry);
+		const { pending } = await this.session.resume();
+		await this.audit.append({ type: "instance.resumed", instanceId: this.record.id, pending, undelivered: undelivered.length });
+		return { pending, undelivered: undelivered.length };
+	}
+
+	async markDelivered(deliveryId: string): Promise<void> {
+		const entry = await this.outbox.get(deliveryId);
+		if (entry === undefined) throw new NotFound(`No outbox entry "${deliveryId}" in ${this.record.tenantId}/${this.record.id}`);
+		if (entry.deliveredAt !== undefined) return;
+		await this.outbox.put({ ...entry, deliveredAt: new Date().toISOString() });
+		this.inFlight.delete(deliveryId);
+		await this.audit.append({
+			type: "reply.delivered",
+			instanceId: this.record.id,
+			channel: entry.channel,
+			threadId: entry.threadId,
+			deliveryId,
+			attempts: entry.attempts,
+			possibleDuplicate: entry.attempts > 1,
+		});
+	}
+
+	/** Replies not yet confirmed by their channel, oldest first. */
+	undelivered(): Promise<OutboxEntry[]> {
+		return this.outbox.undelivered();
 	}
 
 	idle(): Promise<void> {
@@ -205,27 +249,53 @@ export class AnnieInstance {
 		}
 	}
 
-	private async deliver(engineReply: EngineReply, emit: (reply: Reply) => void): Promise<void> {
+	private async deliver(engineReply: EngineReply): Promise<void> {
 		const { channel, threadId } = parseThreadKey(engineReply.threadKey);
+		// One outbox entry per submission: the idempotency key of the reply.
+		const key = `reply:${engineReply.submissionId}`;
+		const existing = await this.outbox.get(key);
+		if (existing?.deliveredAt !== undefined) return;
+		await this.handOff(
+			existing ?? {
+				key,
+				channel,
+				threadId,
+				reply: engineReply.status === "answered" ? { status: "answered", text: engineReply.text } : { status: "unanswered", reason: engineReply.reason },
+				createdAt: new Date().toISOString(),
+				attempts: 0,
+			},
+		);
+	}
+
+	/** Write the entry to the outbox, durably, then give it to the channels. At most once per process. */
+	private async handOff(entry: OutboxEntry): Promise<void> {
+		if (this.inFlight.has(entry.key)) return;
 		// Replies leave through a channel: check egress again, the policy is the last word.
-		if (!this.record.egress.channels.includes(channel)) {
-			await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: "channel", target: channel });
+		if (!this.record.egress.channels.includes(entry.channel)) {
+			await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: "channel", target: entry.channel });
 			return;
 		}
-		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId };
+		this.inFlight.add(entry.key);
+		const attempts = entry.attempts + 1;
+		try {
+			await this.outbox.put({ ...entry, attempts });
+		} catch (error) {
+			this.inFlight.delete(entry.key);
+			throw error;
+		}
+		const { channel, threadId, reply } = entry;
 		await this.audit.append({
 			type: "reply.emitted",
 			instanceId: this.record.id,
 			channel,
 			threadId,
-			status: engineReply.status,
-			...(engineReply.status === "answered" ? { chars: engineReply.text.length } : { reason: engineReply.reason }),
+			deliveryId: entry.key,
+			attempts,
+			status: reply.status,
+			...(reply.status === "answered" ? { chars: reply.text.length } : { reason: reply.reason }),
 		});
-		emit(
-			engineReply.status === "answered"
-				? { ...base, status: "answered", text: engineReply.text }
-				: { ...base, status: "unanswered", reason: engineReply.reason },
-		);
+		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key };
+		this.emit(reply.status === "answered" ? { ...base, status: "answered", text: reply.text } : { ...base, status: "unanswered", reason: reply.reason });
 	}
 }
 

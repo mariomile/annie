@@ -15,7 +15,7 @@ describe("resume with a fast model", () => {
 		const second = new AnnieRuntime({ dataDir: first.dataDir, engine: piDurableEngine });
 		const replies: Reply[] = [];
 		second.onReply((reply) => replies.push(reply));
-		expect(await second.resume("acme", "ops")).toEqual({ pending: 1 });
+		expect(await second.resume("acme", "ops")).toEqual({ pending: 1, undelivered: 0 });
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ threadId: "1", status: "answered", text: "Annie (modello locale di sviluppo): hai scritto «ciao»" });
 

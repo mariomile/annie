@@ -4,7 +4,8 @@ import type { AnnieRuntime } from "./core/index.ts";
 /**
  * Connects a channel adapter, bound to one instance, to the core: inbound messages become
  * submissions; replies of that instance on that channel go back out through it, and only
- * through it. The only module that knows both sides.
+ * through it, and are confirmed to the core's outbox once the channel accepts them.
+ * The only module that knows both sides.
  */
 export function connectChannel(
 	runtime: AnnieRuntime,
@@ -24,7 +25,12 @@ export function connectChannel(
 		const text = reply.status === "answered" ? reply.text : "Non sono riuscita a rispondere. Riprova tra poco.";
 		if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
 		adapter
-			.send({ tenantId: reply.tenantId, instanceId: reply.instanceId, channel: reply.channel, threadId: reply.threadId, text })
-			.catch((error: unknown) => log(`${adapter.name}: send failed: ${error instanceof Error ? error.message : String(error)}`));
+			.send({ tenantId: reply.tenantId, instanceId: reply.instanceId, channel: reply.channel, threadId: reply.threadId, text, idempotencyKey: reply.deliveryId })
+			.then(
+				// Not confirmed: the reply stays in the outbox and goes out again on the next resume.
+				() => runtime.markDelivered(reply),
+				(error: unknown) => log(`${adapter.name}: send failed, kept in the outbox: ${error instanceof Error ? error.message : String(error)}`),
+			)
+			.catch((error: unknown) => log(`${adapter.name}: sent, but not confirmed in the outbox: ${error instanceof Error ? error.message : String(error)}`));
 	});
 }
