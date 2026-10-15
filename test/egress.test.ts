@@ -1,10 +1,13 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { AnnieRuntime, EgressDenied } from "../src/core/index.ts";
+import { AnnieRuntime, EgressDenied, modelApiKeySecret, type Reply } from "../src/core/index.ts";
 import { FAUX_MODEL, runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 });
 
 describe("egress policy", () => {
@@ -56,6 +59,50 @@ describe("egress policy", () => {
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ status: "answered" });
 		expect(fetchSpy).not.toHaveBeenCalled();
+		await runtime.close();
+	});
+});
+
+describe("model credentials", () => {
+	it("never uses ambient Anthropic credentials (API key or workload federation) when the tenant has no key", async () => {
+		const dir = tempDataDir();
+		const tokenFile = join(dir, "identity-token");
+		writeFileSync(tokenFile, "host-identity-token");
+		vi.stubEnv("ANTHROPIC_API_KEY", "host-api-key");
+		vi.stubEnv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_host");
+		vi.stubEnv("ANTHROPIC_ORGANIZATION_ID", "org_host");
+		vi.stubEnv("ANTHROPIC_IDENTITY_TOKEN_FILE", tokenFile);
+		// A non-retryable error: the request is observed, then the run fails fast.
+		const requests: { url: string; apiKey: string | null }[] = [];
+		vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			const request = new Request(input, init);
+			requests.push({ url: request.url, apiKey: request.headers.get("x-api-key") });
+			return Response.json({ type: "error", error: { type: "invalid_request_error", message: "blocked in test" } }, { status: 400 });
+		}));
+
+		const runtime = new AnnieRuntime({ dataDir: dir, engine: piDurableEngine });
+		await runtime.registry.createTenant({ id: "acme", name: "Acme" });
+		await runtime.registry.createInstance("acme", {
+			id: "ops",
+			name: "Ops",
+			model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+			egress: { modelProviders: ["anthropic"], channels: ["test"] },
+		});
+		const replies: Reply[] = [];
+		runtime.onReply((reply) => replies.push(reply));
+
+		// No tenant key: nothing leaves, whatever the host environment holds.
+		await runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "test", threadId: "1", userId: "u", text: "ciao" });
+		await waitFor(() => replies.length === 1, 20_000);
+		expect(replies[0]).toMatchObject({ status: "unanswered" });
+		expect(requests).toEqual([]);
+
+		// With a tenant key, the request goes out with that key and nothing else.
+		await runtime.secrets("acme").set(modelApiKeySecret("anthropic"), "tenant-api-key");
+		await runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "test", threadId: "2", userId: "u", text: "ciao" });
+		await waitFor(() => replies.length === 2, 20_000);
+		expect(requests.length).toBeGreaterThan(0);
+		expect(requests.every((r) => r.url.startsWith("https://api.anthropic.com/") && r.apiKey === "tenant-api-key")).toBe(true);
 		await runtime.close();
 	});
 });
