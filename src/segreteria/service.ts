@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ChannelAdapter, InboundAction, InboundMessage } from "../channels/types.ts";
+import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "../channels/types.ts";
 import type { CrmAdapter, InboundMail, MailAdapter } from "../connectors/types.ts";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 import type { AuditLog } from "../core/audit.ts";
@@ -10,8 +10,8 @@ import { callbackData, type Pratica, PracticeStore, type TenantSegreteriaConfig 
 import { romeDayKey, TELEGRAM_HARD_CAP, type UsageLedger } from "../core/usage.ts";
 import { type CallbackDeps, handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "./callbacks.ts";
 import type { ChecksConfig } from "./checks.ts";
-import { type Notification, NotificationOutbox, type NotificationEntry } from "./notifications.ts";
-import { type PipelineDeps, processInboundMail } from "./pipeline.ts";
+import { maybeDelivered, type Notification, NotificationOutbox, type NotificationEntry } from "./notifications.ts";
+import { forceQuote, type PipelineDeps, processInboundMail } from "./pipeline.ts";
 import * as copy from "./telegram-copy.ts";
 
 export type SegreteriaOptions = {
@@ -44,6 +44,9 @@ type CursorState = {
 	/** Rome day of the last hard-cap notice, so it goes out once a day. */
 	hardCapNoticeDay?: string;
 };
+
+/** How long after Modifica a text from the same person counts as the edit. */
+const EDIT_WINDOW_MS = 30 * 60_000;
 
 const ACTIONS: Record<string, "approve" | "edit" | "discard"> = { Approva: "approve", Modifica: "edit", Scarta: "discard" };
 
@@ -107,6 +110,8 @@ export class SegreteriaService {
 	}
 
 	private async poll(): Promise<{ processed: number }> {
+		// Cards Telegram refused earlier (rate limit, network): try them again every round.
+		for (const entry of await this.notifications.list()) await this.deliver(entry);
 		const state = await this.readCursor();
 		const { messages, nextCursor } = await this.options.mail.listNewRequests(this.options.tenantId, state.cursor);
 		let processed = 0;
@@ -177,7 +182,7 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 	}
 
 	private async onTap(action: InboundAction): Promise<void> {
-		await handleTelegramCallback(this.callbackDeps(), { userId: action.userId, callbackData: action.data });
+		await handleTelegramCallback(this.callbackDeps(), { userId: action.userId, callbackData: action.data, actionId: action.actionId });
 	}
 
 	private async onText(message: InboundMessage): Promise<void> {
@@ -186,7 +191,11 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 			await this.options.audit.append({ type: "user.denied", instanceId: this.options.instanceId, channel: message.channel, userId: message.userId, action: "text" });
 			return;
 		}
-		const editing = (await this.practices.list()).filter((p) => p.status === "awaiting_edit").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+		// The text is the edit of the pratica this person tapped Modifica on, if it is recent.
+		const since = Date.now() - EDIT_WINDOW_MS;
+		const editing = (await this.practices.list())
+			.filter((p) => p.status === "awaiting_edit" && p.editingBy === message.userId && Date.parse(p.editingSince ?? "") >= since)
+			.sort((a, b) => (b.editingSince ?? "").localeCompare(a.editingSince ?? ""))[0];
 		if (editing === undefined) {
 			await this.options.telegram.send({
 				tenantId: this.options.tenantId,
@@ -221,9 +230,9 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 	private async deliver(initial: NotificationEntry): Promise<void> {
 		let entry = initial;
 		for (const chat of initial.pending) {
-			const started = await this.notifications.attempt(entry, chat);
-			entry = started.entry;
-			const text = started.attempt > 1 ? `${copy.duplicateNotifyLine()}\n\n${entry.text}` : entry.text;
+			const duplicate = maybeDelivered(entry, chat);
+			entry = (await this.notifications.attempt(entry, chat)).entry;
+			const text = duplicate ? `${copy.duplicateNotifyLine()}\n\n${entry.text}` : entry.text;
 			try {
 				await this.options.telegram.send({
 					tenantId: this.options.tenantId,
@@ -241,8 +250,9 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 				});
 				entry = await this.notifications.delivered(entry, chat);
 			} catch (error) {
-				// Kept in the outbox: resent at the next start.
-				this.log(`card to ${chat} not sent, kept for the next start: ${errorText(error)}`);
+				// Refused by Telegram: the card did not arrive. Otherwise (network) it may have. Retried next round.
+				if (error instanceof ChannelRefused) entry = await this.notifications.refused(entry, chat);
+				this.log(`card to ${chat} not sent, retried next round: ${errorText(error)}`);
 			}
 		}
 	}
@@ -275,6 +285,9 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 			audit: o.audit,
 			allowedUserIds: this.sales,
 			notify: (n) => this.notify(n),
+			forceExtract: async (pratica) => {
+				await forceQuote(this.pipelineDeps(), pratica);
+			},
 		};
 	}
 

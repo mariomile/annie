@@ -76,3 +76,11 @@ export interface ChannelAdapter {
 	/** Resolves once the channel has accepted the whole message; rejects otherwise. */
 	send(message: OutboundMessage): Promise<void>;
 }
+
+/**
+ * The channel answered and refused the message: it did not reach anyone. Any other error
+ * from `send` (network, timeout) leaves open whether it arrived.
+ */
+export class ChannelRefused extends Error {
+	override readonly name = "ChannelRefused";
+}

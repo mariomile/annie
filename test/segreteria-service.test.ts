@@ -19,13 +19,14 @@ type Sent = { chat_id: string; text: string; reply_markup?: { inline_keyboard: {
 function fakeTelegram() {
 	const updates: unknown[][] = [];
 	const sent: Sent[] = [];
-	const state = { failSend: false };
+	const state = { failSend: false, networkError: false };
 	const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
 		const method = String(url).slice(String(url).lastIndexOf("/") + 1);
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 		if (method === "getUpdates") return Response.json({ ok: true, result: updates.shift() ?? [] });
 		if (method === "answerCallbackQuery") return Response.json({ ok: true, result: true });
 		if (method === "sendMessage") {
+			if (state.networkError) throw new TypeError("fetch failed");
 			if (state.failSend) return Response.json({ ok: false, error_code: 502, description: "Bad Gateway" }, { status: 502 });
 			sent.push(body as unknown as Sent);
 			return Response.json({ ok: true, result: { message_id: sent.length } });
@@ -117,6 +118,31 @@ describe("segreteria service (fake mailbox, fake Telegram)", () => {
 		expect(h.mail.sent).toHaveLength(0);
 	});
 
+	it("an edit text goes to the pratica its sender tapped Modifica on, and only within 30 minutes", async () => {
+		const h = setup();
+		h.mail.seed([request({ messageId: "a", threadId: "ta" }), request({ messageId: "b", threadId: "tb", subject: "Seconda richiesta" })]);
+		await h.service.pollOnce();
+		const [cardA, cardB] = h.telegram.sent.slice(-2);
+		// Two sales people: 7 edits A, then 8 edits B; 7's text must land on A.
+		(h.service as unknown as { sales: Set<string> }).sales.add("8");
+		h.telegram.updates.push([tap(7, dataOf(cardA, "Modifica"))], [tap(8, dataOf(cardB, "Modifica"))], [text(7, "Aggiungi il sopralluogo gratuito.")]);
+		await h.bot.pollOnce();
+		await h.bot.pollOnce();
+		await h.bot.pollOnce();
+		const list = await h.service.practices.list();
+		const a = list.find((p) => p.mailMessageId === "a");
+		const b = list.find((p) => p.mailMessageId === "b");
+		expect(a?.draftVersion).toBe(2);
+		expect(b).toMatchObject({ draftVersion: 1, status: "awaiting_edit", editingBy: "8" });
+		// A Modifica forgotten for over 30 minutes: the text is not an edit.
+		b!.editingSince = new Date(Date.now() - 31 * 60_000).toISOString();
+		await h.service.practices.save(b!);
+		h.telegram.updates.push([text(8, "ok grazie")]);
+		await h.bot.pollOnce();
+		expect((await h.service.practices.get(b!.praticaId))?.draftVersion).toBe(1);
+		expect(h.telegram.sent.at(-1)?.text).toContain("Segreteria attiva");
+	});
+
 	it("strangers get silence; taps and texts from them are audited and change nothing", async () => {
 		const h = setup();
 		h.mail.seed([request()]);
@@ -131,13 +157,25 @@ describe("segreteria service (fake mailbox, fake Telegram)", () => {
 		expect(denied.map((e) => e.userId)).toEqual(["66", "66"]);
 	});
 
-	it("a card Telegram did not accept is resent at the next start, marked as a possible duplicate", async () => {
+	it("a card Telegram refused goes out on the next round, without the duplicate line (it never arrived)", async () => {
+		const h = setup();
+		h.mail.seed([request()]);
+		h.telegram.state.failSend = true;
+		await h.service.pollOnce();
+		expect(h.telegram.sent).toHaveLength(0);
+		expect(h.logs.some((l) => l.includes("retried next round"))).toBe(true);
+		h.telegram.state.failSend = false;
+		await h.service.pollOnce();
+		expect(h.telegram.sent).toHaveLength(1);
+		expect(h.telegram.sent[0]?.text.startsWith("Nuova richiesta di preventivo")).toBe(true);
+	});
+
+	it("a card whose send was cut off (no answer from Telegram) is resent at the next start, marked as a possible duplicate", async () => {
 		const first = setup();
 		first.mail.seed([request()]);
-		first.telegram.state.failSend = true;
+		first.telegram.state.networkError = true;
 		await first.service.pollOnce();
 		expect(first.telegram.sent).toHaveLength(0);
-		expect(first.logs.some((l) => l.includes("kept for the next start"))).toBe(true);
 
 		const second = setup(first.dataDir, { mail: first.mail, crm: first.crm });
 		await second.service.recoverNow();
@@ -200,6 +238,7 @@ describe("segreteria service (fake mailbox, fake Telegram)", () => {
 		expect(h.telegram.sent.some((m) => m.text.startsWith("Mail non elaborata"))).toBe(true);
 		expect(await h.service.pollOnce()).toEqual({ processed: 0 });
 		expect((await h.service.practices.list()).map((p) => p.mailMessageId)).toEqual(["good"]);
-		expect(calls).toBe(1);
+		// The bad mail upserts its lead on each of its 3 tries (idempotent by email), the good one once.
+		expect(calls).toBe(4);
 	});
 });

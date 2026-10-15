@@ -9,8 +9,8 @@ import { tenantId as tid } from "../src/core/ids.ts";
 import { FAUX_MODEL_ROLES } from "../src/core/model-routing.ts";
 import { callbackData, PracticeStore } from "../src/core/practice.ts";
 import { UsageLedger } from "../src/core/usage.ts";
-import { handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "../src/segreteria/callbacks.ts";
-import { processInboundMail } from "../src/segreteria/pipeline.ts";
+import { type CallbackDeps, handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "../src/segreteria/callbacks.ts";
+import { forceQuote, type PipelineDeps, processInboundMail } from "../src/segreteria/pipeline.ts";
 import type { InboundMail } from "../src/connectors/types.ts";
 
 function harness() {
@@ -26,7 +26,7 @@ function harness() {
 	const notify = async (msg: { text: string; buttons: readonly string[]; praticaId: string; draftVersion: number }) => {
 		notifications.push(msg);
 	};
-	const deps = {
+	const deps: PipelineDeps = {
 		tenantId,
 		instanceId,
 		practices,
@@ -37,7 +37,7 @@ function harness() {
 		roles: FAUX_MODEL_ROLES,
 		notify,
 	};
-	const cb = {
+	const cb: CallbackDeps = {
 		tenantId,
 		instanceId,
 		practices,
@@ -111,6 +111,80 @@ describe("segreteria pipeline", () => {
 		await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "discard") });
 		expect((await h.practices.get(r.pratica.praticaId))?.status).toBe("discarded");
 		expect(h.notifications.at(-1)?.text).toContain("CRM non aggiornato");
+	});
+
+	it("a tap redelivered after a crash mid-send never sends again; a fresh tap on the recovery card does", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		const data = callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve");
+		// Crash after Gmail accepted the mail and before the pratica was saved as sent.
+		h.mail.sendReply = async () => {
+			throw new Error("process killed");
+		};
+		await handleTelegramCallback(h.cb, { userId: "7", callbackData: data, actionId: "tap-1" }).catch(() => {});
+		const crashed = (await h.practices.get(r.pratica.praticaId))!;
+		crashed.status = "approved";
+		delete crashed.lastError;
+		await h.practices.save(crashed);
+		const real = new FakeMailAdapter();
+		h.cb.mail = real;
+		const again = await handleTelegramCallback(h.cb, { userId: "7", callbackData: data, actionId: "tap-1" });
+		expect(again).toEqual({ kind: "ignored", reason: "redelivered" });
+		expect(real.sent).toHaveLength(0);
+		const fresh = await handleTelegramCallback(h.cb, { userId: "7", callbackData: data, actionId: "tap-2" });
+		expect(fresh).toMatchObject({ kind: "handled", sent: true });
+		expect(real.sent).toHaveLength(1);
+	});
+
+	it("a crash before the draft is ready leaves no pratica: the mail is read again from the start", async () => {
+		const h = harness();
+		const record = h.usage.record.bind(h.usage);
+		let killed = false;
+		h.usage.record = async (rec, audit) => {
+			if (rec.role === "draft" && !killed) {
+				killed = true;
+				throw new Error("process killed");
+			}
+			return record(rec, audit);
+		};
+		await expect(processInboundMail(h.deps, sampleMail())).rejects.toThrow("process killed");
+		expect(await h.practices.findByMailMessageId("m1")).toBeUndefined();
+		const r = await processInboundMail(h.deps, sampleMail());
+		expect(r.action).toBe("create");
+		expect(r.pratica.status).toBe("draft_ready");
+		expect(h.notifications.at(-1)?.buttons).toEqual(["Approva", "Modifica", "Scarta"]);
+	});
+
+	it("a reply in the thread of a sent pratica gets a new draft that can be sent", async () => {
+		const h = harness();
+		const first = await processInboundMail(h.deps, sampleMail({ messageId: "m1", threadId: "t1" }));
+		await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(first.pratica.praticaId, 1, "approve"), actionId: "a1" });
+		const follow = await processInboundMail(h.deps, sampleMail({ messageId: "m2", threadId: "t1", bodyText: "Ecco i dati: 3 stampanti, consegna a Milano." }));
+		expect(follow.action).toBe("attach_to_existing");
+		expect(follow.pratica.sentMessageId).toBeUndefined();
+		expect(follow.pratica.sentHistory).toEqual(["sent-1"]);
+		const res = await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(follow.pratica.praticaId, follow.pratica.draftVersion, "approve"), actionId: "a2" });
+		expect(res).toMatchObject({ kind: "handled", sent: true });
+		expect(h.mail.sent.map((s) => s.inReplyToMessageId)).toEqual(["m1", "m2"]);
+	});
+
+	it("Approva on a spam card builds a draft and shows it; nothing is sent until that draft is approved", async () => {
+		const h = harness();
+		h.deps.classify = () => "spam";
+		const r = await processInboundMail(h.deps, sampleMail());
+		expect(r.pratica.status).toBe("classified_skip");
+		h.cb.forceExtract = async (p) => {
+			await forceQuote({ ...h.deps, classify: undefined }, p);
+		};
+		const forced = await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(r.pratica.praticaId, 0, "approve"), actionId: "s1" });
+		expect(forced).toMatchObject({ kind: "handled", sent: false });
+		expect(h.mail.sent).toHaveLength(0);
+		const after = (await h.practices.get(r.pratica.praticaId))!;
+		expect(after).toMatchObject({ status: "draft_ready", classification: "richiesta_preventivo", draftVersion: 1 });
+		expect(after.lead.email).toBe("marta.bianchi@acme.example");
+		expect(h.notifications.at(-1)?.buttons).toEqual(["Approva", "Modifica", "Scarta"]);
+		await handleTelegramCallback(h.cb, { userId: "7", callbackData: callbackData(after.praticaId, 1, "approve"), actionId: "s2" });
+		expect(h.mail.sent).toHaveLength(1);
 	});
 
 	it("Scarta does not send", async () => {

@@ -141,6 +141,26 @@ describe("Telegram adapter (mocked fetch)", () => {
 		expect(logs[0]).toContain("query is too old");
 	});
 
+	it("an update whose handler fails is delivered again, up to three times", async () => {
+		const tap = { update_id: 30, callback_query: { id: "cq", from: { id: 7 }, message: { message_id: 9, chat: { id: 42 } }, data: "annie:ab:1:approve" } };
+		const api = fakeTelegram([[tap], [tap], [tap], []]);
+		const logs: string[] = [];
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch, log: (l) => logs.push(l) });
+		let calls = 0;
+		adapter.onAction(async () => {
+			calls++;
+			throw new Error("disk full");
+		});
+		await expect(adapter.pollOnce()).rejects.toThrow("disk full");
+		await expect(adapter.pollOnce()).rejects.toThrow("disk full");
+		await adapter.pollOnce();
+		await adapter.pollOnce();
+		const offsets = api.calls.filter((c) => c.method === "getUpdates").map((c) => c.body.offset);
+		expect(offsets).toEqual([undefined, 30, 30, 31]);
+		expect(calls).toBe(3);
+		expect(logs.some((l) => l.includes("update 30 dropped after 3 failed attempts"))).toBe(true);
+	});
+
 	it("reports API errors without leaking the bot token", async () => {
 		const fetchMock = vi.fn(async () => Response.json({ ok: false, error_code: 401, description: "Unauthorized" }, { status: 401 }));
 		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: fetchMock as unknown as typeof fetch });

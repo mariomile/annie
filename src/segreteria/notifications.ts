@@ -16,9 +16,16 @@ export type NotificationEntry = Notification & {
 	readonly createdAt: string;
 	/** Chats still to reach. */
 	readonly pending: readonly string[];
-	/** Sends started per chat; above 1 the chat may already have it. */
+	/** Sends started per chat. */
 	readonly attempts: Readonly<Record<string, number>>;
+	/** Sends per chat that Telegram explicitly refused: those never reached the chat. */
+	readonly refused?: Readonly<Record<string, number>>;
 };
+
+/** Could the chat already have this message? Only if a send started and did not end in a refusal. */
+export function maybeDelivered(entry: NotificationEntry, chat: string): boolean {
+	return (entry.attempts[chat] ?? 0) - (entry.refused?.[chat] ?? 0) > 0;
+}
 
 /**
  * Durable outbox of the segreteria's Telegram messages: each one is on disk before it
@@ -52,6 +59,13 @@ export class NotificationOutbox {
 		const next = { ...entry, attempts: { ...entry.attempts, [chat]: attempt } };
 		await this.write(next);
 		return { entry: next, attempt };
+	}
+
+	/** Telegram answered with an error: the message did not reach the chat. */
+	async refused(entry: NotificationEntry, chat: string): Promise<NotificationEntry> {
+		const next = { ...entry, refused: { ...entry.refused, [chat]: (entry.refused?.[chat] ?? 0) + 1 } };
+		await this.write(next);
+		return next;
 	}
 
 	async delivered(entry: NotificationEntry, chat: string): Promise<NotificationEntry> {

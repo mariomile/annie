@@ -140,6 +140,39 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 		});
 	}
 
+	return prepareQuote(deps, mail, analysis, classification, attach);
+}
+
+/**
+ * Approva on a spam card: the sales person says it is a real request. Read it as a quote
+ * request and show the draft card; nothing is sent until the draft is approved.
+ */
+export async function forceQuote(deps: PipelineDeps, spam: Pratica): Promise<PipelineResult> {
+	const mail: InboundMail = spam.mail ?? {
+		messageId: spam.mailMessageId,
+		from: spam.lead.email ?? "",
+		subject: spam.lead.rawSubject,
+		bodyText: spam.lead.rawSnippet,
+		receivedAt: spam.lead.receivedAt,
+	};
+	if (await deps.usage.isHardCapped()) throw new Error("hard_cap");
+	const analysis = await analyzeWithModel(deps, mail);
+	return prepareQuote(deps, mail, analysis, "richiesta_preventivo", undefined, spam);
+}
+
+/**
+ * Lead, CRM, draft and card for a quote request. The pratica is saved only once its draft
+ * is ready: if the process dies before, the mail is still new on the next round and is
+ * read again from the start (the CRM upsert is idempotent by email).
+ */
+async function prepareQuote(
+	deps: PipelineDeps,
+	mail: InboundMail,
+	analysis: MailAnalysis | undefined,
+	classification: MailClassification,
+	attach: Pratica | undefined,
+	base?: Pratica,
+): Promise<PipelineResult> {
 	let lead = analysis?.lead ?? extractLead(mail, deps.tenantConfig);
 	if (analysis === undefined) await recordUsage(deps, "extract", 800, 200);
 
@@ -147,21 +180,26 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 	let action: FlowAction;
 	if (attach) {
 		action = "attach_to_existing";
+		const { sentMessageId, approveActionId: _tap, ...rest } = attach;
 		pratica = {
-			...attach,
+			...rest,
+			// A new draft in the same thread is a new reply: the earlier send stays in the history.
+			...(sentMessageId === undefined ? {} : { sentHistory: [...(attach.sentHistory ?? []), sentMessageId] }),
 			lead: {
 				...lead,
 				productOrService: [attach.lead.productOrService, lead.productOrService].filter(Boolean).join("; ") || null,
 			},
 			missingFields: [...lead.missingFields],
 			mailMessageId: mail.messageId, // index latest message too
+			mail: storedMail(mail),
 			status: "received",
 			flowAction: action,
 			classification,
 		};
 	} else {
 		action = "create";
-		pratica = await createSkeleton(deps, mail, "received", "create");
+		pratica = base ?? skeleton(deps, mail, "received", "create");
+		pratica.status = "received";
 		pratica.lead = lead;
 		pratica.missingFields = [...lead.missingFields];
 		pratica.classification = classification;
@@ -208,7 +246,7 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 	}
 	pratica.draftSubject = draft.subject;
 	pratica.draftBody = draft.body;
-	pratica.draftVersion = attach ? pratica.draftVersion + 1 : 1;
+	pratica.draftVersion = attach || base ? pratica.draftVersion + 1 : 1;
 	pratica.status = "draft_ready";
 	await deps.practices.save(pratica);
 
@@ -233,6 +271,24 @@ async function createSkeleton(
 	status: Pratica["status"],
 	flowAction: FlowAction,
 ): Promise<Pratica> {
+	const pratica = skeleton(deps, mail, status, flowAction);
+	await deps.practices.save(pratica);
+	return pratica;
+}
+
+function storedMail(mail: InboundMail): NonNullable<Pratica["mail"]> {
+	return {
+		messageId: mail.messageId,
+		...(mail.threadId === undefined ? {} : { threadId: mail.threadId }),
+		from: mail.from,
+		...(mail.fromName === undefined ? {} : { fromName: mail.fromName }),
+		subject: mail.subject,
+		bodyText: mail.bodyText,
+		receivedAt: mail.receivedAt,
+	};
+}
+
+function skeleton(deps: PipelineDeps, mail: InboundMail, status: Pratica["status"], flowAction: FlowAction): Pratica {
 	const now = new Date().toISOString();
 	const pratica: Pratica = {
 		praticaId: newPraticaId(),
@@ -257,10 +313,10 @@ async function createSkeleton(
 		draftBody: "",
 		draftVersion: 0,
 		flowAction,
+		mail: storedMail(mail),
 		createdAt: now,
 		updatedAt: now,
 	};
-	await deps.practices.save(pratica);
 	return pratica;
 }
 

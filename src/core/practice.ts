@@ -95,6 +95,26 @@ export type Pratica = {
 	approvedBy?: string;
 	approvedAt?: string;
 	sentMessageId?: string;
+	/** Replies sent for earlier draft versions in the same thread, oldest first. */
+	sentHistory?: string[];
+	/**
+	 * Channel ID of the Approva tap that started the current send. A tap redelivered after
+	 * a crash carries the same ID and must not send again.
+	 */
+	approveActionId?: string;
+	/** Who tapped Modifica, and when: their next text is the edit. */
+	editingBy?: string;
+	editingSince?: string;
+	/** The mail this pratica was last built from (needed to force a spam mail into a quote). */
+	mail?: {
+		readonly messageId: string;
+		readonly threadId?: string;
+		readonly from: string;
+		readonly fromName?: string;
+		readonly subject: string;
+		readonly bodyText: string;
+		readonly receivedAt: string;
+	};
 	classification?: MailClassification;
 	flowAction?: FlowAction;
 	lastError?: { code: string; message: string; at: string };

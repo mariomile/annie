@@ -1,4 +1,4 @@
-import type { ActionButton, ChannelAdapter, InboundAction, InboundMessage, OutboundMessage } from "./types.ts";
+import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundMessage } from "./types.ts";
 
 export type TelegramAdapterOptions = {
 	readonly token: string;
@@ -17,6 +17,9 @@ export type TelegramAdapterOptions = {
 
 /** Telegram's limit for one message's text. */
 export const TELEGRAM_MAX_TEXT = 4096;
+
+/** A handler that fails this many times on the same update gives it up. */
+const MAX_UPDATE_FAILURES = 3;
 
 /** Telegram's limit for a button's callback_data, in bytes. */
 export const TELEGRAM_MAX_CALLBACK_DATA = 64;
@@ -47,6 +50,7 @@ export class TelegramAdapter implements ChannelAdapter {
 	readonly name = "telegram";
 	private handler: ((message: InboundMessage) => Promise<void>) | undefined;
 	private actionHandler: ((action: InboundAction) => Promise<void>) | undefined;
+	private readonly failures = new Map<number, number>();
 	private abort: AbortController | undefined;
 	private loop: Promise<void> | undefined;
 	private offset: number | undefined;
@@ -104,23 +108,38 @@ export class TelegramAdapter implements ChannelAdapter {
 			// Confirmed on the next getUpdates. A redelivery after a crash carries the same
 			// message ID, which the core turns into an idempotent request.
 			this.offset = update.update_id + 1;
-			if (update.callback_query !== undefined) {
-				await this.handleTap(update.callback_query);
-				continue;
+			try {
+				await this.dispatch(update);
+			} catch (error) {
+				const failures = (this.failures.get(update.update_id) ?? 0) + 1;
+				if (failures >= MAX_UPDATE_FAILURES) {
+					this.failures.delete(update.update_id);
+					this.options.log?.(`telegram: update ${update.update_id} dropped after ${failures} failed attempts: ${error instanceof Error ? error.message : String(error)}`);
+					continue;
+				}
+				// Not confirmed: Telegram delivers this update again on the next poll.
+				this.failures.set(update.update_id, failures);
+				this.offset = update.update_id;
+				throw error;
 			}
-			const message = update.message;
-			if (message?.text === undefined || this.handler === undefined) continue;
-			await this.handler({
-				tenantId: this.options.tenantId,
-				instanceId: this.options.instanceId,
-				channel: this.name,
-				threadId: String(message.chat.id),
-				userId: String(message.from?.id ?? message.chat.id),
-				text: message.text,
-				messageId: `${message.chat.id}:${message.message_id}`,
-			});
+			this.failures.delete(update.update_id);
 		}
 		return updates.length;
+	}
+
+	private async dispatch(update: TelegramUpdate): Promise<void> {
+		if (update.callback_query !== undefined) return this.handleTap(update.callback_query);
+		const message = update.message;
+		if (message?.text === undefined || this.handler === undefined) return;
+		await this.handler({
+			tenantId: this.options.tenantId,
+			instanceId: this.options.instanceId,
+			channel: this.name,
+			threadId: String(message.chat.id),
+			userId: String(message.from?.id ?? message.chat.id),
+			text: message.text,
+			messageId: `${message.chat.id}:${message.message_id}`,
+		});
 	}
 
 	private async handleTap(tap: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
@@ -162,7 +181,7 @@ export class TelegramAdapter implements ChannelAdapter {
 		});
 		const payload = (await response.json()) as TelegramResponse<T>;
 		// Never include the URL in errors: it contains the bot token.
-		if (!payload.ok) throw new Error(`Telegram ${method} failed: ${payload.error_code ?? response.status} ${payload.description ?? ""}`.trim());
+		if (!payload.ok) throw new ChannelRefused(`Telegram ${method} failed: ${payload.error_code ?? response.status} ${payload.description ?? ""}`.trim());
 		return payload.result;
 	}
 }

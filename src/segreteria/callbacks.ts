@@ -28,7 +28,7 @@ export type CallbackDeps = {
 };
 
 export type CallbackResult =
-	| { kind: "ignored"; reason: "not_allowlisted" | "unknown_callback" | "stale_version" }
+	| { kind: "ignored"; reason: "not_allowlisted" | "unknown_callback" | "stale_version" | "redelivered" }
 	| { kind: "handled"; pratica: Pratica; sent: boolean };
 
 /**
@@ -37,7 +37,8 @@ export type CallbackResult =
  */
 export async function handleTelegramCallback(
 	deps: CallbackDeps,
-	args: { userId: string; callbackData: string },
+	/** `actionId`: the channel's ID of this tap; a redelivered tap carries the same one. */
+	args: { userId: string; callbackData: string; actionId?: string },
 ): Promise<CallbackResult> {
 	const parsed = parseCallbackData(args.callbackData);
 	if (!parsed) return { kind: "ignored", reason: "unknown_callback" };
@@ -86,6 +87,8 @@ export async function handleTelegramCallback(
 
 	if (parsed.action === "edit") {
 		pratica.status = "awaiting_edit";
+		pratica.editingBy = args.userId;
+		pratica.editingSince = new Date().toISOString();
 		await deps.practices.save(pratica);
 		await deps.notify({
 			text: copy.editPrompt(pratica),
@@ -96,20 +99,28 @@ export async function handleTelegramCallback(
 		return { kind: "handled", pratica, sent: false };
 	}
 
-	// Approva
+	// Approva on a spam card means "it is a real request": build the draft and show it.
+	// Nothing is sent: the draft needs its own Approva.
 	if (pratica.status === "classified_skip" && pratica.classification === "spam") {
-		// Force as quote: extract + draft (tests may inject)
-		if (deps.forceExtract) await deps.forceExtract(pratica);
-		else {
+		if (deps.forceExtract) {
+			await deps.forceExtract(pratica);
+		} else {
 			pratica.status = "draft_ready";
+			pratica.classification = "richiesta_preventivo";
 			pratica.draftVersion = Math.max(1, pratica.draftVersion);
-			if (!pratica.draftBody) {
-				const d = buildDraft(pratica.lead);
-				pratica.draftSubject = d.subject;
-				pratica.draftBody = d.body;
-			}
+			const d = buildDraft(pratica.lead);
+			pratica.draftSubject = d.subject;
+			pratica.draftBody = d.body;
 			await deps.practices.save(pratica);
+			await deps.notify({ text: copy.leadCardAndDraft(pratica), buttons: [...copy.BUTTONS], praticaId: pratica.praticaId, draftVersion: pratica.draftVersion });
 		}
+		return { kind: "handled", pratica: (await deps.practices.get(pratica.praticaId)) ?? pratica, sent: false };
+	}
+
+	if (args.actionId !== undefined && pratica.approveActionId === args.actionId) {
+		// The same tap again (Telegram redelivers unconfirmed updates after a crash): never a second send.
+		await deps.audit.append({ type: "tap.redelivered", instanceId: deps.instanceId, praticaId: pratica.praticaId, actionId: args.actionId });
+		return { kind: "ignored", reason: "redelivered" };
 	}
 
 	if (pratica.sentMessageId) {
@@ -123,6 +134,7 @@ export async function handleTelegramCallback(
 	}
 
 	pratica.status = "approved";
+	if (args.actionId !== undefined) pratica.approveActionId = args.actionId;
 	pratica.approvedBy = args.userId;
 	pratica.approvedAt = new Date().toISOString();
 	await deps.practices.save(pratica);
@@ -218,6 +230,8 @@ export async function handleEditMessage(
 	}
 
 	const trimmed = args.text.trim();
+	pratica.editingBy = undefined;
+	pratica.editingSince = undefined;
 	if (/^annulla modifica$/i.test(trimmed)) {
 		pratica.status = "draft_ready";
 		await deps.practices.save(pratica);
