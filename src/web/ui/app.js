@@ -147,6 +147,7 @@ async function refreshCounters() {
 		for (const inst of state.instances.filter((i) => i.isApprover)) {
 			const { proposals } = await api(`/api/instances/${inst.id}/proposals`);
 			pending += proposals.filter((p) => p.status === "pending").length;
+			if (inst.hasSegreteria) pending += (await api(`/api/instances/${inst.id}/pratiche`)).pratiche.filter((p) => p.status === "draft_ready").length;
 		}
 		state.pendingApprovals = pending;
 		renderRail();
@@ -602,9 +603,36 @@ async function viewApprovals(main) {
 		}
 		return el;
 	};
+	// Everything waiting for this person, in one place: drafts of every segreteria they approve too.
+	const drafts = [];
+	for (const s of state.instances.filter((i) => i.hasSegreteria && i.isApprover)) {
+		const waiting = (await api(`/api/instances/${s.id}/pratiche`)).pratiche.filter((p) => p.status === "draft_ready");
+		if (waiting.length)
+			drafts.push(
+				h(
+					"article.card.pad.dossier",
+					h("header", h("div", h("div.kicker", s.name), h("h3", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`)), h("span.chip.accent", "Segreteria")),
+					h("ul", waiting.slice(0, 5).map((p) => h("li", `${p.lead.fullName ?? p.lead.company ?? p.lead.email ?? "Sconosciuto"} · ${p.lead.rawSubject}`))),
+					h(
+						"div.actions",
+						h(
+							"button.btn",
+							{
+								onclick: () => {
+									state.instance = s;
+									store("annie.instance", s.id);
+									go("segreteria", waiting[0].praticaId);
+								},
+							},
+							"Apri la segreteria",
+						),
+					),
+				),
+			);
+	}
 	main.replaceChildren(
-		head(inst.name, h("h1", "Approvazioni"), "I tool che Annie scrive da sola restano spenti finché un approvatore non li legge e li approva."),
-		h("div.stack", pending.length ? pending.map(card) : h("div.card.empty", h("b", "Niente da approvare"), "Quando Annie propone un tool nuovo, lo trovi qui e su Telegram."), decided.length ? [h("div.kicker", "Decisi"), decided.map(card)] : null),
+		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le bozze della segreteria e i tool che Annie scrive da sola, spenti finché un approvatore non li legge e li approva."),
+		h("div.stack", drafts, pending.length ? pending.map(card) : drafts.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria e i tool che Annie propone compaiono qui (e su Telegram)."), decided.length ? [h("div.kicker", "Decisi"), decided.map(card)] : null),
 	);
 }
 
