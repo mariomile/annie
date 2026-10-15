@@ -82,6 +82,11 @@ class PiDurableSession implements EngineSession {
 		const conversationId = await this.conversationFor(threadKey);
 		const conversation = await this.harness.conversation(conversationId, context);
 		if (conversation === undefined) throw new Error(`Conversation ${conversationId} of ${threadKey} is missing`);
+		if (requestId !== undefined) {
+			// A redelivered message: already admitted, so it is answered (or being answered) once.
+			const existing = await conversation.commit((tx) => tx.submissionByRequest(conversationId, requestId), context);
+			if (existing !== undefined) return { submissionId: String(existing.id) };
+		}
 		const submission = await conversation.submit(
 			{ type: "input", content: text, ...(requestId === undefined ? {} : { requestId }) },
 			context,
