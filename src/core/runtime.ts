@@ -5,7 +5,8 @@ import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
-import { engineDir, lockFile, outboxDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { customToolsDir, engineDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
@@ -76,6 +77,24 @@ export class AnnieRuntime {
 
 	secrets(tenant: string): TenantSecrets {
 		return new TenantSecrets(this.options.dataDir, tenantId(tenant));
+	}
+
+	/** The tools proposti of an instance. */
+	proposals(tenant: string, instance: string): ProposalStore {
+		return new ProposalStore(proposalsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Folder of an instance's approved tools (one subfolder each) and of the sandbox runner. */
+	customToolsDir(tenant: string, instance: string): string {
+		return customToolsDir(this.options.dataDir, tenantId(tenant), instanceId(instance));
+	}
+
+	/**
+	 * A message from the instance to a thread that is not a reply (a decision, a notice),
+	 * through the outbox like a reply. The same `key` is sent once.
+	 */
+	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+		await (await this.openInstance(tenant, instance)).sendMessage(message);
 	}
 
 	/** The tasks programmati of an instance. */
@@ -358,6 +377,18 @@ export class AnnieInstance {
 				attempts: entry.attempts,
 				possibleDuplicate: entry.attempts > 1,
 			});
+		});
+	}
+
+	async sendMessage(message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+		assertChannelAllowed(this.record.egress, message.channel);
+		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.key}`;
+		await this.serial(key, async () => {
+			const existing = await this.outbox.get(key);
+			if (existing?.deliveredAt !== undefined) return;
+			await this.handOff(
+				existing ?? { key, submissionId: "message", channel: message.channel, threadId: message.threadId, reply: { status: "answered", text: message.text }, createdAt: new Date().toISOString(), attempts: 0 },
+			);
 		});
 	}
 

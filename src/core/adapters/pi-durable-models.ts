@@ -47,7 +47,8 @@ function createDevModel(): Provider {
 }
 
 function respond(messages: readonly Message[]): AssistantMessage {
-	const last = messages.at(-1);
+	// Pi appends system entries (tool or instruction changes) after the person's message.
+	const last = messages.filter((m) => m.role === "user" || m.role === "toolResult" || m.role === "assistant").at(-1);
 	if (last?.role === "toolResult") {
 		const output = last.content.map((block) => (block.type === "text" ? block.text : "")).join("");
 		return fauxAssistantMessage(`Fatto. ${output}`);

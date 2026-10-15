@@ -44,6 +44,15 @@ export function lockFile(dataDir: string, tenant: TenantId, instance: InstanceId
 	return join(instanceDir(dataDir, tenant, instance), "instance.lock");
 }
 
+export function proposalsDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "proposals");
+}
+
+/** Approved tools' own folders, and the sandbox runner. */
+export function customToolsDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "tools");
+}
+
 export function schedulesDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
 	return join(instanceDir(dataDir, tenant, instance), "schedules");
 }
