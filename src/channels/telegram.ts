@@ -18,6 +18,9 @@ export type TelegramAdapterOptions = {
 /** Telegram's limit for one message's text. */
 export const TELEGRAM_MAX_TEXT = 4096;
 
+/** First line of a reply resent after a crash: sendMessage has no idempotency key. */
+export const DUPLICATE_NOTICE = "Possibile doppione: mi sono riavviata mentre ti inviavo questa risposta. Se l'hai già ricevuta, ignora questa.";
+
 type TelegramUpdate = {
 	update_id: number;
 	message?: {
@@ -62,8 +65,9 @@ export class TelegramAdapter implements ChannelAdapter {
 	}
 
 	async send(message: OutboundMessage): Promise<void> {
-		for (const text of splitText(message.text)) {
-			await this.call("sendMessage", { chat_id: message.threadId, text });
+		const text = message.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
+		for (const chunk of splitText(text)) {
+			await this.call("sendMessage", { chat_id: message.threadId, text: chunk });
 		}
 	}
 

@@ -25,7 +25,7 @@ export function connectChannel(
 		const text = reply.status === "answered" ? reply.text : "Non sono riuscita a rispondere. Riprova tra poco.";
 		if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
 		adapter
-			.send({ tenantId: reply.tenantId, instanceId: reply.instanceId, channel: reply.channel, threadId: reply.threadId, text, idempotencyKey: reply.deliveryId })
+			.send({ tenantId: reply.tenantId, instanceId: reply.instanceId, channel: reply.channel, threadId: reply.threadId, text, idempotencyKey: reply.deliveryId, possibleDuplicate: reply.possibleDuplicate })
 			.then(
 				// Not confirmed: the reply stays in the outbox and goes out again on the next resume.
 				() => runtime.markDelivered(reply),

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { splitText, TELEGRAM_MAX_TEXT, TelegramAdapter } from "../src/channels/telegram.ts";
+import { DUPLICATE_NOTICE, splitText, TELEGRAM_MAX_TEXT, TelegramAdapter } from "../src/channels/telegram.ts";
 import type { InboundMessage } from "../src/channels/types.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { ConfigError, loadTelegramConfig } from "../src/main/config.ts";
@@ -64,6 +64,22 @@ describe("Telegram adapter (mocked fetch)", () => {
 			["sendMessage", "42", 1],
 		]);
 		expect(splitText("")).toEqual(["(risposta vuota)"]);
+	});
+
+	it("puts the duplicate warning on top of a possibly repeated reply, within the length limit", async () => {
+		const api = fakeTelegram([]);
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
+		const base = { tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", idempotencyKey: "reply:1" };
+		await adapter.send({ ...base, text: "ciao", possibleDuplicate: true });
+		await adapter.send({ ...base, text: "ciao", possibleDuplicate: false });
+		await adapter.send({ ...base, text: "x".repeat(TELEGRAM_MAX_TEXT), possibleDuplicate: true });
+		const texts = api.calls.map((c) => String(c.body.text));
+		expect(texts[0]).toBe(`${DUPLICATE_NOTICE}\n\nciao`);
+		expect(texts[1]).toBe("ciao");
+		// Only the first piece carries the warning, and no piece goes over the limit.
+		expect(texts.slice(2).map((t) => t.length)).toEqual([TELEGRAM_MAX_TEXT, DUPLICATE_NOTICE.length + 2]);
+		expect(texts[2]?.startsWith(DUPLICATE_NOTICE)).toBe(true);
+		expect(texts[3]?.includes(DUPLICATE_NOTICE)).toBe(false);
 	});
 
 	it("reports API errors without leaking the bot token", async () => {

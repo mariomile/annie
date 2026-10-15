@@ -35,6 +35,11 @@ export type OutboundMessage = {
 	 * Telegram cannot, so a resend there can show the reply twice.
 	 */
 	readonly idempotencyKey: string;
+	/**
+	 * This message may already have reached the user (resent after a crash). Channels that
+	 * cannot deduplicate should tell the user; the others can ignore it.
+	 */
+	readonly possibleDuplicate?: boolean;
 };
 
 export interface ChannelAdapter {

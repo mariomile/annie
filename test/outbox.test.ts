@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DUPLICATE_NOTICE } from "../src/channels/telegram.ts";
 import type { ChannelAdapter, OutboundMessage } from "../src/channels/types.ts";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import { AnnieRuntime, type DurableEngine, type EngineSession, type OutboxEntry } from "../src/core/index.ts";
@@ -55,6 +56,7 @@ describe("reply outbox (in process)", () => {
 		}
 
 		expect(channel.sent).toHaveLength(1);
+		expect(channel.sent[0]?.possibleDuplicate).toBe(false);
 		const key = channel.sent[0]?.idempotencyKey;
 		expect(key).toMatch(/^reply:/);
 		// At send time: on disk, not yet delivered.
@@ -91,6 +93,9 @@ describe("reply outbox (in process)", () => {
 		await next.resume("acme", "ops");
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(working.sent).toEqual([expect.objectContaining({ threadId: "t1", text: ANSWER, idempotencyKey: failing.sent[0]?.idempotencyKey })]);
+		// The first try may have reached the user before failing: the second one says so.
+		expect(failing.sent[0]?.possibleDuplicate).toBe(false);
+		expect(working.sent[0]?.possibleDuplicate).toBe(true);
 		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ attempts: 2 })]);
 		await next.close();
 	});
@@ -240,7 +245,9 @@ describe("reply outbox across a SIGKILL (real child processes, fake Telegram)", 
 		expect(await third.waitForLine("RESUMED")).toBe('RESUMED {"pending":0,"undelivered":0,"reattached":0}');
 		expect(await third.exited).toBe(0);
 
-		expect(sendMessages(callsFile)).toEqual([{ pid: second.child.pid, method: "sendMessage", body: { chat_id: "42", text: ANSWER } }]);
+		// The outbox cannot tell this crash from one after Telegram received the message, so
+		// the resend carries the warning anyway: a false alarm, never a silent duplicate.
+		expect(sendMessages(callsFile)).toEqual([{ pid: second.child.pid, method: "sendMessage", body: { chat_id: "42", text: `${DUPLICATE_NOTICE}\n\n${ANSWER}` } }]);
 		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ attempts: 2, deliveredAt: expect.any(String) })]);
 	});
 
@@ -262,7 +269,7 @@ describe("reply outbox across a SIGKILL (real child processes, fake Telegram)", 
 		const calls = sendMessages(callsFile);
 		expect(calls.map((c) => [c.pid, c.body])).toEqual([
 			[first.child.pid, { chat_id: "42", text: ANSWER }],
-			[second.child.pid, { chat_id: "42", text: ANSWER }],
+			[second.child.pid, { chat_id: "42", text: `${DUPLICATE_NOTICE}\n\n${ANSWER}` }],
 		]);
 		// The possible duplicate is visible in the tenant's audit.
 		const audit = readFileSync(join(dataDir, "tenants", "acme", "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
