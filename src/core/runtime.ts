@@ -115,7 +115,13 @@ export class AnnieRuntime {
 		});
 		await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
 		return new AnnieInstance(record, session, audit, (reply) => {
-			for (const listener of this.listeners) listener(reply);
+			for (const listener of this.listeners) {
+				try {
+					listener(reply);
+				} catch (error) {
+					console.error(`annie: reply listener failed: ${String(error)}`);
+				}
+			}
 		});
 	}
 }
@@ -128,7 +134,9 @@ export class AnnieInstance {
 		emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
-			void this.deliver(engineReply, emit);
+			this.deliver(engineReply, emit).catch((error: unknown) => {
+				console.error(`annie: delivering a reply of ${record.tenantId}/${record.id} failed: ${String(error)}`);
+			});
 		});
 	}
 

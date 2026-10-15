@@ -69,9 +69,10 @@ export const piDurableEngine: DurableEngine = {
 
 class PiDurableSession implements EngineSession {
 	private readonly listeners = new Set<(reply: EngineReply) => void>();
-	private readonly waiting = new Set<SubmissionId>();
+	private readonly tracked = new Set<SubmissionId>();
 	private readonly creating = new Map<string, Promise<ConversationId>>();
 	private closing = false;
+	private recovery: Promise<number> | undefined;
 
 	constructor(
 		private readonly harness: Harness,
@@ -79,6 +80,8 @@ class PiDurableSession implements EngineSession {
 	) {}
 
 	async submit(threadKey: string, text: string, requestId?: string): Promise<{ submissionId: string }> {
+		// Submitting starts Pi's scheduler: reattach the previous process's open work first.
+		await this.recover();
 		const conversationId = await this.conversationFor(threadKey);
 		const conversation = await this.harness.conversation(conversationId, context);
 		if (conversation === undefined) throw new Error(`Conversation ${conversationId} of ${threadKey} is missing`);
@@ -96,7 +99,23 @@ class PiDurableSession implements EngineSession {
 	}
 
 	async resume(): Promise<{ pending: number }> {
-		this.harness.resume();
+		return { pending: await this.recover() };
+	}
+
+	/**
+	 * Once per session: attach a waiter to every unsettled submission while the scheduler is
+	 * still paused (Harness.open leaves it paused), then start it. Starting first would let a
+	 * fast run settle before it is tracked, and its reply would be lost.
+	 */
+	private recover(): Promise<number> {
+		this.recovery ??= this.attachPending().then((pending) => {
+			this.harness.resume();
+			return pending;
+		});
+		return this.recovery;
+	}
+
+	private async attachPending(): Promise<number> {
 		const inspection = await this.harness.inspect(context);
 		const threads = await this.threads();
 		const byConversation = new Map<number, string>(Object.entries(threads).map(([key, id]) => [id, key]));
@@ -109,7 +128,7 @@ class PiDurableSession implements EngineSession {
 			pending++;
 			this.track(submission, threadKey);
 		}
-		return { pending };
+		return pending;
 	}
 
 	onReply(listener: (reply: EngineReply) => void): () => void {
@@ -160,10 +179,13 @@ class PiDurableSession implements EngineSession {
 		return conversation.id;
 	}
 
+	/** Each submission is tracked, and so replied to, at most once per session. */
 	private track(submission: Submission, threadKey: string): void {
-		if (this.waiting.has(submission.id)) return;
-		this.waiting.add(submission.id);
-		void this.settle(submission, threadKey).finally(() => this.waiting.delete(submission.id));
+		if (this.tracked.has(submission.id)) return;
+		this.tracked.add(submission.id);
+		this.settle(submission, threadKey).catch((error: unknown) => {
+			console.error(`annie: reply for submission ${submission.id} failed: ${String(error)}`);
+		});
 	}
 
 	private async settle(submission: Submission, threadKey: string): Promise<void> {
@@ -180,7 +202,13 @@ class PiDurableSession implements EngineSession {
 			if (this.closing) return; // the next process resumes it
 			reply = { status: "unanswered", threadKey, submissionId, reason: String(error) };
 		}
-		for (const listener of this.listeners) listener(reply);
+		for (const listener of this.listeners) {
+			try {
+				listener(reply);
+			} catch (error) {
+				console.error(`annie: reply listener failed: ${String(error)}`);
+			}
+		}
 	}
 
 	private async answerText(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<string> {
