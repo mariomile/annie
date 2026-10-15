@@ -1,0 +1,54 @@
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import type { TenantId } from "./ids.ts";
+import { secretsFile } from "./paths.ts";
+
+/**
+ * Secrets of one tenant. A store is bound to a single tenant at construction and can
+ * only reach that tenant's file: there is no API that takes another tenant's ID.
+ *
+ * Week 1: a JSON file with mode 0600, not encrypted at rest. See docs/architettura.md.
+ */
+export class TenantSecrets {
+	private readonly file: string;
+
+	constructor(
+		dataDir: string,
+		readonly tenantId: TenantId,
+	) {
+		this.file = secretsFile(dataDir, tenantId);
+	}
+
+	async get(name: string): Promise<string | undefined> {
+		return (await this.readAll())[name];
+	}
+
+	async set(name: string, value: string): Promise<void> {
+		const all = await this.readAll();
+		all[name] = value;
+		await mkdir(dirname(this.file), { recursive: true });
+		const tmp = `${this.file}.tmp`;
+		await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
+		await rename(tmp, this.file);
+		await chmod(this.file, 0o600);
+	}
+
+	/** Secret names only, never values. */
+	async names(): Promise<string[]> {
+		return Object.keys(await this.readAll());
+	}
+
+	private async readAll(): Promise<Record<string, string>> {
+		try {
+			return JSON.parse(await readFile(this.file, "utf8")) as Record<string, string>;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+			throw error;
+		}
+	}
+}
+
+/** Name under which a tenant stores the API key of a model provider. */
+export function modelApiKeySecret(provider: string): string {
+	return `model.${provider}.apiKey`;
+}
