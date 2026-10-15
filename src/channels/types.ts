@@ -20,6 +20,8 @@ export type InboundMessage = {
 	readonly text: string;
 	/** Channel-native message ID, used to drop redeliveries. */
 	readonly messageId?: string;
+	/** Files that came with the message; the gateway stores them in the workspace. */
+	readonly attachments?: readonly { readonly name: string; readonly data: Uint8Array }[];
 };
 
 /** A tap on a button of an earlier outbound message (Telegram: a callback query). */
@@ -60,6 +62,13 @@ export type OutboundMessage = {
 	readonly buttons?: readonly ActionButton[];
 };
 
+/** A file to deliver through a channel. */
+export type OutboundFile = Omit<OutboundMessage, "text" | "buttons"> & {
+	readonly name: string;
+	readonly data: Uint8Array;
+	readonly caption?: string;
+};
+
 export interface ChannelAdapter {
 	readonly name: string;
 	/** Start receiving. Resolves once the adapter is running. */
@@ -75,6 +84,8 @@ export interface ChannelAdapter {
 	onAction?(handler: (action: InboundAction) => Promise<void>): void;
 	/** Resolves once the channel has accepted the whole message; rejects otherwise. */
 	send(message: OutboundMessage): Promise<void>;
+	/** Resolves once the channel has accepted the file. Optional: channels without files omit it. */
+	sendFile?(file: OutboundFile): Promise<void>;
 }
 
 /**

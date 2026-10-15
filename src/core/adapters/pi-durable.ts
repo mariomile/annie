@@ -235,7 +235,12 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 		parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters as never),
 		replay: tool.replaySafe ? "safe" : "unsafe",
 		execute: async (args, api, callContext) => {
+			const threads = (await api.snapshot(ThreadsDoc, callContext))?.threads ?? {};
+			const threadKey = Object.entries(threads).find(([, id]) => id === Number(api.conversationId))?.[0];
+			const at = threadKey?.indexOf(":") ?? -1;
 			const text = await tool.execute(args, {
+				callId: `${api.conversationId}/${api.callId}`,
+				...(threadKey === undefined || at < 0 ? {} : { thread: { channel: threadKey.slice(0, at), threadId: threadKey.slice(at + 1) } }),
 				signal: callContext.abortSignal ?? new AbortController().signal,
 				progress: (chunk) => api.output(chunk),
 				step: async <T extends JsonValue>(key: string, work: () => Promise<T>): Promise<T> => {

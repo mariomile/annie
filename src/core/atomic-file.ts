@@ -8,13 +8,13 @@ let counter = 0;
  * new one, never a mix, and after this resolves the new content survives a crash (file and
  * directory entry are fsynced).
  */
-export async function writeFileAtomic(file: string, data: string): Promise<void> {
+export async function writeFileAtomic(file: string, data: string | Uint8Array): Promise<void> {
 	const dir = dirname(file);
 	await mkdir(dir, { recursive: true });
 	const tmp = join(dir, `.${basename(file)}.${process.pid}.${counter++}.tmp`);
 	const handle = await open(tmp, "w", 0o600);
 	try {
-		await handle.writeFile(data, "utf8");
+		await (typeof data === "string" ? handle.writeFile(data, "utf8") : handle.writeFile(data));
 		await handle.sync();
 	} finally {
 		await handle.close();

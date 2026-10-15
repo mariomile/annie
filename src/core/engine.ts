@@ -70,4 +70,8 @@ export type ToolContext = {
 	/** Running output, visible to watchers while the tool runs. */
 	progress(text: string): void;
 	readonly signal: AbortSignal;
+	/** The conversation the call belongs to, when the engine knows it. */
+	readonly thread?: { readonly channel: string; readonly threadId: string };
+	/** Stable across reruns of the same call: a key for idempotent side effects. */
+	readonly callId: string;
 };

@@ -5,7 +5,8 @@ import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
-import { engineDir, lockFile, outboxDir } from "./paths.ts";
+import { engineDir, lockFile, outboxDir, workspaceDir } from "./paths.ts";
+import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
@@ -38,7 +39,12 @@ export type Reply = {
 	 * earlier try died before reaching the channel.
 	 */
 	readonly possibleDuplicate: boolean;
-} & ({ readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string });
+} & (
+	| { readonly status: "answered"; readonly text: string }
+	| { readonly status: "unanswered"; readonly reason: string }
+	/** A file of the instance's workspace to send to the thread. */
+	| { readonly status: "file"; readonly path: string; readonly caption?: string }
+);
 
 export type RuntimeOptions = {
 	readonly dataDir: string;
@@ -66,6 +72,21 @@ export class AnnieRuntime {
 
 	secrets(tenant: string): TenantSecrets {
 		return new TenantSecrets(this.options.dataDir, tenantId(tenant));
+	}
+
+	/** The files of an instance. Reading them needs no open instance. */
+	workspace(tenant: string, instance: string): Workspace {
+		return new Workspace(workspaceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/**
+	 * Send a workspace file to a thread, through the outbox like a reply: at least once,
+	 * the same `key` at most once per process and never again after the channel accepted it.
+	 */
+	async sendFile(tenant: string, instance: string, file: { channel: string; threadId: string; path: string; caption?: string; key: string }): Promise<void> {
+		const opened = await this.openInstance(tenant, instance);
+		if ((await this.workspace(tenant, instance).stat(file.path)) === undefined) throw new Error(`File not found in the workspace: ${file.path}`);
+		await opened.sendFile(file);
 	}
 
 	audit(tenant: string): AuditLog {
@@ -296,6 +317,26 @@ export class AnnieInstance {
 		});
 	}
 
+	async sendFile(file: { channel: string; threadId: string; path: string; caption?: string; key: string }): Promise<void> {
+		assertChannelAllowed(this.record.egress, file.channel);
+		const key = `file:${this.record.tenantId}/${this.record.id}/${file.key}`;
+		await this.serial(key, async () => {
+			const existing = await this.outbox.get(key);
+			if (existing?.deliveredAt !== undefined) return;
+			await this.handOff(
+				existing ?? {
+					key,
+					submissionId: "file",
+					channel: file.channel,
+					threadId: file.threadId,
+					reply: { status: "file", path: file.path, ...(file.caption === undefined ? {} : { caption: file.caption }) },
+					createdAt: new Date().toISOString(),
+					attempts: 0,
+				},
+			);
+		});
+	}
+
 	/** Replies not yet confirmed by their channel, oldest first. */
 	async undelivered(): Promise<OutboxEntry[]> {
 		return (await this.outbox.list()).filter((entry) => entry.reply !== undefined && entry.deliveredAt === undefined);
@@ -362,10 +403,10 @@ export class AnnieInstance {
 			deliveryId: entry.key,
 			attempts,
 			status: reply.status,
-			...(reply.status === "answered" ? { chars: reply.text.length } : { reason: reply.reason }),
+			...(reply.status === "answered" ? { chars: reply.text.length } : reply.status === "unanswered" ? { reason: reply.reason } : {}),
 		});
 		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1 };
-		this.emit(reply.status === "answered" ? { ...base, status: "answered", text: reply.text } : { ...base, status: "unanswered", reason: reply.reason });
+		this.emit({ ...base, ...reply });
 	}
 
 	/** Idempotency key of a submission's reply; unique across tenants and instances. */
