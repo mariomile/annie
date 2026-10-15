@@ -10,6 +10,9 @@ Branch `week1-core`. Dettagli di design in [`architettura.md`](architettura.md).
 - **Isolamento tra tenant**: due tenant con la stessa istanza e lo stesso thread non vedono storage, segreti, chiavi modello e audit l'uno dell'altro (`test/isolation.test.ts`, controlla anche i byte su disco).
 - **Egress default deny**: istanza senza policy non apre il modello; provider non consentito rifiutato; canale non consentito rifiutato prima del motore; con modello locale zero chiamate `fetch` (`test/egress.test.ts`).
 - **Telegram**: adapter long polling con `fetch`, normalizzazione in `InboundMessage`, offset, invio spezzato a 4096 caratteri, errori senza token, start/stop, flusso completo Telegram → nucleo → Telegram, messaggio riconsegnato che non produce una seconda risposta. Tutto con `fetch` finto (`test/telegram.test.ts`). Nessuna chiamata all'API Telegram reale.
+- **Chiavi modello solo dal tenant**: con `ANTHROPIC_API_KEY` e le variabili di federation Anthropic impostate sull'host e nessuna chiave nel secret store del tenant, non parte nessuna richiesta; con la chiave del tenant la richiesta va ad `api.anthropic.com` con quella chiave (`test/egress.test.ts`, `fetch` intercettato).
+- **Ripresa e risposte**: alla ripresa le risposte pendenti vengono agganciate prima di far ripartire lo scheduler di Pi, e ogni submission riceve al massimo una risposta per processo (`test/resume-fast.test.ts`).
+- **Più bot sullo stesso runtime**: ogni risposta esce solo dal bot dell'istanza che ha risposto (`test/telegram.test.ts`).
 - **Configurazione**: variabili mancanti riportate per nome esatto, processo con exit code 1.
 - **Confini dei moduli**: test che fallisce se Pi viene importato fuori da `src/core/adapters/pi-durable*` o se il nucleo importa dai canali.
 
@@ -25,6 +28,10 @@ Branch `week1-core`. Dettagli di design in [`architettura.md`](architettura.md).
 
 ## Cosa manca
 
+- **Consegna durevole delle risposte**: la risposta è salvata nello storage, ma la consegna al canale no. Se il processo muore dopo che la risposta è stata salvata e prima che `sendMessage` vada a buon fine, o se `sendMessage` fallisce, la risposta non arriva: al riavvio la submission risulta già chiusa e la riconsegna Telegram dello stesso messaggio viene riconosciuta come duplicato. Serve un registro "consegnato" per submission e un nuovo invio al riavvio.
+- **Messaggi persi su errore transitorio**: se `submit` fallisce (es. disco pieno all'apertura dell'istanza), l'offset Telegram è già avanzato e il messaggio non viene riconsegnato. Oggi l'errore è solo loggato.
+- **Cambio di egress policy a caldo**: la policy è letta all'apertura dell'istanza. Togliere un provider o un canale da `instance.json` ha effetto solo dopo il riavvio del processo.
+- **Proxy di sistema**: pi-ai legge `HTTPS_PROXY`/`HTTP_PROXY` dall'ambiente. La destinazione resta il provider consentito, ma il proxy vede i metadati della richiesta.
 - **Lock tra processi**: Pi Durable non impedisce a due processi di aprire lo stesso storage. Serve un lock file per istanza prima di qualunque deploy.
 - **Segreti cifrati a riposo**: oggi JSON con permessi 0600.
 - **Token Telegram per tenant**: oggi un token di processo, quindi un bot per processo.

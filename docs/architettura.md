@@ -183,6 +183,8 @@ type EgressPolicy = { modelProviders: string[]; channels: string[] };   // vuoto
 Limiti attuali, da sapere:
 
 - La policy controlla chi Annie contatta tramite i suoi moduli. Non è un firewall: un tool scritto male potrebbe aprire connessioni proprie. Per garanzie forti serve anche un controllo di rete a livello di deployment (egress firewall del container).
+- La policy è letta all'apertura dell'istanza: una modifica a `instance.json` vale dal riavvio successivo.
+- pi-ai rispetta `HTTPS_PROXY`/`HTTP_PROXY` dell'ambiente: in un deployment con proxy, il proxy vede le richieste verso il provider consentito.
 - Il canale Telegram usa un token di processo (`TELEGRAM_BOT_TOKEN`), non un segreto per tenant: un bot per processo.
 
 ## 6. Roadmap canali
