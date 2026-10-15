@@ -116,6 +116,21 @@ export class TenantRegistry {
 		return record;
 	}
 
+	/** Replace the egress policy. Takes effect the next time the instance is opened. */
+	async setEgress(tenant: string, id: string, egress: EgressPolicy): Promise<InstanceRecord> {
+		const current = await this.getInstance(tenant, id);
+		const record: InstanceRecord = { ...current, egress };
+		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		await new AuditLog(this.dataDir, record.tenantId).append({
+			type: "instance.egress.updated",
+			instanceId: record.id,
+			modelProviders: egress.modelProviders.join(","),
+			channels: egress.channels.join(","),
+			connectors: (egress.connectors ?? []).join(","),
+		});
+		return record;
+	}
+
 	async listInstances(tenant: string): Promise<InstanceRecord[]> {
 		const t = tenantId(tenant);
 		const ids = await listDirs(join(tenantDir(this.dataDir, t), "instances"));

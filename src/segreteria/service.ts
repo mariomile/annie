@@ -277,8 +277,9 @@ Non riesco a elaborare la mail «${mail.subject}» da ${mail.from} (ricevuta ${c
 	}
 
 	private serial<T>(work: () => Promise<T>): Promise<T> {
+		// Errors go to the caller (the poll loop, the Telegram adapter), which logs them.
 		const run = this.queue.then(work);
-		this.queue = run.catch((error: unknown) => this.log(`segreteria: ${errorText(error)}`));
+		this.queue = run.catch(() => {});
 		return run;
 	}
 
