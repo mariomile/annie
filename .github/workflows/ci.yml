@@ -20,3 +20,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Deterministic segreteria evals (incl. PII checks)
+        run: pnpm eval:segreteria

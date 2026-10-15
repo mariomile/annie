@@ -1,0 +1,269 @@
+import type { CrmAdapter, InboundMail, MailAdapter } from "../connectors/types.ts";
+import type { AuditLog } from "../core/audit.ts";
+import {
+	type FlowAction,
+	type MailClassification,
+	newPraticaId,
+	type Pratica,
+	PracticeStore,
+	type TenantSegreteriaConfig,
+	hashIdempotency,
+} from "../core/practice.ts";
+import type { UsageLedger } from "../core/usage.ts";
+import { estimateUsd } from "../core/usage.ts";
+import type { ModelRoles } from "../core/model-routing.ts";
+import { classifyInbound, isValidSender } from "./classify.ts";
+import { extractLead } from "./extract.ts";
+import { buildDraft } from "./draft.ts";
+import * as copy from "./telegram-copy.ts";
+
+export type PipelineDeps = {
+	tenantId: string;
+	instanceId: string;
+	practices: PracticeStore;
+	mail: MailAdapter;
+	crm: CrmAdapter;
+	audit: AuditLog;
+	usage: UsageLedger;
+	roles: ModelRoles;
+	tenantConfig?: TenantSegreteriaConfig;
+	/** Optional: override classification (tests). */
+	classify?: (mail: InboundMail) => MailClassification;
+	/** Notify commercial via Telegram (tests capture this). */
+	notify: (msg: {
+		text: string;
+		buttons: readonly string[];
+		praticaId: string;
+		draftVersion: number;
+	}) => Promise<void>;
+};
+
+export type PipelineResult = {
+	pratica: Pratica;
+	action: FlowAction;
+	crmUpserts: number;
+	sends: number;
+};
+
+/**
+ * Process one inbound mail into a pratica + Telegram proposal.
+ * Never sends email. Human Approva is handled by handleCallback.
+ */
+export async function processInboundMail(deps: PipelineDeps, mail: InboundMail): Promise<PipelineResult> {
+	const existing = await deps.practices.findByMailMessageId(mail.messageId);
+	if (existing) {
+		return { pratica: existing, action: "noop_duplicate", crmUpserts: 0, sends: 0 };
+	}
+
+	// Same-thread new request (A5): find by threadId an open/sent pratica and update lead + new draft.
+	let attach: Pratica | undefined;
+	if (mail.threadId) {
+		const all = await deps.practices.list();
+		attach = all.find((p) => p.mailThreadId === mail.threadId && (p.status === "sent" || p.status === "draft_ready" || p.status === "approved"));
+	}
+
+	if (!isValidSender(mail)) {
+		const pratica = await createSkeleton(deps, mail, "failed", "log_only");
+		pratica.classification = "richiesta_preventivo";
+		pratica.flowAction = "log_only";
+		pratica.lead = { ...pratica.lead, email: null, missingFields: ["email"] };
+		pratica.missingFields = ["email"];
+		await deps.practices.save(pratica);
+		await deps.audit.append({
+			type: "mail.invalid_sender",
+			instanceId: deps.instanceId,
+			mailMessageId: mail.messageId,
+		});
+		await deps.notify({
+			text: copy.invalidSenderNotice(pratica),
+			buttons: [],
+			praticaId: pratica.praticaId,
+			draftVersion: pratica.draftVersion,
+		});
+		return { pratica, action: "log_only", crmUpserts: 0, sends: 0 };
+	}
+
+	if (await deps.usage.isHardCapped()) {
+		await deps.audit.append({ type: "cost.denied", instanceId: deps.instanceId });
+		throw new Error("hard_cap");
+	}
+
+	const classification = (deps.classify ?? classifyInbound)(mail);
+
+	if (classification === "non_commerciale") {
+		const pratica = await createSkeleton(deps, mail, "classified_skip", "notify_only");
+		pratica.classification = "non_commerciale";
+		pratica.flowAction = "notify_only";
+		await deps.practices.save(pratica);
+		await recordUsage(deps, "classify", 200, 50);
+		await deps.notify({
+			text: copy.nonCommercialeNotice(pratica),
+			buttons: [],
+			praticaId: pratica.praticaId,
+			draftVersion: 0,
+		});
+		return { pratica, action: "notify_only", crmUpserts: 0, sends: 0 };
+	}
+
+	if (classification === "spam") {
+		const pratica = await createSkeleton(deps, mail, "classified_skip", "create_skip");
+		pratica.classification = "spam";
+		pratica.flowAction = "create_skip";
+		await deps.practices.save(pratica);
+		await recordUsage(deps, "classify", 200, 50);
+		await deps.notify({
+			text: copy.spamNotice(pratica),
+			buttons: [...copy.BUTTONS],
+			praticaId: pratica.praticaId,
+			draftVersion: pratica.draftVersion,
+		});
+		return { pratica, action: "create_skip", crmUpserts: 0, sends: 0 };
+	}
+
+	// Quote / thread reply
+	await recordUsage(deps, "classify", 200, 50);
+	if (await deps.usage.isSoftCapped()) {
+		await deps.notify({
+			text: (await import("../core/usage.ts")).TELEGRAM_SOFT_CAP,
+			buttons: [],
+			praticaId: "soft-cap",
+			draftVersion: 0,
+		});
+	}
+
+	const lead = extractLead(mail, deps.tenantConfig);
+	await recordUsage(deps, "extract", 800, 200);
+
+	let pratica: Pratica;
+	let action: FlowAction;
+	if (attach) {
+		action = "attach_to_existing";
+		pratica = {
+			...attach,
+			lead: {
+				...lead,
+				productOrService: [attach.lead.productOrService, lead.productOrService].filter(Boolean).join("; ") || null,
+			},
+			missingFields: [...lead.missingFields],
+			mailMessageId: mail.messageId, // index latest message too
+			status: "received",
+			flowAction: action,
+			classification,
+		};
+	} else {
+		action = "create";
+		pratica = await createSkeleton(deps, mail, "received", "create");
+		pratica.lead = lead;
+		pratica.missingFields = [...lead.missingFields];
+		pratica.classification = classification;
+		pratica.flowAction = action;
+	}
+
+	let crmUpserts = 0;
+	try {
+		const key = hashIdempotency("crm", pratica.mailMessageId);
+		const result = await deps.crm.upsertLead(
+			deps.tenantId,
+			{
+				fullName: lead.fullName,
+				title: lead.title,
+				company: lead.company,
+				email: lead.email,
+				phone: lead.phone,
+				productOrService: lead.productOrService,
+				vatNumber: lead.vatNumber,
+				originalLanguage: lead.originalLanguage,
+				missingFields: lead.missingFields,
+				rawSubject: lead.rawSubject,
+				mailMessageId: pratica.mailMessageId,
+			},
+			key,
+		);
+		pratica.crmLeadId = result.crmLeadId;
+		pratica.status = "lead_upserted";
+		crmUpserts = 1;
+	} catch {
+		// CRM down: still draft (spec)
+		await deps.notify({
+			text: copy.crmDownNotice(pratica),
+			buttons: [],
+			praticaId: pratica.praticaId,
+			draftVersion: pratica.draftVersion,
+		});
+	}
+
+	const draft = buildDraft(lead);
+	await recordUsage(deps, "draft", 1200, 600);
+	pratica.draftSubject = draft.subject;
+	pratica.draftBody = draft.body;
+	pratica.draftVersion = attach ? pratica.draftVersion + 1 : 1;
+	pratica.status = "draft_ready";
+	await deps.practices.save(pratica);
+
+	const card = copy.leadCardAndDraft(pratica);
+	const header =
+		action === "attach_to_existing"
+			? copy.threadNewRequestNotice(pratica, lead.fullName ?? lead.company ?? "cliente")
+			: copy.newRequestNotice(pratica);
+	await deps.notify({
+		text: `${header}\n\n${card}`,
+		buttons: [...copy.BUTTONS],
+		praticaId: pratica.praticaId,
+		draftVersion: pratica.draftVersion,
+	});
+
+	return { pratica, action, crmUpserts, sends: 0 };
+}
+
+async function createSkeleton(
+	deps: PipelineDeps,
+	mail: InboundMail,
+	status: Pratica["status"],
+	flowAction: FlowAction,
+): Promise<Pratica> {
+	const now = new Date().toISOString();
+	const pratica: Pratica = {
+		praticaId: newPraticaId(),
+		tenantId: deps.tenantId,
+		instanceId: deps.instanceId,
+		status,
+		mailMessageId: mail.messageId,
+		mailThreadId: mail.threadId,
+		lead: {
+			fullName: mail.fromName ?? null,
+			email: null,
+			productOrService: null,
+			missingFields: [],
+			source: "email",
+			rawSubject: mail.subject,
+			rawSnippet: mail.bodyText.slice(0, 200),
+			receivedAt: mail.receivedAt,
+			mailMessageId: mail.messageId,
+		},
+		missingFields: [],
+		draftSubject: "",
+		draftBody: "",
+		draftVersion: 0,
+		flowAction,
+		createdAt: now,
+		updatedAt: now,
+	};
+	await deps.practices.save(pratica);
+	return pratica;
+}
+
+async function recordUsage(deps: PipelineDeps, role: "extract" | "draft" | "classify", input: number, output: number): Promise<void> {
+	const model = role === "draft" ? deps.roles.draft : deps.roles.extract;
+	await deps.usage.record(
+		{
+			at: new Date().toISOString(),
+			provider: model.provider,
+			model: model.modelId,
+			role,
+			inputTokens: input,
+			outputTokens: output,
+			estimatedUsd: estimateUsd(model.modelId, input, output),
+		},
+		deps.audit,
+	);
+}

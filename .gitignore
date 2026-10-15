@@ -4,3 +4,5 @@ data/
 .env
 .annie-run/
 *.log
+
+evals/segreteria/last-report/

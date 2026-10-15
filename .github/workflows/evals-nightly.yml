@@ -1,0 +1,23 @@
+name: Evals nightly
+on:
+  schedule:
+    - cron: "0 2 * * *" # 02:00 UTC
+  workflow_dispatch:
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Deterministic evals
+        run: pnpm eval:segreteria
+      - name: LLM judge (skipped without ANNIE_JUDGE_MODEL_KEY)
+        run: pnpm eval:segreteria:judge
+        env:
+          ANNIE_JUDGE_MODEL_KEY: ${{ secrets.ANNIE_JUDGE_MODEL_KEY }}
