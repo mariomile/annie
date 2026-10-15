@@ -61,8 +61,12 @@ const STATIC: Record<string, string> = {
 	"/app.js": "app.js",
 	"/app.css": "app.css",
 	"/icon.svg": "icon.svg",
+	"/fonts/fraunces.woff2": "fonts/fraunces.woff2",
+	"/fonts/instrument-sans.woff2": "fonts/instrument-sans.woff2",
+	"/fonts/plex-mono-400.woff2": "fonts/plex-mono-400.woff2",
+	"/fonts/plex-mono-500.woff2": "fonts/plex-mono-500.woff2",
 };
-const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
+const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 
 /** The web console and web channel of one tenant. */
 export function createWebApp(options: WebAppOptions): Server {
@@ -416,7 +420,7 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
 		const data = await readFile(join(options.uiDir, name));
-		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": name === "index.html" ? "no-store" : "public, max-age=300" });
+		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": name === "index.html" ? "no-store" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300" });
 		res.end(data);
 	}
 
@@ -426,7 +430,7 @@ export function createWebApp(options: WebAppOptions): Server {
 const STREAMED = Symbol("streamed");
 
 function securityHeaders(res: ServerResponse): void {
-	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
 	res.setHeader("x-content-type-options", "nosniff");
 	res.setHeader("referrer-policy", "no-referrer");
 	res.setHeader("x-frame-options", "DENY");
