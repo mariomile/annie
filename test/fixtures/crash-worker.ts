@@ -41,6 +41,7 @@ if (mode === "start") {
 			name: "Ops",
 			model: { provider: "faux", modelId: "annie-dev" },
 			egress: { modelProviders: ["faux"], channels: ["test"] },
+			allowedUsers: { test: ["u1"] },
 		});
 	}
 	await runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "test", threadId: "t1", userId: "u1", text: "conta fino a 6", messageId: "m1" });

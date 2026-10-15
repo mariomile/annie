@@ -1,10 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
 import type { AnnieTool, DurableEngine, EngineReply, EngineSession } from "./engine.ts";
-import { EgressDenied } from "./errors.ts";
+import { EgressDenied, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { engineDir } from "./paths.ts";
-import { assertChannelAllowed, assertModelProviderAllowed } from "./policy.ts";
+import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
 
@@ -33,8 +33,6 @@ export type RuntimeOptions = {
 	/** Tools every instance gets. */
 	readonly tools?: readonly AnnieTool[];
 };
-
-const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 /**
  * Annie's core. Knows tenants, instances, secrets, audit and egress policy; runs each
@@ -147,6 +145,23 @@ export class AnnieInstance {
 		} catch (error) {
 			if (error instanceof EgressDenied) {
 				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });
+			}
+			throw error;
+		}
+		// Who may talk to the instance is decided here, in the core, for every channel: a
+		// rejected message never reaches the engine or the model, and gets no reply.
+		try {
+			assertUserAllowed(this.record.allowedUsers, request);
+		} catch (error) {
+			if (error instanceof UserNotAllowed) {
+				await this.audit.append({
+					type: "user.denied",
+					instanceId: this.record.id,
+					channel: error.channel,
+					userId: error.userId,
+					threadId: error.threadId,
+					reason: error.reason,
+				});
 			}
 			throw error;
 		}
