@@ -2,7 +2,7 @@
 export class EgressDenied extends Error {
 	override readonly name = "EgressDenied";
 	constructor(
-		readonly kind: "model_provider" | "channel",
+		readonly kind: "model_provider" | "channel" | "connector",
 		readonly target: string,
 	) {
 		super(`Egress denied: ${kind} "${target}" is not allowed by this instance's egress policy`);

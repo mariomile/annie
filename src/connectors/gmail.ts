@@ -1,22 +1,250 @@
-import type { MailAdapter } from "./types.ts";
+import { createHash } from "node:crypto";
+import { ConnectorHttpError, requestJson } from "./http.ts";
+import type { InboundMail, MailAdapter } from "./types.ts";
+
+/** OAuth client and refresh token of one tenant's mailbox (scopes: gmail.readonly + gmail.send). */
+export type GmailCredentials = {
+	readonly clientId: string;
+	readonly clientSecret: string;
+	readonly refreshToken: string;
+};
+
+/** Tenant secret names of the Gmail credentials. */
+export const GMAIL_SECRETS = {
+	clientId: "mail.gmail.clientId",
+	clientSecret: "mail.gmail.clientSecret",
+	refreshToken: "mail.gmail.refreshToken",
+} as const;
+
+/** Hosts the Gmail adapter talks to; the egress fetch allows only these. */
+export const GMAIL_HOSTS = ["gmail.googleapis.com", "oauth2.googleapis.com"] as const;
+
+export type GmailAdapterOptions = {
+	readonly credentials: () => Promise<GmailCredentials | undefined>;
+	/** Pass an egress-guarded fetch (see egressFetch). */
+	readonly fetch: typeof fetch;
+	readonly now?: () => number;
+	/** Upper bound of messages read per poll. */
+	readonly maxPerPoll?: number;
+	readonly retryBaseMs?: number;
+};
+
+type Header = { name: string; value: string };
+type MessagePart = { mimeType?: string; headers?: Header[]; body?: { data?: string; size?: number }; parts?: MessagePart[] };
+type GmailMessage = { id: string; threadId: string; internalDate?: string; labelIds?: string[]; payload?: MessagePart };
+
+const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 /**
- * Gmail adapter stub. Real OAuth/API wiring waits on Mario's secrets.
- * Production code must not call this without credentials in TenantSecrets.
+ * Gmail over its REST API with plain fetch.
+ *
+ * - `listNewRequests`: the cursor is the newest `internalDate` seen (epoch ms). An empty
+ *   cursor starts from now: the first start never turns old mail into pratiche. Polls
+ *   overlap by up to a second; the pipeline drops messages it already has by ID.
+ * - `sendReply`: replies in the original thread (threadId, In-Reply-To, References).
+ *   The Message-ID is derived from the idempotency key and looked up in sent mail first,
+ *   so a retry after a crash finds the earlier send instead of sending again, provided
+ *   Gmail keeps the Message-ID we set (to confirm on the live mailbox). Never retried here.
  */
 export class GmailMailAdapter implements MailAdapter {
 	readonly name = "gmail";
-	constructor(private readonly getAccessToken: () => Promise<string | undefined>) {}
+	private token: { value: string; expiresAt: number } | undefined;
+	private sender: string | undefined;
+	private readonly now: () => number;
 
-	async listNewRequests(): Promise<never> {
-		const token = await this.getAccessToken();
-		if (!token) throw new Error("Gmail credentials missing (set tenant secret mail.gmail.accessToken)");
-		throw new Error("Gmail listNewRequests: live API not enabled in week-3 without ANNIE_GMAIL_LIVE=1");
+	constructor(private readonly options: GmailAdapterOptions) {
+		this.now = options.now ?? Date.now;
 	}
 
-	async sendReply(): Promise<never> {
-		const token = await this.getAccessToken();
-		if (!token) throw new Error("Gmail credentials missing (set tenant secret mail.gmail.accessToken)");
-		throw new Error("Gmail sendReply: live API not enabled in week-3 without ANNIE_GMAIL_LIVE=1");
+	async listNewRequests(_tenantId: string, sinceCursor: string): Promise<{ messages: InboundMail[]; nextCursor: string }> {
+		if (sinceCursor === "") return { messages: [], nextCursor: String(this.now()) };
+		const since = Number(sinceCursor);
+		if (!Number.isFinite(since)) throw new Error(`Gmail cursor is not a timestamp: ${sinceCursor}`);
+		const q = `in:inbox -from:me after:${Math.floor(since / 1000)}`;
+		const max = this.options.maxPerPoll ?? 200;
+		const ids: string[] = [];
+		let pageToken: string | undefined;
+		do {
+			const params = new URLSearchParams({ q, maxResults: String(Math.min(100, max)) });
+			if (pageToken !== undefined) params.set("pageToken", pageToken);
+			const page = await this.api<{ messages?: { id: string }[]; nextPageToken?: string }>("messages.list", `${API}/messages?${params}`, { retries: 2 });
+			ids.push(...(page.messages ?? []).map((m) => m.id));
+			pageToken = page.nextPageToken;
+		} while (pageToken !== undefined && ids.length < max);
+
+		const messages: InboundMail[] = [];
+		let newest = since;
+		for (const id of ids.slice(0, max)) {
+			const message = await this.api<GmailMessage>("messages.get", `${API}/messages/${encodeURIComponent(id)}?format=full`, { retries: 2 });
+			const receivedMs = Number(message.internalDate ?? "0");
+			if (receivedMs < since) continue;
+			newest = Math.max(newest, receivedMs);
+			messages.push(toInboundMail(message));
+		}
+		// Oldest first, the order the mails arrived in.
+		messages.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+		return { messages, nextCursor: String(newest) };
 	}
+
+	async sendReply(
+		_tenantId: string,
+		args: { to: string; subject: string; bodyText: string; inReplyToMessageId: string; idempotencyKey: string },
+	): Promise<{ sentMessageId: string }> {
+		const messageId = `<annie.${createHash("sha256").update(args.idempotencyKey).digest("hex").slice(0, 32)}@annie.local>`;
+		const earlier = await this.api<{ messages?: { id: string }[] }>(
+			"messages.list",
+			`${API}/messages?${new URLSearchParams({ q: `in:sent rfc822msgid:${messageId}`, maxResults: "1" })}`,
+			{ retries: 2 },
+		);
+		const found = earlier.messages?.[0];
+		if (found !== undefined) return { sentMessageId: found.id };
+
+		const original = await this.api<GmailMessage>(
+			"messages.get",
+			`${API}/messages/${encodeURIComponent(args.inReplyToMessageId)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References`,
+			{ retries: 2 },
+		);
+		const originalId = header(original.payload, "Message-ID");
+		const references = [header(original.payload, "References"), originalId].filter((v): v is string => v !== undefined && v !== "").join(" ");
+		const raw = buildMime({
+			from: await this.senderAddress(),
+			to: args.to,
+			subject: args.subject,
+			bodyText: args.bodyText,
+			messageId,
+			...(originalId === undefined ? {} : { inReplyTo: originalId }),
+			...(references === "" ? {} : { references }),
+		});
+		const sent = await this.api<{ id: string }>("messages.send", `${API}/messages/send`, { body: { raw, threadId: original.threadId } });
+		return { sentMessageId: sent.id };
+	}
+
+	private async senderAddress(): Promise<string> {
+		this.sender ??= (await this.api<{ emailAddress: string }>("getProfile", `${API}/profile`, { retries: 2 })).emailAddress;
+		return this.sender;
+	}
+
+	private async api<T>(operation: string, url: string, request: { body?: unknown; retries?: number }): Promise<T> {
+		const call = async () =>
+			requestJson<T>(this.options.fetch, url, {
+				connector: "gmail",
+				operation,
+				headers: { authorization: `Bearer ${await this.accessToken()}` },
+				...(request.body === undefined ? {} : { body: request.body }),
+				retries: request.retries ?? 0,
+				...(this.options.retryBaseMs === undefined ? {} : { retryBaseMs: this.options.retryBaseMs }),
+			});
+		try {
+			return await call();
+		} catch (error) {
+			// An access token revoked or expired early: refresh once and try again.
+			if (!(error instanceof ConnectorHttpError) || error.status !== 401) throw error;
+			this.token = undefined;
+			return call();
+		}
+	}
+
+	private async accessToken(): Promise<string> {
+		if (this.token !== undefined && this.token.expiresAt > this.now()) return this.token.value;
+		const credentials = await this.options.credentials();
+		if (credentials === undefined) {
+			throw new Error(`Gmail credentials missing: set tenant secrets ${Object.values(GMAIL_SECRETS).join(", ")}`);
+		}
+		const response = await this.options.fetch("https://oauth2.googleapis.com/token", {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				client_id: credentials.clientId,
+				client_secret: credentials.clientSecret,
+				refresh_token: credentials.refreshToken,
+				grant_type: "refresh_token",
+			}),
+		});
+		const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string; error_description?: string };
+		if (!response.ok || body.access_token === undefined) {
+			// invalid_grant: the refresh token was revoked or expired (7 days for apps in "Testing").
+			throw new ConnectorHttpError("gmail", "token refresh", response.status, [body.error, body.error_description].filter(Boolean).join(": "));
+		}
+		// Refresh a minute early so a token never expires in the middle of a request.
+		this.token = { value: body.access_token, expiresAt: this.now() + ((body.expires_in ?? 3600) - 60) * 1000 };
+		return this.token.value;
+	}
+}
+
+function header(part: MessagePart | undefined, name: string): string | undefined {
+	return part?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+}
+
+/** Gmail message (format=full) → InboundMail. `messageId` is Gmail's ID, used to reply. */
+export function toInboundMail(message: GmailMessage): InboundMail {
+	const from = header(message.payload, "From") ?? "";
+	const fromName = /^\s*"?([^"<]*?)"?\s*</.exec(from)?.[1]?.trim();
+	const inReplyTo = header(message.payload, "In-Reply-To");
+	return {
+		messageId: message.id,
+		threadId: message.threadId,
+		from,
+		...(fromName ? { fromName } : {}),
+		subject: header(message.payload, "Subject") ?? "",
+		bodyText: bodyText(message.payload),
+		receivedAt: new Date(Number(message.internalDate ?? "0")).toISOString(),
+		...(inReplyTo === undefined ? {} : { inReplyTo }),
+	};
+}
+
+/** The text/plain body; falls back to text/html with tags removed. Attachments are skipped. */
+export function bodyText(part: MessagePart | undefined): string {
+	const plain = findPart(part, "text/plain");
+	if (plain !== undefined) return plain;
+	const html = findPart(part, "text/html");
+	return html === undefined ? "" : htmlToText(html);
+}
+
+function findPart(part: MessagePart | undefined, mimeType: string): string | undefined {
+	if (part === undefined) return undefined;
+	if (part.mimeType === mimeType && part.body?.data !== undefined) return Buffer.from(part.body.data, "base64url").toString("utf8");
+	for (const child of part.parts ?? []) {
+		const found = findPart(child, mimeType);
+		if (found !== undefined) return found;
+	}
+	return undefined;
+}
+
+function htmlToText(html: string): string {
+	return html
+		.replace(/<(script|style)[\s\S]*?<\/\1>/gi, "")
+		.replace(/<br\s*\/?>|<\/p>|<\/div>/gi, "\n")
+		.replace(/<[^>]+>/g, "")
+		.replace(/&nbsp;/g, " ")
+		.replace(/&amp;/g, "&")
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+/** RFC 2822 text/plain message, UTF-8, base64url-encoded for messages.send. */
+export function buildMime(m: { from: string; to: string; subject: string; bodyText: string; messageId: string; inReplyTo?: string; references?: string }): string {
+	const subject = /^re:/i.test(m.subject) || m.inReplyTo === undefined ? m.subject : `Re: ${m.subject}`;
+	const lines = [
+		`From: ${m.from}`,
+		`To: ${m.to}`,
+		`Subject: ${encodeHeader(subject)}`,
+		`Message-ID: ${m.messageId}`,
+		...(m.inReplyTo === undefined ? [] : [`In-Reply-To: ${m.inReplyTo}`]),
+		...(m.references === undefined ? [] : [`References: ${m.references}`]),
+		"MIME-Version: 1.0",
+		'Content-Type: text/plain; charset="UTF-8"',
+		"Content-Transfer-Encoding: base64",
+		"",
+		(Buffer.from(m.bodyText, "utf8").toString("base64").match(/.{1,76}/g) ?? []).join("\r\n"),
+	];
+	return Buffer.from(lines.join("\r\n"), "utf8").toString("base64url");
+}
+
+/** RFC 2047 encoded-word for non-ASCII header values. */
+function encodeHeader(value: string): string {
+	return /^[\x00-\x7f]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
 }
