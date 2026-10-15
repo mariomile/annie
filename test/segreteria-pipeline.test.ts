@@ -1,0 +1,247 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { FakeCrmAdapter } from "../src/connectors/crm-fake.ts";
+import { FakeMailAdapter } from "../src/connectors/mail-fake.ts";
+import { AuditLog } from "../src/core/audit.ts";
+import { tenantId as tid } from "../src/core/ids.ts";
+import { FAUX_MODEL_ROLES } from "../src/core/model-routing.ts";
+import { callbackData, PracticeStore } from "../src/core/practice.ts";
+import { UsageLedger } from "../src/core/usage.ts";
+import { handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "../src/segreteria/callbacks.ts";
+import { processInboundMail } from "../src/segreteria/pipeline.ts";
+import type { InboundMail } from "../src/connectors/types.ts";
+
+function harness() {
+	const dataDir = mkdtempSync(join(tmpdir(), "annie-seg-"));
+	const tenantId = "acme";
+	const instanceId = "segreteria";
+	const practices = new PracticeStore(join(dataDir, tenantId, "instances", instanceId));
+	const mail = new FakeMailAdapter();
+	const crm = new FakeCrmAdapter();
+	const audit = new AuditLog(dataDir, tid("acme"));
+	const usage = new UsageLedger(join(dataDir, tenantId));
+	const notifications: Array<{ text: string; buttons: readonly string[]; praticaId: string }> = [];
+	const notify = async (msg: { text: string; buttons: readonly string[]; praticaId: string; draftVersion: number }) => {
+		notifications.push(msg);
+	};
+	const deps = {
+		tenantId,
+		instanceId,
+		practices,
+		mail,
+		crm,
+		audit,
+		usage,
+		roles: FAUX_MODEL_ROLES,
+		notify,
+	};
+	const cb = {
+		tenantId,
+		instanceId,
+		practices,
+		mail,
+		crm,
+		audit,
+		allowedUserIds: new Set(["7"]),
+		notify,
+	};
+	return { deps, cb, mail, crm, audit, practices, notifications, usage, dataDir };
+}
+
+const sampleMail = (over: Partial<InboundMail> = {}): InboundMail => ({
+	messageId: "m1",
+	from: "Marta Bianchi <marta.bianchi@acme.example>",
+	fromName: "Marta Bianchi",
+	subject: "Richiesta preventivo stampante",
+	bodyText: "Buongiorno, chiedo preventivo per 2 stampanti UV. Sede Milano. Grazie.",
+	receivedAt: "2026-10-15T12:00:00.000Z",
+	...over,
+});
+
+describe("segreteria pipeline", () => {
+	it("never sends before Approva (gate)", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		expect(r.sends).toBe(0);
+		expect(h.mail.sent).toHaveLength(0);
+		expect(r.pratica.status).toBe("draft_ready");
+		expect(h.notifications.at(-1)?.buttons).toEqual(["Approva", "Modifica", "Scarta"]);
+	});
+
+	it("Approva sends exactly once; second Approva is idempotent", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		const data = callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve");
+		const a1 = await handleTelegramCallback(h.cb, { userId: "7", callbackData: data });
+		expect(a1.kind).toBe("handled");
+		expect(h.mail.sent).toHaveLength(1);
+		const a2 = await handleTelegramCallback(h.cb, { userId: "7", callbackData: data });
+		expect(h.mail.sent).toHaveLength(1);
+		expect(a2.kind).toBe("handled");
+	});
+
+	it("Scarta does not send", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		const data = callbackData(r.pratica.praticaId, r.pratica.draftVersion, "discard");
+		await handleTelegramCallback(h.cb, { userId: "7", callbackData: data });
+		expect(h.mail.sent).toHaveLength(0);
+		expect((await h.practices.get(r.pratica.praticaId))?.status).toBe("discarded");
+	});
+
+	it("Modifica then text bumps draftVersion; annulla modifica does not", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		const v1 = r.pratica.draftVersion;
+		await handleTelegramCallback(h.cb, {
+			userId: "7",
+			callbackData: callbackData(r.pratica.praticaId, v1, "edit"),
+		});
+		await handleEditMessage(h.cb, { userId: "7", praticaId: r.pratica.praticaId, text: "Togli la domanda sul budget." });
+		const after = await h.practices.get(r.pratica.praticaId);
+		expect(after?.draftVersion).toBe(v1 + 1);
+		await handleTelegramCallback(h.cb, {
+			userId: "7",
+			callbackData: callbackData(after!.praticaId, after!.draftVersion, "edit"),
+		});
+		await handleEditMessage(h.cb, { userId: "7", praticaId: r.pratica.praticaId, text: "annulla modifica" });
+		const cancelled = await h.practices.get(r.pratica.praticaId);
+		expect(cancelled?.draftVersion).toBe(after!.draftVersion);
+		expect(cancelled?.status).toBe("draft_ready");
+	});
+
+	it("crash after approve re-proposes buttons; no silent send", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		const p = (await h.practices.get(r.pratica.praticaId))!;
+		p.status = "approved";
+		p.approvedBy = "7";
+		p.approvedAt = new Date().toISOString();
+		await h.practices.save(p);
+		h.notifications.length = 0;
+		await recoverAfterCrash(h.cb, p.praticaId);
+		expect(h.mail.sent).toHaveLength(0);
+		expect(h.notifications[0]?.buttons).toEqual(["Approva", "Modifica", "Scarta"]);
+		expect(h.notifications[0]?.text).toContain("Invio non completato");
+	});
+
+	it("send_email tool replaySafe is false", async () => {
+		const { createMailTools } = await import("../src/core/tools/mail-tools.ts");
+		const h = harness();
+		const tools = createMailTools({
+			tenantId: "acme",
+			mail: h.mail,
+			practices: h.practices,
+			maySend: async () => true,
+		});
+		expect(tools.find((t) => t.name === "send_email")?.replaySafe).toBe(false);
+	});
+
+	it("A8: non-allowlisted tap ignored and audited on open pratica", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		const before = (await h.practices.get(r.pratica.praticaId))!.status;
+		const res = await handleTelegramCallback(h.cb, {
+			userId: "999",
+			callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve"),
+		});
+		expect(res).toEqual({ kind: "ignored", reason: "not_allowlisted" });
+		expect(h.mail.sent).toHaveLength(0);
+		expect((await h.practices.get(r.pratica.praticaId))?.status).toBe(before);
+		const events = await h.audit.read();
+		expect(events.some((e) => e.type === "user.denied")).toBe(true);
+	});
+
+	it("A8: non-allowlisted tap ignored on closed pratica", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		await handleTelegramCallback(h.cb, {
+			userId: "7",
+			callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "discard"),
+		});
+		const res = await handleTelegramCallback(h.cb, {
+			userId: "999",
+			callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve"),
+		});
+		expect(res.kind).toBe("ignored");
+		expect((await h.practices.get(r.pratica.praticaId))?.status).toBe("discarded");
+	});
+
+	it("A2: invalid sender → no lead, notice without buttons, status failed", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail({ from: "not-an-email", fromName: "X" }));
+		expect(r.action).toBe("log_only");
+		expect(r.crmUpserts).toBe(0);
+		expect(h.crm.upsertCalls).toBe(0);
+		expect(r.pratica.status).toBe("failed");
+		expect(h.notifications.at(-1)?.buttons).toEqual([]);
+		expect(h.notifications.at(-1)?.text).toContain("mittente non valido");
+	});
+
+	it("A4: non_commerciale → no lead, no buttons", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail({
+			subject: "Problema con la fattura",
+			bodyText: "Buongiorno, ho un problema con la fattura di settembre.",
+		}));
+		expect(r.pratica.classification).toBe("non_commerciale");
+		expect(h.crm.upsertCalls).toBe(0);
+		expect(h.notifications.at(-1)?.buttons).toEqual([]);
+		expect(h.notifications.at(-1)?.text).toContain("non commerciale");
+	});
+
+	it("A5: new request on same thread updates same lead and new draft", async () => {
+		const h = harness();
+		const first = await processInboundMail(h.deps, sampleMail({ messageId: "m1", threadId: "t1" }));
+		await handleTelegramCallback(h.cb, {
+			userId: "7",
+			callbackData: callbackData(first.pratica.praticaId, first.pratica.draftVersion, "approve"),
+		});
+		const second = await processInboundMail(
+			h.deps,
+			sampleMail({
+				messageId: "m2",
+				threadId: "t1",
+				subject: "Re: Richiesta preventivo stampante",
+				bodyText: "Aggiungo anche 1 plotter A0. Grazie.",
+				inReplyTo: "m1",
+			}),
+		);
+		expect(second.action).toBe("attach_to_existing");
+		expect(second.pratica.praticaId).toBe(first.pratica.praticaId);
+		expect(second.pratica.draftVersion).toBeGreaterThan(first.pratica.draftVersion);
+		expect(h.notifications.at(-1)?.buttons).toEqual(["Approva", "Modifica", "Scarta"]);
+		expect(h.notifications.at(-1)?.text).toContain("Nuova richiesta sul thread");
+		const list = await h.practices.list();
+		expect(list).toHaveLength(1);
+	});
+
+	it("ingress idempotency: same mailMessageId → noop_duplicate", async () => {
+		const h = harness();
+		const a = await processInboundMail(h.deps, sampleMail());
+		const b = await processInboundMail(h.deps, sampleMail());
+		expect(b.action).toBe("noop_duplicate");
+		expect(b.pratica.praticaId).toBe(a.pratica.praticaId);
+		expect(h.crm.upsertCalls).toBe(1);
+	});
+
+	it("failed send keeps buttons for retry Approva", async () => {
+		const h = harness();
+		const r = await processInboundMail(h.deps, sampleMail());
+		h.mail.failNextSend = true;
+		await handleTelegramCallback(h.cb, {
+			userId: "7",
+			callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve"),
+		});
+		expect(h.mail.sent).toHaveLength(0);
+		expect(h.notifications.at(-1)?.buttons).toEqual(["Approva", "Modifica", "Scarta"]);
+		expect(h.notifications.at(-1)?.text).toContain("Invio non riuscito");
+		await handleTelegramCallback(h.cb, {
+			userId: "7",
+			callbackData: callbackData(r.pratica.praticaId, r.pratica.draftVersion, "approve"),
+		});
+		expect(h.mail.sent).toHaveLength(1);
+	});
+});

@@ -22,6 +22,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest --run",
-    "dev:telegram": "tsx src/main/telegram.ts"
+    "dev:telegram": "tsx src/main/telegram.ts",
+    "eval:segreteria": "tsx evals/segreteria/run.ts",
+    "eval:segreteria:judge": "tsx evals/segreteria/judge.ts",
+    "eval:segreteria:validate": "python3 evals/segreteria/scripts/validate_and_build.py"
   }
 }
