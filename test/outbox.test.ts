@@ -47,7 +47,12 @@ describe("reply outbox (in process)", () => {
 		connectChannel(runtime, channel, { tenantId: "acme", instanceId: "ops" });
 
 		await runtime.submit(hello);
-		await waitFor(() => outboxEntries(dataDir).some((e) => e.deliveredAt !== undefined));
+		// markDelivered writes the outbox, then the audit: wait for the last of the two.
+		let audit = await runtime.audit("acme").read();
+		while (!audit.some((e) => e.type === "reply.delivered")) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			audit = await runtime.audit("acme").read();
+		}
 
 		expect(channel.sent).toHaveLength(1);
 		const key = channel.sent[0]?.idempotencyKey;
@@ -57,7 +62,6 @@ describe("reply outbox (in process)", () => {
 		expect(atSend[0]?.deliveredAt).toBeUndefined();
 		// After the channel's ok: delivered.
 		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ key, attempts: 1, deliveredAt: expect.any(String) })]);
-		const audit = await runtime.audit("acme").read();
 		expect(audit).toContainEqual(expect.objectContaining({ type: "reply.delivered", deliveryId: key, attempts: 1, possibleDuplicate: false }));
 		expect(JSON.stringify(audit)).not.toContain("hai scritto");
 		await runtime.close();

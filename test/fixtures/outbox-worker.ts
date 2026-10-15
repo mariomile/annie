@@ -50,9 +50,16 @@ if (mode === "start") {
 	});
 	await runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", userId: "7", text: "ciao", messageId: "42:1" });
 } else {
-	console.log(`RESUMED ${JSON.stringify(await runtime.resume("acme", "ops"))}`);
+	const audit = runtime.audit("acme");
+	const deliveredBefore = (await audit.read()).filter((e) => e.type === "reply.delivered").length;
+	const resumed = await runtime.resume("acme", "ops");
+	console.log(`RESUMED ${JSON.stringify(resumed)}`);
+	// Delivered = confirmed in the outbox and recorded in the audit (written in that order).
 	const instance = await runtime.openInstance("acme", "ops");
-	while ((await instance.undelivered()).length > 0) await new Promise((resolve) => setTimeout(resolve, 20));
+	const done = async () =>
+		(await instance.undelivered()).length === 0 &&
+		(await audit.read()).filter((e) => e.type === "reply.delivered").length === deliveredBefore + resumed.undelivered;
+	while (!(await done())) await new Promise((resolve) => setTimeout(resolve, 20));
 	console.log("DELIVERED");
 	await runtime.close();
 	process.exit(0);
