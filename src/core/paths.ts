@@ -8,6 +8,7 @@ import type { InstanceId, TenantId } from "./ids.ts";
  *   <dataDir>/tenants/<tenantId>/secrets.json          (mode 0600)
  *   <dataDir>/tenants/<tenantId>/audit.jsonl           (append-only)
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/instance.json
+ *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/instance.lock (held while a process has it open)
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/engine/   (durable engine storage)
  */
 export function tenantDir(dataDir: string, tenant: TenantId): string {
@@ -36,4 +37,8 @@ export function instanceFile(dataDir: string, tenant: TenantId, instance: Instan
 
 export function engineDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
 	return join(instanceDir(dataDir, tenant, instance), "engine");
+}
+
+export function lockFile(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "instance.lock");
 }

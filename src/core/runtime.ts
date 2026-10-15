@@ -3,7 +3,8 @@ import { AuditLog } from "./audit.ts";
 import type { AnnieTool, DurableEngine, EngineReply, EngineSession } from "./engine.ts";
 import { EgressDenied, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
-import { engineDir } from "./paths.ts";
+import { InstanceLock } from "./lock.ts";
+import { engineDir, lockFile } from "./paths.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
@@ -102,17 +103,25 @@ export class AnnieRuntime {
 		const secrets = this.secrets(record.tenantId);
 		const storageDir = engineDir(this.options.dataDir, record.tenantId, record.id);
 		await mkdir(storageDir, { recursive: true });
-		const session = await this.options.engine.open({
-			storageDir,
-			model: record.model,
-			// Only this tenant's secrets, and only for providers the policy allows.
-			apiKey: async (provider) =>
-				record.egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined,
-			tools: this.options.tools ?? [],
-			...(record.instructions === undefined ? {} : { instructions: record.instructions }),
-		});
+		// Before anything touches the instance's storage: one process per instance.
+		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
+		let session: EngineSession;
+		try {
+			session = await this.options.engine.open({
+				storageDir,
+				model: record.model,
+				// Only this tenant's secrets, and only for providers the policy allows.
+				apiKey: async (provider) =>
+					record.egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined,
+				tools: this.options.tools ?? [],
+				...(record.instructions === undefined ? {} : { instructions: record.instructions }),
+			});
+		} catch (error) {
+			lock.release();
+			throw error;
+		}
 		await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
-		return new AnnieInstance(record, session, audit, (reply) => {
+		return new AnnieInstance(record, session, lock, audit, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -128,6 +137,7 @@ export class AnnieInstance {
 	constructor(
 		readonly record: InstanceRecord,
 		private readonly session: EngineSession,
+		private readonly lock: InstanceLock,
 		private readonly audit: AuditLog,
 		emit: (reply: Reply) => void,
 	) {
@@ -187,8 +197,12 @@ export class AnnieInstance {
 		return this.session.idle();
 	}
 
-	close(): Promise<void> {
-		return this.session.close();
+	async close(): Promise<void> {
+		try {
+			await this.session.close();
+		} finally {
+			this.lock.release();
+		}
 	}
 
 	private async deliver(engineReply: EngineReply, emit: (reply: Reply) => void): Promise<void> {

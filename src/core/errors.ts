@@ -22,6 +22,20 @@ export class UserNotAllowed extends Error {
 	}
 }
 
+/** Thrown when another process already has the instance open. */
+export class InstanceLocked extends Error {
+	override readonly name = "InstanceLocked";
+	constructor(
+		readonly instance: string,
+		readonly owner: string | undefined,
+	) {
+		super(
+			`Instance ${instance} is already open in another process (${owner ?? "owner unknown"}). ` +
+				"An instance runs in one process at a time: stop the other one first.",
+		);
+	}
+}
+
 export class NotFound extends Error {
 	override readonly name = "NotFound";
 }

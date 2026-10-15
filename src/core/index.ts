@@ -1,6 +1,6 @@
 export { AuditLog, type AuditEvent, type AuditRecord } from "./audit.ts";
 export type { AnnieTool, DurableEngine, EngineOpenOptions, EngineReply, EngineSession, ToolContext } from "./engine.ts";
-export { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
+export { EgressDenied, InstanceLocked, NotFound, UserNotAllowed } from "./errors.ts";
 export { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 export { type AllowedUsers, assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, DENY_ALL, type EgressPolicy } from "./policy.ts";
 export { type CreateInstanceInput, type InstanceRecord, type ModelSelection, TenantRegistry, type TenantRecord } from "./registry.ts";
