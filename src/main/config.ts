@@ -126,3 +126,80 @@ export function loadSegreteriaConfig(env: Readonly<Record<string, string | undef
 		requireVatNumber: /^(1|true|yes|si|sì)$/i.test(nonEmpty(env.ANNIE_REQUIRE_VAT_NUMBER) ?? ""),
 	};
 }
+
+export type AnnieConfig = {
+	readonly dataDir: string;
+	readonly tenantId: string;
+	readonly instanceId: string;
+	readonly instanceName: string;
+	readonly modelProvider: string;
+	readonly modelId: string;
+	readonly modelApiKey: string | undefined;
+	readonly timeZone: string;
+	readonly web: { readonly host: string; readonly port: number; readonly publicUrl: string | undefined };
+	readonly telegram: { readonly token: string; readonly allowedUsers: readonly string[] | undefined; readonly approvers: readonly string[] | undefined } | undefined;
+	readonly segreteria: SegreteriaConfig | undefined;
+};
+
+/** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
+export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>>): AnnieConfig {
+	const missing: string[] = [];
+	const modelProvider = nonEmpty(env.ANNIE_MODEL_PROVIDER) ?? DEFAULT_MODEL_PROVIDER;
+	let modelApiKey: string | undefined;
+	if (modelProvider !== "faux") {
+		const keyEnv = MODEL_KEY_ENV[modelProvider];
+		if (keyEnv === undefined) throw new ConfigError(`ANNIE_MODEL_PROVIDER="${modelProvider}" is not supported. Use one of: ${[...Object.keys(MODEL_KEY_ENV), "faux"].join(", ")}`);
+		modelApiKey = nonEmpty(env[keyEnv]);
+		if (modelApiKey === undefined) missing.push(keyEnv);
+	}
+	const ids = (name: string): readonly string[] | undefined => {
+		const raw = nonEmpty(env[name]);
+		if (raw === undefined) return undefined;
+		const list = raw.split(",").map((id) => id.trim()).filter((id) => id !== "");
+		const invalid = list.filter((id) => !/^\d+$/.test(id));
+		if (invalid.length > 0) throw new ConfigError(`${name} must be a comma-separated list of numeric Telegram user IDs; invalid: ${invalid.join(", ")}`);
+		return list;
+	};
+	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
+	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS") };
+	const port = Number(nonEmpty(env.ANNIE_WEB_PORT) ?? "8080");
+	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new ConfigError("ANNIE_WEB_PORT must be a port number");
+	const publicUrl = nonEmpty(env.ANNIE_PUBLIC_URL)?.replace(/\/+$/, "");
+	if (publicUrl !== undefined && !/^https?:\/\//.test(publicUrl)) throw new ConfigError("ANNIE_PUBLIC_URL must start with http:// or https://");
+	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone });
+	} catch {
+		throw new ConfigError(`ANNIE_TIME_ZONE="${timeZone}" is not a time zone`);
+	}
+	if (missing.length > 0) throw new ConfigError(`Missing environment variable${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. Set ${missing.length > 1 ? "them" : "it"} in .env (see .env.example).`);
+	const segreteriaToken = nonEmpty(env.ANNIE_SEGRETERIA_TELEGRAM_BOT_TOKEN);
+	let segreteria: SegreteriaConfig | undefined;
+	if (segreteriaToken !== undefined) {
+		try {
+			segreteria = loadSegreteriaConfig({
+				...env,
+				TELEGRAM_BOT_TOKEN: segreteriaToken,
+				ANNIE_TELEGRAM_ALLOWED_USERS: env.ANNIE_SEGRETERIA_SALES,
+				ANNIE_SEGRETERIA_MODEL: modelProvider === "faux" ? "faux" : "anthropic",
+			});
+		} catch (error) {
+			// Same checks as dev:segreteria, with the names this process reads.
+			if (error instanceof ConfigError) throw new ConfigError(error.message.replaceAll("ANNIE_TELEGRAM_ALLOWED_USERS", "ANNIE_SEGRETERIA_SALES").replaceAll("TELEGRAM_BOT_TOKEN", "ANNIE_SEGRETERIA_TELEGRAM_BOT_TOKEN"));
+			throw error;
+		}
+	}
+	return {
+		dataDir: nonEmpty(env.ANNIE_DATA_DIR) ?? "data",
+		tenantId: nonEmpty(env.ANNIE_TENANT_ID) ?? "default",
+		instanceId: nonEmpty(env.ANNIE_INSTANCE_ID) ?? "annie",
+		instanceName: nonEmpty(env.ANNIE_INSTANCE_NAME) ?? "Annie",
+		modelProvider,
+		modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? (modelProvider === "faux" ? "annie-dev" : DEFAULT_MODEL_ID),
+		modelApiKey,
+		timeZone,
+		web: { host: nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1", port, publicUrl },
+		telegram,
+		segreteria,
+	};
+}

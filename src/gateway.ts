@@ -1,4 +1,4 @@
-import type { ChannelAdapter, InboundMessage } from "./channels/types.ts";
+import type { ChannelAdapter, InboundAction, InboundMessage } from "./channels/types.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
 /**
@@ -12,7 +12,13 @@ export function connectChannel(
 	adapter: ChannelAdapter,
 	instance: { readonly tenantId: string; readonly instanceId: string },
 	log: (message: string) => void = console.error,
+	/** Button taps on this channel (approval cards). Must be idempotent: taps can be redelivered. */
+	onAction?: (action: InboundAction) => Promise<void>,
 ): () => void {
+	if (onAction !== undefined) {
+		if (adapter.onAction === undefined) throw new Error(`Channel ${adapter.name} has no buttons`);
+		adapter.onAction(onAction);
+	}
 	adapter.onInbound(async (message) => {
 		try {
 			await runtime.submit(await withAttachments(runtime, message));
