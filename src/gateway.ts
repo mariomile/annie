@@ -28,7 +28,7 @@ export function connectChannel(
 				const data = await runtime.workspace(reply.tenantId, reply.instanceId).read(reply.path);
 				const name = reply.path.split("/").at(-1) ?? reply.path;
 				if (adapter.sendFile === undefined) return adapter.send({ ...base, text: `File pronto nel workspace: ${reply.path}${reply.caption ? `\n${reply.caption}` : ""}` });
-				return adapter.sendFile({ ...base, name, data, ...(reply.caption === undefined ? {} : { caption: reply.caption }) });
+				return adapter.sendFile({ ...base, name, data, path: reply.path, ...(reply.caption === undefined ? {} : { caption: reply.caption }) });
 			}
 			if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
 			const text = reply.status === "answered" ? reply.text : "Non sono riuscita a rispondere. Riprova tra poco.";

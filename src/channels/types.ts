@@ -67,6 +67,8 @@ export type OutboundFile = Omit<OutboundMessage, "text" | "buttons"> & {
 	readonly name: string;
 	readonly data: Uint8Array;
 	readonly caption?: string;
+	/** Where the file is in the instance's workspace, for channels that link instead of uploading. */
+	readonly path?: string;
 };
 
 export interface ChannelAdapter {
