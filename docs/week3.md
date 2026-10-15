@@ -1,5 +1,7 @@
 # Week 3 — Segreteria commerciale (Telegram)
 
+> Nota (settimana 4): questa settimana ha consegnato la logica provata con fake. Mancavano entry point, pulsanti Telegram, modello e adapter live, e le eval misuravano il template partendo dal gold. Vedi [`week4.md`](week4.md).
+
 Branch: `week-3` (based on `ci-setup` so PR CI runs). Spec: [`spec-segreteria-commerciale.md`](spec-segreteria-commerciale.md).
 
 ## What shipped

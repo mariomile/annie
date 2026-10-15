@@ -6,6 +6,7 @@ Piattaforma agenti open source di Buildrs: un agente sempre attivo, sul modello 
 - Stato della settimana 1: [`docs/week1.md`](docs/week1.md)
 - Stato della settimana 2 (allowlist, lock, outbox): [`docs/week2.md`](docs/week2.md)
 - Stato della settimana 3 (segreteria commerciale): [`docs/week3.md`](docs/week3.md)
+- Stato della settimana 4 (segreteria end-to-end): [`docs/week4.md`](docs/week4.md)
 - **Stato del progetto e cose da fare: [`docs/stato-e-todo.md`](docs/stato-e-todo.md)**
 - Come contribuire: [`docs/contributing.md`](docs/contributing.md)
 - Piano iniziale: [`docs/piano-iniziale.md`](docs/piano-iniziale.md)
@@ -43,6 +44,17 @@ annie: Missing environment variable: ANTHROPIC_API_KEY. Set it in .env (see .env
 
 Per provare senza chiave del modello: `ANNIE_MODEL_PROVIDER=faux` usa il modello locale deterministico (risponde con un'eco; "conta fino a 5" chiama il tool `slow_counter`). Il token Telegram resta necessario.
 
+### Segreteria commerciale
+
+```bash
+cp .env.example .env
+# oltre alle variabili sopra: GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN,
+# HUBSPOT_ACCESS_TOKEN e i commerciali in ANNIE_TELEGRAM_ALLOWED_USERS
+pnpm dev:segreteria
+```
+
+Legge la casella Gmail ogni minuto, prepara per ogni richiesta di preventivo una scheda con la bozza e la manda su Telegram ai commerciali con i pulsanti Approva, Modifica e Scarta. Nessuna mail parte senza Approva. Serve un bot Telegram diverso da quello di `dev:telegram`, e ogni commerciale deve aprire il bot e premere Start una volta. Dettagli in [`docs/week4.md`](docs/week4.md).
+
 ### Variabili d'ambiente
 
 | Variabile | Obbligatoria | Default |
@@ -55,7 +67,13 @@ Per provare senza chiave del modello: `ANNIE_MODEL_PROVIDER=faux` usa il modello
 | `ANNIE_DATA_DIR` | no | `data` |
 | `ANNIE_TENANT_ID` | no | `default` |
 | `ANNIE_INSTANCE_ID` | no | `telegram` |
-| `ANNIE_TELEGRAM_ALLOWED_USERS` | no, ma senza nessuno può scrivere al bot | nessuno (default deny) |
+| `ANNIE_TELEGRAM_ALLOWED_USERS` | no, ma senza nessuno può scrivere al bot (sì per la segreteria) | nessuno (default deny) |
+| `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | per la segreteria | |
+| `HUBSPOT_ACCESS_TOKEN` | per la segreteria | |
+| `ANNIE_SEGRETERIA_MODEL` | no | `anthropic` (anche `faux`) |
+| `ANNIE_SEGRETERIA_INSTANCE_ID` | no | `segreteria` |
+| `ANNIE_MAIL_POLL_SECONDS` | no | `60` |
+| `ANNIE_REQUIRE_VAT_NUMBER` | no | `false` |
 
 ## Struttura
 
@@ -63,10 +81,15 @@ Per provare senza chiave del modello: `ANNIE_MODEL_PROVIDER=faux` usa il modello
 src/core/                     nucleo: runtime, tenant/instance registry, segreti, audit, egress policy
 src/core/engine.ts            interfaccia DurableEngine
 src/core/adapters/pi-durable* unico punto che importa Pi Durable / pi-ai
-src/core/tools/               tool di esempio (slow_counter)
+src/core/completion.ts        interfaccia ModelClient (chiamate one-shot al modello)
+src/core/tools/               tool (slow_counter, mail, CRM, approvazione)
 src/channels/types.ts         interfaccia ChannelAdapter
-src/channels/telegram.ts      adapter Telegram (long polling, fetch)
+src/channels/telegram.ts      adapter Telegram (long polling, fetch, pulsanti)
+src/connectors/               Gmail e HubSpot (REST, fetch con egress), fake per i test
+src/segreteria/               pipeline, modello, callback, outbox delle schede, servizio
 src/gateway.ts                collega canali e nucleo
 src/main/telegram.ts          entry point di pnpm dev:telegram
-test/                         crash-resume, isolamento, egress, Telegram, confini, allowlist, lock, outbox
+src/main/segreteria.ts        entry point di pnpm dev:segreteria
+evals/segreteria/             35 casi, controlli deterministici (CI), giudice notturno
+test/                         crash-resume, isolamento, egress, Telegram, confini, allowlist, lock, outbox, connettori, segreteria
 ```
