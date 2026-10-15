@@ -4,6 +4,7 @@ Piattaforma agenti open source di Buildrs: un agente sempre attivo, sul modello 
 
 - Architettura: [`docs/architettura.md`](docs/architettura.md)
 - Stato della settimana 1: [`docs/week1.md`](docs/week1.md)
+- Stato della settimana 2 (allowlist, lock, outbox): [`docs/week2.md`](docs/week2.md)
 - Piano iniziale: [`docs/piano-iniziale.md`](docs/piano-iniziale.md)
 
 ## Requisiti
@@ -64,5 +65,5 @@ src/channels/types.ts         interfaccia ChannelAdapter
 src/channels/telegram.ts      adapter Telegram (long polling, fetch)
 src/gateway.ts                collega canali e nucleo
 src/main/telegram.ts          entry point di pnpm dev:telegram
-test/                         crash-resume, isolamento, egress, Telegram, confini dei moduli
+test/                         crash-resume, isolamento, egress, Telegram, confini, allowlist, lock, outbox
 ```
