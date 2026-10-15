@@ -84,6 +84,11 @@ export interface ChannelAdapter {
 	 * Taps can be redelivered after a crash, so the handler must be idempotent.
 	 */
 	onAction?(handler: (action: InboundAction) => Promise<void>): void;
+	/**
+	 * true: the gateway passes a refused message's error back to the adapter (the web, which
+	 * answers the person directly). Otherwise it is only logged (Telegram: silence to strangers).
+	 */
+	readonly surfacesRefusals?: boolean;
 	/** Resolves once the channel has accepted the whole message; rejects otherwise. */
 	send(message: OutboundMessage): Promise<void>;
 	/** Resolves once the channel has accepted the file. Optional: channels without files omit it. */

@@ -86,6 +86,23 @@ describe("web console", () => {
 		expect(JSON.stringify((await anna("/api/me")).body)).not.toContain("tokenHash");
 	});
 
+	it("a link revoked from another process ends its sessions at once; a person removed from the allowlist is refused", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const thread = (await anna("/api/instances/ops/threads", { method: "POST", body: "{}" })).body.thread;
+		await h.runtime.registry.setAllowedUsers("acme", "ops", "web", [h.luca.person.id]);
+		const refused = await anna(`/api/instances/ops/threads/${thread.id}/messages`, { method: "POST", body: JSON.stringify({ text: "ciao" }) });
+		// No longer a member: the instance is invisible to her, and nothing reached the transcript.
+		expect(refused.status).toBe(404);
+		expect(await h.channel.transcript(thread.id)).toEqual([]);
+		// The CLI, in another process, rotates Anna's link.
+		const { PeopleStore: People, SessionStore: Sessions } = await import("../src/web/auth.ts");
+		const dir = join(h.dataDir, "tenants", "acme");
+		await new People(dir).rotate(h.anna.person.id);
+		await new Sessions(dir).endAllOf(h.anna.person.id);
+		expect((await anna("/api/me")).status).toBe(401);
+	});
+
 	it("refuses changes without the X-Annie header (cross-site requests)", async () => {
 		const h = await setup();
 		const res = await fetch(`${h.base}/api/login`, { method: "POST", body: JSON.stringify({ token: h.anna.token }) });

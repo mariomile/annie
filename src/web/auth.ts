@@ -93,7 +93,6 @@ type Session = { readonly idHash: string; readonly personId: string; readonly ex
 /** Web sessions, persisted so a restart does not log everyone out. */
 export class SessionStore {
 	private readonly file: string;
-	private sessions: Session[] | undefined;
 
 	constructor(
 		tenantDir: string,
@@ -125,20 +124,17 @@ export class SessionStore {
 		await this.save((await this.load()).filter((s) => s.personId !== personId));
 	}
 
+	/** Read every time: the CLI revokes sessions from another process. */
 	private async load(): Promise<Session[]> {
-		if (this.sessions === undefined) {
-			try {
-				this.sessions = JSON.parse(await readFile(this.file, "utf8")) as Session[];
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				this.sessions = [];
-			}
+		try {
+			return JSON.parse(await readFile(this.file, "utf8")) as Session[];
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			return [];
 		}
-		return this.sessions;
 	}
 
 	private async save(sessions: Session[]): Promise<void> {
-		this.sessions = sessions;
 		await writeFileAtomic(this.file, `${JSON.stringify(sessions)}\n`);
 	}
 }

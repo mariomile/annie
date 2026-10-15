@@ -27,6 +27,7 @@ const THREAD_ID = /^p_[0-9a-f]{12}\.[0-9a-f]{12}$/;
  */
 export class WebChannel implements ChannelAdapter {
 	readonly name = "web";
+	readonly surfacesRefusals = true;
 	readonly events = new EventEmitter();
 	private handler: ((message: InboundMessage) => Promise<void>) | undefined;
 	private readonly dir: string;

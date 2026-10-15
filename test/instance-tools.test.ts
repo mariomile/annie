@@ -27,6 +27,15 @@ describe("tools per instance", () => {
 		await runtime.close();
 	});
 
+	it("messages submitted during a reopen wait for the new instance; two reopens queue", async () => {
+		const { runtime, replies } = await setup(async () => [createSlowCounter({ stepMs: 1 })]);
+		await runtime.openInstance("acme", "a");
+		const [first, second, submitted] = await Promise.allSettled([runtime.reopen("acme", "a"), runtime.reopen("acme", "a"), runtime.submit(ask("a", "during"))]);
+		expect([first.status, second.status, submitted.status]).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+		await waitFor(() => replies.a!.includes("Fatto. Ho contato fino a 2."));
+		await runtime.close();
+	});
+
 	it("what a tool set holds open is released when its instance closes or reopens", async () => {
 		const closed: string[] = [];
 		const { runtime } = await setup(async (record) => ({ tools: [], close: async () => void closed.push(record.id) }));

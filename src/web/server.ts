@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
+import { EgressDenied, UserNotAllowed } from "../core/errors.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import { ScheduleError } from "../core/schedules.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
@@ -155,6 +156,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		try {
 			return { entry: await channelOf(params[0] as string).post(params[1] as string, (person as Person).id, text) };
 		} catch (error) {
+			if (error instanceof UserNotAllowed) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questa istanza");
+			if (error instanceof EgressDenied) throw new HttpError(403, "Questa istanza non accetta messaggi dal web");
 			throw new HttpError(400, error instanceof Error ? error.message : String(error));
 		}
 	});

@@ -165,11 +165,19 @@ export class AnnieRuntime {
 	 */
 	async reopen(tenant: string, instance: string): Promise<{ pending: number; undelivered: number; reattached: number }> {
 		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
-		const opening = this.instances.get(key);
-		if (opening !== undefined) {
-			this.instances.delete(key);
-			await (await opening.catch(() => undefined))?.close();
-		}
+		const previous = this.instances.get(key);
+		// The map holds the reopening at once: a submit meanwhile waits for the new instance
+		// instead of hitting the old one's lock, and a second reopen queues behind this one.
+		const next = (async () => {
+			await (await previous?.catch(() => undefined))?.close();
+			return this.open(tenant, instance);
+		})();
+		next.catch(() => {
+			if (this.instances.get(key) === next) this.instances.delete(key);
+		});
+		this.instances.set(key, next);
+		await next;
+		// A later reopen may already have replaced this one: resume the current instance.
 		return this.resume(tenant, instance);
 	}
 
@@ -231,7 +239,8 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, (reply) => {
+		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -257,6 +266,8 @@ export class AnnieInstance {
 		private readonly outbox: Outbox,
 		private readonly audit: AuditLog,
 		private readonly releaseTools: () => Promise<void>,
+		/** The record as stored now: allowlist and channel changes apply without a reopen. */
+		private readonly fresh: () => Promise<InstanceRecord>,
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -268,8 +279,9 @@ export class AnnieInstance {
 
 	async submit(request: Omit<SubmitRequest, "tenantId" | "instanceId">): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
+		const record = await this.fresh();
 		try {
-			assertChannelAllowed(this.record.egress, request.channel);
+			assertChannelAllowed(record.egress, request.channel);
 		} catch (error) {
 			if (error instanceof EgressDenied) {
 				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });
@@ -279,7 +291,7 @@ export class AnnieInstance {
 		// Who may talk to the instance is decided here, in the core, for every channel: a
 		// rejected message never reaches the engine or the model, and gets no reply.
 		try {
-			assertUserAllowed(this.record.allowedUsers, request);
+			assertUserAllowed(record.allowedUsers, request);
 		} catch (error) {
 			if (error instanceof UserNotAllowed) {
 				await this.audit.append({

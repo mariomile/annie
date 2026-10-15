@@ -24,6 +24,7 @@ export function connectChannel(
 			await runtime.submit(await withAttachments(runtime, message));
 		} catch (error) {
 			log(`${adapter.name}: message not submitted: ${error instanceof Error ? error.message : String(error)}`);
+			if (adapter.surfacesRefusals === true) throw error;
 		}
 	});
 	return runtime.onReply((reply) => {
