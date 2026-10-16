@@ -1,31 +1,44 @@
 # Annie
 
-Piattaforma agenti open source di Buildrs: un agente sempre attivo, sul modello di Hermes Agent, per aziende attente a privacy e controllo dei processi. Self-host/on-prem, multi-tenant (un Owner, più Tenant, più Instance per tenant), egress default deny. Nucleo durevole: Pi Durable (`@earendil-works/pi-durable` 1.3.0, sperimentale), dietro un'interfaccia nostra. Telegram è il primo canale.
+Piattaforma agenti open source di Buildrs: un agente sempre attivo per aziende attente a privacy e controllo dei processi. Self-host/on-prem, un tenant per installazione, egress default deny, nessuna azione irreversibile senza approvazione. Nucleo durevole: Pi Durable (`@earendil-works/pi-durable` 1.3.0, sperimentale), dietro un'interfaccia nostra.
 
-- Architettura: [`docs/architettura.md`](docs/architettura.md)
-- Stato della settimana 1: [`docs/week1.md`](docs/week1.md)
-- Stato della settimana 2 (allowlist, lock, outbox): [`docs/week2.md`](docs/week2.md)
-- Stato della settimana 3 (segreteria commerciale): [`docs/week3.md`](docs/week3.md)
-- Stato della settimana 4 (segreteria end-to-end): [`docs/week4.md`](docs/week4.md)
-- **Stato del progetto e cose da fare: [`docs/stato-e-todo.md`](docs/stato-e-todo.md)**
-- Come contribuire: [`docs/contributing.md`](docs/contributing.md)
-- Piano iniziale: [`docs/piano-iniziale.md`](docs/piano-iniziale.md)
+Cosa fa:
+
+- **Parla** con le persone su Telegram e nella console web, riprende le conversazioni dopo un crash e segnala le risposte che potrebbero arrivare due volte.
+- **Usa i vostri sistemi** tramite connettori MCP, ognuno limitato al suo host.
+- **Lavora con i file**: li crea, li legge, li invia e riceve quelli caricati.
+- **È proattiva**: esegue task programmati, una volta o a ripetizione.
+- **Si estende da sola**: scrive nuovi tool, che girano isolati in sandbox e solo dopo l'approvazione di una persona.
+- **Segreteria commerciale**: legge le richieste di preventivo da Gmail, aggiorna HubSpot, prepara la bozza e la invia solo dopo Approva.
+
+Documenti: [prodotto e checklist](docs/prodotto.md) · [runbook](docs/runbook.md) · [architettura](docs/architettura.md) · [glossario](GLOSSARY.md) · [decisioni](docs/adr/) · [stato e cose da fare](docs/stato-e-todo.md) · settimane [1](docs/week1.md), [2](docs/week2.md), [3](docs/week3.md), [4](docs/week4.md), [5](docs/week5.md) · [come contribuire](docs/contributing.md) · [piano iniziale](docs/piano-iniziale.md)
 
 ## Requisiti
 
-- Node.js 22.19 o successivo (usa `node:sqlite`)
-- pnpm 10
+- Node.js 22.19 o successivo (usa `node:sqlite`) e pnpm 10, oppure Docker.
 
 ## Avvio
 
 ```bash
+cp .env.example .env     # basta ANTHROPIC_API_KEY
 pnpm install
-pnpm typecheck
-pnpm test          # nessuna chiave, nessuna chiamata di rete
-pnpm build         # compila in dist/
+pnpm start               # al primo avvio il link dell'owner è in data/owner-login-link.txt
 ```
 
-### Bot Telegram
+Con Docker: `docker compose up -d --build`, poi `docker compose exec annie cat /data/owner-login-link.txt`. Installazione, persone, Telegram, segreteria, connettori, backup e aggiornamenti: [`docs/runbook.md`](docs/runbook.md).
+
+Per provare senza chiave: `ANNIE_MODEL_PROVIDER=faux pnpm start` usa un modello locale deterministico (eco; `/tool <nome> <json>` chiama un tool).
+
+## Sviluppo
+
+```bash
+pnpm typecheck
+pnpm test          # nessuna chiave, nessuna chiamata di rete esterna
+pnpm eval:segreteria
+pnpm build
+```
+
+### Solo il bot Telegram (sviluppo)
 
 ```bash
 cp .env.example .env
@@ -44,7 +57,7 @@ annie: Missing environment variable: ANTHROPIC_API_KEY. Set it in .env (see .env
 
 Per provare senza chiave del modello: `ANNIE_MODEL_PROVIDER=faux` usa il modello locale deterministico (risponde con un'eco; "conta fino a 5" chiama il tool `slow_counter`). Il token Telegram resta necessario.
 
-### Segreteria commerciale
+### Solo la segreteria (sviluppo)
 
 ```bash
 cp .env.example .env
@@ -78,18 +91,18 @@ Legge la casella Gmail ogni minuto, prepara per ogni richiesta di preventivo una
 ## Struttura
 
 ```text
-src/core/                     nucleo: runtime, tenant/instance registry, segreti, audit, egress policy
-src/core/engine.ts            interfaccia DurableEngine
+src/app.ts                    processo unico: istanze, canali, scheduler, segreteria, console web
+src/main/                     entry point (annie = pnpm start, cli = pnpm annie, telegram, segreteria)
+src/core/                     nucleo: runtime, tenant/istanze, segreti, audit, egress, outbox
+src/core/workspace.ts         file per istanza; schedules.ts + scheduler.ts + cron.ts: task programmati
+src/core/proposals.ts         tool proposti; approvals.ts decisioni; sandbox.ts esecuzione isolata
+src/core/tools/               tool dell'istanza: file_*, schedule_*, tool_propose, tool approvati
 src/core/adapters/pi-durable* unico punto che importa Pi Durable / pi-ai
-src/core/completion.ts        interfaccia ModelClient (chiamate one-shot al modello)
-src/core/tools/               tool (slow_counter, mail, CRM, approvazione)
-src/channels/types.ts         interfaccia ChannelAdapter
-src/channels/telegram.ts      adapter Telegram (long polling, fetch, pulsanti)
-src/connectors/               Gmail e HubSpot (REST, fetch con egress), fake per i test
-src/segreteria/               pipeline, modello, callback, outbox delle schede, servizio
+src/channels/                 interfaccia ChannelAdapter, adapter Telegram (pulsanti, documenti)
+src/connectors/               MCP, Gmail, HubSpot, fetch con egress
+src/segreteria/               pipeline, modello, callback, schede, servizio, avvio
+src/web/                      server HTTP, accesso, canale web, console (ui/: HTML, CSS, JS, font)
 src/gateway.ts                collega canali e nucleo
-src/main/telegram.ts          entry point di pnpm dev:telegram
-src/main/segreteria.ts        entry point di pnpm dev:segreteria
 evals/segreteria/             35 casi, controlli deterministici (CI), giudice notturno
-test/                         crash-resume, isolamento, egress, Telegram, confini, allowlist, lock, outbox, connettori, segreteria
+test/                         test (vitest), con processi figli reali per i crash
 ```

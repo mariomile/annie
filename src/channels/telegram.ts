@@ -1,4 +1,4 @@
-import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundMessage } from "./types.ts";
+import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
 
 export type TelegramAdapterOptions = {
 	readonly token: string;
@@ -13,6 +13,8 @@ export type TelegramAdapterOptions = {
 	/** Wait after a failed poll before the next one. */
 	readonly retryDelayMs?: number;
 	readonly log?: (message: string) => void;
+	/** May this user's files be downloaded? Default: yes. Files of strangers should not. */
+	readonly mayDownload?: (userId: string) => Promise<boolean>;
 };
 
 /** Telegram's limit for one message's text. */
@@ -20,6 +22,12 @@ export const TELEGRAM_MAX_TEXT = 4096;
 
 /** A handler that fails this many times on the same update gives it up. */
 const MAX_UPDATE_FAILURES = 3;
+
+/** Largest file a bot can download. */
+const TELEGRAM_MAX_DOWNLOAD = 20 * 1024 * 1024;
+
+/** Telegram's limit for a document caption. */
+const TELEGRAM_MAX_CAPTION = 1024;
 
 /** Telegram's limit for a button's callback_data, in bytes. */
 export const TELEGRAM_MAX_CALLBACK_DATA = 64;
@@ -34,6 +42,8 @@ type TelegramUpdate = {
 		chat: { id: number };
 		from?: { id: number };
 		text?: string;
+		caption?: string;
+		document?: { file_id: string; file_name?: string; file_size?: number };
 	};
 	callback_query?: {
 		id: string;
@@ -92,6 +102,16 @@ export class TelegramAdapter implements ChannelAdapter {
 		}
 	}
 
+	/** sendDocument, multipart. Telegram bots can send files up to 50 MB. */
+	async sendFile(file: OutboundFile): Promise<void> {
+		const form = new FormData();
+		form.set("chat_id", file.threadId);
+		const caption = [file.possibleDuplicate === true ? DUPLICATE_NOTICE : undefined, file.caption].filter(Boolean).join("\n\n");
+		if (caption !== "") form.set("caption", caption.slice(0, TELEGRAM_MAX_CAPTION));
+		form.set("document", new Blob([Uint8Array.from(file.data)]), file.name);
+		await this.call("sendDocument", form);
+	}
+
 	/** One getUpdates round; exposed for tests. Returns the number of updates handled. */
 	async pollOnce(signal?: AbortSignal): Promise<number> {
 		const updates = await this.call<TelegramUpdate[]>(
@@ -130,16 +150,43 @@ export class TelegramAdapter implements ChannelAdapter {
 	private async dispatch(update: TelegramUpdate): Promise<void> {
 		if (update.callback_query !== undefined) return this.handleTap(update.callback_query);
 		const message = update.message;
-		if (message?.text === undefined || this.handler === undefined) return;
+		if (message === undefined || this.handler === undefined) return;
+		const text = message.text ?? message.caption ?? "";
+		if (message.text === undefined && message.document === undefined) return;
+		const userId = String(message.from?.id ?? message.chat.id);
+		const attachments = message.document === undefined || !((await this.options.mayDownload?.(userId)) ?? true) ? [] : [await this.download(message.document)];
 		await this.handler({
 			tenantId: this.options.tenantId,
 			instanceId: this.options.instanceId,
 			channel: this.name,
 			threadId: String(message.chat.id),
 			userId: String(message.from?.id ?? message.chat.id),
-			text: message.text,
+			text,
 			messageId: `${message.chat.id}:${message.message_id}`,
+			...(attachments.length === 0 ? {} : { attachments }),
 		});
+	}
+
+	/** getFile, then the file itself. Bots can download files up to 20 MB. */
+	private async download(document: { file_id: string; file_name?: string; file_size?: number }): Promise<{ name: string; data: Uint8Array }> {
+		if ((document.file_size ?? 0) > TELEGRAM_MAX_DOWNLOAD) throw new ChannelRefused(`Telegram file too large to download: ${document.file_size} bytes`);
+		const file = await this.call<{ file_path?: string }>("getFile", { file_id: document.file_id });
+		if (file.file_path === undefined) throw new ChannelRefused("Telegram getFile returned no file_path");
+		const response = await this.fetch(`${this.apiBase}/file/bot${this.options.token}/${file.file_path}`);
+		// Never include the URL in errors: it contains the bot token.
+		if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
+		// file_size can be missing: count while reading.
+		const chunks: Uint8Array[] = [];
+		let size = 0;
+		for await (const chunk of response.body ?? []) {
+			size += (chunk as Uint8Array).length;
+			if (size > TELEGRAM_MAX_DOWNLOAD) {
+				await response.body?.cancel().catch(() => {});
+				throw new ChannelRefused(`Telegram file too large to download: over ${TELEGRAM_MAX_DOWNLOAD} bytes`);
+			}
+			chunks.push(chunk as Uint8Array);
+		}
+		return { name: document.file_name ?? file.file_path.split("/").at(-1) ?? "file", data: new Uint8Array(Buffer.concat(chunks)) };
 	}
 
 	private async handleTap(tap: NonNullable<TelegramUpdate["callback_query"]>): Promise<void> {
@@ -172,11 +219,12 @@ export class TelegramAdapter implements ChannelAdapter {
 		}
 	}
 
-	private async call<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+	private async call<T>(method: string, body: Record<string, unknown> | FormData, signal?: AbortSignal): Promise<T> {
+		const multipart = body instanceof FormData;
 		const response = await this.fetch(`${this.apiBase}/bot${this.options.token}/${method}`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(body),
+			...(multipart ? {} : { headers: { "content-type": "application/json" } }),
+			body: multipart ? body : JSON.stringify(body),
 			...(signal === undefined ? {} : { signal }),
 		});
 		const payload = (await response.json()) as TelegramResponse<T>;

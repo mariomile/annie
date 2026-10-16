@@ -14,7 +14,11 @@ export type OutboxEntry = {
 	readonly channel: string;
 	readonly threadId: string;
 	/** Undefined while the engine has not answered (as far as this outbox knows). */
-	readonly reply?: { readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string };
+	readonly reply?:
+		| { readonly status: "answered"; readonly text: string }
+		| { readonly status: "unanswered"; readonly reason: string }
+		/** A workspace file the instance sends to the thread. */
+		| { readonly status: "file"; readonly path: string; readonly caption?: string };
 	readonly createdAt: string;
 	/** Times the entry was handed to a channel. Above 1, the user may have received it before. */
 	readonly attempts: number;

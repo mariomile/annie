@@ -4,12 +4,13 @@ Aggiornato al 15 ottobre 2026. Lavoro ripreso su richiesta di Mario dopo la paus
 
 ## Dove siamo
 
-Su `main` ci sono le settimane 1, 2 e 3, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. La settimana 4 è sul branch `week-4`, in attesa di PR e dell'ok di Mario.
+Su `main` ci sono le settimane 1, 2 e 3, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le settimane 4 e 5 sono sui branch `week-4` e `week-5`, in attesa di PR e dell'ok di Mario.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
 - CI: typecheck, test ed eval su ogni PR, con la regola di un PR per settimana ([contributing.md](contributing.md)).
 - Settimana 3: logica della segreteria commerciale (pratiche, approvazione obbligatoria, routing dei modelli, tetti di spesa, 35 eval), provata solo con fake ([week3.md](week3.md), [spec](spec-segreteria-commerciale.md)).
+- Settimana 5 (branch `week-5`, parte da `week-4`): agente generale (connettori MCP, file, task programmati, tool proposti in sandbox con approvazione), console web, processo unico `pnpm start`, Docker e runbook ([week5.md](week5.md), [prodotto finito](prodotto.md)).
 - Settimana 4 (branch `week-4`): segreteria funzionante end-to-end. `pnpm dev:segreteria` con Gmail e HubSpot live, pulsanti su Telegram, estrazione con Haiku e bozza con Sonnet sotto i controlli della CI, avviso doppioni, giudice notturno sulla pipeline vera ([week4.md](week4.md)).
 
 Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](architettura.md).
@@ -26,17 +27,24 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [ ] `ANNIE_JUDGE_MODEL_KEY` tra i secret del repo, per il giudice notturno
 - [ ] Verifiche dal vivo: Gmail conserva il nostro `Message-ID`? Valori di `hs_lead_status` del portale (`GET /crm/v3/properties/contacts/hs_lead_status`). Costo per pratica (stima da verificare: 1-2 centesimi di dollaro). Primo report del giudice
 
-### Settimana 5 (proposta)
+### Decisioni che spettano a Mario
+
+- [x] Licenza: Apache-2.0, confermata da Mario il 16 ottobre 2026
+- [ ] Merge di `week-4` e `week-5` su `main`: PR aperte il 16 ottobre 2026 su richiesta di Mario, il merge resta suo
+
+### Dopo (proposta)
 
 - [ ] Ritentativi nello stesso processo, con backoff, per risposte e schede
-- [ ] Pulizia delle outbox
-- [ ] Docker Compose e backup, dal piano iniziale (pacchetto vendibile)
+- [ ] Pulizia delle outbox e dei file vecchi
+- [ ] Sandbox sotto un utente di sistema separato, o in container
+- [ ] Creare istanze dalla console (oggi da configurazione)
+- [ ] 2FA per la console
 
 ### Prima di rendere pubblico il repo
 
-- [ ] Aggiungere LICENSE
-- [ ] Scrivere un runbook per installazione e operatività
-- [ ] Aggiornare le action della CI oltre Node 20 (oggi danno solo avvisi)
+- [x] LICENSE (Apache-2.0, confermata)
+- [x] Runbook per installazione e operatività ([runbook.md](runbook.md))
+- [x] Action della CI su Node 24 (`checkout`, `setup-node`, `upload-artifact` v5). Resta `pnpm/action-setup@v4`: da verificare alla prima PR se dà ancora l'avviso
 
 ## Chi fa cosa
 

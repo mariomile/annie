@@ -20,6 +20,8 @@ export type InboundMessage = {
 	readonly text: string;
 	/** Channel-native message ID, used to drop redeliveries. */
 	readonly messageId?: string;
+	/** Files that came with the message; the gateway stores them in the workspace. */
+	readonly attachments?: readonly { readonly name: string; readonly data: Uint8Array }[];
 };
 
 /** A tap on a button of an earlier outbound message (Telegram: a callback query). */
@@ -60,6 +62,15 @@ export type OutboundMessage = {
 	readonly buttons?: readonly ActionButton[];
 };
 
+/** A file to deliver through a channel. */
+export type OutboundFile = Omit<OutboundMessage, "text" | "buttons"> & {
+	readonly name: string;
+	readonly data: Uint8Array;
+	readonly caption?: string;
+	/** Where the file is in the instance's workspace, for channels that link instead of uploading. */
+	readonly path?: string;
+};
+
 export interface ChannelAdapter {
 	readonly name: string;
 	/** Start receiving. Resolves once the adapter is running. */
@@ -73,8 +84,15 @@ export interface ChannelAdapter {
 	 * Taps can be redelivered after a crash, so the handler must be idempotent.
 	 */
 	onAction?(handler: (action: InboundAction) => Promise<void>): void;
+	/**
+	 * true: the gateway passes a refused message's error back to the adapter (the web, which
+	 * answers the person directly). Otherwise it is only logged (Telegram: silence to strangers).
+	 */
+	readonly surfacesRefusals?: boolean;
 	/** Resolves once the channel has accepted the whole message; rejects otherwise. */
 	send(message: OutboundMessage): Promise<void>;
+	/** Resolves once the channel has accepted the file. Optional: channels without files omit it. */
+	sendFile?(file: OutboundFile): Promise<void>;
 }
 
 /**

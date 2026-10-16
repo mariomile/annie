@@ -19,6 +19,8 @@ export class ConnectorHttpError extends Error {
 	}
 }
 
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
 /**
  * A fetch that only reaches `hosts`, and only if the instance's egress policy lists
  * `connector`. The policy is checked on every request: it is the last word.
@@ -32,7 +34,9 @@ export function egressFetch(
 	return (async (input: string | URL | Request, init?: RequestInit) => {
 		assertConnectorAllowed(await policy(), connector);
 		const url = new URL(input instanceof Request ? input.url : String(input));
-		if (url.protocol !== "https:" || !hosts.includes(url.hostname)) throw new EgressDenied("connector", `${connector}@${url.hostname}`);
+		// Plain http only to this machine (a local MCP server); everything else is https.
+		const secure = url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname));
+		if (!secure || !hosts.includes(url.hostname)) throw new EgressDenied("connector", `${connector}@${url.hostname}`);
 		// A redirect would reach a host that was never checked.
 		return base(input, { ...init, redirect: "error" });
 	}) as typeof fetch;

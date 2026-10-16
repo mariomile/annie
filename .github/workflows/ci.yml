@@ -11,14 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4   # version read from packageManager (pnpm@10.17.1)
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Web console syntax
+        run: node --check src/web/ui/app.js
       - run: pnpm test
       - name: Deterministic segreteria evals (incl. PII checks)
         run: pnpm eval:segreteria

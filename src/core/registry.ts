@@ -27,6 +27,8 @@ export type InstanceRecord = {
 	readonly egress: EgressPolicy;
 	/** Channel → user IDs allowed to talk to this instance. Missing channel: nobody. */
 	readonly allowedUsers: AllowedUsers;
+	/** Channel → user IDs who may approve this instance's actions (tools proposti). Missing: nobody. */
+	readonly approvers?: AllowedUsers;
 	readonly instructions?: string;
 	readonly createdAt: string;
 };
@@ -39,6 +41,7 @@ export type CreateInstanceInput = {
 	readonly egress?: EgressPolicy;
 	/** Omitted: nobody may talk to the instance on any channel. */
 	readonly allowedUsers?: AllowedUsers;
+	readonly approvers?: AllowedUsers;
 	readonly instructions?: string;
 };
 
@@ -79,6 +82,7 @@ export class TenantRegistry {
 			model: input.model,
 			egress: input.egress ?? DENY_ALL,
 			allowedUsers: input.allowedUsers ?? {},
+			...(input.approvers === undefined ? {} : { approvers: input.approvers }),
 			...(input.instructions === undefined ? {} : { instructions: input.instructions }),
 			createdAt: new Date().toISOString(),
 		};
@@ -113,6 +117,22 @@ export class TenantRegistry {
 			channel,
 			users: record.allowedUsers[channel]?.length ?? 0,
 		});
+		return record;
+	}
+
+	/** Change name, instructions or approvers. Takes effect the next time the instance is opened. */
+	async updateInstance(tenant: string, id: string, change: { name?: string; instructions?: string | null; approvers?: AllowedUsers }): Promise<InstanceRecord> {
+		const current = await this.getInstance(tenant, id);
+		const { instructions: _old, ...rest } = current;
+		const instructions = change.instructions === undefined ? current.instructions : change.instructions ?? undefined;
+		const record: InstanceRecord = {
+			...rest,
+			...(change.name === undefined ? {} : { name: change.name }),
+			...(change.approvers === undefined ? {} : { approvers: change.approvers }),
+			...(instructions === undefined ? {} : { instructions }),
+		};
+		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.updated", instanceId: record.id, fields: Object.keys(change).join(",") });
 		return record;
 	}
 

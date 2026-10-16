@@ -31,6 +31,7 @@ export function createProvider(id: string): Provider {
  * transcript, so a new process after a crash continues exactly where the old one was.
  *
  * - "conta fino a N" / "count to N" → calls the slow_counter tool with n = N
+ * - "/tool <name> <json args>" → calls that tool (for tests and development)
  * - after a tool result → "Fatto. <tool output>"
  * - anything else → echoes the message
  */
@@ -46,12 +47,23 @@ function createDevModel(): Provider {
 }
 
 function respond(messages: readonly Message[]): AssistantMessage {
-	const last = messages.at(-1);
+	// Pi appends system entries (tool or instruction changes) after the person's message.
+	const last = messages.filter((m) => m.role === "user" || m.role === "toolResult" || m.role === "assistant").at(-1);
 	if (last?.role === "toolResult") {
 		const output = last.content.map((block) => (block.type === "text" ? block.text : "")).join("");
 		return fauxAssistantMessage(`Fatto. ${output}`);
 	}
 	const text = last?.role === "user" ? userText(last.content) : "";
+	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec(text.trim());
+	if (direct?.[1] !== undefined) {
+		let args: Record<string, unknown> = {};
+		try {
+			args = direct[2] ? (JSON.parse(direct[2]) as Record<string, unknown>) : {};
+		} catch {
+			return fauxAssistantMessage(`Argomenti non validi per ${direct[1]}: serve JSON.`);
+		}
+		return fauxAssistantMessage(fauxToolCall(direct[1], args as never), { stopReason: "toolUse" });
+	}
 	const count = /(?:conta(?:re)? fino a|count to)\s+(\d+)/i.exec(text);
 	if (count?.[1] !== undefined) {
 		return fauxAssistantMessage(fauxToolCall("slow_counter", { n: Number(count[1]) }), { stopReason: "toolUse" });

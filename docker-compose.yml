@@ -1,0 +1,20 @@
+# docker compose up -d   ·   first start: docker compose exec annie cat /data/owner-login-link.txt
+services:
+  annie:
+    build: .
+    image: annie:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ANNIE_DATA_DIR: /data
+      ANNIE_WEB_HOST: 0.0.0.0
+      ANNIE_WEB_PORT: "8080"
+    volumes:
+      - annie-data:/data
+    # Only on this machine: put a reverse proxy with https in front (see docs/runbook.md).
+    ports:
+      - "127.0.0.1:8080:8080"
+    stop_grace_period: 30s
+
+volumes:
+  annie-data:

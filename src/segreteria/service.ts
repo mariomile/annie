@@ -8,7 +8,7 @@ import type { ModelClient } from "../core/completion.ts";
 import type { ModelRoles } from "../core/model-routing.ts";
 import { callbackData, type Pratica, PracticeStore, type TenantSegreteriaConfig } from "../core/practice.ts";
 import { romeDayKey, TELEGRAM_HARD_CAP, type UsageLedger } from "../core/usage.ts";
-import { type CallbackDeps, handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "./callbacks.ts";
+import { type CallbackDeps, type CallbackResult, handleEditMessage, handleTelegramCallback, recoverAfterCrash } from "./callbacks.ts";
 import type { ChecksConfig } from "./checks.ts";
 import { maybeDelivered, type Notification, NotificationOutbox, type NotificationEntry } from "./notifications.ts";
 import { forceQuote, type PipelineDeps, processInboundMail } from "./pipeline.ts";
@@ -97,6 +97,31 @@ export class SegreteriaService {
 		this.stopped = true;
 		if (this.timer !== undefined) clearTimeout(this.timer);
 		await this.queue.catch(() => {});
+	}
+
+	/**
+	 * An action from outside Telegram (the web console), by someone the caller has checked is
+	 * an approver. Same queue and same rules as a tap; `draftVersion` is the version the person
+	 * saw, so acting on an outdated draft is ignored.
+	 */
+	act(
+		by: { userId: string },
+		praticaId: string,
+		action: "approve" | "edit" | "discard",
+		options: { draftVersion?: number; text?: string; actionId: string },
+	): Promise<CallbackResult> {
+		return this.serial(async () => {
+			const deps = { ...this.callbackDeps(), allowedUserIds: new Set([...this.sales, by.userId]) };
+			const pratica = await this.practices.get(praticaId);
+			if (pratica === undefined) return { kind: "ignored", reason: "unknown_callback" } as const;
+			const version = options.draftVersion ?? pratica.draftVersion;
+			if (action === "edit" && options.text !== undefined && options.text.trim() !== "") {
+				const opened = await handleTelegramCallback(deps, { userId: by.userId, callbackData: callbackData(praticaId, version, "edit") });
+				if (opened.kind !== "handled") return opened;
+				return handleEditMessage(deps, { userId: by.userId, praticaId, text: options.text });
+			}
+			return handleTelegramCallback(deps, { userId: by.userId, callbackData: callbackData(praticaId, version, action), actionId: options.actionId });
+		});
 	}
 
 	/** One mailbox round. Exposed for tests. */

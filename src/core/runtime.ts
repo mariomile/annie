@@ -5,7 +5,10 @@ import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
-import { engineDir, lockFile, outboxDir } from "./paths.ts";
+import { customToolsDir, engineDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { ProposalStore } from "./proposals.ts";
+import { ScheduleStore } from "./schedules.ts";
+import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
@@ -38,13 +41,24 @@ export type Reply = {
 	 * earlier try died before reaching the channel.
 	 */
 	readonly possibleDuplicate: boolean;
-} & ({ readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string });
+} & (
+	| { readonly status: "answered"; readonly text: string }
+	| { readonly status: "unanswered"; readonly reason: string }
+	/** A file of the instance's workspace to send to the thread. */
+	| { readonly status: "file"; readonly path: string; readonly caption?: string }
+);
+
+/** Tools of an instance, with what to release when it closes (connector connections). */
+export type ToolSet = readonly AnnieTool[] | { readonly tools: readonly AnnieTool[]; readonly close: () => Promise<void> };
 
 export type RuntimeOptions = {
 	readonly dataDir: string;
 	readonly engine: DurableEngine;
-	/** Tools every instance gets. */
-	readonly tools?: readonly AnnieTool[];
+	/**
+	 * Tools of an instance: the same list for all, or computed from the instance's record
+	 * when it is opened (connectors, approved tools). A changed list applies on `reopen`.
+	 */
+	readonly tools?: readonly AnnieTool[] | ((record: InstanceRecord) => Promise<ToolSet>);
 };
 
 /**
@@ -63,6 +77,44 @@ export class AnnieRuntime {
 
 	secrets(tenant: string): TenantSecrets {
 		return new TenantSecrets(this.options.dataDir, tenantId(tenant));
+	}
+
+	/** The tools proposti of an instance. */
+	proposals(tenant: string, instance: string): ProposalStore {
+		return new ProposalStore(proposalsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Folder of an instance's approved tools (one subfolder each) and of the sandbox runner. */
+	customToolsDir(tenant: string, instance: string): string {
+		return customToolsDir(this.options.dataDir, tenantId(tenant), instanceId(instance));
+	}
+
+	/**
+	 * A message from the instance to a thread that is not a reply (a decision, a notice),
+	 * through the outbox like a reply. The same `key` is sent once.
+	 */
+	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+		await (await this.openInstance(tenant, instance)).sendMessage(message);
+	}
+
+	/** The tasks programmati of an instance. */
+	schedules(tenant: string, instance: string): ScheduleStore {
+		return new ScheduleStore(schedulesDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The files of an instance. Reading them needs no open instance. */
+	workspace(tenant: string, instance: string): Workspace {
+		return new Workspace(workspaceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/**
+	 * Send a workspace file to a thread, through the outbox like a reply: at least once,
+	 * the same `key` at most once per process and never again after the channel accepted it.
+	 */
+	async sendFile(tenant: string, instance: string, file: { channel: string; threadId: string; path: string; caption?: string; key: string }): Promise<void> {
+		const opened = await this.openInstance(tenant, instance);
+		if ((await this.workspace(tenant, instance).stat(file.path)) === undefined) throw new Error(`File not found in the workspace: ${file.path}`);
+		await opened.sendFile(file);
 	}
 
 	audit(tenant: string): AuditLog {
@@ -85,6 +137,14 @@ export class AnnieRuntime {
 		return (await this.openInstance(request.tenantId, request.instanceId)).submit(request);
 	}
 
+	async submitScheduled(
+		tenant: string,
+		instance: string,
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined },
+	): Promise<{ submissionId: string }> {
+		return (await this.openInstance(tenant, instance)).submitScheduled(request);
+	}
+
 	/**
 	 * Resume one instance: hand undelivered replies of earlier processes to the channels
 	 * again, then continue unfinished engine work. Connect channels before calling it.
@@ -101,6 +161,28 @@ export class AnnieRuntime {
 		const opening = this.instances.get(`${reply.tenantId}/${reply.instanceId}`);
 		if (opening === undefined) throw new Error(`Instance ${reply.tenantId}/${reply.instanceId} is not open; the reply stays in the outbox`);
 		await (await opening).markDelivered(reply.deliveryId);
+	}
+
+	/**
+	 * Close an open instance and open it again, so a changed record or tool list applies.
+	 * Work in flight resumes as after a restart: unsent replies go out from the outbox.
+	 */
+	async reopen(tenant: string, instance: string): Promise<{ pending: number; undelivered: number; reattached: number }> {
+		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		const previous = this.instances.get(key);
+		// The map holds the reopening at once: a submit meanwhile waits for the new instance
+		// instead of hitting the old one's lock, and a second reopen queues behind this one.
+		const next = (async () => {
+			await (await previous?.catch(() => undefined))?.close();
+			return this.open(tenant, instance);
+		})();
+		next.catch(() => {
+			if (this.instances.get(key) === next) this.instances.delete(key);
+		});
+		this.instances.set(key, next);
+		await next;
+		// A later reopen may already have replaced this one: resume the current instance.
+		return this.resume(tenant, instance);
 	}
 
 	onReply(listener: (reply: Reply) => void): () => void {
@@ -133,28 +215,36 @@ export class AnnieRuntime {
 		// Before anything touches the instance's storage: one process per instance.
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
+		let toolSet: ToolSet = [];
 		try {
+			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
 				storageDir,
 				model: record.model,
 				// Only this tenant's secrets, and only for providers the policy allows.
 				apiKey: async (provider) =>
 					record.egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined,
-				tools: this.options.tools ?? [],
+				tools: "tools" in toolSet ? toolSet.tools : toolSet,
 				...(record.instructions === undefined ? {} : { instructions: record.instructions }),
 			});
 		} catch (error) {
+			if ("close" in toolSet) await toolSet.close().catch(() => {});
 			lock.release();
 			throw error;
 		}
 		try {
 			await audit.append({ type: "instance.opened", instanceId: record.id, modelProvider: record.model.provider });
 		} catch (error) {
-			await session.close().finally(() => lock.release());
+			await session
+				.close()
+				.then(() => ("close" in toolSet ? toolSet.close() : undefined))
+				.finally(() => lock.release());
 			throw error;
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
-		return new AnnieInstance(record, session, lock, outbox, audit, (reply) => {
+		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
+		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -179,6 +269,9 @@ export class AnnieInstance {
 		private readonly lock: InstanceLock,
 		private readonly outbox: Outbox,
 		private readonly audit: AuditLog,
+		private readonly releaseTools: () => Promise<void>,
+		/** The record as stored now: allowlist and channel changes apply without a reopen. */
+		private readonly fresh: () => Promise<InstanceRecord>,
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -190,8 +283,9 @@ export class AnnieInstance {
 
 	async submit(request: Omit<SubmitRequest, "tenantId" | "instanceId">): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
+		const record = await this.fresh();
 		try {
-			assertChannelAllowed(this.record.egress, request.channel);
+			assertChannelAllowed(record.egress, request.channel);
 		} catch (error) {
 			if (error instanceof EgressDenied) {
 				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });
@@ -201,7 +295,7 @@ export class AnnieInstance {
 		// Who may talk to the instance is decided here, in the core, for every channel: a
 		// rejected message never reaches the engine or the model, and gets no reply.
 		try {
-			assertUserAllowed(this.record.allowedUsers, request);
+			assertUserAllowed(record.allowedUsers, request);
 		} catch (error) {
 			if (error instanceof UserNotAllowed) {
 				await this.audit.append({
@@ -223,6 +317,44 @@ export class AnnieInstance {
 			userId: request.userId,
 			chars: request.text.length,
 		});
+		return this.admit(request);
+	}
+
+	/**
+	 * A task programmato firing: it comes from the instance's own schedule, not from a person,
+	 * so the allowlist does not apply (only allowed users can create schedules). The channel
+	 * must still be allowed. `messageId` makes a refire after a crash idempotent.
+	 */
+	async submitScheduled(request: {
+		channel: string;
+		threadId: string;
+		text: string;
+		messageId: string;
+		scheduleId: string;
+		/** The person it acts for: must still be allowed, or the run is refused. */
+		onBehalfOf: { channel: string; userId: string } | undefined;
+	}): Promise<{ submissionId: string }> {
+		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
+		const record = await this.fresh();
+		const person = request.onBehalfOf;
+		const allowed = person !== undefined && (record.allowedUsers[person.channel] ?? []).includes(person.userId);
+		if (!allowed) {
+			await this.audit.append({ type: "user.denied", instanceId: this.record.id, channel: person?.channel ?? request.channel, userId: person?.userId ?? "(none)", threadId: request.threadId, reason: "schedule_person_not_allowed", scheduleId: request.scheduleId });
+			throw new UserNotAllowed(person?.channel ?? request.channel, person?.userId ?? "(none)", request.threadId, "user_not_in_allowlist");
+		}
+		try {
+			assertChannelAllowed(record.egress, request.channel);
+		} catch (error) {
+			if (error instanceof EgressDenied) {
+				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });
+			}
+			throw error;
+		}
+		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId });
+		return this.admit(request);
+	}
+
+	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }): Promise<{ submissionId: string }> {
 		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
 		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId);
 		// Record the admitted submission in the outbox: if the process dies after the engine
@@ -279,6 +411,38 @@ export class AnnieInstance {
 		});
 	}
 
+	async sendMessage(message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+		assertChannelAllowed(this.record.egress, message.channel);
+		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.key}`;
+		await this.serial(key, async () => {
+			const existing = await this.outbox.get(key);
+			if (existing?.deliveredAt !== undefined) return;
+			await this.handOff(
+				existing ?? { key, submissionId: "message", channel: message.channel, threadId: message.threadId, reply: { status: "answered", text: message.text }, createdAt: new Date().toISOString(), attempts: 0 },
+			);
+		});
+	}
+
+	async sendFile(file: { channel: string; threadId: string; path: string; caption?: string; key: string }): Promise<void> {
+		assertChannelAllowed(this.record.egress, file.channel);
+		const key = `file:${this.record.tenantId}/${this.record.id}/${file.key}`;
+		await this.serial(key, async () => {
+			const existing = await this.outbox.get(key);
+			if (existing?.deliveredAt !== undefined) return;
+			await this.handOff(
+				existing ?? {
+					key,
+					submissionId: "file",
+					channel: file.channel,
+					threadId: file.threadId,
+					reply: { status: "file", path: file.path, ...(file.caption === undefined ? {} : { caption: file.caption }) },
+					createdAt: new Date().toISOString(),
+					attempts: 0,
+				},
+			);
+		});
+	}
+
 	/** Replies not yet confirmed by their channel, oldest first. */
 	async undelivered(): Promise<OutboxEntry[]> {
 		return (await this.outbox.list()).filter((entry) => entry.reply !== undefined && entry.deliveredAt === undefined);
@@ -294,6 +458,7 @@ export class AnnieInstance {
 		try {
 			await this.session.close();
 			await Promise.allSettled(this.chains.values());
+			await this.releaseTools().catch((error: unknown) => console.error(`annie: releasing tools of ${this.record.tenantId}/${this.record.id} failed: ${String(error)}`));
 		} finally {
 			this.lock.release();
 		}
@@ -345,10 +510,10 @@ export class AnnieInstance {
 			deliveryId: entry.key,
 			attempts,
 			status: reply.status,
-			...(reply.status === "answered" ? { chars: reply.text.length } : { reason: reply.reason }),
+			...(reply.status === "answered" ? { chars: reply.text.length } : reply.status === "unanswered" ? { reason: reply.reason } : {}),
 		});
 		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1 };
-		this.emit(reply.status === "answered" ? { ...base, status: "answered", text: reply.text } : { ...base, status: "unanswered", reason: reply.reason });
+		this.emit({ ...base, ...reply });
 	}
 
 	/** Idempotency key of a submission's reply; unique across tenants and instances. */
