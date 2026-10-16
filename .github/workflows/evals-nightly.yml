@@ -23,8 +23,11 @@ jobs:
           ANNIE_JUDGE_MODEL_KEY: ${{ secrets.ANNIE_JUDGE_MODEL_KEY }}
       - name: Upload judge report
         if: always()
+        # A full artifact quota must not turn the evals red: the report is a convenience.
+        continue-on-error: true
         uses: actions/upload-artifact@v5
         with:
           name: segreteria-judge-report
           path: evals/segreteria/last-report/
           if-no-files-found: ignore
+          retention-days: 14
