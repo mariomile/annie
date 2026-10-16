@@ -5,6 +5,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { StripeBilling } from "../cloud/billing.ts";
 import { cloudStatus, startControlPlane } from "../cloud/control-plane.ts";
 import { DockerCellProvider } from "../cloud/docker-provider.ts";
 import { LocalCellProvider } from "../cloud/local-provider.ts";
@@ -68,6 +69,38 @@ function mailer(): Mailer {
 	}
 }
 
+/** Subscriptions through Stripe when ANNIE_CLOUD_STRIPE_SECRET_KEY is set (ADR 0010); free to use otherwise. */
+function billing(): StripeBilling | undefined {
+	const secretKey = env("ANNIE_CLOUD_STRIPE_SECRET_KEY");
+	if (secretKey === undefined) return undefined;
+	const fail = (message: string): never => {
+		console.error(`annie cloud: ${message}`);
+		process.exit(1);
+	};
+	// Prefixes checked so that two values swapped, or a publishable key, stop here and not at the first payment.
+	const named = (name: string, prefix: RegExp, what: string) => {
+		const value = env(name);
+		if (value !== undefined && !prefix.test(value)) fail(`${name}: expected ${what}`);
+		return value;
+	};
+	named("ANNIE_CLOUD_STRIPE_SECRET_KEY", /^(sk|rk)_(test|live)_/, "a secret or restricted key (sk_… or rk_…)");
+	const webhookSecret = named("ANNIE_CLOUD_STRIPE_WEBHOOK_SECRET", /^whsec_/, "the webhook's signing secret (whsec_…)") ?? fail("ANNIE_CLOUD_STRIPE_SECRET_KEY needs ANNIE_CLOUD_STRIPE_WEBHOOK_SECRET (whsec_…)");
+	const price = named("ANNIE_CLOUD_STRIPE_PRICE", /^price_/, "a price id (price_…)") ?? fail("ANNIE_CLOUD_STRIPE_SECRET_KEY needs ANNIE_CLOUD_STRIPE_PRICE (price_…)");
+	const usagePrice = named("ANNIE_CLOUD_STRIPE_USAGE_PRICE", /^price_/, "a price id (price_…)");
+	const meterEvent = env("ANNIE_CLOUD_STRIPE_METER_EVENT");
+	if (usagePrice === price) fail("ANNIE_CLOUD_STRIPE_USAGE_PRICE must be the metered price, not the flat one");
+	if ((usagePrice === undefined) !== (meterEvent === undefined)) fail("ANNIE_CLOUD_STRIPE_USAGE_PRICE and ANNIE_CLOUD_STRIPE_METER_EVENT go together");
+	const trialDays = env("ANNIE_CLOUD_TRIAL_DAYS") ?? "14";
+	if (!/^\d{1,3}$/.test(trialDays)) fail("ANNIE_CLOUD_TRIAL_DAYS: a whole number of days (0 for no trial)");
+	return new StripeBilling({
+		secretKey,
+		webhookSecret,
+		price,
+		trialDays: Number(trialDays),
+		...(usagePrice === undefined || meterEvent === undefined ? {} : { usage: { price: usagePrice, meterEvent } }),
+	});
+}
+
 // `pnpm cloud status`: every tenant, its cell and its spend (an estimate from the model's list
 // prices), beside a running control plane. Emails are the operator's to see; nothing else is.
 if (process.argv[2] === "status") {
@@ -76,7 +109,9 @@ if (process.argv[2] === "status") {
 	const rome = (iso: string) => new Intl.DateTimeFormat("it-IT", { timeZone: "Europe/Rome", dateStyle: "short", timeStyle: "short" }).format(new Date(iso));
 	for (const r of rows) {
 		const spend = r.spend === null ? "spesa: mai letta" : `oggi $${r.spend.todayUsd.toFixed(2)}, mese $${r.spend.monthUsd.toFixed(2)}, mese scorso $${r.spend.lastMonthUsd.toFixed(2)} (letta ${rome(r.spend.readAt)})`;
-		console.log(`${r.tenant}  ${r.email}  dal ${r.createdAt.slice(0, 10)}  cella ${r.cell}${r.nextWakeAt === null ? "" : `, si sveglia ${rome(r.nextWakeAt)}`}  ${spend}`);
+		const ended = r.billing?.subscription === null || r.billing?.subscription === "incomplete" ? "prova finita, sospeso" : `abbonamento ${r.billing?.subscription}, sospeso`;
+		const plan = r.billing === null ? "" : `  ${{ trial: `in prova fino al ${rome(r.billing.trialEndsAt)}`, active: "abbonato", past_due: "pagamento in ritardo", ended }[r.billing.state]}`;
+		console.log(`${r.tenant}  ${r.email}  dal ${r.createdAt.slice(0, 10)}  cella ${r.cell}${r.nextWakeAt === null ? "" : `, si sveglia ${rome(r.nextWakeAt)}`}  ${spend}${plan}`);
 	}
 	const month = rows.reduce((sum, r) => sum + (r.spend?.monthUsd ?? 0), 0);
 	console.log(`${rows.length} tenant, ${rows.filter((r) => r.cell === "running").length} celle accese, spesa del mese stimata $${month.toFixed(2)} (prezzi di listino, ultime letture)`);
@@ -99,6 +134,7 @@ if (process.argv[2] === "upgrade") {
 }
 
 const cells = provider();
+const subscriptions = billing();
 if (cells instanceof RailwayCellProvider) cells.forgetAwake();
 const cp = await startControlPlane({
 	dataDir,
@@ -109,10 +145,12 @@ const cp = await startControlPlane({
 	provider: cells,
 	mailer: mailer(),
 	cellEnv,
+	...(subscriptions === undefined ? {} : { billing: subscriptions }),
 	// Railway sleeps a quiet cell by itself: the control plane must let go of it sooner (railway-provider.ts).
 	idleMs: env("ANNIE_CLOUD_IDLE_MINUTES") !== undefined ? Number(env("ANNIE_CLOUD_IDLE_MINUTES")) * 60_000 : cells instanceof RailwayCellProvider ? RailwayCellProvider.IDLE_MS : 15 * 60_000,
 	web: { host: env("ANNIE_CLOUD_HOST") ?? "127.0.0.1", port },
 	tickMs: 30_000,
 });
 console.error(`annie cloud: http://${domain}:${port} (sign-in links ${env("ANNIE_CLOUD_SMTP_URL") === undefined ? `in ${join(dataDir, "mail", "outbox.txt")}` : "by email"})`);
+if (subscriptions !== undefined) console.error(`annie cloud: subscriptions through Stripe, ${subscriptions.trialDays} days of trial, webhook at /stripe/webhook${subscriptions.meters ? ", model cost metered" : ""}`);
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => void cp.stop().then(() => process.exit(0)));

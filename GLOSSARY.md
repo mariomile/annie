@@ -54,6 +54,14 @@ _Avoid_: container, pod, istanza (un'istanza è un agente, dentro la cella)
 La parte di Annie Cloud comune a tutti i tenant: registrazione, pagamento, smistamento dei messaggi alla cella giusta, risveglio delle celle. Inoltra i messaggi senza conservarli.
 _Avoid_: backend, piattaforma
 
+**Periodo di prova**:
+I primi giorni di un tenant in Annie Cloud, gratuiti. Finiti senza abbonamento, la cella resta spenta con i dati intatti.
+_Avoid_: trial, freemium, piano gratuito
+
+**Abbonamento**:
+Quello che un tenant paga ogni mese per Annie Cloud dopo la prova: una quota fissa e, se previsto, il consumo del modello.
+_Avoid_: piano, licenza, subscription
+
 ## Conversazioni
 
 **Canale**:

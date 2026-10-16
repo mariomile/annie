@@ -125,12 +125,24 @@ In alternativa al server (in valutazione, docs/week9.md): ogni cella è un proge
 1. L'immagine: il workflow `Image` la pubblica su `ghcr.io/<owner>/annie:latest` a ogni merge su `main`. Se il pacchetto GHCR è privato, Railway ha bisogno delle credenziali del registry (o rendi pubblico il pacchetto).
 2. Un token di account o workspace Railway (Account Settings → Tokens).
 3. In `.env` del control plane: `ANNIE_CLOUD_PROVIDER=railway`, `RAILWAY_API_TOKEN`, `ANNIE_CLOUD_RAILWAY_IMAGE`, facoltativi `ANNIE_CLOUD_RAILWAY_WORKSPACE` e `ANNIE_CLOUD_RAILWAY_REGION` (default `europe-west4-drams3a`), più dominio, chiave del modello e SMTP come in 6c.
-4. Il control plane (anche lui su Railway o altrove) raggiunge ogni cella sul suo dominio `*.up.railway.app` in https; la cella si difende da sola come un'installazione self-host (login, segreto di cella).
+4. Il control plane (anche lui su Railway o altrove) raggiunge ogni cella sul suo dominio `*.up.railway.app` in https. La cella risponde solo alle richieste che portano l'intestazione del control plane (derivata dal segreto di cella); una richiesta diretta al dominio Railway riceve 404.
 5. Aggiornare: `pnpm cloud upgrade` aggiorna le variabili e rifà il deploy di ogni cella; i volumi restano.
 
 ## 6e. Navigazione web
 
 In Impostazioni → Navigazione web l'owner elenca i siti che l'istanza può leggere e fotografare (un dominio per riga, sottodomini compresi; `*` per tutti i siti pubblici). Vuoto vuol dire nessuno. Gli indirizzi interni (rete locale, metadati del cloud) restano negati comunque. Per gli screenshot serve Chromium: nell'immagine Docker con `docker build --build-arg WITH_BROWSER=1 .` (l'immagine pubblicata su GHCR lo ha), senza Docker con `ANNIE_CHROMIUM_PATH` o il browser di Playwright. Chromium deve partire con il suo sandbox; se nel log compare «screenshots off», o si dà al container quello che serve agli user namespace, o si accetta il rischio con `ANNIE_SCREENSHOTS_WITHOUT_SANDBOX=1` (ADR 0009).
+
+## 6f. Abbonamenti (Stripe)
+
+Senza `ANNIE_CLOUD_STRIPE_SECRET_KEY` Annie Cloud è gratuito. Con la chiave, ogni tenant ha una prova (`ANNIE_CLOUD_TRIAL_DAYS`, 14 giorni di default) e poi serve l'abbonamento; finita la prova senza abbonamento la cella resta spenta, con i dati intatti (ADR 0010).
+
+1. In Stripe crea un prodotto «Annie» con un prezzo mensile ricorrente: il suo id (`price_…`) va in `ANNIE_CLOUD_STRIPE_PRICE`.
+2. Facoltativo, il consumo del modello: crea un contatore (Billing → Meters) con aggregazione «somma», chiave cliente `stripe_customer_id` e valore `value`. Poi crea un prezzo a consumo collegato al contatore. Un'unità è un centesimo di dollaro di costo del modello a prezzi di listino. Il prezzo per unità copre cambio e ricarico: se un centesimo di dollaro vale X euro, X × 1,5 è un ricarico del 50%. Nome dell'evento del contatore in `ANNIE_CLOUD_STRIPE_METER_EVENT`, id del prezzo in `ANNIE_CLOUD_STRIPE_USAGE_PRICE`.
+3. Developers → Webhooks → aggiungi l'endpoint `https://<dominio>/stripe/webhook` con gli eventi `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`. Il segreto di firma (`whsec_…`) va in `ANNIE_CLOUD_STRIPE_WEBHOOK_SECRET`. A ogni evento il control plane rilegge l'abbonamento da Stripe: la chiave deve poter leggere le subscription.
+4. Settings → Billing → Customer portal: attiva il portale (fatture, carta, disdetta). In Settings → Billing → Subscriptions and emails, per i pagamenti non riusciti scegli di annullare l'abbonamento dopo l'ultimo tentativo: finché resta «in ritardo», Annie continua a funzionare.
+5. Prova in modalità test (chiavi `sk_test_…`) con le carte di prova di Stripe, poi passa alle chiavi live.
+
+Le persone si abbonano dalla pagina di Annie Cloud («Gestisci l'abbonamento», con il link via email) o, a prova finita, dal link che ricevono entrando. Chi si abbona durante la prova paga dalla fine della prova. `pnpm cloud status` mostra per ogni tenant: in prova fino a quando, abbonato, pagamento in ritardo, oppure sospeso (con lo stato Stripe se l'abbonamento è stato annullato). Lo legge da quello che il control plane ha salvato, quindi non servono le variabili Stripe nella shell. Un secondo abbonamento dello stesso tenant (due pagamenti da due schede) compare nel log del control plane: va rimborsato e annullato su Stripe.
 
 ## 7. Connettori MCP
 

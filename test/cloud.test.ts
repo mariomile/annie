@@ -1,8 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { createHmac } from "node:crypto";
+import { createServer, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { StripeBilling } from "../src/cloud/billing.ts";
 import { type ControlPlane, startControlPlane } from "../src/cloud/control-plane.ts";
 import { LocalCellProvider } from "../src/cloud/local-provider.ts";
 import { MemoryMailer } from "../src/cloud/mailer.ts";
@@ -14,11 +16,11 @@ afterEach(async () => {
 	for (const cp of running.splice(0)) await cp.stop();
 });
 
-function cloud(options: { idleMs?: number } = {}) {
+function cloud(options: { idleMs?: number; billing?: StripeBilling } = {}) {
 	return cloudAt(tempDataDir(), options);
 }
 
-async function cloudAt(dataDir: string, options: { idleMs?: number; cellEnv?: Record<string, string> } = {}) {
+async function cloudAt(dataDir: string, options: { idleMs?: number; cellEnv?: Record<string, string>; billing?: StripeBilling } = {}) {
 	const mailer = new MemoryMailer();
 	const provider = new LocalCellProvider({ root: join(dataDir, "cells"), repoRoot: join(import.meta.dirname, "..") });
 	const cp = await startControlPlane({
@@ -31,16 +33,17 @@ async function cloudAt(dataDir: string, options: { idleMs?: number; cellEnv?: Re
 		idleMs: options.idleMs ?? 60_000,
 		web: { host: "127.0.0.1", port: 0 },
 		tickMs: 0,
+		...(options.billing === undefined ? {} : { billing: options.billing }),
 		log: () => {},
 	});
 	running.push(cp);
 	const port = (cp.server.address() as AddressInfo).port;
 	/** A request to the control plane as the browser would send it, by host name. */
-	const at = (host: string) => (path: string, init: { method?: string; body?: string; cookie?: string } = {}) =>
+	const at = (host: string) => (path: string, init: { method?: string; body?: string; cookie?: string; headers?: Record<string, string> } = {}) =>
 		new Promise<{ status: number; headers: Headers; body: any }>((resolve, reject) => {
 			// fetch() cannot set Host; the control plane routes by it, as behind a real domain.
 			const req = request(
-				{ host: "127.0.0.1", port, path, method: init.method ?? "GET", headers: { host, "x-annie": "1", "content-type": "application/json", ...(init.cookie === undefined ? {} : { cookie: init.cookie }) } },
+				{ host: "127.0.0.1", port, path, method: init.method ?? "GET", headers: { host, "x-annie": "1", "content-type": "application/json", ...(init.cookie === undefined ? {} : { cookie: init.cookie }), ...init.headers } },
 				(res) => {
 					const chunks: Buffer[] = [];
 					res.on("data", (c: Buffer) => chunks.push(c));
@@ -248,5 +251,183 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 		expect(await c.provider.status(cell)).toBe("stopped");
 		await c.cp.tick(new Date(Date.parse(at) + 1000));
 		expect(await c.provider.status(cell)).toBe("running");
+	}, 180_000);
+});
+
+/** A Stripe that answers like the real one for what Annie asks, and records each call. */
+async function fakeStripe() {
+	const calls: { method: string; path: string; form: Record<string, string>; auth: string }[] = [];
+	/** Subscriptions as Stripe has them: tests change them, then send the event. */
+	const subscriptions = new Map<string, { id: string; customer: string; status: string; metadata: Record<string, string> }>();
+	const server = createServer((req, res) => {
+		const chunks: Buffer[] = [];
+		req.on("data", (c: Buffer) => chunks.push(c));
+		req.on("end", () => {
+			const path = req.url ?? "";
+			calls.push({ method: req.method ?? "", path, form: Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString("utf8"))), auth: String(req.headers.authorization ?? "") });
+			const sub = /^\/v1\/subscriptions\/([\w]+)$/.exec(path);
+			const body =
+				path === "/v1/checkout/sessions"
+					? { id: `cs_${calls.length}`, url: `https://checkout.stripe.test/c/${calls.length}` }
+					: path === "/v1/billing_portal/sessions"
+						? { url: `https://billing.stripe.test/p/${calls.length}` }
+						: sub !== null
+							? subscriptions.get(sub[1] as string)
+							: { object: "ok" };
+			res.writeHead(body === undefined ? 404 : 200, { "content-type": "application/json" });
+			res.end(JSON.stringify(body ?? { error: { message: "No such subscription" } }));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+	stripes.push(server);
+	return { calls, subscriptions, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+}
+const stripes: Server[] = [];
+afterEach(async () => {
+	for (const s of stripes.splice(0)) await new Promise((r) => s.close(() => r(undefined)));
+});
+
+const WEBHOOK_SECRET = "whsec_test_annie";
+/** A delivery signed as Stripe signs it. */
+function signed(event: { type: string; created: number; object: Record<string, unknown> }) {
+	const body = JSON.stringify({ id: `evt_${event.created}`, type: event.type, created: event.created, data: { object: event.object } });
+	const t = Math.floor(Date.now() / 1000);
+	const v1 = createHmac("sha256", WEBHOOK_SECRET).update(`${t}.${body}`).digest("hex");
+	return { method: "POST", body, headers: { "stripe-signature": `t=${t},v1=${v1}` } };
+}
+
+/** Sign-in by email link, returning what the control plane answers (no login into the cell). */
+async function verifyFor(c: Awaited<ReturnType<typeof cloudAt>>, email: string, purpose?: "billing") {
+	const home = c.at(DOMAIN);
+	await home("/api/signup", { method: "POST", body: JSON.stringify({ email, ...(purpose === undefined ? {} : { purpose }) }) });
+	const mail = c.mailer.sent.findLast((m) => m.to === email) as { text: string };
+	const token = /#([\w-]+)/.exec(mail.text)?.[1] as string;
+	return { mail, answer: await home("/api/verify", { method: "POST", body: JSON.stringify({ token, ...(purpose === undefined ? {} : { purpose }) }) }) };
+}
+
+describe("Annie Cloud subscriptions (Stripe, faked)", () => {
+	it("after the trial the cell stays asleep and the person is sent to subscribe; what Stripe says, asked again, opens it", async () => {
+		const stripe = await fakeStripe();
+		const billing = new StripeBilling({ secretKey: "sk_test_annie", webhookSecret: WEBHOOK_SECRET, price: "price_flat", trialDays: 0, apiBase: stripe.base });
+		const c = await cloud({ billing });
+		const home = c.at(DOMAIN);
+		expect((await home("/api/info")).body).toEqual({ billing: true, trialDays: 0 });
+		const { answer } = await verifyFor(c, "anna@studio.example");
+		expect(answer.status).toBe(200);
+		expect(answer.body.loginUrl).toBeUndefined();
+		expect(answer.body.billing).toMatchObject({ state: "ended", checkoutUrl: expect.stringMatching(/^https:\/\/checkout\.stripe\.test\//) });
+		const checkout = stripe.calls.find((call) => call.path === "/v1/checkout/sessions") as (typeof stripe.calls)[number];
+		const tenant = checkout.form.client_reference_id as string;
+		expect(checkout.auth).toBe("Bearer sk_test_annie");
+		expect(checkout.form).toMatchObject({ mode: "subscription", "line_items[0][price]": "price_flat", customer_email: "anna@studio.example", "subscription_data[metadata][tenant]": tenant });
+		// The trial is over: Stripe is not asked to give days that are not there.
+		expect(checkout.form["subscription_data[trial_end]"]).toBeUndefined();
+		// Nothing reaches or wakes the cell: a page goes to the subscription, an API call is refused.
+		expect(await c.provider.status(tenant)).not.toBe("running");
+		const cell = c.at(`${tenant}.${DOMAIN}`);
+		const page = await cell("/", { headers: { accept: "text/html" } });
+		expect(page.status).toBe(302);
+		expect(page.headers.get("location")).toBe(`http://${DOMAIN}/?sospesa=1`);
+		expect((await cell("/hooks/telegram/x", { method: "POST", body: "{}" })).status).toBe(402);
+		// A forged or unsigned delivery changes nothing.
+		stripe.subscriptions.set("sub_1", { id: "sub_1", customer: "cus_1", status: "active", metadata: { tenant } });
+		const done = signed({ type: "checkout.session.completed", created: 100, object: { client_reference_id: tenant, customer: "cus_1", subscription: "sub_1" } });
+		const signature = done.headers["stripe-signature"];
+		const flipped = signature.slice(0, -1) + (signature.endsWith("0") ? "1" : "0");
+		expect((await home("/stripe/webhook", { ...done, headers: { "stripe-signature": flipped } })).status).toBe(400);
+		expect((await home("/stripe/webhook", { method: "POST", body: done.body })).status).toBe(400);
+		expect((await verifyFor(c, "anna@studio.example")).answer.body.loginUrl).toBeUndefined();
+		// Stripe says the checkout is done; asked, it confirms the subscription: Anna is in, and can reach the portal.
+		expect((await home("/stripe/webhook", done)).status).toBe(200);
+		expect(stripe.calls.some((call) => call.method === "GET" && call.path === "/v1/subscriptions/sub_1")).toBe(true);
+		const back = (await verifyFor(c, "anna@studio.example")).answer.body;
+		expect(back.loginUrl).toMatch(new RegExp(`^http://${tenant}\\.`));
+		expect(back.billing).toEqual({ state: "active", trialEndsAt: expect.any(String) });
+		const manage = await verifyFor(c, "anna@studio.example", "billing");
+		expect(manage.mail.text).toContain("/verify?per=abbonamento#");
+		expect(manage.answer.body.billing).toMatchObject({ state: "active", portalUrl: expect.stringMatching(/^https:\/\/billing\.stripe\.test\//) });
+		expect(manage.answer.body.billing.checkoutUrl).toBeUndefined();
+		expect(manage.answer.body.loginUrl).toBeUndefined();
+		expect(stripe.calls.findLast((call) => call.path === "/v1/billing_portal/sessions")?.form.customer).toBe("cus_1");
+		// A second subscription (a second Checkout page paid) never overrides the live one.
+		stripe.subscriptions.set("sub_2", { id: "sub_2", customer: "cus_2", status: "canceled", metadata: { tenant } });
+		await home("/stripe/webhook", signed({ type: "customer.subscription.deleted", created: 150, object: { id: "sub_2" } }));
+		expect((await c.cp.status())[0]?.billing).toMatchObject({ state: "active", subscription: "active" });
+		// The event says what changed; Stripe says how it stands: a late payment keeps Annie on, cancellation ends it.
+		stripe.subscriptions.set("sub_1", { id: "sub_1", customer: "cus_1", status: "past_due", metadata: { tenant } });
+		await home("/stripe/webhook", signed({ type: "customer.subscription.updated", created: 300, object: { id: "sub_1", status: "active" } }));
+		expect((await c.cp.status())[0]?.billing).toMatchObject({ state: "past_due", subscription: "past_due" });
+		stripe.subscriptions.set("sub_1", { id: "sub_1", customer: "cus_1", status: "canceled", metadata: { tenant } });
+		await home("/stripe/webhook", signed({ type: "customer.subscription.deleted", created: 400, object: { id: "sub_1" } }));
+		expect((await c.cp.status())[0]?.billing).toMatchObject({ state: "ended", subscription: "canceled" });
+		expect((await cell("/api/me")).status).toBe(402);
+		// Subscribing again: the same customer, and the previous Checkout page made to expire.
+		await verifyFor(c, "anna@studio.example", "billing");
+		expect(stripe.calls.findLast((call) => call.path === "/v1/checkout/sessions")?.form).toMatchObject({ customer: "cus_1", "customer_update[address]": "auto" });
+		expect(stripe.calls.some((call) => /^\/v1\/checkout\/sessions\/cs_\d+\/expire$/.test(call.path))).toBe(true);
+		// The control plane keeps ids and status only.
+		expect(readFileSync(join(c.root, "control-plane.json"), "utf8")).not.toMatch(/card|iban|sk_test/i);
+	}, 180_000);
+
+	it("sends Stripe the model cost after the trial only, once, whatever order Stripe's events come in", async () => {
+		const stripe = await fakeStripe();
+		const billing = new StripeBilling({ secretKey: "sk_test_annie", webhookSecret: WEBHOOK_SECRET, price: "price_flat", usage: { price: "price_cost", meterEvent: "annie_model_cost" }, trialDays: 14, apiBase: stripe.base });
+		const c = await cloud({ idleMs: 0, billing });
+		const anna = await signUp(c, "anna@studio.example");
+		const tenant = anna.host.split(".")[0] as string;
+		const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+		const tenantDir = join(c.root, "cells", tenant, "data", "tenants", tenant);
+		mkdirSync(tenantDir, { recursive: true });
+		const spent = (usd: number) => writeFileSync(join(tenantDir, "usage-totals.json"), JSON.stringify({ [today]: usd }));
+		// During the trial: read when the cell goes to sleep, sent nowhere.
+		spent(1.25);
+		await c.cp.tick(new Date());
+		expect(await c.provider.status(tenant)).toBe("stopped");
+		// Subscribing during the trial keeps its days, with the metered price; the cell is not woken for it.
+		const manage = await verifyFor(c, "anna@studio.example", "billing");
+		expect(manage.answer.body.billing.state).toBe("trial");
+		const checkout = stripe.calls.findLast((call) => call.path === "/v1/checkout/sessions")?.form ?? {};
+		expect(checkout["line_items[1][price]"]).toBe("price_cost");
+		expect(checkout["line_items[1][quantity]"]).toBeUndefined();
+		expect(Number(checkout["subscription_data[trial_end]"])).toBe(Math.floor(Date.parse(manage.answer.body.billing.trialEndsAt) / 1000));
+		expect(await c.provider.status(tenant)).toBe("stopped");
+		// Stripe sends the subscription's own event before the checkout's.
+		stripe.subscriptions.set("sub_9", { id: "sub_9", customer: "cus_9", status: "trialing", metadata: { tenant } });
+		const home = c.at(DOMAIN);
+		expect((await home("/stripe/webhook", signed({ type: "customer.subscription.created", created: 100, object: { id: "sub_9" } }))).status).toBe(200);
+		expect((await home("/stripe/webhook", signed({ type: "checkout.session.completed", created: 101, object: { client_reference_id: tenant, subscription: "sub_9" } }))).status).toBe(200);
+		// After subscribing: 75 more cents, sent as 75 units for this customer.
+		await signUp(c, "anna@studio.example");
+		spent(2);
+		await c.cp.tick(new Date());
+		await until(async () => stripe.calls.some((call) => call.path === "/v1/billing/meter_events"));
+		const meters = () => stripe.calls.filter((call) => call.path === "/v1/billing/meter_events");
+		expect(meters()).toHaveLength(1);
+		expect(meters()[0]?.form).toEqual({ event_name: "annie_model_cost", "payload[stripe_customer_id]": "cus_9", "payload[value]": "75", identifier: `${tenant}-${today.slice(0, 7)}-200` });
+		// Nothing new: nothing more sent.
+		await signUp(c, "anna@studio.example");
+		await c.cp.tick(new Date());
+		await new Promise((r) => setTimeout(r, 200));
+		expect(meters()).toHaveLength(1);
+	}, 180_000);
+
+	it("a cell still running when the trial ends is stopped at the next round, not after the idle time", async () => {
+		const stripe = await fakeStripe();
+		const dataDir = tempDataDir();
+		const first = await cloudAt(dataDir, { billing: new StripeBilling({ secretKey: "sk_test_annie", webhookSecret: WEBHOOK_SECRET, price: "price_flat", trialDays: 1, apiBase: stripe.base }) });
+		const anna = await signUp(first, "anna@studio.example");
+		const tenant = anna.host.split(".")[0] as string;
+		await first.cp.stop();
+		running.splice(running.indexOf(first.cp), 1);
+		// Billing switched off: the start of the trials is forgotten; switched on again with no trial left.
+		const off = await cloudAt(dataDir);
+		await off.cp.stop();
+		running.splice(running.indexOf(off.cp), 1);
+		expect(JSON.parse(readFileSync(join(dataDir, "control-plane.json"), "utf8")).billingSince).toBeUndefined();
+		const again = await cloudAt(dataDir, { idleMs: 3_600_000, billing: new StripeBilling({ secretKey: "sk_test_annie", webhookSecret: WEBHOOK_SECRET, price: "price_flat", trialDays: 0, apiBase: stripe.base }) });
+		await again.provider.start(tenant);
+		await again.cp.tick(new Date());
+		expect(await again.provider.status(tenant)).toBe("stopped");
+		expect((await again.cp.status())[0]?.billing).toMatchObject({ state: "ended", subscription: null });
 	}, 180_000);
 });

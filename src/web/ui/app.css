@@ -139,6 +139,8 @@ button.who-id:hover { background: var(--hover); }
 .code-input { font-size: 20px !important; letter-spacing: 0.2em; text-align: center; }
 .secret-key { padding: 12px 14px; border: 1px dashed var(--border-2); border-radius: 8px; background: var(--bg-2); font-size: 15px; letter-spacing: 0.08em; word-break: break-all; user-select: all; }
 .login form.card .btn { width: 100%; }
+.login .card .stack .btn { width: 100%; }
+a.btn { text-decoration: none; }
 .who .name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .who .role { font-size: 11.5px; color: var(--fg-3); }
 .who .row-gap { gap: 2px; flex-wrap: nowrap; }
