@@ -1,5 +1,5 @@
 import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
-import { DockerComputerProvider } from "../computer/docker-computer.ts";
+import { computerLabel, createComputerProvider } from "../computer/create.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -29,7 +29,7 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	const transcription = config.transcription;
 	if (transcription !== undefined) checks.push(check("Trascrizione dei vocali", () => transcriptionCheck(transcription, call)));
 	const computer = config.computer;
-	if (computer !== undefined) checks.push(check("Computer (Docker)", () => computerCheck(computer)));
+	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	return Promise.all(checks);
 }
 
@@ -72,11 +72,13 @@ async function modelCheck(config: AnnieConfig, call: Call): Promise<string> {
 	return `chiave valida, modello ${config.modelId}`;
 }
 
-/** The Docker host answers and has the computer's image (ADR 0013). */
-async function computerCheck(config: NonNullable<AnnieConfig["computer"]>): Promise<string> {
-	const problem = await new DockerComputerProvider(config).check();
+/** The Docker host answers and has the image (ADR 0013), Fly takes the token, or the control plane answers (ADR 0015). */
+async function computerCheck(config: AnnieConfig, computer: NonNullable<AnnieConfig["computer"]>): Promise<string> {
+	const problem = await createComputerProvider(computer, { tenant: config.tenantId, dataDir: config.dataDir, ...(config.cell.secret === undefined ? {} : { cellSecret: config.cell.secret }) }).check();
 	if (problem !== undefined) throw new CheckFailed(problem);
-	return `Docker risponde, immagine ${config.image} presente`;
+	if (computer.kind === "docker") return `Docker risponde, immagine ${computer.image} presente`;
+	if (computer.kind === "fly") return `Fly accetta il token dell'organizzazione ${computer.org}; l'immagine ${computer.image} si prova al primo comando`;
+	return "il control plane risponde";
 }
 
 /** The service's model list: the key works and the model is there (the services that list models). */

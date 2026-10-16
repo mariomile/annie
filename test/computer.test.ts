@@ -469,8 +469,11 @@ describe("computer_run", () => {
 		expect(docker.calls).toHaveLength(0);
 	});
 
-	it("Annie Cloud's cells get no computer: its settings are not passed to them", () => {
-		expect(readFileSync("src/main/cloud.ts", "utf8")).not.toMatch(/ANNIE_COMPUTER|ANNIE_DOCKER_SOCKET/);
+	it("Annie Cloud's cells get no computer settings of their own: no Docker, no Fly token, only the control plane's computers", () => {
+		const source = readFileSync("src/main/cloud.ts", "utf8");
+		const passed = /const passed = \[([^\]]*)\]/.exec(source)?.[1] ?? "";
+		expect(passed).not.toMatch(/COMPUTER|DOCKER|FLY/);
+		expect([...source.matchAll(/cellEnv\.(\w+) = ([^;]+);/g)].map((m) => `${m[1]}=${m[2]}`)).toEqual(['ANNIE_COMPUTER=""', 'ANNIE_COMPUTER="cloud"', "ANNIE_COMPUTER_URL=url"]);
 	});
 
 	it("bad paths and missing workspace files are refused before anything runs", async () => {

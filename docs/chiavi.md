@@ -155,9 +155,19 @@ Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta ([
 6. Facoltativo: `ANNIE_PHONE_VOICE`, la voce di Twilio (`Polly.Bianca` se non lo metti). Si prova con una chiamata vera.
 7. Domini: `api.twilio.com` (o quello della regione scelta).
 
-### 12. Il computer delle istanze: nessuna chiave
+### 12. Il computer delle istanze: nessuna chiave con Docker, `FLY_API_TOKEN` con Fly
 
-Il terminale di Annie ([ADR 0013](adr/0013-terminale-in-un-computer-senza-rete.md)) non usa chiavi né domini: gira in un container senza rete sul server di Annie. Serve solo Docker e l'immagine del computer, con `ANNIE_COMPUTER=docker` in `.env` ([runbook](runbook.md), 6j). In Annie Cloud resta spento.
+Con Docker il terminale di Annie ([ADR 0013](adr/0013-terminale-in-un-computer-senza-rete.md)) non usa chiavi né domini: gira in un container senza rete sul server di Annie, con `ANNIE_COMPUTER=docker` in `.env` ([runbook](runbook.md), 6j).
+
+Su micro-VM Fly.io ([ADR 0015](adr/0015-computer-su-micro-vm.md)), ed è l'unico modo in Annie Cloud, serve un token dell'organizzazione Fly:
+
+1. https://fly.io → crea l'account di Buildrs e un'organizzazione (lo *slug*, per esempio `buildrs`, è `ANNIE_FLY_ORG`), con un metodo di pagamento: le macchine si pagano al secondo da accese, i volumi al gigabyte al mese (listino di Fly, da verificare).
+2. Con la CLI `fly` installata e l'accesso fatto: `fly tokens create org -o <slug> -x 8760h` (un anno). Il token inizia con `FlyV1 `: va copiato intero, spazio compreso.
+3. Mettilo **solo** nel `.env` del control plane come `FLY_API_TOKEN` (in Annie Cloud) o nel `.env` del server (installazione propria). Mai nelle celle: il control plane non lo passa, e chi ha il token raggiunge tutte le macchine dell'organizzazione.
+4. Per ruotarlo: crea il nuovo, sostituiscilo, riavvia, poi revoca il vecchio con `fly tokens revoke`.
+5. Domini: `api.machines.dev` (l'API delle macchine) e, per Fly, il registry da cui scarica l'immagine (`ghcr.io` se usi quella pubblicata dal workflow `Image`).
+
+Per la prova dal vivo: `FLY_API_TOKEN` e `ANNIE_TEST_FLY_ORG` nell'ambiente della sessione (mai in chat), poi il comando di [week20.md](week20.md).
 
 ## Domini da consentire nella sessione cloud
 

@@ -20,6 +20,7 @@ import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
 import { readOnlyInBriefs } from "./core/brief.ts";
 import { type ComputerProvider, computerKey } from "./core/computer.ts";
 import { createComputerTools } from "./core/tools/computer-tools.ts";
+import { computerLabel, createComputerProvider } from "./computer/create.ts";
 import { DockerComputerProvider } from "./computer/docker-computer.ts";
 import { createGoogleTools } from "./core/tools/google-tools.ts";
 import { createWebTools } from "./core/tools/web-tools.ts";
@@ -160,13 +161,17 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		});
 	};
 
-	// The instances' computers (ADR 0013): only where the operator gave Annie a Docker host.
-	const docker = options.computer === undefined && config.computer !== undefined ? new DockerComputerProvider({ ...config.computer, log }) : undefined;
-	const computer: ComputerProvider | undefined = options.computer ?? docker;
-	if (docker !== undefined) {
+	// The instances' computers: only where the operator gave Annie a Docker host (ADR 0013), a Fly
+	// organization, or, in a cell of Annie Cloud, the control plane's computers (ADR 0015).
+	const made = options.computer === undefined && config.computer !== undefined ? createComputerProvider(config.computer, { tenant: config.tenantId, dataDir: config.dataDir, cellSecret: config.cell.secret, log }) : undefined;
+	const computer: ComputerProvider | undefined = options.computer ?? made;
+	if (made !== undefined && config.computer !== undefined) {
+		const label = computerLabel(config.computer);
 		// What keeps the computers from working is said at boot, not at the first command.
-		void docker.check().then((problem) => log(problem === undefined ? "computer: Docker ready" : `computer: not ready: ${problem}`));
-		void docker
+		void made.check().then((problem) => log(problem === undefined ? `computer: ${label} ready` : `computer: not ready: ${problem}`));
+	}
+	if (made instanceof DockerComputerProvider) {
+		void made
 			.stopLeftovers()
 			.then((n) => (n > 0 ? log(`computer: stopped ${n} left running by a previous start`) : undefined))
 			.catch((error: unknown) => log(`computer: leftovers not checked: ${error instanceof Error ? error.message : String(error)}`));

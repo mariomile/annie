@@ -1,5 +1,7 @@
 # Fase 3, quarto passo: il browser con clic, nel Chromium della cella
 
+> Aggiornata dall'[ADR 0015](0015-computer-su-micro-vm.md): il computer ora c'è anche in Annie Cloud, su micro-VM. Il browser resta nella cella: il computer continua a non avere rete.
+
 Annie apre una pagina in un browser che resta aperto per la conversazione (`web_browse`), clicca (`web_click`) e scrive nei campi (`web_type`), così usa i siti costruiti in JavaScript: menu, filtri, ricerche, schede, paginazione, pagine che senza clic non mostrano niente. Il browser è il Chromium della cella che già fa gli screenshot (ADR 0009), con le stesse regole: ogni richiesta della pagina passa dal fetch controllato, solo verso i siti che l'owner consente e mai verso un indirizzo interno.
 
 Il browser **legge e basta**. Ogni richiesta che non è una GET (un modulo che invia, un `fetch` in POST, un upload) viene bloccata prima di partire, e Annie lo sa: per inviare usa `web_submit`, che passa dall'approvazione (ADR 0011). «Leggere è libero, scrivere o inviare si approva» resta vero anche con i clic.

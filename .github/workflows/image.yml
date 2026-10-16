@@ -1,6 +1,7 @@
 name: Image
 # Builds the Dockerfile on every PR and checks that the container answers; on main it also
-# publishes ghcr.io/<owner>/annie (the image Annie Cloud cells run, docs/runbook.md 6c and 6d).
+# publishes ghcr.io/<owner>/annie (the image Annie Cloud cells run, docs/runbook.md 6c and 6d)
+# and ghcr.io/<owner>/annie-computer:fly (the computers' micro-VMs, runbook 6j).
 on:
   push:
     branches: [main]
@@ -30,7 +31,7 @@ jobs:
   # The instances' computers (ADR 0013): the image builds, and the provider works on a real daemon.
   computer:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -45,13 +46,20 @@ jobs:
         env:
           ANNIE_TEST_COMPUTER_IMAGE: annie-computer:ci
         run: pnpm vitest run test/computer-docker.live.test.ts
+      # The micro-VM target (ADR 0015): its first process seals it off the network, then the same checks.
+      - name: Build the micro-VM computer image
+        run: docker build -f docker/computer.Dockerfile --target fly -t annie-computer:fly-ci docker
+      - name: The micro-VM computer, sealed, on Docker's network
+        env:
+          ANNIE_TEST_FLY_IMAGE: annie-computer:fly-ci
+        run: pnpm vitest run test/computer-fly.live.test.ts
 
   # Only this job can write packages, and only on main: a PR's Dockerfile never builds with it.
   publish:
-    needs: image
+    needs: [image, computer]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: write
@@ -81,3 +89,14 @@ jobs:
           docker tag annie:ci "$image:latest"
           docker push "$image:${GITHUB_SHA::12}"
           docker push "$image:latest"
+      # The micro-VM computer (ADR 0015), checked by the computer job on this same commit.
+      - name: Build and push the micro-VM computer image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          docker build -f docker/computer.Dockerfile --target fly -t annie-computer:fly-ci docker
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/annie-computer"
+          docker tag annie-computer:fly-ci "$image:fly-${GITHUB_SHA::12}"
+          docker tag annie-computer:fly-ci "$image:fly"
+          docker push "$image:fly-${GITHUB_SHA::12}"
+          docker push "$image:fly"
