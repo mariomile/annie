@@ -65,7 +65,7 @@ _Avoid_: piano, licenza, subscription
 ## Conversazioni
 
 **Canale**:
-Un luogo dove le persone parlano con un'istanza: Telegram, l'interfaccia web.
+Un luogo dove le persone parlano con un'istanza: Telegram, WhatsApp, l'interfaccia web.
 _Avoid_: gateway, integrazione
 
 **Thread**:

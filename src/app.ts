@@ -9,7 +9,8 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
-import type { InboundAction } from "./channels/types.ts";
+import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter } from "./channels/whatsapp.ts";
+import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
 import { egressFetch } from "./connectors/http.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
@@ -47,6 +48,8 @@ export type AnnieOptions = {
 	readonly engine?: DurableEngine;
 	/** Telegram Bot API fetch (tests). */
 	readonly telegramFetch?: typeof fetch;
+	/** WhatsApp Cloud API base (tests: a fake Graph API). */
+	readonly whatsappApiBase?: string;
 	/** Google OAuth and API fetch (tests). */
 	readonly googleFetch?: typeof fetch;
 	/** Tests only: which addresses the web tools may connect to (public ones by default). */
@@ -71,6 +74,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const tenant = config.tenantId;
 	const connections = new Map<string, McpConnections>();
 	const telegrams = new Map<string, TelegramAdapter>();
+	const whatsapps = new Map<string, WhatsAppAdapter>();
 	const segreteriaId = config.segreteria?.instanceId;
 	const connectorStore = (id: string) => new ConnectorStore(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(id)));
 	const policyOf = (record: InstanceRecord) => async () => (await runtime.registry.getInstance(record.tenantId, record.id)).egress;
@@ -243,7 +247,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
 		});
-		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, (action) => onTelegramTap(instance, bot, action)));
+		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, bot, action)));
 		telegrams.set(instance, bot);
 		if (webhookSecret !== undefined) telegramHooks.set(instance, { secret: webhookSecret, handle: (update) => bot.handleUpdate(update as TelegramUpdate) });
 		return bot;
@@ -263,55 +267,88 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		if (token !== undefined) await attachTelegram(record.id, token);
 	}
 
+	/** Approval cards go to the approvers of each chat channel the instance has (Telegram, WhatsApp). */
 	async function notifyApprovers(instance: string, proposal: ToolProposal): Promise<void> {
-		const bot = telegrams.get(instance);
 		const record = await runtime.registry.getInstance(tenant, instance);
-		if (bot === undefined) return;
-		for (const chat of record.approvers?.telegram ?? []) {
-			if ((proposal.notified ?? []).includes(`telegram:${chat}`)) continue;
-			// An approver approves what they read: with the code cut, no button, only the console.
-			const truncated = proposal.code.length > 1500;
-			const code = truncated ? `${proposal.code.slice(0, 1500)}\n[...]` : proposal.code;
-			try {
-				await bot.send({
-					tenantId: tenant,
-					instanceId: instance,
-					channel: "telegram",
-					threadId: chat,
-					idempotencyKey: `proposal:${proposal.id}:${chat}`,
-					text: `Nuovo tool da approvare · ${customToolName(proposal.name)}\n\n${proposal.description}\n\nHost raggiungibili: ${proposal.hosts.length > 0 ? proposal.hosts.join(", ") : "nessuno"}\n\nCodice:\n${code}${truncated ? `\n\nIl codice è lungo ${proposal.code.length} caratteri: leggilo tutto e decidi nella console web (Approvazioni).` : ""}`,
-					buttons: truncated
-						? [{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` }]
-						: [
-								{ label: "Approva", data: `tool:${proposal.id}:approved` },
-								{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` },
-							],
-				});
-				await runtime.proposals(tenant, instance).markNotified(proposal.id, `telegram:${chat}`);
-			} catch (error) {
-				log(`annie: approval card for ${proposal.id} to ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`);
+		for (const adapter of [telegrams.get(instance), whatsapps.get(instance)]) {
+			if (adapter === undefined) continue;
+			for (const chat of record.approvers?.[adapter.name] ?? []) {
+				if ((proposal.notified ?? []).includes(`${adapter.name}:${chat}`)) continue;
+				// An approver approves what they read: with the code cut, no button, only the console.
+				const truncated = proposal.code.length > 1500;
+				const code = truncated ? `${proposal.code.slice(0, 1500)}\n[...]` : proposal.code;
+				try {
+					await adapter.send({
+						tenantId: tenant,
+						instanceId: instance,
+						channel: adapter.name,
+						threadId: chat,
+						idempotencyKey: `proposal:${proposal.id}:${chat}`,
+						text: `Nuovo tool da approvare · ${customToolName(proposal.name)}\n\n${proposal.description}\n\nHost raggiungibili: ${proposal.hosts.length > 0 ? proposal.hosts.join(", ") : "nessuno"}\n\nCodice:\n${code}${truncated ? `\n\nIl codice è lungo ${proposal.code.length} caratteri: leggilo tutto e decidi nella console web (Approvazioni).` : ""}`,
+						buttons: truncated
+							? [{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` }]
+							: [
+									{ label: "Approva", data: `tool:${proposal.id}:approved` },
+									{ label: "Rifiuta", data: `tool:${proposal.id}:rejected` },
+								],
+					});
+					await runtime.proposals(tenant, instance).markNotified(proposal.id, `${adapter.name}:${chat}`);
+				} catch (error) {
+					log(`annie: approval card for ${proposal.id} to ${adapter.name} ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`);
+				}
 			}
 		}
 	}
 
-	async function onTelegramTap(instance: string, bot: TelegramAdapter, action: InboundAction): Promise<void> {
+	async function onApprovalTap(instance: string, adapter: ChannelAdapter, action: InboundAction): Promise<void> {
 		const m = /^tool:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
 		if (m === null) return;
 		if (m[2] === "approved" && ((await runtime.proposals(tenant, instance).get(m[1] as string))?.code.length ?? 0) > 1500) return; // only from the console
 		try {
-			const proposal = await decideToolProposal(runtime, tenant, instance, m[1] as string, m[2] as "approved" | "rejected", { channel: "telegram", userId: action.userId });
-			await bot.send({
+			const proposal = await decideToolProposal(runtime, tenant, instance, m[1] as string, m[2] as "approved" | "rejected", { channel: adapter.name, userId: action.userId });
+			await adapter.send({
 				tenantId: tenant,
 				instanceId: instance,
-				channel: "telegram",
+				channel: adapter.name,
 				threadId: action.threadId,
 				idempotencyKey: `decision:${action.actionId}`,
-				text: `${customToolName(proposal.name)}: ${proposal.status === "approved" ? "approvato" : "rifiutato"}${proposal.decidedBy?.userId === action.userId ? "" : " (deciso in precedenza)"}.`,
+				text: `${customToolName(proposal.name)}: ${proposal.status === "approved" ? "approvato" : "rifiutato"}${proposal.decidedBy?.channel === adapter.name && proposal.decidedBy.userId === action.userId ? "" : " (deciso in precedenza)"}.`,
 			});
 		} catch (error) {
 			// Not an approver: silence (audited in decideToolProposal).
 			if (!(error instanceof NotAnApprover)) throw error;
 		}
+	}
+
+	// --- WhatsApp: at most one business number per instance, by webhook only ---
+	const whatsappUnsubscribes = new Map<string, () => void>();
+
+	function attachWhatsApp(instance: string, credentials: WhatsAppCredentials): WhatsAppAdapter {
+		const adapter = new WhatsAppAdapter({
+			...credentials,
+			tenantId: tenant,
+			instanceId: instance,
+			log,
+			// Files from strangers are never downloaded.
+			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.whatsapp ?? []).includes(userId),
+			...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }),
+		});
+		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, adapter, action)));
+		whatsapps.set(instance, adapter);
+		return adapter;
+	}
+
+	function detachWhatsApp(instance: string): void {
+		whatsapps.delete(instance);
+		whatsappUnsubscribes.get(instance)?.();
+		whatsappUnsubscribes.delete(instance);
+	}
+
+	for (const record of conversational) {
+		const saved = await runtime.secrets(tenant).get(whatsappSecret(record.id));
+		const credentials = saved === undefined ? undefined : parseCredentials(saved);
+		if (credentials !== undefined) attachWhatsApp(record.id, credentials);
+		else if (saved !== undefined) log(`whatsapp: saved credentials of ${record.id} unreadable; connect it again from the console`);
 	}
 
 	// --- resume, scheduler, segreteria, web ---
@@ -350,6 +387,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
 		telegramHooks,
+		whatsappHooks: whatsapps,
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {
@@ -390,6 +428,45 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			disconnect: async (id) => {
 				await detachTelegram(id);
 				await runtime.secrets(tenant).delete(telegramTokenSecret(id));
+			},
+		},
+		whatsapp: {
+			status: async (id) => {
+				const adapter = whatsapps.get(id);
+				const record = await runtime.registry.getInstance(tenant, id);
+				const saved = await runtime.secrets(tenant).get(whatsappSecret(id));
+				const me = adapter === undefined ? undefined : await adapter.me().catch(() => undefined);
+				return {
+					connected: adapter !== undefined,
+					...(me?.number === undefined ? {} : { number: me.number }),
+					...(me?.name === undefined ? {} : { name: me.name }),
+					// What the owner pastes into the Meta app: the address and the token Meta sends back to check it.
+					webhookUrl: config.web.publicUrl?.startsWith("https://") ? `${config.web.publicUrl}/hooks/whatsapp/${id}` : null,
+					...(saved === undefined || parseCredentials(saved) === undefined ? {} : { verifyToken: (parseCredentials(saved) as WhatsAppCredentials).verifyToken }),
+					allowedUsers: record.allowedUsers.whatsapp ?? [],
+					approvers: record.approvers?.whatsapp ?? [],
+				};
+			},
+			// Checked with Meta before anything changes; a value left out keeps the one saved.
+			connect: async (id, given) => {
+				const saved = await runtime.secrets(tenant).get(whatsappSecret(id));
+				const old = saved === undefined ? undefined : parseCredentials(saved);
+				const accessToken = given.accessToken ?? old?.accessToken;
+				const phoneNumberId = given.phoneNumberId ?? old?.phoneNumberId;
+				const appSecret = given.appSecret ?? old?.appSecret;
+				if (accessToken === undefined || phoneNumberId === undefined || appSecret === undefined) throw new MissingWhatsAppField();
+				const credentials: WhatsAppCredentials = { accessToken, phoneNumberId, appSecret, verifyToken: old?.verifyToken ?? randomBytes(18).toString("base64url") };
+				const me = await new WhatsAppAdapter({ ...credentials, tenantId: tenant, instanceId: id, ...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }) }).me();
+				detachWhatsApp(id);
+				await runtime.secrets(tenant).set(whatsappSecret(id), JSON.stringify(credentials));
+				attachWhatsApp(id, credentials);
+				const record = await runtime.registry.getInstance(tenant, id);
+				if (!record.egress.channels.includes("whatsapp")) await runtime.registry.setEgress(tenant, id, { ...record.egress, channels: [...record.egress.channels, "whatsapp"] });
+				return me;
+			},
+			disconnect: async (id) => {
+				detachWhatsApp(id);
+				await runtime.secrets(tenant).delete(whatsappSecret(id));
 			},
 		},
 		...(config.cell.secret === undefined
@@ -454,3 +531,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 function telegramTokenSecret(instance: string): string {
 	return `telegram.botToken.${instance}`;
 }
+
+/** The WhatsApp credentials of an instance, as one JSON value in its secret store. */
+function whatsappSecret(instance: string): string {
+	return `whatsapp.credentials.${instance}`;
+}
+
+

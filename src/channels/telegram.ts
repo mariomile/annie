@@ -1,3 +1,4 @@
+import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
 
 export type TelegramAdapterOptions = {
@@ -38,7 +39,7 @@ const TELEGRAM_MAX_CAPTION = 1024;
 export const TELEGRAM_MAX_CALLBACK_DATA = 64;
 
 /** First line of a reply resent after a crash: sendMessage has no idempotency key. */
-export const DUPLICATE_NOTICE = "Possibile doppione: mi sono riavviata mentre ti inviavo questa risposta. Se l'hai già ricevuta, ignora questa.";
+export { DUPLICATE_NOTICE };
 
 export type TelegramUpdate = {
 	update_id: number;
@@ -277,10 +278,7 @@ export class TelegramAdapter implements ChannelAdapter {
 }
 
 export function splitText(text: string, max = TELEGRAM_MAX_TEXT): string[] {
-	if (text.length === 0) return ["(risposta vuota)"];
-	const chunks: string[] = [];
-	for (let i = 0; i < text.length; i += max) chunks.push(text.slice(i, i + max));
-	return chunks;
+	return splitPieces(text, max);
 }
 
 function inlineKeyboard(buttons: readonly ActionButton[]): { inline_keyboard: { text: string; callback_data: string }[][] } {

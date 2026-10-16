@@ -45,7 +45,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [ ] Fase 1: la cella. Fatti e su `main` (settimane 7 e 8): Telegram via webhook, celle che si spengono e si risvegliano, control plane con registrazione, link via SMTP, celle container (ADR 0008). Misure: circa 4 s dalla registrazione alla prima risposta e per il risveglio, circa 100 MB di memoria da accesa, 0,1 MB di disco da spenta. Mancano: la scelta del provider (Railway in valutazione, spike con `RAILWAY_API_TOKEN`), dominio con PSL, servizio SMTP, prova dal vivo
 - [x] Fase 2: l'agente personale (memoria della persona, Google per persona in sola lettura, brief del mattino). Restano la verifica dell'app presso Google e la misura sul campo (`pnpm annie brief` dopo una settimana d'uso vero)
 - [ ] Fase 3: il computer dell'agente. Fatta la navigazione web in sola lettura (settimana 10, ADR 0009); mancano le azioni con approvazione e il terminale, che chiedono le micro-VM
-- [ ] Fase 4: pagamento, voce, WhatsApp. Pronti la misura della spesa per tenant (`pnpm cloud status`) e l'abbonamento Stripe con prova, quota fissa e consumo a contatore (settimana 12, ADR 0010). Mancano le cifre (decisione di Mario, si impostano su Stripe), la prova dal vivo con le chiavi test, voce e WhatsApp
+- [ ] Fase 4: pagamento, voce, WhatsApp. Pronti la misura della spesa per tenant (`pnpm cloud status`), l'abbonamento Stripe con prova, quota fissa e consumo a contatore (settimana 12, ADR 0010) e il canale WhatsApp (settimana 13). Mancano le cifre (decisione di Mario, si impostano su Stripe), le prove dal vivo con le chiavi di test di Stripe e Meta, i template WhatsApp per i messaggi oltre le 24 ore e la voce
 
 ### Prima di rendere pubblico il repo
 

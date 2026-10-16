@@ -144,6 +144,14 @@ Senza `ANNIE_CLOUD_STRIPE_SECRET_KEY` Annie Cloud è gratuito. Con la chiave, og
 
 Le persone si abbonano dalla pagina di Annie Cloud («Gestisci l'abbonamento», con il link via email) o, a prova finita, dal link che ricevono entrando. Chi si abbona durante la prova paga dalla fine della prova. `pnpm cloud status` mostra per ogni tenant: in prova fino a quando, abbonato, pagamento in ritardo, oppure sospeso (con lo stato Stripe se l'abbonamento è stato annullato). Lo legge da quello che il control plane ha salvato, quindi non servono le variabili Stripe nella shell. Un secondo abbonamento dello stesso tenant (due pagamenti da due schede) compare nel log del control plane: va rimborsato e annullato su Stripe.
 
+## 6g. WhatsApp
+
+Ogni istanza può avere un numero WhatsApp Business, collegato dall'owner in Impostazioni → WhatsApp con token di accesso, ID del numero e app secret dell'app Meta (passi in [chiavi.md](chiavi.md), punto 9). I messaggi arrivano solo per webhook, quindi serve `ANNIE_PUBLIC_URL` in https. In Annie Cloud il control plane inoltra `/hooks/whatsapp/…` alla cella e la sveglia. Meta firma ogni consegna con l'app secret: una consegna senza firma valida riceve 401. Chi non è in «Chi può scrivere» non riceve risposta e i suoi file non vengono scaricati.
+
+WhatsApp consente risposte libere solo entro 24 ore dall'ultimo messaggio della persona. Un task programmato o un brief che arriva più tardi non viene consegnato: Meta di solito accetta l'invio e poi segnala il fallimento sul webhook, e Annie lo scrive nel log («not delivered: outside the 24-hour window»). Per i messaggi proattivi oltre la finestra servono i template approvati da Meta, che Annie non usa ancora.
+
+I messaggi passano dai server di Meta, che li conserva secondo le sue regole: per i dati in Unione Europea va verificata l'opzione di archiviazione locale della Cloud API e va indicato Meta nell'informativa.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
