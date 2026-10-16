@@ -2,6 +2,8 @@
 
 Per chi installa Annie presso un cliente (owner). Un'installazione = un tenant = un container. Vocabolario in [`GLOSSARY.md`](../GLOSSARY.md).
 
+Le chiavi che servono, dove prenderle e dove metterle, passo per passo: [`chiavi.md`](chiavi.md).
+
 ## 1. Requisiti
 
 - Un server Linux con Docker e Docker Compose, oppure Node.js 22.19+ e pnpm 10.
