@@ -6,7 +6,8 @@ import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
-import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
 import { Workspace } from "./workspace.ts";
@@ -102,6 +103,11 @@ export class AnnieRuntime {
 		return new TenantSecrets(this.options.dataDir, tenantId(tenant));
 	}
 
+	/** The forms an instance asked to send (web_submit). */
+	webActions(tenant: string, instance: string): WebActionStore {
+		return new WebActionStore(webActionsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
 	/** The tools proposti of an instance. */
 	proposals(tenant: string, instance: string): ProposalStore {
 		return new ProposalStore(proposalsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
@@ -186,6 +192,11 @@ export class AnnieRuntime {
 		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
+	}
+
+	/** Something that happened for a conversation (the outcome of an approved action), for the instance to report there. */
+	async submitNotice(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean> }): Promise<{ submissionId: string }> {
+		return (await this.openInstance(tenant, instance)).submitNotice(request);
 	}
 
 	/**
@@ -447,6 +458,26 @@ export class AnnieInstance {
 		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);
 		const note = memoryNote(this.memory.store.forSubject(alone ? subjectOf(person.channel, person.userId) : SHARED));
 		return this.admit({ ...request, text: `${request.text}${note}` });
+	}
+
+	/**
+	 * A notice for a conversation from the instance's own work (the outcome of an action a person
+	 * approved): not from a person, so no allowlist, but the channel must still be allowed.
+	 * `messageId` makes it idempotent.
+	 */
+	async submitNotice(request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean> }): Promise<{ submissionId: string }> {
+		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
+		const record = await this.fresh();
+		try {
+			assertChannelAllowed(record.egress, request.channel);
+		} catch (error) {
+			if (error instanceof EgressDenied) {
+				await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: error.kind, target: error.target });
+			}
+			throw error;
+		}
+		await this.audit.append({ ...request.event, type: "notice.submitted", instanceId: this.record.id, channel: request.channel, threadId: request.threadId });
+		return this.admit(request);
 	}
 
 	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }): Promise<{ submissionId: string }> {

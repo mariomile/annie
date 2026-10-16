@@ -4,9 +4,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
+import { type WebAction, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
-import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
+import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { WEB_HOST_PATTERN } from "../core/policy.ts";
@@ -85,6 +86,8 @@ export type WebAppOptions = {
 	};
 	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
 	readonly voice?: { readonly host: string };
+	/** Sends a form a person approved (ADR 0011), for an instance. */
+	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<NonNullable<WebAction["result"]>>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
 	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
 	/** WhatsApp per instance, connected by the owner from the console. */
@@ -473,6 +476,42 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof NotAnApprover) throw new HttpError(403, "Non sei un approvatore di questa istanza");
 			throw error;
 		}
+	});
+
+	// --- forms Annie asked to send (web_submit): the person who asked, or an approver, decides ---
+	const mayDecideAll = async (p: Person, instanceId: string) => isApprover(runtime, tenantId, instanceId, approverOf(p));
+	route("GET", "/api/instances/:id/web-actions", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const all = await runtime.webActions(tenantId, params[0] as string).list();
+		const everyone = await mayDecideAll(p, params[0] as string);
+		return { actions: everyone ? all : all.filter((a) => a.requester === `web:${p.id}`) };
+	});
+	route("POST", "/api/instances/:id/web-actions/:aid/decision", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { decision?: string };
+		if (body.decision !== "approved" && body.decision !== "rejected") throw new HttpError(400, "decision: approved | rejected");
+		if (options.sendWebAction === undefined) throw new HttpError(501, "Le azioni sul web non sono disponibili su questo server");
+		const by = (await mayDecideAll(p, params[0] as string)) ? approverOf(p) : { channel: "web", userId: p.id };
+		try {
+			return { action: await decideWebAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, by, options.sendWebAction(params[0] as string)) };
+		} catch (error) {
+			if (error instanceof NotAnApprover) throw new HttpError(403, "Questa richiesta la decide chi l'ha fatta o un approvatore");
+			throw error;
+		}
+	});
+	route("PUT", "/api/instances/:id/web-actions-allowed", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== WEB_ACTIONS_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, WEB_ACTIONS_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "web_actions.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
 	});
 
 	// --- segreteria ---

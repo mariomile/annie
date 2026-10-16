@@ -21,7 +21,36 @@ export type WebFetchOptions = {
 	readonly maxRedirects?: number;
 	/** false: a redirect comes back as it is (the browser follows it, through us again). */
 	readonly followRedirects?: boolean;
+	/** A form being sent (web_submit): POST with this body. A redirect after it is followed with GET, as browsers do. */
+	readonly send?: { readonly contentType: string; readonly body: Buffer };
+	/** Cookies of this visit, per host: read before each request, filled from each answer. */
+	readonly cookies?: CookieJar;
 };
+
+/** Cookies of one visit (web_submit): name=value per exact host, nothing kept after it. */
+export class CookieJar {
+	private readonly byHost = new Map<string, Map<string, string>>();
+
+	header(host: string): string | undefined {
+		const jar = this.byHost.get(host.toLowerCase());
+		return jar === undefined || jar.size === 0 ? undefined : [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+	}
+
+	take(host: string, setCookies: readonly string[]): void {
+		const key = host.toLowerCase();
+		const jar = this.byHost.get(key) ?? new Map<string, string>();
+		for (const line of setCookies) {
+			const pair = line.split(";", 1)[0] ?? "";
+			const eq = pair.indexOf("=");
+			if (eq <= 0) continue;
+			const name = pair.slice(0, eq).trim();
+			const value = pair.slice(eq + 1).trim();
+			if (/max-age=0\b|expires=thu, 01 jan 1970/i.test(line) || value === "") jar.delete(name);
+			else if (jar.size < 50 && name.length + value.length < 4096) jar.set(name, value);
+		}
+		this.byHost.set(key, jar);
+	}
+}
 
 export type WebPage = {
 	readonly url: string;
@@ -32,6 +61,7 @@ export type WebPage = {
 	readonly truncated: boolean;
 	/** Set on a redirect that was not followed. */
 	readonly location?: string;
+	readonly setCookies: readonly string[];
 };
 
 export const USER_AGENT = "Annie/1.0 (+https://github.com/mariomile/annie)";
@@ -42,12 +72,16 @@ export class WebFetchRefused extends Error {
 
 export async function webFetch(url: string, options: WebFetchOptions): Promise<WebPage> {
 	let current = url;
+	let send = options.send;
 	for (let hop = 0; hop <= (options.maxRedirects ?? 5); hop++) {
 		const target = checkedUrl(current, options);
-		const answer = await get(target, options);
+		const answer = await get(target, { ...options, send });
+		options.cookies?.take(target.hostname, answer.setCookies);
 		if (answer.status >= 300 && answer.status < 400 && answer.location !== undefined) {
 			const next = new URL(answer.location, target).toString();
 			if (options.followRedirects === false) return { ...answer, url: target.toString(), location: next };
+			// 307 and 308 keep the method and the body; the others turn into a GET.
+			if (answer.status !== 307 && answer.status !== 308) send = undefined;
 			current = next;
 			continue;
 		}
@@ -89,12 +123,20 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 	};
 	return new Promise((resolve, reject) => {
 		const send = url.protocol === "https:" ? httpsRequest : httpRequest;
-		const req = send(url, { method: "GET", lookup, agent: false, headers: { "user-agent": USER_AGENT, accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "accept-encoding": "identity" } }, (res: IncomingMessage) => {
+		const headers: Record<string, string> = { "user-agent": USER_AGENT, accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "accept-encoding": "identity" };
+		const cookie = options.cookies?.header(url.hostname);
+		if (cookie !== undefined) headers.cookie = cookie;
+		if (options.send !== undefined) {
+			headers["content-type"] = options.send.contentType;
+			headers["content-length"] = String(options.send.body.length);
+		}
+		const req = send(url, { method: options.send === undefined ? "GET" : "POST", lookup, agent: false, headers }, (res: IncomingMessage) => {
 			const status = res.statusCode ?? 0;
 			const contentType = String(res.headers["content-type"] ?? "");
+			const setCookies = res.headers["set-cookie"] ?? [];
 			const done = (bytes: Buffer, truncated: boolean, location?: string) => {
 				clearTimeout(deadline);
-				resolve({ status, contentType, bytes, body: bytes.toString("utf8"), truncated, ...(location === undefined ? {} : { location }) });
+				resolve({ status, contentType, bytes, body: bytes.toString("utf8"), truncated, setCookies, ...(location === undefined ? {} : { location }) });
 			};
 			if (status >= 300 && status < 400 && res.headers.location) {
 				res.resume();
@@ -126,7 +168,7 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 			clearTimeout(deadline);
 			reject(error);
 		});
-		req.end();
+		req.end(options.send?.body);
 	});
 }
 
