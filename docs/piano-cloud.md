@@ -36,6 +36,8 @@ Una persona si registra e parla con la sua Annie, nel cloud, senza che nessuno d
 - Control plane minimo: registrazione con link via email, creazione della cella, sottodominio per tenant, smistamento dei webhook, risveglio per i task programmati.
 - Misure: meno di 2 minuti dalla registrazione alla prima risposta; costo mensile di una cella inattiva; tempo di risveglio.
 
+Stato al 16 ottobre 2026 (branch `week-7`): fatti Telegram via webhook, il contratto della cella (token dell'owner deciso dal control plane, `GET /internal/cell` per sapere se può dormire e quando svegliarla, `POST /internal/owner-link`) e il control plane con celle come processi locali (`pnpm cloud`): registrazione con link via email, una cella per tenant, smistamento per sottodominio (eventi in tempo reale e webhook compresi), celle inattive fermate e svegliate al primo messaggio o al prossimo task. In locale, con il modello finto: 2,1 secondi dalla registrazione alla prima risposta nel browser. Mancano il provider per micro-VM vere e il servizio email: dipendono dalla scelta del cloud e del dominio.
+
 ### Fase 2: l'agente personale (2-3 settimane)
 
 - Memoria della persona: fatti e preferenze che l'istanza ricorda fra conversazioni, visibili e modificabili dalla persona.
