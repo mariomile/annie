@@ -24,19 +24,71 @@ export type WhatsAppCredentials = {
 };
 
 /** A message waiting for its person to open the 24-hour window again. */
-export type ParkedMessage = { readonly text: string; readonly buttons?: readonly ActionButton[] };
+export type ParkedMessage = {
+	/** The outbound message's idempotency key: parking it twice keeps one. */
+	readonly key: string;
+	readonly text: string;
+	readonly buttons?: readonly ActionButton[];
+	/** A delivery of it failed partway: it goes again with the possible-duplicate notice. */
+	readonly resend?: boolean;
+};
 
 /**
  * What the adapter remembers per number, kept by the app across restarts: when the person last
- * wrote (so Annie knows whether WhatsApp lets her write freely) and what waits for them.
+ * wrote (so Annie knows whether WhatsApp lets her write freely), what waits for them, and whether
+ * they were already told something waits since they last wrote.
  */
 export type WhatsAppWindow = {
 	lastInbound(number: string): Promise<number | undefined>;
+	/** The person wrote at `at`: the window opens and they may be told again. */
 	seen(number: string, at: number): Promise<void>;
-	park(number: string, message: ParkedMessage): Promise<void>;
-	/** What waited for this number, removed from the store. */
-	take(number: string): Promise<ParkedMessage[]>;
+	/** Kept (once per key). `notify`: no notice sent since they last wrote, and now one is due; `dropped`: oldest let go over the cap. */
+	park(number: string, message: ParkedMessage): Promise<{ notify: boolean; dropped: number }>;
+	waiting(number: string): Promise<ParkedMessage[]>;
+	/** Sent: out of the store. */
+	delivered(number: string, key: string): Promise<void>;
+	/** Sending failed partway: stays, marked to go again with the notice. */
+	failed(number: string, key: string): Promise<void>;
 };
+
+/** What is kept per number. */
+export type WindowState = Record<string, { last?: number; notified?: boolean; parked?: ParkedMessage[] }>;
+
+/** Most messages kept for one person; numbers remembered in all (the oldest with nothing waiting go first). */
+const MAX_PARKED = 20;
+const MAX_NUMBERS = 2000;
+
+/** The rules of the store, over whatever keeps the state (a locked JSON file in the app, memory in tests). */
+export function windowStore(io: { read(): WindowState; update(change: (state: WindowState) => WindowState): void }): WhatsAppWindow {
+	const edit = (number: string, change: (entry: NonNullable<WindowState[string]>) => NonNullable<WindowState[string]>) =>
+		io.update((state) => {
+			const next: WindowState = { ...state, [number]: change(state[number] ?? {}) };
+			const numbers = Object.keys(next);
+			if (numbers.length > MAX_NUMBERS) {
+				const idle = numbers.filter((n) => n !== number && (next[n]?.parked ?? []).length === 0).sort((a, b) => (next[a]?.last ?? 0) - (next[b]?.last ?? 0));
+				for (const n of idle.slice(0, numbers.length - MAX_NUMBERS)) delete next[n];
+			}
+			return next;
+		});
+	return {
+		lastInbound: async (number) => io.read()[number]?.last,
+		seen: async (number, at) => edit(number, (e) => ({ ...e, last: Math.max(e.last ?? 0, at), notified: false })),
+		park: async (number, message) => {
+			let result = { notify: false, dropped: 0 };
+			edit(number, (e) => {
+				const parked = e.parked ?? [];
+				if (parked.some((p) => p.key === message.key)) return e;
+				const all = [...parked, message];
+				result = { notify: e.notified !== true, dropped: Math.max(0, all.length - MAX_PARKED) };
+				return { ...e, parked: all.slice(-MAX_PARKED), notified: true };
+			});
+			return result;
+		},
+		waiting: async (number) => io.read()[number]?.parked ?? [],
+		delivered: async (number, key) => edit(number, (e) => ({ ...e, parked: (e.parked ?? []).filter((p) => p.key !== key) })),
+		failed: async (number, key) => edit(number, (e) => ({ ...e, parked: (e.parked ?? []).map((p) => (p.key === key ? { ...p, resend: true } : p)) })),
+	};
+}
 
 /** A template the owner had Meta approve, with one body variable for an excerpt of the message. */
 export type WhatsAppTemplate = { readonly name: string; readonly language: string };
@@ -71,8 +123,8 @@ const MAX_INTERACTIVE_BODY = 1024;
 const MAX_DOWNLOAD = 20 * 1024 * 1024;
 /** Free-form messages are allowed this long after the person's last one; a little less, to be safe. */
 const WINDOW_MS = 24 * 3_600_000 - 10 * 60_000;
-/** Longest excerpt in a template variable (no line breaks allowed there). */
-const MAX_EXCERPT = 900;
+/** Longest excerpt in a template variable (no line breaks allowed there); with the template's own text it must stay under Meta's 1024. */
+const MAX_EXCERPT = 600;
 /** Meta's error code for a free-form message outside the 24-hour window. */
 const OUTSIDE_WINDOW = 131047;
 /** Meta's codes for "not now": rate limits (4, 80007, 130429, 131048, 131056) and its own temporary errors (1, 2, 131000, 131016, 133004). */
@@ -97,6 +149,10 @@ const MIME: Record<string, string> = {
 	jpeg: "image/jpeg",
 };
 
+/** A template's name as Meta writes it, and its language code (it, en_US). */
+export const TEMPLATE_NAME = /^[a-z0-9_]{1,512}$/;
+export const TEMPLATE_LANGUAGE = /^[a-z]{2,3}(_[A-Z]{2})?$/;
+
 /** Connecting WhatsApp the first time needs all three values from Meta. */
 export class MissingWhatsAppField extends Error {
 	override readonly name = "MissingWhatsAppField";
@@ -108,9 +164,9 @@ export function parseCredentials(saved: string): WhatsAppCredentials | undefined
 		const value = JSON.parse(saved) as Partial<WhatsAppCredentials>;
 		const fields = [value.accessToken, value.phoneNumberId, value.appSecret, value.verifyToken];
 		if (!fields.every((f) => typeof f === "string" && f !== "")) return undefined;
-		const template = value.template;
-		const valid = template === undefined || (typeof template?.name === "string" && typeof template.language === "string");
-		return valid ? (value as WhatsAppCredentials) : { ...(value as WhatsAppCredentials), template: undefined };
+		const { template, ...credentials } = value as WhatsAppCredentials;
+		const valid = template !== undefined && TEMPLATE_NAME.test(String(template?.name)) && TEMPLATE_LANGUAGE.test(String(template?.language));
+		return { ...credentials, ...(valid ? { template: { name: template.name, language: template.language } } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -119,6 +175,8 @@ export function parseCredentials(saved: string): WhatsAppCredentials | undefined
 type WhatsAppMessage = {
 	from: string;
 	id: string;
+	/** When the person wrote it, Unix seconds. */
+	timestamp?: string;
 	type: string;
 	text?: { body?: string };
 	interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
@@ -209,9 +267,10 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
 	async send(message: OutboundMessage): Promise<void> {
 		const text = message.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
-		const parked: ParkedMessage = { text, ...(message.buttons === undefined || message.buttons.length === 0 ? {} : { buttons: message.buttons }) };
-		if (await this.windowClosed(message.threadId)) return this.park(message.threadId, parked);
-		await this.sendNow(message.threadId, parked);
+		const buttons = message.buttons === undefined || message.buttons.length === 0 ? {} : { buttons: message.buttons };
+		const window = this.options.window;
+		if (window !== undefined && (await this.windowClosed(message.threadId))) return this.park(window, message.threadId, { key: message.idempotencyKey, text, ...buttons });
+		await this.sendNow(message.threadId, { text, ...buttons });
 	}
 
 	/** Whether WhatsApp would refuse a free-form message now: only known for numbers that wrote since we started keeping track. */
@@ -220,28 +279,34 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		return last !== undefined && Date.now() - last > WINDOW_MS;
 	}
 
-	/** Kept for the person's next message; meanwhile the approved template, if any, tells them something waits. */
-	private async park(number: string, message: ParkedMessage): Promise<void> {
-		const window = this.options.window as WhatsAppWindow;
-		await window.park(number, message);
+	/**
+	 * Kept for the person's next message; parking is the hand-off, so this resolves even if the
+	 * notice cannot go. The approved template, if any, goes once per closed window: one paid
+	 * message, not one per reminder.
+	 */
+	private async park(window: WhatsAppWindow, number: string, message: ParkedMessage): Promise<void> {
+		const { notify, dropped } = await window.park(number, message);
+		if (dropped > 0) this.options.log?.(`whatsapp: ${dropped} older message(s) waiting for ${number} let go (over the limit)`);
 		const template = this.options.template;
-		if (template === undefined) {
-			this.options.log?.(`whatsapp: outside the 24-hour window with ${number}: message kept until they write (no template set)`);
-			return;
-		}
+		if (template === undefined) return void this.options.log?.(`whatsapp: outside the 24-hour window with ${number}: message kept until they write (no template set)`);
+		if (!notify) return;
 		const flat = message.text.replace(/\s+/g, " ").trim();
-		const excerpt = flat.length > MAX_EXCERPT ? `${flat.slice(0, MAX_EXCERPT)}…` : flat || "…";
-		await this.call("POST", `/${this.options.phoneNumberId}/messages`, {
-			messaging_product: "whatsapp",
-			recipient_type: "individual",
-			to: number,
-			type: "template",
-			template: { name: template.name, language: { code: template.language }, components: [{ type: "body", parameters: [{ type: "text", text: excerpt }] }] },
-		});
+		const excerpt = flat.length > MAX_EXCERPT ? `${splitText(flat, MAX_EXCERPT)[0]}…` : flat || "…";
+		try {
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, {
+				messaging_product: "whatsapp",
+				recipient_type: "individual",
+				to: number,
+				type: "template",
+				template: { name: template.name, language: { code: template.language }, components: [{ type: "body", parameters: [{ type: "text", text: excerpt }] }] },
+			});
+		} catch (error) {
+			this.options.log?.(`whatsapp: notice to ${number} not sent (template ${template.name}): ${error instanceof Error ? error.message : String(error)}; the message waits for them anyway`);
+		}
 	}
 
-	private async sendNow(number: string, message: ParkedMessage): Promise<void> {
-		const text = message.text;
+	private async sendNow(number: string, message: Omit<ParkedMessage, "key">): Promise<void> {
+		const text = message.resend === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
 		const buttons = message.buttons ?? [];
 		// A message with buttons holds at most 1024 characters: the text before goes as plain messages.
 		const tail = buttons.length === 0 ? "" : tailOf(text, MAX_INTERACTIVE_BODY);
@@ -275,9 +340,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 	}
 
 	private async dispatch(message: WhatsAppMessage): Promise<void> {
-		// The person wrote: the window is open again, and what waited for them goes now, before the answer to this.
-		await this.options.window?.seen(message.from, Date.now());
-		await this.deliverParked(message.from);
+		await this.opened(message);
 		if (message.type === "interactive" && message.interactive?.type === "button_reply") {
 			const data = message.interactive.button_reply?.id;
 			if (this.actionHandler === undefined || data === undefined) return;
@@ -313,17 +376,28 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		});
 	}
 
-	private async deliverParked(number: string): Promise<void> {
-		const waiting = (await this.options.window?.take(number)) ?? [];
-		for (const [i, message] of waiting.entries()) {
+	/**
+	 * A person who may write wrote: the window opens from when they wrote (a message Meta delivers
+	 * again days later opens nothing), and what waited for them goes now, before the answer to
+	 * this. Strangers are not recorded.
+	 */
+	private async opened(message: WhatsAppMessage): Promise<void> {
+		const window = this.options.window;
+		if (window === undefined || !((await this.options.mayDownload?.(message.from)) ?? true)) return;
+		const written = Number(message.timestamp) * 1000;
+		const at = Number.isFinite(written) && written > 0 ? Math.min(written, Date.now()) : Date.now();
+		await window.seen(message.from, at);
+		if (Date.now() - at > WINDOW_MS) return;
+		for (const parked of await window.waiting(message.from)) {
 			try {
-				await this.sendNow(number, message);
+				await this.sendNow(message.from, parked);
 			} catch (error) {
-				// Not lost: back in the store for the next message.
-				for (const rest of waiting.slice(i)) await this.options.window?.park(number, rest);
-				this.options.log?.(`whatsapp: messages kept for ${number} not sent yet: ${error instanceof Error ? error.message : String(error)}`);
+				// Not lost: it stays, and goes again with the notice at the next message.
+				await window.failed(message.from, parked.key);
+				this.options.log?.(`whatsapp: messages kept for ${message.from} not sent yet: ${error instanceof Error ? error.message : String(error)}`);
 				return;
 			}
+			await window.delivered(message.from, parked.key);
 		}
 	}
 

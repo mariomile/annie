@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
-import { WhatsAppAdapter, type WhatsAppWebhook } from "../src/channels/whatsapp.ts";
+import { WhatsAppAdapter, type WhatsAppWebhook, type WindowState, windowStore } from "../src/channels/whatsapp.ts";
 import { splitText } from "../src/channels/text.ts";
 import { ChannelRefused, type InboundAction, type InboundMessage } from "../src/channels/types.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
@@ -189,80 +189,98 @@ describe("WhatsApp adapter", () => {
 });
 
 describe("WhatsApp beyond the 24-hour window", () => {
-	/** The app's store, in memory. */
+	/** The adapter's store with the app's rules, kept in memory. */
 	function memoryWindow() {
-		const last = new Map<string, number>();
-		const parked = new Map<string, { text: string; buttons?: readonly { label: string; data: string }[] }[]>();
-		return {
-			last,
-			parked,
-			window: {
-				lastInbound: async (n: string) => last.get(n),
-				seen: async (n: string, at: number) => void last.set(n, at),
-				park: async (n: string, m: { text: string }) => void parked.set(n, [...(parked.get(n) ?? []), m]),
-				take: async (n: string) => {
-					const taken = parked.get(n) ?? [];
-					parked.delete(n);
-					return taken;
-				},
-			},
-		};
+		let state: WindowState = {};
+		const window = windowStore({ read: () => state, update: (change) => void (state = change(state)) });
+		return { window, state: () => state, setLast: (n: string, at: number) => void (state = { ...state, [n]: { ...state[n], last: at } }) };
 	}
 	const base = { tenantId: "default", instanceId: "annie", channel: "whatsapp", threadId: "393331234567", idempotencyKey: "k" };
+	const adapter = (apiBase: string, store: ReturnType<typeof memoryWindow>, extra: { template?: { name: string; language: string }; log?: (m: string) => void } = {}) => {
+		const wa = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase, window: store.window, mayDownload: async (n) => n === "393331234567", ...extra });
+		wa.onInbound(async () => {});
+		return wa;
+	};
+	const templates = (graph: Awaited<ReturnType<typeof fakeGraph>>) => graph.sent().filter((b) => b.type === "template");
 
-	it("inside the window it writes; outside it keeps the message, sends the approved template with an excerpt, and delivers when the person writes", async () => {
+	it("inside the window it writes; outside it keeps the message, tells once with the approved template, and delivers when the person writes", async () => {
 		const graph = await fakeGraph();
 		const store = memoryWindow();
-		const wa = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: graph.base, window: store.window, template: { name: "annie_aggiornamento", language: "it" } });
-		wa.onInbound(async () => {});
+		const wa = adapter(graph.base, store, { template: { name: "annie_aggiornamento", language: "it" } });
 		// Never heard from: sent as is (the window is not known).
 		await wa.send({ ...base, text: "Prima volta" });
 		expect(graph.sent().at(-1)).toMatchObject({ type: "text", text: { body: "Prima volta" } });
-		// Wrote an hour ago: free text.
-		store.last.set("393331234567", Date.now() - 3_600_000);
+		store.setLast("393331234567", Date.now() - 3_600_000);
 		await wa.send({ ...base, text: "Entro la finestra" });
 		expect(graph.sent().at(-1)).toMatchObject({ type: "text", text: { body: "Entro la finestra" } });
-		// Wrote two days ago: the template, with the text flattened into its variable; the message waits.
-		store.last.set("393331234567", Date.now() - 48 * 3_600_000);
-		await wa.send({ ...base, text: "Promemoria:\n\nscadenza F24 domani", buttons: [{ label: "Approva", data: "tool:0123456789ab:approved" }] });
-		expect(graph.sent().at(-1)).toEqual({
-			messaging_product: "whatsapp",
-			recipient_type: "individual",
-			to: "393331234567",
-			type: "template",
-			template: { name: "annie_aggiornamento", language: { code: "it" }, components: [{ type: "body", parameters: [{ type: "text", text: "Promemoria: scadenza F24 domani" }] }] },
-		});
-		expect(store.parked.get("393331234567")).toHaveLength(1);
-		// A file cannot wait: refused, final.
+		// Wrote two days ago: the template, the text flattened into its variable; the message waits.
+		store.setLast("393331234567", Date.now() - 48 * 3_600_000);
+		await wa.send({ ...base, idempotencyKey: "brief", text: "Promemoria:\n\nscadenza F24 domani", buttons: [{ label: "Approva", data: "tool:0123456789ab:approved" }] });
+		expect(templates(graph)).toEqual([
+			{
+				messaging_product: "whatsapp",
+				recipient_type: "individual",
+				to: "393331234567",
+				type: "template",
+				template: { name: "annie_aggiornamento", language: { code: "it" }, components: [{ type: "body", parameters: [{ type: "text", text: "Promemoria: scadenza F24 domani" }] }] },
+			},
+		]);
+		// The same message again (an outbox retry) is kept once; a second message waits without a second paid notice.
+		await wa.send({ ...base, idempotencyKey: "brief", text: "Promemoria:\n\nscadenza F24 domani", possibleDuplicate: true });
+		await wa.send({ ...base, idempotencyKey: "reminder", text: "Altro promemoria" });
+		expect(templates(graph)).toHaveLength(1);
+		expect(store.state()["393331234567"]?.parked?.map((p) => p.key)).toEqual(["brief", "reminder"]);
 		await expect(wa.sendFile({ ...base, name: "f24.pdf", data: new Uint8Array([1]) })).rejects.toThrow(/24-hour window/);
-		// The person writes: what waited goes first, with its buttons, and the window is open again.
+		// The person writes: what waited goes first, in order, with its buttons; the window is open again.
 		const before = graph.sent().length;
-		await wa.handleWebhook(delivery([{ from: "393331234567", id: "wamid.back", type: "text", text: { body: "eccomi" } }]));
+		await wa.handleWebhook(delivery([{ from: "393331234567", id: "wamid.back", timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: "eccomi" } }]));
 		const delivered = graph.sent().slice(before);
-		expect(delivered).toHaveLength(1);
-		expect(delivered[0]).toMatchObject({ type: "interactive", interactive: { body: { text: "Promemoria:\n\nscadenza F24 domani" } } });
-		expect(store.parked.has("393331234567")).toBe(false);
+		expect(delivered.map((b) => b.type)).toEqual(["interactive", "text"]);
+		expect(delivered[0]).toMatchObject({ interactive: { body: { text: "Promemoria:\n\nscadenza F24 domani" } } });
+		expect(store.state()["393331234567"]?.parked).toEqual([]);
 		await wa.send({ ...base, text: "Di nuovo libero" });
 		expect(graph.sent().at(-1)).toMatchObject({ type: "text", text: { body: "Di nuovo libero" } });
+		// Closed again later: a new notice is due.
+		store.setLast("393331234567", Date.now() - 48 * 3_600_000);
+		await wa.send({ ...base, idempotencyKey: "next", text: "Domani" });
+		expect(templates(graph)).toHaveLength(2);
 	});
 
-	it("without a template the message only waits, logged; if delivering it fails it waits again", async () => {
-		const graph = await fakeGraph();
+	it("a notice Meta refuses still leaves the message waiting, and the send counts as handed off; without a template it only waits", async () => {
+		const refusing = await fakeGraph({ refuse: { code: 132001, message: "Template name does not exist" } });
 		const store = memoryWindow();
 		const logs: string[] = [];
-		const wa = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: graph.base, window: store.window, log: (m) => void logs.push(m) });
-		wa.onInbound(async () => {});
-		store.last.set("393331234567", Date.now() - 48 * 3_600_000);
-		const sent = graph.sent().length;
-		await wa.send({ ...base, text: "Aspetto" });
-		expect(graph.sent()).toHaveLength(sent);
-		expect(logs.at(-1)).toContain("kept until they write");
-		// Delivery fails (Meta refuses now): back in the store, nothing lost.
+		const wa = adapter(refusing.base, store, { template: { name: "manca", language: "it" }, log: (m) => void logs.push(m) });
+		store.setLast("393331234567", Date.now() - 48 * 3_600_000);
+		await wa.send({ ...base, idempotencyKey: "a", text: "Aspetto" });
+		expect(store.state()["393331234567"]?.parked?.map((p) => p.text)).toEqual(["Aspetto"]);
+		expect(logs.at(-1)).toMatch(/notice to 393331234567 not sent \(template manca\).*waits for them anyway/);
+		const quiet = memoryWindow();
+		const plain = await fakeGraph();
+		const silent = adapter(plain.base, quiet, { log: (m) => void logs.push(m) });
+		quiet.setLast("393331234567", Date.now() - 48 * 3_600_000);
+		await silent.send({ ...base, idempotencyKey: "b", text: "Senza avviso" });
+		expect(plain.sent()).toHaveLength(0);
+		expect(logs.at(-1)).toContain("kept until they write (no template set)");
+	});
+
+	it("an old message Meta delivers again opens nothing; a delivery that fails stays, to go again with the notice; strangers are not recorded", async () => {
+		const graph = await fakeGraph();
+		const store = memoryWindow();
+		const wa = adapter(graph.base, store);
+		store.setLast("393331234567", Date.now() - 48 * 3_600_000);
+		await wa.send({ ...base, idempotencyKey: "w", text: "In attesa" });
+		const twoDaysAgo = String(Math.floor((Date.now() - 47 * 3_600_000) / 1000));
+		await wa.handleWebhook(delivery([{ from: "393331234567", id: "wamid.old", timestamp: twoDaysAgo, type: "text", text: { body: "vecchio" } }]));
+		expect(store.state()["393331234567"]?.parked).toHaveLength(1);
 		const refusing = await fakeGraph({ refuse: { code: 131000, message: "Something went wrong" } });
-		const later = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: refusing.base, window: store.window, log: (m) => void logs.push(m) });
-		later.onInbound(async () => {});
-		await later.handleWebhook(delivery([{ from: "393331234567", id: "wamid.x", type: "text", text: { body: "ci sono" } }]));
-		expect(store.parked.get("393331234567")?.map((m) => m.text)).toEqual(["Aspetto"]);
+		const later = adapter(refusing.base, store);
+		await later.handleWebhook(delivery([{ from: "393331234567", id: "wamid.now", timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: "ci sono" } }]));
+		expect(store.state()["393331234567"]?.parked).toEqual([{ key: "w", text: "In attesa", resend: true }]);
+		await adapter(graph.base, store).handleWebhook(delivery([{ from: "393331234567", id: "wamid.again", type: "text", text: { body: "riprovo" } }]));
+		expect(graph.sent().at(-1)?.text.body).toMatch(/^Possibile doppione/);
+		await wa.handleWebhook(delivery([{ from: "390000000000", id: "wamid.s", type: "text", text: { body: "estraneo" } }]));
+		expect(store.state()["390000000000"]).toBeUndefined();
 	});
 });
 

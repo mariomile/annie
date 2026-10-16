@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
-import { MissingWhatsAppField, type WhatsAppAdapter, type WhatsAppWebhook } from "../channels/whatsapp.ts";
+import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
@@ -56,7 +56,7 @@ export type WhatsAppStatus = {
 	readonly allowedUsers: readonly string[];
 	readonly approvers: readonly string[];
 	/** The approved template sent outside the 24-hour window; null: messages wait without notice. */
-	readonly template: { readonly name: string; readonly language: string } | null;
+	readonly template: WhatsAppTemplate | null;
 };
 
 export type WebAppOptions = {
@@ -91,7 +91,7 @@ export type WebAppOptions = {
 	readonly whatsapp?: {
 		status(instanceId: string): Promise<WhatsAppStatus>;
 		/** Check with Meta, keep the credentials in the secret store, start receiving. Values left out keep the saved ones. */
-		connect(instanceId: string, credentials: { accessToken?: string; phoneNumberId?: string; appSecret?: string; template?: { name: string; language: string } | null }): Promise<{ number: string | undefined; name: string | undefined }>;
+		connect(instanceId: string, credentials: { accessToken?: string; phoneNumberId?: string; appSecret?: string; template?: WhatsAppTemplate | null }): Promise<{ number: string | undefined; name: string | undefined }>;
 		disconnect(instanceId: string): Promise<void>;
 	};
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
@@ -759,12 +759,12 @@ export function createWebApp(options: WebAppOptions): Server {
 			appSecret: text(body.appSecret, /^[0-9a-f]{16,128}$/i, "App secret"),
 		};
 		// The template: both name and language, or both empty to remove it; left out, unchanged.
-		let template: { name: string; language: string } | null | undefined;
+		let template: WhatsAppTemplate | null | undefined;
 		if (body.templateName !== undefined || body.templateLanguage !== undefined) {
 			const name = typeof body.templateName === "string" ? body.templateName.trim() : "";
 			const language = typeof body.templateLanguage === "string" ? body.templateLanguage.trim() : "";
 			if (name === "" && language === "") template = null;
-			else if (/^[a-z0-9_]{1,512}$/.test(name) && /^[a-z]{2,3}(_[A-Z]{2})?$/.test(language)) template = { name, language };
+			else if (TEMPLATE_NAME.test(name) && TEMPLATE_LANGUAGE.test(language)) template = { name, language };
 			else throw new HttpError(400, "Template: il nome come in Meta (minuscole, cifre e _) e la lingua come it o en_US");
 		}
 		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {

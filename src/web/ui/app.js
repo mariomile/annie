@@ -1515,7 +1515,9 @@ function whatsappCard(inst, w) {
 	const save = async () => {
 		try {
 			const given = { accessToken: accessToken.value.trim(), phoneNumberId: phoneNumberId.value.trim(), appSecret: appSecret.value.trim() };
-			const template = w.connected ? { templateName: templateName.value.trim(), templateLanguage: templateLanguage.value.trim() } : {};
+			// The template only when it changed: otherwise saving the people list does not need Meta.
+			const changed = w.connected && (templateName.value.trim() !== (w.template?.name ?? "") || templateLanguage.value.trim() !== (w.template?.language ?? ""));
+			const template = changed ? { templateName: templateName.value.trim(), templateLanguage: templateLanguage.value.trim() } : {};
 			const body = { ...Object.fromEntries(Object.entries(given).filter(([, v]) => v)), ...template, allowedUsers: numbers(allowed), approvers: numbers(approvers) };
 			await api(`/api/instances/${inst.id}/whatsapp`, { method: "PUT", body });
 			toast(w.connected ? "WhatsApp aggiornato" : "Numero collegato");

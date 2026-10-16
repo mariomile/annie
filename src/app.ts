@@ -5,12 +5,13 @@
  * environment and calls startAnnie; tests call it directly.
  */
 import { randomBytes } from "node:crypto";
+import { renameSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
 import { type Transcribe, TranscriptionOff, transcriber, VOICE_CONNECTOR } from "./channels/voice.ts";
-import { MissingWhatsAppField, type ParkedMessage, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWindow } from "./channels/whatsapp.ts";
+import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter, type WhatsAppWindow, type WindowState, windowStore } from "./channels/whatsapp.ts";
 import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
 import { egressFetch } from "./connectors/http.ts";
@@ -342,7 +343,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	function attachWhatsApp(instance: string, credentials: WhatsAppCredentials): WhatsAppAdapter {
 		const adapter = new WhatsAppAdapter({
 			...credentials,
-			window: whatsappWindow(join(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(instance)), "whatsapp-window.json")),
+			window: whatsappWindow(join(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(instance)), "whatsapp-window.json"), log),
 			tenantId: tenant,
 			instanceId: instance,
 			log,
@@ -454,6 +455,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				const adapter = whatsapps.get(id);
 				const record = await runtime.registry.getInstance(tenant, id);
 				const saved = await runtime.secrets(tenant).get(whatsappSecret(id));
+				const credentials = saved === undefined ? undefined : parseCredentials(saved);
 				const me = adapter === undefined ? undefined : await adapter.me().catch(() => undefined);
 				return {
 					connected: adapter !== undefined,
@@ -461,10 +463,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					...(me?.name === undefined ? {} : { name: me.name }),
 					// What the owner pastes into the Meta app: the address and the token Meta sends back to check it.
 					webhookUrl: config.web.publicUrl?.startsWith("https://") ? `${config.web.publicUrl}/hooks/whatsapp/${id}` : null,
-					...(saved === undefined || parseCredentials(saved) === undefined ? {} : { verifyToken: (parseCredentials(saved) as WhatsAppCredentials).verifyToken }),
+					...(credentials === undefined ? {} : { verifyToken: credentials.verifyToken }),
 					allowedUsers: record.allowedUsers.whatsapp ?? [],
 					approvers: record.approvers?.whatsapp ?? [],
-					template: (saved === undefined ? undefined : parseCredentials(saved)?.template) ?? null,
+					template: credentials?.template ?? null,
 				};
 			},
 			// Checked with Meta before anything changes; a value left out keeps the one saved.
@@ -553,35 +555,31 @@ function telegramTokenSecret(instance: string): string {
 	return `telegram.botToken.${instance}`;
 }
 
-/** Per number: when they last wrote, and what waits for them. Strangers who write are remembered too, so the file is capped. */
-function whatsappWindow(file: string): WhatsAppWindow {
-	type Entry = { last?: number; parked?: ParkedMessage[] };
-	type State = Record<string, Entry>;
-	const MAX_NUMBERS = 2000;
-	const MAX_PARKED = 20;
-	const change = (number: string, edit: (entry: Entry) => Entry) =>
-		updateJsonFile<State>(file, {}, (state) => {
-			const next = { ...state, [number]: edit(state[number] ?? {}) };
-			const numbers = Object.keys(next);
-			if (numbers.length <= MAX_NUMBERS) return next;
-			// The oldest without anything waiting go first.
-			const drop = numbers.filter((n) => (next[n]?.parked ?? []).length === 0).sort((a, b) => (next[a]?.last ?? 0) - (next[b]?.last ?? 0)).slice(0, numbers.length - MAX_NUMBERS);
-			for (const n of drop) delete next[n];
-			return next;
-		});
-	return {
-		lastInbound: async (number) => readJsonFile<State>(file, {})[number]?.last,
-		seen: async (number, at) => void change(number, (e) => ({ ...e, last: at })),
-		park: async (number, message) => void change(number, (e) => ({ ...e, parked: [...(e.parked ?? []), message].slice(-MAX_PARKED) })),
-		take: async (number) => {
-			let taken: ParkedMessage[] = [];
-			change(number, (e) => {
-				taken = e.parked ?? [];
-				return { ...(e.last === undefined ? {} : { last: e.last }) };
-			});
-			return taken;
-		},
+/** The WhatsApp window store of an instance, in a locked JSON file. A damaged file is set aside, not left to block the channel. */
+function whatsappWindow(file: string, log: (message: string) => void): WhatsAppWindow {
+	const aside = (error: unknown) => {
+		if (!(error instanceof SyntaxError)) throw error;
+		log(`whatsapp: ${file} unreadable, set aside as .damaged`);
+		renameSync(file, `${file}.damaged`);
 	};
+	return windowStore({
+		read: () => {
+			try {
+				return readJsonFile<WindowState>(file, {});
+			} catch (error) {
+				aside(error);
+				return {};
+			}
+		},
+		update: (change) => {
+			try {
+				updateJsonFile<WindowState>(file, {}, change);
+			} catch (error) {
+				aside(error);
+				updateJsonFile<WindowState>(file, {}, change);
+			}
+		},
+	});
 }
 
 /** The WhatsApp credentials of an instance, as one JSON value in its secret store. */
