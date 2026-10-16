@@ -1,0 +1,22 @@
+import { describe, expect, it } from "vitest";
+import { WebChannel } from "../src/web/channel.ts";
+import { tempDataDir } from "./helpers.ts";
+
+describe("web channel", () => {
+	it("an answer ready before the question is written down still lands after it", async () => {
+		const channel = new WebChannel({ tenantId: "acme", instanceId: "ops" }, tempDataDir());
+		const thread = await channel.createThread("p_000000000001");
+		let delivered: Promise<void> | undefined;
+		channel.onInbound(async (message) => {
+			// The fastest possible answer: sent while the question is still being admitted.
+			delivered = channel.send({ tenantId: "acme", instanceId: "ops", channel: "web", threadId: message.threadId, text: "risposta", idempotencyKey: "reply:1" });
+			await new Promise((r) => setTimeout(r, 20));
+		});
+		await channel.post(thread.id, "p_000000000001", "domanda");
+		await delivered;
+		expect((await channel.transcript(thread.id)).map((e) => [e.from, e.text])).toEqual([
+			["person", "domanda"],
+			["annie", "risposta"],
+		]);
+	});
+});

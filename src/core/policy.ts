@@ -11,6 +11,11 @@ export type EgressPolicy = {
 	readonly modelProviders: readonly string[];
 	readonly channels: readonly string[];
 	readonly connectors?: readonly string[];
+	/**
+	 * Sites the instance may read with its web tools: "example.com" (and its subdomains), or "*"
+	 * for any public site. Missing or empty: none.
+	 */
+	readonly web?: readonly string[];
 };
 
 export const DENY_ALL: EgressPolicy = { modelProviders: [], channels: [] };
@@ -39,4 +44,12 @@ export function assertUserAllowed(allowed: AllowedUsers, message: { channel: str
 	const list = allowed[message.channel];
 	if (list === undefined || list.length === 0) throw new UserNotAllowed(message.channel, message.userId, message.threadId, "no_users_allowed_on_channel");
 	if (!list.includes(message.userId)) throw new UserNotAllowed(message.channel, message.userId, message.threadId, "user_not_in_allowlist");
+}
+
+/** A web host pattern: a domain name ("example.com", subdomains included) or "*". */
+export const WEB_HOST_PATTERN = /^(\*|(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})$/;
+
+export function webHostAllowed(policy: EgressPolicy, host: string): boolean {
+	const name = host.toLowerCase().replace(/\.$/, "");
+	return (policy.web ?? []).some((pattern) => pattern === "*" || name === pattern || name.endsWith(`.${pattern}`));
 }

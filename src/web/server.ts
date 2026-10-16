@@ -7,6 +7,7 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { WEB_HOST_PATTERN } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
 import { ConnectorHttpError } from "../connectors/http.ts";
@@ -615,6 +616,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, GOOGLE_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "google.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
+	});
+
+	// --- owner: the sites an instance may read with its web tools ---
+	route("PUT", "/api/instances/:id/web", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { hosts?: unknown };
+		if (!Array.isArray(body.hosts) || body.hosts.length > 200) throw new HttpError(400, "hosts: un elenco di domini (al massimo 200)");
+		const hosts = [...new Set(body.hosts.map((h) => String(h).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "")).filter((h) => h !== ""))];
+		const wrong = hosts.filter((h) => !WEB_HOST_PATTERN.test(h));
+		if (wrong.length > 0) throw new HttpError(400, `Non sono domini: ${wrong.slice(0, 5).join(", ")}. Scrivi per esempio comune.roma.it, oppure * per tutti i siti pubblici`);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, web: hosts });
+		await runtime.audit(tenantId).append({ type: "web.hosts_changed", instanceId: id, count: hosts.length, any: hosts.includes("*") });
+		return { hosts };
 	});
 
 	// --- owner: the Telegram bot of an instance (the token never comes back) ---
