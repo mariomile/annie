@@ -21,7 +21,45 @@ export type WebFetchOptions = {
 	readonly maxRedirects?: number;
 	/** false: a redirect comes back as it is (the browser follows it, through us again). */
 	readonly followRedirects?: boolean;
+	/** A form being sent (web_submit): POST with this body. A redirect after it is followed with GET, as browsers do. */
+	readonly send?: { readonly contentType: string; readonly body: Buffer };
+	/** Cookies of this visit, per host: read before each request, filled from each answer. */
+	readonly cookies?: CookieJar;
 };
+
+/**
+ * Cookies of one visit (web_submit), nothing kept after it. A cookie goes back to the host that
+ * set it, or to the domain it names when that host is under it; a Secure one only over https.
+ */
+export class CookieJar {
+	private readonly cookies = new Map<string, { value: string; domain: string; hostOnly: boolean; secure: boolean }>();
+
+	header(url: URL): string | undefined {
+		const host = url.hostname.toLowerCase();
+		const out = [...this.cookies]
+			.filter(([, c]) => (c.hostOnly ? host === c.domain : host === c.domain || host.endsWith(`.${c.domain}`)) && (!c.secure || url.protocol === "https:"))
+			.map(([key, c]) => `${key.slice(key.indexOf(" ") + 1)}=${c.value}`);
+		return out.length === 0 ? undefined : out.join("; ");
+	}
+
+	take(url: URL, setCookies: readonly string[]): void {
+		const host = url.hostname.toLowerCase();
+		for (const line of setCookies) {
+			const [pair = "", ...attrs] = line.split(";");
+			const eq = pair.indexOf("=");
+			if (eq <= 0) continue;
+			const name = pair.slice(0, eq).trim();
+			const value = pair.slice(eq + 1).trim();
+			const attr = (key: string) => attrs.map((a) => a.trim()).find((a) => a.toLowerCase().startsWith(key));
+			const named = attr("domain=")?.slice(7).trim().toLowerCase().replace(/^\./, "");
+			// A domain the host is not under (or a bare suffix like "it") is ignored: host-only.
+			const domain = named !== undefined && named.includes(".") && (host === named || host.endsWith(`.${named}`)) ? named : host;
+			const key = `${domain} ${name}`;
+			if (/max-age=0\b|expires=thu, 01 jan 1970/i.test(line) || value === "") this.cookies.delete(key);
+			else if (this.cookies.size < 50 && name.length + value.length < 4096) this.cookies.set(key, { value, domain, hostOnly: named === undefined || domain === host && named !== host, secure: attr("secure") !== undefined });
+		}
+	}
+}
 
 export type WebPage = {
 	readonly url: string;
@@ -32,6 +70,7 @@ export type WebPage = {
 	readonly truncated: boolean;
 	/** Set on a redirect that was not followed. */
 	readonly location?: string;
+	readonly setCookies: readonly string[];
 };
 
 export const USER_AGENT = "Annie/1.0 (+https://github.com/mariomile/annie)";
@@ -42,12 +81,18 @@ export class WebFetchRefused extends Error {
 
 export async function webFetch(url: string, options: WebFetchOptions): Promise<WebPage> {
 	let current = url;
+	let send = options.send;
 	for (let hop = 0; hop <= (options.maxRedirects ?? 5); hop++) {
 		const target = checkedUrl(current, options);
-		const answer = await get(target, options);
+		const answer = await get(target, { ...options, send });
+		options.cookies?.take(target, answer.setCookies);
 		if (answer.status >= 300 && answer.status < 400 && answer.location !== undefined) {
 			const next = new URL(answer.location, target).toString();
 			if (options.followRedirects === false) return { ...answer, url: target.toString(), location: next };
+			// 307 and 308 keep the method and the body; the others turn into a GET. A form goes
+			// only where the person approved it: never on to another origin with its body.
+			if (answer.status !== 307 && answer.status !== 308) send = undefined;
+			else if (send !== undefined && new URL(next).origin !== target.origin) throw new WebFetchRefused(`il sito voleva inoltrare il modulo a ${new URL(next).host}, non approvato`);
 			current = next;
 			continue;
 		}
@@ -89,12 +134,20 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 	};
 	return new Promise((resolve, reject) => {
 		const send = url.protocol === "https:" ? httpsRequest : httpRequest;
-		const req = send(url, { method: "GET", lookup, agent: false, headers: { "user-agent": USER_AGENT, accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "accept-encoding": "identity" } }, (res: IncomingMessage) => {
+		const headers: Record<string, string> = { "user-agent": USER_AGENT, accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "accept-encoding": "identity" };
+		const cookie = options.cookies?.header(url);
+		if (cookie !== undefined) headers.cookie = cookie;
+		if (options.send !== undefined) {
+			headers["content-type"] = options.send.contentType;
+			headers["content-length"] = String(options.send.body.length);
+		}
+		const req = send(url, { method: options.send === undefined ? "GET" : "POST", lookup, agent: false, headers }, (res: IncomingMessage) => {
 			const status = res.statusCode ?? 0;
 			const contentType = String(res.headers["content-type"] ?? "");
+			const setCookies = res.headers["set-cookie"] ?? [];
 			const done = (bytes: Buffer, truncated: boolean, location?: string) => {
 				clearTimeout(deadline);
-				resolve({ status, contentType, bytes, body: bytes.toString("utf8"), truncated, ...(location === undefined ? {} : { location }) });
+				resolve({ status, contentType, bytes, body: bytes.toString("utf8"), truncated, setCookies, ...(location === undefined ? {} : { location }) });
 			};
 			if (status >= 300 && status < 400 && res.headers.location) {
 				res.resume();
@@ -126,7 +179,7 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 			clearTimeout(deadline);
 			reject(error);
 		});
-		req.end();
+		req.end(options.send?.body);
 	});
 }
 
@@ -182,7 +235,8 @@ function ipv6Words(address: string): number[] | undefined {
 
 /** The readable text of an HTML page, and its title. Linear in the page's size: no backtracking regex. */
 export function pageText(html: string): { title: string; text: string } {
-	const lower = html.toLowerCase();
+	// ASCII only: a lowercase that changed the length would shift every index below.
+	const lower = html.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 	const titleStart = lower.indexOf("<title");
 	const titleOpen = titleStart < 0 ? -1 : lower.indexOf(">", titleStart);
 	const titleEnd = titleOpen < 0 ? -1 : lower.indexOf("</title", titleOpen);

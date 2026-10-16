@@ -189,6 +189,8 @@ async function refreshCounters() {
 			pending += proposals.filter((p) => p.status === "pending").length;
 			if (inst.hasSegreteria) pending += (await api(`/api/instances/${inst.id}/pratiche`)).pratiche.filter((p) => p.status === "draft_ready").length;
 		}
+		// Forms to send: a person sees and decides their own, an approver everyone's.
+		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/web-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
 		state.pendingApprovals = pending;
 		renderRail();
 	} catch {
@@ -396,9 +398,29 @@ function webCard(inst, hosts) {
 	return h(
 		"div.card.pad",
 		h("h3", "Navigazione web"),
-		h("p.muted", "I siti che Annie può leggere e fotografare (web_read, web_screenshot). Solo lettura: non compila moduli e non invia niente. Un dominio per riga, i sottodomini sono compresi; * vuol dire tutti i siti pubblici. Vuoto: nessuno."),
+		h("p.muted", "I siti che Annie può leggere e fotografare (web_read, web_screenshot). Un dominio per riga, i sottodomini sono compresi; * vuol dire tutti i siti pubblici. Vuoto: nessuno."),
 		h("label.field", h("span", "Siti consentiti"), list),
 		h("button.btn", { onclick: save }, "Salva i siti"),
+	);
+}
+
+/** Owner: forms on the allowed sites, sent only after a person approves each one (ADR 0011). */
+function webActionsCard(inst, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
+	toggle.onchange = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/web-actions-allowed`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Annie può chiedere di inviare moduli" : "Azioni sul web spente");
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	};
+	return h(
+		"div.card.pad",
+		h("h3", "Azioni sul web"),
+		h("p.muted", "Annie può chiedere di inviare un modulo di un sito consentito (un contatto, una prenotazione). Ogni invio aspetta l'approvazione di chi l'ha chiesto o di un approvatore, che vede destinazione e valori esatti; niente parte da solo."),
+		h("label.row-gap", toggle, h("span", "Consenti le azioni sul web con approvazione")),
 	);
 }
 
@@ -976,6 +998,36 @@ async function viewApprovals(main) {
 		}
 		return el;
 	};
+	const { actions } = await api(`/api/instances/${inst.id}/web-actions`);
+	const ACTION_STAMP = { done: ["ok", "Inviato"], failed: ["bad", "Non inviato"], rejected: ["bad", "Rifiutato"], expired: ["bad", "Scaduto"], uncertain: ["bad", "Esito incerto"], running: ["ok", "In invio"] };
+	const actionCard = (a) => {
+		const el = h(
+			"article.card.pad.dossier",
+			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h3", "Invio di un modulo a ", h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("p", a.reason),
+			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
+			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
+			h("p.muted", "Cosa parte (tranne i campi nascosti del sito, come i token di sicurezza):"),
+			h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))),
+			a.result ? h("details", h("summary", "Risposta del sito"), h("pre.code", a.result.error ?? `${a.result.status} ${a.result.url}\n${a.result.title}\n\n${a.result.text}`)) : null,
+			a.status !== "pending" && ACTION_STAMP[a.status] ? h(`div.stamp.${ACTION_STAMP[a.status][0]}`, ACTION_STAMP[a.status][1]) : null,
+		);
+		if (a.status === "pending") {
+			const decide = async (decision) => {
+				try {
+					const { action } = await api(`/api/instances/${inst.id}/web-actions/${a.id}/decision`, { method: "POST", body: { decision } });
+					toast(action.status === "done" ? "Modulo inviato" : action.status === "rejected" ? "Richiesta rifiutata" : action.status === "failed" ? "Il modulo non è partito: vedi la risposta" : action.status === "uncertain" ? "Esito incerto: controlla sul sito" : `Richiesta ${action.status}`, action.status === "failed" || action.status === "uncertain");
+					setTimeout(() => void refreshCounters().then(render), 600);
+				} catch (error) {
+					toast(error.message, true);
+				}
+			};
+			el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Invia"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), h("span.muted", "Il modulo parte una volta sola, con questi valori. Se nel frattempo il sito lo cambia, non parte.")));
+		}
+		return el;
+	};
+	const pendingActions = actions.filter((a) => a.status === "pending");
+	const decidedActions = actions.filter((a) => a.status !== "pending").reverse();
 	// Everything waiting for this person, in one place: drafts of every segreteria they approve too.
 	const drafts = [];
 	for (const s of state.instances.filter((i) => i.hasSegreteria && i.isApprover)) {
@@ -1004,8 +1056,15 @@ async function viewApprovals(main) {
 			);
 	}
 	main.replaceChildren(
-		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le bozze della segreteria e i tool che Annie scrive da sola, spenti finché un approvatore non li legge e li approva."),
-		h("div.stack", drafts, pending.length ? pending.map(card) : drafts.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."), decided.length ? [h("div.kicker", "Decisi"), decided.map(card)] : null),
+		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
+		h(
+			"div.stack",
+			drafts,
+			pendingActions.map(actionCard),
+			pending.map(card),
+			drafts.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria, i moduli da inviare e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."),
+			decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
+		),
 	);
 }
 
@@ -1446,6 +1505,7 @@ async function viewSettings(main) {
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				webCard(inst, settings.egress.web ?? []),
+				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 			),
 			h(
 				"div.stack",

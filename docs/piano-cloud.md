@@ -51,7 +51,7 @@ Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Anni
 
 - Browser e terminale dentro la cella, con livelli di approvazione: leggere è libero, scrivere o inviare si approva.
 
-Stato al 16 ottobre 2026 (settimana 10, [ADR 0009](adr/0009-navigazione-web-in-sola-lettura.md)): fatta la lettura. Un'istanza legge pagine web e ne fa screenshot dai siti che l'owner consente, mai da indirizzi interni. Mancano le azioni (compilare, cliccare, inviare, con approvazione) e il terminale: chiedono le micro-VM.
+Stato al 16 ottobre 2026 (settimana 10, [ADR 0009](adr/0009-navigazione-web-in-sola-lettura.md)): fatta la lettura. Un'istanza legge pagine web e ne fa screenshot dai siti che l'owner consente, mai da indirizzi interni. Settimana 16 ([ADR 0011](adr/0011-moduli-web-con-approvazione.md)): Annie chiede di inviare un modulo di un sito consentito e lo invia, una volta sola, dopo che chi l'ha chiesto o un approvatore ha letto destinazione e valori esatti. Mancano il browser con clic su pagine costruite da JavaScript e il terminale: chiedono le micro-VM.
 
 ### Fase 4: commerciale
 

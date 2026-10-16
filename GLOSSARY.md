@@ -113,6 +113,10 @@ _Avoid_: integrazione, connettore personale
 I siti che un'istanza può leggere e fotografare, scelti dall'owner; tutto il resto, e qualunque indirizzo interno, le è negato.
 _Avoid_: whitelist, domini, navigazione libera
 
+**Azione sul web**:
+L'invio di un modulo di un sito consentito che l'istanza chiede e che parte solo dopo che chi l'ha chiesta, o un approvatore, ha letto destinazione e valori e l'ha approvato. Una volta sola; l'esito torna nella conversazione.
+_Avoid_: automazione, bot, compilazione automatica
+
 **Brief del mattino**:
 Il task programmato di una persona che ogni mattina le riassume impegni del giorno, mail che chiedono una risposta e quello che l'istanza ricorda di lei, leggendo senza cambiare niente.
 _Avoid_: digest, report giornaliero, newsletter
@@ -124,7 +128,7 @@ L'elenco di ciò che un'istanza può raggiungere: provider di modelli, canali, c
 _Avoid_: firewall, whitelist
 
 **Approvazione**:
-La decisione di un approvatore su un'azione che l'istanza non può compiere da sola: inviare una mail, attivare un tool proposto.
+La decisione di un approvatore su un'azione che l'istanza non può compiere da sola: inviare una mail, attivare un tool proposto, inviare un modulo sul web (questa la può decidere anche chi l'ha chiesta, nella sua conversazione privata).
 _Avoid_: conferma, ok
 
 **Audit**:
