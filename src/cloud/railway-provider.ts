@@ -11,9 +11,10 @@ export type RailwayCellOptions = {
 	readonly dataDir: string;
 	/** Railway workspace (team) the projects go to; the token's default if unset. */
 	readonly workspaceId?: string;
-	/** EU West, Amsterdam. */
+	/** Railway region of every cell; default EU West, Amsterdam. */
 	readonly region?: string;
 	readonly fetch?: typeof fetch;
+	readonly log?: (message: string) => void;
 	/** How long a deploy or a cold start has to answer /healthz. */
 	readonly startTimeoutMs?: number;
 	readonly pollMs?: number;
@@ -92,7 +93,7 @@ export class RailwayCellProvider implements CellProvider {
 			this.save(id, { ...scope, serviceId, domain, deployed: false, awake: false });
 		} catch (error) {
 			// Nothing half made stays behind, and nothing keeps costing.
-			await this.gql(GQL.projectDelete, { id: project.id }).catch(() => {});
+			await this.gql(GQL.projectDelete, { id: project.id }).catch((cleanup: unknown) => this.options.log?.(`railway: project ${project.id} of cell ${id} left behind, delete it by hand: ${cleanup instanceof Error ? cleanup.message : String(cleanup)}`));
 			throw error;
 		}
 	}
@@ -108,8 +109,7 @@ export class RailwayCellProvider implements CellProvider {
 	/** The control plane stops talking to it; Railway puts it to sleep minutes later. */
 	async stop(id: string): Promise<void> {
 		await this.starting.get(id)?.catch(() => {});
-		const cell = this.record(id);
-		if (cell !== undefined) this.save(id, { ...cell, awake: false });
+		this.change(id, { awake: false });
 	}
 
 	async destroy(id: string): Promise<void> {
@@ -130,37 +130,33 @@ export class RailwayCellProvider implements CellProvider {
 	}
 
 	async baseUrl(id: string): Promise<string> {
-		const cell = this.record(id);
-		if (cell === undefined) throw new Error(`No cell ${id}`);
-		return `https://${cell.domain}`;
+		return `https://${this.must(id).domain}`;
 	}
 
-	/** New image or settings (a new model key): new variables, then a redeploy; the volume stays. */
+	/** The current image and new settings (a new model key), then a redeploy; the volume stays. */
 	async upgrade(id: string, changes: Readonly<Record<string, string>> = {}): Promise<void> {
-		const cell = this.record(id);
-		if (cell === undefined) throw new Error(`No cell ${id}`);
-		const scope = { projectId: cell.projectId, environmentId: cell.environmentId, serviceId: cell.serviceId };
-		if (Object.keys(changes).length > 0) await this.gql(GQL.variables, { input: { ...scope, skipDeploys: true, variables: changes } });
+		const cell = this.must(id);
+		await this.gql(GQL.instance, { serviceId: cell.serviceId, environmentId: cell.environmentId, input: { source: { image: this.options.image } } });
+		if (Object.keys(changes).length > 0) await this.gql(GQL.variables, { input: { projectId: cell.projectId, environmentId: cell.environmentId, serviceId: cell.serviceId, skipDeploys: true, variables: changes } });
 		await this.gql(GQL.deploy, { serviceId: cell.serviceId, environmentId: cell.environmentId });
-		this.save(id, { ...cell, deployed: true, awake: false });
+		this.change(id, { deployed: true, awake: false });
 	}
 
 	private async wake(id: string): Promise<void> {
-		let cell = this.record(id);
-		if (cell === undefined) throw new Error(`No cell ${id}`);
+		const cell = this.must(id);
 		if (!cell.deployed) {
 			await this.gql(GQL.deploy, { serviceId: cell.serviceId, environmentId: cell.environmentId });
-			cell = { ...cell, deployed: true };
-			this.save(id, cell);
+			this.change(id, { deployed: true });
 		}
 		// The first request to a sleeping service may get a 502 while it boots: keep asking.
-		const deadline = Date.now() + (this.options.startTimeoutMs ?? 180_000);
+		// Under a front proxy's usual 100 s: a request waiting on a cold start must not be cut first.
+		const deadline = Date.now() + (this.options.startTimeoutMs ?? 90_000);
 		while (Date.now() < deadline) {
 			const ok = await this.fetchImpl(`https://${cell.domain}/healthz`, { signal: AbortSignal.timeout(10_000) })
 				.then((r) => r.ok)
 				.catch(() => false);
 			if (ok) {
-				this.save(id, { ...cell, awake: true });
+				this.change(id, { awake: true });
 				return;
 			}
 			await new Promise((resolve) => setTimeout(resolve, this.options.pollMs ?? 1_000));
@@ -179,6 +175,8 @@ export class RailwayCellProvider implements CellProvider {
 		});
 		const body = (await response.json().catch(() => ({}))) as { data?: T; errors?: { message?: string }[] };
 		if (!response.ok || body.errors !== undefined || body.data === undefined) {
+			// A refused value can be repeated in the error: the variables of a cell are its secrets.
+			if (operation === "variableCollectionUpsert") throw new Error(`railway ${operation}: refused (HTTP ${response.status}; details left out, they may contain the cell's secrets)`);
 			const message = body.errors?.map((e) => e.message).join("; ") || `HTTP ${response.status}`;
 			throw new Error(`railway ${operation}: ${message.slice(0, 300)}`);
 		}
@@ -189,8 +187,19 @@ export class RailwayCellProvider implements CellProvider {
 		return readJsonFile<Record<string, CellRecord>>(this.file, {})[id];
 	}
 
+	private must(id: string): CellRecord {
+		const cell = this.record(id);
+		if (cell === undefined) throw new Error(`No cell ${id}`);
+		return cell;
+	}
+
 	private save(id: string, cell: CellRecord): void {
 		updateJsonFile<Record<string, CellRecord>>(this.file, {}, (all) => ({ ...all, [id]: cell }));
+	}
+
+	/** Change fields of a cell as it is now; a cell destroyed meanwhile stays destroyed. */
+	private change(id: string, fields: Partial<Pick<CellRecord, "deployed" | "awake">>): void {
+		updateJsonFile<Record<string, CellRecord>>(this.file, {}, (all) => (all[id] === undefined ? all : { ...all, [id]: { ...all[id], ...fields } }));
 	}
 }
 

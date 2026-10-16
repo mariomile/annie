@@ -36,7 +36,7 @@ function provider(): CellProvider {
 		}
 		const workspaceId = env("ANNIE_CLOUD_RAILWAY_WORKSPACE");
 		const region = env("ANNIE_CLOUD_RAILWAY_REGION");
-		return new RailwayCellProvider({ token, image, dataDir, ...(workspaceId === undefined ? {} : { workspaceId }), ...(region === undefined ? {} : { region }) });
+		return new RailwayCellProvider({ token, image, dataDir, log: (message) => console.error(`annie cloud: ${message}`), ...(workspaceId === undefined ? {} : { workspaceId }), ...(region === undefined ? {} : { region }) });
 	}
 	if (kind !== "docker") {
 		console.error(`annie cloud: ANNIE_CLOUD_PROVIDER="${kind}": use local, docker or railway`);

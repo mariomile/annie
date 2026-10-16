@@ -5,7 +5,7 @@ import { RailwayCellProvider } from "../src/cloud/railway-provider.ts";
 import { tempDataDir } from "./helpers.ts";
 
 /** Fake Railway: the GraphQL API and the cells' domains, every call recorded. */
-function fakeRailway(options: { failOn?: string; coldStarts?: number } = {}) {
+function fakeRailway(options: { failOn?: string; coldStarts?: number; errorMessage?: string } = {}) {
 	const calls: { operation: string; variables: any; auth: string }[] = [];
 	const health: string[] = [];
 	let cold = options.coldStarts ?? 0;
@@ -23,7 +23,7 @@ function fakeRailway(options: { failOn?: string; coldStarts?: number } = {}) {
 		const { query, variables } = JSON.parse(String(init?.body)) as { query: string; variables: any };
 		const operation = /^mutation (\w+)/.exec(query)?.[1] ?? "query";
 		calls.push({ operation, variables, auth: String((init?.headers as Record<string, string>).authorization) });
-		if (operation === options.failOn) return Response.json({ errors: [{ message: "Not Authorized" }] });
+		if (operation === options.failOn) return Response.json({ errors: [{ message: options.errorMessage ?? "Not Authorized" }] });
 		const data: Record<string, unknown> = {
 			projectCreate: { projectCreate: { id: "prj1", environments: { edges: [{ node: { id: "env1", name: "production" } }] } } },
 			serviceCreate: { serviceCreate: { id: "svc1" } },
@@ -43,6 +43,23 @@ const provider = (dataDir: string, railway: ReturnType<typeof fakeRailway>) =>
 	new RailwayCellProvider({ token: "rw-token", image: "ghcr.io/buildrs/annie:latest", dataDir, fetch: railway.fetch, pollMs: 5, startTimeoutMs: 2_000 });
 
 describe("Railway cell provider", () => {
+	it("a refused variable never brings the cell's secrets into an error", async () => {
+		const railway = fakeRailway({ failOn: "variableCollectionUpsert", errorMessage: `Invalid value "${"s".repeat(32)}" for ANNIE_CELL_SECRET` });
+		const failed = provider(tempDataDir(), railway).create("a1", { ANNIE_CELL_SECRET: "s".repeat(32) });
+		await expect(failed).rejects.toThrow(/variableCollectionUpsert: refused/);
+		await expect(failed).rejects.not.toThrow(/sssss/);
+	});
+
+	it("a cell destroyed while it wakes stays destroyed", async () => {
+		const railway = fakeRailway({ coldStarts: 5 });
+		const cells = provider(tempDataDir(), railway);
+		await cells.create("a1", {});
+		const waking = cells.start("a1");
+		await cells.destroy("a1");
+		await waking.catch(() => {});
+		expect(await cells.status("a1")).toBe("missing");
+	});
+
 	it("creates a project per cell, with the image, the EU region before the volume on /data, sleep on, without deploying yet", async () => {
 		const railway = fakeRailway();
 		const cells = provider(tempDataDir(), railway);
@@ -100,9 +117,11 @@ describe("Railway cell provider", () => {
 		const cells = provider(dataDir, railway);
 		await cells.create("a1", {});
 		await cells.upgrade("a1", { ANNIE_MODEL_ID: "nuovo" });
-		const tail = railway.calls.slice(-2);
-		expect(tail.map((c) => c.operation)).toEqual(["variableCollectionUpsert", "serviceInstanceDeployV2"]);
-		expect(tail[0]?.variables.input.variables).toEqual({ ANNIE_MODEL_ID: "nuovo" });
+		const tail = railway.calls.slice(-3);
+		expect(tail.map((c) => c.operation)).toEqual(["serviceInstanceUpdate", "variableCollectionUpsert", "serviceInstanceDeployV2"]);
+		// The current image, not the one the cell was made with.
+		expect(tail[0]?.variables.input).toEqual({ source: { image: "ghcr.io/buildrs/annie:latest" } });
+		expect(tail[1]?.variables.input.variables).toEqual({ ANNIE_MODEL_ID: "nuovo" });
 		expect(railway.calls.some((c) => c.operation === "volumeDelete")).toBe(false);
 		await cells.destroy("a1");
 		expect(railway.calls.at(-1)).toMatchObject({ operation: "projectDelete", variables: { id: "prj1" } });

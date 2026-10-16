@@ -7,10 +7,10 @@ on:
   pull_request:
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: true
+  # A publish on main is never cut between its two tags.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
-  packages: write
 jobs:
   image:
     runs-on: ubuntu-latest
@@ -26,12 +26,39 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
           docker logs annie
           exit 1
-      - name: Publish
+      - name: Keep the image for the publish job
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save annie:ci -o annie.tar
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: annie-image
+          path: annie.tar
+          retention-days: 1
+
+  # Only this job can write packages, and only on main: a PR's Dockerfile never builds with it.
+  publish:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: annie-image
+      - name: Push to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          image="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/annie"
-          docker tag annie:ci "$image:latest"
+          docker load -i annie.tar
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/annie"
           docker tag annie:ci "$image:${GITHUB_SHA::12}"
-          docker push "$image:latest"
+          docker tag annie:ci "$image:latest"
           docker push "$image:${GITHUB_SHA::12}"
+          docker push "$image:latest"
