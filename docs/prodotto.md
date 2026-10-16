@@ -33,7 +33,7 @@ Annie è «pronta al 100%» quando ognuna di queste voci è vera e verificata da
 - [x] CI verde: typecheck, test, eval deterministiche; giudice notturno. *(Verificato in locale; la CI su GitHub parte con la PR.)*
 - [x] Review indipendente su ogni blocco, problemi corretti o documentati.
 - [x] Runbook: installazione, aggiornamento, backup e ripristino, rotazione dei segreti.
-- [x] LICENSE: Apache-2.0, **da confermare da Mario** prima di rendere pubblico il repo.
+- [x] LICENSE: Apache-2.0, confermata da Mario il 16 ottobre 2026.
 
 ## Fuori dal perimetro (scelte esplicite)
 

@@ -29,8 +29,8 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 ### Decisioni che spettano a Mario
 
-- [ ] Licenza: proposta Apache-2.0 (già nel repo), da confermare
-- [ ] Merge di `week-4` e `week-5` su `main` (oggi solo branch)
+- [x] Licenza: Apache-2.0, confermata da Mario il 16 ottobre 2026
+- [ ] Merge di `week-4` e `week-5` su `main`: PR aperte il 16 ottobre 2026 su richiesta di Mario, il merge resta suo
 
 ### Dopo (proposta)
 
@@ -42,7 +42,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 ### Prima di rendere pubblico il repo
 
-- [x] LICENSE (Apache-2.0, da confermare)
+- [x] LICENSE (Apache-2.0, confermata)
 - [x] Runbook per installazione e operatività ([runbook.md](runbook.md))
 - [x] Action della CI su Node 24 (`checkout`, `setup-node`, `upload-artifact` v5). Resta `pnpm/action-setup@v4`: da verificare alla prima PR se dà ancora l'avviso
 
