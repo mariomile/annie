@@ -6,6 +6,7 @@
  *   person link <id>                                    new login link (the old one stops working)
  *   person remove <id>
  *   person reset-2fa <id>                               turn off two-factor login (lost phone)
+ *   check                                               do the keys in .env work, are the services reachable?
  *
  * Works on the data directory; Annie can be running.
  */
@@ -14,6 +15,8 @@ import { tenantId as toTenantId } from "../core/ids.ts";
 import { tenantDir } from "../core/paths.ts";
 import { TenantRegistry } from "../core/registry.ts";
 import { PeopleStore, SessionStore } from "../web/auth.ts";
+import { runChecks } from "./check.ts";
+import { ConfigError, loadAnnieConfig } from "./config.ts";
 
 if (existsSync(".env")) process.loadEnvFile(".env");
 
@@ -27,8 +30,22 @@ const registry = new TenantRegistry(dataDir);
 const [group, command, ...rest] = process.argv.slice(2);
 
 function usage(): never {
-	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id>");
+	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id> | check");
 	process.exit(2);
+}
+
+if (group === "check") {
+	let config: ReturnType<typeof loadAnnieConfig>;
+	try {
+		config = loadAnnieConfig(process.env);
+	} catch (error) {
+		if (!(error instanceof ConfigError)) throw error;
+		console.log(`✗ Configurazione: ${error.message}`);
+		process.exit(1);
+	}
+	const results = await runChecks(config);
+	for (const r of results) console.log(`${r.ok ? "✓" : "✗"} ${r.name}: ${r.detail}`);
+	process.exit(results.every((r) => r.ok) ? 0 : 1);
 }
 
 if (group !== "person") usage();

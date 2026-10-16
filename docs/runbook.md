@@ -44,6 +44,8 @@ pnpm start                    # oppure un servizio systemd che lancia questo com
 cat data/owner-login-link.txt && rm data/owner-login-link.txt   # primo avvio
 ```
 
+Prima di tutto, e ogni volta che cambi una chiave: `pnpm annie check` (con Docker: `docker compose exec annie node_modules/.bin/tsx src/main/cli.ts check`). Prova ogni servizio configurato e dice cosa non va, senza stampare segreti: chiave del modello, bot Telegram, OAuth Gmail con i due scope, token HubSpot (e i valori di `hs_lead_status` del portale), host non raggiungibili.
+
 ## 4. Persone e accessi
 
 Dalla console (pagina Persone, solo owner) o da riga di comando:
