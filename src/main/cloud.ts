@@ -1,11 +1,14 @@
 /**
- * `pnpm cloud`: the control plane of Annie Cloud, with cells as local processes (ADR 0007).
- * The provider for real micro-VMs and the mail service come next (docs/piano-cloud.md).
+ * `pnpm cloud`: the control plane of Annie Cloud (ADR 0007, ADR 0008).
+ * Cells as local processes (development) or containers on one server (ANNIE_CLOUD_PROVIDER=docker);
+ * micro-VMs come with the provider for the chosen cloud (docs/piano-cloud.md).
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { startControlPlane } from "../cloud/control-plane.ts";
+import { DockerCellProvider } from "../cloud/docker-provider.ts";
 import { LocalCellProvider } from "../cloud/local-provider.ts";
+import type { CellProvider } from "../cloud/provider.ts";
 import { FileMailer, type Mailer } from "../cloud/mailer.ts";
 import { parseSmtpUrl, SmtpMailer } from "../cloud/smtp.ts";
 
@@ -18,6 +21,20 @@ const port = Number(env("ANNIE_CLOUD_PORT") ?? "8090");
 // What every cell gets; the control plane's own settings never reach a cell.
 const passed = ["ANNIE_MODEL_PROVIDER", "ANNIE_MODEL_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANNIE_TIME_ZONE", "ANNIE_GOOGLE_CLIENT_ID", "ANNIE_GOOGLE_CLIENT_SECRET", "ANNIE_GOOGLE_SERVICES"];
 const cellEnv = Object.fromEntries(passed.flatMap((name) => (env(name) === undefined ? [] : [[name, env(name) as string]])));
+
+/** Cells as containers (one server) with ANNIE_CLOUD_PROVIDER=docker; local processes otherwise (development). */
+function provider(): CellProvider {
+	const kind = env("ANNIE_CLOUD_PROVIDER") ?? "local";
+	if (kind === "local") return new LocalCellProvider({ root: join(dataDir, "cells"), repoRoot: process.cwd() });
+	if (kind !== "docker") {
+		console.error(`annie cloud: ANNIE_CLOUD_PROVIDER="${kind}": use local or docker`);
+		process.exit(1);
+	}
+	return new DockerCellProvider({
+		image: env("ANNIE_CLOUD_DOCKER_IMAGE") ?? "annie:local",
+		...(env("ANNIE_CLOUD_CELL_MEMORY_MB") === undefined ? {} : { memoryMb: Number(env("ANNIE_CLOUD_CELL_MEMORY_MB")) }),
+	});
+}
 
 /** A real mail service when ANNIE_CLOUD_SMTP_URL is set; otherwise links go to a file to read. */
 function mailer(): Mailer {
@@ -42,7 +59,7 @@ const cp = await startControlPlane({
 	publicScheme: (env("ANNIE_CLOUD_SCHEME") ?? (domain.endsWith("localhost") ? "http" : "https")) as "http" | "https",
 	// Locally the browser reaches the control plane on its own port; behind a proxy, on the default one.
 	...(domain.endsWith("localhost") ? { publicPort: port } : {}),
-	provider: new LocalCellProvider({ root: join(dataDir, "cells"), repoRoot: process.cwd() }),
+	provider: provider(),
 	mailer: mailer(),
 	cellEnv,
 	idleMs: Number(env("ANNIE_CLOUD_IDLE_MINUTES") ?? "15") * 60_000,

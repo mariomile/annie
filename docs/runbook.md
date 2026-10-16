@@ -101,6 +101,18 @@ Il brief del mattino si attiva dalla pagina Task; `pnpm annie brief` dice quanti
 
 Il refresh token resta nel secret store del tenant; «Scollega» lo cancella e lo revoca presso Google. In Annie Cloud il control plane passa le variabili alle celle nuove e riceve lui il ritorno da Google (`https://<dominio>/oauth/google/callback`, da registrare come unico URI), poi rimanda la persona alla sua cella.
 
+## 6c. Annie Cloud su un server (control plane e celle container)
+
+Per offrire Annie come servizio su un solo server in UE (ADR 0008):
+
+1. Costruisci l'immagine: `docker build -t annie:local .`.
+2. In `.env` del control plane: `ANNIE_CLOUD_DOMAIN` (dominio delle celle), `ANNIE_CLOUD_PROVIDER=docker`, `ANNIE_CLOUD_DOCKER_IMAGE=annie:local`, la chiave del modello (passa alle celle), `ANNIE_CLOUD_SMTP_URL` e `ANNIE_CLOUD_MAIL_FROM` per i link di accesso, e se serve `ANNIE_CLOUD_CELL_MEMORY_MB` (default 512).
+3. `pnpm cloud`, dietro un reverse proxy https per `dominio` e `*.dominio` (certificato wildcard). Il control plane ascolta su 127.0.0.1.
+4. Blocca ai container l'endpoint dei metadati del cloud e i servizi dell'host: `iptables -I DOCKER-USER -d 169.254.169.254 -j DROP`, e niente sull'host in ascolto su 0.0.0.0 oltre al reverse proxy.
+5. Backup ogni notte dei volumi `annie-cell-*` (contengono tutto di ogni tenant) e di `data-cloud/control-plane.json`.
+
+`pnpm vitest run test/docker-provider.test.ts` con `ANNIE_TEST_DOCKER_IMAGE=annie:local` prova il giro completo su un daemon vero.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
