@@ -32,6 +32,12 @@ export type Reply = {
 	 * the channel has accepted the reply; until then it is sent again after a restart.
 	 */
 	readonly deliveryId: string;
+	/**
+	 * An earlier hand-off of this reply was never confirmed: the user may already have it.
+	 * Same rule as `possibleDuplicate` in the audit (attempts > 1), so it also fires when the
+	 * earlier try died before reaching the channel.
+	 */
+	readonly possibleDuplicate: boolean;
 } & ({ readonly status: "answered"; readonly text: string } | { readonly status: "unanswered"; readonly reason: string });
 
 export type RuntimeOptions = {
@@ -341,7 +347,7 @@ export class AnnieInstance {
 			status: reply.status,
 			...(reply.status === "answered" ? { chars: reply.text.length } : { reason: reply.reason }),
 		});
-		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key };
+		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1 };
 		this.emit(reply.status === "answered" ? { ...base, status: "answered", text: reply.text } : { ...base, status: "unanswered", reason: reply.reason });
 	}
 

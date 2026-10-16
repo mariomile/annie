@@ -28,7 +28,7 @@ export type CallbackDeps = {
 };
 
 export type CallbackResult =
-	| { kind: "ignored"; reason: "not_allowlisted" | "unknown_callback" | "stale_version" }
+	| { kind: "ignored"; reason: "not_allowlisted" | "unknown_callback" | "stale_version" | "redelivered" }
 	| { kind: "handled"; pratica: Pratica; sent: boolean };
 
 /**
@@ -37,7 +37,8 @@ export type CallbackResult =
  */
 export async function handleTelegramCallback(
 	deps: CallbackDeps,
-	args: { userId: string; callbackData: string },
+	/** `actionId`: the channel's ID of this tap; a redelivered tap carries the same one. */
+	args: { userId: string; callbackData: string; actionId?: string },
 ): Promise<CallbackResult> {
 	const parsed = parseCallbackData(args.callbackData);
 	if (!parsed) return { kind: "ignored", reason: "unknown_callback" };
@@ -74,11 +75,9 @@ export async function handleTelegramCallback(
 	if (parsed.action === "discard") {
 		pratica.status = "discarded";
 		await deps.practices.save(pratica);
-		if (pratica.crmLeadId) {
-			await deps.crm.updateLeadStatus(deps.tenantId, pratica.crmLeadId, "discarded", "scartata da commerciale");
-		}
+		const crmError = pratica.crmLeadId ? await crmStatus(deps, pratica, "discarded", "scartata da commerciale") : undefined;
 		await deps.notify({
-			text: copy.discardedNotice(pratica),
+			text: copy.discardedNotice(pratica, crmError),
 			buttons: [],
 			praticaId: pratica.praticaId,
 			draftVersion: pratica.draftVersion,
@@ -88,6 +87,8 @@ export async function handleTelegramCallback(
 
 	if (parsed.action === "edit") {
 		pratica.status = "awaiting_edit";
+		pratica.editingBy = args.userId;
+		pratica.editingSince = new Date().toISOString();
 		await deps.practices.save(pratica);
 		await deps.notify({
 			text: copy.editPrompt(pratica),
@@ -98,20 +99,28 @@ export async function handleTelegramCallback(
 		return { kind: "handled", pratica, sent: false };
 	}
 
-	// Approva
+	// Approva on a spam card means "it is a real request": build the draft and show it.
+	// Nothing is sent: the draft needs its own Approva.
 	if (pratica.status === "classified_skip" && pratica.classification === "spam") {
-		// Force as quote: extract + draft (tests may inject)
-		if (deps.forceExtract) await deps.forceExtract(pratica);
-		else {
+		if (deps.forceExtract) {
+			await deps.forceExtract(pratica);
+		} else {
 			pratica.status = "draft_ready";
+			pratica.classification = "richiesta_preventivo";
 			pratica.draftVersion = Math.max(1, pratica.draftVersion);
-			if (!pratica.draftBody) {
-				const d = buildDraft(pratica.lead);
-				pratica.draftSubject = d.subject;
-				pratica.draftBody = d.body;
-			}
+			const d = buildDraft(pratica.lead);
+			pratica.draftSubject = d.subject;
+			pratica.draftBody = d.body;
 			await deps.practices.save(pratica);
+			await deps.notify({ text: copy.leadCardAndDraft(pratica), buttons: [...copy.BUTTONS], praticaId: pratica.praticaId, draftVersion: pratica.draftVersion });
 		}
+		return { kind: "handled", pratica: (await deps.practices.get(pratica.praticaId)) ?? pratica, sent: false };
+	}
+
+	if (args.actionId !== undefined && pratica.approveActionId === args.actionId) {
+		// The same tap again (Telegram redelivers unconfirmed updates after a crash): never a second send.
+		await deps.audit.append({ type: "tap.redelivered", instanceId: deps.instanceId, praticaId: pratica.praticaId, actionId: args.actionId });
+		return { kind: "ignored", reason: "redelivered" };
 	}
 
 	if (pratica.sentMessageId) {
@@ -125,6 +134,7 @@ export async function handleTelegramCallback(
 	}
 
 	pratica.status = "approved";
+	if (args.actionId !== undefined) pratica.approveActionId = args.actionId;
 	pratica.approvedBy = args.userId;
 	pratica.approvedAt = new Date().toISOString();
 	await deps.practices.save(pratica);
@@ -157,16 +167,6 @@ export async function handleTelegramCallback(
 		pratica.sentMessageId = result.sentMessageId;
 		pratica.status = "sent";
 		await deps.practices.save(pratica);
-		if (pratica.crmLeadId) {
-			await deps.crm.updateLeadStatus(deps.tenantId, pratica.crmLeadId, "replied");
-		}
-		await deps.notify({
-			text: copy.sentNotice(pratica),
-			buttons: [],
-			praticaId: pratica.praticaId,
-			draftVersion: pratica.draftVersion,
-		});
-		return { kind: "handled", pratica, sent: true };
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		pratica.status = "failed";
@@ -179,6 +179,29 @@ export async function handleTelegramCallback(
 			draftVersion: pratica.draftVersion,
 		});
 		return { kind: "handled", pratica, sent: false };
+	}
+	// The mail is out: from here on nothing may turn the pratica into a failed send.
+	const crmError = pratica.crmLeadId ? await crmStatus(deps, pratica, "replied") : undefined;
+	await deps.notify({
+		text: copy.sentNotice(pratica, crmError),
+		buttons: [],
+		praticaId: pratica.praticaId,
+		draftVersion: pratica.draftVersion,
+	});
+	return { kind: "handled", pratica, sent: true };
+}
+
+/** Record the outcome on the CRM; on failure keep the pratica as is and return the reason. */
+async function crmStatus(deps: CallbackDeps, pratica: Pratica, status: "replied" | "discarded", note?: string): Promise<string | undefined> {
+	try {
+		await deps.crm.updateLeadStatus(deps.tenantId, pratica.crmLeadId as string, status, note);
+		return undefined;
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		pratica.lastError = { code: "crm_update_failed", message: reason, at: new Date().toISOString() };
+		await deps.practices.save(pratica);
+		await deps.audit.append({ type: "crm.update_failed", instanceId: deps.instanceId, praticaId: pratica.praticaId, status, error: reason });
+		return reason;
 	}
 }
 
@@ -207,6 +230,8 @@ export async function handleEditMessage(
 	}
 
 	const trimmed = args.text.trim();
+	pratica.editingBy = undefined;
+	pratica.editingSince = undefined;
 	if (/^annulla modifica$/i.test(trimmed)) {
 		pratica.status = "draft_ready";
 		await deps.practices.save(pratica);

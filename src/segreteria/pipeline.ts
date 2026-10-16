@@ -15,6 +15,9 @@ import type { ModelRoles } from "../core/model-routing.ts";
 import { classifyInbound, isValidSender } from "./classify.ts";
 import { extractLead } from "./extract.ts";
 import { buildDraft } from "./draft.ts";
+import type { ModelClient } from "../core/completion.ts";
+import type { ChecksConfig } from "./checks.ts";
+import { analyzeMail, draftReply, type MailAnalysis, type ModelCall } from "./model.ts";
 import * as copy from "./telegram-copy.ts";
 
 export type PipelineDeps = {
@@ -27,6 +30,11 @@ export type PipelineDeps = {
 	usage: UsageLedger;
 	roles: ModelRoles;
 	tenantConfig?: TenantSegreteriaConfig;
+	/**
+	 * Real model for extraction and drafting. Absent, or roles on the local "faux" model:
+	 * the deterministic heuristics (CI, offline).
+	 */
+	model?: { client: ModelClient; checks: ChecksConfig };
 	/** Optional: override classification (tests). */
 	classify?: (mail: InboundMail) => MailClassification;
 	/** Notify commercial via Telegram (tests capture this). */
@@ -88,14 +96,15 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 		throw new Error("hard_cap");
 	}
 
-	const classification = (deps.classify ?? classifyInbound)(mail);
+	const analysis = await analyzeWithModel(deps, mail);
+	const classification = deps.classify?.(mail) ?? analysis?.classification ?? classifyInbound(mail);
 
 	if (classification === "non_commerciale") {
 		const pratica = await createSkeleton(deps, mail, "classified_skip", "notify_only");
 		pratica.classification = "non_commerciale";
 		pratica.flowAction = "notify_only";
 		await deps.practices.save(pratica);
-		await recordUsage(deps, "classify", 200, 50);
+		if (analysis === undefined) await recordUsage(deps, "classify", 200, 50);
 		await deps.notify({
 			text: copy.nonCommercialeNotice(pratica),
 			buttons: [],
@@ -110,7 +119,7 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 		pratica.classification = "spam";
 		pratica.flowAction = "create_skip";
 		await deps.practices.save(pratica);
-		await recordUsage(deps, "classify", 200, 50);
+		if (analysis === undefined) await recordUsage(deps, "classify", 200, 50);
 		await deps.notify({
 			text: copy.spamNotice(pratica),
 			buttons: [...copy.BUTTONS],
@@ -121,7 +130,7 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 	}
 
 	// Quote / thread reply
-	await recordUsage(deps, "classify", 200, 50);
+	if (analysis === undefined) await recordUsage(deps, "classify", 200, 50);
 	if (await deps.usage.isSoftCapped()) {
 		await deps.notify({
 			text: (await import("../core/usage.ts")).TELEGRAM_SOFT_CAP,
@@ -131,28 +140,66 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 		});
 	}
 
-	const lead = extractLead(mail, deps.tenantConfig);
-	await recordUsage(deps, "extract", 800, 200);
+	return prepareQuote(deps, mail, analysis, classification, attach);
+}
+
+/**
+ * Approva on a spam card: the sales person says it is a real request. Read it as a quote
+ * request and show the draft card; nothing is sent until the draft is approved.
+ */
+export async function forceQuote(deps: PipelineDeps, spam: Pratica): Promise<PipelineResult> {
+	const mail: InboundMail = spam.mail ?? {
+		messageId: spam.mailMessageId,
+		from: spam.lead.email ?? "",
+		subject: spam.lead.rawSubject,
+		bodyText: spam.lead.rawSnippet,
+		receivedAt: spam.lead.receivedAt,
+	};
+	if (await deps.usage.isHardCapped()) throw new Error("hard_cap");
+	const analysis = await analyzeWithModel(deps, mail);
+	return prepareQuote(deps, mail, analysis, "richiesta_preventivo", undefined, spam);
+}
+
+/**
+ * Lead, CRM, draft and card for a quote request. The pratica is saved only once its draft
+ * is ready: if the process dies before, the mail is still new on the next round and is
+ * read again from the start (the CRM upsert is idempotent by email).
+ */
+async function prepareQuote(
+	deps: PipelineDeps,
+	mail: InboundMail,
+	analysis: MailAnalysis | undefined,
+	classification: MailClassification,
+	attach: Pratica | undefined,
+	base?: Pratica,
+): Promise<PipelineResult> {
+	let lead = analysis?.lead ?? extractLead(mail, deps.tenantConfig);
+	if (analysis === undefined) await recordUsage(deps, "extract", 800, 200);
 
 	let pratica: Pratica;
 	let action: FlowAction;
 	if (attach) {
 		action = "attach_to_existing";
+		const { sentMessageId, approveActionId: _tap, ...rest } = attach;
 		pratica = {
-			...attach,
+			...rest,
+			// A new draft in the same thread is a new reply: the earlier send stays in the history.
+			...(sentMessageId === undefined ? {} : { sentHistory: [...(attach.sentHistory ?? []), sentMessageId] }),
 			lead: {
 				...lead,
 				productOrService: [attach.lead.productOrService, lead.productOrService].filter(Boolean).join("; ") || null,
 			},
 			missingFields: [...lead.missingFields],
 			mailMessageId: mail.messageId, // index latest message too
+			mail: storedMail(mail),
 			status: "received",
 			flowAction: action,
 			classification,
 		};
 	} else {
 		action = "create";
-		pratica = await createSkeleton(deps, mail, "received", "create");
+		pratica = base ?? skeleton(deps, mail, "received", "create");
+		pratica.status = "received";
 		pratica.lead = lead;
 		pratica.missingFields = [...lead.missingFields];
 		pratica.classification = classification;
@@ -192,11 +239,14 @@ export async function processInboundMail(deps: PipelineDeps, mail: InboundMail):
 		});
 	}
 
-	const draft = buildDraft(lead);
-	await recordUsage(deps, "draft", 1200, 600);
+	const draft = await draftWithModel(deps, mail, lead, analysis);
+	if (draft.note !== undefined) {
+		lead = { ...lead, notes: [lead.notes, draft.note].filter(Boolean).join(" ") };
+		pratica.lead = { ...pratica.lead, notes: lead.notes };
+	}
 	pratica.draftSubject = draft.subject;
 	pratica.draftBody = draft.body;
-	pratica.draftVersion = attach ? pratica.draftVersion + 1 : 1;
+	pratica.draftVersion = attach || base ? pratica.draftVersion + 1 : 1;
 	pratica.status = "draft_ready";
 	await deps.practices.save(pratica);
 
@@ -221,6 +271,24 @@ async function createSkeleton(
 	status: Pratica["status"],
 	flowAction: FlowAction,
 ): Promise<Pratica> {
+	const pratica = skeleton(deps, mail, status, flowAction);
+	await deps.practices.save(pratica);
+	return pratica;
+}
+
+function storedMail(mail: InboundMail): NonNullable<Pratica["mail"]> {
+	return {
+		messageId: mail.messageId,
+		...(mail.threadId === undefined ? {} : { threadId: mail.threadId }),
+		from: mail.from,
+		...(mail.fromName === undefined ? {} : { fromName: mail.fromName }),
+		subject: mail.subject,
+		bodyText: mail.bodyText,
+		receivedAt: mail.receivedAt,
+	};
+}
+
+function skeleton(deps: PipelineDeps, mail: InboundMail, status: Pratica["status"], flowAction: FlowAction): Pratica {
 	const now = new Date().toISOString();
 	const pratica: Pratica = {
 		praticaId: newPraticaId(),
@@ -245,11 +313,68 @@ async function createSkeleton(
 		draftBody: "",
 		draftVersion: 0,
 		flowAction,
+		mail: storedMail(mail),
 		createdAt: now,
 		updatedAt: now,
 	};
-	await deps.practices.save(pratica);
 	return pratica;
+}
+
+function modelEnabled(deps: PipelineDeps): deps is PipelineDeps & { model: NonNullable<PipelineDeps["model"]> } {
+	return deps.model !== undefined && deps.roles.extract.provider !== "faux";
+}
+
+/** Model analysis, or undefined for the heuristics (no model, or the model failed). */
+async function analyzeWithModel(deps: PipelineDeps, mail: InboundMail): Promise<MailAnalysis | undefined> {
+	if (!modelEnabled(deps)) return undefined;
+	try {
+		return await analyzeMail(deps.model.client, deps.roles.extract, mail, deps.tenantConfig, (call) => recordModelCall(deps, call));
+	} catch (error) {
+		await deps.audit.append({ type: "model.failed", instanceId: deps.instanceId, role: "extract", mailMessageId: mail.messageId, error: errorText(error) });
+		return undefined;
+	}
+}
+
+async function draftWithModel(
+	deps: PipelineDeps,
+	mail: InboundMail,
+	lead: Pratica["lead"],
+	analysis: MailAnalysis | undefined,
+): Promise<{ subject: string; body: string; note?: string }> {
+	if (!modelEnabled(deps)) {
+		const draft = buildDraft(lead);
+		await recordUsage(deps, "draft", 1200, 600);
+		return draft;
+	}
+	const requests = analysis?.requests ?? [];
+	try {
+		const draft = await draftReply(deps.model.client, deps.roles.draft, { mail, lead, requests, checks: deps.model.checks }, (call) => recordModelCall(deps, call));
+		if (draft.source === "model") return draft;
+		await deps.audit.append({ type: "draft.fallback", instanceId: deps.instanceId, mailMessageId: mail.messageId, failures: [...new Set(draft.failures.map((f) => f.check))].join(",") });
+		return { ...draft, note: "Bozza standard: quella del modello non passava i controlli (prezzi, tono o dati)." };
+	} catch (error) {
+		await deps.audit.append({ type: "model.failed", instanceId: deps.instanceId, role: "draft", mailMessageId: mail.messageId, error: errorText(error) });
+		return { ...buildDraft(lead, { requests }), note: "Bozza standard: il modello non ha risposto." };
+	}
+}
+
+async function recordModelCall(deps: PipelineDeps, call: ModelCall): Promise<void> {
+	await deps.usage.record(
+		{
+			at: new Date().toISOString(),
+			provider: call.model.provider,
+			model: call.model.modelId,
+			role: call.role,
+			inputTokens: call.result.inputTokens,
+			outputTokens: call.result.outputTokens,
+			estimatedUsd: call.result.costUsd ?? estimateUsd(call.model.modelId, call.result.inputTokens, call.result.outputTokens),
+		},
+		deps.audit,
+	);
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 async function recordUsage(deps: PipelineDeps, role: "extract" | "draft" | "classify", input: number, output: number): Promise<void> {

@@ -11,7 +11,15 @@ export type InboundMail = {
 
 export interface MailAdapter {
 	readonly name: string;
-	listNewRequests(tenantId: string, sinceCursor: string): Promise<{ messages: InboundMail[]; nextCursor: string }>;
+	/**
+	 * Mails received since the cursor, oldest first. `isKnown` names mails already handled:
+	 * adapters may skip fetching them (the caller deduplicates anyway).
+	 */
+	listNewRequests(
+		tenantId: string,
+		sinceCursor: string,
+		options?: { isKnown?: (messageId: string) => Promise<boolean> },
+	): Promise<{ messages: InboundMail[]; nextCursor: string }>;
 	sendReply(
 		tenantId: string,
 		args: {

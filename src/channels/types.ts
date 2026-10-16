@@ -22,6 +22,22 @@ export type InboundMessage = {
 	readonly messageId?: string;
 };
 
+/** A tap on a button of an earlier outbound message (Telegram: a callback query). */
+export type InboundAction = {
+	readonly tenantId: string;
+	readonly instanceId: string;
+	readonly channel: string;
+	readonly threadId: string;
+	readonly userId: string;
+	/** The `data` of the button that was tapped. */
+	readonly data: string;
+	/** Channel-native ID of the tap; a redelivery after a crash carries the same one. */
+	readonly actionId: string;
+};
+
+/** A button under an outbound message. `data` comes back in the InboundAction when tapped. */
+export type ActionButton = { readonly label: string; readonly data: string };
+
 /** A message to deliver through a channel. */
 export type OutboundMessage = {
 	readonly tenantId: string;
@@ -35,6 +51,13 @@ export type OutboundMessage = {
 	 * Telegram cannot, so a resend there can show the reply twice.
 	 */
 	readonly idempotencyKey: string;
+	/**
+	 * This message may already have reached the user (resent after a crash). Channels that
+	 * cannot deduplicate should tell the user; the others can ignore it.
+	 */
+	readonly possibleDuplicate?: boolean;
+	/** Buttons, in one row, under the message (under its last piece if it is split). */
+	readonly buttons?: readonly ActionButton[];
 };
 
 export interface ChannelAdapter {
@@ -45,6 +68,19 @@ export interface ChannelAdapter {
 	stop(): Promise<void>;
 	/** Register the handler for inbound messages. One handler per adapter. */
 	onInbound(handler: (message: InboundMessage) => Promise<void>): void;
+	/**
+	 * Register the handler for button taps. Optional: channels without buttons omit it.
+	 * Taps can be redelivered after a crash, so the handler must be idempotent.
+	 */
+	onAction?(handler: (action: InboundAction) => Promise<void>): void;
 	/** Resolves once the channel has accepted the whole message; rejects otherwise. */
 	send(message: OutboundMessage): Promise<void>;
+}
+
+/**
+ * The channel answered and refused the message: it did not reach anyone. Any other error
+ * from `send` (network, timeout) leaves open whether it arrived.
+ */
+export class ChannelRefused extends Error {
+	override readonly name = "ChannelRefused";
 }

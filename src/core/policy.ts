@@ -4,10 +4,13 @@ import { EgressDenied, UserNotAllowed } from "./errors.ts";
  * What an instance may talk to. Default deny: an empty list allows nothing.
  * `modelProviders` are pi-ai provider IDs ("anthropic", "openai", ...; "faux" is the
  * local deterministic model). `channels` are channel adapter names ("telegram", ...).
+ * `connectors` are external systems the instance's tools reach ("gmail", "hubspot");
+ * missing means none, so policies written before week 4 still deny them.
  */
 export type EgressPolicy = {
 	readonly modelProviders: readonly string[];
 	readonly channels: readonly string[];
+	readonly connectors?: readonly string[];
 };
 
 export const DENY_ALL: EgressPolicy = { modelProviders: [], channels: [] };
@@ -26,6 +29,10 @@ export function assertModelProviderAllowed(policy: EgressPolicy, provider: strin
 
 export function assertChannelAllowed(policy: EgressPolicy, channel: string): void {
 	if (!policy.channels.includes(channel)) throw new EgressDenied("channel", channel);
+}
+
+export function assertConnectorAllowed(policy: EgressPolicy, connector: string): void {
+	if (!(policy.connectors ?? []).includes(connector)) throw new EgressDenied("connector", connector);
 }
 
 export function assertUserAllowed(allowed: AllowedUsers, message: { channel: string; userId: string; threadId: string }): void {
