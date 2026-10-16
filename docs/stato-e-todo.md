@@ -38,7 +38,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Pulizia delle outbox: le risposte consegnate da più di 30 giorni si cancellano all'apertura dell'istanza (settimana 6). I file del workspace non si cancellano da soli: sono dati delle persone, li toglie chi li gestisce
 - [ ] Sandbox sotto un utente di sistema separato, o in container. Fatto il primo passo (settimana 6): il container di Annie gira con filesystem in sola lettura, senza capability Linux e senza escalation di privilegi, e la sandbox eredita questi limiti. Resta un utente separato per i tool proposti
 - [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))
-- [ ] 2FA per la console
+- [x] 2FA per la console: verifica in due passaggi facoltativa con app di autenticazione (settimana 6)
 
 ### Prima di rendere pubblico il repo
 

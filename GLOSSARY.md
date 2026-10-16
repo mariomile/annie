@@ -24,6 +24,14 @@ _Avoid_: user, membro
 Utente consentito che può approvare le azioni di un'istanza. Nella segreteria è il commerciale.
 _Avoid_: admin, supervisore
 
+**Link personale**:
+Il link con cui una persona entra nella console web. È la sua chiave: chi lo ha entra come lei. Rigenerarlo chiude le sessioni aperte.
+_Avoid_: password, invito
+
+**Verifica in due passaggi**:
+Per chi la attiva, il link personale da solo non basta: serve anche il codice di sei cifre dell'app di autenticazione del telefono (TOTP). L'owner può toglierla a chi ha perso il telefono.
+_Avoid_: MFA, OTP (nei testi per le persone)
+
 ## Conversazioni
 
 **Canale**:

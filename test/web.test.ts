@@ -11,6 +11,7 @@ import { connectChannel } from "../src/gateway.ts";
 import { PeopleStore, SessionStore } from "../src/web/auth.ts";
 import { WebChannel } from "../src/web/channel.ts";
 import { createWebApp } from "../src/web/server.ts";
+import { totp } from "../src/web/totp.ts";
 import { FAUX_MODEL, tempDataDir, waitFor } from "./helpers.ts";
 
 const closers: (() => Promise<void>)[] = [];
@@ -186,5 +187,68 @@ describe("web console", () => {
 		expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
 		expect(page.headers.get("x-frame-options")).toBe("DENY");
 		expect((await fetch(`${h.base}/../package.json`)).status).toBe(404);
+	});
+});
+
+describe("web console: two-factor login", () => {
+	const login = (base: string, body: unknown) => fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1", "content-type": "application/json" }, body: JSON.stringify(body) });
+
+	it("a person turns on 2FA; from then on the link alone does not log in", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		expect((await anna("/api/me")).body.person.twoFactor).toBe(false);
+		const setupRes = await anna("/api/me/2fa/setup", { method: "POST", body: "{}" });
+		const { secret, uri } = setupRes.body;
+		expect(secret).toMatch(/^[A-Z2-7]{32}$/);
+		expect(uri).toContain(`secret=${secret}`);
+		// A wrong code does not turn it on.
+		expect((await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: "000000" }) })).status).toBe(400);
+		expect((await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now()) }) })).status).toBe(200);
+		expect((await anna("/api/me")).body.person.twoFactor).toBe(true);
+		// The secret is never sent back, and is not in the people list either.
+		expect(JSON.stringify((await (await h.as(h.owner.token))("/api/people")).body)).not.toContain(secret);
+
+		const linkOnly = await login(h.base, { token: h.anna.token });
+		expect(linkOnly.status).toBe(401);
+		expect(await linkOnly.json()).toEqual({ error: "Serve il codice dell'app di autenticazione", twoFactor: true });
+		expect(linkOnly.headers.get("set-cookie")).toBeNull();
+		expect((await login(h.base, { token: h.anna.token, code: "123456" })).status).toBe(401);
+		const ok = await login(h.base, { token: h.anna.token, code: totp(secret, Date.now() + 30_000) });
+		expect(ok.status).toBe(200);
+		expect(ok.headers.get("set-cookie")).toMatch(/^annie_session=/);
+		// The same code does not work twice.
+		expect((await login(h.base, { token: h.anna.token, code: totp(secret, Date.now() + 30_000) })).status).toBe(401);
+		const audit = await h.runtime.audit("acme").read();
+		expect(audit).toContainEqual(expect.objectContaining({ type: "web.2fa_enabled", personId: h.anna.person.id }));
+		expect(audit).toContainEqual(expect.objectContaining({ type: "web.login_denied", personId: h.anna.person.id, reason: "2fa" }));
+	});
+
+	it("after five wrong codes the login is blocked for a while, even with the right one", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const { secret } = (await anna("/api/me/2fa/setup", { method: "POST", body: "{}" })).body;
+		await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now()) }) });
+		for (let i = 0; i < 5; i++) expect((await login(h.base, { token: h.anna.token, code: "000000" })).status).toBe(401);
+		const blocked = await login(h.base, { token: h.anna.token, code: totp(secret, Date.now() + 30_000) });
+		expect(blocked.status).toBe(429);
+	});
+
+	it("turning it off needs a code; the owner can reset it for someone who lost the phone", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const { secret } = (await anna("/api/me/2fa/setup", { method: "POST", body: "{}" })).body;
+		await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now() - 30_000) }) });
+		expect((await anna("/api/me/2fa/disable", { method: "POST", body: JSON.stringify({ code: "000000" }) })).status).toBe(400);
+		expect((await anna("/api/me/2fa/disable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now()) }) })).status).toBe(200);
+		expect((await login(h.base, { token: h.anna.token })).status).toBe(200);
+
+		const again = (await anna("/api/me/2fa/setup", { method: "POST", body: "{}" })).body.secret;
+		await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(again, Date.now()) }) });
+		const luca = await h.as(h.luca.token);
+		expect((await luca(`/api/people/${h.anna.person.id}/2fa/reset`, { method: "POST", body: "{}" })).status).toBe(403);
+		const owner = await h.as(h.owner.token);
+		expect((await owner(`/api/people/${h.anna.person.id}/2fa/reset`, { method: "POST", body: "{}" })).status).toBe(200);
+		expect((await login(h.base, { token: h.anna.token })).status).toBe(200);
+		expect(await h.runtime.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "web.2fa_reset", personId: h.anna.person.id }));
 	});
 });

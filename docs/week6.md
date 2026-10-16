@@ -1,4 +1,4 @@
-# Settimana 6: istanze dalla console
+# Settimana 6: istanze dalla console, affidabilità e sicurezza
 
 Branch `week-6` (parte da `main` dopo il merge delle settimane 4 e 5). Vocabolario: [`GLOSSARY.md`](../GLOSSARY.md).
 
@@ -18,10 +18,12 @@ Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel c
 
 - **Container con privilegi minimi** (`docker-compose.yml`). Filesystem in sola lettura tranne `/data` e `/tmp`, nessuna capability Linux, niente escalation di privilegi (`no-new-privileges`). I tool proposti girano in un processo figlio dentro lo stesso container e ne ereditano i limiti. Verificato con un'immagine costruita da questo branch e avviata con le stesse opzioni: healthcheck `healthy`, utente 1000, `/app` non scrivibile, `/data` sì; login, file, tool proposto approvato ed eseguito in sandbox (con `node:sqlite` bloccato), tutto ancora lì dopo `docker restart`.
 
+- **Verifica in due passaggi** (`test/totp.test.ts`, `test/web.test.ts`). Ognuno, dal dialogo «Il tuo account» (clic sul proprio nome), può attivarla: aggiunge la chiave all'app di autenticazione del telefono e conferma con un codice. Da quel momento il link personale da solo non basta: al login serve il codice di sei cifre. Ogni codice vale una volta sola; dopo cinque codici sbagliati il login aspetta dieci minuti; i tentativi respinti finiscono nell'audit (`web.login_denied`). Per disattivarla serve un codice. L'owner può toglierla a chi ha perso il telefono (Persone → Reset 2FA, oppure `pnpm annie person reset-2fa <id>`). TOTP standard (RFC 6238, verificato sui vettori della RFC), senza dipendenze nuove.
+
 ## Verifica
 
-- `pnpm typecheck`: ok. `pnpm test`: 25 file, 153 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
-- Chromium headless: l'owner crea «Ufficio acquisti» dal dialogo, l'istanza viene selezionata, la chat risponde in tempo reale. Nessun errore in console.
+- `pnpm typecheck`: ok. `pnpm test`: 26 file, 163 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
+- Chromium headless: l'owner crea «Ufficio acquisti» dal dialogo, l'istanza viene selezionata, la chat risponde in tempo reale. Poi attiva la verifica in due passaggi, esce, rientra: il link da solo viene respinto, un codice sbagliato pure, quello giusto entra. Nessun errore in console oltre ai 401 attesi.
 
 ## Limiti
 
@@ -30,3 +32,4 @@ Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel c
 | Modello | l'istanza nuova usa il modello dell'istanza principale; cambiarlo resta un'operazione da configurazione |
 | Telegram | l'istanza nuova parla solo dal web; un bot Telegram resta legato all'istanza principale |
 | Cancellazione | la console non cancella istanze |
+| Verifica in due passaggi | la chiave TOTP sta in `people.json` nella cartella dati, come il resto dei dati delle persone: i backup vanno conservati cifrati. Il blocco dopo cinque codici sbagliati vale per il processo e si azzera al riavvio |

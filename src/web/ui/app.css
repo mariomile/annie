@@ -134,6 +134,11 @@ nav.sections .group:first-child { margin-top: 4px; }
 .who { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 2px 0 4px; }
 .who-id { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .avatar { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 600; color: var(--accent-fg); background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #e879f9)); }
+button.who-id { border: 0; background: transparent; padding: 4px; margin: -4px; border-radius: 7px; text-align: left; cursor: pointer; color: inherit; transition: background 0.1s; }
+button.who-id:hover { background: var(--hover); }
+.code-input { font-size: 20px !important; letter-spacing: 0.2em; text-align: center; }
+.secret-key { padding: 12px 14px; border: 1px dashed var(--border-2); border-radius: 8px; background: var(--bg-2); font-size: 15px; letter-spacing: 0.08em; word-break: break-all; user-select: all; }
+.login form.card .btn { width: 100%; }
 .who .name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .who .role { font-size: 11.5px; color: var(--fg-3); }
 .who .row-gap { gap: 2px; flex-wrap: nowrap; }

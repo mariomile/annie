@@ -14,6 +14,7 @@ import { WorkspaceError } from "../core/workspace.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
+import { otpauthUri } from "./totp.ts";
 
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
@@ -39,6 +40,7 @@ class HttpError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
+		readonly extra: Record<string, unknown> = {},
 	) {
 		super(message);
 	}
@@ -57,6 +59,8 @@ type Route = { method: string; pattern: RegExp; auth: "none" | "person" | "owner
 
 const COOKIE = "annie_session";
 const MAX_JSON = 1024 * 1024;
+const MAX_CODE_FAILURES = 5;
+const LOGIN_LOCK_MS = 10 * 60 * 1000;
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
 const STATIC: Record<string, string> = {
@@ -91,6 +95,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (person.role !== "owner" && !member) throw new HttpError(404, "No such instance");
 		return { record, member };
 	};
+	// Wrong 2FA codes per person, in this process: after a few, the login waits.
+	const loginFailures = new Map<string, number[]>();
 	// Open event streams, so a channel created later reaches them too.
 	const streams = new Set<(channel: WebChannel) => void>();
 	const approverOf = (person: Person): Approver => (person.role === "owner" ? OWNER : { channel: "web", userId: person.id });
@@ -102,9 +108,20 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	// --- session ---
 	route("POST", "/api/login", "none", async ({ req, res }) => {
-		const body = (await readJson(req)) as { token?: string };
+		const body = (await readJson(req)) as { token?: string; code?: string };
 		const person = await options.people.byToken(String(body.token ?? ""));
 		if (person === undefined) throw new HttpError(401, "Link non valido o revocato");
+		if (person.totp !== undefined) {
+			if (typeof body.code !== "string" || body.code.trim() === "") throw new HttpError(401, "Serve il codice dell'app di autenticazione", { twoFactor: true });
+			const failures = (loginFailures.get(person.id) ?? []).filter((at) => at > Date.now() - LOGIN_LOCK_MS);
+			if (failures.length >= MAX_CODE_FAILURES) throw new HttpError(429, "Troppi codici sbagliati: riprova tra qualche minuto", { twoFactor: true });
+			if (!(await options.people.useTotp(person.id, body.code))) {
+				loginFailures.set(person.id, [...failures, Date.now()]);
+				await runtime.audit(tenantId).append({ type: "web.login_denied", personId: person.id, reason: "2fa" });
+				throw new HttpError(401, "Codice non valido", { twoFactor: true });
+			}
+			loginFailures.delete(person.id);
+		}
 		const session = await options.sessions.create(person.id);
 		res.setHeader("set-cookie", `${COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 3600}${options.secureCookies ? "; Secure" : ""}`);
 		await runtime.audit(tenantId).append({ type: "web.login", personId: person.id });
@@ -117,6 +134,27 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 	route("GET", "/api/me", "person", async ({ person }) => ({ person: publicPerson(person as Person) }));
+	route("POST", "/api/me/2fa/setup", "person", async ({ person }) => {
+		const p = person as Person;
+		if (p.totp !== undefined) throw new HttpError(409, "La verifica in due passaggi è già attiva");
+		const secret = await options.people.startTotp(p.id);
+		return { secret, uri: otpauthUri(secret, p.name, "Annie") };
+	});
+	route("POST", "/api/me/2fa/enable", "person", async ({ person, req }) => {
+		const body = (await readJson(req)) as { code?: string };
+		if (!(await options.people.enableTotp((person as Person).id, String(body.code ?? "")))) throw new HttpError(400, "Codice non valido: controlla l'ora del telefono e riprova");
+		await runtime.audit(tenantId).append({ type: "web.2fa_enabled", personId: (person as Person).id });
+		return { ok: true };
+	});
+	route("POST", "/api/me/2fa/disable", "person", async ({ person, req }) => {
+		const body = (await readJson(req)) as { code?: string };
+		const p = person as Person;
+		if (p.totp === undefined) return { ok: true };
+		if (!(await options.people.useTotp(p.id, String(body.code ?? "")))) throw new HttpError(400, "Codice non valido");
+		await options.people.clearTotp(p.id);
+		await runtime.audit(tenantId).append({ type: "web.2fa_disabled", personId: p.id });
+		return { ok: true };
+	});
 
 	// --- instances ---
 	const describeInstance = async (r: InstanceRecord, p: Person) => ({
@@ -400,6 +438,13 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw new HttpError(400, error instanceof Error ? error.message : String(error));
 		}
 	});
+	route("POST", "/api/people/:pid/2fa/reset", "owner", async ({ params }) => {
+		await options.people.clearTotp(params[0] as string).catch(() => {
+			throw new HttpError(404, "No such person");
+		});
+		await runtime.audit(tenantId).append({ type: "web.2fa_reset", personId: params[0] });
+		return { ok: true };
+	});
 	route("POST", "/api/people/:pid/link", "owner", async ({ params, url }) => {
 		const token = await options.people.rotate(params[0] as string).catch(() => {
 			throw new HttpError(404, "No such person");
@@ -452,7 +497,7 @@ export function createWebApp(options: WebAppOptions): Server {
 			const result = await match.handler({ req, res, url, params, person });
 			if (result !== STREAMED) send(res, 200, result);
 		} catch (error) {
-			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			if (error instanceof HttpError) return send(res, error.status, { error: error.message, ...error.extra });
 			throw error;
 		}
 	}

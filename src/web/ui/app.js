@@ -65,9 +65,10 @@ function toast(text, bad = false) {
 }
 
 class ApiError extends Error {
-	constructor(status, message) {
+	constructor(status, message, data = {}) {
 		super(message);
 		this.status = status;
+		this.data = data;
 	}
 }
 
@@ -84,7 +85,7 @@ async function api(path, { method = "GET", body, raw } = {}) {
 		renderLogin();
 		throw new ApiError(401, data.error ?? "Accesso richiesto");
 	}
-	if (!res.ok) throw new ApiError(res.status, data.error ?? `Errore ${res.status}`);
+	if (!res.ok) throw new ApiError(res.status, data.error ?? `Errore ${res.status}`, data);
 	return data;
 }
 
@@ -147,10 +148,16 @@ async function boot() {
 			try {
 				await api("/api/login", { method: "POST", body: { token } });
 			} catch (error) {
+				if (error.data?.twoFactor) return renderCode(token);
 				return renderLogin(error.message);
 			}
 		}
 	}
+	await enter();
+}
+
+/** With a session: load who this is and the instances, then show the console. */
+async function enter() {
 	try {
 		state.me = (await api("/api/me")).person;
 	} catch {
@@ -224,6 +231,125 @@ function renderLogin(error) {
 			),
 		),
 	);
+}
+
+/** Second step of the login, for people with two-factor on. The link token stays in memory only. */
+function renderCode(token, error) {
+	const code = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "7", placeholder: "123 456", class: "mono code-input", "aria-label": "Codice" });
+	const submit = async (e) => {
+		e.preventDefault();
+		try {
+			await api("/api/login", { method: "POST", body: { token, code: code.value } });
+		} catch (err) {
+			return renderCode(token, err.message);
+		}
+		await enter();
+	};
+	$app.replaceChildren(
+		h(
+			"div.login",
+			h(
+				"form.card",
+				{ onsubmit: submit },
+				h("div.login-mark", h("img", { src: "/icon.svg", alt: "", width: "40", height: "40" })),
+				h("h1", "Codice di verifica"),
+				h("p", "Apri l'app di autenticazione sul telefono e scrivi il codice di sei cifre di Annie."),
+				error ? h("p.chip.bad", error) : null,
+				h("div.field", code),
+				h("button.btn.accent", { type: "submit" }, "Entra"),
+			),
+		),
+	);
+	code.focus();
+}
+
+// ---------- account (two-factor) ----------
+function accountDialog() {
+	const body = h("div");
+	const dialog = h("dialog", h("h3", "Il tuo account"), body);
+	const codeInput = () => h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "7", placeholder: "123 456", class: "mono code-input" });
+	const draw = async () => {
+		const me = (await api("/api/me")).person;
+		state.me = me;
+		if (me.twoFactor) {
+			const code = codeInput();
+			body.replaceChildren(
+				h("p", h("span.chip.ok", "Verifica in due passaggi attiva"), " Per entrare servono il tuo link e il codice dell'app."),
+				h("label.field", h("span", "Per disattivarla, scrivi un codice"), code),
+				h(
+					"div.actions",
+					h(
+						"button.btn.danger",
+						{
+							onclick: async () => {
+								try {
+									await api("/api/me/2fa/disable", { method: "POST", body: { code: code.value } });
+									toast("Verifica in due passaggi disattivata");
+									await draw();
+								} catch (error) {
+									toast(error.message, true);
+								}
+							},
+						},
+						"Disattiva",
+					),
+					h("button.btn.ghost", { onclick: () => dialog.close() }, "Chiudi"),
+				),
+			);
+			return;
+		}
+		body.replaceChildren(
+			h("p", "Con la verifica in due passaggi, per entrare servono il tuo link e un codice dall'app di autenticazione del telefono (Google Authenticator, 1Password, Authy…). Se qualcuno ti ruba il link, da solo non basta."),
+			h(
+				"div.actions",
+				h(
+					"button.btn.accent",
+					{
+						onclick: async () => {
+							try {
+								const { secret, uri } = await api("/api/me/2fa/setup", { method: "POST", body: {} });
+								const code = codeInput();
+								body.replaceChildren(
+									h("p", "1. Nell'app di autenticazione aggiungi un account con questa chiave (o apri il link dal telefono):"),
+									h("div.secret-key.mono", secret.match(/.{1,4}/g).join(" ")),
+									h("p", h("a", { href: uri }, "Apri nell'app di autenticazione")),
+									h("label.field", h("span", "2. Scrivi il codice che l'app mostra"), code),
+									h(
+										"div.actions",
+										h(
+											"button.btn.accent",
+											{
+												onclick: async () => {
+													try {
+														await api("/api/me/2fa/enable", { method: "POST", body: { code: code.value } });
+														toast("Verifica in due passaggi attiva");
+														await draw();
+													} catch (error) {
+														toast(error.message, true);
+													}
+												},
+											},
+											"Attiva",
+										),
+										h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla"),
+									),
+								);
+								code.focus();
+							} catch (error) {
+								toast(error.message, true);
+							}
+						},
+					},
+					"Attiva la verifica in due passaggi",
+				),
+				h("button.btn.ghost", { onclick: () => dialog.close() }, "Chiudi"),
+			),
+		);
+	};
+	dialog.addEventListener("close", () => (dialog.remove(), renderRail()));
+	document.body.append(dialog);
+	dialog.showModal();
+	void draw();
 }
 
 // ---------- shell ----------
@@ -301,7 +427,7 @@ function renderRail() {
 				: null,
 			h(
 				"div.who",
-				h("div.who-id", h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", state.me.role === "owner" ? "Owner" : "Membro"))),
+				h("button.who-id", { onclick: accountDialog, title: "Il tuo account" }, h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", `${state.me.role === "owner" ? "Owner" : "Membro"}${state.me.twoFactor ? " · 2FA" : ""}`))),
 				h(
 					"div.row-gap",
 					h("button.icon-btn", { title: "Tema chiaro/scuro", "aria-label": "Cambia tema", onclick: cycleTheme }, icon("theme")),
@@ -1123,7 +1249,7 @@ async function viewPeople(main) {
 							h(
 								"tr",
 								h("td", p.name, h("div.mono.muted", p.id)),
-								h("td", h(`span.chip${p.role === "owner" ? ".accent" : ""}`, p.role === "owner" ? "owner" : "membro")),
+								h("td", h("div.row-gap", h(`span.chip${p.role === "owner" ? ".accent" : ""}`, p.role === "owner" ? "owner" : "membro"), p.twoFactor ? h("span.chip.ok", "2FA") : null)),
 								h("td.mono", fmt.day(p.createdAt)),
 								h(
 									"td.row-gap",
@@ -1138,6 +1264,19 @@ async function viewPeople(main) {
 										},
 										"Nuovo link",
 									),
+									p.twoFactor && p.id !== state.me.id
+										? h(
+												"button.btn.small.ghost",
+												{
+													onclick: () =>
+														confirmDialog(`Togliere la verifica in due passaggi a ${p.name}?`, "Per chi ha perso il telefono: potrà entrare con il solo link e riattivarla.", "Togli", async () => {
+															await api(`/api/people/${p.id}/2fa/reset`, { method: "POST" });
+															render();
+														}),
+												},
+												"Reset 2FA",
+											)
+										: null,
 									p.id !== state.me.id
 										? h(
 												"button.btn.small.danger",
