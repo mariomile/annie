@@ -9,6 +9,7 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
+import { transcriber } from "./connectors/transcriber.ts";
 import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter } from "./channels/whatsapp.ts";
 import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
@@ -50,6 +51,8 @@ export type AnnieOptions = {
 	readonly telegramFetch?: typeof fetch;
 	/** WhatsApp Cloud API base (tests: a fake Graph API). */
 	readonly whatsappApiBase?: string;
+	/** Transcription service fetch (tests). */
+	readonly transcribeFetch?: typeof fetch;
 	/** Google OAuth and API fetch (tests). */
 	readonly googleFetch?: typeof fetch;
 	/** Tests only: which addresses the web tools may connect to (public ones by default). */
@@ -75,6 +78,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const connections = new Map<string, McpConnections>();
 	const telegrams = new Map<string, TelegramAdapter>();
 	const whatsapps = new Map<string, WhatsAppAdapter>();
+	// Voice messages of every chat channel go to the one service the operator chose, or nowhere.
+	const transcribe = config.transcription === undefined ? undefined : transcriber(config.transcription, options.transcribeFetch);
 	const segreteriaId = config.segreteria?.instanceId;
 	const connectorStore = (id: string) => new ConnectorStore(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(id)));
 	const policyOf = (record: InstanceRecord) => async () => (await runtime.registry.getInstance(record.tenantId, record.id)).egress;
@@ -244,6 +249,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			log,
 			// Files from strangers are never downloaded.
 			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.telegram ?? []).includes(userId),
+			...(transcribe === undefined ? {} : { transcribe }),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
 		});
@@ -331,6 +337,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			log,
 			// Files from strangers are never downloaded.
 			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.whatsapp ?? []).includes(userId),
+			...(transcribe === undefined ? {} : { transcribe }),
 			...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }),
 		});
 		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, adapter, action)));

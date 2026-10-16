@@ -1,3 +1,4 @@
+import { type Transcribe, voiceText } from "../connectors/transcriber.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
 
@@ -21,6 +22,8 @@ export type TelegramAdapterOptions = {
 	 * `url`, with `secretToken` in a header. A process that can sleep (a cell) needs this.
 	 */
 	readonly webhook?: { readonly url: string; readonly secretToken: string };
+	/** Voice messages to text; without it Annie is told transcription is off. */
+	readonly transcribe?: Transcribe;
 };
 
 /** Telegram's limit for one message's text. */
@@ -50,6 +53,8 @@ export type TelegramUpdate = {
 		text?: string;
 		caption?: string;
 		document?: { file_id: string; file_name?: string; file_size?: number };
+		voice?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
+		audio?: { file_id: string; duration?: number; mime_type?: string; file_size?: number; file_name?: string };
 	};
 	callback_query?: {
 		id: string;
@@ -188,10 +193,17 @@ export class TelegramAdapter implements ChannelAdapter {
 		if (update.callback_query !== undefined) return this.handleTap(update.callback_query);
 		const message = update.message;
 		if (message === undefined || this.handler === undefined) return;
-		const text = message.text ?? message.caption ?? "";
-		if (message.text === undefined && message.document === undefined) return;
+		const sound = message.voice ?? message.audio;
+		if (message.text === undefined && message.document === undefined && sound === undefined) return;
 		const userId = String(message.from?.id ?? message.chat.id);
-		const attachments = message.document === undefined || !((await this.options.mayDownload?.(userId)) ?? true) ? [] : [await this.download(message.document)];
+		const mayDownload = (await this.options.mayDownload?.(userId)) ?? true;
+		let text = message.text ?? message.caption ?? "";
+		if (sound !== undefined) {
+			// A stranger's voice is never downloaded, let alone sent to be transcribed.
+			const words = mayDownload ? await voiceText(await this.clip(sound), this.options.transcribe, this.options.log) : "[Messaggio vocale]";
+			text = [words, text].filter(Boolean).join("\n\n");
+		}
+		const attachments = message.document === undefined || !mayDownload ? [] : [await this.download(message.document)];
 		await this.handler({
 			tenantId: this.options.tenantId,
 			instanceId: this.options.instanceId,
@@ -203,6 +215,11 @@ export class TelegramAdapter implements ChannelAdapter {
 			messageId: `${message.chat.id}:${message.message_id}`,
 			...(attachments.length === 0 ? {} : { attachments }),
 		});
+	}
+
+	private async clip(sound: { file_id: string; duration?: number; mime_type?: string; file_size?: number; file_name?: string }) {
+		const file = await this.download({ file_id: sound.file_id, file_name: sound.file_name ?? "vocale.ogg", ...(sound.file_size === undefined ? {} : { file_size: sound.file_size }) });
+		return { data: file.data, name: file.name, mimeType: sound.mime_type ?? "audio/ogg", ...(sound.duration === undefined ? {} : { seconds: sound.duration }) };
 	}
 
 	/** getFile, then the file itself. Bots can download files up to 20 MB. */

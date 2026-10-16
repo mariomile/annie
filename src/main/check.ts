@@ -25,6 +25,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 		checks.push(check("Gmail", () => gmailCheck(segreteria.gmail, call)));
 		checks.push(check("HubSpot", () => hubspotCheck(segreteria.hubspotAccessToken, call)));
 	}
+	const transcription = config.transcription;
+	if (transcription !== undefined) checks.push(check("Trascrizione dei vocali", () => transcriptionCheck(transcription, call)));
 	return Promise.all(checks);
 }
 
@@ -65,6 +67,17 @@ async function modelCheck(config: AnnieConfig, call: Call): Promise<string> {
 	const found = models.includes(config.modelId);
 	if (models.length > 0 && !found) throw new CheckFailed(`chiave valida, ma il modello ${config.modelId} non è tra quelli disponibili (ANNIE_MODEL_ID)`);
 	return `chiave valida, modello ${config.modelId}`;
+}
+
+/** The service's model list: the key works and the model is there (the services that list models). */
+async function transcriptionCheck(config: { url: string; apiKey: string; model: string }, call: Call): Promise<string> {
+	const response = await reach(call, `${config.url.replace(/\/+$/, "")}/models`, { headers: { authorization: `Bearer ${config.apiKey}` } });
+	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_TRANSCRIBE_API_KEY");
+	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_TRANSCRIBE_URL`);
+	const models = ((await response.json().catch(() => ({}))) as { data?: { id: string }[] }).data?.map((m) => m.id) ?? [];
+	// Aliases (voxtral-mini-latest) are not always listed: a warning, not a failure.
+	if (models.length > 0 && !models.includes(config.model)) return `chiave valida; il modello ${config.model} non compare nell'elenco del servizio, prova un vocale per esserne certo`;
+	return `chiave valida, modello ${config.model}`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {

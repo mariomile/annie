@@ -128,6 +128,19 @@ Annie risponde su un numero WhatsApp Business attraverso la Cloud API di Meta. I
 8. Per uscire dalla modalità sviluppo l'app va pubblicata (**App Review** per `whatsapp_business_messaging`) e serve un metodo di pagamento sul Business Account: Meta fa pagare le conversazioni secondo il suo listino.
 9. Domini: `graph.facebook.com` (e `lookaside.fbsbx.com` per scaricare i file che le persone mandano).
 
+### 10. Messaggi vocali: `ANNIE_TRANSCRIBE_URL` e `ANNIE_TRANSCRIBE_API_KEY`
+
+Senza queste variabili Annie riceve i vocali ma non li capisce, e chiede di scrivere. Consiglio Mistral, che ha i server in Unione Europea.
+
+1. https://console.mistral.ai → entra con l'account di Buildrs → **Billing**: aggiungi un metodo di pagamento. La trascrizione costa pochi millesimi di dollaro al minuto: controlla il listino aggiornato su https://mistral.ai/pricing.
+2. **API Keys → Create new key**, nome `annie-voce`. La chiave va in `ANNIE_TRANSCRIBE_API_KEY`.
+3. `ANNIE_TRANSCRIBE_URL=https://api.mistral.ai/v1`. Il modello è `voxtral-mini-latest` se non indichi altro in `ANNIE_TRANSCRIBE_MODEL`.
+4. Facoltativo: `ANNIE_TRANSCRIBE_MAX_SECONDS`, la durata massima di un vocale (300 secondi se non lo metti).
+5. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
+6. Dominio: `api.mistral.ai`.
+
+In alternativa va bene qualunque servizio con la stessa API di OpenAI: per OpenAI `ANNIE_TRANSCRIBE_URL=https://api.openai.com/v1` (modello `whisper-1`).
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -140,6 +153,7 @@ Annie risponde su un numero WhatsApp Business attraverso la Cloud API di Meta. I
 | Railway | `backboard.railway.com`, `docs.railway.com` |
 | Stripe | `api.stripe.com` |
 | WhatsApp | `graph.facebook.com`, `lookaside.fbsbx.com` |
+| Vocali | `api.mistral.ai` (o il servizio scelto) |
 
 ## Cosa succede dopo
 

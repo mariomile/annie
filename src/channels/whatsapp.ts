@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { type Transcribe, voiceText } from "../connectors/transcriber.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
@@ -29,6 +30,8 @@ export type WhatsAppAdapterOptions = WhatsAppCredentials & {
 	readonly log?: (message: string) => void;
 	/** May this person's files be downloaded? Files of strangers should not. */
 	readonly mayDownload?: (userId: string) => Promise<boolean>;
+	/** Voice messages to text; without it Annie is told transcription is off. */
+	readonly transcribe?: Transcribe;
 };
 
 export const WHATSAPP_GRAPH = "https://graph.facebook.com/v26.0";
@@ -89,6 +92,7 @@ type WhatsAppMessage = {
 	text?: { body?: string };
 	interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
 	document?: { id?: string; filename?: string; mime_type?: string; caption?: string };
+	audio?: { id?: string; mime_type?: string; voice?: boolean };
 };
 /** What Meta says later about a message we sent: a failure outside the 24-hour window arrives here, not as an error on the send. */
 type WhatsAppStatus = { id?: string; status?: string; recipient_id?: string; errors?: { code?: number; title?: string }[] };
@@ -212,8 +216,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			return this.actionHandler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, data, actionId: message.id });
 		}
 		if (this.handler === undefined) return;
+		if (message.type === "audio") return this.voice(message);
 		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : undefined;
-		// Voice notes, images, stickers, locations: not understood yet, so not passed on as empty messages.
+		// Images, stickers, locations: not understood yet, so not passed on as empty messages.
 		if (text === undefined) return;
 		let attachments: { name: string; data: Uint8Array }[] = [];
 		let note = "";
@@ -238,6 +243,24 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			messageId: message.id,
 			...(attachments.length === 0 ? {} : { attachments }),
 		});
+	}
+
+	/** A voice note: downloaded and transcribed only for people who may write; a stranger's is never fetched. */
+	private async voice(message: WhatsAppMessage): Promise<void> {
+		if (this.handler === undefined) return;
+		const id = message.audio?.id;
+		let text = "[Messaggio vocale]";
+		if (typeof id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
+			try {
+				const file = await this.download(id, "vocale.ogg");
+				text = await voiceText({ data: file.data, name: file.name, mimeType: (message.audio?.mime_type ?? "audio/ogg").split(";")[0] as string }, this.options.transcribe, this.options.log);
+			} catch (error) {
+				if (!(error instanceof ChannelRefused)) throw error;
+				this.options.log?.(`whatsapp: voice of ${message.id} not downloaded: ${error.message}`);
+				text = "[Messaggio vocale troppo grande o non disponibile.]";
+			}
+		}
+		await this.handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id });
 	}
 
 	/** The media's address from the Graph API, then the file itself, with the token. */
