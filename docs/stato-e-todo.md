@@ -40,6 +40,13 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))
 - [x] 2FA per la console: verifica in due passaggi facoltativa con app di autenticazione (settimana 6)
 
+### Annie Cloud (deciso il 16 ottobre 2026, [piano](piano-cloud.md), [ADR 0007](adr/0007-annie-cloud-a-celle.md))
+
+- [ ] Fase 1: la cella (Telegram via webhook, celle che si spengono e si risvegliano, control plane minimo con registrazione)
+- [ ] Fase 2: l'agente personale (memoria della persona, Google con OAuth, brief proattivo)
+- [ ] Fase 3: il computer dell'agente (browser e terminale nella cella, con approvazioni)
+- [ ] Fase 4: pagamento a consumo, voce, WhatsApp
+
 ### Prima di rendere pubblico il repo
 
 - [x] LICENSE (Apache-2.0, confermata)
