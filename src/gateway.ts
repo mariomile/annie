@@ -1,4 +1,4 @@
-import type { ChannelAdapter, InboundAction, InboundMessage } from "./channels/types.ts";
+import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
 /**
@@ -43,9 +43,14 @@ export function connectChannel(
 		};
 		sending()
 			.then(
-				// Not confirmed: the reply stays in the outbox and goes out again on the next resume.
+				// Not confirmed: the reply stays in the outbox. A failure is retried in this process
+				// with backoff; a refusal, and anything left at shutdown, goes out on the next resume.
 				() => runtime.markDelivered(reply),
-				(error: unknown) => log(`${adapter.name}: send failed, kept in the outbox: ${error instanceof Error ? error.message : String(error)}`),
+				(error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					log(`${adapter.name}: send failed, kept in the outbox: ${reason}`);
+					return runtime.deliveryFailed(reply, error instanceof ChannelRefused, reason);
+				},
 			)
 			.catch((error: unknown) => log(`${adapter.name}: sent, but not confirmed in the outbox: ${error instanceof Error ? error.message : String(error)}`));
 	});

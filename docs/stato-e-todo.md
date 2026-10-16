@@ -34,7 +34,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 ### Dopo (proposta)
 
-- [ ] Ritentativi nello stesso processo, con backoff, per risposte e schede
+- [x] Ritentativi nello stesso processo, con backoff, per risposte e schede (risposte: settimana 6; schede: a ogni giro dalla settimana 4)
 - [ ] Pulizia delle outbox e dei file vecchi
 - [ ] Sandbox sotto un utente di sistema separato, o in container
 - [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))

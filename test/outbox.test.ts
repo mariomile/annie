@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DUPLICATE_NOTICE } from "../src/channels/telegram.ts";
-import type { ChannelAdapter, OutboundMessage } from "../src/channels/types.ts";
+import { type ChannelAdapter, ChannelRefused, type OutboundMessage } from "../src/channels/types.ts";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import { AnnieRuntime, type DurableEngine, type EngineSession, type OutboxEntry } from "../src/core/index.ts";
 import { connectChannel } from "../src/gateway.ts";
@@ -98,6 +98,59 @@ describe("reply outbox (in process)", () => {
 		expect(working.sent[0]?.possibleDuplicate).toBe(true);
 		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ attempts: 2 })]);
 		await next.close();
+	});
+});
+
+describe("reply outbox: retries in the same process", () => {
+	it("retries a reply whose send failed, with backoff, until the channel takes it", async () => {
+		const dataDir = tempDataDir();
+		const { runtime } = await runtimeWithInstance({ dataDir });
+		await runtime.close();
+		const retrying = new AnnieRuntime({ dataDir, engine: piDurableEngine, retryDelaysMs: [30, 60] });
+		let failures = 2;
+		const flaky = testChannel(async () => {
+			if (failures-- > 0) throw new Error("network down");
+		});
+		connectChannel(retrying, flaky, { tenantId: "acme", instanceId: "ops" }, () => {});
+		await retrying.submit(hello);
+		await waitFor(() => outboxEntries(dataDir)[0]?.deliveredAt !== undefined);
+		expect(flaky.sent).toHaveLength(3);
+		expect(flaky.sent.map((m) => m.possibleDuplicate)).toEqual([false, true, true]);
+		expect(new Set(flaky.sent.map((m) => m.idempotencyKey)).size).toBe(1);
+		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ attempts: 3 })]);
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(flaky.sent).toHaveLength(3);
+		await retrying.close();
+	});
+
+	it("does not retry a reply the channel refused, and a close stops pending retries", async () => {
+		const dataDir = tempDataDir();
+		const { runtime } = await runtimeWithInstance({ dataDir });
+		await runtime.close();
+		const retrying = new AnnieRuntime({ dataDir, engine: piDurableEngine, retryDelaysMs: [30] });
+		const refusing = testChannel(async () => {
+			throw new ChannelRefused("Forbidden: bot was blocked by the user");
+		});
+		connectChannel(retrying, refusing, { tenantId: "acme", instanceId: "ops" }, () => {});
+		await retrying.submit(hello);
+		while (!(await retrying.audit("acme").read()).some((e) => e.type === "reply.refused")) await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(refusing.sent).toHaveLength(1);
+		expect(outboxEntries(dataDir)[0]?.deliveredAt).toBeUndefined();
+
+		const down = testChannel(async () => {
+			throw new Error("network down");
+		});
+		const other = new AnnieRuntime({ dataDir: tempDataDir(), engine: piDurableEngine, retryDelaysMs: [60] });
+		await other.registry.createTenant({ id: "acme", name: "acme" });
+		await other.registry.createInstance("acme", { id: "ops", name: "ops", model: { provider: "faux", modelId: "annie-dev" }, egress: { modelProviders: ["faux"], channels: ["test"] }, allowedUsers: { test: ["u"] } });
+		connectChannel(other, down, { tenantId: "acme", instanceId: "ops" }, () => {});
+		await other.submit(hello);
+		await waitFor(() => down.sent.length === 1);
+		await other.close();
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(down.sent).toHaveLength(1);
+		await retrying.close();
 	});
 });
 

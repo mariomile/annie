@@ -12,9 +12,11 @@ Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel c
 - **Task programmati dell'istanza nuova** (`test/app.test.ts`). Lo scheduler rilegge l'elenco delle istanze a ogni giro: i task di un'istanza appena creata partono senza riavvio. Prima l'elenco era fissato all'avvio.
 - **Risposte in tempo reale** (`test/app.test.ts`). Uno stream di eventi aperto prima della creazione riceve anche le risposte dell'istanza nuova. Prima i canali venivano agganciati solo all'apertura dello stream, quindi nel browser la risposta compariva solo ricaricando.
 
+- **Ritentativi delle risposte nello stesso processo** (`test/outbox.test.ts`). Una risposta che il canale non prende per un problema di rete riparte dopo 5 secondi, poi 30 secondi, 2 minuti e ogni 10 minuti, finché il canale non la conferma. Prima restava nell'outbox fino al riavvio. Ogni nuovo tentativo porta l'avviso «Possibile doppione», perché il tentativo fallito potrebbe essere arrivato comunque. Un rifiuto esplicito del canale (per esempio un utente che ha bloccato il bot) non viene ritentato a raffica: resta nell'outbox per il prossimo avvio e finisce nell'audit (`reply.refused`). Lo spegnimento annulla i ritentativi in sospeso. Le schede della segreteria si ritentano già a ogni giro di polling dalla settimana 4.
+
 ## Verifica
 
-- `pnpm typecheck`: ok. `pnpm test`: 25 file, 150 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
+- `pnpm typecheck`: ok. `pnpm test`: 25 file, 152 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
 - Chromium headless: l'owner crea «Ufficio acquisti» dal dialogo, l'istanza viene selezionata, la chat risponde in tempo reale. Nessun errore in console.
 
 ## Limiti
