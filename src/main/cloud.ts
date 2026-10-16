@@ -5,7 +5,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { startControlPlane } from "../cloud/control-plane.ts";
+import { cloudStatus, startControlPlane } from "../cloud/control-plane.ts";
 import { DockerCellProvider } from "../cloud/docker-provider.ts";
 import { LocalCellProvider } from "../cloud/local-provider.ts";
 import type { CellProvider } from "../cloud/provider.ts";
@@ -68,6 +68,21 @@ function mailer(): Mailer {
 	}
 }
 
+// `pnpm cloud status`: every tenant, its cell and its spend (an estimate from the model's list
+// prices), beside a running control plane. Emails are the operator's to see; nothing else is.
+if (process.argv[2] === "status") {
+	const rows = await cloudStatus({ dataDir, provider: provider() });
+	if (rows.length === 0) console.log("Nessun tenant ancora.");
+	const rome = (iso: string) => new Intl.DateTimeFormat("it-IT", { timeZone: "Europe/Rome", dateStyle: "short", timeStyle: "short" }).format(new Date(iso));
+	for (const r of rows) {
+		const spend = r.spend === null ? "spesa: mai letta" : `oggi $${r.spend.todayUsd.toFixed(2)}, mese $${r.spend.monthUsd.toFixed(2)}, mese scorso $${r.spend.lastMonthUsd.toFixed(2)} (letta ${rome(r.spend.readAt)})`;
+		console.log(`${r.tenant}  ${r.email}  dal ${r.createdAt.slice(0, 10)}  cella ${r.cell}${r.nextWakeAt === null ? "" : `, si sveglia ${rome(r.nextWakeAt)}`}  ${spend}`);
+	}
+	const month = rows.reduce((sum, r) => sum + (r.spend?.monthUsd ?? 0), 0);
+	console.log(`${rows.length} tenant, ${rows.filter((r) => r.cell === "running").length} celle accese, spesa del mese stimata $${month.toFixed(2)} (prezzi di listino, ultime letture)`);
+	process.exit(0);
+}
+
 // `pnpm cloud upgrade`, with the control plane stopped: every cell gets a new container from the
 // current image and the current model settings (ANNIE_MODEL_*, keys); volumes and data stay.
 if (process.argv[2] === "upgrade") {
@@ -84,6 +99,7 @@ if (process.argv[2] === "upgrade") {
 }
 
 const cells = provider();
+if (cells instanceof RailwayCellProvider) cells.forgetAwake();
 const cp = await startControlPlane({
 	dataDir,
 	domain,

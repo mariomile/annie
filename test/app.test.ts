@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { romeDayKey } from "../src/core/usage.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir, waitFor } from "./helpers.ts";
 
@@ -224,11 +225,11 @@ describe("pnpm start (startAnnie)", () => {
 		const state = (secret?: string) => fetch(`${base}/internal/cell`, { headers: secret === undefined ? {} : { authorization: `Bearer ${secret}` } });
 		expect((await state()).status).toBe(401);
 		expect((await state("wrong")).status).toBe(401);
-		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: null });
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: null, usage: { day: romeDayKey(), todayUsd: 0, months: {} } });
 		const thread = (await api("/api/instances/annie/threads", {})).thread;
 		const at = new Date(Date.now() + 3_600_000).toISOString();
 		await api("/api/instances/annie/schedules", { instruction: "Promemoria", at, threadId: thread.id });
-		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at });
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at, usage: { day: romeDayKey(), todayUsd: 0, months: {} } });
 	});
 
 	it("a cell gives the control plane a fresh owner link on request; the old link stops working", async () => {

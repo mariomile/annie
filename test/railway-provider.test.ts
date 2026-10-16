@@ -96,7 +96,11 @@ describe("Railway cell provider", () => {
 		expect(railway.calls.filter((c) => c.operation === "serviceInstanceDeployV2")).toHaveLength(1);
 		// A restarted control plane does not trust what it knew: the cell may have slept meanwhile.
 		expect(await cells.status("a1")).toBe("running");
-		expect(await provider(dataDir, railway).status("a1")).toBe("stopped");
+		// Only the control plane forgets, when it starts; `pnpm cloud status` from another process reads what is known.
+		const reader = provider(dataDir, railway);
+		expect(await reader.status("a1")).toBe("running");
+		reader.forgetAwake();
+		expect(await reader.status("a1")).toBe("stopped");
 	});
 
 	it("a failed create leaves no project behind; errors name the operation, never the token", async () => {

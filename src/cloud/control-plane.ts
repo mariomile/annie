@@ -8,6 +8,7 @@ import { sameSecret } from "../web/compare.ts";
 import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { CellState } from "../web/server.ts";
 import type { Mailer } from "./mailer.ts";
+import { romeDayKey } from "../core/usage.ts";
 import type { CellProvider } from "./provider.ts";
 
 /**
@@ -37,6 +38,8 @@ export type ControlPlaneOptions = {
 };
 
 export type ControlPlane = {
+	/** The tenants, their cells and their spend: for the operator (pnpm cloud status). */
+	status(): Promise<TenantStatus[]>;
 	readonly server: Server;
 	/** Stop idle cells, wake the ones whose next task is due. */
 	tick(now: Date): Promise<void>;
@@ -44,7 +47,58 @@ export type ControlPlane = {
 };
 
 type Account = { readonly email: string; readonly tenant: string; readonly createdAt: string };
-type Cell = { readonly tenant: string; readonly secret: string; readonly nextWakeAt: string | null };
+type Cell = {
+	readonly tenant: string;
+	readonly secret: string;
+	readonly nextWakeAt: string | null;
+	/** What the cell said it spent when it was last asked (a sleeping cell is not woken to ask). */
+	readonly usage?: SeenUsage;
+};
+
+type SeenUsage = NonNullable<CellState["usage"]> & { readonly at: string };
+
+/** One tenant as the operator sees it: no conversation, no file, only who, state and spend. */
+export type TenantStatus = {
+	readonly tenant: string;
+	readonly email: string;
+	readonly createdAt: string;
+	readonly cell: "running" | "stopped" | "missing";
+	readonly nextWakeAt: string | null;
+	/** Estimated model spend (list prices), as of `readAt`; null if never read. */
+	readonly spend: { readonly todayUsd: number; readonly monthUsd: number; readonly lastMonthUsd: number; readonly readAt: string } | null;
+};
+
+/**
+ * A new reading of a cell's spend, kept with what was known: the later reading wins for today,
+ * and each month keeps its highest total (a month only grows), so a reading taken just before
+ * a newer one never undoes it.
+ */
+function keepUsage(cells: readonly Cell[], tenant: string, usage: NonNullable<CellState["usage"]>): Cell[] {
+	const seen: SeenUsage = { ...usage, at: new Date().toISOString() };
+	return cells.map((c) => {
+		if (c.tenant !== tenant) return c;
+		const old = c.usage;
+		const months = { ...old?.months };
+		for (const [month, usd] of Object.entries(usage.months)) months[month] = Math.max(months[month] ?? 0, usd);
+		const latest = old === undefined || usage.day > old.day ? seen : usage.day < old.day ? old : { ...seen, todayUsd: Math.max(old.todayUsd, usage.todayUsd) };
+		return { ...c, usage: { ...latest, months, at: old !== undefined && old.at > seen.at ? old.at : seen.at } };
+	});
+}
+
+/** Today's and this month's figures from a reading, in Europe/Rome; stale figures count as zero. */
+function spendNow(usage: SeenUsage | undefined): TenantStatus["spend"] {
+	if (usage === undefined) return null;
+	const today = romeDayKey();
+	const month = today.slice(0, 7);
+	const previous = new Date(`${month}-15T12:00:00Z`);
+	previous.setUTCMonth(previous.getUTCMonth() - 1);
+	return {
+		todayUsd: usage.day === today ? usage.todayUsd : 0,
+		monthUsd: usage.months[month] ?? 0,
+		lastMonthUsd: usage.months[previous.toISOString().slice(0, 7)] ?? 0,
+		readAt: usage.at,
+	};
+}
 type PendingLink = { readonly hash: string; readonly email: string; readonly expiresAt: number; readonly usedAt?: number };
 type State = { accounts: Account[]; cells: Cell[]; links: PendingLink[] };
 
@@ -205,7 +259,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	/** Save when to wake it, then stop it; requests arriving meanwhile wait and wake it again. */
 	function stopCell(tenant: string, state: CellState): Promise<void> {
 		const stopping = (async () => {
-			setNextWake(tenant, state.nextWakeAt);
+			setNextWake(tenant, state.nextWakeAt, state.usage);
 			await options.provider.stop(tenant);
 			log(`cloud: cell ${tenant} stopped${state.nextWakeAt === null ? "" : `, wakes at ${state.nextWakeAt}`}`);
 		})().finally(() => stoppings.delete(tenant));
@@ -213,8 +267,11 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		return stopping;
 	}
 
-	function setNextWake(tenant: string, nextWakeAt: string | null): void {
-		update((s) => ({ ...s, cells: s.cells.map((c) => (c.tenant === tenant ? { ...c, nextWakeAt } : c)) }));
+	function setNextWake(tenant: string, nextWakeAt: string | null, usage?: CellState["usage"]): void {
+		update((s) => {
+			const cells = s.cells.map((c) => (c.tenant === tenant ? { ...c, nextWakeAt } : c));
+			return { ...s, cells: usage === undefined ? cells : keepUsage(cells, tenant, usage) };
+		});
 	}
 
 	// --- HTTP ---
@@ -324,6 +381,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	return {
 		server,
 		tick,
+		status: () => cloudStatus(options),
 		async stop() {
 			if (timer !== undefined) clearInterval(timer);
 			server.closeAllConnections();
@@ -332,11 +390,45 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			for (const id of await options.provider.list()) {
 				if ((await options.provider.status(id)) !== "running") continue;
 				const state = await cellState(id);
-				if (state !== undefined) setNextWake(id, state.nextWakeAt);
+				if (state !== undefined) setNextWake(id, state.nextWakeAt, state.usage);
 				await options.provider.stop(id);
 			}
 		},
 	};
+}
+
+/**
+ * Every tenant, its cell and its spend, for the operator. A running cell is asked (and what it
+ * says is kept); a sleeping one shows what it said last, without being woken. Works beside a
+ * running control plane: it only reads the state file and asks cells.
+ */
+export async function cloudStatus(options: { readonly dataDir: string; readonly provider: CellProvider }): Promise<TenantStatus[]> {
+	const file = join(options.dataDir, "control-plane.json");
+	const state = readJsonFile<State>(file, EMPTY);
+	const within = <T>(work: Promise<T>, fallback: T): Promise<T> =>
+		Promise.race([work.catch(() => fallback), new Promise<T>((resolve) => setTimeout(() => resolve(fallback), CELL_TIMEOUT_MS))]);
+	return Promise.all(
+		state.accounts.map(async (account) => {
+			const cell = state.cells.find((c) => c.tenant === account.tenant);
+			const now = await within<TenantStatus["cell"]>(options.provider.status(account.tenant), "missing");
+			let usage = cell?.usage;
+			if (now === "running" && cell !== undefined) {
+				// A cell stopped meanwhile, or one that hangs, keeps its last reading.
+				const fresh = await within(
+					(async () => {
+						const answer = await fetch(`${await options.provider.baseUrl(account.tenant)}/internal/cell`, { headers: { authorization: `Bearer ${cell.secret}` }, signal: AbortSignal.timeout(CELL_TIMEOUT_MS) });
+						return answer.ok ? ((await answer.json()) as CellState) : undefined;
+					})(),
+					undefined,
+				);
+				if (fresh?.usage !== undefined) {
+					const kept = updateJsonFile<State>(file, EMPTY, (s) => ({ ...s, cells: keepUsage(s.cells, account.tenant, fresh.usage as NonNullable<CellState["usage"]>) }));
+					usage = kept.cells.find((c) => c.tenant === account.tenant)?.usage;
+				}
+			}
+			return { tenant: account.tenant, email: account.email, createdAt: account.createdAt, cell: now, nextWakeAt: cell?.nextWakeAt ?? null, spend: spendNow(usage) };
+		}),
+	);
 }
 
 class HttpError extends Error {

@@ -92,6 +92,19 @@ export class UsageLedger {
 		return { softExceeded, hardExceeded };
 	}
 
+	/** Spent per month ("YYYY-MM", Europe/Rome), every month on record. */
+	async byMonth(): Promise<Record<string, number>> {
+		const months: Record<string, number> = {};
+		for (const [day, usd] of Object.entries(await this.readTotals())) months[day.slice(0, 7)] = (months[day.slice(0, 7)] ?? 0) + usd;
+		return months;
+	}
+
+	/** Spent this month (Europe/Rome), or in the month "YYYY-MM". */
+	async monthSpent(month = romeDayKey().slice(0, 7)): Promise<number> {
+		const totals = await this.readTotals();
+		return Object.entries(totals).reduce((sum, [day, usd]) => (day.startsWith(`${month}-`) ? sum + usd : sum), 0);
+	}
+
 	/** true when new model generations must be rejected. */
 	async isHardCapped(): Promise<boolean> {
 		return (await this.todaySpent()) >= this.caps.hardUsdPerDay;
