@@ -26,15 +26,6 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
           docker logs annie
           exit 1
-      - name: Keep the image for the publish job
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: docker save annie:ci -o annie.tar
-      - uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        with:
-          name: annie-image
-          path: annie.tar
-          retention-days: 1
 
   # Only this job can write packages, and only on main: a PR's Dockerfile never builds with it.
   publish:
@@ -46,16 +37,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: annie-image
+      # Built again here rather than handed over as an artifact: no artifact storage needed, and
+      # this job only ever runs on code already merged to main.
+      - uses: actions/checkout@v5
+      - name: Build
+        run: docker build -t annie:ci .
       - name: Push to GHCR
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          docker load -i annie.tar
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/annie"
           docker tag annie:ci "$image:${GITHUB_SHA::12}"
