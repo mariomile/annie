@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DUPLICATE_NOTICE, splitText, TELEGRAM_MAX_TEXT, TelegramAdapter } from "../src/channels/telegram.ts";
+import { ChannelRefused } from "../src/channels/types.ts";
 import type { InboundAction, InboundMessage } from "../src/channels/types.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { ConfigError, loadSegreteriaConfig, loadTelegramConfig } from "../src/main/config.ts";
@@ -280,5 +281,27 @@ describe("dev:telegram configuration", () => {
 		expect(loadTelegramConfig(base).telegramAllowedUsers).toBeUndefined();
 		expect(loadTelegramConfig({ ...base, ANNIE_TELEGRAM_ALLOWED_USERS: " 12, 34 ,," }).telegramAllowedUsers).toEqual(["12", "34"]);
 		expect(() => loadTelegramConfig({ ...base, ANNIE_TELEGRAM_ALLOWED_USERS: "12,@mario" })).toThrow("invalid: @mario");
+	});
+});
+
+describe("Telegram errors", () => {
+	const answering = (status: number, payload: unknown) => (async () => new Response(JSON.stringify(payload), { status })) as unknown as typeof fetch;
+	const message = { tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "7", idempotencyKey: "k", text: "ciao" };
+
+	it("a blocked bot is a refusal; rate limits and server errors are failures worth retrying", async () => {
+		const blocked = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: answering(403, { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" }) });
+		const no = await blocked.send(message).catch((e: unknown) => e);
+		expect(no).toBeInstanceOf(ChannelRefused);
+		expect((no as ChannelRefused).retryable).toBe(false);
+		for (const [status, payload] of [
+			[429, { ok: false, error_code: 429, description: "Too Many Requests: retry after 5" }],
+			[502, { ok: false, error_code: 502, description: "Bad Gateway" }],
+		] as const) {
+			const busy = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: answering(status, payload) });
+			const notNow = await busy.send(message).catch((e: unknown) => e);
+			// Not arrived (so no duplicate notice later), but worth another try.
+			expect(notNow).toBeInstanceOf(ChannelRefused);
+			expect((notNow as ChannelRefused).retryable).toBe(true);
+		}
 	});
 });

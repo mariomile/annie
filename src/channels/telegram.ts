@@ -229,7 +229,12 @@ export class TelegramAdapter implements ChannelAdapter {
 		});
 		const payload = (await response.json()) as TelegramResponse<T>;
 		// Never include the URL in errors: it contains the bot token.
-		if (!payload.ok) throw new ChannelRefused(`Telegram ${method} failed: ${payload.error_code ?? response.status} ${payload.description ?? ""}`.trim());
+		if (!payload.ok) {
+			const code = payload.error_code ?? response.status;
+			const message = `Telegram ${method} failed: ${code} ${payload.description ?? ""}`.trim();
+			// Too many requests and Telegram's own errors are a "not now"; other 4xx are a no.
+			throw new ChannelRefused(message, code === 429 || code >= 500);
+		}
 		return payload.result;
 	}
 }

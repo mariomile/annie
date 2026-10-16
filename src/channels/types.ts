@@ -97,8 +97,15 @@ export interface ChannelAdapter {
 
 /**
  * The channel answered and refused the message: it did not reach anyone. Any other error
- * from `send` (network, timeout) leaves open whether it arrived.
+ * from `send` (network, timeout) leaves open whether it arrived. `retryable`: the refusal
+ * is about now (rate limit, the channel's own outage), not about this message or person.
  */
 export class ChannelRefused extends Error {
 	override readonly name = "ChannelRefused";
+	constructor(
+		message: string,
+		readonly retryable = false,
+	) {
+		super(message);
+	}
 }

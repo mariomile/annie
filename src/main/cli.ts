@@ -59,6 +59,10 @@ switch (command) {
 		break;
 	case "link": {
 		const id = rest[0] ?? usage();
+		if ((await people.get(id)) === undefined) {
+			console.error(`No person ${id}. See: pnpm annie person list`);
+			process.exit(1);
+		}
 		const token = await people.rotate(id);
 		await new SessionStore(dir).endAllOf(id);
 		console.log(`New login link for ${id} (the old one and its sessions are revoked):\n\n  ${base}/login#${token}\n`);
@@ -73,8 +77,13 @@ switch (command) {
 	}
 	case "reset-2fa": {
 		const id = rest[0] ?? usage();
+		if ((await people.get(id)) === undefined) {
+			console.error(`No person ${id}. See: pnpm annie person list`);
+			process.exit(1);
+		}
 		await people.clearTotp(id);
-		console.log(`Two-factor login is off for ${id}; their link alone logs in again.`);
+		await new SessionStore(dir).endAllOf(id);
+		console.log(`Two-factor login is off for ${id}; their sessions are ended and their link alone logs in again.`);
 		break;
 	}
 	default:

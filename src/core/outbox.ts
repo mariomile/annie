@@ -62,11 +62,11 @@ export class Outbox {
 		return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 	}
 
-	/** Remove entries delivered before `cutoff`; the rest stay. Returns how many went. */
-	async prune(cutoff: Date): Promise<number> {
+	/** Remove entries whose key starts with `prefix`, delivered before `cutoff`. Returns how many went. */
+	async prune(cutoff: Date, prefix: string): Promise<number> {
 		let removed = 0;
 		for (const entry of await this.list()) {
-			if (entry.deliveredAt === undefined || entry.deliveredAt >= cutoff.toISOString()) continue;
+			if (!entry.key.startsWith(prefix) || entry.deliveredAt === undefined || entry.deliveredAt >= cutoff.toISOString()) continue;
 			await rm(this.file(entry.key), { force: true });
 			removed++;
 		}

@@ -178,6 +178,14 @@ describe("pnpm start (startAnnie)", () => {
 		await reading;
 	});
 
+	it("two owners creating the same id at once: one wins, the other gets a message", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		const results = await Promise.all([1, 2, 3].map(() => api("/api/instances", { id: "doppia", name: "Doppia" })));
+		expect(results.filter((r) => r.instance !== undefined)).toHaveLength(1);
+		for (const r of results.filter((r) => r.instance === undefined)) expect(r.error).toMatch(/esiste già/);
+	});
+
 	it("only the owner creates instances", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const owner = await client(base, annie.ownerLink as string);

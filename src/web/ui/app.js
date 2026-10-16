@@ -233,9 +233,14 @@ function renderLogin(error) {
 	);
 }
 
+/** The six-digit field of the verifica in due passaggi. */
+function codeInput() {
+	return h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "7", placeholder: "123 456", class: "mono code-input", "aria-label": "Codice" });
+}
+
 /** Second step of the login, for people with two-factor on. The link token stays in memory only. */
 function renderCode(token, error) {
-	const code = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "7", placeholder: "123 456", class: "mono code-input", "aria-label": "Codice" });
+	const code = codeInput();
 	const submit = async (e) => {
 		e.preventDefault();
 		try {
@@ -267,7 +272,6 @@ function renderCode(token, error) {
 function accountDialog() {
 	const body = h("div");
 	const dialog = h("dialog", h("h3", "Il tuo account"), body);
-	const codeInput = () => h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "7", placeholder: "123 456", class: "mono code-input" });
 	const draw = async () => {
 		const me = (await api("/api/me")).person;
 		state.me = me;
@@ -427,7 +431,7 @@ function renderRail() {
 				: null,
 			h(
 				"div.who",
-				h("button.who-id", { onclick: accountDialog, title: "Il tuo account" }, h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", `${state.me.role === "owner" ? "Owner" : "Membro"}${state.me.twoFactor ? " · 2FA" : ""}`))),
+				h("button.who-id", { onclick: accountDialog, title: "Il tuo account" }, h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", `${state.me.role === "owner" ? "Owner" : "Membro"}${state.me.twoFactor ? " · verifica attiva" : ""}`))),
 				h(
 					"div.row-gap",
 					h("button.icon-btn", { title: "Tema chiaro/scuro", "aria-label": "Cambia tema", onclick: cycleTheme }, icon("theme")),
@@ -1249,7 +1253,7 @@ async function viewPeople(main) {
 							h(
 								"tr",
 								h("td", p.name, h("div.mono.muted", p.id)),
-								h("td", h("div.row-gap", h(`span.chip${p.role === "owner" ? ".accent" : ""}`, p.role === "owner" ? "owner" : "membro"), p.twoFactor ? h("span.chip.ok", "2FA") : null)),
+								h("td", h("div.row-gap", h(`span.chip${p.role === "owner" ? ".accent" : ""}`, p.role === "owner" ? "owner" : "membro"), p.twoFactor ? h("span.chip.ok", "Verifica in 2 passaggi") : null)),
 								h("td.mono", fmt.day(p.createdAt)),
 								h(
 									"td.row-gap",
@@ -1274,7 +1278,7 @@ async function viewPeople(main) {
 															render();
 														}),
 												},
-												"Reset 2FA",
+												"Togli verifica",
 											)
 										: null,
 									p.id !== state.me.id

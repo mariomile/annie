@@ -1,0 +1,37 @@
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+
+/**
+ * Read a JSON file, change it, write it back, under a lock every process shares (the CLI
+ * writes while Annie runs). The lock is an exclusive SQLite transaction on `<file>.lock`, a
+ * kernel advisory lock released even if the process dies, as for instances. Read and write
+ * are synchronous inside it, so no other code of this process runs while it is held.
+ */
+export function updateJsonFile<T>(file: string, empty: T, change: (current: T) => T): T {
+	const db = new DatabaseSync(`${file}.lock`, { timeout: 5_000 });
+	try {
+		db.exec("BEGIN EXCLUSIVE");
+		const next = change(readJsonFile(file, empty));
+		const temp = `${file}.${process.pid}.tmp`;
+		const fd = openSync(temp, "w", 0o600);
+		try {
+			writeSync(fd, `${JSON.stringify(next, null, 2)}\n`);
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+		renameSync(temp, file);
+		return next;
+	} finally {
+		db.close();
+	}
+}
+
+export function readJsonFile<T>(file: string, empty: T): T {
+	try {
+		return JSON.parse(readFileSync(file, "utf8")) as T;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty;
+		throw error;
+	}
+}

@@ -41,6 +41,8 @@ export type Reply = {
 	 * earlier try died before reaching the channel.
 	 */
 	readonly possibleDuplicate: boolean;
+	/** Which hand-off of this reply this is (1 the first time). A failure report names it. */
+	readonly attempt: number;
 } & (
 	| { readonly status: "answered"; readonly text: string }
 	| { readonly status: "unanswered"; readonly reason: string }
@@ -64,12 +66,19 @@ export type RuntimeOptions = {
 	 * attempt; the last repeats. A reply the channel refused is not retried in the process.
 	 */
 	readonly retryDelaysMs?: readonly number[];
+	/** Retries in one process before the reply waits for the next resume. */
+	readonly maxRetries?: number;
 };
+
+/** What happened to a send the channel did not confirm. */
+export type DeliveryFailure = { readonly refused: boolean; readonly reason: string };
 
 /** How long a delivered reply stays in the outbox. */
 const OUTBOX_RETENTION_MS = 30 * 86_400_000;
 
 export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_000, 600_000];
+/** About two hours of tries with the default delays. */
+export const DEFAULT_MAX_RETRIES = 14;
 
 /**
  * Annie's core. Knows tenants, instances, secrets, audit and egress policy; runs each
@@ -177,10 +186,10 @@ export class AnnieRuntime {
 	 * The channel did not take `reply`. A failure is sent again later in this process, with
 	 * backoff; a refusal (the channel said no) waits for the next resume. Never opens the instance.
 	 */
-	async deliveryFailed(reply: Pick<Reply, "tenantId" | "instanceId" | "deliveryId">, refused: boolean, reason: string): Promise<void> {
+	async deliveryFailed(reply: Pick<Reply, "tenantId" | "instanceId" | "deliveryId" | "attempt">, failure: DeliveryFailure): Promise<void> {
 		const opening = this.instances.get(`${reply.tenantId}/${reply.instanceId}`);
 		if (opening === undefined) return;
-		await (await opening).deliveryFailed(reply.deliveryId, refused, reason);
+		await (await opening).deliveryFailed(reply.deliveryId, reply.attempt, failure);
 	}
 
 	/**
@@ -264,7 +273,7 @@ export class AnnieRuntime {
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -294,7 +303,7 @@ export class AnnieInstance {
 		private readonly releaseTools: () => Promise<void>,
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
-		private readonly retryDelaysMs: readonly number[],
+		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -397,7 +406,9 @@ export class AnnieInstance {
 	async resume(): Promise<{ pending: number; undelivered: number; reattached: number }> {
 		// Delivered replies are kept a while (idempotency, audit by key), then dropped: each
 		// resume reads the whole outbox.
-		const removed = await this.outbox.prune(new Date(Date.now() - OUTBOX_RETENTION_MS));
+		// Only replies to people: the keys of the instance's own messages (approval notices)
+		// are what stops a notice from going out twice, so they stay.
+		const removed = await this.outbox.prune(new Date(Date.now() - OUTBOX_RETENTION_MS), "reply:");
 		if (removed > 0) await this.audit.append({ type: "outbox.pruned", instanceId: this.record.id, removed });
 		let undelivered = 0;
 		let reattached = 0;
@@ -438,29 +449,33 @@ export class AnnieInstance {
 		});
 	}
 
-	async deliveryFailed(deliveryId: string, refused: boolean, reason: string): Promise<void> {
-		if (this.closed || this.retries.has(deliveryId)) return;
-		const entry = await this.outbox.get(deliveryId);
-		if (entry === undefined || entry.deliveredAt !== undefined) return;
-		if (refused) {
-			await this.audit.append({ type: "reply.refused", instanceId: this.record.id, channel: entry.channel, threadId: entry.threadId, deliveryId, attempts: entry.attempts, reason: reason.slice(0, 200) });
-			return;
-		}
-		const delays = this.retryDelaysMs;
-		const delay = delays[Math.min(entry.attempts, delays.length) - 1] ?? delays.at(-1) ?? DEFAULT_RETRY_DELAYS_MS[0];
-		const timer = setTimeout(() => {
-			this.retries.delete(deliveryId);
-			if (this.closed) return;
-			this.serial(deliveryId, async () => {
-				const current = await this.outbox.get(deliveryId);
-				if (this.closed || current?.reply === undefined || current.deliveredAt !== undefined) return;
-				this.handedOff.delete(deliveryId);
-				await this.handOff(current);
-			}).catch((error: unknown) => console.error(`annie: retrying a reply of ${this.record.tenantId}/${this.record.id} failed: ${String(error)}`));
-		}, delay);
-		timer.unref();
-		this.retries.set(deliveryId, timer);
-		await this.audit.append({ type: "reply.retry_scheduled", instanceId: this.record.id, channel: entry.channel, deliveryId, attempts: entry.attempts, inMs: delay });
+	/**
+	 * The channel did not confirm hand-off number `attempt` of a reply. Ignored when a later
+	 * hand-off already exists (a reopen sent it again) or a retry is already pending.
+	 */
+	async deliveryFailed(deliveryId: string, attempt: number, failure: DeliveryFailure): Promise<void> {
+		await this.serial(deliveryId, async () => {
+			if (this.closed || this.retries.has(deliveryId)) return;
+			const entry = await this.outbox.get(deliveryId);
+			if (entry === undefined || entry.deliveredAt !== undefined || entry.attempts !== attempt) return;
+			const event = { instanceId: this.record.id, channel: entry.channel, threadId: entry.threadId, deliveryId, attempts: entry.attempts, reason: failure.reason.slice(0, 200) };
+			if (failure.refused) return void (await this.audit.append({ type: "reply.refused", ...event }));
+			if (entry.attempts - 1 >= this.retry.max) return void (await this.audit.append({ type: "reply.retries_exhausted", ...event }));
+			const delays = this.retry.delaysMs;
+			const delay = delays[Math.min(entry.attempts, delays.length) - 1] ?? DEFAULT_RETRY_DELAYS_MS[0];
+			const timer = setTimeout(() => {
+				this.serial(deliveryId, async () => {
+					this.retries.delete(deliveryId);
+					const current = await this.outbox.get(deliveryId);
+					if (this.closed || current?.reply === undefined || current.deliveredAt !== undefined) return;
+					this.handedOff.delete(deliveryId);
+					await this.handOff(current);
+				}).catch((error: unknown) => console.error(`annie: retrying a reply of ${this.record.tenantId}/${this.record.id} failed: ${String(error)}`));
+			}, delay);
+			timer.unref();
+			this.retries.set(deliveryId, timer);
+			await this.audit.append({ type: "reply.retry_scheduled", ...event, inMs: delay });
+		});
 	}
 
 	async sendMessage(message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
@@ -566,7 +581,7 @@ export class AnnieInstance {
 			status: reply.status,
 			...(reply.status === "answered" ? { chars: reply.text.length } : reply.status === "unanswered" ? { reason: reply.reason } : {}),
 		});
-		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1 };
+		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1, attempt: attempts };
 		this.emit({ ...base, ...reply });
 	}
 

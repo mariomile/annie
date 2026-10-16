@@ -233,6 +233,49 @@ describe("web console: two-factor login", () => {
 		expect(blocked.status).toBe(429);
 	});
 
+	it("parallel wrong codes still count: the sixth try is blocked", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const { secret } = (await anna("/api/me/2fa/setup", { method: "POST", body: "{}" })).body;
+		await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now()) }) });
+		const burst = await Promise.all(Array.from({ length: 20 }, () => login(h.base, { token: h.anna.token, code: "000000" })));
+		expect(burst.filter((r) => r.status === 401).length).toBeLessThanOrEqual(5);
+		expect((await login(h.base, { token: h.anna.token, code: totp(secret, Date.now() + 30_000) })).status).toBe(429);
+	});
+
+	it("turning it off is limited the same way: no guessing codes from an open session", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const { secret } = (await anna("/api/me/2fa/setup", { method: "POST", body: "{}" })).body;
+		await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now()) }) });
+		const tries = await Promise.all(Array.from({ length: 10 }, () => anna("/api/me/2fa/disable", { method: "POST", body: JSON.stringify({ code: "000000" }) })));
+		expect(tries.filter((r) => r.status === 400).length).toBeLessThanOrEqual(5);
+		expect((await anna("/api/me/2fa/disable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now() + 30_000) }) })).status).toBe(429);
+		expect((await anna("/api/me")).body.person.twoFactor).toBe(true);
+	});
+
+	it("turning 2FA on ends the person's other sessions; an owner reset ends them all", async () => {
+		const h = await setup();
+		const thief = await h.as(h.anna.token);
+		const anna = await h.as(h.anna.token);
+		const { secret } = (await anna("/api/me/2fa/setup", { method: "POST", body: "{}" })).body;
+		await anna("/api/me/2fa/enable", { method: "POST", body: JSON.stringify({ code: totp(secret, Date.now()) }) });
+		expect((await thief("/api/me")).status).toBe(401);
+		expect((await anna("/api/me")).status).toBe(200);
+		const owner = await h.as(h.owner.token);
+		await owner(`/api/people/${h.anna.person.id}/2fa/reset`, { method: "POST", body: "{}" });
+		expect((await anna("/api/me")).status).toBe(401);
+	});
+
+	it("people written from two processes at once are all kept", async () => {
+		const h = await setup();
+		const tenantDir = join(h.dataDir, "tenants", "acme");
+		const a = new PeopleStore(tenantDir);
+		const b = new PeopleStore(tenantDir);
+		await Promise.all(Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? a : b).add(`P${i}`, "member")));
+		expect((await h.people.list()).filter((p) => p.name.startsWith("P"))).toHaveLength(10);
+	});
+
 	it("turning it off needs a code; the owner can reset it for someone who lost the phone", async () => {
 		const h = await setup();
 		const anna = await h.as(h.anna.token);

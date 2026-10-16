@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DUPLICATE_NOTICE } from "../src/channels/telegram.ts";
 import { type ChannelAdapter, ChannelRefused, type OutboundMessage } from "../src/channels/types.ts";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { AnnieRuntime, type DurableEngine, type EngineSession, Outbox, type OutboxEntry } from "../src/core/index.ts";
+import { AnnieRuntime, type DurableEngine, type EngineSession, Outbox, type OutboxEntry, type Reply } from "../src/core/index.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 import { kill9, spawnFixture, type Worker } from "./processes.ts";
@@ -154,6 +154,78 @@ describe("reply outbox: retries in the same process", () => {
 	});
 });
 
+describe("reply outbox: retry limits", () => {
+	it("two failure reports at once schedule one retry, and a close leaves nothing to send", async () => {
+		const dataDir = tempDataDir();
+		const { runtime } = await runtimeWithInstance({ dataDir });
+		await runtime.close();
+		// The first retry soon, the next one far away: only the duplicate reports are under test.
+		const retrying = new AnnieRuntime({ dataDir, engine: piDurableEngine, retryDelaysMs: [40, 60_000] });
+		const sent: Reply[] = [];
+		retrying.onReply((r) => sent.push(r));
+		const down = testChannel(async () => {
+			throw new Error("network down");
+		});
+		connectChannel(retrying, down, { tenantId: "acme", instanceId: "ops" }, () => {});
+		await retrying.submit(hello);
+		await waitFor(() => sent.length === 1);
+		const first = sent[0] as Reply;
+		await Promise.all([1, 2, 3].map(() => retrying.deliveryFailed(first, { refused: false, reason: "again" })));
+		await waitFor(() => sent.length >= 2);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		await retrying.close();
+		const after = sent.length;
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(sent.length).toBe(after);
+		expect(sent.length).toBe(2);
+	});
+
+	it("gives up in the process after the last delay; the reply waits for the next resume", async () => {
+		const dataDir = tempDataDir();
+		const { runtime } = await runtimeWithInstance({ dataDir });
+		await runtime.close();
+		const retrying = new AnnieRuntime({ dataDir, engine: piDurableEngine, retryDelaysMs: [10, 10], maxRetries: 3 });
+		const down = testChannel(async () => {
+			throw new Error("network down");
+		});
+		connectChannel(retrying, down, { tenantId: "acme", instanceId: "ops" }, () => {});
+		await retrying.submit(hello);
+		while (!(await retrying.audit("acme").read()).some((e) => e.type === "reply.retries_exhausted")) await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(down.sent).toHaveLength(4);
+		expect(outboxEntries(dataDir)[0]?.deliveredAt).toBeUndefined();
+		await retrying.close();
+	});
+});
+
+describe("reply outbox: stale failures", () => {
+	it("a failure of a send started before a reopen does not send the reply again", async () => {
+		const dataDir = tempDataDir();
+		const { runtime } = await runtimeWithInstance({ dataDir });
+		await runtime.close();
+		const retrying = new AnnieRuntime({ dataDir, engine: piDurableEngine, retryDelaysMs: [20] });
+		const sent: Reply[] = [];
+		retrying.onReply((r) => sent.push(r));
+		const pending: (() => void)[] = [];
+		const slow = testChannel(
+			() =>
+				new Promise<void>((_, reject) => {
+					pending.push(() => reject(new Error("timed out")));
+				}),
+		);
+		connectChannel(retrying, slow, { tenantId: "acme", instanceId: "ops" }, () => {});
+		await retrying.submit(hello);
+		await waitFor(() => pending.length === 1);
+		// The reopen hands the reply off again (attempt 2); then the first send fails.
+		await retrying.reopen("acme", "ops");
+		await waitFor(() => sent.length === 2);
+		pending[0]?.();
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(sent.map((r) => r.attempt)).toEqual([1, 2]);
+		await retrying.close();
+	});
+});
+
 describe("reply outbox: cleanup", () => {
 	it("on resume, drops replies delivered more than 30 days ago and keeps the rest", async () => {
 		const dataDir = tempDataDir();
@@ -166,9 +238,11 @@ describe("reply outbox: cleanup", () => {
 		await outbox.put({ ...base, key: "reply:old", createdAt: days(41), deliveredAt: days(40) });
 		await outbox.put({ ...base, key: "reply:recent", createdAt: days(6), deliveredAt: days(5) });
 		await outbox.put({ key: "reply:stuck", submissionId: "s2", channel: "test", threadId: "t1", attempts: 0, createdAt: days(40) });
+		// Messages the instance sends itself (approval notices) keep their key: it stops a second notice.
+		await outbox.put({ ...base, key: "msg:acme/ops/proposal:p1:9", createdAt: days(41), deliveredAt: days(40) });
 		const next = new AnnieRuntime({ dataDir, engine: piDurableEngine });
 		await next.resume("acme", "ops");
-		expect((await outbox.list()).map((e) => e.key).sort()).toEqual(["reply:recent", "reply:stuck"]);
+		expect((await outbox.list()).map((e) => e.key).sort()).toEqual(["msg:acme/ops/proposal:p1:9", "reply:recent", "reply:stuck"]);
 		expect(await next.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "outbox.pruned", instanceId: "ops", removed: 1 }));
 		await next.close();
 	});
