@@ -113,6 +113,20 @@ Servono solo quando decidi il prezzo di Annie Cloud. Senza, il servizio resta gr
 7. Facoltativo: `ANNIE_CLOUD_TRIAL_DAYS`, i giorni di prova (14 se non lo metti).
 8. Dominio: `api.stripe.com`.
 
+### 9. WhatsApp: token, ID del numero e app secret (per istanza, dalla console)
+
+Annie risponde su un numero WhatsApp Business attraverso la Cloud API di Meta. I tre valori si inseriscono nella console, in Impostazioni → WhatsApp, non nel file `.env`. Serve un indirizzo https pubblico, perché Meta manda i messaggi a un webhook: in Annie Cloud c'è già, in self-host è `ANNIE_PUBLIC_URL`.
+
+1. https://developers.facebook.com → **My Apps → Create app**, tipo *Business*, e aggiungi il prodotto **WhatsApp**. Collega o crea il **Business portfolio** di Buildrs.
+2. In **WhatsApp → API Setup** aggiungi il numero di telefono (un numero non già usato sull'app WhatsApp) e verificalo. Copia il **Phone number ID**: è il campo «ID del numero».
+3. Token permanente: in https://business.facebook.com → **Impostazioni → Utenti di sistema** crea un utente di sistema *Admin*. Assegnagli l'app e il WhatsApp Business Account, poi **Genera token** con i permessi `whatsapp_business_messaging` e `whatsapp_business_management`. È il campo «Token di accesso». Il token temporaneo di API Setup dura 24 ore: va bene solo per una prova.
+4. **App settings → Basic → App secret** → *Show*: è il campo «App secret».
+5. Nella console premi **Collega**. Annie mostra l'indirizzo del webhook e un token di verifica.
+6. Di nuovo su developers.facebook.com, in **WhatsApp → Configuration → Webhook → Edit**, incolla indirizzo e token di verifica, poi **Verify and save**. Sotto *Webhook fields* iscriviti a **messages**.
+7. In «Chi può scrivere» metti i numeri delle persone con il prefisso, solo cifre (per esempio `393331234567`).
+8. Per uscire dalla modalità sviluppo l'app va pubblicata (**App Review** per `whatsapp_business_messaging`) e serve un metodo di pagamento sul Business Account: Meta fa pagare le conversazioni secondo il suo listino.
+9. Domini: `graph.facebook.com` (e `lookaside.fbsbx.com` per scaricare i file che le persone mandano).
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -124,6 +138,7 @@ Servono solo quando decidi il prezzo di Annie Cloud. Senza, il servizio resta gr
 | Google per persona | `accounts.google.com`, `oauth2.googleapis.com`, `openidconnect.googleapis.com`, `gmail.googleapis.com`, `www.googleapis.com` |
 | Railway | `backboard.railway.com`, `docs.railway.com` |
 | Stripe | `api.stripe.com` |
+| WhatsApp | `graph.facebook.com`, `lookaside.fbsbx.com` |
 
 ## Cosa succede dopo
 

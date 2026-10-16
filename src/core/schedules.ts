@@ -118,11 +118,13 @@ export class ScheduleStore {
 
 /**
  * The person a schedule acts for: its creator, or else the person whose conversation it
- * writes to (a Telegram private chat, a web thread). Undefined: nobody to answer for it.
+ * writes to (a Telegram private chat, a WhatsApp chat, a web thread). Undefined: nobody to answer for it.
  */
 export function schedulePerson(schedule: Schedule): { channel: string; userId: string } | undefined {
 	if (schedule.createdBy.kind === "person") return { channel: schedule.createdBy.channel, userId: schedule.createdBy.userId };
 	if (schedule.channel === "telegram" && /^\d+$/.test(schedule.threadId)) return { channel: "telegram", userId: schedule.threadId };
+	// A WhatsApp chat is one person, whose number is the thread.
+	if (schedule.channel === "whatsapp" && /^\d+$/.test(schedule.threadId)) return { channel: "whatsapp", userId: schedule.threadId };
 	const owner = schedule.threadId.split(".")[0] ?? "";
 	if (schedule.channel === "web" && /^p_[0-9a-f]{12}$/.test(owner)) return { channel: "web", userId: owner };
 	return undefined;

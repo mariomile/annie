@@ -1385,7 +1385,13 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, google] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people"), api(`/api/instances/${inst.id}/telegram`).catch(() => undefined), api("/api/google").catch(() => ({ available: false }))]);
+	const [{ settings }, { people }, tg, wa, google] = await Promise.all([
+		api(`/api/instances/${inst.id}/settings`),
+		api("/api/people"),
+		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
+		api(`/api/instances/${inst.id}/whatsapp`).catch(() => undefined),
+		api("/api/google").catch(() => ({ available: false })),
+	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
 	const chat = new Set(settings.allowedUsers.web ?? []);
@@ -1414,6 +1420,7 @@ async function viewSettings(main) {
 				"div.stack",
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
 				tg === undefined ? null : telegramCard(inst, tg.telegram),
+				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				webCard(inst, settings.egress.web ?? []),
 			),
@@ -1461,6 +1468,62 @@ function telegramCard(inst, t) {
 		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta.")),
 		h("label.field", h("span", "Chi approva"), approvers, h("small", "Ricevono su Telegram le schede dei tool da approvare.")),
 		h("div.actions", h("button.btn.accent", { onclick: save }, t.connected ? "Salva" : "Collega"), t.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
+	);
+}
+
+/** A value to copy into another service's dashboard. */
+function copyBox(value, what) {
+	const input = h("input", { type: "text", class: "mono", readonly: true, value });
+	return h("div.link-box", input, h("button.btn.ghost", { onclick: async () => (await navigator.clipboard.writeText(value).catch(() => input.select()), toast(`${what} copiato`)) }, "Copia"));
+}
+
+/** The instance's WhatsApp number (Meta Cloud API): token and app secret go in once and never come back. */
+function whatsappCard(inst, w) {
+	const secret = (placeholder) => h("input", { type: "password", autocomplete: "off", class: "mono", placeholder });
+	const accessToken = secret(w.connected ? "Nuovo token (facoltativo)" : "EAAG…");
+	const appSecret = secret(w.connected ? "Nuovo app secret (facoltativo)" : "32 caratteri esadecimali");
+	const phoneNumberId = h("input", { type: "text", class: "mono", placeholder: w.connected ? "Invariato" : "123456789012345" });
+	const list = (numbers) => numbers.join(", ");
+	const allowed = h("input", { type: "text", class: "mono", value: list(w.allowedUsers), placeholder: "393331234567, 393479876543" });
+	const approvers = h("input", { type: "text", class: "mono", value: list(w.approvers), placeholder: "393331234567" });
+	const numbers = (input) => input.value.split(/[\s,]+/).map((n) => n.replace(/^\+/, "")).filter(Boolean);
+	const save = async () => {
+		try {
+			const given = { accessToken: accessToken.value.trim(), phoneNumberId: phoneNumberId.value.trim(), appSecret: appSecret.value.trim() };
+			const body = { ...Object.fromEntries(Object.entries(given).filter(([, v]) => v)), allowedUsers: numbers(allowed), approvers: numbers(approvers) };
+			await api(`/api/instances/${inst.id}/whatsapp`, { method: "PUT", body });
+			toast(w.connected ? "WhatsApp aggiornato" : "Numero collegato");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const disconnect = () =>
+		confirmDialog("Scollegare WhatsApp?", "Annie smette di rispondere su WhatsApp per questa istanza. Token e app secret vengono cancellati.", "Scollega", async () => {
+			await api(`/api/instances/${inst.id}/whatsapp`, { method: "DELETE" });
+			toast("WhatsApp scollegato");
+			render();
+		});
+	return h(
+		"div.card.pad",
+		h("div.row-gap", h("div.kicker", "WhatsApp"), w.connected ? h("span.chip.ok", w.number ?? "Collegato") : h("span.chip", "Non collegato")),
+		w.connected ? null : h("p.muted", "Serve un numero WhatsApp Business sulla piattaforma di Meta. Da developers.facebook.com prendi il token di accesso permanente, l'ID del numero e l'app secret (guida in docs/chiavi.md)."),
+		w.webhookUrl === null ? h("p.muted", "Questo server non ha un indirizzo https pubblico: WhatsApp non può mandargli i messaggi.") : null,
+		h("label.field", h("span", "Token di accesso"), accessToken),
+		h("label.field", h("span", "ID del numero"), phoneNumberId),
+		h("label.field", h("span", "App secret"), appSecret, h("small", "Serve a controllare che i messaggi arrivino davvero da Meta.")),
+		w.connected && w.webhookUrl !== null
+			? h(
+					"div.stack",
+					h("div.kicker", "Da incollare nell'app Meta (WhatsApp → Configurazione → Webhook)"),
+					copyBox(w.webhookUrl, "Indirizzo"),
+					copyBox(w.verifyToken ?? "", "Token di verifica"),
+					h("small.muted", "Poi iscriviti al campo «messages»."),
+				)
+			: null,
+		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "Numeri con prefisso internazionale, separati da virgole. Chi non è in elenco non riceve risposta.")),
+		h("label.field", h("span", "Chi approva"), approvers, h("small", "Ricevono su WhatsApp le schede dei tool da approvare, se hanno scritto ad Annie nelle ultime 24 ore.")),
+		h("div.actions", h("button.btn.accent", { onclick: save }, w.connected ? "Salva" : "Collega"), w.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
 	);
 }
 

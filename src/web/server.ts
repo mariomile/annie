@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
+import type { WhatsAppAdapter, WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
@@ -44,6 +45,17 @@ export type TelegramStatus = {
 	readonly approvers: readonly string[];
 };
 
+export type WhatsAppStatus = {
+	readonly connected: boolean;
+	readonly number?: string;
+	readonly name?: string;
+	/** Where Meta must send messages; null when this server has no public https address. */
+	readonly webhookUrl: string | null;
+	readonly verifyToken?: string;
+	readonly allowedUsers: readonly string[];
+	readonly approvers: readonly string[];
+};
+
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
 	readonly tenantId: string;
@@ -66,6 +78,15 @@ export type WebAppOptions = {
 		status(instanceId: string): Promise<TelegramStatus>;
 		/** Check the token with Telegram, keep it in the secret store, start the bot. */
 		connect(instanceId: string, token: string): Promise<{ username: string | undefined }>;
+		disconnect(instanceId: string): Promise<void>;
+	};
+	/** The WhatsApp number of each instance that has one: its webhook. */
+	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
+	/** WhatsApp per instance, connected by the owner from the console. */
+	readonly whatsapp?: {
+		status(instanceId: string): Promise<WhatsAppStatus>;
+		/** Check with Meta, keep the credentials in the secret store, start receiving. Values left out keep the saved ones. */
+		connect(instanceId: string, credentials: { accessToken?: string; phoneNumberId?: string; appSecret?: string }): Promise<{ number: string | undefined; name: string | undefined }>;
 		disconnect(instanceId: string): Promise<void>;
 	};
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
@@ -684,6 +705,62 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 
+	// --- owner: WhatsApp of an instance (token and app secret never come back) ---
+	const whatsappOf = () => {
+		if (options.whatsapp === undefined) throw new HttpError(501, "WhatsApp non disponibile");
+		return options.whatsapp;
+	};
+	route("GET", "/api/instances/:id/whatsapp", "owner", async ({ params }) => {
+		await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		return { whatsapp: await whatsappOf().status(params[0] as string) };
+	});
+	route("PUT", "/api/instances/:id/whatsapp", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const body = (await readJson(req)) as { accessToken?: unknown; phoneNumberId?: unknown; appSecret?: unknown; allowedUsers?: unknown; approvers?: unknown };
+		// Numbers as WhatsApp writes them: international, digits only (393331234567).
+		const numbers = (list: unknown, what: string): string[] | undefined => {
+			if (list === undefined) return undefined;
+			if (!Array.isArray(list) || !list.every((x) => typeof x === "string" && /^\d{6,15}$/.test(x))) throw new HttpError(400, `${what}: numeri con prefisso internazionale, solo cifre (393331234567)`);
+			return [...new Set(list as string[])];
+		};
+		const allowed = numbers(body.allowedUsers, "Chi può scrivere");
+		const approvers = numbers(body.approvers, "Chi approva");
+		const text = (value: unknown, pattern: RegExp, what: string): string | undefined => {
+			if (value === undefined || (typeof value === "string" && value.trim() === "")) return undefined;
+			if (typeof value !== "string" || !pattern.test(value.trim())) throw new HttpError(400, `${what} non valido`);
+			return value.trim();
+		};
+		const given = {
+			accessToken: text(body.accessToken, /^[\w-]{20,1024}$/, "Token di accesso"),
+			phoneNumberId: text(body.phoneNumberId, /^\d{5,30}$/, "ID del numero"),
+			appSecret: text(body.appSecret, /^[0-9a-f]{16,128}$/i, "App secret"),
+		};
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		if (Object.values(given).some((v) => v !== undefined)) {
+			try {
+				await whatsappOf().connect(id, Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined)));
+			} catch (error) {
+				if (error instanceof HttpError) throw error;
+				if (error instanceof Error && error.name === "MissingWhatsAppField") throw new HttpError(400, "La prima volta servono token di accesso, ID del numero e app secret");
+				if (error instanceof ChannelRefused) throw new HttpError(400, "Meta non accetta questi dati: controlla token e ID del numero");
+				throw new HttpError(502, "WhatsApp non è raggiungibile da questo server: controlla la rete e riprova");
+			}
+			await runtime.audit(tenantId).append({ type: "whatsapp.connected", instanceId: id });
+		}
+		if (allowed !== undefined) await runtime.registry.setAllowedUsers(tenantId, id, "whatsapp", allowed);
+		if (approvers !== undefined) await runtime.registry.updateInstance(tenantId, id, { approvers: { ...(record.approvers ?? {}), whatsapp: approvers } });
+		return { whatsapp: await whatsappOf().status(id) };
+	});
+	route("DELETE", "/api/instances/:id/whatsapp", "owner", async ({ params }) => {
+		await whatsappOf().disconnect(params[0] as string);
+		await runtime.audit(tenantId).append({ type: "whatsapp.disconnected", instanceId: params[0] });
+		return { ok: true };
+	});
+
 	route("GET", "/api/people", "owner", async () => ({ people: (await options.people.list()).map(publicPerson) }));
 	route("POST", "/api/people", "owner", async ({ req, url }) => {
 		const body = (await readJson(req)) as { name?: string; role?: string };
@@ -746,6 +823,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
+		const wa = /^\/hooks\/whatsapp\/([a-z0-9_-]+)$/.exec(url.pathname);
+		if (wa !== null && (req.method === "GET" || req.method === "POST")) return whatsappHook(req, res, url, wa[1] as string);
 		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
@@ -777,6 +856,44 @@ export function createWebApp(options: WebAppOptions): Server {
 	function googleCallback(res: ServerResponse, url: URL): void {
 		res.writeHead(302, { location: `/#/google?${googleReturnQuery(url)}`, "cache-control": "no-store" });
 		res.end();
+	}
+
+	/**
+	 * Meta's webhook for an instance's WhatsApp number. GET: Meta checks the address, with our
+	 * verify token, and wants its challenge back as plain text. POST: messages, signed with the
+	 * Meta app's secret over the raw body. An error answer makes Meta deliver again; the core
+	 * dedupes by message id.
+	 */
+	async function whatsappHook(req: IncomingMessage, res: ServerResponse, url: URL, instance: string): Promise<void> {
+		const adapter = options.whatsappHooks?.get(instance);
+		if (adapter === undefined) return send(res, 404, { error: "Not found" });
+		if (req.method === "GET") {
+			const challenge = adapter.verify(url.searchParams);
+			if (challenge === undefined) return send(res, 403, { error: "Forbidden" });
+			res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+			return void res.end(challenge);
+		}
+		let raw: Buffer;
+		try {
+			raw = await readBody(req, MAX_WHATSAPP_BODY);
+		} catch (error) {
+			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			throw error;
+		}
+		if (!adapter.signed(raw, req.headers["x-hub-signature-256"] as string | undefined)) return send(res, 401, { error: "Unauthorized" });
+		let payload: WhatsAppWebhook;
+		try {
+			payload = JSON.parse(raw.toString("utf8")) as WhatsAppWebhook;
+		} catch {
+			return send(res, 400, { error: "JSON non valido" });
+		}
+		try {
+			await adapter.handleWebhook(payload);
+		} catch (error) {
+			options.log?.(`whatsapp webhook: not handled, Meta will retry: ${error instanceof Error ? error.message : String(error)}`);
+			return send(res, 500, { error: "retry" });
+		}
+		send(res, 200, { ok: true });
 	}
 
 	/**
@@ -873,6 +990,8 @@ function cookie(req: IncomingMessage, name: string): string | undefined {
 	}
 	return undefined;
 }
+
+const MAX_WHATSAPP_BODY = 1024 * 1024;
 
 async function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
 	const chunks: Buffer[] = [];
