@@ -75,12 +75,25 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const connectorStore = (id: string) => new ConnectorStore(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(id)));
 	const policyOf = (record: InstanceRecord) => async () => (await runtime.registry.getInstance(record.tenantId, record.id)).egress;
 	// Chromium for web_screenshot: started on the first screenshot, one for all instances, closed on stop.
+	// It runs with its own sandbox, or not at all unless the operator says so (ADR 0009); it gets no
+	// secrets in its environment, and no network: every request is answered by the guarded fetch.
 	let browser: Promise<Browser | undefined> | undefined;
 	const chromium = (): Promise<Browser | undefined> => {
 		browser ??= import("playwright-core")
-			.then(({ chromium: launcher }) => launcher.launch({ ...(config.chromiumPath === undefined ? {} : { executablePath: config.chromiumPath }) }) as unknown as Promise<Browser>)
+			.then(async ({ chromium: launcher }) => {
+				const launched = (await launcher.launch({
+					...(config.chromiumPath === undefined ? {} : { executablePath: config.chromiumPath }),
+					chromiumSandbox: !config.screenshotsWithoutSandbox,
+					env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: "/tmp" },
+					args: ["--proxy-server=http://127.0.0.1:9", "--disable-background-networking", "--disable-sync", "--no-first-run"],
+				})) as unknown as Browser;
+				launched.on("disconnected", () => {
+					browser = undefined;
+				});
+				return launched;
+			})
 			.catch((error: unknown) => {
-				log(`web: no Chromium for screenshots (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`);
+				log(`web: screenshots off: Chromium did not start${config.screenshotsWithoutSandbox ? "" : " with its sandbox (ANNIE_SCREENSHOTS_WITHOUT_SANDBOX=1 to accept running it without, ADR 0009)"}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
 				browser = undefined;
 				return undefined;
 			});
@@ -428,8 +441,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			for (const bot of telegrams.values()) await bot.stop();
 			await segreteria?.stop();
 			await runtime.close();
-			const open = await browser;
-			await (open as unknown as { close(): Promise<void> } | undefined)?.close().catch(() => {});
+			await (await browser)?.close().catch(() => {});
 		},
 	};
 }

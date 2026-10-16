@@ -40,8 +40,16 @@ jobs:
       # Built again here rather than handed over as an artifact: no artifact storage needed, and
       # this job only ever runs on code already merged to main.
       - uses: actions/checkout@v5
+      # The published image has Chromium, so cells can take screenshots (web_screenshot, ADR 0009).
       - name: Build
-        run: docker build -t annie:ci .
+        run: docker build --build-arg WITH_BROWSER=1 -t annie:ci .
+      - name: The published image starts and answers
+        run: |
+          docker run -d --name annie -e ANNIE_MODEL_PROVIDER=faux -p 127.0.0.1:8080:8080 \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true annie:ci
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/healthz && exit 0; sleep 1; done
+          docker logs annie
+          exit 1
       - name: Push to GHCR
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
