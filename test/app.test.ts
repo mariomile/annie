@@ -225,6 +225,18 @@ describe("pnpm start (startAnnie)", () => {
 		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at });
 	});
 
+	it("a cell gives the control plane a fresh owner link on request; the old link stops working", async () => {
+		const ownerToken = "p".repeat(43);
+		const { base } = await boot(tempDataDir(), fakeTelegram(), { ANNIE_OWNER_TOKEN: ownerToken, ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
+		const ask = (secret: string) => fetch(`${base}/internal/owner-link`, { method: "POST", headers: { authorization: `Bearer ${secret}` } });
+		expect((await ask("wrong-secret-000000")).status).toBe(401);
+		const { token } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
+		expect(token).toMatch(/^[\w-]{40,}$/);
+		const login = (t: string) => fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: t }) });
+		expect((await login(ownerToken)).status).toBe(401);
+		expect((await login(token)).status).toBe(200);
+	});
+
 	it("without a cell secret there is no cell endpoint", async () => {
 		const { base } = await boot(tempDataDir());
 		expect((await fetch(`${base}/internal/cell`, { headers: { authorization: "Bearer x" } })).status).toBe(404);

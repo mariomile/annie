@@ -502,6 +502,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
 		if (req.method === "GET" && url.pathname === "/internal/cell") return cellState(req, res);
+		if (req.method === "POST" && url.pathname === "/internal/owner-link") return ownerLink(req, res);
 		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
@@ -551,11 +552,34 @@ export function createWebApp(options: WebAppOptions): Server {
 		send(res, 200, { ok: true });
 	}
 
-	async function cellState(req: IncomingMessage, res: ServerResponse): Promise<void> {
-		if (options.cell === undefined) return send(res, 404, { error: "Not found" });
+	/** The control plane of Annie Cloud, with the cell's secret. */
+	function fromControlPlane(req: IncomingMessage, res: ServerResponse): boolean {
+		if (options.cell === undefined) {
+			send(res, 404, { error: "Not found" });
+			return false;
+		}
 		const given = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ""))?.[1] ?? "";
-		if (!sameSecret(given, options.cell.secret)) return send(res, 401, { error: "Unauthorized" });
-		send(res, 200, await options.cell.state());
+		if (sameSecret(given, options.cell.secret)) return true;
+		send(res, 401, { error: "Unauthorized" });
+		return false;
+	}
+
+	async function cellState(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!fromControlPlane(req, res)) return;
+		send(res, 200, await (options.cell as NonNullable<WebAppOptions["cell"]>).state());
+	}
+
+	/**
+	 * A new login link for the first owner, each time they sign in to Annie Cloud. The old link
+	 * stops working; open sessions stay. With two-factor on, the link alone still does not log in.
+	 */
+	async function ownerLink(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!fromControlPlane(req, res)) return;
+		const owner = (await options.people.list()).find((p) => p.role === "owner");
+		if (owner === undefined) return send(res, 409, { error: "No owner yet" });
+		const token = await options.people.rotate(owner.id);
+		await runtime.audit(tenantId).append({ type: "cell.owner_link", personId: owner.id });
+		send(res, 200, { token });
 	}
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
