@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-/** How the control plane sends the sign-in links. The real service is still to choose. */
+/** How the control plane sends the sign-in links: SmtpMailer in production (smtp.ts). */
 export interface Mailer {
 	send(mail: Mail): Promise<void>;
 }

@@ -36,7 +36,7 @@ Una persona si registra e parla con la sua Annie, nel cloud, senza che nessuno d
 - Control plane minimo: registrazione con link via email, creazione della cella, sottodominio per tenant, smistamento dei webhook, risveglio per i task programmati.
 - Misure: meno di 2 minuti dalla registrazione alla prima risposta; costo mensile di una cella inattiva; tempo di risveglio.
 
-Stato al 16 ottobre 2026 (branch `week-7`): fatti Telegram via webhook, il contratto della cella (token dell'owner deciso dal control plane, `GET /internal/cell` per sapere se può dormire e quando svegliarla, `POST /internal/owner-link`) e il control plane con celle come processi locali (`pnpm cloud`): registrazione con link via email, una cella per tenant, smistamento per sottodominio (eventi in tempo reale e webhook compresi), celle inattive fermate e svegliate al primo messaggio o al prossimo task. In locale, con il modello finto: 2,1 secondi dalla registrazione alla prima risposta nel browser. Mancano il provider per micro-VM vere e il servizio email: dipendono dalla scelta del cloud e del dominio.
+Stato al 16 ottobre 2026 (settimana 7, su `main`): fatti Telegram via webhook, il contratto della cella (token dell'owner deciso dal control plane, `GET /internal/cell` per sapere se può dormire e quando svegliarla, `POST /internal/owner-link`) e il control plane con celle come processi locali (`pnpm cloud`): registrazione con link via email, una cella per tenant, smistamento per sottodominio (eventi in tempo reale e webhook compresi), celle inattive fermate e svegliate al primo messaggio o al prossimo task. In locale, con il modello finto: 2,1 secondi dalla registrazione alla prima risposta nel browser. Settimana 8 (branch `week-8`): i link partono via SMTP (qualunque servizio, anche in UE) e le celle possono essere container Docker isolati su un solo server (ADR 0008), provati su un daemon vero: circa 4 secondi dalla registrazione alla prima risposta e per il risveglio. Costo di una cella: circa 100 MB di memoria da accesa, 0,1 MB di disco da spenta (più la crescita dei suoi dati): su un server da 16 GB stanno un centinaio di celle accese insieme, stima da confermare con il modello vero. Resta il provider per micro-VM, che serve per la Fase 3; per partire bastano un server UE, un dominio e un servizio SMTP.
 
 ### Fase 2: l'agente personale (2-3 settimane)
 
@@ -57,8 +57,9 @@ Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Anni
 
 ## Domande aperte
 
-- Provider delle celle: Fly.io Machines in UE è il candidato; costi, tempi di risveglio e volumi vanno misurati con un esperimento prima di scegliere.
-- Email per i link di accesso: quale servizio, con dominio di Buildrs.
+- Provider delle celle per la Fase 3: Fly.io Machines in UE è il candidato; costi, tempi di risveglio e volumi vanno misurati prima di scegliere. Fino ad allora, container su un server (ADR 0008).
+- Integrazioni oltre Google: Composio come account collegato opzionale, dopo uno spike (serve una chiave) e le risposte su region UE e verifica Google con app propria.
+- Email per i link di accesso: quale servizio SMTP (meglio con server in UE), con dominio di Buildrs.
 - Dominio di Annie Cloud.
 - Google: partire con il solo Calendar o affrontare subito la valutazione di sicurezza per Gmail (settimane e un costo annuale, da preventivare con un assessor).
 - Prezzo: dipende dal costo misurato di una cella e del modello per tenant.

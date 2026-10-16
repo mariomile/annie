@@ -1,5 +1,7 @@
 # Annie Cloud: una cella per tenant, un control plane sottile
 
+> Aggiornata dall'[ADR 0008](0008-celle-container-prima-delle-micro-vm.md): per i primi clienti le celle sono container su un server in UE; le micro-VM arrivano con la Fase 3. Il resto di questa decisione vale.
+
 Annie deve funzionare anche come servizio, come Grok Bot e dots: un agente sempre attivo a cui ci si registra e si parla, senza installare nulla. Abbiamo deciso che in Annie Cloud ogni tenant ha una **cella**: lo stesso container del self-host, su una micro-VM con il suo volume, che si spegne quando non lavora e si riaccende a un messaggio o a un task programmato. Accanto c'è un **control plane** sottile e comune: registrazione, pagamento, smistamento dei messaggi in arrivo alla cella giusta, risveglio. Il target sono professionisti e piccoli team (20-50 € al mese, dati in Unione Europea), non il consumer generalista.
 
 Perché: il nucleo di Annie (storage su file, SQLite di Pi Durable, lock POSIX, outbox) è fatto per un processo con un disco suo, e la cella lo riusa senza riscriverlo. L'isolamento per macchina è il più forte che possiamo offrire, contiene la sandbox dei tool proposti e domani il «computer dell'agente» (browser e terminale). Cloud e self-host restano lo stesso prodotto, che è ciò che vendiamo: privacy e controllo.

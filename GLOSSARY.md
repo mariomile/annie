@@ -47,7 +47,7 @@ Annie offerta come servizio da Buildrs: ogni tenant ha la sua cella, con dati in
 _Avoid_: SaaS, versione online
 
 **Cella**:
-L'ambiente isolato di un tenant in Annie Cloud: lo stesso Annie del self-host, su una macchina tutta sua, che si spegne quando non lavora.
+L'ambiente isolato di un tenant in Annie Cloud: lo stesso Annie del self-host, con il suo disco e separato dagli altri tenant, che si spegne quando non lavora.
 _Avoid_: container, pod, istanza (un'istanza è un agente, dentro la cella)
 
 **Control plane**:
