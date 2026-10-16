@@ -9,44 +9,85 @@ export type DockerCellOptions = {
 	/** Per cell. */
 	readonly memoryMb?: number;
 	readonly cpus?: number;
-	readonly log?: (message: string) => void;
 	/** How long a starting cell has to answer /healthz. */
 	readonly startTimeoutMs?: number;
 };
 
 const LABEL = "annie.cell";
+const NETWORK = "annie-cells";
+const API_TIMEOUT_MS = 30_000;
 const PORT = "8080/tcp";
 
 /**
- * Cells as containers on one Docker host: for a single EU server before micro-VMs. Each cell has
- * its own container, volume and network, so cells cannot reach each other or the host's other
- * services; the container runs as the image's unprivileged user with a read-only root, no Linux
- * capabilities, no privilege escalation, and memory, CPU and process limits. Its port is
- * published on 127.0.0.1 only: the control plane on the same host is the way in.
+ * Cells as containers on one Docker host: for a single EU server before micro-VMs (ADR 0008).
+ * Each cell has its own container and volume on a shared bridge where containers cannot reach
+ * each other; it runs as uid 1000 (never root) with a read-only root, no Linux capabilities, no
+ * privilege escalation, and memory, CPU and process limits. Its port is published on 127.0.0.1
+ * only: the control plane on the same host is the way in.
  *
  * Isolation is a container's, weaker than a micro-VM's (ADR 0007): the kernel is shared.
  */
 export class DockerCellProvider implements CellProvider {
 	private readonly starting = new Map<string, Promise<void>>();
 
-	constructor(private readonly options: DockerCellOptions) {}
+	constructor(private readonly options: DockerCellOptions) {
+		const memory = options.memoryMb ?? 512;
+		const cpus = options.cpus ?? 1;
+		// Docker reads a missing or zero value as "no limit".
+		if (!Number.isInteger(memory) || memory < 128) throw new Error("Docker cells: memory of at least 128 MB");
+		if (!(cpus > 0)) throw new Error("Docker cells: a positive number of CPUs");
+	}
 
 	async create(id: string, env: Readonly<Record<string, string>>): Promise<void> {
-		const name = cellName(id);
 		if ((await this.inspect(id)) !== undefined) throw new Error(`Cell ${id} exists`);
-		await this.api("POST", "/networks/create", { Name: name, Driver: "bridge", Labels: { [LABEL]: id } }, [201]);
+		await this.ensureNetwork();
+		await this.createContainer(id, env);
+	}
+
+	/**
+	 * One bridge for every cell, with traffic between containers turned off: cells reach the
+	 * internet and the host reaches them, but they cannot reach each other. (A network per cell
+	 * would run out of Docker's address pools at about thirty tenants.)
+	 */
+	private async ensureNetwork(): Promise<void> {
+		if ((await this.api("GET", `/networks/${NETWORK}`, undefined, [200, 404])) !== undefined) return;
+		await this.api("POST", "/networks/create", { Name: NETWORK, Driver: "bridge", Options: { "com.docker.network.bridge.enable_icc": "false" }, Labels: { [LABEL]: "network" } }, [201, 409]);
+	}
+
+	/**
+	 * A new container for the cell from the current image, with its environment changed by
+	 * `changes`; volume and network stay, so its data does too. For upgrades and a new model key.
+	 * Run it with the control plane stopped: the cell is down meanwhile.
+	 */
+	async upgrade(id: string, changes: Readonly<Record<string, string>> = {}): Promise<void> {
+		const info = await this.inspect(id);
+		if (info === undefined) throw new Error(`No cell ${id}`);
+		// The cell's own environment: what the container has minus what its old image set.
+		const image = (await this.api("GET", `/images/${encodeURIComponent(info.Image ?? "")}/json`, undefined, [200, 404])) as { Config?: { Env?: string[] } } | undefined;
+		const fromImage = new Set(image?.Config?.Env ?? []);
+		const env = Object.fromEntries((info.Config?.Env ?? []).filter((e) => !fromImage.has(e)).map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]));
+		const wasRunning = info.State?.Running === true;
+		await this.api("DELETE", `/containers/${cellName(id)}?force=true`, undefined, [204, 404]);
+		await this.createContainer(id, { ...env, ...changes });
+		if (wasRunning) await this.start(id);
+	}
+
+	private async createContainer(id: string, env: Readonly<Record<string, string>>): Promise<void> {
+		const name = cellName(id);
 		const memory = (this.options.memoryMb ?? 512) * 1024 * 1024;
 		await this.api(
 			"POST",
 			`/containers/create?name=${name}`,
 			{
 				Image: this.options.image,
+				// The node user of the official image, whatever the image says: never root.
+				User: "1000:1000",
 				Env: Object.entries({ ...env, ANNIE_DATA_DIR: "/data", ANNIE_WEB_HOST: "0.0.0.0", ANNIE_WEB_PORT: "8080" }).map(([k, v]) => `${k}=${v}`),
 				Labels: { [LABEL]: id },
 				ExposedPorts: { [PORT]: {} },
 				HostConfig: {
 					Binds: [`${name}:/data`],
-					NetworkMode: name,
+					NetworkMode: NETWORK,
 					PortBindings: { [PORT]: [{ HostIp: "127.0.0.1", HostPort: "" }] },
 					ReadonlyRootfs: true,
 					Tmpfs: { "/tmp": "rw,noexec,nosuid,size=64m" },
@@ -82,7 +123,6 @@ export class DockerCellProvider implements CellProvider {
 		const name = cellName(id);
 		await this.api("DELETE", `/containers/${name}?force=true`, undefined, [204, 404]);
 		await this.api("DELETE", `/volumes/${name}`, undefined, [204, 404]);
-		await this.api("DELETE", `/networks/${name}`, undefined, [204, 404]);
 	}
 
 	async status(id: string): Promise<CellStatus> {
@@ -113,13 +153,14 @@ export class DockerCellProvider implements CellProvider {
 				// The cell's output can hold its content: it stays in `docker logs`, not in ours.
 				throw new Error(`Cell ${id} exited at start (code ${info?.State?.ExitCode ?? "?"}); see docker logs ${cellName(id)}`);
 			}
-			const ok = await fetch(`${await this.baseUrl(id)}/healthz`)
+			const ok = await fetch(`${await this.baseUrl(id)}/healthz`, { signal: AbortSignal.timeout(2_000) })
 				.then((r) => r.ok)
 				.catch(() => false);
 			if (ok) return;
 			await new Promise((resolve) => setTimeout(resolve, 200));
 		}
-		await this.stop(id);
+		// Not stop(): it waits for this very start to finish.
+		await this.api("POST", `/containers/${cellName(id)}/stop?t=10`, undefined, [204, 304, 404]).catch(() => {});
 		throw new Error(`Cell ${id} did not answer in time`);
 	}
 
@@ -146,13 +187,15 @@ export class DockerCellProvider implements CellProvider {
 					}
 				});
 			});
+			// A daemon that hangs must not hang the control plane with it.
+			req.setTimeout(API_TIMEOUT_MS, () => req.destroy(new Error(`docker ${method} ${path.split("?")[0]}: no answer in ${API_TIMEOUT_MS / 1000} s`)));
 			req.on("error", reject);
 			req.end(body === undefined ? undefined : JSON.stringify(body));
 		});
 	}
 }
 
-type ContainerInfo = { State?: { Running?: boolean; ExitCode?: number }; NetworkSettings?: { Ports?: Record<string, { HostIp: string; HostPort: string }[] | null> } };
+type ContainerInfo = { Image?: string; Config?: { Env?: string[] }; State?: { Running?: boolean; ExitCode?: number }; NetworkSettings?: { Ports?: Record<string, { HostIp: string; HostPort: string }[] | null> } };
 
 function cellName(id: string): string {
 	if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(id)) throw new Error(`Invalid cell id ${id}`);

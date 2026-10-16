@@ -15,9 +15,10 @@ afterEach(async () => {
 });
 
 /** A fake Docker Engine API on a unix socket: records every call, keeps containers in memory. */
-async function fakeDocker() {
+async function fakeDocker(options: { healthy?: boolean } = {}) {
 	const calls: { method: string; path: string; body: any }[] = [];
-	const containers = new Map<string, { running: boolean; labels: Record<string, string> }>();
+	const containers = new Map<string, { running: boolean; labels: Record<string, string>; env: string[] }>();
+	const networks = new Set<string>();
 	const socketPath = join(mkdtempSync(join(tmpdir(), "docker-")), "docker.sock");
 	const server = createServer((req, res) => {
 		let text = "";
@@ -31,14 +32,17 @@ async function fakeDocker() {
 				res.end(value === undefined ? "" : JSON.stringify(value));
 			};
 			const name = /\/containers\/([^/?]+)/.exec(path)?.[1] ?? "";
-			if (path.startsWith("/networks/create")) return send(201, { Id: "n" });
+			if (path.startsWith("/networks/create")) return (networks.add(body.Name), send(201, { Id: "n" }));
+			if (path.startsWith("/networks/")) return networks.has(path.slice("/networks/".length)) ? send(200, { Name: "n" }) : send(404, { message: "no network" });
 			if (path.startsWith("/containers/create")) {
-				containers.set(new URL(path, "http://x").searchParams.get("name") ?? "", { running: false, labels: body.Labels });
+				// The daemon adds the image's own environment to the container's.
+				containers.set(new URL(path, "http://x").searchParams.get("name") ?? "", { running: false, labels: body.Labels, env: ["PATH=/usr/local/bin", ...body.Env] });
 				return send(201, { Id: "c" });
 			}
+			if (path.startsWith("/images/")) return send(200, { Config: { Env: ["PATH=/usr/local/bin"] } });
 			if (path.startsWith("/containers/json")) return send(200, [...containers.values()].map((c) => ({ Labels: c.labels })));
 			const c = containers.get(name);
-			if (path.endsWith("/json")) return c === undefined ? send(404, { message: "No such container" }) : send(200, { State: { Running: c.running, ExitCode: 0 }, NetworkSettings: { Ports: { "8080/tcp": c.running ? [{ HostIp: "127.0.0.1", HostPort: String(cellPort) }] : null } } });
+			if (path.endsWith("/json")) return c === undefined ? send(404, { message: "No such container" }) : send(200, { Image: "sha256:old", Config: { Env: c.env }, State: { Running: c.running, ExitCode: 0 }, NetworkSettings: { Ports: { "8080/tcp": c.running ? [{ HostIp: "127.0.0.1", HostPort: String(cellPort) }] : null } } });
 			if (path.endsWith("/start") && c) return (c.running = true), send(204);
 			if (path.includes("/stop") && c) return (c.running = false), send(204);
 			if (req.method === "DELETE") return containers.delete(name), send(204);
@@ -47,7 +51,10 @@ async function fakeDocker() {
 	});
 	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
 	// The "cell" answers /healthz.
-	const cell = createServer((_req, res) => res.end('{"ok":true}'));
+	const cell = createServer((_req, res) => {
+		res.statusCode = options.healthy === false ? 503 : 200;
+		res.end('{"ok":true}');
+	});
 	await new Promise<void>((resolve) => cell.listen(0, "127.0.0.1", () => resolve()));
 	const cellPort = (cell.address() as AddressInfo).port;
 	closers.push(() => new Promise((r) => server.close(() => r())), () => new Promise((r) => cell.close(() => r())));
@@ -55,7 +62,18 @@ async function fakeDocker() {
 }
 
 describe("Docker cell provider", () => {
-	it("creates each cell locked down, on its own network and volume, reachable only from this host", async () => {
+	it("a cell that never becomes healthy is stopped, and the tenant is not left stuck", async () => {
+		const docker = await fakeDocker({ healthy: false });
+		const provider = new DockerCellProvider({ image: "annie:local", socketPath: docker.socketPath, startTimeoutMs: 500 });
+		await provider.create("b1", {});
+		await expect(provider.start("b1")).rejects.toThrow(/did not answer in time/);
+		expect(await provider.status("b1")).toBe("stopped");
+		// start and stop answer again.
+		await provider.stop("b1");
+		await expect(provider.start("b1")).rejects.toThrow(/did not answer in time/);
+	});
+
+	it("creates each cell locked down, on a network where cells cannot reach each other, reachable only from this host", async () => {
 		const docker = await fakeDocker();
 		const provider = new DockerCellProvider({ image: "annie:local", socketPath: docker.socketPath });
 		await provider.create("a1", { ANNIE_TENANT_ID: "a1", ANNIE_CELL_SECRET: "s".repeat(32) });
@@ -63,7 +81,7 @@ describe("Docker cell provider", () => {
 		expect(create.Env).toEqual(expect.arrayContaining(["ANNIE_TENANT_ID=a1", "ANNIE_DATA_DIR=/data", "ANNIE_WEB_HOST=0.0.0.0"]));
 		expect(create.HostConfig).toMatchObject({
 			Binds: ["annie-cell-a1:/data"],
-			NetworkMode: "annie-cell-a1",
+			NetworkMode: "annie-cells",
 			PortBindings: { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }] },
 			ReadonlyRootfs: true,
 			CapDrop: ["ALL"],
@@ -71,18 +89,32 @@ describe("Docker cell provider", () => {
 			PidsLimit: 256,
 		});
 		expect(create.HostConfig.Memory).toBe(512 * 1024 * 1024);
-		expect(docker.calls.find((c) => c.path.startsWith("/networks/create"))?.body).toMatchObject({ Name: "annie-cell-a1", Driver: "bridge" });
+		expect(create.User).toBe("1000:1000");
+		expect(docker.calls.find((c) => c.path.startsWith("/networks/create"))?.body).toMatchObject({ Name: "annie-cells", Driver: "bridge", Options: { "com.docker.network.bridge.enable_icc": "false" } });
+		// A second cell reuses the network.
+		await provider.create("a2", {});
+		expect(docker.calls.filter((c) => c.path.startsWith("/networks/create"))).toHaveLength(1);
+		await provider.destroy("a2");
 		expect(await provider.status("a1")).toBe("stopped");
 		await provider.start("a1");
 		expect(await provider.status("a1")).toBe("running");
 		expect(await provider.baseUrl("a1")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 		expect(await provider.list()).toEqual(["a1"]);
+		// Upgrade: a new container with the cell's own environment changed, the volume kept, running again.
+		await provider.upgrade("a1", { ANNIE_MODEL_ID: "nuovo" });
+		const recreated = docker.calls.filter((c) => c.path.startsWith("/containers/create")).at(-1)?.body;
+		expect(recreated.Env).toEqual(expect.arrayContaining(["ANNIE_TENANT_ID=a1", `ANNIE_CELL_SECRET=${"s".repeat(32)}`, "ANNIE_MODEL_ID=nuovo"]));
+		expect(recreated.Env).not.toContain("PATH=/usr/local/bin");
+		expect(recreated.HostConfig.Binds).toEqual(["annie-cell-a1:/data"]);
+		expect(docker.calls.some((c) => c.method === "DELETE" && c.path.startsWith("/volumes/annie-cell-a1"))).toBe(false);
+		expect(await provider.status("a1")).toBe("running");
 		await provider.stop("a1");
 		expect(await provider.status("a1")).toBe("stopped");
 		await provider.destroy("a1");
 		expect(await provider.status("a1")).toBe("missing");
-		expect(docker.calls.filter((c) => c.method === "DELETE").map((c) => c.path.split("?")[0])).toEqual(["/containers/annie-cell-a1", "/volumes/annie-cell-a1", "/networks/annie-cell-a1"]);
+		expect(docker.calls.filter((c) => c.method === "DELETE" && c.path.includes("a1")).map((c) => c.path.split("?")[0])).toEqual(["/containers/annie-cell-a1", "/containers/annie-cell-a1", "/volumes/annie-cell-a1"]);
 		await expect(provider.create("../x", {})).rejects.toThrow(/Invalid cell id/);
+		expect(() => new DockerCellProvider({ image: "x", memoryMb: Number.NaN })).toThrow(/128 MB/);
 	});
 });
 
@@ -130,5 +162,26 @@ describe.skipIf(image === undefined)("Docker cell provider, real daemon", () => 
 		const again = await call(url.host, `/api/instances/annie/threads/${thread.id}`, undefined, login.cookie);
 		console.log(`docker cell: wake in ${((Date.now() - woke) / 1000).toFixed(1)} s`);
 		expect(again.body.entries.some((e: { text?: string }) => e.text === "ciao dal container")).toBe(true);
+		// What a cell costs: memory while it runs, disk while it sleeps.
+		const docker = (path: string) =>
+			new Promise<any>((resolve, reject) => {
+				const req = request({ socketPath: "/var/run/docker.sock", path: `/v1.43${path}` }, (res) => {
+					let text = "";
+					res.on("data", (c) => (text += c));
+					res.on("end", () => resolve(JSON.parse(text)));
+				});
+				req.on("error", reject);
+				req.end();
+			});
+		const stats = await docker(`/containers/annie-cell-${tenant}/stats?stream=false`);
+		console.log(`docker cell: ${Math.round((stats.memory_stats?.usage ?? 0) / 1024 / 1024)} MB of memory while running`);
+		// An upgrade keeps the conversation.
+		await provider.upgrade(tenant, { ANNIE_TIME_ZONE: "Europe/Berlin" });
+		const after = await call(url.host, `/api/instances/annie/threads/${thread.id}`, undefined, login.cookie);
+		expect(after.body.entries.some((e: { text?: string }) => e.text === "ciao dal container")).toBe(true);
+		await provider.stop(tenant);
+		const df = await docker("/system/df");
+		const volume = (df.Volumes as { Name: string; UsageData?: { Size?: number } }[]).find((v) => v.Name === `annie-cell-${tenant}`);
+		console.log(`docker cell: ${((volume?.UsageData?.Size ?? 0) / 1024 / 1024).toFixed(1)} MB on disk while asleep`);
 	}, 180_000);
 });

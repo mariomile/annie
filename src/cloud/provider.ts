@@ -1,6 +1,7 @@
 /**
  * Where the cells of Annie Cloud run (ADR 0007). The control plane only knows this interface;
- * a provider runs each cell (the same Annie as self-host) on its own machine and volume.
+ * a provider runs each cell (the same Annie as self-host) with its own volume, isolated from the
+ * other cells: a container on one server today (ADR 0008), a micro-VM later.
  */
 export interface CellProvider {
 	/** Create a stopped cell with this environment. The id is the tenant's. */

@@ -30,10 +30,13 @@ function provider(): CellProvider {
 		console.error(`annie cloud: ANNIE_CLOUD_PROVIDER="${kind}": use local or docker`);
 		process.exit(1);
 	}
-	return new DockerCellProvider({
-		image: env("ANNIE_CLOUD_DOCKER_IMAGE") ?? "annie:local",
-		...(env("ANNIE_CLOUD_CELL_MEMORY_MB") === undefined ? {} : { memoryMb: Number(env("ANNIE_CLOUD_CELL_MEMORY_MB")) }),
-	});
+	const memory = env("ANNIE_CLOUD_CELL_MEMORY_MB");
+	// A typo must not become "no limit": Docker reads a missing memory value as unlimited.
+	if (memory !== undefined && !(/^\d+$/.test(memory) && Number(memory) >= 128)) {
+		console.error("annie cloud: ANNIE_CLOUD_CELL_MEMORY_MB: a whole number of megabytes, at least 128");
+		process.exit(1);
+	}
+	return new DockerCellProvider({ image: env("ANNIE_CLOUD_DOCKER_IMAGE") ?? "annie:local", ...(memory === undefined ? {} : { memoryMb: Number(memory) }) });
 }
 
 /** A real mail service when ANNIE_CLOUD_SMTP_URL is set; otherwise links go to a file to read. */
@@ -51,6 +54,21 @@ function mailer(): Mailer {
 		console.error(`annie cloud: ${error instanceof Error ? error.message : String(error)}`);
 		process.exit(1);
 	}
+}
+
+// `pnpm cloud upgrade`, with the control plane stopped: every cell gets a new container from the
+// current image and the current model settings (ANNIE_MODEL_*, keys); volumes and data stay.
+if (process.argv[2] === "upgrade") {
+	const cells = provider();
+	if (!(cells instanceof DockerCellProvider)) {
+		console.error("annie cloud: upgrade is for ANNIE_CLOUD_PROVIDER=docker; local cells run the code of this checkout");
+		process.exit(1);
+	}
+	for (const id of await cells.list()) {
+		await cells.upgrade(id, cellEnv);
+		console.error(`annie cloud: cell ${id} upgraded`);
+	}
+	process.exit(0);
 }
 
 const cp = await startControlPlane({

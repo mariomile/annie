@@ -103,15 +103,16 @@ Il refresh token resta nel secret store del tenant; «Scollega» lo cancella e l
 
 ## 6c. Annie Cloud su un server (control plane e celle container)
 
-Per offrire Annie come servizio su un solo server in UE (ADR 0008):
+Per offrire Annie come servizio su un solo server in UE (ADR 0008). Serve Docker 28 o successivo (prima, le porte pubblicate su 127.0.0.1 erano raggiungibili dalla rete locale), Node 22 e pnpm.
 
-1. Costruisci l'immagine: `docker build -t annie:local .`.
-2. In `.env` del control plane: `ANNIE_CLOUD_DOMAIN` (dominio delle celle), `ANNIE_CLOUD_PROVIDER=docker`, `ANNIE_CLOUD_DOCKER_IMAGE=annie:local`, la chiave del modello (passa alle celle), `ANNIE_CLOUD_SMTP_URL` e `ANNIE_CLOUD_MAIL_FROM` per i link di accesso, e se serve `ANNIE_CLOUD_CELL_MEMORY_MB` (default 512).
-3. `pnpm cloud`, dietro un reverse proxy https per `dominio` e `*.dominio` (certificato wildcard). Il control plane ascolta su 127.0.0.1.
-4. Blocca ai container l'endpoint dei metadati del cloud e i servizi dell'host: `iptables -I DOCKER-USER -d 169.254.169.254 -j DROP`, e niente sull'host in ascolto su 0.0.0.0 oltre al reverse proxy.
-5. Backup ogni notte dei volumi `annie-cell-*` (contengono tutto di ogni tenant) e di `data-cloud/control-plane.json`.
+1. Un utente dedicato, nel gruppo `docker` (l'accesso al socket di Docker equivale a root: nessun altro servizio con quell'utente). Clona il repository, `pnpm install --frozen-lockfile`, poi costruisci l'immagine delle celle: `docker build -t annie:local .`.
+2. In `.env` del control plane: `ANNIE_CLOUD_DOMAIN` (dominio delle celle, separato da quello di Buildrs e registrato nella Public Suffix List, ADR 0007), `ANNIE_CLOUD_SCHEME=https`, `ANNIE_CLOUD_PROVIDER=docker`, `ANNIE_CLOUD_DOCKER_IMAGE=annie:local`, la chiave del modello (passa alle celle), `ANNIE_CLOUD_SMTP_URL` e `ANNIE_CLOUD_MAIL_FROM` per i link di accesso, e se serve `ANNIE_CLOUD_CELL_MEMORY_MB` (intero, almeno 128; default 512).
+3. `pnpm cloud` come servizio (systemd), dietro un reverse proxy https per `dominio` e `*.dominio` (certificato wildcard) che passa l'header `Host` così com'è: lo smistamento alle celle si basa su quello. Il control plane ascolta su 127.0.0.1.
+4. Blocca ai container l'endpoint dei metadati del cloud e i servizi dell'host, e rendi la regola permanente (per esempio con `iptables-persistent`): `iptables -I DOCKER-USER -d 169.254.169.254 -j DROP` (e l'equivalente IPv6 se il provider lo espone). Sull'host niente in ascolto su 0.0.0.0 oltre al reverse proxy.
+5. Backup ogni notte dei volumi `annie-cell-*` (contengono tutto di ogni tenant) e di `data-cloud/control-plane.json`. Ripristino: ricrea il volume con lo stesso nome, rimetti i file, e la cella riparte al primo messaggio.
+6. Aggiornare (nuova versione, nuova chiave del modello): ferma `pnpm cloud`, ricostruisci l'immagine, `pnpm cloud upgrade` (ricrea i container tenendo i volumi), riavvia `pnpm cloud`.
 
-`pnpm vitest run test/docker-provider.test.ts` con `ANNIE_TEST_DOCKER_IMAGE=annie:local` prova il giro completo su un daemon vero.
+Le celle stanno tutte sulla rete `annie-cells`, dove i container non si parlano fra loro. `ANNIE_TEST_DOCKER_IMAGE=annie:local pnpm vitest run test/docker-provider.test.ts` prova il giro completo su un daemon vero.
 
 ## 7. Connettori MCP
 

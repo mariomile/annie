@@ -7,7 +7,7 @@ import type { Mail, Mailer } from "./mailer.ts";
  * The SMTP server the sign-in links leave from: any mail service speaks it (Postmark, SES,
  * Brevo, Mailgun, an EU provider). `smtps://` is TLS from the first byte (port 465); `smtp://`
  * must upgrade with STARTTLS (port 587) and is refused if the server cannot. `plain` is only for
- * a server on this machine (tests, a local relay).
+ * a server on this machine, and only from code (tests): no URL selects it.
  */
 export type SmtpOptions = {
 	readonly host: string;
@@ -18,7 +18,7 @@ export type SmtpOptions = {
 	/** "Annie <accesso@example.it>" */
 	readonly from: string;
 	readonly timeoutMs?: number;
-	/** Extra CA for a test server; production uses the system's. */
+	/** Trusted CA in place of the system's: only for a test server. */
 	readonly ca?: string;
 };
 
@@ -32,7 +32,7 @@ export function parseSmtpUrl(url: string, from: string): SmtpOptions {
 	}
 	const security = parsed.protocol === "smtps:" ? "tls" : parsed.protocol === "smtp:" ? "starttls" : undefined;
 	if (security === undefined) throw new Error("ANNIE_CLOUD_SMTP_URL: use smtps:// (port 465) or smtp:// with STARTTLS (port 587)");
-	if (!/^[^\r\n<>]*<[^\s<>@]+@[^\s<>@]+>$|^[^\s<>@]+@[^\s<>@]+$/.test(from)) throw new Error('ANNIE_CLOUD_MAIL_FROM: an address, or "Name <address>"');
+	assertSender(from);
 	return {
 		host: parsed.hostname,
 		port: Number(parsed.port || (security === "tls" ? 465 : 587)),
@@ -43,17 +43,28 @@ export function parseSmtpUrl(url: string, from: string): SmtpOptions {
 }
 
 const LOCAL = new Set(["127.0.0.1", "localhost", "::1"]);
+/** A whole send, however slowly the server answers. */
+const SEND_DEADLINE_MS = 60_000;
+/** A reply line longer than this is not SMTP. */
+const MAX_LINE = 8192;
+
+function assertSender(from: string): void {
+	if (!/^[^\r\n<>]*<[^\s<>@]+@[^\s<>@]+>$|^[^\s<>@]+@[^\s<>@]+$/.test(from)) throw new Error('ANNIE_CLOUD_MAIL_FROM: an address, or "Name <address>"');
+}
 
 /** Sends each mail over a fresh SMTP connection: few mails, no pool to keep alive. */
 export class SmtpMailer implements Mailer {
 	constructor(private readonly options: SmtpOptions) {
 		if (options.security === "plain" && !LOCAL.has(options.host)) throw new Error("SMTP without TLS only to a server on this machine");
+		assertSender(options.from);
 	}
 
 	async send(mail: Mail): Promise<void> {
 		// A line break in an address would let someone write their own headers.
-		if (/[\r\n]/.test(mail.to + mail.subject + this.options.from)) throw new Error("SMTP: line break in an address or subject");
+		if (/[\r\n]/.test(mail.to + mail.subject)) throw new Error("SMTP: line break in an address or subject");
 		const session = await SmtpSession.open(this.options);
+		// A server that trickles a byte at a time never trips the idle timeout: this does.
+		const deadline = setTimeout(() => session.abort(new Error(`SMTP: ${this.options.host} took more than ${SEND_DEADLINE_MS / 1000} seconds`)), SEND_DEADLINE_MS);
 		try {
 			await session.expect(220);
 			let features = await session.ehlo();
@@ -76,11 +87,13 @@ export class SmtpMailer implements Mailer {
 				}
 			}
 			await session.command(`MAIL FROM:<${address(this.options.from)}>`, 250);
-			await session.command(`RCPT TO:<${address(mail.to)}>`, [250, 251]);
+			// A refusal can quote the address: not in our logs.
+			await session.command(`RCPT TO:<${address(mail.to)}>`, [250, 251], true);
 			await session.command("DATA", 354);
-			await session.command(`${message(this.options.from, mail)}\r\n.`, 250);
+			await session.command(`${smtpMessage(this.options.from, mail)}\r\n.`, 250);
 			await session.command("QUIT", 221).catch(() => {});
 		} finally {
+			clearTimeout(deadline);
 			session.close();
 		}
 	}
@@ -91,7 +104,7 @@ function address(from: string): string {
 }
 
 /** RFC 5322 message, UTF-8 text in base64, lines dot-stuffed for DATA. */
-export function message(from: string, mail: Mail, now = new Date()): string {
+export function smtpMessage(from: string, mail: Mail, now = new Date()): string {
 	const encodeWord = (text: string) => (/^[\x20-\x7e]*$/.test(text) ? text : `=?UTF-8?B?${Buffer.from(text).toString("base64")}?=`);
 	const fromHeader = /^(.*?)\s*<([^>]+)>$/.exec(from);
 	const body = (Buffer.from(mail.text.replace(/\r?\n/g, "\r\n")).toString("base64").match(/.{1,76}/g) ?? []).join("\r\n");
@@ -148,6 +161,7 @@ class SmtpSession {
 				this.buffer = this.buffer.slice(index + 2);
 				index = this.buffer.indexOf("\r\n");
 			}
+			if (this.buffer.length > MAX_LINE) this.abort(new Error(`SMTP: ${this.options.host} sent a line longer than ${MAX_LINE} characters`));
 		});
 		this.socket.on("error", (error) => this.fail(error));
 		this.socket.on("close", () => this.fail(new Error(`SMTP: ${this.options.host} closed the connection`)));
@@ -206,6 +220,9 @@ class SmtpSession {
 
 	/** STARTTLS accepted: the same connection continues encrypted, certificate checked. */
 	upgrade(): Promise<void> {
+		// Anything sent after the 220 and before the handshake came in clear text and could be
+		// someone's injected reply (CVE-2011-0411): refuse rather than read it after TLS.
+		if (this.lines.length > 0 || this.buffer !== "") return Promise.reject(new Error(`SMTP: ${this.options.host} sent data before the TLS handshake`));
 		return new Promise((resolve, reject) => {
 			this.socket.removeAllListeners("data");
 			this.socket.removeAllListeners("close");
@@ -218,6 +235,11 @@ class SmtpSession {
 			});
 			secure.once("error", reject);
 		});
+	}
+
+	abort(error: Error): void {
+		this.fail(error);
+		this.socket.destroy();
 	}
 
 	close(): void {

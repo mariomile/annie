@@ -3,7 +3,7 @@ import { type AddressInfo, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { createServer as createTlsServer, TLSSocket } from "node:tls";
 import { afterEach, describe, expect, it } from "vitest";
-import { message, parseSmtpUrl, SmtpMailer } from "../src/cloud/smtp.ts";
+import { smtpMessage as message, parseSmtpUrl, SmtpMailer } from "../src/cloud/smtp.ts";
 
 const cert = readFileSync(join(import.meta.dirname, "fixtures", "localhost-cert.pem"), "utf8");
 const key = readFileSync(join(import.meta.dirname, "fixtures", "localhost-key.pem"), "utf8");
@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 /** A fake SMTP server: what a client says, recorded; STARTTLS and AUTH as asked. */
-async function fakeSmtp(options: { starttls?: boolean; auth?: string; refuseLogin?: boolean; implicitTls?: boolean } = {}) {
+async function fakeSmtp(options: { starttls?: boolean; auth?: string; refuseLogin?: boolean; implicitTls?: boolean; injectAfterStarttls?: boolean } = {}) {
 	const log: string[] = [];
 	const mails: string[] = [];
 	const handler = (raw: Socket) => {
@@ -44,7 +44,8 @@ async function fakeSmtp(options: { starttls?: boolean; auth?: string; refuseLogi
 			const verb = line.split(" ")[0]?.toUpperCase();
 			if (verb === "EHLO") return write(["250-fake", ...(options.starttls && !secure ? ["250-STARTTLS"] : []), ...(options.auth ? [`250-AUTH ${options.auth}`] : []), "250 OK"].join("\r\n"));
 			if (verb === "STARTTLS") {
-				write("220 go ahead");
+				// A man in the middle adds clear-text replies right after the 220.
+				write(options.injectAfterStarttls ? "220 go ahead\r\n250 OK\r\n354 go\r\n250 OK queued" : "220 go ahead");
 				socket.removeAllListeners("data");
 				const tls = new TLSSocket(socket, { isServer: true, cert, key });
 				socket = tls;
@@ -112,6 +113,13 @@ describe("SMTP mailer", () => {
 		await new SmtpMailer({ host: "localhost", port: smtp.port, security: "tls", user: "u", password: "p", from: "a@b.it", ca: cert }).send(mail);
 		expect(smtp.log.map((l) => l.split(" ")[0])).toEqual(["EHLO", "AUTH", "dQ==", "cA==", "MAIL", "RCPT", "DATA", "QUIT"]);
 		expect(smtp.mails).toHaveLength(1);
+	});
+
+	it("refuses replies injected in clear text before the TLS handshake (CVE-2011-0411)", async () => {
+		const smtp = await fakeSmtp({ starttls: true, auth: "PLAIN", injectAfterStarttls: true });
+		const sending = new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "p", from: "a@b.it", ca: cert }).send(mail);
+		await expect(sending).rejects.toThrow(/before the TLS handshake/);
+		expect(smtp.mails).toEqual([]);
 	});
 
 	it("refuses a server that does not offer STARTTLS, and plain SMTP to another machine", async () => {
