@@ -42,7 +42,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 ### Annie Cloud (deciso il 16 ottobre 2026, [piano](piano-cloud.md), [ADR 0007](adr/0007-annie-cloud-a-celle.md))
 
-- [ ] Fase 1: la cella. Fatti: Telegram via webhook, celle che si spengono e si risvegliano, control plane con registrazione, link via SMTP, celle container su un server UE (ADR 0008, da confermare con Mario). Mancano: PR verde su `main` della settimana 8, scelta di server, dominio con PSL e servizio SMTP, prova dal vivo
+- [ ] Fase 1: la cella. Fatti e su `main` (settimane 7 e 8): Telegram via webhook, celle che si spengono e si risvegliano, control plane con registrazione, link via SMTP, celle container (ADR 0008). Misure: circa 4 s dalla registrazione alla prima risposta e per il risveglio, circa 100 MB di memoria da accesa, 0,1 MB di disco da spenta. Mancano: la scelta del provider (Railway in valutazione, spike con `RAILWAY_API_TOKEN`), dominio con PSL, servizio SMTP, prova dal vivo
 - [x] Fase 2: l'agente personale (memoria della persona, Google per persona in sola lettura, brief del mattino). Restano la verifica dell'app presso Google e la misura sul campo (`pnpm annie brief` dopo una settimana d'uso vero)
 - [ ] Fase 3: il computer dell'agente (browser e terminale nella cella, con approvazioni)
 - [ ] Fase 4: pagamento a consumo, voce, WhatsApp
