@@ -7,7 +7,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates coreutils file bc jq sqlite3 zip unzip xz-utils \
-      python3 python3-pandas python3-openpyxl python3-xlrd python3-matplotlib python3-pypdf python3-weasyprint \
+      python3 python3-pandas python3-openpyxl python3-xlrd python3-matplotlib python3-pypdf weasyprint \
       pandoc poppler-utils qpdf imagemagick ghostscript fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd -g 1000 annie && useradd -u 1000 -g 1000 -d /tmp -s /bin/sh annie \
