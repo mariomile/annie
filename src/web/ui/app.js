@@ -398,7 +398,7 @@ function webCard(inst, hosts) {
 	return h(
 		"div.card.pad",
 		h("h3", "Navigazione web"),
-		h("p.muted", "I siti che Annie può leggere e fotografare (web_read, web_screenshot). Un dominio per riga, i sottodomini sono compresi; * vuol dire tutti i siti pubblici. Vuoto: nessuno."),
+		h("p.muted", "I siti che Annie può leggere, fotografare e usare con il suo browser: apre le pagine, clicca, scrive nelle ricerche e nei filtri, ma non invia moduli (per quello servono le azioni sul web, con approvazione). Quello che scrive in una ricerca arriva al sito. Un dominio per riga, i sottodomini sono compresi. Meglio elencarli uno per uno: * vuol dire tutti i siti pubblici, anche quelli dove una pagina potrebbe spingere Annie a cercare qualcosa che non deve. Vuoto: nessuno."),
 		h("label.field", h("span", "Siti consentiti"), list),
 		h("button.btn", { onclick: save }, "Salva i siti"),
 	);

@@ -114,8 +114,12 @@ Un account esterno di una persona (oggi Google) che le istanze leggono per lei, 
 _Avoid_: integrazione, connettore personale
 
 **Siti consentiti**:
-I siti che un'istanza può leggere e fotografare, scelti dall'owner; tutto il resto, e qualunque indirizzo interno, le è negato.
+I siti che un'istanza può leggere, fotografare e navigare con il browser, scelti dall'owner; tutto il resto, e qualunque indirizzo interno, le è negato.
 _Avoid_: whitelist, domini, navigazione libera
+
+**Browser**:
+La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
+_Avoid_: computer, automazione del browser, agente web
 
 **Azione sul web**:
 L'invio di un modulo di un sito consentito che l'istanza chiede e che parte solo dopo che chi l'ha chiesta, o un approvatore, ha letto destinazione e valori e l'ha approvato. Una volta sola; l'esito torna nella conversazione.

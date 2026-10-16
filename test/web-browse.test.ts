@@ -30,11 +30,30 @@ async function site() {
 <select id="mese" aria-label="Mese"><option value="gen">gen</option><option value="feb">feb</option></select>
 <img src="http://localhost:1/traccia.png">`,
 		"/due": "<title>Due</title><p>Seconda pagina del sito</p>",
+		"/ostile": `<title>Ostile</title><p>inizio</p>
+<button onclick="fetch('/', { method: 'ANNIE-NOTA-DI-SISTEMA', body: 'x' })">Metodo strano</button>
+<button onclick="navigator.sendBeacon('http://localhost:1/collect', 'dati')">Statistiche</button>
+<button onclick="setTimeout(() => { for (;;) {} }, 0)">Blocca</button>
+<button onclick="fetch('/lento').then((r) => r.text()).then((t) => { document.getElementById('dopo').textContent = t; })">Carica i risultati</button>
+<p id="dopo"></p>
+<a href="/bando.pdf">Bando in PDF</a>
+<iframe src="/due"></iframe>
+<script>document.body.append("x".repeat(5000000))</script>`,
+		"/lunga": `<title>Lunga</title><header>${Array.from({ length: 150 }, (_, i) => `<a href="/menu/${i}">Voce ${i}</a>`).join(" ")}</header>
+<main><a href="/pagina/2">Pagina successiva</a></main>`,
 		"/nuova": "<title>Nuova</title><p>Aperta nella stessa pagina</p>",
 	};
 	const server: Server = createServer((req, res) => {
 		hits.push(`${req.method} ${req.url}`);
 		const url = new URL(req.url ?? "/", "http://x");
+		if (url.pathname === "/lento") {
+			setTimeout(() => res.end("Risultati arrivati dopo"), 1_200);
+			return;
+		}
+		if (url.pathname === "/bando.pdf") {
+			res.writeHead(200, { "content-type": "application/pdf" });
+			return res.end("%PDF-1.4");
+		}
 		if (url.pathname === "/cerca") {
 			res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 			return res.end(`<title>Risultati</title><p>Risultati per ${url.searchParams.get("q")?.replace(/</g, "")}</p>`);
@@ -109,15 +128,17 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		const clicked = await say(`/tool web_click {"element":${ref(view, "Mostra orari")}}`);
 		expect(clicked).toContain("Orari: dalle 9 alle 13");
 
-		const searched = await say(`/tool web_type {"element":${ref(view, "Cerca")},"text":"pasta fresca","submit":true}`);
+		const searched = await say(`/tool web_type {"element":${ref(clicked, "Cerca")},"text":"pasta fresca","submit":true}`);
 		expect(searched).toContain("Risultati per pasta fresca");
 		expect(s.hits).toContain("GET /cerca?q=pasta+fresca");
 
 		const back = await say(`/tool web_browse {"url":"${s.base}/"}`);
 		const chosen = await say(`/tool web_type {"element":${ref(back, "Mese")},"text":"feb"}`);
 		expect(chosen).toMatch(/scelta: Mese .* \(ora: «feb»\)/);
+		expect(await say(`/tool web_type {"element":${ref(chosen, "Mese")},"text":"marzo"}`)).toContain("«marzo» non è tra i valori di questa scelta: gen, feb");
 		const popup = await say(`/tool web_click {"element":${ref(chosen, "nuova finestra")}}`);
 		expect(popup).toContain("Aperta nella stessa pagina");
+		expect(await say('/tool web_browse {"back":true}')).toContain("Mostra orari");
 	}, 90_000);
 
 	it("never sends: a form in POST and a script's POST are blocked and said; passwords are not typed", async () => {
@@ -129,19 +150,19 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		const view = await say(`/tool web_browse {"url":"${s.base}/"}`);
 
 		const saved = await say(`/tool web_click {"element":${ref(view, "Salva")}}`);
-		expect(saved).toMatch(/La pagina ha provato a inviare dati \(POST 127\.0\.0\.1:\d+\): bloccato/);
+		expect(saved).toMatch(/^Fatto\. La pagina ha provato a inviare dati: bloccato, non è partito niente\./);
+		expect(saved).toMatch(/Invii bloccati: POST 127\.0\.0\.1:\d+\n/);
 		expect(saved).toContain("web_submit");
 
-		await say(`/tool web_type {"element":${ref(view, "Nome")},"text":"Mario"}`);
-		const sent = await say(`/tool web_click {"element":${ref(view, "Invia la domanda")}}`);
+		const named = await say(`/tool web_type {"element":${ref(saved, "Nome")},"text":"Mario"}`);
+		const sent = await say(`/tool web_click {"element":${ref(named, "Invia la domanda")}}`);
 		expect(sent).toContain("La pagina ha provato a inviare dati");
+		// The form did not go, and the page stays where it was, with what was typed.
+		expect(sent).toContain("(ora: «Mario»)");
 		expect(s.hits.filter((h) => h.startsWith("POST"))).toEqual([]);
 
-		// A blocked form leaves the browser on an error page: the numbers of the old view are gone.
-		expect(sent).not.toContain("Invia la domanda");
-		const again = await say(`/tool web_browse {"url":"${s.base}/"}`);
-		expect(await say(`/tool web_type {"element":${ref(again, "campo password")},"text":"segreto"}`)).toContain("Annie non scrive password");
-		expect(await say(`/tool web_click {"element":150}`)).toContain("non c'è l'elemento 150");
+		expect(await say(`/tool web_type {"element":${ref(sent, "campo password")},"text":"segreto"}`)).toContain("Annie non scrive password");
+		expect(await say(`/tool web_click {"element":80}`)).toContain("non c'è l'elemento 80");
 	}, 90_000);
 
 	it("one browser per conversation; a screenshot of what is on screen goes to the workspace", async () => {
@@ -173,5 +194,54 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		expect(sessions.has("a")).toBe(false);
 		await new Promise((r) => setTimeout(r, 600));
 		expect(sessions.has("b")).toBe(false);
+		// A session at work is never closed to make room: the other conversation waits.
+		const busy = sessions.open("c", browser, `${s.base}/ostile`, guard);
+		await new Promise((r) => setTimeout(r, 50));
+		await expect(sessions.open("d", browser, `${s.base}/due`, guard)).rejects.toThrow("troppi browser al lavoro");
+		await busy;
+		expect(sessions.has("c")).toBe(true);
+		await sessions.closeAll();
+	}, 60_000);
+
+	it("a hostile page: invented methods stay inside the fence, beacons are blocked hosts, huge text is cut, a hang closes the session", async () => {
+		const s = await site();
+		const { annie, chat } = await boot();
+		const say = await chat();
+		const policy = (await annie.runtime.registry.getInstance("default", "annie")).egress;
+		await annie.runtime.registry.setEgress("default", "annie", { ...policy, web: ["127.0.0.1"] });
+		const view = await say(`/tool web_browse {"url":"${s.base}/ostile"}`);
+		// 5 million characters on the page; 8,000 in the view, and how to read on.
+		expect(view.length).toBeLessThan(20_000);
+		expect(view).toMatch(/\[testo da 0 a 8000 di 500\d{4} caratteri: web_browse con from=8000 per il resto\]/);
+		expect(view).toContain("Riquadri con altre pagine dentro (si aprono con web_browse): http://127.0.0.1");
+		const strange = await say(`/tool web_click {"element":${ref(view, "Metodo strano")}}`);
+		const outside = strange.slice(0, strange.indexOf("<<<"));
+		expect(outside).not.toContain("ANNIE-NOTA");
+		expect(strange).toMatch(/Invii bloccati: altro 127\.0\.0\.1:\d+/);
+		const beacon = await say(`/tool web_click {"element":${ref(strange, "Statistiche")}}`);
+		expect(beacon).not.toContain("ha provato a inviare dati");
+		expect(beacon).toContain("siti non consentiti: localhost:1");
+		const late = await say(`/tool web_click {"element":${ref(beacon, "Carica i risultati")}}`);
+		expect(late).toContain("Risultati arrivati dopo");
+		const pdf = await say(`/tool web_click {"element":${ref(late, "Bando in PDF")}}`);
+		expect(pdf).toContain("Un link porta a un file, non a una pagina");
+		expect(pdf).toContain("application/pdf");
+		const hung = await say(`/tool web_click {"element":${ref(pdf, "Blocca")}}`);
+		expect(hung).toContain("la pagina non risponde ed è stata chiusa");
+		expect(await say("/tool web_browse {}")).toContain("la pagina di questa conversazione è stata chiusa perché non rispondeva");
+		expect(await say(`/tool web_browse {"url":"${s.base}/due"}`)).toContain("Seconda pagina del sito");
+	}, 120_000);
+
+	it("a long menu does not hide the page: the main part comes first, the rest is counted and found with find", async () => {
+		const s = await site();
+		const { annie, chat } = await boot();
+		const say = await chat();
+		const policy = (await annie.runtime.registry.getInstance("default", "annie")).egress;
+		await annie.runtime.registry.setEgress("default", "annie", { ...policy, web: ["127.0.0.1"] });
+		const view = await say(`/tool web_browse {"url":"${s.base}/lunga"}`);
+		expect(view).toMatch(/\[\d+\] link: Pagina successiva/);
+		expect(view).toMatch(/Altri 71 elementi non elencati/);
+		const found = await say('/tool web_browse {"find":"voce 149"}');
+		expect(found).toMatch(/\[1\] link: Voce 149 → /);
 	}, 60_000);
 });

@@ -14,10 +14,11 @@ Il piano era di metterlo sul computer della settimana 18. Abbiamo cambiato idea:
 
 ## Come funziona
 
-- Una sessione per conversazione, con i suoi cookie, che si chiude dopo 5 minuti senza azioni. Al massimo 4 sessioni aperte per server; per aprirne un'altra si chiude quella ferma da più tempo. Una sessione ha un tetto di richieste e di byte.
-- Dopo ogni azione Annie riceve indirizzo, titolo, il testo visibile (al più 8.000 caratteri) e gli elementi su cui può agire, numerati, recintati come dati. Con `screenshot` salva anche quello che si vede.
-- Clic e testo agiscono sugli elementi numerati dell'ultima vista. I campi password e i caricamenti di file non si toccano: Annie non entra negli account e non carica file.
-- Bloccati e riferiti ad Annie: le richieste non GET, quelle verso siti non consentiti, le finestre nuove (ne riceve l'indirizzo), i WebSocket, i service worker, i download.
+- Una sessione per conversazione, con i suoi cookie (tenuti da Annie, mai condivisi fra conversazioni), che si chiude dopo 5 minuti senza azioni. Al massimo 4 sessioni aperte per server; per aprirne un'altra si chiude quella ferma da più tempo, mai una che sta lavorando: se lavorano tutte, Annie riprova dopo. Fuori da una conversazione (un task senza chat) il browser non si apre.
+- Ogni pagina ha un tetto di 400 richieste e 40 MB, che riparte quando Annie apre un indirizzo o torna indietro. Ogni azione ha un tempo massimo: una pagina che non risponde viene chiusa e Annie la riapre.
+- Dopo ogni azione Annie riceve indirizzo, titolo, il testo visibile (al più 8.000 caratteri, con `from` legge il seguito) e al più 80 elementi su cui può agire, numerati, prima campi e pulsanti, poi il contenuto principale; con `find` cerca fra gli altri. Tutto quello che viene dalla pagina, etichette e note comprese, arriva recintato come dati; fuori dal recinto restano solo le nostre frasi. Con `screenshot` salva anche quello che si vede.
+- Clic e testo agiscono sugli elementi numerati dell'ultima vista, ricontrollati sulla pagina viva prima di agire. I campi password e i caricamenti di file non si toccano: Annie non entra negli account e non carica file. In una scelta si accettano solo i valori elencati.
+- Fermati e riferiti ad Annie: le richieste non GET (con il metodo e il sito), quelle verso siti non consentiti, i link a file non HTML (la pagina resta dov'è). I moduli che inviano non lasciano la pagina. Le finestre nuove si aprono nella stessa pagina; i WebSocket si chiudono e WebRTC è spento, senza nota. Le iframe sono segnalate, il loro contenuto non è letto.
 - Nel brief del mattino, che legge mail di chiunque, nessuno strumento web gira.
 
 ## Alternative scartate

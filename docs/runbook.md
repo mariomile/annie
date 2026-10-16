@@ -132,6 +132,8 @@ In alternativa al server (in valutazione, docs/week9.md): ogni cella è un proge
 
 In Impostazioni → Navigazione web l'owner elenca i siti che l'istanza può leggere e fotografare (un dominio per riga, sottodomini compresi; `*` per tutti i siti pubblici). Vuoto vuol dire nessuno. Gli indirizzi interni (rete locale, metadati del cloud) restano negati comunque. Per gli screenshot serve Chromium: nell'immagine Docker con `docker build --build-arg WITH_BROWSER=1 .` (l'immagine pubblicata su GHCR lo ha), senza Docker con `ANNIE_CHROMIUM_PATH` o il browser di Playwright. Chromium deve partire con il suo sandbox; se nel log compare «screenshots off», o si dà al container quello che serve agli user namespace, o si accetta il rischio con `ANNIE_SCREENSHOTS_WITHOUT_SANDBOX=1` (ADR 0009).
 
+Lo stesso Chromium fa da browser con clic (`web_browse`, `web_click`, `web_type`, ADR 0014): niente da configurare in più, e «screenshots off» vuol dire anche browser spento. Il browser legge e basta: le richieste non GET non partono, per inviare c'è `web_submit` con approvazione. Al più 4 sessioni per server, una per conversazione, chiuse dopo 5 minuti senza azioni e perse al riavvio; ogni pagina ha un tetto di 400 richieste e 40 MB. Chromium parte senza DNS proprio (`--host-resolver-rules`) e con WebRTC limitato al proxy, che non esiste: ogni richiesta passa dal fetch controllato.
+
 ## 6f. Abbonamenti (Stripe)
 
 Senza `ANNIE_CLOUD_STRIPE_SECRET_KEY` Annie Cloud è gratuito. Con la chiave, ogni tenant ha una prova (`ANNIE_CLOUD_TRIAL_DAYS`, 14 giorni di default) e poi serve l'abbonamento; finita la prova senza abbonamento la cella resta spenta, con i dati intatti (ADR 0010).
