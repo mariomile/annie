@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, request, type Server, type ServerRe
 import { request as httpsRequest } from "node:https";
 import { extname, join } from "node:path";
 import { googleReturnQuery } from "../connectors/google.ts";
-import { COMPUTER_LIMITS, ComputerError, type ComputerProvider, computerKey, workPath } from "../core/computer.ts";
+import { COMPUTER_LIMITS, ComputerError, type ComputerProvider, type ComputerRun, computerKey, workPath } from "../core/computer.ts";
 import { computerToken, proxyToken, sameSecret } from "../web/compare.ts";
 import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { CellState } from "../web/server.ts";
@@ -118,7 +118,12 @@ type State = {
 	billingSince?: string;
 	/** The trial's length while billing is on, for `pnpm cloud status`. */
 	trialDays?: number;
+	/** The computers each tenant has used (ADR 0015): capped, and what `pnpm cloud computers` lists and deletes. */
+	computers?: TenantComputer[];
 };
+
+/** A computer of a tenant: the cell's key for it, and the key the provider knows it by. */
+export type TenantComputer = { readonly tenant: string; readonly key: string; readonly createdAt: string };
 
 const EMPTY: State = { accounts: [], cells: [], links: [] };
 const LINK_TTL_MS = 30 * 60 * 1000;
@@ -129,6 +134,18 @@ const LINKS_PER_HOUR = 5;
 const MAX_BODY = 64 * 1024;
 const MAX_WEBHOOK_BODY = 512 * 1024;
 const COMPUTER_RUNS_PER_TENANT = 2;
+const COMPUTERS_PER_TENANT = 10;
+/** A command nobody asked about for this long is ended; its result, dropped. */
+const COMPUTER_JOB_ORPHAN_MS = 90_000;
+const COMPUTER_BYTES_IN_FLIGHT = 256 * 1024 * 1024;
+
+type ComputerJob = {
+	readonly tenant: string;
+	readonly abort: AbortController;
+	seenAt: number;
+	result?: { readonly run?: ComputerRun; readonly error?: string; readonly internal?: boolean };
+	readonly waiters: (() => void)[];
+};
 /** A running cell is asked for its spend at least this often, so a cell that never sleeps is billed too. */
 const USAGE_EVERY_MS = 60 * 60 * 1000;
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
@@ -498,64 +515,137 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		}
 	}
 
-	/** Commands running at once per tenant: one tenant cannot take every computer slot of the server. */
-	const computerRuns = new Map<string, number>();
+	/** Commands under way, by id: started by one request and waited for by others, so no request stays open for minutes. */
+	const computerJobs = new Map<string, ComputerJob>();
+	/** Copies in or out under way per tenant, and bytes being copied on this server. */
+	const computerFiles = new Map<string, number>();
+	let computerBytes = 0;
+	let computerCheck: { at: number; problem: string | undefined } | undefined;
+	const running = (tenant: string) => [...computerJobs.values()].filter((j) => j.tenant === tenant && j.result === undefined).length;
+	const jobSweeper = setInterval(() => {
+		const now = Date.now();
+		for (const [id, job] of computerJobs) {
+			// A cell that stopped asking (gone, restarted) ends its command; a result nobody fetched is dropped.
+			if (job.result === undefined && now - job.seenAt > COMPUTER_JOB_ORPHAN_MS) job.abort.abort();
+			if (job.result !== undefined && now - job.seenAt > COMPUTER_JOB_ORPHAN_MS) computerJobs.delete(id);
+		}
+	}, 10_000);
+	jobSweeper.unref();
 
 	/**
 	 * The computers of Annie Cloud (ADR 0015): a cell asks for its own tenant, with a token derived
 	 * from its secret; its keys are named again under the tenant, so no cell reaches another
-	 * tenant's computer. The provider's token stays here. A suspended tenant runs nothing.
+	 * tenant's computer. The provider's token stays here. A suspended tenant runs nothing. A
+	 * command starts with one request and is waited for with others of at most 25 seconds, so a
+	 * reverse proxy's timeouts never cut a 5-minute command.
 	 */
 	async function computerApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
 		const computer = options.computer;
 		const tenant = String(req.headers["x-annie-tenant"] ?? "");
 		const cell = cellOf(tenant);
 		const given = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
-		if (computer === undefined || cell === undefined || !sameSecret(given, computerToken(cell.secret))) return send(res, 404, { error: "Not found" });
+		if (cell === undefined || !sameSecret(given, computerToken(cell.secret))) return send(res, 404, { error: "Not found" });
+		const op = url.pathname.slice("/internal/computer/".length);
+		// A cell still set up for computers after they were switched off here: it is told, not left guessing.
+		if (computer === undefined) return op === "check" ? send(res, 200, { problem: "Annie Cloud non offre il computer" }) : send(res, 404, { error: "Not found" });
 		if (suspended(tenant)) return send(res, 402, { error: "il periodo di prova è finito: il computer riparte con l'abbonamento" });
-		const keyOf = (value: unknown) => {
-			if (typeof value !== "string" || !/^[a-f0-9]{32}$/.test(value)) throw new HttpError(400, "chiave non valida");
-			return computerKey(tenant, value);
-		};
 		try {
-			const op = url.pathname.slice("/internal/computer/".length);
-			if (op === "check" && req.method === "GET") return send(res, 200, { problem: await computer.check() });
+			if (op === "check" && req.method === "GET") {
+				// Asked at each look at the settings: Fly is asked at most once a minute, and the cell gets no operator detail.
+				if (computerCheck === undefined || Date.now() - computerCheck.at > 60_000) {
+					const problem = await computer.check();
+					if (problem !== undefined) log(`cloud: computers not ready: ${problem}`);
+					computerCheck = { at: Date.now(), problem: problem === undefined ? undefined : "il computer di Annie Cloud non è disponibile ora" };
+				}
+				return send(res, 200, { problem: computerCheck.problem });
+			}
 			if (op === "reset" && req.method === "POST") {
-				await computer.reset(keyOf((await readJson(req)).key));
+				const value = (await readJson(req)).key;
+				const key = await keyOf(tenant, value, false);
+				if (key !== undefined) await computer.reset(key);
+				// Its place under the cap is free again.
+				await update((s) => ({ ...s, computers: (s.computers ?? []).filter((c) => !(c.tenant === tenant && c.key === value)) }));
 				return send(res, 200, { ok: true });
 			}
 			if (op === "run" && req.method === "POST") {
 				const body = await readJson(req);
-				const key = keyOf(body.key);
 				const command = body.command;
 				const timeoutS = Number(body.timeoutS);
 				if (typeof command !== "string" || command.length === 0 || command.length > 8000) throw new HttpError(400, "comando non valido");
 				if (!(timeoutS >= 1 && timeoutS <= COMPUTER_LIMITS.maxTimeoutS)) throw new HttpError(400, "tempo non valido");
-				if ((computerRuns.get(tenant) ?? 0) >= COMPUTER_RUNS_PER_TENANT) return send(res, 429, { error: "ci sono già altri comandi in corso: riprova quando finiscono" });
-				computerRuns.set(tenant, (computerRuns.get(tenant) ?? 0) + 1);
-				// The cell gone (the conversation cancelled, the cell stopped): the command ends too.
-				const gone = new AbortController();
-				res.once("close", () => gone.abort());
-				try {
-					return send(res, 200, await computer.run(key, command, { timeoutS, signal: gone.signal }));
-				} finally {
-					computerRuns.set(tenant, Math.max(0, (computerRuns.get(tenant) ?? 1) - 1));
-				}
+				const key = (await keyOf(tenant, body.key, true)) as string;
+				if (running(tenant) >= COMPUTER_RUNS_PER_TENANT) return send(res, 429, { error: "ci sono già altri comandi in corso: riprova quando finiscono" });
+				const id = randomBytes(16).toString("hex");
+				const job: ComputerJob = { tenant, abort: new AbortController(), seenAt: Date.now(), waiters: [] };
+				computerJobs.set(id, job);
+				void computer
+					.run(key, command, { timeoutS, signal: job.abort.signal })
+					.then((run): ComputerJob["result"] => ({ run }))
+					.catch((error: unknown): ComputerJob["result"] => {
+						if (error instanceof ComputerError) return { error: error.message };
+						log(`cloud: computer of ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
+						return { error: "il computer non risponde", internal: true };
+					})
+					.then((result) => {
+						job.result = result;
+						job.seenAt = Date.now();
+						for (const wake of job.waiters.splice(0)) wake();
+					});
+				return send(res, 200, { job: id });
 			}
-			if (op === "file") {
-				const key = keyOf(url.searchParams.get("key"));
-				const path = workPath(url.searchParams.get("path") ?? "");
-				if (path === undefined) throw new HttpError(422, "percorso non valido");
-				if (req.method === "PUT") {
-					await computer.put(key, [{ path, data: await readBytes(req, COMPUTER_LIMITS.maxFileBytes) }]);
+			if ((op === "result" || op === "cancel") && (req.method === "GET" || req.method === "POST")) {
+				const id = url.searchParams.get("job") ?? "";
+				const job = computerJobs.get(id);
+				if (job === undefined || job.tenant !== tenant) return send(res, 404, { error: "comando sconosciuto" });
+				job.seenAt = Date.now();
+				if (op === "cancel") {
+					job.abort.abort();
 					return send(res, 200, { ok: true });
 				}
-				if (req.method === "GET") {
-					const max = Number(url.searchParams.get("max"));
-					if (!Number.isInteger(max) || max < 1 || max > COMPUTER_LIMITS.maxFileBytes) throw new HttpError(400, "dimensione non valida");
+				// A cell that gave up on this request (cancelled mid-wait) asks again: the result waits for that one.
+				let gone = false;
+				res.once("close", () => (gone = !res.writableFinished));
+				if (job.result === undefined) {
+					const waitS = Math.max(0, Math.min(25, Number(url.searchParams.get("wait") ?? "0") || 0));
+					await new Promise<void>((resolve) => {
+						const timer = setTimeout(resolve, waitS * 1000);
+						job.waiters.push(() => {
+							clearTimeout(timer);
+							resolve();
+						});
+					});
+				}
+				const result = job.result;
+				if (result === undefined) return send(res, 200, { done: false });
+				if (gone) return;
+				computerJobs.delete(id);
+				if (result.run !== undefined) return send(res, 200, { done: true, run: result.run });
+				return send(res, result.internal === true ? 502 : 422, { error: result.error });
+			}
+			if (op === "file") {
+				const path = workPath(url.searchParams.get("path") ?? "");
+				if (path === undefined) throw new HttpError(422, "percorso non valido");
+				const max = req.method === "PUT" ? COMPUTER_LIMITS.maxCopyInBytes : Number(url.searchParams.get("max"));
+				if (req.method !== "PUT" && req.method !== "GET") return send(res, 404, { error: "Not found" });
+				if (!Number.isInteger(max) || max < 1 || max > (req.method === "PUT" ? COMPUTER_LIMITS.maxCopyInBytes : COMPUTER_LIMITS.maxFileBytes)) throw new HttpError(400, "dimensione non valida");
+				const size = req.method === "PUT" ? Number(req.headers["content-length"]) : max;
+				if (req.method === "PUT" && !(Number.isInteger(size) && size >= 0 && size <= max)) throw new HttpError(413, "file troppo grande per il computer");
+				// One copy at a time per tenant, and a ceiling on what the server holds at once.
+				if ((computerFiles.get(tenant) ?? 0) >= 1 || computerBytes + size > COMPUTER_BYTES_IN_FLIGHT) return send(res, 429, { error: "il computer sta già copiando altri file: riprova tra poco" });
+				const key = (await keyOf(tenant, url.searchParams.get("key"), true)) as string;
+				computerFiles.set(tenant, 1);
+				computerBytes += size;
+				try {
+					if (req.method === "PUT") {
+						await computer.put(key, [{ path, data: await readBytes(req, size) }]);
+						return send(res, 200, { ok: true });
+					}
 					const data = await computer.get(key, path, max);
 					res.writeHead(200, { "content-type": "application/octet-stream", "content-length": data.length, "cache-control": "no-store" });
 					return void res.end(data);
+				} finally {
+					computerFiles.delete(tenant);
+					computerBytes -= size;
 				}
 			}
 			send(res, 404, { error: "Not found" });
@@ -565,6 +655,30 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			log(`cloud: computer of ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
 			if (!res.headersSent) send(res, 502, { error: "il computer non risponde" });
 		}
+	}
+
+	/**
+	 * The provider's key for a cell's computer: named under the tenant. A new one is recorded,
+	 * up to COMPUTERS_PER_TENANT; `create` false gives undefined for one never used.
+	 */
+	async function keyOf(tenant: string, value: unknown, create: boolean): Promise<string | undefined> {
+		if (typeof value !== "string" || !/^[a-f0-9]{32}$/.test(value)) throw new HttpError(400, "chiave non valida");
+		const key = computerKey(tenant, value);
+		const known = (read().computers ?? []).some((c) => c.tenant === tenant && c.key === value);
+		if (known) return key;
+		if (!create) return undefined;
+		let refused = false;
+		await update((s) => {
+			const mine = (s.computers ?? []).filter((c) => c.tenant === tenant);
+			if (mine.some((c) => c.key === value)) return s;
+			if (mine.length >= COMPUTERS_PER_TENANT) {
+				refused = true;
+				return s;
+			}
+			return { ...s, computers: [...(s.computers ?? []), { tenant, key: value, createdAt: new Date().toISOString() }] };
+		});
+		if (refused) throw new ComputerError(`questo account ha già ${COMPUTERS_PER_TENANT} computer: azzerane uno da un'altra istanza`);
+		return key;
 	}
 
 	/**
@@ -653,6 +767,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			if (timer !== undefined) clearInterval(timer);
 			server.closeAllConnections();
 			await new Promise((resolve) => server.close(resolve));
+			clearInterval(jobSweeper);
+			for (const job of computerJobs.values()) job.abort.abort();
 			await options.computer?.close().catch((error: unknown) => log(`cloud: computers not stopped: ${error instanceof Error ? error.message : String(error)}`));
 			// Each running cell tells when to wake it before going down, so its tasks survive a restart.
 			for (const id of await options.provider.list()) {
@@ -792,4 +908,24 @@ function withoutHopByHop(headers: NodeJS.Dict<string | string[]>): Record<string
 	const out: Record<string, string | string[]> = {};
 	for (const [name, value] of Object.entries(headers)) if (value !== undefined && !HOP_BY_HOP.has(name.toLowerCase())) out[name] = value;
 	return out;
+}
+
+/** The computers each tenant has used, oldest first, for `pnpm cloud computers` (ADR 0015). */
+export function cloudComputers(options: { readonly dataDir: string }): TenantComputer[] {
+	return [...(readJsonFile<State>(join(options.dataDir, "control-plane.json"), EMPTY).computers ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * Deletes a tenant's computers, machines and files with them, and forgets them: for an account
+ * that leaves. One that fails stays recorded, so it can be asked again. The number deleted.
+ */
+export async function deleteTenantComputers(options: { readonly dataDir: string; readonly tenant: string; readonly computer: ComputerProvider }): Promise<number> {
+	const file = join(options.dataDir, "control-plane.json");
+	let deleted = 0;
+	for (const c of cloudComputers(options).filter((c) => c.tenant === options.tenant)) {
+		await options.computer.reset(computerKey(c.tenant, c.key));
+		updateJsonFile<State>(file, EMPTY, (s) => ({ ...s, computers: (s.computers ?? []).filter((x) => !(x.tenant === c.tenant && x.key === c.key)) }));
+		deleted++;
+	}
+	return deleted;
 }

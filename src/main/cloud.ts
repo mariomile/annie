@@ -6,14 +6,15 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { StripeBilling } from "../cloud/billing.ts";
-import { cloudStatus, startControlPlane } from "../cloud/control-plane.ts";
+import { cloudComputers, cloudStatus, deleteTenantComputers, startControlPlane } from "../cloud/control-plane.ts";
 import { DockerCellProvider } from "../cloud/docker-provider.ts";
 import { LocalCellProvider } from "../cloud/local-provider.ts";
 import type { CellProvider } from "../cloud/provider.ts";
 import { RailwayCellProvider } from "../cloud/railway-provider.ts";
 import { FileMailer, type Mailer } from "../cloud/mailer.ts";
 import { parseSmtpUrl, SmtpMailer } from "../cloud/smtp.ts";
-import { FlyComputerProvider } from "../computer/fly-computer.ts";
+import { computerSalt, FlyComputerProvider } from "../computer/fly-computer.ts";
+import { computerKey } from "../core/computer.ts";
 import { ConfigError, loadComputerConfig } from "./config.ts";
 
 if (existsSync(".env")) process.loadEnvFile(".env");
@@ -34,7 +35,11 @@ const scheme = (env("ANNIE_CLOUD_SCHEME") ?? (domain.endsWith("localhost") ? "ht
  */
 function computers(): FlyComputerProvider | undefined {
 	const kind = env("ANNIE_CLOUD_COMPUTER");
-	if (kind === undefined) return undefined;
+	if (kind === undefined) {
+		// Switched off: an upgrade takes the computer away from cells that had it, too.
+		cellEnv.ANNIE_COMPUTER = "";
+		return undefined;
+	}
 	try {
 		if (kind !== "fly") throw new ConfigError("ANNIE_CLOUD_COMPUTER: fly, or unset for no computer (Docker computers are never for cells)");
 		const config = loadComputerConfig(process.env, kind, "ANNIE_CLOUD_COMPUTER");
@@ -43,7 +48,7 @@ function computers(): FlyComputerProvider | undefined {
 		if (!/^https?:\/\/[^\s/]+\/?$/.test(url)) throw new ConfigError("ANNIE_CLOUD_COMPUTER_URL: the control plane's address as cells reach it (http(s)://host[:port])");
 		cellEnv.ANNIE_COMPUTER = "cloud";
 		cellEnv.ANNIE_COMPUTER_URL = url;
-		return new FlyComputerProvider({ ...config, log: (message) => console.error(`annie cloud: ${message}`) });
+		return new FlyComputerProvider({ ...config, salt: computerSalt(dataDir), log: (message) => console.error(`annie cloud: ${message}`) });
 	} catch (error) {
 		console.error(`annie cloud: ${error instanceof Error ? error.message : String(error)}`);
 		process.exit(1);
@@ -142,6 +147,24 @@ if (process.argv[2] === "status") {
 	}
 	const month = rows.reduce((sum, r) => sum + (r.spend?.monthUsd ?? 0), 0);
 	console.log(`${rows.length} tenant, ${rows.filter((r) => r.cell === "running").length} celle accese, spesa del mese stimata $${month.toFixed(2)} (prezzi di listino, ultime letture)`);
+	process.exit(0);
+}
+
+// `pnpm cloud computers`: the computers each tenant has used, with their Fly app (ADR 0015).
+// `pnpm cloud computers delete <tenant>`: deletes them, machines and files, for an account that leaves.
+if (process.argv[2] === "computers") {
+	const tenant = process.argv[4];
+	if (process.argv[3] === "delete") {
+		if (computer === undefined || tenant === undefined) {
+			console.error("annie cloud: computers delete <tenant>, with ANNIE_CLOUD_COMPUTER=fly and its settings");
+			process.exit(1);
+		}
+		console.log(`${await deleteTenantComputers({ dataDir, tenant, computer })} computer cancellati per ${tenant}`);
+		process.exit(0);
+	}
+	const rows = cloudComputers({ dataDir });
+	if (rows.length === 0) console.log("Nessun computer ancora.");
+	for (const c of rows) console.log(`${c.tenant}  ${c.key.slice(0, 8)}  dal ${c.createdAt.slice(0, 10)}${computer === undefined ? "" : `  app ${computer.appOf(computerKey(c.tenant, c.key))}`}`);
 	process.exit(0);
 }
 

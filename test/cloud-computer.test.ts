@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StripeBilling } from "../src/cloud/billing.ts";
-import { type ControlPlane, startControlPlane } from "../src/cloud/control-plane.ts";
+import { type ControlPlane, cloudComputers, deleteTenantComputers, startControlPlane } from "../src/cloud/control-plane.ts";
 import { MemoryMailer } from "../src/cloud/mailer.ts";
 import type { CellProvider } from "../src/cloud/provider.ts";
 import { createComputerProvider } from "../src/computer/create.ts";
@@ -30,10 +30,16 @@ class Recorder implements ComputerProvider {
 	aborted = false;
 	async run(key: string, command: string, options: { readonly timeoutS: number; readonly signal?: AbortSignal }): Promise<ComputerRun> {
 		this.calls.push(`run ${key} ${command}`);
-		options.signal?.addEventListener("abort", () => (this.aborted = true));
+		let cut = () => {};
+		const stopped = new Promise<"cut">((resolve) => (cut = () => resolve("cut")));
+		options.signal?.addEventListener("abort", () => {
+			this.aborted = true;
+			cut();
+		});
 		if (command === "rifiuta") throw new ComputerError("il disco del computer è pieno");
 		if (command === "rompi") throw new Error("fly POST /v1/apps: HTTP 500 dettagli interni");
-		await this.hold;
+		// Like the real computers: a cancelled command ends, and what it wrote so far comes back.
+		if ((await Promise.race([this.hold, stopped])) === "cut") return { exitCode: null, stdout: "a metà", stderr: "", timedOut: true, killed: false, truncated: false, ms: 1, diskFull: false };
 		return { exitCode: 0, stdout: `ok ${options.timeoutS}`, stderr: "", timedOut: false, killed: false, truncated: false, ms: 1, diskFull: false };
 	}
 	async put(key: string, files: readonly { readonly path: string; readonly data: Uint8Array }[]): Promise<void> {
@@ -63,8 +69,7 @@ const idle: CellProvider = {
 	baseUrl: async () => "http://127.0.0.1:1",
 };
 
-async function controlPlane(computer: ComputerProvider, state: Record<string, unknown> = {}, billing?: StripeBilling) {
-	const dataDir = tempDataDir();
+async function controlPlane(computer: ComputerProvider, state: Record<string, unknown> = {}, billing?: StripeBilling, dataDir = tempDataDir()) {
 	const now = new Date().toISOString();
 	writeFileSync(
 		join(dataDir, "control-plane.json"),
@@ -132,7 +137,7 @@ describe("computers through the control plane", () => {
 		const url = await controlPlane(recorder);
 		const a = new RemoteComputerProvider({ url, tenant: "aaaa", cellSecret: SECRET_A });
 		const cancel = new AbortController();
-		const first = a.run(KEY, "uno", { timeoutS: 60, signal: cancel.signal }).catch(() => "annullato");
+		const first = a.run(KEY, "uno", { timeoutS: 60, signal: cancel.signal });
 		const second = a.run(KEY, "due", { timeoutS: 60 });
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		await expect(a.run(KEY, "tre", { timeoutS: 60 })).rejects.toThrow("altri comandi in corso");
@@ -140,12 +145,46 @@ describe("computers through the control plane", () => {
 		const b = new RemoteComputerProvider({ url, tenant: "bbbb", cellSecret: SECRET_B });
 		const other = b.run(KEY, "suo", { timeoutS: 60 });
 		cancel.abort();
-		expect(await first).toBe("annullato");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(await first).toMatchObject({ exitCode: null, stdout: "a metà", timedOut: true });
 		expect(recorder.aborted).toBe(true);
 		release();
 		expect((await second).exitCode).toBe(0);
 		expect((await other).exitCode).toBe(0);
+	});
+
+	it("gives a tenant at most 10 computers, and a reset one frees its place", async () => {
+		const recorder = new Recorder();
+		const url = await controlPlane(recorder);
+		const a = new RemoteComputerProvider({ url, tenant: "aaaa", cellSecret: SECRET_A });
+		const keys = Array.from({ length: 11 }, (_, i) => i.toString(16).padStart(32, "0"));
+		for (const key of keys.slice(0, 10)) await a.run(key, "x", { timeoutS: 5 });
+		await expect(a.run(keys[10] as string, "x", { timeoutS: 5 })).rejects.toThrow("già 10 computer");
+		// Another tenant has places of its own.
+		await new RemoteComputerProvider({ url, tenant: "bbbb", cellSecret: SECRET_B }).run(keys[10] as string, "x", { timeoutS: 5 });
+		await a.reset(keys[0] as string);
+		expect((await a.run(keys[10] as string, "x", { timeoutS: 5 })).exitCode).toBe(0);
+	});
+
+	it("lists the computers of each tenant, and deletes a leaving tenant's", async () => {
+		const recorder = new Recorder();
+		const dataDir = tempDataDir();
+		const url = await controlPlane(recorder, {}, undefined, dataDir);
+		await new RemoteComputerProvider({ url, tenant: "aaaa", cellSecret: SECRET_A }).run(KEY, "x", { timeoutS: 5 });
+		await new RemoteComputerProvider({ url, tenant: "bbbb", cellSecret: SECRET_B }).run(KEY, "x", { timeoutS: 5 });
+		expect(cloudComputers({ dataDir }).map((c) => c.tenant)).toEqual(["aaaa", "bbbb"]);
+		expect(await deleteTenantComputers({ dataDir, tenant: "aaaa", computer: recorder })).toBe(1);
+		expect(recorder.calls.at(-1)).toBe(`reset ${computerKey("aaaa", KEY)}`);
+		expect(cloudComputers({ dataDir }).map((c) => c.tenant)).toEqual(["bbbb"]);
+	});
+
+	it("tells a cell when Annie Cloud offers no computer", async () => {
+		const dataDir = tempDataDir();
+		writeFileSync(join(dataDir, "control-plane.json"), JSON.stringify({ accounts: [{ email: "a@x.example", tenant: "aaaa", createdAt: new Date().toISOString() }], cells: [{ tenant: "aaaa", secret: SECRET_A, nextWakeAt: null }], links: [] }));
+		const cp = await startControlPlane({ dataDir, domain: "annie.test", publicScheme: "http", provider: idle, mailer: new MemoryMailer(), cellEnv: {}, idleMs: 60_000, web: { host: "127.0.0.1", port: 0 }, tickMs: 0, log: () => {} });
+		running.push(cp);
+		const a = new RemoteComputerProvider({ url: `http://127.0.0.1:${(cp.server.address() as AddressInfo).port}`, tenant: "aaaa", cellSecret: SECRET_A });
+		expect(await a.check()).toBe("Annie Cloud non offre il computer");
+		await expect(a.run(KEY, "x", { timeoutS: 5 })).rejects.toThrow("HTTP 404");
 	});
 
 	it("runs nothing for a tenant whose trial is over", async () => {
@@ -171,6 +210,6 @@ describe("computer settings", () => {
 		expect(() => loadComputerConfig({ ANNIE_COMPUTER: "podman" })).toThrow("docker or fly");
 		const cell = loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "faux", ANNIE_TENANT_ID: "aaaa", ANNIE_CELL_SECRET: SECRET_A, ANNIE_COMPUTER: "cloud", ANNIE_COMPUTER_URL: "https://annie.example/" });
 		expect(cell.computer).toEqual({ kind: "cloud", url: "https://annie.example" });
-		expect(createComputerProvider(cell.computer as NonNullable<typeof cell.computer>, { tenant: "aaaa", cellSecret: SECRET_A })).toBeInstanceOf(RemoteComputerProvider);
+		expect(createComputerProvider(cell.computer as NonNullable<typeof cell.computer>, { tenant: "aaaa", dataDir: tempDataDir(), cellSecret: SECRET_A })).toBeInstanceOf(RemoteComputerProvider);
 	});
 });

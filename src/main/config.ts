@@ -167,7 +167,7 @@ export type AnnieConfig = {
 
 export type ComputerConfig =
 	| { readonly kind: "docker"; readonly image: string; readonly socketPath: string; readonly runtime?: string; readonly memoryMb: number; readonly cpus: number; readonly diskMb: number }
-	| { readonly kind: "fly"; readonly token: string; readonly org: string; readonly region: string; readonly image: string; readonly memoryMb: number; readonly cpus: number; readonly diskMb: number }
+	| { readonly kind: "fly"; readonly token: string; readonly org: string; readonly region: string; readonly image: string; readonly memoryMb: number; readonly cpus: number; readonly diskMb: number; readonly appPrefix?: string; readonly maxConcurrent?: number }
 	| { readonly kind: "cloud"; readonly url: string };
 
 /**
@@ -199,7 +199,11 @@ export function loadComputerConfig(env: Readonly<Record<string, string | undefin
 		if (!/^[a-z]{3}$/.test(region)) throw new ConfigError("ANNIE_FLY_REGION: a Fly region code, e.g. fra");
 		if (!Number.isInteger(cpus) || cpus > 8) throw new ConfigError("ANNIE_COMPUTER_CPUS: Fly machines have 1 to 8 whole CPUs");
 		if (memoryMb < 256 || memoryMb % 256 !== 0 || memoryMb > cpus * 2048) throw new ConfigError("ANNIE_COMPUTER_MEMORY_MB: on Fly, steps of 256 MB, at most 2048 MB per CPU");
-		return { kind, token, org, region, image, memoryMb, cpus, diskMb };
+		const appPrefix = nonEmpty(env.ANNIE_FLY_APP_PREFIX);
+		if (appPrefix !== undefined && !/^[a-z][a-z0-9-]{1,20}$/.test(appPrefix)) throw new ConfigError("ANNIE_FLY_APP_PREFIX: 2 to 21 lowercase letters, digits and dashes, starting with a letter");
+		const concurrent = nonEmpty(env.ANNIE_COMPUTER_MAX_RUNNING);
+		if (concurrent !== undefined && !(/^\d+$/.test(concurrent) && Number(concurrent) >= 1 && Number(concurrent) <= 200)) throw new ConfigError("ANNIE_COMPUTER_MAX_RUNNING: commands at once on Fly, 1 to 200");
+		return { kind, token, org, region, image, memoryMb, cpus, diskMb, ...(appPrefix === undefined ? {} : { appPrefix }), ...(concurrent === undefined ? {} : { maxConcurrent: Number(concurrent) }) };
 	}
 	const runtime = nonEmpty(env.ANNIE_COMPUTER_RUNTIME);
 	if (runtime !== undefined && !/^[\w.-]{1,40}$/.test(runtime)) throw new ConfigError("ANNIE_COMPUTER_RUNTIME: a Docker runtime name, e.g. runsc");

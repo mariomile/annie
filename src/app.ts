@@ -163,7 +163,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 
 	// The instances' computers: only where the operator gave Annie a Docker host (ADR 0013), a Fly
 	// organization, or, in a cell of Annie Cloud, the control plane's computers (ADR 0015).
-	const made = options.computer === undefined && config.computer !== undefined ? createComputerProvider(config.computer, { tenant: config.tenantId, cellSecret: config.cell.secret, log }) : undefined;
+	const made = options.computer === undefined && config.computer !== undefined ? createComputerProvider(config.computer, { tenant: config.tenantId, dataDir: config.dataDir, cellSecret: config.cell.secret, log }) : undefined;
 	const computer: ComputerProvider | undefined = options.computer ?? made;
 	if (made !== undefined && config.computer !== undefined) {
 		const label = computerLabel(config.computer);

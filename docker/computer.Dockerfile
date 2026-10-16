@@ -11,7 +11,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates coreutils file bc jq sqlite3 zip unzip xz-utils \
       python3 python3-pandas python3-openpyxl python3-xlrd python3-matplotlib python3-pypdf weasyprint \
-      pandoc poppler-utils qpdf imagemagick ghostscript fonts-dejavu-core \
+      pandoc poppler-utils qpdf imagemagick ghostscript fonts-dejavu-core procps \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd -g 1000 annie && useradd -u 1000 -g 1000 -d /tmp -s /bin/sh annie \
  && mkdir /work && chown 1000:1000 /work
@@ -21,8 +21,9 @@ ENV HOME=/tmp LANG=C.UTF-8 MPLBACKEND=Agg
 # arrive through Fly's exec API and run as uid 1000 through annie-run.
 FROM tools AS fly
 RUN apt-get update \
- && apt-get install -y --no-install-recommends iptables \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends iptables python3-seccomp \
+ && rm -rf /var/lib/apt/lists/* \
+ && find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 COPY --chmod=755 annie-run.py /usr/local/bin/annie-run
 COPY --chmod=755 annie-fly-init /usr/local/bin/annie-fly-init
 WORKDIR /work

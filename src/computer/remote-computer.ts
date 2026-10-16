@@ -26,10 +26,33 @@ export class RemoteComputerProvider implements ComputerProvider {
 		this.fetch = options.fetch ?? fetch;
 	}
 
+	/**
+	 * Started with one request, then waited for with requests of at most 25 seconds each, so no
+	 * proxy between cell and control plane cuts a long command. Cancelled, it is ended there and
+	 * what it wrote so far comes back.
+	 */
 	async run(key: string, command: string, options: { readonly timeoutS: number; readonly signal?: AbortSignal }): Promise<ComputerRun> {
-		const timeout = AbortSignal.timeout((Math.min(COMPUTER_LIMITS.maxTimeoutS, options.timeoutS) + 120) * 1000);
-		const response = await this.call("POST", "/run", JSON.stringify({ key, command, timeoutS: options.timeoutS }), options.signal === undefined ? timeout : AbortSignal.any([timeout, options.signal]));
-		return (await response.json()) as ComputerRun;
+		const started = await this.call("POST", "/run", JSON.stringify({ key, command, timeoutS: options.timeoutS }), AbortSignal.timeout(API_TIMEOUT_MS));
+		const job = String(((await started.json()) as { job?: string }).job ?? "");
+		const deadline = Date.now() + (Math.min(COMPUTER_LIMITS.maxTimeoutS, options.timeoutS) + 6 * 60) * 1000;
+		let cancelled = false;
+		while (Date.now() < deadline) {
+			if (options.signal?.aborted === true && !cancelled) {
+				cancelled = true;
+				await this.call("POST", `/cancel?job=${job}`, undefined, AbortSignal.timeout(API_TIMEOUT_MS)).catch(() => {});
+			}
+			const wait = options.signal === undefined || cancelled ? AbortSignal.timeout(API_TIMEOUT_MS) : AbortSignal.any([AbortSignal.timeout(API_TIMEOUT_MS), options.signal]);
+			let answer: { done?: boolean; run?: ComputerRun };
+			try {
+				answer = (await (await this.call("GET", `/result?job=${job}&wait=${cancelled ? 5 : 25}`, undefined, wait)).json()) as typeof answer;
+			} catch (error) {
+				// The conversation cancelled mid-wait: the command is ended above, its output asked for once more.
+				if (options.signal?.aborted === true && !cancelled) continue;
+				throw error;
+			}
+			if (answer.done === true && answer.run !== undefined) return answer.run;
+		}
+		throw new Error("computer service: no result in time");
 	}
 
 	async put(key: string, files: readonly { readonly path: string; readonly data: Uint8Array }[]): Promise<void> {
@@ -76,7 +99,7 @@ export class RemoteComputerProvider implements ComputerProvider {
 		try {
 			error = String((JSON.parse(text) as { error?: string }).error ?? "");
 		} catch {}
-		if (response.status === 422 || response.status === 402 || response.status === 429) throw new ComputerError(error.slice(0, 300) || "il computer ha rifiutato la richiesta");
+		if (response.status === 422 || response.status === 402 || response.status === 413 || response.status === 429) throw new ComputerError(error.slice(0, 300) || "il computer ha rifiutato la richiesta");
 		throw new Error(`computer service: HTTP ${response.status} ${error.slice(0, 200)}`);
 	}
 }

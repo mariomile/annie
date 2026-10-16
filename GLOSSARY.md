@@ -126,7 +126,7 @@ L'invio di un modulo di un sito consentito che l'istanza chiede e che parte solo
 _Avoid_: automazione, bot, compilazione automatica
 
 **Computer**:
-La macchina di un'istanza, separata dalla cella, senza rete e senza segreti, dove l'istanza esegue comandi su copie dei file del workspace e rimette lì quelli che produce. La accende l'owner; i suoi file restano finché l'owner non la azzera.
+La macchina di un'istanza, separata dalla cella, senza rete e senza segreti, dove l'istanza esegue comandi su copie dei file del workspace e rimette lì quelli che produce. Un container sul server di Annie o una micro-VM su Fly.io; in Annie Cloud sempre una micro-VM, raggiunta attraverso il control plane. La accende l'owner; i suoi file restano finché l'owner non la azzera.
 _Avoid_: sandbox (è quella dei tool proposti), VM, server
 
 **Brief del mattino**:

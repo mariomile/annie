@@ -445,7 +445,7 @@ function computerCard(inst, allowed, problem) {
 		"div.card.pad",
 		h("h3", "Computer"),
 		h("p.muted", "Annie esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
-		problem ? h("p.warn", `Il computer non funziona su questo server: ${problem}.`) : null,
+		problem ? h("p.warn", `Il computer non è disponibile: ${problem}.`) : null,
 		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo computer")),
 		h("div.actions", h("button.btn.ghost", { onclick: reset }, "Azzera i file del computer")),
 	);

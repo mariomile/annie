@@ -116,6 +116,8 @@ Per offrire Annie come servizio su un solo server in UE (ADR 0008). Serve Docker
 
 Le celle stanno tutte sulla rete `annie-cells`, dove i container non si parlano fra loro. `ANNIE_TEST_DOCKER_IMAGE=annie:local pnpm vitest run test/docker-provider.test.ts` prova il giro completo su un daemon vero.
 
+Il computer delle istanze, in Annie Cloud, gira su Fly: vedi 6j, «Su Fly».
+
 `pnpm cloud status` elenca i tenant (email, data, stato della cella, prossimo risveglio) e la spesa sul modello di oggi, del mese e del mese scorso, stimata dai prezzi di listino. Le celle accese vengono interrogate; per quelle che dormono mostra l'ultima spesa letta, senza svegliarle. Il control plane conserva la spesa di ogni mese, anche di quelli chiusi, per la fattura. Funziona con `docker` e `railway`; con il provider `local` (solo sviluppo) le celle sono processi del control plane e da un altro processo risultano tutte spente.
 
 ## 6d. Annie Cloud su Railway
@@ -170,7 +172,7 @@ La voce passa da Twilio, che fa riconoscimento e sintesi: per i dati in UE scegl
 
 Annie può eseguire comandi (Python, `jq`, `sqlite3`, `pandoc`, gli strumenti PDF) in un computer suo, un container per istanza senza rete ([ADR 0013](adr/0013-terminale-in-un-computer-senza-rete.md)). Serve Docker 20.10 o più recente sullo stesso server.
 
-**Prima di accenderlo: il socket di Docker equivale a root sul server.** Chi lo usa può creare un container che monta tutto il disco. Accendilo solo dove Annie è l'unico servizio della macchina, e mai in Annie Cloud: lì le celle non ricevono le variabili del computer, e il computer resta spento finché le celle non girano su micro-VM.
+**Prima di accenderlo: il socket di Docker equivale a root sul server.** Chi lo usa può creare un container che monta tutto il disco. Accendilo solo dove Annie è l'unico servizio della macchina, e mai in Annie Cloud: lì il computer gira solo su Fly (sotto, «Su Fly»).
 
 1. Costruisci l'immagine: `docker build -f docker/computer.Dockerfile -t annie-computer:latest docker`. Va rifatta quando cambia il Dockerfile; al comando dopo, ogni computer viene ricreato con la nuova immagine e i suoi file restano.
 2. In `.env`: `ANNIE_COMPUTER=docker`. Le altre variabili hanno valori di default: `ANNIE_COMPUTER_IMAGE` (`annie-computer:latest`), `ANNIE_DOCKER_SOCKET` (`/var/run/docker.sock`), `ANNIE_COMPUTER_MEMORY_MB` (1024), `ANNIE_COMPUTER_CPUS` (1), `ANNIE_COMPUTER_DISK_MB` (2048, la quota di `/work`), `ANNIE_COMPUTER_RUNTIME` (vuoto; `runsc` per gVisor).
@@ -185,6 +187,26 @@ Come gira: un container per istanza con rete `none`, file system in sola lettura
 **Disco**: i volumi dei computer stanno nella cartella dati di Docker (`/var/lib/docker`). Meglio metterla su una partizione sua, così un computer pieno non ferma il server. `docker system df -v` mostra quanto occupa ogni volume `annie-computer-*`; «Azzera i file del computer» nella console cancella container e volume di un'istanza. I file dei computer non sono nel backup della cartella dati: quello che conta Annie lo copia nel workspace.
 
 **Immagine personalizzata**: si può partire da `docker/computer.Dockerfile` e aggiungere strumenti, purché restino l'utente 1000, `/work` suo, `sh`, `timeout`, `du` e `chmod`. Poi `ANNIE_COMPUTER_IMAGE` con il nuovo nome. `copy_out` legge i file attraverso Docker, non dentro il computer: un collegamento simbolico o una cartella vengono rifiutati.
+
+### Su Fly (micro-VM, anche per Annie Cloud)
+
+Una micro-VM Fly.io per istanza, con un kernel suo, sigillata dal primo processo prima di ogni comando ([ADR 0015](adr/0015-computer-su-micro-vm.md)). Non serve Docker sul server.
+
+1. L'immagine: il workflow `Image` pubblica a ogni merge su `main` `ghcr.io/<owner>/annie-computer:fly` (e `:fly-<commit>`), il target `fly` di `docker/computer.Dockerfile`. Rendi pubblico il pacchetto GHCR, o copia l'immagine nel registry di Fly (`registry.fly.io/<app>`). Meglio indicare il tag con il commit: ogni computer passa alla nuova immagine al comando dopo, con i suoi file.
+2. Il token dell'organizzazione ([chiavi](chiavi.md) §12).
+3. Su un server proprio, in `.env`: `ANNIE_COMPUTER=fly`, `FLY_API_TOKEN`, `ANNIE_FLY_ORG`, `ANNIE_COMPUTER_IMAGE`. Facoltativi: `ANNIE_FLY_REGION` (`fra`), `ANNIE_COMPUTER_MEMORY_MB` (1024, a passi di 256 e al più 2048 per CPU), `ANNIE_COMPUTER_CPUS` (1, intero fino a 8), `ANNIE_COMPUTER_DISK_MB` (2048, il volume si arrotonda al gigabyte), `ANNIE_COMPUTER_MAX_RUNNING` (8 comandi alla volta), `ANNIE_FLY_APP_PREFIX` (solo se Fly dice che il nome è preso).
+4. `pnpm annie check` dice se Fly accetta il token; lo stesso nella console e nel log all'avvio.
+
+Un computer senza comandi per 10 minuti si ferma da solo e costa solo il volume; al comando dopo riparte (un primo avvio, con il download dell'immagine, può chiedere un minuto). «Azzera i file del computer» cancella la app Fly con macchina e volume. Le app si chiamano `annie-computer-<hash>`; `fly apps list -o <org>` le mostra. I volumi di Fly non sono nel backup di Annie.
+
+**In Annie Cloud** il token sta solo nel control plane:
+
+1. Nel `.env` del control plane: `ANNIE_CLOUD_COMPUTER=fly` più le variabili del punto 3 (senza `ANNIE_COMPUTER`). `ANNIE_CLOUD_COMPUTER_URL` è l'indirizzo del control plane come lo raggiungono le celle; di default `https://<dominio>`. Con le celle su Railway serve l'indirizzo pubblico del control plane.
+2. Il reverse proxy deve passare al control plane `/internal/computer/` con richieste fino a 100 MB (con nginx `client_max_body_size 100m` su quel percorso) e risposte fino a 25 secondi.
+3. Le celle esistenti ricevono `ANNIE_COMPUTER=cloud` con `pnpm cloud upgrade` (control plane fermo); quelle nuove lo hanno da sole.
+4. Per spegnerlo: togli `ANNIE_CLOUD_COMPUTER` e rifai `pnpm cloud upgrade`; le celle lo vedono spento nella console.
+
+Tetti per tenant: 2 comandi alla volta, 10 computer, una copia di file alla volta. `pnpm cloud computers` elenca i computer di ogni tenant con la sua app Fly; `pnpm cloud computers delete <tenant>` li cancella, macchine e file, quando un account se ne va.
 
 ## 7. Connettori MCP
 

@@ -74,7 +74,7 @@ async function modelCheck(config: AnnieConfig, call: Call): Promise<string> {
 
 /** The Docker host answers and has the image (ADR 0013), Fly takes the token, or the control plane answers (ADR 0015). */
 async function computerCheck(config: AnnieConfig, computer: NonNullable<AnnieConfig["computer"]>): Promise<string> {
-	const problem = await createComputerProvider(computer, { tenant: config.tenantId, ...(config.cell.secret === undefined ? {} : { cellSecret: config.cell.secret }) }).check();
+	const problem = await createComputerProvider(computer, { tenant: config.tenantId, dataDir: config.dataDir, ...(config.cell.secret === undefined ? {} : { cellSecret: config.cell.secret }) }).check();
 	if (problem !== undefined) throw new CheckFailed(problem);
 	if (computer.kind === "docker") return `Docker risponde, immagine ${computer.image} presente`;
 	if (computer.kind === "fly") return `Fly accetta il token dell'organizzazione ${computer.org}; l'immagine ${computer.image} si prova al primo comando`;

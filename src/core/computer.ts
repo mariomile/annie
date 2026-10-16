@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 /**
  * The computer of an instance (ADR 0013): a machine apart from the cell, with no network and
  * no secrets, where Annie runs commands on copies of workspace files. Providers: a container
- * per instance on the Docker host (src/computer/docker-computer.ts); micro-VMs later.
+ * per instance on the Docker host (src/computer/docker-computer.ts), a Fly.io micro-VM per
+ * instance (src/computer/fly-computer.ts, ADR 0015), or, for Annie Cloud's cells, the control
+ * plane's computers (src/computer/remote-computer.ts).
  */
 export type ComputerRun = {
 	/** null: never known (the computer stopped answering). */
