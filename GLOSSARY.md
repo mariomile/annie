@@ -9,7 +9,7 @@ Chi gestisce un tenant: in self-host chi installa Annie (Buildrs o l'IT del clie
 _Avoid_: admin, superuser
 
 **Operatore**:
-Chi gestisce Annie Cloud per tutti i tenant (Buildrs). Non legge le conversazioni dei tenant.
+Chi gestisce Annie Cloud per tutti i tenant (Buildrs). Non legge le conversazioni nel lavoro normale; può entrare in una cella come owner solo lasciando traccia nell'audit della cella, e non se l'owner ha la verifica in due passaggi.
 _Avoid_: admin, owner
 
 **Tenant**:

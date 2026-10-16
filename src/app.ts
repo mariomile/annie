@@ -117,12 +117,12 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const people = new PeopleStore(tenantDir(config.dataDir, toTenantId(tenant)));
 	let ownerLink: string | undefined;
 	if ((await people.list()).length === 0) {
-		const { person, token } = await people.add("Owner", "owner", config.cell.ownerToken);
+		const { person, token } = await people.add("Owner", "owner");
 		// The owner can chat with the general instance and approve its actions.
 		const record = await runtime.registry.getInstance(tenant, config.instanceId);
 		await runtime.registry.setAllowedUsers(tenant, config.instanceId, "web", [...(record.allowedUsers.web ?? []), person.id]);
-		// In a cell the control plane chose the token and already has the link.
-		if (config.cell.ownerToken === undefined) {
+		// A cell writes no link: the control plane asks for one (/internal/owner-link) at each sign-in.
+		if (config.cell.secret === undefined) {
 			ownerLink = `${config.web.publicUrl ?? `http://${config.web.host === "0.0.0.0" ? "localhost" : config.web.host}:${config.web.port}`}/login#${token}`;
 			// Kept out of the logs: in a 0600 file the owner reads once and deletes.
 			await writeFileAtomic(join(config.dataDir, "owner-login-link.txt"), `${ownerLink}\n`);
@@ -224,7 +224,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	);
 	scheduler.start(options.schedulerIntervalMs ?? 30_000);
 	const segreteria = config.segreteria === undefined ? undefined : await startSegreteria(runtime, config.segreteria, log);
-	for (const bot of telegrams.values()) await bot.start();
+	// A bot Telegram does not accept (wrong token, webhook on http) must not keep Annie down.
+	for (const bot of telegrams.values()) await bot.start().catch((error: unknown) => log(`telegram: not started: ${error instanceof Error ? error.message : String(error)}`));
 
 	const server = createWebApp({
 		runtime,
@@ -239,7 +240,6 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		uiDir: options.uiDir ?? join(import.meta.dirname, "web", "ui"),
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
-		// Same model as the general instance; web only, open to the owner who creates it.
 		telegramHooks: new Map(
 			config.telegram?.webhookSecret === undefined
 				? []
@@ -261,6 +261,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						},
 					},
 				}),
+		// Same model as the general instance; web only, open to the owner who creates it.
 		createInstance: async ({ id, name, instructions, ownerId }) => {
 			const general = await runtime.registry.getInstance(tenant, config.instanceId);
 			const record = await runtime.registry.createInstance(tenant, {

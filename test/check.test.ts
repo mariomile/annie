@@ -25,7 +25,7 @@ const healthy: Record<string, Route> = {
 	"api.telegram.org": (url) => Response.json({ ok: true, result: { username: url.pathname.includes("222:") ? "segreteria_bot" : "annie_bot" } }),
 	"oauth2.googleapis.com": () => Response.json({ access_token: "at", scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send" }),
 	"gmail.googleapis.com": () => Response.json({ emailAddress: "vendite@azienda.example" }),
-	"api.hubapi.com": () => Response.json({ name: "hs_lead_status", options: [{ value: "NEW" }, { value: "OPEN" }, { value: "IN_PROGRESS" }] }),
+	"api.hubapi.com": () => Response.json({ name: "hs_lead_status", options: [{ value: "NEW" }, { value: "ATTEMPTED_TO_CONTACT" }, { value: "UNQUALIFIED" }] }),
 };
 
 describe("pnpm annie check", () => {
@@ -42,7 +42,7 @@ describe("pnpm annie check", () => {
 		expect(results.find((r) => r.name === "Gmail")?.detail).toContain("vendite@azienda.example");
 		expect(results.find((r) => r.name === "Telegram (segreteria)")?.detail).toContain("@segreteria_bot");
 		// The open question of the live test: which lead statuses the portal accepts.
-		expect(results.find((r) => r.name === "HubSpot")?.detail).toContain("NEW, OPEN, IN_PROGRESS");
+		expect(results.find((r) => r.name === "HubSpot")?.detail).toContain("NEW, ATTEMPTED_TO_CONTACT, UNQUALIFIED");
 	});
 
 	it("never prints a secret", async () => {
@@ -68,6 +68,12 @@ describe("pnpm annie check", () => {
 		const net = internet({ ...healthy, "oauth2.googleapis.com": () => Response.json({ access_token: "at", scope: "https://www.googleapis.com/auth/gmail.readonly" }) });
 		const gmail = (await runChecks(loadAnnieConfig(ENV), net.fetch)).find((r) => r.name === "Gmail");
 		expect(gmail).toMatchObject({ ok: false, detail: expect.stringContaining("gmail.send") });
+	});
+
+	it("a portal without the lead statuses the segreteria sets fails, naming them", async () => {
+		const net = internet({ ...healthy, "api.hubapi.com": () => Response.json({ options: [{ value: "NEW" }, { value: "OPEN" }] }) });
+		const hubspot = (await runChecks(loadAnnieConfig(ENV), net.fetch)).find((r) => r.name === "HubSpot");
+		expect(hubspot).toMatchObject({ ok: false, detail: expect.stringContaining("ATTEMPTED_TO_CONTACT, UNQUALIFIED") });
 	});
 
 	it("only checks what is configured; the local model needs no network", async () => {

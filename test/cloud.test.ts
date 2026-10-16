@@ -13,8 +13,11 @@ afterEach(async () => {
 	for (const cp of running.splice(0)) await cp.stop();
 });
 
-async function cloud(options: { idleMs?: number } = {}) {
-	const dataDir = tempDataDir();
+function cloud(options: { idleMs?: number } = {}) {
+	return cloudAt(tempDataDir(), options);
+}
+
+async function cloudAt(dataDir: string, options: { idleMs?: number } = {}) {
 	const mailer = new MemoryMailer();
 	const provider = new LocalCellProvider({ root: join(dataDir, "cells"), repoRoot: join(import.meta.dirname, "..") });
 	const cp = await startControlPlane({
@@ -55,7 +58,7 @@ async function cloud(options: { idleMs?: number } = {}) {
 }
 
 /** Sign up through the control plane and land, logged in, in the new cell. */
-async function signUp(c: Awaited<ReturnType<typeof cloud>>, email: string) {
+async function signUp(c: Awaited<ReturnType<typeof cloudAt>>, email: string) {
 	const home = c.at(DOMAIN);
 	expect((await home("/api/signup", { method: "POST", body: JSON.stringify({ email }) })).status).toBe(200);
 	const mail = c.mailer.sent.findLast((m) => m.to === email.toLowerCase());
@@ -85,6 +88,8 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 		const started = Date.now();
 		const anna = await signUp(c, "anna@studio.example");
 		expect(anna.url.host).toMatch(new RegExp(`^[a-z0-9-]+\\.${DOMAIN.replace(".", "\\.")}$`));
+		// The address does not show the person's name.
+		expect(anna.url.host).not.toContain("anna");
 		const thread = (await anna.api("/api/instances/annie/threads", {})).body.thread;
 		await anna.api(`/api/instances/annie/threads/${thread.id}/messages`, { text: "ciao dal cloud" });
 		await until(async () => ((await anna.api(`/api/instances/annie/threads/${thread.id}`)).body.entries as { from: string }[]).some((e) => e.from === "annie"));
@@ -112,7 +117,67 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 		expect((await home("/api/verify", { method: "POST", body: JSON.stringify({ token }) })).status).toBe(200);
 		expect((await home("/api/verify", { method: "POST", body: JSON.stringify({ token }) })).status).toBe(400);
 		expect((await home("/api/signup", { method: "POST", body: JSON.stringify({ email: "non è una mail" }) })).status).toBe(400);
-		expect((await c.at(`nessuno.${DOMAIN}`)("/api/me")).status).toBe(404);
+		// A tenant that does not exist answers like a sleeping one: hosts reveal nothing.
+		const nobody = await c.at(`nessuno.${DOMAIN}`)("/api/me");
+		const sleeping = await c.at(`nessuno2.${DOMAIN}`)("/login");
+		expect([nobody.status, sleeping.status]).toEqual([503, 503]);
+		expect(nobody.body).toEqual(sleeping.body);
+	}, 180_000);
+
+	it("nothing reaches a cell's /internal/ endpoints through the control plane, however the path is written", async () => {
+		const c = await cloud();
+		const anna = await signUp(c, "anna@studio.example");
+		const raw = (target: string) =>
+			new Promise<number>((resolve, reject) => {
+				const req = request({ host: "127.0.0.1", port: c.port, path: target, method: "GET", headers: { host: anna.host, authorization: "Bearer guess" } }, (res) => {
+					res.resume();
+					resolve(res.statusCode ?? 0);
+				});
+				req.on("error", reject);
+				req.end();
+			});
+		for (const target of ["/internal/cell", "//x/internal/cell", "/./internal/cell", "/a/../internal/cell", "/%2e/internal/cell", "/internal\\cell", "http://x/internal/cell", "/INTERNAL/cell"]) {
+			expect([target, await raw(target)]).toEqual([target, 404]);
+		}
+	}, 180_000);
+
+	it("a stopped cell is not woken by anonymous requests, only by its people or its webhooks", async () => {
+		const c = await cloud({ idleMs: 0 });
+		const anna = await signUp(c, "anna@studio.example");
+		await anna.api("/api/me");
+		const cell = (await c.provider.list())[0] as string;
+		await c.cp.tick(new Date());
+		expect(await c.provider.status(cell)).toBe("stopped");
+		expect((await anna.cell("/api/me")).status).toBe(503);
+		expect((await anna.cell("/login")).status).toBe(503);
+		expect(await c.provider.status(cell)).toBe("stopped");
+		expect((await anna.api("/api/me")).status).toBe(200);
+		expect(await c.provider.status(cell)).toBe("running");
+	}, 180_000);
+
+	it("the same machine cannot send sign-in links to everyone", async () => {
+		const c = await cloud();
+		const home = c.at(DOMAIN);
+		const statuses: number[] = [];
+		for (let i = 0; i < 25; i++) statuses.push((await home("/api/signup", { method: "POST", body: JSON.stringify({ email: `p${i}@x.example` }) })).status);
+		expect(statuses.filter((s) => s === 200)).toHaveLength(20);
+		expect(statuses.at(-1)).toBe(429);
+	}, 60_000);
+
+	it("a sleeping cell's next task survives a restart of the control plane", async () => {
+		const dataDir = tempDataDir();
+		const first = await cloudAt(dataDir);
+		const anna = await signUp(first, "anna@studio.example");
+		const thread = (await anna.api("/api/instances/annie/threads", {})).body.thread;
+		const at = new Date(Date.now() + 3_600_000).toISOString();
+		await anna.api("/api/instances/annie/schedules", { instruction: "Promemoria", at, threadId: thread.id });
+		await first.cp.stop();
+		running.splice(running.indexOf(first.cp), 1);
+		const second = await cloudAt(dataDir);
+		const cell = (await second.provider.list())[0] as string;
+		expect(await second.provider.status(cell)).toBe("stopped");
+		await second.cp.tick(new Date(Date.parse(at) + 1000));
+		expect(await second.provider.status(cell)).toBe("running");
 	}, 180_000);
 
 	it("an idle cell is stopped, and the next request wakes it with everything still there", async () => {

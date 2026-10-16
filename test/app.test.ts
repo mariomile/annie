@@ -207,12 +207,12 @@ describe("pnpm start (startAnnie)", () => {
 		expect(telegram.sent.filter((m) => m.chat_id === "7" && m.text.includes("ciao dal webhook"))).toHaveLength(1);
 	});
 
-	it("a cell: the owner token comes from the control plane, and the cell tells when it may sleep and when to wake it", async () => {
+	it("a cell: no owner link on disk, the control plane asks for one; the cell tells when it may sleep and when to wake it", async () => {
 		const dataDir = tempDataDir();
-		const ownerToken = "o".repeat(43);
-		const { annie, base } = await boot(dataDir, fakeTelegram(), { ANNIE_OWNER_TOKEN: ownerToken, ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
+		const { annie, base } = await boot(dataDir, fakeTelegram(), { ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
 		expect(annie.ownerLink).toBeUndefined();
 		expect(existsSync(join(dataDir, "owner-login-link.txt"))).toBe(false);
+		const { token: ownerToken } = (await (await fetch(`${base}/internal/owner-link`, { method: "POST", headers: { authorization: "Bearer cell-secret-xyz-0001" } })).json()) as { token: string };
 		const api = await client(base, `${base}/login#${ownerToken}`);
 		expect((await api("/api/me")).person.role).toBe("owner");
 		const state = (secret?: string) => fetch(`${base}/internal/cell`, { headers: secret === undefined ? {} : { authorization: `Bearer ${secret}` } });
@@ -226,10 +226,10 @@ describe("pnpm start (startAnnie)", () => {
 	});
 
 	it("a cell gives the control plane a fresh owner link on request; the old link stops working", async () => {
-		const ownerToken = "p".repeat(43);
-		const { base } = await boot(tempDataDir(), fakeTelegram(), { ANNIE_OWNER_TOKEN: ownerToken, ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
+		const { base } = await boot(tempDataDir(), fakeTelegram(), { ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
 		const ask = (secret: string) => fetch(`${base}/internal/owner-link`, { method: "POST", headers: { authorization: `Bearer ${secret}` } });
 		expect((await ask("wrong-secret-000000")).status).toBe(401);
+		const { token: ownerToken } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
 		const { token } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
 		expect(token).toMatch(/^[\w-]{40,}$/);
 		const login = (t: string) => fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: t }) });

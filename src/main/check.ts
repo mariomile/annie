@@ -1,3 +1,4 @@
+import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -100,5 +101,9 @@ async function hubspotCheck(accessToken: string, call: Call): Promise<string> {
 	if (!response.ok) throw new CheckFailed(`HubSpot risponde ${response.status}`);
 	const property = (await response.json()) as { options?: { value: string }[] };
 	const values = (property.options ?? []).map((o) => o.value);
-	return `token valido; valori di hs_lead_status nel portale: ${values.length > 0 ? values.join(", ") : "nessuno"}`;
+	const listed = `valori di hs_lead_status nel portale: ${values.length > 0 ? values.join(", ") : "nessuno"}`;
+	// The segreteria sets these after a pratica; a portal without them only gets the note.
+	const missing = Object.values(DEFAULT_LEAD_STATUS).filter((v): v is string => v !== null && !values.includes(v));
+	if (missing.length > 0) throw new CheckFailed(`token valido, ma il portale non ha ${missing.join(", ")}, che la segreteria imposta: aggiungili o cambia la mappa (${listed})`);
+	return `token valido; ${listed}`;
 }

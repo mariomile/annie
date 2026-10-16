@@ -76,7 +76,11 @@ export class LocalCellProvider implements CellProvider {
 		child.once("exit", () => this.processes.delete(id));
 		const deadline = Date.now() + 60_000;
 		while (Date.now() < deadline) {
-			if (child.exitCode !== null) throw new Error(`Cell ${id} exited at start: ${stderr.split("\n").filter(Boolean).slice(-3).join(" | ")}`);
+			if (child.exitCode !== null) {
+				// The cell's output can hold its content: it goes to the cell's folder, not to our log.
+				writeFileSync(join(this.dir(id), "last-start-error.log"), stderr, { mode: 0o600 });
+				throw new Error(`Cell ${id} exited at start (code ${child.exitCode}); see last-start-error.log in its folder`);
+			}
 			const ok = await fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok).catch(() => false);
 			if (ok) return;
 			await new Promise((resolve) => setTimeout(resolve, 100));

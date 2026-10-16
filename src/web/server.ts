@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
@@ -14,7 +14,16 @@ import { WorkspaceError } from "../core/workspace.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
+import { sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
+
+/** What a cell tells the control plane of Annie Cloud before being stopped. */
+export type CellState = {
+	/** Work under way: stopping now would delay it until the next start. */
+	readonly busy: boolean;
+	/** When to start it again by itself (next task programmato), or null. */
+	readonly nextWakeAt: string | null;
+};
 
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
@@ -34,7 +43,7 @@ export type WebAppOptions = {
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
 	readonly telegramHooks?: ReadonlyMap<string, { readonly secret: string; readonly handle: (update: unknown) => Promise<void> }>;
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
-	readonly cell?: { readonly secret: string; readonly state: () => Promise<{ busy: boolean; nextWakeAt: string | null }> };
+	readonly cell?: { readonly secret: string; readonly state: () => Promise<CellState> };
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -655,10 +664,4 @@ async function workspaceCall<T>(work: () => Promise<T>): Promise<T> {
 /** Relative: the console prefixes its own origin (Annie may sit behind a proxy). */
 function loginLink(_url: URL, token: string): string {
 	return `/login#${token}`;
-}
-
-function sameSecret(given: string, expected: string): boolean {
-	const a = createHash("sha256").update(given).digest();
-	const b = createHash("sha256").update(expected).digest();
-	return timingSafeEqual(a, b);
 }

@@ -94,6 +94,8 @@ export class TelegramAdapter implements ChannelAdapter {
 			this.loop = Promise.resolve();
 			return;
 		}
+		// A webhook left from an earlier run makes getUpdates fail forever: polling removes it.
+		await this.call("deleteWebhook", {}).catch((error: unknown) => this.options.log?.(`telegram: deleteWebhook failed: ${error instanceof Error ? error.message : String(error)}`));
 		this.abort = new AbortController();
 		this.loop = this.poll(this.abort.signal);
 	}
