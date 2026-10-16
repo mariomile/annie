@@ -18,6 +18,8 @@ export type InboundMessage = {
 	readonly threadId: string;
 	readonly userId: string;
 	readonly text: string;
+	/** The thread is with this person alone (a private chat): only then does their memoria apply. */
+	readonly privateThread?: boolean;
 	/** Channel-native message ID, used to drop redeliveries. */
 	readonly messageId?: string;
 	/** Files that came with the message; the gateway stores them in the workspace. */

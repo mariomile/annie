@@ -44,6 +44,8 @@ pnpm start                    # oppure un servizio systemd che lancia questo com
 cat data/owner-login-link.txt && rm data/owner-login-link.txt   # primo avvio
 ```
 
+Prima di tutto, e ogni volta che cambi una chiave: `pnpm annie check` (con Docker: `docker compose exec annie node_modules/.bin/tsx src/main/cli.ts check`). Prova ogni servizio configurato e dice cosa non va, senza stampare segreti: chiave del modello, bot Telegram, OAuth Gmail con i due scope, token HubSpot (e i valori di `hs_lead_status` del portale), host non raggiungibili.
+
 ## 4. Persone e accessi
 
 Dalla console (pagina Persone, solo owner) o da riga di comando:
@@ -64,9 +66,12 @@ Il link contiene il token nel frammento (`#...`): non finisce nei log del server
 
 ## 5. Telegram
 
+Ogni istanza può avere il suo bot, collegato dall'owner in Impostazioni → Telegram (token, chi può scrivere, chi approva), senza riavviare. In alternativa, per l'istanza principale, da `.env`:
+
 1. Crea un bot con @BotFather e metti il token in `TELEGRAM_BOT_TOKEN`.
 2. Metti in `ANNIE_TELEGRAM_ALLOWED_USERS` gli ID numerici di chi può scrivere al bot, e in `ANNIE_TELEGRAM_APPROVERS` chi riceve le schede di approvazione dei tool. Ogni persona apre il bot e preme Start una volta.
 3. Riavvia. Chi non è in elenco non riceve risposta (e finisce nell'audit).
+4. Facoltativo, webhook invece del long polling: con `ANNIE_PUBLIC_URL` in https e `ANNIE_TELEGRAM_WEBHOOK_SECRET` (lettere, cifre, `_` e `-`), all'avvio Annie registra il webhook e Telegram manda i messaggi a `ANNIE_PUBLIC_URL/hooks/telegram/<istanza>`. Il reverse proxy deve far passare quel percorso. Serve quando il processo può spegnersi (Annie Cloud); in self-host il long polling va benissimo.
 
 ## 6. Segreteria commerciale
 
@@ -80,6 +85,21 @@ HUBSPOT_ACCESS_TOKEN                                         # scope crm.objects
 ```
 
 Al primo avvio la segreteria ignora la posta già presente e parte da quella nuova. Le pratiche si gestiscono su Telegram o nella console (pagina Segreteria). Nessuna mail parte senza Approva. Un'app Google in modalità «Testing» ha refresh token che scadono dopo 7 giorni: per l'uso reale pubblica l'app OAuth.
+
+## 6b. Google per persona (Gmail e Calendar in sola lettura)
+
+Ogni persona collega il proprio account Google dal menu del suo account nella console; Annie lo usa solo nelle conversazioni di quella persona dalla console e nel suo brief del mattino. Per attivarlo:
+
+1. In Google Cloud console crea un client OAuth di tipo «Applicazione web» e aggiungi come URI di reindirizzamento `ANNIE_PUBLIC_URL/oauth/google/callback` (in locale `http://localhost:8080/oauth/google/callback`).
+2. Abilita Gmail API e Google Calendar API nel progetto.
+3. In `.env`: `ANNIE_GOOGLE_CLIENT_ID`, `ANNIE_GOOGLE_CLIENT_SECRET` e, se serve, `ANNIE_GOOGLE_SERVICES` (`gmail,calendar`, il default, oppure uno dei due). Riavvia.
+4. In Impostazioni l'owner attiva «Consenti Google a questa istanza».
+
+Verifica dell'app da parte di Google: `calendar.readonly` è uno scope «sensitive» (verifica di pochi giorni), `gmail.readonly` è «restricted» e per un'app pubblica che conserva i dati sul server richiede una valutazione di sicurezza annuale da un assessor approvato da Google. Finché l'app è in «Testing» i refresh token scadono dopo 7 giorni e possono collegarsi solo gli utenti di test; in un'organizzazione Google Workspace l'amministratore può marcare l'app come attendibile. Per partire senza la valutazione: `ANNIE_GOOGLE_SERVICES=calendar`.
+
+Il brief del mattino si attiva dalla pagina Task; `pnpm annie brief` dice quanti sono attivi e quante persone lo ricevono e lo usano. La memoria di una persona vale solo nelle sue conversazioni private (console, chat privata di Telegram), mai nei gruppi.
+
+Il refresh token resta nel secret store del tenant; «Scollega» lo cancella e lo revoca presso Google. In Annie Cloud il control plane passa le variabili alle celle nuove e riceve lui il ritorno da Google (`https://<dominio>/oauth/google/callback`, da registrare come unico URI), poi rimanda la persona alla sua cella.
 
 ## 7. Connettori MCP
 

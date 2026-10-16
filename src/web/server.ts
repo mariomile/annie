@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
+import { ChannelRefused } from "../channels/types.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
+import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
+import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
+import { ConnectorHttpError } from "../connectors/http.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
@@ -14,7 +19,24 @@ import { WorkspaceError } from "../core/workspace.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
+import { sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
+
+/** What a cell tells the control plane of Annie Cloud before being stopped. */
+export type CellState = {
+	/** Work under way: stopping now would delay it until the next start. */
+	readonly busy: boolean;
+	/** When to start it again by itself (next task programmato), or null. */
+	readonly nextWakeAt: string | null;
+};
+
+export type TelegramStatus = {
+	readonly connected: boolean;
+	readonly username?: string;
+	readonly mode: "webhook" | "polling";
+	readonly allowedUsers: readonly string[];
+	readonly approvers: readonly string[];
+};
 
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
@@ -31,6 +53,19 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
+	readonly telegramHooks?: ReadonlyMap<string, { readonly secret: string; readonly handle: (update: unknown) => Promise<void> }>;
+	/** The Telegram bot of each instance, connected by the owner from the console. */
+	readonly telegram?: {
+		status(instanceId: string): Promise<TelegramStatus>;
+		/** Check the token with Telegram, keep it in the secret store, start the bot. */
+		connect(instanceId: string, token: string): Promise<{ username: string | undefined }>;
+		disconnect(instanceId: string): Promise<void>;
+	};
+	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
+	readonly cell?: { readonly secret: string; readonly state: () => Promise<CellState> };
+	/** People connect their own Google account (Gmail and Calendar, read only). */
+	readonly google?: { readonly oauth: GoogleOAuth; readonly accounts: GoogleAccounts; readonly services: readonly GoogleService[]; readonly forget: (personId: string) => void };
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -323,6 +358,65 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw error;
 		}
 	});
+	// --- brief del mattino: one per person and instance ---
+	const briefOf = async (instanceId: string, p: Person) => (await runtime.schedules(tenantId, instanceId).list()).find((s) => s.kind === "brief" && mine(s, p));
+	route("GET", "/api/instances/:id/brief", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const brief = await briefOf(record.id, p);
+		const when = brief !== undefined && "cron" in brief.when ? briefWhen(brief.when.cron) : undefined;
+		return {
+			brief: brief === undefined ? null : { scheduleId: brief.id, threadId: brief.threadId, nextRunAt: brief.nextRunAt, ...when },
+			google: { available: options.google !== undefined, connected: options.google?.accounts.get(p.id) !== undefined, allowed: (record.egress.connectors ?? []).includes(GOOGLE_CONNECTOR) },
+		};
+	});
+	// One change at a time per instance, so two tabs cannot leave a person with two briefs.
+	const briefChanges = new Map<string, Promise<unknown>>();
+	const oneAtATime = <T>(key: string, work: () => Promise<T>): Promise<T> => {
+		const next = (briefChanges.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
+		briefChanges.set(key, next);
+		return next;
+	};
+	route("PUT", "/api/instances/:id/brief", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const { record, member } = await instanceAccess(p, params[0] as string);
+		if (!member) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questa istanza");
+		const body = (await readJson(req)) as { time?: unknown; weekdaysOnly?: unknown };
+		const cron = briefCron(String(body.time ?? ""), body.weekdaysOnly !== false);
+		if (cron === undefined) throw new HttpError(400, "Ora nel formato HH:MM, per esempio 07:30");
+		return oneAtATime(record.id, async () => {
+			const store = runtime.schedules(tenantId, record.id);
+			const channel = channelOf(record.id);
+			const previous = await briefOf(record.id, p);
+			const kept = previous === undefined ? undefined : await channel.thread(previous.threadId);
+			const thread = kept !== undefined && kept.personId === p.id ? kept : await channel.createThread(p.id, BRIEF_THREAD_TITLE);
+			const input = { instruction: BRIEF_INSTRUCTION, channel: "web", threadId: thread.id, when: { cron, timeZone: options.defaultTimeZone }, createdBy: { kind: "person" as const, channel: "web", userId: p.id }, kind: "brief" as const };
+			let schedule;
+			try {
+				schedule = await store.create(input);
+				if (previous !== undefined) await store.remove(previous.id);
+			} catch (error) {
+				if (!(error instanceof ScheduleError)) throw error;
+				// At the limit of tasks, moving the brief frees its own place first.
+				if (previous === undefined) throw new HttpError(400, error.message);
+				await store.remove(previous.id);
+				schedule = await store.create(input);
+			}
+			await runtime.audit(tenantId).append({ type: "brief.enabled", instanceId: record.id, personId: p.id, cron });
+			return { brief: { scheduleId: schedule.id, threadId: thread.id, nextRunAt: schedule.nextRunAt, ...briefWhen(cron) } };
+		});
+	});
+	route("DELETE", "/api/instances/:id/brief", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		return oneAtATime(record.id, async () => {
+			const brief = await briefOf(record.id, p);
+			if (brief === undefined) throw new HttpError(404, "Nessun brief attivo");
+			await runtime.schedules(tenantId, record.id).remove(brief.id);
+			await runtime.audit(tenantId).append({ type: "brief.disabled", instanceId: record.id, personId: p.id });
+			return { ok: true };
+		});
+	});
 	route("DELETE", "/api/instances/:id/schedules/:sid", "person", async ({ person, params }) => {
 		const p = person as Person;
 		await instanceAccess(p, params[0] as string);
@@ -442,6 +536,132 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
 	});
+	// --- memoria: each person sees what the instance remembers about them, and the shared facts ---
+	const subjectOfPerson = (p: Person) => subjectOf("web", p.id);
+	route("GET", "/api/instances/:id/memory", "person", async ({ person, params }) => {
+		await instanceAccess(person as Person, params[0] as string);
+		const all = runtime.memory(tenantId, params[0] as string).list();
+		return { mine: all.filter((m) => m.about === subjectOfPerson(person as Person)), shared: all.filter((m) => m.about === SHARED), canEditShared: (person as Person).role === "owner" };
+	});
+	route("POST", "/api/instances/:id/memory", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { text?: unknown; shared?: unknown };
+		const shared = body.shared === true;
+		if (shared && p.role !== "owner") throw new HttpError(403, "Solo l'owner aggiunge memorie condivise");
+		try {
+			const memory = runtime.memory(tenantId, params[0] as string).add({ about: shared ? SHARED : subjectOfPerson(p), text: String(body.text ?? ""), source: "person" });
+			await runtime.audit(tenantId).append({ type: "memory.saved", instanceId: params[0], personId: p.id, memoryId: memory.id, shared });
+			return { memory };
+		} catch (error) {
+			if (error instanceof MemoryError) throw new HttpError(400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/memory/:mid", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const removed = runtime.memory(tenantId, params[0] as string).remove(params[1] as string, (m) => m.about === subjectOfPerson(p) || (m.about === SHARED && p.role === "owner"));
+		if (removed === undefined) throw new HttpError(404, "Memoria non trovata");
+		await runtime.audit(tenantId).append({ type: "memory.forgotten", instanceId: params[0], personId: p.id, memoryId: removed.id });
+		return { ok: true };
+	});
+
+	// --- Google: each person connects their own account; the refresh token never comes back ---
+	const googleOf = () => {
+		if (options.google === undefined) throw new HttpError(501, "Google non è configurato su questo server");
+		return options.google;
+	};
+	route("GET", "/api/google", "person", async ({ person }) => ({ available: options.google !== undefined, services: options.google?.services ?? [], account: options.google?.accounts.get((person as Person).id) ?? null }));
+	route("POST", "/api/google/start", "person", async ({ person }) => ({ url: googleOf().oauth.start((person as Person).id) }));
+	route("POST", "/api/google/finish", "person", async ({ person, req }) => {
+		const p = person as Person;
+		const google = googleOf();
+		const body = (await readJson(req)) as { state?: unknown; code?: unknown };
+		if (typeof body.state !== "string" || typeof body.code !== "string") throw new HttpError(400, "Collegamento incompleto: riprova");
+		let connected: Awaited<ReturnType<GoogleOAuth["finish"]>>;
+		try {
+			connected = await google.oauth.finish(p.id, body.state, body.code);
+		} catch (error) {
+			if (error instanceof GoogleConsentError) throw new HttpError(400, error.message);
+			if (error instanceof ConnectorHttpError || error instanceof TypeError) throw new HttpError(502, "Google non è raggiungibile da questo server: riprova più tardi.");
+			throw error;
+		}
+		// A previous token of the same person is not revoked: with Google that would end the new grant too.
+		await google.accounts.connect(p.id, connected.account, connected.refreshToken);
+		google.forget(p.id);
+		await runtime.audit(tenantId).append({ type: "google.connected", personId: p.id });
+		return { account: connected.account };
+	});
+	route("DELETE", "/api/google", "person", async ({ person }) => {
+		const p = person as Person;
+		const google = googleOf();
+		const account = google.accounts.get(p.id);
+		const token = await google.accounts.disconnect(p.id);
+		google.forget(p.id);
+		// Revoking ends the grant for the whole Google account: not while someone else here uses it.
+		if (token !== undefined && (account === undefined || !google.accounts.sharedWithOthers(p.id, account.email))) await google.oauth.revoke(token);
+		await runtime.audit(tenantId).append({ type: "google.disconnected", personId: p.id });
+		return { ok: true };
+	});
+	route("PUT", "/api/instances/:id/google", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== GOOGLE_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, GOOGLE_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "google.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+
+	// --- owner: the Telegram bot of an instance (the token never comes back) ---
+	const telegramOf = () => {
+		if (options.telegram === undefined) throw new HttpError(501, "Telegram non disponibile");
+		return options.telegram;
+	};
+	route("GET", "/api/instances/:id/telegram", "owner", async ({ params }) => {
+		await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		return { telegram: await telegramOf().status(params[0] as string) };
+	});
+	route("PUT", "/api/instances/:id/telegram", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const body = (await readJson(req)) as { token?: unknown; allowedUsers?: unknown; approvers?: unknown };
+		const ids = (list: unknown, what: string): string[] | undefined => {
+			if (list === undefined) return undefined;
+			if (!Array.isArray(list) || !list.every((x) => typeof x === "string" && /^\d{1,20}$/.test(x))) throw new HttpError(400, `${what}: ID numerici di Telegram`);
+			return [...new Set(list as string[])];
+		};
+		const allowed = ids(body.allowedUsers, "Persone ammesse");
+		const approvers = ids(body.approvers, "Approvatori");
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		if (typeof body.token === "string" && body.token.trim() !== "") {
+			try {
+				await telegramOf().connect(id, body.token.trim());
+			} catch (error) {
+				if (error instanceof HttpError) throw error;
+				// Telegram said no, or we never reached it: different fixes for the owner.
+				if (error instanceof ChannelRefused) throw new HttpError(400, "Telegram non accetta questo token: copialo di nuovo da @BotFather");
+				throw new HttpError(502, "Telegram non è raggiungibile da questo server: controlla la rete e riprova");
+			}
+			await runtime.audit(tenantId).append({ type: "telegram.connected", instanceId: id });
+		}
+		if (allowed !== undefined) await runtime.registry.setAllowedUsers(tenantId, id, "telegram", allowed);
+		if (approvers !== undefined) await runtime.registry.updateInstance(tenantId, id, { approvers: { ...(record.approvers ?? {}), telegram: approvers } });
+		return { telegram: await telegramOf().status(id) };
+	});
+	route("DELETE", "/api/instances/:id/telegram", "owner", async ({ params }) => {
+		await telegramOf().disconnect(params[0] as string);
+		await runtime.audit(tenantId).append({ type: "telegram.disconnected", instanceId: params[0] });
+		return { ok: true };
+	});
+
 	route("GET", "/api/people", "owner", async () => ({ people: (await options.people.list()).map(publicPerson) }));
 	route("POST", "/api/people", "owner", async ({ req, url }) => {
 		const body = (await readJson(req)) as { name?: string; role?: string };
@@ -497,6 +717,11 @@ export function createWebApp(options: WebAppOptions): Server {
 		const url = new URL(req.url ?? "/", "http://annie.local");
 		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+		if (req.method === "GET" && url.pathname === "/internal/cell") return cellState(req, res);
+		if (req.method === "POST" && url.pathname === "/internal/owner-link") return ownerLink(req, res);
+		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
+		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
+		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
 		if (match === undefined) return send(res, 404, { error: "Not found" });
@@ -517,6 +742,71 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof HttpError) return send(res, error.status, { ...error.extra, error: error.message });
 			throw error;
 		}
+	}
+
+	/**
+	 * Where Google sends the person back. The session cookie is SameSite=Strict, so it does not
+	 * come with a navigation from Google: the console picks the code up from the fragment and
+	 * finishes with its own request, which carries the session.
+	 */
+	function googleCallback(res: ServerResponse, url: URL): void {
+		res.writeHead(302, { location: `/#/google?${googleReturnQuery(url)}`, "cache-control": "no-store" });
+		res.end();
+	}
+
+	/**
+	 * An update Telegram pushes. Authenticated by the secret Telegram repeats in a header, not
+	 * by a session. An error answer makes Telegram deliver it again; the core dedupes by ID.
+	 */
+	async function telegramHook(req: IncomingMessage, res: ServerResponse, instance: string): Promise<void> {
+		const target = options.telegramHooks?.get(instance);
+		if (target === undefined) return send(res, 404, { error: "Not found" });
+		const given = String(req.headers["x-telegram-bot-api-secret-token"] ?? "");
+		if (!sameSecret(given, target.secret)) return send(res, 401, { error: "Unauthorized" });
+		let update: Record<string, unknown>;
+		try {
+			update = await readJson(req);
+		} catch (error) {
+			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			throw error;
+		}
+		try {
+			await target.handle(update);
+		} catch (error) {
+			options.log?.(`telegram webhook: update not handled, Telegram will retry: ${error instanceof Error ? error.message : String(error)}`);
+			return send(res, 500, { error: "retry" });
+		}
+		send(res, 200, { ok: true });
+	}
+
+	/** The control plane of Annie Cloud, with the cell's secret. */
+	function fromControlPlane(req: IncomingMessage, res: ServerResponse): boolean {
+		if (options.cell === undefined) {
+			send(res, 404, { error: "Not found" });
+			return false;
+		}
+		const given = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ""))?.[1] ?? "";
+		if (sameSecret(given, options.cell.secret)) return true;
+		send(res, 401, { error: "Unauthorized" });
+		return false;
+	}
+
+	async function cellState(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!fromControlPlane(req, res)) return;
+		send(res, 200, await (options.cell as NonNullable<WebAppOptions["cell"]>).state());
+	}
+
+	/**
+	 * A new login link for the first owner, each time they sign in to Annie Cloud. The old link
+	 * stops working; open sessions stay. With two-factor on, the link alone still does not log in.
+	 */
+	async function ownerLink(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!fromControlPlane(req, res)) return;
+		const owner = (await options.people.list()).find((p) => p.role === "owner");
+		if (owner === undefined) return send(res, 409, { error: "No owner yet" });
+		const token = await options.people.rotate(owner.id);
+		await runtime.audit(tenantId).append({ type: "cell.owner_link", personId: owner.id });
+		send(res, 200, { token });
 	}
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {

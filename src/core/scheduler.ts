@@ -6,7 +6,7 @@ export type SchedulerTarget = {
 	readonly instanceId: string;
 	readonly store: ScheduleStore;
 	/** Admit the run into the instance (AnnieRuntime.submitScheduled). */
-	readonly submit: (request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined }) => Promise<unknown>;
+	readonly submit: (request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" }) => Promise<unknown>;
 };
 
 /**
@@ -37,6 +37,7 @@ export class Scheduler {
 						messageId: `schedule:${schedule.id}:${plannedFor}`,
 						scheduleId: schedule.id,
 						onBehalfOf: schedulePerson(schedule),
+						...(schedule.kind === undefined ? {} : { kind: schedule.kind }),
 					});
 					await target.store.advance(schedule, plannedFor, now);
 					fired++;

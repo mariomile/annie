@@ -107,3 +107,19 @@ describe("model credentials", () => {
 		await runtime.close();
 	});
 });
+
+describe("egress policy changed while the instance is open", () => {
+	it("a reply goes out on a channel allowed after the instance opened, and not on one taken away", async () => {
+		const { runtime, replies } = await runtimeWithInstance({ egress: { modelProviders: ["faux"], channels: ["test"] }, allowedUsers: { test: ["u"], other: ["u"] } });
+		await runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "test", threadId: "t", userId: "u", text: "uno", messageId: "1" });
+		await waitFor(() => replies.length === 1);
+		// Opened: now the policy changes on disk, as the console does, without a reopen.
+		await runtime.registry.setEgress("acme", "ops", { modelProviders: ["faux"], channels: ["test", "other"] });
+		await runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "other", threadId: "t2", userId: "u", text: "due", messageId: "2" });
+		await waitFor(() => replies.some((r) => r.channel === "other"));
+		await runtime.registry.setEgress("acme", "ops", { modelProviders: ["faux"], channels: ["other"] });
+		await expect(runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "test", threadId: "t", userId: "u", text: "tre", messageId: "3" })).rejects.toThrow(EgressDenied);
+		await runtime.close();
+	});
+});
+

@@ -5,7 +5,8 @@ import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
-import { customToolsDir, engineDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
+import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
 import { Workspace } from "./workspace.ts";
@@ -21,6 +22,8 @@ export type SubmitRequest = {
 	readonly threadId: string;
 	readonly userId: string;
 	readonly text: string;
+	/** The thread is with this person alone; in a group nobody's memoria applies. */
+	readonly privateThread?: boolean;
 	/** Channel-native message ID; makes a redelivered message idempotent. */
 	readonly messageId?: string;
 };
@@ -89,6 +92,7 @@ export class AnnieRuntime {
 	readonly registry: TenantRegistry;
 	private readonly instances = new Map<string, Promise<AnnieInstance>>();
 	private readonly listeners = new Set<(reply: Reply) => void>();
+	private readonly participantStores = new Map<string, Participants>();
 
 	constructor(private readonly options: RuntimeOptions) {
 		this.registry = new TenantRegistry(options.dataDir);
@@ -114,6 +118,26 @@ export class AnnieRuntime {
 	 */
 	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
 		await (await this.openInstance(tenant, instance)).sendMessage(message);
+	}
+
+	/** The memoria of an instance: what it remembers about each person, and shared facts. */
+	memory(tenant: string, instance: string): MemoryStore {
+		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */
+	participant(tenant: string, instance: string, thread: { channel: string; threadId: string }): string | undefined {
+		return this.participants(tenant, instance).get(threadKey(thread.channel, thread.threadId));
+	}
+
+	private participants(tenant: string, instance: string): Participants {
+		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		let store = this.participantStores.get(key);
+		if (store === undefined) {
+			store = new Participants(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+			this.participantStores.set(key, store);
+		}
+		return store;
 	}
 
 	/** The tasks programmati of an instance. */
@@ -159,7 +183,7 @@ export class AnnieRuntime {
 	async submitScheduled(
 		tenant: string,
 		instance: string,
-		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined },
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
@@ -212,6 +236,26 @@ export class AnnieRuntime {
 		await next;
 		// A later reopen may already have replaced this one: resume the current instance.
 		return this.resume(tenant, instance);
+	}
+
+	/**
+	 * Work under way in a tenant's open instances: submissions still waiting for their reply,
+	 * and replies with a retry pending. A process that may be stopped (a cell) waits for zero.
+	 * Replies that only wait for a restart do not count: the next resume sends them.
+	 */
+	async activity(tenant: string): Promise<{ working: number; retrying: number }> {
+		const prefix = `${tenantId(tenant)}/`;
+		let working = 0;
+		let retrying = 0;
+		for (const [key, opening] of this.instances) {
+			if (!key.startsWith(prefix)) continue;
+			const instance = await opening.catch(() => undefined);
+			if (instance === undefined) continue;
+			const a = await instance.activity();
+			working += a.working;
+			retrying += a.retrying;
+		}
+		return { working, retrying };
 	}
 
 	onReply(listener: (reply: Reply) => void): () => void {
@@ -273,7 +317,7 @@ export class AnnieRuntime {
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id) }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -304,6 +348,7 @@ export class AnnieInstance {
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
+		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants },
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -349,7 +394,20 @@ export class AnnieInstance {
 			userId: request.userId,
 			chars: request.text.length,
 		});
-		return this.admit(request);
+		// In a private thread the instance learns whom it is with and gets what it remembers about
+		// them; in a group, only the shared memories, so one person's never reach the others.
+		const key = threadKey(request.channel, request.threadId);
+		const { privateThread, ...message } = request;
+		let note: string;
+		if (privateThread === true) {
+			const subject = subjectOf(request.channel, request.userId);
+			this.memory.participants.set(key, subject);
+			note = memoryNote(this.memory.store.forSubject(subject));
+		} else {
+			this.memory.participants.clear(key);
+			note = memoryNote(this.memory.store.forSubject(SHARED));
+		}
+		return this.admit({ ...message, text: `${request.text}${note}` });
 	}
 
 	/**
@@ -365,6 +423,7 @@ export class AnnieInstance {
 		scheduleId: string;
 		/** The person it acts for: must still be allowed, or the run is refused. */
 		onBehalfOf: { channel: string; userId: string } | undefined;
+		kind?: "brief";
 	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
@@ -382,8 +441,12 @@ export class AnnieInstance {
 			}
 			throw error;
 		}
-		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId });
-		return this.admit(request);
+		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
+		// The person's own memories only in a thread with them alone: a console thread, or a
+		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
+		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);
+		const note = memoryNote(this.memory.store.forSubject(alone ? subjectOf(person.channel, person.userId) : SHARED));
+		return this.admit({ ...request, text: `${request.text}${note}` });
 	}
 
 	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }): Promise<{ submissionId: string }> {
@@ -510,6 +573,11 @@ export class AnnieInstance {
 		});
 	}
 
+	async activity(): Promise<{ working: number; retrying: number }> {
+		const waiting = (await this.outbox.list()).filter((entry) => entry.reply === undefined && entry.deliveredAt === undefined);
+		return { working: waiting.length, retrying: this.retries.size };
+	}
+
 	/** Replies not yet confirmed by their channel, oldest first. */
 	async undelivered(): Promise<OutboxEntry[]> {
 		return (await this.outbox.list()).filter((entry) => entry.reply !== undefined && entry.deliveredAt === undefined);
@@ -557,8 +625,8 @@ export class AnnieInstance {
 	private async handOff(entry: OutboxEntry): Promise<void> {
 		const reply = entry.reply;
 		if (reply === undefined || this.handedOff.has(entry.key)) return;
-		// Replies leave through a channel: check egress again, the policy is the last word.
-		if (!this.record.egress.channels.includes(entry.channel)) {
+		// Replies leave through a channel: check egress again, the policy as stored now is the last word.
+		if (!(await this.fresh()).egress.channels.includes(entry.channel)) {
 			await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: "channel", target: entry.channel });
 			return;
 		}

@@ -30,6 +30,7 @@
     "dev:segreteria": "tsx src/main/segreteria.ts",
     "eval:segreteria": "tsx evals/segreteria/run.ts",
     "eval:segreteria:judge": "tsx evals/segreteria/judge.ts",
-    "eval:segreteria:validate": "python3 evals/segreteria/scripts/validate_and_build.py"
+    "eval:segreteria:validate": "python3 evals/segreteria/scripts/validate_and_build.py",
+    "cloud": "tsx src/main/cloud.ts"
   }
 }

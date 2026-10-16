@@ -1,6 +1,8 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmodSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { TenantId } from "./ids.ts";
+import { updateJsonFile } from "./locked-json.ts";
 import { secretsFile } from "./paths.ts";
 
 /**
@@ -24,13 +26,18 @@ export class TenantSecrets {
 	}
 
 	async set(name: string, value: string): Promise<void> {
-		const all = await this.readAll();
-		all[name] = value;
-		await mkdir(dirname(this.file), { recursive: true });
-		const tmp = `${this.file}.tmp`;
-		await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
-		await rename(tmp, this.file);
-		await chmod(this.file, 0o600);
+		this.update((all) => ({ ...all, [name]: value }));
+	}
+
+	async delete(name: string): Promise<void> {
+		this.update(({ [name]: _gone, ...rest }) => rest);
+	}
+
+	/** Read, change and write under a lock: two writers at once never lose each other's secret. */
+	private update(change: (all: Record<string, string>) => Record<string, string>): void {
+		mkdirSync(dirname(this.file), { recursive: true });
+		updateJsonFile<Record<string, string>>(this.file, {}, change);
+		chmodSync(this.file, 0o600);
 	}
 
 	/** Secret names only, never values. */

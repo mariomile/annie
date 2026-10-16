@@ -1,3 +1,4 @@
+import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;
 	readonly modelProvider: string;
@@ -137,8 +138,20 @@ export type AnnieConfig = {
 	readonly modelApiKey: string | undefined;
 	readonly timeZone: string;
 	readonly web: { readonly host: string; readonly port: number; readonly publicUrl: string | undefined };
-	readonly telegram: { readonly token: string; readonly allowedUsers: readonly string[] | undefined; readonly approvers: readonly string[] | undefined } | undefined;
+	readonly telegram:
+		| {
+				readonly token: string;
+				readonly allowedUsers: readonly string[] | undefined;
+				readonly approvers: readonly string[] | undefined;
+				/** Webhook instead of long polling: Telegram pushes to ANNIE_PUBLIC_URL with this secret. */
+				readonly webhookSecret: string | undefined;
+		  }
+		| undefined;
 	readonly segreteria: SegreteriaConfig | undefined;
+	/** Running as a cell of Annie Cloud: set by the control plane. */
+	readonly cell: { readonly secret: string | undefined };
+	/** The OAuth client people connect their Google account with (Gmail and Calendar, read only). */
+	readonly google: { readonly clientId: string; readonly clientSecret: string; readonly redirectUrl: string; readonly services: readonly GoogleService[] } | undefined;
 };
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -160,12 +173,32 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (invalid.length > 0) throw new ConfigError(`${name} must be a comma-separated list of numeric Telegram user IDs; invalid: ${invalid.join(", ")}`);
 		return list;
 	};
-	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
-	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS") };
 	const port = Number(nonEmpty(env.ANNIE_WEB_PORT) ?? "8080");
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new ConfigError("ANNIE_WEB_PORT must be a port number");
 	const publicUrl = nonEmpty(env.ANNIE_PUBLIC_URL)?.replace(/\/+$/, "");
 	if (publicUrl !== undefined && !/^https?:\/\//.test(publicUrl)) throw new ConfigError("ANNIE_PUBLIC_URL must start with http:// or https://");
+	const webhookSecret = nonEmpty(env.ANNIE_TELEGRAM_WEBHOOK_SECRET);
+	if (webhookSecret !== undefined) {
+		// Telegram's rule for secret_token: 1-256 characters, letters, digits, _ and -.
+		if (!/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret)) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET: 1 to 256 characters, only letters, digits, _ and -");
+		if (publicUrl === undefined) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET needs ANNIE_PUBLIC_URL: Telegram sends the updates there");
+	}
+	const cellSecret = nonEmpty(env.ANNIE_CELL_SECRET);
+	if (cellSecret !== undefined && cellSecret.length < 16) throw new ConfigError("ANNIE_CELL_SECRET: at least 16 characters");
+	const googleId = nonEmpty(env.ANNIE_GOOGLE_CLIENT_ID);
+	const googleSecret = nonEmpty(env.ANNIE_GOOGLE_CLIENT_SECRET);
+	let google: AnnieConfig["google"];
+	if (googleId !== undefined || googleSecret !== undefined) {
+		if (googleId === undefined || googleSecret === undefined) throw new ConfigError("Set both ANNIE_GOOGLE_CLIENT_ID and ANNIE_GOOGLE_CLIENT_SECRET, or neither");
+		const redirectUrl = nonEmpty(env.ANNIE_GOOGLE_REDIRECT_URL) ?? (publicUrl === undefined ? `http://localhost:${port}` : publicUrl) + "/oauth/google/callback";
+		if (!/^https?:\/\/[^/]+\/oauth\/google\/callback$/.test(redirectUrl)) throw new ConfigError("ANNIE_GOOGLE_REDIRECT_URL must be an http(s) address ending in /oauth/google/callback (Google accepts http only on localhost)");
+		const services = (nonEmpty(env.ANNIE_GOOGLE_SERVICES) ?? GOOGLE_SERVICES.join(",")).split(",").map((x) => x.trim()).filter((x) => x !== "");
+		const unknown = services.filter((x) => !(GOOGLE_SERVICES as readonly string[]).includes(x));
+		if (services.length === 0 || unknown.length > 0) throw new ConfigError(`ANNIE_GOOGLE_SERVICES: a comma-separated list of ${GOOGLE_SERVICES.join(", ")}${unknown.length > 0 ? `; unknown: ${unknown.join(", ")}` : ""}`);
+		google = { clientId: googleId, clientSecret: googleSecret, redirectUrl, services: [...new Set(services)] as GoogleService[] };
+	}
+	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
+	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
 	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
 	try {
 		new Intl.DateTimeFormat("en-US", { timeZone });
@@ -201,5 +234,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		web: { host: nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1", port, publicUrl },
 		telegram,
 		segreteria,
+		cell: { secret: cellSecret },
+		google,
 	};
 }

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="it">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="color-scheme" content="light dark">
+	<meta name="referrer" content="no-referrer">
+	<title>Annie Cloud</title>
+	<link rel="icon" href="/icon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+	<div class="login">
+		<div class="card">
+			<div class="login-mark"><img src="/icon.svg" alt="" width="40" height="40"></div>
+			<h1 id="title">Il tuo agente sempre attivo</h1>
+			<p id="lead">Annie lavora per te anche a telefono spento: risponde, prepara file, ricorda le scadenze, usa i tuoi strumenti. I tuoi dati restano in Europa.</p>
+			<form id="signup" class="stack">
+				<label class="field"><span>La tua email</span><input id="email" type="text" inputmode="email" autocomplete="email" placeholder="nome@studio.it" required></label>
+				<button class="btn accent" type="submit">Ricevi il link per entrare</button>
+			</form>
+			<p id="status" class="muted" role="status" aria-live="polite"></p>
+		</div>
+	</div>
+	<script type="module" src="/cloud.js"></script>
+</body>
+</html>

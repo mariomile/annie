@@ -1,6 +1,7 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { readJsonFile, updateJsonFile } from "./locked-json.ts";
+import { sameSecret } from "./compare.ts";
+import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import { generateTotpSecret, verifyTotp } from "./totp.ts";
 
 /**
@@ -28,11 +29,6 @@ export function publicPerson(p: Person): PublicPerson {
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
-function sameHash(a: string, b: string): boolean {
-	const x = Buffer.from(a, "hex");
-	const y = Buffer.from(b, "hex");
-	return x.length === y.length && timingSafeEqual(x, y);
-}
 
 /** The people of a tenant, in one file. */
 export class PeopleStore {
@@ -107,7 +103,7 @@ export class PeopleStore {
 	async byToken(token: string): Promise<Person | undefined> {
 		if (typeof token !== "string" || token.length < 20 || token.length > 200) return undefined;
 		const h = hash(token);
-		return (await this.list()).find((p) => sameHash(p.tokenHash, h));
+		return (await this.list()).find((p) => sameSecret(p.tokenHash, h));
 	}
 
 	/** Change one person under the shared lock; returns what `change` reports. */
@@ -146,18 +142,18 @@ export class SessionStore {
 	async personOf(sessionId: string | undefined, now = Date.now()): Promise<string | undefined> {
 		if (sessionId === undefined || sessionId.length < 20 || sessionId.length > 200) return undefined;
 		const h = hash(sessionId);
-		return (await this.load()).find((s) => s.expiresAt > now && sameHash(s.idHash, h))?.personId;
+		return (await this.load()).find((s) => s.expiresAt > now && sameSecret(s.idHash, h))?.personId;
 	}
 
 	async end(sessionId: string): Promise<void> {
 		const h = hash(sessionId);
-		updateJsonFile<Session[]>(this.file, [], (all) => all.filter((s) => !sameHash(s.idHash, h)));
+		updateJsonFile<Session[]>(this.file, [], (all) => all.filter((s) => !sameSecret(s.idHash, h)));
 	}
 
 	/** End every session of a person, but `keep` (the session asking, when it should stay). */
 	async endAllOf(personId: string, keep?: string): Promise<void> {
 		const kept = keep === undefined ? undefined : hash(keep);
-		updateJsonFile<Session[]>(this.file, [], (all) => all.filter((s) => s.personId !== personId || (kept !== undefined && sameHash(s.idHash, kept))));
+		updateJsonFile<Session[]>(this.file, [], (all) => all.filter((s) => s.personId !== personId || (kept !== undefined && sameSecret(s.idHash, kept))));
 	}
 
 	/** Read every time: the CLI revokes sessions from another process. */

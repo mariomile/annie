@@ -5,11 +5,15 @@ Piattaforma open source di agenti sempre attivi per aziende attente a privacy e 
 ## Chi
 
 **Owner**:
-Chi installa e gestisce Annie (Buildrs o l'IT del cliente). Crea tenant e istanze e decide cosa possono raggiungere.
+Chi gestisce un tenant: in self-host chi installa Annie (Buildrs o l'IT del cliente), in Annie Cloud chi si registra. Crea istanze e decide cosa possono raggiungere.
 _Avoid_: admin, superuser
 
+**Operatore**:
+Chi gestisce Annie Cloud per tutti i tenant (Buildrs). Non legge le conversazioni nel lavoro normale; può entrare in una cella come owner solo lasciando traccia nell'audit della cella, e non se l'owner ha la verifica in due passaggi.
+_Avoid_: admin, owner
+
 **Tenant**:
-Un'azienda cliente, con dati, segreti, audit e spesa separati da tutti gli altri.
+Un cliente (azienda, studio o professionista), con dati, segreti, audit e spesa separati da tutti gli altri.
 _Avoid_: cliente (nel codice), account, workspace
 
 **Istanza**:
@@ -31,6 +35,24 @@ _Avoid_: password, invito
 **Verifica in due passaggi**:
 Per chi la attiva, il link personale da solo non basta: serve anche il codice di sei cifre dell'app di autenticazione del telefono (TOTP). L'owner può toglierla a chi ha perso il telefono.
 _Avoid_: MFA, OTP (nei testi per le persone)
+
+## Dove gira
+
+**Self-host**:
+Annie installata dal cliente sul suo server, gestita dall'Owner.
+_Avoid_: on-prem (nei testi per le persone)
+
+**Annie Cloud**:
+Annie offerta come servizio da Buildrs: ogni tenant ha la sua cella, con dati in Unione Europea.
+_Avoid_: SaaS, versione online
+
+**Cella**:
+L'ambiente isolato di un tenant in Annie Cloud: lo stesso Annie del self-host, su una macchina tutta sua, che si spegne quando non lavora.
+_Avoid_: container, pod, istanza (un'istanza è un agente, dentro la cella)
+
+**Control plane**:
+La parte di Annie Cloud comune a tutti i tenant: registrazione, pagamento, smistamento dei messaggi alla cella giusta, risveglio delle celle. Inoltra i messaggi senza conservarli.
+_Avoid_: backend, piattaforma
 
 ## Conversazioni
 
@@ -70,6 +92,18 @@ _Avoid_: disco, storage, cartella
 **Task programmato**:
 Un'istruzione che un'istanza esegue da sola a un'ora stabilita, una volta o a ripetizione, consegnando il risultato a un thread.
 _Avoid_: cron, job, promemoria, routine
+
+**Memoria**:
+Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; valgono solo quando parla con lei da sola, e la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce solo l'owner.
+_Avoid_: profilo, contesto, knowledge base
+
+**Account collegato**:
+Un account esterno di una persona (oggi Google) che le istanze leggono per lei, solo nelle sue conversazioni e solo dove l'owner lo consente. Diverso da un connettore, che appartiene a un'istanza.
+_Avoid_: integrazione, connettore personale
+
+**Brief del mattino**:
+Il task programmato di una persona che ogni mattina le riassume impegni del giorno, mail che chiedono una risposta e quello che l'istanza ricorda di lei, leggendo senza cambiare niente.
+_Avoid_: digest, report giornaliero, newsletter
 
 ## Controllo
 

@@ -34,6 +34,7 @@ const ICONS = {
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
 	task: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 7.5V12l3 2"],
 	file: ["M14 3H6v18h12V7Z", "M14 3v4h4"],
+	memoria: ["M12 4a4 4 0 0 0-4 4v1a3 3 0 0 0-2 5.2V16a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4v-1.8A3 3 0 0 0 16 9V8a4 4 0 0 0-4-4Z", "M12 4v16"],
 	connettori: ["M9 3v5M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4"],
 	impostazioni: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 5v4M9 15v4"],
 	persone: ["M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M2.5 21a6.5 6.5 0 0 1 13 0", "M16 3.6a4 4 0 0 1 0 6.8", "M18.5 14.5A6.5 6.5 0 0 1 21.5 21"],
@@ -123,6 +124,7 @@ const PALETTE = [
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
 	{ id: "task", label: "Task programmati", group: "Lavoro" },
 	{ id: "file", label: "File", group: "Lavoro" },
+	{ id: "memoria", label: "Memoria", group: "Lavoro" },
 	{ id: "connettori", label: "Connettori", group: "Gestione", owner: true },
 	{ id: "impostazioni", label: "Impostazioni", group: "Gestione", owner: true },
 	{ id: "persone", label: "Persone", group: "Gestione", owner: true },
@@ -164,6 +166,7 @@ async function enter() {
 		return;
 	}
 	await refreshInstances();
+	if (location.hash.startsWith("#/google?")) await finishGoogle();
 	connectEvents();
 	window.addEventListener("hashchange", render);
 	render();
@@ -268,10 +271,99 @@ function renderCode(token, error) {
 	code.focus();
 }
 
+// ---------- Google ----------
+/** Back from Google's consent: the code is in the fragment, the session in our cookie. */
+async function finishGoogle() {
+	const params = new URLSearchParams(location.hash.slice("#/google?".length));
+	history.replaceState(null, "", "/#/chat");
+	if (params.get("error")) return toast(params.get("error") === "access_denied" ? "Collegamento a Google annullato" : "Google non ha completato il collegamento: riprova", true);
+	try {
+		const { account } = await api("/api/google/finish", { method: "POST", body: { state: params.get("state") ?? "", code: params.get("code") ?? "" } });
+		toast(`Google collegato: ${account.email}`);
+	} catch (error) {
+		toast(error.message, true);
+	}
+}
+
+/** The person's own Google account, in the account dialog. */
+function googleSection() {
+	const box = h("div.card.pad.stack");
+	const draw = async () => {
+		const { available, account, services } = await api("/api/google");
+		if (!available) return box.remove();
+		const what = services.length > 1 ? "la tua posta e il tuo calendario" : services[0] === "gmail" ? "la tua posta" : "il tuo calendario";
+		if (account) {
+			box.replaceChildren(
+				h("div.kicker", "Google"),
+				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
+				h("p.muted", `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
+				h(
+					"div.actions",
+					h(
+						"button.btn.danger",
+						{
+							onclick: async () => {
+								await api("/api/google", { method: "DELETE" }).catch((e) => toast(e.message, true));
+								toast("Google scollegato");
+								await draw();
+							},
+						},
+						"Scollega",
+					),
+				),
+			);
+			return;
+		}
+		box.replaceChildren(
+			h("div.kicker", "Google"),
+			h("p", `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
+			h(
+				"div.actions",
+				h(
+					"button.btn.accent",
+					{
+						onclick: async () => {
+							try {
+								location.assign((await api("/api/google/start", { method: "POST", body: {} })).url);
+							} catch (error) {
+								toast(error.message, true);
+							}
+						},
+					},
+					"Collega Google",
+				),
+			),
+		);
+	};
+	void draw().catch(() => box.remove());
+	return box;
+}
+
+/** Owner: whether this instance may use people's Google accounts (its egress policy). */
+function googleCard(inst, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/google`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Google consentito per questa istanza" : "Google non più consentito per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Google"),
+		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questa istanza di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console."),
+		h("label.row-gap", toggle, h("span", "Consenti Google a questa istanza")),
+	);
+}
+
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
-	const dialog = h("dialog", h("h3", "Il tuo account"), body);
+	const dialog = h("dialog", h("h3", "Il tuo account"), googleSection(), body);
 	const draw = async () => {
 		const me = (await api("/api/me")).person;
 		state.me = me;
@@ -372,7 +464,7 @@ function render() {
 	$app.replaceChildren(shell);
 	renderRail();
 	state.onEntry = undefined;
-	const views = { chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		main.replaceChildren(h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -879,7 +971,11 @@ async function viewApprovals(main) {
 async function viewTasks(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ schedules }, threads] = await Promise.all([api(`/api/instances/${inst.id}/schedules`), inst.canChat ? api(`/api/instances/${inst.id}/threads`).then((r) => r.threads) : Promise.resolve([])]);
+	const [{ schedules }, threads, briefState] = await Promise.all([
+		api(`/api/instances/${inst.id}/schedules`),
+		inst.canChat ? api(`/api/instances/${inst.id}/threads`).then((r) => r.threads) : Promise.resolve([]),
+		api(`/api/instances/${inst.id}/brief`).catch(() => undefined),
+	]);
 	const table = h(
 		"table.ledger",
 		h("thead", h("tr", h("th", "Istruzione"), h("th", "Quando"), h("th", "Prossima"), h("th", ""))),
@@ -888,7 +984,7 @@ async function viewTasks(main) {
 			schedules.map((s) =>
 				h(
 					"tr",
-					h("td", s.instruction, h("div.mono.muted", `${s.id} · ${s.channel}${s.createdBy.kind === "instance" ? " · creato da Annie" : ""}`)),
+					h("td", s.kind === "brief" ? "Brief del mattino" : s.instruction, h("div.mono.muted", `${s.id} · ${s.channel}${s.createdBy.kind === "instance" ? " · creato da Annie" : ""}`)),
 					h("td.mono", "at" in s.when ? `una volta` : `${s.when.cron} (${s.when.timeZone})`),
 					h("td.mono", s.nextRunAt ? fmt.time(s.nextRunAt) : "finito"),
 					h(
@@ -959,6 +1055,7 @@ async function viewTasks(main) {
 	};
 	main.replaceChildren(
 		head(inst.name, h("h1", "Task programmati"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione. Il risultato arriva nella chat scelta."),
+		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
 			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), "Creane uno qui accanto, oppure chiedilo ad Annie in chat.")),
@@ -969,6 +1066,46 @@ async function viewTasks(main) {
 					? [h("label.field", h("span", "Cosa deve fare"), instruction), h("div.field", h("span", "Quando"), seg), whenBox, h("label.field", h("span", "Risultato nella chat"), thread), h("button.btn.accent", { onclick: create }, "Programma")]
 					: h("p.muted", "Apri prima una conversazione in Chat: il risultato dei task arriva lì."),
 			),
+		),
+	);
+}
+
+/** The person's brief del mattino: on, off, and at what time. */
+function briefCard(inst, { brief, google }) {
+	const time = h("input", { type: "time", value: brief?.time ?? "07:30", class: "mono" });
+	const weekdays = h("input", { type: "checkbox", checked: brief ? brief.weekdaysOnly !== false : true });
+	const save = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/brief`, { method: "PUT", body: { time: time.value, weekdaysOnly: weekdays.checked } });
+			toast(brief ? "Brief aggiornato" : `Brief attivo: ogni mattina alle ${time.value}`);
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const off = async () => {
+		await api(`/api/instances/${inst.id}/brief`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+		toast("Brief disattivato");
+		render();
+	};
+	const hint = !google.available
+		? "Google non è configurato su questo server: il brief userà solo quello che Annie ricorda di te."
+		: !google.connected
+			? "Collega Google dal menu del tuo account per avere calendario e mail nel brief."
+			: !google.allowed
+				? "Hai collegato Google, ma questa istanza non lo può usare: l'owner lo attiva in Impostazioni."
+				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Annie ricorda di te. Solo lettura.";
+	return h(
+		"div.card.pad.brief",
+		h("div.row-gap", h("h3", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),
+		h("p.muted", hint),
+		h(
+			"div.row-gap",
+			h("label.field.inline", h("span", "Ora"), time),
+			h("label.row-gap", weekdays, h("span", "Solo giorni feriali")),
+			h("button.btn.accent", { onclick: save }, brief ? "Aggiorna" : "Attiva"),
+			brief ? h("button.btn.ghost", { onclick: () => go("chat", brief.threadId) }, "Apri la chat del brief") : null,
+			brief ? h("button.btn.danger", { onclick: off }, "Disattiva") : null,
 		),
 	);
 }
@@ -1028,6 +1165,55 @@ async function viewFiles(main) {
 						),
 					)
 				: h("div.empty", h("b", "Nessun file"), "Caricane uno, o chiedi ad Annie di preparare un report."),
+		),
+	);
+}
+
+// ---------- memoria ----------
+async function viewMemory(main) {
+	if (needInstance(main)) return;
+	const inst = state.instance;
+	const { mine, shared, canEditShared } = await api(`/api/instances/${inst.id}/memory`);
+	const forget = (m) =>
+		confirmDialog("Dimenticare questa memoria?", m.text, "Dimentica", async () => {
+			await api(`/api/instances/${inst.id}/memory/${m.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+			render();
+		});
+	const list = (memories, editable, empty) =>
+		memories.length
+			? h(
+					"table.ledger",
+					h(
+						"tbody",
+						memories.map((m) =>
+							h(
+								"tr",
+								h("td", m.text, h("div.mono.muted", `${m.source === "annie" ? "ricordata da Annie" : "aggiunta a mano"} · ${fmt.time(m.createdAt)}`)),
+								h("td", editable ? h("button.btn.small.danger", { onclick: () => forget(m) }, "Dimentica") : null),
+							),
+						),
+					),
+				)
+			: h("div.empty", h("b", "Niente"), empty);
+	const add = (isShared) => {
+		const text = h("textarea", { rows: 2, maxlength: 500, placeholder: isShared ? "Es. L'ufficio è chiuso dal 10 al 25 agosto" : "Es. Preferisco risposte brevi, in punti" });
+		const save = async () => {
+			try {
+				await api(`/api/instances/${inst.id}/memory`, { method: "POST", body: { text: text.value, shared: isShared } });
+				toast("Annie se lo ricorderà");
+				render();
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		return h("div.pad", h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text), h("button.btn", { onclick: save }, "Ricorda"));
+	};
+	main.replaceChildren(
+		head(inst.name, h("h1", "Memoria"), "Quello che Annie ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva ad Annie."),
+		h(
+			"div.grid-2",
+			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, "Annie non ricorda ancora niente di te. Puoi dirle «ricordati che…» in chat, o aggiungerlo qui."), add(false)),
+			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
 }
@@ -1178,7 +1364,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people")]);
+	const [{ settings }, { people }, tg, google] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people"), api(`/api/instances/${inst.id}/telegram`).catch(() => undefined), api("/api/google").catch(() => ({ available: false }))]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
 	const chat = new Set(settings.allowedUsers.web ?? []);
@@ -1203,7 +1389,12 @@ async function viewSettings(main) {
 		head(inst.name, h("h1", "Impostazioni"), "Chi può usare questa istanza dal web, chi approva le sue azioni, e come si comporta.", h("button.btn.accent", { onclick: save }, "Salva")),
 		h(
 			"div.grid-2",
-			h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
+			h(
+				"div.stack",
+				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
+				tg === undefined ? null : telegramCard(inst, tg.telegram),
+				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
+			),
 			h(
 				"div.stack",
 				h("div.card", h("table.ledger", h("thead", h("tr", h("th", "Persona"), h("th", "Scrive"), h("th", "Approva"))), h("tbody", rows.map((r) => r.row)))),
@@ -1215,6 +1406,39 @@ async function viewSettings(main) {
 				),
 			),
 		),
+	);
+}
+
+/** The instance's Telegram bot: the token goes in once and never comes back. */
+function telegramCard(inst, t) {
+	const token = h("input", { type: "password", autocomplete: "off", placeholder: t.connected ? "Nuovo token (facoltativo)" : "123456789:AA…", class: "mono" });
+	const list = (ids) => ids.join(", ");
+	const allowed = h("input", { type: "text", class: "mono", value: list(t.allowedUsers), placeholder: "123456789, 987654321" });
+	const approvers = h("input", { type: "text", class: "mono", value: list(t.approvers), placeholder: "123456789" });
+	const ids = (input) => input.value.split(/[\s,]+/).filter(Boolean);
+	const save = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/telegram`, { method: "PUT", body: { ...(token.value.trim() ? { token: token.value.trim() } : {}), allowedUsers: ids(allowed), approvers: ids(approvers) } });
+			toast(t.connected ? "Telegram aggiornato" : "Bot collegato");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const disconnect = () =>
+		confirmDialog("Scollegare il bot?", "Annie smette di rispondere su Telegram per questa istanza. Il token viene cancellato.", "Scollega", async () => {
+			await api(`/api/instances/${inst.id}/telegram`, { method: "DELETE" });
+			toast("Bot scollegato");
+			render();
+		});
+	return h(
+		"div.card.pad",
+		h("div.row-gap", h("div.kicker", "Telegram"), t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato")),
+		t.connected ? null : h("p.muted", "Crea un bot con @BotFather su Telegram e incolla qui il suo token. Ogni persona ammessa apre il bot e preme Start."),
+		h("label.field", h("span", t.connected ? "Token" : "Token del bot"), token),
+		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta.")),
+		h("label.field", h("span", "Chi approva"), approvers, h("small", "Ricevono su Telegram le schede dei tool da approvare.")),
+		h("div.actions", h("button.btn.accent", { onclick: save }, t.connected ? "Salva" : "Collega"), t.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
 	);
 }
 

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
@@ -9,21 +11,28 @@ afterEach(async () => {
 	for (const a of running.splice(0)) await a.stop();
 });
 
-/** Fake Telegram: queued updates in, every sendMessage recorded. */
+/** Fake Telegram: queued updates in, every call recorded; bots told apart by their token. */
 function fakeTelegram() {
-	const updates: unknown[][] = [];
-	const sent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } }[] = [];
+	const queues = new Map<string, unknown[][]>();
+	const queue = (token: string) => queues.get(token) ?? (queues.set(token, []).get(token) as unknown[][]);
+	const sent: { token: string; chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } }[] = [];
+	const methods: string[] = [];
+	const calls: { token: string; method: string }[] = [];
 	const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-		const method = String(url).slice(String(url).lastIndexOf("/") + 1);
+		const [, token = "", method = ""] = /\/bot([^/]+)\/(\w+)$/.exec(String(url)) ?? [];
+		methods.push(method);
+		calls.push({ token, method });
+		if (token === "bad") return Response.json({ ok: false, error_code: 401, description: "Unauthorized" }, { status: 401 });
+		if (method === "getMe") return Response.json({ ok: true, result: { username: `bot_${token.split(":")[0]}` } });
 		if (method === "getUpdates") {
-			const batch = updates.shift();
+			const batch = queue(token).shift();
 			if (batch === undefined) await new Promise((r) => setTimeout(r, 20));
 			return Response.json({ ok: true, result: batch ?? [] });
 		}
-		if (method === "sendMessage") sent.push(JSON.parse(String(init?.body)));
+		if (method === "sendMessage") sent.push({ token, ...JSON.parse(String(init?.body)) });
 		return Response.json({ ok: true, result: { message_id: 1 } });
 	}) as typeof fetch;
-	return { updates, sent, fetch: fetchImpl };
+	return { updates: queue("1:T"), queue, sent, methods, calls, fetch: fetchImpl };
 }
 
 async function until(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
@@ -34,9 +43,9 @@ async function until(check: () => Promise<boolean>, timeoutMs = 10_000): Promise
 	}
 }
 
-async function boot(dataDir: string, telegram = fakeTelegram()) {
-	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", TELEGRAM_BOT_TOKEN: "1:T", ANNIE_TELEGRAM_ALLOWED_USERS: "7", ANNIE_TELEGRAM_APPROVERS: "9" });
-	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { telegramFetch: telegram.fetch, schedulerIntervalMs: 60_000, log: () => {} });
+async function boot(dataDir: string, telegram = fakeTelegram(), env: Record<string, string> = {}) {
+	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", TELEGRAM_BOT_TOKEN: "1:T", ANNIE_TELEGRAM_ALLOWED_USERS: "7", ANNIE_TELEGRAM_APPROVERS: "9", ...env });
+	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { telegramFetch: telegram.fetch, schedulerIntervalMs: 60_000, log: process.env.DEBUG_APP ? console.error : () => {} });
 	running.push(annie);
 	const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
 	return { annie, base, telegram };
@@ -47,11 +56,12 @@ async function client(base: string, link: string) {
 	const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token }) });
 	expect(login.status).toBe(200);
 	const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
-	return async (path: string, body?: unknown) => {
+	const call = async (path: string, body?: unknown) => {
 		const res = await fetch(`${base}${path}`, { method: body === undefined ? "GET" : "POST", headers: { cookie, "x-annie": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 		// biome-ignore lint: test
 		return (await res.json()) as any;
 	};
+	return Object.assign(call, { cookie });
 }
 
 describe("pnpm start (startAnnie)", () => {
@@ -184,6 +194,99 @@ describe("pnpm start (startAnnie)", () => {
 		const results = await Promise.all([1, 2, 3].map(() => api("/api/instances", { id: "doppia", name: "Doppia" })));
 		expect(results.filter((r) => r.instance !== undefined)).toHaveLength(1);
 		for (const r of results.filter((r) => r.instance === undefined)) expect(r.error).toMatch(/esiste già/);
+	});
+
+	it("Telegram via webhook: the bot is registered, a pushed update with the right secret gets a reply, a wrong secret gets nothing", async () => {
+		const telegram = fakeTelegram();
+		const { base } = await boot(tempDataDir(), telegram, { ANNIE_PUBLIC_URL: "https://annie.example", ANNIE_TELEGRAM_WEBHOOK_SECRET: "hook_secret-123" });
+		await until(async () => telegram.methods.includes("setWebhook"));
+		expect(telegram.methods).not.toContain("getUpdates");
+		const push = (secret: string, update: unknown) => fetch(`${base}/hooks/telegram/annie`, { method: "POST", headers: { "content-type": "application/json", "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(update) });
+		const update = { update_id: 1, message: { message_id: 3, chat: { id: 7 }, from: { id: 7 }, text: "ciao dal webhook" } };
+		expect((await push("wrong", update)).status).toBe(401);
+		expect((await fetch(`${base}/hooks/telegram/altra`, { method: "POST", headers: { "x-telegram-bot-api-secret-token": "hook_secret-123" }, body: "{}" })).status).toBe(404);
+		expect((await push("hook_secret-123", update)).status).toBe(200);
+		await waitFor(() => telegram.sent.some((m) => m.chat_id === "7" && m.text.includes("ciao dal webhook")));
+		// The same update delivered again (Telegram retries) is answered once.
+		expect((await push("hook_secret-123", update)).status).toBe(200);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(telegram.sent.filter((m) => m.chat_id === "7" && m.text.includes("ciao dal webhook"))).toHaveLength(1);
+	});
+
+	it("a cell: no owner link on disk, the control plane asks for one; the cell tells when it may sleep and when to wake it", async () => {
+		const dataDir = tempDataDir();
+		const { annie, base } = await boot(dataDir, fakeTelegram(), { ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
+		expect(annie.ownerLink).toBeUndefined();
+		expect(existsSync(join(dataDir, "owner-login-link.txt"))).toBe(false);
+		const { token: ownerToken } = (await (await fetch(`${base}/internal/owner-link`, { method: "POST", headers: { authorization: "Bearer cell-secret-xyz-0001" } })).json()) as { token: string };
+		const api = await client(base, `${base}/login#${ownerToken}`);
+		expect((await api("/api/me")).person.role).toBe("owner");
+		const state = (secret?: string) => fetch(`${base}/internal/cell`, { headers: secret === undefined ? {} : { authorization: `Bearer ${secret}` } });
+		expect((await state()).status).toBe(401);
+		expect((await state("wrong")).status).toBe(401);
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: null });
+		const thread = (await api("/api/instances/annie/threads", {})).thread;
+		const at = new Date(Date.now() + 3_600_000).toISOString();
+		await api("/api/instances/annie/schedules", { instruction: "Promemoria", at, threadId: thread.id });
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at });
+	});
+
+	it("a cell gives the control plane a fresh owner link on request; the old link stops working", async () => {
+		const { base } = await boot(tempDataDir(), fakeTelegram(), { ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
+		const ask = (secret: string) => fetch(`${base}/internal/owner-link`, { method: "POST", headers: { authorization: `Bearer ${secret}` } });
+		expect((await ask("wrong-secret-000000")).status).toBe(401);
+		const { token: ownerToken } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
+		const { token } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
+		expect(token).toMatch(/^[\w-]{40,}$/);
+		const login = (t: string) => fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: t }) });
+		expect((await login(ownerToken)).status).toBe(401);
+		expect((await login(token)).status).toBe(200);
+	});
+
+	it("without a cell secret there is no cell endpoint", async () => {
+		const { base } = await boot(tempDataDir());
+		expect((await fetch(`${base}/internal/cell`, { headers: { authorization: "Bearer x" } })).status).toBe(404);
+	});
+
+	it("the owner connects a Telegram bot to an instance from the console; it answers, survives a restart, and can be disconnected", async () => {
+		const dataDir = tempDataDir();
+		const telegram = fakeTelegram();
+		const first = await boot(dataDir, telegram);
+		const owner = await client(first.base, first.annie.ownerLink as string);
+		await owner("/api/instances", { id: "vendite", name: "Vendite" });
+		const put = (body: unknown) =>
+			fetch(`${first.base}/api/instances/vendite/telegram`, { method: "PUT", headers: { "x-annie": "1", "content-type": "application/json", cookie: owner.cookie }, body: JSON.stringify(body) });
+		expect((await put({ token: "bad", allowedUsers: ["8"] })).status).toBe(400);
+		expect((await put({ token: "2:V", allowedUsers: ["8", "nope"] })).status).toBe(400);
+		const connected = await put({ token: "2:V", allowedUsers: ["8"], approvers: ["8"] });
+		expect(connected.status).toBe(200);
+		const status = await owner("/api/instances/vendite/telegram");
+		expect(status).toEqual({ telegram: { connected: true, username: "bot_2", mode: "polling", allowedUsers: ["8"], approvers: ["8"] } });
+		expect(JSON.stringify(status)).not.toContain("2:V");
+		telegram.queue("2:V").push([{ update_id: 1, message: { message_id: 4, chat: { id: 8 }, from: { id: 8 }, text: "ciao bot vendite" } }]);
+		await waitFor(() => telegram.sent.some((m) => m.token === "2:V" && m.chat_id === "8" && m.text.includes("ciao bot vendite")));
+		await first.annie.stop();
+		running.splice(running.indexOf(first.annie), 1);
+
+		const second = await boot(dataDir, telegram);
+		const again = await client(second.base, first.annie.ownerLink as string);
+		expect((await again("/api/instances/vendite/telegram")).telegram.connected).toBe(true);
+		telegram.queue("2:V").push([{ update_id: 2, message: { message_id: 5, chat: { id: 8 }, from: { id: 8 }, text: "dopo il riavvio" } }]);
+		await waitFor(() => telegram.sent.some((m) => m.token === "2:V" && m.text.includes("dopo il riavvio")));
+		const off = await fetch(`${second.base}/api/instances/vendite/telegram`, { method: "DELETE", headers: { "x-annie": "1", cookie: again.cookie } });
+		expect(off.status).toBe(200);
+		expect((await again("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
+		const polls = telegram.calls.filter((c) => c.token === "2:V" && c.method === "getUpdates").length;
+		await new Promise((r) => setTimeout(r, 200));
+		expect(telegram.calls.filter((c) => c.token === "2:V" && c.method === "getUpdates").length).toBeLessThanOrEqual(polls + 1);
+	});
+
+	it("only the owner sees and changes an instance's Telegram bot", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const owner = await client(base, annie.ownerLink as string);
+		const { link } = await owner("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		expect((await member("/api/instances/annie/telegram")).error).toBeDefined();
 	});
 
 	it("only the owner creates instances", async () => {

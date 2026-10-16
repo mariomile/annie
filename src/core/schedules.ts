@@ -18,6 +18,8 @@ export type Schedule = {
 	readonly disabledReason?: string;
 	readonly createdBy: { readonly kind: "person"; readonly channel: string; readonly userId: string } | { readonly kind: "instance" };
 	readonly createdAt: string;
+	/** A brief del mattino: one per person and instance, turned on and off from the console. */
+	readonly kind?: "brief";
 };
 
 export type NewSchedule = {
@@ -26,6 +28,7 @@ export type NewSchedule = {
 	readonly threadId: string;
 	readonly when: Schedule["when"];
 	readonly createdBy: Schedule["createdBy"];
+	readonly kind?: "brief";
 };
 
 /** Limits that keep a runaway instance from flooding itself. */

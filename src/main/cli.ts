@@ -6,14 +6,21 @@
  *   person link <id>                                    new login link (the old one stops working)
  *   person remove <id>
  *   person reset-2fa <id>                               turn off two-factor login (lost phone)
+ *   check                                               do the keys in .env work, are the services reachable?
+ *   brief                                               who gets the brief del mattino, and who uses it (last 7 days)
  *
  * Works on the data directory; Annie can be running.
  */
 import { existsSync } from "node:fs";
-import { tenantId as toTenantId } from "../core/ids.ts";
-import { tenantDir } from "../core/paths.ts";
+import { AuditLog } from "../core/audit.ts";
+import { briefStats } from "../core/brief.ts";
+import { instanceId as toInstanceId, tenantId as toTenantId } from "../core/ids.ts";
+import { schedulesDir, tenantDir } from "../core/paths.ts";
+import { ScheduleStore } from "../core/schedules.ts";
 import { TenantRegistry } from "../core/registry.ts";
 import { PeopleStore, SessionStore } from "../web/auth.ts";
+import { runChecks } from "./check.ts";
+import { ConfigError, loadAnnieConfig } from "./config.ts";
 
 if (existsSync(".env")) process.loadEnvFile(".env");
 
@@ -27,8 +34,36 @@ const registry = new TenantRegistry(dataDir);
 const [group, command, ...rest] = process.argv.slice(2);
 
 function usage(): never {
-	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id>");
+	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id> | check | brief");
 	process.exit(2);
+}
+
+if (group === "check") {
+	let config: ReturnType<typeof loadAnnieConfig>;
+	try {
+		config = loadAnnieConfig(process.env);
+	} catch (error) {
+		if (!(error instanceof ConfigError)) throw error;
+		console.log(`✗ Configurazione: ${error.message}`);
+		process.exit(1);
+	}
+	const results = await runChecks(config);
+	for (const r of results) console.log(`${r.ok ? "✓" : "✗"} ${r.name}: ${r.detail}`);
+	process.exit(results.every((r) => r.ok) ? 0 : 1);
+}
+
+if (group === "brief") {
+	// Brief thread → its person, from every instance's tasks programmati.
+	const threads = new Map<string, string>();
+	for (const instance of await registry.listInstances(tenant)) {
+		for (const s of await new ScheduleStore(schedulesDir(dataDir, toTenantId(tenant), toInstanceId(instance.id))).list()) {
+			if (s.kind === "brief" && s.createdBy.kind === "person") threads.set(s.threadId, s.createdBy.userId);
+		}
+	}
+	const stats = briefStats(await new AuditLog(dataDir, toTenantId(tenant)).read(), threads, new Date());
+	console.log(`Brief attivi: ${stats.active}`);
+	console.log(`Ultimi 7 giorni: ${stats.deliveries} brief consegnati a ${stats.peopleDelivered} persone; ${stats.peopleWhoWrote} hanno poi scritto nella chat del brief.`);
+	process.exit(0);
 }
 
 if (group !== "person") usage();
