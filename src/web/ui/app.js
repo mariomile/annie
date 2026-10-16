@@ -166,6 +166,7 @@ async function enter() {
 		return;
 	}
 	await refreshInstances();
+	if (location.hash.startsWith("#/google?")) await finishGoogle();
 	connectEvents();
 	window.addEventListener("hashchange", render);
 	render();
@@ -270,10 +271,99 @@ function renderCode(token, error) {
 	code.focus();
 }
 
+// ---------- Google ----------
+/** Back from Google's consent: the code is in the fragment, the session in our cookie. */
+async function finishGoogle() {
+	const params = new URLSearchParams(location.hash.slice("#/google?".length));
+	history.replaceState(null, "", "/#/chat");
+	if (params.get("error")) return toast(params.get("error") === "access_denied" ? "Collegamento a Google annullato" : "Google non ha completato il collegamento: riprova", true);
+	try {
+		const { account } = await api("/api/google/finish", { method: "POST", body: { state: params.get("state") ?? "", code: params.get("code") ?? "" } });
+		toast(`Google collegato: ${account.email}`);
+	} catch (error) {
+		toast(error.message, true);
+	}
+}
+
+/** The person's own Google account, in the account dialog. */
+function googleSection() {
+	const box = h("div.card.pad.stack");
+	const draw = async () => {
+		const { available, account, services } = await api("/api/google");
+		if (!available) return box.remove();
+		const what = services.length > 1 ? "la tua posta e il tuo calendario" : services[0] === "gmail" ? "la tua posta" : "il tuo calendario";
+		if (account) {
+			box.replaceChildren(
+				h("div.kicker", "Google"),
+				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
+				h("p.muted", `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
+				h(
+					"div.actions",
+					h(
+						"button.btn.danger",
+						{
+							onclick: async () => {
+								await api("/api/google", { method: "DELETE" }).catch((e) => toast(e.message, true));
+								toast("Google scollegato");
+								await draw();
+							},
+						},
+						"Scollega",
+					),
+				),
+			);
+			return;
+		}
+		box.replaceChildren(
+			h("div.kicker", "Google"),
+			h("p", `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
+			h(
+				"div.actions",
+				h(
+					"button.btn.accent",
+					{
+						onclick: async () => {
+							try {
+								location.assign((await api("/api/google/start", { method: "POST", body: {} })).url);
+							} catch (error) {
+								toast(error.message, true);
+							}
+						},
+					},
+					"Collega Google",
+				),
+			),
+		);
+	};
+	void draw().catch(() => box.remove());
+	return box;
+}
+
+/** Owner: whether this instance may use people's Google accounts (its egress policy). */
+function googleCard(inst, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/google`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Google consentito per questa istanza" : "Google non più consentito per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Google"),
+		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questa istanza di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console."),
+		h("label.row-gap", toggle, h("span", "Consenti Google a questa istanza")),
+	);
+}
+
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
-	const dialog = h("dialog", h("h3", "Il tuo account"), body);
+	const dialog = h("dialog", h("h3", "Il tuo account"), googleSection(), body);
 	const draw = async () => {
 		const me = (await api("/api/me")).person;
 		state.me = me;
@@ -881,7 +971,11 @@ async function viewApprovals(main) {
 async function viewTasks(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ schedules }, threads] = await Promise.all([api(`/api/instances/${inst.id}/schedules`), inst.canChat ? api(`/api/instances/${inst.id}/threads`).then((r) => r.threads) : Promise.resolve([])]);
+	const [{ schedules }, threads, briefState] = await Promise.all([
+		api(`/api/instances/${inst.id}/schedules`),
+		inst.canChat ? api(`/api/instances/${inst.id}/threads`).then((r) => r.threads) : Promise.resolve([]),
+		api(`/api/instances/${inst.id}/brief`).catch(() => undefined),
+	]);
 	const table = h(
 		"table.ledger",
 		h("thead", h("tr", h("th", "Istruzione"), h("th", "Quando"), h("th", "Prossima"), h("th", ""))),
@@ -890,7 +984,7 @@ async function viewTasks(main) {
 			schedules.map((s) =>
 				h(
 					"tr",
-					h("td", s.instruction, h("div.mono.muted", `${s.id} · ${s.channel}${s.createdBy.kind === "instance" ? " · creato da Annie" : ""}`)),
+					h("td", s.kind === "brief" ? "Brief del mattino" : s.instruction, h("div.mono.muted", `${s.id} · ${s.channel}${s.createdBy.kind === "instance" ? " · creato da Annie" : ""}`)),
 					h("td.mono", "at" in s.when ? `una volta` : `${s.when.cron} (${s.when.timeZone})`),
 					h("td.mono", s.nextRunAt ? fmt.time(s.nextRunAt) : "finito"),
 					h(
@@ -961,6 +1055,7 @@ async function viewTasks(main) {
 	};
 	main.replaceChildren(
 		head(inst.name, h("h1", "Task programmati"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione. Il risultato arriva nella chat scelta."),
+		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
 			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), "Creane uno qui accanto, oppure chiedilo ad Annie in chat.")),
@@ -971,6 +1066,46 @@ async function viewTasks(main) {
 					? [h("label.field", h("span", "Cosa deve fare"), instruction), h("div.field", h("span", "Quando"), seg), whenBox, h("label.field", h("span", "Risultato nella chat"), thread), h("button.btn.accent", { onclick: create }, "Programma")]
 					: h("p.muted", "Apri prima una conversazione in Chat: il risultato dei task arriva lì."),
 			),
+		),
+	);
+}
+
+/** The person's brief del mattino: on, off, and at what time. */
+function briefCard(inst, { brief, google }) {
+	const time = h("input", { type: "time", value: brief?.time ?? "07:30", class: "mono" });
+	const weekdays = h("input", { type: "checkbox", checked: brief ? brief.weekdaysOnly !== false : true });
+	const save = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/brief`, { method: "PUT", body: { time: time.value, weekdaysOnly: weekdays.checked } });
+			toast(brief ? "Brief aggiornato" : `Brief attivo: ogni mattina alle ${time.value}`);
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const off = async () => {
+		await api(`/api/instances/${inst.id}/brief`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+		toast("Brief disattivato");
+		render();
+	};
+	const hint = !google.available
+		? "Google non è configurato su questo server: il brief userà solo quello che Annie ricorda di te."
+		: !google.connected
+			? "Collega Google dal menu del tuo account per avere calendario e mail nel brief."
+			: !google.allowed
+				? "Hai collegato Google, ma questa istanza non lo può usare: l'owner lo attiva in Impostazioni."
+				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Annie ricorda di te. Solo lettura.";
+	return h(
+		"div.card.pad.brief",
+		h("div.row-gap", h("h3", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),
+		h("p.muted", hint),
+		h(
+			"div.row-gap",
+			h("label.field.inline", h("span", "Ora"), time),
+			h("label.row-gap", weekdays, h("span", "Solo giorni feriali")),
+			h("button.btn.accent", { onclick: save }, brief ? "Aggiorna" : "Attiva"),
+			brief ? h("button.btn.ghost", { onclick: () => go("chat", brief.threadId) }, "Apri la chat del brief") : null,
+			brief ? h("button.btn.danger", { onclick: off }, "Disattiva") : null,
 		),
 	);
 }
@@ -1229,7 +1364,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people"), api(`/api/instances/${inst.id}/telegram`).catch(() => undefined)]);
+	const [{ settings }, { people }, tg, google] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people"), api(`/api/instances/${inst.id}/telegram`).catch(() => undefined), api("/api/google").catch(() => ({ available: false }))]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
 	const chat = new Set(settings.allowedUsers.web ?? []);
@@ -1258,6 +1393,7 @@ async function viewSettings(main) {
 				"div.stack",
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
 				tg === undefined ? null : telegramCard(inst, tg.telegram),
+				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 			),
 			h(
 				"div.stack",

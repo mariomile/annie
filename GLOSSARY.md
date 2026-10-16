@@ -97,6 +97,10 @@ _Avoid_: cron, job, promemoria, routine
 Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce l'owner.
 _Avoid_: profilo, contesto, knowledge base
 
+**Brief del mattino**:
+Il task programmato di una persona che ogni mattina le riassume impegni del giorno, mail che chiedono una risposta e quello che l'istanza ricorda di lei, leggendo senza cambiare niente.
+_Avoid_: digest, report giornaliero, newsletter
+
 ## Controllo
 
 **Egress policy**:

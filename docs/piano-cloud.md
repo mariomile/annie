@@ -45,7 +45,7 @@ Stato al 16 ottobre 2026 (branch `week-7`): fatti Telegram via webhook, il contr
 - Brief proattivo del mattino con tool in sola lettura.
 - Misura: quante persone usano il brief dopo una settimana.
 
-Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Annie ricorda con `memory_remember` e dimentica con `memory_forget`; quello che ricorda di chi le scrive le arriva con ogni messaggio di quella persona, in qualunque conversazione. Ogni persona vede e cancella solo le proprie memorie nella pagina Memoria della console; quelle condivise le gestisce l'owner. Mancano i connettori Google e il brief del mattino.
+Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Annie ricorda con `memory_remember` e dimentica con `memory_forget`; quello che ricorda di chi le scrive le arriva con ogni messaggio di quella persona, in qualunque conversazione. Ogni persona vede e cancella solo le proprie memorie nella pagina Memoria della console; quelle condivise le gestisce l'owner. Fatti anche Google per persona (OAuth con PKCE dalla console, Gmail e Calendar in sola lettura, solo nelle conversazioni della persona, consentito istanza per istanza dall'owner; in cloud il control plane riceve il ritorno da Google e rimanda alla cella) e il brief del mattino (un clic nella pagina Task, ora e giorni a scelta). Prima di aprire Google a tutti serve la verifica dell'app: `gmail.readonly` richiede la valutazione di sicurezza annuale, `calendar.readonly` no, quindi si può partire con il solo calendario. La misura (quante persone usano il brief dopo una settimana) si legge dall'audit: `brief.enabled` e `brief.disabled`.
 
 ### Fase 3: il computer dell'agente (2-3 settimane)
 
@@ -60,4 +60,5 @@ Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Anni
 - Provider delle celle: Fly.io Machines in UE è il candidato; costi, tempi di risveglio e volumi vanno misurati con un esperimento prima di scegliere.
 - Email per i link di accesso: quale servizio, con dominio di Buildrs.
 - Dominio di Annie Cloud.
+- Google: partire con il solo Calendar o affrontare subito la valutazione di sicurezza per Gmail (settimane e un costo annuale, da preventivare con un assessor).
 - Prezzo: dipende dal costo misurato di una cella e del modello per tenant.

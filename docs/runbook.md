@@ -86,6 +86,19 @@ HUBSPOT_ACCESS_TOKEN                                         # scope crm.objects
 
 Al primo avvio la segreteria ignora la posta già presente e parte da quella nuova. Le pratiche si gestiscono su Telegram o nella console (pagina Segreteria). Nessuna mail parte senza Approva. Un'app Google in modalità «Testing» ha refresh token che scadono dopo 7 giorni: per l'uso reale pubblica l'app OAuth.
 
+## 6b. Google per persona (Gmail e Calendar in sola lettura)
+
+Ogni persona collega il proprio account Google dal menu del suo account nella console; Annie lo usa solo nelle conversazioni di quella persona dalla console e nel suo brief del mattino. Per attivarlo:
+
+1. In Google Cloud console crea un client OAuth di tipo «Applicazione web» e aggiungi come URI di reindirizzamento `ANNIE_PUBLIC_URL/oauth/google/callback` (in locale `http://localhost:8080/oauth/google/callback`).
+2. Abilita Gmail API e Google Calendar API nel progetto.
+3. In `.env`: `ANNIE_GOOGLE_CLIENT_ID`, `ANNIE_GOOGLE_CLIENT_SECRET` e, se serve, `ANNIE_GOOGLE_SERVICES` (`gmail,calendar`, il default, oppure uno dei due). Riavvia.
+4. In Impostazioni l'owner attiva «Consenti Google a questa istanza».
+
+Verifica dell'app da parte di Google: `calendar.readonly` è uno scope «sensitive» (verifica di pochi giorni), `gmail.readonly` è «restricted» e per un'app pubblica che conserva i dati sul server richiede una valutazione di sicurezza annuale da un assessor approvato da Google. Finché l'app è in «Testing» i refresh token scadono dopo 7 giorni e possono collegarsi solo gli utenti di test; in un'organizzazione Google Workspace l'amministratore può marcare l'app come attendibile. Per partire senza la valutazione: `ANNIE_GOOGLE_SERVICES=calendar`.
+
+Il refresh token resta nel secret store del tenant; «Scollega» lo cancella e lo revoca presso Google. In Annie Cloud il control plane passa le variabili alle celle nuove e riceve lui il ritorno da Google (`https://<dominio>/oauth/google/callback`, da registrare come unico URI), poi rimanda la persona alla sua cella.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.

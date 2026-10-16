@@ -10,7 +10,10 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
 import type { InboundAction } from "./channels/types.ts";
+import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
+import { egressFetch } from "./connectors/http.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
+import { createGoogleTools } from "./core/tools/google-tools.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { decideToolProposal, NotAnApprover } from "./core/approvals.ts";
 import type { DurableEngine } from "./core/engine.ts";
@@ -21,7 +24,7 @@ import { customToolName, type ToolProposal } from "./core/proposals.ts";
 import type { InstanceRecord } from "./core/registry.ts";
 import { AnnieRuntime, type ToolSet } from "./core/runtime.ts";
 import { Scheduler } from "./core/scheduler.ts";
-import { modelApiKeySecret } from "./core/secrets.ts";
+import { modelApiKeySecret, TenantSecrets } from "./core/secrets.ts";
 import { createCustomTools } from "./core/tools/custom-tools.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
@@ -42,6 +45,8 @@ export type AnnieOptions = {
 	readonly engine?: DurableEngine;
 	/** Telegram Bot API fetch (tests). */
 	readonly telegramFetch?: typeof fetch;
+	/** Google OAuth and API fetch (tests). */
+	readonly googleFetch?: typeof fetch;
 	readonly uiDir?: string;
 	readonly schedulerIntervalMs?: number;
 	readonly log?: (message: string) => void;
@@ -65,6 +70,29 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const segreteriaId = config.segreteria?.instanceId;
 	const connectorStore = (id: string) => new ConnectorStore(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(id)));
 	const policyOf = (record: InstanceRecord) => async () => (await runtime.registry.getInstance(record.tenantId, record.id)).egress;
+	// Google: one account per person, a client per instance and person (the fetch is the instance's).
+	const googleAccounts = config.google === undefined ? undefined : new GoogleAccounts(tenantDir(config.dataDir, toTenantId(tenant)), new TenantSecrets(config.dataDir, toTenantId(tenant)));
+	const googleClients = new Map<string, GoogleClient>();
+	const googleTools = (record: InstanceRecord) => {
+		const google = config.google;
+		if (google === undefined || googleAccounts === undefined) return [];
+		const fetchImpl = egressFetch(GOOGLE_CONNECTOR, GOOGLE_HOSTS, policyOf(record), options.googleFetch);
+		return createGoogleTools({
+			timeZone: config.timeZone,
+			services: google.services,
+			personOf: async (thread) => (thread.channel === "web" ? (await webChannels.get(record.id)?.thread(thread.threadId))?.personId : undefined),
+			clientFor: async (personId) => {
+				if (googleAccounts.get(personId) === undefined) return undefined;
+				const key = `${record.id}:${personId}`;
+				let client = googleClients.get(key);
+				if (client === undefined) {
+					client = new GoogleClient({ clientId: google.clientId, clientSecret: google.clientSecret, refreshToken: () => googleAccounts.refreshToken(personId), fetch: fetchImpl });
+					googleClients.set(key, client);
+				}
+				return client;
+			},
+		});
+	};
 
 	const runtime: AnnieRuntime = new AnnieRuntime({
 		dataDir: config.dataDir,
@@ -76,6 +104,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createScheduleTools({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone }),
 				...createMemoryTools({ store: runtime.memory(record.tenantId, record.id), whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread) }),
+				...googleTools(record),
 				...(await createCustomTools({
 					store: runtime.proposals(record.tenantId, record.id),
 					toolsDir: runtime.customToolsDir(record.tenantId, record.id),
@@ -277,6 +306,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
 		telegramHooks,
+		...(config.google === undefined || googleAccounts === undefined
+			? {}
+			: {
+					google: {
+						oauth: new GoogleOAuth(config.google, tenant, options.googleFetch),
+						accounts: googleAccounts,
+						services: config.google.services,
+						forget: (personId: string) => {
+							for (const key of googleClients.keys()) if (key.endsWith(`:${personId}`)) googleClients.delete(key);
+						},
+					},
+				}),
 		telegram: {
 			status: async (id) => {
 				const bot = telegrams.get(id);

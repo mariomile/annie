@@ -127,6 +127,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 				ANNIE_TENANT_ID: tenant,
 				ANNIE_PUBLIC_URL: publicUrl(`${tenant}.${options.domain}`),
 				ANNIE_CELL_SECRET: secret,
+				// Google sends everyone back to one address, the control plane's, which passes the person on to their cell.
+				...(options.cellEnv.ANNIE_GOOGLE_CLIENT_ID === undefined ? {} : { ANNIE_GOOGLE_REDIRECT_URL: `${publicUrl(options.domain)}/oauth/google/callback` }),
 			});
 			const account: Account = { email, tenant, createdAt: new Date().toISOString() };
 			update((s) => ({ ...s, accounts: [...s.accounts, account], cells: [...s.cells, { tenant, secret, nextWakeAt: null }] }));
@@ -233,6 +235,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		if (req.method === "GET" && url.pathname in SHARED_UI) return serve(res, join(import.meta.dirname, "..", "web", "ui", SHARED_UI[url.pathname] as string));
 		if (req.method === "GET" && /^\/fonts\/[a-z0-9-]+\.woff2$/.test(url.pathname)) return serve(res, join(import.meta.dirname, "..", "web", "ui", url.pathname));
 		if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
 		if (req.method !== "POST" || req.headers["x-annie"] !== "1") return send(res, 404, { error: "Not found" });
 		try {
 			if (url.pathname === "/api/signup") {
@@ -246,6 +249,23 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			log(`cloud: ${error instanceof Error ? error.message : String(error)}`);
 			send(res, 500, { error: "Qualcosa non va: riprova tra poco" });
 		}
+	}
+
+	/**
+	 * Google's way back for every cell: the state starts with the tenant, set by its cell. The
+	 * person goes straight to their console, which finishes the connection with its session
+	 * (the same step a cell's own callback does), so a sleeping cell needs no waking for this.
+	 */
+	function googleCallback(res: ServerResponse, url: URL): void {
+		const tenant = /^([a-z0-9]{1,63})~/.exec(url.searchParams.get("state") ?? "")?.[1];
+		if (tenant === undefined || !read().accounts.some((a) => a.tenant === tenant)) return send(res, 404, { error: "Collegamento non valido: riprova dalla tua Annie" });
+		const keep = new URLSearchParams();
+		for (const name of ["code", "state", "error"]) {
+			const value = url.searchParams.get(name);
+			if (value !== null && value.length <= 2048) keep.set(name, value);
+		}
+		res.writeHead(302, { location: `${publicUrl(`${tenant}.${options.domain}`)}/#/google?${keep.toString()}`, "cache-control": "no-store" });
+		res.end();
 	}
 
 	async function proxy(tenant: string, req: IncomingMessage, res: ServerResponse): Promise<void> {

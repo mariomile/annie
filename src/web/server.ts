@@ -7,6 +7,8 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
+import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService } from "../connectors/google.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
@@ -61,6 +63,8 @@ export type WebAppOptions = {
 	};
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
 	readonly cell?: { readonly secret: string; readonly state: () => Promise<CellState> };
+	/** People connect their own Google account (Gmail and Calendar, read only). */
+	readonly google?: { readonly oauth: GoogleOAuth; readonly accounts: GoogleAccounts; readonly services: readonly GoogleService[]; readonly forget: (personId: string) => void };
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -353,6 +357,46 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw error;
 		}
 	});
+	// --- brief del mattino: one per person and instance ---
+	const briefOf = async (instanceId: string, p: Person) => (await runtime.schedules(tenantId, instanceId).list()).find((s) => s.kind === "brief" && mine(s, p));
+	route("GET", "/api/instances/:id/brief", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const brief = await briefOf(record.id, p);
+		const when = brief !== undefined && "cron" in brief.when ? briefWhen(brief.when.cron) : undefined;
+		return {
+			brief: brief === undefined ? null : { scheduleId: brief.id, threadId: brief.threadId, nextRunAt: brief.nextRunAt, ...when },
+			google: { available: options.google !== undefined, connected: options.google?.accounts.get(p.id) !== undefined, allowed: (record.egress.connectors ?? []).includes(GOOGLE_CONNECTOR) },
+		};
+	});
+	route("PUT", "/api/instances/:id/brief", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const { record, member } = await instanceAccess(p, params[0] as string);
+		if (!member) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questa istanza");
+		const body = (await readJson(req)) as { time?: unknown; weekdaysOnly?: unknown };
+		const cron = briefCron(String(body.time ?? ""), body.weekdaysOnly !== false);
+		if (cron === undefined) throw new HttpError(400, "Ora nel formato HH:MM, per esempio 07:30");
+		const store = runtime.schedules(tenantId, record.id);
+		const channel = channelOf(record.id);
+		const previous = await briefOf(record.id, p);
+		const kept = previous === undefined ? undefined : await channel.thread(previous.threadId);
+		const thread = kept !== undefined && kept.personId === p.id ? kept : await channel.createThread(p.id, BRIEF_THREAD_TITLE);
+		const schedule = await store.create({ instruction: BRIEF_INSTRUCTION, channel: "web", threadId: thread.id, when: { cron, timeZone: options.defaultTimeZone }, createdBy: { kind: "person", channel: "web", userId: p.id }, kind: "brief" }).catch((error: unknown) => {
+			throw error instanceof ScheduleError ? new HttpError(400, error.message) : error;
+		});
+		if (previous !== undefined) await store.remove(previous.id);
+		await runtime.audit(tenantId).append({ type: "brief.enabled", instanceId: record.id, personId: p.id, cron });
+		return { brief: { scheduleId: schedule.id, threadId: thread.id, nextRunAt: schedule.nextRunAt, ...briefWhen(cron) } };
+	});
+	route("DELETE", "/api/instances/:id/brief", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const brief = await briefOf(record.id, p);
+		if (brief === undefined) throw new HttpError(404, "Nessun brief attivo");
+		await runtime.schedules(tenantId, record.id).remove(brief.id);
+		await runtime.audit(tenantId).append({ type: "brief.disabled", instanceId: record.id, personId: p.id });
+		return { ok: true };
+	});
 	route("DELETE", "/api/instances/:id/schedules/:sid", "person", async ({ person, params }) => {
 		const p = person as Person;
 		await instanceAccess(p, params[0] as string);
@@ -503,6 +547,52 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 
+	// --- Google: each person connects their own account; the refresh token never comes back ---
+	const googleOf = () => {
+		if (options.google === undefined) throw new HttpError(501, "Google non è configurato su questo server");
+		return options.google;
+	};
+	route("GET", "/api/google", "person", async ({ person }) => ({ available: options.google !== undefined, services: options.google?.services ?? [], account: options.google?.accounts.get((person as Person).id) ?? null }));
+	route("POST", "/api/google/start", "person", async ({ person }) => ({ url: googleOf().oauth.start((person as Person).id) }));
+	route("POST", "/api/google/finish", "person", async ({ person, req }) => {
+		const p = person as Person;
+		const google = googleOf();
+		const body = (await readJson(req)) as { state?: unknown; code?: unknown };
+		if (typeof body.state !== "string" || typeof body.code !== "string") throw new HttpError(400, "Collegamento incompleto: riprova");
+		try {
+			const { account, refreshToken } = await google.oauth.finish(p.id, body.state, body.code);
+			const previous = await google.accounts.refreshToken(p.id);
+			await google.accounts.connect(p.id, account, refreshToken);
+			google.forget(p.id);
+			if (previous !== undefined && previous !== refreshToken) await google.oauth.revoke(previous);
+			await runtime.audit(tenantId).append({ type: "google.connected", personId: p.id });
+			return { account };
+		} catch (error) {
+			if (error instanceof GoogleConsentError) throw new HttpError(400, error.message);
+			throw new HttpError(502, "Google non è raggiungibile da questo server: riprova più tardi.");
+		}
+	});
+	route("DELETE", "/api/google", "person", async ({ person }) => {
+		const p = person as Person;
+		const google = googleOf();
+		const token = await google.accounts.disconnect(p.id);
+		google.forget(p.id);
+		if (token !== undefined) await google.oauth.revoke(token);
+		await runtime.audit(tenantId).append({ type: "google.disconnected", personId: p.id });
+		return { ok: true };
+	});
+	route("PUT", "/api/instances/:id/google", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== GOOGLE_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, GOOGLE_CONNECTOR] : others });
+		return { allowed: body.allowed };
+	});
+
 	// --- owner: the Telegram bot of an instance (the token never comes back) ---
 	const telegramOf = () => {
 		if (options.telegram === undefined) throw new HttpError(501, "Telegram non disponibile");
@@ -607,6 +697,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (req.method === "POST" && url.pathname === "/internal/owner-link") return ownerLink(req, res);
 		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
+		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
 		if (match === undefined) return send(res, 404, { error: "Not found" });
@@ -627,6 +718,21 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof HttpError) return send(res, error.status, { ...error.extra, error: error.message });
 			throw error;
 		}
+	}
+
+	/**
+	 * Where Google sends the person back. The session cookie is SameSite=Strict, so it does not
+	 * come with a navigation from Google: the console picks the code up from the fragment and
+	 * finishes with its own request, which carries the session.
+	 */
+	function googleCallback(res: ServerResponse, url: URL): void {
+		const keep = new URLSearchParams();
+		for (const name of ["code", "state", "error"]) {
+			const value = url.searchParams.get(name);
+			if (value !== null && value.length <= 2048) keep.set(name, value);
+		}
+		res.writeHead(302, { location: `/#/google?${keep.toString()}`, "cache-control": "no-store" });
+		res.end();
 	}
 
 	/**

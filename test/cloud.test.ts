@@ -17,7 +17,7 @@ function cloud(options: { idleMs?: number } = {}) {
 	return cloudAt(tempDataDir(), options);
 }
 
-async function cloudAt(dataDir: string, options: { idleMs?: number } = {}) {
+async function cloudAt(dataDir: string, options: { idleMs?: number; cellEnv?: Record<string, string> } = {}) {
 	const mailer = new MemoryMailer();
 	const provider = new LocalCellProvider({ root: join(dataDir, "cells"), repoRoot: join(import.meta.dirname, "..") });
 	const cp = await startControlPlane({
@@ -26,7 +26,7 @@ async function cloudAt(dataDir: string, options: { idleMs?: number } = {}) {
 		publicScheme: "http",
 		provider,
 		mailer,
-		cellEnv: { ANNIE_MODEL_PROVIDER: "faux" },
+		cellEnv: { ANNIE_MODEL_PROVIDER: "faux", ...options.cellEnv },
 		idleMs: options.idleMs ?? 60_000,
 		web: { host: "127.0.0.1", port: 0 },
 		tickMs: 0,
@@ -192,6 +192,24 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 		expect(entries.length).toBeGreaterThanOrEqual(2);
 		expect(await c.provider.status((await c.provider.list())[0] as string)).toBe("running");
 	}, 180_000);
+
+	it("Google sends everyone back to the control plane, which passes the person on to their own cell", async () => {
+		const c = await cloudAt(tempDataDir(), { cellEnv: { ANNIE_GOOGLE_CLIENT_ID: "client-1", ANNIE_GOOGLE_CLIENT_SECRET: "secret-1" } });
+		const anna = await signUp(c, "anna@example.com");
+		const tenant = anna.host.split(".")[0] as string;
+		const consent = new URL((await anna.api("/api/google/start", {})).body.url as string);
+		expect(consent.searchParams.get("redirect_uri")).toBe(`http://${DOMAIN}/oauth/google/callback`);
+		const state = consent.searchParams.get("state") as string;
+		expect(state.startsWith(`${tenant}~`)).toBe(true);
+		const home = c.at(DOMAIN);
+		const back = await home(`/oauth/google/callback?code=abc&state=${encodeURIComponent(state)}&scope=x`);
+		expect(back.status).toBe(302);
+		const location = back.headers.get("location") ?? "";
+		expect(location.startsWith(`http://${anna.host}/#/google?`)).toBe(true);
+		expect(Object.fromEntries(new URLSearchParams(location.split("#/google?")[1]))).toEqual({ code: "abc", state });
+		expect((await home("/oauth/google/callback?code=abc&state=anobody00000~x")).status).toBe(404);
+		expect((await home("/oauth/google/callback?code=abc")).status).toBe(404);
+	});
 
 	it("a sleeping cell is woken for its next task programmato", async () => {
 		const c = await cloud({ idleMs: 0 });
