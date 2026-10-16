@@ -35,7 +35,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 ### Dopo (proposta)
 
 - [x] Ritentativi nello stesso processo, con backoff, per risposte e schede (risposte: settimana 6; schede: a ogni giro dalla settimana 4)
-- [ ] Pulizia delle outbox e dei file vecchi
+- [x] Pulizia delle outbox: le risposte consegnate da più di 30 giorni si cancellano all'apertura dell'istanza (settimana 6). I file del workspace non si cancellano da soli: sono dati delle persone, li toglie chi li gestisce
 - [ ] Sandbox sotto un utente di sistema separato, o in container
 - [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))
 - [ ] 2FA per la console

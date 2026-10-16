@@ -66,6 +66,9 @@ export type RuntimeOptions = {
 	readonly retryDelaysMs?: readonly number[];
 };
 
+/** How long a delivered reply stays in the outbox. */
+const OUTBOX_RETENTION_MS = 30 * 86_400_000;
+
 export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_000, 600_000];
 
 /**
@@ -392,6 +395,10 @@ export class AnnieInstance {
 	 * no reply in the outbox yet, then continue unfinished engine work.
 	 */
 	async resume(): Promise<{ pending: number; undelivered: number; reattached: number }> {
+		// Delivered replies are kept a while (idempotency, audit by key), then dropped: each
+		// resume reads the whole outbox.
+		const removed = await this.outbox.prune(new Date(Date.now() - OUTBOX_RETENTION_MS));
+		if (removed > 0) await this.audit.append({ type: "outbox.pruned", instanceId: this.record.id, removed });
 		let undelivered = 0;
 		let reattached = 0;
 		for (const entry of await this.outbox.list()) {

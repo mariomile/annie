@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 
@@ -60,6 +60,17 @@ export class Outbox {
 			names.filter((name) => name.endsWith(".json") && !name.startsWith(".")).map(async (name) => JSON.parse(await readFile(join(this.dir, name), "utf8")) as OutboxEntry),
 		);
 		return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+	}
+
+	/** Remove entries delivered before `cutoff`; the rest stay. Returns how many went. */
+	async prune(cutoff: Date): Promise<number> {
+		let removed = 0;
+		for (const entry of await this.list()) {
+			if (entry.deliveredAt === undefined || entry.deliveredAt >= cutoff.toISOString()) continue;
+			await rm(this.file(entry.key), { force: true });
+			removed++;
+		}
+		return removed;
 	}
 
 	private file(key: string): string {

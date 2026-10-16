@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DUPLICATE_NOTICE } from "../src/channels/telegram.ts";
 import { type ChannelAdapter, ChannelRefused, type OutboundMessage } from "../src/channels/types.ts";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
-import { AnnieRuntime, type DurableEngine, type EngineSession, type OutboxEntry } from "../src/core/index.ts";
+import { AnnieRuntime, type DurableEngine, type EngineSession, Outbox, type OutboxEntry } from "../src/core/index.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 import { kill9, spawnFixture, type Worker } from "./processes.ts";
@@ -151,6 +151,26 @@ describe("reply outbox: retries in the same process", () => {
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		expect(down.sent).toHaveLength(1);
 		await retrying.close();
+	});
+});
+
+describe("reply outbox: cleanup", () => {
+	it("on resume, drops replies delivered more than 30 days ago and keeps the rest", async () => {
+		const dataDir = tempDataDir();
+		const { runtime } = await runtimeWithInstance({ dataDir });
+		await runtime.close();
+		const outbox = new Outbox(outboxOf(dataDir));
+		const days = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+		const reply = { status: "answered" as const, text: "ok" };
+		const base = { submissionId: "s", channel: "test", threadId: "t1", reply, attempts: 1 };
+		await outbox.put({ ...base, key: "reply:old", createdAt: days(41), deliveredAt: days(40) });
+		await outbox.put({ ...base, key: "reply:recent", createdAt: days(6), deliveredAt: days(5) });
+		await outbox.put({ key: "reply:stuck", submissionId: "s2", channel: "test", threadId: "t1", attempts: 0, createdAt: days(40) });
+		const next = new AnnieRuntime({ dataDir, engine: piDurableEngine });
+		await next.resume("acme", "ops");
+		expect((await outbox.list()).map((e) => e.key).sort()).toEqual(["reply:recent", "reply:stuck"]);
+		expect(await next.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "outbox.pruned", instanceId: "ops", removed: 1 }));
+		await next.close();
 	});
 });
 

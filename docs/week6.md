@@ -14,9 +14,11 @@ Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel c
 
 - **Ritentativi delle risposte nello stesso processo** (`test/outbox.test.ts`). Una risposta che il canale non prende per un problema di rete riparte dopo 5 secondi, poi 30 secondi, 2 minuti e ogni 10 minuti, finché il canale non la conferma. Prima restava nell'outbox fino al riavvio. Ogni nuovo tentativo porta l'avviso «Possibile doppione», perché il tentativo fallito potrebbe essere arrivato comunque. Un rifiuto esplicito del canale (per esempio un utente che ha bloccato il bot) non viene ritentato a raffica: resta nell'outbox per il prossimo avvio e finisce nell'audit (`reply.refused`). Lo spegnimento annulla i ritentativi in sospeso. Le schede della segreteria si ritentano già a ogni giro di polling dalla settimana 4.
 
+- **Pulizia dell'outbox** (`test/outbox.test.ts`). All'apertura di un'istanza le risposte consegnate da più di 30 giorni vengono tolte dall'outbox (evento `outbox.pruned` nell'audit); quelle recenti e quelle non ancora consegnate restano. Senza pulizia l'outbox cresceva di un file per risposta e ogni avvio li rileggeva tutti. I file del workspace invece non si cancellano da soli: sono dati delle persone.
+
 ## Verifica
 
-- `pnpm typecheck`: ok. `pnpm test`: 25 file, 152 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
+- `pnpm typecheck`: ok. `pnpm test`: 25 file, 153 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
 - Chromium headless: l'owner crea «Ufficio acquisti» dal dialogo, l'istanza viene selezionata, la chat risponde in tempo reale. Nessun errore in console.
 
 ## Limiti
