@@ -44,7 +44,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 - [x] LICENSE (Apache-2.0, da confermare)
 - [x] Runbook per installazione e operatività ([runbook.md](runbook.md))
-- [ ] Aggiornare le action della CI oltre Node 20 (oggi danno solo avvisi)
+- [x] Action della CI su Node 24 (`checkout`, `setup-node`, `upload-artifact` v5). Resta `pnpm/action-setup@v4`: da verificare alla prima PR se dà ancora l'avviso
 
 ## Chi fa cosa
 
