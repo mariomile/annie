@@ -29,6 +29,8 @@ export function createScheduleTools(options: { readonly store: ScheduleStore; re
 			async execute(args, ctx) {
 				if (ctx.thread === undefined) return "Errore: un task programmato va creato in una conversazione.";
 				const thread = ctx.thread;
+				// Annie never calls first: a reminder set on a call would only be heard at the next one.
+				if (thread.channel === "phone") return "Errore: al telefono non posso programmare task, perché non chiamo per prima. Chiedi alla persona di farlo su Telegram, WhatsApp o nella console.";
 				if ((args.at === undefined) === (args.cron === undefined)) return "Errore: indica at (una volta) oppure cron (ripetuto), non entrambi.";
 				// Once per call, also when the call reruns after a crash.
 				const result = await ctx.step("create", async () => {

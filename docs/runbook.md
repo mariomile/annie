@@ -156,6 +156,14 @@ I messaggi passano dai server di Meta, che li conserva secondo le sue regole: pe
 
 Con `ANNIE_TRANSCRIBE_URL` e `ANNIE_TRANSCRIBE_API_KEY` i vocali di Telegram e WhatsApp possono essere trascritti e arrivare ad Annie come testo, marcati «[Messaggio vocale, trascritto]». L'owner lo consente istanza per istanza in Impostazioni → Messaggi vocali (connettore `voice` nella egress policy, cambio registrato nell'audit); finché non lo fa, l'audio non esce e Annie chiede di scrivere. Il servizio deve avere la stessa API di OpenAI (`/audio/transcriptions`); il consigliato è Mistral, con server in UE ([chiavi.md](chiavi.md), punto 10). L'audio va solo a quel servizio, e solo per le persone che possono scrivere: il vocale di un estraneo non viene nemmeno scaricato. Su Telegram i vocali più lunghi di `ANNIE_TRANSCRIBE_MAX_SECONDS` (300 di default) non vengono nemmeno scaricati; WhatsApp non dice la durata, quindi lì vale solo il limite di 20 MB del download. Un vocale troppo grande arriva come nota, non si perde. Se il servizio non risponde, Annie riceve una nota e chiede di riprovare o di scrivere. `pnpm annie check` controlla chiave e modello. Il costo della trascrizione non entra nel tetto di spesa del modello: si controlla sulla console del servizio.
 
+## 6i. Telefono
+
+Ogni istanza può avere un numero Twilio, collegato dall'owner in Impostazioni → Telefono con Account SID, auth token e numero ([chiavi.md](chiavi.md), punto 11). Annie imposta da sola l'indirizzo delle chiamate del numero su `/hooks/phone/<istanza>`, quindi serve `ANNIE_PUBLIC_URL` in https; in Annie Cloud il control plane inoltra la chiamata alla cella e la sveglia. Twilio firma ogni richiesta con l'auth token (`X-Twilio-Signature`): senza firma valida, 403. Una chiamata da un numero che non è in «Chi può chiamare» viene rifiutata prima di rispondere. Poiché il numero di chi chiama si può falsificare, all'inizio di ogni chiamata si digita il codice scelto dall'owner; tre codici sbagliati chiudono la chiamata e finiscono nel log.
+
+Una chiamata è a turni: Twilio trascrive la frase, Annie risponde, Twilio la legge. La cella aspetta la risposta fino a 8 secondi per richiesta e, se serve di più, fa dire «un momento»; dopo sei attese la chiamata si chiude e la risposta resta da parte (`phone-pending.json` nella cartella dell'istanza, al massimo 5 per numero e per 7 giorni), detta all'inizio della chiamata dopo. Le schede di approvazione e i file non passano dal telefono: arrivano sugli altri canali o nella console. Al telefono Annie non crea task programmati. Scollegare il numero cancella le credenziali e le risposte in attesa; l'indirizzo delle chiamate resta impostato su Twilio, e la cella rifiuta quelle chiamate senza rispondere. A ogni avvio Annie reimposta l'indirizzo delle chiamate, quindi dopo un cambio di `ANNIE_PUBLIC_URL` basta riavviare. Riavviare la cella mentre una chiamata è in corso la fa cadere; la risposta non si perde.
+
+La voce passa da Twilio, che fa riconoscimento e sintesi: per i dati in UE scegli la regione Irlanda (`ANNIE_TWILIO_API`) e indica Twilio nell'informativa. Il costo delle chiamate lo fattura Twilio e non entra nel tetto di spesa del modello.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
@@ -187,6 +195,7 @@ Le risposte rimaste a metà ripartono dall'outbox; quelle che potrebbero arrivar
 
 - **Chiave del modello, Gmail, HubSpot, token Telegram**: cambia `.env` e riavvia (i valori vengono riscritti nel secret store all'avvio).
 - **Segreti dei connettori**: pagina Connettori → Modifica → nuovo valore.
+- **Auth token di Twilio**: dopo averlo ruotato su Twilio, Impostazioni → Telefono → nuovo auth token → Salva. Fino ad allora le chiamate ricevono 403.
 - **Link di una persona**: `pnpm annie person link <id>` o Persone → Nuovo link.
 - **Link dell'owner perso**: `pnpm annie person list` per l'ID, poi `pnpm annie person link <id>`.
 

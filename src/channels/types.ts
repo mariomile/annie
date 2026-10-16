@@ -2,7 +2,8 @@
  * Channel adapters connect Annie to the places people talk to it. The core never imports
  * this module: the gateway (src/gateway.ts) passes normalized messages between the two.
  *
- * Implemented: telegram, whatsapp (Meta Cloud API), web (src/web/channel.ts).
+ * Implemented: telegram, whatsapp (Meta Cloud API), phone (Twilio, calls one turn at a time),
+ * web (src/web/channel.ts).
  * Planned (interface only, see docs/architettura.md): desktop app, HTTP API / webhook,
  * mobile app. Each one is another ChannelAdapter with its own `name`, which an
  * instance's egress policy must list in `channels` before it can be used.

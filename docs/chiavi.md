@@ -143,6 +143,18 @@ Senza queste variabili Annie riceve i vocali ma non li capisce, e chiede di scri
 
 In alternativa va bene qualunque servizio con la stessa API di OpenAI: per OpenAI `ANNIE_TRANSCRIBE_URL=https://api.openai.com/v1` (modello `whisper-1`).
 
+### 11. Telefono: Account SID, auth token e numero Twilio (per istanza, dalla console)
+
+Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta ([ADR 0012](adr/0012-chiamate-vocali-con-numero-twilio.md)). I tre valori si inseriscono nella console, in Impostazioni → Telefono, non nel file `.env`. Serve un indirizzo https pubblico, perché Twilio chiama un webhook della cella.
+
+1. https://console.twilio.com → crea l'account (o entra con quello di Buildrs) e aggiungi un metodo di pagamento: con l'account di prova Twilio legge un avviso all'inizio di ogni chiamata e accetta solo i numeri verificati.
+2. **Phone Numbers → Manage → Buy a number**: un numero italiano con la capacità *Voice*. Per i numeri italiani Twilio chiede un *Regulatory Bundle* (documento e indirizzo di Buildrs): va approvato prima dell'acquisto. Il costo del numero e dei minuti è sul listino di Twilio, da verificare.
+3. Dalla home della console copia **Account SID** (`AC…`) e **Auth Token** (32 caratteri, *Show*).
+4. Facoltativo, per i dati in Unione Europea: Twilio offre la regione Irlanda. Si sceglie nella console (**Regions**), e allora `ANNIE_TWILIO_API=https://api.dublin.ie1.twilio.com` con le credenziali di quella regione.
+5. Nella console di Annie scrivi Account SID, auth token, il numero con il prefisso (`+390612345678`) e un codice da 4 a 8 cifre, e in «Chi può chiamare» i numeri delle persone con il `+`. Premi **Collega**: Annie controlla le credenziali e imposta da sola l'indirizzo delle chiamate del numero. Non serve incollare niente su Twilio. Il codice va dato solo alle persone in elenco: lo digitano all'inizio di ogni chiamata.
+6. Facoltativo: `ANNIE_PHONE_VOICE`, la voce di Twilio (`Polly.Bianca` se non lo metti). Si prova con una chiamata vera.
+7. Domini: `api.twilio.com` (o quello della regione scelta).
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -156,6 +168,7 @@ In alternativa va bene qualunque servizio con la stessa API di OpenAI: per OpenA
 | Stripe | `api.stripe.com` |
 | WhatsApp | `graph.facebook.com`, `lookaside.fbsbx.com` |
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
+| Telefono | `api.twilio.com` (o la regione scelta) |
 
 ## Cosa succede dopo
 

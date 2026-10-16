@@ -65,12 +65,16 @@ _Avoid_: piano, licenza, subscription
 ## Conversazioni
 
 **Canale**:
-Un luogo dove le persone parlano con un'istanza: Telegram, WhatsApp, l'interfaccia web.
+Un luogo dove le persone parlano con un'istanza: Telegram, WhatsApp, il telefono, l'interfaccia web.
 _Avoid_: gateway, integrazione
 
 **Thread**:
 Una conversazione su un canale: una chat Telegram, una chat nell'interfaccia web.
 _Avoid_: sessione, chat (nel codice)
+
+**Chiamata**:
+Una telefonata al numero Twilio di un'istanza, a turni: la persona parla, Annie risponde a voce. Il thread è il numero di chi chiama, quindi una chiamata continua la conversazione delle precedenti.
+_Avoid_: sessione vocale
 
 **Risposta**:
 Il messaggio con cui un'istanza chiude un messaggio ricevuto. Arriva almeno una volta, e può arrivare due volte dopo un crash.

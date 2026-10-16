@@ -125,6 +125,8 @@ export function schedulePerson(schedule: Schedule): { channel: string; userId: s
 	if (schedule.channel === "telegram" && /^\d+$/.test(schedule.threadId)) return { channel: "telegram", userId: schedule.threadId };
 	// A WhatsApp chat is one person, whose number is the thread.
 	if (schedule.channel === "whatsapp" && /^\d+$/.test(schedule.threadId)) return { channel: "whatsapp", userId: schedule.threadId };
+	// A phone conversation is the caller's number.
+	if (schedule.channel === "phone" && /^\+\d{7,15}$/.test(schedule.threadId)) return { channel: "phone", userId: schedule.threadId };
 	const owner = schedule.threadId.split(".")[0] ?? "";
 	if (schedule.channel === "web" && /^p_[0-9a-f]{12}$/.test(owner)) return { channel: "web", userId: owner };
 	return undefined;

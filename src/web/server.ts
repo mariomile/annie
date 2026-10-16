@@ -5,7 +5,7 @@ import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
-import { MissingPhoneField, PHONE_NUMBER, type PhoneAdapter } from "../channels/phone.ts";
+import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
@@ -97,7 +97,7 @@ export type WebAppOptions = {
 	readonly phone?: {
 		status(instanceId: string): Promise<{ connected: boolean; https: boolean; number?: string; accountSid?: string; allowedUsers: readonly string[] }>;
 		/** Check with Twilio, point the number at this cell, keep the credentials. Values left out keep the saved ones. */
-		connect(instanceId: string, credentials: { accountSid?: string; authToken?: string; number?: string }): Promise<{ number: string }>;
+		connect(instanceId: string, credentials: { accountSid?: string; authToken?: string; number?: string; pin?: string }): Promise<{ number: string }>;
 		disconnect(instanceId: string): Promise<void>;
 	};
 	/** WhatsApp per instance, connected by the owner from the console. */
@@ -857,13 +857,13 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.getInstance(tenantId, id).catch(() => {
 			throw new HttpError(404, "Istanza inesistente");
 		});
-		const body = (await readJson(req)) as { accountSid?: unknown; authToken?: unknown; number?: unknown; allowedUsers?: unknown };
+		const body = (await readJson(req)) as { accountSid?: unknown; authToken?: unknown; number?: unknown; pin?: unknown; allowedUsers?: unknown };
 		const text = (value: unknown, pattern: RegExp, what: string): string | undefined => {
 			if (value === undefined || (typeof value === "string" && value.trim() === "")) return undefined;
 			if (typeof value !== "string" || !pattern.test(value.replace(/\s+/g, ""))) throw new HttpError(400, `${what} non valido`);
 			return value.replace(/\s+/g, "");
 		};
-		const given = { accountSid: text(body.accountSid, /^AC[0-9a-f]{32}$/i, "Account SID"), authToken: text(body.authToken, /^[0-9a-f]{32}$/i, "Auth token"), number: text(body.number, PHONE_NUMBER, "Numero (con +, per esempio +390612345678)") };
+		const given = { accountSid: text(body.accountSid, /^AC[0-9a-f]{32}$/i, "Account SID"), authToken: text(body.authToken, /^[0-9a-f]{32}$/i, "Auth token"), number: text(body.number, PHONE_NUMBER, "Numero (con +, per esempio +390612345678)"), pin: text(body.pin, PHONE_PIN, "Codice (da 4 a 8 cifre)") };
 		let allowed: string[] | undefined;
 		if (body.allowedUsers !== undefined) {
 			const list = Array.isArray(body.allowedUsers) ? body.allowedUsers.map((n) => String(n).replace(/[\s.-]+/g, "")) : [];
@@ -874,8 +874,10 @@ export function createWebApp(options: WebAppOptions): Server {
 			try {
 				await phoneOf().connect(id, Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined)));
 			} catch (error) {
-				if (error instanceof MissingPhoneField) throw new HttpError(400, error.message === "https" ? "Serve un indirizzo https pubblico: Twilio deve poter chiamare questo server" : "La prima volta servono Account SID, auth token e numero");
+				if (error instanceof HttpError) throw error;
+				if (error instanceof MissingPhoneField) throw new HttpError(400, error.message === "https" ? "Serve un indirizzo https pubblico: Twilio deve poter chiamare questo server" : "La prima volta servono Account SID, auth token, numero e codice");
 				if (error instanceof ChannelRefused) throw new HttpError(400, `Twilio: ${error.message}`);
+				options.log?.(`phone: not connected: ${error instanceof Error ? error.message : String(error)}`);
 				throw new HttpError(502, "Twilio non è raggiungibile da questo server: controlla la rete e riprova");
 			}
 			await runtime.audit(tenantId).append({ type: "phone.connected", instanceId: id });
@@ -884,6 +886,9 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { phone: await phoneOf().status(id) };
 	});
 	route("DELETE", "/api/instances/:id/phone", "owner", async ({ params }) => {
+		await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
 		await phoneOf().disconnect(params[0] as string);
 		await runtime.audit(tenantId).append({ type: "phone.disconnected", instanceId: params[0] });
 		return { ok: true };
@@ -995,7 +1000,11 @@ export function createWebApp(options: WebAppOptions): Server {
 	 */
 	async function phoneHook(req: IncomingMessage, res: ServerResponse, url: URL, instance: string): Promise<void> {
 		const adapter = options.phoneHooks?.get(instance);
-		if (adapter === undefined) return send(res, 404, { error: "Not found" });
+		// A number still pointing here after it was disconnected: refused before it is answered, so it costs nothing.
+		if (adapter === undefined) {
+			res.writeHead(200, { "content-type": "text/xml; charset=utf-8" });
+			return void res.end('<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>');
+		}
 		let raw: Buffer;
 		try {
 			raw = await readBody(req, 64 * 1024);
@@ -1006,13 +1015,18 @@ export function createWebApp(options: WebAppOptions): Server {
 		const params = new URLSearchParams(raw.toString("utf8"));
 		if (!adapter.signed(adapter.hookUrl(url.search), params, req.headers["x-twilio-signature"] as string | undefined)) return send(res, 403, { error: "Forbidden" });
 		try {
-			const xml = await adapter.handle(url.searchParams, params);
+			// The caller hung up while the reply was awaited: Twilio closes the request.
+			const gone = new AbortController();
+			res.on("close", () => {
+				if (!res.writableFinished) gone.abort();
+			});
+			const xml = await adapter.handle(url.searchParams, params, gone.signal);
 			res.writeHead(200, { "content-type": "text/xml; charset=utf-8", "cache-control": "no-store" });
 			res.end(xml);
 		} catch (error) {
 			options.log?.(`phone webhook: not handled: ${error instanceof Error ? error.message : String(error)}`);
 			res.writeHead(200, { "content-type": "text/xml; charset=utf-8" });
-			res.end('<?xml version="1.0" encoding="UTF-8"?><Response><Say language="it-IT">Scusa, qualcosa non va. Riprova tra poco.</Say><Hangup/></Response>');
+			res.end(adapter.apology());
 		}
 	}
 

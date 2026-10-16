@@ -5,7 +5,7 @@
  * environment and calls startAnnie; tests call it directly.
  */
 import { randomBytes } from "node:crypto";
-import { renameSync } from "node:fs";
+import { renameSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
@@ -439,6 +439,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const phones = new Map<string, PhoneAdapter>();
 	const phoneUnsubscribes = new Map<string, () => void>();
 
+	const phonePendingFile = (instance: string) => join(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(instance)), "phone-pending.json");
+
 	function attachPhone(instance: string, credentials: PhoneCredentials): PhoneAdapter | undefined {
 		if (!(config.web.publicUrl?.startsWith("https://") ?? false)) return undefined;
 		const adapter = new PhoneAdapter({
@@ -446,9 +448,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			tenantId: tenant,
 			instanceId: instance,
 			publicUrl: config.web.publicUrl as string,
-			pending: pendingReplies(join(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(instance)), "phone-pending.json"), log),
+			pending: pendingReplies(phonePendingFile(instance), log),
 			mayCall: async (number) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.phone ?? []).includes(number),
-			language: config.phone.language,
+			voice: config.phone.voice,
 			log,
 			...(options.phoneWait === undefined ? {} : { waitMs: options.phoneWait.ms, maxWaits: options.phoneWait.max }),
 		});
@@ -468,6 +470,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		const saved = await runtime.secrets(tenant).get(phoneSecret(record.id));
 		const credentials = saved === undefined ? undefined : parsePhoneCredentials(saved);
 		if (credentials !== undefined && attachPhone(record.id, credentials) === undefined) log(`phone: ${record.id} has a number but this server has no public https address; calls are off`);
+		// The public address may have changed since the number was connected: point it here again.
+		else if (credentials !== undefined)
+			void connectTwilioNumber({ ...credentials, voiceUrl: `${config.web.publicUrl}/hooks/phone/${record.id}`, apiBase: config.phone.apiBase, ...(options.phoneFetch === undefined ? {} : { fetch: options.phoneFetch }) }).catch((error: unknown) =>
+				log(`phone: could not point the number of ${record.id} here: ${error instanceof Error ? error.message : String(error)}`),
+			);
 		else if (saved !== undefined && credentials === undefined) log(`phone: saved credentials of ${record.id} unreadable; connect it again from the console`);
 	}
 
@@ -538,9 +545,14 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				const accountSid = given.accountSid ?? old?.accountSid;
 				const authToken = given.authToken ?? old?.authToken;
 				const number = given.number ?? old?.number;
-				if (accountSid === undefined || authToken === undefined || number === undefined) throw new MissingPhoneField("fields");
-				const { numberSid } = await connectTwilioNumber({ accountSid, authToken, number, voiceUrl: `${publicUrl}/hooks/phone/${id}`, apiBase: config.phone.apiBase, ...(options.phoneFetch === undefined ? {} : { fetch: options.phoneFetch }) });
-				const credentials: PhoneCredentials = { accountSid, authToken, number, numberSid };
+				const pin = given.pin ?? old?.pin;
+				if (accountSid === undefined || authToken === undefined || number === undefined || pin === undefined) throw new MissingPhoneField("fields");
+				const twilio = { apiBase: config.phone.apiBase, ...(options.phoneFetch === undefined ? {} : { fetch: options.phoneFetch }) };
+				// Only the code changed: nothing to ask Twilio.
+				const same = old !== undefined && old.accountSid === accountSid && old.authToken === authToken && old.number === number;
+				const { numberSid } = same ? { numberSid: old.numberSid } : await connectTwilioNumber({ accountSid, authToken, number, voiceUrl: `${publicUrl}/hooks/phone/${id}`, ...twilio });
+				// A number replaced still points here: the adapter refuses calls to any other number.
+				const credentials: PhoneCredentials = { accountSid, authToken, number, numberSid, pin };
 				detachPhone(id);
 				await runtime.secrets(tenant).set(phoneSecret(id), JSON.stringify(credentials));
 				attachPhone(id, credentials);
@@ -550,7 +562,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			},
 			disconnect: async (id) => {
 				detachPhone(id);
+				// The number keeps pointing here, and its calls are refused before they are answered (no cost).
 				await runtime.secrets(tenant).delete(phoneSecret(id));
+				rmSync(phonePendingFile(id), { force: true });
 			},
 		},
 		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
@@ -737,16 +751,18 @@ function phoneSecret(instance: string): string {
 
 /** Replies waiting for a caller, on disk: at most 5 per number, none older than 7 days. */
 function pendingReplies(file: string, log: (message: string) => void): PendingReplies {
-	type State = Record<string, { text: string; at: string }[]>;
+	type State = Record<string, { text: string; at: string; key?: string }[]>;
 	const fresh = (list: State[string] | undefined) => (list ?? []).filter((r) => Date.now() - Date.parse(r.at) < 7 * 24 * 3600_000);
+	// Every write also drops what is too old, for every number.
+	const prune = (s: State): State => Object.fromEntries(Object.entries(s).map(([n, list]) => [n, fresh(list)] as const).filter(([, list]) => list.length > 0));
 	const update = (change: (s: State) => State) => {
 		try {
-			return updateJsonFile<State>(file, {}, change);
+			return updateJsonFile<State>(file, {}, (s) => change(prune(s)));
 		} catch (error) {
 			if (!(error instanceof SyntaxError)) throw error;
 			log(`phone: ${file} unreadable, set aside as .damaged`);
 			renameSync(file, `${file}.damaged`);
-			return updateJsonFile<State>(file, {}, change);
+			return updateJsonFile<State>(file, {}, (s) => change(prune(s)));
 		}
 	};
 	return {
@@ -765,12 +781,17 @@ function pendingReplies(file: string, log: (message: string) => void): PendingRe
 			});
 			return taken;
 		},
-		put: (number, text) => {
-			update((s) => ({ ...s, [number]: [...fresh(s[number]), { text, at: new Date().toISOString() }].slice(-5) }));
+		put: (number, text, key) => {
+			update((s) => {
+				const list = fresh(s[number]);
+				if (list.some((r) => r.key === key)) return s;
+				return { ...s, [number]: [...list, { text, at: new Date().toISOString(), key }].slice(-5) };
+			});
 		},
 	};
 }
 
+/** The WhatsApp credentials of an instance, as one JSON value in its secret store. */
 function whatsappSecret(instance: string): string {
 	return `whatsapp.credentials.${instance}`;
 }
