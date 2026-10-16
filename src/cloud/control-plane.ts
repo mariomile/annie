@@ -4,7 +4,8 @@ import { createServer, type IncomingMessage, request, type Server, type ServerRe
 import { request as httpsRequest } from "node:https";
 import { extname, join } from "node:path";
 import { googleReturnQuery } from "../connectors/google.ts";
-import { proxyToken, sameSecret } from "../web/compare.ts";
+import { COMPUTER_LIMITS, ComputerError, type ComputerProvider, computerKey, workPath } from "../core/computer.ts";
+import { computerToken, proxyToken, sameSecret } from "../web/compare.ts";
 import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { CellState } from "../web/server.ts";
 import { type Access, type AccountBilling, accessOf, BillingRefused, live, mayCheckout, mayUse, type StripeBilling, type StripeEvent, type Subscription } from "./billing.ts";
@@ -37,6 +38,8 @@ export type ControlPlaneOptions = {
 	readonly tickMs: number;
 	/** Subscriptions through Stripe (ADR 0010); without it Annie Cloud is free to use. */
 	readonly billing?: StripeBilling;
+	/** The instances' computers on micro-VMs (ADR 0015), which cells reach through here; none without it. */
+	readonly computer?: ComputerProvider;
 	readonly log?: (message: string) => void;
 };
 
@@ -125,6 +128,7 @@ const CELL_TIMEOUT_MS = 5_000;
 const LINKS_PER_HOUR = 5;
 const MAX_BODY = 64 * 1024;
 const MAX_WEBHOOK_BODY = 512 * 1024;
+const COMPUTER_RUNS_PER_TENANT = 2;
 /** A running cell is asked for its spend at least this often, so a cell that never sleeps is billed too. */
 const USAGE_EVERY_MS = 60 * 60 * 1000;
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
@@ -457,6 +461,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const host = String(req.headers.host ?? "").replace(/:\d+$/, "").toLowerCase();
 		const url = new URL(req.url ?? "/", "http://cloud.local");
+		// Cells reach their computers here, at whatever address the operator gave them for the control plane.
+		if (url.pathname.startsWith("/internal/computer/") && !host.endsWith(`.${options.domain}`)) return computerApi(req, res, url);
 		if (host === options.domain) return home(req, res, url);
 		if (host.endsWith(`.${options.domain}`)) {
 			const tenant = host.slice(0, -(options.domain.length + 1));
@@ -489,6 +495,75 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
 			log(`cloud: ${error instanceof Error ? error.message : String(error)}`);
 			send(res, 500, { error: "Qualcosa non va: riprova tra poco" });
+		}
+	}
+
+	/** Commands running at once per tenant: one tenant cannot take every computer slot of the server. */
+	const computerRuns = new Map<string, number>();
+
+	/**
+	 * The computers of Annie Cloud (ADR 0015): a cell asks for its own tenant, with a token derived
+	 * from its secret; its keys are named again under the tenant, so no cell reaches another
+	 * tenant's computer. The provider's token stays here. A suspended tenant runs nothing.
+	 */
+	async function computerApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+		const computer = options.computer;
+		const tenant = String(req.headers["x-annie-tenant"] ?? "");
+		const cell = cellOf(tenant);
+		const given = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+		if (computer === undefined || cell === undefined || !sameSecret(given, computerToken(cell.secret))) return send(res, 404, { error: "Not found" });
+		if (suspended(tenant)) return send(res, 402, { error: "il periodo di prova è finito: il computer riparte con l'abbonamento" });
+		const keyOf = (value: unknown) => {
+			if (typeof value !== "string" || !/^[a-f0-9]{32}$/.test(value)) throw new HttpError(400, "chiave non valida");
+			return computerKey(tenant, value);
+		};
+		try {
+			const op = url.pathname.slice("/internal/computer/".length);
+			if (op === "check" && req.method === "GET") return send(res, 200, { problem: await computer.check() });
+			if (op === "reset" && req.method === "POST") {
+				await computer.reset(keyOf((await readJson(req)).key));
+				return send(res, 200, { ok: true });
+			}
+			if (op === "run" && req.method === "POST") {
+				const body = await readJson(req);
+				const key = keyOf(body.key);
+				const command = body.command;
+				const timeoutS = Number(body.timeoutS);
+				if (typeof command !== "string" || command.length === 0 || command.length > 8000) throw new HttpError(400, "comando non valido");
+				if (!(timeoutS >= 1 && timeoutS <= COMPUTER_LIMITS.maxTimeoutS)) throw new HttpError(400, "tempo non valido");
+				if ((computerRuns.get(tenant) ?? 0) >= COMPUTER_RUNS_PER_TENANT) return send(res, 429, { error: "ci sono già altri comandi in corso: riprova quando finiscono" });
+				computerRuns.set(tenant, (computerRuns.get(tenant) ?? 0) + 1);
+				// The cell gone (the conversation cancelled, the cell stopped): the command ends too.
+				const gone = new AbortController();
+				res.once("close", () => gone.abort());
+				try {
+					return send(res, 200, await computer.run(key, command, { timeoutS, signal: gone.signal }));
+				} finally {
+					computerRuns.set(tenant, Math.max(0, (computerRuns.get(tenant) ?? 1) - 1));
+				}
+			}
+			if (op === "file") {
+				const key = keyOf(url.searchParams.get("key"));
+				const path = workPath(url.searchParams.get("path") ?? "");
+				if (path === undefined) throw new HttpError(422, "percorso non valido");
+				if (req.method === "PUT") {
+					await computer.put(key, [{ path, data: await readBytes(req, COMPUTER_LIMITS.maxFileBytes) }]);
+					return send(res, 200, { ok: true });
+				}
+				if (req.method === "GET") {
+					const max = Number(url.searchParams.get("max"));
+					if (!Number.isInteger(max) || max < 1 || max > COMPUTER_LIMITS.maxFileBytes) throw new HttpError(400, "dimensione non valida");
+					const data = await computer.get(key, path, max);
+					res.writeHead(200, { "content-type": "application/octet-stream", "content-length": data.length, "cache-control": "no-store" });
+					return void res.end(data);
+				}
+			}
+			send(res, 404, { error: "Not found" });
+		} catch (error) {
+			if (error instanceof ComputerError) return send(res, 422, { error: error.message });
+			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			log(`cloud: computer of ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
+			if (!res.headersSent) send(res, 502, { error: "il computer non risponde" });
 		}
 	}
 
@@ -578,6 +653,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			if (timer !== undefined) clearInterval(timer);
 			server.closeAllConnections();
 			await new Promise((resolve) => server.close(resolve));
+			await options.computer?.close().catch((error: unknown) => log(`cloud: computers not stopped: ${error instanceof Error ? error.message : String(error)}`));
 			// Each running cell tells when to wake it before going down, so its tasks survive a restart.
 			for (const id of await options.provider.list()) {
 				if ((await options.provider.status(id)) !== "running") continue;
@@ -658,6 +734,18 @@ async function serve(res: ServerResponse, path: string): Promise<void> {
 	const data = await readFile(path);
 	res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream", "cache-control": "no-store" });
 	res.end(data);
+}
+
+/** A request's body as bytes, at most `max`. */
+async function readBytes(req: IncomingMessage, max: number): Promise<Buffer> {
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of req as AsyncIterable<Buffer>) {
+		size += chunk.length;
+		if (size > max) throw new HttpError(413, "file troppo grande");
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

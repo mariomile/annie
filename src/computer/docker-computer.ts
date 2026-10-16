@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { request } from "node:http";
 import { COMPUTER_LIMITS, ComputerError, type ComputerProvider, type ComputerRun, tarFiles, untarFirstFile } from "../core/computer.ts";
+import { PerKey, Slots } from "./queue.ts";
 
 export type DockerComputerOptions = {
 	/** The computer's image (docker/computer.Dockerfile). */
@@ -48,13 +49,11 @@ type Exec = { stdout: string; stderr: string; truncated: boolean; cut: boolean; 
  * Docker's archive API: the container has no interface to talk to.
  */
 export class DockerComputerProvider implements ComputerProvider {
-	/** One operation at a time per computer: no start, stop or sweep under a running command. */
-	private readonly locks = new Map<string, Promise<unknown>>();
+	private readonly locks = new PerKey();
 	/** Computers this process started, least recently used first, with their idle timers. */
 	private readonly running = new Map<string, NodeJS.Timeout>();
 	private readonly full = new Set<string>();
-	private readonly queue: (() => void)[] = [];
-	private busy = 0;
+	private readonly slots: Slots;
 
 	constructor(private readonly options: DockerComputerOptions) {
 		const memory = options.memoryMb ?? 1024;
@@ -64,6 +63,7 @@ export class DockerComputerProvider implements ComputerProvider {
 		if (!(cpus > 0)) throw new Error("Computer: a positive number of CPUs");
 		if (!Number.isInteger(disk) || disk < 16) throw new Error("Computer: disk quota of at least 16 MB");
 		if (options.runtime !== undefined && !/^[\w.-]{1,40}$/.test(options.runtime)) throw new Error("Computer: invalid runtime");
+		this.slots = new Slots(options.maxConcurrent ?? 4);
 	}
 
 	run(key: string, command: string, options: { readonly timeoutS: number; readonly signal?: AbortSignal }): Promise<ComputerRun> {
@@ -164,28 +164,12 @@ export class DockerComputerProvider implements ComputerProvider {
 		await Promise.all([...this.running.keys()].map((key) => this.exclusive(key, () => this.stop(key))));
 	}
 
-	/** Runs `work` after every operation already queued for this computer. */
 	private exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
-		const result = (this.locks.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
-		const tail = result.catch(() => {});
-		this.locks.set(key, tail);
-		void tail.then(() => {
-			if (this.locks.get(key) === tail) this.locks.delete(key);
-		});
-		return result;
+		return this.locks.run(key, work);
 	}
 
-	/** At most maxConcurrent commands at once on this server. */
-	private async slot<T>(work: () => Promise<T>): Promise<T> {
-		if (this.busy >= (this.options.maxConcurrent ?? 4)) await new Promise<void>((resolve) => this.queue.push(resolve));
-		else this.busy += 1;
-		try {
-			return await work();
-		} finally {
-			const next = this.queue.shift();
-			if (next === undefined) this.busy -= 1;
-			else next();
-		}
+	private slot<T>(work: () => Promise<T>): Promise<T> {
+		return this.slots.run(work);
 	}
 
 	private async stop(key: string): Promise<void> {

@@ -1,0 +1,20 @@
+#!/bin/sh
+# The computer's first process on a micro-VM (ADR 0015), as root. It cuts the machine off the
+# network before anything else: no packet goes out except on loopback and as a reply to a
+# connection that came in (a machine has no services, so none does). Only then does it mark the
+# machine sealed, and annie-run starts no command on a machine that is not. Then it waits: with
+# no call and no command for ANNIE_IDLE_S seconds it returns, and the machine stops by itself,
+# even if whoever started it is gone.
+set -eu
+for table in iptables ip6tables; do
+	"$table" -P OUTPUT DROP
+	"$table" -F OUTPUT
+	"$table" -A OUTPUT -o lo -j ACCEPT
+	"$table" -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+done
+mkdir -p /run/annie
+chmod 700 /run/annie
+# The volume comes up owned by root; only its top folder changes hands.
+chown 1000:1000 /work
+: > /run/annie/sealed
+exec /usr/local/bin/annie-run idle "${ANNIE_IDLE_S:-600}"
