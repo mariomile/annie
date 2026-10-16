@@ -14,7 +14,7 @@ export interface CellProvider {
 	destroy(id: string): Promise<void>;
 	status(id: string): Promise<CellStatus>;
 	list(): Promise<string[]>;
-	/** Where the control plane reaches the cell's web server (not public). */
+	/** Where the control plane reaches the cell's web server: 127.0.0.1 for a cell on this host, its https domain on a platform (Railway), where the cell guards itself as a self-hosted Annie does. */
 	baseUrl(id: string): Promise<string>;
 }
 

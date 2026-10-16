@@ -48,6 +48,9 @@ const GQL = {
  * to the cell and lets Railway put it to sleep; `start` wakes it with a request, retrying while
  * the cold start answers 502. The control plane reaches a cell on its Railway domain, like any
  * self-hosted Annie behind https: the cell's own login and cell secret guard it.
+ *
+ * `serviceCreate` with an image may deploy at once, before variables and volume exist: that
+ * first deploy cannot start (no configuration) and the first `start` deploys again with all of it.
  */
 export class RailwayCellProvider implements CellProvider {
 	private readonly file: string;
@@ -57,7 +60,16 @@ export class RailwayCellProvider implements CellProvider {
 	constructor(private readonly options: RailwayCellOptions) {
 		this.file = join(options.dataDir, "railway-cells.json");
 		this.fetchImpl = options.fetch ?? fetch;
+		// A new control plane process knows nothing of what slept meanwhile: every cell starts as
+		// "stopped", so the first request wakes it properly (a cheap check if it is already up).
+		updateJsonFile<Record<string, CellRecord>>(this.file, {}, (all) => Object.fromEntries(Object.entries(all).map(([id, cell]) => [id, { ...cell, awake: false }])));
 	}
+
+	/**
+	 * Railway puts a service to sleep after 5 to 10 minutes without outbound traffic: the control
+	 * plane must call a cell idle sooner, or its check would wake a cell that is already asleep.
+	 */
+	static readonly IDLE_MS = 4 * 60_000;
 
 	async create(id: string, env: Readonly<Record<string, string>>): Promise<void> {
 		assertId(id);
@@ -70,12 +82,13 @@ export class RailwayCellProvider implements CellProvider {
 			if (environmentId === undefined) throw new Error(`Railway project for ${id} has no environment`);
 			const scope = { projectId: project.id, environmentId };
 			const serviceId = (await this.gql<{ serviceCreate: { id: string } }>(GQL.serviceCreate, { input: { projectId: project.id, name: "annie", source: { image: this.options.image } } })).serviceCreate.id;
+			// Region first, so the volume (the tenant's data) is made in the EU.
+			await this.gql(GQL.instance, { serviceId, environmentId, input: { sleepApplication: true, region: this.options.region ?? DEFAULT_REGION, healthcheckPath: "/healthz" } });
 			await this.gql(GQL.volumeCreate, { input: { ...scope, serviceId, mountPath: "/data" } });
 			await this.gql(GQL.variables, {
 				input: { ...scope, serviceId, skipDeploys: true, variables: { ...env, ANNIE_DATA_DIR: "/data", ANNIE_WEB_HOST: "0.0.0.0", ANNIE_WEB_PORT: "8080", PORT: "8080" } },
 			});
-			await this.gql(GQL.instance, { serviceId, environmentId, input: { sleepApplication: true, region: this.options.region ?? DEFAULT_REGION, healthcheckPath: "/healthz" } });
-			const domain = (await this.gql<{ serviceDomainCreate: { domain: string } }>(GQL.domain, { input: { ...scope, serviceId, targetPort: 8080 } })).serviceDomainCreate.domain;
+			const domain = (await this.gql<{ serviceDomainCreate: { domain: string } }>(GQL.domain, { input: { environmentId, serviceId, targetPort: 8080 } })).serviceDomainCreate.domain;
 			this.save(id, { ...scope, serviceId, domain, deployed: false, awake: false });
 		} catch (error) {
 			// Nothing half made stays behind, and nothing keeps costing.

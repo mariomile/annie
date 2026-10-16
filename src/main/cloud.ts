@@ -83,16 +83,18 @@ if (process.argv[2] === "upgrade") {
 	process.exit(0);
 }
 
+const cells = provider();
 const cp = await startControlPlane({
 	dataDir,
 	domain,
 	publicScheme: (env("ANNIE_CLOUD_SCHEME") ?? (domain.endsWith("localhost") ? "http" : "https")) as "http" | "https",
 	// Locally the browser reaches the control plane on its own port; behind a proxy, on the default one.
 	...(domain.endsWith("localhost") ? { publicPort: port } : {}),
-	provider: provider(),
+	provider: cells,
 	mailer: mailer(),
 	cellEnv,
-	idleMs: Number(env("ANNIE_CLOUD_IDLE_MINUTES") ?? "15") * 60_000,
+	// Railway sleeps a quiet cell by itself: the control plane must let go of it sooner (railway-provider.ts).
+	idleMs: env("ANNIE_CLOUD_IDLE_MINUTES") !== undefined ? Number(env("ANNIE_CLOUD_IDLE_MINUTES")) * 60_000 : cells instanceof RailwayCellProvider ? RailwayCellProvider.IDLE_MS : 15 * 60_000,
 	web: { host: env("ANNIE_CLOUD_HOST") ?? "127.0.0.1", port },
 	tickMs: 30_000,
 });

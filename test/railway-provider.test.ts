@@ -43,17 +43,18 @@ const provider = (dataDir: string, railway: ReturnType<typeof fakeRailway>) =>
 	new RailwayCellProvider({ token: "rw-token", image: "ghcr.io/buildrs/annie:latest", dataDir, fetch: railway.fetch, pollMs: 5, startTimeoutMs: 2_000 });
 
 describe("Railway cell provider", () => {
-	it("creates a project per cell, with the image, a volume on /data, sleep on, in the EU, without deploying yet", async () => {
+	it("creates a project per cell, with the image, the EU region before the volume on /data, sleep on, without deploying yet", async () => {
 		const railway = fakeRailway();
 		const cells = provider(tempDataDir(), railway);
 		await cells.create("a1", { ANNIE_TENANT_ID: "a1", ANNIE_CELL_SECRET: "s".repeat(32) });
-		expect(railway.calls.map((c) => c.operation)).toEqual(["projectCreate", "serviceCreate", "volumeCreate", "variableCollectionUpsert", "serviceInstanceUpdate", "serviceDomainCreate"]);
+		expect(railway.calls.map((c) => c.operation)).toEqual(["projectCreate", "serviceCreate", "serviceInstanceUpdate", "volumeCreate", "variableCollectionUpsert", "serviceDomainCreate"]);
 		expect(railway.calls.every((c) => c.auth === "Bearer rw-token")).toBe(true);
 		const byName = Object.fromEntries(railway.calls.map((c) => [c.operation, c.variables]));
 		expect(byName.projectCreate.input.name).toBe("annie-a1");
 		expect(byName.serviceCreate.input).toEqual({ projectId: "prj1", name: "annie", source: { image: "ghcr.io/buildrs/annie:latest" } });
 		expect(byName.volumeCreate.input).toEqual({ projectId: "prj1", environmentId: "env1", serviceId: "svc1", mountPath: "/data" });
 		expect(byName.variableCollectionUpsert.input).toMatchObject({ skipDeploys: true, variables: { ANNIE_TENANT_ID: "a1", ANNIE_DATA_DIR: "/data", PORT: "8080" } });
+		expect(byName.serviceDomainCreate.input).toEqual({ environmentId: "env1", serviceId: "svc1", targetPort: 8080 });
 		expect(byName.serviceInstanceUpdate).toMatchObject({ serviceId: "svc1", environmentId: "env1", input: { sleepApplication: true, region: "europe-west4-drams3a", healthcheckPath: "/healthz" } });
 		expect(await cells.status("a1")).toBe("stopped");
 		expect(await cells.baseUrl("a1")).toBe("https://annie-a1.up.railway.app");
@@ -62,7 +63,8 @@ describe("Railway cell provider", () => {
 
 	it("the first start deploys; a start waits out the cold start's 502s; stop only lets Railway put it to sleep", async () => {
 		const railway = fakeRailway({ coldStarts: 3 });
-		const cells = provider(tempDataDir(), railway);
+		const dataDir = tempDataDir();
+		const cells = provider(dataDir, railway);
 		await cells.create("a1", {});
 		await cells.start("a1");
 		expect(railway.calls.filter((c) => c.operation === "serviceInstanceDeployV2")).toHaveLength(1);
@@ -75,6 +77,9 @@ describe("Railway cell provider", () => {
 		// Waking again: no new deploy, just a request.
 		await cells.start("a1");
 		expect(railway.calls.filter((c) => c.operation === "serviceInstanceDeployV2")).toHaveLength(1);
+		// A restarted control plane does not trust what it knew: the cell may have slept meanwhile.
+		expect(await cells.status("a1")).toBe("running");
+		expect(await provider(dataDir, railway).status("a1")).toBe("stopped");
 	});
 
 	it("a failed create leaves no project behind; errors name the operation, never the token", async () => {
