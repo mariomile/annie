@@ -1,4 +1,4 @@
-import type { TranscriberConfig } from "../connectors/transcriber.ts";
+import type { TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;

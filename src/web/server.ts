@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
+import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { MissingWhatsAppField, type WhatsAppAdapter, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
@@ -80,6 +81,8 @@ export type WebAppOptions = {
 		connect(instanceId: string, token: string): Promise<{ username: string | undefined }>;
 		disconnect(instanceId: string): Promise<void>;
 	};
+	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
+	readonly voice?: { readonly host: string };
 	/** The WhatsApp number of each instance that has one: its webhook. */
 	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
 	/** WhatsApp per instance, connected by the owner from the console. */
@@ -641,6 +644,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const others = (record.egress.connectors ?? []).filter((c) => c !== GOOGLE_CONNECTOR);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, GOOGLE_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "google.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+
+	// --- owner: voice messages transcribed for an instance (the audio leaves for the operator's service) ---
+	route("GET", "/api/voice", "owner", async () => (options.voice === undefined ? { available: false } : { available: true, host: options.voice.host }));
+	route("PUT", "/api/instances/:id/voice", "owner", async ({ params, req }) => {
+		if (options.voice === undefined) throw new HttpError(501, "La trascrizione dei vocali non è configurata su questo server");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== VOICE_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, VOICE_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "voice.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
 	});
 

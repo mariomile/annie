@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { type Transcribe, voiceText } from "../connectors/transcriber.ts";
+import { audioName, type Transcribe, voiceText } from "./voice.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
@@ -216,7 +216,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			return this.actionHandler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, data, actionId: message.id });
 		}
 		if (this.handler === undefined) return;
-		if (message.type === "audio") return this.voice(message);
+		if (message.type === "audio") return this.handler === undefined ? undefined : this.voice(message, this.handler);
 		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : undefined;
 		// Images, stickers, locations: not understood yet, so not passed on as empty messages.
 		if (text === undefined) return;
@@ -226,8 +226,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			try {
 				attachments = [await this.download(message.document.id, message.document.filename)];
 			} catch (error) {
-				// A file that cannot be had now or ever (too large, gone): the message still arrives, saying so.
-				if (!(error instanceof ChannelRefused)) throw error;
+				// A file that cannot be had (too large, gone): the message still arrives, saying so. Meta busy: delivered again.
+				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`whatsapp: file of ${message.id} not downloaded: ${error.message}`);
 				note = "[Un file allegato non è stato scaricato: troppo grande o non disponibile.]";
 			}
@@ -245,22 +245,24 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		});
 	}
 
-	/** A voice note: downloaded and transcribed only for people who may write; a stranger's is never fetched. */
-	private async voice(message: WhatsAppMessage): Promise<void> {
-		if (this.handler === undefined) return;
+	/** A voice note or audio file: downloaded and transcribed only for people who may write; a stranger's is never fetched. */
+	private async voice(message: WhatsAppMessage, handler: (message: InboundMessage) => Promise<void>): Promise<void> {
 		const id = message.audio?.id;
 		let text = "[Messaggio vocale]";
 		if (typeof id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
+			// WhatsApp does not say how long it is: the 20 MB of the download is the limit.
+			const mimeType = (message.audio?.mime_type ?? "audio/ogg").split(";")[0]?.trim() || "audio/ogg";
 			try {
-				const file = await this.download(id, "vocale.ogg");
-				text = await voiceText({ data: file.data, name: file.name, mimeType: (message.audio?.mime_type ?? "audio/ogg").split(";")[0] as string }, this.options.transcribe, this.options.log);
+				const file = await this.download(id, audioName(mimeType));
+				text = await voiceText({ data: file.data, name: file.name, mimeType }, this.options.transcribe, this.options.log);
 			} catch (error) {
-				if (!(error instanceof ChannelRefused)) throw error;
+				// Meta busy now: an error, so Meta delivers again. Anything else is said, not dropped.
+				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`whatsapp: voice of ${message.id} not downloaded: ${error.message}`);
 				text = "[Messaggio vocale troppo grande o non disponibile.]";
 			}
 		}
-		await this.handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id });
+		await handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id });
 	}
 
 	/** The media's address from the Graph API, then the file itself, with the token. */

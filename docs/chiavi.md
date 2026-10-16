@@ -137,7 +137,8 @@ Senza queste variabili Annie riceve i vocali ma non li capisce, e chiede di scri
 3. `ANNIE_TRANSCRIBE_URL=https://api.mistral.ai/v1`. Il modello è `voxtral-mini-latest` se non indichi altro in `ANNIE_TRANSCRIBE_MODEL`.
 4. Facoltativo: `ANNIE_TRANSCRIBE_MAX_SECONDS`, la durata massima di un vocale (300 secondi se non lo metti).
 5. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
-6. Dominio: `api.mistral.ai`.
+6. Poi, in ogni istanza che deve capire i vocali: Impostazioni → **Messaggi vocali** → spunta «Trascrivi i vocali di questa istanza».
+7. Dominio: `api.mistral.ai`.
 
 In alternativa va bene qualunque servizio con la stessa API di OpenAI: per OpenAI `ANNIE_TRANSCRIBE_URL=https://api.openai.com/v1` (modello `whisper-1`).
 

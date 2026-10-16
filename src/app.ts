@@ -9,7 +9,7 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
-import { transcriber } from "./connectors/transcriber.ts";
+import { type Transcribe, TranscriptionOff, transcriber, VOICE_CONNECTOR } from "./channels/voice.ts";
 import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter } from "./channels/whatsapp.ts";
 import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
@@ -78,8 +78,17 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const connections = new Map<string, McpConnections>();
 	const telegrams = new Map<string, TelegramAdapter>();
 	const whatsapps = new Map<string, WhatsAppAdapter>();
-	// Voice messages of every chat channel go to the one service the operator chose, or nowhere.
+	// Voice messages of every chat channel go to the one service the operator chose, or nowhere,
+	// and only from instances whose owner allowed it (connector "voice" in the egress policy).
 	const transcribe = config.transcription === undefined ? undefined : transcriber(config.transcription, options.transcribeFetch);
+	const voiceFor = (instance: string): { transcribe?: Transcribe } => {
+		if (transcribe === undefined) return {};
+		const gated = async (clip: Parameters<Transcribe>[0]) => {
+			if (!((await runtime.registry.getInstance(tenant, instance)).egress.connectors ?? []).includes(VOICE_CONNECTOR)) throw new TranscriptionOff();
+			return transcribe(clip);
+		};
+		return { transcribe: Object.assign(gated, { maxSeconds: transcribe.maxSeconds }) };
+	};
 	const segreteriaId = config.segreteria?.instanceId;
 	const connectorStore = (id: string) => new ConnectorStore(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(id)));
 	const policyOf = (record: InstanceRecord) => async () => (await runtime.registry.getInstance(record.tenantId, record.id)).egress;
@@ -249,7 +258,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			log,
 			// Files from strangers are never downloaded.
 			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.telegram ?? []).includes(userId),
-			...(transcribe === undefined ? {} : { transcribe }),
+			...voiceFor(instance),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
 		});
@@ -337,7 +346,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			log,
 			// Files from strangers are never downloaded.
 			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.whatsapp ?? []).includes(userId),
-			...(transcribe === undefined ? {} : { transcribe }),
+			...voiceFor(instance),
 			...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }),
 		});
 		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, adapter, action)));
@@ -395,6 +404,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		defaultTimeZone: config.timeZone,
 		telegramHooks,
 		whatsappHooks: whatsapps,
+		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {
