@@ -15,6 +15,11 @@ export type TelegramAdapterOptions = {
 	readonly log?: (message: string) => void;
 	/** May this user's files be downloaded? Default: yes. Files of strangers should not. */
 	readonly mayDownload?: (userId: string) => Promise<boolean>;
+	/**
+	 * Receive updates by webhook instead of long polling: Telegram pushes each update to
+	 * `url`, with `secretToken` in a header. A process that can sleep (a cell) needs this.
+	 */
+	readonly webhook?: { readonly url: string; readonly secretToken: string };
 };
 
 /** Telegram's limit for one message's text. */
@@ -35,7 +40,7 @@ export const TELEGRAM_MAX_CALLBACK_DATA = 64;
 /** First line of a reply resent after a crash: sendMessage has no idempotency key. */
 export const DUPLICATE_NOTICE = "Possibile doppione: mi sono riavviata mentre ti inviavo questa risposta. Se l'hai già ricevuta, ignora questa.";
 
-type TelegramUpdate = {
+export type TelegramUpdate = {
 	update_id: number;
 	message?: {
 		message_id: number;
@@ -55,7 +60,7 @@ type TelegramUpdate = {
 
 type TelegramResponse<T> = { ok: true; result: T } | { ok: false; description?: string; error_code?: number };
 
-/** Telegram Bot API over long polling (getUpdates), with plain fetch. Text messages only. */
+/** Telegram Bot API over long polling (getUpdates) or a webhook, with plain fetch. */
 export class TelegramAdapter implements ChannelAdapter {
 	readonly name = "telegram";
 	private handler: ((message: InboundMessage) => Promise<void>) | undefined;
@@ -82,6 +87,13 @@ export class TelegramAdapter implements ChannelAdapter {
 
 	async start(): Promise<void> {
 		if (this.loop !== undefined) return;
+		const webhook = this.options.webhook;
+		if (webhook !== undefined) {
+			// Updates come to handleUpdate from now on. Telegram keeps them up to a day if we are down.
+			await this.call("setWebhook", { url: webhook.url, secret_token: webhook.secretToken, allowed_updates: this.allowedUpdates() });
+			this.loop = Promise.resolve();
+			return;
+		}
 		this.abort = new AbortController();
 		this.loop = this.poll(this.abort.signal);
 	}
@@ -118,8 +130,7 @@ export class TelegramAdapter implements ChannelAdapter {
 			"getUpdates",
 			{
 				timeout: this.options.pollTimeoutSec ?? 30,
-				// Taps are requested only when someone handles them: otherwise they would be dropped.
-				allowed_updates: this.actionHandler === undefined ? ["message"] : ["message", "callback_query"],
+				allowed_updates: this.allowedUpdates(),
 				...(this.offset === undefined ? {} : { offset: this.offset }),
 			},
 			signal,
@@ -129,22 +140,39 @@ export class TelegramAdapter implements ChannelAdapter {
 			// message ID, which the core turns into an idempotent request.
 			this.offset = update.update_id + 1;
 			try {
-				await this.dispatch(update);
+				await this.handleUpdate(update);
 			} catch (error) {
-				const failures = (this.failures.get(update.update_id) ?? 0) + 1;
-				if (failures >= MAX_UPDATE_FAILURES) {
-					this.failures.delete(update.update_id);
-					this.options.log?.(`telegram: update ${update.update_id} dropped after ${failures} failed attempts: ${error instanceof Error ? error.message : String(error)}`);
-					continue;
-				}
 				// Not confirmed: Telegram delivers this update again on the next poll.
-				this.failures.set(update.update_id, failures);
 				this.offset = update.update_id;
 				throw error;
 			}
-			this.failures.delete(update.update_id);
 		}
 		return updates.length;
+	}
+
+	/**
+	 * Handle one update, polled or pushed by the webhook. Throws while it fails, so Telegram
+	 * delivers it again; after the third failure it is let go (logged), not retried forever.
+	 */
+	async handleUpdate(update: TelegramUpdate): Promise<void> {
+		try {
+			await this.dispatch(update);
+		} catch (error) {
+			const failures = (this.failures.get(update.update_id) ?? 0) + 1;
+			if (failures >= MAX_UPDATE_FAILURES) {
+				this.failures.delete(update.update_id);
+				this.options.log?.(`telegram: update ${update.update_id} dropped after ${failures} failed attempts: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+			this.failures.set(update.update_id, failures);
+			throw error;
+		}
+		this.failures.delete(update.update_id);
+	}
+
+	// Taps are requested only when someone handles them: otherwise they would be dropped.
+	private allowedUpdates(): string[] {
+		return this.actionHandler === undefined ? ["message"] : ["message", "callback_query"];
 	}
 
 	private async dispatch(update: TelegramUpdate): Promise<void> {

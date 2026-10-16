@@ -69,6 +69,7 @@ Il link contiene il token nel frammento (`#...`): non finisce nei log del server
 1. Crea un bot con @BotFather e metti il token in `TELEGRAM_BOT_TOKEN`.
 2. Metti in `ANNIE_TELEGRAM_ALLOWED_USERS` gli ID numerici di chi può scrivere al bot, e in `ANNIE_TELEGRAM_APPROVERS` chi riceve le schede di approvazione dei tool. Ogni persona apre il bot e preme Start una volta.
 3. Riavvia. Chi non è in elenco non riceve risposta (e finisce nell'audit).
+4. Facoltativo, webhook invece del long polling: con `ANNIE_PUBLIC_URL` in https e `ANNIE_TELEGRAM_WEBHOOK_SECRET` (lettere, cifre, `_` e `-`), all'avvio Annie registra il webhook e Telegram manda i messaggi a `ANNIE_PUBLIC_URL/hooks/telegram/<istanza>`. Il reverse proxy deve far passare quel percorso. Serve quando il processo può spegnersi (Annie Cloud); in self-host il long polling va benissimo.
 
 ## 6. Segreteria commerciale
 

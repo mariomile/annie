@@ -3,7 +3,7 @@ import { DUPLICATE_NOTICE, splitText, TELEGRAM_MAX_TEXT, TelegramAdapter } from 
 import { ChannelRefused } from "../src/channels/types.ts";
 import type { InboundAction, InboundMessage } from "../src/channels/types.ts";
 import { connectChannel } from "../src/gateway.ts";
-import { ConfigError, loadSegreteriaConfig, loadTelegramConfig } from "../src/main/config.ts";
+import { ConfigError, loadAnnieConfig, loadSegreteriaConfig, loadTelegramConfig } from "../src/main/config.ts";
 import { runtimeWithInstance, waitFor } from "./helpers.ts";
 
 const TOKEN = "123456:TEST-TOKEN";
@@ -27,7 +27,7 @@ function fakeTelegram(batches: unknown[][]) {
 			return Response.json({ ok: true, result: batch ?? [] });
 		}
 		if (method === "sendMessage") return Response.json({ ok: true, result: { message_id: calls.length } });
-		if (method === "answerCallbackQuery") return Response.json({ ok: true, result: true });
+		if (method === "answerCallbackQuery" || method === "setWebhook") return Response.json({ ok: true, result: true });
 		return Response.json({ ok: false, error_code: 404, description: "Not Found" });
 	});
 	return { calls, fetch: fetchMock as unknown as typeof fetch };
@@ -305,3 +305,45 @@ describe("Telegram errors", () => {
 		}
 	});
 });
+
+describe("Telegram adapter, webhook mode", () => {
+	it("start registers the webhook with its secret and never polls", async () => {
+		const api = fakeTelegram([]);
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch, webhook: { url: "https://annie.example/hooks/telegram/ops", secretToken: "s3cret_token-1" } });
+		adapter.onInbound(async () => {});
+		await adapter.start();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		await adapter.stop();
+		expect(api.calls.map((c) => c.method)).toEqual(["setWebhook"]);
+		expect(api.calls[0]?.body).toEqual({ url: "https://annie.example/hooks/telegram/ops", secret_token: "s3cret_token-1", allowed_updates: ["message"] });
+	});
+
+	it("an update pushed by Telegram takes the same path as a polled one; a failing one is refused until the third try", async () => {
+		const api = fakeTelegram([]);
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch, webhook: { url: "https://annie.example/hooks/telegram/ops", secretToken: "s3cret" } });
+		const inbound: InboundMessage[] = [];
+		let fail = 0;
+		adapter.onInbound(async (message) => {
+			if (message.text === "rotto" && fail++ < 10) throw new Error("core down");
+			inbound.push(message);
+		});
+		await adapter.handleUpdate(textUpdate(20, 42, 5, "ciao"));
+		expect(inbound).toEqual([expect.objectContaining({ channel: "telegram", threadId: "42", userId: "7", text: "ciao", messageId: "42:5" })]);
+		const broken = textUpdate(21, 42, 6, "rotto");
+		// Telegram redelivers on an error answer; after three failures the update is let go.
+		await expect(adapter.handleUpdate(broken)).rejects.toThrow("core down");
+		await expect(adapter.handleUpdate(broken)).rejects.toThrow("core down");
+		await expect(adapter.handleUpdate(broken)).resolves.toBeUndefined();
+	});
+});
+
+describe("webhook configuration", () => {
+	const base = { ANNIE_MODEL_PROVIDER: "faux", TELEGRAM_BOT_TOKEN: "1:T" };
+	it("needs a public URL and a secret Telegram accepts", () => {
+		expect(() => loadAnnieConfig({ ...base, ANNIE_TELEGRAM_WEBHOOK_SECRET: "abc" })).toThrow(/ANNIE_PUBLIC_URL/);
+		expect(() => loadAnnieConfig({ ...base, ANNIE_PUBLIC_URL: "https://a.example", ANNIE_TELEGRAM_WEBHOOK_SECRET: "has space" })).toThrow(ConfigError);
+		expect(loadAnnieConfig({ ...base, ANNIE_PUBLIC_URL: "https://a.example", ANNIE_TELEGRAM_WEBHOOK_SECRET: "ok_Secret-1" }).telegram?.webhookSecret).toBe("ok_Secret-1");
+		expect(loadAnnieConfig(base).telegram?.webhookSecret).toBeUndefined();
+	});
+});
+

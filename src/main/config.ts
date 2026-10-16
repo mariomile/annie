@@ -137,7 +137,15 @@ export type AnnieConfig = {
 	readonly modelApiKey: string | undefined;
 	readonly timeZone: string;
 	readonly web: { readonly host: string; readonly port: number; readonly publicUrl: string | undefined };
-	readonly telegram: { readonly token: string; readonly allowedUsers: readonly string[] | undefined; readonly approvers: readonly string[] | undefined } | undefined;
+	readonly telegram:
+		| {
+				readonly token: string;
+				readonly allowedUsers: readonly string[] | undefined;
+				readonly approvers: readonly string[] | undefined;
+				/** Webhook instead of long polling: Telegram pushes to ANNIE_PUBLIC_URL with this secret. */
+				readonly webhookSecret: string | undefined;
+		  }
+		| undefined;
 	readonly segreteria: SegreteriaConfig | undefined;
 };
 
@@ -160,12 +168,18 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (invalid.length > 0) throw new ConfigError(`${name} must be a comma-separated list of numeric Telegram user IDs; invalid: ${invalid.join(", ")}`);
 		return list;
 	};
-	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
-	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS") };
 	const port = Number(nonEmpty(env.ANNIE_WEB_PORT) ?? "8080");
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new ConfigError("ANNIE_WEB_PORT must be a port number");
 	const publicUrl = nonEmpty(env.ANNIE_PUBLIC_URL)?.replace(/\/+$/, "");
 	if (publicUrl !== undefined && !/^https?:\/\//.test(publicUrl)) throw new ConfigError("ANNIE_PUBLIC_URL must start with http:// or https://");
+	const webhookSecret = nonEmpty(env.ANNIE_TELEGRAM_WEBHOOK_SECRET);
+	if (webhookSecret !== undefined) {
+		// Telegram's rule for secret_token: 1-256 characters, letters, digits, _ and -.
+		if (!/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret)) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET: 1 to 256 characters, only letters, digits, _ and -");
+		if (publicUrl === undefined) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET needs ANNIE_PUBLIC_URL: Telegram sends the updates there");
+	}
+	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
+	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
 	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
 	try {
 		new Intl.DateTimeFormat("en-US", { timeZone });

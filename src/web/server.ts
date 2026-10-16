@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
@@ -31,6 +31,8 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
+	readonly telegramHooks?: ReadonlyMap<string, { readonly secret: string; readonly handle: (update: unknown) => Promise<void> }>;
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -497,6 +499,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		const url = new URL(req.url ?? "/", "http://annie.local");
 		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
+		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
 		if (match === undefined) return send(res, 404, { error: "Not found" });
@@ -517,6 +521,31 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof HttpError) return send(res, error.status, { ...error.extra, error: error.message });
 			throw error;
 		}
+	}
+
+	/**
+	 * An update Telegram pushes. Authenticated by the secret Telegram repeats in a header, not
+	 * by a session. An error answer makes Telegram deliver it again; the core dedupes by ID.
+	 */
+	async function telegramHook(req: IncomingMessage, res: ServerResponse, instance: string): Promise<void> {
+		const target = options.telegramHooks?.get(instance);
+		if (target === undefined) return send(res, 404, { error: "Not found" });
+		const given = String(req.headers["x-telegram-bot-api-secret-token"] ?? "");
+		if (!sameSecret(given, target.secret)) return send(res, 401, { error: "Unauthorized" });
+		let update: Record<string, unknown>;
+		try {
+			update = await readJson(req);
+		} catch (error) {
+			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			throw error;
+		}
+		try {
+			await target.handle(update);
+		} catch (error) {
+			options.log?.(`telegram webhook: update not handled, Telegram will retry: ${error instanceof Error ? error.message : String(error)}`);
+			return send(res, 500, { error: "retry" });
+		}
+		send(res, 200, { ok: true });
 	}
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
@@ -592,4 +621,10 @@ async function workspaceCall<T>(work: () => Promise<T>): Promise<T> {
 /** Relative: the console prefixes its own origin (Annie may sit behind a proxy). */
 function loginLink(_url: URL, token: string): string {
 	return `/login#${token}`;
+}
+
+function sameSecret(given: string, expected: string): boolean {
+	const a = createHash("sha256").update(given).digest();
+	const b = createHash("sha256").update(expected).digest();
+	return timingSafeEqual(a, b);
 }

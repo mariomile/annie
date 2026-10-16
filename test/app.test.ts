@@ -13,8 +13,10 @@ afterEach(async () => {
 function fakeTelegram() {
 	const updates: unknown[][] = [];
 	const sent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } }[] = [];
+	const methods: string[] = [];
 	const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
 		const method = String(url).slice(String(url).lastIndexOf("/") + 1);
+		methods.push(method);
 		if (method === "getUpdates") {
 			const batch = updates.shift();
 			if (batch === undefined) await new Promise((r) => setTimeout(r, 20));
@@ -23,7 +25,7 @@ function fakeTelegram() {
 		if (method === "sendMessage") sent.push(JSON.parse(String(init?.body)));
 		return Response.json({ ok: true, result: { message_id: 1 } });
 	}) as typeof fetch;
-	return { updates, sent, fetch: fetchImpl };
+	return { updates, sent, methods, fetch: fetchImpl };
 }
 
 async function until(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
@@ -34,8 +36,8 @@ async function until(check: () => Promise<boolean>, timeoutMs = 10_000): Promise
 	}
 }
 
-async function boot(dataDir: string, telegram = fakeTelegram()) {
-	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", TELEGRAM_BOT_TOKEN: "1:T", ANNIE_TELEGRAM_ALLOWED_USERS: "7", ANNIE_TELEGRAM_APPROVERS: "9" });
+async function boot(dataDir: string, telegram = fakeTelegram(), env: Record<string, string> = {}) {
+	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", TELEGRAM_BOT_TOKEN: "1:T", ANNIE_TELEGRAM_ALLOWED_USERS: "7", ANNIE_TELEGRAM_APPROVERS: "9", ...env });
 	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { telegramFetch: telegram.fetch, schedulerIntervalMs: 60_000, log: () => {} });
 	running.push(annie);
 	const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
@@ -184,6 +186,23 @@ describe("pnpm start (startAnnie)", () => {
 		const results = await Promise.all([1, 2, 3].map(() => api("/api/instances", { id: "doppia", name: "Doppia" })));
 		expect(results.filter((r) => r.instance !== undefined)).toHaveLength(1);
 		for (const r of results.filter((r) => r.instance === undefined)) expect(r.error).toMatch(/esiste già/);
+	});
+
+	it("Telegram via webhook: the bot is registered, a pushed update with the right secret gets a reply, a wrong secret gets nothing", async () => {
+		const telegram = fakeTelegram();
+		const { base } = await boot(tempDataDir(), telegram, { ANNIE_PUBLIC_URL: "https://annie.example", ANNIE_TELEGRAM_WEBHOOK_SECRET: "hook_secret-123" });
+		await until(async () => telegram.methods.includes("setWebhook"));
+		expect(telegram.methods).not.toContain("getUpdates");
+		const push = (secret: string, update: unknown) => fetch(`${base}/hooks/telegram/annie`, { method: "POST", headers: { "content-type": "application/json", "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(update) });
+		const update = { update_id: 1, message: { message_id: 3, chat: { id: 7 }, from: { id: 7 }, text: "ciao dal webhook" } };
+		expect((await push("wrong", update)).status).toBe(401);
+		expect((await fetch(`${base}/hooks/telegram/altra`, { method: "POST", headers: { "x-telegram-bot-api-secret-token": "hook_secret-123" }, body: "{}" })).status).toBe(404);
+		expect((await push("hook_secret-123", update)).status).toBe(200);
+		await waitFor(() => telegram.sent.some((m) => m.chat_id === "7" && m.text.includes("ciao dal webhook")));
+		// The same update delivered again (Telegram retries) is answered once.
+		expect((await push("hook_secret-123", update)).status).toBe(200);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(telegram.sent.filter((m) => m.chat_id === "7" && m.text.includes("ciao dal webhook"))).toHaveLength(1);
 	});
 
 	it("only the owner creates instances", async () => {

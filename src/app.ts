@@ -7,7 +7,7 @@
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
-import { TelegramAdapter } from "./channels/telegram.ts";
+import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
 import type { InboundAction } from "./channels/types.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
@@ -144,6 +144,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			// Files from strangers are never downloaded.
 			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, config.instanceId)).allowedUsers.telegram ?? []).includes(userId),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
+			...(config.telegram.webhookSecret === undefined
+				? {}
+				: { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${config.instanceId}`, secretToken: config.telegram.webhookSecret } }),
 		});
 		connectChannel(runtime, bot, { tenantId: tenant, instanceId: config.instanceId }, log, (action) => onTelegramTap(config.instanceId, bot, action));
 		telegrams.set(config.instanceId, bot);
@@ -234,6 +237,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
 		// Same model as the general instance; web only, open to the owner who creates it.
+		telegramHooks: new Map(
+			config.telegram?.webhookSecret === undefined
+				? []
+				: [...telegrams].map(([id, bot]) => [id, { secret: config.telegram?.webhookSecret as string, handle: (update: unknown) => bot.handleUpdate(update as TelegramUpdate) }]),
+		),
 		createInstance: async ({ id, name, instructions, ownerId }) => {
 			const general = await runtime.registry.getInstance(tenant, config.instanceId);
 			const record = await runtime.registry.createInstance(tenant, {
