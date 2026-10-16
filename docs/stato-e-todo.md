@@ -36,7 +36,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 
 - [x] Ritentativi nello stesso processo, con backoff, per risposte e schede (risposte: settimana 6; schede: a ogni giro dalla settimana 4)
 - [x] Pulizia delle outbox: le risposte consegnate da più di 30 giorni si cancellano all'apertura dell'istanza (settimana 6). I file del workspace non si cancellano da soli: sono dati delle persone, li toglie chi li gestisce
-- [ ] Sandbox sotto un utente di sistema separato, o in container. Fatto il primo passo (settimana 6): il container di Annie gira con filesystem in sola lettura, senza capability Linux e senza escalation di privilegi, e la sandbox eredita questi limiti. Resta un utente separato per i tool proposti
+- [x] Sandbox: container di Annie con privilegi minimi, che il processo del tool eredita (settimana 6). L'utente di sistema separato è scartato: richiederebbe di ridare ad Annie i privilegi per cambiare utente ([ADR 0002](adr/0002-tool-proposti-sandbox-e-approvazione.md))
 - [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))
 - [x] 2FA per la console: verifica in due passaggi facoltativa con app di autenticazione (settimana 6)
 
