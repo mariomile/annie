@@ -5,12 +5,13 @@
  * environment and calls startAnnie; tests call it directly.
  */
 import { randomBytes } from "node:crypto";
+import { renameSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
 import { type Transcribe, TranscriptionOff, transcriber, VOICE_CONNECTOR } from "./channels/voice.ts";
-import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter } from "./channels/whatsapp.ts";
+import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter, type WhatsAppWindow, type WindowState, windowStore } from "./channels/whatsapp.ts";
 import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
 import { egressFetch } from "./connectors/http.ts";
@@ -23,6 +24,7 @@ import { decideToolProposal, NotAnApprover } from "./core/approvals.ts";
 import type { DurableEngine } from "./core/engine.ts";
 import { NotFound } from "./core/errors.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "./core/ids.ts";
+import { readJsonFile, updateJsonFile } from "./core/locked-json.ts";
 import { instanceDir, tenantDir } from "./core/paths.ts";
 import { customToolName, type ToolProposal } from "./core/proposals.ts";
 import type { InstanceRecord } from "./core/registry.ts";
@@ -341,6 +343,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	function attachWhatsApp(instance: string, credentials: WhatsAppCredentials): WhatsAppAdapter {
 		const adapter = new WhatsAppAdapter({
 			...credentials,
+			window: whatsappWindow(join(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(instance)), "whatsapp-window.json"), log),
 			tenantId: tenant,
 			instanceId: instance,
 			log,
@@ -452,6 +455,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				const adapter = whatsapps.get(id);
 				const record = await runtime.registry.getInstance(tenant, id);
 				const saved = await runtime.secrets(tenant).get(whatsappSecret(id));
+				const credentials = saved === undefined ? undefined : parseCredentials(saved);
 				const me = adapter === undefined ? undefined : await adapter.me().catch(() => undefined);
 				return {
 					connected: adapter !== undefined,
@@ -459,9 +463,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					...(me?.name === undefined ? {} : { name: me.name }),
 					// What the owner pastes into the Meta app: the address and the token Meta sends back to check it.
 					webhookUrl: config.web.publicUrl?.startsWith("https://") ? `${config.web.publicUrl}/hooks/whatsapp/${id}` : null,
-					...(saved === undefined || parseCredentials(saved) === undefined ? {} : { verifyToken: (parseCredentials(saved) as WhatsAppCredentials).verifyToken }),
+					...(credentials === undefined ? {} : { verifyToken: credentials.verifyToken }),
 					allowedUsers: record.allowedUsers.whatsapp ?? [],
 					approvers: record.approvers?.whatsapp ?? [],
+					template: credentials?.template ?? null,
 				};
 			},
 			// Checked with Meta before anything changes; a value left out keeps the one saved.
@@ -472,7 +477,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				const phoneNumberId = given.phoneNumberId ?? old?.phoneNumberId;
 				const appSecret = given.appSecret ?? old?.appSecret;
 				if (accessToken === undefined || phoneNumberId === undefined || appSecret === undefined) throw new MissingWhatsAppField();
-				const credentials: WhatsAppCredentials = { accessToken, phoneNumberId, appSecret, verifyToken: old?.verifyToken ?? randomBytes(18).toString("base64url") };
+				const template = given.template === null ? undefined : (given.template ?? old?.template);
+				const credentials: WhatsAppCredentials = { accessToken, phoneNumberId, appSecret, verifyToken: old?.verifyToken ?? randomBytes(18).toString("base64url"), ...(template === undefined ? {} : { template }) };
 				const me = await new WhatsAppAdapter({ ...credentials, tenantId: tenant, instanceId: id, ...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }) }).me();
 				detachWhatsApp(id);
 				await runtime.secrets(tenant).set(whatsappSecret(id), JSON.stringify(credentials));
@@ -547,6 +553,33 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 
 function telegramTokenSecret(instance: string): string {
 	return `telegram.botToken.${instance}`;
+}
+
+/** The WhatsApp window store of an instance, in a locked JSON file. A damaged file is set aside, not left to block the channel. */
+function whatsappWindow(file: string, log: (message: string) => void): WhatsAppWindow {
+	const aside = (error: unknown) => {
+		if (!(error instanceof SyntaxError)) throw error;
+		log(`whatsapp: ${file} unreadable, set aside as .damaged`);
+		renameSync(file, `${file}.damaged`);
+	};
+	return windowStore({
+		read: () => {
+			try {
+				return readJsonFile<WindowState>(file, {});
+			} catch (error) {
+				aside(error);
+				return {};
+			}
+		},
+		update: (change) => {
+			try {
+				updateJsonFile<WindowState>(file, {}, change);
+			} catch (error) {
+				aside(error);
+				updateJsonFile<WindowState>(file, {}, change);
+			}
+		},
+	});
 }
 
 /** The WhatsApp credentials of an instance, as one JSON value in its secret store. */

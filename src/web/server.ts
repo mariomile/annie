@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
-import { MissingWhatsAppField, type WhatsAppAdapter, type WhatsAppWebhook } from "../channels/whatsapp.ts";
+import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
@@ -55,6 +55,8 @@ export type WhatsAppStatus = {
 	readonly verifyToken?: string;
 	readonly allowedUsers: readonly string[];
 	readonly approvers: readonly string[];
+	/** The approved template sent outside the 24-hour window; null: messages wait without notice. */
+	readonly template: WhatsAppTemplate | null;
 };
 
 export type WebAppOptions = {
@@ -89,7 +91,7 @@ export type WebAppOptions = {
 	readonly whatsapp?: {
 		status(instanceId: string): Promise<WhatsAppStatus>;
 		/** Check with Meta, keep the credentials in the secret store, start receiving. Values left out keep the saved ones. */
-		connect(instanceId: string, credentials: { accessToken?: string; phoneNumberId?: string; appSecret?: string }): Promise<{ number: string | undefined; name: string | undefined }>;
+		connect(instanceId: string, credentials: { accessToken?: string; phoneNumberId?: string; appSecret?: string; template?: WhatsAppTemplate | null }): Promise<{ number: string | undefined; name: string | undefined }>;
 		disconnect(instanceId: string): Promise<void>;
 	};
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
@@ -737,7 +739,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	route("PUT", "/api/instances/:id/whatsapp", "owner", async ({ params, req }) => {
 		const id = params[0] as string;
-		const body = (await readJson(req)) as { accessToken?: unknown; phoneNumberId?: unknown; appSecret?: unknown; allowedUsers?: unknown; approvers?: unknown };
+		const body = (await readJson(req)) as { accessToken?: unknown; phoneNumberId?: unknown; appSecret?: unknown; allowedUsers?: unknown; approvers?: unknown; templateName?: unknown; templateLanguage?: unknown };
 		// Numbers as WhatsApp writes them: international, digits only (393331234567).
 		const numbers = (list: unknown, what: string): string[] | undefined => {
 			if (list === undefined) return undefined;
@@ -756,12 +758,21 @@ export function createWebApp(options: WebAppOptions): Server {
 			phoneNumberId: text(body.phoneNumberId, /^\d{5,30}$/, "ID del numero"),
 			appSecret: text(body.appSecret, /^[0-9a-f]{16,128}$/i, "App secret"),
 		};
+		// The template: both name and language, or both empty to remove it; left out, unchanged.
+		let template: WhatsAppTemplate | null | undefined;
+		if (body.templateName !== undefined || body.templateLanguage !== undefined) {
+			const name = typeof body.templateName === "string" ? body.templateName.trim() : "";
+			const language = typeof body.templateLanguage === "string" ? body.templateLanguage.trim() : "";
+			if (name === "" && language === "") template = null;
+			else if (TEMPLATE_NAME.test(name) && TEMPLATE_LANGUAGE.test(language)) template = { name, language };
+			else throw new HttpError(400, "Template: il nome come in Meta (minuscole, cifre e _) e la lingua come it o en_US");
+		}
 		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
 			throw new HttpError(404, "Istanza inesistente");
 		});
-		if (Object.values(given).some((v) => v !== undefined)) {
+		if (Object.values(given).some((v) => v !== undefined) || template !== undefined) {
 			try {
-				await whatsappOf().connect(id, Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined)));
+				await whatsappOf().connect(id, { ...Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined)), ...(template === undefined ? {} : { template }) });
 			} catch (error) {
 				if (error instanceof HttpError) throw error;
 				if (error instanceof MissingWhatsAppField) throw new HttpError(400, "La prima volta servono token di accesso, ID del numero e app secret");
