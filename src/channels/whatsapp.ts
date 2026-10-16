@@ -19,7 +19,27 @@ export type WhatsAppCredentials = {
 	readonly appSecret: string;
 	/** What the webhook answers Meta's verification with; ours, random. */
 	readonly verifyToken: string;
+	/** The template for messages outside the 24-hour window, saved with the rest. */
+	readonly template?: WhatsAppTemplate;
 };
+
+/** A message waiting for its person to open the 24-hour window again. */
+export type ParkedMessage = { readonly text: string; readonly buttons?: readonly ActionButton[] };
+
+/**
+ * What the adapter remembers per number, kept by the app across restarts: when the person last
+ * wrote (so Annie knows whether WhatsApp lets her write freely) and what waits for them.
+ */
+export type WhatsAppWindow = {
+	lastInbound(number: string): Promise<number | undefined>;
+	seen(number: string, at: number): Promise<void>;
+	park(number: string, message: ParkedMessage): Promise<void>;
+	/** What waited for this number, removed from the store. */
+	take(number: string): Promise<ParkedMessage[]>;
+};
+
+/** A template the owner had Meta approve, with one body variable for an excerpt of the message. */
+export type WhatsAppTemplate = { readonly name: string; readonly language: string };
 
 export type WhatsAppAdapterOptions = WhatsAppCredentials & {
 	readonly tenantId: string;
@@ -32,6 +52,10 @@ export type WhatsAppAdapterOptions = WhatsAppCredentials & {
 	readonly mayDownload?: (userId: string) => Promise<boolean>;
 	/** Voice messages to text; without it Annie is told transcription is off. */
 	readonly transcribe?: Transcribe;
+	/** Without it every message is sent as is, and outside the window Meta drops it (logged). */
+	readonly window?: WhatsAppWindow;
+	/** Sent instead of a message outside the window, to tell the person something waits for them. */
+	readonly template?: WhatsAppTemplate;
 };
 
 export const WHATSAPP_GRAPH = "https://graph.facebook.com/v26.0";
@@ -45,6 +69,10 @@ const MAX_CAPTION = 1024;
 const MAX_INTERACTIVE_BODY = 1024;
 /** Largest file Annie downloads from a chat. */
 const MAX_DOWNLOAD = 20 * 1024 * 1024;
+/** Free-form messages are allowed this long after the person's last one; a little less, to be safe. */
+const WINDOW_MS = 24 * 3_600_000 - 10 * 60_000;
+/** Longest excerpt in a template variable (no line breaks allowed there). */
+const MAX_EXCERPT = 900;
 /** Meta's error code for a free-form message outside the 24-hour window. */
 const OUTSIDE_WINDOW = 131047;
 /** Meta's codes for "not now": rate limits (4, 80007, 130429, 131048, 131056) and its own temporary errors (1, 2, 131000, 131016, 133004). */
@@ -79,7 +107,10 @@ export function parseCredentials(saved: string): WhatsAppCredentials | undefined
 	try {
 		const value = JSON.parse(saved) as Partial<WhatsAppCredentials>;
 		const fields = [value.accessToken, value.phoneNumberId, value.appSecret, value.verifyToken];
-		return fields.every((f) => typeof f === "string" && f !== "") ? (value as WhatsAppCredentials) : undefined;
+		if (!fields.every((f) => typeof f === "string" && f !== "")) return undefined;
+		const template = value.template;
+		const valid = template === undefined || (typeof template?.name === "string" && typeof template.language === "string");
+		return valid ? (value as WhatsAppCredentials) : { ...(value as WhatsAppCredentials), template: undefined };
 	} catch {
 		return undefined;
 	}
@@ -178,19 +209,53 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
 	async send(message: OutboundMessage): Promise<void> {
 		const text = message.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
+		const parked: ParkedMessage = { text, ...(message.buttons === undefined || message.buttons.length === 0 ? {} : { buttons: message.buttons }) };
+		if (await this.windowClosed(message.threadId)) return this.park(message.threadId, parked);
+		await this.sendNow(message.threadId, parked);
+	}
+
+	/** Whether WhatsApp would refuse a free-form message now: only known for numbers that wrote since we started keeping track. */
+	private async windowClosed(number: string): Promise<boolean> {
+		const last = await this.options.window?.lastInbound(number);
+		return last !== undefined && Date.now() - last > WINDOW_MS;
+	}
+
+	/** Kept for the person's next message; meanwhile the approved template, if any, tells them something waits. */
+	private async park(number: string, message: ParkedMessage): Promise<void> {
+		const window = this.options.window as WhatsAppWindow;
+		await window.park(number, message);
+		const template = this.options.template;
+		if (template === undefined) {
+			this.options.log?.(`whatsapp: outside the 24-hour window with ${number}: message kept until they write (no template set)`);
+			return;
+		}
+		const flat = message.text.replace(/\s+/g, " ").trim();
+		const excerpt = flat.length > MAX_EXCERPT ? `${flat.slice(0, MAX_EXCERPT)}…` : flat || "…";
+		await this.call("POST", `/${this.options.phoneNumberId}/messages`, {
+			messaging_product: "whatsapp",
+			recipient_type: "individual",
+			to: number,
+			type: "template",
+			template: { name: template.name, language: { code: template.language }, components: [{ type: "body", parameters: [{ type: "text", text: excerpt }] }] },
+		});
+	}
+
+	private async sendNow(number: string, message: ParkedMessage): Promise<void> {
+		const text = message.text;
 		const buttons = message.buttons ?? [];
 		// A message with buttons holds at most 1024 characters: the text before goes as plain messages.
 		const tail = buttons.length === 0 ? "" : tailOf(text, MAX_INTERACTIVE_BODY);
 		const head = text.slice(0, text.length - tail.length);
-		const to = { messaging_product: "whatsapp", recipient_type: "individual", to: message.threadId };
+		const to = { messaging_product: "whatsapp", recipient_type: "individual", to: number };
 		if (head !== "" || buttons.length === 0) {
 			for (const chunk of splitText(head, MAX_TEXT)) await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "text", text: { body: chunk, preview_url: false } });
 		}
 		if (buttons.length > 0) await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "interactive", interactive: replyButtons(tail || "…", buttons) });
 	}
 
-	/** Upload, then send as a document. */
+	/** Upload, then send as a document. A file cannot wait for the window: outside it, it is refused. */
 	async sendFile(file: OutboundFile): Promise<void> {
+		if (await this.windowClosed(file.threadId)) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Annie first");
 		const form = new FormData();
 		form.set("messaging_product", "whatsapp");
 		const type = MIME[file.name.split(".").at(-1)?.toLowerCase() ?? ""];
@@ -210,6 +275,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
 	}
 
 	private async dispatch(message: WhatsAppMessage): Promise<void> {
+		// The person wrote: the window is open again, and what waited for them goes now, before the answer to this.
+		await this.options.window?.seen(message.from, Date.now());
+		await this.deliverParked(message.from);
 		if (message.type === "interactive" && message.interactive?.type === "button_reply") {
 			const data = message.interactive.button_reply?.id;
 			if (this.actionHandler === undefined || data === undefined) return;
@@ -243,6 +311,20 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			messageId: message.id,
 			...(attachments.length === 0 ? {} : { attachments }),
 		});
+	}
+
+	private async deliverParked(number: string): Promise<void> {
+		const waiting = (await this.options.window?.take(number)) ?? [];
+		for (const [i, message] of waiting.entries()) {
+			try {
+				await this.sendNow(number, message);
+			} catch (error) {
+				// Not lost: back in the store for the next message.
+				for (const rest of waiting.slice(i)) await this.options.window?.park(number, rest);
+				this.options.log?.(`whatsapp: messages kept for ${number} not sent yet: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
 	}
 
 	/** A voice note or audio file: downloaded and transcribed only for people who may write; a stranger's is never fetched. */
