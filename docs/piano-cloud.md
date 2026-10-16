@@ -57,7 +57,7 @@ Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Anni
 
 ## Domande aperte
 
-- Provider delle celle per la Fase 3: Fly.io Machines in UE è il candidato; costi, tempi di risveglio e volumi vanno misurati prima di scegliere. Fino ad allora, container su un server (ADR 0008).
+- Provider delle celle: container su un server (ADR 0008) o Railway (provider scritto, settimana 9, da provare dal vivo con un token). Per la Fase 3 servono micro-VM (Fly.io Machines in UE il candidato).
 - Integrazioni oltre Google: Composio come account collegato opzionale, dopo uno spike (serve una chiave) e le risposte su region UE e verifica Google con app propria.
 - Email per i link di accesso: quale servizio SMTP (meglio con server in UE), con dominio di Buildrs.
 - Dominio di Annie Cloud.

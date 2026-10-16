@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, request, type Server, type ServerResponse } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { extname, join } from "node:path";
 import { googleReturnQuery } from "../connectors/google.ts";
 import { sameSecret } from "../web/compare.ts";
@@ -283,7 +284,9 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			open.set(tenant, Math.max(0, (open.get(tenant) ?? 1) - 1));
 			lastSeen.set(tenant, Date.now());
 		};
-		const upstream = request({ host: target.hostname, port: target.port, method: req.method, path: `${path.pathname}${path.search}`, headers: forwardHeaders(req, tenant) }, (answer) => {
+		// A cell on this host speaks http; one on a platform (Railway) is reached over https.
+		const call = target.protocol === "https:" ? httpsRequest : request;
+		const upstream = call({ host: target.hostname, port: target.port, method: req.method, path: `${path.pathname}${path.search}`, headers: forwardHeaders(req, tenant, target.host) }, (answer) => {
 			res.writeHead(answer.statusCode ?? 502, withoutHopByHop(answer.headers));
 			answer.pipe(res);
 		});
@@ -299,10 +302,11 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	}
 
 	/** Headers for the cell: no credentials meant for the control plane, no hop-by-hop, our own forwarding facts. */
-	function forwardHeaders(req: IncomingMessage, tenant: string): Record<string, string | string[]> {
+	function forwardHeaders(req: IncomingMessage, tenant: string, cellHost: string): Record<string, string | string[]> {
 		const headers = withoutHopByHop(req.headers);
 		for (const name of Object.keys(headers)) if (name === "authorization" || name.startsWith("x-forwarded-")) delete headers[name];
-		return { ...headers, host: `${tenant}.${options.domain}`, "x-forwarded-proto": options.publicScheme, "x-forwarded-for": req.socket.remoteAddress ?? "" };
+		// Host is the cell's own address (a platform routes by it); the public one goes in X-Forwarded-Host.
+		return { ...headers, host: cellHost, "x-forwarded-host": `${tenant}.${options.domain}`, "x-forwarded-proto": options.publicScheme, "x-forwarded-for": req.socket.remoteAddress ?? "" };
 	}
 
 	const server = createServer((req, res) => {
