@@ -1,3 +1,6 @@
+import type { AuditRecord } from "./audit.ts";
+import type { AnnieTool } from "./engine.ts";
+
 /**
  * The brief del mattino: a task programmato of the person, in their own console thread, that
  * reads their calendar and mail (read only) and what Annie remembers about them.
@@ -22,4 +25,44 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
 	const match = /^(\d{1,2}) (\d{1,2}) \* \* (1-5|\*)$/.exec(cron);
 	if (match === null) return undefined;
 	return { time: `${match[2]?.padStart(2, "0")}:${match[1]?.padStart(2, "0")}`, weekdaysOnly: match[3] === "1-5" };
+}
+
+/** Tools that only read: the only ones that run in a brief's thread. */
+const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "file_list", "file_read", "schedule_list"]);
+
+/**
+ * The brief reads mail written by anyone: in its thread every tool that writes, sends or
+ * remembers refuses, so nothing a mail says can make Annie act. The person acts from another chat.
+ */
+export function readOnlyInBriefs(tools: readonly AnnieTool[], isBriefThread: (thread: { channel: string; threadId: string }) => Promise<boolean>): AnnieTool[] {
+	return tools.map((tool) =>
+		READ_ONLY_TOOLS.has(tool.name)
+			? tool
+			: {
+					...tool,
+					execute: async (args, ctx) => {
+						if (ctx.thread !== undefined && (await isBriefThread(ctx.thread))) return "Errore: nella chat del brief del mattino Annie legge soltanto. Per agire, scrivile in un'altra conversazione.";
+						return tool.execute(args, ctx);
+					},
+				},
+	);
+}
+
+export type BriefStats = { readonly active: number; readonly peopleDelivered: number; readonly deliveries: number; readonly peopleWhoWrote: number };
+
+/**
+ * The Fase 2 measure, over the last `days`: how many briefs are on, how many people got one, and
+ * how many then wrote in their brief's thread (the sign they use it, not just receive it).
+ */
+export function briefStats(events: readonly AuditRecord[], briefThreads: ReadonlyMap<string, string>, now: Date, days = 7): BriefStats {
+	const since = now.getTime() - days * 24 * 3600_000;
+	const recent = events.filter((e) => Date.parse(e.ts) >= since);
+	const delivered = recent.filter((e) => e.type === "schedule.fired" && e.kind === "brief");
+	const wrote = new Set(recent.filter((e) => e.type === "message.received" && e.channel === "web" && briefThreads.has(String(e.threadId))).map((e) => String(e.userId)));
+	return {
+		active: briefThreads.size,
+		peopleDelivered: new Set(delivered.map((e) => briefThreads.get(String(e.threadId))).filter((p) => p !== undefined)).size,
+		deliveries: delivered.length,
+		peopleWhoWrote: wrote.size,
+	};
 }

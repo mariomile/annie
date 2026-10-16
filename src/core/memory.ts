@@ -5,7 +5,8 @@ import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 /**
  * The memoria of an instance: facts and preferences it keeps across conversations, about one
  * person (`about` = "<channel>:<userId>") or shared by everyone who talks to it (`about` = "*").
- * The person it is about can see and delete it.
+ * The person it is about can see and delete it; shared ones are the owner's, from the console.
+ * A person's memories only reach the instance in a conversation with that person alone.
  */
 export type Memory = {
 	readonly id: string;
@@ -17,7 +18,8 @@ export type Memory = {
 
 export const SHARED = "*";
 const MAX_TEXT = 500;
-const MAX_PER_SUBJECT = 200;
+/** All of them reach the instance with each message, so the cap is also what it can read. */
+const MAX_PER_SUBJECT = 50;
 
 export function subjectOf(channel: string, userId: string): string {
 	return `${channel}:${userId}`;
@@ -85,11 +87,20 @@ export class Participants {
 		if (this.get(threadKey) === subject) return;
 		this.cache = updateJsonFile<Record<string, string>>(this.file, {}, (all) => ({ ...all, [threadKey]: subject }));
 	}
+
+	/** A thread with more than one person (a group chat): nobody's memory applies there. */
+	clear(threadKey: string): void {
+		if (this.get(threadKey) === undefined) return;
+		this.cache = updateJsonFile<Record<string, string>>(this.file, {}, ({ [threadKey]: _gone, ...rest }) => rest);
+	}
 }
+
+/** Where the memory note starts in a message (the local development model cuts it off there). */
+export const MEMORY_NOTE_MARKER = "\n\n[Memoria]";
 
 /** The block added after a person's message: what the instance remembers that applies to them. */
 export function memoryNote(memories: readonly Memory[]): string {
 	if (memories.length === 0) return "";
-	const lines = memories.slice(0, 50).map((m) => `- ${m.text} (${m.about === SHARED ? "condivisa, " : ""}id ${m.id})`);
-	return `\n\n[Memoria] Cose che ricordi di chi ti scrive; usale solo se servono, aggiornale con memory_remember e memory_forget:\n${lines.join("\n")}`;
+	const lines = memories.map((m) => `- ${m.text} (${m.about === SHARED ? "condivisa, " : ""}id ${m.id})`);
+	return `${MEMORY_NOTE_MARKER} Cose che ricordi di chi ti scrive; usale solo se servono, aggiornale con memory_remember e memory_forget:\n${lines.join("\n")}`;
 }

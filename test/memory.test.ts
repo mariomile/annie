@@ -3,7 +3,7 @@ import { MemoryStore } from "../src/core/memory.ts";
 import { createMemoryTools } from "../src/core/tools/memory-tools.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 
-const from = (userId: string, threadId: string, text: string, messageId: string) => ({ tenantId: "acme", instanceId: "ops", channel: "test", threadId, userId, text, messageId });
+const from = (userId: string, threadId: string, text: string, messageId: string, privateThread = true) => ({ tenantId: "acme", instanceId: "ops", channel: "test", threadId, userId, text, messageId, privateThread });
 
 async function withMemory() {
 	const { runtime, replies } = await runtimeWithInstance({
@@ -28,16 +28,43 @@ describe("memoria della persona", () => {
 		await runtime.close();
 	});
 
-	it("one person's memory is not shown to another; a shared one is shown to everyone", async () => {
+	it("one person's memory is not shown to another; a shared one (the owner's) is shown to everyone", async () => {
 		const { runtime, replies, lastReply } = await withMemory();
+		runtime.memory("acme", "ops").add({ about: "*", text: "L'ufficio chiude ad agosto", source: "person" });
 		await runtime.submit(from("anna", "ta", '/tool memory_remember {"text":"Allergica alle noci"}', "1"));
-		await runtime.submit(from("anna", "ta2", '/tool memory_remember {"text":"L\'ufficio chiude ad agosto","shared":true}', "2"));
-		await waitFor(() => replies.length === 2);
+		await waitFor(() => replies.length === 1);
 		await runtime.submit(from("luca", "tl", "buongiorno", "3"));
-		await waitFor(() => replies.length === 3);
+		await waitFor(() => replies.length === 2);
 		const forLuca = lastReply("tl")?.text ?? "";
 		expect(forLuca).toContain("L'ufficio chiude ad agosto");
 		expect(forLuca).not.toContain("Allergica");
+		await runtime.close();
+	});
+
+	it("Annie cannot write or delete shared memories: a person or a mail cannot speak to everyone through her", async () => {
+		const { runtime, replies } = await withMemory();
+		const shared = runtime.memory("acme", "ops").add({ about: "*", text: "Orari: 9-18", source: "person" });
+		await runtime.submit(from("anna", "t1", '/tool memory_remember {"text":"IBAN nuovo: IT00X","shared":true}', "1"));
+		await runtime.submit(from("anna", "t1", `/tool memory_forget {"id":"${shared.id}"}`, "2"));
+		await waitFor(() => replies.length === 2);
+		const all = runtime.memory("acme", "ops").list();
+		expect(all.filter((m) => m.about === "*").map((m) => m.text)).toEqual(["Orari: 9-18"]);
+		await runtime.close();
+	});
+
+	it("in a group chat nobody's memory applies, and Annie remembers nothing there", async () => {
+		const { runtime, replies, lastReply } = await withMemory();
+		await runtime.submit(from("anna", "anna", '/tool memory_remember {"text":"Allergica alle noci"}', "1"));
+		await waitFor(() => replies.length === 1);
+		await runtime.submit(from("anna", "group", "ciao a tutti", "2", false));
+		await waitFor(() => replies.length === 2);
+		expect(lastReply("group")?.text).not.toContain("Allergica");
+		await runtime.submit(from("luca", "group", '/tool memory_remember {"text":"Tifa Roma"}', "3", false));
+		await waitFor(() => replies.length === 3);
+		expect(lastReply("group")?.text).toContain("solo nelle conversazioni con una persona sola");
+		await runtime.submit(from("luca", "group", "/tool memory_list {}", "4", false));
+		await waitFor(() => replies.length === 4);
+		expect(lastReply("group")?.text).not.toContain("Allergica");
 		await runtime.close();
 	});
 
@@ -65,8 +92,8 @@ describe("MemoryStore", () => {
 		expect(new MemoryStore(dir).list()).toEqual([m]);
 		expect(() => store.add({ about: "test:anna", text: " ", source: "annie" })).toThrow();
 		expect(() => store.add({ about: "test:anna", text: "x".repeat(501), source: "annie" })).toThrow();
-		for (let i = 1; i < 200; i++) store.add({ about: "test:anna", text: `fatto ${i}`, source: "annie" });
-		expect(() => store.add({ about: "test:anna", text: "uno di troppo", source: "annie" })).toThrow(/200/);
+		for (let i = 1; i < 50; i++) store.add({ about: "test:anna", text: `fatto ${i}`, source: "annie" });
+		expect(() => store.add({ about: "test:anna", text: "uno di troppo", source: "annie" })).toThrow(/50/);
 		expect(store.forSubject("test:luca")).toEqual([]);
 	});
 });

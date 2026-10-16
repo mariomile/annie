@@ -94,8 +94,12 @@ Un'istruzione che un'istanza esegue da sola a un'ora stabilita, una volta o a ri
 _Avoid_: cron, job, promemoria, routine
 
 **Memoria**:
-Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce l'owner.
+Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; valgono solo quando parla con lei da sola, e la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce solo l'owner.
 _Avoid_: profilo, contesto, knowledge base
+
+**Account collegato**:
+Un account esterno di una persona (oggi Google) che le istanze leggono per lei, solo nelle sue conversazioni e solo dove l'owner lo consente. Diverso da un connettore, che appartiene a un'istanza.
+_Avoid_: integrazione, connettore personale
 
 **Brief del mattino**:
 Il task programmato di una persona che ogni mattina le riassume impegni del giorno, mail che chiedono una risposta e quello che l'istanza ricorda di lei, leggendo senza cambiare niente.

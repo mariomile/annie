@@ -8,7 +8,8 @@ import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } f
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
-import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService } from "../connectors/google.ts";
+import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
+import { ConnectorHttpError } from "../connectors/http.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
@@ -369,6 +370,13 @@ export function createWebApp(options: WebAppOptions): Server {
 			google: { available: options.google !== undefined, connected: options.google?.accounts.get(p.id) !== undefined, allowed: (record.egress.connectors ?? []).includes(GOOGLE_CONNECTOR) },
 		};
 	});
+	// One change at a time per instance, so two tabs cannot leave a person with two briefs.
+	const briefChanges = new Map<string, Promise<unknown>>();
+	const oneAtATime = <T>(key: string, work: () => Promise<T>): Promise<T> => {
+		const next = (briefChanges.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
+		briefChanges.set(key, next);
+		return next;
+	};
 	route("PUT", "/api/instances/:id/brief", "person", async ({ person, params, req }) => {
 		const p = person as Person;
 		const { record, member } = await instanceAccess(p, params[0] as string);
@@ -376,26 +384,38 @@ export function createWebApp(options: WebAppOptions): Server {
 		const body = (await readJson(req)) as { time?: unknown; weekdaysOnly?: unknown };
 		const cron = briefCron(String(body.time ?? ""), body.weekdaysOnly !== false);
 		if (cron === undefined) throw new HttpError(400, "Ora nel formato HH:MM, per esempio 07:30");
-		const store = runtime.schedules(tenantId, record.id);
-		const channel = channelOf(record.id);
-		const previous = await briefOf(record.id, p);
-		const kept = previous === undefined ? undefined : await channel.thread(previous.threadId);
-		const thread = kept !== undefined && kept.personId === p.id ? kept : await channel.createThread(p.id, BRIEF_THREAD_TITLE);
-		const schedule = await store.create({ instruction: BRIEF_INSTRUCTION, channel: "web", threadId: thread.id, when: { cron, timeZone: options.defaultTimeZone }, createdBy: { kind: "person", channel: "web", userId: p.id }, kind: "brief" }).catch((error: unknown) => {
-			throw error instanceof ScheduleError ? new HttpError(400, error.message) : error;
+		return oneAtATime(record.id, async () => {
+			const store = runtime.schedules(tenantId, record.id);
+			const channel = channelOf(record.id);
+			const previous = await briefOf(record.id, p);
+			const kept = previous === undefined ? undefined : await channel.thread(previous.threadId);
+			const thread = kept !== undefined && kept.personId === p.id ? kept : await channel.createThread(p.id, BRIEF_THREAD_TITLE);
+			const input = { instruction: BRIEF_INSTRUCTION, channel: "web", threadId: thread.id, when: { cron, timeZone: options.defaultTimeZone }, createdBy: { kind: "person" as const, channel: "web", userId: p.id }, kind: "brief" as const };
+			let schedule;
+			try {
+				schedule = await store.create(input);
+				if (previous !== undefined) await store.remove(previous.id);
+			} catch (error) {
+				if (!(error instanceof ScheduleError)) throw error;
+				// At the limit of tasks, moving the brief frees its own place first.
+				if (previous === undefined) throw new HttpError(400, error.message);
+				await store.remove(previous.id);
+				schedule = await store.create(input);
+			}
+			await runtime.audit(tenantId).append({ type: "brief.enabled", instanceId: record.id, personId: p.id, cron });
+			return { brief: { scheduleId: schedule.id, threadId: thread.id, nextRunAt: schedule.nextRunAt, ...briefWhen(cron) } };
 		});
-		if (previous !== undefined) await store.remove(previous.id);
-		await runtime.audit(tenantId).append({ type: "brief.enabled", instanceId: record.id, personId: p.id, cron });
-		return { brief: { scheduleId: schedule.id, threadId: thread.id, nextRunAt: schedule.nextRunAt, ...briefWhen(cron) } };
 	});
 	route("DELETE", "/api/instances/:id/brief", "person", async ({ person, params }) => {
 		const p = person as Person;
 		const { record } = await instanceAccess(p, params[0] as string);
-		const brief = await briefOf(record.id, p);
-		if (brief === undefined) throw new HttpError(404, "Nessun brief attivo");
-		await runtime.schedules(tenantId, record.id).remove(brief.id);
-		await runtime.audit(tenantId).append({ type: "brief.disabled", instanceId: record.id, personId: p.id });
-		return { ok: true };
+		return oneAtATime(record.id, async () => {
+			const brief = await briefOf(record.id, p);
+			if (brief === undefined) throw new HttpError(404, "Nessun brief attivo");
+			await runtime.schedules(tenantId, record.id).remove(brief.id);
+			await runtime.audit(tenantId).append({ type: "brief.disabled", instanceId: record.id, personId: p.id });
+			return { ok: true };
+		});
 	});
 	route("DELETE", "/api/instances/:id/schedules/:sid", "person", async ({ person, params }) => {
 		const p = person as Person;
@@ -559,25 +579,28 @@ export function createWebApp(options: WebAppOptions): Server {
 		const google = googleOf();
 		const body = (await readJson(req)) as { state?: unknown; code?: unknown };
 		if (typeof body.state !== "string" || typeof body.code !== "string") throw new HttpError(400, "Collegamento incompleto: riprova");
+		let connected: Awaited<ReturnType<GoogleOAuth["finish"]>>;
 		try {
-			const { account, refreshToken } = await google.oauth.finish(p.id, body.state, body.code);
-			const previous = await google.accounts.refreshToken(p.id);
-			await google.accounts.connect(p.id, account, refreshToken);
-			google.forget(p.id);
-			if (previous !== undefined && previous !== refreshToken) await google.oauth.revoke(previous);
-			await runtime.audit(tenantId).append({ type: "google.connected", personId: p.id });
-			return { account };
+			connected = await google.oauth.finish(p.id, body.state, body.code);
 		} catch (error) {
 			if (error instanceof GoogleConsentError) throw new HttpError(400, error.message);
-			throw new HttpError(502, "Google non è raggiungibile da questo server: riprova più tardi.");
+			if (error instanceof ConnectorHttpError || error instanceof TypeError) throw new HttpError(502, "Google non è raggiungibile da questo server: riprova più tardi.");
+			throw error;
 		}
+		// A previous token of the same person is not revoked: with Google that would end the new grant too.
+		await google.accounts.connect(p.id, connected.account, connected.refreshToken);
+		google.forget(p.id);
+		await runtime.audit(tenantId).append({ type: "google.connected", personId: p.id });
+		return { account: connected.account };
 	});
 	route("DELETE", "/api/google", "person", async ({ person }) => {
 		const p = person as Person;
 		const google = googleOf();
+		const account = google.accounts.get(p.id);
 		const token = await google.accounts.disconnect(p.id);
 		google.forget(p.id);
-		if (token !== undefined) await google.oauth.revoke(token);
+		// Revoking ends the grant for the whole Google account: not while someone else here uses it.
+		if (token !== undefined && (account === undefined || !google.accounts.sharedWithOthers(p.id, account.email))) await google.oauth.revoke(token);
 		await runtime.audit(tenantId).append({ type: "google.disconnected", personId: p.id });
 		return { ok: true };
 	});
@@ -590,6 +613,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
 		const others = (record.egress.connectors ?? []).filter((c) => c !== GOOGLE_CONNECTOR);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, GOOGLE_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "google.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
 	});
 
@@ -726,12 +750,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	 * finishes with its own request, which carries the session.
 	 */
 	function googleCallback(res: ServerResponse, url: URL): void {
-		const keep = new URLSearchParams();
-		for (const name of ["code", "state", "error"]) {
-			const value = url.searchParams.get(name);
-			if (value !== null && value.length <= 2048) keep.set(name, value);
-		}
-		res.writeHead(302, { location: `/#/google?${keep.toString()}`, "cache-control": "no-store" });
+		res.writeHead(302, { location: `/#/google?${googleReturnQuery(url)}`, "cache-control": "no-store" });
 		res.end();
 	}
 

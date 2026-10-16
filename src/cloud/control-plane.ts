@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, request, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
+import { googleReturnQuery } from "../connectors/google.ts";
 import { sameSecret } from "../web/compare.ts";
 import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { CellState } from "../web/server.ts";
@@ -259,12 +260,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	function googleCallback(res: ServerResponse, url: URL): void {
 		const tenant = /^([a-z0-9]{1,63})~/.exec(url.searchParams.get("state") ?? "")?.[1];
 		if (tenant === undefined || !read().accounts.some((a) => a.tenant === tenant)) return send(res, 404, { error: "Collegamento non valido: riprova dalla tua Annie" });
-		const keep = new URLSearchParams();
-		for (const name of ["code", "state", "error"]) {
-			const value = url.searchParams.get(name);
-			if (value !== null && value.length <= 2048) keep.set(name, value);
-		}
-		res.writeHead(302, { location: `${publicUrl(`${tenant}.${options.domain}`)}/#/google?${keep.toString()}`, "cache-control": "no-store" });
+		res.writeHead(302, { location: `${publicUrl(`${tenant}.${options.domain}`)}/#/google?${googleReturnQuery(url)}`, "cache-control": "no-store" });
 		res.end();
 	}
 

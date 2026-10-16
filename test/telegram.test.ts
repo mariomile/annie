@@ -33,28 +33,30 @@ function fakeTelegram(batches: unknown[][]) {
 	return { calls, fetch: fetchMock as unknown as typeof fetch };
 }
 
-function textUpdate(updateId: number, chatId: number, messageId: number, text: string) {
-	return { update_id: updateId, message: { message_id: messageId, chat: { id: chatId }, from: { id: 7 }, text } };
+function textUpdate(updateId: number, chatId: number, messageId: number, text: string, chatType = "private") {
+	return { update_id: updateId, message: { message_id: messageId, chat: { id: chatId, type: chatType }, from: { id: 7 }, text } };
 }
 
 describe("Telegram adapter (mocked fetch)", () => {
 	it("normalizes updates into InboundMessage and advances the offset", async () => {
-		const api = fakeTelegram([[textUpdate(10, 42, 1, "ciao"), { update_id: 11 }], []]);
+		const api = fakeTelegram([[textUpdate(10, 42, 1, "ciao"), { update_id: 11 }, textUpdate(12, -5, 2, "a tutti", "group")], []]);
 		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch });
 		const inbound: InboundMessage[] = [];
 		adapter.onInbound(async (message) => {
 			inbound.push(message);
 		});
 
-		expect(await adapter.pollOnce()).toBe(2);
+		expect(await adapter.pollOnce()).toBe(3);
 		await adapter.pollOnce();
 
 		expect(inbound).toEqual([
-			{ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", userId: "7", text: "ciao", messageId: "42:1" },
+			{ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "42", userId: "7", text: "ciao", privateThread: true, messageId: "42:1" },
+			// A group chat is not private: nobody's memoria applies there.
+			{ tenantId: "acme", instanceId: "ops", channel: "telegram", threadId: "-5", userId: "7", text: "a tutti", privateThread: false, messageId: "-5:2" },
 		]);
 		expect(api.calls[0]).toMatchObject({ method: "getUpdates", body: { allowed_updates: ["message"] } });
 		expect(api.calls[0]?.body.offset).toBeUndefined();
-		expect(api.calls[1]?.body.offset).toBe(12);
+		expect(api.calls[1]?.body.offset).toBe(13);
 	});
 
 	it("sends replies with sendMessage, split at Telegram's length limit", async () => {

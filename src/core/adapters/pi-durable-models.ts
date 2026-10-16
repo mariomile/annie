@@ -7,6 +7,7 @@ import type { Provider } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { MEMORY_NOTE_MARKER } from "../memory.ts";
 
 export const FAUX_PROVIDER = "faux";
 export const FAUX_MODEL_ID = "annie-dev";
@@ -55,7 +56,7 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	}
 	const text = last?.role === "user" ? userText(last.content) : "";
 	// The memoria note the core appends after the person's words is not part of a command.
-	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split("\n\n[Memoria]")[0] ?? "").trim());
+	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split(MEMORY_NOTE_MARKER)[0] ?? "").trim());
 	if (direct?.[1] !== undefined) {
 		let args: Record<string, unknown> = {};
 		try {

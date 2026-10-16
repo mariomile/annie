@@ -22,6 +22,8 @@ export type SubmitRequest = {
 	readonly threadId: string;
 	readonly userId: string;
 	readonly text: string;
+	/** The thread is with this person alone; in a group nobody's memoria applies. */
+	readonly privateThread?: boolean;
 	/** Channel-native message ID; makes a redelivered message idempotent. */
 	readonly messageId?: string;
 };
@@ -118,13 +120,12 @@ export class AnnieRuntime {
 		await (await this.openInstance(tenant, instance)).sendMessage(message);
 	}
 
-	/** The tasks programmati of an instance. */
 	/** The memoria of an instance: what it remembers about each person, and shared facts. */
 	memory(tenant: string, instance: string): MemoryStore {
 		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
-	/** Whom a thread is with, as "<channel>:<userId>": the last person who wrote in it. */
+	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */
 	participant(tenant: string, instance: string, thread: { channel: string; threadId: string }): string | undefined {
 		return this.participants(tenant, instance).get(threadKey(thread.channel, thread.threadId));
 	}
@@ -139,6 +140,7 @@ export class AnnieRuntime {
 		return store;
 	}
 
+	/** The tasks programmati of an instance. */
 	schedules(tenant: string, instance: string): ScheduleStore {
 		return new ScheduleStore(schedulesDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
@@ -181,7 +183,7 @@ export class AnnieRuntime {
 	async submitScheduled(
 		tenant: string,
 		instance: string,
-		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined },
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
@@ -392,10 +394,20 @@ export class AnnieInstance {
 			userId: request.userId,
 			chars: request.text.length,
 		});
-		// The instance learns whom the thread is with, and gets what it remembers about them.
-		const subject = subjectOf(request.channel, request.userId);
-		this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
-		return this.admit({ ...request, text: `${request.text}${memoryNote(this.memory.store.forSubject(subject))}` });
+		// In a private thread the instance learns whom it is with and gets what it remembers about
+		// them; in a group, only the shared memories, so one person's never reach the others.
+		const key = threadKey(request.channel, request.threadId);
+		const { privateThread, ...message } = request;
+		let note: string;
+		if (privateThread === true) {
+			const subject = subjectOf(request.channel, request.userId);
+			this.memory.participants.set(key, subject);
+			note = memoryNote(this.memory.store.forSubject(subject));
+		} else {
+			this.memory.participants.clear(key);
+			note = memoryNote(this.memory.store.forSubject(SHARED));
+		}
+		return this.admit({ ...message, text: `${request.text}${note}` });
 	}
 
 	/**
@@ -411,6 +423,7 @@ export class AnnieInstance {
 		scheduleId: string;
 		/** The person it acts for: must still be allowed, or the run is refused. */
 		onBehalfOf: { channel: string; userId: string } | undefined;
+		kind?: "brief";
 	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
@@ -428,8 +441,11 @@ export class AnnieInstance {
 			}
 			throw error;
 		}
-		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId });
-		const note = person === undefined ? memoryNote(this.memory.store.forSubject(SHARED)) : memoryNote(this.memory.store.forSubject(subjectOf(person.channel, person.userId)));
+		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
+		// The person's own memories only in a thread with them alone: a console thread, or a
+		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
+		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);
+		const note = memoryNote(this.memory.store.forSubject(alone ? subjectOf(person.channel, person.userId) : SHARED));
 		return this.admit({ ...request, text: `${request.text}${note}` });
 	}
 

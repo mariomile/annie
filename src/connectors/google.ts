@@ -61,6 +61,11 @@ export class GoogleAccounts {
 		updateJsonFile<Record<string, GoogleAccount>>(this.file, {}, (all) => ({ ...all, [personId]: account }));
 	}
 
+	/** Whether another person of the tenant connected the same Google account. */
+	sharedWithOthers(personId: string, email: string): boolean {
+		return Object.entries(readJsonFile<Record<string, GoogleAccount>>(this.file, {})).some(([id, account]) => id !== personId && account.email === email);
+	}
+
 	/** Forgets the account; returns the refresh token so it can be revoked with Google. */
 	async disconnect(personId: string): Promise<string | undefined> {
 		const token = await this.refreshToken(personId);
@@ -75,8 +80,20 @@ export class GoogleAccounts {
 
 type PendingConsent = { readonly personId: string; readonly verifier: string; readonly expiresAt: number };
 
+/** What a return from Google carries on to the console: code, state or error, nothing else. */
+export function googleReturnQuery(url: URL): string {
+	const keep = new URLSearchParams();
+	for (const name of ["code", "state", "error"]) {
+		const value = url.searchParams.get(name);
+		if (value !== null && value.length <= 2048) keep.set(name, value);
+	}
+	return keep.toString();
+}
+
 /**
- * The OAuth authorization code flow with PKCE. The state names the tenant (so Annie Cloud's
+ * The OAuth authorization code flow with PKCE. Its calls go to Google's fixed sign-in hosts with
+ * the plain fetch: connecting is the person's act from the console, not an instance's tool, so no
+ * instance's egress policy applies (the tools that read mail and calendar go through it). The state names the tenant (so Annie Cloud's
  * control plane knows which cell to send the person back to) and is single use, bound to the
  * person who started it, and valid for ten minutes. Pending consents live in memory: a restart
  * in the middle only means starting again.
@@ -218,6 +235,7 @@ export class GoogleClient {
 			method: "POST",
 			headers: { "content-type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({ client_id: this.options.clientId, client_secret: this.options.clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
+			redirect: "error",
 		});
 		const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string };
 		// invalid_grant: the person revoked access from their Google account.

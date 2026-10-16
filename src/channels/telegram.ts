@@ -44,7 +44,7 @@ export type TelegramUpdate = {
 	update_id: number;
 	message?: {
 		message_id: number;
-		chat: { id: number };
+		chat: { id: number; type?: string };
 		from?: { id: number };
 		text?: string;
 		caption?: string;
@@ -198,6 +198,7 @@ export class TelegramAdapter implements ChannelAdapter {
 			threadId: String(message.chat.id),
 			userId: String(message.from?.id ?? message.chat.id),
 			text,
+			privateThread: message.chat.type === "private",
 			messageId: `${message.chat.id}:${message.message_id}`,
 			...(attachments.length === 0 ? {} : { attachments }),
 		});

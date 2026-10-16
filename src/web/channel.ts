@@ -111,6 +111,8 @@ export class WebChannel implements ChannelAdapter {
 			threadId,
 			userId: personId,
 			text,
+			// A console thread belongs to one person.
+			privateThread: true,
 			messageId: entry.id,
 			...(attachments === undefined ? {} : { attachments }),
 		});
