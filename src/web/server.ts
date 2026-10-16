@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
-import type { WhatsAppAdapter, WhatsAppWebhook } from "../channels/whatsapp.ts";
+import { MissingWhatsAppField, type WhatsAppAdapter, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
@@ -745,7 +745,7 @@ export function createWebApp(options: WebAppOptions): Server {
 				await whatsappOf().connect(id, Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined)));
 			} catch (error) {
 				if (error instanceof HttpError) throw error;
-				if (error instanceof Error && error.name === "MissingWhatsAppField") throw new HttpError(400, "La prima volta servono token di accesso, ID del numero e app secret");
+				if (error instanceof MissingWhatsAppField) throw new HttpError(400, "La prima volta servono token di accesso, ID del numero e app secret");
 				if (error instanceof ChannelRefused) throw new HttpError(400, "Meta non accetta questi dati: controlla token e ID del numero");
 				throw new HttpError(502, "WhatsApp non è raggiungibile da questo server: controlla la rete e riprova");
 			}

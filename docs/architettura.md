@@ -30,7 +30,9 @@ Stato: settimana 2 (allowlist utenti, lock per istanza, outbox delle risposte). 
                         ▼
    src/channels/types.ts   ChannelAdapter, InboundMessage, OutboundMessage
    src/channels/telegram.ts  (implementato)
-   web app, desktop, API/webhook, mobile  (solo interfaccia, sezione 6)
+   src/channels/whatsapp.ts  (implementato, Cloud API di Meta, solo webhook)
+   src/web/channel.ts        (implementato, la console)
+   desktop, API/webhook, mobile  (solo interfaccia, sezione 6)
 ```
 
 Regole verificate da `test/boundaries.test.ts`:

@@ -124,6 +124,7 @@ Annie risponde su un numero WhatsApp Business attraverso la Cloud API di Meta. I
 5. Nella console premi **Collega**. Annie mostra l'indirizzo del webhook e un token di verifica.
 6. Di nuovo su developers.facebook.com, in **WhatsApp → Configuration → Webhook → Edit**, incolla indirizzo e token di verifica, poi **Verify and save**. Sotto *Webhook fields* iscriviti a **messages**.
 7. In «Chi può scrivere» metti i numeri delle persone con il prefisso, solo cifre (per esempio `393331234567`).
+   Se i messaggi non arrivano con un numero vero (non quello di test), l'app va iscritta anche al WhatsApp Business Account: da Graph API Explorer, con il token dell'utente di sistema, `POST /<WABA_ID>/subscribed_apps`.
 8. Per uscire dalla modalità sviluppo l'app va pubblicata (**App Review** per `whatsapp_business_messaging`) e serve un metodo di pagamento sul Business Account: Meta fa pagare le conversazioni secondo il suo listino.
 9. Domini: `graph.facebook.com` (e `lookaside.fbsbx.com` per scaricare i file che le persone mandano).
 

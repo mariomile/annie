@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { sameSecret } from "../web/compare.ts";
-import { DUPLICATE_NOTICE, splitText } from "./telegram.ts";
+import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
 
 /**
@@ -44,6 +44,43 @@ const MAX_INTERACTIVE_BODY = 1024;
 const MAX_DOWNLOAD = 20 * 1024 * 1024;
 /** Meta's error code for a free-form message outside the 24-hour window. */
 const OUTSIDE_WINDOW = 131047;
+/** Meta's codes for "not now": rate limits (4, 80007, 130429, 131048, 131056) and its own temporary errors (1, 2, 131000, 131016, 133004). */
+const RETRYABLE = new Set([1, 2, 4, 80007, 130429, 131000, 131016, 131048, 131056, 133004]);
+/** A message whose handling fails this many times is let go (logged), so Meta stops delivering it. */
+const MAX_MESSAGE_FAILURES = 3;
+/** Document types WhatsApp accepts, by extension; text-like files go as plain text. */
+const MIME: Record<string, string> = {
+	pdf: "application/pdf",
+	doc: "application/msword",
+	docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	xls: "application/vnd.ms-excel",
+	xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	ppt: "application/vnd.ms-powerpoint",
+	pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	txt: "text/plain",
+	csv: "text/plain",
+	md: "text/plain",
+	json: "text/plain",
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+};
+
+/** Connecting WhatsApp the first time needs all three values from Meta. */
+export class MissingWhatsAppField extends Error {
+	override readonly name = "MissingWhatsAppField";
+}
+
+/** Credentials as saved in the secret store; undefined if what is there is not them. */
+export function parseCredentials(saved: string): WhatsAppCredentials | undefined {
+	try {
+		const value = JSON.parse(saved) as Partial<WhatsAppCredentials>;
+		const fields = [value.accessToken, value.phoneNumberId, value.appSecret, value.verifyToken];
+		return fields.every((f) => typeof f === "string" && f !== "") ? (value as WhatsAppCredentials) : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 type WhatsAppMessage = {
 	from: string;
@@ -53,7 +90,9 @@ type WhatsAppMessage = {
 	interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
 	document?: { id?: string; filename?: string; mime_type?: string; caption?: string };
 };
-export type WhatsAppWebhook = { object?: string; entry?: { changes?: { field?: string; value?: { metadata?: { phone_number_id?: string }; messages?: WhatsAppMessage[] } }[] }[] };
+/** What Meta says later about a message we sent: a failure outside the 24-hour window arrives here, not as an error on the send. */
+type WhatsAppStatus = { id?: string; status?: string; recipient_id?: string; errors?: { code?: number; title?: string }[] };
+export type WhatsAppWebhook = { object?: string; entry?: { changes?: { field?: string; value?: { metadata?: { phone_number_id?: string }; messages?: WhatsAppMessage[]; statuses?: WhatsAppStatus[] } }[] }[] };
 
 export class WhatsAppAdapter implements ChannelAdapter {
 	readonly name = "whatsapp";
@@ -61,6 +100,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 	private actionHandler: ((action: InboundAction) => Promise<void>) | undefined;
 	private readonly fetch: typeof fetch;
 	private readonly apiBase: string;
+	private readonly failures = new Map<string, number>();
 
 	constructor(private readonly options: WhatsAppAdapterOptions) {
 		this.fetch = options.fetch ?? fetch;
@@ -98,13 +138,36 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		return sameSecret(given, createHmac("sha256", this.options.appSecret).update(rawBody).digest("hex"));
 	}
 
-	/** One webhook delivery: every message in it, in order. Throws if one fails, so Meta delivers again (the core dedupes by id). */
+	/**
+	 * One webhook delivery: every message in it, in order. Throws while one fails, so Meta delivers
+	 * again (the core dedupes by id); after the third failure that message is let go, logged, and
+	 * the rest of the delivery goes on. Whatever is not the expected shape is skipped.
+	 */
 	async handleWebhook(payload: WhatsAppWebhook): Promise<void> {
-		for (const entry of payload.entry ?? []) {
-			for (const change of entry.changes ?? []) {
+		for (const entry of list(payload?.entry)) {
+			for (const change of list(entry?.changes)) {
 				// Deliveries for another number of the same app are not ours.
-				if (change.field !== "messages" || change.value?.metadata?.phone_number_id !== this.options.phoneNumberId) continue;
-				for (const message of change.value.messages ?? []) await this.dispatch(message);
+				if (change?.field !== "messages" || change.value?.metadata?.phone_number_id !== this.options.phoneNumberId) continue;
+				for (const status of list(change.value.statuses)) {
+					if (status?.status !== "failed") continue;
+					const reason = list(status.errors).map((e) => (e?.code === OUTSIDE_WINDOW ? "outside the 24-hour window, the person must write to Annie first" : `${e?.code ?? "?"} ${e?.title ?? ""}`.trim())).join("; ");
+					this.options.log?.(`whatsapp: message ${status.id ?? "?"} to ${status.recipient_id ?? "?"} not delivered: ${reason || "no reason given"}`);
+				}
+				for (const message of list(change.value.messages)) {
+					if (typeof message?.id !== "string" || typeof message.from !== "string") continue;
+					try {
+						await this.dispatch(message);
+						this.failures.delete(message.id);
+					} catch (error) {
+						const failures = (this.failures.get(message.id) ?? 0) + 1;
+						if (failures < MAX_MESSAGE_FAILURES) {
+							this.failures.set(message.id, failures);
+							throw error;
+						}
+						this.failures.delete(message.id);
+						this.options.log?.(`whatsapp: message ${message.id} dropped after ${failures} failed attempts: ${error instanceof Error ? error.message : String(error)}`);
+					}
+				}
 			}
 		}
 	}
@@ -113,21 +176,23 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		const text = message.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
 		const buttons = message.buttons ?? [];
 		// A message with buttons holds at most 1024 characters: the text before goes as plain messages.
-		const tail = buttons.length === 0 ? 0 : Math.min(text.length, MAX_INTERACTIVE_BODY);
-		const head = text.slice(0, text.length - tail);
+		const tail = buttons.length === 0 ? "" : tailOf(text, MAX_INTERACTIVE_BODY);
+		const head = text.slice(0, text.length - tail.length);
 		const to = { messaging_product: "whatsapp", recipient_type: "individual", to: message.threadId };
 		if (head !== "" || buttons.length === 0) {
 			for (const chunk of splitText(head, MAX_TEXT)) await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "text", text: { body: chunk, preview_url: false } });
 		}
-		if (buttons.length > 0) await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "interactive", interactive: replyButtons(text.slice(text.length - tail) || "…", buttons) });
+		if (buttons.length > 0) await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "interactive", interactive: replyButtons(tail || "…", buttons) });
 	}
 
 	/** Upload, then send as a document. */
 	async sendFile(file: OutboundFile): Promise<void> {
 		const form = new FormData();
 		form.set("messaging_product", "whatsapp");
-		form.set("file", new Blob([Uint8Array.from(file.data)], { type: "application/octet-stream" }), file.name);
-		form.set("type", "application/octet-stream");
+		const type = MIME[file.name.split(".").at(-1)?.toLowerCase() ?? ""];
+		if (type === undefined) throw new ChannelRefused(`WhatsApp does not take this kind of file as a document: ${file.name}`);
+		form.set("file", new Blob([Uint8Array.from(file.data)], { type }), file.name);
+		form.set("type", type);
 		const uploaded = await this.call<{ id?: string }>("POST", `/${this.options.phoneNumberId}/media`, form);
 		if (uploaded.id === undefined) throw new Error("WhatsApp media upload returned no id");
 		const caption = [file.possibleDuplicate === true ? DUPLICATE_NOTICE : undefined, file.caption].filter(Boolean).join("\n\n");
@@ -150,14 +215,25 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : undefined;
 		// Voice notes, images, stickers, locations: not understood yet, so not passed on as empty messages.
 		if (text === undefined) return;
-		const attachments = message.type === "document" && message.document?.id !== undefined && ((await this.options.mayDownload?.(message.from)) ?? true) ? [await this.download(message.document.id, message.document.filename)] : [];
+		let attachments: { name: string; data: Uint8Array }[] = [];
+		let note = "";
+		if (message.type === "document" && typeof message.document?.id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
+			try {
+				attachments = [await this.download(message.document.id, message.document.filename)];
+			} catch (error) {
+				// A file that cannot be had now or ever (too large, gone): the message still arrives, saying so.
+				if (!(error instanceof ChannelRefused)) throw error;
+				this.options.log?.(`whatsapp: file of ${message.id} not downloaded: ${error.message}`);
+				note = "[Un file allegato non è stato scaricato: troppo grande o non disponibile.]";
+			}
+		}
 		await this.handler({
 			tenantId: this.options.tenantId,
 			instanceId: this.options.instanceId,
 			channel: this.name,
 			threadId: message.from,
 			userId: message.from,
-			text,
+			text: [text, note].filter(Boolean).join("\n\n"),
 			privateThread: true,
 			messageId: message.id,
 			...(attachments.length === 0 ? {} : { attachments }),
@@ -167,10 +243,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
 	/** The media's address from the Graph API, then the file itself, with the token. */
 	private async download(mediaId: string, filename: string | undefined): Promise<{ name: string; data: Uint8Array }> {
 		const media = await this.call<{ url?: string; file_size?: number }>("GET", `/${encodeURIComponent(mediaId)}`);
-		if (media.url === undefined) throw new ChannelRefused("WhatsApp media without url");
-		// The token goes only to Meta's own hosts, whatever address the answer holds.
-		const host = new URL(media.url).hostname;
-		if (!(host === new URL(this.apiBase).hostname || /(^|\.)(fbsbx\.com|facebook\.com|whatsapp\.net)$/.test(host))) throw new ChannelRefused(`WhatsApp media on an unexpected host: ${host}`);
+		if (typeof media.url !== "string" || !URL.canParse(media.url)) throw new ChannelRefused("WhatsApp media without a valid url");
+		// The token goes only to Meta's own hosts over https, whatever address the answer holds (tests: the fake's own host).
+		const url = new URL(media.url);
+		const ours = url.host === new URL(this.apiBase).host;
+		if (!ours && !(url.protocol === "https:" && /(^|\.)(fbsbx\.com|facebook\.com|whatsapp\.net)$/.test(url.hostname))) throw new ChannelRefused(`WhatsApp media on an unexpected address: ${url.hostname}`);
 		if ((media.file_size ?? 0) > MAX_DOWNLOAD) throw new ChannelRefused(`WhatsApp file too large to download: ${media.file_size} bytes`);
 		const response = await this.fetch(media.url, { headers: { authorization: `Bearer ${this.options.accessToken}` }, signal: AbortSignal.timeout(60_000) });
 		if (!response.ok) throw new Error(`WhatsApp media download failed: ${response.status}`);
@@ -200,9 +277,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			const code = payload.error?.code ?? response.status;
 			// Meta's words, never the request: the token stays out of logs.
 			const detail = String(payload.error?.message ?? "").slice(0, 200);
-			if (code === OUTSIDE_WINDOW) throw new ChannelRefused("WhatsApp: fuori dalla finestra di 24 ore, la persona deve scrivere prima ad Annie");
+			if (code === OUTSIDE_WINDOW) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Annie first");
 			// Rate limits and Meta's own outages are a "not now"; the rest is a no.
-			throw new ChannelRefused(`WhatsApp ${method} ${path.split("?")[0]}: ${code} ${detail}`.trim(), code === 4 || code === 80007 || code === 130429 || code === 131048 || response.status === 429 || response.status >= 500);
+			throw new ChannelRefused(`WhatsApp ${method} ${path.split("?")[0]}: ${code} ${detail}`.trim(), RETRYABLE.has(code) || response.status === 429 || response.status >= 500);
 		}
 		return payload;
 	}
@@ -216,4 +293,9 @@ function replyButtons(body: string, buttons: readonly ActionButton[]) {
 		body: { text: body },
 		action: { buttons: buttons.map((b) => ({ type: "reply", reply: { id: b.data, title: b.label.slice(0, MAX_BUTTON_TITLE) } })) },
 	};
+}
+
+/** An array from a payload field, or nothing: a signed but unexpected delivery never throws. */
+function list<T>(value: T[] | undefined): T[] {
+	return Array.isArray(value) ? value : [];
 }

@@ -689,8 +689,8 @@ function cellPath(target: string): { pathname: string; search: string } | undefi
 }
 
 /**
- * A stopped cell wakes for its people (a session cookie), the sign-in link, and Telegram's
- * webhooks; an anonymous request does not, or anyone could keep any cell running.
+ * A stopped cell wakes for its people (a session cookie), the sign-in link, and the webhooks
+ * of Telegram and WhatsApp; an anonymous request does not, or anyone could keep any cell running.
  */
 function mayWake(req: IncomingMessage, pathname: string): boolean {
 	if (pathname.startsWith("/hooks/")) return true;

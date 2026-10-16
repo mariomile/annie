@@ -9,8 +9,8 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
-import { type WhatsAppCredentials, WhatsAppAdapter } from "./channels/whatsapp.ts";
-import type { InboundAction } from "./channels/types.ts";
+import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter } from "./channels/whatsapp.ts";
+import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
 import { egressFetch } from "./connectors/http.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
@@ -300,7 +300,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		}
 	}
 
-	async function onApprovalTap(instance: string, adapter: TelegramAdapter | WhatsAppAdapter, action: InboundAction): Promise<void> {
+	async function onApprovalTap(instance: string, adapter: ChannelAdapter, action: InboundAction): Promise<void> {
 		const m = /^tool:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
 		if (m === null) return;
 		if (m[2] === "approved" && ((await runtime.proposals(tenant, instance).get(m[1] as string))?.code.length ?? 0) > 1500) return; // only from the console
@@ -312,7 +312,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				channel: adapter.name,
 				threadId: action.threadId,
 				idempotencyKey: `decision:${action.actionId}`,
-				text: `${customToolName(proposal.name)}: ${proposal.status === "approved" ? "approvato" : "rifiutato"}${proposal.decidedBy?.userId === action.userId ? "" : " (deciso in precedenza)"}.`,
+				text: `${customToolName(proposal.name)}: ${proposal.status === "approved" ? "approvato" : "rifiutato"}${proposal.decidedBy?.channel === adapter.name && proposal.decidedBy.userId === action.userId ? "" : " (deciso in precedenza)"}.`,
 			});
 		} catch (error) {
 			// Not an approver: silence (audited in decideToolProposal).
@@ -346,7 +346,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 
 	for (const record of conversational) {
 		const saved = await runtime.secrets(tenant).get(whatsappSecret(record.id));
-		if (saved !== undefined) attachWhatsApp(record.id, JSON.parse(saved) as WhatsAppCredentials);
+		const credentials = saved === undefined ? undefined : parseCredentials(saved);
+		if (credentials !== undefined) attachWhatsApp(record.id, credentials);
+		else if (saved !== undefined) log(`whatsapp: saved credentials of ${record.id} unreadable; connect it again from the console`);
 	}
 
 	// --- resume, scheduler, segreteria, web ---
@@ -440,7 +442,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					...(me?.name === undefined ? {} : { name: me.name }),
 					// What the owner pastes into the Meta app: the address and the token Meta sends back to check it.
 					webhookUrl: config.web.publicUrl?.startsWith("https://") ? `${config.web.publicUrl}/hooks/whatsapp/${id}` : null,
-					...(saved === undefined ? {} : { verifyToken: (JSON.parse(saved) as WhatsAppCredentials).verifyToken }),
+					...(saved === undefined || parseCredentials(saved) === undefined ? {} : { verifyToken: (parseCredentials(saved) as WhatsAppCredentials).verifyToken }),
 					allowedUsers: record.allowedUsers.whatsapp ?? [],
 					approvers: record.approvers?.whatsapp ?? [],
 				};
@@ -448,7 +450,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			// Checked with Meta before anything changes; a value left out keeps the one saved.
 			connect: async (id, given) => {
 				const saved = await runtime.secrets(tenant).get(whatsappSecret(id));
-				const old = saved === undefined ? undefined : (JSON.parse(saved) as WhatsAppCredentials);
+				const old = saved === undefined ? undefined : parseCredentials(saved);
 				const accessToken = given.accessToken ?? old?.accessToken;
 				const phoneNumberId = given.phoneNumberId ?? old?.phoneNumberId;
 				const appSecret = given.appSecret ?? old?.appSecret;
@@ -535,7 +537,4 @@ function whatsappSecret(instance: string): string {
 	return `whatsapp.credentials.${instance}`;
 }
 
-/** Connecting WhatsApp the first time needs all three values from Meta. */
-export class MissingWhatsAppField extends Error {
-	override readonly name = "MissingWhatsAppField";
-}
+

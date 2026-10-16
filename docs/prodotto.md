@@ -37,6 +37,6 @@ Annie è «pronta al 100%» quando ognuna di queste voci è vera e verificata da
 
 ## Fuori dal perimetro (scelte esplicite)
 
-- WhatsApp (piano iniziale: non in questa fase).
+- ~~WhatsApp~~: dal 16 ottobre 2026 è un canale come Telegram (Cloud API di Meta, settimana 13, [week13.md](week13.md)).
 - Invio di mail o azioni irreversibili senza approvazione.
 - ~~Multi-tenant cloud con billing~~: dal 16 ottobre 2026 è in programma come Annie Cloud, una cella per tenant ([piano](piano-cloud.md)).

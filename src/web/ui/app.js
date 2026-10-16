@@ -984,7 +984,7 @@ async function viewApprovals(main) {
 	}
 	main.replaceChildren(
 		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le bozze della segreteria e i tool che Annie scrive da sola, spenti finché un approvatore non li legge e li approva."),
-		h("div.stack", drafts, pending.length ? pending.map(card) : drafts.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria e i tool che Annie propone compaiono qui (e su Telegram)."), decided.length ? [h("div.kicker", "Decisi"), decided.map(card)] : null),
+		h("div.stack", drafts, pending.length ? pending.map(card) : drafts.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."), decided.length ? [h("div.kicker", "Decisi"), decided.map(card)] : null),
 	);
 }
 

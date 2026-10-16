@@ -148,7 +148,9 @@ Le persone si abbonano dalla pagina di Annie Cloud («Gestisci l'abbonamento», 
 
 Ogni istanza può avere un numero WhatsApp Business, collegato dall'owner in Impostazioni → WhatsApp con token di accesso, ID del numero e app secret dell'app Meta (passi in [chiavi.md](chiavi.md), punto 9). I messaggi arrivano solo per webhook, quindi serve `ANNIE_PUBLIC_URL` in https. In Annie Cloud il control plane inoltra `/hooks/whatsapp/…` alla cella e la sveglia. Meta firma ogni consegna con l'app secret: una consegna senza firma valida riceve 401. Chi non è in «Chi può scrivere» non riceve risposta e i suoi file non vengono scaricati.
 
-WhatsApp consente risposte libere solo entro 24 ore dall'ultimo messaggio della persona. Un task programmato o un brief che arriva più tardi viene rifiutato da Meta: l'errore finisce nel log («fuori dalla finestra di 24 ore»). Per i messaggi proattivi oltre la finestra servono i template approvati da Meta, che Annie non usa ancora.
+WhatsApp consente risposte libere solo entro 24 ore dall'ultimo messaggio della persona. Un task programmato o un brief che arriva più tardi non viene consegnato: Meta di solito accetta l'invio e poi segnala il fallimento sul webhook, e Annie lo scrive nel log («not delivered: outside the 24-hour window»). Per i messaggi proattivi oltre la finestra servono i template approvati da Meta, che Annie non usa ancora.
+
+I messaggi passano dai server di Meta, che li conserva secondo le sue regole: per i dati in Unione Europea va verificata l'opzione di archiviazione locale della Cloud API e va indicato Meta nell'informativa.
 
 ## 7. Connettori MCP
 

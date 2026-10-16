@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { WhatsAppAdapter, type WhatsAppWebhook } from "../src/channels/whatsapp.ts";
+import { splitText } from "../src/channels/text.ts";
 import { ChannelRefused, type InboundAction, type InboundMessage } from "../src/channels/types.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
@@ -38,6 +39,8 @@ async function fakeGraph(options: { refuse?: { code: number; message: string } }
 			if (path === `/${PHONE_ID}/messages`) return reply(200, { messages: [{ id: `wamid.out${calls.length}` }] });
 			if (path === `/${PHONE_ID}/media`) return reply(200, { id: "media-up-1" });
 			if (path === "/media-in-1") return reply(200, { url: `${base}/files/media-in-1`, file_size: 5 });
+			if (path === "/media-big") return reply(200, { url: `${base}/files/media-big`, file_size: 25 * 1024 * 1024 });
+			if (path === "/media-elsewhere") return reply(200, { url: "http://169.254.169.254/latest/", file_size: 5 });
 			if (path === "/files/media-in-1") {
 				res.writeHead(200, { "content-type": "application/pdf" });
 				return res.end("%PDF-");
@@ -118,13 +121,65 @@ describe("WhatsApp adapter", () => {
 		expect(graph.calls.some((c) => c.path === `/${PHONE_ID}/media` && c.method === "POST")).toBe(true);
 	});
 
+	it("a file it cannot have still lets the message through, saying so; a message that keeps failing is let go after three tries", async () => {
+		const graph = await fakeGraph();
+		const logs: string[] = [];
+		const wa = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: graph.base, log: (m) => void logs.push(m) });
+		const inbound: InboundMessage[] = [];
+		wa.onInbound(async (m) => void inbound.push(m));
+		await wa.handleWebhook(
+			delivery([
+				{ from: "393331234567", id: "wamid.big", type: "document", document: { id: "media-big", filename: "enorme.pdf", caption: "Il bando" } },
+				{ from: "393331234567", id: "wamid.far", type: "document", document: { id: "media-elsewhere", filename: "x.pdf" } },
+				{ from: "393331234567", id: "wamid.next", type: "text", text: { body: "dopo" } },
+			]),
+		);
+		expect(inbound.map((m) => [m.messageId, m.attachments?.length ?? 0])).toEqual([
+			["wamid.big", 0],
+			["wamid.far", 0],
+			["wamid.next", 0],
+		]);
+		expect(inbound[0]?.text).toMatch(/^Il bando\n\n\[Un file allegato non è stato scaricato/);
+		// The token never went to the address the answer named.
+		expect(graph.calls.some((c) => c.path.includes("latest"))).toBe(false);
+		// Signed but not what Meta sends: nothing happens, nothing throws.
+		await wa.handleWebhook(null as never);
+		await wa.handleWebhook({ entry: "x" } as never);
+		// A handler that fails every time: twice an error (Meta delivers again), the third time dropped and logged.
+		const failing = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: graph.base, log: (m) => void logs.push(m) });
+		failing.onInbound(async () => {
+			throw new Error("disk full");
+		});
+		const again = delivery([{ from: "393331234567", id: "wamid.bad", type: "text", text: { body: "x" } }]);
+		await expect(failing.handleWebhook(again)).rejects.toThrow("disk full");
+		await expect(failing.handleWebhook(again)).rejects.toThrow("disk full");
+		await failing.handleWebhook(again);
+		expect(logs.some((l) => l.includes("wamid.bad dropped after 3"))).toBe(true);
+	});
+
+	it("a message Meta could not deliver later (outside the 24 hours) is logged; files go with their type, unknown kinds are refused; emoji are never cut", async () => {
+		const graph = await fakeGraph();
+		const logs: string[] = [];
+		const wa = new WhatsAppAdapter({ accessToken: TOKEN, phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: graph.base, log: (m) => void logs.push(m) });
+		const statuses = delivery([]);
+		(statuses.entry?.[0]?.changes?.[0]?.value as { statuses?: unknown[] }).statuses = [{ id: "wamid.out1", status: "failed", recipient_id: "393331234567", errors: [{ code: 131047, title: "Re-engagement message" }] }];
+		await wa.handleWebhook(statuses);
+		expect(logs).toEqual(["whatsapp: message wamid.out1 to 393331234567 not delivered: outside the 24-hour window, the person must write to Annie first"]);
+		const base = { tenantId: "default", instanceId: "annie", channel: "whatsapp", threadId: "393331234567", idempotencyKey: "k" };
+		await wa.sendFile({ ...base, name: "Preventivo.PDF", data: new Uint8Array([1]) });
+		expect(graph.calls.find((c) => c.path === `/${PHONE_ID}/media`)?.body).toContain("application/pdf");
+		await expect(wa.sendFile({ ...base, name: "script.exe", data: new Uint8Array([1]) })).rejects.toThrow(ChannelRefused);
+		const pieces = splitText(`${"a".repeat(3)}😀b`, 4);
+		expect(pieces).toEqual(["aaa", "😀b"]);
+	});
+
 	it("outside the 24-hour window Meta's refusal says so, final; errors never carry the token", async () => {
 		const graph = await fakeGraph({ refuse: { code: 131047, message: "Re-engagement message" } });
 		const wa = adapterFor(graph.base);
 		const error = await wa.send({ tenantId: "default", instanceId: "annie", channel: "whatsapp", threadId: "393331234567", idempotencyKey: "k", text: "Promemoria" }).catch((e: unknown) => e);
 		expect(error).toBeInstanceOf(ChannelRefused);
 		expect((error as ChannelRefused).retryable).toBe(false);
-		expect((error as Error).message).toContain("24 ore");
+		expect((error as Error).message).toContain("24-hour window");
 		const wrong = new WhatsAppAdapter({ accessToken: "EAAGwrongtoken0123456789", phoneNumberId: PHONE_ID, appSecret: APP_SECRET, verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: graph.base });
 		const refused = await wrong.me().catch((e: Error) => e);
 		expect((refused as Error).message).not.toContain("EAAG");
