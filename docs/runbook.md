@@ -116,6 +116,8 @@ Per offrire Annie come servizio su un solo server in UE (ADR 0008). Serve Docker
 
 Le celle stanno tutte sulla rete `annie-cells`, dove i container non si parlano fra loro. `ANNIE_TEST_DOCKER_IMAGE=annie:local pnpm vitest run test/docker-provider.test.ts` prova il giro completo su un daemon vero.
 
+`pnpm cloud status` elenca i tenant (email, data, stato della cella, prossimo risveglio) e la spesa stimata sul modello di oggi e del mese. Le celle accese vengono interrogate; per quelle che dormono mostra l'ultima spesa letta, senza svegliarle. Gira accanto al control plane acceso.
+
 ## 6d. Annie Cloud su Railway
 
 In alternativa al server (in valutazione, docs/week9.md): ogni cella è un progetto Railway con un servizio dall'immagine di Annie, un volume su `/data`, la regione EU West (Amsterdam) e la modalità serverless, che la fa dormire da sola dopo qualche minuto senza traffico e la risveglia alla prima richiesta.

@@ -224,11 +224,11 @@ describe("pnpm start (startAnnie)", () => {
 		const state = (secret?: string) => fetch(`${base}/internal/cell`, { headers: secret === undefined ? {} : { authorization: `Bearer ${secret}` } });
 		expect((await state()).status).toBe(401);
 		expect((await state("wrong")).status).toBe(401);
-		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: null });
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: null, usage: { todayUsd: 0, monthUsd: 0 } });
 		const thread = (await api("/api/instances/annie/threads", {})).thread;
 		const at = new Date(Date.now() + 3_600_000).toISOString();
 		await api("/api/instances/annie/schedules", { instruction: "Promemoria", at, threadId: thread.id });
-		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at });
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at, usage: { todayUsd: 0, monthUsd: 0 } });
 	});
 
 	it("a cell gives the control plane a fresh owner link on request; the old link stops working", async () => {

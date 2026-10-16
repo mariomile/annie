@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -54,7 +55,7 @@ async function cloudAt(dataDir: string, options: { idleMs?: number; cellEnv?: Re
 			req.on("error", reject);
 			req.end(init.body);
 		});
-	return { cp, mailer, provider, at, port };
+	return { cp, mailer, provider, at, port, root: dataDir };
 }
 
 /** Sign up through the control plane and land, logged in, in the new cell. */
@@ -191,6 +192,24 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 		const entries = (await anna.api(`/api/instances/annie/threads/${thread.id}`)).body.entries as { from: string }[];
 		expect(entries.length).toBeGreaterThanOrEqual(2);
 		expect(await c.provider.status((await c.provider.list())[0] as string)).toBe("running");
+	}, 180_000);
+
+	it("the operator sees each tenant's cell and spend, also after the cell went to sleep", async () => {
+		const c = await cloud({ idleMs: 0 });
+		const anna = await signUp(c, "anna@studio.example");
+		const tenant = anna.host.split(".")[0] as string;
+		// What the cell's ledger holds: today, and an earlier month that must not count.
+		const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+		const tenantDir = join(c.root, "cells", tenant, "data", "tenants", tenant);
+		mkdirSync(tenantDir, { recursive: true });
+		writeFileSync(join(tenantDir, "usage-totals.json"), JSON.stringify({ [today]: 1.25, "2020-01-15": 9 }));
+		const awake = await c.cp.status();
+		expect(awake).toEqual([expect.objectContaining({ tenant, email: "anna@studio.example", cell: "running", usage: expect.objectContaining({ todayUsd: 1.25, monthUsd: 1.25 }) })]);
+		await c.cp.tick(new Date());
+		const asleep = await c.cp.status();
+		expect(asleep[0]).toMatchObject({ cell: "stopped", usage: { todayUsd: 1.25, monthUsd: 1.25 } });
+		// Asking did not wake it.
+		expect(await c.provider.status(tenant)).toBe("stopped");
 	}, 180_000);
 
 	it("Google sends everyone back to the control plane, which passes the person on to their own cell", async () => {

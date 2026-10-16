@@ -5,7 +5,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { startControlPlane } from "../cloud/control-plane.ts";
+import { cloudStatus, startControlPlane } from "../cloud/control-plane.ts";
 import { DockerCellProvider } from "../cloud/docker-provider.ts";
 import { LocalCellProvider } from "../cloud/local-provider.ts";
 import type { CellProvider } from "../cloud/provider.ts";
@@ -66,6 +66,20 @@ function mailer(): Mailer {
 		console.error(`annie cloud: ${error instanceof Error ? error.message : String(error)}`);
 		process.exit(1);
 	}
+}
+
+// `pnpm cloud status`: every tenant, its cell and its spend (an estimate from the model's list
+// prices), beside a running control plane. Emails are the operator's to see; nothing else is.
+if (process.argv[2] === "status") {
+	const rows = await cloudStatus({ dataDir, provider: provider() });
+	if (rows.length === 0) console.log("Nessun tenant ancora.");
+	for (const r of rows) {
+		const spend = r.usage === null ? "spesa: mai letta" : `oggi $${r.usage.todayUsd.toFixed(2)}, mese $${r.usage.monthUsd.toFixed(2)} (letta ${r.usage.at.slice(0, 16).replace("T", " ")})`;
+		console.log(`${r.tenant}  ${r.email}  dal ${r.createdAt.slice(0, 10)}  cella ${r.cell}${r.nextWakeAt === null ? "" : `, si sveglia ${r.nextWakeAt}`}  ${spend}`);
+	}
+	const month = rows.reduce((sum, r) => sum + (r.usage?.monthUsd ?? 0), 0);
+	console.log(`${rows.length} tenant, ${rows.filter((r) => r.cell === "running").length} celle accese, spesa del mese stimata $${month.toFixed(2)}`);
+	process.exit(0);
 }
 
 // `pnpm cloud upgrade`, with the control plane stopped: every cell gets a new container from the

@@ -57,6 +57,8 @@ Stato al 16 ottobre 2026 (settimana 10, [ADR 0009](adr/0009-navigazione-web-in-s
 
 - Pagamento a consumo (Stripe) sopra il registro della spesa che c'è già; voce e WhatsApp.
 
+Stato al 16 ottobre 2026: pronta la misura su cui fatturare, cioè la spesa stimata di ogni tenant (oggi e mese), letta dal control plane anche per le celle che dormono (`pnpm cloud status`). Mancano prezzo e piani (decisione di Mario), poi Stripe.
+
 ## Domande aperte
 
 - Provider delle celle: container su un server (ADR 0008) o Railway (provider scritto, settimana 9, da provare dal vivo con un token). Per la Fase 3 servono micro-VM (Fly.io Machines in UE il candidato).

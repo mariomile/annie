@@ -335,6 +335,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// A bot Telegram does not accept (wrong token, webhook on http) must not keep Annie down.
 	for (const bot of telegrams.values()) await bot.start().catch((error: unknown) => log(`telegram: not started: ${error instanceof Error ? error.message : String(error)}`));
 
+	const ledger = new UsageLedger(tenantDir(config.dataDir, toTenantId(tenant)));
 	const server = createWebApp({
 		runtime,
 		tenantId: tenant,
@@ -344,7 +345,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		connectors: connectorStore,
 		connectorStatus: (id) => connections.get(id)?.status() ?? [],
 		...(segreteria === undefined ? {} : { segreterie: new Map([[segreteria.instanceId, segreteria.service]]) }),
-		usage: new UsageLedger(tenantDir(config.dataDir, toTenantId(tenant))),
+		usage: ledger,
 		uiDir: options.uiDir ?? join(import.meta.dirname, "web", "ui"),
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
@@ -403,7 +404,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							const runs: number[] = [];
 							for (const id of webChannels.keys()) for (const sch of await runtime.schedules(tenant, id).list()) if (sch.nextRunAt !== null) runs.push(Date.parse(sch.nextRunAt));
 							if (config.segreteria !== undefined) runs.push(Date.now() + config.segreteria.pollSeconds * 1000);
-							return { busy: working + retrying > 0, nextWakeAt: runs.length === 0 ? null : new Date(Math.min(...runs)).toISOString() };
+							return {
+								busy: working + retrying > 0,
+								nextWakeAt: runs.length === 0 ? null : new Date(Math.min(...runs)).toISOString(),
+								usage: { todayUsd: await ledger.todaySpent(), monthUsd: await ledger.monthSpent() },
+							};
 						},
 					},
 				}),
