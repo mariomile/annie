@@ -4,7 +4,7 @@ Aggiornato al 15 ottobre 2026. Lavoro ripreso su richiesta di Mario dopo la paus
 
 ## Dove siamo
 
-Su `main` ci sono le settimane 1, 2 e 3, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le settimane 4 e 5 sono sui branch `week-4` e `week-5`, in attesa di PR e dell'ok di Mario.
+Su `main` ci sono le settimane da 1 a 5 (la 4 e la 5 dal 16 ottobre 2026), e la CI controlla ogni PR con typecheck, test ed eval deterministiche. La settimana 6 è sul branch `week-6`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -30,14 +30,14 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 ### Decisioni che spettano a Mario
 
 - [x] Licenza: Apache-2.0, confermata da Mario il 16 ottobre 2026
-- [ ] Merge di `week-4` e `week-5` su `main`: PR aperte il 16 ottobre 2026 su richiesta di Mario, il merge resta suo
+- [x] Merge di `week-4` e `week-5` su `main`, con l'ok di Mario il 16 ottobre 2026 (#3 `e5f9f4f`, #4 `a55e9f0`)
 
 ### Dopo (proposta)
 
 - [ ] Ritentativi nello stesso processo, con backoff, per risposte e schede
 - [ ] Pulizia delle outbox e dei file vecchi
 - [ ] Sandbox sotto un utente di sistema separato, o in container
-- [ ] Creare istanze dalla console (oggi da configurazione)
+- [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))
 - [ ] 2FA per la console
 
 ### Prima di rendere pubblico il repo

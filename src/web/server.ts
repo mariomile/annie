@@ -4,7 +4,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
-import { EgressDenied, UserNotAllowed } from "../core/errors.ts";
+import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
+import { instanceId } from "../core/ids.ts";
+import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import { type Schedule, ScheduleError, schedulePerson } from "../core/schedules.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
@@ -28,6 +30,8 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** Create an instance with its web channel, open for `ownerId` (owner only). */
+	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
 };
 
@@ -87,6 +91,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (person.role !== "owner" && !member) throw new HttpError(404, "No such instance");
 		return { record, member };
 	};
+	// Open event streams, so a channel created later reaches them too.
+	const streams = new Set<(channel: WebChannel) => void>();
 	const approverOf = (person: Person): Approver => (person.role === "owner" ? OWNER : { channel: "web", userId: person.id });
 	const channelOf = (instanceId: string) => {
 		const channel = options.channels.get(instanceId);
@@ -113,21 +119,41 @@ export function createWebApp(options: WebAppOptions): Server {
 	route("GET", "/api/me", "person", async ({ person }) => ({ person: publicPerson(person as Person) }));
 
 	// --- instances ---
+	const describeInstance = async (r: InstanceRecord, p: Person) => ({
+		id: r.id,
+		name: r.name,
+		canChat: options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web"),
+		isApprover: await isApprover(runtime, tenantId, r.id, approverOf(p)),
+		hasSegreteria: options.segreterie?.has(r.id) ?? false,
+	});
 	route("GET", "/api/instances", "person", async ({ person }) => {
 		const p = person as Person;
 		const all = await runtime.registry.listInstances(tenantId);
 		const visible = all.filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
-		return {
-			instances: await Promise.all(
-				visible.map(async (r) => ({
-					id: r.id,
-					name: r.name,
-					canChat: options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web"),
-					isApprover: await isApprover(runtime, tenantId, r.id, approverOf(p)),
-					hasSegreteria: options.segreterie?.has(r.id) ?? false,
-				})),
-			),
-		};
+		return { instances: await Promise.all(visible.map((r) => describeInstance(r, p))) };
+	});
+	route("POST", "/api/instances", "owner", async ({ person, req }) => {
+		if (options.createInstance === undefined) throw new HttpError(501, "Questa installazione non crea istanze dalla console");
+		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown };
+		const id = typeof body.id === "string" ? body.id.trim() : "";
+		const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
+		const instructions = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions.slice(0, 20_000) : undefined;
+		try {
+			instanceId(id);
+		} catch {
+			throw new HttpError(400, "ID non valido: minuscole, numeri, - e _, fino a 63 caratteri, iniziando con una lettera o un numero");
+		}
+		if (name === "") throw new HttpError(400, "Serve un nome");
+		try {
+			await runtime.registry.getInstance(tenantId, id);
+			throw new HttpError(409, "Un'istanza con questo ID esiste già");
+		} catch (error) {
+			if (!(error instanceof NotFound)) throw error;
+		}
+		await options.createInstance({ id, name, instructions, ownerId: (person as Person).id });
+		const channel = options.channels.get(id);
+		if (channel !== undefined) for (const attach of streams) attach(channel);
+		return { instance: await describeInstance(await runtime.registry.getInstance(tenantId, id), person as Person) };
 	});
 
 	// --- chat ---
@@ -166,14 +192,17 @@ export function createWebApp(options: WebAppOptions): Server {
 		res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
 		res.write(": connected\n\n");
 		const listeners: [WebChannel, (e: WebEvent) => void][] = [];
-		for (const channel of options.channels.values()) {
+		const attach = (channel: WebChannel) => {
 			const listener = (event: WebEvent) => res.write(`event: entry\ndata: ${JSON.stringify(event)}\n\n`);
 			channel.events.on(p.id, listener);
 			listeners.push([channel, listener]);
-		}
+		};
+		for (const channel of options.channels.values()) attach(channel);
+		streams.add(attach);
 		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
 		await new Promise<void>((resolve) => req.on("close", resolve));
 		clearInterval(ping);
+		streams.delete(attach);
 		for (const [channel, listener] of listeners) channel.events.off(p.id, listener);
 		return STREAMED;
 	});

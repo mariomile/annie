@@ -111,4 +111,79 @@ describe("pnpm start (startAnnie)", () => {
 		const again = await client(second.base, first.annie.ownerLink as string);
 		expect((await again("/api/me")).person.role).toBe("owner");
 	});
+
+	it("the owner creates an instance from the console: chat works at once and after a restart", async () => {
+		const dataDir = tempDataDir();
+		const first = await boot(dataDir);
+		const api = await client(first.base, first.annie.ownerLink as string);
+		const created = await api("/api/instances", { id: "vendite", name: "Vendite", instructions: "Rispondi sulle offerte." });
+		expect(created.instance).toEqual({ id: "vendite", name: "Vendite", canChat: true, isApprover: true, hasSegreteria: false });
+		expect((await api("/api/instances", { id: "vendite", name: "Doppia" })).error).toMatch(/esiste già/);
+		expect((await api("/api/instances", { id: "../x", name: "X" })).error).toMatch(/ID/);
+		expect((await api("/api/instances", { id: "vuota", name: "  " })).error).toMatch(/nome/);
+		const settings = (await api("/api/instances/vendite/settings")).settings;
+		expect(settings.instructions).toBe("Rispondi sulle offerte.");
+		expect(settings.egress).toEqual({ modelProviders: ["faux"], channels: ["web"] });
+		const thread = (await api("/api/instances/vendite/threads", {})).thread;
+		await api(`/api/instances/vendite/threads/${thread.id}/messages`, { text: "ciao vendite" });
+		const replied = async (a: typeof api, id: string) => ((await a(`/api/instances/vendite/threads/${id}`)).entries as { from: string }[]).some((e) => e.from === "annie");
+		await until(() => replied(api, thread.id));
+		await first.annie.stop();
+		running.splice(running.indexOf(first.annie), 1);
+		const second = await boot(dataDir);
+		const again = await client(second.base, first.annie.ownerLink as string);
+		expect((await again("/api/instances")).instances.map((i: { id: string }) => i.id).sort()).toEqual(["annie", "vendite"]);
+		const t2 = (await again("/api/instances/vendite/threads", {})).thread;
+		await again(`/api/instances/vendite/threads/${t2.id}/messages`, { text: "di nuovo" });
+		await until(() => replied(again, t2.id));
+	});
+
+	it("a task programmato of an instance created from the console runs without a restart", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		const thread = (await api("/api/instances/vendite/threads", {})).thread;
+		const at = new Date(Date.now() + 60_000).toISOString();
+		await api("/api/instances/vendite/schedules", { instruction: "Controlla le offerte", at, threadId: thread.id });
+		expect(await annie.scheduler.tick(new Date(Date.now() + 120_000))).toBe(1);
+		await until(async () => ((await api(`/api/instances/vendite/threads/${thread.id}`)).entries as { from: string; text?: string }[]).some((e) => e.from === "annie" && e.text?.includes("Controlla le offerte")));
+	});
+
+	it("an events stream opened before the instance existed gets its replies live", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const token = (annie.ownerLink as string).split("#")[1] as string;
+		const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token }) });
+		const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
+		const abort = new AbortController();
+		const stream = await fetch(`${base}/api/events`, { headers: { cookie }, signal: abort.signal });
+		const reader = (stream.body as ReadableStream<Uint8Array>).getReader();
+		let received = "";
+		const reading = (async () => {
+			try {
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) return;
+					received += new TextDecoder().decode(value);
+				}
+			} catch {
+				/* aborted */
+			}
+		})();
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		const thread = (await api("/api/instances/vendite/threads", {})).thread;
+		await api(`/api/instances/vendite/threads/${thread.id}/messages`, { text: "ciao" });
+		await until(async () => received.includes(`"threadId":"${thread.id}"`));
+		abort.abort();
+		await reading;
+	});
+
+	it("only the owner creates instances", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const owner = await client(base, annie.ownerLink as string);
+		const { link } = await owner("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		expect((await member("/api/instances", { id: "mia", name: "Mia" })).error).toBeDefined();
+		expect((await owner("/api/instances")).instances.map((i: { id: string }) => i.id)).toEqual(["annie"]);
+	});
 });

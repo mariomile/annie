@@ -287,6 +287,7 @@ function renderRail() {
 					),
 				)
 			: h("div.instance-pick", h("label", "Istanza"), h("div.mono", state.instance?.name ?? "nessuna")),
+		state.me.role === "owner" ? h("button.add-instance", { onclick: instanceForm }, icon("plus"), h("span", "Nuova istanza")) : null,
 		nav,
 		h(
 			"div.rail-foot",
@@ -1002,6 +1003,45 @@ function connectorForm(inst, existing) {
 	dialog.addEventListener("close", () => dialog.remove());
 	document.body.append(dialog);
 	dialog.showModal();
+}
+
+// ---------- nuova istanza ----------
+function instanceForm() {
+	const name = h("input", { type: "text", placeholder: "Vendite", maxlength: "80" });
+	const id = h("input", { type: "text", placeholder: "vendite", class: "mono", maxlength: "63" });
+	const instructions = h("textarea", { rows: 5, placeholder: "Lascia vuoto per le istruzioni predefinite di Annie." });
+	let touched = false;
+	id.addEventListener("input", () => (touched = true));
+	name.addEventListener("input", () => {
+		if (!touched) id.value = name.value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
+	});
+	const create = async () => {
+		try {
+			const { instance } = await api("/api/instances", { method: "POST", body: { id: id.value.trim(), name: name.value.trim(), instructions: instructions.value } });
+			dialog.close();
+			await refreshInstances();
+			state.instance = state.instances.find((i) => i.id === instance.id) ?? state.instance;
+			store("annie.instance", state.instance.id);
+			toast(`Istanza ${instance.name} creata`);
+			go("chat");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const dialog = h(
+		"dialog",
+		h("h3", "Nuova istanza"),
+		h("p.muted", "Un'altra Annie con istruzioni, file, task e connettori suoi. Usa lo stesso modello dell'istanza principale; all'inizio solo tu puoi scriverle, poi decidi chi in Impostazioni."),
+		h("label.field", h("span", "Nome"), name),
+		h("label.field", h("span", "ID"), id, h("small", "Minuscole, cifre, - e _. Non si cambia più.")),
+		h("label.field", h("span", "Istruzioni"), instructions),
+		h("div.actions", h("button.btn.accent", { onclick: create }, "Crea istanza"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
+	);
+	dialog.addEventListener("close", () => dialog.remove());
+	document.body.append(dialog);
+	dialog.showModal();
+	name.focus();
 }
 
 // ---------- impostazioni ----------
