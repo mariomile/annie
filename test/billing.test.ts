@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { accessOf, BillingRefused, mayUse, meterTime, StripeBilling } from "../src/cloud/billing.ts";
+import { accessOf, BillingRefused, mayUse, StripeBilling } from "../src/cloud/billing.ts";
 
 const config = { secretKey: "sk_test_secret_value", webhookSecret: "whsec_unit", price: "price_flat", trialDays: 14 };
 const body = Buffer.from(JSON.stringify({ id: "evt_1", type: "customer.subscription.updated", created: 1, data: { object: { status: "active" } } }));
@@ -24,6 +24,8 @@ describe("Stripe webhook signatures", () => {
 		expect(() => billing.event(Buffer.from(body.toString().replace("active", "trialing")), `t=${t},v1=${sign(t)}`, now)).toThrow(/non valida/);
 		expect(() => billing.event(body, `t=${t - 301},v1=${sign(t - 301)}`, now)).toThrow(/scaduta/);
 		expect(() => billing.event(body, `t=${t},v0=${sign(t)}`, now)).toThrow(/mancante/);
+		const empty = Buffer.from(JSON.stringify({ id: "evt_2", type: "x", created: 1, data: { object: null } }));
+		expect(() => billing.event(empty, `t=${t},v1=${sign(t, empty)}`, now)).toThrow(/evento non valido/);
 	});
 
 	it("a Stripe error says what Stripe said, never the key", async () => {
@@ -58,12 +60,9 @@ describe("trial and access", () => {
 		expect(accessOf({ createdAt: created, billing: { status: "trialing" } }, since, 14, late).state).toBe("active");
 		expect(mayUse(accessOf({ createdAt: created, billing: { status: "past_due" } }, since, 14, late))).toBe(true);
 		for (const status of ["canceled", "unpaid", "incomplete", "incomplete_expired", "paused"]) expect(accessOf({ createdAt: created, billing: { status } }, since, 14, late).state).toBe("ended");
-	});
-
-	it("a closed month's cost is dated in that month, never beyond what Stripe takes", () => {
-		const now = Date.parse("2026-11-03T10:00:00Z");
-		expect(meterTime("2026-11", "2026-11", now).toISOString()).toBe("2026-11-03T10:00:00.000Z");
-		expect(meterTime("2026-10", "2026-11", now).toISOString()).toBe("2026-10-31T21:00:00.000Z");
-		expect(meterTime("2026-08", "2026-11", now).getTime()).toBe(now - 34 * 86_400_000);
+		// Cancelling or not paying ends it even inside the trial; a checkout not yet paid does not.
+		const early = Date.parse(created) + day;
+		for (const status of ["canceled", "unpaid", "incomplete_expired", "paused"]) expect(accessOf({ createdAt: created, billing: { status } }, since, 14, early).state).toBe("ended");
+		expect(accessOf({ createdAt: created, billing: { status: "incomplete" } }, since, 14, early).state).toBe("trial");
 	});
 });

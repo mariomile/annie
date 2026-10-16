@@ -4,10 +4,10 @@ import { createServer, type IncomingMessage, request, type Server, type ServerRe
 import { request as httpsRequest } from "node:https";
 import { extname, join } from "node:path";
 import { googleReturnQuery } from "../connectors/google.ts";
-import { sameSecret } from "../web/compare.ts";
+import { proxyToken, sameSecret } from "../web/compare.ts";
 import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { CellState } from "../web/server.ts";
-import { type Access, type AccountBilling, accessOf, BillingRefused, mayUse, meterTime, type StripeBilling, type StripeEvent } from "./billing.ts";
+import { type Access, type AccountBilling, accessOf, BillingRefused, live, mayCheckout, mayUse, type StripeBilling, type StripeEvent, type Subscription } from "./billing.ts";
 import type { Mailer } from "./mailer.ts";
 import { romeDayKey } from "../core/usage.ts";
 import type { CellProvider } from "./provider.ts";
@@ -111,8 +111,10 @@ type State = {
 	accounts: Account[];
 	cells: Cell[];
 	links: PendingLink[];
-	/** When billing was first switched on: tenants from before get their trial from then. */
+	/** Since when billing has been on: tenants from before get their trial from then. Cleared when it is switched off. */
 	billingSince?: string;
+	/** The trial's length while billing is on, for `pnpm cloud status`. */
+	trialDays?: number;
 };
 
 const EMPTY: State = { accounts: [], cells: [], links: [] };
@@ -145,7 +147,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	const port = options.publicPort === undefined ? "" : `:${options.publicPort}`;
 	const publicUrl = (host: string) => `${options.publicScheme}://${host}${port}`;
 	const billing = options.billing;
-	if (billing !== undefined && read().billingSince === undefined) update((s) => ({ ...s, billingSince: s.billingSince ?? new Date().toISOString() }));
+	update(({ billingSince, trialDays, ...s }) => (billing === undefined ? s : { ...s, billingSince: billingSince ?? new Date().toISOString(), trialDays: billing.trialDays }));
+	const accountOf = (tenant: string) => read().accounts.find((a) => a.tenant === tenant);
 	/** Where a tenant stands with its subscription; undefined when there is no billing. */
 	const accessFor = (tenant: string): Access | undefined => {
 		const state = read();
@@ -192,11 +195,10 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		try {
 			const account = read().accounts.find((a) => a.email === signedIn) ?? (await createAccount(signedIn));
 			const access = accessFor(account.tenant);
-			// A tenant whose trial ended without a subscription gets the way to subscribe, and its cell stays asleep.
-			const loginUrl = access === undefined || mayUse(access) ? await signInLink(account.tenant) : undefined;
-			if (access === undefined) return { loginUrl: loginUrl as string };
-			const wantsBilling = body.purpose === "billing" || loginUrl === undefined;
-			return { ...(loginUrl === undefined ? {} : { loginUrl }), billing: { ...access, ...(wantsBilling ? await billingLinks(account.tenant, access, loginUrl !== undefined) : {}) } };
+			if (access === undefined) return { loginUrl: await signInLink(account.tenant) };
+			// Managing the subscription needs no cell; a tenant whose trial ended gets the way to subscribe, and its cell stays asleep.
+			if (body.purpose === "billing" || !mayUse(access)) return { billing: { ...access, ...(await billingLinks(account.tenant, access)) } };
+			return { loginUrl: await signInLink(account.tenant), billing: access };
 		} catch (error) {
 			// Our failure, not the person's: the link works again for a retry.
 			update((s) => ({ ...s, links: s.links.map((l) => (sameSecret(l.hash, hash(token)) ? { hash: l.hash, email: l.email, expiresAt: l.expiresAt } : l)) }));
@@ -209,24 +211,29 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		return `${publicUrl(`${tenant}.${options.domain}`)}/login#${await ownerLink(tenant)}`;
 	}
 
-	/** Stripe's pages for this tenant: subscribing while it has no subscription, the portal once it has a customer. */
-	async function billingLinks(tenant: string, access: Access, canSignIn: boolean): Promise<{ checkoutUrl?: string; portalUrl?: string }> {
+	/**
+	 * Stripe's pages for this tenant: Checkout while it has no subscription (or one that is over),
+	 * the portal once it has a customer (where an unpaid invoice is settled too).
+	 */
+	async function billingLinks(tenant: string, access: Access): Promise<{ checkoutUrl?: string; portalUrl?: string }> {
 		if (billing === undefined) return {};
-		const account = read().accounts.find((a) => a.tenant === tenant) as Account;
+		const { email, billing: current } = accountOf(tenant) as Account;
 		const homeUrl = publicUrl(options.domain);
-		try {
-			const customerId = account.billing?.customerId;
-			const subscribed = access.state === "active" || access.state === "past_due";
-			return {
-				...(subscribed ? {} : { checkoutUrl: await billing.checkout({ tenant, email: account.email, homeUrl, ...(customerId === undefined ? {} : { customerId }) }) }),
-				...(customerId === undefined ? {} : { portalUrl: await billing.portal(customerId, homeUrl) }),
-			};
-		} catch (error) {
-			// Stripe down: someone who may use Annie still gets in; someone who must subscribe tries again.
-			if (!canSignIn) throw error;
-			log(`cloud: billing links for ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
-			return {};
+		const customerId = current?.customerId;
+		let checkoutUrl: string | undefined;
+		if (mayCheckout(current?.status)) {
+			const page = await billing.checkout({
+				tenant,
+				email,
+				homeUrl,
+				...(customerId === undefined ? {} : { customerId }),
+				...(access.state === "trial" ? { trialEndsAt: access.trialEndsAt } : {}),
+				...(current?.checkoutId === undefined ? {} : { previous: current.checkoutId }),
+			});
+			updateBilling(tenant, (b) => ({ ...b, checkoutId: page.id }));
+			checkoutUrl = page.url;
 		}
+		return { ...(checkoutUrl === undefined ? {} : { checkoutUrl }), ...(customerId === undefined ? {} : { portalUrl: await billing.portal(customerId, homeUrl) }) };
 	}
 
 	function createAccount(email: string): Promise<Account> {
@@ -280,7 +287,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	/** One round at a time; cells in parallel, so a cell that hangs does not hold up the others. */
 	function tick(now: Date): Promise<void> {
 		if (ticking !== undefined) return ticking;
-		ticking = Promise.allSettled(read().cells.map((cell) => tickCell(cell, now)))
+		ticking = Promise.allSettled(read().cells.map((cell) => tickCell(cell, now).then(() => retryUsage(cell.tenant, now))))
 			.then((results) => {
 				for (const r of results) if (r.status === "rejected") log(`cloud: tick: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
 			})
@@ -297,7 +304,9 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 				const reading = await cellState(cell.tenant);
 				if (reading?.usage !== undefined) keepReading(cell.tenant, reading.usage);
 			}
-			const quiet = () => (open.get(cell.tenant) ?? 0) === 0 && now.getTime() - (lastSeen.get(cell.tenant) ?? 0) >= options.idleMs;
+			// A tenant whose trial ended is let go of at once, not after the idle time.
+			const cut = suspended(cell.tenant);
+			const quiet = () => cut || ((open.get(cell.tenant) ?? 0) === 0 && now.getTime() - (lastSeen.get(cell.tenant) ?? 0) >= options.idleMs);
 			if (!quiet()) return;
 			const seen = lastSeen.get(cell.tenant);
 			const state = await cellState(cell.tenant);
@@ -343,6 +352,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 
 	// --- billing ---
 	const reporting = new Map<string, Promise<void>>();
+	/** When sending a tenant's cost last failed: tried again from the tick, not at every round. */
+	const failedAt = new Map<string, number>();
 	/** Sends Stripe the model cost not sent yet, month by month; one tenant at a time, and a retry counts once. */
 	function reportUsage(tenant: string): Promise<void> {
 		if (!billing?.meters) return Promise.resolve();
@@ -352,17 +363,20 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 				const account = state.accounts.find((a) => a.tenant === tenant);
 				const months = state.cells.find((c) => c.tenant === tenant)?.usage?.months ?? {};
 				const customerId = account?.billing?.customerId;
-				if (account === undefined || customerId === undefined || !["active", "trialing", "past_due"].includes(account.billing?.status ?? "")) return;
-				const current = romeDayKey().slice(0, 7);
+				const sent = account?.billing?.reportedCents;
+				if (customerId === undefined || sent === undefined || !live(account?.billing?.status)) return;
 				for (const month of Object.keys(months).sort()) {
 					const cents = Math.round((months[month] ?? 0) * 100);
-					const sent = account.billing?.reportedCents?.[month] ?? 0;
-					if (cents <= sent) continue;
-					await billing.meterEvent({ customerId, cents: cents - sent, identifier: `${tenant}-${month}-${cents}`, at: meterTime(month, current) });
+					if (cents <= (sent[month] ?? 0)) continue;
+					await billing.meterEvent({ customerId, cents: cents - (sent[month] ?? 0), identifier: `${tenant}-${month}-${cents}` });
 					updateBilling(tenant, (b) => ({ ...b, reportedCents: { ...b.reportedCents, [month]: Math.max(b.reportedCents?.[month] ?? 0, cents) } }));
 				}
+				failedAt.delete(tenant);
 			})
-			.catch((error: unknown) => log(`cloud: usage for ${tenant} not sent: ${error instanceof Error ? error.message : String(error)}`))
+			.catch((error: unknown) => {
+				failedAt.set(tenant, Date.now());
+				log(`cloud: usage for ${tenant} not sent: ${error instanceof Error ? error.message : String(error)}`);
+			})
 			.finally(() => {
 				if (reporting.get(tenant) === run) reporting.delete(tenant);
 			});
@@ -370,49 +384,52 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		return run;
 	}
 
+	function retryUsage(tenant: string, now: Date): Promise<void> {
+		const failed = failedAt.get(tenant);
+		return failed !== undefined && now.getTime() - failed >= 5 * 60_000 ? reportUsage(tenant) : Promise.resolve();
+	}
+
 	function updateBilling(tenant: string, change: (billing: AccountBilling) => AccountBilling): void {
 		update((s) => ({ ...s, accounts: s.accounts.map((a) => (a.tenant === tenant ? { ...a, billing: change(a.billing ?? {}) } : a)) }));
 	}
 
 	/**
-	 * What Stripe tells: a finished checkout links the tenant to its customer and subscription;
-	 * subscription events carry its status. Model cost from before the subscription stays in the
-	 * trial: the months as they stand are marked as sent.
+	 * A Stripe event says which subscription changed; what it is now we ask Stripe, so events that
+	 * arrive late or out of order cannot leave a wrong status. Only Annie's own subscription counts:
+	 * a second one (two Checkout pages paid) is reported, never allowed to override a live one.
 	 */
-	function applyEvent(event: StripeEvent): void {
+	async function applyEvent(event: StripeEvent): Promise<void> {
+		if (billing === undefined) return;
 		const object = event.data.object;
-		const str = (value: unknown) => (typeof value === "string" ? value : undefined);
+		const id = event.type === "checkout.session.completed" ? object.subscription : event.type.startsWith("customer.subscription.") ? object.id : undefined;
+		if (typeof id !== "string") return;
+		const subscription = await billing.subscription(id);
 		const accounts = read().accounts;
-		if (event.type === "checkout.session.completed") {
-			const tenant = str(object.client_reference_id);
-			if (tenant === undefined || !accounts.some((a) => a.tenant === tenant)) return;
-			const months = read().cells.find((c) => c.tenant === tenant)?.usage?.months ?? {};
-			updateBilling(tenant, (b) => ({
-				...b,
-				...(str(object.customer) === undefined ? {} : { customerId: str(object.customer) }),
-				...(str(object.subscription) === undefined ? {} : { subscriptionId: str(object.subscription) }),
-				status: b.status ?? (object.payment_status === "unpaid" ? "incomplete" : "active"),
-				reportedCents: b.customerId === undefined ? Object.fromEntries(Object.entries(months).map(([m, usd]) => [m, Math.round(usd * 100)])) : (b.reportedCents ?? {}),
-			}));
-			log(`cloud: ${tenant} subscribed`);
-			return;
-		}
-		if (!event.type.startsWith("customer.subscription.")) return;
-		const metadata = (object.metadata ?? {}) as Record<string, unknown>;
-		const tenant = str(metadata.tenant) ?? accounts.find((a) => a.billing?.customerId !== undefined && a.billing.customerId === str(object.customer))?.tenant;
-		if (tenant === undefined || !accounts.some((a) => a.tenant === tenant)) return;
+		const tenant = [typeof object.client_reference_id === "string" ? object.client_reference_id : undefined, subscription.tenant, accounts.find((a) => a.billing?.customerId === subscription.customerId)?.tenant].find(
+			(t) => t !== undefined && accounts.some((a) => a.tenant === t),
+		);
+		if (tenant !== undefined) adopt(tenant, subscription);
+	}
+
+	function adopt(tenant: string, subscription: Subscription): void {
+		const months = read().cells.find((c) => c.tenant === tenant)?.usage?.months ?? {};
+		let ignored = false;
 		updateBilling(tenant, (b) => {
-			// Stripe does not promise order: an event older than the one applied changes nothing.
-			if ((b.eventAt ?? 0) > event.created) return b;
+			if (b.subscriptionId !== undefined && b.subscriptionId !== subscription.id && live(b.status)) {
+				ignored = true;
+				return b;
+			}
 			return {
 				...b,
-				...(str(object.customer) === undefined ? {} : { customerId: str(object.customer) }),
-				...(str(object.id) === undefined ? {} : { subscriptionId: str(object.id) }),
-				status: event.type === "customer.subscription.deleted" ? "canceled" : (str(object.status) ?? b.status ?? "incomplete"),
-				eventAt: event.created,
+				customerId: subscription.customerId,
+				subscriptionId: subscription.id,
+				status: subscription.status,
+				// The first customer marks the months read so far as sent: they were the trial's.
+				reportedCents: b.reportedCents ?? Object.fromEntries(Object.entries(months).map(([m, usd]) => [m, Math.round(usd * 100)])),
 			};
 		});
-		log(`cloud: ${tenant} subscription ${event.type.slice("customer.subscription.".length)}`);
+		if (ignored) log(`cloud: ${tenant} has another subscription (${subscription.id}, ${subscription.status}) besides its live one: check it on Stripe`);
+		else log(`cloud: ${tenant} subscription ${subscription.status}`);
 	}
 
 	async function stripeWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -431,7 +448,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			if (error instanceof BillingRefused || error instanceof SyntaxError) return send(res, 400, { error: "Firma o evento non valido" });
 			throw error;
 		}
-		applyEvent(event);
+		// If Stripe cannot be asked now, a 500 makes it deliver the event again later.
+		await applyEvent(event);
 		send(res, 200, { received: true });
 	}
 
@@ -535,7 +553,9 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		const headers = withoutHopByHop(req.headers);
 		for (const name of Object.keys(headers)) if (name === "authorization" || name.startsWith("x-forwarded-")) delete headers[name];
 		// Host is the cell's own address (a platform routes by it); the public one goes in X-Forwarded-Host.
-		return { ...headers, host: cellHost, "x-forwarded-host": `${tenant}.${options.domain}`, "x-forwarded-proto": options.publicScheme, "x-forwarded-for": req.socket.remoteAddress ?? "" };
+		// The cell answers only requests that came through here: proof that the gate (sleep, subscription) was passed.
+		const secret = cellOf(tenant)?.secret ?? "";
+		return { ...headers, host: cellHost, "x-forwarded-host": `${tenant}.${options.domain}`, "x-forwarded-proto": options.publicScheme, "x-forwarded-for": req.socket.remoteAddress ?? "", "x-annie-proxy": proxyToken(secret) };
 	}
 
 	const server = createServer((req, res) => {
@@ -553,7 +573,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	return {
 		server,
 		tick,
-		status: () => cloudStatus({ ...options, ...(billing === undefined ? {} : { trialDays: billing.trialDays }) }),
+		status: () => cloudStatus(options),
 		async stop() {
 			if (timer !== undefined) clearInterval(timer);
 			server.closeAllConnections();
@@ -574,7 +594,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
  * says is kept); a sleeping one shows what it said last, without being woken. Works beside a
  * running control plane: it only reads the state file and asks cells.
  */
-export async function cloudStatus(options: { readonly dataDir: string; readonly provider: CellProvider; readonly trialDays?: number }): Promise<TenantStatus[]> {
+export async function cloudStatus(options: { readonly dataDir: string; readonly provider: CellProvider }): Promise<TenantStatus[]> {
 	const file = join(options.dataDir, "control-plane.json");
 	const state = readJsonFile<State>(file, EMPTY);
 	const within = <T>(work: Promise<T>, fallback: T): Promise<T> =>
@@ -598,7 +618,8 @@ export async function cloudStatus(options: { readonly dataDir: string; readonly 
 					usage = kept.cells.find((c) => c.tenant === account.tenant)?.usage;
 				}
 			}
-			const billing = options.trialDays === undefined ? null : { ...accessOf(account, state.billingSince ?? account.createdAt, options.trialDays), subscription: account.billing?.status ?? null };
+			// What the running control plane wrote: the shell asking needs no Stripe settings.
+			const billing = state.billingSince === undefined || state.trialDays === undefined ? null : { ...accessOf(account, state.billingSince, state.trialDays), subscription: account.billing?.status ?? null };
 			return { tenant: account.tenant, email: account.email, createdAt: account.createdAt, cell: now, nextWakeAt: cell?.nextWakeAt ?? null, spend: spendNow(usage), billing };
 		}),
 	);

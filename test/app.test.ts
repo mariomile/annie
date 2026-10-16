@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { romeDayKey } from "../src/core/usage.ts";
+import { proxyToken } from "../src/web/compare.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir, waitFor } from "./helpers.ts";
 
@@ -52,13 +53,13 @@ async function boot(dataDir: string, telegram = fakeTelegram(), env: Record<stri
 	return { annie, base, telegram };
 }
 
-async function client(base: string, link: string) {
+async function client(base: string, link: string, extra: Record<string, string> = {}) {
 	const token = link.split("#")[1] as string;
-	const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token }) });
+	const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1", ...extra }, body: JSON.stringify({ token }) });
 	expect(login.status).toBe(200);
 	const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
 	const call = async (path: string, body?: unknown) => {
-		const res = await fetch(`${base}${path}`, { method: body === undefined ? "GET" : "POST", headers: { cookie, "x-annie": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+		const res = await fetch(`${base}${path}`, { method: body === undefined ? "GET" : "POST", headers: { cookie, "x-annie": "1", ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 		// biome-ignore lint: test
 		return (await res.json()) as any;
 	};
@@ -220,7 +221,10 @@ describe("pnpm start (startAnnie)", () => {
 		expect(annie.ownerLink).toBeUndefined();
 		expect(existsSync(join(dataDir, "owner-login-link.txt"))).toBe(false);
 		const { token: ownerToken } = (await (await fetch(`${base}/internal/owner-link`, { method: "POST", headers: { authorization: "Bearer cell-secret-xyz-0001" } })).json()) as { token: string };
-		const api = await client(base, `${base}/login#${ownerToken}`);
+		// Only through the control plane: without its header the cell knows nothing.
+		expect((await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: ownerToken }) })).status).toBe(404);
+		expect((await fetch(`${base}/`)).status).toBe(404);
+		const api = await client(base, `${base}/login#${ownerToken}`, { "x-annie-proxy": proxyToken("cell-secret-xyz-0001") });
 		expect((await api("/api/me")).person.role).toBe("owner");
 		const state = (secret?: string) => fetch(`${base}/internal/cell`, { headers: secret === undefined ? {} : { authorization: `Bearer ${secret}` } });
 		expect((await state()).status).toBe(401);
@@ -239,7 +243,7 @@ describe("pnpm start (startAnnie)", () => {
 		const { token: ownerToken } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
 		const { token } = (await (await ask("cell-secret-xyz-0001")).json()) as { token: string };
 		expect(token).toMatch(/^[\w-]{40,}$/);
-		const login = (t: string) => fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: t }) });
+		const login = (t: string) => fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1", "x-annie-proxy": proxyToken("cell-secret-xyz-0001") }, body: JSON.stringify({ token: t }) });
 		expect((await login(ownerToken)).status).toBe(401);
 		expect((await login(token)).status).toBe(200);
 	});

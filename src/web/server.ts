@@ -20,7 +20,7 @@ import { WorkspaceError } from "../core/workspace.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
-import { sameSecret } from "./compare.ts";
+import { proxyToken, sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
 
 /** What a cell tells the control plane of Annie Cloud before being stopped. */
@@ -737,10 +737,13 @@ export function createWebApp(options: WebAppOptions): Server {
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		securityHeaders(res);
 		const url = new URL(req.url ?? "/", "http://annie.local");
-		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
 		if (req.method === "GET" && url.pathname === "/internal/cell") return cellState(req, res);
 		if (req.method === "POST" && url.pathname === "/internal/owner-link") return ownerLink(req, res);
+		// A cell on a platform has a public address of its own: there it answers only what came through
+		// the control plane, which checks sleep and subscription first.
+		if (options.cell !== undefined && !sameSecret(String(req.headers["x-annie-proxy"] ?? ""), cellProxyToken)) return send(res, 404, { error: "Not found" });
+		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
 		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
@@ -800,6 +803,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		}
 		send(res, 200, { ok: true });
 	}
+
+	const cellProxyToken = options.cell === undefined ? "" : proxyToken(options.cell.secret);
 
 	/** The control plane of Annie Cloud, with the cell's secret. */
 	function fromControlPlane(req: IncomingMessage, res: ServerResponse): boolean {

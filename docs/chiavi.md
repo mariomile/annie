@@ -105,7 +105,7 @@ Una chiave Anthropic separata, magari con un suo tetto di spesa. Va come secret 
 Servono solo quando decidi il prezzo di Annie Cloud. Senza, il servizio resta gratuito.
 
 1. https://dashboard.stripe.com → crea l'account di Buildrs e lascia attiva la **modalità test** per le prove.
-2. **Developers → API keys → Secret key** (`sk_test_…`, poi `sk_live_…`): va in `ANNIE_CLOUD_STRIPE_SECRET_KEY`. Meglio ancora una **restricted key** con scrittura su Checkout Sessions, Customer portal e Billing meter events.
+2. **Developers → API keys → Secret key** (`sk_test_…`, poi `sk_live_…`): va in `ANNIE_CLOUD_STRIPE_SECRET_KEY`. Meglio ancora una **restricted key** con scrittura su Checkout Sessions, Customer portal e Billing meter events, e lettura sulle Subscriptions.
 3. **Product catalog → Add product** «Annie», con un prezzo mensile ricorrente. Il suo id (`price_…`) va in `ANNIE_CLOUD_STRIPE_PRICE`.
 4. Facoltativo, il consumo del modello: **Billing → Meters → Create meter** con aggregazione *Sum*. Il nome dell'evento, per esempio `annie_model_cost`, va in `ANNIE_CLOUD_STRIPE_METER_EVENT`. Poi aggiungi al prodotto un prezzo a consumo collegato a quel contatore e metti il suo id in `ANNIE_CLOUD_STRIPE_USAGE_PRICE`. Un'unità è un centesimo di dollaro di costo del modello.
 5. **Developers → Webhooks → Add endpoint**: `https://<dominio-del-control-plane>/stripe/webhook`, con gli eventi `checkout.session.completed` e `customer.subscription.created`, `.updated`, `.deleted`. Il **Signing secret** (`whsec_…`) va in `ANNIE_CLOUD_STRIPE_WEBHOOK_SECRET`.
