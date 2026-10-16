@@ -5,7 +5,7 @@
  * environment and calls startAnnie; tests call it directly.
  */
 import { randomBytes } from "node:crypto";
-import { renameSync } from "node:fs";
+import { renameSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
@@ -13,6 +13,7 @@ import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
 import { type Transcribe, TranscriptionOff, transcriber, VOICE_CONNECTOR } from "./channels/voice.ts";
 import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter, type WhatsAppWindow, type WindowState, windowStore } from "./channels/whatsapp.ts";
 import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
+import { connectTwilioNumber, MissingPhoneField, type PendingReplies, PhoneAdapter, type PhoneCredentials, parsePhoneCredentials } from "./channels/phone.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAuth } from "./connectors/google.ts";
 import { egressFetch } from "./connectors/http.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
@@ -56,6 +57,10 @@ export type AnnieOptions = {
 	readonly telegramFetch?: typeof fetch;
 	/** WhatsApp Cloud API base (tests: a fake Graph API). */
 	readonly whatsappApiBase?: string;
+	/** Twilio REST API fetch (tests). */
+	readonly phoneFetch?: typeof fetch;
+	/** Tests: how long a phone webhook waits for a reply, and how many waits. */
+	readonly phoneWait?: { readonly ms: number; readonly max: number };
 	/** Transcription service fetch (tests). */
 	readonly transcribeFetch?: typeof fetch;
 	/** Google OAuth and API fetch (tests). */
@@ -430,6 +435,49 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		else if (saved !== undefined) log(`whatsapp: saved credentials of ${record.id} unreadable; connect it again from the console`);
 	}
 
+	// --- Phone: at most one Twilio number per instance, by webhook only (ADR 0012) ---
+	const phones = new Map<string, PhoneAdapter>();
+	const phoneUnsubscribes = new Map<string, () => void>();
+
+	const phonePendingFile = (instance: string) => join(instanceDir(config.dataDir, toTenantId(tenant), toInstanceId(instance)), "phone-pending.json");
+
+	function attachPhone(instance: string, credentials: PhoneCredentials): PhoneAdapter | undefined {
+		if (!(config.web.publicUrl?.startsWith("https://") ?? false)) return undefined;
+		const adapter = new PhoneAdapter({
+			credentials,
+			tenantId: tenant,
+			instanceId: instance,
+			publicUrl: config.web.publicUrl as string,
+			pending: pendingReplies(phonePendingFile(instance), log),
+			mayCall: async (number) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.phone ?? []).includes(number),
+			voice: config.phone.voice,
+			log,
+			...(options.phoneWait === undefined ? {} : { waitMs: options.phoneWait.ms, maxWaits: options.phoneWait.max }),
+		});
+		phoneUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log));
+		phones.set(instance, adapter);
+		return adapter;
+	}
+
+	function detachPhone(instance: string): void {
+		void phones.get(instance)?.stop();
+		phones.delete(instance);
+		phoneUnsubscribes.get(instance)?.();
+		phoneUnsubscribes.delete(instance);
+	}
+
+	for (const record of conversational) {
+		const saved = await runtime.secrets(tenant).get(phoneSecret(record.id));
+		const credentials = saved === undefined ? undefined : parsePhoneCredentials(saved);
+		if (credentials !== undefined && attachPhone(record.id, credentials) === undefined) log(`phone: ${record.id} has a number but this server has no public https address; calls are off`);
+		// The public address may have changed since the number was connected: point it here again.
+		else if (credentials !== undefined)
+			void connectTwilioNumber({ ...credentials, voiceUrl: `${config.web.publicUrl}/hooks/phone/${record.id}`, apiBase: config.phone.apiBase, ...(options.phoneFetch === undefined ? {} : { fetch: options.phoneFetch }) }).catch((error: unknown) =>
+				log(`phone: could not point the number of ${record.id} here: ${error instanceof Error ? error.message : String(error)}`),
+			);
+		else if (saved !== undefined && credentials === undefined) log(`phone: saved credentials of ${record.id} unreadable; connect it again from the console`);
+	}
+
 	// --- resume, scheduler, segreteria, web ---
 	for (const record of conversational) await runtime.resume(tenant, record.id);
 	// A form left half-sent by the previous process is never sent again: the conversation is told.
@@ -475,6 +523,50 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		defaultTimeZone: config.timeZone,
 		telegramHooks,
 		whatsappHooks: whatsapps,
+		phoneHooks: phones,
+		phone: {
+			status: async (id) => {
+				const record = await runtime.registry.getInstance(tenant, id);
+				const saved = await runtime.secrets(tenant).get(phoneSecret(id));
+				const credentials = saved === undefined ? undefined : parsePhoneCredentials(saved);
+				return {
+					connected: phones.has(id),
+					https: config.web.publicUrl?.startsWith("https://") ?? false,
+					...(credentials === undefined ? {} : { number: credentials.number, accountSid: credentials.accountSid }),
+					allowedUsers: record.allowedUsers.phone ?? [],
+				};
+			},
+			// Checked with Twilio, and the number pointed at this cell, before anything changes.
+			connect: async (id, given) => {
+				const publicUrl = config.web.publicUrl;
+				if (!(publicUrl?.startsWith("https://") ?? false)) throw new MissingPhoneField("https");
+				const saved = await runtime.secrets(tenant).get(phoneSecret(id));
+				const old = saved === undefined ? undefined : parsePhoneCredentials(saved);
+				const accountSid = given.accountSid ?? old?.accountSid;
+				const authToken = given.authToken ?? old?.authToken;
+				const number = given.number ?? old?.number;
+				const pin = given.pin ?? old?.pin;
+				if (accountSid === undefined || authToken === undefined || number === undefined || pin === undefined) throw new MissingPhoneField("fields");
+				const twilio = { apiBase: config.phone.apiBase, ...(options.phoneFetch === undefined ? {} : { fetch: options.phoneFetch }) };
+				// Only the code changed: nothing to ask Twilio.
+				const same = old !== undefined && old.accountSid === accountSid && old.authToken === authToken && old.number === number;
+				const { numberSid } = same ? { numberSid: old.numberSid } : await connectTwilioNumber({ accountSid, authToken, number, voiceUrl: `${publicUrl}/hooks/phone/${id}`, ...twilio });
+				// A number replaced still points here: the adapter refuses calls to any other number.
+				const credentials: PhoneCredentials = { accountSid, authToken, number, numberSid, pin };
+				detachPhone(id);
+				await runtime.secrets(tenant).set(phoneSecret(id), JSON.stringify(credentials));
+				attachPhone(id, credentials);
+				const record = await runtime.registry.getInstance(tenant, id);
+				if (!record.egress.channels.includes("phone")) await runtime.registry.setEgress(tenant, id, { ...record.egress, channels: [...record.egress.channels, "phone"] });
+				return { number };
+			},
+			disconnect: async (id) => {
+				detachPhone(id);
+				// The number keeps pointing here, and its calls are refused before they are answered (no cost).
+				await runtime.secrets(tenant).delete(phoneSecret(id));
+				rmSync(phonePendingFile(id), { force: true });
+			},
+		},
 		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
 		sendWebAction: sendForInstance,
 		...(config.google === undefined || googleAccounts === undefined
@@ -613,6 +705,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await new Promise((resolve) => server.close(resolve));
 			await scheduler.stop();
 			for (const bot of telegrams.values()) await bot.stop();
+			for (const phone of phones.values()) await phone.stop();
 			await segreteria?.stop();
 			await runtime.close();
 			await (await browser)?.close().catch(() => {});
@@ -649,6 +742,53 @@ function whatsappWindow(file: string, log: (message: string) => void): WhatsAppW
 			}
 		},
 	});
+}
+
+/** The Twilio credentials of an instance, as one JSON value in its secret store. */
+function phoneSecret(instance: string): string {
+	return `phone.credentials.${instance}`;
+}
+
+/** Replies waiting for a caller, on disk: at most 5 per number, none older than 7 days. */
+function pendingReplies(file: string, log: (message: string) => void): PendingReplies {
+	type State = Record<string, { text: string; at: string; key?: string }[]>;
+	const fresh = (list: State[string] | undefined) => (list ?? []).filter((r) => Date.now() - Date.parse(r.at) < 7 * 24 * 3600_000);
+	// Every write also drops what is too old, for every number.
+	const prune = (s: State): State => Object.fromEntries(Object.entries(s).map(([n, list]) => [n, fresh(list)] as const).filter(([, list]) => list.length > 0));
+	const update = (change: (s: State) => State) => {
+		try {
+			return updateJsonFile<State>(file, {}, (s) => change(prune(s)));
+		} catch (error) {
+			if (!(error instanceof SyntaxError)) throw error;
+			log(`phone: ${file} unreadable, set aside as .damaged`);
+			renameSync(file, `${file}.damaged`);
+			return updateJsonFile<State>(file, {}, (s) => change(prune(s)));
+		}
+	};
+	return {
+		take: (number) => {
+			// Read first: most waits find nothing, and need no write.
+			try {
+				if (readJsonFile<State>(file, {})[number] === undefined) return [];
+			} catch {
+				/* damaged: update() sets it aside */
+			}
+			let taken: string[] = [];
+			update((s) => {
+				taken = fresh(s[number]).map((r) => r.text);
+				const { [number]: _, ...rest } = s;
+				return rest;
+			});
+			return taken;
+		},
+		put: (number, text, key) => {
+			update((s) => {
+				const list = fresh(s[number]);
+				if (list.some((r) => r.key === key)) return s;
+				return { ...s, [number]: [...list, { text, at: new Date().toISOString(), key }].slice(-5) };
+			});
+		},
+	};
 }
 
 /** The WhatsApp credentials of an instance, as one JSON value in its secret store. */

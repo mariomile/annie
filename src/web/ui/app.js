@@ -1465,13 +1465,14 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, tel] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
 		api(`/api/instances/${inst.id}/whatsapp`).catch(() => undefined),
 		api("/api/google").catch(() => ({ available: false })),
 		api("/api/voice").catch(() => ({ available: false })),
+		api(`/api/instances/${inst.id}/phone`).catch(() => undefined),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -1502,6 +1503,7 @@ async function viewSettings(main) {
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
 				tg === undefined ? null : telegramCard(inst, tg.telegram),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
+				tel === undefined ? null : phoneCard(inst, tel.phone),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				webCard(inst, settings.egress.web ?? []),
@@ -1620,6 +1622,45 @@ function whatsappCard(inst, w) {
 				)
 			: null,
 		h("div.actions", h("button.btn.accent", { onclick: save }, w.connected ? "Salva" : "Collega"), w.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
+	);
+}
+
+/** The instance's phone number (Twilio, ADR 0012): Annie answers calls, one turn at a time. */
+function phoneCard(inst, p) {
+	const accountSid = h("input", { type: "text", class: "mono", autocomplete: "off", placeholder: p.connected ? (p.accountSid ?? "Invariato") : "AC…" });
+	const authToken = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: p.connected ? "Nuovo auth token (facoltativo)" : "32 caratteri esadecimali" });
+	const number = h("input", { type: "text", class: "mono", placeholder: p.connected ? (p.number ?? "Invariato") : "+390612345678" });
+	const pin = h("input", { type: "password", inputmode: "numeric", autocomplete: "off", class: "mono", placeholder: p.connected ? "Nuovo codice (facoltativo)" : "Da 4 a 8 cifre" });
+	const allowed = h("input", { type: "text", class: "mono", value: p.allowedUsers.join(", "), placeholder: "+393331234567, +393479876543" });
+	// No "+" added here: 3331234567 would become a French number. The server asks for the prefix.
+	const numbers = (input) => input.value.split(/[\s,]+/).filter(Boolean);
+	const save = async () => {
+		try {
+			const given = { accountSid: accountSid.value.trim(), authToken: authToken.value.trim(), number: number.value.trim(), pin: pin.value.trim() };
+			await api(`/api/instances/${inst.id}/phone`, { method: "PUT", body: { ...Object.fromEntries(Object.entries(given).filter(([, v]) => v)), allowedUsers: numbers(allowed) } });
+			toast(p.connected ? "Telefono aggiornato" : "Numero collegato");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const disconnect = () =>
+		confirmDialog("Scollegare il telefono?", "Annie smette di rispondere alle chiamate per questa istanza: il numero resta su Twilio ma rifiuta le chiamate. Le credenziali e le risposte in attesa vengono cancellate.", "Scollega", async () => {
+			await api(`/api/instances/${inst.id}/phone`, { method: "DELETE" });
+			toast("Telefono scollegato");
+			render();
+		});
+	return h(
+		"div.card.pad",
+		h("div.row-gap", h("div.kicker", "Telefono"), p.connected ? h("span.chip.ok", p.number ?? "Collegato") : h("span.chip", "Non collegato")),
+		p.connected ? null : h("p.muted", "Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta. Da console.twilio.com prendi Account SID, auth token e il numero (guida in docs/chiavi.md): l'indirizzo delle chiamate lo imposta Annie."),
+		p.https ? null : h("p.muted", "Questo server non ha un indirizzo https pubblico: Twilio non può chiamarlo."),
+		h("label.field", h("span", "Account SID"), accountSid),
+		h("label.field", h("span", "Auth token"), authToken, h("small", "Serve anche a controllare che le chiamate arrivino davvero da Twilio.")),
+		h("label.field", h("span", "Numero"), number),
+		h("label.field", h("span", "Codice"), pin, h("small", "Chi chiama lo digita all'inizio di ogni chiamata: il numero di chi chiama da solo si può falsificare. Dallo solo alle persone in elenco.")),
+		h("label.field", h("span", "Chi può chiamare"), allowed, h("small", "Numeri con + e prefisso internazionale, separati da virgole. Le chiamate da altri numeri vengono rifiutate.")),
+		h("div.actions", h("button.btn.accent", { onclick: save, disabled: !p.https && !p.connected }, p.connected ? "Salva" : "Collega"), p.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
 	);
 }
 
