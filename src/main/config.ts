@@ -159,6 +159,8 @@ export type AnnieConfig = {
 	readonly screenshotsWithoutSandbox: boolean;
 	/** Where voice messages are transcribed (an OpenAI-compatible service); off if unset. */
 	readonly transcription: TranscriberConfig | undefined;
+	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
+	readonly phone: { readonly apiBase: string; readonly language: string };
 };
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -259,5 +261,6 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		chromiumPath: nonEmpty(env.ANNIE_CHROMIUM_PATH),
 		screenshotsWithoutSandbox: nonEmpty(env.ANNIE_SCREENSHOTS_WITHOUT_SANDBOX) === "1",
 		transcription,
+		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), language: nonEmpty(env.ANNIE_PHONE_LANGUAGE) ?? "it-IT" },
 	};
 }
