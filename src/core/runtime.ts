@@ -582,8 +582,8 @@ export class AnnieInstance {
 	private async handOff(entry: OutboxEntry): Promise<void> {
 		const reply = entry.reply;
 		if (reply === undefined || this.handedOff.has(entry.key)) return;
-		// Replies leave through a channel: check egress again, the policy is the last word.
-		if (!this.record.egress.channels.includes(entry.channel)) {
+		// Replies leave through a channel: check egress again, the policy as stored now is the last word.
+		if (!(await this.fresh()).egress.channels.includes(entry.channel)) {
 			await this.audit.append({ type: "egress.denied", instanceId: this.record.id, kind: "channel", target: entry.channel });
 			return;
 		}

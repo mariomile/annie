@@ -1178,7 +1178,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people")]);
+	const [{ settings }, { people }, tg] = await Promise.all([api(`/api/instances/${inst.id}/settings`), api("/api/people"), api(`/api/instances/${inst.id}/telegram`).catch(() => undefined)]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
 	const chat = new Set(settings.allowedUsers.web ?? []);
@@ -1203,7 +1203,11 @@ async function viewSettings(main) {
 		head(inst.name, h("h1", "Impostazioni"), "Chi può usare questa istanza dal web, chi approva le sue azioni, e come si comporta.", h("button.btn.accent", { onclick: save }, "Salva")),
 		h(
 			"div.grid-2",
-			h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
+			h(
+				"div.stack",
+				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
+				tg === undefined ? null : telegramCard(inst, tg.telegram),
+			),
 			h(
 				"div.stack",
 				h("div.card", h("table.ledger", h("thead", h("tr", h("th", "Persona"), h("th", "Scrive"), h("th", "Approva"))), h("tbody", rows.map((r) => r.row)))),
@@ -1215,6 +1219,39 @@ async function viewSettings(main) {
 				),
 			),
 		),
+	);
+}
+
+/** The instance's Telegram bot: the token goes in once and never comes back. */
+function telegramCard(inst, t) {
+	const token = h("input", { type: "password", autocomplete: "off", placeholder: t.connected ? "Nuovo token (facoltativo)" : "123456789:AA…", class: "mono" });
+	const list = (ids) => ids.join(", ");
+	const allowed = h("input", { type: "text", class: "mono", value: list(t.allowedUsers), placeholder: "123456789, 987654321" });
+	const approvers = h("input", { type: "text", class: "mono", value: list(t.approvers), placeholder: "123456789" });
+	const ids = (input) => input.value.split(/[\s,]+/).filter(Boolean);
+	const save = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/telegram`, { method: "PUT", body: { ...(token.value.trim() ? { token: token.value.trim() } : {}), allowedUsers: ids(allowed), approvers: ids(approvers) } });
+			toast(t.connected ? "Telegram aggiornato" : "Bot collegato");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const disconnect = () =>
+		confirmDialog("Scollegare il bot?", "Annie smette di rispondere su Telegram per questa istanza. Il token viene cancellato.", "Scollega", async () => {
+			await api(`/api/instances/${inst.id}/telegram`, { method: "DELETE" });
+			toast("Bot scollegato");
+			render();
+		});
+	return h(
+		"div.card.pad",
+		h("div.row-gap", h("div.kicker", "Telegram"), t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato")),
+		t.connected ? null : h("p.muted", "Crea un bot con @BotFather su Telegram e incolla qui il suo token. Ogni persona ammessa apre il bot e preme Start."),
+		h("label.field", h("span", t.connected ? "Token" : "Token del bot"), token),
+		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta.")),
+		h("label.field", h("span", "Chi approva"), approvers, h("small", "Ricevono su Telegram le schede dei tool da approvare.")),
+		h("div.actions", h("button.btn.accent", { onclick: save }, t.connected ? "Salva" : "Collega"), t.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
 	);
 }
 

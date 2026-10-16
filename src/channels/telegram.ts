@@ -106,6 +106,12 @@ export class TelegramAdapter implements ChannelAdapter {
 		this.loop = undefined;
 	}
 
+	/** The bot's own account: checks the token. */
+	async me(): Promise<{ username: string | undefined }> {
+		const me = await this.call<{ username?: string }>("getMe", {});
+		return { username: me.username };
+	}
+
 	async send(message: OutboundMessage): Promise<void> {
 		const text = message.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${message.text}` : message.text;
 		const markup = message.buttons === undefined || message.buttons.length === 0 ? undefined : inlineKeyboard(message.buttons);

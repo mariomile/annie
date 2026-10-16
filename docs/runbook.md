@@ -66,6 +66,8 @@ Il link contiene il token nel frammento (`#...`): non finisce nei log del server
 
 ## 5. Telegram
 
+Ogni istanza può avere il suo bot, collegato dall'owner in Impostazioni → Telegram (token, chi può scrivere, chi approva), senza riavviare. In alternativa, per l'istanza principale, da `.env`:
+
 1. Crea un bot con @BotFather e metti il token in `TELEGRAM_BOT_TOKEN`.
 2. Metti in `ANNIE_TELEGRAM_ALLOWED_USERS` gli ID numerici di chi può scrivere al bot, e in `ANNIE_TELEGRAM_APPROVERS` chi riceve le schede di approvazione dei tool. Ogni persona apre il bot e preme Start una volta.
 3. Riavvia. Chi non è in elenco non riceve risposta (e finisce nell'audit).

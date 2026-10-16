@@ -4,6 +4,7 @@
  * channels, the scheduler, and the segreteria when configured. `src/main/annie.ts` reads the
  * environment and calls startAnnie; tests call it directly.
  */
+import { randomBytes } from "node:crypto";
 import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
@@ -114,6 +115,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		if (config.telegram.approvers !== undefined) await runtime.registry.updateInstance(tenant, config.instanceId, { approvers: { ...(record.approvers ?? {}), telegram: [...config.telegram.approvers] } });
 	}
 	if (config.modelApiKey !== undefined) await runtime.secrets(tenant).set(modelApiKeySecret(config.modelProvider), config.modelApiKey);
+	// The bot in .env belongs to the general instance; bots connected from the console live in the secret store too.
+	if (config.telegram !== undefined) await runtime.secrets(tenant).set(telegramTokenSecret(config.instanceId), config.telegram.token);
 	const people = new PeopleStore(tenantDir(config.dataDir, toTenantId(tenant)));
 	let ownerLink: string | undefined;
 	if ((await people.list()).length === 0) {
@@ -138,21 +141,52 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		webChannels.set(record.id, channel);
 	};
 	for (const record of conversational) attachWebChannel(record);
-	if (config.telegram !== undefined) {
+	// --- Telegram: at most one bot per instance ---
+	const telegramHooks = new Map<string, { secret: string; handle: (update: unknown) => Promise<void> }>();
+	const telegramUnsubscribes = new Map<string, () => void>();
+
+	/** Webhook when Telegram can reach us over https (a cell), long polling otherwise. */
+	async function webhookSecretFor(instance: string): Promise<string | undefined> {
+		if (instance === config.instanceId && config.telegram?.webhookSecret !== undefined) return config.telegram.webhookSecret;
+		if (!(config.web.publicUrl?.startsWith("https://") ?? false)) return undefined;
+		const name = `telegram.webhookSecret.${instance}`;
+		const known = await runtime.secrets(tenant).get(name);
+		if (known !== undefined) return known;
+		const fresh = randomBytes(24).toString("base64url");
+		await runtime.secrets(tenant).set(name, fresh);
+		return fresh;
+	}
+
+	async function attachTelegram(instance: string, token: string): Promise<TelegramAdapter> {
+		const webhookSecret = await webhookSecretFor(instance);
 		const bot = new TelegramAdapter({
-			token: config.telegram.token,
+			token,
 			tenantId: tenant,
-			instanceId: config.instanceId,
+			instanceId: instance,
 			log,
 			// Files from strangers are never downloaded.
-			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, config.instanceId)).allowedUsers.telegram ?? []).includes(userId),
+			mayDownload: async (userId) => ((await runtime.registry.getInstance(tenant, instance)).allowedUsers.telegram ?? []).includes(userId),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
-			...(config.telegram.webhookSecret === undefined
-				? {}
-				: { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${config.instanceId}`, secretToken: config.telegram.webhookSecret } }),
+			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
 		});
-		connectChannel(runtime, bot, { tenantId: tenant, instanceId: config.instanceId }, log, (action) => onTelegramTap(config.instanceId, bot, action));
-		telegrams.set(config.instanceId, bot);
+		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, (action) => onTelegramTap(instance, bot, action)));
+		telegrams.set(instance, bot);
+		if (webhookSecret !== undefined) telegramHooks.set(instance, { secret: webhookSecret, handle: (update) => bot.handleUpdate(update as TelegramUpdate) });
+		return bot;
+	}
+
+	async function detachTelegram(instance: string): Promise<void> {
+		const bot = telegrams.get(instance);
+		telegrams.delete(instance);
+		telegramHooks.delete(instance);
+		telegramUnsubscribes.get(instance)?.();
+		telegramUnsubscribes.delete(instance);
+		await bot?.stop();
+	}
+
+	for (const record of conversational) {
+		const token = await runtime.secrets(tenant).get(telegramTokenSecret(record.id));
+		if (token !== undefined) await attachTelegram(record.id, token);
 	}
 
 	async function notifyApprovers(instance: string, proposal: ToolProposal): Promise<void> {
@@ -240,11 +274,37 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		uiDir: options.uiDir ?? join(import.meta.dirname, "web", "ui"),
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
-		telegramHooks: new Map(
-			config.telegram?.webhookSecret === undefined
-				? []
-				: [...telegrams].map(([id, bot]) => [id, { secret: config.telegram?.webhookSecret as string, handle: (update: unknown) => bot.handleUpdate(update as TelegramUpdate) }]),
-		),
+		telegramHooks,
+		telegram: {
+			status: async (id) => {
+				const bot = telegrams.get(id);
+				const record = await runtime.registry.getInstance(tenant, id);
+				const username = bot === undefined ? undefined : (await bot.me().catch(() => ({ username: undefined }))).username;
+				return {
+					connected: bot !== undefined,
+					...(username === undefined ? {} : { username }),
+					mode: telegramHooks.has(id) ? "webhook" : "polling",
+					allowedUsers: record.allowedUsers.telegram ?? [],
+					approvers: record.approvers?.telegram ?? [],
+				};
+			},
+			// The token is checked with Telegram before anything changes.
+			connect: async (id, token) => {
+				const probe = new TelegramAdapter({ token, tenantId: tenant, instanceId: id, ...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }) });
+				const me = await probe.me();
+				await detachTelegram(id);
+				await runtime.secrets(tenant).set(telegramTokenSecret(id), token);
+				const bot = await attachTelegram(id, token);
+				await bot.start();
+				const record = await runtime.registry.getInstance(tenant, id);
+				if (!record.egress.channels.includes("telegram")) await runtime.registry.setEgress(tenant, id, { ...record.egress, channels: [...record.egress.channels, "telegram"] });
+				return me;
+			},
+			disconnect: async (id) => {
+				await detachTelegram(id);
+				await runtime.secrets(tenant).delete(telegramTokenSecret(id));
+			},
+		},
 		...(config.cell.secret === undefined
 			? {}
 			: {
@@ -297,4 +357,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await runtime.close();
 		},
 	};
+}
+
+function telegramTokenSecret(instance: string): string {
+	return `telegram.botToken.${instance}`;
 }

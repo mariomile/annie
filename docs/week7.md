@@ -12,6 +12,7 @@ Mario ha chiarito che Annie deve funzionare anche come Grok Bot e dots: un agent
 - **Telegram via webhook** (`test/telegram.test.ts`, `test/app.test.ts`). Con `ANNIE_PUBLIC_URL` e `ANNIE_TELEGRAM_WEBHOOK_SECRET` il bot registra un webhook invece del long polling; gli update arrivano a `/hooks/telegram/<istanza>`, controllati con il secret che Telegram ripete in un header. Stesso percorso del polling (tre fallimenti, poi lascia andare), e un update riconsegnato riceve una sola risposta. Serve a una cella che dorme.
 - **Contratto della cella** (`test/app.test.ts`, `test/outbox.test.ts`). `ANNIE_CELL_SECRET` abilita `GET /internal/cell` (c'è lavoro in corso? quando va svegliata: primo task programmato, prossimo giro di posta della segreteria) e `POST /internal/owner-link` (un nuovo link per l'owner a ogni accesso, registrato nell'audit della cella; con la verifica in due passaggi il link da solo non basta). Una cella non scrive il link dell'owner su disco.
 - **Control plane** (`test/cloud.test.ts`, celle vere come processi locali). `pnpm cloud`: registrazione con link via email (una volta sola, 30 minuti, cinque all'ora per indirizzo, venti all'ora per chi li chiede; se la cella non parte il link resta valido), una cella per tenant creata alla prima verifica con un indirizzo casuale che non mostra il nome della persona, ingresso già autenticato, smistamento per sottodominio verso la cella (stream degli eventi e webhook compresi). Gli endpoint `/internal/` non sono raggiungibili da fuori in nessuna grafia del percorso; al passaggio si tolgono `authorization` e gli header hop-by-hop. Una cella spenta si sveglia per chi ha una sessione o per un webhook, non per richieste anonime; un tenant che non esiste risponde come una cella che dorme. Le celle inattive si fermano se non stanno lavorando (una richiesta arrivata nel frattempo le tiene su, una che arriva durante lo spegnimento aspetta e la risveglia) e si svegliano all'ora del prossimo task, anche dopo un riavvio del control plane. Interfacce `CellProvider` e `Mailer`: oggi un provider a processi locali e un mailer su file.
+- **Telegram per istanza dalla console** (`test/app.test.ts`, `test/egress.test.ts`). In Impostazioni l'owner collega il bot di un'istanza (token, chi può scrivere, chi approva): il token viene provato con Telegram, finisce nel secret store e non torna più al browser; il bot parte subito, riparte dopo un riavvio e si scollega con un clic. Con un indirizzo https (una cella) usa il webhook con un segreto per istanza, altrimenti il long polling. La console distingue un token rifiutato da Telegram non raggiungibile. Il test ha trovato un bug del nucleo: la risposta controllava i canali consentiti come erano all'apertura dell'istanza, quindi un canale aggiunto dopo restava bloccato fino al riavvio. Ora vale la policy salvata in quel momento.
 - **Robustezza** (`test/telegram.test.ts`, `test/app.test.ts`). Un bot che Telegram non accetta (token sbagliato, webhook su http) non impedisce più ad Annie di partire; il long polling cancella un webhook rimasto da prima. `pnpm annie check` confronta i valori di `hs_lead_status` del portale con quelli che la segreteria imposta.
 
 ## Review indipendente
@@ -24,7 +25,8 @@ Due revisori separati hanno trovato, tra gli altri:
 
 ## Verifica
 
-- `pnpm typecheck`: ok. `pnpm test`: 28 file, 195 test, 0 fallimenti (172 a fine settimana 6). `pnpm eval:segreteria`: 35 casi ok.
+- `pnpm typecheck`: ok. `pnpm test`: 28 file, 198 test, 0 fallimenti (172 a fine settimana 6).
+- Chromium: la sezione Telegram in Impostazioni collega un bot; qui Telegram è bloccato dalla rete e la console lo dice («non raggiungibile da questo server»). `pnpm eval:segreteria`: 35 casi ok.
 - Chromium headless su `annie.localhost`: registrazione, link dalla mail, cella creata, console già autenticata, prima risposta in tempo reale in 2,1 secondi (in locale, con il modello finto).
 - `pnpm annie check` eseguito qui: chiave Anthropic finta rifiutata con il nome della variabile, Telegram dato come non raggiungibile con il suggerimento sui domini consentiti.
 
@@ -33,7 +35,6 @@ Due revisori separati hanno trovato, tra gli altri:
 | Cosa | Limite |
 |---|---|
 | Celle | provider a processi locali, solo per sviluppo: le celle girano con lo stesso utente del control plane e potrebbero leggerne i file. L'isolamento per macchina dell'ADR 0007 arriva con il provider per micro-VM |
-| Telegram per tenant | il percorso c'è (webhook che sveglia la cella), ma un tenant non può ancora collegare il suo bot dalla console: prossimo passo |
 | Dominio | tenant e pagina di registrazione condividono il dominio: in produzione i tenant vanno su un dominio separato registrato nella Public Suffix List, così una cella non può toccare i cookie delle altre |
 | Accesso dell'operatore | con il segreto di cella l'operatore può chiedere un link da owner: resta nell'audit della cella, e con la verifica in due passaggi non basta |
 | Email | mailer su file: i link si leggono in `data-cloud/mail/outbox.txt` finché non scegliamo il servizio |

@@ -33,6 +33,17 @@ export class TenantSecrets {
 		await chmod(this.file, 0o600);
 	}
 
+	async delete(name: string): Promise<void> {
+		const all = await this.readAll();
+		if (!(name in all)) return;
+		delete all[name];
+		await mkdir(dirname(this.file), { recursive: true });
+		const tmp = `${this.file}.tmp`;
+		await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
+		await rename(tmp, this.file);
+		await chmod(this.file, 0o600);
+	}
+
 	/** Secret names only, never values. */
 	async names(): Promise<string[]> {
 		return Object.keys(await this.readAll());

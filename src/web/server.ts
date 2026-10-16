@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
+import { ChannelRefused } from "../channels/types.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
@@ -25,6 +26,14 @@ export type CellState = {
 	readonly nextWakeAt: string | null;
 };
 
+export type TelegramStatus = {
+	readonly connected: boolean;
+	readonly username?: string;
+	readonly mode: "webhook" | "polling";
+	readonly allowedUsers: readonly string[];
+	readonly approvers: readonly string[];
+};
+
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
 	readonly tenantId: string;
@@ -42,6 +51,13 @@ export type WebAppOptions = {
 	readonly defaultTimeZone: string;
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
 	readonly telegramHooks?: ReadonlyMap<string, { readonly secret: string; readonly handle: (update: unknown) => Promise<void> }>;
+	/** The Telegram bot of each instance, connected by the owner from the console. */
+	readonly telegram?: {
+		status(instanceId: string): Promise<TelegramStatus>;
+		/** Check the token with Telegram, keep it in the secret store, start the bot. */
+		connect(instanceId: string, token: string): Promise<{ username: string | undefined }>;
+		disconnect(instanceId: string): Promise<void>;
+	};
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
 	readonly cell?: { readonly secret: string; readonly state: () => Promise<CellState> };
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
@@ -455,6 +471,51 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
 	});
+	// --- owner: the Telegram bot of an instance (the token never comes back) ---
+	const telegramOf = () => {
+		if (options.telegram === undefined) throw new HttpError(501, "Telegram non disponibile");
+		return options.telegram;
+	};
+	route("GET", "/api/instances/:id/telegram", "owner", async ({ params }) => {
+		await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		return { telegram: await telegramOf().status(params[0] as string) };
+	});
+	route("PUT", "/api/instances/:id/telegram", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		const body = (await readJson(req)) as { token?: unknown; allowedUsers?: unknown; approvers?: unknown };
+		const ids = (list: unknown, what: string): string[] | undefined => {
+			if (list === undefined) return undefined;
+			if (!Array.isArray(list) || !list.every((x) => typeof x === "string" && /^\d{1,20}$/.test(x))) throw new HttpError(400, `${what}: ID numerici di Telegram`);
+			return [...new Set(list as string[])];
+		};
+		const allowed = ids(body.allowedUsers, "Persone ammesse");
+		const approvers = ids(body.approvers, "Approvatori");
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		if (typeof body.token === "string" && body.token.trim() !== "") {
+			try {
+				await telegramOf().connect(id, body.token.trim());
+			} catch (error) {
+				if (error instanceof HttpError) throw error;
+				// Telegram said no, or we never reached it: different fixes for the owner.
+				if (error instanceof ChannelRefused) throw new HttpError(400, "Telegram non accetta questo token: copialo di nuovo da @BotFather");
+				throw new HttpError(502, "Telegram non è raggiungibile da questo server: controlla la rete e riprova");
+			}
+			await runtime.audit(tenantId).append({ type: "telegram.connected", instanceId: id });
+		}
+		if (allowed !== undefined) await runtime.registry.setAllowedUsers(tenantId, id, "telegram", allowed);
+		if (approvers !== undefined) await runtime.registry.updateInstance(tenantId, id, { approvers: { ...(record.approvers ?? {}), telegram: approvers } });
+		return { telegram: await telegramOf().status(id) };
+	});
+	route("DELETE", "/api/instances/:id/telegram", "owner", async ({ params }) => {
+		await telegramOf().disconnect(params[0] as string);
+		await runtime.audit(tenantId).append({ type: "telegram.disconnected", instanceId: params[0] });
+		return { ok: true };
+	});
+
 	route("GET", "/api/people", "owner", async () => ({ people: (await options.people.list()).map(publicPerson) }));
 	route("POST", "/api/people", "owner", async ({ req, url }) => {
 		const body = (await readJson(req)) as { name?: string; role?: string };
