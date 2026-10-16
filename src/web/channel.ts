@@ -103,8 +103,12 @@ export class WebChannel implements ChannelAdapter {
 		const thread = await this.thread(threadId);
 		if (thread === undefined || thread.personId !== personId) throw new Error("No such thread");
 		if (this.handler === undefined) throw new Error("Web channel not connected");
+		const handler = this.handler;
 		const entry: WebEntry = { id: `m_${randomBytes(8).toString("hex")}`, at: new Date().toISOString(), from: "person", text };
-		await this.handler({
+		// Annie's answer can be ready before this message is written down: the thread's writes go
+		// one at a time, so the answer always lands after the question.
+		return this.serial(threadId, async () => {
+			await handler({
 			tenantId: this.instance.tenantId,
 			instanceId: this.instance.instanceId,
 			channel: this.name,
@@ -115,11 +119,12 @@ export class WebChannel implements ChannelAdapter {
 			privateThread: true,
 			messageId: entry.id,
 			...(attachments === undefined ? {} : { attachments }),
+			});
+			await this.append(threadId, entry);
+			const title = thread.title === "Nuova chat" && text.trim() !== "" ? text.trim().replace(/\s+/g, " ").slice(0, 60) : thread.title;
+			await this.saveThread({ ...thread, title, updatedAt: entry.at });
+			return entry;
 		});
-		await this.append(threadId, entry);
-		const title = thread.title === "Nuova chat" && text.trim() !== "" ? text.trim().replace(/\s+/g, " ").slice(0, 60) : thread.title;
-		await this.saveThread({ ...thread, title, updatedAt: entry.at });
-		return entry;
 	}
 
 	async send(message: OutboundMessage): Promise<void> {
@@ -134,12 +139,28 @@ export class WebChannel implements ChannelAdapter {
 	private async deliver(threadId: string, key: string, body: { text?: string; file?: WebEntry["file"] }): Promise<void> {
 		if (!THREAD_ID.test(threadId)) throw new Error(`Not a web thread: ${threadId}`);
 		const id = `r_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
-		if ((await this.transcript(threadId)).some((e) => e.id === id)) return; // resent after a crash
-		const entry: WebEntry = { id, at: new Date().toISOString(), from: "annie", ...body };
-		await this.append(threadId, entry);
-		const thread = await this.thread(threadId);
-		if (thread !== undefined) await this.saveThread({ ...thread, updatedAt: entry.at });
-		this.events.emit(WebChannel.ownerOf(threadId) ?? "", { instanceId: this.instance.instanceId, threadId, entry } satisfies WebEvent);
+		const entry = await this.serial(threadId, async () => {
+			if ((await this.transcript(threadId)).some((e) => e.id === id)) return undefined; // resent after a crash
+			const entry: WebEntry = { id, at: new Date().toISOString(), from: "annie", ...body };
+			await this.append(threadId, entry);
+			const thread = await this.thread(threadId);
+			if (thread !== undefined) await this.saveThread({ ...thread, updatedAt: entry.at });
+			return entry;
+		});
+		if (entry !== undefined) this.events.emit(WebChannel.ownerOf(threadId) ?? "", { instanceId: this.instance.instanceId, threadId, entry } satisfies WebEvent);
+	}
+
+	private readonly writing = new Map<string, Promise<unknown>>();
+
+	/** Run `work` after the thread's earlier writes, in this process. */
+	private serial<T>(threadId: string, work: () => Promise<T>): Promise<T> {
+		const next = (this.writing.get(threadId) ?? Promise.resolve()).catch(() => {}).then(work);
+		const settled = next.catch(() => {});
+		this.writing.set(threadId, settled);
+		void settled.then(() => {
+			if (this.writing.get(threadId) === settled) this.writing.delete(threadId);
+		});
+		return next;
 	}
 
 	private async append(threadId: string, entry: WebEntry): Promise<void> {

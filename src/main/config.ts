@@ -152,6 +152,10 @@ export type AnnieConfig = {
 	readonly cell: { readonly secret: string | undefined };
 	/** The OAuth client people connect their Google account with (Gmail and Calendar, read only). */
 	readonly google: { readonly clientId: string; readonly clientSecret: string; readonly redirectUrl: string; readonly services: readonly GoogleService[] } | undefined;
+	/** Chromium for web_screenshot; Playwright's own if unset. */
+	readonly chromiumPath: string | undefined;
+	/** The operator accepts Chromium without its sandbox where the sandbox cannot start (ADR 0009). */
+	readonly screenshotsWithoutSandbox: boolean;
 };
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -236,5 +240,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		segreteria,
 		cell: { secret: cellSecret },
 		google,
+		chromiumPath: nonEmpty(env.ANNIE_CHROMIUM_PATH),
+		screenshotsWithoutSandbox: nonEmpty(env.ANNIE_SCREENSHOTS_WITHOUT_SANDBOX) === "1",
 	};
 }

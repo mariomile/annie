@@ -360,6 +360,27 @@ function googleCard(inst, allowed) {
 	);
 }
 
+/** Owner: the sites this instance may read and screenshot. */
+function webCard(inst, hosts) {
+	const list = h("textarea", { rows: 4, class: "mono", placeholder: "comune.roma.it\nagenziaentrate.gov.it\n* (tutti i siti pubblici)", value: hosts.join("\n") });
+	const save = async () => {
+		try {
+			const { hosts: saved } = await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: list.value.split(/[\s,]+/) } });
+			toast(saved.length === 0 ? "Navigazione web spenta per questa istanza" : saved.includes("*") ? "Annie può leggere tutti i siti pubblici" : `Annie può leggere ${saved.length} siti`);
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	return h(
+		"div.card.pad",
+		h("h3", "Navigazione web"),
+		h("p.muted", "I siti che Annie può leggere e fotografare (web_read, web_screenshot). Solo lettura: non compila moduli e non invia niente. Un dominio per riga, i sottodomini sono compresi; * vuol dire tutti i siti pubblici. Vuoto: nessuno."),
+		h("label.field", h("span", "Siti consentiti"), list),
+		h("button.btn", { onclick: save }, "Salva i siti"),
+	);
+}
+
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
@@ -1394,6 +1415,7 @@ async function viewSettings(main) {
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
 				tg === undefined ? null : telegramCard(inst, tg.telegram),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
+				webCard(inst, settings.egress.web ?? []),
 			),
 			h(
 				"div.stack",

@@ -101,6 +101,10 @@ _Avoid_: profilo, contesto, knowledge base
 Un account esterno di una persona (oggi Google) che le istanze leggono per lei, solo nelle sue conversazioni e solo dove l'owner lo consente. Diverso da un connettore, che appartiene a un'istanza.
 _Avoid_: integrazione, connettore personale
 
+**Siti consentiti**:
+I siti che un'istanza può leggere e fotografare, scelti dall'owner; tutto il resto, e qualunque indirizzo interno, le è negato.
+_Avoid_: whitelist, domini, navigazione libera
+
 **Brief del mattino**:
 Il task programmato di una persona che ogni mattina le riassume impegni del giorno, mail che chiedono una risposta e quello che l'istanza ricorda di lei, leggendo senza cambiare niente.
 _Avoid_: digest, report giornaliero, newsletter
