@@ -34,6 +34,18 @@ describe.skipIf(image === undefined)("the computer on a real Docker host", () =>
 		await expect(computer.get(key, "dati", 1024)).rejects.toThrow("cartella");
 		const slow = await computer.run(key, "sleep 30", { timeoutS: 2 });
 		expect(slow).toMatchObject({ exitCode: 137, timedOut: true });
-		for (const tool of ["jq", "sqlite3", "pandoc", "pdftotext", "zip", "convert"]) expect((await computer.run(key, `command -v ${tool}`, { timeoutS: 10 })).exitCode).toBe(0);
+		for (const tool of ["jq", "sqlite3", "pandoc", "pdftotext", "pdftoppm", "qpdf", "zip", "convert"]) expect((await computer.run(key, `command -v ${tool}`, { timeoutS: 10 })).exitCode).toBe(0);
+		const modules = await computer.run(key, 'python3 -c "import pypdf, openpyxl, xlrd, weasyprint; print(1)"', { timeoutS: 120 });
+		expect(modules).toMatchObject({ exitCode: 0, stdout: "1\n" });
 	}, 180_000);
+
+	it("nothing a command leaves running survives it; the computer itself does", async () => {
+		const run = await computer.run(key, "(sleep 3; touch /work/tardi) >/dev/null 2>&1 & echo partito", { timeoutS: 30 });
+		expect(run).toMatchObject({ exitCode: 0, stdout: "partito\n" });
+		expect(run.ms).toBeLessThan(2_500);
+		await new Promise((r) => setTimeout(r, 4_000));
+		expect((await computer.run(key, "test -e /work/tardi", { timeoutS: 10 })).exitCode).toBe(1);
+		// A file past the per-file limit cannot be written.
+		expect((await computer.run(key, "ulimit -f", { timeoutS: 10 })).stdout.trim()).not.toBe("unlimited");
+	}, 60_000);
 });

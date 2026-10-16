@@ -157,8 +157,16 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	};
 
 	// The instances' computers (ADR 0013): only where the operator gave Annie a Docker host.
-	const computer: ComputerProvider | undefined =
-		options.computer ?? (config.computer === undefined ? undefined : new DockerComputerProvider({ ...config.computer, log }));
+	const docker = options.computer === undefined && config.computer !== undefined ? new DockerComputerProvider({ ...config.computer, log }) : undefined;
+	const computer: ComputerProvider | undefined = options.computer ?? docker;
+	if (docker !== undefined) {
+		// What keeps the computers from working is said at boot, not at the first command.
+		void docker.check().then((problem) => log(problem === undefined ? "computer: Docker ready" : `computer: not ready: ${problem}`));
+		void docker
+			.stopLeftovers()
+			.then((n) => (n > 0 ? log(`computer: stopped ${n} left running by a previous start`) : undefined))
+			.catch((error: unknown) => log(`computer: leftovers not checked: ${error instanceof Error ? error.message : String(error)}`));
+	}
 
 	const runtime: AnnieRuntime = new AnnieRuntime({
 		dataDir: config.dataDir,
@@ -188,15 +196,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						onProposed: (action) => notifyWebAction(record.id, action),
 					},
 				}),
-				...createComputerTools({
-					computer,
-					key: computerKey(record.tenantId, record.id),
-					policy: policyOf(record),
-					workspace: runtime.workspace(record.tenantId, record.id),
-					record: async (event) => {
-						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
-					},
-				}),
+				...(computer === undefined
+					? []
+					: createComputerTools({
+							computer,
+							key: computerKey(record.tenantId, record.id),
+							policy: policyOf(record),
+							workspace: runtime.workspace(record.tenantId, record.id),
+							record: async (event) => {
+								await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
+							},
+							log,
+						})),
 				...(await createCustomTools({
 					store: runtime.proposals(record.tenantId, record.id),
 					toolsDir: runtime.customToolsDir(record.tenantId, record.id),
@@ -587,7 +598,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		},
 		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
 		sendWebAction: sendForInstance,
-		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)) } }),
+		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {

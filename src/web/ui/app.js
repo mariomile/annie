@@ -425,7 +425,7 @@ function webActionsCard(inst, allowed) {
 }
 
 /** The instance's computer (ADR 0013): a terminal with no network. */
-function computerCard(inst, allowed) {
+function computerCard(inst, allowed, problem) {
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {
 		try {
@@ -445,6 +445,7 @@ function computerCard(inst, allowed) {
 		"div.card.pad",
 		h("h3", "Computer"),
 		h("p.muted", "Annie esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
+		problem ? h("p.warn", `Il computer non funziona su questo server: ${problem}.`) : null,
 		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo computer")),
 		h("div.actions", h("button.btn.ghost", { onclick: reset }, "Azzera i file del computer")),
 	);
@@ -1535,7 +1536,7 @@ async function viewSettings(main) {
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				webCard(inst, settings.egress.web ?? []),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
-				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer")) : null,
+				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
 			),
 			h(
 				"div.stack",

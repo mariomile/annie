@@ -1,28 +1,37 @@
+import { createHash } from "node:crypto";
+
 /**
  * The computer of an instance (ADR 0013): a machine apart from the cell, with no network and
  * no secrets, where Annie runs commands on copies of workspace files. Providers: a container
  * per instance on the Docker host (src/computer/docker-computer.ts); micro-VMs later.
  */
 export type ComputerRun = {
-	/** null: killed (time out) or never known. */
+	/** null: never known (the computer stopped answering). */
 	readonly exitCode: number | null;
 	readonly stdout: string;
 	readonly stderr: string;
+	/** Killed when its time was up. */
 	readonly timedOut: boolean;
-	/** More output than was kept. */
+	/** Killed before its time: out of memory, most likely. */
+	readonly killed: boolean;
+	/** More output than was kept (the start of stdout, the end of stderr). */
 	readonly truncated: boolean;
 	readonly ms: number;
+	/** /work is over its quota: new files stay tiny until some are deleted. */
+	readonly diskFull: boolean;
 };
 
 export type ComputerProvider = {
 	/** Run `command` with sh in /work. Starts the computer if it is not running. */
-	run(key: string, command: string, options: { readonly timeoutS: number }): Promise<ComputerRun>;
+	run(key: string, command: string, options: { readonly timeoutS: number; readonly signal?: AbortSignal }): Promise<ComputerRun>;
 	/** Write files under /work (paths relative to it). */
 	put(key: string, files: readonly { readonly path: string; readonly data: Uint8Array }[]): Promise<void>;
 	/** A file under /work, at most `maxBytes`. */
 	get(key: string, path: string, maxBytes: number): Promise<Uint8Array>;
 	/** Remove the computer and everything in /work. */
 	reset(key: string): Promise<void>;
+	/** What keeps the computers from working on this server, or undefined when they can. */
+	check(): Promise<string | undefined>;
 	/** Stop every computer of this process (they keep their files). */
 	close(): Promise<void>;
 };
@@ -33,20 +42,25 @@ export class ComputerError extends Error {
 }
 
 export const COMPUTER_CONNECTOR = "computer";
-export const COMPUTER_LIMITS = { maxFileBytes: 20 * 1024 * 1024, maxFiles: 20, maxTimeoutS: 300, maxOutputChars: 16_000 } as const;
+export const COMPUTER_LIMITS = { maxFileBytes: 20 * 1024 * 1024, maxFiles: 20, maxCopyInBytes: 100 * 1024 * 1024, maxTimeoutS: 300, maxOutputChars: 16_000 } as const;
 
-/** The computer's name for an instance of a tenant. */
+/**
+ * The computer's name for an instance of a tenant: a hash, so any ids fit Docker's names and two
+ * instances never share one (`a-b`/`c` and `a`/`b-c` would, joined with a dash).
+ */
 export function computerKey(tenant: string, instance: string): string {
-	const key = `${tenant}-${instance}`.toLowerCase();
-	if (!/^[a-z0-9][a-z0-9_-]{0,100}$/.test(key)) throw new Error(`Invalid computer key ${key}`);
-	return key;
+	return createHash("sha256").update(`${tenant}\0${instance}`).digest("hex").slice(0, 32);
 }
 
-/** A path under /work as given by the model: relative, no `..`, no odd characters. Normalized, or undefined. */
+/**
+ * A path under /work as given by the model: relative (or under /work/), no `..`, no control
+ * characters or backslashes, no part starting with `-`, each part at most 100 bytes (tar's limit).
+ * Normalized, or undefined. It never reaches a shell: it goes to tar and to Docker's archive API.
+ */
 export function workPath(path: string): string | undefined {
-	const parts = path.replace(/^\/?work\//, "").split("/").filter((p) => p !== "" && p !== ".");
-	if (parts.length === 0 || parts.length > 16) return undefined;
-	if (parts.some((p) => p === ".." || !/^[\p{L}\p{N}_ .,()+=@-]{1,120}$/u.test(p) || p.startsWith("-"))) return undefined;
+	const parts = path.replace(/^\/work(\/|$)/, "").split("/").filter((p) => p !== "" && p !== ".");
+	if (parts.length === 0 || parts.length > 16 || (path.startsWith("/") && !path.startsWith("/work/"))) return undefined;
+	if (parts.some((p) => p === ".." || p.startsWith("-") || /[\p{Cc}\\]/u.test(p) || Buffer.byteLength(p) > 100)) return undefined;
 	return parts.join("/");
 }
 

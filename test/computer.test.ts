@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { DockerComputerProvider } from "../src/computer/docker-computer.ts";
 import { ComputerError, computerKey, tarFiles, untarFirstFile, workPath } from "../src/core/computer.ts";
-import { createComputerTools } from "../src/core/tools/computer-tools.ts";
+import { readOnlyInBriefs } from "../src/core/brief.ts";
+import { createComputerTools, report } from "../src/core/tools/computer-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
@@ -22,11 +23,12 @@ afterEach(async () => {
  * Docker's API as the computer uses it, on a unix socket. Commands really run, with sh, in a
  * folder that stands for the container's /work: exec, archive in and out, stat, stop, remove.
  */
-async function fakeDocker(options: { stopsBehindOurBack?: boolean } = {}) {
+async function fakeDocker(options: { stopsBehindOurBack?: boolean; garbage?: boolean; image?: string } = {}) {
 	const root = mkdtempSync(join(tmpdir(), "computer-"));
 	const socketPath = join(root, "docker.sock");
 	const calls: { method: string; path: string; body?: any }[] = [];
 	const containers = new Map<string, { running: boolean; work: string; create: any }>();
+	const volumes = new Map<string, any>();
 	const execs = new Map<string, { container: string; cmd: string[]; exitCode?: number }>();
 	const read = (req: IncomingMessage) =>
 		new Promise<Buffer>((resolve) => {
@@ -41,14 +43,29 @@ async function fakeDocker(options: { stopsBehindOurBack?: boolean } = {}) {
 	const server: Server = createServer(async (req, res) => {
 		const raw = await read(req);
 		const url = new URL(req.url ?? "", "http://docker");
-		const path = url.pathname.replace(/^\/v1\.43/, "");
+		const path = url.pathname.replace(/^\/v1\.41/, "");
 		const body = (req.headers["content-type"] ?? "").includes("json") && raw.length > 0 ? JSON.parse(raw.toString("utf8")) : undefined;
 		calls.push({ method: req.method ?? "", path: `${path}${url.search}`, ...(body === undefined ? {} : { body }) });
 		let m: RegExpExecArray | null;
+		if (path === "/_ping") {
+			res.writeHead(200, { "content-type": "text/plain" });
+			return res.end("OK");
+		}
+		if ((m = /^\/images\/(.+)\/json$/.exec(path)) !== null) return decodeURIComponent(m[1] as string) === (options.image ?? "annie-computer:test") ? json(res, 200, { Id: "sha256:1" }) : json(res, 404, { message: "No such image" });
+		if (req.method === "POST" && path === "/volumes/create") {
+			if (!volumes.has(body.Name)) volumes.set(body.Name, body);
+			return json(res, 201, volumes.get(body.Name));
+		}
+		if (req.method === "GET" && path === "/containers/json") {
+			const label = (JSON.parse(url.searchParams.get("filters") ?? "{}").label ?? [])[0];
+			return json(res, 200, [...containers.entries()].filter(([, c]) => c.running && c.create.Labels?.[label] !== undefined).map(([name, c]) => ({ Names: [`/${name}`], Labels: c.create.Labels })));
+		}
 		if (req.method === "POST" && path === "/containers/create") {
 			const name = url.searchParams.get("name") as string;
-			if (body.Image !== "annie-computer:test") return json(res, 404, { message: `No such image: ${body.Image}` });
-			const work = join(root, name);
+			if (body.Image !== (options.image ?? "annie-computer:test")) return json(res, 404, { message: `No such image: ${body.Image}` });
+			if (containers.has(name)) return json(res, 409, { message: "Conflict. The container name is already in use" });
+			// The container's /work is its volume: it outlives the container.
+			const work = join(root, (body.HostConfig.Binds[0] as string).split(":")[0] as string);
 			mkdirSync(work, { recursive: true });
 			containers.set(name, { running: false, work, create: body });
 			return json(res, 201, { Id: name });
@@ -58,7 +75,7 @@ async function fakeDocker(options: { stopsBehindOurBack?: boolean } = {}) {
 			const c = containers.get(name);
 			if (req.method === "DELETE") return json(res, 404);
 			if (c === undefined) return json(res, 404, { message: "No such container" });
-			if (what === "json") return json(res, 200, { State: { Running: c.running } });
+			if (what === "json") return json(res, 200, { State: { Running: c.running }, Config: { Labels: c.create.Labels } });
 			if (what === "start") {
 				c.running = true;
 				return json(res, 204);
@@ -88,26 +105,30 @@ async function fakeDocker(options: { stopsBehindOurBack?: boolean } = {}) {
 			return res.end(tarFiles([{ path: where.split("/").at(-1) as string, data: readFileSync(file) }]));
 		}
 		if ((m = /^\/containers\/([\w-]+)$/.exec(path)) !== null && req.method === "DELETE") {
-			const c = containers.get(m[1] as string);
-			if (c === undefined) return json(res, 404);
-			rmSync(c.work, { recursive: true, force: true });
-			containers.delete(m[1] as string);
+			if (!containers.delete(m[1] as string)) return json(res, 404);
 			return json(res, 204);
 		}
-		if ((m = /^\/volumes\/([\w-]+)$/.exec(path)) !== null && req.method === "DELETE") return json(res, 204);
+		if ((m = /^\/volumes\/([\w-]+)$/.exec(path)) !== null && req.method === "DELETE") {
+			volumes.delete(m[1] as string);
+			rmSync(join(root, m[1] as string), { recursive: true, force: true });
+			return json(res, 204);
+		}
 		if ((m = /^\/exec\/(\d+)\/(start|json)$/.exec(path)) !== null) {
 			const e = execs.get(m[1] as string);
 			if (e === undefined) return json(res, 404);
 			if (m[2] === "json") return json(res, 200, { Running: false, ExitCode: e.exitCode });
 			const c = containers.get(e.container) as { work: string };
 			res.writeHead(200, { "content-type": "application/vnd.docker.multiplexed-stream" });
+			if (options.garbage === true) return res.end(Buffer.from("HTTP/1.1 not a frame at all"));
 			const frame = (stream: 1 | 2, data: Buffer) => {
 				const header = Buffer.alloc(8);
 				header[0] = stream;
 				header.writeUInt32BE(data.length, 4);
 				res.write(Buffer.concat([header, data]));
 			};
-			const child = spawn(e.cmd[0] as string, e.cmd.slice(1), { cwd: c.work, env: { PATH: process.env.PATH, HOME: c.work } });
+			// Here the computer is this machine: `kill -9 -1` would end the tests, and /work is a folder.
+			const cmd = e.cmd[0] === "sh" && e.cmd[1] === "-c" ? ["sh", "-c", `kill() { echo "kill $*" >> "${root}/kills"; }; ${(e.cmd[2] as string).replaceAll("/work", c.work)}`, ...e.cmd.slice(3)] : e.cmd;
+			const child = spawn(cmd[0] as string, cmd.slice(1), { cwd: c.work, env: { PATH: process.env.PATH, HOME: c.work } });
 			child.stdout.on("data", (d: Buffer) => frame(1, d));
 			child.stderr.on("data", (d: Buffer) => frame(2, d));
 			child.on("close", (code, signal) => {
@@ -124,7 +145,8 @@ async function fakeDocker(options: { stopsBehindOurBack?: boolean } = {}) {
 		await new Promise<void>((r) => server.close(() => r()));
 		rmSync(root, { recursive: true, force: true });
 	});
-	return { socketPath, calls, containers };
+	const kills = () => (existsSync(join(root, "kills")) ? readFileSync(join(root, "kills"), "utf8").trim().split("\n") : []);
+	return { socketPath, calls, containers, volumes, kills };
 }
 
 /** Files of a tar archive written under `dir` (what Docker does with PUT archive). */
@@ -153,8 +175,17 @@ describe("the computer's paths and archives", () => {
 		expect(workPath("dati/vendite 2026.csv")).toBe("dati/vendite 2026.csv");
 		expect(workPath("/work/out/grafico.png")).toBe("out/grafico.png");
 		expect(workPath("./città.txt")).toBe("città.txt");
-		for (const bad of ["", "..", "a/../../etc/passwd", "/", "-rf", "a/-x", "a\nb", "a;rm"]) expect(workPath(bad)).toBeUndefined();
-		expect(computerKey("default", "annie")).toBe("default-annie");
+		// Only /work/ is stripped: work/x is a folder named work inside it.
+		expect(workPath("work/x.txt")).toBe("work/x.txt");
+		expect(workPath("fattura #3 [bozza] & co.pdf")).toBe("fattura #3 [bozza] & co.pdf");
+		for (const bad of ["", "..", "a/../../etc/passwd", "/", "/work", "/etc/passwd", "-rf", "a/-x", "a\nb", "a\\b", `${"x".repeat(101)}.txt`]) expect(workPath(bad)).toBeUndefined();
+	});
+
+	it("a computer's name is a hash: any ids fit, and two instances never share one", () => {
+		expect(computerKey("default", "annie")).toMatch(/^[0-9a-f]{32}$/);
+		expect(computerKey("a-b", "c")).not.toBe(computerKey("a", "b-c"));
+		expect(computerKey("t".repeat(200), "i".repeat(200))).toMatch(/^[0-9a-f]{32}$/);
+		expect(computerKey("default", "annie")).toBe(computerKey("default", "annie"));
 	});
 
 	it("a tar of files with long paths reads back; the first regular file is found past folders", () => {
@@ -179,14 +210,30 @@ describe("Docker computer", () => {
 		const create = docker.calls.find((c) => c.path.startsWith("/containers/create"))?.body;
 		expect(create).toMatchObject({
 			Image: "annie-computer:test",
-			User: "1000:1000",
+			// The container idles as nobody: commands, as 1000, cannot signal it.
+			User: "65534:65534",
 			NetworkDisabled: true,
-			HostConfig: { NetworkMode: "none", ReadonlyRootfs: true, CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges:true"], Memory: 512 * 1024 * 1024, PidsLimit: 128, Runtime: "runsc", Binds: ["annie-computer-default-annie:/work"] },
+			Labels: { "annie.computer": "default-annie", "annie.computer.spec": expect.stringMatching(/^[0-9a-f]{16}$/) },
+			HostConfig: {
+				NetworkMode: "none",
+				ReadonlyRootfs: true,
+				CapDrop: ["ALL"],
+				SecurityOpt: ["no-new-privileges:true"],
+				Init: true,
+				Memory: 512 * 1024 * 1024,
+				PidsLimit: 128,
+				Ulimits: [{ Name: "fsize", Soft: 1024 ** 3, Hard: 1024 ** 3 }],
+				Runtime: "runsc",
+				Binds: ["annie-computer-default-annie:/work"],
+			},
 		});
 		expect(JSON.stringify(create)).not.toMatch(/PortBindings|Privileged|docker\.sock/);
-		// The command runs as uid 1000 in /work, killed by timeout(1) when its time is up.
+		expect(docker.calls.find((c) => c.path === "/volumes/create")?.body).toEqual({ Name: "annie-computer-default-annie", Labels: { "annie.computer": "default-annie" } });
+		// The command runs as uid 1000 in /work, as an argument (never pasted into the script), killed
+		// by timeout(1) when its time is up; then whatever it left running goes too.
 		const exec = docker.calls.find((c) => c.path.endsWith("/exec"))?.body;
-		expect(exec).toMatchObject({ User: "1000:1000", WorkingDir: "/work", Cmd: ["timeout", "-s", "KILL", "10", "sh", "-c", "echo ciao"] });
+		expect(exec).toMatchObject({ User: "1000:1000", WorkingDir: "/work", Cmd: ["sh", "-c", 'timeout -s KILL 10 sh -c "$1"; s=$?; kill -9 -1 2>/dev/null; exit $s', "annie", "echo ciao"] });
+		expect(docker.kills()).toContain("kill -9 -1");
 		// A second command reuses the running computer.
 		await computer.run("default-annie", "true", { timeoutS: 5 });
 		expect(docker.calls.filter((c) => c.path.startsWith("/containers/create"))).toHaveLength(1);
@@ -196,13 +243,18 @@ describe("Docker computer", () => {
 		const docker = await fakeDocker();
 		const computer = provider(docker.socketPath);
 		closers.push(() => computer.close());
-		expect(await computer.run("k", "echo no >&2; exit 3", { timeoutS: 5 })).toMatchObject({ exitCode: 3, stderr: "no\n" });
+		expect(await computer.run("k", "echo no >&2; exit 3", { timeoutS: 5 })).toMatchObject({ exitCode: 3, stderr: "no\n", killed: false, diskFull: false });
 		const slow = await computer.run("k", "sleep 5", { timeoutS: 1 });
-		expect(slow).toMatchObject({ exitCode: 137, timedOut: true });
+		expect(slow).toMatchObject({ exitCode: 137, timedOut: true, killed: false });
 		expect(slow.ms).toBeLessThan(4_000);
-		const loud = await computer.run("k", "head -c 300000 /dev/zero | tr '\\0' a", { timeoutS: 10 });
+		// Killed well before its time: what the kernel does when memory runs out.
+		expect(await computer.run("k", "kill -9 $$", { timeoutS: 30 })).toMatchObject({ exitCode: 137, timedOut: false, killed: true });
+		const loud = await computer.run("k", "head -c 300000 /dev/zero | tr '\\0' a; echo inizio >&2; head -c 300000 /dev/zero | tr '\\0' b >&2; echo fine >&2", { timeoutS: 10 });
 		expect(loud.stdout.length).toBe(64 * 1024);
 		expect(loud.truncated).toBe(true);
+		// stderr keeps its end, where the error is.
+		expect(loud.stderr.length).toBe(64 * 1024);
+		expect(loud.stderr.endsWith("bfine\n")).toBe(true);
 	});
 
 	it("files go in and come out of /work; folders, missing and too big files are refused", async () => {
@@ -238,14 +290,130 @@ describe("Docker computer", () => {
 	});
 });
 
-describe("computer_run", () => {
-	async function tool(connectors: string[] = ["computer"]) {
+describe("Docker computer, its limits and its life", () => {
+	it("/work over its quota: the run says so, files stay tiny, nothing is copied in; deleting frees it", async () => {
 		const docker = await fakeDocker();
+		const computer = provider(docker.socketPath, { diskMb: 16 });
+		closers.push(() => computer.close());
+		const fill = await computer.run("k", "head -c 17000000 /dev/zero > grande.bin", { timeoutS: 10 });
+		expect(fill.diskFull).toBe(true);
+		await expect(computer.put("k", [{ path: "a.txt", data: Buffer.from("a") }])).rejects.toThrow("disco del computer è pieno");
+		// While full, each command runs under a tiny file size limit, so Annie can still clean up.
+		const next = await computer.run("k", "rm grande.bin", { timeoutS: 10 });
+		expect(docker.calls.filter((c) => c.path.endsWith("/exec")).at(-2)?.body.Cmd[2]).toMatch(/^ulimit -f 2048; timeout/);
+		expect(next.diskFull).toBe(false);
+		await computer.put("k", [{ path: "a.txt", data: Buffer.from("a") }]);
+	});
+
+	it("a change of image, runtime or limits recreates the container and keeps the files", async () => {
+		const docker = await fakeDocker();
+		const before = provider(docker.socketPath, { memoryMb: 512 });
+		await before.run("k", "echo resto > nota.txt", { timeoutS: 5 });
+		await before.close();
+		const after = provider(docker.socketPath, { memoryMb: 1024 });
+		closers.push(() => after.close());
+		expect((await after.run("k", "cat nota.txt", { timeoutS: 5 })).stdout).toBe("resto\n");
+		expect(docker.calls.filter((c) => c.path.startsWith("/containers/create"))).toHaveLength(2);
+		expect(docker.calls.some((c) => c.method === "DELETE" && c.path === "/containers/annie-computer-k?force=true")).toBe(true);
+		expect(docker.calls.some((c) => c.method === "DELETE" && c.path.startsWith("/volumes/"))).toBe(false);
+		expect(docker.containers.get("annie-computer-k")?.create.HostConfig.Memory).toBe(1024 * 1024 * 1024);
+		// The same spec again: nothing recreated.
+		await after.close();
+		const same = provider(docker.socketPath, { memoryMb: 1024 });
+		closers.push(() => same.close());
+		await same.run("k", "true", { timeoutS: 5 });
+		expect(docker.calls.filter((c) => c.path.startsWith("/containers/create"))).toHaveLength(2);
+	});
+
+	it("a container with the computer's name that is not this computer is never used", async () => {
+		const docker = await fakeDocker();
+		docker.containers.set("annie-computer-k", { running: true, work: tmpdir(), create: { Labels: { "annie.computer": "altro" } } });
+		const computer = provider(docker.socketPath);
+		await expect(computer.run("k", "true", { timeoutS: 5 })).rejects.toThrow("is not this computer");
+		expect(docker.calls.some((c) => c.path.endsWith("/exec"))).toBe(false);
+	});
+
+	it("an aborted command stops at once, and what it started is ended", async () => {
+		const docker = await fakeDocker();
+		const computer = provider(docker.socketPath);
+		closers.push(() => computer.close());
+		const abort = new AbortController();
+		setTimeout(() => abort.abort(), 200);
+		const run = await computer.run("k", "sleep 3", { timeoutS: 60, signal: abort.signal });
+		expect(run).toMatchObject({ timedOut: true });
+		expect(run.ms).toBeLessThan(2_000);
+		expect(docker.calls.some((c) => c.path.endsWith("/exec") && c.body.Cmd[2] === "kill -9 -1")).toBe(true);
+	});
+
+	it("no more than maxRunning computers: the one unused the longest stops", async () => {
+		const docker = await fakeDocker();
+		const computer = provider(docker.socketPath, { maxRunning: 1 });
+		closers.push(() => computer.close());
+		await computer.run("uno", "true", { timeoutS: 5 });
+		await computer.run("due", "true", { timeoutS: 5 });
+		for (let i = 0; i < 50 && docker.containers.get("annie-computer-uno")?.running; i++) await new Promise((r) => setTimeout(r, 10));
+		expect(docker.containers.get("annie-computer-uno")?.running).toBe(false);
+		expect(docker.containers.get("annie-computer-due")?.running).toBe(true);
+	});
+
+	it("commands on one computer run one at a time", async () => {
+		const docker = await fakeDocker();
+		const computer = provider(docker.socketPath);
+		closers.push(() => computer.close());
+		const [a, b] = await Promise.all([computer.run("k", "echo a > ordine; sleep 0.3; cat ordine", { timeoutS: 5 }), computer.run("k", "echo b > ordine", { timeoutS: 5 })]);
+		expect(a.stdout).toBe("a\n");
+		expect(b.exitCode).toBe(0);
+	});
+
+	it("at boot, computers left running are stopped; check says what is missing", async () => {
+		const docker = await fakeDocker();
+		const first = provider(docker.socketPath);
+		await first.run("k", "true", { timeoutS: 5 });
+		// A crash: nothing stopped it.
+		const second = provider(docker.socketPath);
+		closers.push(() => second.close());
+		expect(await second.stopLeftovers()).toBe(1);
+		expect(docker.containers.get("annie-computer-k")?.running).toBe(false);
+		expect(await second.check()).toBeUndefined();
+		expect(await new DockerComputerProvider({ image: "annie-computer:missing", socketPath: docker.socketPath }).check()).toContain("docker build -f docker/computer.Dockerfile");
+		expect(await new DockerComputerProvider({ image: "annie-computer:test", socketPath: join(tmpdir(), "nessun-docker.sock") }).check()).toMatch(/^Docker non risponde/);
+	});
+
+	it("an output stream that is not Docker's frames is refused", async () => {
+		const docker = await fakeDocker({ garbage: true });
+		const computer = provider(docker.socketPath);
+		closers.push(() => computer.close());
+		await expect(computer.run("k", "true", { timeoutS: 5 })).rejects.toThrow("unreadable output stream");
+	});
+});
+
+describe("computer_run's report", () => {
+	const run = { exitCode: 0, timedOut: false, killed: false, truncated: false, ms: 1200, diskFull: false };
+	it("one output budget: a short stdout leaves room to stderr, which keeps its end", () => {
+		const text = report({ ...run, stdout: "ok\n", stderr: `${"x".repeat(20_000)}ERRORE FINALE` }, [], []);
+		expect(text).toContain("ERRORE FINALE");
+		expect(text).toMatch(/\(\d+ caratteri tagliati\) …/);
+		expect(text.length).toBeLessThan(16_000 + 600);
+		const both = report({ ...run, stdout: "o".repeat(20_000), stderr: "e".repeat(20_000) }, [], []);
+		expect(both.match(/o/g)?.length).toBeGreaterThanOrEqual(8_000);
+		expect(both.match(/e{8000}/)).not.toBeNull();
+	});
+
+	it("says when memory ran out and when the disk is full", () => {
+		expect(report({ ...run, exitCode: 137, killed: true, stdout: "", stderr: "" }, [], [])).toContain("finito la memoria");
+		expect(report({ ...run, diskFull: true, stdout: "", stderr: "" }, [], [])).toContain("disco del computer è pieno");
+	});
+});
+
+describe("computer_run", () => {
+	async function tool(connectors: string[] = ["computer"], fake: Parameters<typeof fakeDocker>[0] = {}) {
+		const docker = await fakeDocker(fake);
 		const computer = provider(docker.socketPath);
 		closers.push(() => computer.close());
 		const workspace = new Workspace(mkdtempSync(join(tmpdir(), "ws-")));
 		const events: Record<string, unknown>[] = [];
-		const [run] = createComputerTools({ computer, key: "default-annie", policy: async () => ({ modelProviders: ["faux"], channels: ["web"], connectors }), workspace, record: async (e) => void events.push(e) });
+		const logs: string[] = [];
+		const [run] = createComputerTools({ computer, key: "default-annie", policy: async () => ({ modelProviders: ["faux"], channels: ["web"], connectors }), workspace, record: async (e) => void events.push(e), log: (m) => void logs.push(m) });
 		const steps = new Map<string, unknown>();
 		let calls = 0;
 		const ctx = {
@@ -260,7 +428,7 @@ describe("computer_run", () => {
 			signal: new AbortController().signal,
 			callId: "c1",
 		} as any;
-		return { run: run as NonNullable<typeof run>, ctx, workspace, events, docker, calls: () => calls };
+		return { run: run as NonNullable<typeof run>, ctx, workspace, events, docker, logs, calls: () => calls };
 	}
 
 	it("is not offered without a computer, and refuses until the owner turns it on", async () => {
@@ -283,8 +451,26 @@ describe("computer_run", () => {
 		// The same call again (a rerun after a crash) gets the stored result: nothing runs twice.
 		expect(await run.execute(args, ctx)).toBe(out);
 		expect(calls()).toBe(1);
-		expect(events).toEqual([{ type: "computer.ran", exitCode: 0, timedOut: false, ms: expect.any(Number), filesIn: 1, filesOut: 1, outputBytes: 10 }]);
+		expect(events).toEqual([{ type: "computer.ran", exitCode: 0, timedOut: false, killed: false, ms: expect.any(Number), filesIn: 1, filesOut: 1, outputBytes: 10, diskFull: false }]);
 		expect(JSON.stringify(events)).not.toContain("awk");
+	});
+
+	it("Docker's own errors go to the operator's log; the model gets a plain sentence", async () => {
+		const { run, ctx, events, logs } = await tool(["computer"], { garbage: true });
+		expect(await run.execute({ command: "true" }, ctx)).toBe("Errore: il computer non ha risposto. Riprova tra poco; se succede ancora, l'owner lo controlla nelle Impostazioni.");
+		expect(logs.join("\n")).toContain("unreadable output stream");
+		expect(events).toEqual([{ type: "computer.failed" }]);
+	});
+
+	it("does not run in the morning brief's chat, like every tool that is not read-only", async () => {
+		const { run, ctx, docker } = await tool();
+		const [guarded] = readOnlyInBriefs([run], async () => true);
+		expect(await guarded?.execute({ command: "echo ciao" }, { ...ctx, thread: { channel: "web", threadId: "brief" } })).toContain("nella chat del brief");
+		expect(docker.calls).toHaveLength(0);
+	});
+
+	it("Annie Cloud's cells get no computer: its settings are not passed to them", () => {
+		expect(readFileSync("src/main/cloud.ts", "utf8")).not.toMatch(/ANNIE_COMPUTER|ANNIE_DOCKER_SOCKET/);
 	});
 
 	it("bad paths and missing workspace files are refused before anything runs", async () => {

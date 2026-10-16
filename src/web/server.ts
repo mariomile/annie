@@ -89,7 +89,7 @@ export type WebAppOptions = {
 	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
 	readonly voice?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
-	readonly computer?: { reset(instanceId: string): Promise<void> };
+	readonly computer?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined> };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
@@ -529,7 +529,11 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 
 	// --- owner: the instance's computer (ADR 0013) ---
-	route("GET", "/api/computer", "owner", async () => ({ available: options.computer !== undefined }));
+	route("GET", "/api/computer", "owner", async () => {
+		if (options.computer === undefined) return { available: false };
+		const problem = await options.computer.check();
+		return problem === undefined ? { available: true } : { available: true, problem };
+	});
 	route("PUT", "/api/instances/:id/computer-allowed", "owner", async ({ params, req }) => {
 		if (options.computer === undefined) throw new HttpError(501, "Il computer non è disponibile su questo server");
 		const id = params[0] as string;

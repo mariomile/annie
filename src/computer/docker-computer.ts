@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { request } from "node:http";
 import { COMPUTER_LIMITS, ComputerError, type ComputerProvider, type ComputerRun, tarFiles, untarFirstFile } from "../core/computer.ts";
 
@@ -10,183 +11,305 @@ export type DockerComputerOptions = {
 	readonly runtime?: string;
 	readonly memoryMb?: number;
 	readonly cpus?: number;
+	/** Quota of /work: past it, new files stay tiny until some are deleted. */
+	readonly diskMb?: number;
 	/** A computer with no command for this long is stopped (its files stay). */
 	readonly idleMs?: number;
+	/** Computers running at once; the one unused the longest is stopped to start another. */
+	readonly maxRunning?: number;
+	/** Commands running at once, across all computers. */
+	readonly maxConcurrent?: number;
 	readonly log?: (message: string) => void;
 };
 
+/** Docker Engine API 1.41: Docker 20.10 and later. */
+const API = "/v1.41";
 const LABEL = "annie.computer";
+/** A hash of how the container was created: a change of image, runtime or limits recreates it (the files stay). */
+const SPEC_LABEL = "annie.computer.spec";
 const API_TIMEOUT_MS = 30_000;
-/** Kept of each of stdout and stderr; the rest is read and dropped. */
+/** Kept of each of stdout (the start) and stderr (the end); the rest is read and dropped. */
 const MAX_STREAM_BYTES = 64 * 1024;
+/** Docker's frames are small; a bigger one means the stream is not what it should be. */
+const MAX_FRAME_BYTES = 1024 * 1024;
+/** No single file in the computer grows past this (RLIMIT_FSIZE). */
+const MAX_FILE_BYTES = 1024 * 1024 * 1024;
+/** `ulimit -f` while /work is over its quota: enough to write a note, not to fill anything. */
+const FULL_FILE_BLOCKS = 2048;
+
+type Exec = { stdout: string; stderr: string; truncated: boolean; cut: boolean; exitCode: number | null };
 
 /**
  * A computer per instance as a container on this Docker host (ADR 0013): no network at all,
- * uid 1000, read-only root except /work (the instance's volume) and /tmp, no capabilities, no
- * privilege escalation, memory, CPU and process limits, and optionally gVisor. Commands go in
- * with `docker exec`, files with Docker's archive API: the container has no interface to talk to.
+ * read-only root except /work (the instance's volume) and /tmp, no capabilities, no privilege
+ * escalation, memory, CPU, process and file size limits, and optionally gVisor. Commands go in
+ * with `docker exec` as uid 1000; the container itself idles as another user, so after each
+ * command `kill -9 -1` ends everything the command left behind. Files go in and out with
+ * Docker's archive API: the container has no interface to talk to.
  */
 export class DockerComputerProvider implements ComputerProvider {
-	private readonly ready = new Map<string, Promise<void>>();
-	private readonly idle = new Map<string, NodeJS.Timeout>();
+	/** One operation at a time per computer: no start, stop or sweep under a running command. */
+	private readonly locks = new Map<string, Promise<unknown>>();
+	/** Computers this process started, least recently used first, with their idle timers. */
+	private readonly running = new Map<string, NodeJS.Timeout>();
+	private readonly full = new Set<string>();
+	private readonly queue: (() => void)[] = [];
+	private busy = 0;
 
 	constructor(private readonly options: DockerComputerOptions) {
 		const memory = options.memoryMb ?? 1024;
 		const cpus = options.cpus ?? 1;
+		const disk = options.diskMb ?? 2048;
 		if (!Number.isInteger(memory) || memory < 128) throw new Error("Computer: memory of at least 128 MB");
 		if (!(cpus > 0)) throw new Error("Computer: a positive number of CPUs");
+		if (!Number.isInteger(disk) || disk < 16) throw new Error("Computer: disk quota of at least 16 MB");
 		if (options.runtime !== undefined && !/^[\w.-]{1,40}$/.test(options.runtime)) throw new Error("Computer: invalid runtime");
 	}
 
-	async run(key: string, command: string, options: { readonly timeoutS: number }): Promise<ComputerRun> {
-		await this.started(key);
-		this.touch(key);
-		const timeoutS = Math.max(1, Math.min(COMPUTER_LIMITS.maxTimeoutS, Math.round(options.timeoutS)));
-		const create = () => this.api("POST", `/containers/${name(key)}/exec`, {
-			// timeout(1) kills the command and everything it started when the time is up.
-			Cmd: ["timeout", "-s", "KILL", String(timeoutS), "sh", "-c", command],
-			AttachStdout: true,
-			AttachStderr: true,
-			Tty: false,
-			User: "1000:1000",
-			WorkingDir: "/work",
-			Env: ["HOME=/tmp", "MPLCONFIGDIR=/tmp", "LANG=C.UTF-8"],
-		}, [201]);
-		// A computer stopped behind our back (out of memory, a restart of Docker) is started again, once.
-		const exec = (await create().catch(async (error: unknown) => {
-			if (!/HTTP 409/.test(message(error))) throw error;
-			this.ready.delete(key);
-			await this.started(key);
-			return create();
-		})) as { Id?: string };
-		if (exec.Id === undefined || !/^[0-9a-f]{12,64}$/.test(exec.Id)) throw new Error("docker exec: no id");
-		const started = Date.now();
-		const output = await this.stream(`/exec/${exec.Id}/start`, { Detach: false, Tty: false }, (timeoutS + 15) * 1000);
-		const info = (await this.api("GET", `/exec/${exec.Id}/json`, undefined, [200])) as { ExitCode?: number | null; Running?: boolean };
-		this.touch(key);
-		const exitCode = info.Running === true ? null : (info.ExitCode ?? null);
-		return { exitCode, stdout: output.stdout, stderr: output.stderr, timedOut: exitCode === 137 || output.cut, truncated: output.truncated, ms: Date.now() - started };
+	run(key: string, command: string, options: { readonly timeoutS: number; readonly signal?: AbortSignal }): Promise<ComputerRun> {
+		return this.exclusive(key, () =>
+			this.slot(async () => {
+				await this.launch(key);
+				const timeoutS = Math.max(1, Math.min(COMPUTER_LIMITS.maxTimeoutS, Math.round(options.timeoutS)));
+				// timeout(1) kills the command when its time is up; then everything it left running goes too.
+				const limit = this.full.has(key) ? `ulimit -f ${FULL_FILE_BLOCKS}; ` : "";
+				const cmd = ["sh", "-c", `${limit}timeout -s KILL ${timeoutS} sh -c "$1"; s=$?; kill -9 -1 2>/dev/null; exit $s`, "annie", command];
+				const waitMs = (timeoutS + 15) * 1000;
+				const started = Date.now();
+				const out = await this.exec(key, cmd, waitMs, options.signal).catch(async (error: unknown) => {
+					// A computer stopped or removed behind our back (a restart of Docker) is started again, once.
+					if (!/HTTP (404|409)/.test(message(error))) throw error;
+					this.forget(key);
+					await this.launch(key);
+					return this.exec(key, cmd, waitMs, options.signal);
+				});
+				const ms = Date.now() - started;
+				// Cut short (aborted, or no end in sight): whatever is still running is ended here.
+				if (out.cut) await this.exec(key, ["sh", "-c", "kill -9 -1"], API_TIMEOUT_MS).catch((error: unknown) => this.options.log?.(`computer: sweep failed: ${message(error)}`));
+				const diskFull = await this.checkDisk(key);
+				this.touch(key);
+				const timedOut = out.cut || (out.exitCode === 137 && ms >= timeoutS * 1000 - 250);
+				return { exitCode: out.exitCode, stdout: out.stdout, stderr: out.stderr, timedOut, killed: !timedOut && out.exitCode === 137, truncated: out.truncated, ms, diskFull };
+			}),
+		);
 	}
 
-	async put(key: string, files: readonly { readonly path: string; readonly data: Uint8Array }[]): Promise<void> {
-		if (files.length === 0) return;
-		await this.started(key);
-		this.touch(key);
-		await this.api("PUT", `/containers/${name(key)}/archive?path=${encodeURIComponent("/work")}`, tarFiles(files), [200]);
+	put(key: string, files: readonly { readonly path: string; readonly data: Uint8Array }[]): Promise<void> {
+		if (files.length === 0) return Promise.resolve();
+		return this.exclusive(key, async () => {
+			if (this.full.has(key)) throw new ComputerError(`il disco del computer è pieno (${this.diskMb()} MB): prima vanno cancellati dei file in /work`);
+			await this.launch(key);
+			await this.api("PUT", `/containers/${name(key)}/archive?path=${encodeURIComponent("/work")}`, tarFiles(files), [200]);
+			this.touch(key);
+		});
 	}
 
-	async get(key: string, path: string, maxBytes: number): Promise<Uint8Array> {
-		await this.started(key);
-		this.touch(key);
-		const where = `/containers/${name(key)}/archive?path=${encodeURIComponent(`/work/${path}`)}`;
-		// The size first, from the stat Docker sends with HEAD: a big file is never read.
-		const stat = await this.statOf(where);
-		if (stat === undefined) throw new ComputerError(`nel computer non c'è /work/${path}`);
-		if ((stat.mode & 0x80000000) !== 0) throw new ComputerError(`/work/${path} è una cartella: indica i file uno per uno`);
-		if ((stat.mode & 0x08000000) !== 0) throw new ComputerError(`/work/${path} è un collegamento, non un file`);
-		if (stat.size > maxBytes) throw new ComputerError(`/work/${path} è più grande di ${Math.round(maxBytes / 1024 / 1024)} MB`);
-		const archive = (await this.api("GET", where, undefined, [200], true)) as Buffer;
-		const file = untarFirstFile(archive);
-		if (file === undefined) throw new ComputerError(`/work/${path} non è un file`);
-		if (file.length > maxBytes) throw new ComputerError(`/work/${path} è più grande di ${Math.round(maxBytes / 1024 / 1024)} MB`);
-		return file;
+	get(key: string, path: string, maxBytes: number): Promise<Uint8Array> {
+		return this.exclusive(key, async () => {
+			await this.launch(key);
+			this.touch(key);
+			const where = `/containers/${name(key)}/archive?path=${encodeURIComponent(`/work/${path}`)}`;
+			// The size first, from the stat Docker sends with HEAD: a big file is never read.
+			const stat = await this.statOf(where);
+			if (stat === undefined) throw new ComputerError(`nel computer non c'è /work/${path}`);
+			if ((stat.mode & 0x80000000) !== 0) throw new ComputerError(`/work/${path} è una cartella: indica i file uno per uno`);
+			if ((stat.mode & 0x08000000) !== 0) throw new ComputerError(`/work/${path} è un collegamento, non un file`);
+			if (stat.size > maxBytes) throw new ComputerError(`/work/${path} è più grande di ${Math.round(maxBytes / 1024 / 1024)} MB`);
+			const archive = (await this.api("GET", where, undefined, [200], true)) as Buffer;
+			const file = untarFirstFile(archive);
+			if (file === undefined) throw new ComputerError(`/work/${path} non è un file`);
+			if (file.length > maxBytes) throw new ComputerError(`/work/${path} è più grande di ${Math.round(maxBytes / 1024 / 1024)} MB`);
+			return file;
+		});
 	}
 
-	async reset(key: string): Promise<void> {
-		clearTimeout(this.idle.get(key));
-		this.idle.delete(key);
-		await this.ready.get(key)?.catch(() => {});
-		this.ready.delete(key);
-		await this.api("DELETE", `/containers/${name(key)}?force=true`, undefined, [204, 404]);
-		await this.api("DELETE", `/volumes/${name(key)}`, undefined, [204, 404]);
+	reset(key: string): Promise<void> {
+		return this.exclusive(key, async () => {
+			this.forget(key);
+			this.full.delete(key);
+			await this.api("DELETE", `/containers/${name(key)}?force=true`, undefined, [204, 404]);
+			await this.api("DELETE", `/volumes/${name(key)}`, undefined, [204, 404]);
+		});
+	}
+
+	async check(): Promise<string | undefined> {
+		try {
+			await this.api("GET", "/_ping", undefined, [200], true);
+			const image = await this.api("GET", `/images/${encodeURIComponent(this.options.image)}/json`, undefined, [200, 404]);
+			if (image === undefined) return `l'immagine ${this.options.image} non c'è: si costruisce con docker build -f docker/computer.Dockerfile -t ${this.options.image} docker`;
+			return undefined;
+		} catch (error) {
+			return `Docker non risponde su ${this.socket()} (${message(error).slice(0, 120)})`;
+		}
+	}
+
+	/**
+	 * At boot: computers left running by a previous run of Annie (a crash, a kill) are stopped;
+	 * they start again, with their files, at their next command. One Annie per Docker host.
+	 */
+	async stopLeftovers(): Promise<number> {
+		const filters = encodeURIComponent(JSON.stringify({ label: [LABEL] }));
+		const list = ((await this.api("GET", `/containers/json?filters=${filters}`, undefined, [200])) ?? []) as { Labels?: Record<string, string> }[];
+		let stopped = 0;
+		for (const container of list) {
+			const key = container.Labels?.[LABEL];
+			if (key === undefined || !/^[a-z0-9][a-z0-9_-]{0,100}$/.test(key) || this.running.has(key)) continue;
+			await this.exclusive(key, () => this.stop(key));
+			stopped += 1;
+		}
+		return stopped;
 	}
 
 	async close(): Promise<void> {
-		const keys = [...this.idle.keys()];
-		for (const timer of this.idle.values()) clearTimeout(timer);
-		this.idle.clear();
-		for (const key of keys) await this.stop(key);
+		await Promise.all([...this.running.keys()].map((key) => this.exclusive(key, () => this.stop(key))));
+	}
+
+	/** Runs `work` after every operation already queued for this computer. */
+	private exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
+		const result = (this.locks.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
+		const tail = result.catch(() => {});
+		this.locks.set(key, tail);
+		void tail.then(() => {
+			if (this.locks.get(key) === tail) this.locks.delete(key);
+		});
+		return result;
+	}
+
+	/** At most maxConcurrent commands at once on this server. */
+	private async slot<T>(work: () => Promise<T>): Promise<T> {
+		if (this.busy >= (this.options.maxConcurrent ?? 4)) await new Promise<void>((resolve) => this.queue.push(resolve));
+		else this.busy += 1;
+		try {
+			return await work();
+		} finally {
+			const next = this.queue.shift();
+			if (next === undefined) this.busy -= 1;
+			else next();
+		}
 	}
 
 	private async stop(key: string): Promise<void> {
-		this.ready.delete(key);
+		this.forget(key);
 		await this.api("POST", `/containers/${name(key)}/stop?t=2`, undefined, [204, 304, 404]).catch((error: unknown) => this.options.log?.(`computer: ${key} not stopped: ${message(error)}`));
 	}
 
-	/** Stopped after a while with no commands. */
+	private forget(key: string): void {
+		clearTimeout(this.running.get(key));
+		this.running.delete(key);
+	}
+
+	/** Stopped after a while with no commands; most recently used last. */
 	private touch(key: string): void {
-		clearTimeout(this.idle.get(key));
-		const timer = setTimeout(() => {
-			this.idle.delete(key);
-			void this.stop(key);
-		}, this.options.idleMs ?? 10 * 60_000);
+		this.forget(key);
+		const timer = setTimeout(() => void this.exclusive(key, () => this.stop(key)), this.options.idleMs ?? 10 * 60_000);
 		timer.unref();
-		this.idle.set(key, timer);
+		this.running.set(key, timer);
 	}
 
-	/** Created on first use, started when stopped; once at a time per computer. */
-	private started(key: string): Promise<void> {
-		const pending = this.ready.get(key);
-		if (pending !== undefined) return pending;
-		const starting = this.launch(key).catch((error: unknown) => {
-			this.ready.delete(key);
-			throw error;
-		});
-		this.ready.set(key, starting);
-		return starting;
-	}
-
+	/** Created on first use, recreated when its spec changed, started when stopped. Called under the computer's lock. */
 	private async launch(key: string): Promise<void> {
-		let info = (await this.api("GET", `/containers/${name(key)}/json`, undefined, [200, 404])) as { State?: { Running?: boolean } } | undefined;
-		if (info === undefined) {
-			await this.create(key);
-			info = {};
+		if (this.running.has(key)) return;
+		// Room for one more: the computer unused the longest stops (not awaited: it waits for its own lock).
+		for (const other of [...this.running.keys()]) {
+			if (this.running.size < (this.options.maxRunning ?? 8)) break;
+			if (this.locks.has(other)) continue;
+			this.forget(other);
+			void this.exclusive(other, () => this.stop(other));
 		}
-		if (info.State?.Running !== true) await this.api("POST", `/containers/${name(key)}/start`, undefined, [204, 304]);
+		const spec = this.spec(key);
+		const hash = createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 16);
+		let info = (await this.api("GET", `/containers/${name(key)}/json`, undefined, [200, 404])) as { State?: { Running?: boolean }; Config?: { Labels?: Record<string, string> } } | undefined;
+		if (info !== undefined && info.Config?.Labels?.[LABEL] !== key) throw new Error(`computer: container ${name(key)} exists and is not this computer`);
+		if (info !== undefined && info.Config?.Labels?.[SPEC_LABEL] !== hash) {
+			this.options.log?.(`computer: ${key} recreated with the new image or limits (its files stay)`);
+			await this.api("DELETE", `/containers/${name(key)}?force=true`, undefined, [204, 404]);
+			info = undefined;
+		}
+		if (info === undefined) {
+			await this.api("POST", "/volumes/create", { Name: name(key), Labels: { [LABEL]: key } }, [201]);
+			try {
+				await this.api("POST", `/containers/create?name=${name(key)}`, { ...spec, Labels: { [LABEL]: key, [SPEC_LABEL]: hash } }, [201]);
+			} catch (error) {
+				if (/No such image/i.test(message(error))) throw new ComputerError(`l'immagine del computer ${this.options.image} non c'è su questo server: l'operatore la costruisce con docker build -f docker/computer.Dockerfile`);
+				throw error;
+			}
+		}
+		if (info?.State?.Running !== true) await this.api("POST", `/containers/${name(key)}/start`, undefined, [204, 304]);
+		this.touch(key);
 	}
 
-	private async create(key: string): Promise<void> {
+	private spec(key: string): Record<string, unknown> {
 		const memory = (this.options.memoryMb ?? 1024) * 1024 * 1024;
+		return {
+			Image: this.options.image,
+			// The container idles as nobody; commands run as 1000 and cannot signal it.
+			User: "65534:65534",
+			Cmd: ["sleep", "infinity"],
+			WorkingDir: "/work",
+			NetworkDisabled: true,
+			HostConfig: {
+				NetworkMode: "none",
+				Binds: [`${name(key)}:/work`],
+				ReadonlyRootfs: true,
+				Tmpfs: { "/tmp": "rw,nosuid,nodev,size=256m" },
+				CapDrop: ["ALL"],
+				SecurityOpt: ["no-new-privileges:true"],
+				// An init as pid 1 reaps what commands leave behind.
+				Init: true,
+				Memory: memory,
+				MemorySwap: memory,
+				NanoCpus: Math.round((this.options.cpus ?? 1) * 1e9),
+				PidsLimit: 128,
+				Ulimits: [{ Name: "fsize", Soft: MAX_FILE_BYTES, Hard: MAX_FILE_BYTES }],
+				RestartPolicy: { Name: "no" },
+				LogConfig: { Type: "none", Config: {} },
+				...(this.options.runtime === undefined ? {} : { Runtime: this.options.runtime }),
+			},
+		};
+	}
+
+	private diskMb(): number {
+		return this.options.diskMb ?? 2048;
+	}
+
+	/** /work against its quota, after each command. Its files are 1000's: after a chmod it can read them all. */
+	private async checkDisk(key: string): Promise<boolean> {
 		try {
-			await this.api(
-				"POST",
-				`/containers/create?name=${name(key)}`,
-				{
-					Image: this.options.image,
-					User: "1000:1000",
-					// Nothing to do but wait for commands.
-					Cmd: ["sleep", "infinity"],
-					WorkingDir: "/work",
-					Labels: { [LABEL]: key },
-					NetworkDisabled: true,
-					HostConfig: {
-						NetworkMode: "none",
-						Binds: [`${name(key)}:/work`],
-						ReadonlyRootfs: true,
-						Tmpfs: { "/tmp": "rw,nosuid,nodev,size=256m" },
-						CapDrop: ["ALL"],
-						SecurityOpt: ["no-new-privileges:true"],
-						Memory: memory,
-						MemorySwap: memory,
-						NanoCpus: Math.round((this.options.cpus ?? 1) * 1e9),
-						PidsLimit: 128,
-						RestartPolicy: { Name: "no" },
-						LogConfig: { Type: "none", Config: {} },
-						...(this.options.runtime === undefined ? {} : { Runtime: this.options.runtime }),
-					},
-				},
-				[201],
-			);
+			const du = await this.exec(key, ["sh", "-c", "chmod -R u+rwX /work 2>/dev/null; du -sxk /work"], API_TIMEOUT_MS);
+			const kb = Number.parseInt(du.stdout, 10);
+			if (Number.isFinite(kb) && kb > this.diskMb() * 1024) this.full.add(key);
+			else if (Number.isFinite(kb)) this.full.delete(key);
 		} catch (error) {
-			if (/No such image/i.test(message(error))) throw new ComputerError(`l'immagine del computer ${this.options.image} non c'è su questo server: l'operatore la costruisce con docker build -f docker/computer.Dockerfile`);
-			throw error;
+			this.options.log?.(`computer: disk check failed: ${message(error)}`);
 		}
+		return this.full.has(key);
+	}
+
+	/** A command in the computer as uid 1000, in /work, with its output and exit code. */
+	private async exec(key: string, cmd: string[], timeoutMs: number, signal?: AbortSignal): Promise<Exec> {
+		const created = (await this.api(
+			"POST",
+			`/containers/${name(key)}/exec`,
+			{ Cmd: cmd, AttachStdout: true, AttachStderr: true, Tty: false, User: "1000:1000", WorkingDir: "/work", Env: ["HOME=/tmp", "MPLCONFIGDIR=/tmp", "LANG=C.UTF-8"] },
+			[201],
+		)) as { Id?: string } | undefined;
+		const id = created?.Id;
+		if (id === undefined || !/^[0-9a-f]{12,64}$/.test(id)) throw new Error("docker exec: no id");
+		const output = await this.stream(`/exec/${id}/start`, { Detach: false, Tty: false }, timeoutMs, signal);
+		// The stream can end a moment before Docker records the exit code.
+		for (let i = 0; i < 20; i++) {
+			const info = (await this.api("GET", `/exec/${id}/json`, undefined, [200])) as { ExitCode?: number | null; Running?: boolean };
+			if (info.Running !== true) return { ...output, exitCode: info.ExitCode ?? null };
+			if (output.cut) break;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		return { ...output, exitCode: null };
 	}
 
 	/** Docker's stat of a path (the X-Docker-Container-Path-Stat header of HEAD), or undefined when missing. */
 	private statOf(path: string): Promise<{ size: number; mode: number } | undefined> {
 		return new Promise((resolve, reject) => {
-			const req = request({ socketPath: this.socket(), path: `/v1.43${path}`, method: "HEAD" }, (res) => {
+			const req = request({ socketPath: this.socket(), path: `${API}${path}`, method: "HEAD" }, (res) => {
 				res.resume();
 				if (res.statusCode === 404) return resolve(undefined);
 				const header = res.headers["x-docker-container-path-stat"];
@@ -204,51 +327,84 @@ export class DockerComputerProvider implements ComputerProvider {
 		});
 	}
 
-	/** An exec's output: Docker's stream of frames (8-byte header: stream, 3 zeros, length). */
-	private stream(path: string, body: unknown, timeoutMs: number): Promise<{ stdout: string; stderr: string; truncated: boolean; cut: boolean }> {
+	/**
+	 * An exec's output: Docker's stream of frames (8-byte header: stream, 3 zeros, length). Ends
+	 * at the latest `timeoutMs` after it starts (a wall clock, not an inactivity timer) or on abort.
+	 */
+	private stream(path: string, body: unknown, timeoutMs: number, signal?: AbortSignal): Promise<Omit<Exec, "exitCode">> {
 		return new Promise((resolve, reject) => {
-			const kept = { 1: [] as Buffer[], 2: [] as Buffer[] };
-			const size = { 1: 0, 2: 0 };
+			const out: Buffer[] = [];
+			const err: Buffer[] = [];
+			let outSize = 0;
+			let errSize = 0;
 			let truncated = false;
 			let pending = Buffer.alloc(0);
 			let cut = false;
-			const finish = () => {
-				const text = (stream: 1 | 2) => Buffer.concat(kept[stream]).toString("utf8");
-				resolve({ stdout: text(1), stderr: text(2), truncated, cut });
+			let done = false;
+			const settle = (error?: Error) => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", stop);
+				if (error !== undefined) return reject(error);
+				resolve({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), truncated, cut });
 			};
-			const req = request({ socketPath: this.socket(), path: `/v1.43${path}`, method: "POST", headers: { "content-type": "application/json" } }, (res) => {
+			const stop = () => {
+				cut = true;
+				req.destroy();
+				settle();
+			};
+			const take = (kind: number, payload: Buffer) => {
+				if (kind === 2) {
+					// The end of stderr is where the error is: the oldest part goes.
+					err.push(payload);
+					errSize += payload.length;
+					while (errSize > MAX_STREAM_BYTES) {
+						truncated = true;
+						const first = err[0] as Buffer;
+						const extra = errSize - MAX_STREAM_BYTES;
+						if (first.length <= extra) {
+							err.shift();
+							errSize -= first.length;
+						} else {
+							err[0] = first.subarray(extra);
+							errSize -= extra;
+						}
+					}
+					return;
+				}
+				const room = MAX_STREAM_BYTES - outSize;
+				if (payload.length > room) truncated = true;
+				if (room <= 0) return;
+				out.push(payload.subarray(0, room));
+				outSize += Math.min(room, payload.length);
+			};
+			const req = request({ socketPath: this.socket(), path: `${API}${path}`, method: "POST", headers: { "content-type": "application/json" } }, (res) => {
 				if (res.statusCode !== 200) {
 					res.resume();
-					return reject(new Error(`docker exec start: HTTP ${res.statusCode}`));
+					return settle(new Error(`docker exec start: HTTP ${res.statusCode}`));
 				}
 				res.on("data", (chunk: Buffer) => {
 					pending = Buffer.concat([pending, chunk]);
 					while (pending.length >= 8) {
+						const kind = pending[0] as number;
 						const length = pending.readUInt32BE(4);
-						if (pending.length < 8 + length) break;
-						const stream = pending[0] === 2 ? 2 : 1;
-						const payload = pending.subarray(8, 8 + length);
-						pending = pending.subarray(8 + length);
-						const room = MAX_STREAM_BYTES - size[stream];
-						if (room <= 0) {
-							truncated = true;
-							continue;
+						if (kind > 2 || pending[1] !== 0 || pending[2] !== 0 || pending[3] !== 0 || length > MAX_FRAME_BYTES) {
+							req.destroy();
+							return settle(new Error("docker exec: unreadable output stream"));
 						}
-						if (payload.length > room) truncated = true;
-						kept[stream].push(Buffer.from(payload.subarray(0, room)));
-						size[stream] += Math.min(room, payload.length);
+						if (pending.length < 8 + length) break;
+						take(kind, Buffer.from(pending.subarray(8, 8 + length)));
+						pending = pending.subarray(8 + length);
 					}
 				});
-				res.on("end", finish);
-				res.on("error", reject);
+				res.on("end", () => settle());
+				res.on("error", (error) => (cut ? undefined : settle(error)));
 			});
-			// A command that outlives its own timeout (it cannot: timeout(1) kills it) does not hold the tool forever.
-			req.setTimeout(timeoutMs, () => {
-				cut = true;
-				req.destroy();
-				finish();
-			});
-			req.on("error", (error) => (cut ? undefined : reject(error)));
+			const timer = setTimeout(stop, timeoutMs);
+			if (signal?.aborted === true) queueMicrotask(stop);
+			else signal?.addEventListener("abort", stop, { once: true });
+			req.on("error", (error) => (cut ? undefined : settle(error)));
 			req.end(JSON.stringify(body));
 		});
 	}
@@ -261,7 +417,7 @@ export class DockerComputerProvider implements ComputerProvider {
 		return new Promise((resolve, reject) => {
 			const tar = Buffer.isBuffer(body);
 			const headers = body === undefined ? {} : { "content-type": tar ? "application/x-tar" : "application/json" };
-			const req = request({ socketPath: this.socket(), path: `/v1.43${path}`, method, headers }, (res) => {
+			const req = request({ socketPath: this.socket(), path: `${API}${path}`, method, headers }, (res) => {
 				const chunks: Buffer[] = [];
 				let total = 0;
 				res.on("data", (c: Buffer) => {
@@ -293,7 +449,7 @@ export class DockerComputerProvider implements ComputerProvider {
 }
 
 function name(key: string): string {
-	if (!/^[a-z0-9][a-z0-9_-]{0,100}$/.test(key)) throw new Error(`Invalid computer key ${key}`);
+	if (!/^[a-z0-9][a-z0-9_-]{0,100}$/.test(key)) throw new Error("Invalid computer key");
 	return `annie-computer-${key}`;
 }
 

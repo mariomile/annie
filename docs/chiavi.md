@@ -155,6 +155,10 @@ Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta ([
 6. Facoltativo: `ANNIE_PHONE_VOICE`, la voce di Twilio (`Polly.Bianca` se non lo metti). Si prova con una chiamata vera.
 7. Domini: `api.twilio.com` (o quello della regione scelta).
 
+### 12. Il computer delle istanze: nessuna chiave
+
+Il terminale di Annie ([ADR 0013](adr/0013-terminale-in-un-computer-senza-rete.md)) non usa chiavi né domini: gira in un container senza rete sul server di Annie. Serve solo Docker e l'immagine del computer, con `ANNIE_COMPUTER=docker` in `.env` ([runbook](runbook.md), 6j). In Annie Cloud resta spento.
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
