@@ -1,7 +1,7 @@
 /**
  * `pnpm cloud`: the control plane of Annie Cloud (ADR 0007, ADR 0008).
- * Cells as local processes (development) or containers on one server (ANNIE_CLOUD_PROVIDER=docker);
- * micro-VMs come with the provider for the chosen cloud (docs/piano-cloud.md).
+ * Cells as local processes (development), containers on one server (ANNIE_CLOUD_PROVIDER=docker)
+ * or Railway services (ANNIE_CLOUD_PROVIDER=railway); see docs/runbook.md 6c and 6d.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { startControlPlane } from "../cloud/control-plane.ts";
 import { DockerCellProvider } from "../cloud/docker-provider.ts";
 import { LocalCellProvider } from "../cloud/local-provider.ts";
 import type { CellProvider } from "../cloud/provider.ts";
+import { RailwayCellProvider } from "../cloud/railway-provider.ts";
 import { FileMailer, type Mailer } from "../cloud/mailer.ts";
 import { parseSmtpUrl, SmtpMailer } from "../cloud/smtp.ts";
 
@@ -26,8 +27,19 @@ const cellEnv = Object.fromEntries(passed.flatMap((name) => (env(name) === undef
 function provider(): CellProvider {
 	const kind = env("ANNIE_CLOUD_PROVIDER") ?? "local";
 	if (kind === "local") return new LocalCellProvider({ root: join(dataDir, "cells"), repoRoot: process.cwd() });
+	if (kind === "railway") {
+		const token = env("RAILWAY_API_TOKEN");
+		const image = env("ANNIE_CLOUD_RAILWAY_IMAGE");
+		if (token === undefined || image === undefined) {
+			console.error("annie cloud: ANNIE_CLOUD_PROVIDER=railway needs RAILWAY_API_TOKEN and ANNIE_CLOUD_RAILWAY_IMAGE (e.g. ghcr.io/<owner>/annie:latest)");
+			process.exit(1);
+		}
+		const workspaceId = env("ANNIE_CLOUD_RAILWAY_WORKSPACE");
+		const region = env("ANNIE_CLOUD_RAILWAY_REGION");
+		return new RailwayCellProvider({ token, image, dataDir, log: (message) => console.error(`annie cloud: ${message}`), ...(workspaceId === undefined ? {} : { workspaceId }), ...(region === undefined ? {} : { region }) });
+	}
 	if (kind !== "docker") {
-		console.error(`annie cloud: ANNIE_CLOUD_PROVIDER="${kind}": use local or docker`);
+		console.error(`annie cloud: ANNIE_CLOUD_PROVIDER="${kind}": use local, docker or railway`);
 		process.exit(1);
 	}
 	const memory = env("ANNIE_CLOUD_CELL_MEMORY_MB");
@@ -60,8 +72,8 @@ function mailer(): Mailer {
 // current image and the current model settings (ANNIE_MODEL_*, keys); volumes and data stay.
 if (process.argv[2] === "upgrade") {
 	const cells = provider();
-	if (!(cells instanceof DockerCellProvider)) {
-		console.error("annie cloud: upgrade is for ANNIE_CLOUD_PROVIDER=docker; local cells run the code of this checkout");
+	if (!(cells instanceof DockerCellProvider || cells instanceof RailwayCellProvider)) {
+		console.error("annie cloud: upgrade is for docker and railway cells; local cells run the code of this checkout");
 		process.exit(1);
 	}
 	for (const id of await cells.list()) {
@@ -71,16 +83,18 @@ if (process.argv[2] === "upgrade") {
 	process.exit(0);
 }
 
+const cells = provider();
 const cp = await startControlPlane({
 	dataDir,
 	domain,
 	publicScheme: (env("ANNIE_CLOUD_SCHEME") ?? (domain.endsWith("localhost") ? "http" : "https")) as "http" | "https",
 	// Locally the browser reaches the control plane on its own port; behind a proxy, on the default one.
 	...(domain.endsWith("localhost") ? { publicPort: port } : {}),
-	provider: provider(),
+	provider: cells,
 	mailer: mailer(),
 	cellEnv,
-	idleMs: Number(env("ANNIE_CLOUD_IDLE_MINUTES") ?? "15") * 60_000,
+	// Railway sleeps a quiet cell by itself: the control plane must let go of it sooner (railway-provider.ts).
+	idleMs: env("ANNIE_CLOUD_IDLE_MINUTES") !== undefined ? Number(env("ANNIE_CLOUD_IDLE_MINUTES")) * 60_000 : cells instanceof RailwayCellProvider ? RailwayCellProvider.IDLE_MS : 15 * 60_000,
 	web: { host: env("ANNIE_CLOUD_HOST") ?? "127.0.0.1", port },
 	tickMs: 30_000,
 });

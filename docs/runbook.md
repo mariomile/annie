@@ -114,6 +114,16 @@ Per offrire Annie come servizio su un solo server in UE (ADR 0008). Serve Docker
 
 Le celle stanno tutte sulla rete `annie-cells`, dove i container non si parlano fra loro. `ANNIE_TEST_DOCKER_IMAGE=annie:local pnpm vitest run test/docker-provider.test.ts` prova il giro completo su un daemon vero.
 
+## 6d. Annie Cloud su Railway
+
+In alternativa al server (in valutazione, docs/week9.md): ogni cella è un progetto Railway con un servizio dall'immagine di Annie, un volume su `/data`, la regione EU West (Amsterdam) e la modalità serverless, che la fa dormire da sola dopo qualche minuto senza traffico e la risveglia alla prima richiesta.
+
+1. L'immagine: il workflow `Image` la pubblica su `ghcr.io/<owner>/annie:latest` a ogni merge su `main`. Se il pacchetto GHCR è privato, Railway ha bisogno delle credenziali del registry (o rendi pubblico il pacchetto).
+2. Un token di account o workspace Railway (Account Settings → Tokens).
+3. In `.env` del control plane: `ANNIE_CLOUD_PROVIDER=railway`, `RAILWAY_API_TOKEN`, `ANNIE_CLOUD_RAILWAY_IMAGE`, facoltativi `ANNIE_CLOUD_RAILWAY_WORKSPACE` e `ANNIE_CLOUD_RAILWAY_REGION` (default `europe-west4-drams3a`), più dominio, chiave del modello e SMTP come in 6c.
+4. Il control plane (anche lui su Railway o altrove) raggiunge ogni cella sul suo dominio `*.up.railway.app` in https; la cella si difende da sola come un'installazione self-host (login, segreto di cella).
+5. Aggiornare: `pnpm cloud upgrade` aggiorna le variabili e rifà il deploy di ogni cella; i volumi restano.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
