@@ -132,6 +132,18 @@ In alternativa al server (in valutazione, docs/week9.md): ogni cella è un proge
 
 In Impostazioni → Navigazione web l'owner elenca i siti che l'istanza può leggere e fotografare (un dominio per riga, sottodomini compresi; `*` per tutti i siti pubblici). Vuoto vuol dire nessuno. Gli indirizzi interni (rete locale, metadati del cloud) restano negati comunque. Per gli screenshot serve Chromium: nell'immagine Docker con `docker build --build-arg WITH_BROWSER=1 .` (l'immagine pubblicata su GHCR lo ha), senza Docker con `ANNIE_CHROMIUM_PATH` o il browser di Playwright. Chromium deve partire con il suo sandbox; se nel log compare «screenshots off», o si dà al container quello che serve agli user namespace, o si accetta il rischio con `ANNIE_SCREENSHOTS_WITHOUT_SANDBOX=1` (ADR 0009).
 
+## 6f. Abbonamenti (Stripe)
+
+Senza `ANNIE_CLOUD_STRIPE_SECRET_KEY` Annie Cloud è gratuito. Con la chiave, ogni tenant ha una prova (`ANNIE_CLOUD_TRIAL_DAYS`, 14 giorni di default) e poi serve l'abbonamento; finita la prova senza abbonamento la cella resta spenta, con i dati intatti (ADR 0010).
+
+1. In Stripe crea un prodotto «Annie» con un prezzo mensile ricorrente: il suo id (`price_…`) va in `ANNIE_CLOUD_STRIPE_PRICE`.
+2. Facoltativo, il consumo del modello: crea un contatore (Billing → Meters) con aggregazione «somma», chiave cliente `stripe_customer_id` e valore `value`. Poi crea un prezzo a consumo collegato al contatore. Un'unità è un centesimo di dollaro di costo del modello a prezzi di listino. Il prezzo per unità copre cambio e ricarico: se un centesimo di dollaro vale X euro, X × 1,5 è un ricarico del 50%. Nome dell'evento del contatore in `ANNIE_CLOUD_STRIPE_METER_EVENT`, id del prezzo in `ANNIE_CLOUD_STRIPE_USAGE_PRICE`.
+3. Developers → Webhooks → aggiungi l'endpoint `https://<dominio>/stripe/webhook` con gli eventi `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`. Il segreto di firma (`whsec_…`) va in `ANNIE_CLOUD_STRIPE_WEBHOOK_SECRET`.
+4. Settings → Billing → Customer portal: attiva il portale (fatture, carta, disdetta).
+5. Prova in modalità test (chiavi `sk_test_…`) con le carte di prova di Stripe, poi passa alle chiavi live.
+
+Le persone si abbonano dalla pagina di Annie Cloud («Gestisci l'abbonamento», con il link via email) o, a prova finita, dal link che ricevono entrando. `pnpm cloud status` mostra per ogni tenant: in prova fino a quando, abbonato, pagamento in ritardo, oppure sospeso.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
