@@ -5,6 +5,7 @@
  *   person list
  *   person link <id>                                    new login link (the old one stops working)
  *   person remove <id>
+ *   person reset-2fa <id>                               turn off two-factor login (lost phone)
  *
  * Works on the data directory; Annie can be running.
  */
@@ -26,7 +27,7 @@ const registry = new TenantRegistry(dataDir);
 const [group, command, ...rest] = process.argv.slice(2);
 
 function usage(): never {
-	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id>");
+	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id>");
 	process.exit(2);
 }
 
@@ -54,10 +55,14 @@ switch (command) {
 		break;
 	}
 	case "list":
-		for (const p of await people.list()) console.log(`${p.id}\t${p.role}\t${p.name}\t${p.createdAt}`);
+		for (const p of await people.list()) console.log(`${p.id}\t${p.role}\t${p.name}\t${p.createdAt}${p.totp === undefined ? "" : "\t2FA"}`);
 		break;
 	case "link": {
 		const id = rest[0] ?? usage();
+		if ((await people.get(id)) === undefined) {
+			console.error(`No person ${id}. See: pnpm annie person list`);
+			process.exit(1);
+		}
 		const token = await people.rotate(id);
 		await new SessionStore(dir).endAllOf(id);
 		console.log(`New login link for ${id} (the old one and its sessions are revoked):\n\n  ${base}/login#${token}\n`);
@@ -68,6 +73,17 @@ switch (command) {
 		const removed = await people.remove(id);
 		await new SessionStore(dir).endAllOf(id);
 		console.log(removed ? `Removed ${id}.` : `No person ${id}.`);
+		break;
+	}
+	case "reset-2fa": {
+		const id = rest[0] ?? usage();
+		if ((await people.get(id)) === undefined) {
+			console.error(`No person ${id}. See: pnpm annie person list`);
+			process.exit(1);
+		}
+		await people.clearTotp(id);
+		await new SessionStore(dir).endAllOf(id);
+		console.log(`Two-factor login is off for ${id}; their sessions are ended and their link alone logs in again.`);
 		break;
 	}
 	default:

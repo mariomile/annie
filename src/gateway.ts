@@ -1,4 +1,4 @@
-import type { ChannelAdapter, InboundAction, InboundMessage } from "./channels/types.ts";
+import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
 /**
@@ -23,7 +23,7 @@ export function connectChannel(
 		try {
 			await runtime.submit(await withAttachments(runtime, message));
 		} catch (error) {
-			log(`${adapter.name}: message not submitted: ${error instanceof Error ? error.message : String(error)}`);
+			log(`${adapter.name}: message not submitted: ${errorMessage(error)}`);
 			if (adapter.surfacesRefusals === true) throw error;
 		}
 	});
@@ -32,7 +32,13 @@ export function connectChannel(
 		const base = { tenantId: reply.tenantId, instanceId: reply.instanceId, channel: reply.channel, threadId: reply.threadId, idempotencyKey: reply.deliveryId, possibleDuplicate: reply.possibleDuplicate };
 		const sending = async (): Promise<void> => {
 			if (reply.status === "file") {
-				const data = await runtime.workspace(reply.tenantId, reply.instanceId).read(reply.path);
+				// A file gone from the workspace will not come back by retrying.
+				const data = await runtime
+					.workspace(reply.tenantId, reply.instanceId)
+					.read(reply.path)
+					.catch((error: unknown) => {
+						throw new ChannelRefused(`file not readable: ${errorMessage(error)}`);
+					});
 				const name = reply.path.split("/").at(-1) ?? reply.path;
 				if (adapter.sendFile === undefined) return adapter.send({ ...base, text: `File pronto nel workspace: ${reply.path}${reply.caption ? `\n${reply.caption}` : ""}` });
 				return adapter.sendFile({ ...base, name, data, path: reply.path, ...(reply.caption === undefined ? {} : { caption: reply.caption }) });
@@ -43,11 +49,15 @@ export function connectChannel(
 		};
 		sending()
 			.then(
-				// Not confirmed: the reply stays in the outbox and goes out again on the next resume.
+				// Not confirmed: the reply stays in the outbox. A failure is retried in this process
+				// with backoff; a refusal, and anything left at shutdown, goes out on the next resume.
 				() => runtime.markDelivered(reply),
-				(error: unknown) => log(`${adapter.name}: send failed, kept in the outbox: ${error instanceof Error ? error.message : String(error)}`),
+				(error: unknown) => {
+					log(`${adapter.name}: send failed, kept in the outbox: ${errorMessage(error)}`);
+					return runtime.deliveryFailed(reply, { refused: error instanceof ChannelRefused && !error.retryable, reason: errorMessage(error) });
+				},
 			)
-			.catch((error: unknown) => log(`${adapter.name}: sent, but not confirmed in the outbox: ${error instanceof Error ? error.message : String(error)}`));
+			.catch((error: unknown) => log(`${adapter.name}: sent, but not confirmed in the outbox: ${errorMessage(error)}`));
 	});
 }
 
@@ -72,4 +82,8 @@ async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): 
 	const note = saved.map((p) => `[File caricato nel workspace: ${p}]`).join("\n");
 	const { attachments: _files, ...rest } = message;
 	return { ...rest, text: message.text === "" ? note : `${message.text}\n\n${note}` };
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

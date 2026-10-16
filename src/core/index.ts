@@ -4,7 +4,7 @@ export { EgressDenied, InstanceLocked, NotFound, UserNotAllowed } from "./errors
 export { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 export { type AllowedUsers, assertChannelAllowed, assertConnectorAllowed, assertModelProviderAllowed, assertUserAllowed, DENY_ALL, type EgressPolicy } from "./policy.ts";
 export { type CreateInstanceInput, type InstanceRecord, type ModelSelection, TenantRegistry, type TenantRecord } from "./registry.ts";
-export type { OutboxEntry } from "./outbox.ts";
+export { Outbox, type OutboxEntry } from "./outbox.ts";
 export { AnnieInstance, AnnieRuntime, type Reply, type RuntimeOptions, type SubmitRequest, type ToolSet } from "./runtime.ts";
 export { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
 export { createSlowCounter, type SlowCounterOptions } from "./tools/slow-counter.ts";

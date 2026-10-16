@@ -4,7 +4,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
-import { EgressDenied, UserNotAllowed } from "../core/errors.ts";
+import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
+import { instanceId } from "../core/ids.ts";
+import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import { type Schedule, ScheduleError, schedulePerson } from "../core/schedules.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
@@ -12,6 +14,7 @@ import { WorkspaceError } from "../core/workspace.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
+import { otpauthUri } from "./totp.ts";
 
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
@@ -28,6 +31,8 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** Create an instance with its web channel, open for `ownerId` (owner only). */
+	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
 };
 
@@ -35,6 +40,7 @@ class HttpError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
+		readonly extra: Record<string, unknown> = {},
 	) {
 		super(message);
 	}
@@ -53,6 +59,8 @@ type Route = { method: string; pattern: RegExp; auth: "none" | "person" | "owner
 
 const COOKIE = "annie_session";
 const MAX_JSON = 1024 * 1024;
+const MAX_CODE_ATTEMPTS = 5;
+const CODE_LOCK_MS = 10 * 60 * 1000;
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
 const STATIC: Record<string, string> = {
@@ -87,6 +95,19 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (person.role !== "owner" && !member) throw new HttpError(404, "No such instance");
 		return { record, member };
 	};
+	// Two-factor codes tried per person, in this process. An attempt counts before the
+	// check, so codes sent all at once cannot slip past the limit; a right code clears it.
+	const codeAttempts = new Map<string, number[]>();
+	const checkCode = async (personId: string, code: string): Promise<boolean> => {
+		const recent = (codeAttempts.get(personId) ?? []).filter((at) => at > Date.now() - CODE_LOCK_MS);
+		if (recent.length >= MAX_CODE_ATTEMPTS) throw new HttpError(429, "Troppi codici sbagliati: riprova tra qualche minuto", { twoFactor: true });
+		codeAttempts.set(personId, [...recent, Date.now()]);
+		if (!(await options.people.useTotp(personId, code))) return false;
+		codeAttempts.delete(personId);
+		return true;
+	};
+	// Each open event stream, as the way to attach it to a channel created later.
+	const streamAttachers = new Set<(channel: WebChannel) => void>();
 	const approverOf = (person: Person): Approver => (person.role === "owner" ? OWNER : { channel: "web", userId: person.id });
 	const channelOf = (instanceId: string) => {
 		const channel = options.channels.get(instanceId);
@@ -96,9 +117,16 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	// --- session ---
 	route("POST", "/api/login", "none", async ({ req, res }) => {
-		const body = (await readJson(req)) as { token?: string };
+		const body = (await readJson(req)) as { token?: string; code?: string };
 		const person = await options.people.byToken(String(body.token ?? ""));
 		if (person === undefined) throw new HttpError(401, "Link non valido o revocato");
+		if (person.totp !== undefined) {
+			if (typeof body.code !== "string" || body.code.trim() === "") throw new HttpError(401, "Serve il codice dell'app di autenticazione", { twoFactor: true });
+			if (!(await checkCode(person.id, body.code))) {
+				await runtime.audit(tenantId).append({ type: "web.login_denied", personId: person.id, reason: "2fa" });
+				throw new HttpError(401, "Codice non valido", { twoFactor: true });
+			}
+		}
 		const session = await options.sessions.create(person.id);
 		res.setHeader("set-cookie", `${COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 24 * 3600}${options.secureCookies ? "; Secure" : ""}`);
 		await runtime.audit(tenantId).append({ type: "web.login", personId: person.id });
@@ -111,23 +139,74 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 	route("GET", "/api/me", "person", async ({ person }) => ({ person: publicPerson(person as Person) }));
+	route("POST", "/api/me/2fa/setup", "person", async ({ person }) => {
+		const p = person as Person;
+		if (p.totp !== undefined) throw new HttpError(409, "La verifica in due passaggi è già attiva");
+		const secret = await options.people.startTotp(p.id);
+		return { secret, uri: otpauthUri(secret, p.name, "Annie") };
+	});
+	route("POST", "/api/me/2fa/enable", "person", async ({ person, req }) => {
+		const body = (await readJson(req)) as { code?: string };
+		const p = person as Person;
+		if (!(await options.people.enableTotp(p.id, String(body.code ?? "")))) throw new HttpError(400, "Codice non valido: controlla l'ora del telefono e riprova");
+		// Sessions opened with the link alone (maybe a leaked one) end; this one stays.
+		await options.sessions.endAllOf(p.id, cookie(req, COOKIE));
+		await runtime.audit(tenantId).append({ type: "web.2fa_enabled", personId: p.id });
+		return { ok: true };
+	});
+	route("POST", "/api/me/2fa/disable", "person", async ({ person, req }) => {
+		const body = (await readJson(req)) as { code?: string };
+		const p = person as Person;
+		if (p.totp === undefined) return { ok: true };
+		if (!(await checkCode(p.id, String(body.code ?? "")))) throw new HttpError(400, "Codice non valido");
+		await options.people.clearTotp(p.id);
+		await runtime.audit(tenantId).append({ type: "web.2fa_disabled", personId: p.id });
+		return { ok: true };
+	});
 
 	// --- instances ---
+	const describeInstance = async (r: InstanceRecord, p: Person) => ({
+		id: r.id,
+		name: r.name,
+		canChat: options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web"),
+		isApprover: await isApprover(runtime, tenantId, r.id, approverOf(p)),
+		hasSegreteria: options.segreterie?.has(r.id) ?? false,
+	});
 	route("GET", "/api/instances", "person", async ({ person }) => {
 		const p = person as Person;
 		const all = await runtime.registry.listInstances(tenantId);
 		const visible = all.filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
-		return {
-			instances: await Promise.all(
-				visible.map(async (r) => ({
-					id: r.id,
-					name: r.name,
-					canChat: options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web"),
-					isApprover: await isApprover(runtime, tenantId, r.id, approverOf(p)),
-					hasSegreteria: options.segreterie?.has(r.id) ?? false,
-				})),
-			),
-		};
+		return { instances: await Promise.all(visible.map((r) => describeInstance(r, p))) };
+	});
+	route("POST", "/api/instances", "owner", async ({ person, req }) => {
+		if (options.createInstance === undefined) throw new HttpError(501, "Questa installazione non crea istanze dalla console");
+		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown };
+		const id = typeof body.id === "string" ? body.id.trim() : "";
+		const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
+		const instructions = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions.slice(0, 20_000) : undefined;
+		try {
+			instanceId(id);
+		} catch {
+			throw new HttpError(400, "ID non valido: minuscole, numeri, - e _, fino a 63 caratteri, iniziando con una lettera o un numero");
+		}
+		if (name === "") throw new HttpError(400, "Serve un nome");
+		try {
+			await runtime.registry.getInstance(tenantId, id);
+			throw new HttpError(409, "Un'istanza con questo ID esiste già");
+		} catch (error) {
+			if (!(error instanceof NotFound)) throw error;
+		}
+		try {
+			await options.createInstance({ id, name, instructions, ownerId: (person as Person).id });
+		} catch (error) {
+			// Two creations of the same id at once: the second loses here.
+			if (error instanceof Error && error.message.startsWith("Already exists")) throw new HttpError(409, "Un'istanza con questo ID esiste già");
+			throw error;
+		}
+		await runtime.audit(tenantId).append({ type: "web.instance_created", instanceId: id, personId: (person as Person).id });
+		const channel = options.channels.get(id);
+		if (channel !== undefined) for (const attach of streamAttachers) attach(channel);
+		return { instance: await describeInstance(await runtime.registry.getInstance(tenantId, id), person as Person) };
 	});
 
 	// --- chat ---
@@ -166,14 +245,17 @@ export function createWebApp(options: WebAppOptions): Server {
 		res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
 		res.write(": connected\n\n");
 		const listeners: [WebChannel, (e: WebEvent) => void][] = [];
-		for (const channel of options.channels.values()) {
+		const attach = (channel: WebChannel) => {
 			const listener = (event: WebEvent) => res.write(`event: entry\ndata: ${JSON.stringify(event)}\n\n`);
 			channel.events.on(p.id, listener);
 			listeners.push([channel, listener]);
-		}
+		};
+		for (const channel of options.channels.values()) attach(channel);
+		streamAttachers.add(attach);
 		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
 		await new Promise<void>((resolve) => req.on("close", resolve));
 		clearInterval(ping);
+		streamAttachers.delete(attach);
 		for (const [channel, listener] of listeners) channel.events.off(p.id, listener);
 		return STREAMED;
 	});
@@ -371,6 +453,15 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw new HttpError(400, error instanceof Error ? error.message : String(error));
 		}
 	});
+	route("POST", "/api/people/:pid/2fa/reset", "owner", async ({ params }) => {
+		await options.people.clearTotp(params[0] as string).catch(() => {
+			throw new HttpError(404, "No such person");
+		});
+		// Whoever holds the link must log in again, now with the link alone.
+		await options.sessions.endAllOf(params[0] as string);
+		await runtime.audit(tenantId).append({ type: "web.2fa_reset", personId: params[0] });
+		return { ok: true };
+	});
 	route("POST", "/api/people/:pid/link", "owner", async ({ params, url }) => {
 		const token = await options.people.rotate(params[0] as string).catch(() => {
 			throw new HttpError(404, "No such person");
@@ -423,7 +514,7 @@ export function createWebApp(options: WebAppOptions): Server {
 			const result = await match.handler({ req, res, url, params, person });
 			if (result !== STREAMED) send(res, 200, result);
 		} catch (error) {
-			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			if (error instanceof HttpError) return send(res, error.status, { ...error.extra, error: error.message });
 			throw error;
 		}
 	}

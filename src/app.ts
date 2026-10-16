@@ -129,11 +129,12 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// --- channels ---
 	const conversational = (await runtime.registry.listInstances(tenant)).filter((r) => r.id !== segreteriaId);
 	const webChannels = new Map<string, WebChannel>();
-	for (const record of conversational) {
+	const attachWebChannel = (record: InstanceRecord) => {
 		const channel = new WebChannel({ tenantId: tenant, instanceId: record.id }, instanceDir(config.dataDir, record.tenantId, record.id));
 		connectChannel(runtime, channel, { tenantId: tenant, instanceId: record.id }, log);
 		webChannels.set(record.id, channel);
-	}
+	};
+	for (const record of conversational) attachWebChannel(record);
 	if (config.telegram !== undefined) {
 		const bot = new TelegramAdapter({
 			token: config.telegram.token,
@@ -205,12 +206,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		for (const proposal of await runtime.proposals(tenant, record.id).list()) if (proposal.status === "pending") await notifyApprovers(record.id, proposal);
 	}
 	const scheduler = new Scheduler(
+		// Read each tick: instances created from the console join without a restart.
 		async () =>
-			conversational.map((r) => ({
+			[...webChannels.keys()].map((id) => ({
 				tenantId: tenant,
-				instanceId: r.id,
-				store: runtime.schedules(tenant, r.id),
-				submit: (req) => runtime.submitScheduled(tenant, r.id, req),
+				instanceId: id,
+				store: runtime.schedules(tenant, id),
+				submit: (req) => runtime.submitScheduled(tenant, id, req),
 			})),
 		log,
 	);
@@ -231,6 +233,20 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		uiDir: options.uiDir ?? join(import.meta.dirname, "web", "ui"),
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
+		// Same model as the general instance; web only, open to the owner who creates it.
+		createInstance: async ({ id, name, instructions, ownerId }) => {
+			const general = await runtime.registry.getInstance(tenant, config.instanceId);
+			const record = await runtime.registry.createInstance(tenant, {
+				id,
+				name,
+				model: general.model,
+				egress: { modelProviders: [general.model.provider], channels: ["web"] },
+				allowedUsers: { web: [ownerId] },
+				instructions: instructions ?? DEFAULT_INSTRUCTIONS,
+			});
+			attachWebChannel(record);
+			await runtime.resume(tenant, record.id);
+		},
 		log,
 	});
 	await new Promise<void>((resolve, reject) => {

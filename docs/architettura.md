@@ -185,7 +185,7 @@ Ogni risposta passa dall'outbox dell'istanza prima di arrivare a un canale:
 1. Quando il motore ammette un messaggio, il nucleo scrive nell'outbox una voce per quella submission, senza risposta.
 2. Quando il motore risponde, il nucleo riempie la voce (testo o motivo, `attempts + 1`) e la scrive in `outbox/<hash>.json`: file temporaneo, `fsync`, `rename`, `fsync` della directory. Solo dopo la emette ai listener. Se la voce risulta già consegnata, si ferma.
 3. Il gateway chiama `adapter.send`; quando risolve, chiama `runtime.markDelivered`, che riscrive la voce con `deliveredAt` e scrive `reply.delivered` nell'audit.
-4. Se `send` fallisce, la voce resta non consegnata.
+4. Se `send` fallisce, la voce resta non consegnata e il gateway lo dice al nucleo (`runtime.deliveryFailed`, con il numero del tentativo). Un fallimento (rete, timeout, o un rifiuto «non ora» come un 429 di Telegram, `ChannelRefused` con `retryable`) riparte nello stesso processo dopo 5 s, 30 s, 2 min e poi ogni 10 min, al massimo 14 volte (audit `reply.retry_scheduled`, poi `reply.retries_exhausted`). Un rifiuto definitivo (`ChannelRefused`: per esempio un bot bloccato, o un file non più nel workspace) non si ritenta nel processo (audit `reply.refused`). Un fallimento di un tentativo già superato (dopo una riapertura che l'ha rimandato) viene ignorato. `close()` annulla i ritentativi in sospeso.
 5. `resume()` all'avvio, prima di riprendere il motore, rimanda ogni voce con risposta non consegnata e chiede al motore di riemettere (`reattach`) l'esito di ogni voce ancora senza risposta, anche se in Pi la submission è già chiusa.
 
 Le operazioni sulla stessa voce sono serializzate e rileggono il file prima di agire; ogni voce è affidata ai canali al massimo una volta per processo, anche con più `resume()` concorrenti o se il motore riemette la stessa risposta. Dopo `close()` le risposte che arrivano e le conferme tardive del canale non toccano più l'outbox: restano per il processo successivo.
@@ -207,9 +207,9 @@ Exactly-once non è possibile con Telegram: `sendMessage` non accetta una chiave
 
 Limiti:
 
-- **Nessun nuovo tentativo nello stesso processo**: un invio fallito riparte solo al prossimo avvio.
+- **Ritentativi**: dopo 14 tentativi nello stesso processo, o dopo un rifiuto definitivo, la risposta aspetta il prossimo avvio. Un nuovo tentativo porta «Possibile doppione» anche quando il precedente era un rifiuto (quindi non arrivato): è un falso allarme accettato.
 - **Messaggi lunghi**: una risposta oltre 4096 caratteri sono più `sendMessage`; un crash a metà rimanda tutti i pezzi.
-- **L'outbox cresce**: le voci consegnate restano su disco (servono a riconoscere i doppioni). Nessuna pulizia automatica.
+- **Pulizia**: a ogni `resume()` le risposte alle persone (chiavi `reply:`) consegnate da più di 30 giorni vengono tolte (audit `outbox.pruned`). I messaggi che l'istanza manda da sé (chiavi `msg:`, per esempio gli avvisi di un tool da approvare) restano: sono loro a impedire un secondo avviso.
 - **Canale tolto dalla policy**: una voce verso un canale non più consentito resta non consegnata e a ogni avvio produce di nuovo `egress.denied`.
 - **File illeggibile**: un file dell'outbox corrotto da fuori (le scritture di Annie sono atomiche) fa fallire `resume()` con l'errore di parsing invece di saltarlo.
 - **Reset parziale**: cancellare `engine/` e tenere `outbox/` fa ripartire gli ID di Pi; voci vecchie con lo stesso ID verrebbero prese per già consegnate. Si cancellano insieme.

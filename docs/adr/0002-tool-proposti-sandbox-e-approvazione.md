@@ -5,3 +5,9 @@ Un'istanza può scrivere i propri tool, come fa Hermes Agent, ma un tool propost
 ## Consequences
 
 Il permission model di Node 22 non limita i socket di rete in sé: il blocco dei moduli di rete è nostro, nel runner, e una falla nel runtime di Node potrebbe aggirarlo. Per questo restano due difese in più: l'approvatore legge il codice e gli host prima di approvare, e per garanzie forti il deployment deve avere un egress firewall a livello di container (come già indicato in architettura).
+
+## Utente di sistema separato: scartato (settimana 6)
+
+Avevamo messo in lista «sandbox sotto un utente di sistema separato». Per far girare il processo del tool con un altro utente, il processo di Annie dovrebbe poter cambiare utente: servono root o le capability `CAP_SETUID`/`CAP_SETGID`, che il container dalla settimana 6 toglie apposta (`cap_drop: [ALL]`, `no-new-privileges`, filesystem in sola lettura tranne `/data` e `/tmp`). Rimettere quei privilegi per separare la sandbox renderebbe più pericoloso proprio il processo che tiene segreti e conversazioni. Un container per ogni esecuzione chiederebbe di dare ad Annie il socket di Docker, che equivale a root sull'host.
+
+Restiamo quindi con: permission model di Node e moduli consentiti nel processo del tool; container di Annie con privilegi minimi, che il processo del tool eredita; approvazione umana del codice e degli host; egress firewall sul container per chi vuole garanzie di rete forti. Da rivalutare se Node aggiungerà il blocco dei socket al permission model, o se un cliente chiederà un runner di tool separato, su un'altra macchina.

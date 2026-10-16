@@ -21,6 +21,8 @@ docker compose exec annie rm /data/owner-login-link.txt
 
 Al primo avvio Annie crea il tenant, l'istanza `annie` e l'owner, e scrive il link d'accesso dell'owner in `owner-login-link.txt` nella cartella dati (permessi 0600; non finisce nei log). Aprilo nel browser, poi cancella il file.
 
+Il container gira con il minimo dei privilegi: filesystem in sola lettura tranne `/data` e `/tmp`, nessuna capability Linux, niente escalation di privilegi. Se lo avvii senza compose, usa le stesse opzioni (`--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true`).
+
 La porta 8080 è esposta solo su `127.0.0.1`. Esempio Caddy:
 
 ```text
@@ -51,9 +53,12 @@ pnpm annie person add "Anna Rossi" --instance annie    # stampa il link personal
 pnpm annie person list
 pnpm annie person link p_xxxxxxxxxxxx                   # nuovo link, il vecchio e le sue sessioni smettono di funzionare
 pnpm annie person remove p_xxxxxxxxxxxx
+pnpm annie person reset-2fa p_xxxxxxxxxxxx              # toglie la verifica in due passaggi (telefono perso)
 ```
 
 Con Docker: `docker compose exec annie node_modules/.bin/tsx src/main/cli.ts person add "Anna Rossi" --instance annie`.
+
+Ognuno può attivare la verifica in due passaggi cliccando sul proprio nome nella console: da quel momento per entrare servono il link e il codice dell'app di autenticazione. Per chi gestisce dati di clienti conviene chiederla a tutti.
 
 Il link contiene il token nel frammento (`#...`): non finisce nei log del server né del proxy. Va dato alla persona in privato. In Impostazioni l'owner decide chi può **scrivere** all'istanza dal web e chi **approva** le sue azioni (tool proposti, pratiche della segreteria).
 

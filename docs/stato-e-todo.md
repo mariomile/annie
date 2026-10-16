@@ -4,7 +4,7 @@ Aggiornato al 15 ottobre 2026. Lavoro ripreso su richiesta di Mario dopo la paus
 
 ## Dove siamo
 
-Su `main` ci sono le settimane 1, 2 e 3, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le settimane 4 e 5 sono sui branch `week-4` e `week-5`, in attesa di PR e dell'ok di Mario.
+Su `main` ci sono le settimane da 1 a 5 (la 4 e la 5 dal 16 ottobre 2026), e la CI controlla ogni PR con typecheck, test ed eval deterministiche. La settimana 6 è sul branch `week-6`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -30,15 +30,15 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 ### Decisioni che spettano a Mario
 
 - [x] Licenza: Apache-2.0, confermata da Mario il 16 ottobre 2026
-- [ ] Merge di `week-4` e `week-5` su `main`: PR aperte il 16 ottobre 2026 su richiesta di Mario, il merge resta suo
+- [x] Merge di `week-4` e `week-5` su `main`, con l'ok di Mario il 16 ottobre 2026 (#3 `e5f9f4f`, #4 `a55e9f0`)
 
 ### Dopo (proposta)
 
-- [ ] Ritentativi nello stesso processo, con backoff, per risposte e schede
-- [ ] Pulizia delle outbox e dei file vecchi
-- [ ] Sandbox sotto un utente di sistema separato, o in container
-- [ ] Creare istanze dalla console (oggi da configurazione)
-- [ ] 2FA per la console
+- [x] Ritentativi nello stesso processo, con backoff, per risposte e schede (risposte: settimana 6; schede: a ogni giro dalla settimana 4)
+- [x] Pulizia delle outbox: le risposte consegnate da più di 30 giorni si cancellano all'apertura dell'istanza (settimana 6). I file del workspace non si cancellano da soli: sono dati delle persone, li toglie chi li gestisce
+- [x] Sandbox: container di Annie con privilegi minimi, che il processo del tool eredita (settimana 6). L'utente di sistema separato è scartato: richiederebbe di ridare ad Annie i privilegi per cambiare utente ([ADR 0002](adr/0002-tool-proposti-sandbox-e-approvazione.md))
+- [x] Creare istanze dalla console (branch `week-6`, vedi [week6.md](week6.md))
+- [x] 2FA per la console: verifica in due passaggi facoltativa con app di autenticazione (settimana 6)
 
 ### Prima di rendere pubblico il repo
 

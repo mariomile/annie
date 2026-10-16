@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { writeFileAtomic } from "../core/atomic-file.ts";
+import { readJsonFile, updateJsonFile } from "./locked-json.ts";
+import { generateTotpSecret, verifyTotp } from "./totp.ts";
 
 /**
  * A person who uses the web interface. The owner manages Annie; a member uses the
@@ -13,13 +13,17 @@ export type Person = {
 	readonly role: "owner" | "member";
 	readonly tokenHash: string;
 	readonly createdAt: string;
+	/** Two-factor login (TOTP): on once `secret` is set; `lastStep` stops a code being reused. */
+	readonly totp?: { readonly secret: string; readonly lastStep: number };
+	/** A secret shown to the person and not yet confirmed with a code. */
+	readonly totpPending?: string;
 };
 
-export type PublicPerson = Omit<Person, "tokenHash">;
+export type PublicPerson = Omit<Person, "tokenHash" | "totp" | "totpPending"> & { readonly twoFactor: boolean };
 
 export function publicPerson(p: Person): PublicPerson {
-	const { tokenHash: _hash, ...rest } = p;
-	return rest;
+	const { tokenHash: _hash, totp, totpPending: _pending, ...rest } = p;
+	return { ...rest, twoFactor: totp !== undefined };
 }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -38,12 +42,7 @@ export class PeopleStore {
 	}
 
 	async list(): Promise<Person[]> {
-		try {
-			return JSON.parse(await readFile(this.file, "utf8")) as Person[];
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-			throw error;
-		}
+		return readJsonFile<Person[]>(this.file, []);
 	}
 
 	async get(id: string): Promise<Person | undefined> {
@@ -55,26 +54,54 @@ export class PeopleStore {
 		if (name.trim() === "" || name.length > 80) throw new Error("Name: 1 to 80 characters");
 		const token = randomBytes(32).toString("base64url");
 		const person: Person = { id: `p_${randomBytes(6).toString("hex")}`, name: name.trim(), role, tokenHash: hash(token), createdAt: new Date().toISOString() };
-		await this.write([...(await this.list()), person]);
+		updateJsonFile<Person[]>(this.file, [], (all) => [...all, person]);
 		return { person, token };
 	}
 
 	/** A new login token; the old one stops working. Existing sessions are ended by the caller. */
 	async rotate(id: string): Promise<string> {
-		const all = await this.list();
-		const person = all.find((p) => p.id === id);
-		if (person === undefined) throw new Error(`No person ${id}`);
 		const token = randomBytes(32).toString("base64url");
-		await this.write(all.map((p) => (p.id === id ? { ...p, tokenHash: hash(token) } : p)));
+		this.update(id, (p) => [{ ...p, tokenHash: hash(token) }, undefined]);
 		return token;
 	}
 
 	async remove(id: string): Promise<boolean> {
-		const all = await this.list();
-		const kept = all.filter((p) => p.id !== id);
-		if (kept.length === all.length) return false;
-		await this.write(kept);
-		return true;
+		const before = (await this.list()).length;
+		return updateJsonFile<Person[]>(this.file, [], (all) => all.filter((p) => p.id !== id)).length !== before;
+	}
+
+	/** Start turning on 2FA: a new secret, active only once confirmed with `enableTotp`. */
+	async startTotp(id: string): Promise<string> {
+		const secret = generateTotpSecret();
+		this.update(id, (p) => [{ ...p, totpPending: secret }, undefined]);
+		return secret;
+	}
+
+	/** Turn on 2FA if `code` matches the pending secret. */
+	async enableTotp(id: string, code: string, now = Date.now()): Promise<boolean> {
+		return this.update(id, (p) => {
+			const step = p.totpPending === undefined ? undefined : verifyTotp(p.totpPending, code, now);
+			if (p.totpPending === undefined || step === undefined) return [p, false];
+			const { totpPending: _pending, ...rest } = p;
+			return [{ ...rest, totp: { secret: p.totpPending, lastStep: step } }, true];
+		});
+	}
+
+	/** Check a code for a person with 2FA on, and use it up. */
+	async useTotp(id: string, code: string, now = Date.now()): Promise<boolean> {
+		return this.update(id, (p) => {
+			const step = p.totp === undefined ? undefined : verifyTotp(p.totp.secret, code, now, p.totp.lastStep);
+			if (p.totp === undefined || step === undefined) return [p, false];
+			return [{ ...p, totp: { ...p.totp, lastStep: step } }, true];
+		});
+	}
+
+	/** Turn 2FA off (after a code from the person, or a reset by the owner). */
+	async clearTotp(id: string): Promise<void> {
+		this.update(id, (p) => {
+			const { totp: _totp, totpPending: _pending, ...rest } = p;
+			return [rest, undefined];
+		});
 	}
 
 	async byToken(token: string): Promise<Person | undefined> {
@@ -83,8 +110,17 @@ export class PeopleStore {
 		return (await this.list()).find((p) => sameHash(p.tokenHash, h));
 	}
 
-	private write(people: Person[]): Promise<void> {
-		return writeFileAtomic(this.file, `${JSON.stringify(people, null, 2)}\n`);
+	/** Change one person under the shared lock; returns what `change` reports. */
+	private update<R>(id: string, change: (p: Person) => [Person, R]): R {
+		let result: R | undefined;
+		updateJsonFile<Person[]>(this.file, [], (all) => {
+			const index = all.findIndex((p) => p.id === id);
+			if (index < 0) throw new Error(`No person ${id}`);
+			const [next, r] = change(all[index] as Person);
+			result = r;
+			return all.with(index, next);
+		});
+		return result as R;
 	}
 }
 
@@ -103,9 +139,7 @@ export class SessionStore {
 
 	async create(personId: string, now = Date.now()): Promise<string> {
 		const id = randomBytes(32).toString("base64url");
-		const all = (await this.load()).filter((s) => s.expiresAt > now);
-		all.push({ idHash: hash(id), personId, expiresAt: now + this.ttlMs });
-		await this.save(all);
+		updateJsonFile<Session[]>(this.file, [], (all) => [...all.filter((s) => s.expiresAt > now), { idHash: hash(id), personId, expiresAt: now + this.ttlMs }]);
 		return id;
 	}
 
@@ -117,24 +151,17 @@ export class SessionStore {
 
 	async end(sessionId: string): Promise<void> {
 		const h = hash(sessionId);
-		await this.save((await this.load()).filter((s) => !sameHash(s.idHash, h)));
+		updateJsonFile<Session[]>(this.file, [], (all) => all.filter((s) => !sameHash(s.idHash, h)));
 	}
 
-	async endAllOf(personId: string): Promise<void> {
-		await this.save((await this.load()).filter((s) => s.personId !== personId));
+	/** End every session of a person, but `keep` (the session asking, when it should stay). */
+	async endAllOf(personId: string, keep?: string): Promise<void> {
+		const kept = keep === undefined ? undefined : hash(keep);
+		updateJsonFile<Session[]>(this.file, [], (all) => all.filter((s) => s.personId !== personId || (kept !== undefined && sameHash(s.idHash, kept))));
 	}
 
 	/** Read every time: the CLI revokes sessions from another process. */
 	private async load(): Promise<Session[]> {
-		try {
-			return JSON.parse(await readFile(this.file, "utf8")) as Session[];
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			return [];
-		}
-	}
-
-	private async save(sessions: Session[]): Promise<void> {
-		await writeFileAtomic(this.file, `${JSON.stringify(sessions)}\n`);
+		return readJsonFile<Session[]>(this.file, []);
 	}
 }

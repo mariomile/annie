@@ -48,7 +48,7 @@ Eseguita su questo branch, Node 22.22.0, Linux:
 | Task programmati | nessun doppione dopo un crash, un solo recupero dopo uno spegnimento | granularità 30 secondi; un task di un'istanza chiusa aspetta la riapertura |
 | File | non escono dal workspace | i file restano finché qualcuno non li cancella |
 | Console | sessioni da 30 giorni, revocabili rigenerando il link | nessun 2FA; la console va messa dietro https |
-| Istanze nuove | | create dall'owner dalla riga di comando o nel codice; la console non crea istanze |
+| Istanze nuove | | dalla settimana 6 l'owner le crea anche dalla console ([week6.md](week6.md)) |
 
 ## Decisioni
 
