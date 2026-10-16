@@ -31,7 +31,7 @@ import { createCustomTools } from "./core/tools/custom-tools.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
-import { UsageLedger } from "./core/usage.ts";
+import { romeDayKey, UsageLedger } from "./core/usage.ts";
 import { connectChannel } from "./gateway.ts";
 import type { AnnieConfig } from "./main/config.ts";
 import { type RunningSegreteria, startSegreteria } from "./segreteria/boot.ts";
@@ -407,7 +407,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							return {
 								busy: working + retrying > 0,
 								nextWakeAt: runs.length === 0 ? null : new Date(Math.min(...runs)).toISOString(),
-								usage: { todayUsd: await ledger.todaySpent(), monthUsd: await ledger.monthSpent() },
+								usage: { day: romeDayKey(), todayUsd: await ledger.todaySpent(), months: await ledger.byMonth() },
 							};
 						},
 					},

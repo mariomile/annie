@@ -61,8 +61,14 @@ export class RailwayCellProvider implements CellProvider {
 	constructor(private readonly options: RailwayCellOptions) {
 		this.file = join(options.dataDir, "railway-cells.json");
 		this.fetchImpl = options.fetch ?? fetch;
-		// A new control plane process knows nothing of what slept meanwhile: every cell starts as
-		// "stopped", so the first request wakes it properly (a cheap check if it is already up).
+	}
+
+	/**
+	 * For a control plane that is starting: it knows nothing of what slept meanwhile, so every cell
+	 * counts as stopped and the first request wakes it properly (a cheap check if it is up). Only
+	 * the control plane calls this; a status reader must not, or the running one loses track.
+	 */
+	forgetAwake(): void {
 		updateJsonFile<Record<string, CellRecord>>(this.file, {}, (all) => Object.fromEntries(Object.entries(all).map(([id, cell]) => [id, { ...cell, awake: false }])));
 	}
 

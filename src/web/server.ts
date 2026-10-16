@@ -29,8 +29,11 @@ export type CellState = {
 	readonly busy: boolean;
 	/** When to start it again by itself (next task programmato), or null. */
 	readonly nextWakeAt: string | null;
-	/** What the cell spent on the model (estimate): the measure for the operator and for billing. */
-	readonly usage?: { readonly todayUsd: number; readonly monthUsd: number };
+	/**
+	 * What the cell spent on the model (estimate from list prices): today, and per month
+	 * ("YYYY-MM", Europe/Rome) so a month that closed while the cell slept can still be billed.
+	 */
+	readonly usage?: { readonly day: string; readonly todayUsd: number; readonly months: Readonly<Record<string, number>> };
 };
 
 export type TelegramStatus = {

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -198,16 +198,21 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 		const c = await cloud({ idleMs: 0 });
 		const anna = await signUp(c, "anna@studio.example");
 		const tenant = anna.host.split(".")[0] as string;
-		// What the cell's ledger holds: today, and an earlier month that must not count.
+		// What the cell's ledger holds: today, last month (closed, still to bill), and an old month.
 		const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+		const previous = new Date(`${today.slice(0, 7)}-15T12:00:00Z`);
+		previous.setUTCMonth(previous.getUTCMonth() - 1);
 		const tenantDir = join(c.root, "cells", tenant, "data", "tenants", tenant);
 		mkdirSync(tenantDir, { recursive: true });
-		writeFileSync(join(tenantDir, "usage-totals.json"), JSON.stringify({ [today]: 1.25, "2020-01-15": 9 }));
+		writeFileSync(join(tenantDir, "usage-totals.json"), JSON.stringify({ [today]: 1.25, [`${previous.toISOString().slice(0, 7)}-10`]: 4, "2020-01-15": 9 }));
 		const awake = await c.cp.status();
-		expect(awake).toEqual([expect.objectContaining({ tenant, email: "anna@studio.example", cell: "running", usage: expect.objectContaining({ todayUsd: 1.25, monthUsd: 1.25 }) })]);
+		expect(awake).toEqual([expect.objectContaining({ tenant, email: "anna@studio.example", cell: "running", spend: expect.objectContaining({ todayUsd: 1.25, monthUsd: 1.25, lastMonthUsd: 4 }) })]);
 		await c.cp.tick(new Date());
 		const asleep = await c.cp.status();
-		expect(asleep[0]).toMatchObject({ cell: "stopped", usage: { todayUsd: 1.25, monthUsd: 1.25 } });
+		expect(asleep[0]).toMatchObject({ cell: "stopped", spend: { todayUsd: 1.25, monthUsd: 1.25, lastMonthUsd: 4 } });
+		// The control plane kept the reading, every month of it, for billing.
+		const kept = JSON.parse(readFileSync(join(c.root, "control-plane.json"), "utf8")).cells[0].usage;
+		expect(kept.months["2020-01"]).toBe(9);
 		// Asking did not wake it.
 		expect(await c.provider.status(tenant)).toBe("stopped");
 	}, 180_000);

@@ -14,7 +14,7 @@ Perché: il nucleo di Annie (storage su file, SQLite di Pi Durable, lock POSIX, 
 ## Conseguenze
 
 - La cella deve potersi spegnere: Telegram passa dal long polling ai webhook (il messaggio arriva al control plane, che sveglia la cella), e i task programmati vengono svegliati dal control plane all'ora prevista.
-- Il control plane vede i messaggi in transito (deve smistarli) ma non li conserva; conversazioni, file e segreti stanno solo nella cella. Tiene però il segreto di ogni cella, con cui può chiedere un link da owner: ogni richiesta resta nell'audit della cella, e chi vuole escludere anche l'operatore attiva la verifica in due passaggi.
+- Il control plane vede i messaggi in transito (deve smistarli) ma non li conserva; conversazioni, file e segreti stanno solo nella cella. Tiene però il segreto di ogni cella, con cui può chiedere un link da owner: ogni richiesta resta nell'audit della cella, e chi vuole escludere anche l'operatore attiva la verifica in due passaggi. Per la fattura conserva anche la spesa stimata di ogni tenant, giorno e mesi: solo numeri, nessun contenuto (nota del 16 ottobre 2026).
 - In produzione le celle stanno su un dominio separato da quello della registrazione, registrato nella Public Suffix List: tenant diversi non sono «same-site» e non possono toccarsi i cookie.
 - Costo fisso per tenant: il volume della cella si paga anche da spenta. Va misurato prima di fissare il prezzo.
 - Il provider (per esempio Fly.io Machines in una regione UE) è dietro un'interfaccia nostra, come Pi: si può cambiare.
