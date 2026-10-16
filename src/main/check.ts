@@ -1,4 +1,5 @@
 import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
+import { DockerComputerProvider } from "../computer/docker-computer.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -27,6 +28,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	}
 	const transcription = config.transcription;
 	if (transcription !== undefined) checks.push(check("Trascrizione dei vocali", () => transcriptionCheck(transcription, call)));
+	const computer = config.computer;
+	if (computer !== undefined) checks.push(check("Computer (Docker)", () => computerCheck(computer)));
 	return Promise.all(checks);
 }
 
@@ -67,6 +70,13 @@ async function modelCheck(config: AnnieConfig, call: Call): Promise<string> {
 	const found = models.includes(config.modelId);
 	if (models.length > 0 && !found) throw new CheckFailed(`chiave valida, ma il modello ${config.modelId} non è tra quelli disponibili (ANNIE_MODEL_ID)`);
 	return `chiave valida, modello ${config.modelId}`;
+}
+
+/** The Docker host answers and has the computer's image (ADR 0013). */
+async function computerCheck(config: NonNullable<AnnieConfig["computer"]>): Promise<string> {
+	const problem = await new DockerComputerProvider(config).check();
+	if (problem !== undefined) throw new CheckFailed(problem);
+	return `Docker risponde, immagine ${config.image} presente`;
 }
 
 /** The service's model list: the key works and the model is there (the services that list models). */

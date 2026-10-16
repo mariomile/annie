@@ -161,6 +161,8 @@ export type AnnieConfig = {
 	readonly transcription: TranscriberConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
+	/** The instances' computers (ADR 0013): a container each on this Docker host. */
+	readonly computer: { readonly image: string; readonly socketPath: string; readonly runtime?: string; readonly memoryMb: number; readonly cpus: number; readonly diskMb: number } | undefined;
 };
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -219,6 +221,20 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (!Number.isInteger(maxSeconds) || maxSeconds < 10 || maxSeconds > 3600) throw new ConfigError("ANNIE_TRANSCRIBE_MAX_SECONDS: whole seconds between 10 and 3600");
 		transcription = { url: transcribeUrl, apiKey: transcribeKey, model, maxSeconds };
 	}
+	const computerKind = nonEmpty(env.ANNIE_COMPUTER);
+	if (computerKind !== undefined && computerKind !== "docker") throw new ConfigError("ANNIE_COMPUTER: docker, or unset for no computer");
+	const computerMemory = Number(nonEmpty(env.ANNIE_COMPUTER_MEMORY_MB) ?? "1024");
+	if (computerKind !== undefined && (!Number.isInteger(computerMemory) || computerMemory < 128 || computerMemory > 16384)) throw new ConfigError("ANNIE_COMPUTER_MEMORY_MB: whole megabytes between 128 and 16384");
+	const computerCpus = Number(nonEmpty(env.ANNIE_COMPUTER_CPUS) ?? "1");
+	if (computerKind !== undefined && !(computerCpus >= 0.25 && computerCpus <= 16)) throw new ConfigError("ANNIE_COMPUTER_CPUS: between 0.25 and 16");
+	const computerDisk = Number(nonEmpty(env.ANNIE_COMPUTER_DISK_MB) ?? "2048");
+	if (computerKind !== undefined && (!Number.isInteger(computerDisk) || computerDisk < 64 || computerDisk > 102400)) throw new ConfigError("ANNIE_COMPUTER_DISK_MB: whole megabytes between 64 and 102400");
+	const computerRuntime = nonEmpty(env.ANNIE_COMPUTER_RUNTIME);
+	if (computerRuntime !== undefined && !/^[\w.-]{1,40}$/.test(computerRuntime)) throw new ConfigError("ANNIE_COMPUTER_RUNTIME: a Docker runtime name, e.g. runsc");
+	const computer =
+		computerKind === undefined
+			? undefined
+			: { image: nonEmpty(env.ANNIE_COMPUTER_IMAGE) ?? "annie-computer:latest", socketPath: nonEmpty(env.ANNIE_DOCKER_SOCKET) ?? "/var/run/docker.sock", memoryMb: computerMemory, cpus: computerCpus, diskMb: computerDisk, ...(computerRuntime === undefined ? {} : { runtime: computerRuntime }) };
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
 	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
@@ -261,6 +277,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		chromiumPath: nonEmpty(env.ANNIE_CHROMIUM_PATH),
 		screenshotsWithoutSandbox: nonEmpty(env.ANNIE_SCREENSHOTS_WITHOUT_SANDBOX) === "1",
 		transcription,
+		computer,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },
 	};
 }

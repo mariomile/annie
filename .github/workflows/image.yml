@@ -27,6 +27,25 @@ jobs:
           docker logs annie
           exit 1
 
+  # The instances' computers (ADR 0013): the image builds, and the provider works on a real daemon.
+  computer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the computer image
+        run: docker build -f docker/computer.Dockerfile -t annie-computer:ci docker
+      - name: The computer on a real Docker host
+        env:
+          ANNIE_TEST_COMPUTER_IMAGE: annie-computer:ci
+        run: pnpm vitest run test/computer-docker.live.test.ts
+
   # Only this job can write packages, and only on main: a PR's Dockerfile never builds with it.
   publish:
     needs: image

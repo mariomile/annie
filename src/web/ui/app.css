@@ -357,3 +357,4 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 .brief h3 { margin: 0; }
 .field.inline { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 0; }
 .field.inline input { width: auto; }
+p.warn { color: var(--warn); }

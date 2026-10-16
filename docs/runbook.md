@@ -164,6 +164,26 @@ Una chiamata è a turni: Twilio trascrive la frase, Annie risponde, Twilio la le
 
 La voce passa da Twilio, che fa riconoscimento e sintesi: per i dati in UE scegli la regione Irlanda (`ANNIE_TWILIO_API`) e indica Twilio nell'informativa. Il costo delle chiamate lo fattura Twilio e non entra nel tetto di spesa del modello.
 
+## 6j. Il computer delle istanze
+
+Annie può eseguire comandi (Python, `jq`, `sqlite3`, `pandoc`, gli strumenti PDF) in un computer suo, un container per istanza senza rete ([ADR 0013](adr/0013-terminale-in-un-computer-senza-rete.md)). Serve Docker 20.10 o più recente sullo stesso server.
+
+**Prima di accenderlo: il socket di Docker equivale a root sul server.** Chi lo usa può creare un container che monta tutto il disco. Accendilo solo dove Annie è l'unico servizio della macchina, e mai in Annie Cloud: lì le celle non ricevono le variabili del computer, e il computer resta spento finché le celle non girano su micro-VM.
+
+1. Costruisci l'immagine: `docker build -f docker/computer.Dockerfile -t annie-computer:latest docker`. Va rifatta quando cambia il Dockerfile; al comando dopo, ogni computer viene ricreato con la nuova immagine e i suoi file restano.
+2. In `.env`: `ANNIE_COMPUTER=docker`. Le altre variabili hanno valori di default: `ANNIE_COMPUTER_IMAGE` (`annie-computer:latest`), `ANNIE_DOCKER_SOCKET` (`/var/run/docker.sock`), `ANNIE_COMPUTER_MEMORY_MB` (1024), `ANNIE_COMPUTER_CPUS` (1), `ANNIE_COMPUTER_DISK_MB` (2048, la quota di `/work`), `ANNIE_COMPUTER_RUNTIME` (vuoto; `runsc` per gVisor).
+3. Con Docker Compose, scommenta in `docker-compose.yml` il socket e `group_add`, con `DOCKER_GID` uguale al gruppo del socket (`stat -c %g /var/run/docker.sock`). Senza Compose, il processo di Annie deve poter leggere e scrivere il socket.
+4. `pnpm annie check` dice se Docker risponde e se l'immagine c'è; lo stesso controllo compare nella console (Impostazioni, Computer) e nel log all'avvio.
+5. L'owner accende il computer istanza per istanza (Impostazioni, Computer).
+
+Come gira: un container per istanza con rete `none`, file system in sola lettura tranne `/work` (un volume `annie-computer-<hash>`) e `/tmp` (256 MB in memoria), nessuna capability, niente escalation di privilegi, 128 processi, nessun file oltre 1 GB. I comandi girano come uid 1000 e il container come nobody: alla fine di ogni comando tutto quello che il comando ha lasciato acceso viene chiuso. Al massimo 8 computer accesi e 4 comandi alla volta; un computer senza comandi per 10 minuti si ferma. Quando `/work` supera la quota, Annie lo legge nel risultato, i nuovi file restano minuscoli finché non ne cancella e non si copiano altri file dentro. All'avvio Annie ferma i computer rimasti accesi da un avvio precedente: un solo Annie per server Docker, perché due installazioni sullo stesso Docker si fermerebbero i computer a vicenda.
+
+**gVisor** dà al computer un kernel suo invece di quello del server: installa `runsc` ([gvisor.dev](https://gvisor.dev/docs/user_guide/install/)), registralo in `/etc/docker/daemon.json` e imposta `ANNIE_COMPUTER_RUNTIME=runsc`. Consigliato se più persone di fiducia diversa usano la stessa installazione.
+
+**Disco**: i volumi dei computer stanno nella cartella dati di Docker (`/var/lib/docker`). Meglio metterla su una partizione sua, così un computer pieno non ferma il server. `docker system df -v` mostra quanto occupa ogni volume `annie-computer-*`; «Azzera i file del computer» nella console cancella container e volume di un'istanza. I file dei computer non sono nel backup della cartella dati: quello che conta Annie lo copia nel workspace.
+
+**Immagine personalizzata**: si può partire da `docker/computer.Dockerfile` e aggiungere strumenti, purché restino l'utente 1000, `/work` suo, `sh`, `timeout`, `du` e `chmod`. Poi `ANNIE_COMPUTER_IMAGE` con il nuovo nome. `copy_out` legge i file attraverso Docker, non dentro il computer: un collegamento simbolico o una cartella vengono rifiutati.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.

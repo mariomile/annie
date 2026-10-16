@@ -424,6 +424,33 @@ function webActionsCard(inst, allowed) {
 	);
 }
 
+/** The instance's computer (ADR 0013): a terminal with no network. */
+function computerCard(inst, allowed, problem) {
+	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
+	toggle.onchange = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/computer-allowed`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Annie può usare il suo computer" : "Computer spento");
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	};
+	const reset = () =>
+		confirmDialog("Azzerare il computer?", "Annie perde i file che ha nel suo computer (/work). Quelli copiati nel workspace restano.", "Azzera", async () => {
+			await api(`/api/instances/${inst.id}/computer`, { method: "DELETE" });
+			toast("Computer azzerato");
+		});
+	return h(
+		"div.card.pad",
+		h("h3", "Computer"),
+		h("p.muted", "Annie esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
+		problem ? h("p.warn", `Il computer non funziona su questo server: ${problem}.`) : null,
+		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo computer")),
+		h("div.actions", h("button.btn.ghost", { onclick: reset }, "Azzera i file del computer")),
+	);
+}
+
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
@@ -1465,7 +1492,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, tel] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, tel, computer] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -1473,6 +1500,7 @@ async function viewSettings(main) {
 		api("/api/google").catch(() => ({ available: false })),
 		api("/api/voice").catch(() => ({ available: false })),
 		api(`/api/instances/${inst.id}/phone`).catch(() => undefined),
+		api("/api/computer").catch(() => ({ available: false })),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -1508,6 +1536,7 @@ async function viewSettings(main) {
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				webCard(inst, settings.egress.web ?? []),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
+				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
 			),
 			h(
 				"div.stack",

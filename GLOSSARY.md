@@ -121,6 +121,10 @@ _Avoid_: whitelist, domini, navigazione libera
 L'invio di un modulo di un sito consentito che l'istanza chiede e che parte solo dopo che chi l'ha chiesta, o un approvatore, ha letto destinazione e valori e l'ha approvato. Una volta sola; l'esito torna nella conversazione.
 _Avoid_: automazione, bot, compilazione automatica
 
+**Computer**:
+La macchina di un'istanza, separata dalla cella, senza rete e senza segreti, dove l'istanza esegue comandi su copie dei file del workspace e rimette lì quelli che produce. La accende l'owner; i suoi file restano finché l'owner non la azzera.
+_Avoid_: sandbox (è quella dei tool proposti), VM, server
+
 **Brief del mattino**:
 Il task programmato di una persona che ogni mattina le riassume impegni del giorno, mail che chiedono una risposta e quello che l'istanza ricorda di lei, leggendo senza cambiare niente.
 _Avoid_: digest, report giornaliero, newsletter
