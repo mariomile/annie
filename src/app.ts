@@ -328,8 +328,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	/** The card of a form to send: in the conversation that asked (Telegram, WhatsApp) and to the approvers' chats. */
 	async function notifyWebAction(instance: string, action: WebAction): Promise<void> {
 		const record = await runtime.registry.getInstance(tenant, instance);
-		const values = Object.entries(action.values).map(([k, v]) => `${k}: ${v.length > 300 ? `${v.slice(0, 300)}[...]` : v}`);
-		const long = Object.values(action.values).some((v) => v.length > 300);
+		// Everything that leaves except hidden fields: page defaults and the button pressed too.
+		const values = action.shown.map(([k, v]) => `${k}: ${v.length > 300 ? `${v.slice(0, 300)}[...]` : v}`);
+		const long = action.shown.some(([, v]) => v.length > 300);
 		const text = `Azione sul web da approvare · richiesta ${action.id}\n\n${action.reason}\n\nPagina: ${action.pageUrl}\nInvio a: ${action.action}\n\n${values.length > 0 ? values.join("\n") : "(nessun campo compilato)"}${long ? "\n\nAlcuni valori sono lunghi: leggili interi e decidi nella console web (Approvazioni)." : ""}\n\nScade fra 24 ore.`;
 		const buttons = long
 			? [{ label: "Rifiuta", data: `web:${action.id}:rejected` }]
@@ -362,11 +363,12 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 
 	async function onWebActionTap(instance: string, adapter: ChannelAdapter, action: InboundAction, id: string, decision: "approved" | "rejected"): Promise<void> {
 		const pending = await runtime.webActions(tenant, instance).get(id);
-		if (decision === "approved" && Object.values(pending?.values ?? {}).some((v) => v.length > 300)) return; // only from the console
+		if (pending === undefined) return;
+		if (decision === "approved" && pending.shown.some(([, v]) => v.length > 300)) return; // only from the console
 		try {
 			const decided = await decideWebAction(runtime, tenant, instance, id, decision, { channel: adapter.name, userId: action.userId }, sendForInstance(instance));
 			const mine = decided.decidedBy?.channel === adapter.name && decided.decidedBy.userId === action.userId;
-			const word = decided.status === "rejected" ? "rifiutata" : decided.status === "expired" ? "scaduta" : decided.status === "done" || decided.status === "failed" ? "approvata" : decided.status;
+			const word = { rejected: "rifiutata", expired: "scaduta", done: "approvata e inviata", failed: "approvata, ma il modulo non è partito", uncertain: "approvata, esito incerto" }[decided.status as string] ?? decided.status;
 			await adapter.send({ tenantId: tenant, instanceId: instance, channel: adapter.name, threadId: action.threadId, idempotencyKey: `decision:${action.actionId}`, text: `Richiesta ${id}: ${word}${mine || decided.status === "expired" ? "" : " (decisa in precedenza)"}.` });
 		} catch (error) {
 			if (!(error instanceof NotAnApprover)) throw error;
@@ -430,15 +432,16 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 
 	// --- resume, scheduler, segreteria, web ---
 	for (const record of conversational) await runtime.resume(tenant, record.id);
-	for (const record of conversational) {
-		for (const proposal of await runtime.proposals(tenant, record.id).list()) if (proposal.status === "pending") await notifyApprovers(record.id, proposal);
-		const actions = runtime.webActions(tenant, record.id);
-		// A form left half-sent by the previous process is never sent again: the conversation is told.
-		for (const action of await actions.settleInterrupted()) {
+	// A form left half-sent by the previous process is never sent again: the conversation is told.
+	for (const record of await runtime.registry.listInstances(tenant)) {
+		for (const action of await runtime.webActions(tenant, record.id).settleInterrupted()) {
 			await runtime.audit(tenant).append({ type: "web_action.uncertain", instanceId: record.id, actionId: action.id });
 			if (action.thread !== undefined) await runtime.sendMessage(tenant, record.id, { ...action.thread, text: `Richiesta ${action.id}: Annie si è riavviata mentre inviava il modulo a ${new URL(action.action).host}. Non so se è arrivato: controlla sul sito prima di chiederlo di nuovo.`, key: `web-action:${action.id}:uncertain` }).catch(() => {});
 		}
-		for (const action of await actions.list()) if (action.status === "pending") await notifyWebAction(record.id, action);
+	}
+	for (const record of conversational) {
+		for (const proposal of await runtime.proposals(tenant, record.id).list()) if (proposal.status === "pending") await notifyApprovers(record.id, proposal);
+		for (const action of await runtime.webActions(tenant, record.id).list()) if (action.status === "pending") await notifyWebAction(record.id, action);
 	}
 	const scheduler = new Scheduler(
 		// Read each tick: instances created from the console join without a restart.

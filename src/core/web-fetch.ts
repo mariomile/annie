@@ -27,28 +27,37 @@ export type WebFetchOptions = {
 	readonly cookies?: CookieJar;
 };
 
-/** Cookies of one visit (web_submit): name=value per exact host, nothing kept after it. */
+/**
+ * Cookies of one visit (web_submit), nothing kept after it. A cookie goes back to the host that
+ * set it, or to the domain it names when that host is under it; a Secure one only over https.
+ */
 export class CookieJar {
-	private readonly byHost = new Map<string, Map<string, string>>();
+	private readonly cookies = new Map<string, { value: string; domain: string; hostOnly: boolean; secure: boolean }>();
 
-	header(host: string): string | undefined {
-		const jar = this.byHost.get(host.toLowerCase());
-		return jar === undefined || jar.size === 0 ? undefined : [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+	header(url: URL): string | undefined {
+		const host = url.hostname.toLowerCase();
+		const out = [...this.cookies]
+			.filter(([, c]) => (c.hostOnly ? host === c.domain : host === c.domain || host.endsWith(`.${c.domain}`)) && (!c.secure || url.protocol === "https:"))
+			.map(([key, c]) => `${key.slice(key.indexOf(" ") + 1)}=${c.value}`);
+		return out.length === 0 ? undefined : out.join("; ");
 	}
 
-	take(host: string, setCookies: readonly string[]): void {
-		const key = host.toLowerCase();
-		const jar = this.byHost.get(key) ?? new Map<string, string>();
+	take(url: URL, setCookies: readonly string[]): void {
+		const host = url.hostname.toLowerCase();
 		for (const line of setCookies) {
-			const pair = line.split(";", 1)[0] ?? "";
+			const [pair = "", ...attrs] = line.split(";");
 			const eq = pair.indexOf("=");
 			if (eq <= 0) continue;
 			const name = pair.slice(0, eq).trim();
 			const value = pair.slice(eq + 1).trim();
-			if (/max-age=0\b|expires=thu, 01 jan 1970/i.test(line) || value === "") jar.delete(name);
-			else if (jar.size < 50 && name.length + value.length < 4096) jar.set(name, value);
+			const attr = (key: string) => attrs.map((a) => a.trim()).find((a) => a.toLowerCase().startsWith(key));
+			const named = attr("domain=")?.slice(7).trim().toLowerCase().replace(/^\./, "");
+			// A domain the host is not under (or a bare suffix like "it") is ignored: host-only.
+			const domain = named !== undefined && named.includes(".") && (host === named || host.endsWith(`.${named}`)) ? named : host;
+			const key = `${domain} ${name}`;
+			if (/max-age=0\b|expires=thu, 01 jan 1970/i.test(line) || value === "") this.cookies.delete(key);
+			else if (this.cookies.size < 50 && name.length + value.length < 4096) this.cookies.set(key, { value, domain, hostOnly: named === undefined || domain === host && named !== host, secure: attr("secure") !== undefined });
 		}
-		this.byHost.set(key, jar);
 	}
 }
 
@@ -76,12 +85,14 @@ export async function webFetch(url: string, options: WebFetchOptions): Promise<W
 	for (let hop = 0; hop <= (options.maxRedirects ?? 5); hop++) {
 		const target = checkedUrl(current, options);
 		const answer = await get(target, { ...options, send });
-		options.cookies?.take(target.hostname, answer.setCookies);
+		options.cookies?.take(target, answer.setCookies);
 		if (answer.status >= 300 && answer.status < 400 && answer.location !== undefined) {
 			const next = new URL(answer.location, target).toString();
 			if (options.followRedirects === false) return { ...answer, url: target.toString(), location: next };
-			// 307 and 308 keep the method and the body; the others turn into a GET.
+			// 307 and 308 keep the method and the body; the others turn into a GET. A form goes
+			// only where the person approved it: never on to another origin with its body.
 			if (answer.status !== 307 && answer.status !== 308) send = undefined;
+			else if (send !== undefined && new URL(next).origin !== target.origin) throw new WebFetchRefused(`il sito voleva inoltrare il modulo a ${new URL(next).host}, non approvato`);
 			current = next;
 			continue;
 		}
@@ -124,7 +135,7 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 	return new Promise((resolve, reject) => {
 		const send = url.protocol === "https:" ? httpsRequest : httpRequest;
 		const headers: Record<string, string> = { "user-agent": USER_AGENT, accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "accept-encoding": "identity" };
-		const cookie = options.cookies?.header(url.hostname);
+		const cookie = options.cookies?.header(url);
 		if (cookie !== undefined) headers.cookie = cookie;
 		if (options.send !== undefined) {
 			headers["content-type"] = options.send.contentType;
@@ -224,7 +235,8 @@ function ipv6Words(address: string): number[] | undefined {
 
 /** The readable text of an HTML page, and its title. Linear in the page's size: no backtracking regex. */
 export function pageText(html: string): { title: string; text: string } {
-	const lower = html.toLowerCase();
+	// ASCII only: a lowercase that changed the length would shift every index below.
+	const lower = html.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 	const titleStart = lower.indexOf("<title");
 	const titleOpen = titleStart < 0 ? -1 : lower.indexOf(">", titleStart);
 	const titleEnd = titleOpen < 0 ? -1 : lower.indexOf("</title", titleOpen);

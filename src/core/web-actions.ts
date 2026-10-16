@@ -1,9 +1,9 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
-import { CookieJar, pageText, WebFetchRefused, type WebFetchOptions, webFetch } from "./web-fetch.ts";
-import { FormRefused, formBody, pageForms, type WebForm } from "./web-forms.ts";
+import { CookieJar, checkedUrl, pageText, WebFetchRefused, type WebFetchOptions, webFetch } from "./web-fetch.ts";
+import { FormRefused, formBody, formFingerprint, pageForms, type WebForm } from "./web-forms.ts";
 
 /**
  * A form Annie asked to send (web_submit), waiting for (or past) a person's decision. Sent at
@@ -19,6 +19,12 @@ export type WebAction = {
 	readonly action: string;
 	readonly method: "POST";
 	readonly values: Readonly<Record<string, string>>;
+	/** The submit button pressed (its number among the form's buttons). */
+	readonly button: number;
+	/** Everything that will be sent except hidden fields, as the approver reads it. */
+	readonly shown: readonly (readonly [string, string])[];
+	/** The form as it was when asked (formFingerprint): a changed form is not sent. */
+	readonly fingerprint: string;
 	/** Why, in Annie's words: shown on the card. */
 	readonly reason: string;
 	readonly status: "pending" | "approved" | "rejected" | "expired" | "running" | "done" | "failed" | "uncertain";
@@ -28,13 +34,21 @@ export type WebAction = {
 	readonly proposedAt: string;
 	readonly decidedBy?: { readonly channel: string; readonly userId: string };
 	readonly decidedAt?: string;
-	readonly result?: { readonly status: number; readonly url: string; readonly title: string; readonly text: string } | { readonly error: string };
+	readonly result?: WebActionResult;
 	/** Chats that have the card. */
 	readonly notified?: readonly string[];
 };
 
+/** What the site answered; or why nothing left; or, once the form had gone out, that the outcome is not known. */
+export type WebActionResult = { readonly status: number; readonly url: string; readonly title: string; readonly text: string } | { readonly error: string; readonly uncertain?: true };
+
 export class WebActionError extends Error {
 	override readonly name = "WebActionError";
+}
+
+/** The form may have reached the site: never "not sent", never sent again. */
+export class WebActionUncertain extends Error {
+	override readonly name = "WebActionUncertain";
 }
 
 export const WEB_ACTION_LIMITS = { maxPending: 20, ttlMs: 24 * 3600_000, maxValues: 50, maxValueChars: 5_000, maxResultChars: 4_000 } as const;
@@ -46,12 +60,18 @@ const DECIDING = new Map<string, Promise<unknown>>();
 export class WebActionStore {
 	constructor(private readonly dir: string) {}
 
-	async propose(input: Pick<WebAction, "pageUrl" | "form" | "action" | "values" | "reason" | "thread" | "requester">, now = new Date()): Promise<WebAction> {
+	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
+	async propose(input: Pick<WebAction, "pageUrl" | "form" | "action" | "values" | "button" | "shown" | "fingerprint" | "reason" | "thread" | "requester">, now = new Date(), key?: string): Promise<WebAction> {
+		const id = key === undefined ? randomBytes(6).toString("hex") : createHash("sha256").update(key).digest("hex").slice(0, 12);
+		if (key !== undefined) {
+			const existing = await this.get(id, now);
+			if (existing !== undefined) return existing;
+		}
 		if (Object.keys(input.values).length > WEB_ACTION_LIMITS.maxValues) throw new WebActionError(`al massimo ${WEB_ACTION_LIMITS.maxValues} campi`);
 		if (Object.values(input.values).some((v) => v.length > WEB_ACTION_LIMITS.maxValueChars)) throw new WebActionError(`un valore supera ${WEB_ACTION_LIMITS.maxValueChars} caratteri`);
 		const pending = (await this.list(now)).filter((a) => a.status === "pending");
 		if (pending.length >= WEB_ACTION_LIMITS.maxPending) throw new WebActionError(`troppe azioni in attesa (${WEB_ACTION_LIMITS.maxPending})`);
-		const action: WebAction = { ...input, method: "POST", id: randomBytes(6).toString("hex"), status: "pending", proposedAt: now.toISOString() };
+		const action: WebAction = { ...input, method: "POST", id, status: "pending", proposedAt: now.toISOString() };
 		await this.save(action);
 		return action;
 	}
@@ -84,17 +104,22 @@ export class WebActionStore {
 	 * Decide a pending action; one decision at a time per action, the first one wins. Approving
 	 * marks it running and sends it with `run`, then stores the result.
 	 */
-	decide(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<NonNullable<WebAction["result"]>>, now = new Date()): Promise<{ action: WebAction; changed: boolean }> {
-		const work = (DECIDING.get(id) ?? Promise.resolve()).then(() => this.decideNow(id, decision, by, run, now));
-		const tail = work.catch(() => {});
+	decide(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<WebActionResult>, now = new Date()): Promise<{ action: WebAction; changed: boolean }> {
+		return this.serial(id, () => this.decideNow(id, decision, by, run, now));
+	}
+
+	/** One read-modify-write at a time per action, decisions and card bookkeeping alike. */
+	private serial<T>(id: string, work: () => Promise<T>): Promise<T> {
+		const run = (DECIDING.get(id) ?? Promise.resolve()).then(work);
+		const tail = run.catch(() => {});
 		DECIDING.set(id, tail);
 		void tail.then(() => {
 			if (DECIDING.get(id) === tail) DECIDING.delete(id);
 		});
-		return work;
+		return run;
 	}
 
-	private async decideNow(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<NonNullable<WebAction["result"]>>, now: Date): Promise<{ action: WebAction; changed: boolean }> {
+	private async decideNow(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<WebActionResult>, now: Date): Promise<{ action: WebAction; changed: boolean }> {
 		const current = await this.get(id, now);
 		if (current === undefined) throw new WebActionError(`nessuna azione ${id}`);
 		if (current.status !== "pending") return { action: current, changed: false };
@@ -106,8 +131,8 @@ export class WebActionStore {
 		}
 		const running: WebAction = { ...current, ...decided, status: "running" };
 		await this.save(running);
-		const result = await run(running).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
-		const action: WebAction = { ...running, status: "error" in result ? "failed" : "done", result };
+		const result: WebActionResult = await run(running).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error), ...(error instanceof WebActionUncertain ? { uncertain: true as const } : {}) }));
+		const action: WebAction = { ...running, status: "error" in result ? (result.uncertain ? "uncertain" : "failed") : "done", result };
 		await this.save(action);
 		return { action, changed: true };
 	}
@@ -124,10 +149,12 @@ export class WebActionStore {
 		return settled;
 	}
 
-	async markNotified(id: string, chat: string): Promise<void> {
-		const current = await this.get(id);
-		if (current === undefined) return;
-		await this.save({ ...current, notified: [...new Set([...(current.notified ?? []), chat])] });
+	markNotified(id: string, chat: string): Promise<void> {
+		return this.serial(id, async () => {
+			const current = await this.get(id);
+			if (current === undefined) return;
+			await this.save({ ...current, notified: [...new Set([...(current.notified ?? []), chat])] });
+		});
 	}
 
 	private save(action: WebAction): Promise<void> {
@@ -150,6 +177,7 @@ export async function readForm(pageUrl: string, index: number, guard: WebFetchOp
 	if (form === undefined) throw new FormRefused(`la pagina non ha il modulo ${index}`);
 	if (form.method !== "POST") throw new FormRefused(`il modulo ${index} è di ricerca (GET): leggi direttamente ${form.action} con i parametri nell'indirizzo`);
 	if (form.enctype === "other") throw new FormRefused(`il modulo ${index} usa un formato che Annie non invia`);
+	if (page.url.startsWith("https:") && form.action.startsWith("http:")) throw new FormRefused(`il modulo ${index} manda i dati in chiaro (http): Annie non lo invia`);
 	return { form, page: page.url };
 }
 
@@ -157,11 +185,20 @@ export async function readForm(pageUrl: string, index: number, guard: WebFetchOp
  * Send an approved action: the page again (fresh hidden fields and cookies), the same form,
  * the same destination, then one POST. Everything through the guarded fetch.
  */
-export async function sendWebAction(action: WebAction, guard: Omit<WebFetchOptions, "cookies" | "send">): Promise<NonNullable<WebAction["result"]>> {
+export async function sendWebAction(action: WebAction, guard: Omit<WebFetchOptions, "cookies" | "send">): Promise<WebActionResult> {
 	const cookies = new CookieJar();
 	const { form } = await readForm(action.pageUrl, action.form, { ...guard, cookies });
 	if (form.action !== action.action) throw new FormRefused(`il modulo ora va a ${form.action}, non più a ${action.action}: chiedi di nuovo`);
-	const answer = await webFetch(form.action, { ...guard, cookies, send: formBody(form, action.values) });
+	if (formFingerprint(form) !== action.fingerprint) throw new FormRefused("il modulo è cambiato da quando è stato chiesto: chiedi di nuovo");
+	const send = formBody(form, action.values, action.button);
+	checkedUrl(form.action, guard);
+	// From here the form may reach the site: any failure is an unknown outcome, not "not sent".
+	let answer: Awaited<ReturnType<typeof webFetch>>;
+	try {
+		answer = await webFetch(form.action, { ...guard, cookies, send });
+	} catch (error) {
+		throw new WebActionUncertain(`il modulo è partito ma la risposta non è arrivata (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`);
+	}
 	const html = /^text\/html/i.test(answer.contentType);
 	const { title, text } = html ? pageText(answer.body) : { title: "", text: /^(text\/|application\/(json|xml))/i.test(answer.contentType) ? answer.body : "" };
 	return { status: answer.status, url: answer.url, title: title.slice(0, 200), text: text.slice(0, WEB_ACTION_LIMITS.maxResultChars) };

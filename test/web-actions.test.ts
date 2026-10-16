@@ -4,9 +4,9 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
-import { WEB_ACTION_LIMITS, WebActionStore, sendWebAction } from "../src/core/web-actions.ts";
+import { readForm, WEB_ACTION_LIMITS, type WebAction, WebActionStore, sendWebAction } from "../src/core/web-actions.ts";
 import { CookieJar, publicAddress, webFetch } from "../src/core/web-fetch.ts";
-import { describeForms, formBody, pageForms } from "../src/core/web-forms.ts";
+import { describeForms, formBody, formFingerprint, pageForms } from "../src/core/web-forms.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
 
@@ -127,7 +127,8 @@ describe("sending a form", () => {
 
 	it("sendWebAction reads the page again (fresh token) and refuses a form that now goes elsewhere", async () => {
 		const s = await contactSite();
-		const action = { id: "a".repeat(12), pageUrl: `${s.base}/contact`, form: 1, action: `${s.base}/send`, method: "POST" as const, values: { name: "Mario" }, reason: "x", status: "running" as const, proposedAt: new Date().toISOString() };
+		const { form } = await readForm(`${s.base}/contact`, 1, { hostAllowed: all, addressAllowed: localOnly, cookies: new CookieJar() });
+		const action: WebAction = { id: "a".repeat(12), pageUrl: `${s.base}/contact`, form: 1, action: `${s.base}/send`, method: "POST", values: { name: "Mario" }, button: 0, shown: [], fingerprint: formFingerprint(form), reason: "x", status: "running", proposedAt: new Date().toISOString() };
 		const result = await sendWebAction(action, { hostAllowed: all, addressAllowed: localOnly });
 		expect(result).toMatchObject({ status: 200, title: "Grazie", text: "Messaggio ricevuto" });
 		s.setAction("https://evil.example/collect");
@@ -140,7 +141,7 @@ describe("web action store", () => {
 	it("decides once even when two approvals race; expires after 24 hours; a crash mid-send is uncertain, never resent", async () => {
 		const dir = tempDataDir();
 		const store = new WebActionStore(dir);
-		const input = { pageUrl: "https://e.com/c", form: 0, action: "https://e.com/s", values: { a: "1" }, reason: "prova" };
+		const input = { pageUrl: "https://e.com/c", form: 0, action: "https://e.com/s", values: { a: "1" }, button: 0, shown: [], fingerprint: "f", reason: "prova" };
 		const a = await store.propose(input);
 		let sent = 0;
 		const run = async () => {
@@ -256,5 +257,150 @@ describe("web_submit in an instance", () => {
 		expect((await api("/api/instances/annie/web-actions")).actions).toHaveLength(1);
 		expect((await api(`/api/instances/annie/web-actions/${action.id}/decision`, { decision: "rejected" })).action.status).toBe("rejected");
 		expect(s.posts).toHaveLength(0);
+	});
+});
+
+describe("review fixes: what is sent is what was approved", () => {
+	it("form semantics follow browsers: hidden+checkbox pairs, checkbox groups, disabled, hex entities, chosen button", () => {
+		const html = `<form method=post action=/x>
+			<input type=hidden name=terms value=0><input type=checkbox name=terms value=1>
+			<input type=checkbox name=i value=a><input type=checkbox name=i value=b>
+			<input name=to><input type=hidden name=to value=site>
+			<input name=t value=z disabled>
+			<input type=hidden name=tok value="ab&#x2B;c">
+			<button name=op value=save>Salva</button><button name=op value=delete>Elimina</button></form>`;
+		const form = pageForms(html, "https://e.com/")[0]!;
+		const sent = (values: Record<string, string>, button?: number) => [...new URLSearchParams(formBody(form, values, button).body.toString())];
+		expect(sent({ terms: "on", i: "b", to: "me" })).toEqual([
+			["terms", "0"],
+			["terms", "1"],
+			["i", "b"],
+			["to", "me"],
+			["to", "site"],
+			["tok", "ab+c"],
+			["op", "save"],
+		]);
+		expect(sent({}, 1).at(-1)).toEqual(["op", "delete"]);
+		expect(() => formBody(form, { t: "x" })).toThrow(/lo decide il sito/);
+		expect(() => formBody(form, {}, 5)).toThrow(/non ha il pulsante 5/);
+		// What the approver reads: everything but hidden fields, the button included.
+		expect(formBody(form, { to: "me" }, 1).shown).toEqual([
+			["to", "me"],
+			["op", "delete"],
+		]);
+		expect(describeForms([form])).toContain("pulsanti: 0 «Salva»; 1 «Elimina»");
+		// Characters whose lowercase is longer do not shift the parse.
+		expect(pageForms(`${"İ".repeat(100)}<form method=post><input name=a></form>`, "https://e.com/")).toHaveLength(1);
+	});
+
+	it("decoy tags cost one scan, not one per field", () => {
+		const page = `${"<form method=post>".repeat(20)}${"<input name=a>".repeat(100)}${"<selectx <inputx <textareax <buttonx ".repeat(40_000)}`;
+		const started = Date.now();
+		pageForms(page, "https://e.com/");
+		expect(Date.now() - started).toBeLessThan(500);
+	});
+
+	it("cookies follow Domain and Secure", () => {
+		const jar = new CookieJar();
+		jar.take(new URL("https://www.x.it/c"), ["sid=1; Domain=x.it; Secure", "own=2", "bad=3; Domain=other.it"]);
+		expect(jar.header(new URL("https://forms.x.it/s"))).toBe("sid=1");
+		expect(jar.header(new URL("http://forms.x.it/s"))).toBeUndefined();
+		expect(jar.header(new URL("https://www.x.it/s"))).toBe("sid=1; own=2; bad=3");
+	});
+
+	it("a 307 to another origin never carries the form; a failure after the POST is uncertain, not 'not sent'; a changed form is not sent", async () => {
+		const other = createServer((_req, res) => res.writeHead(200).end("got it"));
+		await new Promise<void>((r) => other.listen(0, "127.0.0.1", () => r()));
+		closers.push(() => new Promise((r) => other.close(() => r())));
+		let mode: "307" | "away" | "ok" = "307";
+		let field = "<input name=a>";
+		let posts = 0;
+		const site = createServer(async (req, res) => {
+			if (req.method === "GET" && req.url === "/f") return res.writeHead(200, { "content-type": "text/html" }).end(`<form method=post action=/p>${field}</form>`);
+			if (req.method === "POST") {
+				posts++;
+				await body(req);
+				if (mode === "307") return res.writeHead(307, { location: `http://localhost:${(other.address() as AddressInfo).port}/steal` }).end();
+				if (mode === "away") return res.writeHead(303, { location: "http://169.254.169.254/" }).end();
+				return res.writeHead(200, { "content-type": "text/html" }).end("<p>ok</p>");
+			}
+			res.writeHead(404).end();
+		});
+		await new Promise<void>((r) => site.listen(0, "127.0.0.1", () => r()));
+		closers.push(() => new Promise((r) => site.close(() => r())));
+		const base = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+		const guard = { hostAllowed: all, addressAllowed: (a: string) => a === "127.0.0.1" || a === "::1" || publicAddress(a) };
+		const store = new WebActionStore(tempDataDir());
+		const ask = async () => {
+			const { form } = await readForm(`${base}/f`, 0, { ...guard, cookies: new CookieJar() });
+			return store.propose({ pageUrl: `${base}/f`, form: 0, action: form.action, values: { a: "1" }, button: 0, shown: [["a", "1"]], fingerprint: formFingerprint(form), reason: "r" });
+		};
+		const by = { channel: "web", userId: "p" };
+		const first = await store.decide((await ask()).id, "approved", by, (a) => sendWebAction(a, guard));
+		expect(first.action.status).toBe("uncertain");
+		expect(JSON.stringify(first.action.result)).toContain("non approvato");
+		mode = "away";
+		expect((await store.decide((await ask()).id, "approved", by, (a) => sendWebAction(a, guard))).action.status).toBe("uncertain");
+		mode = "ok";
+		const changed = await ask();
+		field = "<input name=a><input name=b value=extra>";
+		const refused = await store.decide(changed.id, "approved", by, (a) => sendWebAction(a, guard));
+		expect(refused.action).toMatchObject({ status: "failed", result: { error: expect.stringMatching(/è cambiato/) } });
+		expect(posts).toBe(2);
+	});
+});
+
+/** Fake Telegram: queued updates in, sent messages recorded. */
+function fakeTelegram() {
+	const updates: unknown[][] = [];
+	const sent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } }[] = [];
+	const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+		const method = /\/(\w+)$/.exec(String(url))?.[1];
+		if (method === "getMe") return Response.json({ ok: true, result: { username: "bot" } });
+		if (method === "getUpdates") {
+			const batch = updates.shift();
+			if (batch === undefined) await new Promise((r) => setTimeout(r, 20));
+			return Response.json({ ok: true, result: batch ?? [] });
+		}
+		if (method === "sendMessage") sent.push(JSON.parse(String(init?.body)));
+		return Response.json({ ok: true, result: { message_id: 1 } });
+	}) as typeof fetch;
+	return { updates, sent, fetch: fetchImpl };
+}
+
+async function waitUntil(check: () => boolean | Promise<boolean>, ms = 10_000) {
+	for (const start = Date.now(); !(await check()); ) {
+		if (Date.now() - start > ms) throw new Error("timed out");
+		await new Promise((r) => setTimeout(r, 30));
+	}
+}
+
+describe("web_submit on Telegram", () => {
+	it("the card goes to the person's private chat and to the approver; a stranger's tap does nothing; the person's tap sends it once", async () => {
+		const s = await contactSite();
+		const telegram = fakeTelegram();
+		const config = loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", TELEGRAM_BOT_TOKEN: "1:T", ANNIE_TELEGRAM_ALLOWED_USERS: "7,8", ANNIE_TELEGRAM_APPROVERS: "9" });
+		const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { telegramFetch: telegram.fetch, webAddressAllowed: localOnly, schedulerIntervalMs: 60_000, log: () => {} });
+		closers.push(() => annie.stop());
+		const policy = (await annie.runtime.registry.getInstance("default", "annie")).egress;
+		await annie.runtime.registry.setEgress("default", "annie", { ...policy, web: ["*"], connectors: [...(policy.connectors ?? []), "web-actions"] });
+		const ask = `/tool web_submit {"page_url":"${s.base}/contact","form":1,"values":{"name":"Sette"},"reason":"Modulo di contatto"}`;
+		telegram.updates.push([{ update_id: 1, message: { message_id: 3, chat: { id: 7, type: "private" }, from: { id: 7 }, text: ask } }]);
+		await waitUntil(() => telegram.sent.filter((m) => m.text.startsWith("Azione sul web da approvare")).length === 2);
+		const cards = telegram.sent.filter((m) => m.text.startsWith("Azione sul web da approvare"));
+		expect(cards.map((c) => String(c.chat_id)).sort()).toEqual(["7", "9"]);
+		expect(cards[0]?.text).toContain("name: Sette");
+		expect(cards[0]?.text).toContain("go: 1");
+		const send = cards[0]?.reply_markup?.inline_keyboard[0]?.find((b) => b.text === "Invia")?.callback_data as string;
+		const id = send.split(":")[1] as string;
+		telegram.updates.push([{ update_id: 2, callback_query: { id: "cq1", from: { id: 8 }, message: { message_id: 5, chat: { id: 8 } }, data: send } }]);
+		await new Promise((r) => setTimeout(r, 300));
+		expect((await annie.runtime.webActions("default", "annie").get(id))?.status).toBe("pending");
+		telegram.updates.push([{ update_id: 3, callback_query: { id: "cq2", from: { id: 7 }, message: { message_id: 5, chat: { id: 7 } }, data: send } }]);
+		await waitUntil(() => telegram.sent.some((m) => m.text === `Richiesta ${id}: approvata e inviata.`));
+		await waitUntil(() => telegram.sent.some((m) => String(m.chat_id) === "7" && m.text.includes("Esito della richiesta")) || s.posts.length === 1);
+		telegram.updates.push([{ update_id: 4, callback_query: { id: "cq3", from: { id: 9 }, message: { message_id: 5, chat: { id: 9 } }, data: send } }]);
+		await waitUntil(() => telegram.sent.some((m) => m.text === `Richiesta ${id}: approvata e inviata (decisa in precedenza).`));
+		expect(s.posts).toHaveLength(1);
 	});
 });

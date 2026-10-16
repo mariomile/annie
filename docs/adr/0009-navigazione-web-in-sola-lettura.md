@@ -1,5 +1,7 @@
 # Fase 3, primo passo: navigazione web in sola lettura, prima delle micro-VM
 
+Rivista in parte dall'[ADR 0011](0011-moduli-web-con-approvazione.md): l'invio di moduli con approvazione arriva prima delle micro-VM.
+
 Il piano porta nella cella browser e terminale, «leggere è libero, scrivere o inviare si approva». Abbiamo deciso di iniziare dalla parte che non scrive: un'istanza legge pagine web (`web_read`) e ne fa screenshot (`web_screenshot`) solo dai siti che l'owner elenca per lei, mai da un indirizzo interno. Niente moduli, niente clic, niente terminale.
 
 Perché: è il pezzo che serve subito (leggere il sito di un cliente, un bando, una pagina dell'Agenzia delle Entrate) e il solo che si può dare nei container di oggi (ADR 0008) senza le micro-VM: Annie non esegue codice suo, apre pagine altrui in un Chromium senza download, con ogni richiesta della pagina controllata.

@@ -1007,7 +1007,8 @@ async function viewApprovals(main) {
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
-			h("table.ledger", h("tbody", Object.entries(a.values).map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))),
+			h("p.muted", "Cosa parte (tranne i campi nascosti del sito, come i token di sicurezza):"),
+			h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))),
 			a.result ? h("details", h("summary", "Risposta del sito"), h("pre.code", a.result.error ?? `${a.result.status} ${a.result.url}\n${a.result.title}\n\n${a.result.text}`)) : null,
 			a.status !== "pending" && ACTION_STAMP[a.status] ? h(`div.stamp.${ACTION_STAMP[a.status][0]}`, ACTION_STAMP[a.status][1]) : null,
 		);
@@ -1015,13 +1016,13 @@ async function viewApprovals(main) {
 			const decide = async (decision) => {
 				try {
 					const { action } = await api(`/api/instances/${inst.id}/web-actions/${a.id}/decision`, { method: "POST", body: { decision } });
-					toast(action.status === "done" ? "Modulo inviato" : action.status === "rejected" ? "Richiesta rifiutata" : action.status === "failed" ? "Il modulo non è partito: vedi la risposta" : `Richiesta ${action.status}`, action.status === "failed");
+					toast(action.status === "done" ? "Modulo inviato" : action.status === "rejected" ? "Richiesta rifiutata" : action.status === "failed" ? "Il modulo non è partito: vedi la risposta" : action.status === "uncertain" ? "Esito incerto: controlla sul sito" : `Richiesta ${action.status}`, action.status === "failed" || action.status === "uncertain");
 					setTimeout(() => void refreshCounters().then(render), 600);
 				} catch (error) {
 					toast(error.message, true);
 				}
 			};
-			el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Invia"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), h("span.muted", "Il modulo parte una volta sola, con questi valori.")));
+			el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Invia"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), h("span.muted", "Il modulo parte una volta sola, con questi valori. Se nel frattempo il sito lo cambia, non parte.")));
 		}
 		return el;
 	};

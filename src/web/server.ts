@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
-import { type WebAction, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
+import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
@@ -87,7 +87,7 @@ export type WebAppOptions = {
 	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
 	readonly voice?: { readonly host: string };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
-	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<NonNullable<WebAction["result"]>>;
+	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
 	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
 	/** WhatsApp per instance, connected by the owner from the console. */
@@ -498,6 +498,7 @@ export function createWebApp(options: WebAppOptions): Server {
 			return { action: await decideWebAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, by, options.sendWebAction(params[0] as string)) };
 		} catch (error) {
 			if (error instanceof NotAnApprover) throw new HttpError(403, "Questa richiesta la decide chi l'ha fatta o un approvatore");
+			if (error instanceof WebActionError) throw new HttpError(404, "Richiesta inesistente");
 			throw error;
 		}
 	});

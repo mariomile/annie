@@ -3,7 +3,7 @@ import type { AnnieTool } from "../engine.ts";
 import { type EgressPolicy, webHostAllowed } from "../policy.ts";
 import { readForm, type WebAction, WebActionError, WEB_ACTIONS_CONNECTOR, type WebActionStore } from "../web-actions.ts";
 import { CookieJar, checkedUrl, pageText, publicAddress, USER_AGENT, WebFetchRefused, webFetch } from "../web-fetch.ts";
-import { describeForms, fillable, FormRefused, pageForms } from "../web-forms.ts";
+import { describeForms, fillable, FormRefused, formBody, formFingerprint, pageForms, submitButtons } from "../web-forms.ts";
 import type { Workspace } from "../workspace.ts";
 
 /** Largest page text web_read returns, in characters. */
@@ -177,12 +177,13 @@ function submitTool(actions: NonNullable<WebToolsOptions["actions"]>, policyOf: 
 				page_url: { type: "string", minLength: 8, maxLength: 2000, description: "The page the form is on" },
 				form: { type: "integer", minimum: 0, maximum: 19, description: "The form's number, as web_read lists it" },
 				values: { type: "object", additionalProperties: { type: "string", maxLength: 5000 }, description: "Field name to value; for a checkbox, \"on\" or \"\"" },
+				button: { type: "integer", minimum: 0, maximum: 19, description: "Which button to press, when web_read lists several (default 0, the first)" },
 				reason: { type: "string", minLength: 3, maxLength: 300, description: "What this does and for whom, in one sentence for the person approving" },
 			},
 			required: ["page_url", "form", "values", "reason"],
 			additionalProperties: false,
 		},
-		// Asking is idempotent per call: a rerun returns the stored request instead of a second one.
+		// Asking is idempotent per call (the request's ID comes from the call): a rerun finds it, cards are not sent twice.
 		replaySafe: true,
 		async execute(args, ctx) {
 			const policy = await policyOf();
@@ -192,14 +193,16 @@ function submitTool(actions: NonNullable<WebToolsOptions["actions"]>, policyOf: 
 					const values = Object.fromEntries(Object.entries((args.values ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
 					const { form, page } = await readForm(String(args.page_url), Number(args.form), { ...guard(policy), cookies: new CookieJar() });
 					checkedUrl(form.action, guard(policy));
-					for (const name of Object.keys(values)) {
-						const field = form.fields.find((f) => f.name === name);
-						if (field === undefined) return `Errore: il modulo non ha un campo «${name}». Campi: ${form.fields.filter(fillable).map((f) => f.name).join(", ")}`;
-						if (!fillable(field)) return `Errore: il campo «${name}» lo decide il sito, non si compila.`;
-						if (field.options !== undefined && !field.options.includes(values[name] as string) && field.kind !== "checkbox") return `Errore: «${values[name]}» non è tra le scelte di «${name}» (${field.options.slice(0, 10).join(", ")}).`;
-					}
+					const button = args.button === undefined ? 0 : Number(args.button);
+					if (submitButtons(form).length === 0 && button !== 0) return "Errore: il modulo non ha pulsanti da scegliere.";
+					// Builds what would be sent, refusing unknown, hidden and out-of-choice values.
+					const { shown } = formBody(form, values, button);
 					const requester = ctx.thread === undefined ? undefined : actions.requester(ctx.thread);
-					const action = await actions.store.propose({ pageUrl: page, form: form.index, action: form.action, values, reason: String(args.reason), ...(ctx.thread === undefined ? {} : { thread: ctx.thread }), ...(requester === undefined ? {} : { requester }) });
+					const action = await actions.store.propose(
+						{ pageUrl: page, form: form.index, action: form.action, values, button, shown, fingerprint: formFingerprint(form), reason: String(args.reason), ...(ctx.thread === undefined ? {} : { thread: ctx.thread }), ...(requester === undefined ? {} : { requester }) },
+						new Date(),
+						ctx.callId,
+					);
 					await actions.onProposed(action);
 					return `Richiesta ${action.id} pronta: invio del modulo a ${new URL(form.action).host}. Aspetta l'approvazione (scade fra 24 ore); l'esito arriva in questa conversazione. Non dire che è stato inviato finché non lo sai.`;
 				} catch (error) {

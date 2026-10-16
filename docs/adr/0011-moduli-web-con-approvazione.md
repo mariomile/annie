@@ -9,11 +9,14 @@ Perché adesso: compilare il modulo di contatto di un fornitore, prenotare un ap
 - `web_read` elenca i moduli della pagina (indice, metodo, destinazione, campi visibili), dentro la recinzione dei dati dal web.
 - `web_submit` chiede di inviare il modulo N di una pagina con dei valori. Annie riapre la pagina e controlla che il modulo esista, che sia `POST`, che la destinazione sia un sito consentito e che i campi esistano e siano visibili: i campi nascosti li decide il sito, mai il modello. La richiesta viene salvata e mostrata con destinazione e valori esatti.
 - Approva chi ha chiesto l'azione, nella sua conversazione privata con Annie, oppure un approvatore dell'istanza. Le schede arrivano nella conversazione (Telegram, WhatsApp) e nella pagina Approvazioni della console. In un gruppo approva solo un approvatore.
-- All'approvazione Annie riapre la pagina, prende i campi nascosti freschi (token CSRF) e i cookie di quella visita, controlla che il modulo abbia ancora la stessa destinazione e lo stesso metodo, e lo invia una volta sola. Lo stato passa da `approved` a `running` prima della richiesta: se il processo cade a metà, l'azione resta «esito incerto» e non riparte da sola.
+- La scheda mostra tutto quello che parte tranne i campi nascosti: i valori del modello, quelli che la pagina mette già, il pulsante premuto (il primo, o quello che Annie sceglie fra quelli elencati).
+- All'approvazione Annie riapre la pagina, prende i campi nascosti freschi (token CSRF) e i cookie di quella visita, e controlla che il modulo sia lo stesso di quando è stato chiesto (destinazione, metodo, campi e valori di partenza): se è cambiato non parte. Poi lo invia una volta sola. Lo stato passa da `approved` a `running` prima della richiesta: se il processo cade a metà, o se dopo l'invio la risposta non arriva, l'azione resta «esito incerto» e non riparte da sola.
+- Un redirect che vorrebbe portare il modulo con i suoi dati a un altro sito (307 o 308) è rifiutato; un modulo di una pagina https che manda i dati in http non parte.
 - L'esito (codice e testo della risposta, recintato) torna nella conversazione come messaggio per Annie, che lo riferisce.
 
 ## Limiti voluti
 
+- Chi ha chiesto l'azione la può decidere solo finché può ancora scrivere all'istanza.
 - L'owner accende le azioni per istanza (Impostazioni, «Azioni sul web»); spente di default, come canali e connettori. I siti restano quelli della navigazione.
 - Una richiesta scade dopo 24 ore. Al massimo 20 in attesa per istanza.
 - Niente file da caricare, niente moduli `GET` (per quelli basta `web_read` con l'indirizzo), niente pagine costruite da JavaScript.
