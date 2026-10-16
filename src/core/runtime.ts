@@ -214,6 +214,26 @@ export class AnnieRuntime {
 		return this.resume(tenant, instance);
 	}
 
+	/**
+	 * Work under way in a tenant's open instances: submissions still waiting for their reply,
+	 * and replies with a retry pending. A process that may be stopped (a cell) waits for zero.
+	 * Replies that only wait for a restart do not count: the next resume sends them.
+	 */
+	async activity(tenant: string): Promise<{ working: number; retrying: number }> {
+		const prefix = `${tenantId(tenant)}/`;
+		let working = 0;
+		let retrying = 0;
+		for (const [key, opening] of this.instances) {
+			if (!key.startsWith(prefix)) continue;
+			const instance = await opening.catch(() => undefined);
+			if (instance === undefined) continue;
+			const a = await instance.activity();
+			working += a.working;
+			retrying += a.retrying;
+		}
+		return { working, retrying };
+	}
+
 	onReply(listener: (reply: Reply) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -508,6 +528,11 @@ export class AnnieInstance {
 				},
 			);
 		});
+	}
+
+	async activity(): Promise<{ working: number; retrying: number }> {
+		const waiting = (await this.outbox.list()).filter((entry) => entry.reply === undefined && entry.deliveredAt === undefined);
+		return { working: waiting.length, retrying: this.retries.size };
 	}
 
 	/** Replies not yet confirmed by their channel, oldest first. */

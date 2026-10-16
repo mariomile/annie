@@ -50,9 +50,11 @@ export class PeopleStore {
 	}
 
 	/** Create a person; returns their login token, shown once. */
-	async add(name: string, role: Person["role"]): Promise<{ person: Person; token: string }> {
+	async add(name: string, role: Person["role"], given?: string): Promise<{ person: Person; token: string }> {
 		if (name.trim() === "" || name.length > 80) throw new Error("Name: 1 to 80 characters");
-		const token = randomBytes(32).toString("base64url");
+		// A token chosen elsewhere (the control plane of Annie Cloud) must be as strong as ours.
+		if (given !== undefined && !/^[A-Za-z0-9_-]{32,200}$/.test(given)) throw new Error("Token: 32 to 200 characters, letters, digits, _ and -");
+		const token = given ?? randomBytes(32).toString("base64url");
 		const person: Person = { id: `p_${randomBytes(6).toString("hex")}`, name: name.trim(), role, tokenHash: hash(token), createdAt: new Date().toISOString() };
 		updateJsonFile<Person[]>(this.file, [], (all) => [...all, person]);
 		return { person, token };

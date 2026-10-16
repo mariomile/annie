@@ -267,6 +267,26 @@ function bind(session: EngineSession): EngineSession {
 	};
 }
 
+describe("activity: what a cell must finish before it sleeps", () => {
+	it("counts submissions still waiting for their reply, and nothing once replies are out", async () => {
+		const setup = await runtimeWithInstance({});
+		await setup.runtime.close();
+		const deaf = new AnnieRuntime({ dataDir: setup.dataDir, engine: deafEngine });
+		expect(await deaf.activity("acme")).toEqual({ working: 0, retrying: 0 });
+		await deaf.submit(hello);
+		await (await deaf.openInstance("acme", "ops")).idle();
+		expect(await deaf.activity("acme")).toEqual({ working: 1, retrying: 0 });
+		await deaf.close();
+		const { runtime } = await runtimeWithInstance({ dataDir: tempDataDir() });
+		connectChannel(runtime, testChannel(async () => {}), { tenantId: "acme", instanceId: "ops" });
+		await runtime.submit(hello);
+		await (await runtime.openInstance("acme", "ops")).idle();
+		while ((await runtime.activity("acme")).working > 0) await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(await runtime.activity("acme")).toEqual({ working: 0, retrying: 0 });
+		await runtime.close();
+	});
+});
+
 describe("reply outbox: review regressions", () => {
 	it("a reply Pi settled but the outbox never received is reattached by ID and sent once on resume", async () => {
 		const setup = await runtimeWithInstance({});

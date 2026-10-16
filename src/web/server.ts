@@ -33,6 +33,8 @@ export type WebAppOptions = {
 	readonly defaultTimeZone: string;
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
 	readonly telegramHooks?: ReadonlyMap<string, { readonly secret: string; readonly handle: (update: unknown) => Promise<void> }>;
+	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
+	readonly cell?: { readonly secret: string; readonly state: () => Promise<{ busy: boolean; nextWakeAt: string | null }> };
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -499,6 +501,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const url = new URL(req.url ?? "/", "http://annie.local");
 		if (req.method === "GET" && url.pathname in STATIC) return serveStatic(res, STATIC[url.pathname] as string);
 		if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+		if (req.method === "GET" && url.pathname === "/internal/cell") return cellState(req, res);
 		const hook = /^\/hooks\/telegram\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
@@ -546,6 +549,13 @@ export function createWebApp(options: WebAppOptions): Server {
 			return send(res, 500, { error: "retry" });
 		}
 		send(res, 200, { ok: true });
+	}
+
+	async function cellState(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (options.cell === undefined) return send(res, 404, { error: "Not found" });
+		const given = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ""))?.[1] ?? "";
+		if (!sameSecret(given, options.cell.secret)) return send(res, 401, { error: "Unauthorized" });
+		send(res, 200, await options.cell.state());
 	}
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {

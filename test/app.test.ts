@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
@@ -203,6 +205,29 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await push("hook_secret-123", update)).status).toBe(200);
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(telegram.sent.filter((m) => m.chat_id === "7" && m.text.includes("ciao dal webhook"))).toHaveLength(1);
+	});
+
+	it("a cell: the owner token comes from the control plane, and the cell tells when it may sleep and when to wake it", async () => {
+		const dataDir = tempDataDir();
+		const ownerToken = "o".repeat(43);
+		const { annie, base } = await boot(dataDir, fakeTelegram(), { ANNIE_OWNER_TOKEN: ownerToken, ANNIE_CELL_SECRET: "cell-secret-xyz-0001" });
+		expect(annie.ownerLink).toBeUndefined();
+		expect(existsSync(join(dataDir, "owner-login-link.txt"))).toBe(false);
+		const api = await client(base, `${base}/login#${ownerToken}`);
+		expect((await api("/api/me")).person.role).toBe("owner");
+		const state = (secret?: string) => fetch(`${base}/internal/cell`, { headers: secret === undefined ? {} : { authorization: `Bearer ${secret}` } });
+		expect((await state()).status).toBe(401);
+		expect((await state("wrong")).status).toBe(401);
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: null });
+		const thread = (await api("/api/instances/annie/threads", {})).thread;
+		const at = new Date(Date.now() + 3_600_000).toISOString();
+		await api("/api/instances/annie/schedules", { instruction: "Promemoria", at, threadId: thread.id });
+		expect(await (await state("cell-secret-xyz-0001")).json()).toEqual({ busy: false, nextWakeAt: at });
+	});
+
+	it("without a cell secret there is no cell endpoint", async () => {
+		const { base } = await boot(tempDataDir());
+		expect((await fetch(`${base}/internal/cell`, { headers: { authorization: "Bearer x" } })).status).toBe(404);
 	});
 
 	it("only the owner creates instances", async () => {

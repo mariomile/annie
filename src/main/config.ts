@@ -147,6 +147,8 @@ export type AnnieConfig = {
 		  }
 		| undefined;
 	readonly segreteria: SegreteriaConfig | undefined;
+	/** Running as a cell of Annie Cloud: set by the control plane. */
+	readonly cell: { readonly ownerToken: string | undefined; readonly secret: string | undefined };
 };
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -178,6 +180,10 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (!/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret)) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET: 1 to 256 characters, only letters, digits, _ and -");
 		if (publicUrl === undefined) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET needs ANNIE_PUBLIC_URL: Telegram sends the updates there");
 	}
+	const ownerToken = nonEmpty(env.ANNIE_OWNER_TOKEN);
+	if (ownerToken !== undefined && !/^[A-Za-z0-9_-]{32,200}$/.test(ownerToken)) throw new ConfigError("ANNIE_OWNER_TOKEN: 32 to 200 characters, letters, digits, _ and -");
+	const cellSecret = nonEmpty(env.ANNIE_CELL_SECRET);
+	if (cellSecret !== undefined && cellSecret.length < 16) throw new ConfigError("ANNIE_CELL_SECRET: at least 16 characters");
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
 	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
@@ -215,5 +221,6 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		web: { host: nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1", port, publicUrl },
 		telegram,
 		segreteria,
+		cell: { ownerToken, secret: cellSecret },
 	};
 }

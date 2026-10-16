@@ -117,13 +117,16 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const people = new PeopleStore(tenantDir(config.dataDir, toTenantId(tenant)));
 	let ownerLink: string | undefined;
 	if ((await people.list()).length === 0) {
-		const { person, token } = await people.add("Owner", "owner");
+		const { person, token } = await people.add("Owner", "owner", config.cell.ownerToken);
 		// The owner can chat with the general instance and approve its actions.
 		const record = await runtime.registry.getInstance(tenant, config.instanceId);
 		await runtime.registry.setAllowedUsers(tenant, config.instanceId, "web", [...(record.allowedUsers.web ?? []), person.id]);
-		ownerLink = `${config.web.publicUrl ?? `http://${config.web.host === "0.0.0.0" ? "localhost" : config.web.host}:${config.web.port}`}/login#${token}`;
-		// Kept out of the logs: in a 0600 file the owner reads once and deletes.
-		await writeFileAtomic(join(config.dataDir, "owner-login-link.txt"), `${ownerLink}\n`);
+		// In a cell the control plane chose the token and already has the link.
+		if (config.cell.ownerToken === undefined) {
+			ownerLink = `${config.web.publicUrl ?? `http://${config.web.host === "0.0.0.0" ? "localhost" : config.web.host}:${config.web.port}`}/login#${token}`;
+			// Kept out of the logs: in a 0600 file the owner reads once and deletes.
+			await writeFileAtomic(join(config.dataDir, "owner-login-link.txt"), `${ownerLink}\n`);
+		}
 	}
 
 	// --- channels ---
@@ -242,6 +245,22 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				? []
 				: [...telegrams].map(([id, bot]) => [id, { secret: config.telegram?.webhookSecret as string, handle: (update: unknown) => bot.handleUpdate(update as TelegramUpdate) }]),
 		),
+		...(config.cell.secret === undefined
+			? {}
+			: {
+					cell: {
+						secret: config.cell.secret,
+						// Busy: work the cell must finish before it is stopped. Next wake: the earliest
+						// task programmato, or the next mail round of the segreteria.
+						state: async () => {
+							const { working, retrying } = await runtime.activity(tenant);
+							const runs: number[] = [];
+							for (const id of webChannels.keys()) for (const sch of await runtime.schedules(tenant, id).list()) if (sch.nextRunAt !== null) runs.push(Date.parse(sch.nextRunAt));
+							if (config.segreteria !== undefined) runs.push(Date.now() + config.segreteria.pollSeconds * 1000);
+							return { busy: working + retrying > 0, nextWakeAt: runs.length === 0 ? null : new Date(Math.min(...runs)).toISOString() };
+						},
+					},
+				}),
 		createInstance: async ({ id, name, instructions, ownerId }) => {
 			const general = await runtime.registry.getInstance(tenant, config.instanceId);
 			const record = await runtime.registry.createInstance(tenant, {
