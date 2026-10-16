@@ -28,6 +28,36 @@ function h(spec, attrs, ...children) {
 	return el;
 }
 
+const ICONS = {
+	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
+	segreteria: ["M3 13h5l1.5 2.5h5L16 13h5", "M5.5 5h13L21 13v6H3v-6Z"],
+	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
+	task: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 7.5V12l3 2"],
+	file: ["M14 3H6v18h12V7Z", "M14 3v4h4"],
+	connettori: ["M9 3v5M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4"],
+	impostazioni: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 5v4M9 15v4"],
+	persone: ["M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M2.5 21a6.5 6.5 0 0 1 13 0", "M16 3.6a4 4 0 0 1 0 6.8", "M18.5 14.5A6.5 6.5 0 0 1 21.5 21"],
+	attivita: ["M3 12h4l3-8 4 16 3-8h4"],
+	search: ["M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z", "m20 20-4-4"],
+	theme: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 3v18", "M12 7h4.5M12 11h6M12 15h5.5"],
+	logout: ["M14 4h5v16h-5", "M9.5 8 5.5 12l4 4", "M5.5 12H15"],
+	menu: ["M4 7h16M4 12h16M4 17h16"],
+	plus: ["M12 5v14M5 12h14"],
+};
+
+/** Inline stroke icon from the fixed table above (no markup from outside). */
+function icon(name) {
+	const NS = "http://www.w3.org/2000/svg";
+	const svg = document.createElementNS(NS, "svg");
+	for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: "16", height: "16", fill: "none", stroke: "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: "icon" })) svg.setAttribute(k, v);
+	for (const d of ICONS[name] ?? []) {
+		const path = document.createElementNS(NS, "path");
+		path.setAttribute("d", d);
+		svg.append(path);
+	}
+	return svg;
+}
+
 function toast(text, bad = false) {
 	const t = h(`div.toast${bad ? ".bad" : ""}`, text);
 	$toasts.append(t);
@@ -186,8 +216,8 @@ function renderLogin(error) {
 			"div.login",
 			h(
 				"div.card",
-				h("h1", "Annie"),
-				h("p", "Console"),
+				h("div.login-mark", h("img", { src: "/icon.svg", alt: "", width: "40", height: "40" })),
+				h("h1", "Accedi ad Annie"),
 				h("p", "Per entrare usa il link personale che ti ha dato chi gestisce Annie. Il link ti riconosce: non condividerlo."),
 				error ? h("p.chip.bad", error) : null,
 				h("p.muted", "Hai perso il link? Chiedi all'owner di generarne uno nuovo: quello vecchio smetterà di funzionare."),
@@ -205,7 +235,7 @@ function render() {
 	const main = h("main", { id: "main" });
 	const shell = h(
 		"div.shell",
-		h("header.topbar", h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, "☰"), h("b", "Annie"), h("span.mono.muted", state.instance?.name ?? "")),
+		h("header.topbar", h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, icon("menu")), h("b", h("img", { src: "/icon.svg", alt: "", width: "20", height: "20" }), "Annie"), h("button.icon-btn", { "aria-label": "Cerca", onclick: openPalette }, icon("search"))),
 		h("aside.rail", { id: "rail" }),
 		main,
 	);
@@ -232,12 +262,13 @@ function renderRail() {
 			nav.append(h("div.group", group));
 		}
 		const count = item.id === "chat" ? state.unread.size : (item.count?.() ?? 0);
-		nav.append(h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: () => document.querySelector(".shell")?.classList.remove("open") }, h("span", item.label), count > 0 ? h("span.count", String(count)) : null));
+		nav.append(h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: () => document.querySelector(".shell")?.classList.remove("open") }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", String(count)) : null));
 	}
 	const u = state.usage;
 	const share = u ? Math.min(1, u.todayUsd / u.hardUsd) : 0;
 	rail.replaceChildren(
-		h("div.brand", h("b", "Annie"), h("span", "console")),
+		h("div.brand", h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
+		h("button.search", { onclick: openPalette, "aria-label": "Vai a una sezione" }, icon("search"), h("span", "Vai a…"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
 		state.instances.length > 1
 			? h(
 					"div.instance-pick",
@@ -269,21 +300,22 @@ function renderRail() {
 				: null,
 			h(
 				"div.who",
-				h("div", h("div.name", state.me.name), h("div.role", state.me.role === "owner" ? "owner" : "membro")),
+				h("div.who-id", h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", state.me.role === "owner" ? "Owner" : "Membro"))),
 				h(
 					"div.row-gap",
-					h("button.icon-btn", { title: "Tema chiaro/scuro", "aria-label": "Cambia tema", onclick: cycleTheme }, "◐"),
+					h("button.icon-btn", { title: "Tema chiaro/scuro", "aria-label": "Cambia tema", onclick: cycleTheme }, icon("theme")),
 					h(
 						"button.icon-btn",
 						{
 							title: "Esci",
+							"aria-label": "Esci",
 							onclick: async () => {
 								await api("/api/logout", { method: "POST" }).catch(() => {});
 								state.me = undefined;
 								renderLogin();
 							},
 						},
-						"Esci",
+						icon("logout"),
 					),
 				),
 			),
@@ -303,6 +335,82 @@ function cycleTheme() {
 function head(kicker, title, text, ...actions) {
 	return h("div.head", h("div", h("div.kicker", kicker), title instanceof Node ? title : h("h1", title), text ? h("p", text) : null), actions.length ? h("div.row-gap", actions) : null);
 }
+
+function initials(name) {
+	return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
+}
+
+// ---------- command palette (⌘K) ----------
+function openPalette() {
+	if (!state.me || document.querySelector("dialog.palette")) return;
+	const items = PALETTE.filter((p) => (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
+	const input = h("input", { type: "text", placeholder: "Vai a una sezione…", "aria-label": "Cerca una sezione", autocomplete: "off" });
+	const list = h("ul", { role: "listbox" });
+	let active = 0;
+	let shown = items;
+	const dialog = h("dialog.palette", input, list);
+	const pick = (item) => {
+		dialog.close();
+		dialog.remove();
+		document.querySelector(".shell")?.classList.remove("open");
+		go(item.id);
+	};
+	const draw = () => {
+		const q = input.value.trim().toLowerCase();
+		shown = items.filter((i) => i.label.toLowerCase().includes(q));
+		active = Math.min(active, Math.max(0, shown.length - 1));
+		list.replaceChildren(
+			...shown.map((item, n) =>
+				h(
+					"li",
+					{
+						role: "option",
+						"aria-selected": n === active ? "true" : "false",
+						onclick: () => pick(item),
+						onmousemove: () => {
+							if (active === n) return;
+							active = n;
+							draw();
+						},
+					},
+					icon(item.id),
+					h("span", item.label),
+					h("span.muted", item.group),
+				),
+			),
+			...(shown.length ? [] : [h("li.none", "Nessuna sezione")]),
+		);
+	};
+	input.addEventListener("input", () => {
+		active = 0;
+		draw();
+	});
+	input.addEventListener("keydown", (e) => {
+		if ((e.key === "ArrowDown" || e.key === "ArrowUp") && shown.length) {
+			e.preventDefault();
+			active = (active + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+			draw();
+		} else if (e.key === "Enter" && shown[active]) {
+			e.preventDefault();
+			pick(shown[active]);
+		}
+	});
+	dialog.addEventListener("close", () => dialog.remove());
+	dialog.addEventListener("click", (e) => {
+		if (e.target === dialog) dialog.close();
+	});
+	document.body.append(dialog);
+	draw();
+	dialog.showModal();
+	input.focus();
+}
+
+window.addEventListener("keydown", (e) => {
+	if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+		e.preventDefault();
+		openPalette();
+	}
+});
 
 function needInstance(main) {
 	if (state.instance) return false;
@@ -339,9 +447,9 @@ async function viewChat(main) {
 		if (first) store(`annie.draft.${thread.id}`, first);
 		go("chat", thread.id);
 	};
-	const side = h("section.card.threads", h("header", h("b", "Conversazioni"), h("button.btn.small.ghost", { onclick: () => newThread() }, "+ Nuova")), threads.length ? list : h("p.muted", h("span", "")));
+	const side = h("section.card.threads", h("header", h("b", "Conversazioni"), h("button.btn.small.ghost", { onclick: () => newThread(), "aria-label": "Nuova conversazione" }, icon("plus"), "Nuova")), threads.length ? list : h("p.muted", h("span", "")));
 	const conversation = h("section.card.conversation");
-	main.replaceChildren(head(inst.name, h("h1", "Parla con ", h("em", "Annie")), null), h("div.chat", side, conversation));
+	main.replaceChildren(head(inst.name, h("h1", "Chat"), null), h("div.chat", side, conversation));
 	if (!threadId) {
 		conversation.append(
 			h(
@@ -475,7 +583,7 @@ async function viewSegreteria(main) {
 	}
 	const detail = h("div");
 	main.replaceChildren(
-		head(inst.name, h("h1", "Segreteria ", h("em", "commerciale")), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
+		head(inst.name, h("h1", "Segreteria commerciale"), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
 		pratiche.length ? h("div.pratiche", list, detail) : h("div.card.empty", h("b", "Ancora nessuna richiesta"), "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
 	);
 	const p = pratiche.find((x) => x.praticaId === selected) ?? pratiche[0];
@@ -719,7 +827,7 @@ async function viewTasks(main) {
 		}
 	};
 	main.replaceChildren(
-		head(inst.name, h("h1", "Task ", h("em", "programmati")), "Istruzioni che Annie esegue da sola, una volta o a ripetizione. Il risultato arriva nella chat scelta."),
+		head(inst.name, h("h1", "Task programmati"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione. Il risultato arriva nella chat scelta."),
 		h(
 			"div.grid-2",
 			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), "Creane uno qui accanto, oppure chiedilo ad Annie in chat.")),
@@ -1041,13 +1149,13 @@ async function viewActivity(main) {
 	const audit = owner ? (await api("/api/audit?limit=200")).events : [];
 	const share = Math.min(1, usage.todayUsd / usage.hardUsd);
 	const label = (e) => {
-		const { at: _at, type: _type, ...rest } = e;
+		const { at: _at, ts: _ts, type: _type, tenantId: _tenant, ...rest } = e;
 		return Object.entries(rest)
 			.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
 			.join("  ");
 	};
 	main.replaceChildren(
-		head("Annie", h("h1", "Attività ", h("em", "e spesa")), "Quanto ha speso oggi il tenant in modelli, e cosa è successo."),
+		head("Annie", h("h1", "Attività e spesa"), "Quanto ha speso oggi il tenant in modelli, e cosa è successo."),
 		h(
 			"div.stack",
 			h(
@@ -1064,7 +1172,7 @@ async function viewActivity(main) {
 							? h(
 									"table.ledger",
 									h("thead", h("tr", h("th", "Quando"), h("th", "Evento"), h("th", "Dettagli"))),
-									h("tbody", audit.map((e) => h("tr", h("td.mono", fmt.time(e.at)), h("td", h("span.chip", e.type)), h("td.mono.muted", label(e))))),
+									h("tbody", audit.map((e) => h("tr", h("td.mono", fmt.time(e.ts ?? e.at)), h("td", h("span.chip", e.type)), h("td.mono.muted", label(e))))),
 								)
 							: h("div.empty", h("b", "Nessun evento")),
 					)
