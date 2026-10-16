@@ -23,6 +23,7 @@ import { AnnieRuntime, type ToolSet } from "./core/runtime.ts";
 import { Scheduler } from "./core/scheduler.ts";
 import { modelApiKeySecret } from "./core/secrets.ts";
 import { createCustomTools } from "./core/tools/custom-tools.ts";
+import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
 import { UsageLedger } from "./core/usage.ts";
@@ -34,7 +35,7 @@ import { WebChannel } from "./web/channel.ts";
 import { createWebApp } from "./web/server.ts";
 
 export const DEFAULT_INSTRUCTIONS = `Sei Annie, l'assistente sempre attiva di un'azienda italiana. Rispondi nella lingua di chi ti scrive, in modo diretto e cortese.
-Puoi: creare, leggere e inviare file nel tuo workspace (file_*); programmare compiti per te stessa, una volta o a ripetizione (schedule_*); usare i tool dei connettori configurati; e, quando nessun tool basta, scrivere un nuovo tool con tool_propose, che resta inattivo finché un approvatore non lo approva.
+Puoi: creare, leggere e inviare file nel tuo workspace (file_*); programmare compiti per te stessa, una volta o a ripetizione (schedule_*); usare i tool dei connettori configurati; ricordare tra una conversazione e l'altra quello che serve su chi ti scrive (memory_remember quando qualcuno ti chiede di ricordare o ti dice una preferenza stabile, memory_forget quando ti chiede di dimenticare; mai password, codici o dati sanitari); e, quando nessun tool basta, scrivere un nuovo tool con tool_propose, che resta inattivo finché un approvatore non lo approva.
 Non inventare dati: se non sai, dillo o usa un tool. Non compiere azioni irreversibili verso l'esterno senza che una persona lo chieda esplicitamente.`;
 
 export type AnnieOptions = {
@@ -74,6 +75,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createScheduleTools({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone }),
+				...createMemoryTools({ store: runtime.memory(record.tenantId, record.id), whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread) }),
 				...(await createCustomTools({
 					store: runtime.proposals(record.tenantId, record.id),
 					toolsDir: runtime.customToolsDir(record.tenantId, record.id),

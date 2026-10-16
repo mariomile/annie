@@ -5,7 +5,8 @@ import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
-import { customToolsDir, engineDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
+import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
+import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, workspaceDir } from "./paths.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
 import { Workspace } from "./workspace.ts";
@@ -89,6 +90,7 @@ export class AnnieRuntime {
 	readonly registry: TenantRegistry;
 	private readonly instances = new Map<string, Promise<AnnieInstance>>();
 	private readonly listeners = new Set<(reply: Reply) => void>();
+	private readonly participantStores = new Map<string, Participants>();
 
 	constructor(private readonly options: RuntimeOptions) {
 		this.registry = new TenantRegistry(options.dataDir);
@@ -117,6 +119,26 @@ export class AnnieRuntime {
 	}
 
 	/** The tasks programmati of an instance. */
+	/** The memoria of an instance: what it remembers about each person, and shared facts. */
+	memory(tenant: string, instance: string): MemoryStore {
+		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Whom a thread is with, as "<channel>:<userId>": the last person who wrote in it. */
+	participant(tenant: string, instance: string, thread: { channel: string; threadId: string }): string | undefined {
+		return this.participants(tenant, instance).get(threadKey(thread.channel, thread.threadId));
+	}
+
+	private participants(tenant: string, instance: string): Participants {
+		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		let store = this.participantStores.get(key);
+		if (store === undefined) {
+			store = new Participants(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+			this.participantStores.set(key, store);
+		}
+		return store;
+	}
+
 	schedules(tenant: string, instance: string): ScheduleStore {
 		return new ScheduleStore(schedulesDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
@@ -293,7 +315,7 @@ export class AnnieRuntime {
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id) }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -324,6 +346,7 @@ export class AnnieInstance {
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
+		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants },
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -369,7 +392,10 @@ export class AnnieInstance {
 			userId: request.userId,
 			chars: request.text.length,
 		});
-		return this.admit(request);
+		// The instance learns whom the thread is with, and gets what it remembers about them.
+		const subject = subjectOf(request.channel, request.userId);
+		this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
+		return this.admit({ ...request, text: `${request.text}${memoryNote(this.memory.store.forSubject(subject))}` });
 	}
 
 	/**
@@ -403,7 +429,8 @@ export class AnnieInstance {
 			throw error;
 		}
 		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId });
-		return this.admit(request);
+		const note = person === undefined ? memoryNote(this.memory.store.forSubject(SHARED)) : memoryNote(this.memory.store.forSubject(subjectOf(person.channel, person.userId)));
+		return this.admit({ ...request, text: `${request.text}${note}` });
 	}
 
 	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }): Promise<{ submissionId: string }> {

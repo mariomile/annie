@@ -295,3 +295,32 @@ describe("web console: two-factor login", () => {
 		expect(await h.runtime.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "web.2fa_reset", personId: h.anna.person.id }));
 	});
 });
+
+describe("web console: memoria", () => {
+	it("each person sees and edits what Annie remembers about them; shared facts are the owner's to edit", async () => {
+		const h = await setup();
+		const store = h.runtime.memory("acme", "ops");
+		store.add({ about: `web:${h.anna.person.id}`, text: "Anna preferisce il tu", source: "annie" });
+		store.add({ about: `web:${h.luca.person.id}`, text: "Luca segue i clienti di Milano", source: "annie" });
+		store.add({ about: "*", text: "Lo studio chiude ad agosto", source: "annie" });
+		const anna = await h.as(h.anna.token);
+		const mine = (await anna("/api/instances/ops/memory")).body;
+		expect(mine.mine.map((m: { text: string }) => m.text)).toEqual(["Anna preferisce il tu"]);
+		expect(mine.shared.map((m: { text: string }) => m.text)).toEqual(["Lo studio chiude ad agosto"]);
+		expect(JSON.stringify(mine)).not.toContain("Milano");
+		const added = await anna("/api/instances/ops/memory", { method: "POST", body: JSON.stringify({ text: "Rispondimi in italiano" }) });
+		expect(added.status).toBe(200);
+		expect((await anna("/api/instances/ops/memory", { method: "POST", body: JSON.stringify({ text: "per tutti", shared: true }) })).status).toBe(403);
+		const lucaMemory = store.list().find((m) => m.text.includes("Milano"));
+		expect((await anna(`/api/instances/ops/memory/${lucaMemory?.id}`, { method: "DELETE" })).status).toBe(404);
+		const own = store.list().find((m) => m.text === "Anna preferisce il tu");
+		expect((await anna(`/api/instances/ops/memory/${own?.id}`, { method: "DELETE" })).status).toBe(200);
+		expect(store.list().some((m) => m.text === "Anna preferisce il tu")).toBe(false);
+		// A person without access to the instance sees nothing.
+		const owner = await h.as(h.owner.token);
+		expect((await owner("/api/instances/ops/memory", { method: "POST", body: JSON.stringify({ text: "Fatturazione il 5 del mese", shared: true }) })).status).toBe(200);
+		expect(store.list().some((m) => m.about === "*" && m.text.startsWith("Fatturazione"))).toBe(true);
+		expect(JSON.stringify(await h.runtime.audit("acme").read())).not.toContain("preferisce");
+	});
+});
+

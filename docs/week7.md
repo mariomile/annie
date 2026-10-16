@@ -1,6 +1,6 @@
 # Settimana 7: verso Annie Cloud
 
-Branch `week-7`. Piano: [`piano-cloud.md`](piano-cloud.md). Decisione: [ADR 0007](adr/0007-annie-cloud-a-celle.md). Vocabolario: [`GLOSSARY.md`](../GLOSSARY.md) (Cella, Control plane, Operatore, Annie Cloud).
+Branch `week-7`. Piano: [`piano-cloud.md`](piano-cloud.md). Decisione: [ADR 0007](adr/0007-annie-cloud-a-celle.md). Vocabolario: [`GLOSSARY.md`](../GLOSSARY.md) (Cella, Control plane, Operatore, Annie Cloud, Memoria).
 
 ## Perché
 
@@ -13,6 +13,7 @@ Mario ha chiarito che Annie deve funzionare anche come Grok Bot e dots: un agent
 - **Contratto della cella** (`test/app.test.ts`, `test/outbox.test.ts`). `ANNIE_CELL_SECRET` abilita `GET /internal/cell` (c'è lavoro in corso? quando va svegliata: primo task programmato, prossimo giro di posta della segreteria) e `POST /internal/owner-link` (un nuovo link per l'owner a ogni accesso, registrato nell'audit della cella; con la verifica in due passaggi il link da solo non basta). Una cella non scrive il link dell'owner su disco.
 - **Control plane** (`test/cloud.test.ts`, celle vere come processi locali). `pnpm cloud`: registrazione con link via email (una volta sola, 30 minuti, cinque all'ora per indirizzo, venti all'ora per chi li chiede; se la cella non parte il link resta valido), una cella per tenant creata alla prima verifica con un indirizzo casuale che non mostra il nome della persona, ingresso già autenticato, smistamento per sottodominio verso la cella (stream degli eventi e webhook compresi). Gli endpoint `/internal/` non sono raggiungibili da fuori in nessuna grafia del percorso; al passaggio si tolgono `authorization` e gli header hop-by-hop. Una cella spenta si sveglia per chi ha una sessione o per un webhook, non per richieste anonime; un tenant che non esiste risponde come una cella che dorme. Le celle inattive si fermano se non stanno lavorando (una richiesta arrivata nel frattempo le tiene su, una che arriva durante lo spegnimento aspetta e la risveglia) e si svegliano all'ora del prossimo task, anche dopo un riavvio del control plane. Interfacce `CellProvider` e `Mailer`: oggi un provider a processi locali e un mailer su file.
 - **Telegram per istanza dalla console** (`test/app.test.ts`, `test/egress.test.ts`). In Impostazioni l'owner collega il bot di un'istanza (token, chi può scrivere, chi approva): il token viene provato con Telegram, finisce nel secret store e non torna più al browser; il bot parte subito, riparte dopo un riavvio e si scollega con un clic. Con un indirizzo https (una cella) usa il webhook con un segreto per istanza, altrimenti il long polling. La console distingue un token rifiutato da Telegram non raggiungibile. Il test ha trovato un bug del nucleo: la risposta controllava i canali consentiti come erano all'apertura dell'istanza, quindi un canale aggiunto dopo restava bloccato fino al riavvio. Ora vale la policy salvata in quel momento.
+- **Memoria della persona** (`test/memory.test.ts`, `test/web.test.ts`). Primo pezzo della Fase 2. Annie ha tre tool: `memory_remember` (anche condivisa), `memory_forget`, `memory_list`. Quello che ricorda di chi scrive le arriva con il messaggio, in ogni thread di quella persona, e i task programmati ricevono le memorie della persona per cui girano. Una persona non vede né può far dimenticare le memorie di un'altra; quelle condivise le vedono tutti. Massimo 500 caratteri a memoria e 200 per persona. Nella console la pagina Memoria mostra le proprie e le condivise; ognuno aggiunge e cancella le sue, l'owner anche le condivise. L'audit registra salvataggi e cancellazioni senza il testo. Le istruzioni delle nuove istanze dicono quando ricordare e di non tenere password, codici o dati sanitari.
 - **Robustezza** (`test/telegram.test.ts`, `test/app.test.ts`). Un bot che Telegram non accetta (token sbagliato, webhook su http) non impedisce più ad Annie di partire; il long polling cancella un webhook rimasto da prima. `pnpm annie check` confronta i valori di `hs_lead_status` del portale con quelli che la segreteria imposta.
 
 ## Review indipendente
@@ -25,7 +26,8 @@ Due revisori separati hanno trovato, tra gli altri:
 
 ## Verifica
 
-- `pnpm typecheck`: ok. `pnpm test`: 28 file, 198 test, 0 fallimenti (172 a fine settimana 6).
+- `pnpm typecheck`: ok. `pnpm test`: 29 file, 203 test, 0 fallimenti (172 a fine settimana 6).
+- Chromium: nella pagina Memoria si aggiunge una memoria propria e una condivisa; il messaggio successivo in chat arriva ad Annie con entrambe.
 - Chromium: la sezione Telegram in Impostazioni collega un bot; qui Telegram è bloccato dalla rete e la console lo dice («non raggiungibile da questo server»). `pnpm eval:segreteria`: 35 casi ok.
 - Chromium headless su `annie.localhost`: registrazione, link dalla mail, cella creata, console già autenticata, prima risposta in tempo reale in 2,1 secondi (in locale, con il modello finto).
 - `pnpm annie check` eseguito qui: chiave Anthropic finta rifiutata con il nome della variabile, Telegram dato come non raggiungibile con il suggerimento sui domini consentiti.
@@ -40,4 +42,5 @@ Due revisori separati hanno trovato, tra gli altri:
 | Email | mailer su file: i link si leggono in `data-cloud/mail/outbox.txt` finché non scegliamo il servizio |
 | Sonno | una scheda aperta nel browser tiene sveglia la cella (lo stream degli eventi è una richiesta aperta); la segreteria la sveglia a ogni giro di posta |
 | Segreteria in cloud | il suo bot fa ancora long polling: va passato al webhook come quello dell'agente |
+| Memoria | Annie la riceve come nota in coda al messaggio, non come contesto separato: con molte memorie il messaggio si allunga (tetto di 200 per persona). Le istanze create prima non hanno le istruzioni sulla memoria finché l'owner non le aggiorna |
 | Pagamento | nessuno: ogni cella usa la chiave del modello dell'operatore, con i tetti di spesa per tenant |

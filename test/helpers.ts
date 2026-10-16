@@ -18,9 +18,12 @@ export async function runtimeWithInstance(options: {
 	egress?: EgressPolicy;
 	allowedUsers?: AllowedUsers;
 	tools?: AnnieTool[];
+	/** Tools that need the runtime itself (its stores), built when the instance opens. */
+	toolsFor?: (runtime: AnnieRuntime) => AnnieTool[];
 }): Promise<{ runtime: AnnieRuntime; dataDir: string; replies: Reply[] }> {
 	const dataDir = options.dataDir ?? tempDataDir();
-	const runtime = new AnnieRuntime({ dataDir, engine: piDurableEngine, tools: options.tools ?? [] });
+	const toolsFor = options.toolsFor;
+	const runtime: AnnieRuntime = new AnnieRuntime({ dataDir, engine: piDurableEngine, tools: toolsFor === undefined ? (options.tools ?? []) : async () => toolsFor(runtime) });
 	const tenant = options.tenant ?? "acme";
 	const instance = options.instance ?? "ops";
 	await runtime.registry.createTenant({ id: tenant, name: tenant });

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, request, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 import { sameSecret } from "../web/compare.ts";
-import { readJsonFile, updateJsonFile } from "../web/locked-json.ts";
+import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { CellState } from "../web/server.ts";
 import type { Mailer } from "./mailer.ts";
 import type { CellProvider } from "./provider.ts";

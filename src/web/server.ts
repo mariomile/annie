@@ -6,6 +6,7 @@ import { ChannelRefused } from "../channels/types.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { decideToolProposal, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
+import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
@@ -471,6 +472,37 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
 	});
+	// --- memoria: each person sees what the instance remembers about them, and the shared facts ---
+	const subjectOfPerson = (p: Person) => subjectOf("web", p.id);
+	route("GET", "/api/instances/:id/memory", "person", async ({ person, params }) => {
+		await instanceAccess(person as Person, params[0] as string);
+		const all = runtime.memory(tenantId, params[0] as string).list();
+		return { mine: all.filter((m) => m.about === subjectOfPerson(person as Person)), shared: all.filter((m) => m.about === SHARED), canEditShared: (person as Person).role === "owner" };
+	});
+	route("POST", "/api/instances/:id/memory", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { text?: unknown; shared?: unknown };
+		const shared = body.shared === true;
+		if (shared && p.role !== "owner") throw new HttpError(403, "Solo l'owner aggiunge memorie condivise");
+		try {
+			const memory = runtime.memory(tenantId, params[0] as string).add({ about: shared ? SHARED : subjectOfPerson(p), text: String(body.text ?? ""), source: "person" });
+			await runtime.audit(tenantId).append({ type: "memory.saved", instanceId: params[0], personId: p.id, memoryId: memory.id, shared });
+			return { memory };
+		} catch (error) {
+			if (error instanceof MemoryError) throw new HttpError(400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/memory/:mid", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const removed = runtime.memory(tenantId, params[0] as string).remove(params[1] as string, (m) => m.about === subjectOfPerson(p) || (m.about === SHARED && p.role === "owner"));
+		if (removed === undefined) throw new HttpError(404, "Memoria non trovata");
+		await runtime.audit(tenantId).append({ type: "memory.forgotten", instanceId: params[0], personId: p.id, memoryId: removed.id });
+		return { ok: true };
+	});
+
 	// --- owner: the Telegram bot of an instance (the token never comes back) ---
 	const telegramOf = () => {
 		if (options.telegram === undefined) throw new HttpError(501, "Telegram non disponibile");

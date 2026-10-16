@@ -54,7 +54,8 @@ function respond(messages: readonly Message[]): AssistantMessage {
 		return fauxAssistantMessage(`Fatto. ${output}`);
 	}
 	const text = last?.role === "user" ? userText(last.content) : "";
-	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec(text.trim());
+	// The memoria note the core appends after the person's words is not part of a command.
+	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split("\n\n[Memoria]")[0] ?? "").trim());
 	if (direct?.[1] !== undefined) {
 		let args: Record<string, unknown> = {};
 		try {

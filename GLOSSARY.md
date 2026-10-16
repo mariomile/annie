@@ -93,6 +93,10 @@ _Avoid_: disco, storage, cartella
 Un'istruzione che un'istanza esegue da sola a un'ora stabilita, una volta o a ripetizione, consegnando il risultato a un thread.
 _Avoid_: cron, job, promemoria, routine
 
+**Memoria**:
+Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce l'owner.
+_Avoid_: profilo, contesto, knowledge base
+
 ## Controllo
 
 **Egress policy**:

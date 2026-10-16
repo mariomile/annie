@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { sameSecret } from "./compare.ts";
-import { readJsonFile, updateJsonFile } from "./locked-json.ts";
+import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import { generateTotpSecret, verifyTotp } from "./totp.ts";
 
 /**

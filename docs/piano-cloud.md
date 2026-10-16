@@ -45,6 +45,8 @@ Stato al 16 ottobre 2026 (branch `week-7`): fatti Telegram via webhook, il contr
 - Brief proattivo del mattino con tool in sola lettura.
 - Misura: quante persone usano il brief dopo una settimana.
 
+Stato al 16 ottobre 2026 (branch `week-7`): fatta la memoria della persona. Annie ricorda con `memory_remember` e dimentica con `memory_forget`; quello che ricorda di chi le scrive le arriva con ogni messaggio di quella persona, in qualunque conversazione. Ogni persona vede e cancella solo le proprie memorie nella pagina Memoria della console; quelle condivise le gestisce l'owner. Mancano i connettori Google e il brief del mattino.
+
 ### Fase 3: il computer dell'agente (2-3 settimane)
 
 - Browser e terminale dentro la cella, con livelli di approvazione: leggere è libero, scrivere o inviare si approva.

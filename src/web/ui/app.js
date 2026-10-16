@@ -34,6 +34,7 @@ const ICONS = {
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
 	task: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 7.5V12l3 2"],
 	file: ["M14 3H6v18h12V7Z", "M14 3v4h4"],
+	memoria: ["M12 4a4 4 0 0 0-4 4v1a3 3 0 0 0-2 5.2V16a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4v-1.8A3 3 0 0 0 16 9V8a4 4 0 0 0-4-4Z", "M12 4v16"],
 	connettori: ["M9 3v5M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4"],
 	impostazioni: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 5v4M9 15v4"],
 	persone: ["M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M2.5 21a6.5 6.5 0 0 1 13 0", "M16 3.6a4 4 0 0 1 0 6.8", "M18.5 14.5A6.5 6.5 0 0 1 21.5 21"],
@@ -123,6 +124,7 @@ const PALETTE = [
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
 	{ id: "task", label: "Task programmati", group: "Lavoro" },
 	{ id: "file", label: "File", group: "Lavoro" },
+	{ id: "memoria", label: "Memoria", group: "Lavoro" },
 	{ id: "connettori", label: "Connettori", group: "Gestione", owner: true },
 	{ id: "impostazioni", label: "Impostazioni", group: "Gestione", owner: true },
 	{ id: "persone", label: "Persone", group: "Gestione", owner: true },
@@ -372,7 +374,7 @@ function render() {
 	$app.replaceChildren(shell);
 	renderRail();
 	state.onEntry = undefined;
-	const views = { chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		main.replaceChildren(h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -1028,6 +1030,55 @@ async function viewFiles(main) {
 						),
 					)
 				: h("div.empty", h("b", "Nessun file"), "Caricane uno, o chiedi ad Annie di preparare un report."),
+		),
+	);
+}
+
+// ---------- memoria ----------
+async function viewMemory(main) {
+	if (needInstance(main)) return;
+	const inst = state.instance;
+	const { mine, shared, canEditShared } = await api(`/api/instances/${inst.id}/memory`);
+	const forget = (m) =>
+		confirmDialog("Dimenticare questa memoria?", m.text, "Dimentica", async () => {
+			await api(`/api/instances/${inst.id}/memory/${m.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+			render();
+		});
+	const list = (memories, editable, empty) =>
+		memories.length
+			? h(
+					"table.ledger",
+					h(
+						"tbody",
+						memories.map((m) =>
+							h(
+								"tr",
+								h("td", m.text, h("div.mono.muted", `${m.source === "annie" ? "ricordata da Annie" : "aggiunta a mano"} · ${fmt.time(m.createdAt)}`)),
+								h("td", editable ? h("button.btn.small.danger", { onclick: () => forget(m) }, "Dimentica") : null),
+							),
+						),
+					),
+				)
+			: h("div.empty", h("b", "Niente"), empty);
+	const add = (isShared) => {
+		const text = h("textarea", { rows: 2, maxlength: 500, placeholder: isShared ? "Es. L'ufficio è chiuso dal 10 al 25 agosto" : "Es. Preferisco risposte brevi, in punti" });
+		const save = async () => {
+			try {
+				await api(`/api/instances/${inst.id}/memory`, { method: "POST", body: { text: text.value, shared: isShared } });
+				toast("Annie se lo ricorderà");
+				render();
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		return h("div.pad", h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text), h("button.btn", { onclick: save }, "Ricorda"));
+	};
+	main.replaceChildren(
+		head(inst.name, h("h1", "Memoria"), "Quello che Annie ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva ad Annie."),
+		h(
+			"div.grid-2",
+			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, "Annie non ricorda ancora niente di te. Puoi dirle «ricordati che…» in chat, o aggiungerlo qui."), add(false)),
+			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
 }
