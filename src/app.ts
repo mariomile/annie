@@ -22,7 +22,8 @@ import { type ComputerProvider, computerKey } from "./core/computer.ts";
 import { createComputerTools } from "./core/tools/computer-tools.ts";
 import { DockerComputerProvider } from "./computer/docker-computer.ts";
 import { createGoogleTools } from "./core/tools/google-tools.ts";
-import { type Browser, createWebTools } from "./core/tools/web-tools.ts";
+import { createWebTools } from "./core/tools/web-tools.ts";
+import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { decideToolProposal, decideWebAction, NotAnApprover } from "./core/approvals.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
@@ -111,6 +112,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// It runs with its own sandbox, or not at all unless the operator says so (ADR 0009); it gets no
 	// secrets in its environment, and no network: every request is answered by the guarded fetch.
 	let browser: Promise<Browser | undefined> | undefined;
+	// Browsers open per conversation (web_browse, ADR 0014), in the same Chromium.
+	const browseSessions = new BrowseSessions();
 	const chromium = (): Promise<Browser | undefined> => {
 		browser ??= import("playwright-core")
 			.then(async ({ chromium: launcher }) => {
@@ -189,6 +192,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					policy: policyOf(record),
 					workspace: runtime.workspace(record.tenantId, record.id),
 					chromium,
+					sessions: browseSessions,
+					scope: `${record.tenantId}/${record.id}`,
 					...(options.webAddressAllowed === undefined ? {} : { addressAllowed: options.webAddressAllowed }),
 					actions: {
 						store: runtime.webActions(record.tenantId, record.id),
@@ -736,6 +741,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await scheduler.stop();
 			for (const bot of telegrams.values()) await bot.stop();
 			for (const phone of phones.values()) await phone.stop();
+			await browseSessions.closeAll();
 			await computer?.close().catch((error: unknown) => log(`computer: not stopped: ${error instanceof Error ? error.message : String(error)}`));
 			await segreteria?.stop();
 			await runtime.close();
