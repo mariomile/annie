@@ -16,6 +16,8 @@ Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel c
 
 - **Pulizia dell'outbox** (`test/outbox.test.ts`). All'apertura di un'istanza le risposte consegnate da più di 30 giorni vengono tolte dall'outbox (evento `outbox.pruned` nell'audit); quelle recenti e quelle non ancora consegnate restano. Senza pulizia l'outbox cresceva di un file per risposta e ogni avvio li rileggeva tutti. I file del workspace invece non si cancellano da soli: sono dati delle persone.
 
+- **Container con privilegi minimi** (`docker-compose.yml`). Filesystem in sola lettura tranne `/data` e `/tmp`, nessuna capability Linux, niente escalation di privilegi (`no-new-privileges`). I tool proposti girano in un processo figlio dentro lo stesso container e ne ereditano i limiti. Verificato con un'immagine costruita da questo branch e avviata con le stesse opzioni: healthcheck `healthy`, utente 1000, `/app` non scrivibile, `/data` sì; login, file, tool proposto approvato ed eseguito in sandbox (con `node:sqlite` bloccato), tutto ancora lì dopo `docker restart`.
+
 ## Verifica
 
 - `pnpm typecheck`: ok. `pnpm test`: 25 file, 153 test, 0 fallimenti (146 a fine settimana 5). `pnpm eval:segreteria`: 35 casi ok.
