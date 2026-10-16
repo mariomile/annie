@@ -360,6 +360,27 @@ function googleCard(inst, allowed) {
 	);
 }
 
+/** Owner: voice messages of this instance transcribed by the server's service. */
+function voiceCard(inst, host, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/voice`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Vocali trascritti per questa istanza" : "Vocali non più trascritti per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Messaggi vocali"),
+		h("p.muted", `I vocali di Telegram e WhatsApp vengono trascritti da ${host} e arrivano ad Annie come testo. Solo quelli delle persone che possono scrivere; l'audio va solo a quel servizio.`),
+		h("label.row-gap", toggle, h("span", "Trascrivi i vocali di questa istanza")),
+	);
+}
+
 /** Owner: the sites this instance may read and screenshot. */
 function webCard(inst, hosts) {
 	const list = h("textarea", { rows: 4, class: "mono", placeholder: "comune.roma.it\nagenziaentrate.gov.it\n* (tutti i siti pubblici)", value: hosts.join("\n") });
@@ -1385,12 +1406,13 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
 		api(`/api/instances/${inst.id}/whatsapp`).catch(() => undefined),
 		api("/api/google").catch(() => ({ available: false })),
+		api("/api/voice").catch(() => ({ available: false })),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -1422,6 +1444,7 @@ async function viewSettings(main) {
 				tg === undefined ? null : telegramCard(inst, tg.telegram),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
+				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				webCard(inst, settings.egress.web ?? []),
 			),
 			h(

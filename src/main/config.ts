@@ -1,3 +1,4 @@
+import type { TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;
@@ -156,6 +157,8 @@ export type AnnieConfig = {
 	readonly chromiumPath: string | undefined;
 	/** The operator accepts Chromium without its sandbox where the sandbox cannot start (ADR 0009). */
 	readonly screenshotsWithoutSandbox: boolean;
+	/** Where voice messages are transcribed (an OpenAI-compatible service); off if unset. */
+	readonly transcription: TranscriberConfig | undefined;
 };
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -201,6 +204,19 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (services.length === 0 || unknown.length > 0) throw new ConfigError(`ANNIE_GOOGLE_SERVICES: a comma-separated list of ${GOOGLE_SERVICES.join(", ")}${unknown.length > 0 ? `; unknown: ${unknown.join(", ")}` : ""}`);
 		google = { clientId: googleId, clientSecret: googleSecret, redirectUrl, services: [...new Set(services)] as GoogleService[] };
 	}
+	const transcribeUrl = nonEmpty(env.ANNIE_TRANSCRIBE_URL);
+	const transcribeKey = nonEmpty(env.ANNIE_TRANSCRIBE_API_KEY);
+	let transcription: TranscriberConfig | undefined;
+	if (transcribeUrl !== undefined || transcribeKey !== undefined) {
+		if (transcribeUrl === undefined || transcribeKey === undefined) throw new ConfigError("Set both ANNIE_TRANSCRIBE_URL and ANNIE_TRANSCRIBE_API_KEY, or neither");
+		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(transcribeUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(transcribeUrl)) throw new ConfigError("ANNIE_TRANSCRIBE_URL: an https address, e.g. https://api.mistral.ai/v1");
+		// Mistral's model unless told otherwise: a service in the EU.
+		const model = nonEmpty(env.ANNIE_TRANSCRIBE_MODEL) ?? (transcribeUrl.includes("api.mistral.ai") ? "voxtral-mini-latest" : transcribeUrl.includes("api.openai.com") ? "whisper-1" : undefined);
+		if (model === undefined) throw new ConfigError("ANNIE_TRANSCRIBE_MODEL: the model of this transcription service");
+		const maxSeconds = Number(nonEmpty(env.ANNIE_TRANSCRIBE_MAX_SECONDS) ?? "300");
+		if (!Number.isInteger(maxSeconds) || maxSeconds < 10 || maxSeconds > 3600) throw new ConfigError("ANNIE_TRANSCRIBE_MAX_SECONDS: whole seconds between 10 and 3600");
+		transcription = { url: transcribeUrl, apiKey: transcribeKey, model, maxSeconds };
+	}
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
 	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
@@ -242,5 +258,6 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		google,
 		chromiumPath: nonEmpty(env.ANNIE_CHROMIUM_PATH),
 		screenshotsWithoutSandbox: nonEmpty(env.ANNIE_SCREENSHOTS_WITHOUT_SANDBOX) === "1",
+		transcription,
 	};
 }

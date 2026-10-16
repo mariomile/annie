@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { audioName, type Transcribe, voiceText } from "./voice.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
@@ -29,6 +30,8 @@ export type WhatsAppAdapterOptions = WhatsAppCredentials & {
 	readonly log?: (message: string) => void;
 	/** May this person's files be downloaded? Files of strangers should not. */
 	readonly mayDownload?: (userId: string) => Promise<boolean>;
+	/** Voice messages to text; without it Annie is told transcription is off. */
+	readonly transcribe?: Transcribe;
 };
 
 export const WHATSAPP_GRAPH = "https://graph.facebook.com/v26.0";
@@ -89,6 +92,7 @@ type WhatsAppMessage = {
 	text?: { body?: string };
 	interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
 	document?: { id?: string; filename?: string; mime_type?: string; caption?: string };
+	audio?: { id?: string; mime_type?: string; voice?: boolean };
 };
 /** What Meta says later about a message we sent: a failure outside the 24-hour window arrives here, not as an error on the send. */
 type WhatsAppStatus = { id?: string; status?: string; recipient_id?: string; errors?: { code?: number; title?: string }[] };
@@ -212,8 +216,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			return this.actionHandler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, data, actionId: message.id });
 		}
 		if (this.handler === undefined) return;
+		if (message.type === "audio") return this.handler === undefined ? undefined : this.voice(message, this.handler);
 		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : undefined;
-		// Voice notes, images, stickers, locations: not understood yet, so not passed on as empty messages.
+		// Images, stickers, locations: not understood yet, so not passed on as empty messages.
 		if (text === undefined) return;
 		let attachments: { name: string; data: Uint8Array }[] = [];
 		let note = "";
@@ -221,8 +226,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			try {
 				attachments = [await this.download(message.document.id, message.document.filename)];
 			} catch (error) {
-				// A file that cannot be had now or ever (too large, gone): the message still arrives, saying so.
-				if (!(error instanceof ChannelRefused)) throw error;
+				// A file that cannot be had (too large, gone): the message still arrives, saying so. Meta busy: delivered again.
+				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`whatsapp: file of ${message.id} not downloaded: ${error.message}`);
 				note = "[Un file allegato non è stato scaricato: troppo grande o non disponibile.]";
 			}
@@ -238,6 +243,26 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			messageId: message.id,
 			...(attachments.length === 0 ? {} : { attachments }),
 		});
+	}
+
+	/** A voice note or audio file: downloaded and transcribed only for people who may write; a stranger's is never fetched. */
+	private async voice(message: WhatsAppMessage, handler: (message: InboundMessage) => Promise<void>): Promise<void> {
+		const id = message.audio?.id;
+		let text = "[Messaggio vocale]";
+		if (typeof id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
+			// WhatsApp does not say how long it is: the 20 MB of the download is the limit.
+			const mimeType = (message.audio?.mime_type ?? "audio/ogg").split(";")[0]?.trim() || "audio/ogg";
+			try {
+				const file = await this.download(id, audioName(mimeType));
+				text = await voiceText({ data: file.data, name: file.name, mimeType }, this.options.transcribe, this.options.log);
+			} catch (error) {
+				// Meta busy now: an error, so Meta delivers again. Anything else is said, not dropped.
+				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+				this.options.log?.(`whatsapp: voice of ${message.id} not downloaded: ${error.message}`);
+				text = "[Messaggio vocale troppo grande o non disponibile.]";
+			}
+		}
+		await handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id });
 	}
 
 	/** The media's address from the Graph API, then the file itself, with the token. */
