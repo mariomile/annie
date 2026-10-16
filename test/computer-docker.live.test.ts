@@ -1,0 +1,39 @@
+import { afterAll, describe, expect, it } from "vitest";
+import { DockerComputerProvider } from "../src/computer/docker-computer.ts";
+
+/**
+ * The computer on a real Docker daemon, with the real image (CI's Image workflow builds it):
+ * ANNIE_TEST_COMPUTER_IMAGE=annie-computer:ci pnpm vitest run test/computer-docker.live.test.ts
+ */
+const image = process.env.ANNIE_TEST_COMPUTER_IMAGE;
+const key = `live-${process.pid}`;
+
+describe.skipIf(image === undefined)("the computer on a real Docker host", () => {
+	const computer = new DockerComputerProvider({ image: image as string, ...(process.env.ANNIE_TEST_COMPUTER_RUNTIME ? { runtime: process.env.ANNIE_TEST_COMPUTER_RUNTIME } : {}) });
+	afterAll(() => computer.reset(key));
+
+	it("runs as uid 1000 in /work, with no network and a read-only system", async () => {
+		const who = await computer.run(key, "id -u; pwd", { timeoutS: 30 });
+		expect(who).toMatchObject({ exitCode: 0, stdout: "1000\n/work\n" });
+		// Only the loopback interface: nothing to reach anyone with.
+		expect((await computer.run(key, "ls /sys/class/net", { timeoutS: 10 })).stdout.trim()).toBe("lo");
+		const net = await computer.run(key, "python3 -c \"import socket; socket.create_connection(('1.1.1.1', 53), 3)\"", { timeoutS: 10 });
+		expect(net.exitCode).not.toBe(0);
+		expect((await computer.run(key, "touch /etc/annie", { timeoutS: 10 })).exitCode).not.toBe(0);
+		expect((await computer.run(key, "touch /work/ok && touch /tmp/ok", { timeoutS: 10 })).exitCode).toBe(0);
+	}, 120_000);
+
+	it("files in, a pandas script, a chart out; a command killed at its time", async () => {
+		await computer.put(key, [{ path: "dati/vendite.csv", data: Buffer.from("mese,euro\ngen,10\nfeb,32\n") }]);
+		const script = "import pandas as pd, matplotlib.pyplot as plt; d = pd.read_csv('dati/vendite.csv'); print(d.euro.sum()); d.plot(x='mese', y='euro'); plt.savefig('grafico.png')";
+		const run = await computer.run(key, `python3 -c "${script}"`, { timeoutS: 120 });
+		expect(run.stderr).toBe("");
+		expect(run).toMatchObject({ exitCode: 0, stdout: "42\n" });
+		const png = await computer.get(key, "grafico.png", 5 * 1024 * 1024);
+		expect(Buffer.from(png.subarray(1, 4)).toString()).toBe("PNG");
+		await expect(computer.get(key, "dati", 1024)).rejects.toThrow("cartella");
+		const slow = await computer.run(key, "sleep 30", { timeoutS: 2 });
+		expect(slow).toMatchObject({ exitCode: 137, timedOut: true });
+		for (const tool of ["jq", "sqlite3", "pandoc", "pdftotext", "zip", "convert"]) expect((await computer.run(key, `command -v ${tool}`, { timeoutS: 10 })).exitCode).toBe(0);
+	}, 180_000);
+});

@@ -18,6 +18,9 @@ import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GoogleAccounts, GoogleClient, GoogleOAu
 import { egressFetch } from "./connectors/http.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
 import { readOnlyInBriefs } from "./core/brief.ts";
+import { type ComputerProvider, computerKey } from "./core/computer.ts";
+import { createComputerTools } from "./core/tools/computer-tools.ts";
+import { DockerComputerProvider } from "./computer/docker-computer.ts";
 import { createGoogleTools } from "./core/tools/google-tools.ts";
 import { type Browser, createWebTools } from "./core/tools/web-tools.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
@@ -61,6 +64,8 @@ export type AnnieOptions = {
 	readonly phoneFetch?: typeof fetch;
 	/** Tests: how long a phone webhook waits for a reply, and how many waits. */
 	readonly phoneWait?: { readonly ms: number; readonly max: number };
+	/** Tests: the instances' computers (a fake Docker host); config.computer otherwise. */
+	readonly computer?: ComputerProvider;
 	/** Transcription service fetch (tests). */
 	readonly transcribeFetch?: typeof fetch;
 	/** Google OAuth and API fetch (tests). */
@@ -151,6 +156,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		});
 	};
 
+	// The instances' computers (ADR 0013): only where the operator gave Annie a Docker host.
+	const computer: ComputerProvider | undefined =
+		options.computer ?? (config.computer === undefined ? undefined : new DockerComputerProvider({ ...config.computer, log }));
+
 	const runtime: AnnieRuntime = new AnnieRuntime({
 		dataDir: config.dataDir,
 		engine: options.engine ?? piDurableEngine,
@@ -177,6 +186,15 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						store: runtime.webActions(record.tenantId, record.id),
 						requester: (thread) => runtime.participant(record.tenantId, record.id, thread),
 						onProposed: (action) => notifyWebAction(record.id, action),
+					},
+				}),
+				...createComputerTools({
+					computer,
+					key: computerKey(record.tenantId, record.id),
+					policy: policyOf(record),
+					workspace: runtime.workspace(record.tenantId, record.id),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
 					},
 				}),
 				...(await createCustomTools({
@@ -569,6 +587,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		},
 		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
 		sendWebAction: sendForInstance,
+		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)) } }),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {
@@ -706,6 +725,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await scheduler.stop();
 			for (const bot of telegrams.values()) await bot.stop();
 			for (const phone of phones.values()) await phone.stop();
+			await computer?.close().catch((error: unknown) => log(`computer: not stopped: ${error instanceof Error ? error.message : String(error)}`));
 			await segreteria?.stop();
 			await runtime.close();
 			await (await browser)?.close().catch(() => {});

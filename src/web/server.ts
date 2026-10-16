@@ -5,6 +5,7 @@ import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
+import { COMPUTER_CONNECTOR } from "../core/computer.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
@@ -87,6 +88,8 @@ export type WebAppOptions = {
 	};
 	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
 	readonly voice?: { readonly host: string };
+	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
+	readonly computer?: { reset(instanceId: string): Promise<void> };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
@@ -523,6 +526,32 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, WEB_ACTIONS_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "web_actions.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
+	});
+
+	// --- owner: the instance's computer (ADR 0013) ---
+	route("GET", "/api/computer", "owner", async () => ({ available: options.computer !== undefined }));
+	route("PUT", "/api/instances/:id/computer-allowed", "owner", async ({ params, req }) => {
+		if (options.computer === undefined) throw new HttpError(501, "Il computer non è disponibile su questo server");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== COMPUTER_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, COMPUTER_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "computer.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+	route("DELETE", "/api/instances/:id/computer", "owner", async ({ params }) => {
+		if (options.computer === undefined) throw new HttpError(501, "Il computer non è disponibile su questo server");
+		const id = params[0] as string;
+		await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		await options.computer.reset(id);
+		await runtime.audit(tenantId).append({ type: "computer.reset", instanceId: id });
+		return { ok: true };
 	});
 
 	// --- segreteria ---
