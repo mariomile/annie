@@ -1242,7 +1242,7 @@ function imageOf(doc: Document, stream: Stream, resources: Dict | undefined, fli
 }
 
 /** A JPEG's size from its frame header, or undefined when there is none. */
-function jpegSize(data: Buffer): { width: number; height: number } | undefined {
+export function jpegSize(data: Buffer): { width: number; height: number } | undefined {
 	if (data[0] !== 0xff || data[1] !== 0xd8) return undefined;
 	for (let at = 2; at + 9 < data.length; ) {
 		if (data[at] !== 0xff) return undefined;
