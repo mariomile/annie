@@ -3,16 +3,15 @@
 
 const $app = document.getElementById("app");
 
-// replaceChildren with h()'s rules: null, false and undefined add nothing (not the text "null"),
-// and lists are flattened, so views can pass optional parts and sections as they are.
-const nativeReplaceChildren = Element.prototype.replaceChildren;
-Element.prototype.replaceChildren = function (...children) {
-	nativeReplaceChildren.apply(
-		this,
-		children.flat(Infinity).filter((c) => c !== undefined && c !== null && c !== false),
-	);
-};
 const $toasts = document.getElementById("toasts");
+
+/**
+ * el.replaceChildren with h()'s rules: null, false and undefined add nothing (not the text "null"),
+ * and lists are flattened, so views can pass optional parts and sections as they are.
+ */
+function mount(el, ...children) {
+	el.replaceChildren(...children.flat(Infinity).filter((c) => c !== undefined && c !== null && c !== false));
+}
 
 /** h("div.card.pad", { onclick }, "text", child) — safe DOM builder. */
 function h(spec, attrs, ...children) {
@@ -147,8 +146,8 @@ const PALETTE = [
 ];
 
 function route() {
-	const [view = "chat", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
-	return { view, rest: rest.map(decodeURIComponent) };
+	const [view, ...rest] = location.hash.replace(/^#\/?/, "").split("/");
+	return { view: view || "chat", rest: rest.map(decodeURIComponent) };
 }
 
 function go(view, ...rest) {
@@ -161,6 +160,8 @@ let installOffer;
 window.addEventListener("beforeinstallprompt", (event) => {
 	event.preventDefault();
 	installOffer = event;
+	// The browser offers it again: the app was removed, whatever this browser remembered.
+	if (store("annie.app") === "installed") store("annie.app", "removed");
 	if (state.me) renderRail();
 });
 window.addEventListener("appinstalled", () => {
@@ -170,14 +171,22 @@ window.addEventListener("appinstalled", () => {
 });
 // Only on https or on this machine: elsewhere browsers refuse it, and the console works the same.
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
-const offlineBar = () => document.body.classList.toggle("offline", !navigator.onLine);
+const offlineBar = () => {
+	const bar = document.getElementById("offline");
+	if (bar) bar.hidden = navigator.onLine;
+};
 window.addEventListener("online", offlineBar);
 window.addEventListener("offline", offlineBar);
 offlineBar();
 
+/** Running as the installed app, or installed from this browser (Safari never says so: there it is only known inside the app). */
 function installed() {
 	return window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true || store("annie.app") === "installed";
 }
+
+/** iPhone and iPad, which install only from Safari's Share menu (iPadOS says it is a Mac, but has touch). */
+const appleTouch = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const phone = /iphone|ipod|android.*mobile/i.test(navigator.userAgent);
 
 async function install() {
 	if (!installOffer) return;
@@ -186,7 +195,7 @@ async function install() {
 	installOffer = undefined;
 	if (outcome === "accepted") {
 		store("annie.app", "installed");
-		toast("Annie è sulla schermata Home");
+		toast(phone ? "Annie è sulla schermata Home" : "Annie è installata come app");
 	}
 	render();
 }
@@ -213,23 +222,45 @@ async function boot() {
 async function enter() {
 	try {
 		state.me = (await api("/api/me")).person;
+		await refreshInstances();
 	} catch (error) {
-		// Opened from the home screen without network: the shell says so and comes back by itself.
-		if (!(error instanceof ApiError)) {
-			$app.replaceChildren(h("div.empty", h("b", "Sei offline"), "Annie si riapre da sola appena torna la rete."));
-			window.addEventListener("online", () => location.reload(), { once: true });
-		}
+		// No network, or the server not answering (a restart, a cell waking up): say so and try again by itself.
+		if (!(error instanceof ApiError) || error.status >= 500) unreachable();
 		return;
 	}
-	await refreshInstances();
 	if (location.hash.startsWith("#/google?")) await finishGoogle();
 	connectEvents();
-	await refreshSetup();
-	// An owner with steps left lands on them when they open the console without a page in mind.
-	if ((location.hash === "" || location.hash === "#/") && state.setupLeft > 0) history.replaceState(null, "", "#/inizia");
+	const landing = location.hash === "" || location.hash === "#/";
 	window.addEventListener("hashchange", render);
 	render();
 	setInterval(refreshCounters, 30_000);
+	// After the first paint: the steps never hold the console up.
+	await refreshSetup();
+	// An owner who has not tried Annie yet lands on the steps when opening the console without a page in mind.
+	if (landing && (location.hash === "" || location.hash === "#/") && state.setup && !state.setup.tried && state.setupLeft > 0) history.replaceState(null, "", "#/inizia");
+	render();
+}
+
+/** The server cannot be reached: a screen that retries by itself, and a button to retry now. */
+function unreachable() {
+	let timer;
+	const retry = () => {
+		clearTimeout(timer);
+		window.removeEventListener("online", retry);
+		mount($app, h("div.empty", h("b", "Riprovo…")));
+		void enter();
+	};
+	mount(
+		$app,
+		h(
+			"div.empty",
+			h("b", navigator.onLine ? "Non riesco a raggiungere Annie" : "Sei offline"),
+			navigator.onLine ? "Il server non risponde: riprovo da sola tra qualche secondo." : "Annie si riapre da sola appena torna la rete.",
+			h("p", h("button.btn", { onclick: retry }, "Riprova")),
+		),
+	);
+	window.addEventListener("online", retry, { once: true });
+	timer = setTimeout(retry, 10_000);
 }
 
 async function refreshInstances() {
@@ -242,14 +273,28 @@ async function refreshInstances() {
 /** How many «Primi passi» are left, for the owner of the current instance. */
 async function refreshSetup() {
 	state.setupLeft = 0;
-	if (state.me?.role !== "owner" || !state.instance || store("annie.setup.hidden") === state.instance.id) return;
+	state.setup = undefined;
+	if (state.me?.role !== "owner" || !state.instance || setupHidden(state.instance.id)) return;
 	try {
 		const { setup } = await api(`/api/instances/${state.instance.id}/setup`);
 		state.setup = setup;
-		state.setupLeft = setupSteps(setup).filter((s) => !s.done).length;
+		state.setupLeft = setupLeft(setup);
 	} catch {
 		/* not shown */
 	}
+}
+
+/** «Primi passi» put away, per instance, in this browser: read with one argument, set with two. */
+function setupHidden(instanceId, hide) {
+	let ids = [];
+	try {
+		ids = JSON.parse(store("annie.setup.hidden") ?? "[]");
+	} catch {
+		/* an older value: start again */
+	}
+	if (!Array.isArray(ids)) ids = [];
+	if (hide === undefined) return ids.includes(instanceId);
+	store("annie.setup.hidden", JSON.stringify(hide ? [...new Set([...ids, instanceId])] : ids.filter((id) => id !== instanceId)));
 }
 
 async function refreshCounters() {
@@ -295,7 +340,7 @@ function applyTheme(next) {
 // ---------- login ----------
 function renderLogin(error) {
 	state.events?.close();
-	$app.replaceChildren(
+	mount($app, 
 		h(
 			"div.login",
 			h(
@@ -304,10 +349,33 @@ function renderLogin(error) {
 				h("h1", "Accedi ad Annie"),
 				h("p", "Per entrare usa il link personale che ti ha dato chi gestisce Annie. Il link ti riconosce: non condividerlo."),
 				error ? h("p.chip.bad", error) : null,
+				pasteLink(),
 				h("p.muted", "Hai perso il link? Chiedi all'owner di generarne uno nuovo: quello vecchio smetterà di funzionare."),
 			),
 		),
 	);
+}
+
+/**
+ * The personal link pasted by hand: the app on the iPhone Home screen has no address bar, and a link
+ * tapped in a mail opens in Safari, which keeps its own session.
+ */
+function pasteLink() {
+	const link = h("input", { type: "url", autocomplete: "off", placeholder: "https://…/login#…", class: "mono", "aria-label": "Il tuo link personale" });
+	const submit = async (event) => {
+		event.preventDefault();
+		const token = link.value.trim().split("#")[1] ?? "";
+		if (!/^[\w-]{20,}$/.test(token)) return renderLogin("Questo non sembra il tuo link personale: copialo per intero.");
+		try {
+			await api("/api/login", { method: "POST", body: { token } });
+		} catch (error) {
+			if (error.data?.twoFactor) return renderCode(token);
+			return renderLogin(error.message);
+		}
+		history.replaceState(null, "", "/");
+		await enter();
+	};
+	return h("form.stack", { onsubmit: submit }, h("label.field", h("span", "Hai il link ma sei nell'app? Incollalo qui"), link), h("button.btn", { type: "submit" }, "Entra"));
 }
 
 /** The six-digit field of the verifica in due passaggi. */
@@ -327,7 +395,7 @@ function renderCode(token, error) {
 		}
 		await enter();
 	};
-	$app.replaceChildren(
+	mount($app, 
 		h(
 			"div.login",
 			h(
@@ -367,7 +435,7 @@ function googleSection() {
 		if (!available) return box.remove();
 		const what = services.length > 1 ? "la tua posta e il tuo calendario" : services[0] === "gmail" ? "la tua posta" : "il tuo calendario";
 		if (account) {
-			box.replaceChildren(
+			mount(box, 
 				h("div.kicker", "Google"),
 				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
 				h("p.muted", `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
@@ -388,7 +456,7 @@ function googleSection() {
 			);
 			return;
 		}
-		box.replaceChildren(
+		mount(box, 
 			h("div.kicker", "Google"),
 			h("p", `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
 			h(
@@ -567,7 +635,7 @@ function accountDialog() {
 		state.me = me;
 		if (me.twoFactor) {
 			const code = codeInput();
-			body.replaceChildren(
+			mount(body, 
 				h("p", h("span.chip.ok", "Verifica in due passaggi attiva"), " Per entrare servono il tuo link e il codice dell'app."),
 				h("label.field", h("span", "Per disattivarla, scrivi un codice"), code),
 				h(
@@ -592,7 +660,7 @@ function accountDialog() {
 			);
 			return;
 		}
-		body.replaceChildren(
+		mount(body, 
 			h("p", "Con la verifica in due passaggi, per entrare servono il tuo link e un codice dall'app di autenticazione del telefono (Google Authenticator, 1Password, Authy…). Se qualcuno ti ruba il link, da solo non basta."),
 			h(
 				"div.actions",
@@ -603,7 +671,7 @@ function accountDialog() {
 							try {
 								const { secret, uri } = await api("/api/me/2fa/setup", { method: "POST", body: {} });
 								const code = codeInput();
-								body.replaceChildren(
+								mount(body, 
 									h("p", "1. Nell'app di autenticazione aggiungi un account con questa chiave (o apri il link dal telefono):"),
 									h("div.secret-key.mono", secret.match(/.{1,4}/g).join(" ")),
 									h("p", h("a", { href: uri }, "Apri nell'app di autenticazione")),
@@ -650,7 +718,7 @@ function accountDialog() {
 function render() {
 	if (!state.me) return renderLogin();
 	const { view } = route();
-	const item = PALETTE.find((p) => p.id === view) ?? PALETTE[0];
+	const item = PALETTE.find((p) => p.id === view) ?? PALETTE.find((p) => p.id === "chat");
 	if (item.owner && state.me.role !== "owner") return go("chat");
 	const main = h("main", { id: "main" });
 	const shell = h(
@@ -659,13 +727,13 @@ function render() {
 		h("aside.rail", { id: "rail" }),
 		main,
 	);
-	$app.replaceChildren(shell);
+	mount($app, shell);
 	renderRail();
 	state.onEntry = undefined;
 	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
-		main.replaceChildren(h("div.empty", h("b", "Qualcosa non va"), error.message));
+		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
 	});
 }
 
@@ -686,7 +754,7 @@ function renderRail() {
 	}
 	const u = state.usage;
 	const share = u ? Math.min(1, u.todayUsd / u.hardUsd) : 0;
-	rail.replaceChildren(
+	mount(rail, 
 		h("div.brand", h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
 		h("button.search", { onclick: openPalette, "aria-label": "Vai a una sezione" }, icon("search"), h("span", "Vai a…"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
 		state.instances.length > 1
@@ -701,6 +769,7 @@ function renderRail() {
 								state.instance = state.instances.find((i) => i.id === e.target.value);
 								store("annie.instance", state.instance.id);
 								void refreshSetup().then(render);
+								render();
 							},
 						},
 						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, i.name)),
@@ -781,7 +850,7 @@ function openPalette() {
 		const q = input.value.trim().toLowerCase();
 		shown = items.filter((i) => i.label.toLowerCase().includes(q));
 		active = Math.min(active, Math.max(0, shown.length - 1));
-		list.replaceChildren(
+		mount(list, 
 			...shown.map((item, n) =>
 				h(
 					"li",
@@ -836,7 +905,7 @@ window.addEventListener("keydown", (e) => {
 
 function needInstance(main) {
 	if (state.instance) return false;
-	main.replaceChildren(h("div.empty", h("b", "Nessuna istanza"), "Non hai ancora accesso a nessuna istanza. Chiedi all'owner di aggiungerti."));
+	mount(main, h("div.empty", h("b", "Nessuna istanza"), "Non hai ancora accesso a nessuna istanza. Chiedi all'owner di aggiungerti."));
 	return true;
 }
 
@@ -845,7 +914,7 @@ async function viewChat(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
 	if (!inst.canChat) {
-		main.replaceChildren(head(inst.name, "Chat", null), h("div.card.empty", h("b", "Chat non disponibile"), state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza."));
+		mount(main, head(inst.name, "Chat", null), h("div.card.empty", h("b", "Chat non disponibile"), state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza."));
 		return;
 	}
 	const threadId = route().rest[0];
@@ -872,14 +941,15 @@ async function viewChat(main) {
 	};
 	const side = h("section.card.threads", h("header", h("b", "Conversazioni"), h("button.btn.small.ghost", { onclick: () => newThread(), "aria-label": "Nuova conversazione" }, icon("plus"), "Nuova")), threads.length ? list : h("p.muted", h("span", "")));
 	const conversation = h("section.card.conversation");
-	main.replaceChildren(head(inst.name, h("h1", "Chat"), null), h("div.chat", side, conversation));
+	mount(main, head(inst.name, h("h1", "Chat"), null), h("div.chat", side, conversation));
 	if (!threadId) {
 		conversation.append(
 			h(
 				"div.welcome",
 				h("h2", "Di cosa hai bisogno?"),
 				h("p", "Annie risponde, prepara file, programma promemoria e usa i connettori della tua azienda. Le azioni delicate passano sempre da un'approvazione."),
-				state.setupLeft > 0 ? h("p", h("a", { href: "#/inizia" }, `Primi passi: ne mancano ${state.setupLeft}`)) : null,
+				state.setupLeft > 0 ? h("p", h("a", { href: "#/inizia" }, stepsLeftText(state.setupLeft))) : null,
+				state.me.role !== "owner" && installOffer && !installed() ? h("p", h("button.btn.small", { onclick: install }, icon("install"), "Installa Annie come app")) : null,
 				h(
 					"div.hints",
 					["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t, t.includes("foto")) }, t)),
@@ -950,7 +1020,7 @@ async function viewChat(main) {
 		store(pendingKey, JSON.stringify(pending));
 		tray.hidden = pending.length === 0 && uploading === 0;
 		sendButton.disabled = uploading > 0;
-		tray.replaceChildren(
+		mount(tray, 
 			...pending.map((p, i) =>
 				h("span.chip", h("img", { src: picture(p), alt: p.split("/").pop() }), h("button", { "aria-label": `Togli ${p.split("/").pop()}`, onclick: () => { pending.splice(i, 1); drawTray(); } }, "×")),
 			),
@@ -1094,7 +1164,7 @@ async function viewSegreteria(main) {
 		);
 	}
 	const detail = h("div");
-	main.replaceChildren(
+	mount(main, 
 		head(inst.name, h("h1", "Segreteria commerciale"), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
 		pratiche.length ? h("div.pratiche", list, detail) : h("div.card.empty", h("b", "Ancora nessuna richiesta"), "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
 	);
@@ -1130,7 +1200,7 @@ function renderPratica(detail, inst, p) {
 		["Dati mancanti", p.missingFields.length ? p.missingFields.join(", ") : "nessuno"],
 	];
 	if (lead.notes) rows.push(["Note", lead.notes]);
-	detail.replaceChildren(
+	mount(detail, 
 		h(
 			"div.stack",
 			h(
@@ -1280,7 +1350,7 @@ async function viewApprovals(main) {
 				),
 			);
 	}
-	main.replaceChildren(
+	mount(main, 
 		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
 		h(
 			"div.stack",
@@ -1295,57 +1365,111 @@ async function viewApprovals(main) {
 
 // ---------- primi passi ----------
 const TEMPLATES = [
-	["Assistente personale", "Sei l'assistente personale di chi ti scrive. Rispondi in italiano, breve e diretta. Prima di fare qualcosa che manda messaggi o spende soldi, chiedi conferma."],
-	["Negozio o studio", "Sei l'assistente di [nome dell'attività], a [città]. Aiuti il titolare con clienti, ordini e appuntamenti. Tono cordiale e professionale. Non promettere prezzi o date senza conferma."],
-	["Team di lavoro", "Sei l'assistente del team di [azienda]. Prepari riassunti, documenti e promemoria, e cerchi informazioni aggiornate citando le fonti. Rispondi in italiano, in punti quando serve."],
+	["Assistente personale", "Assistente personale di chi ti scrive. Rispondi in italiano, breve e diretta. Prima di fare qualcosa che manda messaggi o spende soldi, chiedi conferma."],
+	["Negozio o studio", "Assistente di [nome dell'attività], a [città]. Aiuti il titolare con clienti, ordini e appuntamenti. Tono cordiale e professionale. Non promettere prezzi o date senza conferma."],
+	["Team di lavoro", "Assistente del team di [azienda]. Prepari riassunti, documenti e promemoria, e cerchi informazioni aggiornate citando le fonti. Rispondi in italiano, in punti quando serve."],
 ];
+const PLACEHOLDER = /\[[^\]\n]{1,60}\]/;
 
-/** The steps of «Primi passi», from what the server checked and what this browser knows. */
+/** Install is possible here: the browser offered it, or Safari's Share menu on iPhone and iPad. */
+const canInstall = () => installOffer !== undefined || appleTouch;
+
+/**
+ * The steps of «Primi passi», from what the server checked and what this browser knows. `own`: the
+ * owner can take it from here (the model is the operator's, and some browsers cannot install).
+ */
 function setupSteps(setup) {
+	const can = setup.can ?? {};
 	return [
-		{ id: "model", done: setup.model, title: "Un modello vero", text: setup.model ? "Annie usa un modello vero." : "Ora risponde il modello di prova, che ripete quello che scrivi. Chi gestisce il server imposta il modello e la sua chiave (docs/chiavi.md)." },
-		{ id: "instructions", done: setup.instructions, title: "Dille chi è e cosa fa", text: "Due righe su di te o sulla tua azienda, il tono e cosa deve fare. Puoi partire da un esempio; le aggiungo a quello che Annie sa già fare, e le cambi quando vuoi in Impostazioni." },
-		{ id: "tried", done: setup.tried, title: "Scrivile qualcosa", text: "Una domanda, una foto, un file da riassumere: vedi subito come risponde.", go: "chat" },
-		{ id: "channel", done: setup.channel, title: "Usala dal telefono", text: "Collega Telegram o WhatsApp: le scrivi, le mandi vocali e foto, e ti avvisa lei.", go: "impostazioni" },
-		{ id: "web", done: setup.web, title: "Lasciala cercare sul web", text: "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: "impostazioni" },
-		{ id: "people", done: setup.people, title: "Invita il tuo team", text: "Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: "persone" },
-		{ id: "app", done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home, a schermo intero, come un'app." },
+		{ id: "model", own: false, done: setup.model, title: "Collega un modello AI", text: setup.model ? "Annie usa un modello AI vero." : "Ora risponde il modello di prova, che ripete quello che scrivi. Lo collega chi gestisce il server di Annie (su Annie Cloud, l'assistenza): chiediglielo." },
+		{ id: "instructions", own: true, done: setup.instructions, title: "Dille chi è e cosa fa", text: "Due righe su di te o sulla tua azienda, il tono e cosa deve fare. Puoi partire da un esempio: vengono aggiunte a quello che Annie sa già fare, e le cambi quando vuoi in Impostazioni." },
+		{ id: "tried", own: true, done: setup.tried, title: "Scrivile qualcosa", text: `Una domanda, una foto, un file da riassumere: vedi subito come risponde.${setup.model ? "" : " Con il modello di prova la risposta ripete quello che scrivi."}` },
+		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
+		{ id: "web", own: true, done: setup.web, title: "Lasciala cercare sul web", text: can.search ? "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati." : "Scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: ["impostazioni", can.search ? "ricerca" : "siti"] },
+		{ id: "people", own: true, done: setup.people, title: "Invita il tuo team", text: "Aggiungi le persone in Persone, poi in Impostazioni scegli chi può scrivere a questa istanza. Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: ["persone"] },
+		{ id: "app", own: canInstall(), done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home o sul desktop, a schermo intero, come un'app." },
 	];
 }
 
+/** Steps left that the owner can take from the console: what the counters show. */
+function setupLeft(setup) {
+	return setupSteps(setup).filter((s) => !s.done && s.own).length;
+}
+
+function stepsLeftText(n) {
+	return n === 1 ? "Primi passi: ne manca 1" : `Primi passi: ne mancano ${n}`;
+}
+
 async function viewStart(main) {
+	if (needInstance(main)) return;
 	const inst = state.instance;
 	const { setup } = await api(`/api/instances/${inst.id}/setup`);
+	if (inst !== state.instance) return;
 	state.setup = setup;
 	const steps = setupSteps(setup);
-	state.setupLeft = steps.filter((s) => !s.done).length;
+	state.setupLeft = setupHidden(inst.id) ? 0 : setupLeft(setup);
 	renderRail();
-	const instructions = h("textarea", { rows: 4, placeholder: "Es. Sei l'assistente di Studio Rossi a Roma: aiuti con clienti e appuntamenti, in italiano, tono cordiale." });
-	const saveInstructions = async () => {
+	const instructions = h("textarea", { rows: 4, maxlength: "2000", placeholder: "Es. Assistente di Studio Rossi a Roma: aiuti con clienti e appuntamenti, in italiano, tono cordiale." });
+	const save = h("button.btn.accent", "Salva");
+	save.addEventListener("click", async () => {
+		const text = instructions.value.trim();
+		if (text === "") return toast("Scrivi due righe su di te o sulla tua azienda", true);
+		const gap = PLACEHOLDER.exec(text);
+		if (gap) {
+			instructions.focus();
+			instructions.setSelectionRange(gap.index, gap.index + gap[0].length);
+			return toast("Sostituisci le parti tra parentesi quadre con i tuoi dati", true);
+		}
+		save.disabled = true;
 		try {
-			await api(`/api/instances/${inst.id}/settings`, { method: "PUT", body: { about: instructions.value } });
+			await api(`/api/instances/${inst.id}/settings`, { method: "PUT", body: { about: text } });
 			toast("Istruzioni salvate");
 			render();
 		} catch (error) {
+			save.disabled = false;
 			toast(error.message, true);
 		}
+	});
+	const fill = (text) => {
+		instructions.value = text;
+		instructions.focus();
+		// The first part to replace is selected, so typing replaces it.
+		const gap = PLACEHOLDER.exec(text);
+		if (gap) instructions.setSelectionRange(gap.index, gap.index + gap[0].length);
 	};
-	const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
 	const extra = {
-		instructions: () =>
+		instructions: () => h("div.stack", h("div.hints", TEMPLATES.map(([label, text]) => h("button", { type: "button", onclick: () => fill(text) }, label))), instructions, h("div.row-gap", save)),
+		tried: () =>
 			h(
-				"div.stack",
-				h("div.hints", TEMPLATES.map(([label, text]) => h("button", { type: "button", onclick: () => (instructions.value = text) }, label))),
-				instructions,
-				h("div.row-gap", h("button.btn.accent", { onclick: saveInstructions }, "Salva")),
+				"button.btn.small",
+				{
+					onclick: async () => {
+						try {
+							const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
+							store(`annie.draft.${thread.id}`, "Cosa sai fare per me?");
+							go("chat", thread.id);
+						} catch (error) {
+							toast(error.message, true);
+						}
+					},
+				},
+				"Prova: «Cosa sai fare per me?»",
 			),
 		app: () =>
 			installOffer
 				? h("button.btn.accent", { onclick: install }, icon("install"), "Installa")
-				: h("p.muted", ios ? "Su iPhone: apri questa pagina in Safari, tocca Condividi e poi «Aggiungi alla schermata Home»." : "Dal menu del browser scegli «Installa app» o «Aggiungi a schermata Home». Serve l'indirizzo https della console."),
+				: h(
+						"p.muted",
+						appleTouch
+							? "Su iPhone e iPad: apri questa pagina in Safari, tocca Condividi e poi «Aggiungi alla schermata Home». Nell'app entri di nuovo con il tuo link: incollalo nella schermata di accesso."
+							: window.isSecureContext
+								? "Dal menu del browser scegli «Installa app» o «Aggiungi a schermata Home». Alcuni browser, come Firefox sul computer, non lo permettono."
+								: "Si installa solo dall'indirizzo https della console: chiedilo a chi gestisce Annie.",
+					),
 	};
 	const done = steps.filter((s) => s.done).length;
-	main.replaceChildren(
+	mount(
+		main,
 		head(
 			inst.name,
 			h("h1", "Primi passi"),
@@ -1354,8 +1478,9 @@ async function viewStart(main) {
 				"button.btn.small.ghost",
 				{
 					onclick: () => {
-						store("annie.setup.hidden", inst.id);
+						setupHidden(inst.id, true);
 						state.setupLeft = 0;
+						toast("Li ritrovi in Impostazioni, in alto");
 						go("chat");
 					},
 				},
@@ -1370,7 +1495,7 @@ async function viewStart(main) {
 					h("div.row-gap", step.done ? h("span.chip.ok", "fatto") : h("span.chip", "da fare"), h("b", step.title)),
 					h("p.muted", step.text),
 					!step.done && extra[step.id] ? extra[step.id]() : null,
-					!step.done && step.go ? h("button.btn.small", { onclick: () => go(step.go) }, "Vai") : null,
+					!step.done && step.go ? h("button.btn.small", { onclick: () => go(...step.go) }, "Vai") : null,
 				),
 			),
 		),
@@ -1431,7 +1556,7 @@ async function viewTasks(main) {
 			["Primo del mese", "0 9 1 * *"],
 		].map(([label, value]) => h("button", { type: "button", onclick: () => (cron.value = value) }, label)),
 	);
-	const drawWhen = () => whenBox.replaceChildren(mode === "cron" ? h("label.field", h("span", "Ripetizione (cron, fuso Europe/Rome)"), cron, presets, h("small", "minuto ora giorno mese giorno-settimana")) : h("label.field", h("span", "Data e ora"), at));
+	const drawWhen = () => mount(whenBox, mode === "cron" ? h("label.field", h("span", "Ripetizione (cron, fuso Europe/Rome)"), cron, presets, h("small", "minuto ora giorno mese giorno-settimana")) : h("label.field", h("span", "Data e ora"), at));
 	const seg = h(
 		"div.seg",
 		[
@@ -1464,7 +1589,7 @@ async function viewTasks(main) {
 			toast(error.message, true);
 		}
 	};
-	main.replaceChildren(
+	mount(main, 
 		head(inst.name, h("h1", "Task e sentinelle"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione, e pagine che controlla per te. Il risultato arriva nella chat scelta."),
 		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
@@ -1651,7 +1776,7 @@ async function viewFiles(main) {
 		}
 	});
 	const total = files.reduce((n, f) => n + f.size, 0);
-	main.replaceChildren(
+	mount(main, 
 		head(inst.name, h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che le date. ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
 		h(
 			"div.card",
@@ -1731,7 +1856,7 @@ async function viewMemory(main) {
 		};
 		return h("div.pad", h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text), h("button.btn", { onclick: save }, "Ricorda"));
 	};
-	main.replaceChildren(
+	mount(main, 
 		head(inst.name, h("h1", "Memoria"), "Quello che Annie ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva ad Annie."),
 		h(
 			"div.grid-2",
@@ -1772,7 +1897,7 @@ async function viewConnectors(main) {
 			),
 		);
 	});
-	main.replaceChildren(
+	mount(main, 
 		head(inst.name, h("h1", "Connettori"), "Server MCP che danno ad Annie i tool dei vostri sistemi. Ognuno raggiunge solo il suo host, e solo se consentito.", h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
 		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Aggiungi un server MCP (HTTP o locale) per dare ad Annie nuovi strumenti."),
 	);
@@ -1790,7 +1915,7 @@ function connectorForm(inst, existing) {
 	const allowed = h("input", { type: "checkbox", checked: existing ? existing.allowed : true });
 	const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
 	const box = h("div");
-	const draw = () => box.replaceChildren(type.value === "http" ? h("label.field", h("span", "URL"), url) : h("label.field", h("span", "Comando"), command, h("small", "Gira sul server di Annie: solo comandi di cui ti fidi.")));
+	const draw = () => mount(box, type.value === "http" ? h("label.field", h("span", "URL"), url) : h("label.field", h("span", "Comando"), command, h("small", "Gira sul server di Annie: solo comandi di cui ti fidi.")));
 	type.addEventListener("change", draw);
 	draw();
 	const dialog = h(
@@ -1848,7 +1973,7 @@ function connectorForm(inst, existing) {
 function instanceForm() {
 	const name = h("input", { type: "text", placeholder: "Vendite", maxlength: "80" });
 	const id = h("input", { type: "text", placeholder: "vendite", class: "mono", maxlength: "63" });
-	const instructions = h("textarea", { rows: 5, placeholder: "Lascia vuoto per le istruzioni predefinite di Annie." });
+	const instructions = h("textarea", { rows: 5, maxlength: "2000", placeholder: "Per chi lavora e cosa deve fare. Vengono aggiunte a quello che Annie sa già fare; lascia vuoto per partire dalle istruzioni predefinite." });
 	let touched = false;
 	id.addEventListener("input", () => (touched = true));
 	name.addEventListener("input", () => {
@@ -1862,7 +1987,8 @@ function instanceForm() {
 			state.instance = state.instances.find((i) => i.id === instance.id) ?? state.instance;
 			store("annie.instance", state.instance.id);
 			toast(`Istanza ${instance.name} creata`);
-			go("chat");
+			await refreshSetup();
+			go(state.setupLeft > 0 ? "inizia" : "chat");
 			render();
 		} catch (error) {
 			toast(error.message, true);
@@ -1874,7 +2000,7 @@ function instanceForm() {
 		h("p.muted", "Un'altra Annie con istruzioni, file, task e connettori suoi. Usa lo stesso modello dell'istanza principale; all'inizio solo tu puoi scriverle, poi decidi chi in Impostazioni."),
 		h("label.field", h("span", "Nome"), name),
 		h("label.field", h("span", "ID"), id, h("small", "Minuscole, cifre, - e _. Non si cambia più.")),
-		h("label.field", h("span", "Istruzioni"), instructions),
+		h("label.field", h("span", "Chi la usa e per cosa"), instructions),
 		h("div.actions", h("button.btn.accent", { onclick: create }, "Crea istanza"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 	);
 	dialog.addEventListener("close", () => dialog.remove());
@@ -1918,20 +2044,26 @@ async function viewSettings(main) {
 		}
 	};
 	const e = settings.egress;
-	main.replaceChildren(
-		head(inst.name, h("h1", "Impostazioni"), "Chi può usare questa istanza dal web, chi approva le sue azioni, e come si comporta.", h("button.btn.accent", { onclick: save }, "Salva")),
+	mount(main, 
+		head(
+			inst.name,
+			h("h1", "Impostazioni"),
+			"Chi può usare questa istanza dal web, chi approva le sue azioni, e come si comporta.",
+			h("button.btn.ghost", { onclick: () => (setupHidden(inst.id, false), go("inizia")) }, "Primi passi"),
+			h("button.btn.accent", { onclick: save }, "Salva"),
+		),
 		h(
 			"div.grid-2",
 			h(
 				"div.stack",
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
-				tg === undefined ? null : telegramCard(inst, tg.telegram),
+				tg === undefined ? null : anchor("telegram", telegramCard(inst, tg.telegram)),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
 				tel === undefined ? null : phoneCard(inst, tel.phone),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
-				search.available ? searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? []) : null,
-				webCard(inst, settings.egress.web ?? []),
+				search.available ? anchor("ricerca", searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? [])) : null,
+				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
 			),
@@ -1947,6 +2079,17 @@ async function viewSettings(main) {
 			),
 		),
 	);
+}
+
+/** A card that «Primi passi» can point at: #/impostazioni/<id> scrolls to it and makes it flash. */
+function anchor(id, card) {
+	card.id = `card-${id}`;
+	if (route().rest[0] === id)
+		requestAnimationFrame(() => {
+			card.scrollIntoView({ behavior: "smooth", block: "start" });
+			card.classList.add("flash");
+		});
+	return card;
 }
 
 /** The instance's Telegram bot: the token goes in once and never comes back. */
@@ -1976,7 +2119,7 @@ function telegramCard(inst, t) {
 		h("div.row-gap", h("div.kicker", "Telegram"), t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato")),
 		t.connected ? null : h("p.muted", "Crea un bot con @BotFather su Telegram e incolla qui il suo token. Ogni persona ammessa apre il bot e preme Start."),
 		h("label.field", h("span", t.connected ? "Token" : "Token del bot"), token),
-		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta.")),
+		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta. Per sapere il tuo ID scrivi a @userinfobot su Telegram.")),
 		h("label.field", h("span", "Chi approva"), approvers, h("small", "Ricevono su Telegram le schede dei tool da approvare.")),
 		h("div.actions", h("button.btn.accent", { onclick: save }, t.connected ? "Salva" : "Collega"), t.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
 	);
@@ -2110,7 +2253,7 @@ async function viewPeople(main) {
 	};
 	const newName = h("input", { type: "text", placeholder: "Nome e cognome" });
 	const role = h("select", h("option", { value: "member" }, "Membro"), h("option", { value: "owner" }, "Owner"));
-	main.replaceChildren(
+	mount(main, 
 		head("Annie", h("h1", "Persone"), "Chi può entrare nella console. Ognuno ha un link personale; rigenerarlo chiude le sue sessioni."),
 		h(
 			"div.grid-2",
@@ -2209,7 +2352,7 @@ async function viewActivity(main) {
 			.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
 			.join("  ");
 	};
-	main.replaceChildren(
+	mount(main, 
 		head("Annie", h("h1", "Attività e spesa"), "Quanto ha speso oggi il tenant in modelli, e cosa è successo."),
 		h(
 			"div.stack",

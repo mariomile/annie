@@ -29,6 +29,8 @@ import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/im
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
+import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
+import { REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
 
@@ -83,6 +85,8 @@ export type WebAppOptions = {
 	readonly defaultTimeZone: string;
 	/** The instructions a new instance starts with: «Primi passi» asks the owner to add their own. */
 	readonly defaultInstructions?: string;
+	/** The channels of an instance that are connected now (no network call): «Primi passi» reads them. */
+	readonly connectedChannels?: (instanceId: string) => readonly string[];
 	/** Read a page under an instance's policy, for a sentinella's first look (ADR 0018). */
 	readonly watchRead?: (instanceId: string, url: string) => Promise<{ title: string; text: string }>;
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
@@ -282,7 +286,10 @@ export function createWebApp(options: WebAppOptions): Server {
 		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown };
 		const id = typeof body.id === "string" ? body.id.trim() : "";
 		const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
-		const instructions = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions.slice(0, 20_000) : undefined;
+		const given = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions : undefined;
+		if (given !== undefined && options.defaultInstructions !== undefined && given.length > ABOUT_MAX) throw new HttpError(400, `Istruzioni troppo lunghe: al massimo ${ABOUT_MAX} caratteri`);
+		// Like «Primi passi»: the owner's words go after the defaults, so what Annie can do stays said.
+		const instructions = given === undefined ? undefined : options.defaultInstructions === undefined ? given.slice(0, INSTRUCTIONS_MAX) : withAbout(options.defaultInstructions, given);
 		try {
 			instanceId(id);
 		} catch {
@@ -746,11 +753,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { settings: { name: r.name, instructions: r.instructions ?? "", model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {} } };
 	});
 	route("PUT", "/api/instances/:id/settings", "owner", async ({ params, req }) => {
-		const body = (await readJson(req)) as { name?: string; instructions?: string; about?: string; webPeople?: string[]; webApprovers?: string[] };
+		const body = (await readJson(req)) as { name?: string; instructions?: string; about?: unknown; webPeople?: string[]; webApprovers?: string[] };
 		const id = params[0] as string;
 		const people = new Set((await options.people.list()).map((p) => p.id));
 		const pick = (list: unknown) => (Array.isArray(list) ? list.map(String).filter((x) => people.has(x)) : undefined);
 		const record = await runtime.registry.getInstance(tenantId, id);
+		// From «Primi passi»: who the owner is, as one block after the instructions, replaced on each save.
+		let about: string | undefined;
+		if (body.about !== undefined) {
+			if (typeof body.instructions === "string") throw new HttpError(400, "Manda le istruzioni o le informazioni su di te, non tutte e due");
+			const text = typeof body.about === "string" ? body.about.trim() : "";
+			if (text === "") throw new HttpError(400, "Scrivi due righe su di te o sulla tua azienda");
+			if (text.length > ABOUT_MAX) throw new HttpError(400, `Al massimo ${ABOUT_MAX} caratteri`);
+			if (/\[[^\]\n]{1,60}\]/.test(text)) throw new HttpError(400, "Sostituisci le parti tra parentesi quadre con i tuoi dati");
+			about = withAbout(record.instructions ?? options.defaultInstructions ?? "", text);
+			if (about.length > INSTRUCTIONS_MAX) throw new HttpError(400, "Le istruzioni sono già al limite: accorciale in Impostazioni");
+		}
 		const webPeople = pick(body.webPeople);
 		const webApprovers = pick(body.webApprovers);
 		if (webPeople !== undefined) {
@@ -760,8 +778,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.updateInstance(tenantId, id, {
 			...(typeof body.name === "string" ? { name: body.name.slice(0, 80) } : {}),
 			...(typeof body.instructions === "string" ? { instructions: body.instructions.slice(0, 20_000) || null } : {}),
-			// From «Primi passi»: who the owner is, added to the instructions so what Annie can do stays said.
-			...(typeof body.about === "string" && body.about.trim() !== "" ? { instructions: `${record.instructions ?? ""}\n\nChi ti usa e come:\n${body.about.trim()}`.trim().slice(0, 20_000) } : {}),
+			...(about === undefined ? {} : { instructions: about }),
 			...(webApprovers === undefined ? {} : { approvers: { ...(record.approvers ?? {}), web: webApprovers } }),
 		});
 		await runtime.reopen(tenantId, id);
@@ -769,29 +786,33 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	// --- primo avvio: what is left to make the instance useful, checked from the real settings ---
 	route("GET", "/api/instances/:id/setup", "owner", async ({ person, params }) => {
-		const { record } = await instanceAccess(person as Person, params[0] as string);
-		const connected = async (status: (() => Promise<{ connected: boolean }>) | undefined) => (status === undefined ? false : (await status().catch(() => ({ connected: false }))).connected);
-		const channel = channelOf(record.id);
-		const threads = await channel.threads((person as Person).id);
+		const me = person as Person;
+		const { record } = await instanceAccess(me, params[0] as string);
+		// Cheap on purpose: the console asks on every open. No network, at most a few transcripts.
 		let tried = false;
-		for (const thread of threads.slice(0, 10)) {
-			if ((await channel.transcript(thread.id)).some((e) => e.from === "annie")) {
-				tried = true;
-				break;
+		if (record.egress.channels.includes("web")) {
+			const channel = channelOf(record.id);
+			for (const thread of (await channel.threads(me.id)).slice(0, 5)) {
+				if ((await channel.transcript(thread.id)).some((e) => e.from === "annie" && e.text !== REPLY_FAILED)) {
+					tried = true;
+					break;
+				}
 			}
 		}
-		const tg = options.telegram;
-		const wa = options.whatsapp;
-		const ph = options.phone;
+		// A channel counts once someone can write to it: an empty «chi può scrivere» refuses everyone.
+		const connected = options.connectedChannels?.(record.id) ?? [];
+		const others = (record.allowedUsers.web ?? []).filter((id) => id !== me.id);
 		return {
 			setup: {
 				// The local development model answers with an echo: a real model is the operator's key.
 				model: record.model.provider !== "faux",
-				instructions: (record.instructions ?? "").trim() !== "" && record.instructions !== options.defaultInstructions,
+				instructions: ownInstructions(record.instructions ?? undefined, options.defaultInstructions),
 				tried,
-				channel: (await connected(tg && (() => tg.status(record.id)))) || (await connected(wa && (() => wa.status(record.id)))) || (await connected(ph && (() => ph.status(record.id)))),
+				channel: connected.some((c) => (record.allowedUsers[c] ?? []).length > 0),
 				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
-				people: (await options.people.list()).length > 1,
+				people: others.length > 0,
+				// What this server offers, so the console does not count a step nobody can take here.
+				can: { search: options.search !== undefined, transcription: options.voice !== undefined },
 			},
 		};
 	});

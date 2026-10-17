@@ -594,6 +594,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		defaultTimeZone: config.timeZone,
 		watchRead: (instance, url) => watchReader(instance)(url),
 		defaultInstructions: DEFAULT_INSTRUCTIONS,
+		connectedChannels: (id) => [...(telegrams.has(id) ? ["telegram"] : []), ...(whatsapps.has(id) ? ["whatsapp"] : []), ...(phones.has(id) ? ["phone"] : [])],
 		telegramHooks,
 		whatsappHooks: whatsapps,
 		phoneHooks: phones,

@@ -12,9 +12,15 @@ afterEach(async () => {
 	for (const a of running.splice(0)) await a.stop();
 });
 
-async function boot() {
-	const config = loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
-	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 3_600_000, log: () => {} });
+/** A Telegram that knows every token and has no messages: enough for a bot to be connected. */
+const quietTelegram = (async (url: string | URL | Request) => {
+	if (String(url).endsWith("/getUpdates")) await new Promise((r) => setTimeout(r, 20));
+	return Response.json({ ok: true, result: String(url).endsWith("/getMe") ? { username: "annie_bot" } : [] });
+}) as typeof fetch;
+
+async function boot(env: Record<string, string> = {}) {
+	const config = loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", ...env });
+	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 3_600_000, telegramFetch: quietTelegram, log: () => {} });
 	running.push(annie);
 	const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
 	return { annie, base, api: await client(base, annie.ownerLink as string) };
@@ -30,24 +36,69 @@ async function client(base: string, link: string) {
 	};
 }
 
+const nothingDone = { model: false, instructions: false, tried: false, channel: false, web: false, people: false, can: { search: false, transcription: false } };
+
 describe("primi passi", () => {
 	it("each step is checked from the real settings, and only the owner sees them", async () => {
 		const { annie, base, api } = await boot();
-		expect((await api("/api/instances/annie/setup")).setup).toEqual({ model: false, instructions: false, tried: false, channel: false, web: false, people: false });
-		await api("/api/instances/annie/settings", "PUT", { about: "Sei l'assistente di Studio Rossi." });
+		expect((await api("/api/instances/annie/setup")).setup).toEqual(nothingDone);
+		await api("/api/instances/annie/settings", "PUT", { about: "Assistente di Studio Rossi." });
 		const instructions = (await api("/api/instances/annie/settings")).settings.instructions as string;
 		// Added to what Annie can do, not in its place.
 		expect(instructions).toContain("watch_");
-		expect(instructions.endsWith("Chi ti usa e come:\nSei l'assistente di Studio Rossi.")).toBe(true);
+		expect(instructions.endsWith("Informazioni su chi ti usa:\nAssistente di Studio Rossi.")).toBe(true);
 		const thread = (await api("/api/instances/annie/threads", "POST", {})).thread;
 		await api(`/api/instances/annie/threads/${thread.id}/messages`, "POST", { text: "Ciao" });
 		for (let i = 0; i < 200 && !(await api("/api/instances/annie/setup")).setup.tried; i++) await new Promise((r) => setTimeout(r, 30));
 		const record = await annie.runtime.registry.getInstance("default", "annie");
 		await annie.runtime.registry.setEgress("default", "annie", { ...record.egress, web: ["comune.roma.it"] });
+		// Someone added who cannot write to this instance is not the team yet.
 		const added = await api("/api/people", "POST", { name: "Giulia" });
-		expect((await api("/api/instances/annie/setup")).setup).toEqual({ model: false, instructions: true, tried: true, channel: false, web: true, people: true });
+		expect((await api("/api/instances/annie/setup")).setup.people).toBe(false);
+		const owner = (await api("/api/me")).person.id as string;
+		await api("/api/instances/annie/settings", "PUT", { webPeople: [owner, added.person.id] });
+		expect((await api("/api/instances/annie/setup")).setup).toEqual({ ...nothingDone, instructions: true, tried: true, web: true, people: true });
 		const giulia = await client(base, added.link);
 		expect((await giulia("/api/instances/annie/setup")).status).toBe(403);
+	});
+
+	it("saving again replaces the owner's block, and bad or placeholder text is refused", async () => {
+		const { api } = await boot();
+		await api("/api/instances/annie/settings", "PUT", { about: "Primo testo." });
+		await api("/api/instances/annie/settings", "PUT", { about: "Secondo testo." });
+		const instructions = (await api("/api/instances/annie/settings")).settings.instructions as string;
+		expect(instructions.match(/Informazioni su chi ti usa:/g)).toHaveLength(1);
+		expect(instructions).not.toContain("Primo testo");
+		expect(instructions.endsWith("Secondo testo.")).toBe(true);
+		expect((await api("/api/instances/annie/settings", "PUT", { about: "  " })).status).toBe(400);
+		expect((await api("/api/instances/annie/settings", "PUT", { about: "Assistente di [nome dell'attività]" })).status).toBe(400);
+		expect((await api("/api/instances/annie/settings", "PUT", { about: "x".repeat(2001) })).status).toBe(400);
+		expect((await api("/api/instances/annie/settings", "PUT", { about: "Ciao", instructions: "Altro" })).status).toBe(400);
+		expect((await api("/api/instances/annie/settings")).settings.instructions).toBe(instructions);
+	});
+
+	it("an old copy of the default instructions is still the default; the owner's own text counts", async () => {
+		const { annie, api } = await boot();
+		await annie.runtime.registry.updateInstance("default", "annie", { instructions: "Sei Annie, l'assistente sempre attiva di un'azienda italiana. Puoi: cose di una versione vecchia." });
+		expect((await api("/api/instances/annie/setup")).setup.instructions).toBe(false);
+		await annie.runtime.registry.updateInstance("default", "annie", { instructions: "Sei il centralino della pizzeria Da Mario." });
+		expect((await api("/api/instances/annie/setup")).setup.instructions).toBe(true);
+	});
+
+	it("a connected bot is a step done only once someone can write to it", async () => {
+		const { annie, api } = await boot({ TELEGRAM_BOT_TOKEN: "1:T" });
+		expect((await api("/api/instances/annie/setup")).setup.channel).toBe(false);
+		await annie.runtime.registry.setAllowedUsers("default", "annie", "telegram", ["7"]);
+		expect((await api("/api/instances/annie/setup")).setup.channel).toBe(true);
+	});
+
+	it("a new instance with the owner's words keeps what Annie can do", async () => {
+		const { api } = await boot();
+		await api("/api/instances", "POST", { id: "vendite", name: "Vendite", instructions: "Segui i clienti del negozio." });
+		const instructions = (await api("/api/instances/vendite/settings")).settings.instructions as string;
+		expect(instructions).toContain("watch_");
+		expect(instructions.endsWith("Informazioni su chi ti usa:\nSegui i clienti del negozio.")).toBe(true);
+		expect((await api("/api/instances/vendite/setup")).setup.instructions).toBe(true);
 	});
 });
 
@@ -86,7 +137,7 @@ describe("console as an app", () => {
 			clients: { claim: async () => {} },
 		};
 		const caches = {
-			open: async () => ({ addAll: async () => {}, put: async (req: { url: string }) => put.push(new URL(req.url).pathname) }),
+			open: async () => ({ addAll: async () => {}, put: async (req: string | { url: string }) => put.push(typeof req === "string" ? req : new URL(req.url).pathname) }),
 			keys: async () => [],
 			match: async (key: string | { url: string }) => {
 				const path = typeof key === "string" ? key : new URL(key.url).pathname;
@@ -95,7 +146,7 @@ describe("console as an app", () => {
 		};
 		const fetch = async (req: { url: string }) => {
 			if (!online) throw new TypeError("offline");
-			return { ok: true, body: `net ${new URL(req.url).pathname}`, clone: () => ({}) };
+			return { ok: true, type: "basic", body: `net ${new URL(req.url).pathname}`, clone: () => ({}) };
 		};
 		runInNewContext(code, { self, caches, fetch, URL, Response: { error: () => ({ error: true }) }, Promise });
 		const request = async (path: string, mode = "cors", method = "GET", origin = "https://annie.example") => {
@@ -107,9 +158,15 @@ describe("console as an app", () => {
 		expect(await request("/api/instances/annie/files/raw?path=a.pdf")).toBe("not handled");
 		expect(await request("/app.js", "cors", "POST")).toBe("not handled");
 		expect(await request("/app.js", "cors", "GET", "https://cdn.example")).toBe("not handled");
+		// A file opened in a new tab, or the return from Google, is never answered with the shell.
+		expect(await request("/api/instances/annie/files/raw?path=a.pdf", "navigate")).toBe("not handled");
+		expect(await request("/oauth/google/callback?code=x", "navigate")).toBe("not handled");
 		expect(await request("/app.js")).toMatchObject({ body: "net /app.js" });
+		// The page opened online is the one kept for offline; another address is not kept as the page.
+		expect(await request("/", "navigate")).toMatchObject({ body: "net /" });
+		expect(await request("/qualcosa", "navigate")).toMatchObject({ body: "net /qualcosa" });
 		await new Promise((r) => setTimeout(r, 0));
-		expect(put).toEqual(["/app.js"]);
+		expect(put).toEqual(["/app.js", "/"]);
 		online = false;
 		expect(await request("/qualsiasi", "navigate")).toMatchObject({ body: "shell page" });
 		expect(await request("/app.css")).toMatchObject({ error: true });

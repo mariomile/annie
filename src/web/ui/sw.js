@@ -1,7 +1,10 @@
 // Annie's service worker: the console opens from the home screen and without network shows its
 // shell. Only the shell is kept (page, script, style, fonts, icons): never /api, never anything a
 // person wrote or received. Network first, so a new version is used as soon as it is online.
-const CACHE = "annie-shell-v1";
+// Bump CACHE when the shell list changes; the page itself is refreshed on every visit online.
+const CACHE = "annie-shell-v2";
+/** Addresses that are never the shell, also when opened as a page (a file link, a login with Google). */
+const NOT_SHELL = /^\/(api|oauth|hooks|login)(\/|$)/;
 const SHELL = ["/", "/app.js", "/app.css", "/icon.svg", "/manifest.webmanifest", "/fonts/geist-latin.woff2", "/fonts/geist-mono-latin.woff2"];
 
 self.addEventListener("install", (event) => {
@@ -27,14 +30,16 @@ self.addEventListener("fetch", (event) => {
 	if (request.method !== "GET") return;
 	const url = new URL(request.url);
 	if (url.origin !== self.location.origin) return;
+	if (NOT_SHELL.test(url.pathname)) return;
 	const navigation = request.mode === "navigate";
 	if (!navigation && !SHELL.includes(url.pathname)) return;
 	event.respondWith(
 		fetch(request)
 			.then((response) => {
-				if (response.ok && !navigation) {
+				// The page is kept as "/" (whatever #/view it was opened on), the files under their own address.
+				if (response.ok && response.type === "basic" && (!navigation || url.pathname === "/")) {
 					const copy = response.clone();
-					void caches.open(CACHE).then((cache) => cache.put(request, copy));
+					void caches.open(CACHE).then((cache) => cache.put(navigation ? "/" : request, copy));
 				}
 				return response;
 			})
