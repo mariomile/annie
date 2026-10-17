@@ -95,10 +95,12 @@ async function transcriptionCheck(config: { url: string; apiKey: string; model: 
 }
 
 /** One search for a word everyone has: the key works and results come back. */
-async function searchCheck(config: { url: string; apiKey: string }, call: Call): Promise<string> {
+async function searchCheck(config: { url: string; apiKey: string; country: string; language: string }, call: Call): Promise<string> {
 	const url = new URL(config.url);
 	url.searchParams.set("q", "Roma");
 	url.searchParams.set("count", "1");
+	url.searchParams.set("country", config.country);
+	url.searchParams.set("search_lang", config.language);
 	const response = await reach(call, url.toString(), { headers: { accept: "application/json", "x-subscription-token": config.apiKey } });
 	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_SEARCH_API_KEY");
 	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_SEARCH_URL`);

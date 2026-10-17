@@ -398,8 +398,9 @@ function searchCard(inst, host, allowed, hosts) {
 	});
 	const everything = hosts.includes("*");
 	const openAll = async () => {
+		if (!confirm("Annie potrà leggere, fotografare e usare con il browser tutti i siti pubblici, non solo quelli trovati cercando. Una pagina con istruzioni nascoste potrebbe spingerla a cercare qualcosa che non deve. Continuare?")) return;
 		try {
-			await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: [...hosts, "*"] } });
+			await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: ["*"] } });
 			toast("Annie può aprire tutti i siti pubblici");
 			render();
 		} catch (error) {

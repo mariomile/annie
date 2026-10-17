@@ -121,6 +121,10 @@ _Avoid_: integrazione, connettore personale
 I siti che un'istanza può leggere, fotografare e navigare con il browser, scelti dall'owner; tutto il resto, e qualunque indirizzo interno, le è negato.
 _Avoid_: whitelist, domini, navigazione libera
 
+**Ricerca sul web**:
+La ricerca che un'istanza fa con il servizio di ricerca del server (Brave Search) per notizie, prezzi e fatti che cambiano: titoli, indirizzi ed estratti, che apre poi con la lettura dai siti consentiti. La accende l'owner istanza per istanza; al servizio vanno solo le parole cercate.
+_Avoid_: Google, motore, browsing
+
 **Browser**:
 La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
 _Avoid_: computer, automazione del browser, agente web

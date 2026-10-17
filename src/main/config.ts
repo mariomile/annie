@@ -270,9 +270,20 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		transcription = { url: transcribeUrl, apiKey: transcribeKey, model, maxSeconds };
 	}
 	const searchKey = nonEmpty(env.ANNIE_SEARCH_API_KEY);
-	const searchUrl = nonEmpty(env.ANNIE_SEARCH_URL) ?? "https://api.search.brave.com/res/v1/web/search";
-	if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(searchUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(searchUrl)) throw new ConfigError("ANNIE_SEARCH_URL: an https address, e.g. https://api.search.brave.com/res/v1/web/search");
-	const webSearch = searchKey === undefined ? undefined : { url: searchUrl, apiKey: searchKey };
+	let webSearch: WebSearchConfig | undefined;
+	if (searchKey !== undefined) {
+		const url = nonEmpty(env.ANNIE_SEARCH_URL) ?? "https://api.search.brave.com/res/v1/web/search";
+		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(url)) throw new ConfigError("ANNIE_SEARCH_URL: an https address, e.g. https://api.search.brave.com/res/v1/web/search");
+		const country = (nonEmpty(env.ANNIE_SEARCH_COUNTRY) ?? "IT").toUpperCase();
+		if (!/^([A-Z]{2}|ALL)$/.test(country)) throw new ConfigError("ANNIE_SEARCH_COUNTRY: two letters (IT, FR, US…) or ALL");
+		const language = (nonEmpty(env.ANNIE_SEARCH_LANG) ?? "it").toLowerCase();
+		if (!/^[a-z]{2}(-[a-z]{2,4})?$/.test(language)) throw new ConfigError("ANNIE_SEARCH_LANG: a language code, e.g. it or en");
+		const maxPerDay = Number(nonEmpty(env.ANNIE_SEARCH_MAX_PER_DAY) ?? "200");
+		if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_SEARCH_MAX_PER_DAY: a whole number from 1 to 100000");
+		webSearch = { url, apiKey: searchKey, country, language, maxPerDay };
+	} else if (nonEmpty(env.ANNIE_SEARCH_URL) !== undefined) {
+		throw new ConfigError("ANNIE_SEARCH_URL is set without ANNIE_SEARCH_API_KEY");
+	}
 	const computer = loadComputerConfig(env);
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
