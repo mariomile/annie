@@ -3,6 +3,7 @@ import { type InstanceVoice, spokenNote } from "./channels/speech.ts";
 import { documentKind, documentLabel } from "./core/documents.ts";
 import { imageType } from "./core/images.ts";
 import type { AnnieRuntime } from "./core/index.ts";
+import { recordingLabel } from "./core/recordings.ts";
 
 /** What a person reads when the model gave no answer; «Primi passi» does not count it as a reply. */
 export const REPLY_FAILED = "Non sono riuscita a rispondere. Riprova tra poco.";
@@ -114,7 +115,9 @@ async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): 
 		if (picture) images.push({ path, data: file.data });
 		// A document is named as one, so the model knows file_read gives its text (ADR 0026).
 		const kind = picture ? undefined : documentKind(safe, file.data);
-		notes.push(picture ? `[Immagine nel workspace: ${path}]` : kind !== undefined ? `[Documento ${documentLabel(kind)} nel workspace: ${path}. Leggilo con file_read]` : `[File caricato nel workspace: ${path}]`);
+		// A recording is named as one, with its length, so the model knows audio_transcribe gives its words (ADR 0033).
+		const recording = picture || kind !== undefined ? undefined : recordingLabel(file.data);
+		notes.push(picture ? `[Immagine nel workspace: ${path}]` : kind !== undefined ? `[Documento ${documentLabel(kind)} nel workspace: ${path}. Leggilo con file_read]` : recording !== undefined ? `[Registrazione ${recording} nel workspace: ${path}]` : `[File caricato nel workspace: ${path}]`);
 	}
 	const note = notes.join("\n");
 	const { attachments: _files, ...rest } = message;

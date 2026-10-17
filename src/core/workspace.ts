@@ -128,3 +128,12 @@ export class Workspace {
 		if (real !== root && !real.startsWith(root + sep)) throw new WorkspaceError("Path leaves the workspace");
 	}
 }
+
+/** `stem.ext`, or `stem-2.ext` and on when it is taken: a new file never replaces one already there. */
+export async function freePath(workspace: Workspace, stem: string, ext: string): Promise<string> {
+	for (let i = 1; i <= 99; i++) {
+		const path = i === 1 ? `${stem}${ext}` : `${stem}-${i}${ext}`;
+		if ((await workspace.stat(path)) === undefined) return path;
+	}
+	return `${stem}-${Date.now().toString(36)}${ext}`;
+}

@@ -137,12 +137,12 @@ Senza queste variabili Annie riceve i vocali ma non li capisce, e chiede di scri
 1. https://console.mistral.ai → entra con l'account di Buildrs → **Billing**: aggiungi un metodo di pagamento. La trascrizione costa pochi millesimi di dollaro al minuto: controlla il listino aggiornato su https://mistral.ai/pricing.
 2. **API Keys → Create new key**, nome `annie-voce`. La chiave va in `ANNIE_TRANSCRIBE_API_KEY`.
 3. `ANNIE_TRANSCRIBE_URL=https://api.mistral.ai/v1`. Il modello è `voxtral-mini-latest` se non indichi altro in `ANNIE_TRANSCRIBE_MODEL`.
-4. Facoltativo: `ANNIE_TRANSCRIBE_MAX_SECONDS`, la durata massima di un vocale (300 secondi se non lo metti).
+4. Facoltativo: `ANNIE_TRANSCRIBE_MAX_SECONDS`, la durata massima di un vocale letto come messaggio (300 secondi se non lo metti); i più lunghi diventano registrazioni da trascrivere con `audio_transcribe`. Per le registrazioni: `ANNIE_TRANSCRIBE_MAX_MINUTES` (180) e `ANNIE_TRANSCRIBE_MINUTES_PER_DAY` (600 al giorno per account); con Mistral i tempi delle frasi e le voci sono già attivi (`ANNIE_TRANSCRIBE_TIMESTAMPS`, `ANNIE_TRANSCRIBE_SPEAKERS`, [ADR 0033](adr/0033-registrazioni-lunghe.md)).
 5. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
 6. Poi, in ogni istanza che deve capire i vocali: Impostazioni → **Messaggi vocali** → spunta «Trascrivi i vocali di questa istanza».
 7. Dominio: `api.mistral.ai`.
 
-In alternativa va bene qualunque servizio con la stessa API di OpenAI: per OpenAI `ANNIE_TRANSCRIBE_URL=https://api.openai.com/v1` (modello `whisper-1`).
+In alternativa va bene qualunque servizio con la stessa API di OpenAI: per OpenAI `ANNIE_TRANSCRIBE_URL=https://api.openai.com/v1` (modello `whisper-1`, con i tempi delle frasi ma senza le voci).
 
 ### 11. Telefono: Account SID, auth token e numero Twilio (per istanza, dalla console)
 

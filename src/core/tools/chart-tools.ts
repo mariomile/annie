@@ -3,7 +3,7 @@ import { makeChartFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
 import type { AnnieTool } from "../engine.ts";
 import { cellNumber, parseCsv } from "../make-xlsx.ts";
-import { type Workspace, WorkspaceError } from "../workspace.ts";
+import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { slugify } from "./research-tools.ts";
 
 export type ChartToolsOptions = {
@@ -100,7 +100,7 @@ export function createChartTools(options: ChartToolsOptions): AnnieTool[] {
 						const stamp = (options.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
 						// slugify names an empty title «ricerca»: a chart without letters in its title is a «grafico».
 						const name = /[a-z0-9]/i.test((title ?? "").normalize("NFD")) ? slugify(title as string).slice(0, 40).replace(/-+$/, "") : "grafico";
-						const where = path ?? (await freePath(workspace, `grafici/${name}-${stamp}`));
+						const where = path ?? (await freePath(workspace, `grafici/${name}-${stamp}`, ".png"));
 						// A name given by the model may be a person's picture: only charts are replaced.
 						if (path !== undefined && !path.startsWith("grafici/") && (await workspace.stat(path)) !== undefined) {
 							return { error: `${path} esiste già: scegli un altro nome, o lascia path vuoto` };
@@ -157,15 +157,6 @@ function fromArgs(labelsArg: unknown, seriesArg: unknown): ChartData {
 	}));
 	if (!Array.isArray(labelsArg) || labelsArg.length === 0) throw new ChartError("servono le etichette (labels): le categorie o le date dei valori, una per valore");
 	return { labels: labelsArg.map((l) => String(l)), series: out, notes: [], ...(units.size === 1 ? { unit: [...units][0] as string } : {}) };
-}
-
-/** The base name with .png, or -2, -3… when a chart of the same name and second is already there. */
-async function freePath(workspace: Workspace, base: string): Promise<string> {
-	for (let n = 1; n < 100; n++) {
-		const candidate = `${base}${n === 1 ? "" : `-${n}`}.png`;
-		if ((await workspace.stat(candidate)) === undefined) return candidate;
-	}
-	return `${base}-${Date.now()}.png`;
 }
 
 const TOTAL = /^(totale|totali|total|totals|tot\.?|somma|subtotale|sub-totale|totale generale|grand total)$/i;

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
+import { audioSeconds } from "../core/audio.ts";
 import { imageType, isPhoto } from "../core/images.ts";
-import { audioName, TRANSCRIBED, type Transcribe, voiceText } from "./voice.ts";
+import { audioName, isRecording, RECORDING_TOO_LARGE, TRANSCRIBED, type Transcribe, voiceText } from "./voice.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
@@ -189,6 +190,7 @@ type WhatsAppMessage = {
 	image?: { id?: string; mime_type?: string; caption?: string };
 	sticker?: { id?: string; mime_type?: string; animated?: boolean };
 	audio?: { id?: string; mime_type?: string; voice?: boolean };
+	video?: { id?: string; mime_type?: string; caption?: string };
 };
 /** What Meta says later about a message we sent: a failure outside the 24-hour window arrives here, not as an error on the send. */
 type WhatsAppStatus = { id?: string; status?: string; recipient_id?: string; errors?: { code?: number; title?: string }[] };
@@ -390,12 +392,13 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		if (message.type === "audio") return this.handler === undefined ? undefined : this.voice(message, this.handler);
 		// A still sticker is a small WebP picture: the model sees it like a photo.
 		const still = message.type === "sticker" && message.sticker?.animated !== true;
-		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : message.type === "image" ? (message.image?.caption ?? "") : still ? "" : undefined;
+		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : message.type === "image" ? (message.image?.caption ?? "") : message.type === "video" ? (message.video?.caption ?? "") : still ? "" : undefined;
 		// Animated stickers, locations, contacts: not understood yet, so not passed on as empty messages.
 		if (text === undefined) return;
 		let attachments: { name: string; data: Uint8Array }[] = [];
 		let note = "";
-		const media = message.type === "document" ? { id: message.document?.id, name: message.document?.filename } : message.type === "image" ? { id: message.image?.id, name: undefined } : still ? { id: message.sticker?.id, name: undefined } : undefined;
+		// A video goes in the workspace like a document: its sound is a recording (ADR 0033).
+		const media = message.type === "document" ? { id: message.document?.id, name: message.document?.filename } : message.type === "image" ? { id: message.image?.id, name: undefined } : message.type === "video" ? { id: message.video?.id, name: `video-${message.id.replace(/[^\w-]/g, "_").slice(-12)}.mp4` } : still ? { id: message.sticker?.id, name: undefined } : undefined;
 		if (typeof media?.id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
 			try {
 				const file = await this.download(media.id, media.name);
@@ -406,7 +409,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 				// A file that cannot be had (too large, gone): the message still arrives, saying so. Meta busy: delivered again.
 				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`whatsapp: file of ${message.id} not downloaded: ${error.message}`);
-				note = "[Un file allegato non è stato scaricato: troppo grande o non disponibile.]";
+				note = message.type === "video" ? RECORDING_TOO_LARGE : "[Un file allegato non è stato scaricato: troppo grande o non disponibile.]";
 			}
 		}
 		await this.handler({
@@ -456,12 +459,17 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			const mimeType = (message.audio?.mime_type ?? "audio/ogg").split(";")[0]?.trim() || "audio/ogg";
 			try {
 				const file = await this.download(id, audioName(mimeType));
+				// A meeting or a call: kept as a recording in the workspace, for audio_transcribe (ADR 0033).
+				if (isRecording(audioSeconds(file.data), this.options.transcribe)) {
+					return handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text: "", privateThread: true, messageId: message.id, attachments: [{ name: audioName(mimeType, undefined, message.audio?.voice === true ? "vocale-lungo" : "registrazione"), data: file.data }] });
+				}
 				text = await voiceText({ data: file.data, name: file.name, mimeType }, this.options.transcribe, this.options.log);
 			} catch (error) {
 				// Meta busy now: an error, so Meta delivers again. Anything else is said, not dropped.
 				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`whatsapp: voice of ${message.id} not downloaded: ${error.message}`);
-				text = "[Messaggio vocale troppo grande o non disponibile.]";
+				// Over 20 MB is a recording, not a voice note: said with what to do when Annie could transcribe it.
+				text = this.options.transcribe === undefined ? "[Messaggio vocale troppo grande o non disponibile.]" : RECORDING_TOO_LARGE;
 			}
 		}
 		await handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id, ...(text.startsWith(TRANSCRIBED) ? { voice: true } : {}) });
