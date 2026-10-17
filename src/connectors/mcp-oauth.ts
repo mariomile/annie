@@ -314,6 +314,11 @@ export class McpOAuth {
 	}
 
 	/** Drops a connector's sign-in (the connector removed, or pointed elsewhere). */
+	/** Sign-ins left halfway by a deleted agente (ADR 0046) can no longer finish. */
+	forgetInstance(instanceId: string): void {
+		for (const [state, p] of this.pending) if (p.instanceId === instanceId) this.pending.delete(state);
+	}
+
 	async forget(instanceId: string, connectorId: string): Promise<void> {
 		const secret = mcpOAuthSecret(instanceId, connectorId);
 		await serialized(`${this.options.secrets.tenantId}/${secret}`, () => this.options.secrets.delete(secret));

@@ -96,19 +96,24 @@ export class ScheduleStore {
 	async advance(schedule: Schedule, ranFor: string, now: Date): Promise<Schedule> {
 		const next = "at" in schedule.when ? null : nextDistinctRun(parseCron(schedule.when.cron), now, schedule.when.timeZone, new Date(ranFor)).toISOString();
 		const updated: Schedule = { ...schedule, nextRunAt: next, lastRunAt: ranFor };
-		await this.save(updated);
+		await this.update(updated);
 		return updated;
 	}
 
 	/** Stop it for good, keeping it visible with the reason. */
 	async disable(schedule: Schedule, reason: string): Promise<Schedule> {
 		const updated: Schedule = { ...schedule, nextRunAt: null, disabledReason: reason };
-		await this.save(updated);
+		await this.update(updated);
 		return updated;
 	}
 
 	private save(schedule: Schedule): Promise<void> {
 		return writeFileAtomic(this.file(schedule.id), `${JSON.stringify(schedule, null, 2)}\n`);
+	}
+
+	/** A schedule deleted meanwhile (or its agente, ADR 0046) is not written back. */
+	private async update(schedule: Schedule): Promise<void> {
+		if ((await this.get(schedule.id)) !== undefined) await this.save(schedule);
 	}
 
 	private file(id: string): string {

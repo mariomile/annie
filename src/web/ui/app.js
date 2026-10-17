@@ -860,6 +860,46 @@ function desktopCard(inst, allowed, desktop) {
 	);
 }
 
+/** Deleting an agente (ADR 0046): what goes is said plainly, and the owner types the name to confirm. */
+function deleteCard(inst) {
+	const open = () => {
+		const typed = h("input", { type: "text", autocomplete: "off", "aria-label": "Nome dell'agente" });
+		const ok = h("button.btn.danger", { disabled: true }, "Elimina per sempre");
+		typed.addEventListener("input", () => (ok.disabled = typed.value !== inst.name));
+		const dialog = h(
+			"dialog",
+			h("h3", `Eliminare ${inst.name}?`),
+			h("p", `Se ne vanno le sue conversazioni, la sua memoria, i file del suo workspace, i task programmati e le sentinelle, le richieste in attesa e i connettori. Bot Telegram, numero WhatsApp e telefono si scollegano, e il computer e lo schermo, se li ha, si spengono e si svuotano. Gli altri agenti non ricevono più messaggi da lui, e le risposte che gli dovevano ancora vanno perse. Non si può annullare.`),
+			h("label.field", h("span", `Per confermare scrivi «${inst.name}»`), typed),
+			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
+		);
+		ok.onclick = async () => {
+			ok.disabled = true;
+			try {
+				await api(`/api/instances/${inst.id}`, { method: "DELETE", body: { confirm: typed.value } });
+				dialog.close();
+				if (store("annie.instance") === inst.id) store("annie.instance", null);
+				toast(`Agente «${inst.name}» eliminato`);
+				await refreshInstances();
+				go("agenti");
+			} catch (error) {
+				ok.disabled = false;
+				toast(error.message, true);
+			}
+		};
+		dialog.addEventListener("close", () => dialog.remove());
+		document.body.append(dialog);
+		dialog.showModal();
+		typed.focus();
+	};
+	return h(
+		"div.card.pad",
+		h("div.kicker", "Elimina agente"),
+		h("p.muted", `Elimina ${inst.name} con tutto quello che sa e che ha: conversazioni, memoria, file e automazioni. Gli altri agenti restano come sono.`),
+		h("div.actions", h("button.btn.danger", { onclick: open }, `Elimina ${inst.name}`)),
+	);
+}
+
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
@@ -3348,6 +3388,7 @@ async function viewSettings(main) {
 					h("dl.lead", h("dt", "Modello"), h("dd.mono", `${settings.model.provider}/${settings.model.modelId}`), h("dt", "Canali"), h("dd.mono", e.channels.join(", ") || "nessuno"), h("dt", "Connettori"), h("dd.mono", (e.connectors ?? []).join(", ") || "nessuno")),
 					h("p.muted", "Tutto ciò che non è in elenco è negato. I connettori si consentono dalla loro pagina."),
 				),
+				settings.deletable ? anchor("elimina", deleteCard(inst)) : null,
 			),
 		),
 	);

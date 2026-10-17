@@ -11,6 +11,7 @@ import type { InstanceId, TenantId } from "./ids.ts";
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/instance.lock (held while a process has it open)
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/engine/   (durable engine storage)
  *   <dataDir>/tenants/<tenantId>/instances/<instanceId>/outbox/   (replies until their channel confirms them)
+ *   <dataDir>/tenants/<tenantId>/removed/              (deleted instances, until their files are gone)
  */
 export function tenantDir(dataDir: string, tenant: TenantId): string {
 	return join(dataDir, "tenants", tenant);
@@ -26,6 +27,11 @@ export function secretsFile(dataDir: string, tenant: TenantId): string {
 
 export function auditFile(dataDir: string, tenant: TenantId): string {
 	return join(tenantDir(dataDir, tenant), "audit.jsonl");
+}
+
+/** Where a deleted instance's folder is moved before its files are removed (ADR 0046). */
+export function removedDir(dataDir: string, tenant: TenantId): string {
+	return join(tenantDir(dataDir, tenant), "removed");
 }
 
 export function instanceDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {

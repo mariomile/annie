@@ -124,6 +124,8 @@ export async function relayAgentAnswer(
 	answer: { readonly to: string; readonly origin: Origin; readonly text?: string; readonly file?: { readonly name: string; readonly data: Uint8Array }; readonly key: string },
 ): Promise<void> {
 	const record = await runtime.registry.getInstance(tenant, from);
+	// An asker deleted meanwhile (ADR 0046): NotFound, before a file recreates its folder.
+	await runtime.registry.getInstance(tenant, answer.to);
 	let file: string | undefined;
 	if (answer.file !== undefined) {
 		const safe = (answer.file.name.split(/[\\/]/).at(-1) ?? "").replace(/[^\w.\- ]+/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";

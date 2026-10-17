@@ -212,6 +212,55 @@ describe("pnpm start (startAnnie)", () => {
 		await until(() => replied(again, t2.id));
 	});
 
+	it("the owner deletes an agente (ADR 0046): name to confirm, bot stopped, keys and automations gone, colleagues forget it", async () => {
+		const dataDir = tempDataDir();
+		const telegram = fakeTelegram();
+		const { annie, base } = await boot(dataDir, telegram);
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		const send = (method: string, path: string, body?: unknown, cookie = api.cookie) =>
+			fetch(`${base}${path}`, { method, headers: { "x-annie": "1", "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(async (r) => ({ status: r.status, ...((await r.json()) as { error?: string; deletable?: boolean }) }));
+		expect((await send("PUT", "/api/instances/vendite/telegram", { token: "2:V", allowedUsers: ["8"] })).status).toBe(200);
+		// Annie accepts messages from Vendite: that permission must not outlive Vendite.
+		await send("PUT", "/api/instances/annie/agents", { from: ["vendite"] });
+		const thread = (await api("/api/instances/vendite/threads", {})).thread;
+		await api("/api/instances/vendite/schedules", { instruction: "Controlla le offerte", at: new Date(Date.now() + 60_000).toISOString(), threadId: thread.id });
+		const secrets = annie.runtime.secrets("default");
+		for (const name of ["mcp-oauth.vendite.github", "connector.github.vendite.authorization", "connector.github.annie.authorization", "mcp-oauth.vendite2.github"]) await secrets.set(name, "x");
+		expect((await api("/api/instances/vendite/settings")).settings.deletable).toBe(true);
+		expect((await api("/api/instances/annie/settings")).settings.deletable).toBe(false);
+
+		const { link } = await api("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		expect((await send("DELETE", "/api/instances/vendite", { confirm: "Vendite" }, member.cookie)).status).toBe(403);
+		expect((await send("DELETE", "/api/instances/vendite", { confirm: "vendite" })).error).toMatch(/scrivi il nome/);
+		expect((await send("DELETE", "/api/instances/vendite", {})).status).toBe(400);
+		expect((await send("DELETE", "/api/instances/annie", { confirm: "Annie" })).error).toMatch(/non si elimina/);
+		expect((await send("DELETE", "/api/instances/nessuno", { confirm: "Nessuno" })).status).toBe(404);
+
+		const deleted = await send("DELETE", "/api/instances/vendite", { confirm: "Vendite" });
+		expect(deleted.status).toBe(200);
+		expect((await api("/api/instances")).instances.map((i: { id: string }) => i.id)).toEqual(["annie"]);
+		expect(existsSync(join(dataDir, "tenants", "default", "instances", "vendite"))).toBe(false);
+		// Its own keys went, those of the other agenti stayed.
+		const left = await secrets.names();
+		for (const gone of ["telegram.botToken.vendite", "mcp-oauth.vendite.github", "connector.github.vendite.authorization"]) expect(left).not.toContain(gone);
+		expect(left).toEqual(expect.arrayContaining(["telegram.botToken.annie", "connector.github.annie.authorization", "mcp-oauth.vendite2.github"]));
+		expect((await annie.runtime.registry.getInstance("default", "annie")).allowedUsers.agente).toEqual([]);
+		// The bot stopped asking Telegram, and its automations are no longer run.
+		const polls = telegram.calls.filter((c) => c.token === "2:V" && c.method === "getUpdates").length;
+		await new Promise((r) => setTimeout(r, 200));
+		expect(telegram.calls.filter((c) => c.token === "2:V" && c.method === "getUpdates").length).toBeLessThanOrEqual(polls + 1);
+		expect(await annie.scheduler.tick(new Date(Date.now() + 120_000))).toBe(0);
+		const audit = await annie.runtime.audit("default").read();
+		expect(audit.some((e) => e.type === "web.instance_deleted" && e.instanceId === "vendite")).toBe(true);
+
+		// The ID is free again, and the new agente starts empty.
+		await api("/api/instances", { id: "vendite", name: "Vendite 2" });
+		expect((await api("/api/instances/vendite/schedules")).schedules).toEqual([]);
+		expect((await api("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
+	});
+
 	it("a task programmato of an instance created from the console runs without a restart", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);

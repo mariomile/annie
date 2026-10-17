@@ -439,6 +439,14 @@ export class BrowseSessions {
 		await Promise.all([...this.sessions.values()].map((s) => this.end(s, "chiusa")));
 	}
 
+	/** Close every conversation's browser of one scope (an agente deleted, ADR 0046), and forget them. */
+	async closeScope(scope: string): Promise<void> {
+		const prefix = `${scope}|`;
+		await Promise.allSettled([...this.starting].filter(([key]) => key.startsWith(prefix)).map(([, starting]) => starting));
+		await Promise.all([...this.sessions.values()].filter((s) => s.key.startsWith(prefix)).map((s) => this.end(s, "chiusa")));
+		for (const key of [...this.closed.keys()]) if (key.startsWith(prefix)) this.closed.delete(key);
+	}
+
 	/** Closes this session, and only it: a newer one of the same conversation stays. */
 	private async end(s: Session, reason: string): Promise<void> {
 		if (this.sessions.get(s.key) === s) {
