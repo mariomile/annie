@@ -57,6 +57,12 @@ const ICONS = {
 	logout: ["M14 4h5v16h-5", "M9.5 8 5.5 12l4 4", "M5.5 12H15"],
 	menu: ["M4 7h16M4 12h16M4 17h16"],
 	plus: ["M12 5v14M5 12h14"],
+	compose: ["M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6", "M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"],
+	sidebar: ["M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z", "M9.5 4v16"],
+	attach: ["m20 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"],
+	send: ["M12 19V5", "m6 11 6-6 6 6"],
+	more: ["M6 12h.01M12 12h.01M18 12h.01"],
+	account: ["M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M4 21a8 8 0 0 1 16 0"],
 };
 
 /** Inline stroke icon from the fixed table above (no markup from outside). */
@@ -111,10 +117,12 @@ const fmt = {
 	usd: (n) => `$${n.toFixed(n < 1 ? 3 : 2)}`,
 };
 
+/** Reads with one argument, writes with two; null removes the key. */
 function store(key, value) {
 	try {
 		if (value === undefined) return localStorage.getItem(key) ?? undefined;
-		localStorage.setItem(key, value);
+		if (value === null) localStorage.removeItem(key);
+		else localStorage.setItem(key, value);
 	} catch {
 		return undefined;
 	}
@@ -128,6 +136,8 @@ const state = {
 	usage: undefined,
 	pendingApprovals: 0,
 	unread: new Set(),
+	/** The current instance's conversations, newest first, for the sidebar. */
+	threads: [],
 	/** Steps of «Primi passi» still to do, for the owner; 0 when done or put away. */
 	setupLeft: 0,
 	events: undefined,
@@ -332,8 +342,10 @@ function connectEvents() {
 		void refreshCounters();
 		if (state.onEntry?.(event)) return;
 		state.unread.add(event.threadId);
-		if (route().view !== "chat") toast("Nuova risposta di Annie");
+		const { view, rest } = route();
+		if (view !== "chat" || rest[0] !== event.threadId) toast("Nuova risposta di Annie");
 		renderRail();
+		void refreshThreads().then(renderRail);
 	});
 	state.events = es;
 }
@@ -347,6 +359,7 @@ function applyTheme(next) {
 
 // ---------- login ----------
 function renderLogin(error) {
+	closeMenu();
 	state.events?.close();
 	mount($app, 
 		h(
@@ -761,20 +774,37 @@ function accountDialog() {
 }
 
 // ---------- shell ----------
+/** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
+const SIDEBAR = new Set(["inizia", "segreteria", "approvazioni", "task", "file", "memoria"]);
+
 function render() {
 	if (!state.me) return renderLogin();
 	const { view } = route();
 	const item = PALETTE.find((p) => p.id === view) ?? PALETTE.find((p) => p.id === "chat");
 	if (item.owner && state.me.role !== "owner") return go("chat");
-	const main = h("main", { id: "main" });
+	closeMenu();
+	const main = h("main", { id: "main", class: item.id === "chat" ? "is-chat" : "is-page" });
 	const shell = h(
-		"div.shell",
-		h("header.topbar", h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, icon("menu")), h("b", h("img", { src: "/icon.svg", alt: "", width: "20", height: "20" }), "Annie"), h("button.icon-btn", { "aria-label": "Cerca", onclick: openPalette }, icon("search"))),
+		`div.shell${store("annie.rail") === "closed" ? ".collapsed" : ""}`,
+		h(
+			"header.topbar",
+			h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, icon("menu")),
+			h("b", "Annie"),
+			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
+		),
+		h("div.scrim", { onclick: () => shell.classList.remove("open") }),
 		h("aside.rail", { id: "rail" }),
+		// With the sidebar closed on a computer: the two things still needed, in the corner.
+		h(
+			"div.peek",
+			h("button.icon-btn", { "aria-label": "Apri la barra laterale", title: "Apri la barra laterale", onclick: toggleRail }, icon("sidebar")),
+			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
+		),
 		main,
 	);
 	mount($app, shell);
 	renderRail();
+	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
 	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
@@ -783,30 +813,83 @@ function render() {
 	});
 }
 
+function toggleRail() {
+	const shell = document.querySelector(".shell");
+	if (!shell) return;
+	shell.classList.toggle("collapsed");
+	store("annie.rail", shell.classList.contains("collapsed") ? "closed" : "open");
+}
+
+/** The current instance's conversations, for the sidebar; none for someone who cannot chat there. */
+async function refreshThreads() {
+	const inst = state.instance;
+	if (!inst?.canChat) {
+		state.threads = [];
+		return;
+	}
+	try {
+		const { threads } = await api(`/api/instances/${inst.id}/threads`);
+		if (state.instance === inst) state.threads = threads;
+	} catch {
+		/* the list stays as it was */
+	}
+}
+
+/** Today, yesterday, this week, older: how the sidebar groups conversations. */
+function threadGroup(at, now = new Date()) {
+	const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+	const days = Math.round((day(now) - day(new Date(at))) / 86_400_000);
+	return days <= 0 ? "Oggi" : days === 1 ? "Ieri" : days < 7 ? "Ultimi 7 giorni" : days < 30 ? "Ultimi 30 giorni" : "Più vecchie";
+}
+
+function closeRailOnPhone() {
+	document.querySelector(".shell")?.classList.remove("open");
+}
+
 function renderRail() {
 	const rail = document.getElementById("rail");
 	if (!rail) return;
-	const { view } = route();
-	const items = PALETTE.filter((p) => (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
+	const { view, rest } = route();
+	const items = PALETTE.filter((p) => SIDEBAR.has(p.id) && (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
 	const nav = h("nav.sections", { "aria-label": "Sezioni" });
-	let group;
 	for (const item of items) {
-		if (item.group !== group) {
-			group = item.group;
-			nav.append(h("div.group", group));
-		}
-		const count = item.id === "chat" ? state.unread.size : (item.count?.() ?? 0);
-		nav.append(h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: () => document.querySelector(".shell")?.classList.remove("open") }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", String(count)) : null));
+		const count = item.count?.() ?? 0;
+		nav.append(h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: closeRailOnPhone }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", String(count)) : null));
 	}
-	const u = state.usage;
-	const share = u ? Math.min(1, u.todayUsd / u.hardUsd) : 0;
-	mount(rail, 
-		h("div.brand", h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
-		h("button.search", { onclick: openPalette, "aria-label": "Vai a una sezione" }, icon("search"), h("span", "Vai a…"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
+	const past = h("nav.history", { "aria-label": "Conversazioni" });
+	let group;
+	for (const t of state.threads ?? []) {
+		const g = threadGroup(t.updatedAt);
+		if (g !== group) {
+			group = g;
+			past.append(h("div.group", g));
+		}
+		const current = view === "chat" && rest[0] === t.id;
+		past.append(
+			h(
+				"a",
+				{ href: `#/chat/${encodeURIComponent(t.id)}`, "aria-current": current ? "page" : undefined, title: t.title, onclick: closeRailOnPhone },
+				h("span.label", t.title),
+				state.unread.has(t.id) ? [h("span.dot", { "aria-hidden": "true" }), h("span.sr", "non letto")] : null,
+			),
+		);
+	}
+	mount(
+		rail,
+		h(
+			"div.rail-top",
+			h("a.brand", { href: "#/chat", onclick: closeRailOnPhone }, h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
+			h("button.icon-btn.collapse", { "aria-label": "Chiudi la barra laterale", title: "Chiudi la barra laterale", onclick: toggleRail }, icon("sidebar")),
+		),
+		h(
+			"div.rail-actions",
+			h("a.rail-btn", { href: "#/chat", "aria-current": view === "chat" && !rest[0] ? "page" : undefined, onclick: closeRailOnPhone }, icon("compose"), h("span.label", "Nuova chat")),
+			h("button.rail-btn", { onclick: openPalette, "aria-label": "Vai a una sezione" }, icon("search"), h("span.label", "Cerca"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
+		),
 		state.instances.length > 1
 			? h(
 					"div.instance-pick",
-					h("label", { for: "instance" }, "Istanza"),
+					h("label.sr", { for: "instance" }, "Istanza"),
 					h(
 						"select",
 						{
@@ -814,6 +897,9 @@ function renderRail() {
 							onchange: (e) => {
 								state.instance = state.instances.find((i) => i.id === e.target.value);
 								store("annie.instance", state.instance.id);
+								state.threads = [];
+								// A conversation of the other instance does not exist here.
+								if (route().rest[0] && route().view === "chat") go("chat");
 								void refreshSetup().then(render);
 								render();
 							},
@@ -821,45 +907,123 @@ function renderRail() {
 						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, i.name)),
 					),
 				)
-			: h("div.instance-pick", h("label", "Istanza"), h("div.mono", state.instance?.name ?? "nessuna")),
-		state.me.role === "owner" ? h("button.add-instance", { onclick: instanceForm }, icon("plus"), h("span", "Nuova istanza")) : null,
+			: null,
 		nav,
-		...(installOffer && !installed() ? [h("button.add-instance", { onclick: install }, icon("install"), h("span", "Installa l'app"))] : []),
+		h("div.rail-scroll", past.childElementCount ? past : null),
 		h(
 			"div.rail-foot",
-			u
-				? h(
-						"div.spend",
-						h("div.row", h("span", "Spesa di oggi"), h("b.mono", fmt.usd(u.todayUsd))),
-						h("div.bar", h(`i${share >= 1 ? ".bad" : u.todayUsd >= u.softUsd ? ".warn" : ""}`, { "data-w": share })),
-						h("div.row", h("span.muted", `soglia ${fmt.usd(u.softUsd)}`), h("span.muted", `tetto ${fmt.usd(u.hardUsd)}`)),
-					)
-				: null,
 			h(
-				"div.who",
-				h("button.who-id", { onclick: accountDialog, title: "Il tuo account" }, h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", `${state.me.role === "owner" ? "Owner" : "Membro"}${state.me.twoFactor ? " · verifica attiva" : ""}`))),
-				h(
-					"div.row-gap",
-					h("button.icon-btn", { title: "Tema chiaro/scuro", "aria-label": "Cambia tema", onclick: cycleTheme }, icon("theme")),
-					h(
-						"button.icon-btn",
-						{
-							title: "Esci",
-							"aria-label": "Esci",
-							onclick: async () => {
-								await api("/api/logout", { method: "POST" }).catch(() => {});
-								state.me = undefined;
-								renderLogin();
-							},
-						},
-						icon("logout"),
-					),
-				),
+				"button.who-id",
+				{ onclick: openMenu, "aria-haspopup": "menu", "aria-expanded": document.querySelector(".menu") ? "true" : "false", title: "Account e gestione" },
+				h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)),
+				h("span.who-text", h("span.name", state.me.name), h("span.role", state.instance?.name ?? (state.me.role === "owner" ? "Owner" : "Membro"))),
+				icon("more"),
 			),
 		),
 	);
-	const bar = rail.querySelector(".spend .bar i");
-	if (bar) requestAnimationFrame(() => (bar.style.width = `${Math.max(2, Number(bar.dataset.w) * 100)}%`));
+}
+
+/** The account menu: spend, management sections, account, theme, exit. */
+function openMenu() {
+	if (closeMenu()) return;
+	// The sidebar is drawn again on every reply: always the button that is on the page now.
+	const anchor = () => document.querySelector("button.who-id");
+	const owner = state.me.role === "owner";
+	const u = state.usage;
+	const share = u ? Math.min(1, u.todayUsd / u.hardUsd) : 0;
+	const { view } = route();
+	const entry = (iconName, label, action, current) =>
+		h(
+			"button",
+			{
+				role: "menuitem",
+				"aria-current": current ? "page" : undefined,
+				onclick: () => {
+					closeMenu();
+					closeRailOnPhone();
+					action();
+				},
+			},
+			icon(iconName),
+			h("span", label),
+		);
+	const section = (id) => {
+		const item = PALETTE.find((p) => p.id === id);
+		return !item.owner || owner ? entry(id, item.label, () => go(id), view === id) : null;
+	};
+	const menu = h(
+		"div.menu",
+		h("div.menu-head", h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", `${owner ? "Owner" : "Membro"}${state.me.twoFactor ? " · verifica attiva" : ""}`))),
+		u
+			? h(
+					"div.spend",
+					h("div.row", h("span", "Spesa di oggi"), h("b.mono", fmt.usd(u.todayUsd))),
+					h("div.bar", h(`i${share >= 1 ? ".bad" : u.todayUsd >= u.softUsd ? ".warn" : ""}`, { "data-w": share })),
+					h("div.row", h("span.muted", `soglia ${fmt.usd(u.softUsd)}`), h("span.muted", `tetto ${fmt.usd(u.hardUsd)}`)),
+				)
+			: null,
+		h(
+			"div",
+			{ role: "menu", "aria-label": "Account e gestione" },
+			h("hr", { role: "separator" }),
+			section("connettori"),
+			section("impostazioni"),
+			section("persone"),
+			section("attivita"),
+			owner ? entry("plus", "Nuova istanza", instanceForm) : null,
+			installOffer && !installed() ? entry("install", "Installa l'app", install) : null,
+			h("hr", { role: "separator" }),
+			entry("account", "Il tuo account", accountDialog),
+			entry("theme", "Tema chiaro/scuro", cycleTheme),
+			entry("logout", "Esci", async () => {
+				await api("/api/logout", { method: "POST" }).catch(() => {});
+				state.me = undefined;
+				renderLogin();
+			}),
+		),
+	);
+	document.body.append(menu);
+	const bar = menu.querySelector(".spend .bar i");
+	if (bar) bar.style.width = `${Math.max(2, Number(bar.dataset.w) * 100)}%`;
+	const r = anchor().getBoundingClientRect();
+	menu.style.left = `${Math.max(8, r.left)}px`;
+	menu.style.bottom = `${Math.max(8, window.innerHeight - r.top + 6)}px`;
+	anchor().setAttribute("aria-expanded", "true");
+	menu.querySelector("button")?.focus();
+	// The button toggles by itself: a press on it is not «away».
+	const away = (e) => {
+		if (!menu.contains(e.target) && !e.target.closest?.("button.who-id")) closeMenu();
+	};
+	const keys = (e) => {
+		if (!menu.contains(document.activeElement)) return;
+		if (e.key === "Escape") {
+			e.preventDefault();
+			closeMenu();
+			anchor()?.focus();
+		} else if (e.key === "Tab") closeMenu();
+		else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+			e.preventDefault();
+			const all = [...menu.querySelectorAll("button")];
+			const i = all.indexOf(document.activeElement);
+			all[(i + (e.key === "ArrowDown" ? 1 : -1) + all.length) % all.length]?.focus();
+		}
+	};
+	document.addEventListener("pointerdown", away);
+	document.addEventListener("keydown", keys);
+	menu.cleanup = () => {
+		document.removeEventListener("pointerdown", away);
+		document.removeEventListener("keydown", keys);
+		anchor()?.setAttribute("aria-expanded", "false");
+	};
+}
+
+/** Closes the account menu; true when one was open. */
+function closeMenu() {
+	const menu = document.querySelector(".menu");
+	if (!menu) return false;
+	menu.cleanup?.();
+	menu.remove();
+	return true;
 }
 
 function cycleTheme() {
@@ -956,60 +1120,28 @@ function needInstance(main) {
 }
 
 // ---------- chat ----------
+/** A workspace picture shown in the page (not downloaded). */
+const pictureUrl = (inst, path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
+
+const HINTS = ["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"];
+
 async function viewChat(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
 	if (!inst.canChat) {
-		mount(main, head(inst.name, "Chat", null), h("div.card.empty", h("b", "Chat non disponibile"), state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza."));
+		mount(main, h("section.conversation.empty-chat", h("div.welcome", h("h2", "Chat non disponibile"), h("p", state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza."))));
 		return;
 	}
 	const threadId = route().rest[0];
-	const { threads } = await api(`/api/instances/${inst.id}/threads`);
-	const list = h("ul");
-	for (const t of threads) {
-		list.append(
-			h(
-				"li",
-				h(
-					"a",
-					{ href: `#/chat/${encodeURIComponent(t.id)}`, "aria-current": t.id === threadId ? "true" : undefined },
-					h("span.t", t.title),
-					h("span.d", h("span", fmt.time(t.updatedAt)), state.unread.has(t.id) ? h("span.dot", { "aria-label": "non letto" }) : null),
-				),
-			),
-		);
-	}
-	const newThread = async (first, photo = false) => {
-		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
-		if (first) store(`annie.draft.${thread.id}`, first);
-		if (photo) store(`annie.photo.${thread.id}`, "1");
-		go("chat", thread.id);
-	};
-	const side = h("section.card.threads", h("header", h("b", "Conversazioni"), h("button.btn.small.ghost", { onclick: () => newThread(), "aria-label": "Nuova conversazione" }, icon("plus"), "Nuova")), threads.length ? list : h("p.muted", h("span", "")));
-	const conversation = h("section.card.conversation");
-	mount(main, head(inst.name, h("h1", "Chat"), null), h("div.chat", side, conversation));
-	if (!threadId) {
-		conversation.append(
-			h(
-				"div.welcome",
-				h("h2", "Di cosa hai bisogno?"),
-				h("p", "Annie risponde, prepara file, programma promemoria e usa i connettori della tua azienda. Le azioni delicate passano sempre da un'approvazione."),
-				state.setupLeft > 0 ? h("p", h("a", { href: "#/inizia" }, stepsLeftText(state.setupLeft))) : null,
-				state.me.role !== "owner" && installOffer && !installed() ? h("p", h("button.btn.small", { onclick: install }, icon("install"), "Installa Annie come app")) : null,
-				h(
-					"div.hints",
-					["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t, t.includes("foto")) }, t)),
-				),
-			),
-		);
-		return;
-	}
+	const conversation = h("section.conversation");
+	mount(main, conversation);
+	if (!threadId) return landing(inst, conversation);
 	state.unread.delete(threadId);
 	renderRail();
 	const { entries } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	let typing;
-	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
+	const picture = (path) => pictureUrl(inst, path);
 	// A file to download; also what a picture that does not show (deleted, not really a picture) becomes.
 	const fileLink = (file) => h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
 	const show = (entry) => {
@@ -1075,9 +1207,88 @@ async function viewChat(main) {
 		transcript.scrollTop = transcript.scrollHeight;
 		return true;
 	};
-	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(`annie.draft.${threadId}`) ?? "" });
+	const box = chatBox(inst, threadId, conversation, async (text, images) => {
+		const bubble = show({ from: "person", text, images, at: new Date().toISOString() });
+		const listed = state.threads.find((t) => t.id === threadId);
+		if (listed && listed.title === "Nuova chat") {
+			listed.title = text ? text.replace(/\s+/g, " ").slice(0, 60) : "Foto";
+			renderRail();
+		}
+		startTyping();
+		try {
+			await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: images.length ? { text, images } : { text } });
+		} catch (error) {
+			stopTyping();
+			bubble.remove();
+			throw error;
+		}
+		void refreshThreads().then(renderRail);
+	});
+	conversation.append(transcript, h("div.dock", asks, box.el));
+	transcript.scrollTop = transcript.scrollHeight;
+	// A message written on the empty chat: sent as soon as its conversation opens.
+	if (main.isConnected && store(`annie.autosend.${threadId}`) === "1") {
+		store(`annie.autosend.${threadId}`, null);
+		void box.submit();
+	}
+	box.input.focus();
+}
+
+/** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
+function landing(inst, conversation) {
+	conversation.classList.add("empty-chat");
+	const box = chatBox(inst, `new.${inst.id}`, conversation, async (text, images) => {
+		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
+		store(`annie.draft.${thread.id}`, text);
+		if (images.length) store(`annie.pending.${thread.id}`, JSON.stringify(images));
+		store(`annie.autosend.${thread.id}`, "1");
+		go("chat", thread.id);
+	});
+	const hour = new Date().getHours();
+	const hello = hour < 5 || hour >= 18 ? "Buonasera" : "Buongiorno";
+	const first = state.me.name.split(/\s+/)[0];
+	conversation.append(
+		h(
+			"div.welcome",
+			h("img.mark", { src: "/icon.svg", alt: "", width: "40", height: "40" }),
+			h("h2", first && first !== "Owner" ? `${hello}, ${first}.` : `${hello}.`),
+			h("p", "Di cosa hai bisogno?"),
+			box.el,
+			h(
+				"div.hints.ideas",
+				HINTS.map((t) =>
+					h(
+						"button",
+						{
+							onclick: () => {
+								box.input.value = t;
+								box.input.dispatchEvent(new Event("input"));
+								if (t.includes("foto")) box.input.placeholder = "Aggiungi la foto con la graffetta, trascinala qui o incollala";
+								box.input.focus();
+							},
+						},
+						t,
+					),
+				),
+			),
+			state.setupLeft > 0 ? h("p.aside", h("a", { href: "#/inizia" }, stepsLeftText(state.setupLeft))) : null,
+			state.me.role !== "owner" && installOffer && !installed() ? h("p.aside", h("button.btn.small.ghost", { onclick: install }, icon("install"), "Installa Annie come app")) : null,
+		),
+	);
+	box.input.focus();
+}
+
+/**
+ * The message box: text, photos waiting to go with it, files noted in it, a drop zone and a paste.
+ * The draft and the photos are kept per key (a conversation, or "new") until onSend succeeds;
+ * when onSend throws, they come back and the error is said.
+ */
+function chatBox(inst, key, dropZone, onSend) {
+	const picture = (path) => pictureUrl(inst, path);
+	const draftKey = `annie.draft.${key}`;
+	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
 	// Photos uploaded for the next message: shown above the box until it is sent, kept with the draft.
-	const pendingKey = `annie.pending.${threadId}`;
+	const pendingKey = `annie.pending.${key}`;
 	const pending = (() => {
 		try {
 			const saved = JSON.parse(store(pendingKey) ?? "[]");
@@ -1087,12 +1298,16 @@ async function viewChat(main) {
 		}
 	})();
 	let uploading = 0;
+	let sending = false;
 	const tray = h("div.tray", { hidden: true });
-	const sendButton = h("button.btn.accent", { onclick: () => send() }, "Invia");
+	const sendButton = h("button.send", { "aria-label": "Invia", title: "Invia", onclick: () => submit() }, icon("send"));
+	const ready = () => {
+		sendButton.disabled = uploading > 0 || sending || (!input.value.trim() && pending.length === 0);
+	};
 	const drawTray = () => {
-		store(pendingKey, JSON.stringify(pending));
+		store(pendingKey, pending.length ? JSON.stringify(pending) : null);
 		tray.hidden = pending.length === 0 && uploading === 0;
-		sendButton.disabled = uploading > 0;
+		ready();
 		mount(tray, 
 			...pending.map((p, i) =>
 				h("span.chip", h("img", { src: picture(p), alt: p.split("/").pop() }), h("button", { "aria-label": `Togli ${p.split("/").pop()}`, onclick: () => { pending.splice(i, 1); drawTray(); } }, "×")),
@@ -1100,46 +1315,47 @@ async function viewChat(main) {
 			...Array.from({ length: uploading }, () => h("span.chip.loading", { "aria-label": "Caricamento" })),
 		);
 	};
-	const send = async () => {
+	const fit = () => {
+		input.style.height = "auto";
+		input.style.height = `${Math.min(220, input.scrollHeight)}px`;
+	};
+	const submit = async () => {
 		const text = input.value.trim();
 		if (uploading > 0) return toast("Aspetta che le foto finiscano di caricarsi");
-		if (!text && pending.length === 0) return;
-		const sent = pending.splice(0);
-		const images = sent;
+		if (sending || (!text && pending.length === 0)) return;
+		sending = true;
+		const images = pending.splice(0);
 		input.value = "";
-		input.style.height = "auto";
+		fit();
 		drawTray();
-		store(`annie.draft.${threadId}`, "");
-		const bubble = show({ from: "person", text, images, at: new Date().toISOString() });
-		const current = list.querySelector('[aria-current="true"] .t');
-		if (current && current.textContent === "Nuova chat") current.textContent = text ? text.replace(/\s+/g, " ").slice(0, 60) : "Foto";
-		startTyping();
+		store(draftKey, null);
 		try {
-			await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: images.length ? { text, images } : { text } });
+			await onSend(text, images);
 		} catch (error) {
-			stopTyping();
-			bubble.remove();
 			toast(error.message, true);
 			input.value = text;
-			store(`annie.draft.${threadId}`, text);
-			pending.unshift(...sent);
+			store(draftKey, text);
+			pending.unshift(...images);
+			fit();
+		} finally {
+			sending = false;
 			drawTray();
 		}
 	};
 	input.addEventListener("keydown", (e) => {
 		if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();
-			void send();
+			void submit();
 		}
 	});
 	input.addEventListener("input", () => {
-		store(`annie.draft.${threadId}`, input.value);
-		input.style.height = "auto";
-		input.style.height = `${Math.min(220, input.scrollHeight)}px`;
+		store(draftKey, input.value);
+		fit();
+		ready();
 	});
 	const file = h("input", { type: "file", class: "sr", multiple: true, "aria-label": "Carica un file o una foto" });
 	const PICTURES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-	// From the File button, a drop on the chat or a paste (a screenshot): photos go with the message, other files are noted in it.
+	// From the paperclip, a drop on the chat or a paste (a screenshot): photos go with the message, other files are noted in it.
 	const add = async (files) => {
 		const pictures = files.filter((f) => PICTURES.includes(f.type));
 		if (pending.length + pictures.length > 4) toast("Al massimo 4 foto per messaggio", true);
@@ -1156,7 +1372,8 @@ async function viewChat(main) {
 				else {
 					const note = docLabel ? `[Documento ${docLabel} nel workspace: ${saved.path}. Leggilo con file_read]` : `[File caricato nel workspace: ${saved.path}]`;
 					input.value = `${input.value ? `${input.value}\n` : ""}${note} `;
-					store(`annie.draft.${threadId}`, input.value);
+					store(draftKey, input.value);
+					fit();
 					toast(`Caricato ${saved.path}`);
 				}
 			} catch (error) {
@@ -1179,28 +1396,19 @@ async function viewChat(main) {
 		e.preventDefault();
 		void add(files);
 	});
-	conversation.addEventListener("dragover", (e) => {
+	dropZone.addEventListener("dragover", (e) => {
 		if ([...(e.dataTransfer?.types ?? [])].includes("Files")) e.preventDefault();
 	});
-	conversation.addEventListener("drop", (e) => {
+	dropZone.addEventListener("drop", (e) => {
 		const files = [...(e.dataTransfer?.files ?? [])];
 		if (files.length === 0) return;
 		e.preventDefault();
 		void add(files);
 	});
-	if (store(`annie.photo.${threadId}`) === "1") {
-		store(`annie.photo.${threadId}`, "");
-		input.placeholder = "Aggiungi la foto con File, trascinala qui o incollala";
-	}
 	drawTray();
-	conversation.append(
-		transcript,
-		asks,
-		tray,
-		h("div.composer", h("label.btn.ghost.attach", { title: "Carica un file o una foto" }, "File", file), input, sendButton),
-	);
-	transcript.scrollTop = transcript.scrollHeight;
-	input.focus();
+	requestAnimationFrame(fit);
+	const el = h("div.box", tray, h("div.composer", h("label.attach", { title: "Carica un file o una foto" }, icon("attach"), h("span.sr", "File"), file), input, sendButton));
+	return { el, input, submit };
 }
 
 // ---------- segreteria ----------
