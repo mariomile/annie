@@ -1,6 +1,6 @@
 # Settimana 40: liste
 
-Branch `week-40`. Chi usa un assistente ogni giorno gli chiede di tenere a mente la spesa, le cose da fare, i regali. Annie aveva la memoria e i task programmati, ma nessun elenco da spuntare. Ora ha le liste: si aggiungono voci a parole, si spuntano per parole o per numero, si tolgono, si rinominano, e una lista può essere di una persona sola o condivisa con la famiglia o l'ufficio. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0036](adr/0036-liste.md).
+Branch `week-40`. Chi usa un assistente ogni giorno gli chiede di tenere a mente la spesa, le cose da fare, i regali. Annie aveva la memoria e i task programmati, ma nessun elenco da spuntare. Ora ha le liste: si aggiungono voci a parole, si spuntano per parole o per numero, si tolgono, si rinominano, e una lista può essere di una persona sola o condivisa con la famiglia o l'ufficio. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0038](adr/0038-liste.md).
 
 ## Cosa cambia per chi usa Annie
 

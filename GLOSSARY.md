@@ -150,7 +150,7 @@ Quello che fa `file_search`: le parole chiave della domanda cercate dentro il te
 _Avoid_: ricerca full-text, indice, grep
 
 **Lista**:
-Un elenco che Annie tiene per chi le scrive (la spesa, le cose da fare, i regali), con voci da fare e fatte, numerate come le mostra `list_show`. Di una persona sola, o condivisa con tutti quelli che scrivono all'istanza quando lo chiedono; in un gruppo solo le condivise. Vedi ADR 0036.
+Un elenco che Annie tiene per chi le scrive (la spesa, le cose da fare, i regali), con voci da fare e fatte, numerate come le mostra `list_show`. Di una persona sola, o condivisa con tutti quelli che scrivono all'istanza quando lo chiedono; in un gruppo solo le condivise. Vedi ADR 0038.
 _Avoid_: checklist, todo, elenco puntato
 
 **Download**:

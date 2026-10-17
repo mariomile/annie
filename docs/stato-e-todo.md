@@ -73,7 +73,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Conti esatti: domande a CSV, Excel e OpenDocument (totali, medie, classifiche, filtri, gruppi per mese, quote, fogli uniti) e una calcolatrice per preventivi e IVA, mai a mente (settimana 37, [week37.md](week37.md), [ADR 0031](adr/0031-conti-esatti.md))
 - [x] Registrazioni lunghe: riunioni, chiamate, vocali lunghi e video trascritti a pezzi, con il minuto di ogni passaggio e le voci, per verbali e riassunti (settimana 38, [week38.md](week38.md), [ADR 0033](adr/0033-registrazioni-lunghe.md)). Da provare dal vivo con Mistral il campo delle voci
 - [x] Cerca nei file: le parole dentro tutti i file del workspace (PDF, Word, Excel, trascrizioni, note) e nei nomi, con il passaggio, la pagina o il minuto e il punto da cui leggere (settimana 39, [week39.md](week39.md), [ADR 0035](adr/0035-cerca-nei-file.md))
-- [x] Liste: la spesa, le cose da fare, i regali, di una persona o condivise, con voci da aggiungere, spuntare e togliere a parole o per numero (settimana 40, [week40.md](week40.md), [ADR 0036](adr/0036-liste.md))
+- [x] Liste: la spesa, le cose da fare, i regali, di una persona o condivise, con voci da aggiungere, spuntare e togliere a parole o per numero (settimana 40, [week40.md](week40.md), [ADR 0038](adr/0038-liste.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo

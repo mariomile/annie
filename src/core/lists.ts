@@ -5,7 +5,7 @@ import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 import { SHARED } from "./memory.ts";
 
 /**
- * The liste of an instance (ADR 0036): the shopping, the things to do, the gifts, the books to
+ * The liste of an instance (ADR 0038): the shopping, the things to do, the gifts, the books to
  * read. A list is one person's (`owner` = "<channel>:<userId>") or shared by everyone who talks to
  * the instance (`owner` = "*"), like the memoria. A person sees their own lists and the shared
  * ones; a group chat only the shared ones.
