@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { DocumentError, type DocumentText } from "./documents.ts";
+import type { Chart, ChartSpec } from "./charts.ts";
 import type { MadeDocument, MakeInput } from "./make-document.ts";
 import type { PdfPageImage } from "./pdf-text.ts";
 
@@ -57,6 +58,19 @@ export async function makeDocumentFile(input: MakeInput, options: { timeoutMs?: 
 	}
 }
 
+/** A chart drawn in a worker (ADR 0030): the picture is a few million pixels, kept off the event loop. */
+export async function makeChartFile(spec: ChartSpec, options: { timeoutMs?: number; waitMs?: number } = {}): Promise<Chart & { data: Buffer }> {
+	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
+	running++;
+	try {
+		const chart = await inWorker<Chart>({ name: "grafico", data: new Uint8Array(0), chart: spec }, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs, "made");
+		return { ...chart, data: Buffer.from(chart.data.buffer, chart.data.byteOffset, chart.data.byteLength) };
+	} finally {
+		running--;
+		waiting.shift()?.();
+	}
+}
+
 function turn(waitMs: number): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		const go = () => {
@@ -72,7 +86,7 @@ function turn(waitMs: number): Promise<void> {
 	});
 }
 
-function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; make?: MakeInput }, timeoutMs: number, key: "document" | "image" | "made"): Promise<T> {
+function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; make?: MakeInput; chart?: ChartSpec }, timeoutMs: number, key: "document" | "image" | "made"): Promise<T> {
 	// From source (tsx, the tests) the worker is TypeScript that Node runs by stripping the types, so
 	// its files use only erasable syntax; built, it is JavaScript.
 	const source = import.meta.url.endsWith(".ts");
@@ -95,13 +109,13 @@ function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; mak
 			void worker.terminate();
 			outcome();
 		};
-		const timer = setTimeout(() => settle(() => reject(new DocumentError(key === "made" ? "il documento è troppo lungo da creare" : "il documento è troppo complesso da leggere"))), timeoutMs);
+		const timer = setTimeout(() => settle(() => reject(new DocumentError(input.chart !== undefined ? "il grafico è troppo complesso da disegnare" : key === "made" ? "il documento è troppo lungo da creare" : "il documento è troppo complesso da leggere"))), timeoutMs);
 		worker.on("message", (message: { document?: T; image?: T; made?: T; error?: string }) =>
 			settle(() => (message[key] !== undefined ? resolve(message[key]) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
 		);
 		// A worker that fails is our problem, not the file's: the person can try again.
 		worker.on("error", (error: Error & { code?: string }) =>
-			settle(() => reject(new DocumentError(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? `il documento è troppo grande da ${key === "made" ? "creare" : "leggere"}` : AGAIN))),
+			settle(() => reject(new DocumentError(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? input.chart !== undefined ? "il grafico è troppo grande da disegnare" : `il documento è troppo grande da ${key === "made" ? "creare" : "leggere"}` : AGAIN))),
 		);
 		worker.on("exit", () => settle(() => reject(new DocumentError(AGAIN))));
 	});

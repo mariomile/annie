@@ -230,6 +230,16 @@ export function cellOf(spans: readonly Span[], fromFile = false): Cell {
 	return { kind: "text", text: raw.trim(), bold };
 }
 
+/** A number written in a cell, for a chart (ADR 0030): its value and the unit it was written with; dates are not numbers here. */
+export function cellNumber(text: string): { value: number; unit?: "€" | "$" | "%" } | undefined {
+	const n = numberOf(text.trim());
+	if (n === undefined || n.style === STYLE.date) return undefined;
+	if (n.style === STYLE.percent || n.style === STYLE.percentDecimal) return { value: Number((n.value * 100).toPrecision(12)), unit: "%" };
+	if (n.style === STYLE.euro) return { value: n.value, unit: "€" };
+	if (n.style === STYLE.dollar) return { value: n.value, unit: "$" };
+	return { value: n.value };
+}
+
 function numberOf(text: string): { value: number; style: number } | undefined {
 	// Codes with leading zeros (a CAP, an article code) and long digit strings stay text.
 	const date = dateOf(text);
