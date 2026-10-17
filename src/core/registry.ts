@@ -5,6 +5,7 @@ import { NotFound } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { instanceFile, tenantDir, tenantFile } from "./paths.ts";
 import { writeFileAtomic } from "./atomic-file.ts";
+import type { Persona } from "./persona.ts";
 import { type AllowedUsers, CHANNEL_PATTERN, DENY_ALL, type EgressPolicy } from "./policy.ts";
 
 export type ModelSelection = {
@@ -30,6 +31,8 @@ export type InstanceRecord = {
 	/** Channel → user IDs who may approve this instance's actions (tools proposti). Missing: nobody. */
 	readonly approvers?: AllowedUsers;
 	readonly instructions?: string;
+	/** Face and voice of the agente (ADR 0041); missing: Annie as she is. */
+	readonly persona?: Persona;
 	readonly createdAt: string;
 };
 
@@ -43,6 +46,7 @@ export type CreateInstanceInput = {
 	readonly allowedUsers?: AllowedUsers;
 	readonly approvers?: AllowedUsers;
 	readonly instructions?: string;
+	readonly persona?: Persona;
 };
 
 /**
@@ -84,6 +88,7 @@ export class TenantRegistry {
 			allowedUsers: input.allowedUsers ?? {},
 			...(input.approvers === undefined ? {} : { approvers: input.approvers }),
 			...(input.instructions === undefined ? {} : { instructions: input.instructions }),
+			...(input.persona === undefined || Object.keys(input.persona).length === 0 ? {} : { persona: input.persona }),
 			createdAt: new Date().toISOString(),
 		};
 		await writeJsonExclusive(instanceFile(this.dataDir, owner.id, id), record);
@@ -120,16 +125,18 @@ export class TenantRegistry {
 		return record;
 	}
 
-	/** Change name, instructions or approvers. Takes effect the next time the instance is opened. */
-	async updateInstance(tenant: string, id: string, change: { name?: string; instructions?: string | null; approvers?: AllowedUsers }): Promise<InstanceRecord> {
+	/** Change name, instructions, persona or approvers. Takes effect the next time the instance is opened. */
+	async updateInstance(tenant: string, id: string, change: { name?: string; instructions?: string | null; persona?: Persona | null; approvers?: AllowedUsers }): Promise<InstanceRecord> {
 		const current = await this.getInstance(tenant, id);
-		const { instructions: _old, ...rest } = current;
+		const { instructions: _old, persona: _face, ...rest } = current;
 		const instructions = change.instructions === undefined ? current.instructions : change.instructions ?? undefined;
+		const persona = change.persona === undefined ? current.persona : change.persona === null || Object.keys(change.persona).length === 0 ? undefined : change.persona;
 		const record: InstanceRecord = {
 			...rest,
 			...(change.name === undefined ? {} : { name: change.name }),
 			...(change.approvers === undefined ? {} : { approvers: change.approvers }),
 			...(instructions === undefined ? {} : { instructions }),
+			...(persona === undefined ? {} : { persona }),
 		};
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
 		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.updated", instanceId: record.id, fields: Object.keys(change).join(",") });

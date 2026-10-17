@@ -124,6 +124,35 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await again("/api/me")).person.role).toBe("owner");
 	});
 
+	it("agenti (ADR 0041): created with a face and a tone, listed with what they do, changed in Impostazioni", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		const created = await api("/api/instances", { id: "ricerca", name: "Ricercatore", persona: { emoji: "🔎", tagline: "Cerca e confronta fornitori", tone: "conciso" } });
+		expect(created.instance).toMatchObject({ id: "ricerca", name: "Ricercatore", emoji: "🔎", tagline: "Cerca e confronta fornitori" });
+		expect((await api("/api/instances", { id: "brutta", name: "Brutta", persona: { emoji: "ciao" } })).error).toMatch(/emoji/);
+		expect((await annie.runtime.registry.listInstances("default")).map((r) => r.id)).not.toContain("brutta");
+		// biome-ignore lint: test
+		const { agents } = (await api("/api/agents")) as { agents: any[] };
+		expect(agents.map((a) => a.id)).toEqual(["annie", "ricerca"]);
+		expect(agents[1]).toMatchObject({ emoji: "🔎", tone: "conciso", channels: ["web"], schedules: 0, watches: 0, memories: 0 });
+		expect(agents[1].model).toMatchObject({ provider: "faux" });
+		const put = (body: unknown) => fetch(`${base}/api/instances/ricerca/settings`, { method: "PUT", headers: { "x-annie": "1", "content-type": "application/json", cookie: api.cookie }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<{ ok?: boolean; error?: string }>);
+		expect((await put({ persona: { tone: "arrogante" } })).error).toMatch(/Tono/);
+		expect((await put({ name: "  ", persona: { emoji: "🧭", tone: "formale" } })).ok).toBe(true);
+		// A member sees only the agenti they may write to, and only the tasks that act for them.
+		const { link, person } = await api("/api/people", { name: "Anna", role: "member" });
+		await put({ webPeople: [person.id] });
+		await annie.runtime.schedules("default", "ricerca").create({ instruction: "Del owner", when: { at: new Date(Date.now() + 3_600_000).toISOString() }, channel: "web", threadId: "t-owner", createdBy: { kind: "person", channel: "web", userId: "owner-x" } });
+		const member = await client(base, link);
+		const seen = (await member("/api/agents")).agents as { id: string; schedules: number }[];
+		expect(seen.map((a) => a.id)).toEqual(["ricerca"]);
+		expect(seen[0]?.schedules).toBe(0);
+		expect((await api("/api/agents")).agents[1].schedules).toBe(1);
+		const settings = (await api("/api/instances/ricerca/settings")).settings;
+		expect(settings.name).toBe("Ricercatore");
+		expect(settings.persona).toEqual({ emoji: "🧭", tone: "formale", named: true });
+	});
+
 	it("the owner creates an instance from the console: chat works at once and after a restart", async () => {
 		const dataDir = tempDataDir();
 		const first = await boot(dataDir);

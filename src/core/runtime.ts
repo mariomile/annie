@@ -18,6 +18,7 @@ import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { DEV_PROVIDER } from "./model-providers.ts";
+import { withPersona } from "./persona.ts";
 import { type InstanceRecord, type ModelSelection, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
 
@@ -348,6 +349,8 @@ export class AnnieRuntime {
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
 		let toolSet: ToolSet = [];
+		// Its own instructions, then who it is (ADR 0041).
+		const instructions = withPersona(record.instructions, record.name, record.persona);
 		try {
 			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
@@ -357,7 +360,7 @@ export class AnnieRuntime {
 				apiKey: async (provider) => ((await fresh()).egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined),
 				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
-				...(record.instructions === undefined ? {} : { instructions: record.instructions }),
+				...(instructions === undefined ? {} : { instructions }),
 			});
 		} catch (error) {
 			if ("close" in toolSet) await toolSet.close().catch(() => {});

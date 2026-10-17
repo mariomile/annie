@@ -43,6 +43,7 @@ const ICONS = {
 	listen: ["M4 9v6h4l5 4V5L8 9H4Z", "M16.5 8.5a5 5 0 0 1 0 7", "M19 6a8.5 8.5 0 0 1 0 12"],
 	stop: ["M7 7h10v10H7Z"],
 	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
+	agenti: ["M8 4h8a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z", "M9.5 9.5h.01M14.5 9.5h.01", "M9 20h6", "M12 16v4"],
 	segreteria: ["M3 13h5l1.5 2.5h5L16 13h5", "M5.5 5h13L21 13v6H3v-6Z"],
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
 	task: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 7.5V12l3 2"],
@@ -149,6 +150,7 @@ const state = {
 const PALETTE = [
 	{ id: "inizia", label: "Primi passi", group: "Lavoro", owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft },
 	{ id: "chat", label: "Chat", group: "Lavoro" },
+	{ id: "agenti", label: "Agenti", group: "Lavoro", count: () => (state.instances.length > 1 ? state.instances.length : 0) },
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
 	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
@@ -505,7 +507,7 @@ function googleCard(inst, allowed) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/google`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Google consentito per questa istanza" : "Google non più consentito per questa istanza");
+			toast(toggle.checked ? "Google consentito per questo agente" : "Google non più consentito per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -515,8 +517,8 @@ function googleCard(inst, allowed) {
 	return h(
 		"div.card.pad",
 		h("h3", "Google"),
-		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questa istanza di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console. Se il server lo permette, anche di preparare mail ed eventi: partono solo quando quella persona li approva."),
-		h("label.row-gap", toggle, h("span", "Consenti Google a questa istanza")),
+		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questo agente di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console. Se il server lo permette, anche di preparare mail ed eventi: partono solo quando quella persona li approva."),
+		h("label.row-gap", toggle, h("span", "Consenti Google a questo agente")),
 	);
 }
 
@@ -526,7 +528,7 @@ function speechCard(inst, host, allowed, understood) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/speech`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie risponde a voce a chi le manda un vocale" : "Risposte a voce spente per questa istanza");
+			toast(toggle.checked ? `${inst.name} risponde a voce a chi manda un vocale` : "Risposte a voce spente per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -548,7 +550,7 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/images`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può creare immagini" : "Immagini spente per questa istanza");
+			toast(toggle.checked ? `${inst.name} può creare immagini` : "Immagini spente per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -559,7 +561,7 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 		"div.card.pad",
 		h("h3", "Immagini"),
 		h("p.muted", `Annie crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e ritocca le foto che le mandano. Le genera il servizio ${host}, che riceve la descrizione e, per un ritocco, la foto. L'immagine arriva in chat e resta tra i file. Al massimo ${maxPerDay} immagini al giorno per tutto l'account.`),
-		h("label.row-gap", toggle, h("span", "Consenti le immagini a questa istanza")),
+		h("label.row-gap", toggle, h("span", "Consenti le immagini a questo agente")),
 	);
 }
 
@@ -637,7 +639,7 @@ function modelCard(inst, current, providers) {
 		}
 	});
 	forget.addEventListener("click", () =>
-		confirmDialog("Togliere la chiave?", `La chiave di ${chosen()?.label} viene cancellata dal server. Le istanze che la usano vanno prima spostate su un altro modello.`, "Togli", async () => {
+		confirmDialog("Togliere la chiave?", `La chiave di ${chosen()?.label} viene cancellata dal server. Gli agenti che la usano vanno prima spostati su un altro modello.`, "Togli", async () => {
 			await api(`/api/model-keys/${encodeURIComponent(provider.value)}`, { method: "DELETE" });
 			toast("Chiave tolta");
 			render();
@@ -675,7 +677,7 @@ function voiceCard(inst, host, allowed) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/voice`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Vocali trascritti per questa istanza" : "Vocali non più trascritti per questa istanza");
+			toast(toggle.checked ? "Vocali trascritti per questo agente" : "Vocali non più trascritti per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -686,7 +688,7 @@ function voiceCard(inst, host, allowed) {
 		"div.card.pad",
 		h("h3", "Messaggi vocali"),
 		h("p.muted", `I vocali di Telegram e WhatsApp vengono trascritti da ${host} e arrivano ad Annie come testo. Solo quelli delle persone che possono scrivere; l'audio va solo a quel servizio.`),
-		h("label.row-gap", toggle, h("span", "Trascrivi i vocali di questa istanza")),
+		h("label.row-gap", toggle, h("span", "Trascrivi i vocali di questo agente")),
 	);
 }
 
@@ -696,7 +698,7 @@ function searchCard(inst, host, allowed, hosts) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/search`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può cercare sul web" : "Ricerca sul web spenta per questa istanza");
+			toast(toggle.checked ? `${inst.name} può cercare sul web` : "Ricerca sul web spenta per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -718,7 +720,7 @@ function searchCard(inst, host, allowed, hosts) {
 		"div.card.pad",
 		h("h3", "Ricerca sul web"),
 		h("p.muted", `Annie cerca notizie, prezzi, orari e tutto quello che cambia, e se glielo chiedi prepara un report di ricerca con le fonti numerate. Le ricerche vanno a ${host}, solo le parole cercate. Le pagine trovate le apre solo dai siti consentiti qui sotto.`),
-		h("label.row-gap", toggle, h("span", "Consenti la ricerca a questa istanza")),
+		h("label.row-gap", toggle, h("span", "Consenti la ricerca a questo agente")),
 		allowed && !everything
 			? h("p.muted", h("span", hosts.length === 0 ? "Per ora vede solo titoli ed estratti dei risultati. " : "Delle pagine trovate apre solo quelle dei siti consentiti. "), h("button.btn.small.ghost", { onclick: openAll }, "Fai aprire tutti i siti pubblici"))
 			: null,
@@ -731,7 +733,7 @@ function webCard(inst, hosts) {
 	const save = async () => {
 		try {
 			const { hosts: saved } = await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: list.value.split(/[\s,]+/) } });
-			toast(saved.length === 0 ? "Navigazione web spenta per questa istanza" : saved.includes("*") ? "Annie può leggere tutti i siti pubblici" : `Annie può leggere ${saved.length} siti`);
+			toast(saved.length === 0 ? "Navigazione web spenta per questo agente" : saved.includes("*") ? "Annie può leggere tutti i siti pubblici" : `Annie può leggere ${saved.length} siti`);
 			render();
 		} catch (error) {
 			toast(error.message, true);
@@ -883,7 +885,7 @@ function accountDialog() {
 
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
-const SIDEBAR = new Set(["inizia", "segreteria", "approvazioni", "task", "file", "memoria"]);
+const SIDEBAR = new Set(["inizia", "agenti", "segreteria", "approvazioni", "task", "file", "memoria"]);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -915,7 +917,7 @@ function render() {
 	renderRail();
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
-	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, agenti: viewAgents, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -998,7 +1000,7 @@ function renderRail() {
 		state.instances.length > 1
 			? h(
 					"div.instance-pick",
-					h("label.sr", { for: "instance" }, "Istanza"),
+					h("label.sr", { for: "instance" }, "Agente"),
 					h(
 						"select",
 						{
@@ -1013,7 +1015,7 @@ function renderRail() {
 								render();
 							},
 						},
-						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, i.name)),
+						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, agentLabel(i))),
 					),
 				)
 			: null,
@@ -1079,7 +1081,7 @@ function openMenu() {
 			section("impostazioni"),
 			section("persone"),
 			section("attivita"),
-			owner ? entry("plus", "Nuova istanza", instanceForm) : null,
+			owner ? entry("plus", "Nuovo agente", () => agentForm()) : null,
 			installOffer && !installed() ? entry("install", "Installa l'app", install) : null,
 			h("hr", { role: "separator" }),
 			entry("account", "Il tuo account", accountDialog),
@@ -1224,7 +1226,7 @@ window.addEventListener("keydown", (e) => {
 
 function needInstance(main) {
 	if (state.instance) return false;
-	mount(main, h("div.empty", h("b", "Nessuna istanza"), "Non hai ancora accesso a nessuna istanza. Chiedi all'owner di aggiungerti."));
+	mount(main, h("div.empty", h("b", "Nessun agente"), "Non hai ancora accesso a nessun agente. Chiedi all'owner di aggiungerti."));
 	return true;
 }
 
@@ -1238,7 +1240,7 @@ async function viewChat(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
 	if (!inst.canChat) {
-		mount(main, h("section.conversation.empty-chat", h("div.welcome", h("h2", "Chat non disponibile"), h("p", state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza."))));
+		mount(main, h("section.conversation.empty-chat", h("div.welcome", h("h2", "Chat non disponibile"), h("p", state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questo agente, in Impostazioni." : "Non sei tra le persone che possono scrivere a questo agente."))));
 		return;
 	}
 	const threadId = route().rest[0];
@@ -1306,7 +1308,7 @@ async function viewChat(main) {
 	};
 	const startTyping = () => {
 		stopTyping();
-		typing = h("div.typing", { "aria-label": "Annie sta scrivendo" }, h("i"), h("i"), h("i"));
+		typing = h("div.typing", { "aria-label": `${inst.name} sta scrivendo` }, h("i"), h("i"), h("i"));
 		transcript.append(typing);
 		transcript.scrollTop = transcript.scrollHeight;
 	};
@@ -1368,9 +1370,9 @@ function landing(inst, conversation) {
 	conversation.append(
 		h(
 			"div.welcome",
-			h("img.mark", { src: "/icon.svg", alt: "", width: "40", height: "40" }),
+			inst.emoji ? h("span.mark.face", { "aria-hidden": "true" }, inst.emoji) : h("img.mark", { src: "/icon.svg", alt: "", width: "40", height: "40" }),
 			h("h2", first && first !== "Owner" ? `${hello}, ${first}.` : `${hello}.`),
-			h("p", "Di cosa hai bisogno?"),
+			h("p", state.instances.length > 1 ? `${inst.name}${inst.tagline ? `: ${inst.tagline.replace(/[.!?…]+$/, "")}` : ""}. Di cosa hai bisogno?` : "Di cosa hai bisogno?"),
 			box.el,
 			h(
 				"div.hints.ideas",
@@ -1428,7 +1430,7 @@ function modelPill(inst, current, save) {
 		const shown = chosen ?? instanceModel;
 		label.textContent = shown?.name ?? "Modello";
 		pill.classList.toggle("own", chosen !== undefined);
-		pill.setAttribute("aria-label", `Modello di questa chat: ${label.textContent}${chosen ? "" : " (quello dell'istanza)"}`);
+		pill.setAttribute("aria-label", `Modello di questa chat: ${label.textContent}${chosen ? "" : " (quello dell'agente)"}`);
 	};
 	const pick = (model) => {
 		closeModelMenu();
@@ -1511,13 +1513,13 @@ async function openModelMenu(inst, pill, chosen, pick) {
 			return h(
 				"div",
 				{ role: "group", "aria-labelledby": head },
-				h("div.model-group", { id: head }, provider.label, provider.allowed ? null : h("small", " · sceglierlo lo permette all'istanza")),
+				h("div.model-group", { id: head }, provider.label, provider.allowed ? null : h("small", " · sceglierlo lo permette all'agente")),
 				error === undefined
 					? ordered.map((m) => option(names.get(m.name) > 1 ? `${m.name} (${m.id})` : m.name, modelFacts(m), chosen?.provider === provider.id && chosen?.modelId === m.id, () => pick({ provider: provider.id, modelId: m.id, name: m.name })))
 					: h("small.model-error", "Elenco non disponibile ora"),
 			);
 		});
-		mount(list, words.length === 0 ? option("Modello dell'istanza", "lo sceglie l'owner in Impostazioni", chosen === undefined, () => pick(undefined)) : null, groups);
+		mount(list, words.length === 0 ? option("Modello dell'agente", "lo sceglie l'owner in Impostazioni", chosen === undefined, () => pick(undefined)) : null, groups);
 		status.textContent = words.length > 0 && groups.every((g) => g === null) ? "Nessun modello trovato" : "";
 		status.hidden = status.textContent === "";
 	};
@@ -1588,7 +1590,7 @@ function closeModelMenu() {
 function chatBox(inst, key, dropZone, onSend, extra = null) {
 	const picture = (path) => pictureUrl(inst, path);
 	const draftKey = `annie.draft.${key}`;
-	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
+	const input = h("textarea", { rows: 1, placeholder: inst.name.toLowerCase() === "annie" ? "Scrivi ad Annie…" : `Scrivi a ${inst.name}…`, title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
 	// Photos uploaded for the next message: shown above the box until it is sent, kept with the draft.
 	const pendingKey = `annie.pending.${key}`;
 	const pending = (() => {
@@ -1750,7 +1752,7 @@ async function viewSegreteria(main) {
 	}
 	const detail = h("div");
 	mount(main, 
-		head(inst.name, h("h1", "Segreteria commerciale"), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
+		head(agentLabel(inst), h("h1", "Segreteria commerciale"), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
 		pratiche.length ? h("div.pratiche", list, detail) : h("div.card.empty", h("b", "Ancora nessuna richiesta"), "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
 	);
 	const p = pratiche.find((x) => x.praticaId === selected) ?? pratiche[0];
@@ -1812,7 +1814,7 @@ function renderPratica(detail, inst, p) {
 						h("button.btn.danger", { onclick: () => act("discard") }, "Scarta"),
 					)
 				: !inst.isApprover
-					? h("p.muted", "Solo gli approvatori di questa istanza possono decidere.")
+					? h("p.muted", "Solo gli approvatori di questo agente possono decidere.")
 					: null,
 			editing,
 		),
@@ -1944,7 +1946,7 @@ async function viewApprovals(main) {
 			);
 	}
 	mount(main, 
-		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Annie prepara sul tuo Google, le azioni sui servizi collegati (Notion, Linear, GitHub…) che cambiano qualcosa, le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
+		head(agentLabel(inst), h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Annie prepara sul tuo Google, le azioni sui servizi collegati (Notion, Linear, GitHub…) che cambiano qualcosa, le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
 		h(
 			"div.stack",
 			drafts,
@@ -2202,7 +2204,7 @@ function setupSteps(setup) {
 		{ id: "web", own: true, done: setup.web, title: "Lasciala cercare sul web", text: can.search ? "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati, report di ricerca con le fonti." : "Scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: ["impostazioni", can.search ? "ricerca" : "siti"] },
 		...(can.images ? [{ id: "images", own: true, done: setup.images, title: "Fatti creare un'immagine", text: "Accendi le immagini: un logo, un volantino, una foto ritoccata, chiesti a parole in chat.", go: ["impostazioni", "immagini"] }] : []),
 		{ id: "connectors", own: true, done: setup.connectors, title: "Collega i tuoi strumenti", text: "Notion, Linear, Jira, Stripe, GitHub e altri in un clic: entri con il tuo account e Annie può cercare, leggere e aggiornare lì dentro.", go: ["connettori"] },
-		{ id: "people", own: true, done: setup.people, title: "Invita il tuo team", text: "Aggiungi le persone in Persone, poi in Impostazioni scegli chi può scrivere a questa istanza. Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: ["persone"] },
+		{ id: "people", own: true, done: setup.people, title: "Invita il tuo team", text: "Aggiungi le persone in Persone, poi in Impostazioni scegli chi può scrivere a questo agente. Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: ["persone"] },
 		{ id: "app", own: canInstall(), done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home o sul desktop, a schermo intero, come un'app." },
 	];
 }
@@ -2287,9 +2289,9 @@ async function viewStart(main) {
 	mount(
 		main,
 		head(
-			inst.name,
+			agentLabel(inst),
 			h("h1", "Primi passi"),
-			`${done} di ${steps.length} fatti. Ogni passo rende Annie più utile; li puoi fare in qualsiasi ordine.`,
+			`${done} di ${steps.length} fatti. Ogni passo rende ${inst.name} più utile; li puoi fare in qualsiasi ordine.`,
 			h(
 				"button.btn.small.ghost",
 				{
@@ -2406,11 +2408,11 @@ async function viewTasks(main) {
 		}
 	};
 	mount(main, 
-		head(inst.name, h("h1", "Task e sentinelle"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione, e pagine che controlla per te. Il risultato arriva nella chat scelta."),
+		head(agentLabel(inst), h("h1", "Task e sentinelle"), `Istruzioni che ${inst.name} esegue da solo, una volta o a ripetizione, e pagine che controlla per te. Il risultato arriva nella chat scelta.`),
 		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
-			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), "Creane uno qui accanto, oppure chiedilo ad Annie in chat.")),
+			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
 			h(
 				"div.card.pad",
 				h("h3", "Nuovo task"),
@@ -2557,7 +2559,7 @@ function briefCard(inst, { brief, google }) {
 		: !google.connected
 			? "Collega Google dal menu del tuo account per avere calendario e mail nel brief."
 			: !google.allowed
-				? "Hai collegato Google, ma questa istanza non lo può usare: l'owner lo attiva in Impostazioni."
+				? "Hai collegato Google, ma questo agente non lo può usare: l'owner lo attiva in Impostazioni."
 				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Annie ricorda di te. Solo lettura.";
 	return h(
 		"div.card.pad.brief",
@@ -2593,7 +2595,7 @@ async function viewFiles(main) {
 	});
 	const total = files.reduce((n, f) => n + f.size, 0);
 	mount(main, 
-		head(inst.name, h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che le date (legge anche PDF, Word, Excel e PowerPoint). ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
+		head(agentLabel(inst), h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che riceve (legge anche PDF, Word, Excel e PowerPoint). ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
 		h(
 			"div.card",
 			files.length
@@ -2673,10 +2675,10 @@ async function viewMemory(main) {
 		return h("div.pad", h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text), h("button.btn", { onclick: save }, "Ricorda"));
 	};
 	mount(main, 
-		head(inst.name, h("h1", "Memoria"), "Quello che Annie ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva ad Annie."),
+		head(agentLabel(inst), h("h1", "Memoria"), `Quello che ${inst.name} ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva a ${inst.name}.`),
 		h(
 			"div.grid-2",
-			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, "Annie non ricorda ancora niente di te. Puoi dirle «ricordati che…» in chat, o aggiungerlo qui."), add(false)),
+			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
 			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
@@ -2779,7 +2781,7 @@ function tokenDialog(inst, e, replace) {
 		"dialog",
 		h("h3", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
 		h("p.muted", e.tokenHelp ?? ""),
-		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Annie e non si vede più. Si usa solo per questa istanza.")),
+		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Annie e non si vede più. Si usa solo per questo agente.")),
 		h("div.actions", h("button.btn.accent", { onclick: () => void save() }, "Salva e collega"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 	);
 	dialog.addEventListener("close", () => dialog.remove());
@@ -2848,7 +2850,7 @@ async function viewConnectors(main) {
 		);
 	});
 	mount(main, 
-		head(inst.name, h("h1", "Connettori"), "Collegano Annie agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.", h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
+		head(agentLabel(inst), h("h1", "Connettori"), `Collegano ${inst.name} agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.`, h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
 		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
 		catalogGallery(inst, catalog, oauth, redirectUrl, new Set(connectors.map((c) => c.id))),
 	);
@@ -2931,44 +2933,138 @@ function connectorForm(inst, existing) {
 	dialog.showModal();
 }
 
-// ---------- nuova istanza ----------
-function instanceForm() {
-	const name = h("input", { type: "text", placeholder: "Vendite", maxlength: "80" });
-	const id = h("input", { type: "text", placeholder: "vendite", class: "mono", maxlength: "63" });
-	const instructions = h("textarea", { rows: 5, maxlength: "2000", placeholder: "Per chi lavora e cosa deve fare. Vengono aggiunte a quello che Annie sa già fare; lascia vuoto per partire dalle istruzioni predefinite." });
+// ---------- agenti (ADR 0041) ----------
+const TONES = [
+	["naturale", "Naturale"],
+	["formale", "Formale, dà del Lei"],
+	["amichevole", "Amichevole"],
+	["conciso", "Conciso"],
+	["scherzoso", "Spiritoso"],
+];
+
+/** Starting points for a new agente: they only fill the form. */
+const AGENT_TEMPLATES = [
+	{ label: "Da zero", name: "", emoji: "", tagline: "", tone: "naturale", about: "" },
+	{ label: "Assistente", name: "Assistente", emoji: "🙂", tagline: "Agenda, promemoria, mail e cose da fare", tone: "amichevole", about: "Aiuta una persona a organizzare la giornata: impegni, promemoria, liste, risposte alle mail." },
+	{ label: "Ricercatore", name: "Ricercatore", emoji: "🔎", tagline: "Cerca, confronta e cita le fonti", tone: "conciso", about: "Fa ricerche sul web e nei file, confronta opzioni e fornitori, scrive report brevi con le fonti." },
+	{ label: "Scrittore", name: "Scrittore", emoji: "✍️", tagline: "Testi, post e mail con la nostra voce", tone: "naturale", about: "Scrive e rivede testi: post, articoli, newsletter, mail. Chiede sempre a chi sono rivolti e che tono usare." },
+	{ label: "Analista", name: "Analista", emoji: "📊", tagline: "Numeri, tabelle e grafici", tone: "conciso", about: "Risponde a domande su tabelle CSV ed Excel, fa i conti con i tool e prepara grafici e report." },
+	{ label: "Assistenza clienti", name: "Assistenza", emoji: "💬", tagline: "Risponde ai clienti con garbo", tone: "formale", about: "Risponde alle domande dei clienti su prodotti, ordini e tempi, e passa a una persona quello che non sa." },
+];
+
+/** «🔎 Ricercatore», or the name alone. */
+function agentLabel(agent) {
+	return agent.emoji ? `${agent.emoji} ${agent.name}` : agent.name;
+}
+
+function slug(text) {
+	return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
+}
+
+function agentForm() {
+	const name = h("input", { type: "text", placeholder: "Ricercatore", maxlength: "80", "aria-label": "Nome" });
+	const emoji = h("input.emoji-input", { type: "text", placeholder: "🙂", maxlength: "16", "aria-label": "Emoji" });
+	const id = h("input", { type: "text", placeholder: "ricercatore", class: "mono", maxlength: "63" });
+	const tagline = h("input", { type: "text", maxlength: "120", placeholder: "Cerca, confronta e cita le fonti" });
+	const tone = h("select", TONES.map(([value, label]) => h("option", { value }, label)));
+	const instructions = h("textarea", { rows: 4, maxlength: "2000", placeholder: "Per chi lavora e cosa deve fare. Si aggiunge a quello che sa già fare; lascia vuoto per partire dalle istruzioni predefinite." });
 	let touched = false;
 	id.addEventListener("input", () => (touched = true));
 	name.addEventListener("input", () => {
-		if (!touched) id.value = name.value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
+		if (!touched) id.value = slug(name.value);
 	});
+	const chips = h(
+		"div.templates",
+		{ role: "group", "aria-label": "Parti da" },
+		AGENT_TEMPLATES.map((t, i) =>
+			h(
+				"button.pick",
+				{
+					type: "button",
+					"aria-pressed": i === 0 ? "true" : "false",
+					onclick: (e) => {
+						for (const b of chips.querySelectorAll("button")) b.setAttribute("aria-pressed", "false");
+						e.currentTarget.setAttribute("aria-pressed", "true");
+						name.value = t.name;
+						emoji.value = t.emoji;
+						tagline.value = t.tagline;
+						tone.value = t.tone;
+						instructions.value = t.about;
+						if (!touched) id.value = slug(t.name);
+						name.focus();
+					},
+				},
+				t.emoji ? `${t.emoji} ${t.label}` : t.label,
+			),
+		),
+	);
 	const create = async () => {
 		try {
-			const { instance } = await api("/api/instances", { method: "POST", body: { id: id.value.trim(), name: name.value.trim(), instructions: instructions.value } });
+			const { instance } = await api("/api/instances", { method: "POST", body: { id: id.value.trim(), name: name.value.trim(), instructions: instructions.value, persona: { emoji: emoji.value, tagline: tagline.value, tone: tone.value } } });
 			dialog.close();
 			await refreshInstances();
 			state.instance = state.instances.find((i) => i.id === instance.id) ?? state.instance;
 			store("annie.instance", state.instance.id);
-			toast(`Istanza ${instance.name} creata`);
+			toast(`Agente ${agentLabel(instance)} creato`);
 			await refreshSetup();
-			go(state.setupLeft > 0 ? "inizia" : "chat");
+			go("chat");
 			render();
 		} catch (error) {
 			toast(error.message, true);
 		}
 	};
 	const dialog = h(
-		"dialog",
-		h("h3", "Nuova istanza"),
-		h("p.muted", "Un'altra Annie con istruzioni, file, task e connettori suoi. Usa lo stesso modello dell'istanza principale; all'inizio solo tu puoi scriverle, poi decidi chi in Impostazioni."),
-		h("label.field", h("span", "Nome"), name),
-		h("label.field", h("span", "ID"), id, h("small", "Minuscole, cifre, - e _. Non si cambia più.")),
-		h("label.field", h("span", "Chi la usa e per cosa"), instructions),
-		h("div.actions", h("button.btn.accent", { onclick: create }, "Crea istanza"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
+		"dialog.agent-form",
+		h("h3", "Nuovo agente"),
+		h("p.muted", "Un agente con personalità, memoria, file, task e connettori suoi. Parte con il modello dell'agente principale; all'inizio solo tu puoi scrivergli, poi decidi chi in Impostazioni."),
+		h("div.field", h("span", "Parti da"), chips),
+		h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
+		h("label.field", h("span", "Cosa fa, in una riga"), tagline),
+		h("label.field", h("span", "Tono"), tone),
+		h("label.field", h("span", "Chi lo usa e per cosa"), instructions),
+		h("details.advanced", h("summary", "Avanzate"), h("label.field", h("span", "ID"), id, h("small", "Lo usa l'indirizzo dell'agente: minuscole, cifre, - e _. Non si cambia più."))),
+		h("div.actions", h("button.btn.accent", { onclick: create }, "Crea agente"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 	);
 	dialog.addEventListener("close", () => dialog.remove());
 	document.body.append(dialog);
 	dialog.showModal();
 	name.focus();
+}
+
+/** Every agente with its face, what it does and what runs by itself. */
+async function viewAgents(main) {
+	const owner = state.me.role === "owner";
+	const { agents } = await api("/api/agents");
+	const switchTo = (agent, view) => {
+		state.instance = state.instances.find((i) => i.id === agent.id) ?? state.instance;
+		store("annie.instance", state.instance.id);
+		state.threads = [];
+		void refreshSetup().then(render);
+		go(view);
+	};
+	const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+	const card = (a) =>
+		h(
+			`article.card.agent${a.id === state.instance?.id ? ".current" : ""}`,
+			h("div.agent-face", { "aria-hidden": "true" }, a.emoji ?? initials(a.name)),
+			h(
+				"div.agent-body",
+				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
+				a.tagline ? h("p", a.tagline) : null,
+				h("p.muted.small", [a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web").join(", ")].filter(Boolean).join(" · ")),
+				h("p.muted.small", [plural(a.schedules, "task", "task"), plural(a.watches, "sentinella", "sentinelle"), plural(a.memories, "ricordo", "ricordi")].join(" · ")),
+			),
+			h(
+				"div.agent-actions",
+				a.canChat ? h("button.btn.small.accent", { onclick: () => switchTo(a, "chat") }, "Chatta") : null,
+				owner ? h("button.btn.small.ghost", { onclick: () => switchTo(a, "impostazioni") }, "Personalità e impostazioni") : null,
+			),
+		);
+	mount(
+		main,
+		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente") : null),
+		agents.length === 0 ? h("div.empty", h("b", "Nessun agente"), owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
+	);
 }
 
 // ---------- impostazioni ----------
@@ -2989,7 +3085,10 @@ async function viewSettings(main) {
 		api("/api/images").catch(() => ({ available: false })),
 		api(`/api/instances/${inst.id}/model`).catch(() => undefined),
 	]);
-	const name = h("input", { type: "text", value: settings.name });
+	const name = h("input", { type: "text", value: settings.name, maxlength: "80", "aria-label": "Nome" });
+	const emoji = h("input.emoji-input", { type: "text", value: settings.persona.emoji ?? "", placeholder: "🙂", maxlength: "16", "aria-label": "Emoji" });
+	const tagline = h("input", { type: "text", value: settings.persona.tagline ?? "", maxlength: "120", placeholder: "Cosa fa, in una riga" });
+	const tone = h("select", TONES.map(([value, label]) => h("option", { value, selected: value === (settings.persona.tone ?? "naturale") ? "selected" : undefined }, label)));
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
 	const chat = new Set(settings.allowedUsers.web ?? []);
 	const approve = new Set(settings.approvers.web ?? []);
@@ -3000,7 +3099,7 @@ async function viewSettings(main) {
 	});
 	const save = async () => {
 		try {
-			await api(`/api/instances/${inst.id}/settings`, { method: "PUT", body: { name: name.value, instructions: instructions.value, webPeople: rows.filter((r) => r.c.checked).map((r) => r.p.id), webApprovers: rows.filter((r) => r.a.checked).map((r) => r.p.id) } });
+			await api(`/api/instances/${inst.id}/settings`, { method: "PUT", body: { name: name.value, instructions: instructions.value, persona: { emoji: emoji.value, tagline: tagline.value, tone: tone.value }, webPeople: rows.filter((r) => r.c.checked).map((r) => r.p.id), webApprovers: rows.filter((r) => r.a.checked).map((r) => r.p.id) } });
 			toast("Impostazioni salvate");
 			await refreshInstances();
 			render();
@@ -3011,9 +3110,9 @@ async function viewSettings(main) {
 	const e = settings.egress;
 	mount(main, 
 		head(
-			inst.name,
+			agentLabel(inst),
 			h("h1", "Impostazioni"),
-			"Chi può usare questa istanza dal web, chi approva le sue azioni, e come si comporta.",
+			"La personalità di questo agente, chi può usarlo dal web, chi approva le sue azioni.",
 			h("button.btn.ghost", { onclick: () => (setupHidden(inst.id, false), go("inizia")) }, "Primi passi"),
 			h("button.btn.accent", { onclick: save }, "Salva"),
 		),
@@ -3021,7 +3120,17 @@ async function viewSettings(main) {
 			"div.grid-2",
 			h(
 				"div.stack",
-				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
+				anchor(
+					"personalita",
+					h(
+						"div.card.pad",
+						h("div.kicker", "Personalità"),
+						h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
+						h("label.field", h("span", "Cosa fa, in una riga"), tagline),
+						h("label.field", h("span", "Tono"), tone),
+						h("label.field", h("span", "Istruzioni"), instructions, h("small", "Cosa sa fare e le sue regole. Nome, ruolo e tono gli arrivano dopo queste.")),
+					),
+				),
 				models === undefined ? null : anchor("modello", modelCard(inst, models.model, models.providers)),
 				tg === undefined ? null : anchor("telegram", telegramCard(inst, tg.telegram)),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
@@ -3077,7 +3186,7 @@ function telegramCard(inst, t) {
 		}
 	};
 	const disconnect = () =>
-		confirmDialog("Scollegare il bot?", "Annie smette di rispondere su Telegram per questa istanza. Il token viene cancellato.", "Scollega", async () => {
+		confirmDialog("Scollegare il bot?", `${inst.name} smette di rispondere su Telegram. Il token viene cancellato.`, "Scollega", async () => {
 			await api(`/api/instances/${inst.id}/telegram`, { method: "DELETE" });
 			toast("Bot scollegato");
 			render();
@@ -3126,7 +3235,7 @@ function whatsappCard(inst, w) {
 		}
 	};
 	const disconnect = () =>
-		confirmDialog("Scollegare WhatsApp?", "Annie smette di rispondere su WhatsApp per questa istanza. Token e app secret vengono cancellati.", "Scollega", async () => {
+		confirmDialog("Scollegare WhatsApp?", `${inst.name} smette di rispondere su WhatsApp. Token e app secret vengono cancellati.`, "Scollega", async () => {
 			await api(`/api/instances/${inst.id}/whatsapp`, { method: "DELETE" });
 			toast("WhatsApp scollegato");
 			render();
@@ -3182,7 +3291,7 @@ function phoneCard(inst, p) {
 		}
 	};
 	const disconnect = () =>
-		confirmDialog("Scollegare il telefono?", "Annie smette di rispondere alle chiamate per questa istanza: il numero resta su Twilio ma rifiuta le chiamate. Le credenziali e le risposte in attesa vengono cancellate.", "Scollega", async () => {
+		confirmDialog("Scollegare il telefono?", `${inst.name} smette di rispondere alle chiamate: il numero resta su Twilio ma rifiuta le chiamate. Le credenziali e le risposte in attesa vengono cancellate.`, "Scollega", async () => {
 			await api(`/api/instances/${inst.id}/phone`, { method: "DELETE" });
 			toast("Telefono scollegato");
 			render();
@@ -3302,7 +3411,7 @@ async function viewPeople(main) {
 					},
 					"Crea e mostra il link",
 				),
-				h("p.muted", "Poi, in Impostazioni, scegli a quali istanze può scrivere e se approva."),
+				h("p.muted", "Poi, in Impostazioni, scegli a quali agenti può scrivere e se approva."),
 			),
 		),
 	);

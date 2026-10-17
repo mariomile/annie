@@ -17,8 +17,16 @@ Un cliente (azienda, studio o professionista), con dati, segreti, audit e spesa 
 _Avoid_: cliente (nel codice), account, workspace
 
 **Istanza**:
-Un agente di un tenant, con il suo modello, le sue conversazioni, i suoi connettori, i suoi file e le sue regole di uscita.
-_Avoid_: bot, agente (quando si intende la configurazione), profilo
+Un agente di un tenant, con il suo modello, le sue conversazioni, i suoi connettori, i suoi file e le sue regole di uscita. Nella console e nei testi per le persone si chiama **agente** (ADR 0041).
+_Avoid_: bot, profilo; «istanza» nei testi per le persone
+
+**Agente**:
+Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in una riga e un tono, e con loro la sua memoria, i suoi task, file, connettori e bot. Ognuno si presenta con il suo nome. Vedi ADR 0041.
+_Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
+
+**Personalità**:
+Emoji, compito e tono di un agente, scelti dall'owner; il modello li riceve dopo le istruzioni, in un blocco «Chi sei». Il tono è uno tra naturale, formale, amichevole, conciso e scherzoso (in console «Spiritoso»).
+_Avoid_: persona (nei testi per le persone), prompt, carattere
 
 **Utente consentito**:
 Una persona che può parlare con un'istanza su un canale. Chi non è nella lista non riceve risposta.
