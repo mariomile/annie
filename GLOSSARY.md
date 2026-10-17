@@ -145,6 +145,10 @@ _Avoid_: watcher, monitor, alert
 La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
 _Avoid_: computer, automazione del browser, agente web
 
+**Richiesta Google**:
+Una mail, una risposta, una bozza o un evento che Annie prepara sul Google di chi le scrive dalla console, e che succede solo quando quella persona la approva dalla card in chat o in Approvazioni. Una volta sola; l'esito torna nella conversazione.
+_Avoid_: azione Google, automazione
+
 **Azione sul web**:
 L'invio di un modulo di un sito consentito che l'istanza chiede e che parte solo dopo che chi l'ha chiesta, o un approvatore, ha letto destinazione e valori e l'ha approvato. Una volta sola; l'esito torna nella conversazione.
 _Avoid_: automazione, bot, compilazione automatica
@@ -164,7 +168,7 @@ L'elenco di ciò che un'istanza può raggiungere: provider di modelli, canali, c
 _Avoid_: firewall, whitelist
 
 **Approvazione**:
-La decisione di un approvatore su un'azione che l'istanza non può compiere da sola: inviare una mail, attivare un tool proposto, inviare un modulo sul web (questa la può decidere anche chi l'ha chiesta, nella sua conversazione privata).
+La decisione di un approvatore su un'azione che l'istanza non può compiere da sola: inviare una mail, attivare un tool proposto, inviare un modulo sul web (questa la può decidere anche chi l'ha chiesta, nella sua conversazione privata). Le richieste sul Google di una persona le decide solo lei.
 _Avoid_: conferma, ok
 
 **Audit**:

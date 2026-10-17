@@ -392,4 +392,4 @@ ol.steps .stack { display: grid; gap: 8px; }
 .google-ask pre.letter { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 14px; margin: 10px 0 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); max-height: 260px; overflow: auto; }
 .google-ask.compact { padding: 12px 14px; border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 .google-ask.compact h3 { font-size: 14px; }
-@media (max-width: 640px) { .google-ask table.fields td:first-child { width: 84px; } }
+@media (max-width: 640px) { .google-ask table.fields td:first-child { width: 84px; } .asks { max-height: 38vh; } .asks .google-ask pre.letter { max-height: 160px; } }

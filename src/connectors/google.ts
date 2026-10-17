@@ -158,12 +158,10 @@ export class GoogleOAuth {
 		const body = (await response.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string; scope?: string; error?: string };
 		if (!response.ok || body.access_token === undefined || body.refresh_token === undefined) throw new GoogleConsentError(`Google non ha accettato il collegamento${body.error === undefined ? "" : ` (${body.error})`}: riprova.`);
 		const scopes = (body.scope ?? "").split(" ").filter((s) => s !== "");
-		if (googleScopes(this.config.services, this.config.write === true).some((scope) => !scopes.includes(scope))) {
+		// Reading is needed; writing is not: without it the account only reads (Annie says so when asked to write).
+		if (googleScopes(this.config.services, false).some((scope) => !scopes.includes(scope))) {
 			await this.revoke(body.refresh_token);
-			const what =
-				this.config.services.length > 1 || this.config.write === true
-					? `ha bisogno di tutti i permessi richiesti (${this.config.services.map((s) => (s === "gmail" ? "posta" : "calendario")).join(" e ")}${this.config.write === true ? ", leggere e scrivere" : ""})`
-					: `ha bisogno del permesso di leggere ${this.config.services[0] === "gmail" ? "la posta" : "il calendario"}`;
+			const what = this.config.services.length > 1 ? "ha bisogno di tutti i permessi richiesti (posta e calendario)" : `ha bisogno del permesso di leggere ${this.config.services[0] === "gmail" ? "la posta" : "il calendario"}`;
 			throw new GoogleConsentError(`Per usare Google, Annie ${what}: riprova lasciando spuntati i permessi.`);
 		}
 		const profile = await requestJson<{ email?: string }>(this.fetchImpl, "https://openidconnect.googleapis.com/v1/userinfo", { connector: "google", operation: "userinfo", headers: { authorization: `Bearer ${body.access_token}` } });
@@ -182,15 +180,45 @@ export class GoogleConsentError extends Error {
 
 export type MailSummary = { readonly id: string; readonly from: string; readonly subject: string; readonly date: string; readonly snippet: string; readonly unread: boolean };
 export type MailMessage = MailSummary & { readonly to: string; readonly text: string };
-export type CalendarEvent = { readonly id: string; readonly summary: string; readonly start: string; readonly end: string; readonly location?: string; readonly attendees: readonly string[] };
+export type CalendarEvent = {
+	readonly id: string;
+	readonly summary: string;
+	readonly start: string;
+	readonly end: string;
+	/** True when start and end are days (end exclusive, as Google keeps it). */
+	readonly allDay: boolean;
+	readonly location?: string;
+	/** "Name <address>" or the address. */
+	readonly attendees: readonly string[];
+	readonly attendeeEmails: readonly string[];
+	/** An occurrence of a recurring event: its series. */
+	readonly recurringEventId?: string;
+	/** The series itself (its own recurrence rules). */
+	readonly recurring: boolean;
+	readonly etag?: string;
+};
 
 type Header = { name: string; value: string };
 type Part = { mimeType?: string; headers?: Header[]; body?: { data?: string }; parts?: Part[] };
 type Message = { id: string; threadId?: string; snippet?: string; labelIds?: string[]; payload?: Part };
-type ApiEvent = { id: string; summary?: string; location?: string; htmlLink?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string }; attendees?: { email?: string; displayName?: string }[] };
+type ApiEvent = {
+	id: string;
+	etag?: string;
+	summary?: string;
+	location?: string;
+	htmlLink?: string;
+	recurringEventId?: string;
+	recurrence?: string[];
+	start?: { dateTime?: string; date?: string };
+	end?: { dateTime?: string; date?: string };
+	attendees?: { email?: string; displayName?: string; self?: boolean; resource?: boolean }[];
+};
 
 /** What a reply needs of the message it answers. */
-export type ReplyTarget = { readonly id: string; readonly threadId: string; readonly from: string; readonly replyTo: string; readonly subject: string; readonly messageId: string; readonly references: string };
+export type ReplyTarget = { readonly id: string; readonly threadId: string; readonly from: string; readonly replyTo: string; readonly to: string; readonly cc: string; readonly subject: string; readonly date: string; readonly messageId: string; readonly references: string };
+
+/** What Google calendar event ids are made of (base32hex, "_" before an occurrence's time): never a path. */
+export const EVENT_ID_PATTERN = /^[A-Za-z0-9_]{1,1024}$/;
 
 /** The time of an event as Google takes it: a day (all day) or a moment, with its zone when it has no offset. */
 export type EventTime = { readonly date: string } | { readonly dateTime: string; readonly timeZone?: string };
@@ -236,14 +264,15 @@ export class GoogleClient {
 	}
 
 	async event(id: string): Promise<CalendarEvent> {
-		return calendarEvent(await this.get<ApiEvent>(`${EVENTS}/${encodeURIComponent(id)}`, "calendar event"));
+		return calendarEvent(await this.get<ApiEvent>(eventUrl(id), "calendar event"));
 	}
 
 	/** The headers a reply to message `id` needs. */
 	async replyTarget(id: string): Promise<ReplyTarget> {
-		const names = ["From", "Reply-To", "Subject", "Message-ID", "References"].map((n) => `metadataHeaders=${n}`).join("&");
+		const names = ["From", "Reply-To", "To", "Cc", "Subject", "Date", "Message-ID", "References"].map((n) => `metadataHeaders=${n}`).join("&");
 		const m = await this.get<Message>(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=metadata&${names}`, "mail metadata");
-		return { id: m.id, threadId: m.threadId ?? "", from: header(m.payload, "From"), replyTo: header(m.payload, "Reply-To"), subject: header(m.payload, "Subject"), messageId: header(m.payload, "Message-ID"), references: header(m.payload, "References") };
+		const h = (name: string) => header(m.payload, name);
+		return { id: m.id, threadId: m.threadId ?? "", from: h("From"), replyTo: h("Reply-To"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: h("Date"), messageId: h("Message-ID"), references: h("References") };
 	}
 
 	async sendMail(raw: string, threadId?: string): Promise<{ id: string }> {
@@ -259,12 +288,13 @@ export class GoogleClient {
 		return this.write("POST", `${EVENTS}?sendUpdates=${notify ? "all" : "none"}`, event, "calendar create");
 	}
 
-	async updateEvent(id: string, change: Record<string, unknown>, notify: boolean): Promise<{ id: string; htmlLink?: string }> {
-		return this.write("PATCH", `${EVENTS}/${encodeURIComponent(id)}?sendUpdates=${notify ? "all" : "none"}`, change, "calendar update");
+	/** `etag`: the event as the person saw it; changed since, Google refuses (412) and nothing happens. */
+	async updateEvent(id: string, change: Record<string, unknown>, notify: boolean, etag?: string): Promise<{ id: string; htmlLink?: string }> {
+		return this.write("PATCH", `${eventUrl(id)}?sendUpdates=${notify ? "all" : "none"}`, change, "calendar update", etag);
 	}
 
-	async deleteEvent(id: string, notify: boolean): Promise<void> {
-		await this.write("DELETE", `${EVENTS}/${encodeURIComponent(id)}?sendUpdates=${notify ? "all" : "none"}`, undefined, "calendar delete");
+	async deleteEvent(id: string, notify: boolean, etag?: string): Promise<void> {
+		await this.write("DELETE", `${eventUrl(id)}?sendUpdates=${notify ? "all" : "none"}`, undefined, "calendar delete", etag);
 	}
 
 	/**
@@ -272,24 +302,32 @@ export class GoogleClient {
 	 * done". Once the request leaves, no answer or a server error is GoogleUncertain; a refusal
 	 * (4xx) is not done. A 401 is the one retry: Google did nothing with an expired token.
 	 */
-	private async write<T>(method: "POST" | "PATCH" | "DELETE", url: string, body: unknown, operation: string): Promise<T> {
+	private async write<T>(method: "POST" | "PATCH" | "DELETE", url: string, body: unknown, operation: string, etag?: string): Promise<T> {
 		for (let attempt = 0; ; attempt++) {
 			const token = await this.accessToken();
 			let response: Response;
 			try {
-				response = await this.options.fetch(url, { method, headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+				response = await this.options.fetch(url, {
+					method,
+					headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }), ...(etag === undefined ? {} : { "if-match": etag }) },
+					...(body === undefined ? {} : { body: JSON.stringify(body) }),
+					// A request that hangs would hold the decision for good: past this, the outcome is unknown.
+					signal: AbortSignal.timeout(30_000),
+				});
 			} catch (error) {
 				if (error instanceof EgressDenied) throw error;
-				throw new GoogleUncertain(`la richiesta a Google è partita ma la risposta non è arrivata`);
+				throw new GoogleUncertain("la richiesta è partita ma Google non ha risposto");
 			}
 			if (response.status === 401 && attempt === 0) {
 				this.token = undefined;
 				continue;
 			}
-			if (response.status >= 500) throw new GoogleUncertain(`Google ha risposto ${response.status}: non si sa se l'ha fatto`);
+			if (response.status >= 500) throw new GoogleUncertain(`Google ha risposto con un errore suo (${response.status})`);
+			if (response.status === 412) throw new ConnectorHttpError("google", operation, 412, "l'evento è cambiato da quando l'hai visto: chiedi di nuovo");
 			if (!response.ok) {
-				const detail = ((await response.json().catch(() => ({}))) as { error?: { message?: string } }).error?.message ?? "";
-				throw new ConnectorHttpError("google", operation, response.status, detail.slice(0, 200));
+				// Only the status and Google's reason code: its message can repeat what was sent.
+				const reason = ((await response.json().catch(() => ({}))) as { error?: { errors?: { reason?: string }[] } }).error?.errors?.[0]?.reason ?? "";
+				throw new ConnectorHttpError("google", operation, response.status, /^\w{1,60}$/.test(reason) ? reason : "");
 			}
 			return (response.status === 204 ? undefined : await response.json().catch(() => ({}))) as T;
 		}
@@ -335,14 +373,26 @@ export class GoogleNotConnected extends Error {
 
 const EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
+/** One event's address; the id is checked here too, so nothing but an event is ever reached. */
+function eventUrl(id: string): string {
+	if (!EVENT_ID_PATTERN.test(id)) throw new Error("calendar: invalid event id");
+	return `${EVENTS}/${id}`;
+}
+
 function calendarEvent(e: ApiEvent): CalendarEvent {
+	const guests = (e.attendees ?? []).filter((a) => a.resource !== true);
 	return {
 		id: e.id,
 		summary: e.summary ?? "(senza titolo)",
 		start: e.start?.dateTime ?? e.start?.date ?? "",
 		end: e.end?.dateTime ?? e.end?.date ?? "",
+		allDay: e.start?.dateTime === undefined && e.start?.date !== undefined,
 		...(e.location === undefined ? {} : { location: e.location }),
-		attendees: (e.attendees ?? []).map((a) => a.displayName ?? a.email ?? "").filter((a) => a !== ""),
+		attendees: guests.map((a) => (a.displayName && a.email ? `${a.displayName} <${a.email}>` : (a.email ?? a.displayName ?? ""))).filter((a) => a !== ""),
+		attendeeEmails: guests.map((a) => a.email ?? "").filter((a) => a !== ""),
+		...(e.recurringEventId === undefined ? {} : { recurringEventId: e.recurringEventId }),
+		recurring: (e.recurrence?.length ?? 0) > 0,
+		...(e.etag === undefined ? {} : { etag: e.etag }),
 	};
 }
 

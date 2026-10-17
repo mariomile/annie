@@ -1012,7 +1012,7 @@ async function viewChat(main) {
 		const { actions } = await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }));
 		const waiting = actions.filter((a) => a.status === "pending" && a.thread?.threadId === threadId);
 		asks.hidden = waiting.length === 0;
-		mount(asks, ...waiting.map((a) => googleActionCard(inst, a, () => void drawAsks(), true)));
+		mount(asks, ...waiting.map((a) => googleActionCard(inst, a, () => void drawAsks().then(refreshCounters), true)));
 	};
 	void drawAsks();
 	const stopTyping = () => {
@@ -1395,7 +1395,7 @@ async function viewApprovals(main) {
 			pendingGoogle,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingGoogle.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te, le bozze della segreteria, i moduli da inviare e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."),
+			drafts.length || pendingGoogle.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
 			decidedGoogle.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
@@ -1403,63 +1403,101 @@ async function viewApprovals(main) {
 
 // ---------- Google: scrivere con approvazione ----------
 const GOOGLE_KIND = {
-	"mail.send": ["Mail da inviare", "Invia la mail"],
-	"mail.draft": ["Bozza da salvare in Gmail", "Salva la bozza"],
-	"calendar.create": ["Evento da creare", "Crea l'evento"],
-	"calendar.update": ["Evento da modificare", "Modifica l'evento"],
-	"calendar.delete": ["Evento da cancellare", "Cancella l'evento"],
+	"mail.send": ["Mail", "Invia la mail", "Mail inviata"],
+	"mail.draft": ["Bozza in Gmail", "Salva la bozza", "Bozza salvata in Gmail"],
+	"calendar.create": ["Nuovo evento", "Crea l'evento", "Evento creato"],
+	"calendar.update": ["Modifica di un evento", "Modifica l'evento", "Evento modificato"],
+	"calendar.delete": ["Evento da cancellare", "Cancella l'evento", "Evento cancellato"],
 };
 const GOOGLE_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"], rejected: ["bad", "Rifiutato"], expired: ["bad", "Scaduto"], uncertain: ["bad", "Esito incerto"], running: ["ok", "In corso"] };
 
-/** An event time as Google takes it, for reading: "gio 16 ott, 10:00" as written (in the event's own zone), or the day. */
-function eventWhen(t) {
+/** The day before (YYYY-MM-DD): Google ends an all-day event on the day after the last one. */
+function dayBefore(date) {
+	return new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+}
+
+/** An event time as Google takes it, for reading: "gio 16 ott, 10:00" as in the calendar, or the day. */
+function eventWhen(t, end = false) {
 	if (!t) return "";
-	const text = typeof t === "string" ? t : (t.date ?? t.dateTime ?? "");
+	let text = typeof t === "string" ? t : (t.date ?? t.dateTime ?? "");
+	const allDay = /^\d{4}-\d{2}-\d{2}$/.test(text);
+	if (allDay && end) text = dayBefore(text);
 	const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(text);
 	if (!m) return text;
 	const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString("it-IT", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
-	return m[4] ? `${day}, ${m[4]}:${m[5]}` : `${day}, tutto il giorno`;
+	return m[4] ? `${day}, ${m[4]}:${m[5]}` : day;
 }
 
-/** Start → end, the end's day left out when it is the same. */
+/** Start → end, the end's day left out when it is the same; all day said once. */
 function eventSpan(start, end) {
 	const a = eventWhen(start);
-	const b = eventWhen(end);
+	const b = eventWhen(end, true);
+	const allDay = !a.includes(":");
+	if (allDay) return a === b ? `${a}, tutto il giorno` : `da ${a} a ${b}, tutto il giorno`;
 	const [dayA] = a.split(", ");
-	return b.startsWith(`${dayA}, `) && !b.endsWith("tutto il giorno") ? `${a} → ${b.slice(dayA.length + 2)}` : `${a} → ${b}`;
+	return b.startsWith(`${dayA}, `) ? `${a} → ${b.slice(dayA.length + 2)}` : `${a} → ${b}`;
+}
+
+function googleTitle(a) {
+	const to = a.mail?.to.join(", ");
+	return {
+		"mail.send": a.mail?.inReplyTo ? `Rispondere a ${to}` : `Inviare una mail a ${to}`,
+		"mail.draft": `Salvare una bozza per ${to}`,
+		"calendar.create": `Creare «${a.event?.summary ?? ""}»`,
+		"calendar.update": `Modificare «${a.current?.summary ?? ""}»`,
+		"calendar.delete": `Cancellare «${a.current?.summary ?? ""}»`,
+	}[a.kind] ?? "Richiesta";
 }
 
 /**
  * A write to the person's Google account, as they decide it: everything that will happen, word
- * for word. `compact` in the chat, where the conversation already says why.
+ * for word. `compact` in the chat, above the box.
  */
 function googleActionCard(inst, a, after, compact = false) {
-	const [title, verb] = GOOGLE_KIND[a.kind] ?? ["Richiesta", "Approva"];
+	const [kind, verb, doneWord] = GOOGLE_KIND[a.kind] ?? ["Richiesta", "Approva", "Fatto"];
 	const rows = [];
 	const row = (label, value) => value && rows.push(h("tr", h("td", label), h("td", value)));
 	if (a.mail) {
 		row("Da", a.account);
+		const answered = a.mail.inReplyTo;
+		if (answered) row("In risposta a", `${answered.from} · «${answered.subject}»${answered.date ? ` · ${answered.date}` : ""}`);
 		row("A", a.mail.to.join(", "));
+		if (answered?.replyToDiffers) row("Attenzione", "chi ha scritto chiede di rispondere a un altro indirizzo: controlla il destinatario");
 		row("Cc", a.mail.cc.join(", "));
-		row("Oggetto", a.mail.subject || "(senza oggetto)");
-		if (a.mail.inReplyTo) row("In risposta", "alla mail ricevuta, nello stesso filo");
+		row("Oggetto", a.mail.subject);
 	} else {
 		const e = a.event ?? {};
+		const c = a.current;
 		row("Calendario", a.account);
-		if (a.current) row("Ora", `${a.current.summary} · ${eventSpan(a.current.start, a.current.end)}`);
-		row(a.kind === "calendar.update" ? "Nuovo titolo" : "Titolo", e.summary);
+		if (c) row(a.kind === "calendar.delete" ? "Evento" : "Evento attuale", `${c.summary} · ${eventSpan(c.start, c.end)}`);
+		if (c?.occurrence) row("Ricorrente", "cambia solo questa occorrenza");
+		if (c?.series) row("Ricorrente", "cambia tutta la serie");
+		if (a.kind === "calendar.create") row("Titolo", e.summary);
+		else row("Nuovo titolo", e.summary);
 		if (e.start) row(a.kind === "calendar.update" ? "Nuovo orario" : "Quando", eventSpan(e.start, e.end));
 		row("Luogo", e.location);
-		if (e.attendees) row("Invitati", e.attendees.length ? e.attendees.join(", ") : "nessuno");
 		row("Descrizione", e.description);
-		if (a.kind !== "calendar.create" || e.attendees?.length) row("Avvisi", a.notify ? "Google scrive agli invitati" : "nessuno viene avvisato");
+		const before = c?.attendees ?? [];
+		if (e.attendees) {
+			const added = e.attendees.filter((x) => !before.includes(x));
+			const removed = before.filter((x) => !e.attendees.includes(x));
+			if (a.kind === "calendar.create") row("Invitati", e.attendees.join(", "));
+			else {
+				row("Invitati aggiunti", added.join(", "));
+				row("Invitati tolti", removed.join(", "));
+			}
+		} else if (before.length) row("Invitati", before.join(", "));
+		if (before.length || e.attendees?.length) row("Avvisi", a.notify ? "Google scrive agli invitati" : "gli invitati non vengono avvisati");
 	}
+	const expires = new Date(Date.parse(a.proposedAt) + 24 * 3600_000).toISOString();
 	const el = h(
 		`article.card.pad.dossier.google-ask${compact ? ".compact" : ""}`,
-		h("header", h("div", h("div.kicker", `${title} · richiesta ${a.id}`), h("h3", a.reason)), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		h("header", h("div", h("div.kicker", `${kind} · ${fmt.time(a.proposedAt)}`), h("h3", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		a.reason ? h("p.muted", a.reason) : null,
 		h("table.ledger.fields", h("tbody", rows)),
-		a.mail ? h("pre.letter", a.mail.body) : null,
-		a.result && (a.result.error || a.result.link) ? h("p.muted", a.result.error ?? h("a", { href: a.result.link, target: "_blank", rel: "noopener" }, "Apri in Google Calendar")) : null,
+		a.mail ? (compact && a.mail.body.length > 600 ? h("details", h("summary", "Testo della mail"), h("pre.letter", a.mail.body)) : h("pre.letter", a.mail.body)) : null,
+		a.result?.error ? h("p.muted", a.result.error) : null,
+		a.result?.link?.startsWith("https://www.google.com/calendar/") ? h("p", h("a", { href: a.result.link, target: "_blank", rel: "noopener" }, "Apri in Google Calendar")) : null,
 		a.status !== "pending" && GOOGLE_STAMP[a.status] ? h(`div.stamp.${GOOGLE_STAMP[a.status][0]}`, GOOGLE_STAMP[a.status][1]) : null,
 	);
 	if (a.status === "pending") {
@@ -1468,8 +1506,8 @@ function googleActionCard(inst, a, after, compact = false) {
 			for (const b of buttons) b.disabled = true;
 			try {
 				const { action } = await api(`/api/instances/${inst.id}/google-actions/${a.id}/decision`, { method: "POST", body: { decision } });
-				const words = { done: "Fatto", rejected: "Rifiutata: non l'ho fatto", failed: "Non è riuscito: Annie ti dice perché", uncertain: "Esito incerto: controlla in Google", expired: "Richiesta scaduta" };
-				toast(words[action.status] ?? action.status, action.status === "failed" || action.status === "uncertain");
+				const words = { done: doneWord, rejected: "Richiesta rifiutata", failed: "Non è riuscito: vedi il motivo", uncertain: "Esito incerto: controlla in Google", expired: "Richiesta scaduta", running: "In corso" };
+				toast(words[action.status] ?? "Richiesta decisa", action.status === "failed" || action.status === "uncertain");
 				after();
 			} catch (error) {
 				for (const b of buttons) b.disabled = false;
@@ -1477,7 +1515,7 @@ function googleActionCard(inst, a, after, compact = false) {
 			}
 		};
 		buttons.push(h(`button.btn${a.kind === "calendar.delete" ? ".danger" : ".accent"}`, { onclick: () => decide("approved") }, verb), h("button.btn.ghost", { onclick: () => decide("rejected") }, "Rifiuta"));
-		el.append(h("div.actions", ...buttons, compact ? null : h("span.muted", "Succede una volta sola, esattamente così. Scade fra 24 ore.")));
+		el.append(h("div.actions", ...buttons, h("span.muted", `Una volta sola, esattamente così. Scade ${fmt.time(expires)}.`)));
 	}
 	return el;
 }

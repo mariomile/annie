@@ -932,7 +932,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const run = options.google?.runAction;
 		if (run === undefined) throw new HttpError(501, "Google non può scrivere su questo server");
 		try {
-			return { action: await decideGoogleAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, p.id, run(params[0] as string)) };
+			return { action: await decideGoogleAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, p.id, run(params[0] as string), options.log) };
 		} catch (error) {
 			// Someone else's request is, for this person, one that does not exist.
 			if (error instanceof GoogleActionError) throw new HttpError(404, "Richiesta inesistente");

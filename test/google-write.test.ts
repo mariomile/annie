@@ -22,7 +22,7 @@ type Call = { method: string; url: URL; body: string };
 /** Fake Google that also takes writes: every call recorded; `fail` makes the next write answer that status. */
 function fakeGoogle() {
 	const calls: Call[] = [];
-	const state = { fail: 0, down: false };
+	const state = { fail: 0, down: false, email: "anna@example.com", expiredOnce: false };
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(String(input));
 		const method = init?.method ?? "GET";
@@ -33,8 +33,12 @@ function fakeGoogle() {
 			if (form.get("grant_type") === "authorization_code") return Response.json({ access_token: "at", refresh_token: `rt-${form.get("code")}`, scope: form.get("code") === "readonly" ? READ : ALL, expires_in: 3600 });
 			return Response.json({ access_token: `at-${form.get("refresh_token")}`, expires_in: 3600 });
 		}
-		if (url.hostname === "openidconnect.googleapis.com") return Response.json({ email: "anna@example.com" });
+		if (url.hostname === "openidconnect.googleapis.com") return Response.json({ email: state.email });
 		if (method !== "GET") {
+			if (state.expiredOnce) {
+				state.expiredOnce = false;
+				return Response.json({ error: { message: "expired" } }, { status: 401 });
+			}
 			if (state.down) throw new TypeError("fetch failed");
 			if (state.fail !== 0) {
 				const status = state.fail;
@@ -50,6 +54,8 @@ function fakeGoogle() {
 				payload: {
 					headers: [
 						{ name: "From", value: "Rossi <rossi@cliente.it>" },
+						{ name: "To", value: "anna@example.com, Bianchi <bianchi@cliente.it>" },
+						{ name: "Cc", value: "verdi@cliente.it" },
 						{ name: "Subject", value: "Preventivo" },
 						{ name: "Message-ID", value: "<abc@cliente.it>" },
 						{ name: "Date", value: "Thu, 15 Oct 2026 09:00:00 +0200" },
@@ -59,6 +65,11 @@ function fakeGoogle() {
 		if (url.pathname === "/gmail/v1/users/me/messages/send" && method === "POST") return Response.json({ id: "sent1", threadId: "t1" });
 		if (url.pathname === "/gmail/v1/users/me/drafts" && method === "POST") return Response.json({ id: "d1" });
 		if (url.pathname === "/calendar/v3/calendars/primary/events" && method === "POST") return Response.json({ id: "new1", htmlLink: "https://www.google.com/calendar/event?eid=new1" });
+		if (url.pathname === "/calendar/v3/calendars/primary/events/e2_20261019") {
+			if (method === "GET")
+				return Response.json({ id: "e2_20261019", etag: '"etag-2"', recurringEventId: "e2", summary: "Ferie", start: { date: "2026-10-19" }, end: { date: "2026-10-21" }, attendees: [{ email: "luca@example.com" }, { email: "anna@example.com", self: true }] });
+			if (method === "PATCH" || method === "DELETE") return method === "PATCH" ? Response.json({ id: "e2_20261019", htmlLink: "javascript:alert(1)" }) : new Response(null, { status: 204 });
+		}
 		if (url.pathname === "/calendar/v3/calendars/primary/events/e1") {
 			if (method === "GET") return Response.json({ id: "e1", summary: "Call con Rossi", start: { dateTime: "2026-10-16T10:00:00+02:00" }, end: { dateTime: "2026-10-16T10:30:00+02:00" } });
 			if (method === "PATCH") return Response.json({ id: "e1", htmlLink: "https://www.google.com/calendar/event?eid=e1" });
@@ -133,14 +144,18 @@ const tool = (name: string, args: unknown) => `/tool ${name} ${JSON.stringify(ar
 const rawOf = (call: Call | undefined) => Buffer.from((JSON.parse(call?.body ?? "{}").raw ?? JSON.parse(call?.body ?? "{}").message?.raw) as string, "base64url").toString("utf8");
 
 describe("Google: scrivere con approvazione", () => {
-	it("with ANNIE_GOOGLE_WRITE Annie asks to compose mail and edit events; an account connected read only is asked to reconnect", async () => {
+	it("with ANNIE_GOOGLE_WRITE Annie asks to compose mail and edit events; an account granted only reading reads, and is asked to reconnect to write", async () => {
 		const { annie, base } = await boot();
 		const owner = await client(base, annie.ownerLink as string);
-		const { url } = await connect(base, owner, "readonly");
+		const { url, done } = await connect(base, owner, "readonly");
 		expect(url.searchParams.get("scope")).toBe(ALL);
-		// Google gave fewer permissions than asked: the account is refused, as before.
-		expect((await connect(base, owner, "readonly")).done.status).toBe(400);
-		expect((await owner("/api/google")).write).toBe(true);
+		// Fewer permissions than asked: kept for reading, not refused (and not revoked).
+		expect(done.status).toBe(200);
+		expect(await owner("/api/google")).toMatchObject({ write: true, account: { canWrite: false } });
+		await owner("/api/instances/annie/google", { allowed: true }, "PUT");
+		const thread = (await owner("/api/instances/annie/threads", {})).thread as { id: string };
+		expect(await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "e1", reason: "Annullare" }))).toContain("solo in lettura");
+		expect(await reply(owner, thread.id, tool("google_calendar_events", {}))).toContain("Call con Rossi");
 		await connect(base, owner, "good");
 		expect((await owner("/api/google")).account.canWrite).toBe(true);
 		expect(() => loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "faux", ...ENV, ANNIE_GOOGLE_WRITE: "maybe" })).toThrow(/ANNIE_GOOGLE_WRITE/);
@@ -206,7 +221,8 @@ describe("Google: scrivere con approvazione", () => {
 		expect(JSON.parse(post?.body ?? "{}")).toEqual({ summary: "Pranzo con Luca", start: { dateTime: "2026-10-20T13:00:00", timeZone: "Europe/Rome" }, end: { dateTime: "2026-10-20T14:00:00", timeZone: "Europe/Rome" }, attendees: [{ email: "luca@example.com" }] });
 		expect(patch?.method).toBe("PATCH");
 		expect(patch?.url.searchParams.get("sendUpdates")).toBe("none");
-		expect(JSON.parse(patch?.body ?? "{}")).toEqual({ start: { dateTime: "2026-10-16T11:00:00+02:00" }, end: { dateTime: "2026-10-16T11:30:00+02:00" } });
+		// A time with an offset is shown and sent in the person's zone.
+		expect(JSON.parse(patch?.body ?? "{}")).toEqual({ start: { dateTime: "2026-10-16T11:00:00", timeZone: "Europe/Rome" }, end: { dateTime: "2026-10-16T11:30:00", timeZone: "Europe/Rome" } });
 		expect(`${del?.method} ${del?.url.pathname}`).toBe("DELETE /calendar/v3/calendars/primary/events/e1");
 		expect(await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${create.id}`))).toContain("https://www.google.com/calendar/event?eid=new1");
 	});
@@ -224,8 +240,9 @@ describe("Google: scrivere con approvazione", () => {
 		expect((await luca(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "approved" })).status).toBe(404);
 		expect((await owner(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "rejected" })).action.status).toBe("rejected");
 		expect(google.writes()).toEqual([]);
-		expect(await annieSays(owner, thread.id, (t) => t.includes(action.id))).toContain("rifiutata");
-		expect(annie.runtime).toBeDefined();
+		// Annie hears it, so she does not keep waiting for it.
+		expect(await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${action.id}`))).toContain("rifiutata");
+		expect(annie.runtime.googleActions("default", "annie")).toBeDefined();
 	});
 
 	it("refuses what cannot be sent safely: bad addresses, headers broken across lines, threads outside the console", async () => {
@@ -258,6 +275,73 @@ describe("Google: scrivere con approvazione", () => {
 		await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "e1", reason: "Annullare" }));
 		expect((await owner("/api/instances/annie/google-actions")).actions).toEqual([]);
 		expect((await owner("/api/google")).write).toBe(false);
+	});
+
+	it("replies keep the subject, go to Reply-To or to everyone with reply_all, never to oneself", async () => {
+		const { owner, thread } = await ready();
+		await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", subject: "Altro oggetto", reply_all: true, body: "Ok per tutti.", reason: "Risposta a tutti" }));
+		const [action] = (await owner("/api/instances/annie/google-actions")).actions;
+		expect(action.mail).toMatchObject({ to: ["rossi@cliente.it"], cc: ["bianchi@cliente.it", "verdi@cliente.it"], subject: "Re: Preventivo", inReplyTo: { from: "Rossi <rossi@cliente.it>", subject: "Preventivo" } });
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], body: "senza oggetto", reason: "prova" }))).toContain("oggetto");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x", body: "   ", reason: "prova" }))).toContain("vuoto");
+	});
+
+	it("calendar: all-day days are inclusive, a move keeps the length, guests are added and removed, deleting tells them, and the event must be unchanged", async () => {
+		const { owner, thread, google } = await ready();
+		expect(await reply(owner, thread.id, tool("google_calendar_events", {}))).toMatch(/id e1/);
+		await reply(owner, thread.id, tool("google_calendar_create", { summary: "Fiera", start: "2026-10-20", end: "2026-10-20", reason: "Fiera" }));
+		await reply(owner, thread.id, tool("google_calendar_update", { event_id: "e1", start: "2026-10-16T15:00", reason: "Spostare la call" }));
+		await reply(owner, thread.id, tool("google_calendar_update", { event_id: "e2_20261019", add_attendees: ["marco@example.com"], remove_attendees: ["luca@example.com"], reason: "Marco al posto di Luca" }));
+		await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "e2_20261019", reason: "Niente ferie" }));
+		// A path instead of an id is refused before anything is asked.
+		expect(await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "..", reason: "xyz" }))).toMatch(/Errore|Validation/);
+		const actions = (await owner("/api/instances/annie/google-actions")).actions;
+		expect(actions).toHaveLength(4);
+		const [fair, move, guests, remove] = actions;
+		expect(fair.event).toMatchObject({ start: { date: "2026-10-20" }, end: { date: "2026-10-21" } });
+		expect(move.event).toMatchObject({ start: { dateTime: "2026-10-16T15:00:00" }, end: { dateTime: "2026-10-16T15:30:00" } });
+		expect(guests).toMatchObject({ notify: true, current: { occurrence: true, etag: '"etag-2"', attendees: ["luca@example.com", "anna@example.com"] }, event: { attendees: ["anna@example.com", "marco@example.com"] } });
+		expect(remove.notify).toBe(true);
+		for (const a of actions) await owner(`/api/instances/annie/google-actions/${a.id}/decision`, { decision: "approved" });
+		const writes = google.writes();
+		expect(writes.filter((w) => w.url.pathname.endsWith("e2_20261019")).map((w) => w.url.searchParams.get("sendUpdates"))).toEqual(["all", "all"]);
+		expect(google.calls.filter((c) => c.method !== "GET" && c.url.pathname.endsWith("e2_20261019")).length).toBe(2);
+		// Google's link is kept only when it is Google Calendar's.
+		expect((await owner("/api/instances/annie/google-actions")).actions[2].result).toEqual({ done: "Modificare l'evento «Ferie»" });
+	});
+
+	it("is done with the account the card named, while the instance allows Google; a token expired on the way is renewed once", async () => {
+		const { owner, thread, google, base } = await ready();
+		await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "e1", reason: "Uno" }));
+		await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "e1", reason: "Due" }));
+		await reply(owner, thread.id, tool("google_calendar_delete", { event_id: "e1", reason: "Tre" }));
+		const [one, two, three] = (await owner("/api/instances/annie/google-actions")).actions;
+		await owner("/api/instances/annie/google", { allowed: false }, "PUT");
+		const off = (await owner(`/api/instances/annie/google-actions/${one.id}/decision`, { decision: "approved" })).action;
+		expect(off).toMatchObject({ status: "failed", result: { error: expect.stringContaining("Impostazioni") } });
+		await owner("/api/instances/annie/google", { allowed: true }, "PUT");
+		google.state.email = "altro@example.com";
+		await connect(base, owner, "other");
+		expect((await owner(`/api/instances/annie/google-actions/${two.id}/decision`, { decision: "approved" })).action).toMatchObject({ status: "failed", result: { error: expect.stringContaining("anna@example.com") } });
+		expect(google.writes()).toEqual([]);
+		google.state.email = "anna@example.com";
+		await connect(base, owner, "good");
+		google.state.expiredOnce = true;
+		// Two taps at once: one write.
+		const both = await Promise.all([owner(`/api/instances/annie/google-actions/${three.id}/decision`, { decision: "approved" }), owner(`/api/instances/annie/google-actions/${three.id}/decision`, { decision: "approved" })]);
+		expect(both.map((b) => b.action.status)).toEqual(["done", "done"]);
+		expect(google.writes().map((w) => w.method)).toEqual(["DELETE", "DELETE"]);
+		expect(google.calls.filter((c) => c.url.pathname === "/token").length).toBeGreaterThan(1);
+	});
+
+	it("mail headers: long non-ASCII subjects are folded in short encoded words; references keep well-formed ids only", () => {
+		const raw = mimeMessage({ to: ["a@b.it"], cc: [], subject: "è".repeat(200), body: "x", inReplyTo: { id: "m", threadId: "t", messageId: "<id@x>", references: `<a@x> bad <b@x>${" <c@x>".repeat(20)} <ü@x>`, from: "", subject: "", date: "" } });
+		const head = raw.split("\r\n\r\n")[0] as string;
+		expect(head.split("\r\n").every((l) => l.length <= 78)).toBe(true);
+		expect(head).toContain("In-Reply-To: <id@x>");
+		expect(head).not.toContain("ü");
+		expect(head.match(/<[^>]+>/g)?.length).toBeLessThanOrEqual(11);
+		expect(() => mimeMessage({ to: ["a\u0000b@x.it"], cc: [], subject: "x", body: "y" })).toThrow(/indirizzo/);
 	});
 
 	it("store: an action left running by a dead process becomes uncertain; old ones expire", async () => {

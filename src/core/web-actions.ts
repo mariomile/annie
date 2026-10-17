@@ -1,7 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { writeFileAtomic } from "./atomic-file.ts";
+import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
 import { CookieJar, checkedUrl, pageText, WebFetchRefused, type WebFetchOptions, webFetch } from "./web-fetch.ts";
 import { FormRefused, formBody, formFingerprint, pageForms, type WebForm } from "./web-forms.ts";
 
@@ -27,7 +24,7 @@ export type WebAction = {
 	readonly fingerprint: string;
 	/** Why, in Annie's words: shown on the card. */
 	readonly reason: string;
-	readonly status: "pending" | "approved" | "rejected" | "expired" | "running" | "done" | "failed" | "uncertain";
+	readonly status: QueuedStatus;
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	/** The person whose private conversation asked for it ("channel:userId"): they may decide. */
 	readonly requester?: string;
@@ -51,121 +48,55 @@ export class WebActionUncertain extends Error {
 	override readonly name = "WebActionUncertain";
 }
 
-export const WEB_ACTION_LIMITS = { maxPending: 20, ttlMs: 24 * 3600_000, maxValues: 50, maxValueChars: 5_000, maxResultChars: 4_000 } as const;
+export const WEB_ACTION_LIMITS = { maxPending: 20, ttlMs: 24 * 3600_000, maxValues: 50, maxValueChars: 5_000, maxResultChars: 4_000, keepMs: 30 * 24 * 3600_000 } as const;
 /** Connector name in the egress policy: the owner turned web actions on for the instance. */
 export const WEB_ACTIONS_CONNECTOR = "web-actions";
 
-const DECIDING = new Map<string, Promise<unknown>>();
-
 export class WebActionStore {
-	constructor(private readonly dir: string) {}
+	private readonly queue: ActionQueue<WebAction>;
+
+	constructor(dir: string) {
+		this.queue = new ActionQueue<WebAction>(dir, WEB_ACTION_LIMITS, (error) => error instanceof WebActionUncertain, () => new WebActionError(`troppe azioni in attesa (${WEB_ACTION_LIMITS.maxPending})`));
+	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
 	async propose(input: Pick<WebAction, "pageUrl" | "form" | "action" | "values" | "button" | "shown" | "fingerprint" | "reason" | "thread" | "requester">, now = new Date(), key?: string): Promise<WebAction> {
-		const id = key === undefined ? randomBytes(6).toString("hex") : createHash("sha256").update(key).digest("hex").slice(0, 12);
+		const id = this.queue.idFor(key);
 		if (key !== undefined) {
 			const existing = await this.get(id, now);
 			if (existing !== undefined) return existing;
 		}
 		if (Object.keys(input.values).length > WEB_ACTION_LIMITS.maxValues) throw new WebActionError(`al massimo ${WEB_ACTION_LIMITS.maxValues} campi`);
 		if (Object.values(input.values).some((v) => v.length > WEB_ACTION_LIMITS.maxValueChars)) throw new WebActionError(`un valore supera ${WEB_ACTION_LIMITS.maxValueChars} caratteri`);
-		const pending = (await this.list(now)).filter((a) => a.status === "pending");
-		if (pending.length >= WEB_ACTION_LIMITS.maxPending) throw new WebActionError(`troppe azioni in attesa (${WEB_ACTION_LIMITS.maxPending})`);
-		const action: WebAction = { ...input, method: "POST", id, status: "pending", proposedAt: now.toISOString() };
-		await this.save(action);
-		return action;
+		return this.queue.add({ ...input, method: "POST", id, status: "pending", proposedAt: now.toISOString() }, now);
 	}
 
-	async get(id: string, now = new Date()): Promise<WebAction | undefined> {
-		if (!/^[0-9a-f]{12}$/.test(id)) return undefined;
-		let action: WebAction;
-		try {
-			action = JSON.parse(await readFile(join(this.dir, `${id}.json`), "utf8")) as WebAction;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-			throw error;
-		}
-		return expired(action, now) ? { ...action, status: "expired" } : action;
+	get(id: string, now = new Date()): Promise<WebAction | undefined> {
+		return this.queue.get(id, now);
 	}
 
-	async list(now = new Date()): Promise<WebAction[]> {
-		let names: string[];
-		try {
-			names = await readdir(this.dir);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-			throw error;
-		}
-		const all = await Promise.all(names.filter((n) => n.endsWith(".json") && !n.startsWith(".")).map((n) => this.get(n.slice(0, -5), now)));
-		return all.filter((a): a is WebAction => a !== undefined).sort((a, b) => a.proposedAt.localeCompare(b.proposedAt));
+	list(now = new Date()): Promise<WebAction[]> {
+		return this.queue.list(now);
 	}
 
 	/**
 	 * Decide a pending action; one decision at a time per action, the first one wins. Approving
 	 * marks it running and sends it with `run`, then stores the result.
 	 */
-	decide(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<WebActionResult>, now = new Date()): Promise<{ action: WebAction; changed: boolean }> {
-		return this.serial(id, () => this.decideNow(id, decision, by, run, now));
-	}
-
-	/** One read-modify-write at a time per action, decisions and card bookkeeping alike. */
-	private serial<T>(id: string, work: () => Promise<T>): Promise<T> {
-		const run = (DECIDING.get(id) ?? Promise.resolve()).then(work);
-		const tail = run.catch(() => {});
-		DECIDING.set(id, tail);
-		void tail.then(() => {
-			if (DECIDING.get(id) === tail) DECIDING.delete(id);
-		});
-		return run;
-	}
-
-	private async decideNow(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<WebActionResult>, now: Date): Promise<{ action: WebAction; changed: boolean }> {
-		const current = await this.get(id, now);
-		if (current === undefined) throw new WebActionError(`nessuna azione ${id}`);
-		if (current.status !== "pending") return { action: current, changed: false };
-		const decided = { decidedBy: by, decidedAt: now.toISOString() };
-		if (decision === "rejected") {
-			const action: WebAction = { ...current, ...decided, status: "rejected" };
-			await this.save(action);
-			return { action, changed: true };
-		}
-		const running: WebAction = { ...current, ...decided, status: "running" };
-		await this.save(running);
-		const result: WebActionResult = await run(running).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error), ...(error instanceof WebActionUncertain ? { uncertain: true as const } : {}) }));
-		const action: WebAction = { ...running, status: "error" in result ? (result.uncertain ? "uncertain" : "failed") : "done", result };
-		await this.save(action);
-		return { action, changed: true };
+	async decide(id: string, decision: "approved" | "rejected", by: { channel: string; userId: string }, run: (action: WebAction) => Promise<WebActionResult>, now = new Date()): Promise<{ action: WebAction; changed: boolean }> {
+		const decided = await this.queue.decide(id, decision, () => {}, { decidedBy: by }, run, now);
+		if (decided.missing) throw new WebActionError(`nessuna azione ${id}`);
+		return decided;
 	}
 
 	/** At start: an action left running by a dead process may or may not have been sent. */
-	async settleInterrupted(): Promise<WebAction[]> {
-		const settled: WebAction[] = [];
-		for (const action of await this.list()) {
-			if (action.status !== "running") continue;
-			const next: WebAction = { ...action, status: "uncertain" };
-			await this.save(next);
-			settled.push(next);
-		}
-		return settled;
+	settleInterrupted(): Promise<WebAction[]> {
+		return this.queue.settleInterrupted();
 	}
 
 	markNotified(id: string, chat: string): Promise<void> {
-		return this.serial(id, async () => {
-			const current = await this.get(id);
-			if (current === undefined) return;
-			await this.save({ ...current, notified: [...new Set([...(current.notified ?? []), chat])] });
-		});
+		return this.queue.update(id, (current) => ({ ...current, notified: [...new Set([...(current.notified ?? []), chat])] }));
 	}
-
-	private save(action: WebAction): Promise<void> {
-		// "expired" is computed on read, never stored over a pending action.
-		const stored = action.status === "expired" ? { ...action, status: "pending" as const } : action;
-		return writeFileAtomic(join(this.dir, `${action.id}.json`), `${JSON.stringify(stored, null, 2)}\n`);
-	}
-}
-
-function expired(action: WebAction, now: Date): boolean {
-	return action.status === "pending" && now.getTime() - Date.parse(action.proposedAt) > WEB_ACTION_LIMITS.ttlMs;
 }
 
 /** The form `index` of the page, read through the guarded fetch with this visit's cookies. */
