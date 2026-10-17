@@ -139,7 +139,7 @@ export function checkedUrl(raw: string, options: Pick<WebFetchOptions, "hostAllo
 	if (url.username !== "" || url.password !== "") throw new WebFetchRefused("niente credenziali nell'indirizzo");
 	const host = url.hostname.replace(/^\[|\]$/g, "");
 	if (isIP(host) !== 0 && !(options.addressAllowed ?? publicAddress)(host)) throw new WebFetchRefused(`${host} è un indirizzo interno`);
-	if (!options.hostAllowed(host)) throw new WebFetchRefused(`${host} non è tra i siti che questa istanza può leggere`);
+	if (!options.hostAllowed(host)) throw new WebFetchRefused(`${host} non è tra i siti che questo agente può leggere`);
 	return url;
 }
 

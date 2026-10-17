@@ -66,7 +66,7 @@ let screenshotsRunning = 0;
  */
 export function createWebTools(options: WebToolsOptions): AnnieTool[] {
 	const addressAllowed = options.addressAllowed ?? publicAddress;
-	const guard = (policy: EgressPolicy) => ({ hostAllowed: (host: string) => webHostAllowed(policy, host), addressAllowed });
+	const guard = (policy: EgressPolicy) => webGuard(policy, addressAllowed);
 	const recentDocuments = new Map<string, { url: string; doc: DocumentText; at: number }>();
 	const remember = (asked: string, url: string, doc: DocumentText) => {
 		recentDocuments.delete(asked);
@@ -430,6 +430,11 @@ function searchTool(search: NonNullable<WebToolsOptions["search"]>, policyOf: ()
 			});
 		},
 	};
+}
+
+/** The guard of a browser or a fetch for an agente: the owner's sites, and only public addresses unless a test says otherwise. */
+export function webGuard(policy: EgressPolicy, addressAllowed: (address: string) => boolean = publicAddress): Guard {
+	return { hostAllowed: (host: string) => webHostAllowed(policy, host), addressAllowed };
 }
 
 export function refusal(error: unknown): string {

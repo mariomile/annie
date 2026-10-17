@@ -308,7 +308,14 @@ type Session = {
 	used: number;
 	busy: boolean;
 	queue: Promise<unknown>;
+	/** Counts the actions done: what someone watching compares to know the page may have changed. */
+	version: number;
+	/** The last picture taken for someone watching, and at which version. */
+	picture: { readonly version: number; readonly png: Uint8Array } | undefined;
 };
+
+/** A conversation's browser as someone watching it sees it (the console's browser panel). */
+export type BrowserState = { readonly open: true; readonly url: string; readonly title: string; readonly version: number } | { readonly open: false; readonly closed?: string };
 
 /**
  * Browsers that stay open for a conversation (ADR 0014): one per conversation, closed after a
@@ -378,6 +385,40 @@ export class BrowseSessions {
 		return this.sessions.has(key);
 	}
 
+	/** Where the conversation's browser is, without waiting for an action in progress. */
+	async state(key: string): Promise<BrowserState> {
+		const s = this.sessions.get(key);
+		if (s === undefined) {
+			const closed = this.closed.get(key);
+			return closed === undefined ? { open: false } : { open: false, closed };
+		}
+		const title = await within(s.page.title(), READ_TIMEOUT_MS).catch(() => "");
+		return { open: true, url: s.page.url().slice(0, 500), title: String(title).slice(0, 200), version: s.version };
+	}
+
+	/**
+	 * What is on screen, for someone watching: taken between actions, and taken again only after
+	 * one. It changes nothing on the page, so the numbers of the agente's last view stay valid.
+	 */
+	picture(key: string): Promise<{ readonly png: Uint8Array; readonly version: number } | undefined> {
+		const s = this.sessions.get(key);
+		if (s === undefined) return Promise.resolve(undefined);
+		if (s.picture?.version === s.version) return Promise.resolve(s.picture);
+		const run = s.queue
+			.catch(() => {})
+			.then(async () => {
+				if (this.sessions.get(key) !== s) return undefined;
+				if (s.picture?.version === s.version) return s.picture;
+				const version = s.version;
+				const png = await within(s.page.screenshot({ fullPage: false, type: "png", timeout: READ_TIMEOUT_MS }), READ_TIMEOUT_MS + 1_000).catch(() => undefined);
+				if (png === undefined) return s.picture;
+				s.picture = { version, png };
+				return s.picture;
+			});
+		s.queue = run;
+		return run;
+	}
+
 	async closeAll(): Promise<void> {
 		await Promise.all([...this.sessions.values()].map((s) => this.end(s, "chiusa")));
 	}
@@ -429,7 +470,7 @@ export class BrowseSessions {
 			context.on("page", (other) => {
 				if (other !== page) void other.close().catch(() => {});
 			});
-			this.sessions.set(key, { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve() });
+			this.sessions.set(key, { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined });
 			this.closed.delete(key);
 		} catch (error) {
 			await context.close().catch(() => {});
@@ -473,6 +514,7 @@ export class BrowseSessions {
 					throw new BrowseError("la pagina non risponde ed è stata chiusa: riaprila con web_browse, o leggila con web_read");
 				} finally {
 					s.busy = false;
+					s.version += 1;
 					s.used = Date.now();
 					if (this.sessions.get(key) === s) {
 						s.timer = setTimeout(() => void this.end(s, "chiusa dopo qualche minuto senza azioni"), this.limits.idleMs);

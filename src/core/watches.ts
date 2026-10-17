@@ -245,7 +245,7 @@ export async function readPage(url: string, guard: Pick<WebFetchOptions, "hostAl
 	try {
 		checkedUrl(url, guard);
 	} catch {
-		throw new WatchError("il sito non è tra quelli che questa istanza può leggere");
+		throw new WatchError("il sito non è tra quelli che questo agente può leggere");
 	}
 	let page;
 	try {

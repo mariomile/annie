@@ -82,7 +82,7 @@ async function boot() {
 	};
 	const chat = async () => {
 		const thread = (await api("/api/instances/annie/threads", {})).thread;
-		return async (text: string): Promise<string> => {
+		return Object.assign(async (text: string): Promise<string> => {
 			const answers = async () => ((await api(`/api/instances/annie/threads/${thread.id}`)).entries as { from: string; text?: string }[]).filter((e) => e.from === "annie");
 			const before = (await answers()).length;
 			await api(`/api/instances/annie/threads/${thread.id}/messages`, { text });
@@ -92,9 +92,9 @@ async function boot() {
 				await new Promise((r) => setTimeout(r, 30));
 			}
 			throw new Error("no reply");
-		};
+		}, { threadId: thread.id as string });
 	};
-	return { annie, chat };
+	return { annie, chat, api, base, cookie };
 }
 
 /** The number of the element whose line contains `text`, in a view. */
@@ -244,4 +244,41 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		const found = await say('/tool web_browse {"find":"voce 149"}');
 		expect(found).toMatch(/\[1\] link: Voce 149 → /);
 	}, 60_000);
+
+	it("the panel next to the chat watches the agente's browser and drives it, under the same site list (ADR 0044)", async () => {
+		const s = await site();
+		const { annie, chat, api, base, cookie } = await boot();
+		const say = await chat();
+		const panel = `/api/instances/annie/threads/${say.threadId}/browser`;
+		expect((await api(panel)).browser).toEqual({ open: false });
+		// The person opens a page the owner did not allow: refused with Annie's words, nothing opens.
+		const refused = await api(panel, { url: `${s.base}/` });
+		expect(refused.status).toBe(400);
+		expect(refused.error).toBe("127.0.0.1 non è tra i siti che questo agente può leggere");
+		const policy = (await annie.runtime.registry.getInstance("default", "annie")).egress;
+		await annie.runtime.registry.setEgress("default", "annie", { ...policy, web: ["127.0.0.1"] });
+
+		await say(`/tool web_browse {"url":"${s.base}/"}`);
+		const watched = (await api(panel)).browser;
+		expect(watched).toMatchObject({ open: true, title: "Comune", url: `${s.base}/` });
+		const png = await fetch(`${base}${panel}.png`, { headers: { cookie, "x-annie": "1" } });
+		expect(png.headers.get("content-type")).toBe("image/png");
+		expect(Buffer.from(await png.arrayBuffer()).subarray(1, 4).toString()).toBe("PNG");
+		// Watching changes nothing on the page: the agente's numbers still work.
+		const view = await say("/tool web_browse {}");
+		expect(await say(`/tool web_click {"element":${ref(view, "Mostra orari")}}`)).toContain("dalle 9 alle 13");
+
+		// The person drives: the agente sees the page they opened.
+		const opened = (await api(panel, { url: `${s.base}/due` })).browser;
+		expect(opened).toMatchObject({ open: true, title: "Due" });
+		expect(opened.version).toBeGreaterThan(watched.version);
+		expect(await say("/tool web_browse {}")).toContain("Seconda pagina del sito");
+		expect((await api(panel, { back: true })).browser).toMatchObject({ title: "Comune" });
+		expect((await annie.runtime.audit("default").read()).filter((e) => e.type === "web.browser.opened").map((e) => e.host)).toEqual([new URL(s.base).host]);
+
+		// Someone else's conversation has no browser to watch.
+		const other = (await api("/api/instances/annie/threads", {})).thread;
+		expect((await api(`/api/instances/annie/threads/${other.id}/browser`)).browser).toEqual({ open: false });
+		expect((await api("/api/instances/annie/threads/nope/browser")).status).toBe(404);
+	}, 90_000);
 });

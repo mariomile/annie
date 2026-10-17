@@ -247,6 +247,30 @@ pre.code { margin: 0; padding: 12px 14px; background: var(--bg-2); border: 1px s
 /* ---------- chat ---------- */
 main.is-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
 .conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-split { flex: 1; min-height: 0; display: flex; }
+.chat-split > .conversation { min-width: 0; }
+.browser-toggle { position: absolute; top: 12px; right: 16px; z-index: 5; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg-2); font: inherit; font-size: 13px; cursor: pointer; box-shadow: var(--shadow-sm); }
+.browser-toggle:hover { color: var(--fg); border-color: var(--border-2); }
+.browser-toggle[aria-pressed="true"] { color: var(--fg); background: var(--hover); }
+main.is-chat { position: relative; }
+.browser-panel { flex: 0 0 min(46%, 640px); display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--bg); padding: 52px 14px 14px; gap: 10px; }
+.browser-panel[hidden] { display: none; }
+.browser-head { display: flex; align-items: center; gap: 8px; color: var(--fg-2); font-size: 13px; }
+.browser-head .page-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: 500; }
+.browser-bar { display: flex; gap: 6px; }
+.browser-bar .address { flex: 1; min-width: 0; padding: 7px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg); font: 13px var(--mono); }
+.icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; border: 0; border-radius: 8px; background: none; color: var(--fg-2); cursor: pointer; }
+.icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.icon-btn:disabled { opacity: 0.4; cursor: default; }
+.browser-view { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.browser-view .screen { display: block; width: 100%; height: auto; }
+.browser-panel.loading .browser-view { opacity: 0.6; }
+.browser-empty { padding: 28px 22px; color: var(--fg-2); line-height: 1.6; }
+.browser-empty p { margin: 0 0 8px; }
+.browser-note { margin: 0; font-size: 12px; color: var(--fg-3); }
+@media (max-width: 860px) {
+	.browser-panel { position: absolute; inset: 0; z-index: 4; flex-basis: auto; border-left: 0; }
+}
 .transcript { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 22px; padding: 40px max(20px, calc((100% - var(--column)) / 2)) 24px; scroll-behavior: smooth; }
 .dock { padding: 0 max(16px, calc((100% - var(--column)) / 2)) 18px; background: linear-gradient(to bottom, transparent, var(--bg) 18px); }
 .msg { max-width: 100%; }

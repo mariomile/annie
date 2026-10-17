@@ -66,6 +66,9 @@ const ICONS = {
 	send: ["M12 19V5", "m6 11 6-6 6 6"],
 	more: ["M6 12h.01M12 12h.01M18 12h.01"],
 	account: ["M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M4 21a8 8 0 0 1 16 0"],
+	browser: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M3 12h18", "M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z"],
+	back: ["M19 12H5", "m11 6-6 6 6 6"],
+	close: ["M6 6l12 12M18 6 6 18"],
 };
 
 /** Inline stroke icon from the fixed table above (no markup from outside). */
@@ -1248,6 +1251,8 @@ async function viewChat(main) {
 	const conversation = h("section.conversation");
 	mount(main, conversation);
 	if (!threadId) return landing(inst, conversation);
+	const browser = browserPanel(inst, threadId);
+	mount(main, h("div.chat-split", conversation, browser.el), browser.toggle);
 	state.unread.delete(threadId);
 	renderRail();
 	const { entries, model } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
@@ -1348,6 +1353,88 @@ async function viewChat(main) {
 		void box.submit();
 	}
 	box.input.focus();
+}
+
+/**
+ * The conversation's browser, next to the chat (ADR 0044): the page the agente has open with
+ * web_browse, refreshed after each of its actions, and an address bar to open a page for it.
+ * It opens by itself the first time the agente starts browsing in this conversation.
+ */
+function browserPanel(inst, threadId) {
+	const base = `/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/browser`;
+	const seenKey = `annie.browser.${threadId}`;
+	let version = -1;
+	let wasOpen = false;
+	const address = h("input.address", { type: "text", inputmode: "url", placeholder: "Indirizzo di un sito consentito", "aria-label": "Indirizzo", spellcheck: "false", autocomplete: "off" });
+	const back = h("button.icon-btn", { type: "button", title: "Indietro", "aria-label": "Indietro", disabled: true }, icon("back"));
+	const title = h("span.page-title", "Browser");
+	const screen = h("img.screen", { alt: "", hidden: true });
+	const empty = h("div.browser-empty", h("p", `Qui vedi il browser che ${inst.name} usa in questa conversazione, mentre lavora.`), h("p.muted", `Apri una pagina qui sopra e chiedigli di leggerla, oppure chiedigli di cercare qualcosa sul web.`));
+	const el = h(
+		"aside.browser-panel",
+		{ hidden: true, "aria-label": "Browser" },
+		h("div.browser-head", icon("browser"), title, h("button.icon-btn", { type: "button", title: "Chiudi", "aria-label": "Chiudi il browser", onclick: () => show(false) }, icon("close"))),
+		h("form.browser-bar", { onsubmit: (event) => { event.preventDefault(); void go({ url: address.value }); } }, back, address),
+		h("div.browser-view", screen, empty),
+		h("p.browser-note", "Solo i siti che l'owner ha consentito. Il browser legge soltanto: un modulo si invia solo con un'approvazione."),
+	);
+	const toggle = h("button.browser-toggle", { type: "button", title: "Browser della conversazione", "aria-pressed": "false", onclick: () => show(el.hidden) }, icon("browser"), h("span", "Browser"));
+	const show = (on) => {
+		el.hidden = !on;
+		toggle.setAttribute("aria-pressed", String(on));
+		store(seenKey, "1");
+		if (on) void refresh();
+	};
+	const draw = (state) => {
+		back.disabled = !state.open;
+		if (!state.open) {
+			screen.hidden = true;
+			empty.hidden = false;
+			title.textContent = state.closed ? `Pagina ${state.closed}` : "Browser";
+			version = -1;
+			return;
+		}
+		// Chromium's own page for one that did not load: said plainly, the chat has the reason.
+		const failed = state.url.startsWith("chrome-error:");
+		title.textContent = failed ? "La pagina non si è aperta" : state.title || new URL(state.url).host;
+		if (document.activeElement !== address && !failed) address.value = state.url;
+		if (state.version !== version && !el.hidden) {
+			version = state.version;
+			screen.src = `${base}.png?v=${state.version}`;
+			screen.alt = `La pagina ${state.title || state.url}`;
+			screen.hidden = false;
+			empty.hidden = true;
+		}
+	};
+	const refresh = async () => {
+		const { browser } = await api(base).catch(() => ({ browser: undefined }));
+		if (browser === undefined) return;
+		// The agente opened a page: the panel shows it, once per conversation unless closed before.
+		if (browser.open && !wasOpen && el.hidden && store(seenKey) !== "1") show(true);
+		wasOpen = browser.open;
+		draw(browser);
+	};
+	const go = async (body) => {
+		if (body.url !== undefined && !body.url.trim()) return;
+		el.classList.add("loading");
+		try {
+			const { browser } = await api(base, { method: "POST", body });
+			draw(browser);
+			address.blur();
+		} catch (error) {
+			toast(error.message, true);
+		} finally {
+			el.classList.remove("loading");
+		}
+	};
+	back.onclick = () => void go({ back: true });
+	// While the chat is on screen: a light question every few seconds, a picture only after a change.
+	const timer = setInterval(() => {
+		if (!el.isConnected) return clearInterval(timer);
+		if (document.visibilityState === "visible") void refresh();
+	}, 2500);
+	void refresh();
+	return { el, toggle };
 }
 
 /** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
