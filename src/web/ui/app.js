@@ -823,6 +823,7 @@ function computerCard(inst, allowed, problem) {
 
 /** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
 function desktopCard(inst, allowed, desktop) {
+	if (!desktop.available) return h("div.card.pad", h("h3", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {
 		try {
@@ -840,15 +841,17 @@ function desktopCard(inst, allowed, desktop) {
 		});
 	const network =
 		desktop.network === "internet"
-			? "Lo schermo arriva a internet, e il suo browser non segue l'elenco dei siti consentiti."
+			? "Arriva a internet, e il suo browser non segue l'elenco dei siti consentiti."
 			: desktop.network === "none"
-				? "Lo schermo non ha internet: usa solo le sue applicazioni."
-				: "Lo schermo gira altrove ed è lo stesso per tutti gli agenti che lo usano.";
+				? "Non ha internet: usa solo i suoi programmi."
+				: "Gira altrove ed è lo stesso per tutti gli agenti che lo usano. Se arriva a internet, il suo browser non segue l'elenco dei siti consentiti.";
+	const many = desktop.shared ? "" : " Se più agenti usano lo schermo insieme, quello usato meno di recente si chiude per fare posto.";
 	return h(
 		"div.card.pad",
 		h("h3", "Schermo"),
-		h("p.muted", `Annie ha un desktop Linux suo, con Firefox: guarda lo schermo, clicca, scrive e apre programmi. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.`),
-		desktop.problem ? h("p.warn", `Lo schermo non è disponibile: ${desktop.problem}.`) : null,
+		h("p.muted", `Annie ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
+		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
+		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
 		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo schermo")),
 		desktop.shared ? null : h("div.actions", h("button.btn.ghost", { onclick: reset }, "Riavvia lo schermo")),
 	);
@@ -3220,7 +3223,7 @@ async function viewSettings(main) {
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				anchor("agenti", agentsCard(inst, settings)),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
-				desktop.available ? anchor("schermo", desktopCard(inst, (settings.egress.connectors ?? []).includes("schermo"), desktop)) : null,
+				anchor("schermo", desktopCard(inst, (settings.egress.connectors ?? []).includes("schermo"), desktop)),
 			),
 			h(
 				"div.stack",

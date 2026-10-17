@@ -1,4 +1,4 @@
-import { DESKTOP_LIMITS, DESKTOP_TOOLS, DesktopError, type DesktopResult } from "../core/desktop.ts";
+import { DESKTOP_LIMITS, DESKTOP_TOOLS, DesktopError, type DesktopResult, fenced } from "../core/desktop.ts";
 import { imageProblem, imageType } from "../core/images.ts";
 import type { McpHttpClient } from "./mcp-client.ts";
 
@@ -17,7 +17,8 @@ export class Spaces {
 			.flatMap((c) => (c.type === "text" && typeof c.text === "string" ? [c.text] : []))
 			.join("\n")
 			.trim();
-		if (result.isError) throw new DesktopError(`lo schermo ha risposto: ${text.slice(0, 300) || "errore senza spiegazione"}`);
+		// The desktop's words can quote the screen: fenced as data, like everything it says.
+		if (result.isError) throw new DesktopError(text === "" ? "lo schermo ha risposto con un errore, senza spiegazione" : `lo schermo ha risposto con un errore:\n${fenced(text.slice(0, 300))}`);
 		const images = result.content.flatMap((c) => {
 			if (c.type !== "image" || typeof c.data !== "string") return [];
 			const data = Buffer.from(c.data, "base64");

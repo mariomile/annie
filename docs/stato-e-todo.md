@@ -80,8 +80,8 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Agenti: più agenti per tenant, ognuno con nome, emoji, compito e tono, oltre a memoria, task, file e bot suoi; pagina Agenti e nuovo agente da un modello ([ADR 0041](adr/0041-agenti.md))
 - [x] Agenti che si scrivono: un agente chiede a un altro con `agent_message`, se l'owner lo permette, e la risposta torna nella chat di partenza ([ADR 0042](adr/0042-agenti-che-si-scrivono.md))
 - [x] Schermo: un desktop Linux con Firefox per agente, guidato con Cua (guarda, clicca, scrive, tasti, scorre, apre programmi e indirizzi); senza internet di default, l'owner lo accende in Impostazioni ([ADR 0045](adr/0045-schermo-cua.md)). Serve `ANNIE_DESKTOP` e l'immagine di Cua ([chiavi](chiavi.md) §18)
-- [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con i limiti di sicurezza, tempo di avvio, indirizzo del container su una rete interna, strumenti di `cua-spacesd` 0.3.0)
-- [ ] Schermo: vista dal vivo nella console, per vedere quello che Annie fa (il VNC c'è nel container ma non è pubblicato)
+- [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
+- [ ] Schermo: vista dal vivo nella console e ultima schermata visibile all'owner, per vedere quello che Annie fa (il VNC c'è nel container ma non è pubblicato)
 - [ ] Cancellare un agente dalla console ([ADR 0041](adr/0041-agenti.md), «Da fare»)
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 

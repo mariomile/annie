@@ -1,3 +1,4 @@
+import { PerKey } from "../computer/queue.ts";
 import { DesktopError, type DesktopProvider, type DesktopResult } from "../core/desktop.ts";
 import { McpHttpClient } from "./mcp-client.ts";
 import { Spaces } from "./spaces.ts";
@@ -19,6 +20,8 @@ export class RemoteDesktopProvider implements DesktopProvider {
 	readonly network = "unknown";
 	readonly shared = true;
 	private readonly spaces: Spaces;
+	/** One screen: one call at a time, whichever agente makes it, so two actions never interleave. */
+	private readonly lock = new PerKey();
 	private readonly base: string;
 	private readonly fetch: typeof fetch;
 
@@ -29,7 +32,7 @@ export class RemoteDesktopProvider implements DesktopProvider {
 	}
 
 	call(_key: string, tool: string, args: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<DesktopResult> {
-		return this.spaces.call(tool, args, signal);
+		return this.lock.run("screen", () => this.spaces.call(tool, args, signal));
 	}
 
 	async reset(_key: string): Promise<void> {
@@ -38,7 +41,7 @@ export class RemoteDesktopProvider implements DesktopProvider {
 
 	async check(): Promise<string | undefined> {
 		try {
-			const health = await this.fetch(`${this.base}/health`, { signal: AbortSignal.timeout(10_000) });
+			const health = await this.fetch(`${this.base}/health`, { signal: AbortSignal.timeout(10_000), redirect: "error" });
 			await health.body?.cancel();
 			if (!health.ok) return `lo schermo risponde ${health.status} su /health: controlla ANNIE_DESKTOP_URL`;
 		} catch {

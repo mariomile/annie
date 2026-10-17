@@ -297,6 +297,7 @@ export function loadDesktopConfig(env: Readonly<Record<string, string | undefine
 	if (network !== undefined && kind !== "docker") throw new ConfigError("ANNIE_DESKTOP_NETWORK set without ANNIE_DESKTOP=docker");
 	if (remote.length > 0 && kind !== "remote") throw new ConfigError(`${remote.join(", ")} set without ANNIE_DESKTOP=remote`);
 	if (kind === undefined) return undefined;
+	if (nonEmpty(env.ANNIE_CELL_SECRET) !== undefined) throw new ConfigError("ANNIE_DESKTOP is not for a cell of Annie Cloud: a cell has no Docker socket, and a shared screen would mix tenants");
 	if (kind === "docker") {
 		if (network !== undefined && network !== "none" && network !== "internet") throw new ConfigError("ANNIE_DESKTOP_NETWORK: none (default, no internet) or internet");
 		return { kind, socketPath: nonEmpty(env.ANNIE_DOCKER_SOCKET) ?? "/var/run/docker.sock", network: network === "internet" ? "internet" : "none" };

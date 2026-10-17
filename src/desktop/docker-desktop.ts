@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { PerKey } from "../computer/queue.ts";
-import { DesktopError, type DesktopProvider, type DesktopResult } from "../core/desktop.ts";
+import { DESKTOP_READ_TOOLS, DesktopError, type DesktopProvider, type DesktopResult } from "../core/desktop.ts";
 import { McpHttpClient } from "./mcp-client.ts";
 import { Spaces } from "./spaces.ts";
 
@@ -74,8 +74,10 @@ export class DockerDesktopProvider implements DesktopProvider {
 			try {
 				result = await spaces.call(tool, args, signal);
 			} catch (error) {
-				// A desktop stopped behind our back (a restart of Docker) is started again, once.
-				if (error instanceof DesktopError || signal?.aborted === true || !unreachable(error)) throw error;
+				// A desktop stopped behind our back (a restart of Docker) is started again, once. A look is
+				// asked again after any lost connection; an action only when it surely never arrived, so
+				// a click that went through is never made twice.
+				if (error instanceof DesktopError || signal?.aborted === true || !(DESKTOP_READ_TOOLS.includes(tool) ? unreachable(error) : refused(error))) throw error;
 				this.forget(key);
 				spaces = await this.launch(key);
 				result = await spaces.call(tool, args, signal);
@@ -105,18 +107,22 @@ export class DockerDesktopProvider implements DesktopProvider {
 		}
 	}
 
-	/** At boot: desktops left running by a previous run of Annie are stopped; they start again at their next action. */
+	/**
+	 * At boot: desktops left running by a previous run of Annie are stopped, those already stopped
+	 * removed (nothing in them is kept: a desktop starts afresh). They start again at their next action.
+	 */
 	async stopLeftovers(): Promise<number> {
 		const filters = encodeURIComponent(JSON.stringify({ label: [LABEL] }));
-		const list = ((await this.api("GET", `/containers/json?filters=${filters}`, undefined, [200])) ?? []) as { Labels?: Record<string, string> }[];
-		let stopped = 0;
+		const list = ((await this.api("GET", `/containers/json?all=1&filters=${filters}`, undefined, [200])) ?? []) as { Labels?: Record<string, string>; State?: string }[];
+		let handled = 0;
 		for (const container of list) {
 			const key = container.Labels?.[LABEL];
 			if (key === undefined || !KEY.test(key) || this.running.has(key)) continue;
-			await this.locks.run(key, () => this.stop(key));
-			stopped += 1;
+			if (container.State === "running") await this.locks.run(key, () => this.stop(key));
+			else await this.locks.run(key, () => this.api("DELETE", `/containers/${name(key)}?force=true`, undefined, [204, 404]));
+			handled += 1;
 		}
-		return stopped;
+		return handled;
 	}
 
 	async close(): Promise<void> {
@@ -156,12 +162,14 @@ export class DockerDesktopProvider implements DesktopProvider {
 		const known = this.running.get(key);
 		if (known !== undefined) return known.spaces;
 		// Room for one more: the desktop unused the longest stops (not awaited: it waits for its own lock).
+		const max = this.options.maxRunning ?? 4;
 		for (const other of [...this.running.keys()]) {
-			if (this.running.size < (this.options.maxRunning ?? 4)) break;
+			if (this.running.size < max) break;
 			if (this.locks.has(other)) continue;
 			this.forget(other);
 			void this.locks.run(other, () => this.stop(other));
 		}
+		if (this.running.size >= max) throw new DesktopError(`troppi schermi accesi su questo server (${max}), tutti al lavoro: riprova tra un minuto`);
 		await this.ensureNetwork();
 		const spec = this.spec();
 		const hash = createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 16);
@@ -216,9 +224,11 @@ export class DockerDesktopProvider implements DesktopProvider {
 		this.networkReady ??= (async () => {
 			const network = this.networkName();
 			const internal = this.network === "none";
-			const found = (await this.api("GET", `/networks/${network}`, undefined, [200, 404])) as { Internal?: boolean } | undefined;
+			const found = (await this.api("GET", `/networks/${network}`, undefined, [200, 404])) as { Internal?: boolean; Options?: Record<string, string> } | undefined;
 			if (found !== undefined) {
 				if ((found.Internal === true) !== internal) throw new Error(`desktop: the Docker network ${network} ${internal ? "reaches the internet" : "is internal"}, and ANNIE_DESKTOP_NETWORK says ${internal ? "no internet" : "internet"}: remove it or fix it`);
+				// Made by someone else (Docker Compose, so that Annie can join it): desktops may then reach each other.
+				if (found.Options?.["com.docker.network.bridge.enable_icc"] !== "false") this.options.log?.(`desktop: warning: the Docker network ${network} lets containers talk to each other (com.docker.network.bridge.enable_icc is not "false"): one agente's screen can reach another's, kept apart only by their tokens and VNC passwords`);
 				return;
 			}
 			// No traffic between containers: one agente's desktop cannot reach another's.
@@ -251,8 +261,12 @@ export class DockerDesktopProvider implements DesktopProvider {
 				MemorySwap: memory,
 				NanoCpus: Math.round((this.options.cpus ?? 2) * 1e9),
 				PidsLimit: 1024,
-				// Docker's default capabilities, less those a desktop has no use for.
-				CapDrop: ["NET_RAW", "MKNOD", "AUDIT_WRITE", "SETFCAP", "NET_BIND_SERVICE"],
+				// No capability but those a root supervisord needs to start the desktop as its user and
+				// own its files (to verify in the live test: ADR 0045). No NET_ADMIN: Docker gives the address.
+				CapDrop: ["ALL"],
+				CapAdd: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID", "KILL"],
+				// An init as pid 1 reaps what the desktop's programs leave behind.
+				Init: true,
 				SecurityOpt: ["no-new-privileges:true"],
 				RestartPolicy: { Name: "no" },
 				LogConfig: { Type: "none", Config: {} },
@@ -302,10 +316,20 @@ function name(key: string): string {
 	return `annie-desktop-${key}`;
 }
 
-/** The daemon did not answer at all (connection refused or reset): its container is not running. */
+/** The connection to the daemon was lost (refused, reset, cut): its container may not be running. */
 function unreachable(error: unknown): boolean {
-	const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
-	return /fetch failed|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up/.test(`${message(error)} ${cause}`);
+	return /fetch failed|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up/.test(`${message(error)} ${causeOf(error)}`);
+}
+
+/** The daemon refused the connection: the request never reached it. */
+function refused(error: unknown): boolean {
+	return /ECONNREFUSED/.test(causeOf(error));
+}
+
+function causeOf(error: unknown): string {
+	const cause = error instanceof Error ? error.cause : undefined;
+	if (!(cause instanceof Error)) return "";
+	return `${(cause as { code?: unknown }).code ?? ""} ${cause.message}`;
 }
 
 function message(error: unknown): string {

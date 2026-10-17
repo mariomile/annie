@@ -247,7 +247,7 @@ Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, c
 4. In alternativa a Docker, uno schermo che fai girare altrove: `ANNIE_DESKTOP=remote`, `ANNIE_DESKTOP_URL` (l'indirizzo del demone di Cua, in https, per esempio `https://schermo.example:3211`) e `ANNIE_DESKTOP_TOKEN` (il `CUA_ENV_TOKEN` che hai dato a quel container). È **uno schermo solo per tutti gli agenti** che lo usano.
 5. `pnpm annie check` dice se Docker risponde, se il server è amd64 e se l'immagine c'è, oppure se lo schermo remoto risponde e accetta il token. Lo stesso controllo compare nella console (Impostazioni, Schermo) e nel log all'avvio.
 6. Poi, in ogni agente che deve usarlo: Impostazioni → **Schermo** → spunta «Consenti ad Annie di usare il suo schermo».
-7. Domini: nessuno per Annie. Solo per scaricare l'immagine, una volta: `registry-1.docker.io` (Docker Hub).
+7. Domini: con Docker nessuno per Annie; solo per scaricare l'immagine, una volta, `registry-1.docker.io` (Docker Hub). Con uno schermo altrove, l'unico dominio è quello di `ANNIE_DESKTOP_URL`.
 
 ## Domini da consentire nella sessione cloud
 
@@ -268,7 +268,7 @@ Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, c
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
 | Immagini | `api.openai.com` (o il servizio scelto) |
 | Telefono | `api.twilio.com` (o la regione scelta) |
-| Schermo (solo per scaricare l'immagine di Cua) | `registry-1.docker.io` |
+| Schermo | `registry-1.docker.io` (con Docker, solo per scaricare l'immagine di Cua), o il dominio di `ANNIE_DESKTOP_URL` |
 | Connettori in un clic | `mcp.notion.com`, `mcp.linear.app`, `mcp.monday.com`, `mcp.atlassian.com`, `mcp.stripe.com`, `api.githubcopilot.com`, `mcp.sentry.dev`, `mcp.supabase.com`, `mcp.context7.com`, `huggingface.co` (e i loro server di autorizzazione) |
 
 ## Cosa succede dopo

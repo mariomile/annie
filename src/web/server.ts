@@ -817,9 +817,13 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 
 	// --- owner: the agente's screen (ADR 0045) ---
+	// Kept for 30 seconds: Impostazioni asks at every visit, and the Docker check reads the image list.
+	let desktopCheck: { at: number; problem: Promise<string | undefined> } | undefined;
 	route("GET", "/api/desktop", "owner", async () => {
 		if (options.desktop === undefined) return { available: false };
-		const problem = await options.desktop.check();
+		const desktop = options.desktop;
+		if (desktopCheck === undefined || Date.now() - desktopCheck.at > 30_000) desktopCheck = { at: Date.now(), problem: desktop.check() };
+		const problem = await desktopCheck.problem;
 		return { available: true, network: options.desktop.network, shared: options.desktop.shared, ...(problem === undefined ? {} : { problem }) };
 	});
 	route("PUT", "/api/instances/:id/desktop-allowed", "owner", async ({ params, req }) => {
@@ -833,6 +837,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		const others = (record.egress.connectors ?? []).filter((c) => c !== DESKTOP_CONNECTOR);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, DESKTOP_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "desktop.allowed", instanceId: id, allowed: body.allowed });
+		// The screen's tools are offered only while it is on: the agente opens again with or without them.
+		await runtime.reopen(tenantId, id);
 		return { allowed: body.allowed };
 	});
 	route("DELETE", "/api/instances/:id/desktop", "owner", async ({ params }) => {

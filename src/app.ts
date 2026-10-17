@@ -27,7 +27,7 @@ import { type ComputerProvider, computerKey } from "./core/computer.ts";
 import { createComputerTools } from "./core/tools/computer-tools.ts";
 import { computerLabel, createComputerProvider } from "./computer/create.ts";
 import { DockerComputerProvider } from "./computer/docker-computer.ts";
-import type { DesktopProvider } from "./core/desktop.ts";
+import { DESKTOP_CONNECTOR, type DesktopProvider } from "./core/desktop.ts";
 import { createDesktopTools } from "./core/tools/desktop-tools.ts";
 import { createDesktopProvider, desktopLabel } from "./desktop/create.ts";
 import { DockerDesktopProvider } from "./desktop/docker-desktop.ts";
@@ -377,6 +377,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const desktop: DesktopProvider | undefined = options.desktop ?? madeDesktop;
 	if (madeDesktop !== undefined && config.desktop !== undefined) {
 		const label = desktopLabel(config.desktop);
+		if (config.desktop.kind === "docker") {
+			log(
+				`desktop: warning: the screens' browser can reach this server through the Docker network's gateway${config.desktop.network === "internet" ? ", the internet and the local network" : ""}: Annie's console and webhooks and every service listening on 0.0.0.0. Keep those on 127.0.0.1 or behind a firewall (runbook 6n)`,
+			);
+		}
 		void madeDesktop.check().then((problem) => log(problem === undefined ? `desktop: ${label} ready` : `desktop: not ready: ${problem}`));
 	}
 	if (madeDesktop instanceof DockerDesktopProvider) {
@@ -483,6 +488,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 				...googleTools(record),
 				...createWebTools({
+					desktop: desktop !== undefined && (record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR),
 					policy: policyOf(record),
 					workspace: runtime.workspace(record.tenantId, record.id),
 					chromium,
@@ -550,7 +556,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							},
 							log,
 						})),
-				...(desktop === undefined
+				// Offered only where the owner turned the screen on (the switch reopens the agente).
+				...(desktop === undefined || !(record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR)
 					? []
 					: createDesktopTools({
 							desktop,
