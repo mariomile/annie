@@ -528,7 +528,7 @@ function speechCard(inst, host, allowed, understood) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/speech`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie risponde a voce a chi le manda un vocale" : "Risposte a voce spente per questo agente");
+			toast(toggle.checked ? `${inst.name} risponde a voce a chi manda un vocale` : "Risposte a voce spente per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -550,7 +550,7 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/images`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può creare immagini" : "Immagini spente per questo agente");
+			toast(toggle.checked ? `${inst.name} può creare immagini` : "Immagini spente per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -698,7 +698,7 @@ function searchCard(inst, host, allowed, hosts) {
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/search`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può cercare sul web" : "Ricerca sul web spenta per questo agente");
+			toast(toggle.checked ? `${inst.name} può cercare sul web` : "Ricerca sul web spenta per questo agente");
 			render();
 		} catch (error) {
 			toggle.checked = !toggle.checked;
@@ -1372,7 +1372,7 @@ function landing(inst, conversation) {
 			"div.welcome",
 			inst.emoji ? h("span.mark.face", { "aria-hidden": "true" }, inst.emoji) : h("img.mark", { src: "/icon.svg", alt: "", width: "40", height: "40" }),
 			h("h2", first && first !== "Owner" ? `${hello}, ${first}.` : `${hello}.`),
-			h("p", state.instances.length > 1 ? `${inst.name}${inst.tagline ? `: ${inst.tagline}` : ""}. Di cosa hai bisogno?` : "Di cosa hai bisogno?"),
+			h("p", state.instances.length > 1 ? `${inst.name}${inst.tagline ? `: ${inst.tagline.replace(/[.!?…]+$/, "")}` : ""}. Di cosa hai bisogno?` : "Di cosa hai bisogno?"),
 			box.el,
 			h(
 				"div.hints.ideas",
@@ -2291,7 +2291,7 @@ async function viewStart(main) {
 		head(
 			agentLabel(inst),
 			h("h1", "Primi passi"),
-			`${done} di ${steps.length} fatti. Ogni passo rende Annie più utile; li puoi fare in qualsiasi ordine.`,
+			`${done} di ${steps.length} fatti. Ogni passo rende ${inst.name} più utile; li puoi fare in qualsiasi ordine.`,
 			h(
 				"button.btn.small.ghost",
 				{
@@ -2408,11 +2408,11 @@ async function viewTasks(main) {
 		}
 	};
 	mount(main, 
-		head(agentLabel(inst), h("h1", "Task e sentinelle"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione, e pagine che controlla per te. Il risultato arriva nella chat scelta."),
+		head(agentLabel(inst), h("h1", "Task e sentinelle"), `Istruzioni che ${inst.name} esegue da solo, una volta o a ripetizione, e pagine che controlla per te. Il risultato arriva nella chat scelta.`),
 		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
-			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), "Creane uno qui accanto, oppure chiedilo ad Annie in chat.")),
+			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
 			h(
 				"div.card.pad",
 				h("h3", "Nuovo task"),
@@ -2595,7 +2595,7 @@ async function viewFiles(main) {
 	});
 	const total = files.reduce((n, f) => n + f.size, 0);
 	mount(main, 
-		head(agentLabel(inst), h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che le date (legge anche PDF, Word, Excel e PowerPoint). ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
+		head(agentLabel(inst), h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che riceve (legge anche PDF, Word, Excel e PowerPoint). ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
 		h(
 			"div.card",
 			files.length
@@ -2675,10 +2675,10 @@ async function viewMemory(main) {
 		return h("div.pad", h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text), h("button.btn", { onclick: save }, "Ricorda"));
 	};
 	mount(main, 
-		head(agentLabel(inst), h("h1", "Memoria"), "Quello che Annie ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva ad Annie."),
+		head(agentLabel(inst), h("h1", "Memoria"), `Quello che ${inst.name} ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva a ${inst.name}.`),
 		h(
 			"div.grid-2",
-			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, "Annie non ricorda ancora niente di te. Puoi dirle «ricordati che…» in chat, o aggiungerlo qui."), add(false)),
+			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
 			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
@@ -2850,7 +2850,7 @@ async function viewConnectors(main) {
 		);
 	});
 	mount(main, 
-		head(agentLabel(inst), h("h1", "Connettori"), "Collegano Annie agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.", h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
+		head(agentLabel(inst), h("h1", "Connettori"), `Collegano ${inst.name} agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.`, h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
 		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
 		catalogGallery(inst, catalog, oauth, redirectUrl, new Set(connectors.map((c) => c.id))),
 	);
@@ -3005,7 +3005,7 @@ function agentForm() {
 			await refreshInstances();
 			state.instance = state.instances.find((i) => i.id === instance.id) ?? state.instance;
 			store("annie.instance", state.instance.id);
-			toast(`${agentLabel(instance)} è pronto`);
+			toast(`Agente ${agentLabel(instance)} creato`);
 			await refreshSetup();
 			go("chat");
 			render();
@@ -3022,7 +3022,7 @@ function agentForm() {
 		h("label.field", h("span", "Cosa fa, in una riga"), tagline),
 		h("label.field", h("span", "Tono"), tone),
 		h("label.field", h("span", "Chi lo usa e per cosa"), instructions),
-		h("label.field", h("span", "ID"), id, h("small", "Minuscole, cifre, - e _. Non si cambia più.")),
+		h("details.advanced", h("summary", "Avanzate"), h("label.field", h("span", "ID"), id, h("small", "Lo usa l'indirizzo dell'agente: minuscole, cifre, - e _. Non si cambia più."))),
 		h("div.actions", h("button.btn.accent", { onclick: create }, "Crea agente"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 	);
 	dialog.addEventListener("close", () => dialog.remove());
@@ -3050,7 +3050,7 @@ async function viewAgents(main) {
 			h(
 				"div.agent-body",
 				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
-				h("p", a.tagline ?? "Nessuna descrizione"),
+				a.tagline ? h("p", a.tagline) : null,
 				h("p.muted.small", [a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web").join(", ")].filter(Boolean).join(" · ")),
 				h("p.muted.small", [plural(a.schedules, "task", "task"), plural(a.watches, "sentinella", "sentinelle"), plural(a.memories, "ricordo", "ricordi")].join(" · ")),
 			),
@@ -3186,7 +3186,7 @@ function telegramCard(inst, t) {
 		}
 	};
 	const disconnect = () =>
-		confirmDialog("Scollegare il bot?", "Annie smette di rispondere su Telegram per questo agente. Il token viene cancellato.", "Scollega", async () => {
+		confirmDialog("Scollegare il bot?", `${inst.name} smette di rispondere su Telegram. Il token viene cancellato.`, "Scollega", async () => {
 			await api(`/api/instances/${inst.id}/telegram`, { method: "DELETE" });
 			toast("Bot scollegato");
 			render();
@@ -3235,7 +3235,7 @@ function whatsappCard(inst, w) {
 		}
 	};
 	const disconnect = () =>
-		confirmDialog("Scollegare WhatsApp?", "Annie smette di rispondere su WhatsApp per questo agente. Token e app secret vengono cancellati.", "Scollega", async () => {
+		confirmDialog("Scollegare WhatsApp?", `${inst.name} smette di rispondere su WhatsApp. Token e app secret vengono cancellati.`, "Scollega", async () => {
 			await api(`/api/instances/${inst.id}/whatsapp`, { method: "DELETE" });
 			toast("WhatsApp scollegato");
 			render();
@@ -3291,7 +3291,7 @@ function phoneCard(inst, p) {
 		}
 	};
 	const disconnect = () =>
-		confirmDialog("Scollegare il telefono?", "Annie smette di rispondere alle chiamate per questo agente: il numero resta su Twilio ma rifiuta le chiamate. Le credenziali e le risposte in attesa vengono cancellate.", "Scollega", async () => {
+		confirmDialog("Scollegare il telefono?", `${inst.name} smette di rispondere alle chiamate: il numero resta su Twilio ma rifiuta le chiamate. Le credenziali e le risposte in attesa vengono cancellate.`, "Scollega", async () => {
 			await api(`/api/instances/${inst.id}/phone`, { method: "DELETE" });
 			toast("Telefono scollegato");
 			render();

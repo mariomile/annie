@@ -13,11 +13,18 @@ export type Persona = {
 	readonly tagline?: string;
 	/** How it talks. "naturale" adds nothing to the instructions. */
 	readonly tone?: Tone;
+	/**
+	 * The owner gave it its face from the console: from then on it introduces itself with the
+	 * instance's name. Set by the server, never taken from a request; older instances (named
+	 * «Telegram (x)» by a script) keep presenting themselves as before until then.
+	 */
+	readonly named?: true;
 };
 
 export const TAGLINE_MAX = 120;
 /** An emoji with skin tone and joiners stays short; anything longer is not one emoji. */
 const EMOJI_MAX = 16;
+const graphemes = new Intl.Segmenter("it", { granularity: "grapheme" });
 
 export class PersonaError extends Error {}
 
@@ -37,7 +44,10 @@ export function checkPersona(input: unknown): Persona {
 	if (emoji !== undefined && emoji !== null && emoji !== "") {
 		if (typeof emoji !== "string") throw new PersonaError("Emoji non valida");
 		const e = emoji.trim();
-		if (e.length > EMOJI_MAX || !/^[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(e) || /[\p{L}\p{N}\s]/u.test(e)) throw new PersonaError("Scegli una sola emoji");
+		// One grapheme with a pictograph, a flag or a keycap in it; no letters, and no invisible format characters but the emoji joiners.
+		const one = [...graphemes.segment(e)].length === 1;
+		const picture = /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u.test(e);
+		if (e.length > EMOJI_MAX || !one || !picture || /\p{L}|\s/u.test(e) || /\p{Cf}/u.test(e.replace(/\u200D/g, ""))) throw new PersonaError("Scegli una sola emoji");
 		out.emoji = e;
 	}
 	if (tagline !== undefined && tagline !== null) {
@@ -53,14 +63,19 @@ export function checkPersona(input: unknown): Persona {
 	return out;
 }
 
+/** A name as it goes in the instructions and the console: one line, no quote marks of ours. */
+export function cleanName(name: string): string {
+	return name.replace(/[\s«»]+/g, " ").trim().slice(0, 80);
+}
+
 /**
- * The instructions an agente runs with: its own, then who it is. Nothing is added for the
- * agente called Annie with no persona, so existing conversations keep their instructions.
+ * The instructions an agente runs with: its own, then who it is. Nothing is added to an
+ * instance the owner never gave a personality, so existing conversations keep their instructions.
  */
 export function withPersona(instructions: string | undefined, name: string, persona: Persona | undefined): string | undefined {
 	const lines: string[] = [];
-	const own = name.trim();
-	if (own !== "" && own.toLowerCase() !== "annie") lines.push(`Il tuo nome è «${own}»: presentati con questo nome, non come Annie (Annie è la piattaforma su cui lavori).`);
+	const own = cleanName(name);
+	if (persona?.named === true && own !== "" && own.toLowerCase() !== "annie") lines.push(`Il tuo nome è «${own}»: presentati con questo nome, non come Annie (Annie è la piattaforma su cui lavori), e parla di te al maschile o al femminile come si addice al nome.`);
 	if (persona?.tagline !== undefined) lines.push(`Il tuo compito: ${persona.tagline}`);
 	if (persona?.tone !== undefined && persona.tone !== "naturale") lines.push(TONE_LINES[persona.tone]);
 	if (lines.length === 0) return instructions;

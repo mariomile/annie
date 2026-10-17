@@ -503,3 +503,4 @@ ol.steps .stack { display: grid; gap: 8px; }
 .name-row > input { flex: 1 1 auto; min-width: 0; width: auto; }
 .name-row > input.emoji-input { flex: 0 0 56px; width: 56px; text-align: center; font-size: 18px; padding-left: 0; padding-right: 0; }
 .welcome .mark.face { font-size: 40px; line-height: 1; display: block; }
+.advanced summary { cursor: pointer; color: var(--fg-2); font-size: 13px; margin: 4px 0 8px; }

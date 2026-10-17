@@ -25,7 +25,7 @@ Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in
 _Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
 
 **Personalità**:
-Emoji, compito e tono di un agente, scelti dall'owner; il modello li riceve dopo le istruzioni, in un blocco «Chi sei». Il tono è uno tra naturale, formale, amichevole, conciso e spiritoso.
+Emoji, compito e tono di un agente, scelti dall'owner; il modello li riceve dopo le istruzioni, in un blocco «Chi sei». Il tono è uno tra naturale, formale, amichevole, conciso e scherzoso (in console «Spiritoso»).
 _Avoid_: persona (nei testi per le persone), prompt, carattere
 
 **Utente consentito**:
