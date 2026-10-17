@@ -1,4 +1,5 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
+import { DEFAULT_RATES_URL, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEFAULT_FORECAST_URL, DEFAULT_GEOCODING_URL, PAID_FORECAST_URL, type WeatherConfig } from "../core/weather.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
@@ -168,6 +169,8 @@ export type AnnieConfig = {
 	readonly webSearch: WebSearchConfig | undefined;
 	/** The weather tool (Open-Meteo, or the same APIs elsewhere), when the operator turns it on with ANNIE_WEATHER=1; maxPerDay counts tool calls. */
 	readonly weather: WeatherConfig | undefined;
+	/** The exchange_rate tool (the ECB's reference rates), when the operator turns it on with ANNIE_EXCHANGE_RATES=1. */
+	readonly exchangeRates: ExchangeRatesConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
 	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
@@ -215,6 +218,21 @@ function loadWeatherConfig(env: Readonly<Record<string, string | undefined>>): W
 	const maxPerDay = Number(nonEmpty(env.ANNIE_WEATHER_MAX_PER_DAY) ?? "200");
 	if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_WEATHER_MAX_PER_DAY: a whole number from 1 to 100000");
 	return { forecastUrl, geocodingUrl, ...(apiKey === undefined ? {} : { apiKey }), maxPerDay };
+}
+
+/**
+ * ANNIE_EXCHANGE_RATES=1 and its address: off unless the operator says so, like every service
+ * Annie reaches. Only the ECB's public files are fetched; nothing about the person leaves.
+ */
+function loadExchangeRatesConfig(env: Readonly<Record<string, string | undefined>>): ExchangeRatesConfig | undefined {
+	const on = nonEmpty(env.ANNIE_EXCHANGE_RATES);
+	if (on !== undefined && !["0", "1", "true", "false"].includes(on)) throw new ConfigError("ANNIE_EXCHANGE_RATES: 1 to offer the ECB exchange rates, 0 (default) for none");
+	const url = nonEmpty(env.ANNIE_EXCHANGE_RATES_URL);
+	if (on !== "1" && on !== "true") {
+		if (url !== undefined) throw new ConfigError("ANNIE_EXCHANGE_RATES_URL set without ANNIE_EXCHANGE_RATES=1");
+		return undefined;
+	}
+	return { url: serviceUrl("ANNIE_EXCHANGE_RATES_URL", url ?? DEFAULT_RATES_URL, DEFAULT_RATES_URL) };
 }
 
 export type ComputerConfig =
@@ -372,6 +390,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		throw new ConfigError("ANNIE_SEARCH_URL is set without ANNIE_SEARCH_API_KEY");
 	}
 	const weather = loadWeatherConfig(env);
+	const exchangeRates = loadExchangeRatesConfig(env);
 	const computer = loadComputerConfig(env);
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
@@ -419,6 +438,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		images,
 		webSearch,
 		weather,
+		exchangeRates,
 		computer,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },
 	};

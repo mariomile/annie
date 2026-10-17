@@ -32,9 +32,10 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
 /**
  * Tools that only read: the only ones that run in a brief's thread. weather sends only a place
  * name to the operator's weather service, a host an attacker cannot read, so a mail cannot use it
- * to carry data out.
+ * to carry data out. exchange_rate sends nothing derived from what anyone wrote: it fetches a
+ * fixed public file of the ECB.
  */
-const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather"]);
+const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate"]);
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or

@@ -1,6 +1,7 @@
 import type { AnnieTool } from "../engine.ts";
+import { italianDay, italianNumber } from "../italian-format.ts";
 import { untrusted } from "../untrusted.ts";
-import { type CurrentWeather, type DayForecast, type Forecast, type HourForecast, italianDay, italianNumber, MAX_FORECAST_DAYS, type Place, type Weather, WeatherError, weatherWords, wetCode } from "../weather.ts";
+import { type CurrentWeather, type DayForecast, type Forecast, type HourForecast, MAX_FORECAST_DAYS, type Place, type Weather, WeatherError, weatherWords, wetCode } from "../weather.ts";
 
 export type WeatherToolsOptions = {
 	readonly weather: Weather;
