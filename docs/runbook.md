@@ -221,6 +221,10 @@ Tetti per tenant: 2 comandi alla volta, 10 computer, una copia di file alla volt
 - **Il proxy** non deve tenere in cache `/sw.js` né `/manifest.webmanifest` (Annie li manda con `no-cache`). Dopo aver cambiato l'elenco dei file della shell in `sw.js`, cambia il nome `CACHE` lì dentro.
 - **«Primi passi» spariti**: Impostazioni → Primi passi, oppure `#/inizia`. Il «Nascondi» vale per istanza e per browser (chiave `annie.setup.hidden` nel localStorage).
 
+## 6l. Immagini
+
+Con `ANNIE_IMAGE_URL` e `ANNIE_IMAGE_API_KEY` ([chiavi.md](chiavi.md), punto 15) Annie crea e ritocca immagini quando gliele chiedono. L'owner lo consente istanza per istanza in Impostazioni → Immagini (connettore `image_generation`, cambio registrato nell'audit come `images.allowed`). Le immagini vanno in `immagini/` del workspace e in chat: nella console si vedono nel messaggio, su Telegram e WhatsApp arrivano come foto (o come documento, se l'app non le prende come foto). `ANNIE_IMAGE_MAX_PER_DAY` (100) conta le immagini fatte per account, nel processo: un riavvio azzera il conto del giorno. L'audit registra `image.generated` con il numero di immagini e se era un ritocco, mai la descrizione. Il costo non entra nel tetto di spesa del modello: si controlla sulla console del servizio. Un errore «rifiuta la chiave» vuol dire chiave sbagliata o organizzazione non verificata da OpenAI.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.

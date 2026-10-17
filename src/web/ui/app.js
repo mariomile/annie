@@ -523,6 +523,27 @@ function speechCard(inst, host, allowed, understood) {
 	);
 }
 
+/** Owner: pictures made on request for this instance, by the server's image service. */
+function imagesCard(inst, host, maxPerDay, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/images`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Annie può creare immagini" : "Immagini spente per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Immagini"),
+		h("p.muted", `Annie crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e ritocca le foto che le mandano. Le genera il servizio ${host}, che riceve la descrizione e, per un ritocco, la foto. L'immagine arriva in chat e resta tra i file. Al massimo ${maxPerDay} immagini al giorno per tutto l'account.`),
+		h("label.row-gap", toggle, h("span", "Consenti le immagini a questa istanza")),
+	);
+}
+
 /** Owner: voice messages of this instance transcribed by the server's service. */
 function voiceCard(inst, host, allowed) {
 	const toggle = h("input", { type: "checkbox", checked: allowed });
@@ -985,9 +1006,22 @@ async function viewChat(main) {
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	let typing;
 	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
+	// A file to download; also what a picture that does not show (deleted, not really a picture) becomes.
+	const fileLink = (file) => h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
 	const show = (entry) => {
-		const body = entry.file
-			? h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(entry.file.path)}` }, h("span.ext", (entry.file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", entry.file.path.split("/").pop()), entry.file.caption ? h("div.muted", entry.file.caption) : null))
+		const shown = entry.file && /\.(png|jpe?g|webp|gif)$/i.test(entry.file.path);
+		const body = shown
+			? h(
+					"div.picture",
+					h(
+					"a.pic",
+					{ href: picture(entry.file.path), target: "_blank", rel: "noopener" },
+					h("img", { src: picture(entry.file.path), alt: entry.file.caption ?? entry.file.path.split("/").pop(), loading: "lazy", onerror: (event) => event.target.closest(".picture").replaceWith(fileLink(entry.file)) }),
+					),
+					entry.file.caption ? h("div.muted", entry.file.caption) : null,
+				)
+			: entry.file
+			? fileLink(entry.file)
 			: h("div.body", entry.text ?? "");
 		const pictures = entry.images?.length
 			? h(
@@ -1615,6 +1649,7 @@ function setupSteps(setup) {
 		{ id: "tried", own: true, done: setup.tried, title: "Scrivile qualcosa", text: `Una domanda, una foto, un file da riassumere: vedi subito come risponde.${setup.model ? "" : " Con il modello di prova la risposta ripete quello che scrivi."}` },
 		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto${can.transcription && can.speech ? ", ti risponde anche a voce" : ""}, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
 		{ id: "web", own: true, done: setup.web, title: "Lasciala cercare sul web", text: can.search ? "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati, report di ricerca con le fonti." : "Scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: ["impostazioni", can.search ? "ricerca" : "siti"] },
+		...(can.images ? [{ id: "images", own: true, done: setup.images, title: "Fatti creare un'immagine", text: "Accendi le immagini: un logo, un volantino, una foto ritoccata, chiesti a parole in chat.", go: ["impostazioni", "immagini"] }] : []),
 		{ id: "people", own: true, done: setup.people, title: "Invita il tuo team", text: "Aggiungi le persone in Persone, poi in Impostazioni scegli chi può scrivere a questa istanza. Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: ["persone"] },
 		{ id: "app", own: canInstall(), done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home o sul desktop, a schermo intero, come un'app." },
 	];
@@ -2242,7 +2277,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -2253,6 +2288,7 @@ async function viewSettings(main) {
 		api(`/api/instances/${inst.id}/phone`).catch(() => undefined),
 		api("/api/computer").catch(() => ({ available: false })),
 		api("/api/speech").catch(() => ({ available: false })),
+		api("/api/images").catch(() => ({ available: false })),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -2294,6 +2330,7 @@ async function viewSettings(main) {
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				speech.available ? anchor("voce", speechCard(inst, speech.host, (settings.egress.connectors ?? []).includes("speech"), voice.available && (settings.egress.connectors ?? []).includes("voice"))) : null,
 				search.available ? anchor("ricerca", searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? [])) : null,
+				images.available ? anchor("immagini", imagesCard(inst, images.host, images.maxPerDay, (settings.egress.connectors ?? []).includes("image_generation"))) : null,
 				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,

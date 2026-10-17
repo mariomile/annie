@@ -1,9 +1,12 @@
 import { createHmac } from "node:crypto";
-import { imageType } from "../core/images.ts";
+import { imageType, isPhoto } from "../core/images.ts";
 import { audioName, TRANSCRIBED, type Transcribe, voiceText } from "./voice.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
+
+/** Largest image WhatsApp shows as a picture. */
+const WHATSAPP_MAX_IMAGE = 5 * 1024 * 1024;
 
 /**
  * WhatsApp through Meta's Cloud API: a business phone number, messages pushed to a webhook
@@ -146,6 +149,7 @@ const MIME: Record<string, string> = {
 	md: "text/plain",
 	json: "text/plain",
 	png: "image/png",
+	webp: "image/webp",
 	jpg: "image/jpeg",
 	jpeg: "image/jpeg",
 };
@@ -321,25 +325,34 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		if (buttons.length > 0) await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "interactive", interactive: replyButtons(tail || "…", buttons) });
 	}
 
-	/** Upload, then send as a document. A file cannot wait for the window: outside it, it is refused. */
+	/** Upload, then send as a picture or a document. A file cannot wait for the window: outside it, it is refused. */
 	async sendFile(file: OutboundFile): Promise<void> {
 		if (await this.windowClosed(file.threadId)) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Annie first");
 		const form = new FormData();
 		form.set("messaging_product", "whatsapp");
-		const type = MIME[file.name.split(".").at(-1)?.toLowerCase() ?? ""];
+		// A JPEG or PNG up to 5 MB shows in the chat as a picture; anything else is a document.
+		const photo = isPhoto(file.data, WHATSAPP_MAX_IMAGE);
+		const type = photo ? imageType(file.data) : MIME[file.name.split(".").at(-1)?.toLowerCase() ?? ""];
 		if (type === undefined) throw new ChannelRefused(`WhatsApp does not take this kind of file as a document: ${file.name}`);
 		form.set("file", new Blob([Uint8Array.from(file.data)], { type }), file.name);
 		form.set("type", type);
 		const uploaded = await this.call<{ id?: string }>("POST", `/${this.options.phoneNumberId}/media`, form);
 		if (uploaded.id === undefined) throw new Error("WhatsApp media upload returned no id");
 		const caption = [file.possibleDuplicate === true ? DUPLICATE_NOTICE : undefined, file.caption].filter(Boolean).join("\n\n");
-		await this.call("POST", `/${this.options.phoneNumberId}/messages`, {
-			messaging_product: "whatsapp",
-			recipient_type: "individual",
-			to: file.threadId,
-			type: "document",
-			document: { id: uploaded.id, filename: file.name, ...(caption === "" ? {} : { caption: caption.slice(0, MAX_CAPTION) }) },
-		});
+		const captioned = caption === "" ? {} : { caption: caption.slice(0, MAX_CAPTION) };
+		const to = { messaging_product: "whatsapp", recipient_type: "individual", to: file.threadId };
+		const asDocument = { ...to, type: "document", document: { id: uploaded.id, filename: file.name, ...captioned } };
+		if (!photo) {
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, asDocument);
+			return;
+		}
+		try {
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "image", image: { id: uploaded.id, ...captioned } });
+		} catch (error) {
+			// A picture WhatsApp will not show still goes, as a document.
+			if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, asDocument);
+		}
 	}
 
 	/**

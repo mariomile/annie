@@ -1,7 +1,10 @@
-import { IMAGE_LIMITS, imageType } from "../core/images.ts";
+import { IMAGE_LIMITS, imageType, isPhoto } from "../core/images.ts";
 import { audioName, TRANSCRIBED, type Transcribe, tooLong, voiceText } from "./voice.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
+
+/** Largest photo the Bot API takes; larger pictures go as documents. */
+const TELEGRAM_MAX_PHOTO = 10 * 1024 * 1024;
 
 export type TelegramAdapterOptions = {
 	readonly token: string;
@@ -146,8 +149,18 @@ export class TelegramAdapter implements ChannelAdapter {
 		form.set("chat_id", file.threadId);
 		const caption = [file.possibleDuplicate === true ? DUPLICATE_NOTICE : undefined, file.caption].filter(Boolean).join("\n\n");
 		if (caption !== "") form.set("caption", caption.slice(0, TELEGRAM_MAX_CAPTION));
-		form.set("document", new Blob([Uint8Array.from(file.data)]), file.name);
-		await this.call("sendDocument", form);
+		// A JPEG or PNG Telegram takes as a photo shows in the chat; anything else is a document.
+		const photo = isPhoto(file.data, TELEGRAM_MAX_PHOTO);
+		form.set(photo ? "photo" : "document", new Blob([Uint8Array.from(file.data)], photo ? { type: imageType(file.data) as string } : {}), file.name);
+		try {
+			await this.call(photo ? "sendPhoto" : "sendDocument", form);
+		} catch (error) {
+			// A picture Telegram will not take as a photo (too long, too thin) still goes, as a document.
+			if (!photo || !(error instanceof ChannelRefused) || error.retryable) throw error;
+			form.delete("photo");
+			form.set("document", new Blob([Uint8Array.from(file.data)]), file.name);
+			await this.call("sendDocument", form);
+		}
 	}
 
 	/** sendVoice, multipart, with the text as caption where it fits; a longer text follows as a message. */

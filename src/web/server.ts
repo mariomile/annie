@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { SPEECH_CONNECTOR } from "../channels/speech.ts";
+import { IMAGE_CONNECTOR } from "../core/image-generation.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
@@ -104,6 +105,8 @@ export type WebAppOptions = {
 	readonly voice?: { readonly host: string };
 	/** Replies can go back as voice notes, made by this service (ADR 0020); the owner allows it per instance. */
 	readonly speech?: { readonly host: string; readonly voice: string };
+	/** The image service, when the operator set one (ADR 0023). */
+	readonly images?: { readonly host: string; readonly maxPerDay: number };
 	/** The server's web search service (ADR 0017), by host; each owner turns it on per instance. */
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
@@ -822,9 +825,10 @@ export function createWebApp(options: WebAppOptions): Server {
 				tried,
 				channel: connected.some((c) => (record.allowedUsers[c] ?? []).length > 0),
 				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
+				images: (record.egress.connectors ?? []).includes(IMAGE_CONNECTOR),
 				people: others.length > 0,
 				// What this server offers, so the console does not count a step nobody can take here.
-				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined },
+				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined, images: options.images !== undefined },
 			},
 		};
 	});
@@ -969,6 +973,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const others = (record.egress.connectors ?? []).filter((c) => c !== SPEECH_CONNECTOR);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, SPEECH_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "speech.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+
+	// --- owner: pictures on request for an instance (requests and pictures to change go to the operator's image service) ---
+	route("GET", "/api/images", "owner", async () => (options.images === undefined ? { available: false } : { available: true, host: options.images.host, maxPerDay: options.images.maxPerDay }));
+	route("PUT", "/api/instances/:id/images", "owner", async ({ params, req }) => {
+		if (options.images === undefined) throw new HttpError(501, "La generazione di immagini non è configurata su questo server");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== IMAGE_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, IMAGE_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "images.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
 	});
 
