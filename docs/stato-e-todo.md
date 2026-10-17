@@ -4,7 +4,7 @@ Aggiornato al 17 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 42, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 43, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -79,7 +79,9 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Cambi delle valute: i tassi ufficiali BCE, oggi o alla data di una fattura, più importi, elenco e andamento (settimana 42, [week42.md](week42.md), [ADR 0040](adr/0040-cambi.md))
 - [x] Agenti: più agenti per tenant, ognuno con nome, emoji, compito e tono, oltre a memoria, task, file e bot suoi; pagina Agenti e nuovo agente da un modello ([ADR 0041](adr/0041-agenti.md))
 - [x] Agenti che si scrivono: un agente chiede a un altro con `agent_message`, se l'owner lo permette, e la risposta torna nella chat di partenza ([ADR 0042](adr/0042-agenti-che-si-scrivono.md))
-- [x] Schermo: un desktop Linux con Firefox per agente, guidato con Cua (guarda, clicca, scrive, tasti, scorre, apre programmi e indirizzi); senza internet di default, l'owner lo accende in Impostazioni ([ADR 0045](adr/0045-schermo-cua.md)). Serve `ANNIE_DESKTOP` e l'immagine di Cua ([chiavi](chiavi.md) §18)
+- [x] Notizie: i titoli recenti dai feed dei giornali, per argomento, giornale o sezione, di oggi o di ieri, con fonte, ora e link (settimana 43, [week43.md](week43.md), [ADR 0043](adr/0043-notizie.md))
+- [x] Browser interno: il browser della conversazione si vede e si guida da un pannello accanto alla chat della console ([ADR 0044](adr/0044-browser-interno.md)); TODO: clic sulla foto
+- [x] Schermo: un desktop Linux con Firefox per agente, guidato con Cua (guarda, clicca, scrive, tasti, scorre, apre programmi e indirizzi); senza internet di default, l'owner lo accende in Impostazioni ([ADR 0045](adr/0045-schermo-cua.md)). Serve `ANNIE_DESKTOP` e l'immagine di Cua ([chiavi](chiavi.md) §19)
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [ ] Schermo: vista dal vivo nella console e ultima schermata visibile all'owner, per vedere quello che Annie fa (il VNC c'è nel container ma non è pubblicato)
 - [ ] Cancellare un agente dalla console ([ADR 0041](adr/0041-agenti.md), «Da fare»)

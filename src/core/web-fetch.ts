@@ -2,6 +2,7 @@ import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { asciiLower, decodeEntities, INVISIBLE, withoutBlocks, withoutComments } from "./html-text.ts";
 
 /**
  * Reading a public web page for an instance, without letting it reach anything else: only
@@ -139,7 +140,7 @@ export function checkedUrl(raw: string, options: Pick<WebFetchOptions, "hostAllo
 	if (url.username !== "" || url.password !== "") throw new WebFetchRefused("niente credenziali nell'indirizzo");
 	const host = url.hostname.replace(/^\[|\]$/g, "");
 	if (isIP(host) !== 0 && !(options.addressAllowed ?? publicAddress)(host)) throw new WebFetchRefused(`${host} è un indirizzo interno`);
-	if (!options.hostAllowed(host)) throw new WebFetchRefused(`${host} non è tra i siti che questa istanza può leggere`);
+	if (!options.hostAllowed(host)) throw new WebFetchRefused(`${host} non è tra i siti che questo agente può leggere`);
 	return url;
 }
 
@@ -296,55 +297,15 @@ function ipv6Words(address: string): number[] | undefined {
 /** The readable text of an HTML page, and its title. Linear in the page's size: no backtracking regex. */
 export function pageText(html: string): { title: string; text: string } {
 	// ASCII only: a lowercase that changed the length would shift every index below.
-	const lower = html.replace(/[A-Z]+/g, (m) => m.toLowerCase());
+	const lower = asciiLower(html);
 	const titleStart = lower.indexOf("<title");
 	const titleOpen = titleStart < 0 ? -1 : lower.indexOf(">", titleStart);
 	const titleEnd = titleOpen < 0 ? -1 : lower.indexOf("</title", titleOpen);
 	const title = titleEnd < 0 ? "" : html.slice(titleOpen + 1, titleEnd).trim();
-	const text = withoutComments(withoutBlocks(html, lower, ["script", "style", "noscript", "svg", "template", "title"]))
+	const text = withoutComments(withoutBlocks(html, ["script", "style", "noscript", "svg", "template", "title"], lower))
 		.replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr|section|article)>/gi, "\n")
 		.replace(/<[^>]*>/g, " ");
-	return { title: decodeEntities(title).replace(/\s+/g, " "), text: decodeEntities(text).replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*/g, "\n\n").trim() };
-}
-
-/** The HTML without the given elements and their content, found with indexOf: one pass per tag. */
-function withoutBlocks(html: string, lower: string, tags: readonly string[]): string {
-	const cut: [number, number][] = [];
-	for (const tag of tags) {
-		let from = 0;
-		for (;;) {
-			const start = lower.indexOf(`<${tag}`, from);
-			if (start < 0) break;
-			const close = lower.indexOf(`</${tag}`, start + 1);
-			const end = close < 0 ? html.length : Math.max(close, lower.indexOf(">", close) + 1);
-			cut.push([start, end]);
-			from = end;
-		}
-	}
-	cut.sort((a, b) => a[0] - b[0]);
-	let out = "";
-	let at = 0;
-	for (const [start, end] of cut) {
-		if (end <= at) continue;
-		out += `${html.slice(at, Math.max(at, start))} `;
-		at = Math.max(at, end);
-	}
-	return out + html.slice(at);
-}
-
-function withoutComments(html: string): string {
-	let out = "";
-	let at = 0;
-	for (;;) {
-		const start = html.indexOf("<!--", at);
-		if (start < 0) return out + html.slice(at);
-		const end = html.indexOf("-->", start + 4);
-		out += `${html.slice(at, start)} `;
-		if (end < 0) return out;
-		at = end + 3;
-	}
-}
-
-function decodeEntities(text: string): string {
-	return text.replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+	// Invisible characters out, line breaks kept (INVISIBLE holds the controls, \n among them).
+	const visible = (t: string) => t.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(INVISIBLE, " ")).join("\n");
+	return { title: visible(decodeEntities(title)).replace(/\s+/g, " ").trim(), text: visible(decodeEntities(text)).replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*/g, "\n\n").trim() };
 }

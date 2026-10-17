@@ -4,7 +4,11 @@
  * address or the key.
  */
 
-export type HttpProblem = { readonly kind: "status"; readonly status: number } | { readonly kind: "unreachable" | "too_big" | "unreadable" };
+/** redirect: a redirect the caller's rule refused, or one too many. */
+export type HttpProblem = { readonly kind: "status"; readonly status: number } | { readonly kind: "unreachable" | "too_big" | "unreadable" | "redirect" };
+
+/** Redirects followed here instead of by fetch: at most `max`, each target allowed by the caller before it is asked. */
+export type RedirectRule = { readonly max: number; readonly allowed: (url: URL) => Promise<boolean> };
 
 type GetInit = {
 	readonly fetch: typeof fetch;
@@ -13,6 +17,8 @@ type GetInit = {
 	readonly maxBytes: number;
 	/** For the whole exchange, body included: 15 seconds unless a large file needs longer. */
 	readonly timeoutMs?: number;
+	/** "follow" (default): fetch follows redirects on its own. A rule: followed here, each hop checked (feeds that must not be sent inside the network). */
+	readonly redirect?: "follow" | RedirectRule;
 };
 
 /** Thrown by `capped` only, turned into the caller's error by getText. */
@@ -33,11 +39,28 @@ export async function getJson(url: URL, init: GetInit, error: (problem: HttpProb
 
 /** The body at `url` as text, or the caller's error for what went wrong. */
 export async function getText(url: URL, init: GetInit, error: (problem: HttpProblem) => Error): Promise<string> {
+	const rule = init.redirect === undefined || init.redirect === "follow" ? undefined : init.redirect;
+	// One timeout for the whole exchange, redirects included.
+	const signal = AbortSignal.timeout(init.timeoutMs ?? 15_000);
 	let response: Response;
-	try {
-		response = await init.fetch(url, { headers: { ...init.headers }, signal: AbortSignal.timeout(init.timeoutMs ?? 15_000) });
-	} catch {
-		throw error({ kind: "unreachable" });
+	let target = url;
+	for (let hop = 0; ; hop++) {
+		try {
+			response = await init.fetch(target, { headers: { ...init.headers }, signal, ...(rule === undefined ? {} : { redirect: "manual" as const }) });
+		} catch {
+			throw error({ kind: "unreachable" });
+		}
+		const location = rule !== undefined && response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+		if (rule === undefined || location === null) break;
+		await response.body?.cancel().catch(() => {});
+		let next: URL;
+		try {
+			next = new URL(location, target);
+		} catch {
+			throw error({ kind: "redirect" });
+		}
+		if (hop >= rule.max || !(await rule.allowed(next))) throw error({ kind: "redirect" });
+		target = next;
 	}
 	if (!response.ok) {
 		await response.body?.cancel().catch(() => {});

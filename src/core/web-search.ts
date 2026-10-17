@@ -42,7 +42,7 @@ function searchError(problem: HttpProblem): WebSearchError {
 		const { status } = problem;
 		return new WebSearchError(status === 401 || status === 403 ? "il servizio di ricerca rifiuta la chiave del server" : status === 429 ? "troppe ricerche in poco tempo, riprova fra poco" : `il servizio di ricerca risponde ${status}`);
 	}
-	return new WebSearchError({ unreachable: "il servizio di ricerca non risponde", too_big: "il servizio di ricerca ha mandato una risposta troppo grande", unreadable: "il servizio di ricerca ha risposto in modo illeggibile" }[problem.kind]);
+	return new WebSearchError({ unreachable: "il servizio di ricerca non risponde", too_big: "il servizio di ricerca ha mandato una risposta troppo grande", unreadable: "il servizio di ricerca ha risposto in modo illeggibile", redirect: "il servizio di ricerca rimanda a un indirizzo non consentito" }[problem.kind]);
 }
 
 const FRESHNESS = { day: "pd", week: "pw", month: "pm", year: "py" } as const;

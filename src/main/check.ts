@@ -3,6 +3,7 @@ import { computerLabel, createComputerProvider } from "../computer/create.ts";
 import { createDesktopProvider, desktopLabel } from "../desktop/create.ts";
 import { ecbRates, ExchangeRateError, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEV_PROVIDER, modelProvider } from "../core/model-providers.ts";
+import { feedNews, type NewsConfig } from "../core/news.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -14,6 +15,8 @@ import type { AnnieConfig } from "./config.ts";
 export type CheckResult = { readonly name: string; readonly ok: boolean; readonly detail: string };
 
 const TIMEOUT_MS = 10_000;
+/** Each feed's time in the check: a slow feed is reported as slow, not as down. */
+const NEWS_TIMEOUT_MS = 15_000;
 const GMAIL_SCOPES = ["gmail.readonly", "gmail.send"] as const;
 
 export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = fetch): Promise<CheckResult[]> {
@@ -39,6 +42,9 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	if (weather !== undefined) checks.push(check("Meteo", () => weatherCheck(weather, call)));
 	const rates = config.exchangeRates;
 	if (rates !== undefined) checks.push(check("Cambi", () => exchangeRatesCheck(rates, call)));
+	const news = config.news;
+	// Its own timeout per feed, longer than a person waits: not the checks' 10 seconds.
+	if (news !== undefined) checks.push(check("Notizie", () => newsCheck(news, fetchImpl)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	const desktop = config.desktop;
@@ -164,6 +170,23 @@ async function exchangeRatesCheck(config: ExchangeRatesConfig, call: Call): Prom
 		if (error instanceof ExchangeRateError) throw new CheckFailed(`${error.message}: controlla che ${host} sia raggiungibile, o ANNIE_EXCHANGE_RATES_URL`);
 		throw error;
 	}
+}
+
+/**
+ * Every feed downloaded and read, four at a time, each with 15 seconds: each named with what came
+ * of it, never its address (an operator's feed may carry a query). Some feeds failing is a
+ * warning, as for a model the service does not list; none answering is a failure.
+ */
+async function newsCheck(config: NewsConfig, fetchImpl: typeof fetch): Promise<string> {
+	const results = await feedNews(config, fetchImpl, undefined, { timeoutMs: NEWS_TIMEOUT_MS }).read(config.feeds);
+	const report = results.map((r) => ("error" in r ? `${r.feed.name} ${r.error}` : r.headlines.some((h) => h.published !== undefined) ? `${r.feed.name} ok` : `${r.feed.name} senza notizie datate`));
+	const failed = results.filter((r) => "error" in r).map((r) => r.feed.name);
+	// A feed without a single dated headline shows nothing either: it counts toward the warning.
+	const undated = results.flatMap((r) => ("error" in r || r.headlines.some((h) => h.published !== undefined) ? [] : [r.feed.name]));
+	const summary = `${results.length - failed.length} feed su ${results.length} rispondono: ${report.join("; ")}`;
+	if (failed.length === results.length) throw new CheckFailed(`${summary}. Controlla la rete e ANNIE_NEWS_FEEDS`);
+	const warnings = [...(failed.length === 0 ? [] : [`non vanno ${failed.join(", ")}`]), ...(undated.length === 0 ? [] : [`senza notizie datate ${undated.join(", ")}`])];
+	return warnings.length === 0 ? summary : `${summary}. Attenzione: ${warnings.join("; ")}. Controlla ANNIE_NEWS_FEEDS, o togli quei feed`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {

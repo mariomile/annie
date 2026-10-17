@@ -13,6 +13,8 @@ import { checkedUrl, pageText, WebFetchRefused, type WebFetchOptions, webFetch }
  * it when it has a threshold. `text` is the whole page, kept only when it watches the whole page.
  */
 export type WatchSnapshot = {
+	/** The version of the page text it was made from (WATCH_TEXT_VERSION); missing on snapshots older than versions. */
+	readonly v?: number;
 	readonly at: string;
 	readonly hash: string;
 	readonly excerpt: string;
@@ -21,6 +23,13 @@ export type WatchSnapshot = {
 	/** Which threshold the price was past at this check, if any; "missing" when no price was there. */
 	readonly side?: "below" | "above" | "missing";
 };
+
+/**
+ * Raised whenever the text read out of a page changes for the same page (2: more entities decoded,
+ * invisible characters dropped). A snapshot of another version is compared with nothing: the
+ * next check takes it as a new baseline, silently, instead of reporting a change the page never made.
+ */
+export const WATCH_TEXT_VERSION = 2;
 
 /** What a sentinella has to say: a reason line it writes itself, and page text shown as data. */
 export type WatchSaid = { readonly reason: string; readonly before: string; readonly after: string };
@@ -245,7 +254,7 @@ export async function readPage(url: string, guard: Pick<WebFetchOptions, "hostAl
 	try {
 		checkedUrl(url, guard);
 	} catch {
-		throw new WatchError("il sito non è tra quelli che questa istanza può leggere");
+		throw new WatchError("il sito non è tra quelli che questo agente può leggere");
 	}
 	let page;
 	try {
@@ -285,7 +294,7 @@ export function snapshot(page: { text: string }, watch: Pick<Watch, "what" | "be
 		const at = text.toLowerCase().indexOf(watch.what.toLowerCase());
 		if (at >= 0) excerpt = text.slice(at, at + watch.what.length + WATCH_LIMITS.windowChars);
 	}
-	const base = { at: now.toISOString(), excerpt };
+	const base = { v: WATCH_TEXT_VERSION, at: now.toISOString(), excerpt };
 	if (thresholded(watch)) {
 		const price = watch.what === undefined ? parsePrice(text) : excerpt === "" ? undefined : parsePrice(excerpt.slice(watch.what.length), { loose: true });
 		if (price === undefined) return { ...base, hash: digest("missing"), side: "missing" };
@@ -358,6 +367,8 @@ function toNumber(raw: string): number | undefined {
 
 /** Whether the change from `before` to `now` is worth a message, and what to say. */
 export function verdict(watch: Pick<Watch, "what" | "below" | "above">, before: WatchSnapshot | undefined, now: WatchSnapshot): WatchSaid | undefined {
+	// Text read another way is no change of the page: the new snapshot is the baseline.
+	if (before !== undefined && before.v !== now.v) return undefined;
 	if (thresholded(watch)) {
 		// Once when it changes side, not at every check while it stays there.
 		if (before?.side === now.side) return undefined;
