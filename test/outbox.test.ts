@@ -261,6 +261,8 @@ function bind(session: EngineSession): EngineSession {
 		submit: (...args) => session.submit(...args),
 		resume: () => session.resume(),
 		reattach: (...args) => session.reattach(...args),
+		setThreadModel: (...args) => session.setThreadModel(...args),
+		threadModel: (...args) => session.threadModel(...args),
 		onReply: (listener) => session.onReply(listener),
 		idle: () => session.idle(),
 		close: () => session.close(),

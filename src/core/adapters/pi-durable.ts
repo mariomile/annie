@@ -5,7 +5,7 @@
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Message, Type } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
+import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import {
 	AgentDoc,
 	AssistantEntry,
@@ -27,6 +27,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
 import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
+import type { ModelSelection } from "../registry.ts";
 import { createProvider } from "./pi-durable-models.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -37,6 +38,14 @@ const ThreadsDoc = defineDoc<{ threads: Record<string, number> }>({
 	version: 1,
 	scope: "session",
 	initial: () => ({ threads: {} }),
+});
+
+/** Thread key → the model that conversation answers with instead of the instance's (ADR 0036). */
+const ThreadModelsDoc = defineDoc<{ models: Record<string, ModelSelection> }>({
+	kind: "annie.thread-models",
+	version: 1,
+	scope: "session",
+	initial: () => ({ models: {} }),
 });
 
 export const piDurableEngine: DurableEngine = {
@@ -61,7 +70,8 @@ export const piDurableEngine: DurableEngine = {
 			// No ambient credentials: no env vars, no credential files.
 			authContext: { env: async () => undefined, fileExists: async () => false },
 		});
-		// Only the instance's own provider is registered: no other model endpoint is reachable.
+		// The instance's provider; a chat's own model adds its provider when it is first used.
+		// Which of them can actually be reached is apiKey's call (the instance's policy).
 		models.setProvider(provider);
 
 		const registry = createRegistry();
@@ -76,7 +86,7 @@ export const piDurableEngine: DurableEngine = {
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		const harness = await Harness.open(storage, { models, registry }, context);
-		return new PiDurableSession(harness, options);
+		return new PiDurableSession(harness, models, options);
 	},
 };
 
@@ -89,6 +99,7 @@ class PiDurableSession implements EngineSession {
 
 	constructor(
 		private readonly harness: Harness,
+		private readonly models: MutableModels,
 		private readonly options: EngineOpenOptions,
 	) {}
 
@@ -96,6 +107,8 @@ class PiDurableSession implements EngineSession {
 		// Submitting starts Pi's scheduler: reattach the previous process's open work first.
 		await this.recover();
 		const conversationId = await this.conversationFor(threadKey);
+		// Each message: the owner may have changed the instance's model, or the person the chat's.
+		await this.alignAgent(conversationId, threadKey);
 		const conversation = await this.harness.conversation(conversationId, context);
 		if (conversation === undefined) throw new Error(`Conversation ${conversationId} of ${threadKey} is missing`);
 		if (requestId !== undefined) {
@@ -149,12 +162,24 @@ class PiDurableSession implements EngineSession {
 			// Work left half done goes on with the instance's model, before the scheduler starts.
 			if (!aligned.has(record.conversationId)) {
 				aligned.add(record.conversationId);
-				await this.alignAgent(record.conversationId);
+				await this.alignAgent(record.conversationId, threadKey);
 			}
 			pending++;
 			this.track(submission, threadKey);
 		}
 		return pending;
+	}
+
+	async setThreadModel(threadKey: string, model: ModelSelection | undefined): Promise<void> {
+		await this.harness.commit(async (tx) => {
+			const { models } = await tx.doc(ThreadModelsDoc);
+			if (model === undefined) delete models[threadKey];
+			else models[threadKey] = { provider: model.provider, modelId: model.modelId };
+		}, context);
+	}
+
+	async threadModel(threadKey: string): Promise<ModelSelection | undefined> {
+		return (await this.harness.snapshot(ThreadModelsDoc, context))?.models[threadKey];
 	}
 
 	onReply(listener: (reply: EngineReply) => void): () => void {
@@ -187,15 +212,12 @@ class PiDurableSession implements EngineSession {
 
 	private async findOrCreate(threadKey: string): Promise<ConversationId> {
 		const existing = (await this.threads())[threadKey];
-		if (existing !== undefined) {
-			await this.alignAgent(existing as ConversationId);
-			return existing as ConversationId;
-		}
+		if (existing !== undefined) return existing as ConversationId;
 		const conversation = await this.harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
 				agent: {
-					model: this.options.model,
+					model: await this.modelOf(threadKey),
 					...(this.options.instructions === undefined ? {} : { instructions: this.options.instructions }),
 				},
 				// Same commit as the conversation: the mapping can never point to nothing.
@@ -209,14 +231,15 @@ class PiDurableSession implements EngineSession {
 	}
 
 	/**
-	 * A conversation keeps the model and instructions it was created with. The instance's are
-	 * the ones that count: after the owner changes them, an old thread answers with the new
-	 * ones (its history stays). Written only when they differ.
+	 * A conversation keeps the model and instructions it was created with. The ones that count
+	 * are the instance's, or the chat's own model: after either changes, an old thread answers
+	 * with the new ones (its history stays). Written only when they differ.
 	 */
-	private async alignAgent(id: ConversationId): Promise<void> {
+	private async alignAgent(id: ConversationId, threadKey: string): Promise<void> {
 		const conversation = await this.harness.conversation(id, context);
 		if (conversation === undefined) return;
-		const { model, instructions } = this.options;
+		const model = await this.modelOf(threadKey);
+		const { instructions } = this.options;
 		await conversation.commit(async (tx) => {
 			const agent = await tx.doc(AgentDoc, id);
 			const sameModel = agent.model?.provider === model.provider && agent.model?.modelId === model.modelId;
@@ -224,6 +247,13 @@ class PiDurableSession implements EngineSession {
 			if (sameModel && sameInstructions) return;
 			await configure(tx, id, { ...(sameModel ? {} : { model }), ...(sameInstructions ? {} : { instructions: instructions ?? null }) });
 		}, context);
+	}
+
+	/** The chat's own model or the instance's, with its provider registered. */
+	private async modelOf(threadKey: string): Promise<ModelSelection> {
+		const model = (await this.threadModel(threadKey)) ?? this.options.model;
+		if (this.models.getProvider(model.provider) === undefined) this.models.setProvider(createProvider(model.provider));
+		return model;
 	}
 
 	/** Each submission is tracked, and so replied to, at most once per session. */

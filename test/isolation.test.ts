@@ -14,6 +14,8 @@ function recordingEngine(opened: EngineOpenOptions[]): DurableEngine {
 				submit: async () => ({ submissionId: "0" }),
 				resume: async () => ({ pending: 0 }),
 				reattach: async () => false,
+				setThreadModel: async () => {},
+				threadModel: async () => undefined,
 				onReply: () => () => {},
 				idle: async () => {},
 				close: async () => {},

@@ -35,6 +35,13 @@ export interface EngineSession {
 	 * also when it has already settled. At most once per session. false: unknown submission.
 	 */
 	reattach(submissionId: string, threadKey: string): Promise<boolean>;
+	/**
+	 * The model one conversation answers with instead of the instance's (ADR 0036), from its next
+	 * message on and after a restart. undefined: back to the instance's model.
+	 */
+	setThreadModel(threadKey: string, model: ModelSelection | undefined): Promise<void>;
+	/** The conversation's own model, when it has one. */
+	threadModel(threadKey: string): Promise<ModelSelection | undefined>;
 	onReply(listener: (reply: EngineReply) => void): () => void;
 	/** Resolves when no work is running or pending. */
 	idle(): Promise<void>;
