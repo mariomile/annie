@@ -285,7 +285,11 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (voice === undefined) throw new ConfigError("ANNIE_SPEECH_VOICE: the voice of this speech service");
 		const maxChars = Number(nonEmpty(env.ANNIE_SPEECH_MAX_CHARS) ?? "1500");
 		if (!Number.isInteger(maxChars) || maxChars < 100 || maxChars > 4000) throw new ConfigError("ANNIE_SPEECH_MAX_CHARS: whole characters between 100 and 4000");
-		speech = { url: speechUrl.replace(/\/+$/, ""), apiKey: speechKey, model, voice, maxChars };
+		const maxPerDay = Number(nonEmpty(env.ANNIE_SPEECH_MAX_PER_DAY) ?? "300");
+		if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_SPEECH_MAX_PER_DAY: voice notes per day, a whole number from 1");
+		const style = nonEmpty(env.ANNIE_SPEECH_STYLE);
+		if (style !== undefined && style.length > 500) throw new ConfigError("ANNIE_SPEECH_STYLE: at most 500 characters");
+		speech = { url: speechUrl.replace(/\/+$/, ""), apiKey: speechKey, model, voice, maxChars, maxPerDay, ...(style === undefined ? {} : { style }) };
 	}
 	const searchKey = nonEmpty(env.ANNIE_SEARCH_API_KEY);
 	let webSearch: WebSearchConfig | undefined;

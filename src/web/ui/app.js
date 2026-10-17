@@ -41,6 +41,7 @@ const ICONS = {
 	inizia: ["M5 21V4", "M5 4h11l-2 4 2 4H5"],
 	install: ["M12 3v12", "m7 10 5 5 5-5", "M5 21h14"],
 	listen: ["M4 9v6h4l5 4V5L8 9H4Z", "M16.5 8.5a5 5 0 0 1 0 7", "M19 6a8.5 8.5 0 0 1 0 12"],
+	stop: ["M7 7h10v10H7Z"],
 	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
 	segreteria: ["M3 13h5l1.5 2.5h5L16 13h5", "M5.5 5h13L21 13v6H3v-6Z"],
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
@@ -503,10 +504,9 @@ function googleCard(inst, allowed) {
 	);
 }
 
-/** Owner: voice messages of this instance transcribed by the server's service. */
 /** Owner: replies as voice notes, made by the server's speech service (ADR 0020). */
-function speechCard(inst, host, allowed) {
-	const toggle = h("input", { type: "checkbox", checked: allowed });
+function speechCard(inst, host, allowed, understood) {
+	const toggle = h("input", { type: "checkbox", checked: allowed, disabled: !allowed && !understood });
 	toggle.addEventListener("change", async () => {
 		try {
 			await api(`/api/instances/${inst.id}/speech`, { method: "PUT", body: { allowed: toggle.checked } });
@@ -520,11 +520,13 @@ function speechCard(inst, host, allowed) {
 	return h(
 		"div.card.pad",
 		h("h3", "Risposte a voce"),
-		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Annie risponde con un vocale e con il testo. La voce la fa ${host}: riceve solo il testo della risposta, mai l'audio di chi scrive.`),
+		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Annie risponde con un vocale e con il testo. Ognuno può chiederle «rispondimi sempre a voce» o «niente vocali». La voce la fa ${host}: riceve solo il testo delle risposte da leggere, mai i vocali di chi le scrive.`),
+		understood ? null : h("p.chip.warn", "Per rispondere ai vocali Annie deve prima capirli: accendi anche Messaggi vocali."),
 		h("label.row-gap", toggle, h("span", "Rispondi a voce ai vocali")),
 	);
 }
 
+/** Owner: voice messages of this instance transcribed by the server's service. */
 function voiceCard(inst, host, allowed) {
 	const toggle = h("input", { type: "checkbox", checked: allowed });
 	toggle.addEventListener("change", async () => {
@@ -1001,7 +1003,7 @@ async function viewChat(main) {
 					}),
 				)
 			: null;
-		const listen = entry.from === "annie" && entry.text && "speechSynthesis" in window ? h("button.listen", { type: "button", "aria-label": "Ascolta", title: "Ascolta", onclick: () => readAloud(entry.text) }, icon("listen")) : null;
+		const listen = entry.from === "annie" && entry.text ? listenButton(entry.text) : null;
 		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at), listen), pictures, entry.text || entry.file || !pictures ? body : null);
 		transcript.append(el);
 		return el;
@@ -1388,29 +1390,74 @@ async function viewApprovals(main) {
 
 // ---------- ascolta ----------
 /**
- * A reply read aloud by the browser's own voice: nothing leaves the device. Tapping again, or
- * on another reply, stops the one being read.
+ * A reply read aloud by a voice installed on this device: only local voices, so the text never
+ * leaves it (some browsers' voices are online services). No local voice in the page's language:
+ * no button. Read sentence by sentence, since some browsers stop a long utterance midway.
  */
-function readAloud(text) {
-	const synth = window.speechSynthesis;
-	const again = synth.speaking && readAloud.text === text;
-	synth.cancel();
-	readAloud.text = undefined;
-	if (again) return;
-	const said = text
+const listening = { button: undefined, voice: undefined };
+
+function localVoice() {
+	if (!("speechSynthesis" in window)) return undefined;
+	listening.voice ??= window.speechSynthesis.getVoices().find((v) => v.localService && v.lang?.toLowerCase().startsWith("it"));
+	return listening.voice;
+}
+// Chrome lists its voices only after a while: buttons drawn before that appear on the next render.
+if ("speechSynthesis" in window) window.speechSynthesis.addEventListener?.("voiceschanged", () => (listening.voice = undefined));
+window.addEventListener("hashchange", () => stopReading());
+
+function stopReading() {
+	if (!("speechSynthesis" in window)) return;
+	window.speechSynthesis.cancel();
+	listening.button?.replaceChildren(icon("listen"));
+	listening.button?.setAttribute("aria-label", "Ascolta");
+	listening.button?.setAttribute("aria-pressed", "false");
+	listening.button = undefined;
+}
+
+/** What is said: the same rules as the voice notes on Telegram and WhatsApp (src/channels/speech.ts). */
+function speakable(text) {
+	return text
 		.replace(/```[\s\S]*?```/g, " ")
-		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+		.replace(/`([^`]*)`/g, "$1")
+		.replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+		.replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]*\)/g, "$1")
 		.replace(/\bhttps?:\/\/\S+/g, "link")
-		.replace(/[*_`#>|~]/g, "")
+		.replace(/^\s{0,3}#{1,6}\s+/gm, "")
+		.replace(/^\s*(?:[-*•]|\d+[.)])\s+/gm, "")
+		.replace(/^\s*>\s?/gm, "")
+		.replace(/(\*\*|__|\*|_|~~)(?=\S)([\s\S]*?\S)\1/g, "$2")
+		.replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, "")
+		.replace(/\|/g, " ")
+		.replace(/[ \t]+/g, " ")
+		.replace(/\s*\n\s*/g, "\n")
+		.replace(/\n{2,}/g, "\n")
 		.trim();
-	if (said === "") return;
-	const utterance = new SpeechSynthesisUtterance(said);
-	utterance.lang = "it-IT";
-	const voice = synth.getVoices().find((v) => v.lang?.toLowerCase().startsWith("it"));
-	if (voice) utterance.voice = voice;
-	utterance.onend = () => (readAloud.text = undefined);
-	readAloud.text = text;
-	synth.speak(utterance);
+}
+
+function listenButton(text) {
+	if (!localVoice()) return null;
+	const button = h("button.listen", { type: "button", "aria-label": "Ascolta", "aria-pressed": "false", title: "Ascolta" }, icon("listen"));
+	button.addEventListener("click", () => {
+		const again = listening.button === button;
+		stopReading();
+		if (again) return;
+		const voice = localVoice();
+		const sentences = (speakable(text).match(/[^.!?\n]+[.!?]*[»"')\]]*\s*/g) ?? []).filter((x) => /[\p{L}\p{N}]/u.test(x));
+		if (!voice || sentences.length === 0) return;
+		listening.button = button;
+		button.replaceChildren(icon("stop"));
+		button.setAttribute("aria-label", "Ferma");
+		button.setAttribute("aria-pressed", "true");
+		sentences.forEach((sentence, i) => {
+			const utterance = new SpeechSynthesisUtterance(sentence.trim());
+			utterance.voice = voice;
+			utterance.lang = voice.lang;
+			if (i === sentences.length - 1) utterance.onend = () => listening.button === button && stopReading();
+			utterance.onerror = () => listening.button === button && stopReading();
+			window.speechSynthesis.speak(utterance);
+		});
+	});
+	return button;
 }
 
 // ---------- primi passi ----------
@@ -1434,7 +1481,7 @@ function setupSteps(setup) {
 		{ id: "model", own: false, done: setup.model, title: "Collega un modello AI", text: setup.model ? "Annie usa un modello AI vero." : "Ora risponde il modello di prova, che ripete quello che scrivi. Lo collega chi gestisce il server di Annie (su Annie Cloud, l'assistenza): chiediglielo." },
 		{ id: "instructions", own: true, done: setup.instructions, title: "Dille chi è e cosa fa", text: "Due righe su di te o sulla tua azienda, il tono e cosa deve fare. Puoi partire da un esempio: vengono aggiunte a quello che Annie sa già fare, e le cambi quando vuoi in Impostazioni." },
 		{ id: "tried", own: true, done: setup.tried, title: "Scrivile qualcosa", text: `Una domanda, una foto, un file da riassumere: vedi subito come risponde.${setup.model ? "" : " Con il modello di prova la risposta ripete quello che scrivi."}` },
-		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
+		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto${can.transcription && can.speech ? ", ti risponde anche a voce" : ""}, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
 		{ id: "web", own: true, done: setup.web, title: "Lasciala cercare sul web", text: can.search ? "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati." : "Scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: ["impostazioni", can.search ? "ricerca" : "siti"] },
 		{ id: "people", own: true, done: setup.people, title: "Invita il tuo team", text: "Aggiungi le persone in Persone, poi in Impostazioni scegli chi può scrivere a questa istanza. Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: ["persone"] },
 		{ id: "app", own: canInstall(), done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home o sul desktop, a schermo intero, come un'app." },
@@ -2113,7 +2160,7 @@ async function viewSettings(main) {
 				tel === undefined ? null : phoneCard(inst, tel.phone),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
-				speech.available ? anchor("voce", speechCard(inst, speech.host, (settings.egress.connectors ?? []).includes("speech"))) : null,
+				speech.available ? anchor("voce", speechCard(inst, speech.host, (settings.egress.connectors ?? []).includes("speech"), voice.available && (settings.egress.connectors ?? []).includes("voice"))) : null,
 				search.available ? anchor("ricerca", searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? [])) : null,
 				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),

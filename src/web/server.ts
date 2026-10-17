@@ -815,7 +815,7 @@ export function createWebApp(options: WebAppOptions): Server {
 				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
 				people: others.length > 0,
 				// What this server offers, so the console does not count a step nobody can take here.
-				can: { search: options.search !== undefined, transcription: options.voice !== undefined },
+				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined },
 			},
 		};
 	});

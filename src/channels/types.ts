@@ -106,8 +106,13 @@ export interface ChannelAdapter {
 	send(message: OutboundMessage): Promise<void>;
 	/** Resolves once the channel has accepted the file. Optional: channels without files omit it. */
 	sendFile?(file: OutboundFile): Promise<void>;
-	/** Resolves once the channel has accepted the voice note and its text. Optional: channels without voice notes omit it. */
+	/**
+	 * Resolves once the channel has accepted the text; the voice note before it is best effort (a
+	 * channel that refuses it still gets the text). Optional: channels without voice notes omit it.
+	 */
 	sendVoice?(voice: OutboundVoice): Promise<void>;
+	/** Show that a voice note is being recorded in this thread; best effort, never throws. */
+	recording?(threadId: string): Promise<void>;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { IMAGE_LIMITS, imageType } from "../core/images.ts";
-import { audioName, type Transcribe, tooLong, voiceText } from "./voice.ts";
+import { audioName, TRANSCRIBED, type Transcribe, tooLong, voiceText } from "./voice.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
 
@@ -158,8 +158,19 @@ export class TelegramAdapter implements ChannelAdapter {
 		form.set("chat_id", voice.threadId);
 		form.set("voice", new Blob([Uint8Array.from(voice.audio)], { type: "audio/ogg" }), "risposta.ogg");
 		if (fits && text !== "") form.set("caption", text);
-		await this.call("sendVoice", form);
-		if (!fits) for (const chunk of splitText(text)) await this.call("sendMessage", { chat_id: voice.threadId, text: chunk });
+		try {
+			await this.call("sendVoice", form);
+			if (fits) return;
+		} catch (error) {
+			// Refused for good (the person does not take voice messages): the text still goes.
+			if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+			this.options.log?.(`telegram: voice note refused, text only: ${error.message}`);
+		}
+		for (const chunk of splitText(text)) await this.call("sendMessage", { chat_id: voice.threadId, text: chunk });
+	}
+
+	async recording(threadId: string): Promise<void> {
+		await this.call("sendChatAction", { chat_id: threadId, action: "record_voice" }).catch(() => {});
 	}
 
 	/** One getUpdates round; exposed for tests. Returns the number of updates handled. */
@@ -289,7 +300,8 @@ export class TelegramAdapter implements ChannelAdapter {
 			privateThread: message.chat.type === "private",
 			messageId: `${message.chat.id}:${message.message_id}`,
 			...(attachments.length === 0 ? {} : { attachments }),
-			...(sound === undefined ? {} : { voice: true }),
+			// The person spoke, and Annie understood: a song sent as audio, or a voice not transcribed, is not a question to answer aloud.
+			...(message.voice !== undefined && text.startsWith(TRANSCRIBED) ? { voice: true } : {}),
 		});
 	}
 

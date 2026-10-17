@@ -184,12 +184,12 @@ Facoltativi: `ANNIE_SEARCH_COUNTRY` e `ANNIE_SEARCH_LANG` (risultati dall'Italia
 
 ### 14. Risposte a voce: `ANNIE_SPEECH_URL` e `ANNIE_SPEECH_API_KEY`
 
-Senza queste variabili Annie risponde sempre per iscritto. Con queste, a chi le manda un vocale su Telegram o WhatsApp risponde con un vocale e con il testo ([ADR 0020](adr/0020-risposte-a-voce.md)). Al servizio va solo il testo della risposta.
+Senza queste variabili Annie risponde sempre per iscritto. Con queste, a chi le manda un vocale su Telegram o WhatsApp risponde con un vocale e con il testo, e chi vuole può chiederle «rispondimi sempre a voce» o «niente vocali» ([ADR 0020](adr/0020-risposte-a-voce.md)). Al servizio va solo il testo delle risposte da leggere, fuori dall'Unione Europea nel caso di OpenAI.
 
 1. https://platform.openai.com → entra con l'account di Buildrs → **Billing**: aggiungi un metodo di pagamento. Il prezzo si paga a caratteri o a minuti di audio: controlla il listino aggiornato su https://openai.com/api/pricing prima di accendere.
 2. **API keys → Create new secret key**, nome `annie-voce`, con permesso solo sul modello audio se la console lo consente. La chiave va in `ANNIE_SPEECH_API_KEY`.
-3. `ANNIE_SPEECH_URL=https://api.openai.com/v1`. Modello `gpt-4o-mini-tts` e voce `nova` se non indichi altro in `ANNIE_SPEECH_MODEL` e `ANNIE_SPEECH_VOICE`.
-4. Facoltativo: `ANNIE_SPEECH_MAX_CHARS`, la risposta più lunga letta ad alta voce (1500 caratteri se non lo metti; le più lunghe restano solo testo).
+3. `ANNIE_SPEECH_URL=https://api.openai.com/v1`. Modello `gpt-4o-mini-tts` e voce `nova` se non indichi altro in `ANNIE_SPEECH_MODEL` e `ANNIE_SPEECH_VOICE`. La voce è una per tutto il server; quelle di OpenAI (per esempio `alloy`, `coral`, `nova`, `sage`, `shimmer`) sono elencate e si ascoltano su https://platform.openai.com/docs/guides/text-to-speech.
+4. Facoltativi: `ANNIE_SPEECH_MAX_CHARS`, quanto di una risposta viene letto (1500 caratteri se non lo metti; di una più lunga si leggono le prime frasi e il resto resta scritto); `ANNIE_SPEECH_MAX_PER_DAY`, i vocali al giorno per tutto il server (300 se non lo metti; poi le risposte vanno solo per iscritto fino al giorno dopo); `ANNIE_SPEECH_STYLE`, come parlare, per i modelli che lo accettano (per esempio «Parla in italiano, tono cordiale e naturale»).
 5. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
 6. `pnpm annie check` controlla la chiave senza produrre audio.
 7. Poi, in ogni istanza che deve rispondere a voce: Impostazioni → **Risposte a voce** → spunta «Rispondi a voce ai vocali». Perché Annie capisca i vocali serve anche il punto 10.

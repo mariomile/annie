@@ -101,7 +101,7 @@ async function speechCheck(config: { url: string; apiKey: string; model: string;
 	const response = await reach(call, `${config.url}/models`, { headers: { authorization: `Bearer ${config.apiKey}` } });
 	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_SPEECH_API_KEY");
 	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_SPEECH_URL`);
-	return `chiave valida, modello ${config.model}, voce ${config.voice}`;
+	return `chiave valida (modello ${config.model} e voce ${config.voice} non verificati: prova un vocale)`;
 }
 
 /** One search for a word everyone has: the key works and results come back. */
