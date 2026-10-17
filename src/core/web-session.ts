@@ -133,7 +133,13 @@ export type View = {
 	readonly screenshot?: Uint8Array;
 };
 
-export type ViewOptions = { readonly find?: string; readonly from?: number; readonly screenshot?: boolean };
+export type ViewOptions = {
+	readonly find?: string;
+	readonly from?: number;
+	readonly screenshot?: boolean;
+	/** A person drove the page from the console's panel: the agente's last view no longer matches it. */
+	readonly person?: true;
+};
 
 const PAGE_BUDGET: Budget = { requests: 400, bytes: 40 * 1024 * 1024 };
 export const MAX_ELEMENTS = 80;
@@ -308,7 +314,18 @@ type Session = {
 	used: number;
 	busy: boolean;
 	queue: Promise<unknown>;
+	/** Counts the actions done: what someone watching compares to know the page may have changed. */
+	version: number;
+	/** The last picture taken for someone watching, and at which version. */
+	picture: { readonly version: number; readonly png: Uint8Array } | undefined;
+	/** Where the page was after the last action, for someone watching without asking Chromium. */
+	shown: { readonly url: string; readonly title: string };
+	/** A person moved the page since the agente's last view: its numbers point elsewhere now. */
+	movedByPerson: boolean;
 };
+
+/** A conversation's browser as someone watching it sees it (the console's browser panel). */
+export type BrowserState = { readonly open: true; readonly url: string; readonly title: string; readonly version: number; readonly busy: boolean } | { readonly open: false; readonly closed?: string };
 
 /**
  * Browsers that stay open for a conversation (ADR 0014): one per conversation, closed after a
@@ -378,6 +395,46 @@ export class BrowseSessions {
 		return this.sessions.has(key);
 	}
 
+	/** Where the conversation's browser is, as of its last action: no question to Chromium, so it is cheap to ask often. */
+	state(key: string): BrowserState {
+		const s = this.sessions.get(key);
+		if (s === undefined) {
+			const closed = this.closed.get(key);
+			return closed === undefined ? { open: false } : { open: false, closed };
+		}
+		return { open: true, ...s.shown, version: s.version, busy: s.busy };
+	}
+
+	/**
+	 * What is on screen, for someone watching: taken between actions, and taken again only after
+	 * one. It changes nothing on the page, so the numbers of the agente's last view stay valid.
+	 */
+	picture(key: string): Promise<{ readonly png: Uint8Array; readonly version: number } | undefined> {
+		const s = this.sessions.get(key);
+		if (s === undefined) return Promise.resolve(undefined);
+		// Never ahead of the agente: while it acts, the last picture is what there is.
+		if (s.picture?.version === s.version || s.busy) return Promise.resolve(s.picture);
+		const run = s.queue
+			.catch(() => {})
+			.then(async () => {
+				if (this.sessions.get(key) !== s) return undefined;
+				if (s.picture?.version === s.version) return s.picture;
+				const version = s.version;
+				// Busy, so the idle timer and the room for other conversations leave this session alone meanwhile.
+				s.busy = true;
+				const png = await within(s.page.screenshot({ fullPage: false, type: "png", timeout: READ_TIMEOUT_MS }), READ_TIMEOUT_MS + 1_000)
+					.catch(() => undefined)
+					.finally(() => {
+						s.busy = false;
+					});
+				if (png === undefined) return s.picture;
+				s.picture = { version, png };
+				return s.picture;
+			});
+		s.queue = run;
+		return run;
+	}
+
 	async closeAll(): Promise<void> {
 		await Promise.all([...this.sessions.values()].map((s) => this.end(s, "chiusa")));
 	}
@@ -395,6 +452,7 @@ export class BrowseSessions {
 
 	/** The element `ref` of the last view, checked on the page as it is now: one element, the same kind. */
 	private async target(s: Session, ref: number): Promise<{ selector: string; live: { tag: string; type: string } }> {
+		if (s.movedByPerson) throw new BrowseError("chi ti scrive ha aperto un'altra pagina nel browser: guardala di nuovo con web_browse senza url");
 		const known = s.elements.get(ref);
 		if (known === undefined || s.attr === undefined) throw new BrowseError(`nella pagina non c'è l'elemento ${ref}: usa i numeri dell'ultima vista`);
 		const selector = `[${s.attr}="${ref}"]`;
@@ -429,7 +487,7 @@ export class BrowseSessions {
 			context.on("page", (other) => {
 				if (other !== page) void other.close().catch(() => {});
 			});
-			this.sessions.set(key, { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve() });
+			this.sessions.set(key, { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false });
 			this.closed.delete(key);
 		} catch (error) {
 			await context.close().catch(() => {});
@@ -473,6 +531,7 @@ export class BrowseSessions {
 					throw new BrowseError("la pagina non risponde ed è stata chiusa: riaprila con web_browse, o leggila con web_read");
 				} finally {
 					s.busy = false;
+					s.version += 1;
 					s.used = Date.now();
 					if (this.sessions.get(key) === s) {
 						s.timer = setTimeout(() => void this.end(s, "chiusa dopo qualche minuto senza azioni"), this.limits.idleMs);
@@ -545,7 +604,11 @@ export class BrowseSessions {
 			if (error instanceof Hung) throw error;
 			return "";
 		});
-		return { url: s.page.url().slice(0, 500), title: String(title).slice(0, 200), text, elements, notes, details, ...(screenshot === undefined ? {} : { screenshot }) };
+		const url = s.page.url().slice(0, 500);
+		s.shown = { url, title: String(title).slice(0, 200) };
+		// The agente reads this view; a person driving leaves its last one behind.
+		s.movedByPerson = options.person === true;
+		return { url, title: s.shown.title, text, elements, notes, details, ...(screenshot === undefined ? {} : { screenshot }) };
 	}
 }
 

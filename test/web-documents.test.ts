@@ -138,7 +138,7 @@ describe("documents on the web", () => {
 		expect(await call("web_download", { url: `${s.base}/scarica?id=7`, name: "download/a\uD800b" })).toMatch(/^Salvato download\/a_b\.xlsx /);
 		expect(await call("web_download", { url: `${s.base}/login` })).toBe("Errore: a questo indirizzo c'è una pagina web, non un file. Aprila con web_read per trovare il link al documento (o con web_browse se serve accedere).");
 		const closed = tools([]);
-		expect(await closed.call("web_download", { url: `${s.base}/docs/Listino%202026.pdf` })).toContain("non è tra i siti che questa istanza può leggere");
+		expect(await closed.call("web_download", { url: `${s.base}/docs/Listino%202026.pdf` })).toContain("non è tra i siti che questo agente può leggere");
 		expect(urlFileName("https://x.it/")).toBe("documento");
 		expect(urlFileName("https://x.it/%E0%A4")).toBe("_E0_A4");
 		expect(dispositionName('attachment; filename="../../etc/passwd"')).toBe("passwd");

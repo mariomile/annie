@@ -41,6 +41,7 @@ import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
 import { WorkspaceError } from "../core/workspace.ts";
 import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/images.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
+import type { BrowserState } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
 import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
@@ -87,6 +88,25 @@ function catalogTokenSecret(instanceId: string, connectorId: string): string {
 	return `connector.${connectorId}.${instanceId}.authorization`;
 }
 
+/**
+ * The browser of a console conversation, for the panel next to the chat (ADR 0044): the same
+ * browser the agente uses with web_browse, under the same site list.
+ */
+export type BrowserPanel = {
+	/** False when Chromium did not start on this server: the panel says so instead of offering a browser. */
+	available(): boolean;
+	state(instanceId: string, threadId: string): Promise<BrowserState>;
+	picture(instanceId: string, threadId: string): Promise<{ readonly png: Uint8Array; readonly version: number } | undefined>;
+	/** Rejects with BrowserPanelError when the site is not allowed or the page does not open. */
+	open(instanceId: string, threadId: string, url: string): Promise<BrowserState>;
+	back(instanceId: string, threadId: string): Promise<BrowserState>;
+};
+
+/** What the person can read: a site not allowed, a page that does not open, no browser on this server. */
+export class BrowserPanelError extends Error {
+	override readonly name = "BrowserPanelError";
+}
+
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
 	readonly tenantId: string;
@@ -97,6 +117,8 @@ export type WebAppOptions = {
 	readonly connectors: (instanceId: string) => ConnectorStore;
 	readonly connectorStatus: (instanceId: string) => readonly ConnectorStatus[];
 	readonly segreterie?: ReadonlyMap<string, SegreteriaService>;
+	/** The browser panel of the chat; without it the console shows none. */
+	readonly browser?: BrowserPanel;
 	readonly usage: UsageLedger;
 	readonly uiDir: string;
 	/** Send cookies with Secure (behind https). */
@@ -418,6 +440,57 @@ export function createWebApp(options: WebAppOptions): Server {
 		// The transcript reads without the instance: one that cannot open shows no model.
 		const model = await runtime.chatModel(tenantId, record.id, "web", thread.id).catch(() => undefined);
 		return { thread, entries: (await channel.transcript(thread.id)).map(shown), ...(model === undefined ? {} : { model: named(model) }) };
+	});
+	// --- the conversation's browser (ADR 0044): watched and driven from the panel next to the chat ---
+	const browserThread = async (person: Person, instanceId: string, threadId: string) => {
+		const { record } = await instanceAccess(person, instanceId);
+		if (options.browser === undefined) throw new HttpError(404, "Il browser non è disponibile su questo server");
+		const thread = await channelOf(instanceId).thread(threadId);
+		if (thread === undefined || thread.personId !== person.id) throw new HttpError(404, "No such thread");
+		// Who may drive it: who may chat here now, the same rule as the console's chat.
+		const canChat = (record.allowedUsers.web ?? []).includes(person.id) && record.egress.channels.includes("web");
+		return { browser: options.browser, canChat };
+	};
+	const browserCall = async (work: () => Promise<BrowserState>) => {
+		try {
+			return await work();
+		} catch (error) {
+			if (error instanceof BrowserPanelError) throw new HttpError(400, error.message);
+			throw error;
+		}
+	};
+	route("GET", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params }) => {
+		const { browser } = await browserThread(person as Person, params[0] as string, params[1] as string);
+		return { browser: await browser.state(params[0] as string, params[1] as string), available: browser.available() };
+	});
+	route("GET", "/api/instances/:id/threads/:thread/browser.png", "person", async ({ person, params, res }) => {
+		const { browser } = await browserThread(person as Person, params[0] as string, params[1] as string);
+		const picture = await browser.picture(params[0] as string, params[1] as string);
+		if (picture === undefined) throw new HttpError(404, "Nessuna pagina aperta");
+		res.writeHead(200, { "content-type": "image/png", "content-length": picture.png.length, "x-content-type-options": "nosniff", "cache-control": "no-store" });
+		res.end(picture.png);
+		return STREAMED;
+	});
+	route("POST", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params, req }) => {
+		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
+		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
+		const body = (await readJson(req)) as { url?: unknown; back?: unknown };
+		const [instanceId, threadId] = [params[0] as string, params[1] as string];
+		if (body.back === true) return { browser: await browserCall(() => browser.back(instanceId, threadId)) };
+		if (typeof body.url !== "string" || body.url.trim() === "" || body.url.length > 2000) throw new HttpError(400, "Scrivi l'indirizzo di una pagina");
+		const raw = body.url.trim();
+		const url = /^[a-z][\w+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+		// Which site, never the full address: the audit keeps who drove the agente's browser where, refused or not.
+		const host = URL.canParse(url) ? new URL(url).host : "";
+		const record = (ok: boolean) => runtime.audit(tenantId).append({ type: "web.browser.opened", instanceId, personId: (person as Person).id, host, ok });
+		try {
+			const state = await browserCall(() => browser.open(instanceId, threadId, url));
+			await record(true);
+			return { browser: state };
+		} catch (error) {
+			await record(false);
+			throw error;
+		}
 	});
 	// --- a chat's own model (ADR 0036): among the providers with a key that the owner allowed ---
 	route("GET", "/api/instances/:id/chat-models", "person", async ({ person, params }) => {

@@ -298,7 +298,7 @@ describe("sentinelle", () => {
 	it("refuses a site the owner did not allow, a phrase or price that is not there, a group and the phone", async () => {
 		const s = await site({ "/p": { body: "<p>Ciao</p>" } });
 		const h = await setup({ modelProviders: ["faux"], channels: ["telegram"], web: ["example.com"] });
-		expect(await h.say(`/tool watch_create {"url":"${s.base}/p"}`)).toContain("il sito non è tra quelli che questa istanza può leggere");
+		expect(await h.say(`/tool watch_create {"url":"${s.base}/p"}`)).toContain("il sito non è tra quelli che questo agente può leggere");
 		expect(s.hits()).toBe(0);
 		const open = await setup();
 		expect(await open.say(`/tool watch_create {"url":"${s.base}/p","what":"Prezzo"}`)).toContain("non trovo «Prezzo» nella pagina");

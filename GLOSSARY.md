@@ -210,7 +210,7 @@ Una pagina che un'istanza controlla da sola ogni tanto (da 30 minuti a una setti
 _Avoid_: watcher, monitor, alert
 
 **Browser**:
-La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
+La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer. Nella console si vede e si guida dal pannello «Browser» accanto alla chat.
 _Avoid_: computer, automazione del browser, agente web
 
 **Immagine su richiesta**:
