@@ -1,7 +1,7 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
-import type { TranscriberConfig } from "../channels/voice.ts";
+import { TIMESTAMP_STYLES, type TimestampStyle, type TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;
@@ -275,7 +275,17 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (model === undefined) throw new ConfigError("ANNIE_TRANSCRIBE_MODEL: the model of this transcription service");
 		const maxSeconds = Number(nonEmpty(env.ANNIE_TRANSCRIBE_MAX_SECONDS) ?? "300");
 		if (!Number.isInteger(maxSeconds) || maxSeconds < 10 || maxSeconds > 3600) throw new ConfigError("ANNIE_TRANSCRIBE_MAX_SECONDS: whole seconds between 10 and 3600");
-		transcription = { url: transcribeUrl, apiKey: transcribeKey, model, maxSeconds };
+		// The time of each passage of a recording: Mistral and OpenAI's whisper-1 give it, each its own way.
+		const mistral = new URL(transcribeUrl).hostname === "api.mistral.ai";
+		const timestamps = nonEmpty(env.ANNIE_TRANSCRIBE_TIMESTAMPS) ?? (mistral ? "mistral" : model === "whisper-1" ? "openai" : "none");
+		if (!(TIMESTAMP_STYLES as readonly string[]).includes(timestamps)) throw new ConfigError(`ANNIE_TRANSCRIBE_TIMESTAMPS: one of ${TIMESTAMP_STYLES.join(", ")}`);
+		const speakers = nonEmpty(env.ANNIE_TRANSCRIBE_SPEAKERS) ?? (mistral ? "1" : "0");
+		if (!["0", "1", "true", "false"].includes(speakers)) throw new ConfigError("ANNIE_TRANSCRIBE_SPEAKERS: 1 when the service tells voices apart (Mistral's diarize), 0 otherwise");
+		const maxMinutes = Number(nonEmpty(env.ANNIE_TRANSCRIBE_MAX_MINUTES) ?? "180");
+		if (!Number.isInteger(maxMinutes) || maxMinutes < 1 || maxMinutes > 600) throw new ConfigError("ANNIE_TRANSCRIBE_MAX_MINUTES: whole minutes between 1 and 600");
+		const minutesPerDay = Number(nonEmpty(env.ANNIE_TRANSCRIBE_MINUTES_PER_DAY) ?? "600");
+		if (!Number.isInteger(minutesPerDay) || minutesPerDay < 0 || minutesPerDay > 100_000) throw new ConfigError("ANNIE_TRANSCRIBE_MINUTES_PER_DAY: whole minutes between 0 and 100000");
+		transcription = { url: transcribeUrl, apiKey: transcribeKey, model, maxSeconds, timestamps: timestamps as TimestampStyle, speakers: speakers === "1" || speakers === "true", maxMinutes, minutesPerDay };
 	}
 	const speechUrl = nonEmpty(env.ANNIE_SPEECH_URL);
 	const speechKey = nonEmpty(env.ANNIE_SPEECH_API_KEY);

@@ -8,7 +8,7 @@ import { startAnnie } from "../src/app.ts";
 import { TelegramAdapter } from "../src/channels/telegram.ts";
 import type { InboundMessage } from "../src/channels/types.ts";
 import { WhatsAppAdapter, type WhatsAppWebhook } from "../src/channels/whatsapp.ts";
-import { transcriber, voiceText } from "../src/channels/voice.ts";
+import { type TranscriberConfig, transcriber, voiceText } from "../src/channels/voice.ts";
 import { ConfigError, loadAnnieConfig } from "../src/main/config.ts";
 import { runChecks } from "../src/main/check.ts";
 import { tempDataDir } from "./helpers.ts";
@@ -27,7 +27,7 @@ function fakeTranscriber(answer: () => Response = () => Response.json({ text: " 
 	return { received, fetch: fetchImpl };
 }
 
-const config = { url: "https://api.mistral.ai/v1/", apiKey: KEY, model: "voxtral-mini-latest", maxSeconds: 60 };
+const config: TranscriberConfig = { url: "https://api.mistral.ai/v1/", apiKey: KEY, model: "voxtral-mini-latest", maxSeconds: 60, timestamps: "mistral", speakers: true, maxMinutes: 180, minutesPerDay: 600 };
 
 describe("voice messages", () => {
 	it("sends the audio to the chosen service and passes the words on, marked as transcribed", async () => {
@@ -72,7 +72,7 @@ describe("voice messages", () => {
 		adapter.onInbound(async (m) => void inbound.push(m));
 		await adapter.handleUpdate({ update_id: 1, message: { message_id: 1, chat: { id: 7, type: "private" }, from: { id: 7 }, voice: { file_id: "v1", duration: 4, mime_type: "audio/ogg" } } });
 		await adapter.handleUpdate({ update_id: 2, message: { message_id: 2, chat: { id: 8, type: "private" }, from: { id: 8 }, voice: { file_id: "v2", duration: 4 } } });
-		// An audio file keeps its name; one too long is refused before downloading; one too big is said, not dropped.
+		// An audio file keeps its name; one longer than a message is kept as a recording (ADR 0033); one too big is said, not dropped.
 		await adapter.handleUpdate({ update_id: 3, message: { message_id: 3, chat: { id: 7, type: "private" }, from: { id: 7 }, audio: { file_id: "a1", duration: 30, mime_type: "audio/mpeg", file_name: "nota.mp3" } } });
 		await adapter.handleUpdate({ update_id: 4, message: { message_id: 4, chat: { id: 7, type: "private" }, from: { id: 7 }, voice: { file_id: "long", duration: 61 } } });
 		await adapter.handleUpdate({ update_id: 5, message: { message_id: 5, chat: { id: 7, type: "private" }, from: { id: 7 }, audio: { file_id: "huge", duration: 20, file_size: 30 * 1024 * 1024 } } });
@@ -80,10 +80,12 @@ describe("voice messages", () => {
 			["7", "[Messaggio vocale, trascritto] Ciao, richiamami domani"],
 			["8", "[Messaggio vocale]"],
 			["7", "[Messaggio vocale, trascritto] Ciao, richiamami domani"],
-			["7", "[Messaggio vocale troppo lungo da trascrivere. Chiedi di dividerlo o di scriverlo.]"],
+			["7", ""],
 			["7", "[Messaggio vocale troppo grande o non disponibile.]"],
 		]);
-		expect(downloads).toEqual(["v1.oga", "a1.oga"]);
+		expect(inbound[3]?.attachments?.map((a) => a.name)).toEqual(["vocale-lungo.ogg"]);
+		expect(inbound[3]?.voice).toBeUndefined();
+		expect(downloads).toEqual(["v1.oga", "a1.oga", "long.oga"]);
 		expect(service.received.map((r) => [r.name, r.type])).toEqual([
 			["vocale.ogg", "audio/ogg"],
 			["nota.mp3", "audio/mpeg"],
@@ -130,6 +132,30 @@ describe("voice messages", () => {
 		expect(graph.some((p) => p.endsWith("audio-2"))).toBe(false);
 	});
 
+	it("WhatsApp: a long recording and a video become files for audio_transcribe, not words", async () => {
+		const service = fakeTranscriber();
+		const recording = new Uint8Array(readFileSync(join(import.meta.dirname, "fixtures", "audio", "riunione.mp3")));
+		const graphFetch = (async (url: string | URL | Request) => {
+			const href = String(url);
+			if (/\/(audio|video)-1$/.test(href)) return Response.json({ url: `https://lookaside.fbsbx.com/x/?mid=${href.split("/").at(-1)}`, file_size: recording.length });
+			if (href.startsWith("https://lookaside.fbsbx.com/")) return new Response(recording);
+			return Response.json({ error: { message: "unknown", code: 100 } }, { status: 404 });
+		}) as typeof fetch;
+		const wa = new WhatsAppAdapter({ accessToken: "EAAGtoken0123456789abcdef", phoneNumberId: "111", appSecret: "a".repeat(32), verifyToken: "v", tenantId: "default", instanceId: "annie", apiBase: "https://graph.facebook.com/v26.0", fetch: graphFetch, transcribe: transcriber({ ...config, maxSeconds: 10 }, service.fetch) });
+		const inbound: InboundMessage[] = [];
+		wa.onInbound(async (m) => void inbound.push(m));
+		const messages = [
+			{ from: "393331234567", id: "wamid.a1", type: "audio", audio: { id: "audio-1", mime_type: "audio/mpeg", voice: true } },
+			{ from: "393331234567", id: "wamid.v1", type: "video", video: { id: "video-1", mime_type: "video/mp4", caption: "La riunione" } },
+		];
+		await wa.handleWebhook({ entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: "111" }, messages } }] }] } as WhatsAppWebhook);
+		expect(inbound.map((m) => [m.text, m.attachments?.map((a) => a.name)])).toEqual([
+			["", ["vocale-lungo.mp3"]],
+			["La riunione", ["video-wamid_v1.mp4"]],
+		]);
+		expect(service.received).toEqual([]);
+	});
+
 	it("configuration: both or neither; Mistral's model by default; pnpm annie check asks the service", async () => {
 		const base = { ANNIE_DATA_DIR: "/tmp/x", ANNIE_MODEL_PROVIDER: "faux" };
 		expect(loadAnnieConfig(base).transcription).toBeUndefined();
@@ -137,7 +163,7 @@ describe("voice messages", () => {
 		expect(() => loadAnnieConfig({ ...base, ANNIE_TRANSCRIBE_URL: "http://example.com/v1", ANNIE_TRANSCRIBE_API_KEY: KEY })).toThrow(/https/);
 		expect(() => loadAnnieConfig({ ...base, ANNIE_TRANSCRIBE_URL: "https://stt.example.com/v1", ANNIE_TRANSCRIBE_API_KEY: KEY })).toThrow(/ANNIE_TRANSCRIBE_MODEL/);
 		const loaded = loadAnnieConfig({ ...base, ANNIE_TRANSCRIBE_URL: "https://api.mistral.ai/v1", ANNIE_TRANSCRIBE_API_KEY: KEY });
-		expect(loaded.transcription).toEqual({ url: "https://api.mistral.ai/v1", apiKey: KEY, model: "voxtral-mini-latest", maxSeconds: 300 });
+		expect(loaded.transcription).toEqual({ url: "https://api.mistral.ai/v1", apiKey: KEY, model: "voxtral-mini-latest", maxSeconds: 300, timestamps: "mistral", speakers: true, maxMinutes: 180, minutesPerDay: 600 });
 		const asked: string[] = [];
 		const results = await runChecks(loaded, (async (url: string | URL | Request) => {
 			asked.push(String(url));

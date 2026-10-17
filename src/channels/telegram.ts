@@ -1,5 +1,5 @@
 import { IMAGE_LIMITS, imageType, isPhoto } from "../core/images.ts";
-import { audioName, TRANSCRIBED, type Transcribe, tooLong, voiceText } from "./voice.ts";
+import { audioName, isRecording, RECORDING_TOO_LARGE, TRANSCRIBED, type Transcribe, voiceText } from "./voice.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
 
@@ -66,6 +66,9 @@ export type TelegramUpdate = {
 		photo?: { file_id: string; file_size?: number; width?: number; height?: number }[];
 		voice?: TelegramSound;
 		audio?: TelegramSound;
+		/** A video, or a round video message: kept as a file, whose sound audio_transcribe can transcribe. */
+		video?: TelegramSound;
+		video_note?: TelegramSound;
 	};
 	callback_query?: {
 		id: string;
@@ -75,7 +78,7 @@ export type TelegramUpdate = {
 	};
 };
 
-/** A voice note or an audio file, as Telegram describes it. */
+/** A voice note, an audio file or a video, as Telegram describes it. */
 type TelegramSound = { file_id: string; duration?: number; mime_type?: string; file_size?: number; file_name?: string };
 
 type TelegramResponse<T> = { ok: true; result: T } | { ok: false; description?: string; error_code?: number };
@@ -271,17 +274,27 @@ export class TelegramAdapter implements ChannelAdapter {
 			const photo = largest(part.photo);
 			return photo === undefined ? [] : [photo];
 		});
-		const documents = parts.flatMap((part) => (part.document === undefined ? [] : [part.document]));
+		const documents = parts.flatMap((part) => {
+			const video = part.video ?? part.video_note;
+			// A video goes in the workspace like a document: its sound is a recording (ADR 0033).
+			const asFile = video === undefined ? undefined : { file_id: video.file_id, file_name: video.file_name ?? `video-${part.message_id}.mp4`, ...(video.file_size === undefined ? {} : { file_size: video.file_size }) };
+			return [...(part.document === undefined ? [] : [part.document]), ...(asFile === undefined ? [] : [asFile])];
+		});
 		if (message.text === undefined && documents.length === 0 && sound === undefined && photos.length === 0) return;
 		const userId = String(message.from?.id ?? message.chat.id);
 		const mayDownload = (await this.options.mayDownload?.(userId)) ?? true;
 		let text = message.text ?? parts.find((part) => part.caption !== undefined)?.caption ?? "";
+		const attachments: { name: string; data: Uint8Array }[] = [];
 		if (sound !== undefined) {
 			// A stranger's voice is never downloaded, let alone sent to be transcribed.
-			const words = mayDownload ? await this.voice(sound) : "[Messaggio vocale]";
-			text = [words, text].filter(Boolean).join("\n\n");
+			if (!mayDownload) text = ["[Messaggio vocale]", text].filter(Boolean).join("\n\n");
+			// A meeting or a call: kept as a recording in the workspace, for audio_transcribe (ADR 0033).
+			else if (isRecording(sound.duration, this.options.transcribe)) {
+				const recording = await this.recordingFile(sound, message.voice !== undefined ? "voice" : "audio");
+				if (typeof recording === "string") text = [text, recording].filter(Boolean).join("\n\n");
+				else attachments.push(recording);
+			} else text = [await this.voice(sound), text].filter(Boolean).join("\n\n");
 		}
-		const attachments: { name: string; data: Uint8Array }[] = [];
 		// A file that cannot be downloaded is said, not dropped with the message.
 		const fetchFile = async (document: { file_id: string; file_name?: string; file_size?: number }, what: string) => {
 			try {
@@ -289,7 +302,9 @@ export class TelegramAdapter implements ChannelAdapter {
 			} catch (error) {
 				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`telegram: ${what} not downloaded: ${error.message}`);
-				text = [text, `[${what === "photo" ? "Foto" : "File"} troppo grande o non disponibile.]`].filter(Boolean).join("\n\n");
+				// A recording or a video is said with what to do: they are the files that pass 20 MB.
+				const note = what === "photo" ? "[Foto troppo grande o non disponibile.]" : isMedia(document.file_name) ? RECORDING_TOO_LARGE : "[File troppo grande o non disponibile.]";
+				text = [text, note].filter(Boolean).join("\n\n");
 				return undefined;
 			}
 		};
@@ -318,11 +333,22 @@ export class TelegramAdapter implements ChannelAdapter {
 		});
 	}
 
+	/** A long voice note or audio file as a file for the workspace; a note when it cannot be had. */
+	private async recordingFile(sound: TelegramSound, message: "voice" | "audio"): Promise<{ name: string; data: Uint8Array } | string> {
+		const mimeType = sound.mime_type ?? "audio/ogg";
+		try {
+			const file = await this.download({ file_id: sound.file_id, ...(sound.file_size === undefined ? {} : { file_size: sound.file_size }) });
+			return { name: audioName(mimeType, sound.file_name, message === "voice" ? "vocale-lungo" : "registrazione"), data: file.data };
+		} catch (error) {
+			if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+			this.options.log?.(`telegram: recording not downloaded: ${error.message}`);
+			return RECORDING_TOO_LARGE;
+		}
+	}
+
 	/** The words of a voice or audio message; a note when there are none to give. */
 	private async voice(sound: TelegramSound): Promise<string> {
 		const transcribe = this.options.transcribe;
-		// Too long is known from the update: nothing is downloaded for it.
-		if (transcribe !== undefined && tooLong(sound.duration, transcribe.maxSeconds ?? Number.POSITIVE_INFINITY)) return "[Messaggio vocale troppo lungo da trascrivere. Chiedi di dividerlo o di scriverlo.]";
 		const mimeType = sound.mime_type ?? "audio/ogg";
 		let file: { name: string; data: Uint8Array };
 		try {
@@ -450,4 +476,9 @@ function largest(sizes: readonly { file_id: string; file_size?: number; width?: 
 	const fitting = sizes.filter((size) => (size.file_size ?? 0) <= IMAGE_LIMITS.maxBytes);
 	const pool = fitting.length > 0 ? fitting : sizes;
 	return pool.reduce((best, size) => (fitting.length > 0 ? pixels(size) >= pixels(best) : pixels(size) < pixels(best)) ? size : best);
+}
+
+/** An audio or video file by its name: when too large, the person is told how to send it. */
+function isMedia(name: string | undefined): boolean {
+	return /\.(mp3|m4a|mp4|mov|wav|ogg|oga|opus|flac|webm|amr|aac|3gp|mkv)$/i.test(name ?? "");
 }

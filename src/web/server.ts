@@ -18,6 +18,7 @@ import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { type ConnectorAction, ConnectorActionError, type ConnectorActionResult } from "../core/connector-actions.ts";
 import { documentKind, documentLabel } from "../core/documents.ts";
+import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -452,7 +453,9 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.audit(tenantId).append({ type: "web.upload", instanceId: params[0], personId: (person as Person).id, path: file.path, bytes: file.size });
 		// The chat notes a document as one, so the model knows file_read gives its text.
 		const kind = documentKind(unique, data);
-		return { file, ...(kind === undefined ? {} : { document: documentLabel(kind) }) };
+		// A recording is told apart with its length, for the note the console puts in the message (ADR 0033).
+		const recording = kind === undefined ? recordingLabel(data) : undefined;
+		return { file, ...(kind === undefined ? {} : { document: documentLabel(kind) }), ...(recording === undefined ? {} : { recording }) };
 	});
 	route("DELETE", "/api/instances/:id/files", "person", async ({ person, params, url }) => {
 		await instanceAccess(person as Person, params[0] as string);

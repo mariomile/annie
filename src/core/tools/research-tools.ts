@@ -4,7 +4,8 @@ import { DocumentError, type DocumentText, documentKind, documentLabel, document
 import { documentLimit, urlFileName, webDocument } from "../web-documents.ts";
 import { pageText, publicAddress, webFetch } from "../web-fetch.ts";
 import { WEB_SEARCH_CONNECTOR, type SearchResult, WebSearchError } from "../web-search.ts";
-import { type Workspace, WorkspaceError } from "../workspace.ts";
+import { pool } from "../pool.ts";
+import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { refusal, untrusted, type WebToolsOptions } from "./web-tools.ts";
 
 /** Pages read for one dossier, at most; and at most this many from one site. */
@@ -314,15 +315,6 @@ async function loadDossier(workspace: Workspace, name: string): Promise<Dossier 
 	return valid ? (d as Dossier) : undefined;
 }
 
-/** `stem.ext`, or `stem-2.ext` and on when it is taken. */
-async function freePath(workspace: Workspace, stem: string, ext: string): Promise<string> {
-	for (let i = 1; i <= 99; i++) {
-		const path = i === 1 ? `${stem}${ext}` : `${stem}-${i}${ext}`;
-		if ((await workspace.stat(path)) === undefined) return path;
-	}
-	return `${stem}-${Date.now().toString(36)}${ext}`;
-}
-
 /** The passages of a page that match the question, in page order, up to `max` characters; the page's start when none does. */
 /**
  * A document as passages for the excerpt: a few lines at a time (a document's lines are short: a
@@ -484,16 +476,3 @@ function mdUrl(url: string): string {
 	return url.replace(/[()\s<>]/g, (c) => encodeURIComponent(c));
 }
 
-/** Run `work` on every item, at most `limit` at a time, results in the items' order. */
-async function pool<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
-	const results: R[] = new Array(items.length);
-	let next = 0;
-	const lane = async () => {
-		while (next < items.length) {
-			const i = next++;
-			results[i] = await work(items[i] as T);
-		}
-	};
-	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
-	return results;
-}

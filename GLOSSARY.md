@@ -137,6 +137,14 @@ _Avoid_: query, analisi dati, pivot
 L'aritmetica che Annie fa con `calculate` (un preventivo, l'IVA, uno sconto, una divisione), riga per riga e con i nomi, al centesimo. Vedi ADR 0031.
 _Avoid_: calcolatrice, eval, formula
 
+**Registrazione**:
+Un file audio o video più lungo di un vocale (una riunione, una chiamata, una lezione) che Annie tiene nel workspace e trascrive con `audio_transcribe`, a pezzi di dieci minuti. Vedi ADR 0033.
+_Avoid_: audio lungo, file vocale, recording
+
+**Trascrizione**:
+Il file Markdown in `trascrizioni/` con il testo di una registrazione, l'ora di ogni passaggio e, se il servizio le distingue, le voci (Voce 1, Voce 2). Vedi ADR 0033.
+_Avoid_: transcript, sbobinatura
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
