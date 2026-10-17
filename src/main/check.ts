@@ -2,6 +2,7 @@ import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
 import { computerLabel, createComputerProvider } from "../computer/create.ts";
 import { ecbRates, ExchangeRateError, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEV_PROVIDER, modelProvider } from "../core/model-providers.ts";
+import { feedNews, type NewsConfig } from "../core/news.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -38,6 +39,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	if (weather !== undefined) checks.push(check("Meteo", () => weatherCheck(weather, call)));
 	const rates = config.exchangeRates;
 	if (rates !== undefined) checks.push(check("Cambi", () => exchangeRatesCheck(rates, call)));
+	const news = config.news;
+	if (news !== undefined) checks.push(check("Notizie", () => newsCheck(news, call)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	return Promise.all(checks);
@@ -153,6 +156,21 @@ async function exchangeRatesCheck(config: ExchangeRatesConfig, call: Call): Prom
 		if (error instanceof ExchangeRateError) throw new CheckFailed(`${error.message}: controlla che ${host} sia raggiungibile, o ANNIE_EXCHANGE_RATES_URL`);
 		throw error;
 	}
+}
+
+/**
+ * Every feed downloaded and read, four at a time: how many answer, and each one that fails by
+ * its name and why, never its address (an operator's feed may carry a query).
+ */
+async function newsCheck(config: NewsConfig, call: Call): Promise<string> {
+	const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => call(String(input), init)) as typeof fetch;
+	const results = await feedNews(config, fetchImpl).read(config.feeds);
+	const failed = results.flatMap((r) => ("error" in r ? [`${r.feed.name} ${r.error}`] : []));
+	const empty = results.flatMap((r) => ("error" in r || r.headlines.some((h) => h.published !== undefined) ? [] : [r.feed.name]));
+	const answered = `${results.length - failed.length} feed su ${results.length} rispondono`;
+	const undated = empty.length === 0 ? "" : `; senza notizie datate: ${empty.join(", ")}`;
+	if (failed.length > 0) throw new CheckFailed(`${answered}; non vanno: ${failed.join("; ")}${undated}. Controlla ANNIE_NEWS_FEEDS, o togli quei feed`);
+	return `${answered}${undated}`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {
