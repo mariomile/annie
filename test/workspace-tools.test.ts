@@ -28,7 +28,7 @@ function fakeTelegram(updates: unknown[][] = [], download: Uint8Array | string =
 }
 
 describe("workspace tools (faux model, fake Telegram)", () => {
-	it("the instance writes a file, lists it and sends it to the person as a document, once", async () => {
+	it("the instance writes a file, lists it, finds it by its words and sends it to the person as a document, once", async () => {
 		const dataDir = tempDataDir();
 		const runtime: AnnieRuntime = new AnnieRuntime({
 			dataDir,
@@ -54,6 +54,9 @@ describe("workspace tools (faux model, fake Telegram)", () => {
 		await say('/tool file_read {"path":"../../secrets.json"}', "4");
 		await waitFor(() => api.texts.length === 4);
 		expect(api.texts[3]).toContain('Errore: Paths cannot go up with ".."');
+		await say('/tool file_search {"query":"tutto ok"}', "5");
+		await waitFor(() => api.texts.length === 5);
+		expect(api.texts[4]).toMatch(/1\. report\/ottobre\.md \(modificato il [^)]+\)\n {3}\[offset 0\] # Ottobre Tutto ok\.\n/);
 		await runtime.close();
 	});
 });

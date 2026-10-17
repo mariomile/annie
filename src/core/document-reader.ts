@@ -14,6 +14,16 @@ export const DOCUMENT_READER_LIMITS = { timeoutMs: 20_000, memoryMb: 512, maxWor
 
 const AGAIN = "non sono riuscita a leggerlo ora, riprova tra poco";
 
+const TOO_SLOW = "il documento è troppo complesso da leggere";
+
+/**
+ * A failure that may not happen again later: no worker free, a worker lost, or the time run out
+ * (on a busy server a document that reads in time when it is quiet).
+ */
+export function isTransient(error: unknown): boolean {
+	return error instanceof DocumentError && (error.message === AGAIN || error.message === TOO_SLOW);
+}
+
 let running = 0;
 const waiting: (() => void)[] = [];
 
@@ -122,7 +132,7 @@ function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; mak
 			void worker.terminate();
 			outcome();
 		};
-		const timer = setTimeout(() => settle(() => reject(new DocumentError(input.table !== undefined ? "la tabella è troppo grande da analizzare in tempo" : input.chart !== undefined ? "il grafico è troppo complesso da disegnare" : key === "made" ? "il documento è troppo lungo da creare" : "il documento è troppo complesso da leggere"))), timeoutMs);
+		const timer = setTimeout(() => settle(() => reject(new DocumentError(input.table !== undefined ? "la tabella è troppo grande da analizzare in tempo" : input.chart !== undefined ? "il grafico è troppo complesso da disegnare" : key === "made" ? "il documento è troppo lungo da creare" : TOO_SLOW))), timeoutMs);
 		worker.on("message", (message: { document?: T; image?: T; made?: T; table?: T; error?: string }) =>
 			settle(() => (message[key] !== undefined ? resolve(message[key]) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
 		);

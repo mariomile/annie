@@ -46,7 +46,7 @@ export function documentPartsLabel(kind: DocumentKind, parts: number): string {
 /** The page, sheet or slide a piece starts in; for a sheet also its first row, usually the headings. */
 export function documentSectionAt(text: string, at: number): string | undefined {
 	let found: RegExpExecArray | undefined;
-	const marker = /^(?:--- (Pagina \d+) ---|## (Foglio «[^»\n]*»|Diapositiva \d+)[^\n]*)$/gm;
+	const marker = sectionMarker();
 	for (let m = marker.exec(text); m !== null && m.index < at; m = marker.exec(text)) found = m;
 	if (found === undefined) return undefined;
 	const name = found[1] ?? found[2] ?? "";
@@ -54,6 +54,21 @@ export function documentSectionAt(text: string, at: number): string | undefined 
 	const lineEnd = text.indexOf("\n", found.index);
 	const first = lineEnd < 0 ? "" : (text.slice(lineEnd + 1, lineEnd + 401).split("\n")[0] ?? "");
 	return first === "" ? name : `${name}, prima riga: ${first}`;
+}
+
+/** The lines where a page, a sheet or a slide starts in a document's text, as [start, end) ranges. */
+export function documentSectionLines(text: string): { start: number; end: number }[] {
+	return [...text.matchAll(sectionMarker())].map((m) => ({ start: m.index, end: m.index + m[0].length }));
+}
+
+/** Whether a document's text has any word beyond the page and sheet lines: a scan has none. */
+export function documentHasWords(text: string): boolean {
+	return /[\p{L}\p{N}]/u.test(text.replace(sectionMarker(), ""));
+}
+
+/** «--- Pagina 3 ---», «## Foglio «Ordini» (4 righe…)», «## Diapositiva 2…»: how documentText marks the parts. */
+function sectionMarker(): RegExp {
+	return /^(?:--- (Pagina \d+) ---|## (Foglio «[^»\n]*»|Diapositiva \d+)[^\n]*)$/gm;
 }
 
 /** What kind of document this is, from its bytes (the name only breaks ties among ZIP files). */
