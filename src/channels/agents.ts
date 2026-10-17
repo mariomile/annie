@@ -1,3 +1,4 @@
+import { EgressDenied, NotFound } from "../core/errors.ts";
 import { AGENT_CHANNEL, type Origin, agentInboundText, agentThreadId, parseAgentThread } from "../core/agent-messages.ts";
 import { ChannelRefused, type ChannelAdapter, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
 
@@ -49,11 +50,18 @@ export class AgentChannel implements ChannelAdapter {
 	}
 
 	async send(message: OutboundMessage): Promise<void> {
-		await this.deliver({ ...this.back(message.threadId), text: message.text, key: message.idempotencyKey });
+		await this.final(this.deliver({ ...this.back(message.threadId), text: message.text, key: message.idempotencyKey }));
 	}
 
 	async sendFile(file: OutboundFile): Promise<void> {
-		await this.deliver({ ...this.back(file.threadId), file: { name: file.name, data: file.data }, ...(file.caption === undefined ? {} : { text: file.caption }), key: file.idempotencyKey });
+		await this.final(this.deliver({ ...this.back(file.threadId), file: { name: file.name, data: file.data }, ...(file.caption === undefined ? {} : { text: file.caption }), key: file.idempotencyKey }));
+	}
+
+	/** The asker was deleted or no longer takes answers on that channel: no retry will change it. */
+	private async final(delivery: Promise<void>): Promise<void> {
+		await delivery.catch((error: unknown) => {
+			throw error instanceof EgressDenied || error instanceof NotFound ? new ChannelRefused(error.message) : error;
+		});
 	}
 
 	private back(threadId: string): { to: string; origin: Origin } {

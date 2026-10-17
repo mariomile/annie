@@ -66,7 +66,7 @@ import { createRecordingTools } from "./core/tools/recording-tools.ts";
 import { createDocumentTools } from "./core/tools/document-tools.ts";
 import { createListTools } from "./core/tools/list-tools.ts";
 import { createAgentTools } from "./core/tools/agent-tools.ts";
-import { AGENT_CHANNEL, relayAgentAnswer } from "./core/agent-messages.ts";
+import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core/agent-messages.ts";
 import { AgentChannel } from "./channels/agents.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
@@ -85,7 +85,7 @@ Puoi: creare, leggere e inviare file nel tuo workspace (file_*), compreso il tes
 Se hai i tool google_*, nelle conversazioni dalla console leggi posta e calendario di chi ti scrive; se hai anche google_mail_send e google_calendar_create/update/delete, quando te lo chiede prepari mail, risposte, bozze ed eventi, che succedono solo dopo che la persona li approva: non dire che sono fatti prima dell'esito. Senza quei tool non promettere di inviare mail o cambiare il calendario.
 Quando ti arriva una registrazione senza dire cosa farne, trascrivila e chiedi se vogliono il riassunto o il verbale; se è un vocale lungo per te (vocale-lungo), trascrivilo e rispondi a quello che dice. Senza audio_transcribe di' che la trascrizione la attiva l'owner, e non promettere trascrizioni.
 Se qualcuno ti chiede di rispondergli a voce, o di smettere, usa voice_replies quando ce l'hai; senza, spiega che le risposte a voce le attiva l'owner, e non promettere vocali.
-Se hai agent_message, chiedi agli altri agenti dell'azienda (agent_list) quello che sanno o possono fare meglio di te, con strumenti o dati che tu non hai; la risposta arriva dopo, in questa conversazione.
+Se agent_list ti dà qualcuno, chiedi agli altri agenti dell'azienda (agent_list) quello che sanno o possono fare meglio di te, con strumenti o dati che tu non hai; la risposta arriva dopo, in questa conversazione.
 Non inventare dati: se non sai, dillo o usa un tool. Non compiere azioni irreversibili verso l'esterno senza che una persona lo chieda esplicitamente.`;
 
 export type AnnieOptions = {
@@ -144,6 +144,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const connections = new Map<string, McpConnections>();
 	/** Each agente's channel for other agenti's messages (ADR 0042), attached with its web channel. */
 	const agentChannels = new Map<string, AgentChannel>();
+	// One count per agente for the whole process, so reopening an agente after a settings save does not reset it.
+	const agentRates = new Map<string, { readonly rate: AgentRate; readonly total: AgentRate }>();
+	const agentRatesOf = (id: string) => {
+		let rates = agentRates.get(id);
+		if (rates === undefined) agentRates.set(id, (rates = { rate: new AgentRate(), total: new AgentRate(AGENT_LIMITS.perAgentHour) }));
+		return rates;
+	};
 	const telegrams = new Map<string, TelegramAdapter>();
 	const whatsapps = new Map<string, WhatsAppAdapter>();
 	// Voice messages of every chat channel go to the one service the operator chose, or nowhere,
@@ -428,9 +435,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 				...createAgentTools({
 					self: record.id,
+					...agentRatesOf(record.id),
 					colleagues: async () =>
 						(await runtime.registry.listInstances(record.tenantId))
-							.filter((r) => r.id !== record.id && r.egress.channels.includes(AGENT_CHANNEL) && (r.allowedUsers[AGENT_CHANNEL] ?? []).includes(record.id))
+							.filter((r) => r.id !== record.id && r.id !== segreteriaId && r.egress.channels.includes(AGENT_CHANNEL) && (r.allowedUsers[AGENT_CHANNEL] ?? []).includes(record.id))
 							.map((r) => ({ id: r.id, name: r.name, ...(r.persona?.tagline === undefined ? {} : { tagline: r.persona.tagline }) })),
 					post: async ({ to, origin, text, key }) => {
 						const channel = agentChannels.get(to);

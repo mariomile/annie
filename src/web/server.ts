@@ -995,18 +995,21 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 	// --- agenti that write to each other (ADR 0042): who may write to this one ---
-	route("PUT", "/api/instances/:id/agents", "owner", async ({ params, req }) => {
+	route("PUT", "/api/instances/:id/agents", "owner", async ({ person, params, req }) => {
 		const id = params[0] as string;
 		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
 			throw new HttpError(404, "Agente inesistente");
 		});
 		const body = (await readJson(req)) as { from?: unknown };
 		if (!Array.isArray(body.from)) throw new HttpError(400, "Serve l'elenco degli agenti");
-		const known = new Set<string>((await runtime.registry.listInstances(tenantId)).map((r) => r.id));
+		// A segreteria has no conversations of its own: it can neither ask nor be asked.
+		if (options.segreterie?.has(id)) throw new HttpError(400, "La segreteria non scrive agli altri agenti");
+		const known = new Set<string>((await runtime.registry.listInstances(tenantId)).map((r) => r.id).filter((x) => !options.segreterie?.has(x)));
 		const from = [...new Set(body.from.map(String))].filter((x) => x !== String(record.id) && known.has(x));
 		await runtime.registry.setAllowedUsers(tenantId, id, AGENT_CHANNEL, from);
 		const channels = record.egress.channels.filter((c) => c !== AGENT_CHANNEL);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, channels: from.length === 0 ? channels : [...channels, AGENT_CHANNEL] });
+		await runtime.audit(tenantId).append({ type: "agents.allowed", instanceId: id, personId: (person as Person).id, allowed: from.length, from: from.join(",") });
 		return { from };
 	});
 	route("GET", "/api/instances/:id/settings", "owner", async ({ params }) => {
