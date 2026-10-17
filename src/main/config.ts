@@ -1,5 +1,6 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
+import type { ImageGenerationConfig } from "../core/image-generation.ts";
 import type { TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
 export type TelegramConfig = {
@@ -163,6 +164,8 @@ export type AnnieConfig = {
 	readonly transcription: TranscriberConfig | undefined;
 	/** Replies as voice notes (ADR 0020), when the operator set a speech service. */
 	readonly speech: SpeakerConfig | undefined;
+	/** Pictures made on request (ADR 0023), when the operator set an image service. */
+	readonly images: ImageGenerationConfig | undefined;
 	/** Web search for the instances (ADR 0017): Brave Search, or the same API elsewhere; off if unset. */
 	readonly webSearch: WebSearchConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
@@ -293,6 +296,18 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (style !== undefined && style.length > 500) throw new ConfigError("ANNIE_SPEECH_STYLE: at most 500 characters");
 		speech = { url: speechUrl.replace(/\/+$/, ""), apiKey: speechKey, model, voice, maxChars, maxPerDay, ...(style === undefined ? {} : { style }) };
 	}
+	const imageUrl = nonEmpty(env.ANNIE_IMAGE_URL);
+	const imageKey = nonEmpty(env.ANNIE_IMAGE_API_KEY);
+	let images: ImageGenerationConfig | undefined;
+	if (imageUrl !== undefined || imageKey !== undefined) {
+		if (imageUrl === undefined || imageKey === undefined) throw new ConfigError("Set both ANNIE_IMAGE_URL and ANNIE_IMAGE_API_KEY, or neither");
+		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(imageUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(imageUrl)) throw new ConfigError("ANNIE_IMAGE_URL: an https address, e.g. https://api.openai.com/v1");
+		const model = nonEmpty(env.ANNIE_IMAGE_MODEL) ?? (imageUrl.includes("api.openai.com") ? "gpt-image-1" : undefined);
+		if (model === undefined) throw new ConfigError("ANNIE_IMAGE_MODEL: the model of this image service");
+		const maxPerDay = Number(nonEmpty(env.ANNIE_IMAGE_MAX_PER_DAY) ?? "100");
+		if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_IMAGE_MAX_PER_DAY: pictures per day for each account, a whole number from 1");
+		images = { url: imageUrl.replace(/\/+$/, ""), apiKey: imageKey, model, maxPerDay };
+	}
 	const searchKey = nonEmpty(env.ANNIE_SEARCH_API_KEY);
 	let webSearch: WebSearchConfig | undefined;
 	if (searchKey !== undefined) {
@@ -352,6 +367,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		screenshotsWithoutSandbox: nonEmpty(env.ANNIE_SCREENSHOTS_WITHOUT_SANDBOX) === "1",
 		transcription,
 		speech,
+		images,
 		webSearch,
 		computer,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },

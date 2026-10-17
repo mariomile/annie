@@ -30,3 +30,9 @@ export function imageProblem(data: Uint8Array): string | undefined {
 	if (data.length > IMAGE_LIMITS.maxBytes) return IMAGE_TOO_BIG;
 	return undefined;
 }
+
+/** A JPEG or PNG no larger than `max`: what chat apps show as a picture rather than a file. */
+export function isPhoto(data: Uint8Array, max: number): boolean {
+	const type = imageType(data);
+	return (type === "image/jpeg" || type === "image/png") && data.length <= max;
+}

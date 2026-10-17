@@ -36,7 +36,7 @@ async function client(base: string, link: string) {
 	};
 }
 
-const nothingDone = { model: false, instructions: false, tried: false, channel: false, web: false, people: false, can: { search: false, transcription: false, speech: false } };
+const nothingDone = { model: false, instructions: false, tried: false, channel: false, web: false, people: false, can: { search: false, transcription: false, speech: false, images: false } };
 
 describe("primi passi", () => {
 	it("each step is checked from the real settings, and only the owner sees them", async () => {

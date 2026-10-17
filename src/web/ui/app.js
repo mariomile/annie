@@ -523,6 +523,27 @@ function speechCard(inst, host, allowed, understood) {
 	);
 }
 
+/** Owner: pictures made on request for this instance, by the server's image service. */
+function imagesCard(inst, host, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/images`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Annie può creare immagini" : "Immagini spente per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Immagini"),
+		h("p.muted", `Annie crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e cambia le foto che le mandano. Le fa ${host}: riceve la richiesta e, per cambiarla, la foto. L'immagine arriva in chat e resta tra i file.`),
+		h("label.row-gap", toggle, h("span", "Consenti le immagini a questa istanza")),
+	);
+}
+
 /** Owner: voice messages of this instance transcribed by the server's service. */
 function voiceCard(inst, host, allowed) {
 	const toggle = h("input", { type: "checkbox", checked: allowed });
@@ -986,7 +1007,14 @@ async function viewChat(main) {
 	let typing;
 	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
 	const show = (entry) => {
-		const body = entry.file
+		const shown = entry.file && /\.(png|jpe?g|webp|gif)$/i.test(entry.file.path);
+		const body = shown
+			? h(
+					"a.pic",
+					{ href: picture(entry.file.path), target: "_blank", rel: "noopener" },
+					h("img", { src: picture(entry.file.path), alt: entry.file.caption ?? entry.file.path.split("/").pop(), loading: "lazy", onerror: (event) => event.target.closest("a").replaceWith(h("span.gone", `${entry.file.path.split("/").pop()} non c'è più`)) }),
+				)
+			: entry.file
 			? h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(entry.file.path)}` }, h("span.ext", (entry.file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", entry.file.path.split("/").pop()), entry.file.caption ? h("div.muted", entry.file.caption) : null))
 			: h("div.body", entry.text ?? "");
 		const pictures = entry.images?.length
@@ -2242,7 +2270,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -2253,6 +2281,7 @@ async function viewSettings(main) {
 		api(`/api/instances/${inst.id}/phone`).catch(() => undefined),
 		api("/api/computer").catch(() => ({ available: false })),
 		api("/api/speech").catch(() => ({ available: false })),
+		api("/api/images").catch(() => ({ available: false })),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -2294,6 +2323,7 @@ async function viewSettings(main) {
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
 				speech.available ? anchor("voce", speechCard(inst, speech.host, (settings.egress.connectors ?? []).includes("speech"), voice.available && (settings.egress.connectors ?? []).includes("voice"))) : null,
 				search.available ? anchor("ricerca", searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? [])) : null,
+				images.available ? anchor("immagini", imagesCard(inst, images.host, (settings.egress.connectors ?? []).includes("image_generation"))) : null,
 				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
