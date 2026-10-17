@@ -27,6 +27,8 @@ export type InboundMessage = {
 	readonly attachments?: readonly { readonly name: string; readonly data: Uint8Array }[];
 	/** Pictures already in the workspace that the model sees with the message (the core checks them). */
 	readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[];
+	/** The person spoke (a voice note, transcribed): the reply can go back as a voice note too. */
+	readonly voice?: boolean;
 };
 
 /** A tap on a button of an earlier outbound message (Telegram: a callback query). */
@@ -76,6 +78,12 @@ export type OutboundFile = Omit<OutboundMessage, "text" | "buttons"> & {
 	readonly path?: string;
 };
 
+/** A reply as a voice note, with its full text: the adapter sends both, the text as caption where it fits. */
+export type OutboundVoice = Omit<OutboundMessage, "buttons"> & {
+	/** OGG with Opus inside. */
+	readonly audio: Uint8Array;
+};
+
 export interface ChannelAdapter {
 	readonly name: string;
 	/** Start receiving. Resolves once the adapter is running. */
@@ -98,6 +106,8 @@ export interface ChannelAdapter {
 	send(message: OutboundMessage): Promise<void>;
 	/** Resolves once the channel has accepted the file. Optional: channels without files omit it. */
 	sendFile?(file: OutboundFile): Promise<void>;
+	/** Resolves once the channel has accepted the voice note and its text. Optional: channels without voice notes omit it. */
+	sendVoice?(voice: OutboundVoice): Promise<void>;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
+import { VoiceThreads } from "./channels/speech.ts";
 import { imageType } from "./core/images.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
@@ -18,12 +19,19 @@ export function connectChannel(
 	log: (message: string) => void = console.error,
 	/** Button taps on this channel (approval cards). Must be idempotent: taps can be redelivered. */
 	onAction?: (action: InboundAction) => Promise<void>,
+	/**
+	 * A reply's text as a voice note (ADR 0020); undefined when this instance does not speak. Used
+	 * only after a voice note from the person, on channels that send voice notes.
+	 */
+	speak?: (text: string) => Promise<Uint8Array | undefined>,
 ): () => void {
+	const voiceThreads = new VoiceThreads();
 	if (onAction !== undefined) {
 		if (adapter.onAction === undefined) throw new Error(`Channel ${adapter.name} has no buttons`);
 		adapter.onAction(onAction);
 	}
 	adapter.onInbound(async (message) => {
+		voiceThreads.heard(message.threadId, message.voice === true);
 		try {
 			await runtime.submit(await withAttachments(runtime, message));
 		} catch (error) {
@@ -49,6 +57,14 @@ export function connectChannel(
 			}
 			if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
 			const text = reply.status === "answered" ? reply.text : REPLY_FAILED;
+			if (reply.status === "answered" && speak !== undefined && adapter.sendVoice !== undefined && voiceThreads.wantsVoice(reply.threadId)) {
+				// A voice note that cannot be made (too long, the service down) leaves the text, never nothing.
+				const audio = await speak(text).catch((error: unknown) => {
+					log(`${adapter.name}: reply not spoken, sent as text: ${errorMessage(error)}`);
+					return undefined;
+				});
+				if (audio !== undefined) return adapter.sendVoice({ ...base, text, audio });
+			}
 			return adapter.send({ ...base, text });
 		};
 		sending()

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
+import { SPEECH_CONNECTOR } from "../channels/speech.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
@@ -100,6 +101,8 @@ export type WebAppOptions = {
 	};
 	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
 	readonly voice?: { readonly host: string };
+	/** Replies can go back as voice notes, made by this service (ADR 0020); the owner allows it per instance. */
+	readonly speech?: { readonly host: string; readonly voice: string };
 	/** The server's web search service (ADR 0017), by host; each owner turns it on per instance. */
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
@@ -910,6 +913,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const others = (record.egress.connectors ?? []).filter((c) => c !== VOICE_CONNECTOR);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, VOICE_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "voice.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+
+	// --- owner: replies as voice notes for an instance (their text goes to the operator's speech service) ---
+	route("GET", "/api/speech", "owner", async () => (options.speech === undefined ? { available: false } : { available: true, host: options.speech.host, voice: options.speech.voice }));
+	route("PUT", "/api/instances/:id/speech", "owner", async ({ params, req }) => {
+		if (options.speech === undefined) throw new HttpError(501, "Le risposte a voce non sono configurate su questo server");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== SPEECH_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, SPEECH_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "speech.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
 	});
 

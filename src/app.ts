@@ -10,6 +10,7 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { writeFileAtomic } from "./core/atomic-file.ts";
 import { TelegramAdapter, type TelegramUpdate } from "./channels/telegram.ts";
+import { SPEECH_CONNECTOR, speaker } from "./channels/speech.ts";
 import { type Transcribe, TranscriptionOff, transcriber, VOICE_CONNECTOR } from "./channels/voice.ts";
 import { MissingWhatsAppField, parseCredentials, type WhatsAppCredentials, WhatsAppAdapter, type WhatsAppWindow, type WindowState, windowStore } from "./channels/whatsapp.ts";
 import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
@@ -73,6 +74,7 @@ export type AnnieOptions = {
 	readonly computer?: ComputerProvider;
 	/** Transcription service fetch (tests). */
 	readonly transcribeFetch?: typeof fetch;
+	readonly speechFetch?: typeof fetch;
 	/** Tests: the search service's fetch. */
 	readonly searchFetch?: typeof fetch;
 	/** Google OAuth and API fetch (tests). */
@@ -110,6 +112,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			return transcribe(clip);
 		};
 		return { transcribe: Object.assign(gated, { maxSeconds: transcribe.maxSeconds }) };
+	};
+	// Replies as voice notes (ADR 0020): only for instances whose owner allowed the speech service.
+	const speak = config.speech === undefined ? undefined : speaker(config.speech, options.speechFetch);
+	const speakFor = (instance: string) => async (text: string): Promise<Uint8Array | undefined> => {
+		if (speak === undefined) return undefined;
+		if (!((await runtime.registry.getInstance(tenant, instance)).egress.connectors ?? []).includes(SPEECH_CONNECTOR)) return undefined;
+		return speak(text);
 	};
 	// One search service for the whole server; each instance's owner turns it on (connector "web_search").
 	const search = config.webSearch === undefined ? undefined : braveSearch(config.webSearch, options.searchFetch);
@@ -347,7 +356,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
 		});
-		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, bot, action)));
+		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, bot, action), speakFor(instance)));
 		telegrams.set(instance, bot);
 		if (webhookSecret !== undefined) telegramHooks.set(instance, { secret: webhookSecret, handle: (update) => bot.handleUpdate(update as TelegramUpdate) });
 		return bot;
@@ -487,7 +496,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...voiceFor(instance),
 			...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }),
 		});
-		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, adapter, action)));
+		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, adapter, action), speakFor(instance)));
 		whatsapps.set(instance, adapter);
 		return adapter;
 	}
@@ -642,6 +651,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			},
 		},
 		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
+		...(config.speech === undefined ? {} : { speech: { host: new URL(config.speech.url).host, voice: config.speech.voice } }),
 		...(config.webSearch === undefined ? {} : { search: { host: new URL(config.webSearch.url).host } }),
 		sendWebAction: sendForInstance,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),

@@ -28,6 +28,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	}
 	const transcription = config.transcription;
 	if (transcription !== undefined) checks.push(check("Trascrizione dei vocali", () => transcriptionCheck(transcription, call)));
+	const speech = config.speech;
+	if (speech !== undefined) checks.push(check("Risposte a voce", () => speechCheck(speech, call)));
 	const search = config.webSearch;
 	if (search !== undefined) checks.push(check("Ricerca sul web", () => searchCheck(search, call)));
 	const computer = config.computer;
@@ -92,6 +94,14 @@ async function transcriptionCheck(config: { url: string; apiKey: string; model: 
 	// Aliases (voxtral-mini-latest) are not always listed: a warning, not a failure.
 	if (models.length > 0 && !models.includes(config.model)) return `chiave valida; il modello ${config.model} non compare nell'elenco del servizio, prova un vocale per esserne certo`;
 	return `chiave valida, modello ${config.model}`;
+}
+
+/** The key works: the service lists its models. No audio is made, so the check costs nothing. */
+async function speechCheck(config: { url: string; apiKey: string; model: string; voice: string }, call: Call): Promise<string> {
+	const response = await reach(call, `${config.url}/models`, { headers: { authorization: `Bearer ${config.apiKey}` } });
+	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_SPEECH_API_KEY");
+	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_SPEECH_URL`);
+	return `chiave valida, modello ${config.model}, voce ${config.voice}`;
 }
 
 /** One search for a word everyone has: the key works and results come back. */

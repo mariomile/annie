@@ -1,7 +1,7 @@
 import { IMAGE_LIMITS, imageType } from "../core/images.ts";
 import { audioName, type Transcribe, tooLong, voiceText } from "./voice.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
-import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
+import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
 
 export type TelegramAdapterOptions = {
 	readonly token: string;
@@ -150,6 +150,18 @@ export class TelegramAdapter implements ChannelAdapter {
 		await this.call("sendDocument", form);
 	}
 
+	/** sendVoice, multipart, with the text as caption where it fits; a longer text follows as a message. */
+	async sendVoice(voice: OutboundVoice): Promise<void> {
+		const text = voice.possibleDuplicate === true ? `${DUPLICATE_NOTICE}\n\n${voice.text}` : voice.text;
+		const fits = text.length <= TELEGRAM_MAX_CAPTION;
+		const form = new FormData();
+		form.set("chat_id", voice.threadId);
+		form.set("voice", new Blob([Uint8Array.from(voice.audio)], { type: "audio/ogg" }), "risposta.ogg");
+		if (fits && text !== "") form.set("caption", text);
+		await this.call("sendVoice", form);
+		if (!fits) for (const chunk of splitText(text)) await this.call("sendMessage", { chat_id: voice.threadId, text: chunk });
+	}
+
 	/** One getUpdates round; exposed for tests. Returns the number of updates handled. */
 	async pollOnce(signal?: AbortSignal): Promise<number> {
 		const updates = await this.call<TelegramUpdate[]>(
@@ -277,6 +289,7 @@ export class TelegramAdapter implements ChannelAdapter {
 			privateThread: message.chat.type === "private",
 			messageId: `${message.chat.id}:${message.message_id}`,
 			...(attachments.length === 0 ? {} : { attachments }),
+			...(sound === undefined ? {} : { voice: true }),
 		});
 	}
 

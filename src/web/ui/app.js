@@ -40,6 +40,7 @@ function h(spec, attrs, ...children) {
 const ICONS = {
 	inizia: ["M5 21V4", "M5 4h11l-2 4 2 4H5"],
 	install: ["M12 3v12", "m7 10 5 5 5-5", "M5 21h14"],
+	listen: ["M4 9v6h4l5 4V5L8 9H4Z", "M16.5 8.5a5 5 0 0 1 0 7", "M19 6a8.5 8.5 0 0 1 0 12"],
 	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
 	segreteria: ["M3 13h5l1.5 2.5h5L16 13h5", "M5.5 5h13L21 13v6H3v-6Z"],
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
@@ -503,6 +504,27 @@ function googleCard(inst, allowed) {
 }
 
 /** Owner: voice messages of this instance transcribed by the server's service. */
+/** Owner: replies as voice notes, made by the server's speech service (ADR 0020). */
+function speechCard(inst, host, allowed) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/speech`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Annie risponde a voce a chi le manda un vocale" : "Risposte a voce spente per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Risposte a voce"),
+		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Annie risponde con un vocale e con il testo. La voce la fa ${host}: riceve solo il testo della risposta, mai l'audio di chi scrive.`),
+		h("label.row-gap", toggle, h("span", "Rispondi a voce ai vocali")),
+	);
+}
+
 function voiceCard(inst, host, allowed) {
 	const toggle = h("input", { type: "checkbox", checked: allowed });
 	toggle.addEventListener("change", async () => {
@@ -979,7 +1001,8 @@ async function viewChat(main) {
 					}),
 				)
 			: null;
-		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at)), pictures, entry.text || entry.file || !pictures ? body : null);
+		const listen = entry.from === "annie" && entry.text && "speechSynthesis" in window ? h("button.listen", { type: "button", "aria-label": "Ascolta", title: "Ascolta", onclick: () => readAloud(entry.text) }, icon("listen")) : null;
+		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at), listen), pictures, entry.text || entry.file || !pictures ? body : null);
 		transcript.append(el);
 		return el;
 	};
@@ -1361,6 +1384,33 @@ async function viewApprovals(main) {
 			decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
+}
+
+// ---------- ascolta ----------
+/**
+ * A reply read aloud by the browser's own voice: nothing leaves the device. Tapping again, or
+ * on another reply, stops the one being read.
+ */
+function readAloud(text) {
+	const synth = window.speechSynthesis;
+	const again = synth.speaking && readAloud.text === text;
+	synth.cancel();
+	readAloud.text = undefined;
+	if (again) return;
+	const said = text
+		.replace(/```[\s\S]*?```/g, " ")
+		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+		.replace(/\bhttps?:\/\/\S+/g, "link")
+		.replace(/[*_`#>|~]/g, "")
+		.trim();
+	if (said === "") return;
+	const utterance = new SpeechSynthesisUtterance(said);
+	utterance.lang = "it-IT";
+	const voice = synth.getVoices().find((v) => v.lang?.toLowerCase().startsWith("it"));
+	if (voice) utterance.voice = voice;
+	utterance.onend = () => (readAloud.text = undefined);
+	readAloud.text = text;
+	synth.speak(utterance);
 }
 
 // ---------- primi passi ----------
@@ -2013,7 +2063,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -2023,6 +2073,7 @@ async function viewSettings(main) {
 		api("/api/search").catch(() => ({ available: false })),
 		api(`/api/instances/${inst.id}/phone`).catch(() => undefined),
 		api("/api/computer").catch(() => ({ available: false })),
+		api("/api/speech").catch(() => ({ available: false })),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -2062,6 +2113,7 @@ async function viewSettings(main) {
 				tel === undefined ? null : phoneCard(inst, tel.phone),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
+				speech.available ? anchor("voce", speechCard(inst, speech.host, (settings.egress.connectors ?? []).includes("speech"))) : null,
 				search.available ? anchor("ricerca", searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? [])) : null,
 				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
