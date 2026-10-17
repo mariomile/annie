@@ -12,7 +12,9 @@ import { COMPUTER_CONNECTOR } from "../core/computer.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
+import { CONNECTOR_CATALOG, type CatalogEntry } from "../connectors/catalog.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
+import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
 import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
@@ -71,6 +73,11 @@ export type WhatsAppStatus = {
 	readonly template: WhatsAppTemplate | null;
 };
 
+/** The token a one-click connector was given, per instance: two instances with GitHub keep their own. */
+function catalogTokenSecret(instanceId: string, connectorId: string): string {
+	return `connector.${connectorId}.${instanceId}.authorization`;
+}
+
 export type WebAppOptions = {
 	readonly runtime: AnnieRuntime;
 	readonly tenantId: string;
@@ -107,6 +114,10 @@ export type WebAppOptions = {
 	readonly speech?: { readonly host: string; readonly voice: string };
 	/** The image service, when the operator set one (ADR 0023). */
 	readonly images?: { readonly host: string; readonly maxPerDay: number };
+	/** Sign-ins to MCP servers with OAuth (ADR 0024); without it, only token and public connectors. */
+	readonly mcpOAuth?: McpOAuth;
+	/** The one-click connectors (tests: fakes); the well-known servers otherwise. */
+	readonly catalog?: readonly CatalogEntry[];
 	/** The server's web search service (ADR 0017), by host; each owner turns it on per instance. */
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
@@ -726,32 +737,144 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { connectors: list.map((c) => ({ ...c, allowed: (record.egress.connectors ?? []).includes(connectorEgressName(c.id)), status: status.find((s) => s.id === c.id) })) };
 	});
 	route("PUT", "/api/instances/:id/connectors/:cid", "owner", async ({ params, req }) => {
+		const instance = params[0] as string;
 		const body = (await readJson(req)) as Partial<McpConnector> & { allowed?: boolean };
 		const id = params[1] as string;
 		if (!CONNECTOR_ID.test(id)) throw new HttpError(400, "ID: lettere minuscole, cifre e trattini");
-		const connector: McpConnector = { id, name: String(body.name ?? id), transport: body.transport as McpConnector["transport"], enabled: body.enabled !== false };
-		if (connector.transport?.type !== "http" && connector.transport?.type !== "stdio") throw new HttpError(400, "transport: http | stdio");
+		let transport = body.transport as McpConnector["transport"];
+		if (transport?.type !== "http" && transport?.type !== "stdio") throw new HttpError(400, "transport: http | stdio");
+		// With OAuth the sign-in is the only credential: a secret header would also reach the authorization server.
+		if (transport.type === "http" && transport.auth === "oauth") transport = { type: "http", url: transport.url, auth: "oauth" };
+		const connector: McpConnector = { id, name: String(body.name ?? id), transport, enabled: body.enabled !== false };
+		const store = options.connectors(instance);
+		const before = (await store.list()).find((c) => c.id === id);
 		try {
-			await options.connectors(params[0] as string).save(connector);
+			await store.save(connector);
 		} catch (error) {
 			throw new HttpError(400, error instanceof Error ? error.message : String(error));
 		}
-		const record = await runtime.registry.getInstance(tenantId, params[0] as string);
+		// Tokens got for one address never go to another: a new address or a new kind of access signs in again.
+		const b = before?.transport;
+		if (b?.type === "http" && b.auth === "oauth" && (transport.type !== "http" || transport.url !== b.url || transport.auth !== "oauth")) await options.mcpOAuth?.forget(instance, id);
+		const record = await runtime.registry.getInstance(tenantId, instance);
 		const name = connectorEgressName(id);
 		const current = record.egress.connectors ?? [];
 		const allowed = body.allowed !== false;
 		const next = allowed ? [...new Set([...current, name])] : current.filter((c) => c !== name);
-		if (next.join() !== current.join()) await runtime.registry.setEgress(tenantId, params[0] as string, { ...record.egress, connectors: next });
-		await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: params[0], connector: id, transport: connector.transport.type, allowed });
-		await runtime.reopen(tenantId, params[0] as string);
-		return { status: options.connectorStatus(params[0] as string).find((s) => s.id === id) };
+		if (next.join() !== current.join()) await runtime.registry.setEgress(tenantId, instance, { ...record.egress, connectors: next });
+		await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: instance, connector: id, transport: connector.transport.type, allowed });
+		await runtime.reopen(tenantId, instance);
+		return { status: options.connectorStatus(instance).find((s) => s.id === id) };
+	});
+	// One click: a well-known server from the catalog, signed in with OAuth, a token, or nothing (ADR 0024).
+	const catalog = options.catalog ?? CONNECTOR_CATALOG;
+	route("GET", "/api/connector-catalog", "owner", async () => ({ catalog, oauth: options.mcpOAuth !== undefined, redirectUrl: options.mcpOAuth?.redirectUrl ?? null }));
+	route("POST", "/api/instances/:id/connectors/catalog/:entry", "owner", async ({ params, req, person }) => {
+		const instance = params[0] as string;
+		const entry = catalog.find((e) => e.id === params[1]);
+		if (entry === undefined) throw new HttpError(404, "Connettore non in catalogo");
+		await runtime.registry.getInstance(tenantId, instance);
+		const body = (await readJson(req)) as { token?: unknown; replace?: unknown };
+		const store = options.connectors(instance);
+		const existing = (await store.list()).find((c) => c.id === entry.id);
+		// «Cambia token» on a token connector already there; anything else added once.
+		const replacing = body.replace === true && entry.auth === "token" && existing !== undefined;
+		if (existing !== undefined && !replacing) throw new HttpError(409, `${entry.name} è già tra i connettori`);
+		if (entry.auth === "oauth" && options.mcpOAuth === undefined) throw new HttpError(400, "L'accesso con l'account non è disponibile su questo server");
+		const secret = catalogTokenSecret(instance, entry.id);
+		let token: string | undefined;
+		if (entry.auth === "token") {
+			token = typeof body.token === "string" ? body.token.trim().replace(/^Bearer\s+/i, "") : "";
+			if (!/^[\x21-\x7e]{8,4096}$/.test(token)) throw new HttpError(400, `Incolla il token di ${entry.name}, senza spazi`);
+		}
+		const connector: McpConnector = {
+			id: entry.id,
+			name: entry.name,
+			transport: { type: "http", url: entry.url, ...(entry.auth === "token" ? { headerSecrets: { authorization: secret } } : {}), ...(entry.auth === "oauth" ? { auth: "oauth" as const } : {}) },
+			enabled: true,
+		};
+		const allow = async () => {
+			const record = await runtime.registry.getInstance(tenantId, instance);
+			await runtime.registry.setEgress(tenantId, instance, { ...record.egress, connectors: [...new Set([...(record.egress.connectors ?? []), connectorEgressName(entry.id)])] });
+		};
+		if (entry.auth === "oauth") {
+			// The sign-in starts before anything is saved: a service that refuses leaves nothing behind.
+			let url: string | undefined;
+			try {
+				url = await (options.mcpOAuth as McpOAuth).start((person as Person).id, instance, entry.id, entry.url);
+			} catch (error) {
+				await options.mcpOAuth?.forget(instance, entry.id);
+				if (error instanceof McpOAuthError) throw new HttpError(502, `${entry.name}: ${error.message}`);
+				throw error;
+			}
+			await store.save(connector);
+			await allow();
+			await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: instance, connector: entry.id, transport: "http", allowed: true, catalog: true });
+			if (url !== undefined) return { url };
+			await runtime.reopen(tenantId, instance);
+			return { status: options.connectorStatus(instance).find((s) => s.id === entry.id) };
+		}
+		if (token !== undefined) {
+			await runtime.secrets(tenantId).set(secret, `Bearer ${token}`);
+			await runtime.audit(tenantId).append({ type: "secret.set", instanceId: instance, name: secret });
+		}
+		if (!replacing) {
+			await store.save(connector);
+			await allow();
+			await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: instance, connector: entry.id, transport: "http", allowed: true, catalog: true });
+		}
+		await runtime.reopen(tenantId, instance);
+		return { status: options.connectorStatus(instance).find((s) => s.id === entry.id) };
+	});
+	route("POST", "/api/instances/:id/connectors/:cid/sign-in", "owner", async ({ params, person }) => {
+		const instance = params[0] as string;
+		const connector = (await options.connectors(instance).list()).find((c) => c.id === params[1]);
+		if (connector === undefined) throw new HttpError(404, "Connettore non trovato");
+		if (connector.transport.type !== "http" || connector.transport.auth !== "oauth") throw new HttpError(400, "Questo connettore non usa l'accesso con l'account");
+		const record = await runtime.registry.getInstance(tenantId, instance);
+		// A connector turned off or not allowed reaches nothing, not even to sign in.
+		if (!connector.enabled || !(record.egress.connectors ?? []).includes(connectorEgressName(connector.id))) throw new HttpError(400, `${connector.name} è spento o non consentito: accendilo prima`);
+		return signIn((person as Person).id, instance, connector);
+	});
+	route("POST", "/api/connectors/oauth/finish", "owner", async ({ req, person }) => {
+		const body = (await readJson(req)) as { state?: unknown; code?: unknown; error?: unknown };
+		if (typeof body.state !== "string" || (typeof body.code !== "string" && typeof body.error !== "string")) throw new HttpError(400, "Collegamento incompleto: riprova");
+		const oauth = options.mcpOAuth;
+		if (oauth === undefined) throw new HttpError(400, "L'accesso con l'account non è disponibile su questo server");
+		let done: { instanceId: string; connectorId: string };
+		const cancelled = typeof body.code !== "string";
+		try {
+			done = await oauth.finish((person as Person).id, body.state, cancelled ? undefined : (body.code as string));
+		} catch (error) {
+			if (error instanceof McpOAuthError) throw new HttpError(400, error.message);
+			throw error;
+		}
+		if (cancelled) {
+			await runtime.audit(tenantId).append({ type: "connector.sign_in_cancelled", instanceId: done.instanceId, connector: done.connectorId });
+			return { ...done, cancelled: true };
+		}
+		await runtime.audit(tenantId).append({ type: "connector.authorized", instanceId: done.instanceId, connector: done.connectorId });
+		await runtime.reopen(tenantId, done.instanceId);
+		return { ...done, status: options.connectorStatus(done.instanceId).find((s) => s.id === done.connectorId) };
 	});
 	route("DELETE", "/api/instances/:id/connectors/:cid", "owner", async ({ params }) => {
-		const removed = await options.connectors(params[0] as string).remove(params[1] as string);
-		const record = await runtime.registry.getInstance(tenantId, params[0] as string);
-		const name = connectorEgressName(params[1] as string);
-		if ((record.egress.connectors ?? []).includes(name)) await runtime.registry.setEgress(tenantId, params[0] as string, { ...record.egress, connectors: (record.egress.connectors ?? []).filter((c) => c !== name) });
-		await runtime.reopen(tenantId, params[0] as string);
+		const instance = params[0] as string;
+		const id = params[1] as string;
+		const store = options.connectors(instance);
+		const gone = (await store.list()).find((c) => c.id === id);
+		const removed = await store.remove(id);
+		await options.mcpOAuth?.forget(instance, id);
+		// The token a one-click connector was given belongs to it alone: it goes with it.
+		const secret = catalogTokenSecret(instance, id);
+		if (gone?.transport.type === "http" && Object.values(gone.transport.headerSecrets ?? {}).includes(secret)) {
+			await runtime.secrets(tenantId).delete(secret);
+			await runtime.audit(tenantId).append({ type: "secret.deleted", instanceId: instance, name: secret });
+		}
+		const record = await runtime.registry.getInstance(tenantId, instance);
+		const name = connectorEgressName(id);
+		if ((record.egress.connectors ?? []).includes(name)) await runtime.registry.setEgress(tenantId, instance, { ...record.egress, connectors: (record.egress.connectors ?? []).filter((c) => c !== name) });
+		if (removed) await runtime.audit(tenantId).append({ type: "connector.removed", instanceId: instance, connector: id });
+		await runtime.reopen(tenantId, instance);
 		return { removed };
 	});
 	route("PUT", "/api/instances/:id/secrets/:name", "owner", async ({ params, req }) => {
@@ -826,6 +949,7 @@ export function createWebApp(options: WebAppOptions): Server {
 				channel: connected.some((c) => (record.allowedUsers[c] ?? []).length > 0),
 				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
 				images: (record.egress.connectors ?? []).includes(IMAGE_CONNECTOR),
+				connectors: (await options.connectors(record.id).list()).some((c) => c.enabled && (record.egress.connectors ?? []).includes(connectorEgressName(c.id))),
 				people: others.length > 0,
 				// What this server offers, so the console does not count a step nobody can take here.
 				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined, images: options.images !== undefined },
@@ -1254,6 +1378,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const wa = /^\/hooks\/whatsapp\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (wa !== null && (req.method === "GET" || req.method === "POST")) return whatsappHook(req, res, url, wa[1] as string);
 		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
+		if (req.method === "GET" && url.pathname === "/oauth/mcp/callback") return mcpCallback(res, url);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
 		if (match === undefined) return send(res, 404, { error: "Not found" });
@@ -1274,6 +1399,28 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof HttpError) return send(res, error.status, { ...error.extra, error: error.message });
 			throw error;
 		}
+	}
+
+	/** Starts a connector's sign-in: the service's page to open, or the status when the tokens kept still work. */
+	async function signIn(personId: string, instance: string, connector: McpConnector): Promise<{ url: string } | { status: ConnectorStatus | undefined }> {
+		const oauth = options.mcpOAuth;
+		if (oauth === undefined || connector.transport.type !== "http") throw new HttpError(400, "L'accesso con l'account non è disponibile su questo server");
+		let url: string | undefined;
+		try {
+			url = await oauth.start(personId, instance, connector.id, connector.transport.url);
+		} catch (error) {
+			if (error instanceof McpOAuthError) throw new HttpError(502, `${connector.name}: ${error.message}`);
+			throw error;
+		}
+		if (url !== undefined) return { url };
+		await runtime.reopen(tenantId, instance);
+		return { status: options.connectorStatus(instance).find((s) => s.id === connector.id) };
+	}
+
+	/** Back from an MCP server's sign-in: like Google's, the console finishes with its own request. */
+	function mcpCallback(res: ServerResponse, url: URL): void {
+		res.writeHead(302, { location: `/#/connettore?${googleReturnQuery(url)}`, "cache-control": "no-store" });
+		res.end();
 	}
 
 	/**

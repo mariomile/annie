@@ -203,3 +203,7 @@ _Avoid_: draft (in italiano), proposta
 **Scheda**:
 Il messaggio a un approvatore con la pratica, la bozza e i pulsanti Approva, Modifica, Scarta.
 _Avoid_: notifica (quando ha pulsanti), card
+
+**Connettore in un clic**:
+Un servizio del catalogo (Notion, Linear, Jira, Stripe, GitHub e altri) che l'owner collega dalla pagina Connettori entrando con il suo account, o incollando un token. L'accesso resta sul server di Annie e si rinnova da solo; quando non si rinnova il connettore è «Da collegare». Vedi ADR 0024.
+_Avoid_: integrazione, plugin, app

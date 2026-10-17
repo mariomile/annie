@@ -75,7 +75,8 @@ function icon(name) {
 function toast(text, bad = false) {
 	const t = h(`div.toast${bad ? ".bad" : ""}`, text);
 	$toasts.append(t);
-	setTimeout(() => t.remove(), 4200);
+	// An error is usually longer and says what to do: it stays longer.
+	setTimeout(() => t.remove(), bad ? 9000 : 4200);
 }
 
 class ApiError extends Error {
@@ -231,6 +232,7 @@ async function enter() {
 		return;
 	}
 	if (location.hash.startsWith("#/google?")) await finishGoogle();
+	if (location.hash.startsWith("#/connettore?")) await finishConnector();
 	connectEvents();
 	const landing = location.hash === "" || location.hash === "#/";
 	window.addEventListener("hashchange", render);
@@ -1650,6 +1652,7 @@ function setupSteps(setup) {
 		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto${can.transcription && can.speech ? ", ti risponde anche a voce" : ""}, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
 		{ id: "web", own: true, done: setup.web, title: "Lasciala cercare sul web", text: can.search ? "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati, report di ricerca con le fonti." : "Scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: ["impostazioni", can.search ? "ricerca" : "siti"] },
 		...(can.images ? [{ id: "images", own: true, done: setup.images, title: "Fatti creare un'immagine", text: "Accendi le immagini: un logo, un volantino, una foto ritoccata, chiesti a parole in chat.", go: ["impostazioni", "immagini"] }] : []),
+		{ id: "connectors", own: true, done: setup.connectors, title: "Collega i tuoi strumenti", text: "Notion, Linear, Jira, Stripe, GitHub e altri in un clic: entri con il tuo account e Annie può cercare, leggere e aggiornare lì dentro.", go: ["connettori"] },
 		{ id: "people", own: true, done: setup.people, title: "Invita il tuo team", text: "Aggiungi le persone in Persone, poi in Impostazioni scegli chi può scrivere a questa istanza. Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: ["persone"] },
 		{ id: "app", own: canInstall(), done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home o sul desktop, a schermo intero, come un'app." },
 	];
@@ -2131,30 +2134,155 @@ async function viewMemory(main) {
 }
 
 // ---------- connettori ----------
+/** Back from a service's sign-in (ADR 0024): like Google's, the code is in the fragment. */
+async function finishConnector() {
+	const params = new URLSearchParams(location.hash.slice("#/connettore?".length));
+	history.replaceState(null, "", "/#/connettori");
+	const error = params.get("error");
+	try {
+		const done = await api("/api/connectors/oauth/finish", { method: "POST", body: { state: params.get("state") ?? "", ...(error ? { error } : { code: params.get("code") ?? "" }) } });
+		// The connector's own instance, whatever was selected when the sign-in started.
+		const inst = state.instances.find((i) => i.id === done.instanceId);
+		if (inst) {
+			state.instance = inst;
+			store("annie.instance", inst.id);
+		}
+		if (done.cancelled) return toast(error === "access_denied" ? "Accesso annullato: il connettore resta da collegare" : "Il servizio non ha completato l'accesso: riprova con «Collega»", true);
+		const st = done.status;
+		toast(st?.connected ? `Collegato: Annie ha ${st.tools.length} nuovi strumenti` : `Accesso riuscito, ma il servizio non risponde${st?.error ? `: ${st.error}` : ""}`, !st?.connected);
+	} catch (e) {
+		toast(e.message, true);
+	}
+}
+
+/** Opens the service's sign-in page, or says the connector works already. */
+async function signInConnector(path, name) {
+	const result = await api(path, { method: "POST", body: {} });
+	if (result.url) {
+		// Only a web page: a service never sends the console to another kind of address.
+		if (!/^https?:\/\//.test(result.url)) throw new Error(`${name}: pagina di accesso non valida`);
+		return location.assign(result.url);
+	}
+	toast(result.status?.connected ? `${name} collegato: ${result.status.tools.length} strumenti` : `${name} aggiunto${result.status?.error ? `, ma non collegato: ${result.status.error}` : ""}`, !result.status?.connected);
+	render();
+}
+
+const AUTH_LABEL = { oauth: "Accedi con il tuo account", token: "Serve un token", none: "Pubblico, senza account" };
+const CATALOG_GROUPS = [
+	["lavoro", "Lavoro"],
+	["pagamenti", "Pagamenti"],
+	["conoscenza", "Documentazione"],
+	["sviluppo", "Per sviluppatori"],
+];
+
+/** Whether the services can send the owner back here: https, or this computer. */
+function returnWorks(redirectUrl) {
+	if (!redirectUrl) return false;
+	const u = new URL(redirectUrl);
+	return u.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+}
+
+/** The well-known servers not added yet, each one click away, by group. */
+function catalogGallery(inst, catalog, oauth, redirectUrl, added) {
+	const left = catalog.filter((e) => !added.has(e.id) && (e.auth !== "oauth" || oauth));
+	if (left.length === 0) return null;
+	const add = async (e, button) => {
+		if (e.auth === "token") return tokenDialog(inst, e, false);
+		button.disabled = true;
+		try {
+			await signInConnector(`/api/instances/${inst.id}/connectors/catalog/${e.id}`, e.name);
+		} catch (error) {
+			toast(error.message, true);
+			button.disabled = false;
+		}
+	};
+	const card = (e) => {
+		const button = h("button.btn.small.accent", { onclick: () => void add(e, button) }, e.auth === "oauth" ? "Accedi e aggiungi" : "Aggiungi");
+		return h("div.card.pad", h("h3", e.name), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
+	};
+	return h(
+		"section.catalog",
+		h("h2", "Aggiungi in un clic"),
+		h("p.muted", "Servizi noti con un collegamento ufficiale per gli assistenti. Premi «Accedi e aggiungi»: entri con il tuo account sulla pagina del servizio e torni qui. L'accesso resta sul server di Annie, mai nel browser."),
+		oauth && !returnWorks(redirectUrl) ? h("p.chip.warn", "Questo server non ha un indirizzo https (ANNIE_PUBLIC_URL): molti servizi rifiutano di rimandarti qui dopo l'accesso.") : null,
+		CATALOG_GROUPS.map(([group, label]) => {
+			const items = left.filter((e) => e.category === group);
+			return items.length ? h("div.stack", h("div.kicker", label), h("div.gallery", items.map(card))) : null;
+		}),
+	);
+}
+
+/** A token for a one-click connector: to add it, or to change the one it has. */
+function tokenDialog(inst, e, replace) {
+	const token = h("input", { type: "password", placeholder: "Incolla qui il token", autocomplete: "off" });
+	const save = async () => {
+		try {
+			const { status } = await api(`/api/instances/${inst.id}/connectors/catalog/${e.id}`, { method: "POST", body: { token: token.value, ...(replace ? { replace: true } : {}) } });
+			dialog.close();
+			toast(status?.connected ? `${e.name} collegato: ${status.tools.length} strumenti` : `${e.name} salvato, ma non collegato${status?.error ? `: ${status.error}` : ""}`, !status?.connected);
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	token.addEventListener("keydown", (ev) => ev.key === "Enter" && void save());
+	const dialog = h(
+		"dialog",
+		h("h3", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
+		h("p.muted", e.tokenHelp ?? ""),
+		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Annie e non si vede più. Si usa solo per questa istanza.")),
+		h("div.actions", h("button.btn.accent", { onclick: () => void save() }, "Salva e collega"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
+	);
+	dialog.addEventListener("close", () => dialog.remove());
+	document.body.append(dialog);
+	dialog.showModal();
+	token.focus();
+}
+
 async function viewConnectors(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const { connectors } = await api(`/api/instances/${inst.id}/connectors`);
+	const [{ connectors }, { catalog, oauth, redirectUrl }] = await Promise.all([api(`/api/instances/${inst.id}/connectors`), api("/api/connector-catalog")]);
 	const cards = connectors.map((c) => {
 		const st = c.status;
-		const chip = !c.enabled ? h("span.chip", "Spento") : !c.allowed ? h("span.chip.warn", "Non consentito") : st?.connected ? h("span.chip.ok", `${st.tools.length} tool`) : h("span.chip.bad", "Non collegato");
+		const oauthConnector = c.transport.type === "http" && c.transport.auth === "oauth";
+		const tokenEntry = catalog.find((e) => e.id === c.id && e.auth === "token" && c.transport.type === "http" && Object.keys(c.transport.headerSecrets ?? {}).length > 0);
+		const chip = !c.enabled
+			? h("span.chip", "Spento")
+			: !c.allowed
+				? h("span.chip.warn", "Non consentito")
+				: st?.connected
+					? h("span.chip.ok", `${st.tools.length} strumenti`)
+					: st?.signIn
+						? h("span.chip.warn", "Da collegare")
+						: h("span.chip.bad", "Non collegato");
 		return h(
 			"div.card.pad.stack",
 			h("div.row-gap", h("h3", c.name), chip),
 			h("div.mono.muted", c.transport.type === "http" ? c.transport.url : `${c.transport.command} ${(c.transport.args ?? []).join(" ")}`),
 			st?.error ? h("p.chip.bad", st.error) : null,
 			st?.tools?.length ? h("p.mono", st.tools.join("  ")) : null,
+			st?.left ? h("p.muted", `Il servizio ha altri ${st.left} strumenti: Annie usa i primi ${st.tools.length}, per non confondere il modello.`) : null,
 			h(
 				"div.row-gap",
+				oauthConnector && oauth && !st?.connected && c.enabled && c.allowed
+					? h("button.btn.small.accent", { onclick: () => void signInConnector(`/api/instances/${inst.id}/connectors/${c.id}/sign-in`, c.name).catch((error) => toast(error.message, true)) }, "Collega")
+					: null,
+				tokenEntry ? h(`button.btn.small${st?.badToken ? ".accent" : ".ghost"}`, { onclick: () => tokenDialog(inst, tokenEntry, true) }, "Cambia token") : null,
 				h("button.btn.small.ghost", { onclick: () => connectorForm(inst, c) }, "Modifica"),
 				h(
 					"button.btn.small.danger",
 					{
 						onclick: () =>
-							confirmDialog(`Rimuovere ${c.name}?`, "Annie perde i suoi tool. I segreti restano nel secret store.", "Rimuovi", async () => {
-								await api(`/api/instances/${inst.id}/connectors/${c.id}`, { method: "DELETE" });
-								render();
-							}),
+							confirmDialog(
+								`Rimuovere ${c.name}?`,
+								oauthConnector ? "Annie perde i suoi strumenti e il suo accesso al servizio viene cancellato." : tokenEntry ? "Annie perde i suoi strumenti e il token viene cancellato." : "Annie perde i suoi strumenti. I valori segreti restano salvati sul server.",
+								"Rimuovi",
+								async () => {
+									await api(`/api/instances/${inst.id}/connectors/${c.id}`, { method: "DELETE" });
+									render();
+								},
+							),
 					},
 					"Rimuovi",
 				),
@@ -2162,8 +2290,9 @@ async function viewConnectors(main) {
 		);
 	});
 	mount(main, 
-		head(inst.name, h("h1", "Connettori"), "Server MCP che danno ad Annie i tool dei vostri sistemi. Ognuno raggiunge solo il suo host, e solo se consentito.", h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
-		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Aggiungi un server MCP (HTTP o locale) per dare ad Annie nuovi strumenti."),
+		head(inst.name, h("h1", "Connettori"), "Collegano Annie agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.", h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
+		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
+		catalogGallery(inst, catalog, oauth, redirectUrl, new Set(connectors.map((c) => c.id))),
 	);
 }
 
@@ -2178,8 +2307,15 @@ function connectorForm(inst, existing) {
 	const secretValue = h("input", { type: "password", placeholder: "Valore (salvato nel secret store, mai mostrato)" });
 	const allowed = h("input", { type: "checkbox", checked: existing ? existing.allowed : true });
 	const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
+	const oauthBox = h("input", { type: "checkbox", checked: t?.type === "http" && t.auth === "oauth" });
 	const box = h("div");
-	const draw = () => mount(box, type.value === "http" ? h("label.field", h("span", "URL"), url) : h("label.field", h("span", "Comando"), command, h("small", "Gira sul server di Annie: solo comandi di cui ti fidi.")));
+	const draw = () =>
+		mount(
+			box,
+			type.value === "http"
+				? h("div.stack", h("label.field", h("span", "URL"), url), h("label.row-gap", oauthBox, h("span", "Accesso con l'account del servizio (OAuth)")))
+				: h("label.field", h("span", "Comando"), command, h("small", "Gira sul server di Annie: solo comandi di cui ti fidi.")),
+		);
 	type.addEventListener("change", draw);
 	draw();
 	const dialog = h(
@@ -2209,13 +2345,14 @@ function connectorForm(inst, existing) {
 							const prev = existing?.transport ?? {};
 							const transport =
 								type.value === "http"
-									? { type: "http", url: url.value.trim(), headerSecrets: { ...(prev.type === "http" ? prev.headerSecrets : {}), ...secrets } }
+									? { type: "http", url: url.value.trim(), headerSecrets: { ...(prev.type === "http" ? prev.headerSecrets : {}), ...secrets }, ...(oauthBox.checked ? { auth: "oauth" } : {}) }
 									: (() => {
 											const [cmd, ...args] = command.value.trim().split(/\s+/);
 											return { type: "stdio", command: cmd, args, envSecrets: { ...(prev.type === "stdio" ? prev.envSecrets : {}), ...secrets } };
 										})();
 							const { status } = await api(`/api/instances/${inst.id}/connectors/${encodeURIComponent(cid)}`, { method: "PUT", body: { name: name.value.trim() || cid, transport, enabled: enabled.checked, allowed: allowed.checked } });
 							dialog.close();
+							if (type.value === "http" && oauthBox.checked && status?.signIn && allowed.checked && enabled.checked) return await signInConnector(`/api/instances/${inst.id}/connectors/${encodeURIComponent(cid)}/sign-in`, name.value.trim() || cid);
 							toast(status?.connected ? `Collegato: ${status.tools.length} tool` : `Salvato${status?.error ? `, ma non collegato: ${status.error}` : ""}`, !status?.connected);
 							render();
 						} catch (error) {

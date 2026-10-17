@@ -20,6 +20,8 @@ import { connectTwilioNumber, MissingPhoneField, type PendingReplies, PhoneAdapt
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GOOGLE_WRITE_SCOPE, GoogleAccounts, GoogleClient, GoogleNotConnected, GoogleOAuth, type GoogleService, GoogleUncertain } from "./connectors/google.ts";
 import { ConnectorHttpError, egressFetch } from "./connectors/http.ts";
 import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
+import { McpOAuth } from "./connectors/mcp-oauth.ts";
+import type { CatalogEntry } from "./connectors/catalog.ts";
 import { readOnlyInBriefs } from "./core/brief.ts";
 import { type ComputerProvider, computerKey } from "./core/computer.ts";
 import { createComputerTools } from "./core/tools/computer-tools.ts";
@@ -84,6 +86,10 @@ export type AnnieOptions = {
 	readonly speechFetch?: typeof fetch;
 	/** Tests only: the image service's fetch. */
 	readonly imageFetch?: typeof fetch;
+	/** Tests only: which addresses an MCP sign-in may reach, over http too; public ones over https otherwise. */
+	readonly mcpOAuthAddressAllowed?: (address: string) => boolean;
+	/** Tests: one-click connectors pointing at fakes. */
+	readonly connectorCatalog?: readonly CatalogEntry[];
 	/** Tests: the search service's fetch. */
 	readonly searchFetch?: typeof fetch;
 	/** Google OAuth and API fetch (tests). */
@@ -313,11 +319,22 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			.catch((error: unknown) => log(`computer: leftovers not checked: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
+	// Sign-ins to MCP servers (ADR 0024): the service sends the owner back to the console's address.
+	let oauth: McpOAuth | undefined;
+	const mcpOAuth = () =>
+		(oauth ??= new McpOAuth({
+			tenantId: tenant,
+			secrets: runtime.secrets(tenant),
+			// The same address as the owner's login link: the session cookie comes back with the owner.
+			redirectUrl: `${config.web.publicUrl ?? `http://${config.web.host === "0.0.0.0" ? "localhost" : config.web.host}:${config.web.port}`}/oauth/mcp/callback`,
+			...(options.mcpOAuthAddressAllowed === undefined ? {} : { fetch: { addressAllowed: options.mcpOAuthAddressAllowed, allowHttp: true } }),
+		}));
+
 	const runtime: AnnieRuntime = new AnnieRuntime({
 		dataDir: config.dataDir,
 		engine: options.engine ?? piDurableEngine,
 		tools: async (record): Promise<ToolSet> => {
-			const mcp = new McpConnections({ instanceId: record.id, secrets: runtime.secrets(record.tenantId), policy: policyOf(record), audit: runtime.audit(record.tenantId), log });
+			const mcp = new McpConnections({ instanceId: record.id, secrets: runtime.secrets(record.tenantId), policy: policyOf(record), audit: runtime.audit(record.tenantId), log, oauth: mcpOAuth() });
 			connections.set(record.id, mcp);
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
@@ -743,6 +760,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		channels: webChannels,
 		connectors: connectorStore,
 		connectorStatus: (id) => connections.get(id)?.status() ?? [],
+		mcpOAuth: mcpOAuth(),
+		...(options.connectorCatalog === undefined ? {} : { catalog: options.connectorCatalog }),
 		...(segreteria === undefined ? {} : { segreterie: new Map([[segreteria.instanceId, segreteria.service]]) }),
 		usage: ledger,
 		uiDir: options.uiDir ?? join(import.meta.dirname, "web", "ui"),
