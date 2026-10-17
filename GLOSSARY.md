@@ -207,3 +207,7 @@ _Avoid_: notifica (quando ha pulsanti), card
 **Connettore in un clic**:
 Un servizio del catalogo (Notion, Linear, Jira, Stripe, GitHub e altri) che l'owner collega dalla pagina Connettori entrando con il suo account, o incollando un token. L'accesso resta sul server di Annie e si rinnova da solo; quando non si rinnova il connettore è «Da collegare». Vedi ADR 0024.
 _Avoid_: integrazione, plugin, app
+
+**Azione di un connettore**:
+Una chiamata a uno strumento di un servizio collegato che cambia qualcosa (crea, modifica, cancella). Annie la prepara come richiesta; parte, una volta, solo quando chi l'ha chiesta o un approvatore la approva. Gli strumenti che il servizio indica come di sola lettura partono subito. Vedi ADR 0025.
+_Avoid_: tool call, operazione

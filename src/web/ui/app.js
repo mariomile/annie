@@ -312,6 +312,8 @@ async function refreshCounters() {
 		}
 		// Forms to send: a person sees and decides their own, an approver everyone's.
 		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/web-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
+		// Connector calls that change something: the person who asked, or an approver.
+		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/connector-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
 		// Writes to the person's own Google account: theirs alone.
 		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
 		state.pendingApprovals = pending;
@@ -1047,8 +1049,11 @@ async function viewChat(main) {
 	const drawAsks = async () => {
 		const { actions } = await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }));
 		const waiting = actions.filter((a) => a.status === "pending" && a.thread?.threadId === threadId);
-		asks.hidden = waiting.length === 0;
-		mount(asks, ...waiting.map((a) => googleActionCard(inst, a, () => void drawAsks().then(refreshCounters), true)));
+		const { actions: calls } = await api(`/api/instances/${inst.id}/connector-actions`).catch(() => ({ actions: [] }));
+		const asked = calls.filter((a) => a.status === "pending" && a.thread?.threadId === threadId);
+		asks.hidden = waiting.length + asked.length === 0;
+		const again = () => void drawAsks().then(refreshCounters);
+		mount(asks, ...waiting.map((a) => googleActionCard(inst, a, again, true)), ...asked.map((a) => connectorActionCard(inst, a, again, true)));
 	};
 	void drawAsks();
 	const stopTyping = () => {
@@ -1392,6 +1397,10 @@ async function viewApprovals(main) {
 	};
 	const pendingActions = actions.filter((a) => a.status === "pending");
 	const decidedActions = actions.filter((a) => a.status !== "pending").reverse();
+	const { actions: connectorActions } = await api(`/api/instances/${inst.id}/connector-actions`).catch(() => ({ actions: [] }));
+	const afterConnector = () => setTimeout(() => void refreshCounters().then(render), 600);
+	const pendingConnector = connectorActions.filter((a) => a.status === "pending").map((a) => connectorActionCard(inst, a, afterConnector));
+	const decidedConnector = connectorActions.filter((a) => a.status !== "pending").reverse().slice(0, 20).map((a) => connectorActionCard(inst, a, afterConnector));
 	const { actions: googleActions } = await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }));
 	const afterGoogle = () => setTimeout(() => void refreshCounters().then(render), 600);
 	const pendingGoogle = googleActions.filter((a) => a.status === "pending").map((a) => googleActionCard(inst, a, afterGoogle));
@@ -1424,17 +1433,46 @@ async function viewApprovals(main) {
 			);
 	}
 	mount(main, 
-		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Annie prepara sul tuo Google, le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
+		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Annie prepara sul tuo Google, le azioni sui servizi collegati (Notion, Linear, GitHub…) che cambiano qualcosa, le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
 		h(
 			"div.stack",
 			drafts,
 			pendingGoogle,
+			pendingConnector,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingGoogle.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
-			decidedGoogle.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
+			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
+			decidedGoogle.length || decidedConnector.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedConnector, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
+}
+
+// ---------- Connettori: azioni che cambiano qualcosa ----------
+const CONNECTOR_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"], rejected: ["bad", "Rifiutato"], expired: ["bad", "Scaduto"], uncertain: ["bad", "Esito incerto"], running: ["ok", "In corso"] };
+
+/** A call to a connected service waiting for a person: why, what, with which values, whole; approve runs it once. */
+function connectorActionCard(inst, a, after, compact = false) {
+	const el = h(
+		"article.card.pad.dossier",
+		h("header", h("div", h("div.kicker", `${a.connectorName} · richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h3", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
+		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
+		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
+		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
+		a.status !== "pending" && CONNECTOR_STAMP[a.status] ? h(`div.stamp.${CONNECTOR_STAMP[a.status][0]}`, CONNECTOR_STAMP[a.status][1]) : null,
+	);
+	if (a.status === "pending") {
+		const decide = async (decision) => {
+			try {
+				const { action } = await api(`/api/instances/${inst.id}/connector-actions/${a.id}/decision`, { method: "POST", body: { decision } });
+				toast(action.status === "done" ? `Fatto su ${a.connectorName}` : action.status === "rejected" ? "Richiesta rifiutata" : action.status === "failed" ? "Non è stata fatta: vedi i dettagli" : action.status === "uncertain" ? `Esito incerto: controlla su ${a.connectorName}` : action.status === "expired" ? "La richiesta era scaduta" : `Richiesta ${action.status}`, action.status !== "done" && action.status !== "rejected");
+				after();
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), compact ? null : h("span.muted", `Se la approvi, Annie la fa una volta sola, con questi valori, su ${a.connectorName}.`)));
+	}
+	return el;
 }
 
 // ---------- Google: scrivere con approvazione ----------
@@ -2262,6 +2300,15 @@ async function viewConnectors(main) {
 			h("div.mono.muted", c.transport.type === "http" ? c.transport.url : `${c.transport.command} ${(c.transport.args ?? []).join(" ")}`),
 			st?.error ? h("p.chip.bad", st.error) : null,
 			st?.tools?.length ? h("p.mono", st.tools.join("  ")) : null,
+			!st?.connected
+				? null
+				: c.approval === "none"
+					? h("p.muted", "Approvazione spenta: Annie usa tutti gli strumenti senza chiedere.")
+					: !st.approval?.length
+						? h("p.muted", "Tutti gli strumenti leggono soltanto: Annie li usa senza chiedere.")
+						: st.approval.length === st.tools.length
+							? h("p.muted", "Tutti gli strumenti chiedono l'approvazione prima di agire.")
+							: h("p.muted", `Chiedono l'approvazione prima di agire: ${st.approval.map((t) => t.replace(`${c.id}__`, "")).join(", ")}.`),
 			st?.left ? h("p.muted", `Il servizio ha altri ${st.left} strumenti: Annie usa i primi ${st.tools.length}, per non confondere il modello.`) : null,
 			h(
 				"div.row-gap",
@@ -2307,6 +2354,7 @@ function connectorForm(inst, existing) {
 	const secretValue = h("input", { type: "password", placeholder: "Valore (salvato nel secret store, mai mostrato)" });
 	const allowed = h("input", { type: "checkbox", checked: existing ? existing.allowed : true });
 	const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
+	const askBox = h("input", { type: "checkbox", checked: existing?.approval !== "none" });
 	const oauthBox = h("input", { type: "checkbox", checked: t?.type === "http" && t.auth === "oauth" });
 	const box = h("div");
 	const draw = () =>
@@ -2328,6 +2376,8 @@ function connectorForm(inst, existing) {
 		h("div.field", h("span", type.value === "stdio" ? "Variabile segreta (opzionale)" : "Header segreto (opzionale)"), h("div.row-gap", secretName, secretValue)),
 		h("label.row-gap", allowed, h("span", "Consenti nella egress policy")),
 		h("label.row-gap", enabled, h("span", "Acceso")),
+		h("label.row-gap", askBox, h("span", "Chiedi l'approvazione prima delle azioni che cambiano qualcosa")),
+		h("small.muted", "Consigliato. Per creare, modificare o cancellare, Annie chiede il via libera a chi ha fatto la richiesta o a un approvatore; gli strumenti che il servizio indica come di sola lettura li usa da sola. Se il servizio non lo indica, chiede per tutti. Spegnilo solo per un servizio di cui ti fidi del tutto."),
 		h(
 			"div.actions",
 			h(
@@ -2350,7 +2400,7 @@ function connectorForm(inst, existing) {
 											const [cmd, ...args] = command.value.trim().split(/\s+/);
 											return { type: "stdio", command: cmd, args, envSecrets: { ...(prev.type === "stdio" ? prev.envSecrets : {}), ...secrets } };
 										})();
-							const { status } = await api(`/api/instances/${inst.id}/connectors/${encodeURIComponent(cid)}`, { method: "PUT", body: { name: name.value.trim() || cid, transport, enabled: enabled.checked, allowed: allowed.checked } });
+							const { status } = await api(`/api/instances/${inst.id}/connectors/${encodeURIComponent(cid)}`, { method: "PUT", body: { name: name.value.trim() || cid, transport, enabled: enabled.checked, allowed: allowed.checked, ...(askBox.checked ? {} : { approval: "none" }) } });
 							dialog.close();
 							if (type.value === "http" && oauthBox.checked && status?.signIn && allowed.checked && enabled.checked) return await signInConnector(`/api/instances/${inst.id}/connectors/${encodeURIComponent(cid)}/sign-in`, name.value.trim() || cid);
 							toast(status?.connected ? `Collegato: ${status.tools.length} tool` : `Salvato${status?.error ? `, ma non collegato: ${status.error}` : ""}`, !status?.connected);

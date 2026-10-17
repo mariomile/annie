@@ -231,6 +231,8 @@ Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un h
 
 In un clic (settimana 29, ADR 0024): sotto i connettori c'è la galleria dei servizi noti. «Accedi e aggiungi» porta l'owner sulla pagina del servizio e lo riporta a `ANNIE_PUBLIC_URL/oauth/mcp/callback`: senza un indirizzo https molti servizi rifiutano. I token stanno nel secret store (`mcp-oauth.<istanza>.<connettore>`, o `connector.<connettore>.<istanza>.authorization` per i token incollati) e si rinnovano da soli; quando il servizio rifiuta il rinnovo il connettore mostra «Da collegare» e basta premere «Collega». Un accesso in corso si perde a un riavvio. Audit: `connector.authorized`, `connector.sign_in_cancelled`, `connector.removed`.
 
+Azioni con approvazione (settimana 30, ADR 0025): gli strumenti che il servizio non indica come di sola lettura aspettano un «Approva» in Approvazioni, sopra la chat web o sulla card di Telegram e WhatsApp. Le richieste stanno in `connector-actions/` dell'istanza, scadono in 24 ore e al massimo 20 restano in attesa. Una richiesta rimasta «in corso» per un riavvio diventa «esito incerto» all'avvio: controlla sul servizio prima di chiederla di nuovo. Per un servizio di cui ti fidi del tutto, Modifica → togli «Chiedi l'approvazione…». Audit: `connector_action.*`, mai argomenti o risposte.
+
 ## 8. Backup e ripristino
 
 Tutto lo stato è nella cartella dati (`/data` nel container, `data/` senza Docker): istanze, conversazioni (SQLite), outbox, pratiche, file, task, persone, segreti, audit.

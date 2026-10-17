@@ -19,7 +19,7 @@ import type { ChannelAdapter, InboundAction } from "./channels/types.ts";
 import { connectTwilioNumber, MissingPhoneField, type PendingReplies, PhoneAdapter, type PhoneCredentials, parsePhoneCredentials } from "./channels/phone.ts";
 import { GOOGLE_CONNECTOR, GOOGLE_HOSTS, GOOGLE_WRITE_SCOPE, GoogleAccounts, GoogleClient, GoogleNotConnected, GoogleOAuth, type GoogleService, GoogleUncertain } from "./connectors/google.ts";
 import { ConnectorHttpError, egressFetch } from "./connectors/http.ts";
-import { ConnectorStore, McpConnections } from "./connectors/mcp.ts";
+import { ConnectorStore, connectorEgressName, McpConnections, type McpConnectionsOptions } from "./connectors/mcp.ts";
 import { McpOAuth } from "./connectors/mcp-oauth.ts";
 import type { CatalogEntry } from "./connectors/catalog.ts";
 import { readOnlyInBriefs } from "./core/brief.ts";
@@ -34,7 +34,8 @@ import { createWebTools } from "./core/tools/web-tools.ts";
 import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
 import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
-import { decideToolProposal, decideWebAction, NotAnApprover } from "./core/approvals.ts";
+import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover } from "./core/approvals.ts";
+import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { type GoogleAction, type GoogleActionResult, googleActionReport, googleActionTitle, mimeMessage } from "./core/google-actions.ts";
 import { publicAddress } from "./core/web-fetch.ts";
@@ -334,7 +335,15 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		dataDir: config.dataDir,
 		engine: options.engine ?? piDurableEngine,
 		tools: async (record): Promise<ToolSet> => {
-			const mcp = new McpConnections({ instanceId: record.id, secrets: runtime.secrets(record.tenantId), policy: policyOf(record), audit: runtime.audit(record.tenantId), log, oauth: mcpOAuth() });
+			const mcp = new McpConnections({
+				instanceId: record.id,
+				secrets: runtime.secrets(record.tenantId),
+				policy: policyOf(record),
+				audit: runtime.audit(record.tenantId),
+				log,
+				oauth: mcpOAuth(),
+				actions: { propose: (input) => proposeConnectorAction(record.id, input) },
+			});
 			connections.set(record.id, mcp);
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
@@ -595,6 +604,94 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		}
 	}
 
+	/** A connector call that changes something, waiting for a person (ADR 0025): stored, then its card sent. */
+	async function proposeConnectorAction(instance: string, input: Parameters<NonNullable<McpConnectionsOptions["actions"]>["propose"]>[0]): Promise<string> {
+		try {
+			const requester = input.thread === undefined ? undefined : runtime.participant(tenant, instance, input.thread);
+			const action = await runtime.connectorActions(tenant, instance).propose(
+				{
+					connectorId: input.connector.id,
+					connectorName: input.connector.name,
+					server: input.server,
+					tool: input.tool,
+					toolTitle: input.toolTitle,
+					args: input.args,
+					reason: input.reason,
+					destructive: input.destructive,
+					...(input.thread === undefined ? {} : { thread: input.thread }),
+					...(requester === undefined ? {} : { requester }),
+				},
+				new Date(),
+				input.callId,
+			);
+			// A rerun finds the request it made: it is told where that stands, nobody is asked twice.
+			if (action.status !== "pending") return `Richiesta ${action.id} già decisa (${action.status}): non rifarla da sola.`;
+			await notifyConnectorAction(instance, action);
+			const inChat = action.thread !== undefined && action.requester !== undefined && (action.thread.channel === "telegram" || action.thread.channel === "whatsapp");
+			const where = inChat ? "la card con i pulsanti è in questa chat" : action.thread?.channel === "web" ? "la card con i pulsanti è sopra la chat e in Approvazioni" : "si decide nella console web, in Approvazioni";
+			return `Richiesta ${action.id} pronta (${action.toolTitle} su ${action.connectorName}): aspetta l'approvazione di chi l'ha chiesta o di un approvatore; ${where}. Se nessuno la decide entro 24 ore scade e non viene fatta. Non richiamare lo strumento per la stessa azione e non dire che è stata fatta finché non lo sai${action.thread === undefined ? "" : "; l'esito ti arriva in questa conversazione quando viene decisa"}.`;
+		} catch (error) {
+			if (error instanceof ConnectorActionError) return `Errore: ${error.message}.`;
+			throw error;
+		}
+	}
+
+	/** The card of a connector call: in the conversation that asked (Telegram, WhatsApp) and to the approvers' chats. */
+	async function notifyConnectorAction(instance: string, action: ConnectorAction): Promise<void> {
+		const record = await runtime.registry.getInstance(tenant, instance);
+		const fits = fitsInChat(action);
+		const values = action.shown.map(([k, v]) => `${k}: ${v.length > 300 ? `${v.slice(0, 300)}[...]` : v}`);
+		const expires = new Date(Date.parse(action.proposedAt) + CONNECTOR_ACTION_LIMITS.ttlMs).toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+		const long = "\n\nÈ lunga: si legge intera e si approva solo dalla console web (Approvazioni), da chi l'ha chiesta o da un approvatore. Da qui puoi rifiutarla.";
+		const body = (shown: string[]) => `${action.connectorName}: azione da approvare · richiesta ${action.id}\n\n${action.reason}\n\nAzione: ${action.toolTitle} (${action.tool})${action.destructive ? ", può cancellare o sovrascrivere" : ""}\n\n${shown.length > 0 ? shown.join("\n") : "(nessun dato)"}${fits ? "" : long}\n\nScade il ${expires}.`;
+		const text = fits ? body(values) : body(values.slice(0, 10).concat(values.length > 10 ? [`(e altri ${values.length - 10} dati)`] : []));
+		const buttons = fits
+			? [
+					{ label: "Approva", data: `mcp:${action.id}:approved` },
+					{ label: "Rifiuta", data: `mcp:${action.id}:rejected` },
+				]
+			: [{ label: "Rifiuta", data: `mcp:${action.id}:rejected` }];
+		for (const adapter of [telegrams.get(instance), whatsapps.get(instance)]) {
+			if (adapter === undefined) continue;
+			const chats = new Set(record.approvers?.[adapter.name] ?? []);
+			if (action.thread?.channel === adapter.name && action.requester !== undefined) chats.add(action.thread.threadId);
+			for (const chat of chats) {
+				if ((action.notified ?? []).includes(`${adapter.name}:${chat}`)) continue;
+				try {
+					await adapter.send({ tenantId: tenant, instanceId: instance, channel: adapter.name, threadId: chat, idempotencyKey: `connector-action:${action.id}:${chat}`, text, buttons });
+					await runtime.connectorActions(tenant, instance).markNotified(action.id, `${adapter.name}:${chat}`);
+				} catch (error) {
+					log(`annie: connector action card for ${action.id} to ${adapter.name} ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+		}
+	}
+
+	/** Runs an approved connector call, if the connector is still allowed and connected. */
+	const runConnectorAction = (instance: string) => async (action: ConnectorAction) => {
+		const policy = (await runtime.registry.getInstance(tenant, instance)).egress;
+		if (!(policy.connectors ?? []).includes(connectorEgressName(action.connectorId))) throw new ConnectorActionError(`${action.connectorName} è stato spento o tolto per questa istanza`);
+		const live = connections.get(instance);
+		if (live === undefined) throw new ConnectorActionError(`${action.connectorName} non è collegato ora`);
+		const result = await live.callApproved(action.connectorId, action.server, action.tool, { ...action.args });
+		if (result.isError) throw new ConnectorActionError(`${action.connectorName} ha risposto con un errore: ${result.text.slice(0, 1000)}`);
+		return { text: result.text };
+	};
+
+	async function onConnectorActionTap(instance: string, adapter: ChannelAdapter, action: InboundAction, id: string, decision: "approved" | "rejected"): Promise<void> {
+		const pending = await runtime.connectorActions(tenant, instance).get(id);
+		if (pending === undefined) return;
+		if (decision === "approved" && !fitsInChat(pending)) return; // only from the console
+		try {
+			const decided = await decideConnectorAction(runtime, tenant, instance, id, decision, { channel: adapter.name, userId: action.userId }, runConnectorAction(instance), log);
+			const mine = decided.decidedBy?.channel === adapter.name && decided.decidedBy.userId === action.userId;
+			const word = { rejected: "rifiutata", expired: "scaduta", done: "approvata e fatta", failed: "approvata, ma non è riuscita", uncertain: "approvata, esito incerto" }[decided.status as string] ?? decided.status;
+			await adapter.send({ tenantId: tenant, instanceId: instance, channel: adapter.name, threadId: action.threadId, idempotencyKey: `decision:${action.actionId}`, text: `Richiesta ${id}: ${word}${mine || decided.status === "expired" ? "" : " (decisa in precedenza)"}.` });
+		} catch (error) {
+			if (!(error instanceof NotAnApprover)) throw error;
+		}
+	}
+
 	/** Sends an approved form, if the owner still allows actions and the sites. */
 	const sendForInstance = (instance: string) => async (action: WebAction) => {
 		const policy = (await runtime.registry.getInstance(tenant, instance)).egress;
@@ -617,6 +714,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	}
 
 	async function onApprovalTap(instance: string, adapter: ChannelAdapter, action: InboundAction): Promise<void> {
+		const mcpAction = /^mcp:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
+		if (mcpAction !== null) return onConnectorActionTap(instance, adapter, action, mcpAction[1] as string, mcpAction[2] as "approved" | "rejected");
 		const web = /^web:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
 		if (web !== null) return onWebActionTap(instance, adapter, action, web[1] as string, web[2] as "approved" | "rejected");
 		const m = /^tool:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
@@ -730,8 +829,16 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			if (action.thread !== undefined) await runtime.submitNotice(tenant, record.id, { ...action.thread, messageId: `google-action:${action.id}`, text: googleActionReport(action), event: { source: "google_action", actionId: action.id } }).catch(() => {});
 		}
 	}
+	// And for a connector call that changes something.
+	for (const record of await runtime.registry.listInstances(tenant)) {
+		for (const action of await runtime.connectorActions(tenant, record.id).settleInterrupted()) {
+			await runtime.audit(tenant).append({ type: "connector_action.uncertain", instanceId: record.id, actionId: action.id, connector: action.connectorId, tool: action.tool });
+			if (action.thread !== undefined) await runtime.submitNotice(tenant, record.id, { ...action.thread, messageId: `connector-action:${action.id}`, text: connectorActionReport(action), event: { source: "connector_action", actionId: action.id } }).catch(() => {});
+		}
+	}
 	for (const record of conversational) {
 		for (const proposal of await runtime.proposals(tenant, record.id).list()) if (proposal.status === "pending") await notifyApprovers(record.id, proposal);
+		for (const action of await runtime.connectorActions(tenant, record.id).list()) if (action.status === "pending") await notifyConnectorAction(record.id, action);
 		for (const action of await runtime.webActions(tenant, record.id).list()) if (action.status === "pending") await notifyWebAction(record.id, action);
 	}
 	const scheduler = new Scheduler(
@@ -821,6 +928,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		...(config.webSearch === undefined ? {} : { search: { host: new URL(config.webSearch.url).host } }),
 		...(config.images === undefined ? {} : { images: { host: new URL(config.images.url).host, maxPerDay: config.images.maxPerDay } }),
 		sendWebAction: sendForInstance,
+		runConnectorAction,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
