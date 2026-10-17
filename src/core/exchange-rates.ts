@@ -255,7 +255,7 @@ async function fetchDays(base: string, source: Source, fetchImpl: typeof fetch):
 
 function ratesError(problem: HttpProblem): ExchangeRateError {
 	if (problem.kind === "status") return new ExchangeRateError(`il servizio dei cambi della BCE risponde ${problem.status}`);
-	return new ExchangeRateError({ unreachable: "il servizio dei cambi della BCE non risponde", too_big: "il servizio dei cambi della BCE ha mandato un file troppo grande", unreadable: "il servizio dei cambi della BCE ha mandato un file illeggibile" }[problem.kind]);
+	return new ExchangeRateError({ unreachable: "il servizio dei cambi della BCE non risponde", too_big: "il servizio dei cambi della BCE ha mandato un file troppo grande", unreadable: "il servizio dei cambi della BCE ha mandato un file illeggibile", redirect: "il servizio dei cambi della BCE rimanda a un indirizzo non consentito" }[problem.kind]);
 }
 
 /** A file covers `date` when its first day is not after it: then the day is the last one up to it. */
