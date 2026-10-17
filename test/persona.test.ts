@@ -3,7 +3,7 @@ import { AnnieRuntime, type DurableEngine } from "../src/core/index.ts";
 import { checkPersona, cleanName, PersonaError, withPersona } from "../src/core/persona.ts";
 import { FAUX_MODEL, tempDataDir } from "./helpers.ts";
 
-describe("persona (ADR 0040)", () => {
+describe("persona (ADR 0041)", () => {
 	it("keeps what a person typed, trimmed, and leaves out empty parts and the natural tone", () => {
 		expect(checkPersona({ emoji: " 🔎 ", tagline: "  Cerca   e confronta\nfornitori ", tone: "formale" })).toEqual({ emoji: "🔎", tagline: "Cerca e confronta fornitori", tone: "formale" });
 		expect(checkPersona({ emoji: "", tagline: "  ", tone: "naturale" })).toEqual({});

@@ -1,5 +1,5 @@
 /**
- * The personality of an agente (ADR 0040): the face it shows in the console and the voice
+ * The personality of an agente (ADR 0041): the face it shows in the console and the voice
  * it answers with. Instructions say what it does; the persona says who it is.
  */
 

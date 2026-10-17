@@ -17,11 +17,11 @@ Un cliente (azienda, studio o professionista), con dati, segreti, audit e spesa 
 _Avoid_: cliente (nel codice), account, workspace
 
 **Istanza**:
-Un agente di un tenant, con il suo modello, le sue conversazioni, i suoi connettori, i suoi file e le sue regole di uscita. Nella console e nei testi per le persone si chiama **agente** (ADR 0040).
+Un agente di un tenant, con il suo modello, le sue conversazioni, i suoi connettori, i suoi file e le sue regole di uscita. Nella console e nei testi per le persone si chiama **agente** (ADR 0041).
 _Avoid_: bot, profilo; «istanza» nei testi per le persone
 
 **Agente**:
-Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in una riga e un tono, e con loro la sua memoria, i suoi task, file, connettori e bot. Ognuno si presenta con il suo nome. Vedi ADR 0040.
+Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in una riga e un tono, e con loro la sua memoria, i suoi task, file, connettori e bot. Ognuno si presenta con il suo nome. Vedi ADR 0041.
 _Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
 
 **Personalità**:
@@ -164,6 +164,10 @@ _Avoid_: checklist, todo, elenco puntato
 **Meteo**:
 Quello che dà `weather`: le condizioni di adesso, le fasce di oggi e domani (notte, mattina, pomeriggio, sera) e le previsioni giorno per giorno fino a 16 giorni compreso oggi, per un posto cercato per nome. Acceso dall'operatore con `ANNIE_WEATHER`. Vedi ADR 0039.
 _Avoid_: previsioni del tempo (quando si intende il tool), forecast
+
+**Cambio BCE**:
+Il tasso di riferimento dell'euro pubblicato dalla Banca Centrale Europea nei giorni lavorativi verso le 16:00, che `exchange_rate` usa per convertire importi, oggi o alla data di una fattura. Per un giorno senza pubblicazione vale l'ultimo giorno lavorativo prima. Acceso dall'operatore con `ANNIE_EXCHANGE_RATES`. Vedi ADR 0040.
+_Avoid_: tasso di mercato, quotazione (quando si intende il cambio BCE)
 
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.

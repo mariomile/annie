@@ -124,7 +124,7 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await again("/api/me")).person.role).toBe("owner");
 	});
 
-	it("agenti (ADR 0040): created with a face and a tone, listed with what they do, changed in Impostazioni", async () => {
+	it("agenti (ADR 0041): created with a face and a tone, listed with what they do, changed in Impostazioni", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
 		const created = await api("/api/instances", { id: "ricerca", name: "Ricercatore", persona: { emoji: "🔎", tagline: "Cerca e confronta fornitori", tone: "conciso" } });

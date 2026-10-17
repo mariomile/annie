@@ -319,7 +319,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	/**
 	 * A persona from a request body, or a 400 saying what is wrong. Given from the console, so the
-	 * agente goes by its name from now on (ADR 0040). The whole persona is replaced, never merged:
+	 * agente goes by its name from now on (ADR 0041). The whole persona is replaced, never merged:
 	 * the console always sends all of it.
 	 */
 	const personaOf = (input: unknown): Persona => {
@@ -335,7 +335,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const visible = all.filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
 		return { instances: await Promise.all(visible.map((r) => describeInstance(r, p))) };
 	});
-	// The page «Agenti» (ADR 0040): each agente with its face, its model and what it does by itself.
+	// The page «Agenti» (ADR 0041): each agente with its face, its model and what it does by itself.
 	route("GET", "/api/agents", "person", async ({ person }) => {
 		const p = person as Person;
 		const all = await runtime.registry.listInstances(tenantId);

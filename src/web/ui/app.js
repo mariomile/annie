@@ -2933,7 +2933,7 @@ function connectorForm(inst, existing) {
 	dialog.showModal();
 }
 
-// ---------- agenti (ADR 0040) ----------
+// ---------- agenti (ADR 0041) ----------
 const TONES = [
 	["naturale", "Naturale"],
 	["formale", "Formale, dà del Lei"],

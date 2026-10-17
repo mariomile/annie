@@ -349,7 +349,7 @@ export class AnnieRuntime {
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
 		let toolSet: ToolSet = [];
-		// Its own instructions, then who it is (ADR 0040).
+		// Its own instructions, then who it is (ADR 0041).
 		const instructions = withPersona(record.instructions, record.name, record.persona);
 		try {
 			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);

@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { CALC_LIMITS, CalcError, calculate, formatResult } from "../calc.ts";
+import { CALC_LIMITS, CalcError, calculate } from "../calc.ts";
 import { queryTableFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
 import type { AnnieTool } from "../engine.ts";
+import { formatResult } from "../italian-format.ts";
 import { AGGREGATE_OPS, FILTER_OPS, PERIODS, type Period, TABLE_LIMITS, type TableAggregate, TableError, type TableFilter, type TableQuery, type TableResult, type TableSort } from "../tables.ts";
 import { type Workspace, WorkspaceError } from "../workspace.ts";
 

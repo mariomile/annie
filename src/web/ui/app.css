@@ -485,7 +485,7 @@ ol.steps .stack { display: grid; gap: 8px; }
 .google-ask.compact h3 { font-size: 14px; }
 @media (max-width: 640px) { .google-ask table.fields td:first-child { width: 84px; } .asks { max-height: 38vh; } .asks .google-ask pre.letter { max-height: 160px; } }
 
-/* Agenti (ADR 0040) */
+/* Agenti (ADR 0041) */
 .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .card.agent { display: grid; grid-template-columns: 48px 1fr; gap: 4px 14px; padding: 16px; }
 .card.agent.current { border-color: var(--border-2); box-shadow: var(--shadow); }

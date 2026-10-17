@@ -1,5 +1,6 @@
 import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
 import { computerLabel, createComputerProvider } from "../computer/create.ts";
+import { ecbRates, ExchangeRateError, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEV_PROVIDER, modelProvider } from "../core/model-providers.ts";
 import type { AnnieConfig } from "./config.ts";
 
@@ -35,6 +36,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	if (search !== undefined) checks.push(check("Ricerca sul web", () => searchCheck(search, call)));
 	const weather = config.weather;
 	if (weather !== undefined) checks.push(check("Meteo", () => weatherCheck(weather, call)));
+	const rates = config.exchangeRates;
+	if (rates !== undefined) checks.push(check("Cambi", () => exchangeRatesCheck(rates, call)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	return Promise.all(checks);
@@ -136,6 +139,20 @@ async function weatherCheck(config: { forecastUrl: string; geocodingUrl: string;
 		if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ${variable}`);
 	}
 	return `${geocoding.host} e ${forecast.host} rispondono${config.apiKey === undefined ? "" : ", chiave valida"}`;
+}
+
+/** The day's file of reference rates, downloaded and read: the host answers and the file makes sense. */
+async function exchangeRatesCheck(config: ExchangeRatesConfig, call: Call): Promise<string> {
+	const host = new URL(config.url).host;
+	// The check's own call and timeout, like the other checks.
+	const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => call(String(input), init)) as typeof fetch;
+	try {
+		const { day } = await ecbRates(config, fetchImpl).rateOn();
+		return `${host} risponde, cambi del ${day.date} per ${day.rates.size} valute`;
+	} catch (error) {
+		if (error instanceof ExchangeRateError) throw new CheckFailed(`${error.message}: controlla che ${host} sia raggiungibile, o ANNIE_EXCHANGE_RATES_URL`);
+		throw error;
+	}
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {
