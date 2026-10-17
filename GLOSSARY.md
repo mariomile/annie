@@ -211,3 +211,7 @@ _Avoid_: integrazione, plugin, app
 **Azione di un connettore**:
 Una chiamata a uno strumento di un servizio collegato che cambia qualcosa (crea, modifica, cancella). Annie la prepara come richiesta; parte, una volta, solo quando chi l'ha chiesta o un approvatore la approva. Gli strumenti che il servizio indica come di sola lettura partono subito. Vedi ADR 0025.
 _Avoid_: tool call, operazione
+
+**Richiesta scaduta**:
+Una richiesta da approvare (modulo, mail o evento Google, azione di un connettore) che nessuno ha approvato o rifiutato entro 24 ore. Non viene mai fatta; la conversazione che l'ha chiesta riceve un avviso, una volta. Vedi week31.md.
+_Avoid_: richiesta annullata, timeout

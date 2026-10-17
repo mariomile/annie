@@ -20,7 +20,7 @@ Due revisori separati (standard e sicurezza, spec e uso). Corretti:
 - **Media.** Nessun limite al numero di dati e ai nomi: card troppo lunghe per la chat e righe false («Azione: …») con un a capo nel nome o nel motivo; titolo dello strumento scelto dal servizio mostrato come unica descrizione e messo fuori dal recinto nell'esito; il modello invitato a richiamare lo strumento a ogni sollecito; «l'ha rifiutata la persona» anche quando decideva un approvatore; la card dei moduli lunghi che rimandava alla console anche chi non poteva decidere lì; nessuna card nella chat web.
 - **Bassa.** Richiesta approvata che seguiva il connettore anche se ora puntava a un altro server; un rifiuto della egress policy contato come «esito incerto»; una richiesta già decisa annunciata di nuovo a una nuova esecuzione; argomento dello strumento con lo stesso nome del motivo; avviso rosso «può cancellare» su ogni scrittura; testi («Approvata, Annie la fa», «falle decidere prima», «Annie legge da sola» anche quando il servizio non lo dice); ordine degli import e nomi.
 
-Lasciati e scritti nell'ADR: l'avviso alla conversazione quando una richiesta scade, la lista degli strumenti di sola lettura scelta dall'owner, il fatto che `readOnlyHint` lo dichiara il servizio, il limite di richieste in attesa che con molte proposte insieme può essere superato di poco (come per i moduli).
+Lasciati e scritti nell'ADR: l'avviso alla conversazione quando una richiesta scade (fatto nella settimana 31), la lista degli strumenti di sola lettura scelta dall'owner, il fatto che `readOnlyHint` lo dichiara il servizio, il limite di richieste in attesa che con molte proposte insieme può essere superato di poco (come per i moduli).
 
 ## Limiti
 

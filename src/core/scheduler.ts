@@ -24,6 +24,8 @@ export class Scheduler {
 	constructor(
 		private readonly targets: () => Promise<readonly SchedulerTarget[]>,
 		private readonly log: (message: string) => void = console.error,
+		/** Housekeeping after the runs, such as telling conversations what expired. */
+		private readonly sweep?: (now: Date) => Promise<void>,
 	) {}
 
 	/** One pass over every instance: schedules, then sentinelle. Returns the runs admitted. */
@@ -60,6 +62,7 @@ export class Scheduler {
 		const watching = targets.flatMap((t) => (t.watches === undefined ? [] : [{ tenantId: t.tenantId, instanceId: t.instanceId, store: t.watches.store, read: t.watches.read, submit: t.submit }]));
 		// A page that does not answer must not stop the schedules: they ran first.
 		if (watching.length > 0) fired += await checkWatches(watching, now, this.log).catch((error: unknown) => (this.log(`watches: ${error instanceof Error ? error.message : String(error)}`), 0));
+		if (this.sweep !== undefined) await this.sweep(now).catch((error: unknown) => this.log(`sweep: ${error instanceof Error ? error.message : String(error)}`));
 		return fired;
 	}
 

@@ -111,6 +111,7 @@ export async function decideWebAction(
 export function webActionReport(action: WebAction): string {
 	const host = new URL(action.action).host;
 	const result = action.result;
+	if (action.status === "expired") return `[Esito della richiesta ${action.id}] Nessuno l'ha approvata né rifiutata entro 24 ore: è scaduta e il modulo per ${host} non è partito. Dillo alla persona in una frase, senza citare il codice della richiesta; se le serve ancora, può chiedertela di nuovo. Non riproporla da sola.`;
 	if (result !== undefined && "error" in result && result.uncertain) return `[Esito della richiesta ${action.id}] Il modulo è partito verso ${host}, ma la risposta del sito non è arrivata: non si sa se è stato ricevuto. Dillo alla persona e suggeriscile di controllare sul sito prima di chiedere un nuovo invio; non inviarlo di nuovo da sola.`;
 	if (result === undefined || "error" in result) return `[Esito della richiesta ${action.id}] Il modulo per ${host} non è partito: ${result?.error ?? "errore sconosciuto"}. Dillo alla persona con parole tue.`;
 	const tag = randomBytes(6).toString("hex");

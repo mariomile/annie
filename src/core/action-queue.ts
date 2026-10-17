@@ -12,7 +12,14 @@ import { writeFileAtomic } from "./atomic-file.ts";
  */
 export type QueuedStatus = "pending" | "rejected" | "expired" | "running" | "done" | "failed" | "uncertain";
 
-export type Queued = { readonly id: string; readonly status: QueuedStatus; readonly proposedAt: string; readonly decidedAt?: string };
+export type Queued = {
+	readonly id: string;
+	readonly status: QueuedStatus;
+	readonly proposedAt: string;
+	readonly decidedAt?: string;
+	/** The conversation was told that nobody decided in time. */
+	readonly expiryTold?: true;
+};
 
 /** Why the work did not happen (failed), or that it is not known (uncertain). */
 export type QueuedError = { readonly error: string; readonly uncertain?: true };
@@ -75,6 +82,8 @@ export class ActionQueue<T extends Queued> {
 	 */
 	decide<R extends object>(id: string, decision: "approved" | "rejected", check: (current: T) => void, stamp: Partial<T>, run: (running: T) => Promise<R>, now = new Date()): Promise<{ action: T; changed: boolean; missing?: true }> {
 		return this.serial(id, async () => {
+			// The time it actually runs: a tap queued behind an expiry notice finds it expired.
+			now = new Date(Math.max(now.getTime(), Date.now()));
 			const current = await this.get(id, now);
 			if (current === undefined) return { action: undefined as unknown as T, changed: false, missing: true as const };
 			check(current);
@@ -100,6 +109,26 @@ export class ActionQueue<T extends Queued> {
 		return this.serial(id, async () => {
 			const current = await this.get(id);
 			if (current !== undefined) await this.save(change(current));
+		});
+	}
+
+	/** Actions nobody decided in time whose conversation has not been told yet. */
+	async expiredUntold(now = new Date()): Promise<T[]> {
+		return (await this.list(now)).filter((a) => a.status === "expired" && a.expiryTold !== true);
+	}
+
+	/**
+	 * Claim the telling of an expiry, once, in turn with decisions: the action if it is still
+	 * expired and untold (now marked told), else undefined. Told at most once, so a notice that
+	 * cannot go out is never retried forever.
+	 */
+	claimExpired(id: string, now = new Date()): Promise<T | undefined> {
+		return this.serial(id, async () => {
+			const current = await this.get(id, new Date(Math.max(now.getTime(), Date.now())));
+			if (current === undefined || current.status !== "expired" || current.expiryTold === true) return undefined;
+			const told = { ...current, expiryTold: true as const };
+			await this.save(told);
+			return told;
 		});
 	}
 

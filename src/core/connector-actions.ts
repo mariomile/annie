@@ -29,6 +29,8 @@ export type ConnectorAction = {
 	/** The person whose private conversation asked for it ("channel:userId"): they may decide. */
 	readonly requester?: string;
 	readonly proposedAt: string;
+	/** The conversation was told it expired undecided. */
+	readonly expiryTold?: true;
 	readonly decidedBy?: { readonly channel: string; readonly userId: string };
 	readonly decidedAt?: string;
 	readonly result?: ConnectorActionResult;
@@ -104,6 +106,15 @@ export class ConnectorActionStore {
 		return decided;
 	}
 
+	/** Nobody decided in time and the conversation does not know yet. */
+	expiredUntold(now = new Date()): Promise<ConnectorAction[]> {
+		return this.queue.expiredUntold(now);
+	}
+
+	claimExpired(id: string, now = new Date()): Promise<ConnectorAction | undefined> {
+		return this.queue.claimExpired(id, now);
+	}
+
 	/** At start: a call left running by a dead process may or may not have reached the service. */
 	settleInterrupted(): Promise<ConnectorAction[]> {
 		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Annie si è riavviata mentre la faceva", uncertain: true } }));
@@ -141,6 +152,7 @@ export function connectorActionReport(action: ConnectorAction): string {
 	};
 	const result = action.result;
 	const by = action.decidedBy !== undefined && action.requester === `${action.decidedBy.channel}:${action.decidedBy.userId}` ? "dalla persona che l'ha chiesta" : "da un approvatore";
+	if (action.status === "expired") return `${head} Nessuno l'ha approvata né rifiutata entro 24 ore: è scaduta e non è stata fatta. Dillo alla persona in una frase, senza citare il codice della richiesta; se le serve ancora, può chiedertela di nuovo. Non riproporla da sola.\n${fenced("richiesta", `${action.toolTitle}: ${action.reason}`)}`;
 	if (action.status === "rejected") return `${head} Rifiutata ${by}: non è stata fatta. Prendine atto in una frase e non riproporla, a meno che non te lo chieda.`;
 	if (result !== undefined && "error" in result && result.uncertain) return `${head} Approvata ${by}, ma non si sa se ${action.connectorName} l'ha fatta. Dillo alla persona e suggeriscile di controllare prima di chiederla di nuovo; non rifarla da sola.\n${fenced("motivo", result.error)}`;
 	if (result === undefined || "error" in result) return `${head} Approvata ${by}, ma non è stata fatta. Dillo alla persona con parole tue e non riproporla da sola.\n${fenced("motivo", result?.error ?? "sconosciuto")}`;

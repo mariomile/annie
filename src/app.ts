@@ -34,7 +34,7 @@ import { createWebTools } from "./core/tools/web-tools.ts";
 import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
 import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
-import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover } from "./core/approvals.ts";
+import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { type GoogleAction, type GoogleActionResult, googleActionReport, googleActionTitle, mimeMessage } from "./core/google-actions.ts";
@@ -101,6 +101,10 @@ export type AnnieOptions = {
 	readonly schedulerIntervalMs?: number;
 	readonly log?: (message: string) => void;
 };
+
+/** Every approval queue keeps a request 24 hours; one that expired longer ago than this is closed without a notice. */
+const EXPIRY_TTL_MS = 24 * 3600_000;
+const EXPIRY_GRACE_MS = 6 * 3600_000;
 
 export type RunningAnnie = {
 	readonly runtime: AnnieRuntime;
@@ -629,7 +633,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await notifyConnectorAction(instance, action);
 			const inChat = action.thread !== undefined && action.requester !== undefined && (action.thread.channel === "telegram" || action.thread.channel === "whatsapp");
 			const where = inChat ? "la card con i pulsanti è in questa chat" : action.thread?.channel === "web" ? "la card con i pulsanti è sopra la chat e in Approvazioni" : "si decide nella console web, in Approvazioni";
-			return `Richiesta ${action.id} pronta (${action.toolTitle} su ${action.connectorName}): aspetta l'approvazione di chi l'ha chiesta o di un approvatore; ${where}. Se nessuno la decide entro 24 ore scade e non viene fatta. Non richiamare lo strumento per la stessa azione e non dire che è stata fatta finché non lo sai${action.thread === undefined ? "" : "; l'esito ti arriva in questa conversazione quando viene decisa"}.`;
+			return `Richiesta ${action.id} pronta (${action.toolTitle} su ${action.connectorName}): aspetta l'approvazione di chi l'ha chiesta o di un approvatore; ${where}. Se nessuno la decide entro 24 ore scade e non viene fatta. Non richiamare lo strumento per la stessa azione e non dire che è stata fatta finché non lo sai${action.thread === undefined ? "" : "; l'esito ti arriva in questa conversazione quando viene decisa o scade"}.`;
 		} catch (error) {
 			if (error instanceof ConnectorActionError) return `Errore: ${error.message}.`;
 			throw error;
@@ -841,6 +845,57 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		for (const action of await runtime.connectorActions(tenant, record.id).list()) if (action.status === "pending") await notifyConnectorAction(record.id, action);
 		for (const action of await runtime.webActions(tenant, record.id).list()) if (action.status === "pending") await notifyWebAction(record.id, action);
 	}
+	/**
+	 * Requests nobody decided in 24 hours: the conversation that asked is told once, so Annie
+	 * does not wait for an outcome that will never come. At most every few minutes; requests that
+	 * expired long ago (before this existed, or while Annie was off) are closed without a notice.
+	 */
+	let lastSweep = 0;
+	async function tellExpired(now: Date): Promise<void> {
+		if (now.getTime() - lastSweep < 5 * 60_000) return;
+		lastSweep = now.getTime();
+		for (const record of await runtime.registry.listInstances(tenant)) {
+			if (record.id === segreteriaId) continue;
+			await tellExpiredIn(record.id, "connector_action", runtime.connectorActions(tenant, record.id), connectorActionReport, now);
+			await tellExpiredIn(record.id, "web_action", runtime.webActions(tenant, record.id), webActionReport, now);
+			await tellExpiredIn(record.id, "google_action", runtime.googleActions(tenant, record.id), googleActionReport, now);
+		}
+	}
+
+	async function tellExpiredIn<A extends { id: string; proposedAt: string; thread?: { channel: string; threadId: string } }>(
+		instance: string,
+		type: "connector_action" | "web_action" | "google_action",
+		store: { expiredUntold(now: Date): Promise<A[]>; claimExpired(id: string, now: Date): Promise<A | undefined> },
+		report: (action: A) => string,
+		now: Date,
+	): Promise<void> {
+		let expired: A[];
+		try {
+			expired = await store.expiredUntold(now);
+		} catch (error) {
+			// One unreadable file must not stop the other queues.
+			log(`annie: ${type} queue of ${instance} not read: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		for (const candidate of expired) {
+			const action = await store.claimExpired(candidate.id, now).catch(() => undefined);
+			if (action === undefined) continue;
+			const stale = now.getTime() - Date.parse(action.proposedAt) > EXPIRY_TTL_MS + EXPIRY_GRACE_MS;
+			let told = false;
+			let reason: string | undefined = stale ? "stale" : action.thread === undefined ? "no_conversation" : undefined;
+			if (reason === undefined && action.thread !== undefined) {
+				try {
+					await runtime.submitNotice(tenant, instance, { ...action.thread, messageId: `${type.replace("_", "-")}:${action.id}:expired`, text: report(action), event: { source: type, actionId: action.id } });
+					told = true;
+				} catch (error) {
+					reason = error instanceof Error ? error.name : "error";
+					log(`annie: expiry of ${action.id} not passed on: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+			await runtime.audit(tenant).append({ type: `${type}.expired`, instanceId: instance, actionId: action.id, told, ...(reason === undefined ? {} : { reason }) }).catch(() => {});
+		}
+	}
+
 	const scheduler = new Scheduler(
 		// Read each tick: instances created from the console join without a restart.
 		async () =>
@@ -852,6 +907,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				watches: { store: runtime.watches(tenant, id), read: watchReader(id) },
 			})),
 		log,
+		(now) => tellExpired(now),
 	);
 	scheduler.start(options.schedulerIntervalMs ?? 30_000);
 	const segreteria = config.segreteria === undefined ? undefined : await startSegreteria(runtime, config.segreteria, log);

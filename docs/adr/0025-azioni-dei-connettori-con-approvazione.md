@@ -23,7 +23,7 @@ Con i connettori in un clic (ADR 0024) Annie può creare issue su Linear, pagine
 
 - `readOnlyHint` lo dichiara il server: un server compromesso può marcare come lettura uno strumento che scrive. Collegare un server vuol dire fidarsi di lui per questo; una lista di strumenti scelta dall'owner è un passo successivo.
 - Un server che non annota i suoi strumenti chiede l'approvazione anche per leggere. Il modulo del connettore lo dice; l'owner può spegnere l'approvazione per quel servizio.
-- Una richiesta che scade non viene annunciata nella conversazione: si vede scaduta in Approvazioni. Vale anche per i moduli (ADR 0011).
+- Una richiesta che scade viene annunciata una volta alla conversazione che l'ha chiesta (settimana 31, [week31.md](../week31.md)); le card già mandate agli approvatori su Telegram e WhatsApp restano com'erano, e un tocco risponde «scaduta».
 - Un errore dal servizio è «non fatta», anche se alcuni servizi possono aver fatto una parte.
 - Con molte richieste nello stesso istante il limite di 20 in attesa può essere superato di poco, come per i moduli.
 - Chi chiede da Telegram o WhatsApp non entra nella console come quella persona: una richiesta lunga la approva un approvatore.
