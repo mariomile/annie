@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
 import { type InstanceVoice, spokenNote } from "./channels/speech.ts";
 import { attachmentNote } from "./core/attachment-note.ts";
 import { imageType } from "./core/images.ts";
-import type { AnnieRuntime } from "./core/index.ts";
+import type { ChatModels } from "./core/chat-models.ts";
+import type { AnnieRuntime, InstanceRecord } from "./core/index.ts";
+import { answerModelCommand, modelCommandArgument } from "./model-command.ts";
 
 /** What a person reads when the model gave no answer; «Primi passi» does not count it as a reply. */
 export const REPLY_FAILED = "Non sono riuscita a rispondere. Riprova tra poco.";
@@ -18,14 +21,19 @@ export function connectChannel(
 	adapter: ChannelAdapter,
 	instance: { readonly tenantId: string; readonly instanceId: string },
 	log: (message: string) => void = console.error,
-	/** Button taps on this channel (approval cards). Must be idempotent: taps can be redelivered. */
-	onAction?: (action: InboundAction) => Promise<void>,
-	/**
-	 * Replies as voice notes (ADR 0020), for channels that send them: decided per message, in a
-	 * private chat, from the person's choice and whether they spoke; the reply to that message only.
-	 */
-	voice?: InstanceVoice,
+	extras: {
+		/** Button taps on this channel (approval cards). Must be idempotent: taps can be redelivered. */
+		readonly onAction?: (action: InboundAction) => Promise<void>;
+		/**
+		 * Replies as voice notes (ADR 0020), for channels that send them: decided per message, in a
+		 * private chat, from the person's choice and whether they spoke; the reply to that message only.
+		 */
+		readonly voice?: InstanceVoice;
+		/** The /modello command (ADR 0037), for channels without a model picker of their own. */
+		readonly models?: ChatModels;
+	} = {},
 ): () => void {
+	const { onAction, voice, models } = extras;
 	/** Submissions whose reply goes back as a voice note. In memory: after a restart it goes as text. */
 	const spoken = new Set<string>();
 	const speaks = voice !== undefined && adapter.sendVoice !== undefined;
@@ -35,6 +43,16 @@ export function connectChannel(
 	}
 	adapter.onInbound(async (message) => {
 		try {
+			const command = models === undefined ? undefined : modelCommandArgument(message.text);
+			// A stranger's command goes on to the core, which refuses it and writes that down.
+			if (command !== undefined && models !== undefined) {
+				const record = await runtime.registry.getInstance(message.tenantId, message.instanceId);
+				if (talksTo(record, message)) {
+					const text = await answerModelCommand(runtime, models, record, message, command);
+					await runtime.sendMessage(message.tenantId, message.instanceId, { channel: message.channel, threadId: message.threadId, text, key: `model:${message.channel}:${message.messageId ?? randomUUID()}` });
+					return;
+				}
+			}
 			const aloud = speaks && message.privateThread === true && (await voice.wanted(`${message.channel}:${message.threadId}`, message.voice === true).catch(() => false));
 			// The model is told, so it writes something that sounds right read aloud.
 			const said = aloud ? { ...message, text: `${message.text}\n\n${spokenNote(voice.maxChars)}` } : message;
@@ -116,6 +134,11 @@ async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): 
 	const note = notes.join("\n");
 	const { attachments: _files, ...rest } = message;
 	return { ...rest, text: message.text === "" ? note : `${message.text}\n\n${note}`, ...(images.length === 0 ? {} : { images: [...(message.images ?? []), ...images] }) };
+}
+
+/** The instance talks to this person on this channel: the core's own checks, without its audit. */
+function talksTo(record: InstanceRecord, message: InboundMessage): boolean {
+	return record.egress.channels.includes(message.channel) && (record.allowedUsers[message.channel] ?? []).includes(message.userId);
 }
 
 function errorMessage(error: unknown): string {
