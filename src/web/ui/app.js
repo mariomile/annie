@@ -57,6 +57,8 @@ const ICONS = {
 	logout: ["M14 4h5v16h-5", "M9.5 8 5.5 12l4 4", "M5.5 12H15"],
 	menu: ["M4 7h16M4 12h16M4 17h16"],
 	plus: ["M12 5v14M5 12h14"],
+	down: ["m6 9 6 6 6-6"],
+	check: ["m5 12.5 4.5 4.5L19 7"],
 	compose: ["M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6", "M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"],
 	sidebar: ["M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z", "M9.5 4v16"],
 	attach: ["m20 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"],
@@ -657,9 +659,14 @@ function modelCard(inst, current, providers) {
 
 /** «Claude Sonnet 5.5 · foto · ragiona · entrata $3 · uscita $15 per M token»: what tells two models apart. */
 function modelLabel(m, withId) {
+	return `${withId ? `${m.name} (${m.id})` : m.name} · ${modelFacts(m)}`;
+}
+
+/** What a model does and costs: «foto · ragiona · entrata $3 · uscita $15 per M token». */
+function modelFacts(m) {
 	const usd = (n) => `$${n < 1 ? Number(n.toFixed(2)) : Math.round(n * 10) / 10}`;
 	const price = m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
-	return [withId ? `${m.name} (${m.id})` : m.name, m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
+	return [m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
 }
 
 /** Owner: voice messages of this instance transcribed by the server's service. */
@@ -884,6 +891,7 @@ function render() {
 	const item = PALETTE.find((p) => p.id === view) ?? PALETTE.find((p) => p.id === "chat");
 	if (item.owner && state.me.role !== "owner") return go("chat");
 	closeMenu();
+	closeModelMenu();
 	const main = h("main", { id: "main", class: item.id === "chat" ? "is-chat" : "is-page" });
 	const shell = h(
 		`div.shell${store("annie.rail") === "closed" ? ".collapsed" : ""}`,
@@ -1234,12 +1242,13 @@ async function viewChat(main) {
 		return;
 	}
 	const threadId = route().rest[0];
+	chatModelCache.clear();
 	const conversation = h("section.conversation");
 	mount(main, conversation);
 	if (!threadId) return landing(inst, conversation);
 	state.unread.delete(threadId);
 	renderRail();
-	const { entries } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
+	const { entries, model } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	let typing;
 	const picture = (path) => pictureUrl(inst, path);
@@ -1324,7 +1333,9 @@ async function viewChat(main) {
 			throw error;
 		}
 		void refreshThreads().then(renderRail);
-	});
+	}, modelPill(inst, model, async (picked) => {
+		await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/model`, { method: "PUT", body: picked ? { provider: picked.provider, modelId: picked.modelId } : {} });
+	}));
 	conversation.append(transcript, h("div.dock", asks, box.el));
 	transcript.scrollTop = transcript.scrollHeight;
 	// A message written on the empty chat: sent as soon as its conversation opens.
@@ -1338,13 +1349,17 @@ async function viewChat(main) {
 /** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
 function landing(inst, conversation) {
 	conversation.classList.add("empty-chat");
+	// A model picked before the first message: the conversation it opens is created with it.
+	let picked;
 	const box = chatBox(inst, `new.${inst.id}`, conversation, async (text, images) => {
-		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
+		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: picked ? { model: { provider: picked.provider, modelId: picked.modelId } } : {} });
 		store(`annie.draft.${thread.id}`, text);
 		if (images.length) store(`annie.pending.${thread.id}`, JSON.stringify(images));
 		store(`annie.autosend.${thread.id}`, "1");
 		go("chat", thread.id);
-	});
+	}, modelPill(inst, undefined, async (model) => {
+		picked = model;
+	}));
 	const hour = new Date().getHours();
 	const hello = hour < 5 || hour >= 18 ? "Buonasera" : "Buongiorno";
 	const first = state.me.name.split(/\s+/)[0];
@@ -1379,12 +1394,196 @@ function landing(inst, conversation) {
 	box.input.focus();
 }
 
+/** What the chat model picker reads, asked once per chat view: the choices, and each provider's models. */
+const chatModelCache = new Map();
+const chatModelChoices = (inst) => cached(chatModelCache, inst.id, () => api(`/api/instances/${inst.id}/chat-models`));
+const chatModelList = (inst, provider) => cached(chatModelCache, `${inst.id}/${provider}`, () => api(`/api/instances/${inst.id}/chat-models/${encodeURIComponent(provider)}`).then((r) => r.models));
+
+function cached(map, key, load) {
+	if (!map.has(key)) {
+		const loading = load();
+		loading.catch(() => map.delete(key));
+		map.set(key, loading);
+	}
+	return map.get(key);
+}
+
+/**
+ * The chat's model (ADR 0036), a pill in the message box as on Grok: the instance's, or a model of
+ * a provider this person may use. `current` ({provider, modelId, name}) undefined: the instance's.
+ * `save(model | undefined)` stores a choice; choices are saved one after the other, and when the
+ * newest fails the pill shows the last one saved and the error is said.
+ */
+function modelPill(inst, current, save) {
+	let chosen = current;
+	let saved = current;
+	let instanceModel;
+	let picks = 0;
+	let saving = Promise.resolve();
+	const label = h("span.model-name", current?.name ?? "Modello");
+	const pill = h("button.model-pill", { type: "button", "aria-haspopup": "listbox", "aria-expanded": "false", title: "Modello di questa chat" }, label, icon("down"));
+	const draw = () => {
+		const shown = chosen ?? instanceModel;
+		label.textContent = shown?.name ?? "Modello";
+		pill.classList.toggle("own", chosen !== undefined);
+		pill.setAttribute("aria-label", `Modello di questa chat: ${label.textContent}${chosen ? "" : " (quello dell'istanza)"}`);
+	};
+	const pick = (model) => {
+		closeModelMenu();
+		pill.focus();
+		chosen = model;
+		draw();
+		const mine = ++picks;
+		saving = saving.then(async () => {
+			try {
+				await save(model);
+				saved = model;
+				// An owner's pick may have allowed a provider: the list says so next time.
+				chatModelCache.delete(inst.id);
+			} catch (error) {
+				if (mine !== picks) return;
+				chosen = saved;
+				draw();
+				toast(error.message, true);
+			}
+		});
+	};
+	pill.addEventListener("click", () => {
+		if (!closeModelMenu()) void openModelMenu(inst, pill, chosen, pick);
+	});
+	void chatModelChoices(inst)
+		.then((choices) => {
+			instanceModel = choices.instanceModel;
+			draw();
+		})
+		.catch(() => {});
+	draw();
+	return pill;
+}
+
+/** The list of models under the pill: search, the instance's model, then each provider's. */
+async function openModelMenu(inst, pill, chosen, pick) {
+	const listId = `model-list-${Date.now()}`;
+	const search = h("input", { type: "search", placeholder: "Cerca un modello", autocomplete: "off", "aria-label": "Cerca un modello", "aria-controls": listId });
+	const list = h("div.model-list", { id: listId, role: "listbox", "aria-label": "Modelli" });
+	const status = h("p.muted.model-empty", { role: "status" });
+	const menu = h("div.model-menu", search, list, status);
+	document.body.append(menu);
+	pill.setAttribute("aria-expanded", "true");
+	pill.setAttribute("aria-controls", listId);
+	const place = () => {
+		const r = pill.getBoundingClientRect();
+		const view = window.visualViewport;
+		const height = view?.height ?? window.innerHeight;
+		const width = Math.min(320, window.innerWidth - 16);
+		menu.style.width = `${width}px`;
+		menu.style.left = `${Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8))}px`;
+		// Upwards from the box at the bottom of a chat; downwards when there is more room below.
+		const above = r.top - 14;
+		const below = height - r.bottom - 14;
+		const up = above >= 280 || above >= below;
+		menu.style.maxHeight = `${Math.min(420, up ? above : below)}px`;
+		menu.style.bottom = up ? `${window.innerHeight - r.top + 6}px` : "";
+		menu.style.top = up ? "" : `${r.bottom + 6}px`;
+		menu.style.transformOrigin = up ? "bottom right" : "top right";
+	};
+	place();
+	// On a phone the search waits for a tap: focusing it would open the keyboard over the list.
+	const touch = window.matchMedia("(pointer: coarse)").matches;
+	if (!touch) search.focus();
+	const option = (text, note, selected, onPick) =>
+		h("button.model-option", { type: "button", role: "option", "aria-selected": selected ? "true" : "false", onclick: onPick }, h("span", h("span.model-option-name", text), note ? h("small", note) : null), selected ? icon("check") : null);
+	let catalogs = [];
+	const fill = () => {
+		const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+		const match = (m, p) => words.every((w) => `${m.name} ${m.id} ${p.label}`.toLowerCase().includes(w));
+		const groups = catalogs.map(({ provider, models, error }, i) => {
+			const shown = (models ?? []).filter((m) => match(m, provider));
+			if (error === undefined && shown.length === 0) return null;
+			const head = `model-group-${i}`;
+			// Two models with the same name (one is a dated version) are told apart by their id.
+			const names = new Map();
+			for (const m of shown) names.set(m.name, (names.get(m.name) ?? 0) + 1);
+			// The provider's suggested model first, then its catalog as it comes.
+			const ordered = [...shown].sort((a, b) => (b.id === provider.defaultModel) - (a.id === provider.defaultModel));
+			return h(
+				"div",
+				{ role: "group", "aria-labelledby": head },
+				h("div.model-group", { id: head }, provider.label, provider.allowed ? null : h("small", " · sceglierlo lo permette all'istanza")),
+				error === undefined
+					? ordered.map((m) => option(names.get(m.name) > 1 ? `${m.name} (${m.id})` : m.name, modelFacts(m), chosen?.provider === provider.id && chosen?.modelId === m.id, () => pick({ provider: provider.id, modelId: m.id, name: m.name })))
+					: h("small.model-error", "Elenco non disponibile ora"),
+			);
+		});
+		mount(list, words.length === 0 ? option("Modello dell'istanza", "lo sceglie l'owner in Impostazioni", chosen === undefined, () => pick(undefined)) : null, groups);
+		status.textContent = words.length > 0 && groups.every((g) => g === null) ? "Nessun modello trovato" : "";
+		status.hidden = status.textContent === "";
+	};
+	search.addEventListener("input", fill);
+	menu.addEventListener("keydown", (e) => {
+		const all = [search, ...list.querySelectorAll("button")];
+		const i = all.indexOf(document.activeElement);
+		if (e.key === "Escape") {
+			e.preventDefault();
+			closeModelMenu();
+			pill.focus();
+		} else if (e.key === "Tab") closeModelMenu();
+		else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+			e.preventDefault();
+			all[(i + (e.key === "ArrowDown" ? 1 : -1) + all.length) % all.length]?.focus();
+		} else if (e.key === "Home" || e.key === "End") {
+			if (document.activeElement === search) return;
+			e.preventDefault();
+			all[e.key === "Home" ? 1 : all.length - 1]?.focus();
+		} else if (e.key === "Enter" && document.activeElement === search && search.value.trim() !== "") {
+			// Enter in the search takes the first model found; with nothing typed it does nothing.
+			e.preventDefault();
+			list.querySelector("button")?.click();
+		}
+	});
+	const away = (e) => {
+		if (!menu.contains(e.target) && !pill.contains(e.target)) closeModelMenu();
+	};
+	document.addEventListener("pointerdown", away);
+	window.addEventListener("resize", place);
+	window.visualViewport?.addEventListener("resize", place);
+	menu.cleanup = () => {
+		document.removeEventListener("pointerdown", away);
+		window.removeEventListener("resize", place);
+		window.visualViewport?.removeEventListener("resize", place);
+		pill.setAttribute("aria-expanded", "false");
+		pill.removeAttribute("aria-controls");
+	};
+	status.textContent = "Carico i modelli…";
+	try {
+		const { providers } = await chatModelChoices(inst);
+		// One provider that does not answer leaves the others listed.
+		const settled = await Promise.allSettled(providers.map((provider) => chatModelList(inst, provider.id)));
+		catalogs = providers.map((provider, i) => (settled[i].status === "fulfilled" ? { provider, models: settled[i].value } : { provider, error: settled[i].reason }));
+	} catch (error) {
+		status.textContent = error.message;
+		return;
+	}
+	if (!menu.isConnected) return;
+	fill();
+	if (touch) list.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
+}
+
+/** Closes the model list; true when one was open. */
+function closeModelMenu() {
+	const menu = document.querySelector(".model-menu");
+	if (!menu) return false;
+	menu.cleanup?.();
+	menu.remove();
+	return true;
+}
+
 /**
  * The message box: text, photos waiting to go with it, files noted in it, a drop zone and a paste.
  * The draft and the photos are kept per key (a conversation, or "new") until onSend succeeds;
  * when onSend throws, they come back and the error is said.
  */
-function chatBox(inst, key, dropZone, onSend) {
+function chatBox(inst, key, dropZone, onSend, extra = null) {
 	const picture = (path) => pictureUrl(inst, path);
 	const draftKey = `annie.draft.${key}`;
 	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
@@ -1508,7 +1707,7 @@ function chatBox(inst, key, dropZone, onSend) {
 	});
 	drawTray();
 	requestAnimationFrame(fit);
-	const el = h("div.box", tray, h("div.composer", h("label.attach", { title: "Carica un file o una foto" }, icon("attach"), h("span.sr", "File"), file), input, sendButton));
+	const el = h("div.box", tray, h("div.composer", h("label.attach", { title: "Carica un file o una foto" }, icon("attach"), h("span.sr", "File"), file), input, extra, sendButton));
 	return { el, input, submit };
 }
 

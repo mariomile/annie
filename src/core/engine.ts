@@ -19,6 +19,11 @@ export type EngineOpenOptions = {
 	readonly apiKey: (provider: string) => Promise<string | undefined>;
 	readonly tools: readonly AnnieTool[];
 	readonly instructions?: string;
+	/**
+	 * Whether a chat's own model may answer now (ADR 0036): its provider allowed, with a key. When
+	 * not, the instance's model answers, also for work resumed after a restart. Missing: always.
+	 */
+	readonly modelUsable?: (provider: string) => Promise<boolean>;
 };
 
 export interface EngineSession {
@@ -35,6 +40,13 @@ export interface EngineSession {
 	 * also when it has already settled. At most once per session. false: unknown submission.
 	 */
 	reattach(submissionId: string, threadKey: string): Promise<boolean>;
+	/**
+	 * The model one conversation answers with instead of the instance's (ADR 0036), from its next
+	 * message on and after a restart. undefined: back to the instance's model.
+	 */
+	setThreadModel(threadKey: string, model: ModelSelection | undefined): Promise<void>;
+	/** The conversation's own model as stored, when it has one (usable or not). */
+	threadModel(threadKey: string): Promise<ModelSelection | undefined>;
 	onReply(listener: (reply: EngineReply) => void): () => void;
 	/** Resolves when no work is running or pending. */
 	idle(): Promise<void>;
