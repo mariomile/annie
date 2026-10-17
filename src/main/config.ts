@@ -175,6 +175,8 @@ export type AnnieConfig = {
 	readonly phone: { readonly apiBase: string; readonly voice: string };
 	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
 	readonly computer: ComputerConfig | undefined;
+	/** The agenti's screens through Cua (ADR 0043): a container each on this Docker host, or one desktop run elsewhere; off if unset. */
+	readonly desktop: DesktopConfig | undefined;
 };
 
 /**
@@ -278,6 +280,31 @@ export function loadComputerConfig(env: Readonly<Record<string, string | undefin
 	const runtime = nonEmpty(env.ANNIE_COMPUTER_RUNTIME);
 	if (runtime !== undefined && !/^[\w.-]{1,40}$/.test(runtime)) throw new ConfigError("ANNIE_COMPUTER_RUNTIME: a Docker runtime name, e.g. runsc");
 	return { kind, image: nonEmpty(env.ANNIE_COMPUTER_IMAGE) ?? "annie-computer:latest", socketPath: nonEmpty(env.ANNIE_DOCKER_SOCKET) ?? "/var/run/docker.sock", memoryMb, cpus, diskMb, ...(runtime === undefined ? {} : { runtime }) };
+}
+
+export type DesktopConfig = { readonly kind: "docker"; readonly socketPath: string; readonly network: "none" | "internet" } | { readonly kind: "remote"; readonly url: string; readonly token: string };
+
+/**
+ * ANNIE_DESKTOP and its settings (ADR 0043): docker, a container of Cua's image per agente, with
+ * no internet unless ANNIE_DESKTOP_NETWORK=internet; or remote, one Cua desktop at
+ * ANNIE_DESKTOP_URL with its ANNIE_DESKTOP_TOKEN. Unset: no screen, and its tools are not offered.
+ */
+export function loadDesktopConfig(env: Readonly<Record<string, string | undefined>>): DesktopConfig | undefined {
+	const kind = nonEmpty(env.ANNIE_DESKTOP);
+	const network = nonEmpty(env.ANNIE_DESKTOP_NETWORK);
+	const remote = ["ANNIE_DESKTOP_URL", "ANNIE_DESKTOP_TOKEN"].filter((name) => nonEmpty(env[name]) !== undefined);
+	if (kind !== undefined && kind !== "docker" && kind !== "remote") throw new ConfigError("ANNIE_DESKTOP: docker or remote, or unset for no screen");
+	if (network !== undefined && kind !== "docker") throw new ConfigError("ANNIE_DESKTOP_NETWORK set without ANNIE_DESKTOP=docker");
+	if (remote.length > 0 && kind !== "remote") throw new ConfigError(`${remote.join(", ")} set without ANNIE_DESKTOP=remote`);
+	if (kind === undefined) return undefined;
+	if (kind === "docker") {
+		if (network !== undefined && network !== "none" && network !== "internet") throw new ConfigError("ANNIE_DESKTOP_NETWORK: none (default, no internet) or internet");
+		return { kind, socketPath: nonEmpty(env.ANNIE_DOCKER_SOCKET) ?? "/var/run/docker.sock", network: network === "internet" ? "internet" : "none" };
+	}
+	const url = nonEmpty(env.ANNIE_DESKTOP_URL);
+	const token = nonEmpty(env.ANNIE_DESKTOP_TOKEN);
+	if (url === undefined || token === undefined) throw new ConfigError("ANNIE_DESKTOP=remote needs ANNIE_DESKTOP_URL (Cua's daemon, e.g. https://schermo.example:3211) and ANNIE_DESKTOP_TOKEN (its CUA_ENV_TOKEN)");
+	return { kind, url: serviceUrl("ANNIE_DESKTOP_URL", url.replace(/\/+$/, ""), "https://schermo.example:3211"), token };
 }
 
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
@@ -392,6 +419,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	const weather = loadWeatherConfig(env);
 	const exchangeRates = loadExchangeRatesConfig(env);
 	const computer = loadComputerConfig(env);
+	const desktop = loadDesktopConfig(env);
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
 	const timeZone = nonEmpty(env.ANNIE_TIME_ZONE) ?? "Europe/Rome";
@@ -440,6 +468,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		weather,
 		exchangeRates,
 		computer,
+		desktop,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },
 	};
 }

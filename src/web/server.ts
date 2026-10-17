@@ -9,6 +9,7 @@ import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
+import { DESKTOP_CONNECTOR } from "../core/desktop.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
@@ -131,6 +132,8 @@ export type WebAppOptions = {
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
 	readonly computer?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined> };
+	/** The agenti's screens through Cua (ADR 0043), when this server has them: whether they reach the internet, and whether one screen is shared. */
+	readonly desktop?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined>; readonly network: "none" | "internet" | "unknown"; readonly shared: boolean };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** Runs an approved connector call on the instance's live connection (ADR 0025). */
@@ -810,6 +813,37 @@ export function createWebApp(options: WebAppOptions): Server {
 		});
 		await options.computer.reset(id);
 		await runtime.audit(tenantId).append({ type: "computer.reset", instanceId: id });
+		return { ok: true };
+	});
+
+	// --- owner: the agente's screen (ADR 0043) ---
+	route("GET", "/api/desktop", "owner", async () => {
+		if (options.desktop === undefined) return { available: false };
+		const problem = await options.desktop.check();
+		return { available: true, network: options.desktop.network, shared: options.desktop.shared, ...(problem === undefined ? {} : { problem }) };
+	});
+	route("PUT", "/api/instances/:id/desktop-allowed", "owner", async ({ params, req }) => {
+		if (options.desktop === undefined) throw new HttpError(501, "Lo schermo non è disponibile su questo server");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Agente inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== DESKTOP_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, DESKTOP_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "desktop.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+	route("DELETE", "/api/instances/:id/desktop", "owner", async ({ params }) => {
+		if (options.desktop === undefined) throw new HttpError(501, "Lo schermo non è disponibile su questo server");
+		if (options.desktop.shared) throw new HttpError(501, "Lo schermo è condiviso: si riavvia da dove gira");
+		const id = params[0] as string;
+		await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Agente inesistente");
+		});
+		await options.desktop.reset(id);
+		await runtime.audit(tenantId).append({ type: "desktop.reset", instanceId: id });
 		return { ok: true };
 	});
 

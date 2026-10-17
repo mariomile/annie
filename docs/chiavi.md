@@ -237,6 +237,18 @@ La BCE pubblica questi cambi solo a titolo informativo: non valgono per le opera
 4. `pnpm annie check` scarica i cambi del giorno e dice di che data sono.
 5. Dominio: `www.ecb.europa.eu`.
 
+### 18. Lo schermo (Cua): `ANNIE_DESKTOP`, nessuna chiave da comprare
+
+Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, clicca e scrive attraverso Cua ([ADR 0043](adr/0043-schermo-cua.md)). **È gratis e non serve nessuna chiave a pagamento**: Cua pubblica l'immagine, Annie la avvia sul server e si inventa da sola token e password di ogni schermo.
+
+1. Serve un server **amd64** (x86_64) con Docker: l'immagine di Cua non esiste per ARM. Scaricala una volta, circa 8 GB: `docker pull trycua/cua-xfce:0.3.0`. Annie usa esattamente questo tag; non scaricarlo con `latest`.
+2. In `.env`: `ANNIE_DESKTOP=docker`. Usa lo stesso socket del computer (`ANNIE_DOCKER_SOCKET`, di default `/var/run/docker.sock`): vale la stessa avvertenza, il socket equivale a root sul server ([runbook](runbook.md), 6n).
+3. Facoltativo: `ANNIE_DESKTOP_NETWORK=internet`, per dare internet agli schermi e usare il web dal loro Firefox. Senza (o con `none`) gli schermi non hanno internet. **Con internet il browser dello schermo non segue l'elenco dei siti consentiti dell'agente**, e quello che Annie fa sullo schermo non chiede approvazione: accendilo sapendolo.
+4. In alternativa a Docker, uno schermo che fai girare altrove: `ANNIE_DESKTOP=remote`, `ANNIE_DESKTOP_URL` (l'indirizzo del demone di Cua, in https, per esempio `https://schermo.example:3211`) e `ANNIE_DESKTOP_TOKEN` (il `CUA_ENV_TOKEN` che hai dato a quel container). È **uno schermo solo per tutti gli agenti** che lo usano.
+5. `pnpm annie check` dice se Docker risponde, se il server è amd64 e se l'immagine c'è, oppure se lo schermo remoto risponde e accetta il token. Lo stesso controllo compare nella console (Impostazioni, Schermo) e nel log all'avvio.
+6. Poi, in ogni agente che deve usarlo: Impostazioni → **Schermo** → spunta «Consenti ad Annie di usare il suo schermo».
+7. Domini: nessuno per Annie. Solo per scaricare l'immagine, una volta: `registry-1.docker.io` (Docker Hub).
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -256,6 +268,7 @@ La BCE pubblica questi cambi solo a titolo informativo: non valgono per le opera
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
 | Immagini | `api.openai.com` (o il servizio scelto) |
 | Telefono | `api.twilio.com` (o la regione scelta) |
+| Schermo (solo per scaricare l'immagine di Cua) | `registry-1.docker.io` |
 | Connettori in un clic | `mcp.notion.com`, `mcp.linear.app`, `mcp.monday.com`, `mcp.atlassian.com`, `mcp.stripe.com`, `api.githubcopilot.com`, `mcp.sentry.dev`, `mcp.supabase.com`, `mcp.context7.com`, `huggingface.co` (e i loro server di autorizzazione) |
 
 ## Cosa succede dopo

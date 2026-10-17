@@ -247,6 +247,25 @@ Annie risponde alle domande sulle tabelle con `table_query` e fa i conti con `ca
 
 Dal web (ADR 0027): `web_read` legge i PDF e i documenti dei siti consentiti, `web_download` li salva in `download/` nel workspace, fino a 20 MB; ogni salvataggio è una riga `web.download` nell'audit (percorso e byte). Se una persona dice che un link a un PDF «non si apre», controlla che il sito sia tra quelli consentiti (Impostazioni) e che il file non superi i 20 MB. «Riprova tra poco» su un documento vuol dire che i due lettori erano occupati o che troppi documenti grandi arrivavano insieme (oltre 100 MB in tutto il processo): se succede spesso, guarda quante ricerche approfondite girano.
 
+## 6n. Lo schermo (Cua)
+
+Ogni agente può avere un desktop Linux con Firefox, dove Annie guarda lo schermo, clicca e scrive attraverso Cua ([ADR 0043](adr/0043-schermo-cua.md)). Serve un server amd64 con Docker 20.10 o più recente. Come per il computer (6j), **il socket di Docker equivale a root sul server**: accendilo solo dove Annie è l'unico servizio, mai in Annie Cloud.
+
+1. Scarica l'immagine, circa 8 GB: `docker pull trycua/cua-xfce:0.3.0`.
+2. In `.env`: `ANNIE_DESKTOP=docker`, e se serve il web dal browser dello schermo `ANNIE_DESKTOP_NETWORK=internet`.
+3. `pnpm annie check`, poi l'owner accende lo schermo agente per agente (Impostazioni, Schermo).
+
+Come gira: un container `annie-desktop-<hash>` per agente, 3 GB di memoria, 2 CPU, 1 GB di `/dev/shm`, niente escalation di privilegi, nessuna porta pubblicata. Token del demone e password VNC casuali per ogni container. Al massimo 4 schermi accesi; uno senza azioni per 15 minuti si ferma (quello che era aperto si perde). «Riavvia lo schermo» nella console cancella il container. All'avvio Annie ferma gli schermi rimasti accesi.
+
+**Rete.** Gli schermi stanno sulla rete Docker `annie-desktop` (interna, senza internet) o, con `ANNIE_DESKTOP_NETWORK=internet`, su `annie-desktop-internet`. Se la rete non c'è, Annie la crea con il traffico fra container spento: uno schermo non vede gli altri. Annie raggiunge ogni schermo all'indirizzo del suo container sulla rete, porta 3211:
+
+- Annie installata direttamente sul server Linux: funziona così com'è.
+- Annie in Docker Compose: anche il container di Annie deve stare sulla rete degli schermi. Dichiarala in `docker-compose.yml` (sotto `networks:` del servizio `annie`, più `default`) con `name: annie-desktop` e `internal: true` (oppure `name: annie-desktop-internet` senza `internal` per gli schermi con internet). Compose la crea con il traffico fra container acceso, altrimenti Annie non arriverebbe agli schermi: allora gli schermi si vedono fra loro, protetti solo da token e password VNC diversi.
+
+Con internet lo schermo raggiunge anche la rete locale e le porte del server aperte su tutte le interfacce, e il suo browser non segue i siti consentiti dell'agente.
+
+**Uno schermo altrove**: `ANNIE_DESKTOP=remote` con `ANNIE_DESKTOP_URL` e `ANNIE_DESKTOP_TOKEN` ([chiavi](chiavi.md) §18), per esempio un container di Cua su un'altra macchina dietro un proxy https. Tutti gli agenti che lo usano condividono lo stesso schermo; Annie non lo avvia e non lo riavvia.
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
