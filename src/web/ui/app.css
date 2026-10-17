@@ -484,3 +484,22 @@ ol.steps .stack { display: grid; gap: 8px; }
 .google-ask.compact { padding: 12px 14px; border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 .google-ask.compact h3 { font-size: 14px; }
 @media (max-width: 640px) { .google-ask table.fields td:first-child { width: 84px; } .asks { max-height: 38vh; } .asks .google-ask pre.letter { max-height: 160px; } }
+
+/* Agenti (ADR 0040) */
+.agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.card.agent { display: grid; grid-template-columns: 48px 1fr; gap: 4px 14px; padding: 16px; }
+.card.agent.current { border-color: var(--border-2); box-shadow: var(--shadow); }
+.agent-face { grid-row: span 2; width: 48px; height: 48px; border-radius: 12px; display: grid; place-items: center; font-size: 26px; font-weight: 600; background: var(--bg-2); border: 1px solid var(--border); color: var(--fg-2); }
+.agent-body h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.agent-body p { margin: 4px 0 0; }
+.agent-body .small { font-size: 12px; }
+.agent-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.tag { font-size: 11px; font-weight: 500; color: var(--fg-3); border: 1px solid var(--border); border-radius: 99px; padding: 1px 7px; }
+.templates { display: flex; flex-wrap: wrap; gap: 6px; }
+.pick { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; }
+.pick:hover { background: var(--hover); }
+.pick[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.name-row { display: flex; gap: 8px; }
+.name-row > input { flex: 1 1 auto; min-width: 0; width: auto; }
+.name-row > input.emoji-input { flex: 0 0 56px; width: 56px; text-align: center; font-size: 18px; padding-left: 0; padding-right: 0; }
+.welcome .mark.face { font-size: 40px; line-height: 1; display: block; }

@@ -22,6 +22,7 @@ import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { checkPersona, type Persona, PersonaError } from "../core/persona.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
@@ -168,7 +169,7 @@ export type WebAppOptions = {
 	/** Providers whose key the operator gave the server: the owner uses it and cannot replace it. */
 	readonly serverModelKeys?: readonly string[];
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
-	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
+	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; persona: Persona; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
 };
 
@@ -313,17 +314,51 @@ export function createWebApp(options: WebAppOptions): Server {
 		canChat: options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web"),
 		isApprover: await isApprover(runtime, tenantId, r.id, approverOf(p)),
 		hasSegreteria: options.segreterie?.has(r.id) ?? false,
+		...(r.persona?.emoji === undefined ? {} : { emoji: r.persona.emoji }),
+		...(r.persona?.tagline === undefined ? {} : { tagline: r.persona.tagline }),
 	});
+	/** A persona from a request body, or a 400 saying what is wrong. */
+	const personaOf = (input: unknown): Persona => {
+		try {
+			return checkPersona(input);
+		} catch (error) {
+			throw error instanceof PersonaError ? new HttpError(400, error.message) : error;
+		}
+	};
 	route("GET", "/api/instances", "person", async ({ person }) => {
 		const p = person as Person;
 		const all = await runtime.registry.listInstances(tenantId);
 		const visible = all.filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
 		return { instances: await Promise.all(visible.map((r) => describeInstance(r, p))) };
 	});
+	// The page «Agenti» (ADR 0040): each agente with its face, its model and what it does by itself.
+	route("GET", "/api/agents", "person", async ({ person }) => {
+		const p = person as Person;
+		const all = await runtime.registry.listInstances(tenantId);
+		const visible = all.filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
+		const agents = await Promise.all(
+			visible.map(async (r) => {
+				const [schedules, watches] = await Promise.all([runtime.schedules(tenantId, r.id).list(), runtime.watches(tenantId, r.id).list()]);
+				// Like their pages: a member counts only what acts for them.
+				const owner = p.role === "owner";
+				return {
+					...(await describeInstance(r, p)),
+					model: named(r.model),
+					tone: r.persona?.tone ?? "naturale",
+					channels: r.egress.channels,
+					schedules: owner ? schedules.length : schedules.filter((s) => mine(s, p)).length,
+					watches: owner ? watches.length : watches.filter((w) => mineWatch(w, p)).length,
+					memories: runtime.memory(tenantId, r.id).list().filter((m) => m.about === SHARED || m.about === subjectOf("web", p.id)).length,
+				};
+			}),
+		);
+		return { agents };
+	});
 	route("POST", "/api/instances", "owner", async ({ person, req }) => {
-		if (options.createInstance === undefined) throw new HttpError(501, "Questa installazione non crea istanze dalla console");
-		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown };
+		if (options.createInstance === undefined) throw new HttpError(501, "Questa installazione non crea agenti dalla console");
+		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown; persona?: unknown };
 		const id = typeof body.id === "string" ? body.id.trim() : "";
+		const persona = personaOf(body.persona);
 		const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
 		const given = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions : undefined;
 		if (given !== undefined && options.defaultInstructions !== undefined && given.length > ABOUT_MAX) throw new HttpError(400, `Istruzioni troppo lunghe: al massimo ${ABOUT_MAX} caratteri`);
@@ -337,15 +372,15 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (name === "") throw new HttpError(400, "Serve un nome");
 		try {
 			await runtime.registry.getInstance(tenantId, id);
-			throw new HttpError(409, "Un'istanza con questo ID esiste già");
+			throw new HttpError(409, "Un agente con questo ID esiste già");
 		} catch (error) {
 			if (!(error instanceof NotFound)) throw error;
 		}
 		try {
-			await options.createInstance({ id, name, instructions, ownerId: (person as Person).id });
+			await options.createInstance({ id, name, instructions, persona, ownerId: (person as Person).id });
 		} catch (error) {
 			// Two creations of the same id at once: the second loses here.
-			if (error instanceof Error && error.message.startsWith("Already exists")) throw new HttpError(409, "Un'istanza con questo ID esiste già");
+			if (error instanceof Error && error.message.startsWith("Already exists")) throw new HttpError(409, "Un agente con questo ID esiste già");
 			throw error;
 		}
 		await runtime.audit(tenantId).append({ type: "web.instance_created", instanceId: id, personId: (person as Person).id });
@@ -954,11 +989,12 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	route("GET", "/api/instances/:id/settings", "owner", async ({ params }) => {
 		const r = await runtime.registry.getInstance(tenantId, params[0] as string);
-		return { settings: { name: r.name, instructions: r.instructions ?? "", model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {} } };
+		return { settings: { name: r.name, instructions: r.instructions ?? "", persona: r.persona ?? {}, model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {} } };
 	});
 	route("PUT", "/api/instances/:id/settings", "owner", async ({ params, req }) => {
-		const body = (await readJson(req)) as { name?: string; instructions?: string; about?: unknown; webPeople?: string[]; webApprovers?: string[] };
+		const body = (await readJson(req)) as { name?: string; instructions?: string; persona?: unknown; about?: unknown; webPeople?: string[]; webApprovers?: string[] };
 		const id = params[0] as string;
+		const persona = body.persona === undefined ? undefined : personaOf(body.persona);
 		const people = new Set((await options.people.list()).map((p) => p.id));
 		const pick = (list: unknown) => (Array.isArray(list) ? list.map(String).filter((x) => people.has(x)) : undefined);
 		const record = await runtime.registry.getInstance(tenantId, id);
@@ -980,7 +1016,8 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (!record.egress.channels.includes("web")) await runtime.registry.setEgress(tenantId, id, { ...record.egress, channels: [...record.egress.channels, "web"] });
 		}
 		await runtime.registry.updateInstance(tenantId, id, {
-			...(typeof body.name === "string" ? { name: body.name.slice(0, 80) } : {}),
+			...(typeof body.name === "string" && body.name.trim() !== "" ? { name: body.name.trim().slice(0, 80) } : {}),
+			...(persona === undefined ? {} : { persona }),
 			...(typeof body.instructions === "string" ? { instructions: body.instructions.slice(0, 20_000) || null } : {}),
 			...(about === undefined ? {} : { instructions: about }),
 			...(webApprovers === undefined ? {} : { approvers: { ...(record.approvers ?? {}), web: webApprovers } }),

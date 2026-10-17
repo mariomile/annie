@@ -1160,7 +1160,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					},
 				}),
 		// Same model as the general instance; web only, open to the owner who creates it.
-		createInstance: async ({ id, name, instructions, ownerId }) => {
+		createInstance: async ({ id, name, instructions, persona, ownerId }) => {
 			const general = await runtime.registry.getInstance(tenant, config.instanceId);
 			const record = await runtime.registry.createInstance(tenant, {
 				id,
@@ -1169,6 +1169,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				egress: { modelProviders: [general.model.provider], channels: ["web"] },
 				allowedUsers: { web: [ownerId] },
 				instructions: instructions ?? DEFAULT_INSTRUCTIONS,
+				persona,
 			});
 			attachWebChannel(record);
 			await runtime.resume(tenant, record.id);
