@@ -129,6 +129,14 @@ _Avoid_: export, report (il report di ricerca è un'altra cosa, ADR 0022), templ
 Un'immagine PNG a barre, a linee o a torta che Annie disegna con `chart_create` da numeri o da un CSV, in `grafici/`: la manda in chat come una foto o la mette in un documento. Vedi ADR 0030.
 _Avoid_: chart, plot, diagramma
 
+**Domanda a una tabella**:
+Una richiesta che Annie fa con `table_query` a un CSV, un Excel o un foglio OpenDocument del workspace: filtri, gruppi, totali, medie, classifiche, calcolati in codice e mai a mente. La risposta può essere salvata in un CSV per un grafico o un documento. Vedi ADR 0031.
+_Avoid_: query, analisi dati, pivot
+
+**Calcolo**:
+L'aritmetica che Annie fa con `calculate` (un preventivo, l'IVA, uno sconto, una divisione), riga per riga e con i nomi, al centesimo. Vedi ADR 0031.
+_Avoid_: calcolatrice, eval, formula
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
