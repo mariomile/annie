@@ -73,10 +73,9 @@ Legge la casella Gmail ogni minuto, prepara per ogni richiesta di preventivo una
 | Variabile | Obbligatoria | Default |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | sì | |
-| `ANNIE_MODEL_PROVIDER` | no | `anthropic` (anche `openai`, `faux`) |
-| `ANNIE_MODEL_ID` | no | `claude-sonnet-5-5` (`annie-dev` per `faux`) |
-| `ANTHROPIC_API_KEY` | se il provider è `anthropic` | |
-| `OPENAI_API_KEY` | se il provider è `openai` | |
+| `ANNIE_MODEL_PROVIDER` | no | `anthropic` (uno dei 18 provider di [ADR 0032](docs/adr/0032-qualsiasi-modello.md), o `faux`) |
+| `ANNIE_MODEL_ID` | no | il modello di partenza del provider (`claude-sonnet-5-5`; `annie-dev` per `faux`) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, ... | quella del provider scelto | |
 | `ANNIE_DATA_DIR` | no | `data` |
 | `ANNIE_TENANT_ID` | no | `default` |
 | `ANNIE_INSTANCE_ID` | no | `telegram` |

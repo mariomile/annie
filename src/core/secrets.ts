@@ -59,3 +59,18 @@ export class TenantSecrets {
 export function modelApiKeySecret(provider: string): string {
 	return `model.${provider}.apiKey`;
 }
+
+/** The providers whose key the operator gave last time, so a key taken out of the environment leaves too. */
+const SERVER_MODEL_KEYS = "model.serverKeys";
+
+/**
+ * Store the operator's model keys (provider → key) at start, and delete the ones the operator
+ * took away since: those keys are the operator's, and an owner must not keep using them.
+ * A key the owner saved for a provider the operator never gave is left alone.
+ */
+export async function syncServerModelKeys(secrets: TenantSecrets, keys: Readonly<Record<string, string>>): Promise<void> {
+	const before = (await secrets.get(SERVER_MODEL_KEYS))?.split(",").filter(Boolean) ?? [];
+	for (const provider of before) if (!Object.hasOwn(keys, provider)) await secrets.delete(modelApiKeySecret(provider));
+	for (const [provider, key] of Object.entries(keys)) await secrets.set(modelApiKeySecret(provider), key);
+	await secrets.set(SERVER_MODEL_KEYS, Object.keys(keys).join(","));
+}

@@ -34,6 +34,7 @@ import { createWebTools } from "./core/tools/web-tools.ts";
 import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
 import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
+import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
@@ -50,7 +51,7 @@ import { customToolName, type ToolProposal } from "./core/proposals.ts";
 import type { InstanceRecord } from "./core/registry.ts";
 import { AnnieRuntime, type ToolSet } from "./core/runtime.ts";
 import { Scheduler } from "./core/scheduler.ts";
-import { modelApiKeySecret, TenantSecrets } from "./core/secrets.ts";
+import { syncServerModelKeys, TenantSecrets } from "./core/secrets.ts";
 import { createCustomTools } from "./core/tools/custom-tools.ts";
 import { createChartTools } from "./core/tools/chart-tools.ts";
 import { TranscriptionNotAllowed } from "./core/recordings.ts";
@@ -500,7 +501,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		if (config.telegram.allowedUsers !== undefined) await runtime.registry.setAllowedUsers(tenant, config.instanceId, "telegram", config.telegram.allowedUsers);
 		if (config.telegram.approvers !== undefined) await runtime.registry.updateInstance(tenant, config.instanceId, { approvers: { ...(record.approvers ?? {}), telegram: [...config.telegram.approvers] } });
 	}
-	if (config.modelApiKey !== undefined) await runtime.secrets(tenant).set(modelApiKeySecret(config.modelProvider), config.modelApiKey);
+	// The operator's keys: written at every start, and those taken out of the environment deleted.
+	await syncServerModelKeys(runtime.secrets(tenant), config.modelApiKeys);
 	// The bot in .env belongs to the general instance; bots connected from the console live in the secret store too.
 	if (config.telegram !== undefined) await runtime.secrets(tenant).set(telegramTokenSecret(config.instanceId), config.telegram.token);
 	const people = new PeopleStore(tenantDir(config.dataDir, toTenantId(tenant)));
@@ -953,6 +955,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		channels: webChannels,
 		connectors: connectorStore,
 		connectorStatus: (id) => connections.get(id)?.status() ?? [],
+		models: providerModels,
+		serverModelKeys: Object.keys(config.modelApiKeys),
 		mcpOAuth: mcpOAuth(),
 		...(options.connectorCatalog === undefined ? {} : { catalog: options.connectorCatalog }),
 		...(segreteria === undefined ? {} : { segreterie: new Map([[segreteria.instanceId, segreteria.service]]) }),

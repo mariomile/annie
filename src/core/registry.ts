@@ -136,6 +136,19 @@ export class TenantRegistry {
 		return record;
 	}
 
+	/**
+	 * Run the instance on another model, and allow its provider: added to the providers the
+	 * owner already allowed, never in their place. Takes effect the next time the instance is opened.
+	 */
+	async setModel(tenant: string, id: string, model: ModelSelection): Promise<InstanceRecord> {
+		const current = await this.getInstance(tenant, id);
+		const modelProviders = current.egress.modelProviders.includes(model.provider) ? current.egress.modelProviders : [...current.egress.modelProviders, model.provider];
+		const record: InstanceRecord = { ...current, model: { provider: model.provider, modelId: model.modelId }, egress: { ...current.egress, modelProviders } };
+		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.model.updated", instanceId: record.id, modelProvider: model.provider, modelId: model.modelId });
+		return record;
+	}
+
 	/** Replace the egress policy. Takes effect the next time the instance is opened. */
 	async setEgress(tenant: string, id: string, egress: EgressPolicy): Promise<InstanceRecord> {
 		const current = await this.getInstance(tenant, id);

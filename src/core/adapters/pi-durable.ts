@@ -7,7 +7,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Message, Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
+	AgentDoc,
 	AssistantEntry,
+	configure,
 	type ConversationId,
 	createRegistry,
 	defineDoc,
@@ -138,11 +140,17 @@ class PiDurableSession implements EngineSession {
 		const threads = await this.threads();
 		const byConversation = new Map<number, string>(Object.entries(threads).map(([key, id]) => [id, key]));
 		let pending = 0;
+		const aligned = new Set<number>();
 		for (const record of inspection.submissions) {
 			if (record.type !== "input") continue;
 			const threadKey = byConversation.get(record.conversationId);
 			const submission = await this.harness.submission(record.id, context);
 			if (threadKey === undefined || submission === undefined) continue;
+			// Work left half done goes on with the instance's model, before the scheduler starts.
+			if (!aligned.has(record.conversationId)) {
+				aligned.add(record.conversationId);
+				await this.alignAgent(record.conversationId);
+			}
 			pending++;
 			this.track(submission, threadKey);
 		}
@@ -179,7 +187,10 @@ class PiDurableSession implements EngineSession {
 
 	private async findOrCreate(threadKey: string): Promise<ConversationId> {
 		const existing = (await this.threads())[threadKey];
-		if (existing !== undefined) return existing as ConversationId;
+		if (existing !== undefined) {
+			await this.alignAgent(existing as ConversationId);
+			return existing as ConversationId;
+		}
 		const conversation = await this.harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
@@ -195,6 +206,24 @@ class PiDurableSession implements EngineSession {
 			context,
 		);
 		return conversation.id;
+	}
+
+	/**
+	 * A conversation keeps the model and instructions it was created with. The instance's are
+	 * the ones that count: after the owner changes them, an old thread answers with the new
+	 * ones (its history stays). Written only when they differ.
+	 */
+	private async alignAgent(id: ConversationId): Promise<void> {
+		const conversation = await this.harness.conversation(id, context);
+		if (conversation === undefined) return;
+		const { model, instructions } = this.options;
+		await conversation.commit(async (tx) => {
+			const agent = await tx.doc(AgentDoc, id);
+			const sameModel = agent.model?.provider === model.provider && agent.model?.modelId === model.modelId;
+			const sameInstructions = agent.instructions === instructions;
+			if (sameModel && sameInstructions) return;
+			await configure(tx, id, { ...(sameModel ? {} : { model }), ...(sameInstructions ? {} : { instructions: instructions ?? null }) });
+		}, context);
 	}
 
 	/** Each submission is tracked, and so replied to, at most once per session. */

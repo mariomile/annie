@@ -8,14 +8,14 @@ Le chiavi che servono, dove prenderle e dove metterle, passo per passo: [`chiavi
 
 - Un server Linux con Docker e Docker Compose, oppure Node.js 22.19+ e pnpm 10.
 - Disco locale per i dati (non NFS/SMB: il lock delle istanze usa lock POSIX).
-- Una chiave Anthropic (o OpenAI). Opzionali: un bot Telegram per l'agente, un secondo bot per la segreteria, OAuth Gmail e token HubSpot per la segreteria.
+- La chiave di un modello: Anthropic, OpenAI, Gemini, Grok, Mistral, OpenRouter o un altro dei provider di [ADR 0032](adr/0032-qualsiasi-modello.md). Opzionali: un bot Telegram per l'agente, un secondo bot per la segreteria, OAuth Gmail e token HubSpot per la segreteria.
 - Un reverse proxy con https davanti alla console (Caddy, nginx, Traefik).
 
 ## 2. Installazione con Docker
 
 ```bash
 git clone <repo> annie && cd annie
-cp .env.example .env          # compila almeno ANTHROPIC_API_KEY e ANNIE_PUBLIC_URL
+cp .env.example .env          # compila almeno la chiave del modello (ANTHROPIC_API_KEY o un'altra) e ANNIE_PUBLIC_URL
 docker compose up -d --build
 docker compose exec annie cat /data/owner-login-link.txt
 docker compose exec annie rm /data/owner-login-link.txt

@@ -561,6 +561,107 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 	);
 }
 
+/**
+ * Owner: the AI model this instance runs on (ADR 0032). Any provider Annie offers, with the
+ * server's key or one the owner pastes here; a saved key never comes back to the page.
+ */
+function modelCard(inst, current, providers) {
+	const KEY_STATE = { server: "Chiave del server", saved: "Chiave salvata", missing: "Serve una chiave" };
+	const offered = providers.some((p) => p.id === current.provider);
+	const provider = h(
+		"select",
+		// The local development model is not offered: the instance keeps it until the owner picks another.
+		offered ? null : h("option", { value: current.provider, selected: "selected" }, "Modello di prova"),
+		providers.map((p) => h("option", { value: p.id, selected: p.id === current.provider ? "selected" : undefined }, p.label)),
+	);
+	const filter = h("input", { type: "search", placeholder: "Cerca un modello", autocomplete: "off" });
+	const model = h("select");
+	const key = h("input", { type: "password", autocomplete: "off", class: "mono", "aria-describedby": `model-key-${inst.id}` });
+	const hint = h("small", { id: `model-key-${inst.id}` });
+	const keyRow = h("label.field", h("span", "Chiave API"), key, hint);
+	const filterRow = h("label.field", h("span", "Cerca"), filter);
+	const status = h("span.chip", { "aria-live": "polite" });
+	const submit = h("button.btn.accent", "Usa questo modello");
+	const forget = h("button.btn.ghost", "Togli la chiave");
+	let models = [];
+	let asked = 0;
+	const chosen = () => providers.find((p) => p.id === provider.value);
+	const fill = (wanted) => {
+		const words = filter.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+		const shown = models.filter((m) => m.id === wanted || words.every((w) => `${m.name} ${m.id}`.toLowerCase().includes(w)));
+		// Two models with the same name (one is a dated version) are told apart by their id.
+		const names = new Map();
+		for (const m of models) names.set(m.name, (names.get(m.name) ?? 0) + 1);
+		mount(model, shown.map((m) => h("option", { value: m.id, selected: m.id === wanted ? "selected" : undefined }, modelLabel(m, names.get(m.name) > 1))));
+		submit.disabled = shown.length === 0;
+	};
+	// The models are asked for when a provider is picked: some have hundreds. Only the last answer counts.
+	const showModels = async () => {
+		const p = chosen();
+		const ask = ++asked;
+		submit.disabled = true;
+		const state = p?.key ?? "server";
+		status.textContent = p === undefined ? "Modello di prova" : KEY_STATE[state];
+		status.className = `chip${p === undefined || state === "missing" ? " warn" : " ok"}`;
+		key.disabled = state === "server";
+		key.value = "";
+		key.placeholder = state === "server" ? "La mette chi gestisce il server" : state === "saved" ? "Incollane una nuova per cambiarla" : `La tua chiave ${p.label}`;
+		hint.textContent = state === "server" ? "Il server ha già la chiave di questo provider." : `Resta sul server con le altre chiavi dell'account e non torna più su questa pagina. In alternativa chi gestisce il server la mette in ${p?.keyEnv}.`;
+		keyRow.hidden = p === undefined;
+		forget.hidden = state !== "saved";
+		filter.value = "";
+		if (p === undefined) {
+			models = [];
+			filterRow.hidden = true;
+			mount(model, h("option", { value: current.modelId }, current.modelId));
+			return;
+		}
+		const answer = await api(`/api/models/${encodeURIComponent(p.id)}`);
+		if (ask !== asked) return;
+		models = [...answer.models].sort((a, b) => a.name.localeCompare(b.name));
+		filterRow.hidden = models.length <= 20;
+		fill(p.id === current.provider ? current.modelId : p.defaultModel);
+	};
+	provider.addEventListener("change", () => showModels().catch((error) => toast(error.message, true)));
+	filter.addEventListener("input", () => fill(model.value));
+	submit.addEventListener("click", async () => {
+		try {
+			const body = { provider: provider.value, modelId: model.value, ...(key.value.trim() ? { apiKey: key.value.trim() } : {}) };
+			const { model: saved } = await api(`/api/instances/${inst.id}/model`, { method: "PUT", body });
+			toast(`Annie ora usa ${models.find((m) => m.id === saved.modelId)?.name ?? saved.modelId}`);
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	});
+	forget.addEventListener("click", () =>
+		confirmDialog("Togliere la chiave?", `La chiave di ${chosen()?.label} viene cancellata dal server. Le istanze che la usano vanno prima spostate su un altro modello.`, "Togli", async () => {
+			await api(`/api/model-keys/${encodeURIComponent(provider.value)}`, { method: "DELETE" });
+			toast("Chiave tolta");
+			render();
+		}),
+	);
+	const card = h(
+		"div.card.pad",
+		h("div.row-gap", h("h3", "Modello AI"), status),
+		h("p.muted", "Il modello con cui Annie pensa e risponde: Claude, GPT, Gemini, Grok, Mistral, DeepSeek, Kimi, o uno dei tanti di OpenRouter. Cambiarlo non tocca chat, file e memoria: anche le chat vecchie continuano con il nuovo modello."),
+		h("label.field", h("span", "Provider"), provider),
+		filterRow,
+		h("label.field", h("span", "Modello"), model),
+		keyRow,
+		h("div.actions", submit, forget),
+	);
+	showModels().catch((error) => toast(error.message, true));
+	return card;
+}
+
+/** «Claude Sonnet 5.5 · foto · ragiona · entrata $3 · uscita $15 per M token»: what tells two models apart. */
+function modelLabel(m, withId) {
+	const usd = (n) => `$${n < 1 ? Number(n.toFixed(2)) : Math.round(n * 10) / 10}`;
+	const price = m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
+	return [withId ? `${m.name} (${m.id})` : m.name, m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
+}
+
 /** Owner: voice messages of this instance transcribed by the server's service. */
 function voiceCard(inst, host, allowed) {
 	const toggle = h("input", { type: "checkbox", checked: allowed });
@@ -1888,12 +1989,12 @@ const canInstall = () => installOffer !== undefined || appleTouch;
 
 /**
  * The steps of «Primi passi», from what the server checked and what this browser knows. `own`: the
- * owner can take it from here (the model is the operator's, and some browsers cannot install).
+ * owner can take it from here (some browsers cannot install).
  */
 function setupSteps(setup) {
 	const can = setup.can ?? {};
 	return [
-		{ id: "model", own: false, done: setup.model, title: "Collega un modello AI", text: setup.model ? "Annie usa un modello AI vero." : "Ora risponde il modello di prova, che ripete quello che scrivi. Lo collega chi gestisce il server di Annie (su Annie Cloud, l'assistenza): chiediglielo." },
+		{ id: "model", own: true, done: setup.model, title: "Scegli il modello AI", text: setup.model ? "Annie usa un modello AI vero: puoi cambiarlo quando vuoi." : "Ora risponde il modello di prova, che ripete quello che scrivi. Scegli Claude, GPT, Gemini, Grok o un altro, e incolla la tua chiave.", go: ["impostazioni", "modello"] },
 		{ id: "instructions", own: true, done: setup.instructions, title: "Dille chi è e cosa fa", text: "Due righe su di te o sulla tua azienda, il tono e cosa deve fare. Puoi partire da un esempio: vengono aggiunte a quello che Annie sa già fare, e le cambi quando vuoi in Impostazioni." },
 		{ id: "tried", own: true, done: setup.tried, title: "Scrivile qualcosa", text: `Una domanda, una foto, un file da riassumere: vedi subito come risponde.${setup.model ? "" : " Con il modello di prova la risposta ripete quello che scrivi."}` },
 		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto${can.transcription && can.speech ? ", ti risponde anche a voce" : ""}, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
@@ -2673,7 +2774,7 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images, models] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -2685,6 +2786,7 @@ async function viewSettings(main) {
 		api("/api/computer").catch(() => ({ available: false })),
 		api("/api/speech").catch(() => ({ available: false })),
 		api("/api/images").catch(() => ({ available: false })),
+		api(`/api/instances/${inst.id}/model`).catch(() => undefined),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -2719,6 +2821,7 @@ async function viewSettings(main) {
 			h(
 				"div.stack",
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
+				models === undefined ? null : anchor("modello", modelCard(inst, models.model, models.providers)),
 				tg === undefined ? null : anchor("telegram", telegramCard(inst, tg.telegram)),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
 				tel === undefined ? null : phoneCard(inst, tel.phone),
