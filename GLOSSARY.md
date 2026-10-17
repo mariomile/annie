@@ -125,6 +125,10 @@ _Avoid_: OCR (Annie non fa OCR, guarda), PDF immagine
 Un file Word, Excel o PDF che Annie scrive nel workspace con `document_create`, partendo da Markdown o da un CSV: un preventivo, una lettera, un listino, un report. Lo manda con `file_send`. Vedi ADR 0029.
 _Avoid_: export, report (il report di ricerca è un'altra cosa, ADR 0022), template
 
+**Grafico**:
+Un'immagine PNG a barre, a linee o a torta che Annie disegna con `chart_create` da numeri o da un CSV, in `grafici/`: la manda in chat come una foto o la mette in un documento. Vedi ADR 0030.
+_Avoid_: chart, plot, diagramma
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
