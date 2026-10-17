@@ -36,6 +36,8 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
  * to carry data out. exchange_rate sends nothing derived from what anyone wrote: it fetches a
  * fixed public file of the ECB. news_headlines fetches only the feeds the operator fixed, and
  * filters them here: nothing derived from a mail, its topic included, is sent anywhere.
+ * vat_check is left out on purpose: the number it checks would come from a mail's text and go to
+ * the VIES, and a brief has no use for it; a mail could also spend the account's daily VIES quota.
  */
 const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate", "news_headlines"]);
 

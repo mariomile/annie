@@ -1,6 +1,7 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
 import { DEFAULT_RATES_URL, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEFAULT_NEWS_FEEDS, MAX_FEED_NAME, MAX_FEEDS, NEWS_SECTIONS, type NewsConfig, type NewsFeed, type NewsSection } from "../core/news.ts";
+import { DEFAULT_VIES_URL, type ViesConfig } from "../core/vies.ts";
 import { DEFAULT_FORECAST_URL, DEFAULT_GEOCODING_URL, PAID_FORECAST_URL, type WeatherConfig } from "../core/weather.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
@@ -174,6 +175,8 @@ export type AnnieConfig = {
 	readonly exchangeRates: ExchangeRatesConfig | undefined;
 	/** The news_headlines tool (public RSS/Atom feeds, the built-in list or ANNIE_NEWS_FEEDS), when the operator turns it on with ANNIE_NEWS=1. */
 	readonly news: NewsConfig | undefined;
+	/** The VIES lookup of vat_check (the European Commission's VAT numbers), when the operator turns it on with ANNIE_VAT_CHECK=1; without it vat_check checks on paper only. */
+	readonly vatCheck: ViesConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
 	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
@@ -253,6 +256,25 @@ function loadNewsConfig(env: Readonly<Record<string, string | undefined>>): News
 		return undefined;
 	}
 	return { feeds: list === undefined ? DEFAULT_NEWS_FEEDS : newsFeeds(list) };
+}
+
+/**
+ * ANNIE_VAT_CHECK=1 and its overrides: off unless the operator says so. Then the country and the
+ * VAT number someone asks about go to the European Commission's VIES, nothing else.
+ */
+function loadVatCheckConfig(env: Readonly<Record<string, string | undefined>>): ViesConfig | undefined {
+	const on = nonEmpty(env.ANNIE_VAT_CHECK);
+	if (on !== undefined && !["0", "1", "true", "false"].includes(on)) throw new ConfigError("ANNIE_VAT_CHECK: 1 to look VAT numbers up in the EU's VIES, 0 (default) for the formal check only");
+	const overrides = ["ANNIE_VAT_CHECK_URL", "ANNIE_VAT_CHECK_MAX_PER_DAY"].filter((name) => nonEmpty(env[name]) !== undefined);
+	if (on !== "1" && on !== "true") {
+		if (overrides.length > 0) throw new ConfigError(`${overrides.join(", ")} set without ANNIE_VAT_CHECK=1`);
+		return undefined;
+	}
+	const url = serviceUrl("ANNIE_VAT_CHECK_URL", nonEmpty(env.ANNIE_VAT_CHECK_URL) ?? DEFAULT_VIES_URL, DEFAULT_VIES_URL);
+	// Requests to the VIES, cached answers not counted: it rate-limits, and a loop must not get the server blocked.
+	const maxPerDay = Number(nonEmpty(env.ANNIE_VAT_CHECK_MAX_PER_DAY) ?? "200");
+	if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_VAT_CHECK_MAX_PER_DAY: a whole number from 1 to 100000");
+	return { url, maxPerDay };
 }
 
 const FEEDS_EXAMPLE = "Il Post|https://www.ilpost.it/feed/|italia;BBC World|https://feeds.bbci.co.uk/news/world/rss.xml|mondo";
@@ -466,6 +488,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	const weather = loadWeatherConfig(env);
 	const exchangeRates = loadExchangeRatesConfig(env);
 	const news = loadNewsConfig(env);
+	const vatCheck = loadVatCheckConfig(env);
 	const computer = loadComputerConfig(env);
 	const desktop = loadDesktopConfig(env);
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
@@ -516,6 +539,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		weather,
 		exchangeRates,
 		news,
+		vatCheck,
 		computer,
 		desktop,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },
