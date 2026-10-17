@@ -3,7 +3,7 @@ import type { DesktopConfig } from "../main/config.ts";
 import { DockerDesktopProvider } from "./docker-desktop.ts";
 import { RemoteDesktopProvider } from "./remote-desktop.ts";
 
-/** The desktops this configuration asks for (ADR 0043): a container each on this Docker host, or one run elsewhere. */
+/** The desktops this configuration asks for (ADR 0045): a container each on this Docker host, or one run elsewhere. */
 export function createDesktopProvider(config: DesktopConfig, context: { readonly log?: (message: string) => void; readonly fetch?: typeof fetch } = {}): DesktopProvider {
 	const extra = { ...(context.log === undefined ? {} : { log: context.log }), ...(context.fetch === undefined ? {} : { fetch: context.fetch }) };
 	if (config.kind === "docker") return new DockerDesktopProvider({ network: config.network, socketPath: config.socketPath, ...extra });

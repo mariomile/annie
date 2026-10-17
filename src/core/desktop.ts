@@ -1,7 +1,7 @@
 import type { EngineImage } from "./engine.ts";
 
 /**
- * The screen of an agente (ADR 0043): a Linux desktop with its own Firefox, driven through Cua
+ * The screen of an agente (ADR 0045): a Linux desktop with its own Firefox, driven through Cua
  * (trycua/cua), where Annie looks at the screen and clicks, types, presses keys, scrolls and
  * opens apps. Providers: a container of Cua's image per agente on the Docker host
  * (src/desktop/docker-desktop.ts), or one desktop someone runs elsewhere

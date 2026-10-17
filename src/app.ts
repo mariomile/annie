@@ -371,7 +371,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			.catch((error: unknown) => log(`computer: leftovers not checked: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
-	// The agenti's screens through Cua (ADR 0043): only where the operator gave Annie a Docker host
+	// The agenti's screens through Cua (ADR 0045): only where the operator gave Annie a Docker host
 	// for them, or the address of one desktop run elsewhere.
 	const madeDesktop = options.desktop === undefined && config.desktop !== undefined ? createDesktopProvider(config.desktop, { log }) : undefined;
 	const desktop: DesktopProvider | undefined = options.desktop ?? madeDesktop;

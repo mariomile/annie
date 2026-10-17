@@ -1,5 +1,5 @@
 /**
- * Just enough of an MCP client for Cua's daemon (ADR 0043): JSON-RPC 2.0 over Streamable HTTP,
+ * Just enough of an MCP client for Cua's daemon (ADR 0045): JSON-RPC 2.0 over Streamable HTTP,
  * with `initialize` first, the session id the server mints echoed on every later request, the
  * tool list asked once, tool calls with a time limit. Replies are JSON; an event stream is read
  * too, for servers that answer that way. Connectors keep the full SDK (src/connectors/mcp.ts):

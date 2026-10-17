@@ -11,7 +11,7 @@ export type RemoteDesktopOptions = {
 };
 
 /**
- * One Cua desktop someone runs elsewhere (ADR 0043), with its daemon's address and token: every
+ * One Cua desktop someone runs elsewhere (ADR 0045), with its daemon's address and token: every
  * agente that uses it shares the same screen, and Annie neither starts nor resets it. Whether it
  * reaches the internet depends on where it runs.
  */

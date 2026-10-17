@@ -249,7 +249,7 @@ Dal web (ADR 0027): `web_read` legge i PDF e i documenti dei siti consentiti, `w
 
 ## 6n. Lo schermo (Cua)
 
-Ogni agente può avere un desktop Linux con Firefox, dove Annie guarda lo schermo, clicca e scrive attraverso Cua ([ADR 0043](adr/0043-schermo-cua.md)). Serve un server amd64 con Docker 20.10 o più recente. Come per il computer (6j), **il socket di Docker equivale a root sul server**: accendilo solo dove Annie è l'unico servizio, mai in Annie Cloud.
+Ogni agente può avere un desktop Linux con Firefox, dove Annie guarda lo schermo, clicca e scrive attraverso Cua ([ADR 0045](adr/0045-schermo-cua.md)). Serve un server amd64 con Docker 20.10 o più recente. Come per il computer (6j), **il socket di Docker equivale a root sul server**: accendilo solo dove Annie è l'unico servizio, mai in Annie Cloud.
 
 1. Scarica l'immagine, circa 8 GB: `docker pull trycua/cua-xfce:0.3.0`.
 2. In `.env`: `ANNIE_DESKTOP=docker`, e se serve il web dal browser dello schermo `ANNIE_DESKTOP_NETWORK=internet`.

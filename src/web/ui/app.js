@@ -821,7 +821,7 @@ function computerCard(inst, allowed, problem) {
 	);
 }
 
-/** The agente's screen through Cua (ADR 0043): a desktop of its own where it clicks and types. */
+/** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
 function desktopCard(inst, allowed, desktop) {
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {

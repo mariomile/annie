@@ -239,7 +239,7 @@ La BCE pubblica questi cambi solo a titolo informativo: non valgono per le opera
 
 ### 18. Lo schermo (Cua): `ANNIE_DESKTOP`, nessuna chiave da comprare
 
-Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, clicca e scrive attraverso Cua ([ADR 0043](adr/0043-schermo-cua.md)). **È gratis e non serve nessuna chiave a pagamento**: Cua pubblica l'immagine, Annie la avvia sul server e si inventa da sola token e password di ogni schermo.
+Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, clicca e scrive attraverso Cua ([ADR 0045](adr/0045-schermo-cua.md)). **È gratis e non serve nessuna chiave a pagamento**: Cua pubblica l'immagine, Annie la avvia sul server e si inventa da sola token e password di ogni schermo.
 
 1. Serve un server **amd64** (x86_64) con Docker: l'immagine di Cua non esiste per ARM. Scaricala una volta, circa 8 GB: `docker pull trycua/cua-xfce:0.3.0`. Annie usa esattamente questo tag; non scaricarlo con `latest`.
 2. In `.env`: `ANNIE_DESKTOP=docker`. Usa lo stesso socket del computer (`ANNIE_DOCKER_SOCKET`, di default `/var/run/docker.sock`): vale la stessa avvertenza, il socket equivale a root sul server ([runbook](runbook.md), 6n).

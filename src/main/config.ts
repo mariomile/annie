@@ -175,7 +175,7 @@ export type AnnieConfig = {
 	readonly phone: { readonly apiBase: string; readonly voice: string };
 	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
 	readonly computer: ComputerConfig | undefined;
-	/** The agenti's screens through Cua (ADR 0043): a container each on this Docker host, or one desktop run elsewhere; off if unset. */
+	/** The agenti's screens through Cua (ADR 0045): a container each on this Docker host, or one desktop run elsewhere; off if unset. */
 	readonly desktop: DesktopConfig | undefined;
 };
 
@@ -285,7 +285,7 @@ export function loadComputerConfig(env: Readonly<Record<string, string | undefin
 export type DesktopConfig = { readonly kind: "docker"; readonly socketPath: string; readonly network: "none" | "internet" } | { readonly kind: "remote"; readonly url: string; readonly token: string };
 
 /**
- * ANNIE_DESKTOP and its settings (ADR 0043): docker, a container of Cua's image per agente, with
+ * ANNIE_DESKTOP and its settings (ADR 0045): docker, a container of Cua's image per agente, with
  * no internet unless ANNIE_DESKTOP_NETWORK=internet; or remote, one Cua desktop at
  * ANNIE_DESKTOP_URL with its ANNIE_DESKTOP_TOKEN. Unset: no screen, and its tools are not offered.
  */

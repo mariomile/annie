@@ -44,7 +44,7 @@ type Running = { readonly spaces: Spaces; readonly timer: NodeJS.Timeout };
 type Inspect = { State?: { Running?: boolean }; Config?: { Labels?: Record<string, string>; Env?: string[] }; NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> } };
 
 /**
- * A desktop per agente as a container of Cua's image on this Docker host (ADR 0043). It sits on
+ * A desktop per agente as a container of Cua's image on this Docker host (ADR 0045). It sits on
  * its own Docker network: internal (no internet) unless the operator chose otherwise, with
  * traffic between containers off when Annie creates it, so desktops do not see each other.
  * Annie reaches Cua's daemon at the container's address on that network, with a token made

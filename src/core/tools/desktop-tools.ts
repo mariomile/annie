@@ -29,7 +29,7 @@ const ASK_FIRST =
 	"Nothing you do on the screen asks for approval: before you submit a form, send a message or a mail, buy or pay, accept terms, or sign in anywhere, stop and ask the person in the chat, and go on only when they say so. Never type passwords.";
 
 /**
- * The agente's screen (ADR 0043): a Linux desktop of its own, through Cua. Annie looks at it,
+ * The agente's screen (ADR 0045): a Linux desktop of its own, through Cua. Annie looks at it,
  * clicks, types, presses keys, scrolls, opens apps; after each action she gets the screen again.
  */
 export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {

@@ -96,7 +96,7 @@ async function computerCheck(config: AnnieConfig, computer: NonNullable<AnnieCon
 	return "il control plane risponde";
 }
 
-/** The Docker host answers, is amd64 and has Cua's image, or the desktop run elsewhere answers with its token (ADR 0043). */
+/** The Docker host answers, is amd64 and has Cua's image, or the desktop run elsewhere answers with its token (ADR 0045). */
 async function desktopCheck(desktop: NonNullable<AnnieConfig["desktop"]>, fetchImpl: typeof fetch): Promise<string> {
 	const problem = await createDesktopProvider(desktop, { fetch: fetchImpl }).check();
 	if (problem !== undefined) throw new CheckFailed(problem);

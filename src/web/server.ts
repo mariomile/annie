@@ -132,7 +132,7 @@ export type WebAppOptions = {
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
 	readonly computer?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined> };
-	/** The agenti's screens through Cua (ADR 0043), when this server has them: whether they reach the internet, and whether one screen is shared. */
+	/** The agenti's screens through Cua (ADR 0045), when this server has them: whether they reach the internet, and whether one screen is shared. */
 	readonly desktop?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined>; readonly network: "none" | "internet" | "unknown"; readonly shared: boolean };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
@@ -816,7 +816,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 
-	// --- owner: the agente's screen (ADR 0043) ---
+	// --- owner: the agente's screen (ADR 0045) ---
 	route("GET", "/api/desktop", "owner", async () => {
 		if (options.desktop === undefined) return { available: false };
 		const problem = await options.desktop.check();
