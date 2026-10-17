@@ -30,6 +30,7 @@ import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { decideToolProposal, decideWebAction, NotAnApprover } from "./core/approvals.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { publicAddress } from "./core/web-fetch.ts";
+import { readPage } from "./core/watches.ts";
 import { webHostAllowed } from "./core/policy.ts";
 import type { DurableEngine } from "./core/engine.ts";
 import { NotFound } from "./core/errors.ts";
@@ -45,7 +46,6 @@ import { createCustomTools } from "./core/tools/custom-tools.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWatchTools } from "./core/tools/watch-tools.ts";
-import { readPage } from "./core/watches.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
 import { romeDayKey, UsageLedger } from "./core/usage.ts";
 import { connectChannel } from "./gateway.ts";
@@ -199,7 +199,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createScheduleTools({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone }),
-				...createWatchTools({ store: runtime.watches(record.tenantId, record.id), read: watchReader(record.id) }),
+				...createWatchTools({
+					store: runtime.watches(record.tenantId, record.id),
+					read: watchReader(record.id),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
+					},
+				}),
 				...createMemoryTools({
 					store: runtime.memory(record.tenantId, record.id),
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
@@ -586,6 +592,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		uiDir: options.uiDir ?? join(import.meta.dirname, "web", "ui"),
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
+		watchRead: (instance, url) => watchReader(instance)(url),
 		telegramHooks,
 		whatsappHooks: whatsapps,
 		phoneHooks: phones,
