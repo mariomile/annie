@@ -1,10 +1,10 @@
 # Stato del progetto e cose da fare
 
-Aggiornato al 16 ottobre 2026.
+Aggiornato al 17 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 16 (dalla 4 alla 16 fuse il 16 ottobre 2026), e la CI controlla ogni PR con typecheck, test ed eval deterministiche. La settimana 17 (chiamate vocali su un numero Twilio, [week17.md](week17.md)) è sul branch `week-17`. I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 21, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -46,6 +46,17 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Fase 2: l'agente personale (memoria della persona, Google per persona in sola lettura, brief del mattino). Restano la verifica dell'app presso Google e la misura sul campo (`pnpm annie brief` dopo una settimana d'uso vero)
 - [ ] Fase 3: il computer dell'agente. Fatte la navigazione web in sola lettura (settimana 10, ADR 0009), l'invio di moduli con approvazione (settimana 16, [ADR 0011](adr/0011-moduli-web-con-approvazione.md)) e il terminale in un computer per istanza senza rete (settimana 18, [ADR 0013](adr/0013-terminale-in-un-computer-senza-rete.md), per ora solo installando Annie su un proprio server), il browser con clic nel Chromium della cella (settimana 19, [ADR 0014](adr/0014-browser-con-clic-nella-cella.md), anche in Annie Cloud) e il computer su micro-VM Fly.io, che lo accende anche in Annie Cloud (settimana 20, [ADR 0015](adr/0015-computer-su-micro-vm.md)). Manca la prova dal vivo su Fly con un token vero (`FLY_API_TOKEN`, [chiavi](chiavi.md) §12)
 - [ ] Fase 4: pagamento, voce, WhatsApp. Pronti la misura della spesa per tenant (`pnpm cloud status`), l'abbonamento Stripe con prova, quota fissa e consumo a contatore (settimana 12, ADR 0010) il canale WhatsApp (settimana 13) e i messaggi vocali trascritti (settimana 14). Mancano le cifre (decisione di Mario, si impostano su Stripe), le prove dal vivo con le chiavi di test di Stripe, Meta e Mistral, il template WhatsApp da far approvare a Meta (il codice c'è, settimana 15) e la prova dal vivo delle chiamate vocali (settimana 17, [ADR 0012](adr/0012-chiamate-vocali-con-numero-twilio.md)), che chiede un numero Twilio italiano
+
+### Funzioni (dal 17 ottobre 2026, una PR per funzione)
+
+- [x] Foto e immagini: Annie vede le foto mandate su Telegram, WhatsApp e web e riapre le immagini del workspace (settimana 21, [week21.md](week21.md), [ADR 0016](adr/0016-immagini-al-modello.md))
+- [ ] Ricerca sul web
+- [ ] Sentinelle: avvisi quando una pagina o un prezzo cambiano
+- [ ] Primo avvio guidato e console installabile come app (PWA)
+- [ ] Risposte a voce
+- [ ] Scrivere su calendario e mail, con approvazione
+- [ ] Ricerca approfondita con report
+- [ ] Generazione di immagini e connettori in un clic
 
 ### Prima di rendere pubblico il repo
 

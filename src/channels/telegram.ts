@@ -1,3 +1,4 @@
+import { IMAGE_LIMITS, imageType } from "../core/images.ts";
 import { audioName, type Transcribe, tooLong, voiceText } from "./voice.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
@@ -12,6 +13,8 @@ export type TelegramAdapterOptions = {
 	readonly apiBase?: string;
 	/** Long-polling timeout in seconds. */
 	readonly pollTimeoutSec?: number;
+	/** How long the first photo of an album waits for the others (webhook). Default 1.5 s. */
+	readonly albumWaitMs?: number;
 	/** Wait after a failed poll before the next one. */
 	readonly retryDelayMs?: number;
 	readonly log?: (message: string) => void;
@@ -31,6 +34,7 @@ export const TELEGRAM_MAX_TEXT = 4096;
 
 /** A handler that fails this many times on the same update gives it up. */
 const MAX_UPDATE_FAILURES = 3;
+const ALBUM_WAIT_MS = 1_500;
 
 /** Largest file a bot can download. */
 const TELEGRAM_MAX_DOWNLOAD = 20 * 1024 * 1024;
@@ -52,7 +56,11 @@ export type TelegramUpdate = {
 		from?: { id: number };
 		text?: string;
 		caption?: string;
+		/** Set on each photo of an album: the parts arrive as separate updates. */
+		media_group_id?: string;
 		document?: { file_id: string; file_name?: string; file_size?: number };
+		/** The same photo in several sizes, smallest first. */
+		photo?: { file_id: string; file_size?: number; width?: number; height?: number }[];
 		voice?: TelegramSound;
 		audio?: TelegramSound;
 	};
@@ -75,6 +83,7 @@ export class TelegramAdapter implements ChannelAdapter {
 	private handler: ((message: InboundMessage) => Promise<void>) | undefined;
 	private actionHandler: ((action: InboundAction) => Promise<void>) | undefined;
 	private readonly failures = new Map<number, number>();
+	private readonly albums = new Map<string, { updates: TelegramUpdate[]; done: Promise<void> }>();
 	private abort: AbortController | undefined;
 	private loop: Promise<void> | undefined;
 	private offset: number | undefined;
@@ -152,15 +161,15 @@ export class TelegramAdapter implements ChannelAdapter {
 			},
 			signal,
 		);
-		for (const update of updates) {
+		for (const group of albums(updates)) {
 			// Confirmed on the next getUpdates. A redelivery after a crash carries the same
 			// message ID, which the core turns into an idempotent request.
-			this.offset = update.update_id + 1;
+			this.offset = (group.at(-1) as TelegramUpdate).update_id + 1;
 			try {
-				await this.handleUpdate(update);
+				await this.handleUpdates(group);
 			} catch (error) {
-				// Not confirmed: Telegram delivers this update again on the next poll.
-				this.offset = update.update_id;
+				// Not confirmed: Telegram delivers these updates again on the next poll.
+				this.offset = (group[0] as TelegramUpdate).update_id;
 				throw error;
 			}
 		}
@@ -172,19 +181,41 @@ export class TelegramAdapter implements ChannelAdapter {
 	 * delivers it again; after the third failure it is let go (logged), not retried forever.
 	 */
 	async handleUpdate(update: TelegramUpdate): Promise<void> {
+		const album = update.message?.media_group_id;
+		if (album === undefined) return this.handleUpdates([update]);
+		// An album comes as one update per photo, each its own webhook call: the first waits a
+		// moment for the others, and they go to the instance as one message.
+		const key = `${update.message?.chat.id}:${album}`;
+		const open = this.albums.get(key);
+		if (open !== undefined) {
+			open.updates.push(update);
+			return open.done;
+		}
+		const updates = [update];
+		const done = new Promise<void>((resolve) => setTimeout(resolve, this.options.albumWaitMs ?? ALBUM_WAIT_MS)).then(() => {
+			this.albums.delete(key);
+			return this.handleUpdates(updates);
+		});
+		this.albums.set(key, { updates, done });
+		return done;
+	}
+
+	/** One message, or the photos of one album; failures count on the first update. */
+	private async handleUpdates(updates: readonly TelegramUpdate[]): Promise<void> {
+		const first = (updates[0] as TelegramUpdate).update_id;
 		try {
-			await this.dispatch(update);
+			await this.dispatch(updates);
 		} catch (error) {
-			const failures = (this.failures.get(update.update_id) ?? 0) + 1;
+			const failures = (this.failures.get(first) ?? 0) + 1;
 			if (failures >= MAX_UPDATE_FAILURES) {
-				this.failures.delete(update.update_id);
-				this.options.log?.(`telegram: update ${update.update_id} dropped after ${failures} failed attempts: ${error instanceof Error ? error.message : String(error)}`);
+				this.failures.delete(first);
+				this.options.log?.(`telegram: update ${first} dropped after ${failures} failed attempts: ${error instanceof Error ? error.message : String(error)}`);
 				return;
 			}
-			this.failures.set(update.update_id, failures);
+			this.failures.set(first, failures);
 			throw error;
 		}
-		this.failures.delete(update.update_id);
+		this.failures.delete(first);
 	}
 
 	// Taps are requested only when someone handles them: otherwise they would be dropped.
@@ -192,21 +223,50 @@ export class TelegramAdapter implements ChannelAdapter {
 		return this.actionHandler === undefined ? ["message"] : ["message", "callback_query"];
 	}
 
-	private async dispatch(update: TelegramUpdate): Promise<void> {
+	private async dispatch(updates: readonly TelegramUpdate[]): Promise<void> {
+		const update = updates[0] as TelegramUpdate;
 		if (update.callback_query !== undefined) return this.handleTap(update.callback_query);
 		const message = update.message;
 		if (message === undefined || this.handler === undefined) return;
+		// The rest of an album: more photos and documents for the same message.
+		const parts = updates.flatMap((u) => (u.message === undefined ? [] : [u.message]));
 		const sound = message.voice ?? message.audio;
-		if (message.text === undefined && message.document === undefined && sound === undefined) return;
+		const photos = parts.flatMap((part) => {
+			const photo = largest(part.photo);
+			return photo === undefined ? [] : [photo];
+		});
+		const documents = parts.flatMap((part) => (part.document === undefined ? [] : [part.document]));
+		if (message.text === undefined && documents.length === 0 && sound === undefined && photos.length === 0) return;
 		const userId = String(message.from?.id ?? message.chat.id);
 		const mayDownload = (await this.options.mayDownload?.(userId)) ?? true;
-		let text = message.text ?? message.caption ?? "";
+		let text = message.text ?? parts.find((part) => part.caption !== undefined)?.caption ?? "";
 		if (sound !== undefined) {
 			// A stranger's voice is never downloaded, let alone sent to be transcribed.
 			const words = mayDownload ? await this.voice(sound) : "[Messaggio vocale]";
 			text = [words, text].filter(Boolean).join("\n\n");
 		}
-		const attachments = message.document === undefined || !mayDownload ? [] : [await this.download(message.document)];
+		const attachments: { name: string; data: Uint8Array }[] = [];
+		// A file that cannot be downloaded is said, not dropped with the message.
+		const fetchFile = async (document: { file_id: string; file_name?: string; file_size?: number }, what: string) => {
+			try {
+				return await this.download(document);
+			} catch (error) {
+				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+				this.options.log?.(`telegram: ${what} not downloaded: ${error.message}`);
+				text = [text, `[${what === "photo" ? "Foto" : "File"} troppo grande o non disponibile.]`].filter(Boolean).join("\n\n");
+				return undefined;
+			}
+		};
+		for (const document of mayDownload ? documents : []) {
+			const file = await fetchFile(document, "file");
+			if (file !== undefined) attachments.push(file);
+		}
+		for (const [i, photo] of (mayDownload ? photos : []).entries()) {
+			const file = await fetchFile({ file_id: photo.file_id, ...(photo.file_size === undefined ? {} : { file_size: photo.file_size }) }, "photo");
+			// Named by what it is: Telegram sends photos as JPEG, but the bytes decide.
+			const ext = (imageType(file?.data ?? new Uint8Array()) ?? "image/jpeg").slice("image/".length).replace("jpeg", "jpg");
+			if (file !== undefined) attachments.push({ name: photos.length === 1 ? `foto.${ext}` : `foto-${i + 1}.${ext}`, data: file.data });
+		}
 		await this.handler({
 			tenantId: this.options.tenantId,
 			instanceId: this.options.instanceId,
@@ -331,4 +391,25 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 			resolve();
 		}, { once: true });
 	});
+}
+
+/** Consecutive updates of one album, together; every other update alone. */
+function albums(updates: readonly TelegramUpdate[]): TelegramUpdate[][] {
+	const groups: TelegramUpdate[][] = [];
+	for (const update of updates) {
+		const last = groups.at(-1)?.[0]?.message;
+		const album = update.message?.media_group_id;
+		if (album !== undefined && last?.media_group_id === album && last.chat.id === update.message?.chat.id) (groups.at(-1) as TelegramUpdate[]).push(update);
+		else groups.push([update]);
+	}
+	return groups;
+}
+
+/** The biggest size of a photo the model takes, by pixels; the smallest if none fits. */
+function largest(sizes: readonly { file_id: string; file_size?: number; width?: number; height?: number }[] | undefined) {
+	if (sizes === undefined || sizes.length === 0) return undefined;
+	const pixels = (size: { width?: number; height?: number }) => (size.width ?? 0) * (size.height ?? 0);
+	const fitting = sizes.filter((size) => (size.file_size ?? 0) <= IMAGE_LIMITS.maxBytes);
+	const pool = fitting.length > 0 ? fitting : sizes;
+	return pool.reduce((best, size) => (fitting.length > 0 ? pixels(size) >= pixels(best) : pixels(size) < pixels(best)) ? size : best);
 }

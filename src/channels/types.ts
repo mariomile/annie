@@ -25,6 +25,8 @@ export type InboundMessage = {
 	readonly messageId?: string;
 	/** Files that came with the message; the gateway stores them in the workspace. */
 	readonly attachments?: readonly { readonly name: string; readonly data: Uint8Array }[];
+	/** Pictures already in the workspace that the model sees with the message (the core checks them). */
+	readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[];
 };
 
 /** A tap on a button of an earlier outbound message (Telegram: a callback query). */

@@ -756,9 +756,10 @@ async function viewChat(main) {
 			),
 		);
 	}
-	const newThread = async (first) => {
+	const newThread = async (first, photo = false) => {
 		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
 		if (first) store(`annie.draft.${thread.id}`, first);
+		if (photo) store(`annie.photo.${thread.id}`, "1");
 		go("chat", thread.id);
 	};
 	const side = h("section.card.threads", h("header", h("b", "Conversazioni"), h("button.btn.small.ghost", { onclick: () => newThread(), "aria-label": "Nuova conversazione" }, icon("plus"), "Nuova")), threads.length ? list : h("p.muted", h("span", "")));
@@ -772,7 +773,7 @@ async function viewChat(main) {
 				h("p", "Annie risponde, prepara file, programma promemoria e usa i connettori della tua azienda. Le azioni delicate passano sempre da un'approvazione."),
 				h(
 					"div.hints",
-					["Riassumi in punti il file che ti carico", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t) }, t)),
+					["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t, t.includes("foto")) }, t)),
 				),
 			),
 		);
@@ -783,11 +784,25 @@ async function viewChat(main) {
 	const { entries } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	let typing;
+	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
 	const show = (entry) => {
 		const body = entry.file
 			? h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(entry.file.path)}` }, h("span.ext", (entry.file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", entry.file.path.split("/").pop()), entry.file.caption ? h("div.muted", entry.file.caption) : null))
 			: h("div.body", entry.text ?? "");
-		transcript.append(h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at)), body));
+		const pictures = entry.images?.length
+			? h(
+					"div.pics",
+					entry.images.map((path) => {
+						const link = h("a", { href: picture(path), target: "_blank", rel: "noopener" });
+						// A photo deleted from the workspace since: said, not a broken image.
+						link.append(h("img", { src: picture(path), alt: path.split("/").pop(), loading: "lazy", onerror: () => link.replaceWith(h("span.gone", `${path.split("/").pop()} non c'è più`)) }));
+						return link;
+					}),
+				)
+			: null;
+		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at)), pictures, entry.text || entry.file || !pictures ? body : null);
+		transcript.append(el);
+		return el;
 	};
 	for (const e of entries) show(e);
 	const stopTyping = () => {
@@ -809,22 +824,54 @@ async function viewChat(main) {
 		return true;
 	};
 	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(`annie.draft.${threadId}`) ?? "" });
+	// Photos uploaded for the next message: shown above the box until it is sent, kept with the draft.
+	const pendingKey = `annie.pending.${threadId}`;
+	const pending = (() => {
+		try {
+			const saved = JSON.parse(store(pendingKey) ?? "[]");
+			return Array.isArray(saved) ? saved.filter((p) => typeof p === "string").slice(0, 4) : [];
+		} catch {
+			return [];
+		}
+	})();
+	let uploading = 0;
+	const tray = h("div.tray", { hidden: true });
+	const sendButton = h("button.btn.accent", { onclick: () => send() }, "Invia");
+	const drawTray = () => {
+		store(pendingKey, JSON.stringify(pending));
+		tray.hidden = pending.length === 0 && uploading === 0;
+		sendButton.disabled = uploading > 0;
+		tray.replaceChildren(
+			...pending.map((p, i) =>
+				h("span.chip", h("img", { src: picture(p), alt: p.split("/").pop() }), h("button", { "aria-label": `Togli ${p.split("/").pop()}`, onclick: () => { pending.splice(i, 1); drawTray(); } }, "×")),
+			),
+			...Array.from({ length: uploading }, () => h("span.chip.loading", { "aria-label": "Caricamento" })),
+		);
+	};
 	const send = async () => {
 		const text = input.value.trim();
-		if (!text) return;
+		if (uploading > 0) return toast("Aspetta che le foto finiscano di caricarsi");
+		if (!text && pending.length === 0) return;
+		const sent = pending.splice(0);
+		const images = sent;
 		input.value = "";
 		input.style.height = "auto";
+		drawTray();
 		store(`annie.draft.${threadId}`, "");
-		show({ from: "person", text, at: new Date().toISOString() });
+		const bubble = show({ from: "person", text, images, at: new Date().toISOString() });
 		const current = list.querySelector('[aria-current="true"] .t');
-		if (current && current.textContent === "Nuova chat") current.textContent = text.replace(/\s+/g, " ").slice(0, 60);
+		if (current && current.textContent === "Nuova chat") current.textContent = text ? text.replace(/\s+/g, " ").slice(0, 60) : "Foto";
 		startTyping();
 		try {
-			await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: { text } });
+			await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: images.length ? { text, images } : { text } });
 		} catch (error) {
 			stopTyping();
+			bubble.remove();
 			toast(error.message, true);
 			input.value = text;
+			store(`annie.draft.${threadId}`, text);
+			pending.unshift(...sent);
+			drawTray();
 		}
 	};
 	input.addEventListener("keydown", (e) => {
@@ -838,23 +885,65 @@ async function viewChat(main) {
 		input.style.height = "auto";
 		input.style.height = `${Math.min(220, input.scrollHeight)}px`;
 	});
-	const file = h("input", { type: "file", class: "sr", "aria-label": "Carica un file" });
-	file.addEventListener("change", async () => {
-		const f = file.files?.[0];
-		if (!f) return;
-		try {
-			const { file: saved } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(f.name)}`, { method: "PUT", raw: f });
-			input.value = `${input.value ? `${input.value}\n` : ""}[File caricato nel workspace: ${saved.path}] `;
-			input.focus();
-			toast(`Caricato ${saved.path}`);
-		} catch (error) {
-			toast(error.message, true);
+	const file = h("input", { type: "file", class: "sr", multiple: true, "aria-label": "Carica un file o una foto" });
+	const PICTURES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+	// From the File button, a drop on the chat or a paste (a screenshot): photos go with the message, other files are noted in it.
+	const add = async (files) => {
+		const pictures = files.filter((f) => PICTURES.includes(f.type));
+		if (pending.length + pictures.length > 4) toast("Al massimo 4 foto per messaggio", true);
+		const allowed = new Set(pictures.slice(0, Math.max(0, 4 - pending.length)));
+		for (const f of files) {
+			const isPicture = PICTURES.includes(f.type);
+			if (isPicture && !allowed.has(f)) continue;
+			if (isPicture) uploading += 1;
+			drawTray();
+			try {
+				const name = f.name || `incollata.${f.type.slice("image/".length).replace("jpeg", "jpg")}`;
+				const { file: saved } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(name)}`, { method: "PUT", raw: f });
+				if (isPicture) pending.push(saved.path);
+				else {
+					input.value = `${input.value ? `${input.value}\n` : ""}[File caricato nel workspace: ${saved.path}] `;
+					store(`annie.draft.${threadId}`, input.value);
+					toast(`Caricato ${saved.path}`);
+				}
+			} catch (error) {
+				toast(error.message, true);
+			} finally {
+				if (isPicture) uploading -= 1;
+				drawTray();
+			}
 		}
+		input.focus();
+	};
+	file.addEventListener("change", () => {
+		const files = [...(file.files ?? [])];
 		file.value = "";
+		void add(files);
 	});
+	input.addEventListener("paste", (e) => {
+		const files = [...(e.clipboardData?.files ?? [])];
+		if (files.length === 0) return;
+		e.preventDefault();
+		void add(files);
+	});
+	conversation.addEventListener("dragover", (e) => {
+		if ([...(e.dataTransfer?.types ?? [])].includes("Files")) e.preventDefault();
+	});
+	conversation.addEventListener("drop", (e) => {
+		const files = [...(e.dataTransfer?.files ?? [])];
+		if (files.length === 0) return;
+		e.preventDefault();
+		void add(files);
+	});
+	if (store(`annie.photo.${threadId}`) === "1") {
+		store(`annie.photo.${threadId}`, "");
+		input.placeholder = "Aggiungi la foto con File, trascinala qui o incollala";
+	}
+	drawTray();
 	conversation.append(
 		transcript,
-		h("div.composer", h("label.btn.ghost.attach", { title: "Carica un file" }, "File", file), input, h("button.btn.accent", { onclick: send }, "Invia")),
+		tray,
+		h("div.composer", h("label.btn.ghost.attach", { title: "Carica un file o una foto" }, "File", file), input, sendButton),
 	);
 	transcript.scrollTop = transcript.scrollHeight;
 	input.focus();

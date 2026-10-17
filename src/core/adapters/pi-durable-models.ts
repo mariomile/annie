@@ -33,8 +33,8 @@ export function createProvider(id: string): Provider {
  *
  * - "conta fino a N" / "count to N" → calls the slow_counter tool with n = N
  * - "/tool <name> <json args>" → calls that tool (for tests and development)
- * - after a tool result → "Fatto. <tool output>"
- * - anything else → echoes the message
+ * - after a tool result → "Fatto. <tool output>", and "[N immagini]" when it shows pictures
+ * - anything else → echoes the message, saying which pictures came with it
  */
 function createDevModel(): Provider {
 	const faux = fauxProvider({ provider: FAUX_PROVIDER, models: [{ id: FAUX_MODEL_ID, name: "Annie dev (deterministic)" }] });
@@ -52,7 +52,8 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	const last = messages.filter((m) => m.role === "user" || m.role === "toolResult" || m.role === "assistant").at(-1);
 	if (last?.role === "toolResult") {
 		const output = last.content.map((block) => (block.type === "text" ? block.text : "")).join("");
-		return fauxAssistantMessage(`Fatto. ${output}`);
+		const shown = last.content.filter((block) => block.type === "image").length;
+		return fauxAssistantMessage(`Fatto. ${output}${shown === 0 ? "" : ` [${shown} ${shown === 1 ? "immagine" : "immagini"}]`}`);
 	}
 	const text = last?.role === "user" ? userText(last.content) : "";
 	// The memoria note the core appends after the person's words is not part of a command.
@@ -70,7 +71,18 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	if (count?.[1] !== undefined) {
 		return fauxAssistantMessage(fauxToolCall("slow_counter", { n: Number(count[1]) }), { stopReason: "toolUse" });
 	}
-	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}»`);
+	// Pictures of earlier messages still in the request: old ones should have left it.
+	const earlier = messages.filter((m) => m !== last && m.role !== "assistant" && typeof m.content !== "string" && m.content.some((c) => c.type === "image")).length;
+	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}»${last?.role === "user" ? imagesSeen(last.content) : ""}${earlier === 0 ? "" : ` [${earlier} ${earlier === 1 ? "messaggio precedente" : "messaggi precedenti"} con immagini]`}`);
+}
+
+/** The pictures of a message as the model received them: how many, of which type and size. */
+function imagesSeen(content: string | readonly { type: string; data?: string; mimeType?: string }[]): string {
+	if (typeof content === "string") return "";
+	const images = content.filter((block) => block.type === "image");
+	if (images.length === 0) return "";
+	const each = images.map((image) => `${image.mimeType}, ${Buffer.from(image.data ?? "", "base64").length} byte`);
+	return ` e mandato ${images.length} ${images.length === 1 ? "immagine" : "immagini"} (${each.join("; ")})`;
 }
 
 function userText(content: string | readonly { type: string; text?: string }[]): string {

@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { imageType } from "../core/images.ts";
 import { audioName, type Transcribe, voiceText } from "./voice.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
@@ -181,6 +182,8 @@ type WhatsAppMessage = {
 	text?: { body?: string };
 	interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
 	document?: { id?: string; filename?: string; mime_type?: string; caption?: string };
+	image?: { id?: string; mime_type?: string; caption?: string };
+	sticker?: { id?: string; mime_type?: string; animated?: boolean };
 	audio?: { id?: string; mime_type?: string; voice?: boolean };
 };
 /** What Meta says later about a message we sent: a failure outside the 24-hour window arrives here, not as an error on the send. */
@@ -348,14 +351,20 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		}
 		if (this.handler === undefined) return;
 		if (message.type === "audio") return this.handler === undefined ? undefined : this.voice(message, this.handler);
-		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : undefined;
-		// Images, stickers, locations: not understood yet, so not passed on as empty messages.
+		// A still sticker is a small WebP picture: the model sees it like a photo.
+		const still = message.type === "sticker" && message.sticker?.animated !== true;
+		const text = message.type === "text" ? (message.text?.body ?? "") : message.type === "document" ? (message.document?.caption ?? "") : message.type === "image" ? (message.image?.caption ?? "") : still ? "" : undefined;
+		// Animated stickers, locations, contacts: not understood yet, so not passed on as empty messages.
 		if (text === undefined) return;
 		let attachments: { name: string; data: Uint8Array }[] = [];
 		let note = "";
-		if (message.type === "document" && typeof message.document?.id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
+		const media = message.type === "document" ? { id: message.document?.id, name: message.document?.filename } : message.type === "image" ? { id: message.image?.id, name: undefined } : still ? { id: message.sticker?.id, name: undefined } : undefined;
+		if (typeof media?.id === "string" && ((await this.options.mayDownload?.(message.from)) ?? true)) {
 			try {
-				attachments = [await this.download(message.document.id, message.document.filename)];
+				const file = await this.download(media.id, media.name);
+				// A photo is named by what its bytes are.
+				const type = message.type === "image" || still ? imageType(file.data) : undefined;
+				attachments = [type === undefined ? file : { ...file, name: `${still ? "sticker" : "foto"}.${type.slice("image/".length).replace("jpeg", "jpg")}` }];
 			} catch (error) {
 				// A file that cannot be had (too large, gone): the message still arrives, saying so. Meta busy: delivered again.
 				if (!(error instanceof ChannelRefused) || error.retryable) throw error;

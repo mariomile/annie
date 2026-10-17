@@ -47,3 +47,7 @@ export async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 }
+
+/** Pictures as far as their first bytes go: nobody decodes them on the way to the model. */
+export const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 1, 2, 3, 4]);
+export const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1]);

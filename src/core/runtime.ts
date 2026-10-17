@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
-import type { AnnieTool, DurableEngine, EngineReply, EngineSession } from "./engine.ts";
+import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession } from "./engine.ts";
+import { IMAGE_LIMITS, imageProblem, imageType } from "./images.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
@@ -27,6 +28,8 @@ export type SubmitRequest = {
 	readonly privateThread?: boolean;
 	/** Channel-native message ID; makes a redelivered message idempotent. */
 	readonly messageId?: string;
+	/** Pictures that came with the message, already in the workspace at `path`: the model sees them. */
+	readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[];
 };
 
 export type Reply = {
@@ -397,6 +400,7 @@ export class AnnieInstance {
 			}
 			throw error;
 		}
+		const { images, skipped } = checkedImages(request.images ?? []);
 		await this.audit.append({
 			type: "message.received",
 			instanceId: this.record.id,
@@ -404,11 +408,12 @@ export class AnnieInstance {
 			threadId: request.threadId,
 			userId: request.userId,
 			chars: request.text.length,
+			...(images.length === 0 ? {} : { images: images.length }),
 		});
 		// In a private thread the instance learns whom it is with and gets what it remembers about
 		// them; in a group, only the shared memories, so one person's never reach the others.
 		const key = threadKey(request.channel, request.threadId);
-		const { privateThread, ...message } = request;
+		const { privateThread, images: _given, ...message } = request;
 		let note: string;
 		if (privateThread === true) {
 			const subject = subjectOf(request.channel, request.userId);
@@ -418,7 +423,7 @@ export class AnnieInstance {
 			this.memory.participants.clear(key);
 			note = memoryNote(this.memory.store.forSubject(SHARED));
 		}
-		return this.admit({ ...message, text: `${request.text}${note}` });
+		return this.admit({ ...message, text: `${request.text}${skipped}${note}` }, images);
 	}
 
 	/**
@@ -480,9 +485,9 @@ export class AnnieInstance {
 		return this.admit(request);
 	}
 
-	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }): Promise<{ submissionId: string }> {
+	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }, images: readonly EngineImage[] = []): Promise<{ submissionId: string }> {
 		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
-		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId);
+		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId, images);
 		// Record the admitted submission in the outbox: if the process dies after the engine
 		// has answered and before the reply is in the outbox, resume() reattaches it by ID.
 		const key = this.replyKey(submissionId);
@@ -707,4 +712,22 @@ function threadKey(channel: string, threadId: string): string {
 function parseThreadKey(key: string): { channel: string; threadId: string } {
 	const at = key.indexOf(":");
 	return { channel: key.slice(0, at), threadId: key.slice(at + 1) };
+}
+
+/**
+ * The pictures of a message the model may see: real images within the size limit, at most
+ * IMAGE_LIMITS.perMessage. The rest are named in a note, so the model can tell the person.
+ */
+function checkedImages(given: readonly { readonly path: string; readonly data: Uint8Array }[]): { images: EngineImage[]; skipped: string } {
+	const images: EngineImage[] = [];
+	const extra: string[] = [];
+	const refused: string[] = [];
+	for (const image of given) {
+		const problem = imageProblem(image.data);
+		if (problem !== undefined) refused.push(`${image.path} (${problem})`);
+		else if (images.length >= IMAGE_LIMITS.perMessage) extra.push(image.path);
+		else images.push({ mimeType: imageType(image.data) as string, data: image.data });
+	}
+	const parts = [...(extra.length === 0 ? [] : [`${extra.join(", ")} (al massimo ${IMAGE_LIMITS.perMessage} per messaggio)`]), ...refused];
+	return { images, skipped: parts.length === 0 ? "" : `\n\n[Immagini non mostrate: ${parts.join("; ")}]` };
 }
