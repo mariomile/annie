@@ -8,7 +8,7 @@ import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
-import { ListStore } from "./lists.ts";
+import { ListStore, listsLine } from "./lists.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
@@ -374,7 +374,7 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id) }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id) }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -407,7 +407,7 @@ export class AnnieInstance {
 		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
 		private readonly reachable: (provider: string) => Promise<boolean>,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
-		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants },
+		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore },
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -463,10 +463,10 @@ export class AnnieInstance {
 		if (privateThread === true) {
 			const subject = subjectOf(request.channel, request.userId);
 			this.memory.participants.set(key, subject);
-			note = memoryNote(this.memory.store.forSubject(subject));
+			note = memoryNote(this.memory.store.forSubject(subject), listsLine(this.memory.lists.visible(subject)));
 		} else {
 			this.memory.participants.clear(key);
-			note = memoryNote(this.memory.store.forSubject(SHARED));
+			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)));
 		}
 		return this.admit({ ...message, text: `${request.text}${skipped}${note}` }, images);
 	}
@@ -508,7 +508,10 @@ export class AnnieInstance {
 		// The person's own memories only in a thread with them alone: a console thread, or a
 		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
 		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);
-		const note = memoryNote(this.memory.store.forSubject(alone ? subjectOf(person.channel, person.userId) : SHARED));
+		const subject = alone ? subjectOf(person.channel, person.userId) : undefined;
+		// So the tools know whom the thread is with even before the person writes in it (a brief's).
+		if (subject !== undefined) this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
+		const note = memoryNote(this.memory.store.forSubject(subject ?? SHARED), listsLine(this.memory.lists.visible(subject)));
 		return this.admit({ ...request, text: `${request.text}${note}` });
 	}
 

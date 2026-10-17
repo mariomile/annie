@@ -1,7 +1,8 @@
 import { DOCUMENT_READER_LIMITS } from "./document-reader.ts";
 import type { DocumentTexts, ReadOptions } from "./document-texts.ts";
 import { DocumentError, type DocumentKind, documentHasWords, documentKind, documentLabel, documentSectionAt, documentSectionLines, looksLikeDocument, oldFormatAdvice } from "./documents.ts";
-import { type FileMatch, matchFile, type Passage, type QueryTerm, rankMatches } from "./file-search.ts";
+import { type FileMatch, matchFile, type Passage, rankMatches } from "./file-search.ts";
+import type { QueryTerm } from "./text-match.ts";
 import { pool } from "./pool.ts";
 import type { Workspace, WorkspaceFile } from "./workspace.ts";
 

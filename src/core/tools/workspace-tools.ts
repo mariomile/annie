@@ -3,7 +3,7 @@ import { readPdfPage } from "../document-reader.ts";
 import { DocumentTexts } from "../document-texts.ts";
 import { DocumentError, type DocumentText, documentKind, documentLabel, documentPartsLabel, documentSectionAt, looksLikeDocument, oldFormatAdvice } from "../documents.ts";
 import type { AnnieTool } from "../engine.ts";
-import { parseQuery, QUERY_LIMITS, type QueryTerm } from "../file-search.ts";
+import { parseQuery, QUERY_LIMITS, type QueryTerm } from "../text-match.ts";
 import { imageProblem, imageType } from "../images.ts";
 import { type Workspace, WorkspaceError } from "../workspace.ts";
 import { SEARCH_LIMITS, type SearchLimits, type SearchOutcome, searchWorkspace } from "../workspace-search.ts";

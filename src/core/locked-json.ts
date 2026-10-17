@@ -11,7 +11,10 @@ export function updateJsonFile<T>(file: string, empty: T, change: (current: T) =
 	const db = new DatabaseSync(`${file}.lock`, { timeout: 5_000 });
 	try {
 		db.exec("BEGIN EXCLUSIVE");
-		const next = change(readJsonFile(file, empty));
+		const current = readJsonFile(file, empty);
+		const next = change(current);
+		// Nothing changed: no write, so the file keeps its time and nobody waits on a rename.
+		if (next === current) return next;
 		const temp = `${file}.${process.pid}.tmp`;
 		const fd = openSync(temp, "w", 0o600);
 		try {

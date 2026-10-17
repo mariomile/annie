@@ -98,9 +98,13 @@ export class Participants {
 /** Where the memory note starts in a message (the local development model cuts it off there). */
 export const MEMORY_NOTE_MARKER = "\n\n[Memoria]";
 
-/** The block added after a person's message: what the instance remembers that applies to them. */
-export function memoryNote(memories: readonly Memory[]): string {
-	if (memories.length === 0) return "";
+/**
+ * The block added after a person's message: what the instance remembers that applies to them,
+ * and `more` (the names of their liste), inside the same block so it stays out of their words.
+ */
+export function memoryNote(memories: readonly Memory[], more = ""): string {
+	if (memories.length === 0 && more === "") return "";
 	const lines = memories.map((m) => `- ${m.text} (${m.about === SHARED ? "condivisa, " : ""}id ${m.id})`);
-	return `${MEMORY_NOTE_MARKER} Cose che ricordi di chi ti scrive; usale solo se servono, aggiornale con memory_remember e memory_forget:\n${lines.join("\n")}`;
+	const remembered = lines.length === 0 ? "" : ` Cose che ricordi di chi ti scrive; usale solo se servono, aggiornale con memory_remember e memory_forget:\n${lines.join("\n")}`;
+	return `${MEMORY_NOTE_MARKER}${remembered}${more === "" ? "" : `${remembered === "" ? " " : "\n"}${more}`}`;
 }
