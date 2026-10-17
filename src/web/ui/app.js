@@ -383,6 +383,41 @@ function voiceCard(inst, host, allowed) {
 	);
 }
 
+/** Owner: web search for this instance, through the server's search service (ADR 0017). */
+function searchCard(inst, host, allowed, hosts) {
+	const toggle = h("input", { type: "checkbox", checked: allowed });
+	toggle.addEventListener("change", async () => {
+		try {
+			await api(`/api/instances/${inst.id}/search`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? "Annie può cercare sul web" : "Ricerca sul web spenta per questa istanza");
+			render();
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	});
+	const everything = hosts.includes("*");
+	const openAll = async () => {
+		if (!confirm("Annie potrà leggere, fotografare e usare con il browser tutti i siti pubblici, non solo quelli trovati cercando. Una pagina con istruzioni nascoste potrebbe spingerla a cercare qualcosa che non deve. Continuare?")) return;
+		try {
+			await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: ["*"] } });
+			toast("Annie può aprire tutti i siti pubblici");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	return h(
+		"div.card.pad",
+		h("h3", "Ricerca sul web"),
+		h("p.muted", `Annie cerca notizie, prezzi, orari e tutto quello che cambia. Le ricerche vanno a ${host}, solo le parole cercate. Le pagine trovate le apre solo dai siti consentiti qui sotto.`),
+		h("label.row-gap", toggle, h("span", "Consenti la ricerca a questa istanza")),
+		allowed && !everything
+			? h("p.muted", h("span", hosts.length === 0 ? "Per ora vede solo titoli ed estratti dei risultati. " : "Delle pagine trovate apre solo quelle dei siti consentiti. "), h("button.btn.small.ghost", { onclick: openAll }, "Fai aprire tutti i siti pubblici"))
+			: null,
+	);
+}
+
 /** Owner: the sites this instance may read and screenshot. */
 function webCard(inst, hosts) {
 	const list = h("textarea", { rows: 4, class: "mono", placeholder: "comune.roma.it\nagenziaentrate.gov.it\n* (tutti i siti pubblici)", value: hosts.join("\n") });
@@ -1581,13 +1616,14 @@ function instanceForm() {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, tel, computer] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
 		api(`/api/instances/${inst.id}/whatsapp`).catch(() => undefined),
 		api("/api/google").catch(() => ({ available: false })),
 		api("/api/voice").catch(() => ({ available: false })),
+		api("/api/search").catch(() => ({ available: false })),
 		api(`/api/instances/${inst.id}/phone`).catch(() => undefined),
 		api("/api/computer").catch(() => ({ available: false })),
 	]);
@@ -1623,6 +1659,7 @@ async function viewSettings(main) {
 				tel === undefined ? null : phoneCard(inst, tel.phone),
 				google.available ? googleCard(inst, (settings.egress.connectors ?? []).includes("google")) : null,
 				voice.available ? voiceCard(inst, voice.host, (settings.egress.connectors ?? []).includes("voice")) : null,
+				search.available ? searchCard(inst, search.host, (settings.egress.connectors ?? []).includes("web_search"), settings.egress.web ?? []) : null,
 				webCard(inst, settings.egress.web ?? []),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,

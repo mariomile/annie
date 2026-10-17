@@ -76,6 +76,20 @@ describe("pnpm annie check", () => {
 		expect(hubspot).toMatchObject({ ok: false, detail: expect.stringContaining("ATTEMPTED_TO_CONTACT, UNQUALIFIED") });
 	});
 
+	it("web search: one query with the key in a header; a refused key is named, never printed", async () => {
+		const key = "BSA-secret-key";
+		const env = { ANNIE_DATA_DIR: "/tmp/x", ANNIE_MODEL_PROVIDER: "faux", ANNIE_SEARCH_API_KEY: key };
+		const asked: URL[] = [];
+		const ok = internet({ "api.search.brave.com": (url, init) => (asked.push(url), new Headers(init?.headers).get("x-subscription-token") === key ? Response.json({ web: { results: [] } }) : Response.json({}, { status: 401 })) });
+		const passing = (await runChecks(loadAnnieConfig(env), ok.fetch)).find((r) => r.name === "Ricerca sul web");
+		expect(passing).toMatchObject({ ok: true, detail: expect.stringContaining("chiave valida") });
+		expect(asked[0]?.searchParams.get("country")).toBe("IT");
+		const refused = internet({ "api.search.brave.com": () => Response.json({ error: key }, { status: 401 }) });
+		const failing = (await runChecks(loadAnnieConfig(env), refused.fetch)).find((r) => r.name === "Ricerca sul web");
+		expect(failing).toMatchObject({ ok: false, detail: expect.stringContaining("ANNIE_SEARCH_API_KEY") });
+		expect(JSON.stringify(failing)).not.toContain(key);
+	});
+
 	it("only checks what is configured; the local model needs no network", async () => {
 		const net = internet({});
 		const results = await runChecks(loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "faux" }), net.fetch);

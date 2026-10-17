@@ -1,3 +1,4 @@
+import type { WebSearchConfig } from "../core/web-search.ts";
 import type { TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
 export type TelegramConfig = {
@@ -159,6 +160,8 @@ export type AnnieConfig = {
 	readonly screenshotsWithoutSandbox: boolean;
 	/** Where voice messages are transcribed (an OpenAI-compatible service); off if unset. */
 	readonly transcription: TranscriberConfig | undefined;
+	/** Web search for the instances (ADR 0017): Brave Search, or the same API elsewhere; off if unset. */
+	readonly webSearch: WebSearchConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
 	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
@@ -266,6 +269,21 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (!Number.isInteger(maxSeconds) || maxSeconds < 10 || maxSeconds > 3600) throw new ConfigError("ANNIE_TRANSCRIBE_MAX_SECONDS: whole seconds between 10 and 3600");
 		transcription = { url: transcribeUrl, apiKey: transcribeKey, model, maxSeconds };
 	}
+	const searchKey = nonEmpty(env.ANNIE_SEARCH_API_KEY);
+	let webSearch: WebSearchConfig | undefined;
+	if (searchKey !== undefined) {
+		const url = nonEmpty(env.ANNIE_SEARCH_URL) ?? "https://api.search.brave.com/res/v1/web/search";
+		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(url)) throw new ConfigError("ANNIE_SEARCH_URL: an https address, e.g. https://api.search.brave.com/res/v1/web/search");
+		const country = (nonEmpty(env.ANNIE_SEARCH_COUNTRY) ?? "IT").toUpperCase();
+		if (!/^([A-Z]{2}|ALL)$/.test(country)) throw new ConfigError("ANNIE_SEARCH_COUNTRY: two letters (IT, FR, US…) or ALL");
+		const language = (nonEmpty(env.ANNIE_SEARCH_LANG) ?? "it").toLowerCase();
+		if (!/^[a-z]{2}(-[a-z]{2,4})?$/.test(language)) throw new ConfigError("ANNIE_SEARCH_LANG: a language code, e.g. it or en");
+		const maxPerDay = Number(nonEmpty(env.ANNIE_SEARCH_MAX_PER_DAY) ?? "200");
+		if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_SEARCH_MAX_PER_DAY: a whole number from 1 to 100000");
+		webSearch = { url, apiKey: searchKey, country, language, maxPerDay };
+	} else if (nonEmpty(env.ANNIE_SEARCH_URL) !== undefined) {
+		throw new ConfigError("ANNIE_SEARCH_URL is set without ANNIE_SEARCH_API_KEY");
+	}
 	const computer = loadComputerConfig(env);
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
@@ -309,6 +327,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		chromiumPath: nonEmpty(env.ANNIE_CHROMIUM_PATH),
 		screenshotsWithoutSandbox: nonEmpty(env.ANNIE_SCREENSHOTS_WITHOUT_SANDBOX) === "1",
 		transcription,
+		webSearch,
 		computer,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },
 	};

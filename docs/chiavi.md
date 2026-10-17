@@ -169,6 +169,19 @@ Su micro-VM Fly.io ([ADR 0015](adr/0015-computer-su-micro-vm.md)), ed è l'unico
 
 Per la prova dal vivo: `FLY_API_TOKEN` e `ANNIE_TEST_FLY_ORG` nell'ambiente della sessione (mai in chat), poi il comando di [week20.md](week20.md).
 
+### 13. Ricerca sul web: `ANNIE_SEARCH_API_KEY`
+
+Senza questa chiave Annie legge le pagine che le indichi ma non può cercare. Il servizio è Brave Search, con un indice suo (non rivende Google o Bing).
+
+1. https://api-dashboard.search.brave.com → crea un account con l'email di Buildrs → scegli un piano della **Search API** (prezzi e limiti aggiornati sulla stessa pagina: controllali prima di scegliere) e aggiungi un metodo di pagamento.
+2. **API Keys → Add API key**, nome `annie`. La chiave va in `ANNIE_SEARCH_API_KEY`.
+3. In Annie Cloud basta metterla sul control plane: passa a tutte le celle.
+4. `pnpm annie check` prova una ricerca e dice se la chiave funziona.
+5. Poi, in ogni istanza che deve cercare: Impostazioni → **Ricerca sul web** → spunta «Consenti la ricerca a questa istanza». Dalla stessa scheda puoi farle aprire tutti i siti pubblici; altrimenti apre solo quelli elencati in Navigazione web.
+6. Dominio: `api.search.brave.com`.
+
+Facoltativi: `ANNIE_SEARCH_COUNTRY` e `ANNIE_SEARCH_LANG` (risultati dall'Italia e in italiano se non li metti; Annie può chiedere un altro paese per una ricerca), `ANNIE_SEARCH_MAX_PER_DAY` (200 ricerche al giorno per account se non lo metti). `ANNIE_SEARCH_URL` serve solo per un servizio con la stessa API di Brave a un altro indirizzo.
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -182,6 +195,7 @@ Per la prova dal vivo: `FLY_API_TOKEN` e `ANNIE_TEST_FLY_ORG` nell'ambiente dell
 | Stripe | `api.stripe.com` |
 | WhatsApp | `graph.facebook.com`, `lookaside.fbsbx.com` |
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
+| Ricerca sul web | `api.search.brave.com` |
 | Telefono | `api.twilio.com` (o la regione scelta) |
 
 ## Cosa succede dopo

@@ -28,6 +28,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	}
 	const transcription = config.transcription;
 	if (transcription !== undefined) checks.push(check("Trascrizione dei vocali", () => transcriptionCheck(transcription, call)));
+	const search = config.webSearch;
+	if (search !== undefined) checks.push(check("Ricerca sul web", () => searchCheck(search, call)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	return Promise.all(checks);
@@ -90,6 +92,19 @@ async function transcriptionCheck(config: { url: string; apiKey: string; model: 
 	// Aliases (voxtral-mini-latest) are not always listed: a warning, not a failure.
 	if (models.length > 0 && !models.includes(config.model)) return `chiave valida; il modello ${config.model} non compare nell'elenco del servizio, prova un vocale per esserne certo`;
 	return `chiave valida, modello ${config.model}`;
+}
+
+/** One search for a word everyone has: the key works and results come back. */
+async function searchCheck(config: { url: string; apiKey: string; country: string; language: string }, call: Call): Promise<string> {
+	const url = new URL(config.url);
+	url.searchParams.set("q", "Roma");
+	url.searchParams.set("count", "1");
+	url.searchParams.set("country", config.country);
+	url.searchParams.set("search_lang", config.language);
+	const response = await reach(call, url.toString(), { headers: { accept: "application/json", "x-subscription-token": config.apiKey } });
+	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_SEARCH_API_KEY");
+	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_SEARCH_URL`);
+	return `chiave valida, ${url.host} risponde`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {
