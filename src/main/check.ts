@@ -170,9 +170,12 @@ async function newsCheck(config: NewsConfig, fetchImpl: typeof fetch): Promise<s
 	const results = await feedNews(config, fetchImpl, undefined, { timeoutMs: NEWS_TIMEOUT_MS }).read(config.feeds);
 	const report = results.map((r) => ("error" in r ? `${r.feed.name} ${r.error}` : r.headlines.some((h) => h.published !== undefined) ? `${r.feed.name} ok` : `${r.feed.name} senza notizie datate`));
 	const failed = results.filter((r) => "error" in r).map((r) => r.feed.name);
+	// A feed without a single dated headline shows nothing either: it counts toward the warning.
+	const undated = results.flatMap((r) => ("error" in r || r.headlines.some((h) => h.published !== undefined) ? [] : [r.feed.name]));
 	const summary = `${results.length - failed.length} feed su ${results.length} rispondono: ${report.join("; ")}`;
 	if (failed.length === results.length) throw new CheckFailed(`${summary}. Controlla la rete e ANNIE_NEWS_FEEDS`);
-	return failed.length === 0 ? summary : `${summary}. Attenzione, non vanno: ${failed.join(", ")}: controlla ANNIE_NEWS_FEEDS, o togli quei feed`;
+	const warnings = [...(failed.length === 0 ? [] : [`non vanno ${failed.join(", ")}`]), ...(undated.length === 0 ? [] : [`senza notizie datate ${undated.join(", ")}`])];
+	return warnings.length === 0 ? summary : `${summary}. Attenzione: ${warnings.join("; ")}. Controlla ANNIE_NEWS_FEEDS, o togli quei feed`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {

@@ -2,7 +2,7 @@ import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
-import { asciiLower, decodeEntities, withoutBlocks, withoutComments } from "./html-text.ts";
+import { asciiLower, decodeEntities, INVISIBLE, withoutBlocks, withoutComments } from "./html-text.ts";
 
 /**
  * Reading a public web page for an instance, without letting it reach anything else: only
@@ -305,5 +305,7 @@ export function pageText(html: string): { title: string; text: string } {
 	const text = withoutComments(withoutBlocks(html, ["script", "style", "noscript", "svg", "template", "title"], lower))
 		.replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr|section|article)>/gi, "\n")
 		.replace(/<[^>]*>/g, " ");
-	return { title: decodeEntities(title).replace(/\s+/g, " "), text: decodeEntities(text).replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*/g, "\n\n").trim() };
+	// Invisible characters out, line breaks kept (INVISIBLE holds the controls, \n among them).
+	const visible = (t: string) => t.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(INVISIBLE, " ")).join("\n");
+	return { title: visible(decodeEntities(title)).replace(/\s+/g, " ").trim(), text: visible(decodeEntities(text)).replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*/g, "\n\n").trim() };
 }

@@ -48,6 +48,13 @@ export function withoutComments(html: string): string {
 	}
 }
 
+/**
+ * Characters that hide or reorder text: controls, soft hyphen, bidirectional marks and overrides,
+ * zero-width and invisible operators, variation selectors, the byte order mark and the tag
+ * characters (which can spell hidden instructions). Global: for replace, not test.
+ */
+export const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
+
 /** The named entities pages and feeds use, beyond XML's five: Italian letters, quotes and dashes. A Map, so «&constructor;» is no entity. */
 const ENTITIES = new Map<string, string>(
 	Object.entries({

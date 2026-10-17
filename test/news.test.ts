@@ -222,7 +222,7 @@ describe("news feeds: parsing", () => {
 		}
 	});
 
-	it("parses RFC 822 dates, Italian names and European zones included, and ISO 8601; anything else, or a day that does not exist, is unknown", () => {
+	it("parses RFC 822 and 850 dates, Italian names and European zones included, an unknown zone as UTC, a day without a time, and ISO 8601; anything else is unknown", () => {
 		const utc = at("2026-10-17T12:32:00Z");
 		for (const text of [
 			"Sat, 17 Oct 2026 12:32:00 GMT",
@@ -243,14 +243,16 @@ describe("news feeds: parsing", () => {
 		]) {
 			expect(parseDate(text), text).toEqual({ at: utc, dateOnly: false });
 		}
-		expect(parseDate("2026-10-17")).toEqual({ at: at("2026-10-17T00:00:00Z"), dateOnly: true });
+		expect(parseDate("Saturday, 17-Oct-26 12:32:00 GMT")).toEqual({ at: utc, dateOnly: false });
+		expect(parseDate("Sat, 17 Oct 2026 12:32:00 XYZ")).toEqual({ at: utc, dateOnly: false });
+		for (const text of ["2026-10-17", "2026-10-17+02:00", "17 ott 2026", "Sat, 17 Oct 2026", "sab,17-ott-2026"]) expect(parseDate(text), text).toEqual({ at: at("2026-10-17T00:00:00Z"), dateOnly: true });
 		expect(parseDate("mer, 3 giu 2026 10:00:00 GMT")?.at).toBe(at("2026-06-03T10:00:00Z"));
-		for (const text of ["", "ieri", "Sat, 30 Feb 2026 10:00:00 GMT", "2026-02-30T10:00:00Z", "2026-10-17T25:00:00Z", "Sat, 17 Foo 2026 10:00:00 GMT", "Sat, 17 Oct 2026 10:00:00 XYZ", "2026-10-17T10:00:00+15:00", "1760704320"]) {
+		for (const text of ["", "ieri", "Sat, 30 Feb 2026 10:00:00 GMT", "2026-02-30T10:00:00Z", "2026-10-17T25:00:00Z", "Sat, 17 Foo 2026 10:00:00 GMT", "Sat, 17 Oct 2026 10:00:00 TOOLONGZONE", "2026-10-17T10:00:00+15:00", "1760704320"]) {
 			expect(parseDate(text), text).toBeUndefined();
 		}
 	});
 
-	it("a date ahead of the clock is taken as now, however far; a day alone is shown without a time", async () => {
+	it("a date more than a day ahead is no date; a day alone is shown without a time", async () => {
 		const xml = rss([
 			{ title: "Orologio avanti", pubDate: new Date(NOW.getTime() + 9 * MINUTE).toUTCString() },
 			{ title: "Dal futuro", pubDate: new Date(NOW.getTime() + 2 * 24 * 60 * MINUTE).toUTCString() },
@@ -258,12 +260,33 @@ describe("news feeds: parsing", () => {
 			{ title: "Senza data" },
 		]);
 		expect(parsed(xml).map((i) => [i.title, i.published, i.dateOnly])).toEqual([
-			["Orologio avanti", NOW.getTime(), undefined],
-			["Dal futuro", NOW.getTime(), undefined],
+			["Orologio avanti", NOW.getTime() + 9 * MINUTE, undefined],
+			["Dal futuro", undefined, undefined],
 			["Solo il giorno", at("2026-10-17T00:00:00Z"), true],
 			["Senza data", undefined, undefined],
 		]);
-		expect(titles(await newsTool(fakeFeeds({ [POST.url]: xml }), [POST]).run())).toEqual(["• Orologio avanti (Il Post, alle 14:40)", "• Dal futuro (Il Post, alle 14:40)", "• Solo il giorno (Il Post, oggi)"]);
+		expect(titles(await newsTool(fakeFeeds({ [POST.url]: xml }), [POST]).run())).toEqual(["• Orologio avanti (Il Post, alle 14:40)", "• Solo il giorno (Il Post, oggi)"]);
+	});
+
+	it("a feed cannot pin itself to the top: a headline is never more recent than when it was first seen", async () => {
+		let stamp = (): string => new Date(NOW.getTime() + 30 * MINUTE).toUTCString();
+		const files = { [POST.url]: () => new Response(rss([{ title: "Sempre in cima", link: "https://www.ilpost.it/cima/", pubDate: stamp() }, { title: "Onesta", link: "https://www.ilpost.it/onesta/", pubDate: ago(20) }])) };
+		const { run, clock } = newsTool(fakeFeeds(files), [POST]);
+		expect(titles(await run())).toEqual(["• Sempre in cima (Il Post, alle 14:40)", "• Onesta (Il Post, alle 14:20)"]);
+		// Eleven minutes on, the feed is read again and still says «now»: the headline keeps the time it was first seen.
+		clock.now = new Date(NOW.getTime() + 11 * MINUTE);
+		stamp = () => clock.now.toUTCString();
+		expect(titles(await run())).toEqual(["• Sempre in cima (Il Post, alle 14:40)", "• Onesta (Il Post, alle 14:20)"]);
+		const news = feedNews({ feeds: [POST] }, fakeFeeds({ [POST.url]: rss([{ title: "Nuova", pubDate: new Date(NOW.getTime() + 5 * MINUTE).toUTCString() }]) }).fetch, () => NOW);
+		expect(await news.read([POST])).toEqual([{ feed: POST, headlines: [{ title: "Nuova", published: NOW.getTime() }] }]);
+	});
+
+	it("a day alone is its own calendar day: «2026-10-18» is today at 01:30 in Rome on the 18th, never moved to now", async () => {
+		const night = new Date("2026-10-17T23:30:00Z");
+		const xml = rss([{ title: "Del giorno", pubDate: "2026-10-18" }, { title: "Di ieri sera", pubDate: "Sat, 17 Oct 2026 21:00:00 GMT" }]);
+		const { run } = newsTool(fakeFeeds({ [POST.url]: xml }), [POST], { start: night });
+		expect(titles(await run({ day: "oggi" }))).toEqual(["• Del giorno (Il Post, oggi)"]);
+		expect(titles(await run())).toEqual(["• Del giorno (Il Post, oggi)", "• Di ieri sera (Il Post, ieri alle 23:00)"]);
 	});
 
 	it("only RSS, RDF or Atom documents are feeds: a web page, JSON or text is refused", async () => {
@@ -356,6 +379,9 @@ describe("news feeds: fetching", () => {
 		const answer = await run();
 		expect(titles(answer)).toEqual(["• Sciopero dei treni lunedì (ANSA Ultima ora, alle 14:32)", "• Perché il governo rinvia la manovra (ANSA Ultima ora, ieri alle 21:10)"]);
 		expect(answer.split("\n").at(-1)).toBe("In ritardo, non ancora qui: Il Post (fra poco ci saranno).");
+		const slow = newsTool(fakeFeeds({ [POST.url]: HANG }), FEEDS, { deadlineMs: 30, news: { timeoutMs: 100 } });
+		expect(await slow.run({ source: "post" })).toBe("Il Post è lento e sta ancora caricando: richiedi fra qualche secondo, le notizie arrivano.");
+		expect(await newsTool(fakeFeeds({ [POST.url]: HANG, [TOP.url]: HANG }), FEEDS, { deadlineMs: 30, news: { timeoutMs: 100 } }).run()).toBe("Le fonti sono lente e stanno ancora caricando (ANSA Ultima ora, Il Post): richiedi fra qualche secondo, le notizie arrivano.");
 		await new Promise((r) => setTimeout(r, 250));
 		// The late request went on until its own timeout: that failure is cached two minutes, and said as such.
 		expect(await run({ source: "post" })).toBe("Errore: Il Post non ha risposto. Prova un'altra fonte o sezione (list per l'elenco), o web_search, se ce l'hai.");
@@ -440,8 +466,8 @@ describe("news_headlines", () => {
 		expect(fake.asked.some((a) => /perche|torino|stellantis/i.test(a.url))).toBe(false);
 	});
 
-	it("singular and plural match each other from four letters; governo does not find governatore; a word in capitals stays whole", async () => {
-		const items = ["La banca centrale alza i tassi", "Le banche chiudono in rialzo", "Treno deragliato a Bari", "Elezione del sindaco a Genova", "Il governatore della regione si dimette", "Il governo cade", "Vertice NATO a Bruxelles", "Nati due panda allo zoo", "Laghi in secca"];
+	it("singular and plural match each other from four letters, endings tied to the final vowel: no pace for Pacco, no mare for Marzo; a word in capitals stays whole", async () => {
+		const items = ["La banca centrale alza i tassi", "Le banche chiudono in rialzo", "Treno deragliato a Bari", "Elezione del sindaco a Genova", "Il governatore della regione si dimette", "Il governo cade", "Vertice NATO a Bruxelles", "Nati due panda allo zoo", "Laghi in secca", "Due giornalisti premiati", "Pacco bomba", "Il caso Rossi", "Marzo piovoso", "Mario Draghi parla", "Voto contro la legge", "Il trend dei mercati", "Banchi a rotelle", "Pace in Medio Oriente"];
 		const { run } = newsTool(fakeFeeds({ [POST.url]: rss(items.map((title, i) => ({ title, pubDate: ago(i + 1) }))) }), [POST]);
 		const found = async (topic: string) => titles(await run({ topic })).map((l) => l.slice(2, l.indexOf(" (")));
 		expect(await found("banca")).toEqual(["La banca centrale alza i tassi", "Le banche chiudono in rialzo"]);
@@ -452,6 +478,12 @@ describe("news_headlines", () => {
 		expect(await found("NATO")).toEqual(["Vertice NATO a Bruxelles"]);
 		expect(await found("nato")).toEqual(["Vertice NATO a Bruxelles", "Nati due panda allo zoo"]);
 		expect(await found("lago")).toEqual(["Laghi in secca"]);
+		expect(await found("giornalista")).toEqual(["Due giornalisti premiati"]);
+		expect(await found("giornalisti")).toEqual(["Due giornalisti premiati"]);
+		for (const [topic, wrong] of [["pace", "Pacco bomba"], ["casa", "Il caso Rossi"], ["mare", "Marzo piovoso"], ["mare", "Mario Draghi parla"], ["Conte", "Voto contro la legge"], ["treno", "Il trend dei mercati"], ["banca", "Banchi a rotelle"]]) {
+			expect(await found(topic as string), `${topic} / ${wrong}`).not.toContain(wrong);
+		}
+		expect(await found("pace")).toEqual(["Pace in Medio Oriente"]);
 	});
 
 	it("topic alternatives with |: any of them matches, those matching more come first", async () => {
@@ -545,7 +577,7 @@ describe("news_headlines", () => {
 		const [guarded] = readOnlyInBriefs([tool], async () => true);
 		const ctx: ToolContext = { step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId: "brief-1", thread: { channel: "web", threadId: "brief" } };
 		expect(await guarded?.execute({ day: "oggi", limit: 3 }, ctx)).toContain("Sciopero dei treni");
-		expect(BRIEF_INSTRUCTION).toContain("6. Se hai news_headlines e la persona ha chiesto le notizie nel brief (dalla memoria), news_headlines con day «oggi» e limit 3 (o il topic che ricordi), una riga ciascuna con fonte e ora.");
+		expect(BRIEF_INSTRUCTION).toContain("6. Se hai news_headlines e la persona ha chiesto le notizie nel brief (dalla memoria), news_headlines con since_hours 12 e limit 3 (o il topic che ricordi), una riga ciascuna con fonte e ora.");
 	});
 
 	it("the instructions make it the first call for news, and web_search defers to it", () => {
@@ -622,10 +654,10 @@ describe("news configuration", () => {
 		const env = { ...base, ANNIE_NEWS: "1", ANNIE_NEWS_FEEDS: "Il Post|https://www.ilpost.it/feed/;Segreto|https://giornale.example/rss?token=abc123;Vuoto|https://vuoto.example/rss" };
 		const files: Record<string, Answer> = { "https://www.ilpost.it/feed/": rss([{ title: "Oggi", pubDate: fresh }]), "https://giornale.example/rss?token=abc123": rss([{ title: "Oggi", pubDate: fresh }]), "https://vuoto.example/rss": rss([{ title: "Senza data" }]) };
 		const ok = fakeFeeds(files);
-		expect(notizie(await runChecks(loadAnnieConfig(env), ok.fetch))).toEqual({ name: "Notizie", ok: true, detail: "3 feed su 3 rispondono: Il Post ok; Segreto ok; Vuoto senza notizie datate" });
+		expect(notizie(await runChecks(loadAnnieConfig(env), ok.fetch))).toEqual({ name: "Notizie", ok: true, detail: "3 feed su 3 rispondono: Il Post ok; Segreto ok; Vuoto senza notizie datate. Attenzione: senza notizie datate Vuoto. Controlla ANNIE_NEWS_FEEDS, o togli quei feed" });
 		expect(ok.asked.every((a) => a.signal instanceof AbortSignal)).toBe(true);
 		const some = notizie(await runChecks(loadAnnieConfig(env), fakeFeeds({ ...files, "https://giornale.example/rss?token=abc123": () => new Response("no", { status: 403 }), "https://www.ilpost.it/feed/": "<html></html>" }).fetch));
-		expect(some).toEqual({ name: "Notizie", ok: true, detail: "1 feed su 3 rispondono: Il Post non ha mandato un feed; Segreto risponde 403; Vuoto senza notizie datate. Attenzione, non vanno: Il Post, Segreto: controlla ANNIE_NEWS_FEEDS, o togli quei feed" });
+		expect(some).toEqual({ name: "Notizie", ok: true, detail: "1 feed su 3 rispondono: Il Post non ha mandato un feed; Segreto risponde 403; Vuoto senza notizie datate. Attenzione: non vanno Il Post, Segreto; senza notizie datate Vuoto. Controlla ANNIE_NEWS_FEEDS, o togli quei feed" });
 		expect(some?.detail).not.toContain("abc123");
 		const none = notizie(await runChecks(loadAnnieConfig(env), fakeFeeds({}).fetch));
 		expect(none).toEqual({ name: "Notizie", ok: false, detail: "0 feed su 3 rispondono: Il Post risponde 404; Segreto risponde 404; Vuoto risponde 404. Controlla la rete e ANNIE_NEWS_FEEDS" });

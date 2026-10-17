@@ -7,7 +7,7 @@
  */
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { decodeEntities, withoutBlocks } from "./html-text.ts";
+import { decodeEntities, INVISIBLE, withoutBlocks } from "./html-text.ts";
 import { getText, type HttpProblem, type RedirectRule } from "./http.ts";
 import { pool } from "./pool.ts";
 import { publicAddress } from "./web-fetch.ts";
@@ -107,6 +107,8 @@ export const SUMMARY_CHARS = 240;
 const TITLE_CHARS = 300;
 const LINK_CHARS = 2000;
 export const LATE = "non ha risposto in tempo";
+/** A date further ahead than this is a feed's mistake or a trick: the headline counts as undated. */
+const MAX_AHEAD_MS = 24 * 60 * MINUTE;
 
 type Entry = { readonly at: number; readonly result: Promise<Headline[]>; failed?: boolean };
 
@@ -115,11 +117,13 @@ export function feedNews(config: NewsConfig, fetchImpl: typeof fetch = fetch, no
 	const cache = new Map<string, Entry>();
 	const redirects = feedRedirects(options.resolve ?? systemResolve);
 	const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+	// When this process first saw each headline of a feed: a time no feed can move forward.
+	const firstSeen = new Map<string, Map<string, number>>();
 	const load = (feed: NewsFeed): Promise<Headline[]> => {
 		const at = now().getTime();
 		const hit = cache.get(feed.url);
 		if (hit !== undefined && at - hit.at < (hit.failed === true ? FAILURE_TTL_MS : TTL_MS)) return hit.result;
-		const entry: Entry = { at, result: fetchFeed(feed, { fetchImpl, now, timeoutMs, redirects }) };
+		const entry: Entry = { at, result: fetchFeed(feed, { fetchImpl, now, timeoutMs, redirects }).then((headlines) => seenFirst(headlines, firstSeen, feed.url, now().getTime())) };
 		entry.result.catch(() => {
 			entry.failed = true;
 		});
@@ -150,6 +154,25 @@ export function feedNews(config: NewsConfig, fetchImpl: typeof fetch = fetch, no
 			return done ?? feeds.map((feed) => settled.get(feed) ?? { feed, error: LATE });
 		},
 	};
+}
+
+/**
+ * Each timed headline at most as recent as the first time this process saw it: a feed that dates
+ * its items in the future, or always at the moment it is asked, cannot keep them at the top. The
+ * map holds only the feed's current items, so it never grows past MAX_ITEMS a feed. A day alone
+ * keeps its day: it is compared as a calendar day, never moved.
+ */
+function seenFirst(headlines: readonly Headline[], firstSeen: Map<string, Map<string, number>>, url: string, now: number): Headline[] {
+	const before = firstSeen.get(url) ?? new Map<string, number>();
+	const after = new Map<string, number>();
+	const out = headlines.map((h) => {
+		const key = h.link ?? `t:${h.title}`;
+		const seen = after.get(key) ?? before.get(key) ?? now;
+		after.set(key, seen);
+		return h.published === undefined || h.dateOnly === true ? h : { ...h, published: Math.min(h.published, seen) };
+	});
+	firstSeen.set(url, after);
+	return out;
 }
 
 type Fetching = { readonly fetchImpl: typeof fetch; readonly now: () => Date; readonly timeoutMs: number; readonly redirects: RedirectRule };
@@ -206,7 +229,8 @@ export function looksLikeFeed(text: string): boolean {
  * The items of an RSS 2.0 or 1.0 feed, or the entries of an Atom one, in the feed's order, at most
  * MAX_ITEMS. Each needs a title; a link counts only when http(s), a relative one resolved against
  * the feed's address without its query (which may hold the operator's token); a date only when it
- * parses. Every scan moves forward with indexOf, so any input, a hostile one included, is read in
+ * parses and is at most a day ahead of `now` (a day alone may be tomorrow in UTC and today in
+ * Rome). Every scan moves forward with indexOf, so any input, a hostile one included, is read in
  * linear time.
  */
 export function parseFeed(xml: string, feedUrl: string, now: number): Headline[] {
@@ -223,25 +247,19 @@ export function parseFeed(xml: string, feedUrl: string, now: number): Headline[]
 		const link = atom ? atomLink(block, base) : rssLink();
 		const summary = clip(feedText(inner(block, atom ? ["summary", "content"] : ["description", "content:encoded"]) ?? ""), SUMMARY_CHARS);
 		const date = parseDate(feedText(inner(block, atom ? ["published", "updated"] : ["pubDate", "dc:date"]) ?? ""));
+		const trusted = date !== undefined && date.at - now <= MAX_AHEAD_MS ? date : undefined;
 		headlines.push({
 			title,
 			...(link === undefined ? {} : { link }),
 			...(summary === "" ? {} : { summary }),
-			...(date === undefined ? {} : { published: notAfter(date.at, now) }),
-			...(date?.dateOnly === true ? { dateOnly: true as const } : {}),
+			...(trusted === undefined ? {} : { published: trusted.at }),
+			...(trusted?.dateOnly === true ? { dateOnly: true as const } : {}),
 		});
 		if (headlines.length >= MAX_ITEMS) break;
 	}
 	return headlines;
 }
 
-/**
- * A date ahead of the clock is taken as now, however far ahead: the story stays, shown as just
- * published, and a feed with a wrong clock cannot put its stories above everyone's for days.
- */
-function notAfter(at: number, now: number): number {
-	return Math.min(at, now);
-}
 
 /** The contents of each `<tag …>…</tag>` in turn; an element left open ends the scan. */
 function* elements(xml: string, tag: string): Generator<string> {
@@ -307,12 +325,6 @@ function webLink(raw: string, base?: URL): string | undefined {
 	}
 }
 
-/**
- * Characters that hide or reorder text: controls, soft hyphen, bidirectional marks and overrides,
- * zero-width and invisible operators, variation selectors, the byte order mark and the tag
- * characters (which can spell hidden instructions).
- */
-const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
 
 /**
  * The text of a feed field: CDATA unwrapped, entities decoded, then tags (and what scripts and
@@ -356,8 +368,12 @@ function clip(text: string, max: number): string {
 const MONTHS = new Map<string, number>([..."jan feb mar apr may jun jul aug sep oct nov dec".split(" ").map((m, i) => [m, i] as const), ..."gen feb mar apr mag giu lug ago set ott nov dic".split(" ").map((m, i) => [m, i] as const)]);
 /** RFC 822's zones, and the European ones feeds write though the RFC has no name for them. */
 const ZONES = new Map<string, number>(Object.entries({ UT: 0, UTC: 0, GMT: 0, Z: 0, EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7, WET: 0, WEST: 1, BST: 1, CET: 1, CEST: 2, EET: 2, EEST: 3 }));
-/** The weekday in front (Sat, sab, sabato) is skipped, with or without a comma and a space after it. */
-const RFC822 = /^(?:\p{L}{3,9}\.?,?\s*)?(\d{1,2})\s+(\p{L}{3})\p{L}*\.?\s+(\d{2}|\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(?:([+-])(\d{2}):?(\d{2})|([A-Za-z]{1,5}))?$/u;
+/**
+ * The weekday in front (Sat, sab, sabato) is skipped, with or without a comma and a space after it;
+ * day, month and year apart by spaces or, as RFC 850 writes them, dashes (17-Oct-26); the time may
+ * be missing, and then it is a day alone.
+ */
+const RFC822 = /^(?:\p{L}{3,9}\.?,?\s*)?(\d{1,2})[\s-]+(\p{L}{3})\p{L}*\.?[\s-]+(\d{2}|\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*(?:([+-])(\d{2}):?(\d{2})|([A-Za-z]{1,5}))?$/u;
 const ISO8601 = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,]\d{1,9})?)?)?\s*(?:(Z)|([+-])(\d{2}):?(\d{2}))?$/i;
 
 export type FeedDate = { readonly at: number; readonly dateOnly: boolean };
@@ -365,8 +381,8 @@ export type FeedDate = { readonly at: number; readonly dateOnly: boolean };
 /**
  * An RFC 822 date (RSS's pubDate: «Sat, 17 Oct 2026 14:32:00 +0200», also with Italian names:
  * «sab, 17 ott 2026») or an ISO 8601 one (Atom, dc:date: «2026-10-17T14:32:00Z», or a day alone),
- * in milliseconds; a time without a zone is UTC. Undefined for anything else, or a day or time
- * that does not exist.
+ * in milliseconds; a time without a zone, or with a zone name not known, is UTC; without a time it
+ * is a day alone, at its midnight UTC. Undefined for anything else, or a day or time that does not exist.
  */
 export function parseDate(text: string): FeedDate | undefined {
 	const value = text.trim();
@@ -378,18 +394,17 @@ export function parseDate(text: string): FeedDate | undefined {
 		const year = yearText.length === 2 ? (Number(yearText) < 50 ? 2000 : 1900) + Number(yearText) : Number(yearText);
 		let offset = 0;
 		if (sign !== undefined) offset = (sign === "-" ? -1 : 1) * (Number(zoneHours) * 60 + Number(zoneMinutes));
-		else if (zoneName !== undefined) {
-			const hours = ZONES.get(zoneName.toUpperCase());
-			if (hours === undefined) return undefined;
-			offset = hours * 60;
-		}
-		const at = month === undefined ? undefined : utc(year, month, Number(day), Number(hour), Number(minute), Number(second ?? 0), offset);
-		return at === undefined ? undefined : { at, dateOnly: false };
+		// A zone name not in the list (feeds invent some) is read as UTC: off by a few hours at most.
+		else if (zoneName !== undefined) offset = (ZONES.get(zoneName.toUpperCase()) ?? 0) * 60;
+		if (month === undefined) return undefined;
+		const at = hour === undefined ? utc(year, month, Number(day), 0, 0, 0, 0) : utc(year, month, Number(day), Number(hour), Number(minute), Number(second ?? 0), offset);
+		return at === undefined ? undefined : { at, dateOnly: hour === undefined };
 	}
 	const iso = ISO8601.exec(value);
 	if (iso === null) return undefined;
 	const [, year, month, day, hour, minute, second, , sign, zoneHours, zoneMinutes] = iso;
-	const offset = sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(zoneHours) * 60 + Number(zoneMinutes));
+	// A day alone is that calendar day as written, whatever zone follows it.
+	const offset = sign === undefined || hour === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(zoneHours) * 60 + Number(zoneMinutes));
 	const at = utc(Number(year), Number(month) - 1, Number(day), Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0), offset);
 	return at === undefined ? undefined : { at, dateOnly: hour === undefined };
 }

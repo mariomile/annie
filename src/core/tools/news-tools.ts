@@ -149,10 +149,11 @@ function topicAlternatives(topic: string): Alternative[] {
 }
 
 /**
- * A word as it is written in the news: from four letters its stem, so the singular finds the plural
- * and back (banca, banche; treno, treni; elezione, elezioni), followed by at most two letters and
- * then the end of the word, so «governo» does not find «governatore». Shorter words, numbers and
- * words in capitals match whole; a phrase matches its words in order.
+ * A word as it is written in the news: from four letters, its singular and plural (banca, banche;
+ * treno, treni; elezione, elezioni; giornalista, giornalisti; lago, laghi), and nothing else: the
+ * endings allowed follow the vowel the word ends with, so «pace» does not find «Pacco», «mare» not
+ * «Marzo», «governo» not «governatore». Shorter words, numbers and words in capitals match whole;
+ * a phrase matches its words in order.
  */
 function termPattern(term: QueryTerm, capitals: ReadonlySet<string>): RegExp {
 	const escape = (w: string) => w.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
@@ -161,13 +162,28 @@ function termPattern(term: QueryTerm, capitals: ReadonlySet<string>): RegExp {
 	if (term.phrase) return new RegExp(`${before}${term.word.split(" ").map(escape).join("[\\s\\p{P}]+")}${after}`, "u");
 	const word = term.word;
 	if (capitals.has(word) || [...word].length < STEM_FROM || !/^\p{L}+$/u.test(word)) return new RegExp(`${before}${escape(word)}${after}`, "u");
-	return new RegExp(`${before}${escape(newsStem(word))}\\p{L}{0,2}${after}`, "u");
+	const { stem, endings } = inflections(word);
+	return new RegExp(`${before}${escape(stem)}(?:${endings.join("|")})${after}`, "u");
 }
 
-/** A word without its final vowel; -che, -chi, -ghe, -ghi without the last two letters (banche: banc, laghi: lag). */
-function newsStem(word: string): string {
-	if (/[cg]h[ei]$/.test(word)) return word.slice(0, -2);
-	return /[aeio]$/.test(word) ? word.slice(0, -1) : word;
+/**
+ * The stem of an Italian word and the endings of its singular and plural:
+ * -ca, -ga: a, he (banca, banche); -che, -ghe: a, he; -chi, -ghi: o, hi (lago, laghi);
+ * -a: a, e, i (casa, case; giornalista, giornalisti); -o: o, i, hi (treno, treni; amico, amici);
+ * -e: e, i (elezione, elezioni); -i: a, e, i, o (a plural of any of them);
+ * any other ending: the word, with or without a final s.
+ */
+function inflections(word: string): { stem: string; endings: readonly string[] } {
+	if (/[cg]he$/.test(word)) return { stem: word.slice(0, -2), endings: ["a", "he"] };
+	if (/[cg]hi$/.test(word)) return { stem: word.slice(0, -2), endings: ["o", "hi"] };
+	if (/[cg]a$/.test(word)) return { stem: word.slice(0, -1), endings: ["a", "he"] };
+	const ending = word.at(-1) ?? "";
+	const stem = word.slice(0, -1);
+	if (ending === "a") return { stem, endings: ["a", "e", "i"] };
+	if (ending === "o") return { stem, endings: ["o", "i", "hi"] };
+	if (ending === "e") return { stem, endings: ["e", "i"] };
+	if (ending === "i") return { stem, endings: ["a", "e", "i", "o"] };
+	return { stem: word, endings: ["", "s"] };
 }
 
 /** A name without case, accents or a leading article: «Il Post» and «il post» and «post» are the same start. */
@@ -222,6 +238,9 @@ function answer(results: readonly FeedResult[], request: Request, now: Date, tim
 	const lateLine = late.length === 0 ? [] : [`In ritardo, non ancora qui: ${late.join(", ")} (fra poco ci saranno).`];
 	const answered = results.flatMap((r) => ("error" in r ? [] : [r]));
 	const picked = request.source !== undefined || request.section !== undefined;
+	if (answered.length === 0 && failed.length === 0) {
+		return `${late.length === 1 ? `${late[0]} è lento e sta ancora caricando` : `Le fonti sono lente e stanno ancora caricando (${late.join(", ")})`}: richiedi fra qualche secondo, le notizie arrivano.`;
+	}
 	if (answered.length === 0) {
 		const silent = [...failed, ...late];
 		if (picked) return `Errore: ${silent.length === 1 ? `${silent[0]} non ha risposto` : `non hanno risposto ${silent.join(", ")}`}. Prova un'altra fonte o sezione (list per l'elenco), o ${WEB_SEARCH_HINT}.`;
@@ -246,7 +265,8 @@ function answer(results: readonly FeedResult[], request: Request, now: Date, tim
 				return request.alternatives.length > 0 && hits === 0 ? [] : [{ ...dated, date, hits, source: r.feed.name }];
 			}),
 		)
-		.sort((a, b) => b.hits - a.hits || b.published - a.published);
+		// A day alone at its midnight UTC may be ahead of now: in the order it counts as now at most.
+		.sort((a, b) => b.hits - a.hits || Math.min(b.published, now.getTime()) - Math.min(a.published, now.getTime()));
 	const unique = withoutRepeats(found);
 	const shown = unique.slice(0, request.limit);
 	const scope = [request.topic === undefined ? "" : ` su «${request.topic}»`, request.section === undefined ? "" : ` (${request.section})`, request.source === undefined ? "" : ` da «${request.source}»`].join("");

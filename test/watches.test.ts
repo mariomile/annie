@@ -9,7 +9,8 @@ import { Scheduler } from "../src/core/scheduler.ts";
 import { createWatchTools } from "../src/core/tools/watch-tools.ts";
 import { publicAddress } from "../src/core/web-fetch.ts";
 import { EgressDenied } from "../src/core/errors.ts";
-import { changedPart, checkWatches, parseAmount, parsePrice, readPage, snapshot, steady, verdict, type WatchSnapshot, WATCH_LIMITS, WatchStore } from "../src/core/watches.ts";
+import { changedPart, checkWatches, parseAmount, parsePrice, readPage, snapshot, steady, verdict, type WatchSnapshot, WATCH_LIMITS, WATCH_TEXT_VERSION, WatchStore } from "../src/core/watches.ts";
+import { pageText } from "../src/core/web-fetch.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 
 const closers: (() => Promise<void>)[] = [];
@@ -163,6 +164,25 @@ describe("what a sentinella sees", () => {
 		expect(verdict(watch, low, snapshot({ text: "Prezzo 120 €" }, watch, T0, low))?.reason).toContain("è salito sopra 100");
 	});
 
+	it("a snapshot made from text read another way (no version, or another) is a silent new baseline", () => {
+		const now = snapshot({ text: "Caffè e cornetto, 2 €" }, {}, T0);
+		expect(now.v).toBe(WATCH_TEXT_VERSION);
+		const { v: _v, ...unversioned } = snapshot({ text: "Caff&egrave; e cornetto, 2 €" }, {}, T0);
+		expect(verdict({}, unversioned, now)).toBeUndefined();
+		expect(verdict({}, { ...unversioned, v: 1 }, now)).toBeUndefined();
+		expect(verdict({}, { ...unversioned, v: WATCH_TEXT_VERSION }, now)?.reason).toBe("La pagina è cambiata.");
+		const phrase = { what: "Caff" };
+		const { v: _p, ...oldPhrase } = snapshot({ text: "Caff&egrave; e cornetto" }, phrase, T0);
+		expect(verdict(phrase, oldPhrase, snapshot({ text: "Caffè e cornetto" }, phrase, T0))).toBeUndefined();
+		const price = { what: "Prezzo", below: 50 };
+		const { v: _q, ...oldPrice } = snapshot({ text: "Prezzo &euro; 60" }, price, T0);
+		expect(verdict(price, oldPrice, snapshot({ text: "Prezzo 40 €" }, price, T0))).toBeUndefined();
+	});
+
+	it("page text decodes entities and drops invisible characters, keeping line breaks", () => {
+		expect(pageText("<title>Caff&egrave;\u200b bar</title><p>Caff&egrave;\u202e e\u00adcornetto</p><p>&euro; 2</p>")).toEqual({ title: "Caffè bar", text: "Caffè e cornetto\n € 2" });
+	});
+
 	it("shows a short window around a change in a long page", () => {
 		const long = "x".repeat(5000);
 		const part = changedPart(`${long}A${long}`, `${long}B${long}`);
@@ -220,6 +240,27 @@ describe("sentinelle", () => {
 		expect(await h.say("/tool watch_list {}")).toContain(w!.id);
 		expect(await h.say(`/tool watch_delete {"id":"${w!.id}"}`)).toContain("Eliminata");
 		expect(await h.store.list()).toEqual([]);
+	});
+
+	it("after an upgrade that reads page text another way, old sentinelle re-baseline without writing, whole page or phrase", async () => {
+		const s = await site({ "/menu": { body: "<p>Caff&egrave; 1,20 €</p><p>Cornetto 1,50 €</p>" } });
+		const h = await setup();
+		await h.say(`/tool watch_create {"url":"${s.base}/menu","everyMinutes":30}`);
+		await h.say(`/tool watch_create {"url":"${s.base}/menu","everyMinutes":30,"what":"Caff"}`);
+		const replies = h.replies.length;
+		// Snapshots as an older Annie stored them: no version, the entity left as written.
+		for (const w of await h.store.list()) {
+			const { v: _v, ...old } = w.last as WatchSnapshot;
+			const oldText = "Caff&egrave; 1,20 € Cornetto 1,50 €";
+			await h.store.update({ ...w, last: { ...old, hash: "old", excerpt: w.what === undefined ? oldText : "Caff&egrave; 1,20 € Cornetto", ...(w.what === undefined ? { text: oldText } : {}) } });
+		}
+		expect(await h.scheduler.tick(later(31))).toBe(0);
+		expect(await h.scheduler.tick(later(62))).toBe(0);
+		expect(h.replies.length).toBe(replies);
+		for (const w of await h.store.list()) expect(w.last?.v).toBe(WATCH_TEXT_VERSION);
+		// From the new baseline, a real change is still told.
+		s.pages["/menu"] = { body: "<p>Caff&egrave; 1,40 €</p><p>Cornetto 1,50 €</p>" };
+		expect(await h.scheduler.tick(later(93))).toBe(1);
 	});
 
 	it("a page with a rotating banner never writes", async () => {
