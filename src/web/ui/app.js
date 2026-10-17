@@ -2176,14 +2176,14 @@ function catalogGallery(inst, catalog, oauth, added) {
 		}
 	};
 	return h(
-		"section.stack",
+		"section.catalog",
 		h("h2", "Aggiungi in un clic"),
-		h("p.muted", "Servizi noti con un server MCP ufficiale. Con «Accedi» firmi sulla pagina del servizio e torni qui: Annie tiene l'accesso sul server, mai nel browser."),
+		h("p.muted", "Servizi noti con un server MCP ufficiale. Con «Accedi» entri con il tuo account sulla pagina del servizio e torni qui. L'accesso resta sul server di Annie, mai nel browser."),
 		h(
 			"div.gallery",
 			left.map((e) => {
 				const button = h("button.btn.small.accent", { onclick: () => void add(e, button) }, e.auth === "oauth" ? "Accedi e aggiungi" : "Aggiungi");
-				return h("div.card.pad.stack", h("div.row-gap", h("h3", e.name), h("span.chip", AUTH_LABEL[e.auth])), h("p.muted", e.description), h("div", button));
+				return h("div.card.pad", h("h3", e.name), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
 			}),
 		),
 	);
@@ -2259,7 +2259,7 @@ async function viewConnectors(main) {
 	});
 	mount(main, 
 		head(inst.name, h("h1", "Connettori"), "Server MCP che danno ad Annie i tool dei vostri sistemi. Ognuno raggiunge solo il suo host, e solo se consentito.", h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
-		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, o aggiungi un altro server MCP (HTTP o locale) con «+ Connettore»."),
+		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
 		catalogGallery(inst, catalog, oauth, new Set(connectors.map((c) => c.id))),
 	);
 }
