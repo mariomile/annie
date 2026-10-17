@@ -145,6 +145,10 @@ _Avoid_: watcher, monitor, alert
 La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
 _Avoid_: computer, automazione del browser, agente web
 
+**Report di ricerca**:
+Il file Markdown che Annie scrive quando le chiedono di approfondire un tema: più ricerche, le pagine migliori dei siti consentiti, e un testo dove ogni fatto rimanda a una fonte numerata del suo dossier. L'elenco delle fonti lo scrive il codice, non il modello.
+_Avoid_: deep research, ricerca profonda
+
 **Richiesta Google**:
 Una mail, una risposta, una bozza o un evento che Annie prepara sul Google di chi le scrive dalla console, e che succede solo quando quella persona la approva dalla card in chat o in Approvazioni. Una volta sola; l'esito torna nella conversazione.
 _Avoid_: azione Google, automazione
