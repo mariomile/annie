@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 import type { AuditLog } from "../core/audit.ts";
@@ -9,6 +10,7 @@ import type { AnnieTool } from "../core/engine.ts";
 import type { EgressPolicy } from "../core/policy.ts";
 import type { TenantSecrets } from "../core/secrets.ts";
 import { egressFetch } from "./http.ts";
+import { type McpOAuth, McpSignInNeeded } from "./mcp-oauth.ts";
 
 /**
  * A connector to an MCP server, configured by the owner. Holds no secrets: header and
@@ -18,7 +20,13 @@ export type McpConnector = {
 	readonly id: string;
 	readonly name: string;
 	readonly transport:
-		| { readonly type: "http"; readonly url: string; readonly headerSecrets?: Readonly<Record<string, string>> }
+		| {
+				readonly type: "http";
+				readonly url: string;
+				readonly headerSecrets?: Readonly<Record<string, string>>;
+				/** "oauth": the owner signs in on the service's page; the tokens live in the secret store (ADR 0024). */
+				readonly auth?: "oauth";
+		  }
 		| { readonly type: "stdio"; readonly command: string; readonly args?: readonly string[]; readonly envSecrets?: Readonly<Record<string, string>> };
 	readonly enabled: boolean;
 };
@@ -75,9 +83,18 @@ export type McpConnectionsOptions = {
 	readonly fetch?: typeof fetch;
 	/** Per tool call. */
 	readonly callTimeoutMs?: number;
+	/** Sign-ins of connectors with OAuth; without it they do not connect. */
+	readonly oauth?: McpOAuth;
 };
 
-export type ConnectorStatus = { readonly id: string; readonly connected: boolean; readonly tools: readonly string[]; readonly error?: string };
+export type ConnectorStatus = {
+	readonly id: string;
+	readonly connected: boolean;
+	readonly tools: readonly string[];
+	readonly error?: string;
+	/** The connector needs the owner to sign in (again). */
+	readonly signIn?: boolean;
+};
 
 /** Largest tool result passed to the model, in characters. */
 const MAX_RESULT = 100_000;
@@ -123,8 +140,9 @@ export class McpConnections {
 				statuses.push({ id: connector.id, connected: true, tools: names });
 				await this.options.audit.append({ type: "connector.connected", instanceId: this.options.instanceId, connector: connector.id, tools: names.length });
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				statuses.push({ id: connector.id, connected: false, tools: [], error: message });
+				const signIn = error instanceof UnauthorizedError || error instanceof McpSignInNeeded;
+				const message = signIn ? new McpSignInNeeded().message : error instanceof Error ? error.message : String(error);
+				statuses.push({ id: connector.id, connected: false, tools: [], error: message, ...(signIn ? { signIn: true } : {}) });
 				this.options.log?.(`mcp: connector ${connector.id} not connected: ${message}`);
 				await this.options.audit.append({ type: "connector.failed", instanceId: this.options.instanceId, connector: connector.id, error: message.slice(0, 300) });
 			}
@@ -148,6 +166,18 @@ export class McpConnections {
 				const value = await secrets.get(secret);
 				if (value === undefined) throw new Error(`secret ${secret} for header ${header} is missing`);
 				headers[header] = value;
+			}
+			if (connector.transport.auth === "oauth") {
+				const oauth = this.options.oauth;
+				if (oauth === undefined) throw new Error("accesso OAuth non disponibile su questo server");
+				const provider = oauth.provider(this.options.instanceId, connector.id);
+				if ((await provider.tokens()) === undefined) throw new McpSignInNeeded();
+				// The refreshes go to the authorization server found at sign-in, under the same policy.
+				return new StreamableHTTPClientTransport(url, {
+					fetch: egressFetch(connectorEgressName(connector.id), [url.hostname, ...(await provider.authHosts())], this.options.policy, this.options.fetch),
+					requestInit: { headers },
+					authProvider: provider,
+				});
 			}
 			return new StreamableHTTPClientTransport(url, {
 				fetch: egressFetch(connectorEgressName(connector.id), [url.hostname], this.options.policy, this.options.fetch),

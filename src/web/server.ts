@@ -12,7 +12,9 @@ import { COMPUTER_CONNECTOR } from "../core/computer.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
+import { CONNECTOR_CATALOG, type CatalogEntry } from "../connectors/catalog.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
+import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
 import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
@@ -107,6 +109,10 @@ export type WebAppOptions = {
 	readonly speech?: { readonly host: string; readonly voice: string };
 	/** The image service, when the operator set one (ADR 0023). */
 	readonly images?: { readonly host: string; readonly maxPerDay: number };
+	/** Sign-ins to MCP servers with OAuth (ADR 0024); without it, only token and public connectors. */
+	readonly mcpOAuth?: McpOAuth;
+	/** The one-click connectors (tests: fakes); the well-known servers otherwise. */
+	readonly catalog?: readonly CatalogEntry[];
 	/** The server's web search service (ADR 0017), by host; each owner turns it on per instance. */
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
@@ -746,8 +752,66 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.reopen(tenantId, params[0] as string);
 		return { status: options.connectorStatus(params[0] as string).find((s) => s.id === id) };
 	});
+	// One click: a well-known server from the catalog, signed in with OAuth, a token, or nothing (ADR 0024).
+	const catalog = options.catalog ?? CONNECTOR_CATALOG;
+	route("GET", "/api/connector-catalog", "owner", async () => ({ catalog, oauth: options.mcpOAuth !== undefined }));
+	route("POST", "/api/instances/:id/connectors/catalog/:entry", "owner", async ({ params, req }) => {
+		const instance = params[0] as string;
+		const entry = catalog.find((e) => e.id === params[1]);
+		if (entry === undefined) throw new HttpError(404, "Connettore non in catalogo");
+		await runtime.registry.getInstance(tenantId, instance);
+		const body = (await readJson(req)) as { token?: unknown };
+		const store = options.connectors(instance);
+		if ((await store.list()).some((c) => c.id === entry.id)) throw new HttpError(409, `${entry.name} è già tra i connettori`);
+		if (entry.auth === "oauth" && options.mcpOAuth === undefined) throw new HttpError(400, "L'accesso OAuth non è disponibile su questo server");
+		const secret = `connector.${entry.id}.authorization`;
+		if (entry.auth === "token") {
+			const token = typeof body.token === "string" ? body.token.trim() : "";
+			if (token === "" || token.length > 4096 || /\s/.test(token)) throw new HttpError(400, `Incolla il token di ${entry.name}`);
+			await runtime.secrets(tenantId).set(secret, `Bearer ${token.replace(/^Bearer\s+/i, "")}`);
+			await runtime.audit(tenantId).append({ type: "secret.set", instanceId: instance, name: secret });
+		}
+		const connector: McpConnector = {
+			id: entry.id,
+			name: entry.name,
+			transport: { type: "http", url: entry.url, ...(entry.auth === "token" ? { headerSecrets: { authorization: secret } } : {}), ...(entry.auth === "oauth" ? { auth: "oauth" as const } : {}) },
+			enabled: true,
+		};
+		await store.save(connector);
+		const record = await runtime.registry.getInstance(tenantId, instance);
+		const current = record.egress.connectors ?? [];
+		await runtime.registry.setEgress(tenantId, instance, { ...record.egress, connectors: [...new Set([...current, connectorEgressName(entry.id)])] });
+		await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: instance, connector: entry.id, transport: "http", allowed: true, catalog: true });
+		if (entry.auth === "oauth") return signIn(instance, connector);
+		await runtime.reopen(tenantId, instance);
+		return { status: options.connectorStatus(instance).find((s) => s.id === entry.id) };
+	});
+	route("POST", "/api/instances/:id/connectors/:cid/sign-in", "owner", async ({ params }) => {
+		const instance = params[0] as string;
+		const connector = (await options.connectors(instance).list()).find((c) => c.id === params[1]);
+		if (connector === undefined) throw new HttpError(404, "Connettore non trovato");
+		if (connector.transport.type !== "http" || connector.transport.auth !== "oauth") throw new HttpError(400, "Questo connettore non usa l'accesso OAuth");
+		return signIn(instance, connector);
+	});
+	route("POST", "/api/connectors/oauth/finish", "owner", async ({ req }) => {
+		const body = (await readJson(req)) as { state?: unknown; code?: unknown };
+		if (typeof body.state !== "string" || typeof body.code !== "string") throw new HttpError(400, "Collegamento incompleto: riprova");
+		const oauth = options.mcpOAuth;
+		if (oauth === undefined) throw new HttpError(400, "L'accesso OAuth non è disponibile su questo server");
+		let done: { instanceId: string; connectorId: string };
+		try {
+			done = await oauth.finish(body.state, body.code);
+		} catch (error) {
+			if (error instanceof McpOAuthError) throw new HttpError(400, error.message);
+			throw error;
+		}
+		await runtime.audit(tenantId).append({ type: "connector.signed_in", instanceId: done.instanceId, connector: done.connectorId });
+		await runtime.reopen(tenantId, done.instanceId);
+		return { instanceId: done.instanceId, connectorId: done.connectorId, status: options.connectorStatus(done.instanceId).find((s) => s.id === done.connectorId) };
+	});
 	route("DELETE", "/api/instances/:id/connectors/:cid", "owner", async ({ params }) => {
 		const removed = await options.connectors(params[0] as string).remove(params[1] as string);
+		await options.mcpOAuth?.forget(params[0] as string, params[1] as string);
 		const record = await runtime.registry.getInstance(tenantId, params[0] as string);
 		const name = connectorEgressName(params[1] as string);
 		if ((record.egress.connectors ?? []).includes(name)) await runtime.registry.setEgress(tenantId, params[0] as string, { ...record.egress, connectors: (record.egress.connectors ?? []).filter((c) => c !== name) });
@@ -1254,6 +1318,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const wa = /^\/hooks\/whatsapp\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (wa !== null && (req.method === "GET" || req.method === "POST")) return whatsappHook(req, res, url, wa[1] as string);
 		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
+		if (req.method === "GET" && url.pathname === "/oauth/mcp/callback") return mcpCallback(res, url);
 		if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found" });
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
 		if (match === undefined) return send(res, 404, { error: "Not found" });
@@ -1274,6 +1339,28 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof HttpError) return send(res, error.status, { ...error.extra, error: error.message });
 			throw error;
 		}
+	}
+
+	/** Starts a connector's sign-in: the service's page to open, or the status when the tokens kept still work. */
+	async function signIn(instance: string, connector: McpConnector): Promise<{ url: string } | { status: ConnectorStatus | undefined }> {
+		const oauth = options.mcpOAuth;
+		if (oauth === undefined || connector.transport.type !== "http") throw new HttpError(400, "L'accesso OAuth non è disponibile su questo server");
+		let url: string | undefined;
+		try {
+			url = await oauth.start(instance, connector.id, connector.transport.url);
+		} catch (error) {
+			if (error instanceof McpOAuthError) throw new HttpError(502, `${connector.name}: ${error.message}`);
+			throw error;
+		}
+		if (url !== undefined) return { url };
+		await runtime.reopen(tenantId, instance);
+		return { status: options.connectorStatus(instance).find((s) => s.id === connector.id) };
+	}
+
+	/** Back from an MCP server's sign-in: like Google's, the console finishes with its own request. */
+	function mcpCallback(res: ServerResponse, url: URL): void {
+		res.writeHead(302, { location: `/#/connettore?${googleReturnQuery(url)}`, "cache-control": "no-store" });
+		res.end();
 	}
 
 	/**
