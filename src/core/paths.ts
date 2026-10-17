@@ -52,6 +52,10 @@ export function googleActionsDir(dataDir: string, tenant: TenantId, instance: In
 	return join(instanceDir(dataDir, tenant, instance), "google-actions");
 }
 
+export function connectorActionsDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "connector-actions");
+}
+
 export function proposalsDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
 	return join(instanceDir(dataDir, tenant, instance), "proposals");
 }

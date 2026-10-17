@@ -7,6 +7,8 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontex
 import { OAuthError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 import type { AuditLog } from "../core/audit.ts";
+import { EgressDenied } from "../core/errors.ts";
+import { CONNECTOR_ACTION_LIMITS, ConnectorActionError, ConnectorActionUncertain } from "../core/connector-actions.ts";
 import type { AnnieTool } from "../core/engine.ts";
 import type { EgressPolicy } from "../core/policy.ts";
 import type { TenantSecrets } from "../core/secrets.ts";
@@ -30,6 +32,11 @@ export type McpConnector = {
 		  }
 		| { readonly type: "stdio"; readonly command: string; readonly args?: readonly string[]; readonly envSecrets?: Readonly<Record<string, string>> };
 	readonly enabled: boolean;
+	/**
+	 * "writes" (the default): a tool the server does not mark read-only waits for a person's
+	 * approval (ADR 0025). "none": every tool runs at once, the owner trusts the server.
+	 */
+	readonly approval?: "writes" | "none";
 };
 
 export const CONNECTOR_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
@@ -86,7 +93,34 @@ export type McpConnectionsOptions = {
 	readonly callTimeoutMs?: number;
 	/** Sign-ins of connectors with OAuth; without it they do not connect. */
 	readonly oauth?: McpOAuth;
+	/** Calls that change something wait here for a person; without it they are refused. */
+	readonly actions?: {
+		propose(input: { connector: McpConnector; server: string; tool: string; toolTitle: string; args: Record<string, unknown>; reason: string; destructive: boolean; thread?: { channel: string; threadId: string }; callId: string }): Promise<string>;
+	};
 };
+
+/** A tool as the server lists it, with the hints of what it does. */
+type ListedTool = {
+	readonly name: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly inputSchema: Record<string, unknown>;
+	readonly annotations?: { readonly title?: string; readonly readOnlyHint?: boolean; readonly destructiveHint?: boolean };
+};
+
+/** The parameter the model fills, for a call that waits for approval, with one sentence for the approver. */
+const REASON = "annie_reason";
+
+/** Where a connector points: an approved call runs only if it still points there. */
+export function connectorServer(connector: Pick<McpConnector, "transport">): string {
+	const t = connector.transport;
+	return t.type === "http" ? t.url : [t.command, ...(t.args ?? [])].join(" ");
+}
+
+/** Whether calling this tool waits for a person: it may change something, and the owner wants to be asked. */
+export function needsApproval(connector: Pick<McpConnector, "approval">, tool: Pick<ListedTool, "annotations">): boolean {
+	return (connector.approval ?? "writes") === "writes" && tool.annotations?.readOnlyHint !== true;
+}
 
 export type ConnectorStatus = {
 	readonly id: string;
@@ -99,6 +133,8 @@ export type ConnectorStatus = {
 	readonly badToken?: boolean;
 	/** Tools the server has beyond the ones given to the model. */
 	readonly left?: number;
+	/** The tools that wait for approval. */
+	readonly approval?: readonly string[];
 };
 
 /** Largest tool result passed to the model, in characters. */
@@ -113,7 +149,7 @@ export const MAX_TOOLS_PER_CONNECTOR = 64;
  * fails is skipped (audited), so one broken server never takes the instance down.
  */
 export class McpConnections {
-	private clients: { id: string; client: Client }[] = [];
+	private clients: { id: string; server: string; client: Client }[] = [];
 	private statuses: ConnectorStatus[] = [];
 
 	constructor(private readonly options: McpConnectionsOptions) {}
@@ -137,16 +173,18 @@ export class McpConnections {
 			try {
 				const client = new Client({ name: "annie", version: "0.0.0" });
 				await client.connect(await this.transport(connector), { timeout: 20_000 });
-				this.clients.push({ id: connector.id, client });
+				this.clients.push({ id: connector.id, server: connectorServer(connector), client });
 				const listed = await client.listTools(undefined, { timeout: 20_000 });
 				const names: string[] = [];
-				for (const tool of listed.tools.slice(0, MAX_TOOLS_PER_CONNECTOR)) {
+				const asked: string[] = [];
+				for (const tool of listed.tools.slice(0, MAX_TOOLS_PER_CONNECTOR) as ListedTool[]) {
 					const name = toolName(connector.id, tool.name);
 					names.push(name);
+					if (needsApproval(connector, tool)) asked.push(name);
 					tools.push(this.wrap(connector, client, name, tool));
 				}
 				const left = listed.tools.length - names.length;
-				statuses.push({ id: connector.id, connected: true, tools: names, ...(left > 0 ? { left } : {}) });
+				statuses.push({ id: connector.id, connected: true, tools: names, ...(left > 0 ? { left } : {}), ...(asked.length > 0 ? { approval: asked } : {}) });
 				await this.options.audit.append({ type: "connector.connected", instanceId: this.options.instanceId, connector: connector.id, tools: names.length });
 			} catch (error) {
 				const oauth = connector.transport.type === "http" && connector.transport.auth === "oauth";
@@ -220,7 +258,66 @@ export class McpConnections {
 		return new StdioClientTransport({ command: connector.transport.command, args: [...(connector.transport.args ?? [])], env, stderr: "ignore" });
 	}
 
-	private wrap(connector: McpConnector, client: Client, name: string, tool: { name: string; description?: string; inputSchema: Record<string, unknown> }): AnnieTool {
+	/**
+	 * Runs an approved call (ADR 0025) on the live connection. Before the call leaves, a failure
+	 * means it was not done; after, that it is not known.
+	 */
+	async callApproved(connectorId: string, server: string, tool: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+		const entry = this.clients.find((c) => c.id === connectorId);
+		if (entry === undefined) throw new ConnectorActionError("il connettore non è collegato ora: va ricollegato, poi si chiede di nuovo");
+		if (entry.server !== server) throw new ConnectorActionError("il connettore ora punta a un altro servizio: la richiesta non vale più");
+		let result: Awaited<ReturnType<Client["callTool"]>>;
+		try {
+			result = await entry.client.callTool({ name: tool, arguments: args }, undefined, { timeout: this.options.callTimeoutMs ?? 120_000 });
+		} catch (error) {
+			// Refused by the policy before leaving: not done.
+			if (error instanceof EgressDenied || (error instanceof Error && error.cause instanceof EgressDenied)) throw new ConnectorActionError("il connettore non è più consentito per questa istanza");
+			throw new ConnectorActionUncertain(`la richiesta è partita ma la risposta non è arrivata (${error instanceof Error ? error.message.split("\n")[0]?.slice(0, 200) : String(error)})`);
+		}
+		const text = resultText(result).slice(0, CONNECTOR_ACTION_LIMITS.maxResultChars);
+		return { text, isError: result.isError === true };
+	}
+
+	private wrap(connector: McpConnector, client: Client, name: string, tool: ListedTool): AnnieTool {
+		const title = tool.annotations?.title ?? tool.title ?? tool.name;
+		if (needsApproval(connector, tool)) {
+			const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+			// A tool with its own argument of that name keeps it: Annie's goes under another.
+			const reasonKey = schema.properties?.[REASON] === undefined ? REASON : `${REASON}_annie`;
+			return {
+				name,
+				description:
+					`[${connector.name}] ${tool.description ?? tool.name}`.slice(0, 900) +
+					` Needs a person's approval: nothing happens until they approve this exact call; you get the outcome later in this conversation. Only when the person you are talking to asked for it. Put in ${reasonKey} one sentence for the approver.`,
+				parameters: {
+					type: "object",
+					...tool.inputSchema,
+					properties: { ...(schema.properties ?? {}), [reasonKey]: { type: "string", minLength: 3, maxLength: 300, description: "For the person approving: what this does and for whom, in Italian, plain words, no tool names" } },
+					required: [...(schema.required ?? []), reasonKey],
+				},
+				// Asking is idempotent per call (the request's ID comes from the call): a rerun finds it.
+				replaySafe: true,
+				execute: async (args, ctx) => {
+					const actions = this.options.actions;
+					if (actions === undefined) return `Errore: ${connector.name} chiede l'approvazione per questa azione, ma qui non si può approvare.`;
+					const { [reasonKey]: reason, ...rest } = args as Record<string, unknown>;
+					return ctx.step("propose", () =>
+						actions.propose({
+							connector,
+							server: connectorServer(connector),
+							tool: tool.name,
+							toolTitle: title,
+							args: rest,
+							reason: typeof reason === "string" && reason.trim() !== "" ? reason.trim() : `${title} su ${connector.name}`,
+							// Only a server that says so: warning on every write teaches people to ignore it.
+							destructive: tool.annotations?.destructiveHint === true,
+							...(ctx.thread === undefined ? {} : { thread: ctx.thread }),
+							callId: ctx.callId,
+						}),
+					);
+				},
+			};
+		}
 		return {
 			name,
 			description: `[${connector.name}] ${tool.description ?? tool.name}`.slice(0, 1024),
@@ -229,13 +326,18 @@ export class McpConnections {
 			replaySafe: false,
 			execute: async (args, ctx) => {
 				const result = await client.callTool({ name: tool.name, arguments: args }, undefined, { signal: ctx.signal, timeout: this.options.callTimeoutMs ?? 120_000 });
-				const content = (result.content ?? []) as { type: string; text?: string; mimeType?: string }[];
-				const text = content.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}${part.mimeType ? ` ${part.mimeType}` : ""}]`)).join("\n");
+				const text = resultText(result);
 				const bounded = text.length > MAX_RESULT ? `${text.slice(0, MAX_RESULT)}\n[... troncato]` : text;
 				return result.isError === true ? `Errore dal connettore ${connector.name}: ${bounded}` : bounded;
 			},
 		};
 	}
+}
+
+/** A tool's answer as text: text parts as they are, the others named. */
+function resultText(result: Record<string, unknown>): string {
+	const content = (result.content ?? []) as { type: string; text?: string; mimeType?: string }[];
+	return content.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}${part.mimeType ? ` ${part.mimeType}` : ""}]`)).join("\n");
 }
 
 /** In place of a connector's tools while it cannot connect: tells the model what the person can do. */

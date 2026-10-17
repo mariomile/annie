@@ -15,7 +15,8 @@ import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAd
 import { CONNECTOR_CATALOG, type CatalogEntry } from "../connectors/catalog.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
-import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
+import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
+import { type ConnectorAction, ConnectorActionError, type ConnectorActionResult } from "../core/connector-actions.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -124,6 +125,8 @@ export type WebAppOptions = {
 	readonly computer?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined> };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
+	/** Runs an approved connector call on the instance's live connection (ADR 0025). */
+	readonly runConnectorAction?: (instanceId: string) => (action: ConnectorAction) => Promise<ConnectorActionResult>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
 	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
 	/** The phone number of each instance that has one: its webhook (ADR 0012). */
@@ -662,6 +665,29 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw error;
 		}
 	});
+	// --- connector calls that change something (ADR 0025): the person who asked, or an approver, decides ---
+	route("GET", "/api/instances/:id/connector-actions", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const all = await runtime.connectorActions(tenantId, params[0] as string).list();
+		const everyone = await mayDecideAll(p, params[0] as string);
+		return { actions: everyone ? all : all.filter((a) => a.requester === `web:${p.id}`) };
+	});
+	route("POST", "/api/instances/:id/connector-actions/:aid/decision", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { decision?: string };
+		if (body.decision !== "approved" && body.decision !== "rejected") throw new HttpError(400, "decision: approved | rejected");
+		if (options.runConnectorAction === undefined) throw new HttpError(501, "Le azioni dei connettori non sono disponibili su questo server");
+		const by = (await mayDecideAll(p, params[0] as string)) ? approverOf(p) : { channel: "web", userId: p.id };
+		try {
+			return { action: await decideConnectorAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, by, options.runConnectorAction(params[0] as string)) };
+		} catch (error) {
+			if (error instanceof NotAnApprover) throw new HttpError(403, "Questa richiesta la decide chi l'ha fatta o un approvatore");
+			if (error instanceof ConnectorActionError) throw new HttpError(404, "Richiesta inesistente");
+			throw error;
+		}
+	});
 	route("PUT", "/api/instances/:id/web-actions-allowed", "owner", async ({ params, req }) => {
 		const id = params[0] as string;
 		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
@@ -745,7 +771,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (transport?.type !== "http" && transport?.type !== "stdio") throw new HttpError(400, "transport: http | stdio");
 		// With OAuth the sign-in is the only credential: a secret header would also reach the authorization server.
 		if (transport.type === "http" && transport.auth === "oauth") transport = { type: "http", url: transport.url, auth: "oauth" };
-		const connector: McpConnector = { id, name: String(body.name ?? id), transport, enabled: body.enabled !== false };
+		const connector: McpConnector = { id, name: String(body.name ?? id), transport, enabled: body.enabled !== false, ...(body.approval === "none" ? { approval: "none" as const } : {}) };
 		const store = options.connectors(instance);
 		const before = (await store.list()).find((c) => c.id === id);
 		try {
@@ -762,7 +788,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const allowed = body.allowed !== false;
 		const next = allowed ? [...new Set([...current, name])] : current.filter((c) => c !== name);
 		if (next.join() !== current.join()) await runtime.registry.setEgress(tenantId, instance, { ...record.egress, connectors: next });
-		await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: instance, connector: id, transport: connector.transport.type, allowed });
+		await runtime.audit(tenantId).append({ type: "connector.saved", instanceId: instance, connector: id, transport: connector.transport.type, allowed, approval: connector.approval ?? "writes" });
 		await runtime.reopen(tenantId, instance);
 		return { status: options.connectorStatus(instance).find((s) => s.id === id) };
 	});

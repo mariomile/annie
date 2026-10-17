@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
+import { ConnectorActionStore } from "./connector-actions.ts";
 import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession } from "./engine.ts";
 import { IMAGE_LIMITS, imageProblem, imageType } from "./images.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
@@ -7,7 +8,7 @@ import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
-import { customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
@@ -118,6 +119,11 @@ export class AnnieRuntime {
 	/** Writes to people's Google accounts waiting for (or past) their decision (ADR 0021). */
 	googleActions(tenant: string, instance: string): GoogleActionStore {
 		return new GoogleActionStore(googleActionsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Calls of connector tools that change something, waiting for (or past) a decision (ADR 0025). */
+	connectorActions(tenant: string, instance: string): ConnectorActionStore {
+		return new ConnectorActionStore(connectorActionsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** The tools proposti of an instance. */
