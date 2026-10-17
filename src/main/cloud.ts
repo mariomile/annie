@@ -24,7 +24,7 @@ const domain = env("ANNIE_CLOUD_DOMAIN") ?? "annie.localhost";
 const dataDir = env("ANNIE_CLOUD_DATA_DIR") ?? "data-cloud";
 const port = Number(env("ANNIE_CLOUD_PORT") ?? "8090");
 // What every cell gets; the control plane's own settings never reach a cell.
-const passed = ["ANNIE_MODEL_PROVIDER", "ANNIE_MODEL_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANNIE_TIME_ZONE", "ANNIE_GOOGLE_CLIENT_ID", "ANNIE_GOOGLE_CLIENT_SECRET", "ANNIE_GOOGLE_SERVICES", "ANNIE_TRANSCRIBE_URL", "ANNIE_TRANSCRIBE_API_KEY", "ANNIE_TRANSCRIBE_MODEL", "ANNIE_TRANSCRIBE_MAX_SECONDS"];
+const passed = ["ANNIE_MODEL_PROVIDER", "ANNIE_MODEL_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANNIE_TIME_ZONE", "ANNIE_GOOGLE_CLIENT_ID", "ANNIE_GOOGLE_CLIENT_SECRET", "ANNIE_GOOGLE_SERVICES", "ANNIE_TRANSCRIBE_URL", "ANNIE_TRANSCRIBE_API_KEY", "ANNIE_TRANSCRIBE_MODEL", "ANNIE_TRANSCRIBE_MAX_SECONDS", "ANNIE_SEARCH_URL", "ANNIE_SEARCH_API_KEY"];
 const cellEnv: Record<string, string> = Object.fromEntries(passed.flatMap((name) => (env(name) === undefined ? [] : [[name, env(name) as string]])));
 const scheme = (env("ANNIE_CLOUD_SCHEME") ?? (domain.endsWith("localhost") ? "http" : "https")) as "http" | "https";
 

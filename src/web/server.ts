@@ -6,6 +6,7 @@ import { ChannelRefused } from "../channels/types.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
+import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
@@ -89,6 +90,8 @@ export type WebAppOptions = {
 	};
 	/** Voice messages can be transcribed here, by this service; the owner allows it per instance. */
 	readonly voice?: { readonly host: string };
+	/** The server's web search service (ADR 0017), by host; each owner turns it on per instance. */
+	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
 	readonly computer?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined> };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
@@ -774,6 +777,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const others = (record.egress.connectors ?? []).filter((c) => c !== VOICE_CONNECTOR);
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, VOICE_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "voice.allowed", instanceId: id, allowed: body.allowed });
+		return { allowed: body.allowed };
+	});
+
+	// --- owner: web search for an instance (its queries go to the operator's search service) ---
+	route("GET", "/api/search", "owner", async () => (options.search === undefined ? { available: false } : { available: true, host: options.search.host }));
+	route("PUT", "/api/instances/:id/search", "owner", async ({ params, req }) => {
+		if (options.search === undefined) throw new HttpError(501, "La ricerca sul web non è configurata su questo server");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { allowed?: unknown };
+		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
+		const others = (record.egress.connectors ?? []).filter((c) => c !== WEB_SEARCH_CONNECTOR);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, WEB_SEARCH_CONNECTOR] : others });
+		await runtime.audit(tenantId).append({ type: "web_search.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
 	});
 
