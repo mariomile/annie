@@ -261,6 +261,20 @@ Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, c
 6. Poi, in ogni agente che deve usarlo: Impostazioni → **Schermo** → spunta «Consenti lo schermo a questo agente».
 7. Domini: con Docker nessuno per Annie; solo per scaricare l'immagine, una volta, `registry-1.docker.io` (Docker Hub). Con uno schermo altrove, l'unico dominio è quello di `ANNIE_DESKTOP_URL`.
 
+### 20. Partita IVA: `ANNIE_VAT_CHECK=1`
+
+Anche senza questa variabile Annie controlla «sulla carta» partite IVA, numeri IVA europei e codici fiscali (tool `vat_check`): la cifra di controllo, la matricola (non tutta a zero) e il codice dell'ufficio IVA di una partita IVA italiana, la forma del numero per ogni paese del VIES, e di un codice fiscale la forma, le lettere di omocodia, il mese, il giorno e il carattere di controllo. Un numero scritto male ha così una risposta precisa senza chiedere niente a nessuno. Un numero di 11 cifre che comincia con 8 o 9 ed è scritto giusto è il codice fiscale numerico di un ente senza partita IVA (associazione, ente non commerciale, ente pubblico): Annie lo dice e non lo cerca nel VIES, dove non c'è. Con `ANNIE_VAT_CHECK=1` risponde anche a «la partita IVA 00743110157 è attiva?», «di chi è la P.IVA IT…?» o «controlla questa partita IVA tedesca»: chiede al VIES della Commissione europea se il numero è attivo per le operazioni intracomunitarie e dà nome e indirizzo registrati, quando lo Stato membro li comunica (la Germania no), con data e ora del controllo, utili come riscontro per una fattura intra-UE.
+
+«Non attiva nel VIES» non vuol dire inesistente: molte partite IVA italiane valide non sono abilitate alle operazioni intracomunitarie, e Annie lo dice. Un codice fiscale non si può verificare all'Agenzia delle Entrate da qui: Annie dice solo se sembra scritto giusto.
+
+1. **Non serve una chiave.** Al VIES vanno solo il paese e il numero chiesto, nient'altro di chi scrive. Si accende con `ANNIE_VAT_CHECK=1`, come ogni servizio esterno.
+2. Facoltativo: `ANNIE_VAT_CHECK_MAX_PER_DAY`, le richieste al VIES al giorno per ogni account: 200 se non lo metti. Le risposte restano in memoria un'ora per account e numero (un errore del VIES due minuti) e quelle non contano; un account non vede mai quando un altro ha controllato lo stesso numero. Il VIES limita le richieste: meglio non alzarlo troppo.
+3. Facoltativo: `ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER`, le richieste al VIES al giorno per tutto il server, tutti gli account insieme: 2000 se non lo metti. Il VIES blocca un indirizzo che chiede troppo, e l'indirizzo è quello del server.
+4. Facoltativo, solo per i test o per un mirror con la stessa API: `ANNIE_VAT_CHECK_URL` (di default `https://ec.europa.eu/taxation_customs/vies/rest-api`).
+5. In Annie Cloud basta metterle sul control plane: passano a tutte le celle (il tetto del server vale per ogni cella).
+6. `pnpm annie check` chiede al VIES la partita IVA di ENI (IT00905811006): se risulta attiva va tutto bene; se risulta non attiva, o se il servizio italiano non risponde in quel momento, è un avviso; se il VIES non risponde o risponde in un modo che Annie non sa leggere è un errore. L'indirizzo dell'API va verificato così alla prima sessione con la rete.
+7. Dominio: `ec.europa.eu`.
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -276,6 +290,7 @@ Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, c
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
 | Ricerca sul web | `api.search.brave.com` |
 | Cambi delle valute | `www.ecb.europa.eu` |
+| Partita IVA | `ec.europa.eu` |
 | Notizie | `www.ansa.it`, `www.rainews.it`, `tg24.sky.it`, `xml2.corriereobjects.it`, `www.repubblica.it`, `www.ilpost.it`, `www.ilsole24ore.com`, `feeds.bbci.co.uk` (o i domini dei feed in `ANNIE_NEWS_FEEDS`, e dei siti a cui rimandano) |
 | Meteo | `api.open-meteo.com`, `geocoding-api.open-meteo.com` (con un piano, `customer-api.open-meteo.com` e il dominio di ricerca indicato da Open-Meteo) |
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |

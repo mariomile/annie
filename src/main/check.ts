@@ -4,6 +4,7 @@ import { createDesktopProvider, desktopLabel } from "../desktop/create.ts";
 import { ecbRates, ExchangeRateError, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEV_PROVIDER, modelProvider } from "../core/model-providers.ts";
 import { feedNews, type NewsConfig } from "../core/news.ts";
+import { viesClient, type ViesConfig, ViesError } from "../core/vies.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -45,6 +46,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	const news = config.news;
 	// Its own timeout per feed, longer than a person waits: not the checks' 10 seconds.
 	if (news !== undefined) checks.push(check("Notizie", () => newsCheck(news, fetchImpl)));
+	const vatCheck = config.vatCheck;
+	if (vatCheck !== undefined) checks.push(check("Partita IVA", () => vatCheckCheck(vatCheck, call)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	const desktop = config.desktop;
@@ -187,6 +190,29 @@ async function newsCheck(config: NewsConfig, fetchImpl: typeof fetch): Promise<s
 	if (failed.length === results.length) throw new CheckFailed(`${summary}. Controlla la rete e ANNIE_NEWS_FEEDS`);
 	const warnings = [...(failed.length === 0 ? [] : [`non vanno ${failed.join(", ")}`]), ...(undated.length === 0 ? [] : [`senza notizie datate ${undated.join(", ")}`])];
 	return warnings.length === 0 ? summary : `${summary}. Attenzione: ${warnings.join("; ")}. Controlla ANNIE_NEWS_FEEDS, o togli quei feed`;
+}
+
+/**
+ * ENI S.p.A.'s partita IVA, a large listed company's, published on its website and invoices:
+ * stable for decades, so a «not active» answer means the VIES or this number changed.
+ */
+const VIES_PROBE = { country: "IT", number: "00905811006" } as const;
+
+/** One known partita IVA asked to the VIES: the endpoint answers and reads as expected. A member state down is a warning. */
+async function vatCheckCheck(config: ViesConfig, call: Call): Promise<string> {
+	const host = new URL(config.url).host;
+	const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => call(String(input), init)) as typeof fetch;
+	const probe = `${VIES_PROBE.country}${VIES_PROBE.number}`;
+	try {
+		const answer = await viesClient(config, fetchImpl).check("check", VIES_PROBE.country, VIES_PROBE.number, () => true);
+		if (!answer.valid) return `${host} risponde. Attenzione: la partita IVA di prova ${probe} risulta non attiva: aggiorna VIES_PROBE in src/main/check.ts`;
+		return `${host} risponde, la partita IVA di prova ${probe} risulta attiva`;
+	} catch (error) {
+		if (!(error instanceof ViesError)) throw error;
+		// Errors that pass by themselves are a warning, not a failure.
+		if (error.temporary) return `${host} risponde. Attenzione: ${error.message}`;
+		throw new CheckFailed(`${error.message}: controlla che ${host} sia raggiungibile, o ANNIE_VAT_CHECK_URL`);
+	}
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {

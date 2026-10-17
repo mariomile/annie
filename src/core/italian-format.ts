@@ -2,6 +2,7 @@
  * Numbers, money and dates as they are read in Italy, for every tool that writes them: a point
  * for thousands, a comma for decimals, days and months in Italian.
  */
+import { localMinute } from "./cron.ts";
 
 const NUMBER = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
 const DAY = new Intl.DateTimeFormat("it-IT", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
@@ -41,4 +42,20 @@ export function italianDate(date: string): string {
 /** 2026-10-17 → sabato. */
 export function italianWeekday(date: string): string {
 	return WEEKDAY.format(new Date(`${date}T00:00:00Z`));
+}
+
+/** An instant as 17/10/2026 22:10 in `timeZone`, with cron's cached formatter. */
+export function italianDateTime(at: number, timeZone: string): string {
+	const minute = localMinute(new Date(at), timeZone);
+	return `${italianDate(minute.slice(0, 10))} ${minute.slice(-5)}`;
+}
+
+/** 1 → 01: days and months as dates write them. */
+export function twoDigits(n: number): string {
+	return String(n).padStart(2, "0");
+}
+
+/** The first letter in capitals: a sentence that starts with a name or a weekday. */
+export function capitalized(text: string): string {
+	return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }

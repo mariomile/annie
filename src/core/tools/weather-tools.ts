@@ -1,5 +1,5 @@
 import type { AnnieTool } from "../engine.ts";
-import { italianDay, italianNumber } from "../italian-format.ts";
+import { capitalized, italianDay, italianNumber } from "../italian-format.ts";
 import { untrusted } from "../untrusted.ts";
 import { type CurrentWeather, type DayForecast, type Forecast, type HourForecast, MAX_FORECAST_DAYS, type Place, type Weather, WeatherError, weatherWords, wetCode } from "../weather.ts";
 
@@ -273,10 +273,6 @@ function partCode(hours: readonly HourForecast[]): number | undefined {
 function range(min: number, max: number): string {
 	if (min === max) return `${min} °C`;
 	return min < 0 ? `da ${min} a ${max} °C` : `${min}-${max} °C`;
-}
-
-function capitalized(text: string): string {
-	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** 2026-10-17 plus 1 → 2026-10-18. */
