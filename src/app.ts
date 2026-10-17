@@ -86,7 +86,7 @@ export type AnnieOptions = {
 	readonly speechFetch?: typeof fetch;
 	/** Tests only: the image service's fetch. */
 	readonly imageFetch?: typeof fetch;
-	/** Which addresses an MCP sign-in may reach (tests: the loopback); public ones otherwise. */
+	/** Tests only: which addresses an MCP sign-in may reach, over http too; public ones over https otherwise. */
 	readonly mcpOAuthAddressAllowed?: (address: string) => boolean;
 	/** Tests: one-click connectors pointing at fakes. */
 	readonly connectorCatalog?: readonly CatalogEntry[];
@@ -325,8 +325,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		(oauth ??= new McpOAuth({
 			tenantId: tenant,
 			secrets: runtime.secrets(tenant),
-			redirectUrl: `${config.web.publicUrl ?? `http://localhost:${config.web.port}`}/oauth/mcp/callback`,
-			...(options.mcpOAuthAddressAllowed === undefined ? {} : { addressAllowed: options.mcpOAuthAddressAllowed }),
+			// The same address as the owner's login link: the session cookie comes back with the owner.
+			redirectUrl: `${config.web.publicUrl ?? `http://${config.web.host === "0.0.0.0" ? "localhost" : config.web.host}:${config.web.port}`}/oauth/mcp/callback`,
+			...(options.mcpOAuthAddressAllowed === undefined ? {} : { fetch: { addressAllowed: options.mcpOAuthAddressAllowed, allowHttp: true } }),
 		}));
 
 	const runtime: AnnieRuntime = new AnnieRuntime({

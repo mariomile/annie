@@ -3,14 +3,15 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { OAuthError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 import type { AuditLog } from "../core/audit.ts";
 import type { AnnieTool } from "../core/engine.ts";
 import type { EgressPolicy } from "../core/policy.ts";
 import type { TenantSecrets } from "../core/secrets.ts";
 import { egressFetch } from "./http.ts";
-import { type McpOAuth, McpSignInNeeded } from "./mcp-oauth.ts";
+import { type McpOAuth, McpSignInNeeded, oauthWords } from "./mcp-oauth.ts";
 
 /**
  * A connector to an MCP server, configured by the owner. Holds no secrets: header and
@@ -94,10 +95,17 @@ export type ConnectorStatus = {
 	readonly error?: string;
 	/** The connector needs the owner to sign in (again). */
 	readonly signIn?: boolean;
+	/** The service refuses the token it was given. */
+	readonly badToken?: boolean;
+	/** Tools the server has beyond the ones given to the model. */
+	readonly left?: number;
 };
 
 /** Largest tool result passed to the model, in characters. */
 const MAX_RESULT = 100_000;
+
+/** Tools of one connector given to the model: a server with hundreds would crowd out every other tool. */
+export const MAX_TOOLS_PER_CONNECTOR = 64;
 
 /**
  * Live connections to an instance's MCP servers. `connect` opens every enabled connector
@@ -132,17 +140,31 @@ export class McpConnections {
 				this.clients.push({ id: connector.id, client });
 				const listed = await client.listTools(undefined, { timeout: 20_000 });
 				const names: string[] = [];
-				for (const tool of listed.tools) {
+				for (const tool of listed.tools.slice(0, MAX_TOOLS_PER_CONNECTOR)) {
 					const name = toolName(connector.id, tool.name);
 					names.push(name);
 					tools.push(this.wrap(connector, client, name, tool));
 				}
-				statuses.push({ id: connector.id, connected: true, tools: names });
+				const left = listed.tools.length - names.length;
+				statuses.push({ id: connector.id, connected: true, tools: names, ...(left > 0 ? { left } : {}) });
 				await this.options.audit.append({ type: "connector.connected", instanceId: this.options.instanceId, connector: connector.id, tools: names.length });
 			} catch (error) {
-				const signIn = error instanceof UnauthorizedError || error instanceof McpSignInNeeded;
-				const message = signIn ? new McpSignInNeeded().message : error instanceof Error ? error.message : String(error);
-				statuses.push({ id: connector.id, connected: false, tools: [], error: message, ...(signIn ? { signIn: true } : {}) });
+				const oauth = connector.transport.type === "http" && connector.transport.auth === "oauth";
+				const signIn = oauth && (error instanceof UnauthorizedError || error instanceof McpSignInNeeded);
+				const refused = !oauth && error instanceof StreamableHTTPError && (error.code === 401 || error.code === 403);
+				// An authorization server's words can repeat a token: they are not kept (ADR 0024).
+				const message = signIn
+					? new McpSignInNeeded().message
+					: refused
+						? `il servizio rifiuta l'accesso (${(error as StreamableHTTPError).code}): token non valido, scaduto o senza i permessi necessari`
+						: oauth && error instanceof OAuthError
+							? oauthWords(error).message
+							: error instanceof Error
+								? error.message
+								: String(error);
+				statuses.push({ id: connector.id, connected: false, tools: [], error: message, ...(signIn ? { signIn: true } : {}), ...(refused ? { badToken: true } : {}) });
+				// The model learns why the service is missing, so it can say what to do instead of guessing.
+				if (signIn || refused) tools.push(missing(connector, signIn));
 				this.options.log?.(`mcp: connector ${connector.id} not connected: ${message}`);
 				await this.options.audit.append({ type: "connector.failed", instanceId: this.options.instanceId, connector: connector.id, error: message.slice(0, 300) });
 			}
@@ -162,7 +184,8 @@ export class McpConnections {
 		if (connector.transport.type === "http") {
 			const url = new URL(connector.transport.url);
 			const headers: Record<string, string> = {};
-			for (const [header, secret] of Object.entries(connector.transport.headerSecrets ?? {})) {
+			// With OAuth no other secret header: the SDK would also send it to the authorization server.
+			for (const [header, secret] of Object.entries(connector.transport.auth === "oauth" ? {} : (connector.transport.headerSecrets ?? {}))) {
 				const value = await secrets.get(secret);
 				if (value === undefined) throw new Error(`secret ${secret} for header ${header} is missing`);
 				headers[header] = value;
@@ -172,12 +195,14 @@ export class McpConnections {
 				if (oauth === undefined) throw new Error("accesso OAuth non disponibile su questo server");
 				const provider = oauth.provider(this.options.instanceId, connector.id);
 				if ((await provider.tokens()) === undefined) throw new McpSignInNeeded();
-				// The refreshes go to the authorization server found at sign-in, under the same policy.
-				return new StreamableHTTPClientTransport(url, {
-					fetch: egressFetch(connectorEgressName(connector.id), [url.hostname, ...(await provider.authHosts())], this.options.policy, this.options.fetch),
-					requestInit: { headers },
-					authProvider: provider,
-				});
+				// The refreshes go to the authorization server found at sign-in, under the same policy and
+				// through the sign-in's own fetch: public addresses only, checked at connect time.
+				const name = connectorEgressName(connector.id);
+				const server = egressFetch(name, [url.hostname], this.options.policy, this.options.fetch);
+				const authServer = egressFetch(name, await provider.authHosts(), this.options.policy, oauth.fetch);
+				const fetchFn = ((input: string | URL | Request, init?: RequestInit) =>
+					new URL(input instanceof Request ? input.url : String(input)).hostname === url.hostname ? server(input, init) : authServer(input, init)) as typeof fetch;
+				return new StreamableHTTPClientTransport(url, { fetch: fetchFn, requestInit: { headers }, authProvider: provider });
 			}
 			return new StreamableHTTPClientTransport(url, {
 				fetch: egressFetch(connectorEgressName(connector.id), [url.hostname], this.options.policy, this.options.fetch),
@@ -211,6 +236,21 @@ export class McpConnections {
 			},
 		};
 	}
+}
+
+/** In place of a connector's tools while it cannot connect: tells the model what the person can do. */
+function missing(connector: McpConnector, signIn: boolean): AnnieTool {
+	const what = signIn ? "the owner has to sign in again: in the console, Connettori, «Collega»" : "the owner has to give it a valid token: in the console, Connettori";
+	return {
+		name: toolName(connector.id, "non_collegato"),
+		description: `[${connector.name}] Not connected now (${what}). Call it only to know what to tell the person when they ask for ${connector.name}.`.slice(0, 1024),
+		parameters: { type: "object", properties: {}, additionalProperties: false },
+		replaySafe: true,
+		execute: async () =>
+			signIn
+				? `${connector.name} non è collegato: l'accesso è scaduto o non è mai stato fatto. Dillo alla persona: l'owner apre Connettori nella console e preme «Collega».`
+				: `${connector.name} non è collegato: il servizio rifiuta il token. Dillo alla persona: l'owner apre Connettori nella console e mette un token nuovo.`,
+	};
 }
 
 /** `<connector>__<tool>`, in the characters and length model APIs accept. */
