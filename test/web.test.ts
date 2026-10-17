@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -154,6 +155,10 @@ describe("web console", () => {
 		expect(down.body).toBe("a,b\n1,2\n");
 		expect(down.headers.get("content-disposition")).toMatch(/^attachment;/);
 		expect((await anna("/api/instances/ops/files/raw?path=../../people.json")).status).toBe(400);
+		expect(up.body.document).toBeUndefined();
+		const docx = readFileSync(new URL("./fixtures/docs/preventivo.docx", import.meta.url));
+		const doc = await anna("/api/instances/ops/files/raw?name=preventivo.docx", { method: "PUT", body: docx, headers: { "content-type": "application/octet-stream" } });
+		expect(doc.body).toMatchObject({ file: { path: "uploads/preventivo.docx" }, document: "Word" });
 	});
 
 	it("a member sends photos with a message: the model sees them, the transcript shows them, and only real images are served inline", async () => {

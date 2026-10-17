@@ -1,5 +1,6 @@
 import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
 import { type InstanceVoice, spokenNote } from "./channels/speech.ts";
+import { documentKind, documentLabel } from "./core/documents.ts";
 import { imageType } from "./core/images.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
@@ -111,7 +112,9 @@ async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): 
 		await workspace.write(path, file.data);
 		const picture = imageType(file.data) !== undefined;
 		if (picture) images.push({ path, data: file.data });
-		notes.push(picture ? `[Immagine nel workspace: ${path}]` : `[File caricato nel workspace: ${path}]`);
+		// A document is named as one, so the model knows file_read gives its text (ADR 0026).
+		const kind = picture ? undefined : documentKind(safe, file.data);
+		notes.push(picture ? `[Immagine nel workspace: ${path}]` : kind !== undefined ? `[Documento ${documentLabel(kind)} nel workspace: ${path}. Leggilo con file_read]` : `[File caricato nel workspace: ${path}]`);
 	}
 	const note = notes.join("\n");
 	const { attachments: _files, ...rest } = message;
