@@ -5,6 +5,7 @@
  * the person leaves the server. The XML is read with a few strict patterns, never an XML library.
  */
 import { getText, type HttpProblem } from "./http.ts";
+import { addDays, easterSunday, realDate, weekend } from "./italian-calendar.ts";
 
 export type ExchangeRatesConfig = {
 	/** The folder of the ECB's files, e.g. https://www.ecb.europa.eu/stats/eurofxref. */
@@ -203,25 +204,6 @@ export function targetWorkingDay(date: string): boolean {
 	return !weekend(date) && !targetHoliday(date);
 }
 
-/** Easter Sunday of a Gregorian year (the anonymous Gregorian computus), YYYY-MM-DD. */
-function easterSunday(year: number): string {
-	const a = year % 19;
-	const b = Math.floor(year / 100);
-	const c = year % 100;
-	const d = Math.floor(b / 4);
-	const e = b % 4;
-	const f = Math.floor((b + 8) / 25);
-	const g = Math.floor((b - f + 1) / 3);
-	const h = (19 * a + b - d - g + 15) % 30;
-	const i = Math.floor(c / 4);
-	const k = c % 4;
-	const l = (32 + 2 * e + 2 * i - h - k) % 7;
-	const m = Math.floor((a + 11 * h + 22 * l) / 451);
-	const month = Math.floor((h + l - 7 * m + 114) / 31);
-	const day = ((h + l - 7 * m + 114) % 31) + 1;
-	return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
 type Clock = { readonly today: string; readonly time: string };
 
 /**
@@ -287,25 +269,10 @@ function fallbackOf(asked: string, used: string, today: string, time: string): F
 	return time < GIVE_UP_TIME ? "late" : "not_published";
 }
 
-function weekend(date: string): boolean {
-	const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
-	return weekday === 0 || weekday === 6;
-}
-
 const FRANKFURT = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Berlin", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
 /** Today's date and the time in Frankfurt, where the rates are published. */
 function frankfurt(now: Date): Clock {
 	const p = Object.fromEntries(FRANKFURT.formatToParts(now).map((part) => [part.type, part.value]));
 	return { today: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
-}
-
-/** YYYY-MM-DD that exists (no 30 February). */
-function realDate(date: string): boolean {
-	const parsed = Date.parse(`${date}T00:00:00Z`);
-	return !Number.isNaN(parsed) && new Date(parsed).toISOString().slice(0, 10) === date;
-}
-
-export function addDays(date: string, days: number): string {
-	return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
