@@ -69,12 +69,15 @@ export function transcriber(config: TranscriberConfig, fetchImpl: typeof fetch =
 	return Object.assign(transcribe, { maxSeconds: config.maxSeconds });
 }
 
+/** How a transcribed voice message starts: only these ask for a spoken reply (ADR 0020). */
+export const TRANSCRIBED = "[Messaggio vocale, trascritto]";
+
 /** How a voice message reaches Annie: its words, marked as transcribed; or why there are none. */
 export async function voiceText(clip: VoiceClip, transcribe: Transcribe | undefined, log?: (message: string) => void): Promise<string> {
 	if (transcribe === undefined) return "[Messaggio vocale: su questo server la trascrizione non è attiva. Chiedi di scrivere il messaggio.]";
 	try {
 		const text = await transcribe(clip);
-		return text === "" ? "[Messaggio vocale senza parole riconoscibili.]" : `[Messaggio vocale, trascritto] ${text}`;
+		return text === "" ? "[Messaggio vocale senza parole riconoscibili.]" : `${TRANSCRIBED} ${text}`;
 	} catch (error) {
 		if (error instanceof TranscriptionOff) return "[Messaggio vocale: la trascrizione non è attiva per questa istanza. Chiedi di scrivere il messaggio.]";
 		log?.(`voice: not transcribed: ${error instanceof Error ? error.message : String(error)}`);

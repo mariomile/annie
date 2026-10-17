@@ -133,6 +133,10 @@ _Avoid_: whitelist, domini, navigazione libera
 La ricerca che un'istanza fa con il servizio di ricerca del server (Brave Search) per notizie, prezzi e fatti che cambiano: titoli, indirizzi ed estratti, che apre poi con la lettura dai siti consentiti. La accende l'owner istanza per istanza; al servizio vanno solo le parole cercate.
 _Avoid_: Google, motore, browsing
 
+**Risposta a voce**:
+Una risposta che arriva su Telegram o WhatsApp come messaggio vocale, con il testo accanto. Di norma a chi ha mandato un vocale; ogni persona può chiedere «sempre» o «mai». Nella console, invece, ogni risposta si ascolta con «Ascolta», dalla voce del dispositivo.
+_Avoid_: TTS, sintesi vocale (nei testi per le persone)
+
 **Sentinella**:
 Una pagina che un'istanza controlla da sola ogni tanto (da 30 minuti a una settimana), per una conversazione: tutta la pagina, la parte vicino a una frase, o un prezzo con una soglia sotto o sopra. Scrive nella conversazione solo quando qualcosa è cambiato, una volta per cambiamento; legge solo dai siti consentiti.
 _Avoid_: watcher, monitor, alert

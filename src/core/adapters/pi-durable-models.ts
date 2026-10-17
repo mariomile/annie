@@ -57,7 +57,8 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	}
 	const text = last?.role === "user" ? userText(last.content) : "";
 	// The memoria note the core appends after the person's words is not part of a command.
-	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split(MEMORY_NOTE_MARKER)[0] ?? "").trim());
+	// Notes the gateway adds after the person's words (a spoken reply, ADR 0020) are not part of the call.
+	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split(MEMORY_NOTE_MARKER)[0] ?? "").replace(/\n\n\[[^\]]*\]\s*$/, "").trim());
 	if (direct?.[1] !== undefined) {
 		let args: Record<string, unknown> = {};
 		try {

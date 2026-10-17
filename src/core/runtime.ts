@@ -51,6 +51,8 @@ export type Reply = {
 	readonly possibleDuplicate: boolean;
 	/** Which hand-off of this reply this is (1 the first time). A failure report names it. */
 	readonly attempt: number;
+	/** The submission this reply answers; messages Annie sends by herself carry "message" or "file". */
+	readonly submissionId: string;
 } & (
 	| { readonly status: "answered"; readonly text: string }
 	| { readonly status: "unanswered"; readonly reason: string }
@@ -693,7 +695,7 @@ export class AnnieInstance {
 			status: reply.status,
 			...(reply.status === "answered" ? { chars: reply.text.length } : reply.status === "unanswered" ? { reason: reply.reason } : {}),
 		});
-		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1, attempt: attempts };
+		const base = { tenantId: this.record.tenantId, instanceId: this.record.id, channel, threadId, deliveryId: entry.key, possibleDuplicate: attempts > 1, attempt: attempts, submissionId: entry.submissionId };
 		this.emit({ ...base, ...reply });
 	}
 

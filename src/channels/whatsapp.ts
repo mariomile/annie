@@ -1,9 +1,9 @@
 import { createHmac } from "node:crypto";
 import { imageType } from "../core/images.ts";
-import { audioName, type Transcribe, voiceText } from "./voice.ts";
+import { audioName, TRANSCRIBED, type Transcribe, voiceText } from "./voice.ts";
 import { sameSecret } from "../web/compare.ts";
 import { DUPLICATE_NOTICE, splitText, tailOf } from "./text.ts";
-import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
+import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage, type OutboundVoice } from "./types.ts";
 
 /**
  * WhatsApp through Meta's Cloud API: a business phone number, messages pushed to a webhook
@@ -342,6 +342,30 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		});
 	}
 
+	/**
+	 * The voice note, then the text as a message (an audio message has no caption). Outside the
+	 * 24-hour window only the text goes, kept like any other message until the person writes.
+	 */
+	async sendVoice(voice: OutboundVoice): Promise<void> {
+		const { audio, ...message } = voice;
+		if (!(await this.windowClosed(voice.threadId))) {
+			try {
+				const form = new FormData();
+				form.set("messaging_product", "whatsapp");
+				form.set("file", new Blob([Uint8Array.from(audio)], { type: "audio/ogg" }), "risposta.ogg");
+				form.set("type", "audio/ogg");
+				const uploaded = await this.call<{ id?: string }>("POST", `/${this.options.phoneNumberId}/media`, form);
+				if (uploaded.id === undefined) throw new ChannelRefused("WhatsApp media upload returned no id");
+				await this.call("POST", `/${this.options.phoneNumberId}/messages`, { messaging_product: "whatsapp", recipient_type: "individual", to: voice.threadId, type: "audio", audio: { id: uploaded.id } });
+			} catch (error) {
+				// Refused for good (Meta does not take this audio): the text still goes.
+				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+				this.options.log?.(`whatsapp: voice note refused, text only: ${error.message}`);
+			}
+		}
+		await this.send(message);
+	}
+
 	private async dispatch(message: WhatsAppMessage): Promise<void> {
 		await this.opened(message);
 		if (message.type === "interactive" && message.interactive?.type === "button_reply") {
@@ -427,7 +451,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 				text = "[Messaggio vocale troppo grande o non disponibile.]";
 			}
 		}
-		await handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id });
+		await handler({ tenantId: this.options.tenantId, instanceId: this.options.instanceId, channel: this.name, threadId: message.from, userId: message.from, text, privateThread: true, messageId: message.id, ...(text.startsWith(TRANSCRIBED) ? { voice: true } : {}) });
 	}
 
 	/** The media's address from the Graph API, then the file itself, with the token. */

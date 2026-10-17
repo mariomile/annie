@@ -1,4 +1,5 @@
 import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
+import { type InstanceVoice, spokenNote } from "./channels/speech.ts";
 import { imageType } from "./core/images.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
@@ -18,14 +19,29 @@ export function connectChannel(
 	log: (message: string) => void = console.error,
 	/** Button taps on this channel (approval cards). Must be idempotent: taps can be redelivered. */
 	onAction?: (action: InboundAction) => Promise<void>,
+	/**
+	 * Replies as voice notes (ADR 0020), for channels that send them: decided per message, in a
+	 * private chat, from the person's choice and whether they spoke; the reply to that message only.
+	 */
+	voice?: InstanceVoice,
 ): () => void {
+	/** Submissions whose reply goes back as a voice note. In memory: after a restart it goes as text. */
+	const spoken = new Set<string>();
+	const speaks = voice !== undefined && adapter.sendVoice !== undefined;
 	if (onAction !== undefined) {
 		if (adapter.onAction === undefined) throw new Error(`Channel ${adapter.name} has no buttons`);
 		adapter.onAction(onAction);
 	}
 	adapter.onInbound(async (message) => {
 		try {
-			await runtime.submit(await withAttachments(runtime, message));
+			const aloud = speaks && message.privateThread === true && (await voice.wanted(`${message.channel}:${message.threadId}`, message.voice === true).catch(() => false));
+			// The model is told, so it writes something that sounds right read aloud.
+			const said = aloud ? { ...message, text: `${message.text}\n\n${spokenNote(voice.maxChars)}` } : message;
+			const { submissionId } = await runtime.submit(await withAttachments(runtime, said));
+			if (aloud) {
+				spoken.add(submissionId);
+				if (spoken.size > 500) spoken.delete(spoken.values().next().value as string);
+			}
 		} catch (error) {
 			log(`${adapter.name}: message not submitted: ${errorMessage(error)}`);
 			if (adapter.surfacesRefusals === true) throw error;
@@ -49,6 +65,16 @@ export function connectChannel(
 			}
 			if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
 			const text = reply.status === "answered" ? reply.text : REPLY_FAILED;
+			// Only the reply to the message that asked for it, and only the first time: a retry sends the text alone.
+			if (reply.status === "answered" && speaks && reply.attempt === 1 && spoken.delete(reply.submissionId)) {
+				void adapter.recording?.(reply.threadId);
+				// A voice note that cannot be made (the service down, the day's quota) leaves the text, never nothing.
+				const audio = await voice.speak(text).catch((error: unknown) => {
+					log(`${adapter.name}: reply not spoken, sent as text: ${errorMessage(error)}`);
+					return undefined;
+				});
+				if (audio !== undefined) return adapter.sendVoice?.({ ...base, text, audio });
+			}
 			return adapter.send({ ...base, text });
 		};
 		sending()
