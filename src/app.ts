@@ -27,6 +27,10 @@ import { type ComputerProvider, computerKey } from "./core/computer.ts";
 import { createComputerTools } from "./core/tools/computer-tools.ts";
 import { computerLabel, createComputerProvider } from "./computer/create.ts";
 import { DockerComputerProvider } from "./computer/docker-computer.ts";
+import { DESKTOP_CONNECTOR, type DesktopProvider } from "./core/desktop.ts";
+import { createDesktopTools } from "./core/tools/desktop-tools.ts";
+import { createDesktopProvider, desktopLabel } from "./desktop/create.ts";
+import { DockerDesktopProvider } from "./desktop/docker-desktop.ts";
 import { createGoogleTools } from "./core/tools/google-tools.ts";
 import { createImageTools } from "./core/tools/image-tools.ts";
 import { createResearchTools } from "./core/tools/research-tools.ts";
@@ -102,6 +106,8 @@ export type AnnieOptions = {
 	readonly phoneWait?: { readonly ms: number; readonly max: number };
 	/** Tests: the instances' computers (a fake Docker host); config.computer otherwise. */
 	readonly computer?: ComputerProvider;
+	/** Tests: the agenti's screens (a fake desktop); config.desktop otherwise. */
+	readonly desktop?: DesktopProvider;
 	/** Transcription service fetch (tests). */
 	readonly transcribeFetch?: typeof fetch;
 	readonly speechFetch?: typeof fetch;
@@ -375,6 +381,26 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			.catch((error: unknown) => log(`computer: leftovers not checked: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
+	// The agenti's screens through Cua (ADR 0045): only where the operator gave Annie a Docker host
+	// for them, or the address of one desktop run elsewhere.
+	const madeDesktop = options.desktop === undefined && config.desktop !== undefined ? createDesktopProvider(config.desktop, { log }) : undefined;
+	const desktop: DesktopProvider | undefined = options.desktop ?? madeDesktop;
+	if (madeDesktop !== undefined && config.desktop !== undefined) {
+		const label = desktopLabel(config.desktop);
+		if (config.desktop.kind === "docker") {
+			log(
+				`desktop: warning: the screens' browser can reach this server through the Docker network's gateway${config.desktop.network === "internet" ? ", the internet and the local network" : ""}: Annie's console and webhooks and every service listening on 0.0.0.0. Keep those on 127.0.0.1 or behind a firewall (runbook 6n)`,
+			);
+		}
+		void madeDesktop.check().then((problem) => log(problem === undefined ? `desktop: ${label} ready` : `desktop: not ready: ${problem}`));
+	}
+	if (madeDesktop instanceof DockerDesktopProvider) {
+		void madeDesktop
+			.stopLeftovers()
+			.then((n) => (n > 0 ? log(`desktop: stopped ${n} left running by a previous start`) : undefined))
+			.catch((error: unknown) => log(`desktop: leftovers not checked: ${error instanceof Error ? error.message : String(error)}`));
+	}
+
 	// Sign-ins to MCP servers (ADR 0024): the service sends the owner back to the console's address.
 	let oauth: McpOAuth | undefined;
 	const mcpOAuth = () =>
@@ -472,6 +498,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 				...googleTools(record),
 				...createWebTools({
+					desktop: desktop !== undefined && (record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR),
 					policy: policyOf(record),
 					workspace: runtime.workspace(record.tenantId, record.id),
 					chromium,
@@ -535,6 +562,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							key: computerKey(record.tenantId, record.id),
 							policy: policyOf(record),
 							workspace: runtime.workspace(record.tenantId, record.id),
+							record: async (event) => {
+								await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
+							},
+							log,
+						})),
+				// Offered only where the owner turned the screen on (the switch reopens the agente).
+				...(desktop === undefined || !(record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR)
+					? []
+					: createDesktopTools({
+							desktop,
+							key: computerKey(record.tenantId, record.id),
+							policy: policyOf(record),
 							record: async (event) => {
 								await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
 							},
@@ -1142,6 +1181,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		sendWebAction: sendForInstance,
 		runConnectorAction,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
+		...(desktop === undefined ? {} : { desktop: { reset: (id: string) => desktop.reset(computerKey(tenant, id)), check: () => desktop.check(), network: desktop.network, shared: desktop.shared } }),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {
@@ -1285,6 +1325,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			for (const phone of phones.values()) await phone.stop();
 			await browseSessions.closeAll();
 			await computer?.close().catch((error: unknown) => log(`computer: not stopped: ${error instanceof Error ? error.message : String(error)}`));
+			await desktop?.close().catch((error: unknown) => log(`desktop: not stopped: ${error instanceof Error ? error.message : String(error)}`));
 			await segreteria?.stop();
 			await runtime.close();
 			await (await browser)?.close().catch(() => {});

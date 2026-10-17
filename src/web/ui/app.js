@@ -824,6 +824,42 @@ function computerCard(inst, allowed, problem) {
 	);
 }
 
+/** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
+function desktopCard(inst, allowed, desktop) {
+	if (!desktop.available) return h("div.card.pad", h("h3", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
+	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
+	toggle.onchange = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/desktop-allowed`, { method: "PUT", body: { allowed: toggle.checked } });
+			toast(toggle.checked ? `${inst.name} può usare il suo schermo` : "Schermo spento");
+		} catch (error) {
+			toggle.checked = !toggle.checked;
+			toast(error.message, true);
+		}
+	};
+	const reset = () =>
+		confirmDialog("Riavviare lo schermo?", "Si chiude tutto quello che è aperto sullo schermo di questo agente. Il workspace non cambia.", "Riavvia", async () => {
+			await api(`/api/instances/${inst.id}/desktop`, { method: "DELETE" });
+			toast("Schermo riavviato");
+		});
+	const network =
+		desktop.network === "internet"
+			? "Arriva a internet, e il suo browser non segue l'elenco dei siti consentiti."
+			: desktop.network === "none"
+				? "Non ha internet: usa solo i suoi programmi."
+				: "Gira altrove ed è lo stesso per tutti gli agenti che lo usano. Se arriva a internet, il suo browser non segue l'elenco dei siti consentiti.";
+	const many = desktop.shared ? "" : " Se più agenti usano lo schermo insieme, quello usato meno di recente si chiude per fare posto.";
+	return h(
+		"div.card.pad",
+		h("h3", "Schermo"),
+		h("p.muted", `${inst.name} ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
+		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
+		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
+		h("label.row-gap", toggle, h("span", "Consenti lo schermo a questo agente")),
+		desktop.shared ? null : h("div.actions", h("button.btn.ghost", { onclick: reset }, "Riavvia lo schermo")),
+	);
+}
+
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
@@ -3227,7 +3263,7 @@ async function viewAgents(main) {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images, models] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images, models, desktop] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -3240,6 +3276,7 @@ async function viewSettings(main) {
 		api("/api/speech").catch(() => ({ available: false })),
 		api("/api/images").catch(() => ({ available: false })),
 		api(`/api/instances/${inst.id}/model`).catch(() => undefined),
+		api("/api/desktop").catch(() => ({ available: false })),
 	]);
 	const name = h("input", { type: "text", value: settings.name, maxlength: "80", "aria-label": "Nome" });
 	const emoji = h("input.emoji-input", { type: "text", value: settings.persona.emoji ?? "", placeholder: "🙂", maxlength: "16", "aria-label": "Emoji" });
@@ -3300,6 +3337,7 @@ async function viewSettings(main) {
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				anchor("agenti", agentsCard(inst, settings)),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
+				anchor("schermo", desktopCard(inst, (settings.egress.connectors ?? []).includes("schermo"), desktop)),
 			),
 			h(
 				"div.stack",

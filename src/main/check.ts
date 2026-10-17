@@ -1,5 +1,6 @@
 import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
 import { computerLabel, createComputerProvider } from "../computer/create.ts";
+import { createDesktopProvider, desktopLabel } from "../desktop/create.ts";
 import { ecbRates, ExchangeRateError, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEV_PROVIDER, modelProvider } from "../core/model-providers.ts";
 import { feedNews, type NewsConfig } from "../core/news.ts";
@@ -46,6 +47,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	if (news !== undefined) checks.push(check("Notizie", () => newsCheck(news, fetchImpl)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
+	const desktop = config.desktop;
+	if (desktop !== undefined) checks.push(check(`Schermo (${desktopLabel(desktop)})`, () => desktopCheck(desktop, fetchImpl)));
 	return Promise.all(checks);
 }
 
@@ -97,6 +100,14 @@ async function computerCheck(config: AnnieConfig, computer: NonNullable<AnnieCon
 	if (computer.kind === "docker") return `Docker risponde, immagine ${computer.image} presente`;
 	if (computer.kind === "fly") return `Fly accetta il token dell'organizzazione ${computer.org}; l'immagine ${computer.image} si prova al primo comando`;
 	return "il control plane risponde";
+}
+
+/** The Docker host answers, is amd64 and has Cua's image, or the desktop run elsewhere answers with its token (ADR 0045). */
+async function desktopCheck(desktop: NonNullable<AnnieConfig["desktop"]>, fetchImpl: typeof fetch): Promise<string> {
+	const problem = await createDesktopProvider(desktop, { fetch: fetchImpl }).check();
+	if (problem !== undefined) throw new CheckFailed(problem);
+	if (desktop.kind === "docker") return `Docker risponde, immagine di Cua presente; il primo schermo si prova alla prima azione${desktop.network === "internet" ? " (con internet)" : " (senza internet)"}`;
+	return "lo schermo risponde e accetta il token";
 }
 
 /** The service's model list: the key works and the model is there (the services that list models). */

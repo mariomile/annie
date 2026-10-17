@@ -249,6 +249,18 @@ L'elenco predefinito ha feed pubblici noti, ognuno con la sua sezione: ANSA (ult
 4. `pnpm annie check` scarica ogni feed (15 secondi ciascuno) e li elenca tutti per nome, con l'esito, mai per indirizzo: se qualcuno non va, o risponde senza notizie datate, è un avviso che li nomina, se non ne risponde nessuno è un errore. Gli indirizzi dell'elenco predefinito vanno verificati così alla prima sessione con la rete.
 5. Domini: `www.ansa.it`, `www.rainews.it`, `tg24.sky.it`, `xml2.corriereobjects.it`, `www.repubblica.it`, `www.ilpost.it`, `www.ilsole24ore.com`, `feeds.bbci.co.uk`, o quelli dei feed in `ANNIE_NEWS_FEEDS` (e dei siti a cui rimandano).
 
+### 19. Lo schermo (Cua): `ANNIE_DESKTOP`, nessuna chiave da comprare
+
+Lo schermo è un desktop Linux con Firefox per ogni agente, dove Annie guarda, clicca e scrive attraverso Cua ([ADR 0045](adr/0045-schermo-cua.md)). **È gratis e non serve nessuna chiave a pagamento**: Cua pubblica l'immagine, Annie la avvia sul server e si inventa da sola token e password di ogni schermo.
+
+1. Serve un server **amd64** (x86_64) con Docker: l'immagine di Cua non esiste per ARM. Scaricala una volta, circa 8 GB: `docker pull trycua/cua-xfce:0.3.0`. Annie usa esattamente questo tag; non scaricarlo con `latest`.
+2. In `.env`: `ANNIE_DESKTOP=docker`. Usa lo stesso socket del computer (`ANNIE_DOCKER_SOCKET`, di default `/var/run/docker.sock`): vale la stessa avvertenza, il socket equivale a root sul server ([runbook](runbook.md), 6n).
+3. Facoltativo: `ANNIE_DESKTOP_NETWORK=internet`, per dare internet agli schermi e usare il web dal loro Firefox. Senza (o con `none`) gli schermi non hanno internet. **Con internet il browser dello schermo non segue l'elenco dei siti consentiti dell'agente**, e quello che Annie fa sullo schermo non chiede approvazione: accendilo sapendolo.
+4. In alternativa a Docker, uno schermo che fai girare altrove: `ANNIE_DESKTOP=remote`, `ANNIE_DESKTOP_URL` (l'indirizzo del demone di Cua, in https, per esempio `https://schermo.example:3211`) e `ANNIE_DESKTOP_TOKEN` (il `CUA_ENV_TOKEN` che hai dato a quel container). È **uno schermo solo per tutti gli agenti** che lo usano.
+5. `pnpm annie check` dice se Docker risponde, se il server è amd64 e se l'immagine c'è, oppure se lo schermo remoto risponde e accetta il token. Lo stesso controllo compare nella console (Impostazioni, Schermo) e nel log all'avvio.
+6. Poi, in ogni agente che deve usarlo: Impostazioni → **Schermo** → spunta «Consenti lo schermo a questo agente».
+7. Domini: con Docker nessuno per Annie; solo per scaricare l'immagine, una volta, `registry-1.docker.io` (Docker Hub). Con uno schermo altrove, l'unico dominio è quello di `ANNIE_DESKTOP_URL`.
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -269,6 +281,7 @@ L'elenco predefinito ha feed pubblici noti, ognuno con la sua sezione: ANSA (ult
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
 | Immagini | `api.openai.com` (o il servizio scelto) |
 | Telefono | `api.twilio.com` (o la regione scelta) |
+| Schermo | `registry-1.docker.io` (con Docker, solo per scaricare l'immagine di Cua), o il dominio di `ANNIE_DESKTOP_URL` |
 | Connettori in un clic | `mcp.notion.com`, `mcp.linear.app`, `mcp.monday.com`, `mcp.atlassian.com`, `mcp.stripe.com`, `api.githubcopilot.com`, `mcp.sentry.dev`, `mcp.supabase.com`, `mcp.context7.com`, `huggingface.co` (e i loro server di autorizzazione) |
 
 ## Cosa succede dopo
