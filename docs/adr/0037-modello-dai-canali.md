@@ -22,5 +22,5 @@ Con [ADR 0036](0036-modello-per-chat.md) ogni chat della console ha il suo model
 
 ## Conseguenze
 
-- Il comando non compare ancora nel menu dei comandi di Telegram (`setMyCommands`): per ora lo conosce chi lo legge qui o in `docs/prodotto.md`.
+- Su Telegram il comando è nel menu accanto al box di scrittura: il bot lo registra all'avvio (`setMyCommands`). Se Telegram rifiuta, il bot parte lo stesso e il comando funziona, solo senza menu. WhatsApp non ha un menu dei comandi.
 - Un messaggio che comincia con `/modello` non arriva più al modello su Telegram e WhatsApp.

@@ -36,6 +36,7 @@ import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
+import { MODEL_COMMAND } from "./model-command.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
@@ -559,6 +560,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...voiceFor(instance),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
+			commands: [MODEL_COMMAND],
 		});
 		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, { onAction: (action) => onApprovalTap(instance, bot, action), voice: voiceOf(instance), models: chatModels }));
 		telegrams.set(instance, bot);

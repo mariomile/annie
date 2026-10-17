@@ -5,6 +5,9 @@ import type { InstanceRecord } from "./core/registry.ts";
 import type { AnnieRuntime } from "./core/runtime.ts";
 import { subjectOf } from "./core/memory.ts";
 
+/** The command in a channel's menu (Telegram's, next to the message box). */
+export const MODEL_COMMAND = { command: "modello", description: "Scegli il modello di questa chat" } as const;
+
 /** Words that take a chat back to the instance's model. */
 const BACK = new Set(["istanza", "predefinito", "default", "reset"]);
 /** How many matches a reply lists before asking to narrow the search. */
