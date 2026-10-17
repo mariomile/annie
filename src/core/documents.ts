@@ -299,6 +299,51 @@ function resolvePath(folder: string, target: string): string {
  * dates and times, percentages, money with its symbol, the decimals of the format, Italian separators.
  */
 function xlsxText(zip: Zip): { text: string; parts: number } {
+	const sheets = xlsxSheets(zip, false);
+	const out = sheets.map((sheet) => {
+		const rows: string[] = [];
+		let widest = 0;
+		let lastRow = 0;
+		for (const row of sheet.rows) {
+			// After empty rows, the row number: the model can still say «riga 500».
+			if (row.number > lastRow + 1 && lastRow > 0) rows.push(`[riga ${row.number}]`);
+			lastRow = row.number;
+			rows.push(row.cells.join("\t"));
+			widest = Math.max(widest, row.cells.length);
+		}
+		const columns = widest <= 1 ? "colonna A" : `colonne A-${columnName(widest - 1)}`;
+		const size = rows.length === 0 ? "vuoto" : `${lastRow} ${lastRow === 1 ? "riga" : "righe"}, ${columns}`;
+		const notes = [sheet.hidden ? "nascosto" : "", sheet.wide ? `le colonne dopo ${columnName(MAX_COLUMNS)} non sono lette` : ""].filter((n) => n !== "");
+		return `## Foglio «${sheet.name}» (${[size, ...notes].join("; ")})\n${rows.join("\n")}`;
+	});
+	return { text: tidy(out.join("\n\n")), parts: sheets.length };
+}
+
+/** A sheet as rows of cells, for reading as a table (ADR 0031): no text markers to confuse with the cells. */
+export type SheetRows = { readonly name: string; readonly hidden: boolean; readonly rows: string[][] };
+
+/**
+ * The sheets of an Excel or OpenDocument workbook as rows of cells, with the values as stored, not
+ * as the format rounds them (10,4 stays 10,4 under a «0» format), so sums are exact. `maxRows` stops
+ * a sheet of repeated rows from growing without end.
+ */
+export function spreadsheetRows(name: string, data: Uint8Array, maxRows: number): SheetRows[] | undefined {
+	const kind = documentKind(name, data);
+	if (kind !== "xlsx" && kind !== "ods") return undefined;
+	try {
+		const zip = new Zip(Buffer.from(data));
+		if (kind === "xlsx") return xlsxSheets(zip, true).map((s) => ({ name: s.name, hidden: s.hidden, rows: s.rows.map((r) => r.cells) }));
+		return odsSheets(zip, maxRows);
+	} catch (error) {
+		if (error instanceof ZipError) throw new DocumentError(error.message);
+		throw new DocumentError(error instanceof RangeError ? "il documento è troppo complesso da leggere" : NOT_A_DOCUMENT);
+	}
+}
+
+type XlsxSheet = { name: string; hidden: boolean; wide: boolean; rows: { number: number; cells: string[] }[] };
+
+/** Excel's sheets; with `exact` numbers keep every decimal stored, without grouping, and the format's unit. */
+function xlsxSheets(zip: Zip, exact: boolean): XlsxSheet[] {
 	const workbook = zip.text("xl/workbook.xml") ?? "";
 	const rels = relationships(zip, "xl", "xl/_rels/workbook.xml.rels");
 	const shared = [...(zip.text("xl/sharedStrings.xml") ?? "").split("</si>")].slice(0, -1).map((piece) => inlineText(piece.slice(piece.lastIndexOf("<si"))));
@@ -308,14 +353,13 @@ function xlsxText(zip: Zip): { text: string; parts: number } {
 		const state = attribute(attrs, "state");
 		return { name: xmlUnescape(attribute(attrs, "name") ?? "Foglio"), id: attribute(attrs, "r:id") ?? "", hidden: state === "hidden" || state === "veryHidden" };
 	});
-	const out: string[] = [];
+	const out: XlsxSheet[] = [];
 	for (const sheet of sheets) {
 		const path = rels.get(sheet.id);
 		const xml = path === undefined ? undefined : zip.text(path);
 		if (xml === undefined) continue;
-		const rows: string[] = [];
+		const rows: { number: number; cells: string[] }[] = [];
 		let wide = false;
-		let widest = 0;
 		let lastRow = 0;
 		for (const piece of xml.split("</row>")) {
 			const open = piece.lastIndexOf("<row");
@@ -338,7 +382,7 @@ function xlsxText(zip: Zip): { text: string; parts: number } {
 					const v = c[2];
 					if (current.type === "s") value = shared[Number(v)] ?? "";
 					else if (current.type === "b") value = v === "1" ? "VERO" : "FALSO";
-					else if (current.type === undefined || current.type === "n") value = excelValue(Number(v), formats.get(current.style), v);
+					else if (current.type === undefined || current.type === "n") value = excelValue(Number(v), formats.get(current.style), v, exact);
 					else value = xmlUnescape(v);
 				} else continue;
 				if (current.column > MAX_COLUMNS) {
@@ -351,19 +395,114 @@ function xlsxText(zip: Zip): { text: string; parts: number } {
 			while (cells.length > 0 && cells.at(-1) === "") cells.pop();
 			const number = Number(attribute(piece.slice(open, piece.indexOf(">", open)), "r") ?? lastRow + 1);
 			if (cells.length > 0) {
-				// After empty rows, the row number: the model can still say «riga 500».
-				if (number > lastRow + 1 && lastRow > 0) rows.push(`[riga ${number}]`);
 				lastRow = number;
-				rows.push(cells.join("\t"));
-				widest = Math.max(widest, cells.length);
+				rows.push({ number, cells });
 			}
 		}
-		const columns = widest <= 1 ? "colonna A" : `colonne A-${columnName(widest - 1)}`;
-		const size = rows.length === 0 ? "vuoto" : `${lastRow} ${lastRow === 1 ? "riga" : "righe"}, ${columns}`;
-		const notes = [sheet.hidden ? "nascosto" : "", wide ? `le colonne dopo ${columnName(MAX_COLUMNS)} non sono lette` : ""].filter((n) => n !== "");
-		out.push(`## Foglio «${sheet.name}» (${[size, ...notes].join("; ")})\n${rows.join("\n")}`);
+		out.push({ name: sheet.name, hidden: sheet.hidden, wide, rows });
 	}
-	return { text: tidy(out.join("\n\n")), parts: sheets.length };
+	return out;
+}
+
+/**
+ * OpenDocument sheets as rows, from the stored values (office:value, office:date-value), with
+ * repeated rows and cells written out as many times as they repeat (empty ones are only skipped).
+ */
+function odsSheets(zip: Zip, maxRows: number): SheetRows[] {
+	const content = zip.text("content.xml") ?? "";
+	const bodyAt = content.indexOf("<office:body");
+	const xml = bodyAt < 0 ? "" : content.slice(bodyAt);
+	const hiddenStyles = new Set<string>();
+	for (const m of content.slice(0, Math.max(0, bodyAt)).matchAll(/<style:style\b([^>]*)>\s*<style:table-properties\b([^>]*)>/g)) {
+		if (attribute(m[2] ?? "", "table:display") === "false") hiddenStyles.add(attribute(m[1] ?? "", "style:name") ?? "");
+	}
+	const sheets: SheetRows[] = [];
+	let sheet: SheetRows | undefined;
+	let depth = 0;
+	let row: string[] | undefined;
+	let rowRepeat = 1;
+	let cell: { value: string | undefined; text: string; repeat: number } | undefined;
+	let paragraphs = 0;
+	let total = 0;
+	for (const m of xml.matchAll(/<(\/?)([\w:.-]+)([^>]*)>|<[?!][^>]*>|([^<]+)/g)) {
+		const [, close, tag, attrs = ""] = m;
+		if (m[4] !== undefined) {
+			if (cell !== undefined && paragraphs > 0) cell.text += xmlUnescape(m[4]).replace(/\s+/g, " ");
+			continue;
+		}
+		if (tag === undefined) continue;
+		const selfClosing = attrs.endsWith("/");
+		if (tag === "table:table") {
+			if (close === "/") depth = Math.max(0, depth - 1);
+			else if (!selfClosing && ++depth === 1) {
+				sheet = { name: xmlUnescape(attribute(attrs, "table:name") ?? ""), hidden: hiddenStyles.has(attribute(attrs, "table:style-name") ?? ""), rows: [] };
+				sheets.push(sheet);
+			}
+			continue;
+		}
+		// Tables inside a cell (rare) are not rows of the sheet.
+		if (depth !== 1 || sheet === undefined) continue;
+		if (tag === "table:table-row") {
+			if (close !== "/") {
+				row = [];
+				rowRepeat = Math.max(1, Math.min(Number(attribute(attrs, "table:number-rows-repeated") ?? "1") || 1, 1_048_576));
+				if (!selfClosing) continue;
+			}
+			if (row !== undefined) {
+				while (row.length > 0 && row.at(-1) === "") row.pop();
+				if (row.length > 0) {
+					for (let i = 0; i < rowRepeat && total <= maxRows; i++, total++) sheet.rows.push(i === 0 ? row : [...row]);
+				}
+			}
+			row = undefined;
+			continue;
+		}
+		if ((tag === "table:table-cell" || tag === "table:covered-table-cell") && row !== undefined) {
+			if (close !== "/") {
+				cell = { value: odsValue(attrs), text: "", repeat: Math.max(1, Math.min(Number(attribute(attrs, "table:number-columns-repeated") ?? "1") || 1, MAX_COLUMNS + 1)) };
+				if (!selfClosing) continue;
+			}
+			if (cell !== undefined) {
+				const value = (cell.value ?? cell.text.trim()).replace(/[\t\n\r]+/g, " ");
+				for (let i = 0; i < cell.repeat && row.length <= MAX_COLUMNS; i++) row.push(value);
+			}
+			cell = undefined;
+			continue;
+		}
+		if (cell === undefined) continue;
+		if (tag === "text:p" || tag === "text:h") {
+			if (close === "/") paragraphs = Math.max(0, paragraphs - 1);
+			else if (!selfClosing) {
+				if (cell.text !== "") cell.text += " ";
+				paragraphs++;
+			}
+		} else if (tag === "text:s" && close !== "/") cell.text += " ".repeat(Math.min(Number(attribute(attrs, "text:c") ?? "1") || 1, 50));
+	}
+	return sheets;
+}
+
+/** A cell's stored value: numbers with every decimal and the decimal comma, the unit of money and percentages, dates as ISO. */
+function odsValue(attrs: string): string | undefined {
+	const type = attribute(attrs, "office:value-type");
+	const raw = attribute(attrs, "office:value");
+	if (type === "date") {
+		const date = attribute(attrs, "office:date-value") ?? "";
+		return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(date) && !/T00:00(:00)?$/.test(date) ? `${date.slice(0, 10)} ${date.slice(11, 16)}` : date.slice(0, 10) || undefined;
+	}
+	if (raw === undefined || !Number.isFinite(Number(raw))) return undefined;
+	const n = Number(raw);
+	if (type === "percentage") return `${exactNumber(n * 100)}%`;
+	if (type === "currency") {
+		const currency = attribute(attrs, "office:currency");
+		return currency === "EUR" ? `${exactNumber(n)} €` : currency === "USD" ? `$${exactNumber(n)}` : exactNumber(n);
+	}
+	if (type === "float") return exactNumber(n);
+	return undefined;
+}
+
+/** A number with every decimal it has and the decimal comma, never grouped: 1234,5. */
+function exactNumber(n: number): string {
+	return String(Number(n.toPrecision(15))).replace(".", ",");
 }
 
 /** Columns read in a sheet: A to SG. A sheet wider than this is data for the computer. */
@@ -430,11 +569,19 @@ function excelFormat(id: number, custom: Map<number, string>): ExcelFormat | und
 	return { kind: bare.includes("%") ? "percent" : "number", decimals, grouping: /#,#|0,0/.test(bare), ...(currency === undefined ? {} : { currency }) };
 }
 
-/** A number as the format shows it; without a format, as written, with the Italian decimal comma. */
-function excelValue(n: number, format: ExcelFormat | undefined, raw: string): string {
+/**
+ * A number as the format shows it; without a format, as written, with the Italian decimal comma.
+ * `exact`: every stored decimal, ungrouped, with only the format's unit (for sums that must add up).
+ */
+function excelValue(n: number, format: ExcelFormat | undefined, raw: string, exact = false): string {
 	if (!Number.isFinite(n)) return xmlUnescape(raw);
-	if (format === undefined) return italian(n, undefined, false);
+	if (format === undefined) return exact ? exactNumber(n) : italian(n, undefined, false);
 	if (format.kind === "date" || format.kind === "datetime" || format.kind === "time") return excelDate(n, format.kind);
+	if (exact) {
+		if (format.kind === "percent") return `${exactNumber(n * 100)}%`;
+		if (format.currency === undefined) return exactNumber(n);
+		return format.currency === "€" ? `${exactNumber(n)} €` : `${format.currency}${exactNumber(n).replace(/^-/, "")}`.replace(/^/, n < 0 ? "-" : "");
+	}
 	if (format.kind === "percent") return `${italian(n * 100, format.decimals, false)}%`;
 	const shown = italian(n, format.decimals, format.grouping || format.currency !== undefined);
 	if (format.currency === undefined) return shown;

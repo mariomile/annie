@@ -119,12 +119,39 @@ export function sheetOfCsv(text: string, name: string): Sheet {
 	return { name, rows: rows.map((r, i) => ({ cells: r.map((c) => [{ text: c }]), ...(i === 0 ? { header: true } : {}) })), table: { first: 0, columns, rows: rows.length }, headers: [1], csv: true };
 }
 
+/**
+ * The separator of a CSV: the one found the same number of times on most of the first lines, so a
+ * title line above the table or decimal commas in the numbers do not mislead. Ties go to «;», then tab.
+ */
+function csvSeparator(text: string): string {
+	const lines = [];
+	for (let from = 0; lines.length < 20 && from < text.length; ) {
+		const end = text.indexOf("\n", from);
+		const line = text.slice(from, end === -1 ? text.length : end);
+		if (line.trim() !== "") lines.push(line.replace(/"[^"]*"/g, ""));
+		from = end === -1 ? text.length : end + 1;
+	}
+	let best = ",";
+	let bestScore = 0;
+	for (const c of [";", "\t", ","]) {
+		const counts = new Map<number, number>();
+		for (const line of lines) {
+			const n = line.split(c).length - 1;
+			if (n > 0) counts.set(n, (counts.get(n) ?? 0) + 1);
+		}
+		const score = Math.max(0, ...counts.values());
+		if (score > bestScore) {
+			best = c;
+			bestScore = score;
+		}
+	}
+	return best;
+}
+
 /** CSV with commas, semicolons (as Italian Excel writes it) or tabs, and quotes. */
 export function parseCsv(text: string): string[][] {
 	const clean = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
-	const firstLine = clean.slice(0, clean.indexOf("\n") === -1 ? clean.length : clean.indexOf("\n"));
-	const count = (c: string): number => firstLine.split(c).length - 1;
-	const separator = [";", "\t", ","].reduce((best, c) => (count(c) > count(best) ? c : best), ",");
+	const separator = csvSeparator(clean);
 	const rows: string[][] = [];
 	let row: string[] = [];
 	let cell = "";
