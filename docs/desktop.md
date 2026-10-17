@@ -5,9 +5,10 @@ Annie come app per Mac, Windows e Linux: una finestra sul tuo server Annie, l'ic
 ## Usarla
 
 1. Al primo avvio scrivi l'indirizzo del tuo Annie (per esempio `annie.tuaazienda.it`), oppure incolla il tuo link personale per entrare subito.
-2. **Ctrl+Shift+Spazio** (⌘⇧Spazio sul Mac) la apre e la nasconde da qualsiasi app.
-3. Chiudere la finestra la nasconde: Annie resta nella barra. Dall'icona: Apri Annie, Nuova chat, Cambia server, Esci.
-4. I link che portano fuori da Annie si aprono nel browser.
+2. **Ctrl+Shift+Spazio** (⌘⇧Spazio sul Mac) la apre e la nasconde da qualsiasi app. Su Linux con Wayland le scorciatoie globali non arrivano alle app: lì si usa l'icona nella barra.
+3. Chiudere la finestra la nasconde: Annie resta nella barra. Dall'icona: Apri Annie, Nuova chat, Cambia server, Esci. Sul Mac la riapre anche l'icona nel Dock.
+4. I link che portano fuori da Annie si aprono nel browser. Una pagina di Annie aperta "in una nuova scheda" (un file, un documento) si apre in una seconda finestra dell'app.
+5. I file scaricati vanno nella cartella Download, con un numero in fondo al nome se ce n'è già uno uguale.
 
 ## Svilupparla
 

@@ -5,13 +5,13 @@
 mod server;
 mod settings;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{
-    AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
-};
+use tauri::webview::{DownloadEvent, NewWindowResponse};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -68,7 +68,13 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed && *shortcut == summon() {
-                        toggle(app);
+                        // From another app: hide only when Annie is already in front.
+                        match main_window(app) {
+                            Some(w) if w.is_focused().unwrap_or(false) => {
+                                let _ = w.hide();
+                            }
+                            _ => show(app),
+                        }
                     }
                 })
                 .build(),
@@ -77,9 +83,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![connect, current])
         .setup(|app| {
             let handle = app.handle().clone();
+            // Checked again: a hand-edited file must not open a page the form would refuse.
             let saved = settings::load(&settings_file(&handle)?)
                 .server
-                .and_then(|s| Url::parse(&s).ok());
+                .and_then(|s| server::parse(&s).ok())
+                .map(|s| s.origin);
             *handle.state::<Current>().0.lock().unwrap() = saved.clone();
             open_main(&handle, saved.map_or(Page::Connect, Page::Server))?;
             tray(&handle)?;
@@ -100,14 +108,14 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("annie: the app could not start")
-        .run(|_app, event| {
-            // No window open is not a reason to quit: Annie lives in the tray until Esci.
-            if let RunEvent::ExitRequested {
-                code: None, api, ..
-            } = event
-            {
-                api.prevent_exit();
+        .run(|app, event| {
+            // The Mac's Dock icon brings the hidden window back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show(app);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         });
 }
 
@@ -131,7 +139,7 @@ fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
 /// navigation rule reads the current server, so one window serves both kinds of page.
 fn open_main(app: &AppHandle, page: Page) -> tauri::Result<()> {
     let url = match page {
-        Page::Connect => bundled_page(),
+        Page::Connect => server::bundled_page(),
         Page::Server(start) => start,
     };
     if let Some(window) = main_window(app) {
@@ -147,6 +155,34 @@ fn open_main(app: &AppHandle, page: Page) -> tauri::Result<()> {
         .visible(false)
         // Pages of the server stay in the window; any other link opens in the browser.
         .on_navigation(move |target| allowed(&guard, target))
+        // A link that asks for a new window (target=_blank, window.open): a server page opens in a
+        // window of the app, which shares the session; anything else in the browser.
+        .on_new_window({
+            let app = app.clone();
+            move |target, _| {
+                if allowed(&app, &target) {
+                    let _ = open_viewer(&app, target);
+                }
+                NewWindowResponse::Deny
+            }
+        })
+        // A file from the server (Scarica in File) goes to Downloads, as in a browser.
+        .on_download({
+            let app = app.clone();
+            move |_, event| {
+                if let DownloadEvent::Requested { destination, .. } = event {
+                    if let Ok(dir) = app.path().download_dir() {
+                        let name = destination
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("download")
+                            .to_string();
+                        *destination = unused(&dir, &name);
+                    }
+                }
+                true
+            }
+        })
         .build()?;
     // Shown once built: no white flash before the page.
     window.show()?;
@@ -154,16 +190,42 @@ fn open_main(app: &AppHandle, page: Page) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The bundled connect page, where Tauri serves the app's own files on each system.
-fn bundled_page() -> Url {
-    let base = if cfg!(windows) {
-        "http://tauri.localhost/"
-    } else {
-        "tauri://localhost/"
-    };
-    Url::parse(base)
-        .and_then(|u| u.join("index.html"))
-        .expect("annie: a fixed address")
+/// A server page that asked for its own window (a picture, a document): a plain window of the
+/// app, under the same navigation rule.
+fn open_viewer(app: &AppHandle, page: Url) -> tauri::Result<()> {
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+    let label = format!("view-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let guard = app.clone();
+    WebviewWindowBuilder::new(app, label, WebviewUrl::External(page))
+        .title("Annie")
+        .inner_size(960.0, 720.0)
+        .on_navigation(move |target| allowed(&guard, target))
+        .build()?;
+    Ok(())
+}
+
+/// `name` in `dir`, or `name (2)`, `name (3)`…: a download never replaces a file.
+fn unused(dir: &Path, name: &str) -> PathBuf {
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    (1..)
+        .map(|n| {
+            dir.join(if n == 1 {
+                format!("{stem}{ext}")
+            } else {
+                format!("{stem} ({n}){ext}")
+            })
+        })
+        .find(|p| !p.exists())
+        .expect("annie: an unused name")
 }
 
 fn allowed(app: &AppHandle, target: &Url) -> bool {
@@ -190,11 +252,10 @@ fn show(app: &AppHandle) {
     }
 }
 
+/// The tray icon: clicking it takes the focus from the window, so being visible alone decides.
 fn toggle(app: &AppHandle) {
     match main_window(app) {
-        Some(window)
-            if window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false) =>
-        {
+        Some(window) if window.is_visible().unwrap_or(false) => {
             let _ = window.hide();
         }
         _ => show(app),
@@ -255,4 +316,21 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unused;
+
+    #[test]
+    fn a_download_never_replaces_a_file() {
+        let dir = std::env::temp_dir().join(format!("annie-unused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unused(&dir, "nota.pdf"), dir.join("nota.pdf"));
+        std::fs::write(dir.join("nota.pdf"), "").unwrap();
+        std::fs::write(dir.join("nota (2).pdf"), "").unwrap();
+        assert_eq!(unused(&dir, "nota.pdf"), dir.join("nota (3).pdf"));
+        assert_eq!(unused(&dir, "LEGGIMI"), dir.join("LEGGIMI"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -4,7 +4,7 @@
 	"type": "module",
 	"description": "Annie as a desktop app: a Tauri 2 window on an Annie server (docs/desktop.md).",
 	"scripts": {
-		"dev": "tauri dev",
+		"dev": "tauri dev --no-dev-server",
 		"build": "tauri build",
 		"icons": "tauri icon ../src/web/ui/icon-512.png",
 		"tauri": "tauri"

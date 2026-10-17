@@ -21,7 +21,7 @@ pub fn parse(input: &str) -> Result<Server, String> {
     }
     let with_scheme = if text.contains("://") {
         text.to_string()
-    } else if is_loopback_host(text.split(['/', ':']).next().unwrap_or("")) {
+    } else if is_loopback_host(typed_host(text)) {
         format!("http://{text}")
     } else {
         format!("https://{text}")
@@ -63,15 +63,29 @@ pub enum Navigation {
 }
 
 pub fn navigation(server: Option<&Url>, target: &Url) -> Navigation {
-    let bundled = (target.scheme() == "tauri" && target.host_str() == Some("localhost"))
-        || (target.scheme() == "http" && target.host_str() == Some("tauri.localhost"));
-    if bundled || server.is_some_and(|origin| same_origin(origin, target)) {
+    if is_bundled(target) || server.is_some_and(|origin| same_origin(origin, target)) {
         Navigation::Stay
     } else if matches!(target.scheme(), "http" | "https" | "mailto") {
         Navigation::Browser
     } else {
         Navigation::Refuse
     }
+}
+
+/// The connect page shipped inside the app. Windows serves the app's files from
+/// http://tauri.localhost, the other systems from tauri://localhost.
+pub fn bundled_page() -> Url {
+    let base = if cfg!(windows) {
+        "http://tauri.localhost/index.html"
+    } else {
+        "tauri://localhost/index.html"
+    };
+    Url::parse(base).expect("annie: a fixed address")
+}
+
+fn is_bundled(target: &Url) -> bool {
+    let page = bundled_page();
+    target.scheme() == page.scheme() && target.host_str() == page.host_str()
 }
 
 /// The page belongs to the server: same scheme, host and port.
@@ -110,8 +124,17 @@ pub fn check(origin: &Url) -> Result<(), String> {
     }
 }
 
+/// The host part of an address typed without a scheme: `[::1]` keeps its brackets.
+fn typed_host(text: &str) -> &str {
+    match text.find(']') {
+        Some(end) if text.starts_with('[') => &text[..=end],
+        _ => text.split(['/', ':']).next().unwrap_or(""),
+    }
+}
+
 fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]") || host.ends_with(".localhost")
+    // Url writes an IPv6 host in brackets.
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
 #[cfg(test)]
@@ -154,6 +177,11 @@ mod tests {
     #[test]
     fn refuses_clear_text_to_another_computer_and_other_schemes() {
         assert!(parse("http://annie.example.it").is_err());
+        assert!(parse("http://annie.localhost").is_err());
+        assert_eq!(
+            parse("[::1]:8080").unwrap().origin.as_str(),
+            "http://[::1]:8080/"
+        );
         assert!(parse("file:///etc/passwd").is_err());
         assert!(parse("javascript:alert(1)").is_err());
         assert!(parse("https://user:pw@annie.example.it").is_err());
@@ -165,8 +193,19 @@ mod tests {
         let origin = parse("annie.example.it").unwrap().origin;
         let at = |u: &str| navigation(Some(&origin), &Url::parse(u).unwrap());
         assert_eq!(at("https://annie.example.it/#/chat"), Navigation::Stay);
-        assert_eq!(at("tauri://localhost/index.html"), Navigation::Stay);
-        assert_eq!(at("http://tauri.localhost/index.html"), Navigation::Stay);
+        let (bundled, other) = if cfg!(windows) {
+            (
+                "http://tauri.localhost/index.html",
+                "tauri://localhost/index.html",
+            )
+        } else {
+            (
+                "tauri://localhost/index.html",
+                "http://tauri.localhost/index.html",
+            )
+        };
+        assert_eq!(at(bundled), Navigation::Stay);
+        assert_ne!(at(other), Navigation::Stay);
         assert_eq!(at("https://docs.example.com/x.pdf"), Navigation::Browser);
         assert_eq!(at("mailto:ciao@example.it"), Navigation::Browser);
         assert_eq!(at("file:///etc/passwd"), Navigation::Refuse);
