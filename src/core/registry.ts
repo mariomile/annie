@@ -1,9 +1,10 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AuditLog } from "./audit.ts";
 import { NotFound } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
-import { instanceFile, tenantDir, tenantFile } from "./paths.ts";
+import { instanceDir, instanceFile, removedDir, tenantDir, tenantFile } from "./paths.ts";
 import { writeFileAtomic } from "./atomic-file.ts";
 import type { Persona } from "./persona.ts";
 import { type AllowedUsers, CHANNEL_PATTERN, DENY_ALL, type EgressPolicy } from "./policy.ts";
@@ -185,6 +186,26 @@ export class TenantRegistry {
 			connectors: (egress.connectors ?? []).join(","),
 		});
 		return record;
+	}
+
+	/**
+	 * Delete an instance and everything under its folder (ADR 0046). The folder is first moved
+	 * aside in one step, so the instance is gone at once even if removing its files takes a while
+	 * or fails half-way; what is left aside is removed again at the next start. The caller closes
+	 * the instance first. The audit log keeps that it existed.
+	 */
+	async deleteInstance(tenant: string, id: string): Promise<void> {
+		const record = await this.getInstance(tenant, id);
+		const aside = join(removedDir(this.dataDir, record.tenantId), `${record.id}-${randomBytes(6).toString("hex")}`);
+		await mkdir(dirname(aside), { recursive: true });
+		await rename(instanceDir(this.dataDir, record.tenantId, record.id), aside);
+		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.deleted", instanceId: record.id, name: record.name });
+		await this.purgeRemoved(record.tenantId);
+	}
+
+	/** Remove what deleted instances left aside. */
+	async purgeRemoved(tenant: string): Promise<void> {
+		await rm(removedDir(this.dataDir, tenantId(tenant)), { recursive: true, force: true });
 	}
 
 	async listInstances(tenant: string): Promise<InstanceRecord[]> {

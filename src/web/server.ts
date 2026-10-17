@@ -196,6 +196,8 @@ export type WebAppOptions = {
 	readonly serverModelKeys?: readonly string[];
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; persona: Persona; ownerId: string }) => Promise<void>;
+	/** Delete an agente for good (ADR 0046); never the general one, nor a segreteria. */
+	readonly deleteInstance?: { readonly main: string; readonly run: (id: string) => Promise<void> };
 	readonly log?: (message: string) => void;
 };
 
@@ -419,6 +421,24 @@ export function createWebApp(options: WebAppOptions): Server {
 		const channel = options.channels.get(id);
 		if (channel !== undefined) for (const attach of streamAttachers) attach(channel);
 		return { instance: await describeInstance(await runtime.registry.getInstance(tenantId, id), person as Person) };
+	});
+
+	// Deleting an agente (ADR 0046): the owner types its name, as it is now, to confirm.
+	const deletable = (id: string) => options.deleteInstance !== undefined && id !== options.deleteInstance.main && !(options.segreterie?.has(id) ?? false);
+	route("DELETE", "/api/instances/:id", "owner", async ({ person, params, req }) => {
+		const remover = options.deleteInstance;
+		if (remover === undefined) throw new HttpError(501, "Questa installazione non elimina agenti dalla console");
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Agente inesistente");
+		});
+		if (id === remover.main) throw new HttpError(400, `${record.name} è l'agente principale: non si elimina`);
+		if (options.segreterie?.has(id)) throw new HttpError(400, "La segreteria non si elimina dalla console");
+		const body = (await readJson(req)) as { confirm?: unknown };
+		if (body.confirm !== record.name) throw new HttpError(400, `Per confermare scrivi il nome dell'agente esattamente così: «${record.name}»`);
+		await remover.run(id);
+		await runtime.audit(tenantId).append({ type: "web.instance_deleted", instanceId: id, personId: (person as Person).id });
+		return { ok: true };
 	});
 
 	// --- chat ---
@@ -1127,7 +1147,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	route("GET", "/api/instances/:id/settings", "owner", async ({ params }) => {
 		const r = await runtime.registry.getInstance(tenantId, params[0] as string);
-		return { settings: { name: r.name, instructions: r.instructions ?? "", persona: r.persona ?? {}, model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {} } };
+		return { settings: { name: r.name, instructions: r.instructions ?? "", persona: r.persona ?? {}, model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {}, deletable: deletable(r.id) } };
 	});
 	route("PUT", "/api/instances/:id/settings", "owner", async ({ params, req }) => {
 		const body = (await readJson(req)) as { name?: string; instructions?: string; persona?: unknown; about?: unknown; webPeople?: string[]; webApprovers?: string[] };

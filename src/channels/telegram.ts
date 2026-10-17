@@ -139,6 +139,11 @@ export class TelegramAdapter implements ChannelAdapter {
 		this.loop = undefined;
 	}
 
+	/** Tell Telegram to stop pushing updates here (the bot's agente is gone). Best effort. */
+	async unhook(): Promise<void> {
+		await this.call("deleteWebhook", {}).catch((error: unknown) => this.options.log?.(`telegram: deleteWebhook failed: ${error instanceof Error ? error.message : String(error)}`));
+	}
+
 	/** The bot's own account: checks the token. */
 	async me(): Promise<{ username: string | undefined }> {
 		const me = await this.call<{ username?: string }>("getMe", {});

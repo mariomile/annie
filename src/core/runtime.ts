@@ -106,6 +106,8 @@ export class AnnieRuntime {
 	private readonly instances = new Map<string, Promise<AnnieInstance>>();
 	private readonly listeners = new Set<(reply: Reply) => void>();
 	private readonly participantStores = new Map<string, Participants>();
+	/** Instances being deleted: nothing opens them meanwhile. */
+	private readonly removing = new Set<string>();
 
 	constructor(private readonly options: RuntimeOptions) {
 		this.registry = new TenantRegistry(options.dataDir);
@@ -205,6 +207,7 @@ export class AnnieRuntime {
 	/** Open an instance's engine session once per process; later calls share it. */
 	openInstance(tenant: string, instance: string): Promise<AnnieInstance> {
 		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		if (this.removing.has(key)) return Promise.reject(new NotFound(`Instance "${instanceId(instance)}" is being deleted`));
 		let opening = this.instances.get(key);
 		if (opening === undefined) {
 			opening = this.open(tenant, instance);
@@ -287,6 +290,26 @@ export class AnnieRuntime {
 		await next;
 		// A later reopen may already have replaced this one: resume the current instance.
 		return this.resume(tenant, instance);
+	}
+
+	/**
+	 * Delete an instance (ADR 0046): close it if open, without resuming it, and remove its record
+	 * and everything it kept. Work in flight is dropped with it. Channels, bots and the rest that
+	 * live outside the core are the caller's to stop first.
+	 */
+	async removeInstance(tenant: string, instance: string): Promise<void> {
+		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		await this.registry.getInstance(tenant, instance);
+		this.removing.add(key);
+		try {
+			const open = this.instances.get(key);
+			this.instances.delete(key);
+			await (await open?.catch(() => undefined))?.close();
+			this.participantStores.delete(key);
+			await this.registry.deleteInstance(tenant, instance);
+		} finally {
+			this.removing.delete(key);
+		}
 	}
 
 	/**

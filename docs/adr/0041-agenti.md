@@ -23,7 +23,7 @@ Quasi tutto c'era già: un'istanza è un agente con il suo modello, le sue conve
 
 ## Da fare
 
-- Cancellare un agente: oggi non si può (servono la chiusura dei bot, la cancellazione dei dati e un'audit chiara). Fino ad allora l'owner toglie a tutti il permesso di scrivergli.
+- Cancellare un agente: dalla console, con il nome da scrivere per conferma ([ADR 0046](0046-eliminare-un-agente.md)).
 - Le istruzioni in Impostazioni mostrano anche quelle predefinite: sarebbe più chiaro modificare solo la parte dell'owner, come in Primi passi.
 
 ## Conseguenze
