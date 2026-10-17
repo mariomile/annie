@@ -149,6 +149,10 @@ _Avoid_: transcript, sbobinatura
 Quello che fa `file_search`: le parole chiave della domanda cercate dentro il testo di tutti i file del workspace (documenti, trascrizioni, note) e nei loro nomi, con i passaggi trovati e il punto da cui leggere il seguito. Senza accenti e maiuscole, all'inizio delle parole. Vedi ADR 0035.
 _Avoid_: ricerca full-text, indice, grep
 
+**Lista**:
+Un elenco che Annie tiene per chi le scrive (la spesa, le cose da fare, i regali), con voci da fare e fatte, numerate come le mostra `list_show`. Di una persona sola, o condivisa con tutti quelli che scrivono all'istanza quando lo chiedono; in un gruppo solo le condivise. Vedi ADR 0038.
+_Avoid_: checklist, todo, elenco puntato
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
