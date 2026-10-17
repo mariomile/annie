@@ -768,6 +768,32 @@ function webActionsCard(inst, allowed) {
 	);
 }
 
+/** Which other agenti may write to this one (ADR 0042). Each tick saves at once. */
+function agentsCard(inst, settings) {
+	const others = state.instances.filter((i) => i.id !== inst.id);
+	const allowed = new Set(settings.egress.channels.includes("agente") ? (settings.allowedUsers.agente ?? []) : []);
+	const boxes = others.map((o) => {
+		const box = h("input", { type: "checkbox", checked: allowed.has(o.id) || undefined });
+		box.onchange = async () => {
+			try {
+				const from = others.filter((x, i) => boxes[i].box.checked).map((x) => x.id);
+				await api(`/api/instances/${inst.id}/agents`, { method: "PUT", body: { from } });
+				toast(box.checked ? `${o.name} può scrivere a ${inst.name}` : `${o.name} non può più scrivere a ${inst.name}`);
+			} catch (error) {
+				box.checked = !box.checked;
+				toast(error.message, true);
+			}
+		};
+		return { box, row: h("label.row-gap", box, h("span", agentLabel(o))) };
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Agenti che possono scrivergli"),
+		h("p.muted", `Un agente spuntato può chiedere qualcosa a ${inst.name} mentre lavora: ${inst.name} risponde in una conversazione sua, con i suoi strumenti e solo la memoria condivisa, e la risposta torna nella chat da cui era partita la domanda. Al massimo tre agenti in fila, senza giri.`),
+		others.length === 0 ? h("p.muted", "Non ci sono altri agenti: creane uno dalla pagina Agenti.") : boxes.map((b) => b.row),
+	);
+}
+
 /** The instance's computer (ADR 0013): a terminal with no network. */
 function computerCard(inst, allowed, problem) {
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
@@ -3053,6 +3079,7 @@ async function viewAgents(main) {
 				a.tagline ? h("p", a.tagline) : null,
 				h("p.muted.small", [a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web").join(", ")].filter(Boolean).join(" · ")),
 				h("p.muted.small", [plural(a.schedules, "task", "task"), plural(a.watches, "sentinella", "sentinelle"), plural(a.memories, "ricordo", "ricordi")].join(" · ")),
+				a.acceptsFrom?.length ? h("p.muted.small", `Gli scrivono: ${a.acceptsFrom.map((id) => agents.find((x) => x.id === id)?.name ?? id).join(", ")}`) : null,
 			),
 			h(
 				"div.agent-actions",
@@ -3142,6 +3169,7 @@ async function viewSettings(main) {
 				images.available ? anchor("immagini", imagesCard(inst, images.host, images.maxPerDay, (settings.egress.connectors ?? []).includes("image_generation"))) : null,
 				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
+				anchor("agenti", agentsCard(inst, settings)),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
 			),
 			h(
