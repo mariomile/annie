@@ -1368,12 +1368,15 @@ function browserPanel(inst, threadId) {
 	const address = h("input.address", { type: "text", inputmode: "url", placeholder: "Indirizzo di un sito consentito", "aria-label": "Indirizzo", spellcheck: "false", autocomplete: "off" });
 	const back = h("button.icon-btn", { type: "button", title: "Indietro", "aria-label": "Indietro", disabled: true }, icon("back"));
 	const title = h("span.page-title", "Browser");
-	const screen = h("img.screen", { alt: "", hidden: true });
-	const empty = h("div.browser-empty", h("p", `Qui vedi il browser che ${inst.name} usa in questa conversazione, mentre lavora.`), h("p.muted", `Apri una pagina qui sopra e chiedigli di leggerla, oppure chiedigli di cercare qualcosa sul web.`));
+	// A picture gone between the question and the download (the page closed): the last one stays.
+	const screen = h("img.screen", { alt: "", hidden: true, onerror: () => { version = -1; } });
+	const emptyLead = h("p");
+	const empty = h("div.browser-empty", emptyLead, h("p.muted", "Apri una pagina qui sopra e chiedigli di leggerla, oppure chiedigli di cercare qualcosa sul web."));
+	const busyNote = h("span.busy-note", { hidden: true }, `${inst.name} sta usando il browser…`);
 	const el = h(
 		"aside.browser-panel",
 		{ hidden: true, "aria-label": "Browser" },
-		h("div.browser-head", icon("browser"), title, h("button.icon-btn", { type: "button", title: "Chiudi", "aria-label": "Chiudi il browser", onclick: () => show(false) }, icon("close"))),
+		h("div.browser-head", icon("browser"), title, busyNote, h("button.icon-btn", { type: "button", title: "Chiudi", "aria-label": "Chiudi il browser", onclick: () => show(false) }, icon("close"))),
 		h("form.browser-bar", { onsubmit: (event) => { event.preventDefault(); void go({ url: address.value }); } }, back, address),
 		h("div.browser-view", screen, empty),
 		h("p.browser-note", "Solo i siti che l'owner ha consentito. Il browser legge soltanto: un modulo si invia solo con un'approvazione."),
@@ -1382,15 +1385,23 @@ function browserPanel(inst, threadId) {
 	const show = (on) => {
 		el.hidden = !on;
 		toggle.setAttribute("aria-pressed", String(on));
+		toggle.classList.remove("news");
 		store(seenKey, "1");
 		if (on) void refresh();
 	};
-	const draw = (state) => {
+	const narrow = () => matchMedia("(max-width: 860px)").matches;
+	const draw = (state, available = true) => {
 		back.disabled = !state.open;
+		busyNote.hidden = !state.busy;
 		if (!state.open) {
 			screen.hidden = true;
 			empty.hidden = false;
-			title.textContent = state.closed ? `Pagina ${state.closed}` : "Browser";
+			title.textContent = "Browser";
+			emptyLead.textContent = !available
+				? "Il browser non è disponibile su questo server: chiedi all'operatore di installare Chromium."
+				: state.closed
+				? `Il browser si è chiuso (${state.closed}). Scrivi un indirizzo per riaprirlo.`
+				: `Qui vedi il browser che ${inst.name} usa in questa conversazione, mentre lavora.`;
 			version = -1;
 			return;
 		}
@@ -1407,12 +1418,16 @@ function browserPanel(inst, threadId) {
 		}
 	};
 	const refresh = async () => {
-		const { browser } = await api(base).catch(() => ({ browser: undefined }));
+		const { browser, available } = await api(base).catch(() => ({ browser: undefined }));
 		if (browser === undefined) return;
 		// The agente opened a page: the panel shows it, once per conversation unless closed before.
-		if (browser.open && !wasOpen && el.hidden && store(seenKey) !== "1") show(true);
+		// On a phone it would cover the chat: a dot on the button says it instead.
+		if (browser.open && !wasOpen && el.hidden && store(seenKey) !== "1") {
+			if (narrow()) toggle.classList.add("news");
+			else show(true);
+		}
 		wasOpen = browser.open;
-		draw(browser);
+		draw(browser, available);
 	};
 	const go = async (body) => {
 		if (body.url !== undefined && !body.url.trim()) return;
@@ -1428,11 +1443,13 @@ function browserPanel(inst, threadId) {
 		}
 	};
 	back.onclick = () => void go({ back: true });
-	// While the chat is on screen: a light question every few seconds, a picture only after a change.
+	// While the chat is on screen: a light question, often while the panel is open, rarely otherwise; a picture only after a change.
+	let ticks = 0;
 	const timer = setInterval(() => {
 		if (!el.isConnected) return clearInterval(timer);
-		if (document.visibilityState === "visible") void refresh();
-	}, 2500);
+		ticks += 1;
+		if (document.visibilityState === "visible" && (!el.hidden || ticks % 4 === 0)) void refresh();
+	}, 2000);
 	void refresh();
 	return { el, toggle };
 }

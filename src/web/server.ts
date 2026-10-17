@@ -92,6 +92,8 @@ function catalogTokenSecret(instanceId: string, connectorId: string): string {
  * browser the agente uses with web_browse, under the same site list.
  */
 export type BrowserPanel = {
+	/** False when Chromium did not start on this server: the panel says so instead of offering a browser. */
+	available(): boolean;
 	state(instanceId: string, threadId: string): Promise<BrowserState>;
 	picture(instanceId: string, threadId: string): Promise<{ readonly png: Uint8Array; readonly version: number } | undefined>;
 	/** Rejects with BrowserPanelError when the site is not allowed or the page does not open. */
@@ -438,11 +440,13 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	// --- the conversation's browser (ADR 0044): watched and driven from the panel next to the chat ---
 	const browserThread = async (person: Person, instanceId: string, threadId: string) => {
-		const { member } = await instanceAccess(person, instanceId);
+		const { record } = await instanceAccess(person, instanceId);
 		if (options.browser === undefined) throw new HttpError(404, "Il browser non è disponibile su questo server");
 		const thread = await channelOf(instanceId).thread(threadId);
 		if (thread === undefined || thread.personId !== person.id) throw new HttpError(404, "No such thread");
-		return { browser: options.browser, member };
+		// Who may drive it: who may chat here now, the same rule as the console's chat.
+		const canChat = (record.allowedUsers.web ?? []).includes(person.id) && record.egress.channels.includes("web");
+		return { browser: options.browser, canChat };
 	};
 	const browserCall = async (work: () => Promise<BrowserState>) => {
 		try {
@@ -454,29 +458,36 @@ export function createWebApp(options: WebAppOptions): Server {
 	};
 	route("GET", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params }) => {
 		const { browser } = await browserThread(person as Person, params[0] as string, params[1] as string);
-		return { browser: await browser.state(params[0] as string, params[1] as string) };
+		return { browser: await browser.state(params[0] as string, params[1] as string), available: browser.available() };
 	});
 	route("GET", "/api/instances/:id/threads/:thread/browser.png", "person", async ({ person, params, res }) => {
 		const { browser } = await browserThread(person as Person, params[0] as string, params[1] as string);
 		const picture = await browser.picture(params[0] as string, params[1] as string);
 		if (picture === undefined) throw new HttpError(404, "Nessuna pagina aperta");
-		res.writeHead(200, { "content-type": "image/png", "content-length": picture.png.length, "x-content-type-options": "nosniff", "cache-control": "no-store", "x-annie-version": String(picture.version) });
+		res.writeHead(200, { "content-type": "image/png", "content-length": picture.png.length, "x-content-type-options": "nosniff", "cache-control": "no-store" });
 		res.end(picture.png);
 		return STREAMED;
 	});
 	route("POST", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params, req }) => {
-		const { browser, member } = await browserThread(person as Person, params[0] as string, params[1] as string);
-		if (!member) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
+		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
+		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
 		const body = (await readJson(req)) as { url?: unknown; back?: unknown };
 		const [instanceId, threadId] = [params[0] as string, params[1] as string];
 		if (body.back === true) return { browser: await browserCall(() => browser.back(instanceId, threadId)) };
 		if (typeof body.url !== "string" || body.url.trim() === "" || body.url.length > 2000) throw new HttpError(400, "Scrivi l'indirizzo di una pagina");
 		const raw = body.url.trim();
-		const url = /^[a-z][\w+.-]*:/i.test(raw) ? raw : `https://${raw}`;
-		const state = await browserCall(() => browser.open(instanceId, threadId, url));
-		// Which site, never the full address: the audit keeps who drove the agente's browser where.
-		await runtime.audit(tenantId).append({ type: "web.browser.opened", instanceId, personId: (person as Person).id, host: state.open ? new URL(state.url).host : "" });
-		return { browser: state };
+		const url = /^[a-z][\w+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+		// Which site, never the full address: the audit keeps who drove the agente's browser where, refused or not.
+		const host = URL.canParse(url) ? new URL(url).host : "";
+		const record = (ok: boolean) => runtime.audit(tenantId).append({ type: "web.browser.opened", instanceId, personId: (person as Person).id, host, ok });
+		try {
+			const state = await browserCall(() => browser.open(instanceId, threadId, url));
+			await record(true);
+			return { browser: state };
+		} catch (error) {
+			await record(false);
+			throw error;
+		}
 	});
 	// --- a chat's own model (ADR 0036): among the providers with a key that the owner allowed ---
 	route("GET", "/api/instances/:id/chat-models", "person", async ({ person, params }) => {

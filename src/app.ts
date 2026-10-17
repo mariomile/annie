@@ -32,11 +32,11 @@ import { createImageTools } from "./core/tools/image-tools.ts";
 import { createResearchTools } from "./core/tools/research-tools.ts";
 import { createExchangeTools } from "./core/tools/exchange-tools.ts";
 import { createWeatherTools } from "./core/tools/weather-tools.ts";
-import { createWebTools, refusal, webGuard } from "./core/tools/web-tools.ts";
+import { createWebTools, webGuard } from "./core/tools/web-tools.ts";
 import { ecbRates } from "./core/exchange-rates.ts";
 import { openMeteo } from "./core/weather.ts";
 import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
-import { type Browser, BrowseError, BrowseSessions, type BrowserState, sessionKey } from "./core/web-session.ts";
+import { type Browser, BrowseError, BrowseSessions, type BrowserState, type Guard, sessionKey } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
@@ -45,7 +45,7 @@ import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprov
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { type GoogleAction, type GoogleActionResult, googleActionReport, googleActionTitle, mimeMessage } from "./core/google-actions.ts";
-import { checkedUrl, publicAddress } from "./core/web-fetch.ts";
+import { checkedUrl, publicAddress, WebFetchRefused } from "./core/web-fetch.ts";
 import { readPage } from "./core/watches.ts";
 import { webHostAllowed } from "./core/policy.ts";
 import type { DurableEngine } from "./core/engine.ts";
@@ -219,6 +219,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// It runs with its own sandbox, or not at all unless the operator says so (ADR 0009); it gets no
 	// secrets in its environment, and no network: every request is answered by the guarded fetch.
 	let browser: Promise<Browser | undefined> | undefined;
+	/** The last try to start Chromium failed: the console says so instead of offering a browser. */
+	let chromiumFailed = false;
 	// Browsers open per conversation (web_browse, ADR 0014), in the same Chromium.
 	const browseSessions = new BrowseSessions();
 	const chromium = (): Promise<Browser | undefined> => {
@@ -234,11 +236,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				launched.on("disconnected", () => {
 					browser = undefined;
 				});
+				chromiumFailed = false;
 				return launched;
 			})
 			.catch((error: unknown) => {
 				log(`web: screenshots off: Chromium did not start${config.screenshotsWithoutSandbox ? "" : " with its sandbox (ANNIE_SCREENSHOTS_WITHOUT_SANDBOX=1 to accept running it without, ADR 0009)"}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
 				browser = undefined;
+				chromiumFailed = true;
 				return undefined;
 			});
 		return browser;
@@ -989,34 +993,37 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// The browser panel of a console conversation (ADR 0044): the conversation's own web_browse browser.
 	const panelKey = (instanceId: string, threadId: string) => sessionKey(`${tenant}/${instanceId}`, { channel: "web", threadId });
 	const panelGuard = async (instanceId: string) => webGuard((await runtime.registry.getInstance(tenant, instanceId)).egress, options.webAddressAllowed);
-	const panelAct = async (work: () => Promise<unknown>, key: string): Promise<BrowserState> => {
+	/** What the person reads when the panel cannot do it: the site refusal as it is, the rest in words of the panel, never a tool's name. */
+	const panelSentence = (error: unknown): string => {
+		// Often starts with the site's name, which keeps its own spelling.
+		if (error instanceof WebFetchRefused) return error.message;
+		if (error instanceof BrowseError && /troppi browser|non è disponibile/.test(error.message)) return error.message.charAt(0).toUpperCase() + error.message.slice(1);
+		if (error instanceof BrowseError && error.message.startsWith("nessuna pagina")) return "Non c'è una pagina aperta: scrivi un indirizzo qui sopra.";
+		if (error instanceof BrowseError) return "La pagina si è chiusa: riaprila scrivendo l'indirizzo qui sopra.";
+		return "La pagina non si apre: riprova tra poco.";
+	};
+	const panelAct = async (instanceId: string, threadId: string, work: (key: string, guard: Guard) => Promise<unknown>): Promise<BrowserState> => {
+		const key = panelKey(instanceId, threadId);
 		try {
-			await work();
+			await work(key, await panelGuard(instanceId));
 		} catch (error) {
-			// Annie's words for the same refusals, as a sentence for the person.
-			const why = error instanceof BrowseError ? error.message : refusal(error);
-			throw new BrowserPanelError(why.charAt(0).toUpperCase() + why.slice(1));
+			if (!(error instanceof WebFetchRefused || error instanceof BrowseError)) log(`web: browser panel: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+			throw new BrowserPanelError(panelSentence(error));
 		}
 		return browseSessions.state(key);
 	};
 	const browserPanel: BrowserPanel = {
-		state: (instanceId, threadId) => browseSessions.state(panelKey(instanceId, threadId)),
+		available: () => !chromiumFailed,
+		state: async (instanceId, threadId) => browseSessions.state(panelKey(instanceId, threadId)),
 		picture: (instanceId, threadId) => browseSessions.picture(panelKey(instanceId, threadId)),
-		open: async (instanceId, threadId, url) => {
-			const key = panelKey(instanceId, threadId);
-			const guard = await panelGuard(instanceId);
-			return panelAct(async () => {
+		open: (instanceId, threadId, url) =>
+			panelAct(instanceId, threadId, async (key, guard) => {
 				checkedUrl(url, guard);
 				const browser = await chromium();
 				if (browser === undefined) throw new BrowseError("il browser non è disponibile su questo server");
-				await browseSessions.open(key, browser, url, guard);
-			}, key);
-		},
-		back: async (instanceId, threadId) => {
-			const key = panelKey(instanceId, threadId);
-			const guard = await panelGuard(instanceId);
-			return panelAct(() => browseSessions.view(key, guard, { back: true }), key);
-		},
+				await browseSessions.open(key, browser, url, guard, { person: true });
+			}),
+		back: (instanceId, threadId) => panelAct(instanceId, threadId, (key, guard) => browseSessions.view(key, guard, { back: true, person: true })),
 	};
 	const server = createWebApp({
 		runtime,
