@@ -237,6 +237,18 @@ La BCE pubblica questi cambi solo a titolo informativo: non valgono per le opera
 4. `pnpm annie check` scarica i cambi del giorno e dice di che data sono.
 5. Dominio: `www.ecb.europa.eu`.
 
+### 18. Notizie: `ANNIE_NEWS=1`
+
+Senza questa variabile Annie non legge le notizie. Con `ANNIE_NEWS=1` risponde a «che notizie ci sono oggi?», «novità su Stellantis?», «le ultime di economia» o «cosa dice il Post sulle elezioni?» con i titoli recenti dei feed RSS e Atom di giornali e agenzie (tool `news_headlines`, il primo che Annie usa per le notizie; la ricerca sul web resta per i giornali che non ci sono e i fatti più vecchi di 72 ore): per ogni notizia la fonte, l'ora («alle 14:32», «ieri alle 9:10») e il link, che Annie apre con `web_read` quando ha gli strumenti web. Le notizie di oggi o di ieri, o fino a 72 ore indietro, al più 20 titoli per risposta; lo stesso titolo o lo stesso link una volta sola. L'argomento chiesto si cerca nei titoli e nei riassunti, singolare e plurale insieme, anche con sinonimi.
+
+L'elenco predefinito ha feed pubblici noti, ognuno con la sua sezione: ANSA (ultima ora, cronaca, politica, mondo, economia, tecnologia, sport), Rai News, Sky TG24, Corriere della Sera, la Repubblica, Il Post, Il Sole 24 Ore, BBC World e BBC Technology. Per le notizie in generale Annie legge solo quelli di ultima ora e Italia; gli altri quando la persona chiede un argomento, un giornale o una sezione.
+
+1. **Non serve una chiave.** Annie scarica solo gli indirizzi fissi dei feed: l'argomento chiesto si cerca nei titoli e nei riassunti sul server e non parte niente di chi scrive. Un feed che rimanda altrove si segue al più 3 volte, solo verso indirizzi https pubblici (mai la rete interna del server). Si accende con `ANNIE_NEWS=1`, come ogni servizio esterno.
+2. Facoltativo: `ANNIE_NEWS_FEEDS` sostituisce l'elenco predefinito. Al più 30 feed separati da `;`, ognuno `Nome|https://indirizzo`, con `|sezione` se vuoi (`ultima ora`, `italia`, `politica`, `mondo`, `economia`, `tecnologia`, `sport`): per esempio `Il Post|https://www.ilpost.it/feed/|italia;BBC World|https://feeds.bbci.co.uk/news/world/rss.xml|mondo`. Nomi da 1 a 40 caratteri, ognuno una volta; solo indirizzi https (`http://localhost` o `http://127.0.0.1` solo per i test), e un indirizzo non può contenere `;` (né `|`), che separano i feed. Il nome è quello che Annie mostra accanto a ogni titolo e che la persona usa per scegliere la fonte.
+3. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
+4. `pnpm annie check` scarica ogni feed (15 secondi ciascuno) e li elenca tutti per nome, con l'esito, mai per indirizzo: se qualcuno non va, o risponde senza notizie datate, è un avviso che li nomina, se non ne risponde nessuno è un errore. Gli indirizzi dell'elenco predefinito vanno verificati così alla prima sessione con la rete.
+5. Domini: `www.ansa.it`, `www.rainews.it`, `tg24.sky.it`, `xml2.corriereobjects.it`, `www.repubblica.it`, `www.ilpost.it`, `www.ilsole24ore.com`, `feeds.bbci.co.uk`, o quelli dei feed in `ANNIE_NEWS_FEEDS` (e dei siti a cui rimandano).
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -252,6 +264,7 @@ La BCE pubblica questi cambi solo a titolo informativo: non valgono per le opera
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
 | Ricerca sul web | `api.search.brave.com` |
 | Cambi delle valute | `www.ecb.europa.eu` |
+| Notizie | `www.ansa.it`, `www.rainews.it`, `tg24.sky.it`, `xml2.corriereobjects.it`, `www.repubblica.it`, `www.ilpost.it`, `www.ilsole24ore.com`, `feeds.bbci.co.uk` (o i domini dei feed in `ANNIE_NEWS_FEEDS`, e dei siti a cui rimandano) |
 | Meteo | `api.open-meteo.com`, `geocoding-api.open-meteo.com` (con un piano, `customer-api.open-meteo.com` e il dominio di ricerca indicato da Open-Meteo) |
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
 | Immagini | `api.openai.com` (o il servizio scelto) |

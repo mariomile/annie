@@ -173,6 +173,10 @@ _Avoid_: previsioni del tempo (quando si intende il tool), forecast
 Il tasso di riferimento dell'euro pubblicato dalla Banca Centrale Europea nei giorni lavorativi verso le 16:00, che `exchange_rate` usa per convertire importi, oggi o alla data di una fattura. Per un giorno senza pubblicazione vale l'ultimo giorno lavorativo prima. Acceso dall'operatore con `ANNIE_EXCHANGE_RATES`. Vedi ADR 0040.
 _Avoid_: tasso di mercato, quotazione (quando si intende il cambio BCE)
 
+**Feed di notizie**:
+Il file RSS o Atom pubblico di un giornale, da cui `news_headlines` prende i titoli recenti con fonte, ora e link. La lista la sceglie l'operatore (`ANNIE_NEWS_FEEDS`), con una di partenza; acceso con `ANNIE_NEWS`. Vedi ADR 0043.
+_Avoid_: notiziario, rassegna stampa (quando si intendono i titoli dei feed)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

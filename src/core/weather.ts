@@ -135,7 +135,7 @@ export function openMeteo(config: WeatherConfig, fetchImpl: typeof fetch = fetch
 function weatherError(withKey: boolean): (problem: HttpProblem) => WeatherError {
 	return (problem) => {
 		if (problem.kind !== "status") {
-			return new WeatherError({ unreachable: "il servizio meteo non risponde", too_big: "il servizio meteo ha mandato una risposta troppo grande", unreadable: "il servizio meteo ha risposto in modo illeggibile" }[problem.kind]);
+			return new WeatherError({ unreachable: "il servizio meteo non risponde", too_big: "il servizio meteo ha mandato una risposta troppo grande", unreadable: "il servizio meteo ha risposto in modo illeggibile", redirect: "il servizio meteo rimanda a un indirizzo non consentito" }[problem.kind]);
 		}
 		const { status } = problem;
 		if (status === 401 || status === 403) return new WeatherError(withKey ? "il servizio meteo rifiuta la chiave del server" : "il servizio meteo rifiuta la richiesta: per un uso commerciale serve un piano a pagamento e ANNIE_WEATHER_API_KEY");
