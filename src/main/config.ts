@@ -1,4 +1,5 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
+import { DEFAULT_FORECAST_URL, DEFAULT_GEOCODING_URL, type WeatherConfig } from "../core/weather.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
 import { TIMESTAMP_STYLES, type TimestampStyle, type TranscriberConfig } from "../channels/voice.ts";
@@ -165,11 +166,38 @@ export type AnnieConfig = {
 	readonly images: ImageGenerationConfig | undefined;
 	/** Web search for the instances (ADR 0017): Brave Search, or the same API elsewhere; off if unset. */
 	readonly webSearch: WebSearchConfig | undefined;
+	/** The weather tool (Open-Meteo, or the same APIs elsewhere), when the operator turns it on with ANNIE_WEATHER=1. */
+	readonly weather: WeatherConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
 	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
 	readonly computer: ComputerConfig | undefined;
 };
+
+/**
+ * ANNIE_WEATHER=1 and its overrides: place names and coordinates leave the server only when
+ * the operator says so. Open-Meteo needs no key for non-commercial use.
+ */
+function loadWeatherConfig(env: Readonly<Record<string, string | undefined>>): WeatherConfig | undefined {
+	const on = nonEmpty(env.ANNIE_WEATHER);
+	if (on !== undefined && !["0", "1", "true", "false"].includes(on)) throw new ConfigError("ANNIE_WEATHER: 1 to offer the weather tool (Open-Meteo), 0 (default) for no weather");
+	const overrides = ["ANNIE_WEATHER_URL", "ANNIE_WEATHER_GEOCODING_URL", "ANNIE_WEATHER_API_KEY", "ANNIE_WEATHER_MAX_PER_DAY"].filter((name) => nonEmpty(env[name]) !== undefined);
+	if (on !== "1" && on !== "true") {
+		if (overrides.length > 0) throw new ConfigError(`${overrides.join(", ")} set without ANNIE_WEATHER=1`);
+		return undefined;
+	}
+	const url = (name: string, fallback: string) => {
+		const value = nonEmpty(env[name]) ?? fallback;
+		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(value) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(value)) throw new ConfigError(`${name}: an https address, e.g. ${fallback}`);
+		return value;
+	};
+	const forecastUrl = url("ANNIE_WEATHER_URL", DEFAULT_FORECAST_URL);
+	const geocodingUrl = url("ANNIE_WEATHER_GEOCODING_URL", DEFAULT_GEOCODING_URL);
+	const maxPerDay = Number(nonEmpty(env.ANNIE_WEATHER_MAX_PER_DAY) ?? "500");
+	if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_WEATHER_MAX_PER_DAY: a whole number from 1 to 100000");
+	const apiKey = nonEmpty(env.ANNIE_WEATHER_API_KEY);
+	return { forecastUrl, geocodingUrl, ...(apiKey === undefined ? {} : { apiKey }), maxPerDay };
+}
 
 export type ComputerConfig =
 	| { readonly kind: "docker"; readonly image: string; readonly socketPath: string; readonly runtime?: string; readonly memoryMb: number; readonly cpus: number; readonly diskMb: number }
@@ -326,6 +354,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	} else if (nonEmpty(env.ANNIE_SEARCH_URL) !== undefined) {
 		throw new ConfigError("ANNIE_SEARCH_URL is set without ANNIE_SEARCH_API_KEY");
 	}
+	const weather = loadWeatherConfig(env);
 	const computer = loadComputerConfig(env);
 	const token = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	const telegram = token === undefined ? undefined : { token, allowedUsers: ids("ANNIE_TELEGRAM_ALLOWED_USERS"), approvers: ids("ANNIE_TELEGRAM_APPROVERS"), webhookSecret };
@@ -372,6 +401,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		speech,
 		images,
 		webSearch,
+		weather,
 		computer,
 		phone: { apiBase: (nonEmpty(env.ANNIE_TWILIO_API) ?? "https://api.twilio.com").replace(/\/$/, ""), voice: nonEmpty(env.ANNIE_PHONE_VOICE) ?? "Polly.Bianca" },
 	};

@@ -33,6 +33,8 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	if (speech !== undefined) checks.push(check("Risposte a voce", () => speechCheck(speech, call)));
 	const search = config.webSearch;
 	if (search !== undefined) checks.push(check("Ricerca sul web", () => searchCheck(search, call)));
+	const weather = config.weather;
+	if (weather !== undefined) checks.push(check("Meteo", () => weatherCheck(weather, call)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	return Promise.all(checks);
@@ -118,6 +120,19 @@ async function searchCheck(config: { url: string; apiKey: string; country: strin
 	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_SEARCH_API_KEY");
 	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_SEARCH_URL`);
 	return `chiave valida, ${url.host} risponde`;
+}
+
+/** One place everyone has: the service answers (with the key, on a commercial plan). No forecast is asked. */
+async function weatherCheck(config: { geocodingUrl: string; apiKey?: string }, call: Call): Promise<string> {
+	const url = new URL(config.geocodingUrl);
+	url.searchParams.set("name", "Roma");
+	url.searchParams.set("count", "1");
+	url.searchParams.set("format", "json");
+	if (config.apiKey !== undefined) url.searchParams.set("apikey", config.apiKey);
+	const response = await reach(call, url.toString(), { headers: { accept: "application/json" } });
+	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_WEATHER_API_KEY");
+	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_WEATHER_GEOCODING_URL`);
+	return `${url.host} risponde${config.apiKey === undefined ? "" : ", chiave valida"} (previsioni non provate: chiedi il meteo)`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {

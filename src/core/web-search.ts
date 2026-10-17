@@ -58,7 +58,7 @@ export function braveSearch(config: WebSearchConfig, fetchImpl: typeof fetch = f
 					response.status === 401 || response.status === 403 ? "il servizio di ricerca rifiuta la chiave del server" : response.status === 429 ? "troppe ricerche in poco tempo, riprova fra poco" : `il servizio di ricerca risponde ${response.status}`,
 				);
 			}
-			text = await capped(response, MAX_BODY);
+			text = await capped(response, MAX_BODY, () => new WebSearchError("il servizio di ricerca ha mandato una risposta troppo grande"));
 		} catch (error) {
 			if (error instanceof WebSearchError) throw error;
 			throw new WebSearchError("il servizio di ricerca non risponde");
@@ -84,8 +84,8 @@ export function braveSearch(config: WebSearchConfig, fetchImpl: typeof fetch = f
 	};
 }
 
-/** The body as text, refused past `max` bytes. */
-async function capped(response: Response, max: number): Promise<string> {
+/** The body as text, refused past `max` bytes with the caller's error. */
+export async function capped(response: Response, max: number, tooBig: () => Error): Promise<string> {
 	const reader = response.body?.getReader();
 	if (reader === undefined) return "";
 	const chunks: Uint8Array[] = [];
@@ -96,7 +96,7 @@ async function capped(response: Response, max: number): Promise<string> {
 		size += value.length;
 		if (size > max) {
 			await reader.cancel().catch(() => {});
-			throw new WebSearchError("il servizio di ricerca ha mandato una risposta troppo grande");
+			throw tooBig();
 		}
 		chunks.push(value);
 	}
@@ -130,7 +130,7 @@ export function dailyCounter(max: number, now: () => Date = () => new Date()): {
 }
 
 /** Text without tags or entities the service may still put in. */
-function plain(value: unknown): string {
+export function plain(value: unknown): string {
 	if (typeof value !== "string") return "";
 	return value
 		.replace(/<[^>]*>/g, "")
