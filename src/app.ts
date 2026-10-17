@@ -593,6 +593,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		secureCookies: config.web.publicUrl?.startsWith("https://") ?? false,
 		defaultTimeZone: config.timeZone,
 		watchRead: (instance, url) => watchReader(instance)(url),
+		defaultInstructions: DEFAULT_INSTRUCTIONS,
 		telegramHooks,
 		whatsappHooks: whatsapps,
 		phoneHooks: phones,

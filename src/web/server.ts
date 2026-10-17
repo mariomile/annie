@@ -81,6 +81,8 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** The instructions a new instance starts with: «Primi passi» asks the owner to add their own. */
+	readonly defaultInstructions?: string;
 	/** Read a page under an instance's policy, for a sentinella's first look (ADR 0018). */
 	readonly watchRead?: (instanceId: string, url: string) => Promise<{ title: string; text: string }>;
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
@@ -161,12 +163,18 @@ const STATIC: Record<string, string> = {
 	"/app.js": "app.js",
 	"/app.css": "app.css",
 	"/icon.svg": "icon.svg",
+	"/icon-192.png": "icon-192.png",
+	"/icon-512.png": "icon-512.png",
+	"/icon-maskable-512.png": "icon-maskable-512.png",
+	"/apple-touch-icon.png": "apple-touch-icon.png",
+	"/manifest.webmanifest": "manifest.webmanifest",
+	"/sw.js": "sw.js",
 	"/fonts/geist-latin.woff2": "fonts/geist-latin.woff2",
 	"/fonts/geist-latin-ext.woff2": "fonts/geist-latin-ext.woff2",
 	"/fonts/geist-mono-latin.woff2": "fonts/geist-mono-latin.woff2",
 	"/fonts/geist-mono-latin-ext.woff2": "fonts/geist-mono-latin-ext.woff2",
 };
-const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
+const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 /** The web console and web channel of one tenant. */
 export function createWebApp(options: WebAppOptions): Server {
@@ -738,7 +746,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { settings: { name: r.name, instructions: r.instructions ?? "", model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {} } };
 	});
 	route("PUT", "/api/instances/:id/settings", "owner", async ({ params, req }) => {
-		const body = (await readJson(req)) as { name?: string; instructions?: string; webPeople?: string[]; webApprovers?: string[] };
+		const body = (await readJson(req)) as { name?: string; instructions?: string; about?: string; webPeople?: string[]; webApprovers?: string[] };
 		const id = params[0] as string;
 		const people = new Set((await options.people.list()).map((p) => p.id));
 		const pick = (list: unknown) => (Array.isArray(list) ? list.map(String).filter((x) => people.has(x)) : undefined);
@@ -752,10 +760,40 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.updateInstance(tenantId, id, {
 			...(typeof body.name === "string" ? { name: body.name.slice(0, 80) } : {}),
 			...(typeof body.instructions === "string" ? { instructions: body.instructions.slice(0, 20_000) || null } : {}),
+			// From «Primi passi»: who the owner is, added to the instructions so what Annie can do stays said.
+			...(typeof body.about === "string" && body.about.trim() !== "" ? { instructions: `${record.instructions ?? ""}\n\nChi ti usa e come:\n${body.about.trim()}`.trim().slice(0, 20_000) } : {}),
 			...(webApprovers === undefined ? {} : { approvers: { ...(record.approvers ?? {}), web: webApprovers } }),
 		});
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
+	});
+	// --- primo avvio: what is left to make the instance useful, checked from the real settings ---
+	route("GET", "/api/instances/:id/setup", "owner", async ({ person, params }) => {
+		const { record } = await instanceAccess(person as Person, params[0] as string);
+		const connected = async (status: (() => Promise<{ connected: boolean }>) | undefined) => (status === undefined ? false : (await status().catch(() => ({ connected: false }))).connected);
+		const channel = channelOf(record.id);
+		const threads = await channel.threads((person as Person).id);
+		let tried = false;
+		for (const thread of threads.slice(0, 10)) {
+			if ((await channel.transcript(thread.id)).some((e) => e.from === "annie")) {
+				tried = true;
+				break;
+			}
+		}
+		const tg = options.telegram;
+		const wa = options.whatsapp;
+		const ph = options.phone;
+		return {
+			setup: {
+				// The local development model answers with an echo: a real model is the operator's key.
+				model: record.model.provider !== "faux",
+				instructions: (record.instructions ?? "").trim() !== "" && record.instructions !== options.defaultInstructions,
+				tried,
+				channel: (await connected(tg && (() => tg.status(record.id)))) || (await connected(wa && (() => wa.status(record.id)))) || (await connected(ph && (() => ph.status(record.id)))),
+				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
+				people: (await options.people.list()).length > 1,
+			},
+		};
 	});
 	// --- memoria: each person sees what the instance remembers about them, and the shared facts ---
 	const subjectOfPerson = (p: Person) => subjectOf("web", p.id);
@@ -1282,7 +1320,9 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
 		const data = await readFile(join(options.uiDir, name));
-		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": name === "index.html" ? "no-store" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300" });
+		// The service worker is checked for a new version at every visit.
+		const cache = name === "index.html" ? "no-store" : name === "sw.js" ? "no-cache" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
+		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": cache });
 		res.end(data);
 	}
 
@@ -1310,7 +1350,7 @@ function publicWatch(watch: Watch) {
 }
 
 function securityHeaders(res: ServerResponse): void {
-	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
 	res.setHeader("x-content-type-options", "nosniff");
 	res.setHeader("referrer-policy", "no-referrer");
 	res.setHeader("x-frame-options", "DENY");

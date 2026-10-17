@@ -2,6 +2,16 @@
 // model is only ever set with textContent: never innerHTML.
 
 const $app = document.getElementById("app");
+
+// replaceChildren with h()'s rules: null, false and undefined add nothing (not the text "null"),
+// and lists are flattened, so views can pass optional parts and sections as they are.
+const nativeReplaceChildren = Element.prototype.replaceChildren;
+Element.prototype.replaceChildren = function (...children) {
+	nativeReplaceChildren.apply(
+		this,
+		children.flat(Infinity).filter((c) => c !== undefined && c !== null && c !== false),
+	);
+};
 const $toasts = document.getElementById("toasts");
 
 /** h("div.card.pad", { onclick }, "text", child) — safe DOM builder. */
@@ -29,6 +39,8 @@ function h(spec, attrs, ...children) {
 }
 
 const ICONS = {
+	inizia: ["M5 21V4", "M5 4h11l-2 4 2 4H5"],
+	install: ["M12 3v12", "m7 10 5 5 5-5", "M5 21h14"],
 	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
 	segreteria: ["M3 13h5l1.5 2.5h5L16 13h5", "M5.5 5h13L21 13v6H3v-6Z"],
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
@@ -114,11 +126,14 @@ const state = {
 	usage: undefined,
 	pendingApprovals: 0,
 	unread: new Set(),
+	/** Steps of «Primi passi» still to do, for the owner; 0 when done or put away. */
+	setupLeft: 0,
 	events: undefined,
 	onEntry: undefined,
 };
 
 const PALETTE = [
+	{ id: "inizia", label: "Primi passi", group: "Lavoro", owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft },
 	{ id: "chat", label: "Chat", group: "Lavoro" },
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
@@ -138,6 +153,42 @@ function route() {
 
 function go(view, ...rest) {
 	location.hash = `#/${[view, ...rest].map(encodeURIComponent).join("/")}`;
+}
+
+// ---------- app on the phone (PWA) ----------
+/** The browser's install offer, kept for the «Installa» button; undefined where there is none (iOS, already installed). */
+let installOffer;
+window.addEventListener("beforeinstallprompt", (event) => {
+	event.preventDefault();
+	installOffer = event;
+	if (state.me) renderRail();
+});
+window.addEventListener("appinstalled", () => {
+	installOffer = undefined;
+	store("annie.app", "installed");
+	if (state.me) render();
+});
+// Only on https or on this machine: elsewhere browsers refuse it, and the console works the same.
+if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
+const offlineBar = () => document.body.classList.toggle("offline", !navigator.onLine);
+window.addEventListener("online", offlineBar);
+window.addEventListener("offline", offlineBar);
+offlineBar();
+
+function installed() {
+	return window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true || store("annie.app") === "installed";
+}
+
+async function install() {
+	if (!installOffer) return;
+	installOffer.prompt();
+	const { outcome } = await installOffer.userChoice;
+	installOffer = undefined;
+	if (outcome === "accepted") {
+		store("annie.app", "installed");
+		toast("Annie è sulla schermata Home");
+	}
+	render();
 }
 
 // ---------- boot ----------
@@ -162,12 +213,20 @@ async function boot() {
 async function enter() {
 	try {
 		state.me = (await api("/api/me")).person;
-	} catch {
+	} catch (error) {
+		// Opened from the home screen without network: the shell says so and comes back by itself.
+		if (!(error instanceof ApiError)) {
+			$app.replaceChildren(h("div.empty", h("b", "Sei offline"), "Annie si riapre da sola appena torna la rete."));
+			window.addEventListener("online", () => location.reload(), { once: true });
+		}
 		return;
 	}
 	await refreshInstances();
 	if (location.hash.startsWith("#/google?")) await finishGoogle();
 	connectEvents();
+	await refreshSetup();
+	// An owner with steps left lands on them when they open the console without a page in mind.
+	if ((location.hash === "" || location.hash === "#/") && state.setupLeft > 0) history.replaceState(null, "", "#/inizia");
 	window.addEventListener("hashchange", render);
 	render();
 	setInterval(refreshCounters, 30_000);
@@ -178,6 +237,19 @@ async function refreshInstances() {
 	const saved = store("annie.instance");
 	state.instance = state.instances.find((i) => i.id === saved) ?? state.instances[0];
 	await refreshCounters();
+}
+
+/** How many «Primi passi» are left, for the owner of the current instance. */
+async function refreshSetup() {
+	state.setupLeft = 0;
+	if (state.me?.role !== "owner" || !state.instance || store("annie.setup.hidden") === state.instance.id) return;
+	try {
+		const { setup } = await api(`/api/instances/${state.instance.id}/setup`);
+		state.setup = setup;
+		state.setupLeft = setupSteps(setup).filter((s) => !s.done).length;
+	} catch {
+		/* not shown */
+	}
 }
 
 async function refreshCounters() {
@@ -590,7 +662,7 @@ function render() {
 	$app.replaceChildren(shell);
 	renderRail();
 	state.onEntry = undefined;
-	const views = { chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		main.replaceChildren(h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -628,7 +700,7 @@ function renderRail() {
 							onchange: (e) => {
 								state.instance = state.instances.find((i) => i.id === e.target.value);
 								store("annie.instance", state.instance.id);
-								render();
+								void refreshSetup().then(render);
 							},
 						},
 						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, i.name)),
@@ -637,6 +709,7 @@ function renderRail() {
 			: h("div.instance-pick", h("label", "Istanza"), h("div.mono", state.instance?.name ?? "nessuna")),
 		state.me.role === "owner" ? h("button.add-instance", { onclick: instanceForm }, icon("plus"), h("span", "Nuova istanza")) : null,
 		nav,
+		...(installOffer && !installed() ? [h("button.add-instance", { onclick: install }, icon("install"), h("span", "Installa l'app"))] : []),
 		h(
 			"div.rail-foot",
 			u
@@ -806,6 +879,7 @@ async function viewChat(main) {
 				"div.welcome",
 				h("h2", "Di cosa hai bisogno?"),
 				h("p", "Annie risponde, prepara file, programma promemoria e usa i connettori della tua azienda. Le azioni delicate passano sempre da un'approvazione."),
+				state.setupLeft > 0 ? h("p", h("a", { href: "#/inizia" }, `Primi passi: ne mancano ${state.setupLeft}`)) : null,
 				h(
 					"div.hints",
 					["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t, t.includes("foto")) }, t)),
@@ -1215,6 +1289,90 @@ async function viewApprovals(main) {
 			pending.map(card),
 			drafts.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria, i moduli da inviare e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."),
 			decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
+		),
+	);
+}
+
+// ---------- primi passi ----------
+const TEMPLATES = [
+	["Assistente personale", "Sei l'assistente personale di chi ti scrive. Rispondi in italiano, breve e diretta. Prima di fare qualcosa che manda messaggi o spende soldi, chiedi conferma."],
+	["Negozio o studio", "Sei l'assistente di [nome dell'attività], a [città]. Aiuti il titolare con clienti, ordini e appuntamenti. Tono cordiale e professionale. Non promettere prezzi o date senza conferma."],
+	["Team di lavoro", "Sei l'assistente del team di [azienda]. Prepari riassunti, documenti e promemoria, e cerchi informazioni aggiornate citando le fonti. Rispondi in italiano, in punti quando serve."],
+];
+
+/** The steps of «Primi passi», from what the server checked and what this browser knows. */
+function setupSteps(setup) {
+	return [
+		{ id: "model", done: setup.model, title: "Un modello vero", text: setup.model ? "Annie usa un modello vero." : "Ora risponde il modello di prova, che ripete quello che scrivi. Chi gestisce il server imposta il modello e la sua chiave (docs/chiavi.md)." },
+		{ id: "instructions", done: setup.instructions, title: "Dille chi è e cosa fa", text: "Due righe su di te o sulla tua azienda, il tono e cosa deve fare. Puoi partire da un esempio; le aggiungo a quello che Annie sa già fare, e le cambi quando vuoi in Impostazioni." },
+		{ id: "tried", done: setup.tried, title: "Scrivile qualcosa", text: "Una domanda, una foto, un file da riassumere: vedi subito come risponde.", go: "chat" },
+		{ id: "channel", done: setup.channel, title: "Usala dal telefono", text: "Collega Telegram o WhatsApp: le scrivi, le mandi vocali e foto, e ti avvisa lei.", go: "impostazioni" },
+		{ id: "web", done: setup.web, title: "Lasciala cercare sul web", text: "Accendi la ricerca e scegli i siti che può aprire: notizie, prezzi, orari aggiornati.", go: "impostazioni" },
+		{ id: "people", done: setup.people, title: "Invita il tuo team", text: "Ognuno ha le sue chat e la sua memoria; tu decidi chi approva le azioni delicate.", go: "persone" },
+		{ id: "app", done: installed(), title: "Installa la console come app", text: "Annie sulla schermata Home, a schermo intero, come un'app." },
+	];
+}
+
+async function viewStart(main) {
+	const inst = state.instance;
+	const { setup } = await api(`/api/instances/${inst.id}/setup`);
+	state.setup = setup;
+	const steps = setupSteps(setup);
+	state.setupLeft = steps.filter((s) => !s.done).length;
+	renderRail();
+	const instructions = h("textarea", { rows: 4, placeholder: "Es. Sei l'assistente di Studio Rossi a Roma: aiuti con clienti e appuntamenti, in italiano, tono cordiale." });
+	const saveInstructions = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/settings`, { method: "PUT", body: { about: instructions.value } });
+			toast("Istruzioni salvate");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+	const extra = {
+		instructions: () =>
+			h(
+				"div.stack",
+				h("div.hints", TEMPLATES.map(([label, text]) => h("button", { type: "button", onclick: () => (instructions.value = text) }, label))),
+				instructions,
+				h("div.row-gap", h("button.btn.accent", { onclick: saveInstructions }, "Salva")),
+			),
+		app: () =>
+			installOffer
+				? h("button.btn.accent", { onclick: install }, icon("install"), "Installa")
+				: h("p.muted", ios ? "Su iPhone: apri questa pagina in Safari, tocca Condividi e poi «Aggiungi alla schermata Home»." : "Dal menu del browser scegli «Installa app» o «Aggiungi a schermata Home». Serve l'indirizzo https della console."),
+	};
+	const done = steps.filter((s) => s.done).length;
+	main.replaceChildren(
+		head(
+			inst.name,
+			h("h1", "Primi passi"),
+			`${done} di ${steps.length} fatti. Ogni passo rende Annie più utile; li puoi fare in qualsiasi ordine.`,
+			h(
+				"button.btn.small.ghost",
+				{
+					onclick: () => {
+						store("annie.setup.hidden", inst.id);
+						state.setupLeft = 0;
+						go("chat");
+					},
+				},
+				"Nascondi",
+			),
+		),
+		h(
+			"ol.steps",
+			steps.map((step) =>
+				h(
+					`li.card.pad${step.done ? ".done" : ""}`,
+					h("div.row-gap", step.done ? h("span.chip.ok", "fatto") : h("span.chip", "da fare"), h("b", step.title)),
+					h("p.muted", step.text),
+					!step.done && extra[step.id] ? extra[step.id]() : null,
+					!step.done && step.go ? h("button.btn.small", { onclick: () => go(step.go) }, "Vai") : null,
+				),
+			),
 		),
 	);
 }
