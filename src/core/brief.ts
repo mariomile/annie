@@ -36,10 +36,11 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
  * to carry data out. exchange_rate sends nothing derived from what anyone wrote: it fetches a
  * fixed public file of the ECB. news_headlines fetches only the feeds the operator fixed, and
  * filters them here: nothing derived from a mail, its topic included, is sent anywhere.
- * vat_check is left out on purpose: the number it checks would come from a mail's text and go to
- * the VIES, and a brief has no use for it; a mail could also spend the account's daily VIES quota.
+ * vat_check runs here on paper only (app.ts passes it the brief's threads as offlineIn): the
+ * number would come from a mail's text, so it never goes to the VIES nor spends the account's
+ * daily VIES quota; the formal check reads nothing and sends nothing.
  */
-const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate", "news_headlines"]);
+const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate", "news_headlines", "vat_check"]);
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or

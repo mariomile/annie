@@ -6,14 +6,20 @@
  */
 import { INVISIBLE } from "./html-text.ts";
 import { getJson, type HttpProblem, plain, type RedirectRule } from "./http.ts";
-import { EU_VAT_COUNTRIES, type EuVatCountry } from "./tax-ids.ts";
+import { EU_VAT_COUNTRIES, type EuVatCountry, euVatProblem } from "./tax-ids.ts";
+import { dailyCounter } from "./web-search.ts";
 
 export type ViesConfig = {
 	/** The REST API's base, e.g. https://ec.europa.eu/taxation_customs/vies/rest-api. */
 	readonly url: string;
 	/** Requests to the VIES a tenant may make in a day, all its instances together (cached answers are free). */
 	readonly maxPerDay: number;
+	/** Requests to the VIES the whole server may make in a day, every tenant together: the VIES blocks an address that asks too much. */
+	readonly maxPerDayServer: number;
 };
+
+/** The server's requests a day unless the operator says otherwise: ten accounts at their default. */
+export const DEFAULT_MAX_PER_DAY_SERVER = 2000;
 
 export const DEFAULT_VIES_URL = "https://ec.europa.eu/taxation_customs/vies/rest-api";
 
@@ -39,7 +45,7 @@ export type ViesAnswer = {
 };
 
 /** The VIES's own errors, and ours: the network, an answer we cannot read, the day's quota. */
-export type ViesErrorCode =
+type ViesErrorCode =
 	| "INVALID_INPUT"
 	| "MS_UNAVAILABLE"
 	| "MS_MAX_CONCURRENT_REQ"
@@ -52,6 +58,9 @@ export type ViesErrorCode =
 	| "UNREADABLE"
 	| "DAILY_LIMIT";
 
+/** Errors that pass by themselves: a member state down, a busy or unavailable VIES. Worth trying again in a few minutes. */
+const TEMPORARY: ReadonlySet<ViesErrorCode> = new Set(["MS_UNAVAILABLE", "MS_MAX_CONCURRENT_REQ", "GLOBAL_MAX_CONCURRENT_REQ", "TIMEOUT", "SERVICE_UNAVAILABLE"]);
+
 /** Why there is no answer, in Italian; never the address. */
 export class ViesError extends Error {
 	constructor(
@@ -60,14 +69,20 @@ export class ViesError extends Error {
 	) {
 		super(message);
 	}
+
+	/** It may pass by itself: try again in a few minutes. */
+	get temporary(): boolean {
+		return TEMPORARY.has(this.code);
+	}
 }
 
 export type Vies = {
 	/**
-	 * The VIES's answer for a number already checked on paper (tax-ids.ts). `allow` is asked only
-	 * when a request would leave, and counts it: a cached answer costs nothing.
+	 * The VIES's answer for `tenant`, for a number already checked on paper (tax-ids.ts, checked
+	 * again here). `allow` (the tenant's daily quota) is asked only when a request would leave,
+	 * and counts it: a cached answer costs nothing.
 	 */
-	check(country: EuVatCountry, number: string, allow: () => boolean): Promise<ViesAnswer>;
+	check(tenant: string, country: EuVatCountry, number: string, allow: () => boolean): Promise<ViesAnswer>;
 };
 
 export type ViesOptions = {
@@ -83,7 +98,7 @@ const TIMEOUT_MS = 10_000;
 const ANSWER_TTL_MS = 60 * MINUTE;
 /** A member state down, a busy VIES or a failed request: two minutes, then asked again. */
 const FAILURE_TTL_MS = 2 * MINUTE;
-/** Numbers kept at most: past this the oldest goes. */
+/** Numbers kept at most, every tenant together: past this the oldest goes. */
 const MAX_CACHED = 2000;
 const NAME_CHARS = 200;
 const ADDRESS_CHARS = 300;
@@ -94,18 +109,27 @@ const NO_REDIRECTS: RedirectRule = { max: 0, allowed: async () => false };
 
 type Entry = { readonly at: number; readonly result: Promise<ViesAnswer>; ttl: number };
 
-/** The VIES REST API at `config.url`, each number's answer kept an hour (a failure two minutes). */
-export function viesClient(config: Pick<ViesConfig, "url">, fetchImpl: typeof fetch = fetch, now: () => Date = () => new Date(), options: ViesOptions = {}): Vies {
+/**
+ * The VIES REST API at `config.url`, each tenant's answer for a number kept an hour (a failure two
+ * minutes): a tenant never sees when another one checked. At most `maxPerDayServer` requests a day
+ * leave the server, whatever each tenant's own quota.
+ */
+export function viesClient(config: Pick<ViesConfig, "url"> & Partial<Pick<ViesConfig, "maxPerDayServer">>, fetchImpl: typeof fetch = fetch, now: () => Date = () => new Date(), options: ViesOptions = {}): Vies {
 	const cache = new Map<string, Entry>();
 	const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+	const server = dailyCounter(config.maxPerDayServer ?? DEFAULT_MAX_PER_DAY_SERVER, now);
 	return {
-		check(country, number, allow) {
-			const key = `${country}${number}`;
+		check(tenant, country, number, allow) {
+			// Only well-formed numbers leave, whoever calls.
+			if (euVatProblem(country, number) !== undefined) return Promise.reject(new ViesError("INVALID_INPUT", `il numero non ha la forma di un numero IVA ${EU_VAT_COUNTRIES[country].of}`));
+			const key = `${tenant}:${country}${number}`;
 			const at = now().getTime();
 			const hit = cache.get(key);
 			if (hit !== undefined && at - hit.at < hit.ttl) return hit.result;
-			// Not cached: the quota is asked before anything leaves, and a refusal is not kept.
+			// Not cached: the quotas are asked before anything leaves, the server's spent only if the tenant's allows; a refusal is not kept.
+			if (server.left("") < 1) return Promise.reject(new ViesError("DAILY_LIMIT", "per oggi i controlli nel VIES di questo server sono finiti"));
 			if (!allow()) return Promise.reject(new ViesError("DAILY_LIMIT", "per oggi i controlli nel VIES di questo account sono finiti"));
+			server.spend("", 1);
 			const entry: Entry = { at, ttl: ANSWER_TTL_MS, result: ask(config.url, country, number, { fetchImpl, timeoutMs, now }) };
 			entry.result.catch((error: unknown) => {
 				// A malformed number stays malformed; anything else may pass.
@@ -151,34 +175,36 @@ function errorCodeOf(body: Record<string, unknown>): string | undefined {
 
 /** Each error the VIES documents, in Italian, with what to do. */
 function viesError(code: string, country: EuVatCountry): ViesError {
-	const state = EU_VAT_COUNTRIES[country].name;
+	const state = EU_VAT_COUNTRIES[country].of;
 	switch (code) {
 		case "INVALID_INPUT":
-			return new ViesError("INVALID_INPUT", `il VIES non accetta il numero: non ha la forma di un numero IVA di ${state}`);
+			// Only numbers written right are sent: a refusal is the VIES's, not the number's.
+			return new ViesError("INVALID_INPUT", "il VIES non accetta il numero in questo momento");
 		case "MS_UNAVAILABLE":
-			return new ViesError("MS_UNAVAILABLE", `il servizio di ${state} non risponde al VIES in questo momento (succede spesso di notte e nei fine settimana): riprova fra qualche minuto`);
+			return new ViesError("MS_UNAVAILABLE", `il servizio ${state} non risponde al VIES in questo momento (succede spesso di notte e nei fine settimana)`);
 		case "MS_MAX_CONCURRENT_REQ":
-			return new ViesError("MS_MAX_CONCURRENT_REQ", `il servizio di ${state} ha troppe richieste in questo momento: riprova fra qualche minuto`);
+		case "MS_MAX_CONCURRENT_REQ_TIME":
+			return new ViesError("MS_MAX_CONCURRENT_REQ", `il servizio ${state} ha troppe richieste in questo momento`);
 		case "GLOBAL_MAX_CONCURRENT_REQ":
 		case "GLOBAL_MAX_CONCURRENT_REQ_TIME":
-		case "MS_MAX_CONCURRENT_REQ_TIME":
-			return new ViesError("GLOBAL_MAX_CONCURRENT_REQ", "il VIES ha troppe richieste in questo momento: riprova fra qualche minuto");
+			return new ViesError("GLOBAL_MAX_CONCURRENT_REQ", "il VIES ha troppe richieste in questo momento");
 		case "TIMEOUT":
-			return new ViesError("TIMEOUT", `il servizio di ${state} non ha risposto in tempo al VIES: riprova fra poco`);
+			return new ViesError("TIMEOUT", `il servizio ${state} non ha risposto in tempo al VIES`);
 		case "SERVICE_UNAVAILABLE":
-			return new ViesError("SERVICE_UNAVAILABLE", "il VIES non è disponibile in questo momento: riprova più tardi");
+			return new ViesError("SERVICE_UNAVAILABLE", "il VIES non è disponibile in questo momento");
 		case "VAT_BLOCKED":
 		case "IP_BLOCKED":
 			return new ViesError("BLOCKED", "il VIES rifiuta per ora le richieste di questo server: riprova più tardi");
 		default:
-			return new ViesError("OTHER", `il VIES ha risposto con un errore (${code})`);
+			// The code is not echoed: it is the service's text, and an unknown one tells the person nothing.
+			return new ViesError("OTHER", "il VIES ha risposto con un errore che Annie non conosce");
 	}
 }
 
 function httpError(problem: HttpProblem): ViesError {
 	if (problem.kind === "status") {
-		if (problem.status === 429) return new ViesError("GLOBAL_MAX_CONCURRENT_REQ", "il VIES ha troppe richieste in questo momento: riprova fra qualche minuto");
-		if (problem.status >= 500) return new ViesError("SERVICE_UNAVAILABLE", "il VIES non è disponibile in questo momento: riprova più tardi");
+		if (problem.status === 429) return new ViesError("GLOBAL_MAX_CONCURRENT_REQ", "il VIES ha troppe richieste in questo momento");
+		if (problem.status >= 500) return new ViesError("SERVICE_UNAVAILABLE", "il VIES non è disponibile in questo momento");
 		return new ViesError("OTHER", `il VIES risponde ${problem.status}`);
 	}
 	if (problem.kind === "unreachable") return new ViesError("UNREACHABLE", "il VIES non risponde");

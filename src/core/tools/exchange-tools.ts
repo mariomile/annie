@@ -1,6 +1,6 @@
 import type { AnnieTool } from "../engine.ts";
 import { addDays, checkDate, type DayRates, type ExchangeRates, ExchangeRateError, FIRST_RATES_DATE, type RatesOn, type RatesSeries } from "../exchange-rates.ts";
-import { formatResult, italianDate, italianMoney, italianWeekday, MAX_MONEY } from "../italian-format.ts";
+import { capitalized, formatResult, italianDate, italianMoney, italianWeekday, MAX_MONEY } from "../italian-format.ts";
 
 export type ExchangeToolsOptions = { readonly rates: ExchangeRates };
 
@@ -231,7 +231,7 @@ function rateLine(legs: readonly Leg[], from: string, to: string, rate: number, 
 		...(fixed.length === 0 ? [] : [`cambio fisso irrevocabile: ${fixed.join(" e ")}`]),
 	];
 	const head = parts.join("; ");
-	const capital = `${head.charAt(0).toUpperCase()}${head.slice(1)}`;
+	const capital = capitalized(head);
 	const [only] = legs;
 	if (legs.length === 1 && only !== undefined) return `${capital} (1 ${only.code} = ${rateText(1 / only.perEuro)} EUR).`;
 	return `${capital}; quindi 1 ${from} = ${rateText(rate)} ${to} (1 ${to} = ${rateText(1 / rate)} ${from}).`;
@@ -335,6 +335,3 @@ function withoutArticle(name: string): string {
 	return name.replace(/^(il |lo |la |l')/, "");
 }
 
-function capitalized(text: string): string {
-	return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
-}

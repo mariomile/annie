@@ -197,8 +197,6 @@ async function newsCheck(config: NewsConfig, fetchImpl: typeof fetch): Promise<s
  * stable for decades, so a «not active» answer means the VIES or this number changed.
  */
 const VIES_PROBE = { country: "IT", number: "00905811006" } as const;
-/** The VIES's errors that pass by themselves: a warning, not a failure. */
-const VIES_TRANSIENT = new Set(["MS_UNAVAILABLE", "MS_MAX_CONCURRENT_REQ", "GLOBAL_MAX_CONCURRENT_REQ", "TIMEOUT", "SERVICE_UNAVAILABLE"]);
 
 /** One known partita IVA asked to the VIES: the endpoint answers and reads as expected. A member state down is a warning. */
 async function vatCheckCheck(config: ViesConfig, call: Call): Promise<string> {
@@ -206,12 +204,13 @@ async function vatCheckCheck(config: ViesConfig, call: Call): Promise<string> {
 	const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => call(String(input), init)) as typeof fetch;
 	const probe = `${VIES_PROBE.country}${VIES_PROBE.number}`;
 	try {
-		const answer = await viesClient(config, fetchImpl).check(VIES_PROBE.country, VIES_PROBE.number, () => true);
+		const answer = await viesClient(config, fetchImpl).check("check", VIES_PROBE.country, VIES_PROBE.number, () => true);
 		if (!answer.valid) return `${host} risponde. Attenzione: la partita IVA di prova ${probe} risulta non attiva: aggiorna VIES_PROBE in src/main/check.ts`;
 		return `${host} risponde, la partita IVA di prova ${probe} risulta attiva`;
 	} catch (error) {
 		if (!(error instanceof ViesError)) throw error;
-		if (VIES_TRANSIENT.has(error.code)) return `${host} risponde. Attenzione: ${error.message}`;
+		// Errors that pass by themselves are a warning, not a failure.
+		if (error.temporary) return `${host} risponde. Attenzione: ${error.message}`;
 		throw new CheckFailed(`${error.message}: controlla che ${host} sia raggiungibile, o ANNIE_VAT_CHECK_URL`);
 	}
 }

@@ -1,7 +1,7 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
 import { DEFAULT_RATES_URL, type ExchangeRatesConfig } from "../core/exchange-rates.ts";
 import { DEFAULT_NEWS_FEEDS, MAX_FEED_NAME, MAX_FEEDS, NEWS_SECTIONS, type NewsConfig, type NewsFeed, type NewsSection } from "../core/news.ts";
-import { DEFAULT_VIES_URL, type ViesConfig } from "../core/vies.ts";
+import { DEFAULT_MAX_PER_DAY_SERVER, DEFAULT_VIES_URL, type ViesConfig } from "../core/vies.ts";
 import { DEFAULT_FORECAST_URL, DEFAULT_GEOCODING_URL, PAID_FORECAST_URL, type WeatherConfig } from "../core/weather.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
@@ -265,7 +265,7 @@ function loadNewsConfig(env: Readonly<Record<string, string | undefined>>): News
 function loadVatCheckConfig(env: Readonly<Record<string, string | undefined>>): ViesConfig | undefined {
 	const on = nonEmpty(env.ANNIE_VAT_CHECK);
 	if (on !== undefined && !["0", "1", "true", "false"].includes(on)) throw new ConfigError("ANNIE_VAT_CHECK: 1 to look VAT numbers up in the EU's VIES, 0 (default) for the formal check only");
-	const overrides = ["ANNIE_VAT_CHECK_URL", "ANNIE_VAT_CHECK_MAX_PER_DAY"].filter((name) => nonEmpty(env[name]) !== undefined);
+	const overrides = ["ANNIE_VAT_CHECK_URL", "ANNIE_VAT_CHECK_MAX_PER_DAY", "ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER"].filter((name) => nonEmpty(env[name]) !== undefined);
 	if (on !== "1" && on !== "true") {
 		if (overrides.length > 0) throw new ConfigError(`${overrides.join(", ")} set without ANNIE_VAT_CHECK=1`);
 		return undefined;
@@ -274,7 +274,10 @@ function loadVatCheckConfig(env: Readonly<Record<string, string | undefined>>): 
 	// Requests to the VIES, cached answers not counted: it rate-limits, and a loop must not get the server blocked.
 	const maxPerDay = Number(nonEmpty(env.ANNIE_VAT_CHECK_MAX_PER_DAY) ?? "200");
 	if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_VAT_CHECK_MAX_PER_DAY: a whole number from 1 to 100000");
-	return { url, maxPerDay };
+	// Every account together: the VIES blocks an address, not an account.
+	const maxPerDayServer = Number(nonEmpty(env.ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER) ?? String(DEFAULT_MAX_PER_DAY_SERVER));
+	if (!Number.isInteger(maxPerDayServer) || maxPerDayServer < 1 || maxPerDayServer > 1_000_000) throw new ConfigError("ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER: a whole number from 1 to 1000000");
+	return { url, maxPerDay, maxPerDayServer };
 }
 
 const FEEDS_EXAMPLE = "Il Post|https://www.ilpost.it/feed/|italia;BBC World|https://feeds.bbci.co.uk/news/world/rss.xml|mondo";

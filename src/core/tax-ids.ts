@@ -6,37 +6,37 @@
  * number is written right, never that it exists.
  */
 
-/** The VIES countries: the 27 member states, Greece as EL (its VAT prefix, not GR), and Northern Ireland as XI: 28 prefixes. */
+/** The VIES countries: the 27 member states, Greece as EL (its VAT prefix, not GR), and Northern Ireland as XI: 28 prefixes. `of` is the name with «di» and its article. */
 export const EU_VAT_COUNTRIES = {
-	AT: { name: "Austria", format: /^U\d{8}$/, example: "U + 8 cifre" },
-	BE: { name: "Belgio", format: /^[01]\d{9}$/, example: "10 cifre, la prima 0 o 1" },
-	BG: { name: "Bulgaria", format: /^\d{9,10}$/, example: "9 o 10 cifre" },
-	CY: { name: "Cipro", format: /^\d{8}[A-Z]$/, example: "8 cifre e una lettera" },
-	CZ: { name: "Repubblica Ceca", format: /^\d{8,10}$/, example: "da 8 a 10 cifre" },
-	DE: { name: "Germania", format: /^\d{9}$/, example: "9 cifre" },
-	DK: { name: "Danimarca", format: /^\d{8}$/, example: "8 cifre" },
-	EE: { name: "Estonia", format: /^\d{9}$/, example: "9 cifre" },
-	EL: { name: "Grecia", format: /^\d{9}$/, example: "9 cifre" },
-	ES: { name: "Spagna", format: /^(?:[A-Z]\d{7}[A-Z0-9]|\d{8}[A-Z])$/, example: "9 caratteri, con una lettera all'inizio o alla fine" },
-	FI: { name: "Finlandia", format: /^\d{8}$/, example: "8 cifre" },
-	FR: { name: "Francia", format: /^[A-HJ-NP-Z0-9]{2}\d{9}$/, example: "2 caratteri di controllo e le 9 cifre del SIREN" },
-	HR: { name: "Croazia", format: /^\d{11}$/, example: "11 cifre" },
-	HU: { name: "Ungheria", format: /^\d{8}$/, example: "8 cifre" },
-	IE: { name: "Irlanda", format: /^(?:\d{7}[A-W][A-IW]?|\d[A-Z+*]\d{5}[A-W])$/, example: "7 cifre e una o due lettere" },
-	IT: { name: "Italia", format: /^\d{11}$/, example: "11 cifre" },
-	LT: { name: "Lituania", format: /^(?:\d{9}|\d{12})$/, example: "9 o 12 cifre" },
-	LU: { name: "Lussemburgo", format: /^\d{8}$/, example: "8 cifre" },
-	LV: { name: "Lettonia", format: /^\d{11}$/, example: "11 cifre" },
-	MT: { name: "Malta", format: /^\d{8}$/, example: "8 cifre" },
-	NL: { name: "Paesi Bassi", format: /^\d{9}B\d{2}$/, example: "9 cifre, B e 2 cifre" },
-	PL: { name: "Polonia", format: /^\d{10}$/, example: "10 cifre" },
-	PT: { name: "Portogallo", format: /^\d{9}$/, example: "9 cifre" },
-	RO: { name: "Romania", format: /^[1-9]\d{1,9}$/, example: "da 2 a 10 cifre" },
-	SE: { name: "Svezia", format: /^\d{10}01$/, example: "12 cifre che finiscono con 01" },
-	SI: { name: "Slovenia", format: /^\d{8}$/, example: "8 cifre" },
-	SK: { name: "Slovacchia", format: /^\d{10}$/, example: "10 cifre" },
-	XI: { name: "Irlanda del Nord", format: /^(?:\d{9}|\d{12}|GD\d{3}|HA\d{3})$/, example: "9 o 12 cifre" },
-} as const satisfies Record<string, { readonly name: string; readonly format: RegExp; readonly example: string }>;
+	AT: { name: "Austria", of: "dell'Austria", format: /^U\d{8}$/, example: "U + 8 cifre" },
+	BE: { name: "Belgio", of: "del Belgio", format: /^[01]\d{9}$/, example: "10 cifre, la prima 0 o 1" },
+	BG: { name: "Bulgaria", of: "della Bulgaria", format: /^\d{9,10}$/, example: "9 o 10 cifre" },
+	CY: { name: "Cipro", of: "di Cipro", format: /^\d{8}[A-Z]$/, example: "8 cifre e una lettera" },
+	CZ: { name: "Repubblica Ceca", of: "della Repubblica Ceca", format: /^\d{8,10}$/, example: "da 8 a 10 cifre" },
+	DE: { name: "Germania", of: "della Germania", format: /^\d{9}$/, example: "9 cifre" },
+	DK: { name: "Danimarca", of: "della Danimarca", format: /^\d{8}$/, example: "8 cifre" },
+	EE: { name: "Estonia", of: "dell'Estonia", format: /^\d{9}$/, example: "9 cifre" },
+	EL: { name: "Grecia", of: "della Grecia", format: /^\d{9}$/, example: "9 cifre" },
+	ES: { name: "Spagna", of: "della Spagna", format: /^(?:[A-Z]\d{7}[A-Z0-9]|\d{8}[A-Z])$/, example: "9 caratteri, con una lettera all'inizio o alla fine" },
+	FI: { name: "Finlandia", of: "della Finlandia", format: /^\d{8}$/, example: "8 cifre" },
+	FR: { name: "Francia", of: "della Francia", format: /^[A-HJ-NP-Z0-9]{2}\d{9}$/, example: "2 caratteri di controllo e le 9 cifre del SIREN" },
+	HR: { name: "Croazia", of: "della Croazia", format: /^\d{11}$/, example: "11 cifre" },
+	HU: { name: "Ungheria", of: "dell'Ungheria", format: /^\d{8}$/, example: "8 cifre" },
+	IE: { name: "Irlanda", of: "dell'Irlanda", format: /^(?:\d{7}[A-W][A-IW]?|\d[A-Z+*]\d{5}[A-W])$/, example: "7 cifre e una o due lettere" },
+	IT: { name: "Italia", of: "dell'Italia", format: /^\d{11}$/, example: "11 cifre" },
+	LT: { name: "Lituania", of: "della Lituania", format: /^(?:\d{9}|\d{12})$/, example: "9 o 12 cifre" },
+	LU: { name: "Lussemburgo", of: "del Lussemburgo", format: /^\d{8}$/, example: "8 cifre" },
+	LV: { name: "Lettonia", of: "della Lettonia", format: /^\d{11}$/, example: "11 cifre" },
+	MT: { name: "Malta", of: "di Malta", format: /^\d{8}$/, example: "8 cifre" },
+	NL: { name: "Paesi Bassi", of: "dei Paesi Bassi", format: /^\d{9}B\d{2}$/, example: "9 cifre, B e 2 cifre" },
+	PL: { name: "Polonia", of: "della Polonia", format: /^\d{10}$/, example: "10 cifre" },
+	PT: { name: "Portogallo", of: "del Portogallo", format: /^\d{9}$/, example: "9 cifre" },
+	RO: { name: "Romania", of: "della Romania", format: /^[1-9]\d{1,9}$/, example: "da 2 a 10 cifre" },
+	SE: { name: "Svezia", of: "della Svezia", format: /^\d{10}01$/, example: "12 cifre che finiscono con 01" },
+	SI: { name: "Slovenia", of: "della Slovenia", format: /^\d{8}$/, example: "8 cifre" },
+	SK: { name: "Slovacchia", of: "della Slovacchia", format: /^\d{10}$/, example: "10 cifre" },
+	XI: { name: "Irlanda del Nord", of: "dell'Irlanda del Nord", format: /^(?:\d{9}|\d{12}|GD[0-4]\d{2}|HA[5-9]\d{2})$/, example: "9 o 12 cifre (GD o HA e 3 cifre per gli enti pubblici)" },
+} as const satisfies Record<string, { readonly name: string; readonly of: string; readonly format: RegExp; readonly example: string }>;
 
 export type EuVatCountry = keyof typeof EU_VAT_COUNTRIES;
 
@@ -48,9 +48,17 @@ const OTHER_PREFIXES: Readonly<Record<string, string>> = {
 	SM: "San Marino non è nell'Unione europea: il VIES non ha i suoi numeri IVA",
 };
 
-/** Spaces, dots, dashes and slashes out, letters in capitals: «it 007.431-10157» → «IT00743110157». */
+/** What to say about a prefix outside the VIES, if it is one of those people write. */
+function otherPrefix(code: string): string | undefined {
+	return Object.hasOwn(OTHER_PREFIXES, code) ? OTHER_PREFIXES[code] : undefined;
+}
+
+/** «P.IVA:», «partita IVA», «VAT number», «C.F.», «codice fiscale» in front: a label, not part of the number. A separator must follow, so a code starting with CF stays whole. */
+const LABEL = /^\s*(?:p\.?\s*iva|partita\s+iva|vat(?:\s+number)?|c\.\s*f\.|cf|codice\s+fiscale)(?:\s*:\s*|\s+|(?=\d))/i;
+
+/** A leading label out, then spaces, dots, dashes and slashes, letters in capitals: «P.IVA: it 007.431-10157» → «IT00743110157». */
 export function normalizeTaxId(text: string): string {
-	return text.replace(/[\s.\-/]/g, "").toUpperCase();
+	return text.replace(LABEL, "").replace(/[\s.\-/]/g, "").toUpperCase();
 }
 
 /** The VAT office codes (digits 8 to 10 of a partita IVA): 001 to 100, 120, 121, and the special 888 and 999. */
@@ -70,15 +78,17 @@ function luhnDigit(digits: string): number {
 
 /**
  * What is wrong with an Italian partita IVA (11 digits, «IT» not included), or undefined when it
- * is written right. Numbers starting with 8 or 9 are the numeric codici fiscali of bodies without
- * a partita IVA: same check digit, but their digits 8 to 10 are not a VAT office, so not checked.
+ * is written right: the check digit, a serial number (the first 7 digits) that is not all zeros,
+ * and the VAT office. The numeric codici fiscali of bodies (starting with 8 or 9) pass the same
+ * checks: parseTaxId tells them apart.
  */
 export function partitaIvaProblem(digits: string): string | undefined {
 	if (!/^\d+$/.test(digits)) return "una partita IVA italiana ha solo cifre, 11";
 	if (digits.length !== 11) return `una partita IVA italiana ha 11 cifre, qui ne ha ${digits.length}`;
 	// The check digit first: a typo is the likeliest mistake, and the office code would hide it.
 	if (luhnDigit(digits) !== Number(digits[10])) return "la cifra di controllo (l'ultima) non torna: probabilmente c'è un errore di battitura";
-	if (!/^[89]/.test(digits) && !validOffice(Number(digits.slice(7, 10)))) return `le cifre dall'8ª alla 10ª (${digits.slice(7, 10)}) dovrebbero essere il codice di un ufficio IVA, e non lo sono`;
+	if (/^0{7}/.test(digits)) return "le prime 7 cifre (il numero di matricola) non possono essere tutte zero";
+	if (!validOffice(Number(digits.slice(7, 10)))) return `le cifre dall'8ª alla 10ª (${digits.slice(7, 10)}) dovrebbero essere il codice di un ufficio IVA, e non lo sono`;
 	return undefined;
 }
 
@@ -127,7 +137,12 @@ export function checkCodiceFiscale(text: string): CodiceFiscale | { readonly pro
 		if (!MONTHS.includes(code.charAt(8))) return { problem: `la 9ª lettera (${code.charAt(8)}) dovrebbe essere il mese di nascita (A, B, C, D, E, H, L, M, P, R, S, T), e non lo è` };
 		return { problem: "non ha la forma di un codice fiscale: 6 lettere, 2 cifre, una lettera, 2 cifre, una lettera, 3 cifre e una lettera" };
 	}
-	const omocodia = DIGIT_POSITIONS.some((i) => OMOCODIA.includes(code.charAt(i)));
+	// Omocodia replaces digits from the right, one at a time: the letters are the last positions, never a gap.
+	const replaced = DIGIT_POSITIONS.filter((i) => OMOCODIA.includes(code.charAt(i)));
+	if (replaced.some((position, k) => position !== DIGIT_POSITIONS[DIGIT_POSITIONS.length - replaced.length + k])) {
+		return { problem: "ha lettere al posto di cifre in posizioni dove l'omocodia non le mette (si sostituiscono da destra, una alla volta)" };
+	}
+	const omocodia = replaced.length > 0;
 	const digits = [...code].map((c, i) => (DIGIT_POSITIONS.includes(i) && OMOCODIA.includes(c) ? String(OMOCODIA.indexOf(c)) : c)).join("");
 	const year = Number(digits.slice(6, 8));
 	const month = MONTHS.indexOf(code.charAt(8)) + 1;
@@ -144,37 +159,47 @@ export function checkCodiceFiscale(text: string): CodiceFiscale | { readonly pro
 /** What is wrong with a VAT number of `country` (without its prefix), or undefined when it has the right shape (for Italy: the check digit too). */
 export function euVatProblem(country: EuVatCountry, number: string): string | undefined {
 	if (country === "IT") return partitaIvaProblem(number);
-	const { name, format, example } = EU_VAT_COUNTRIES[country];
-	return format.test(number) ? undefined : `un numero IVA di ${name} è ${country} seguito da ${example}`;
+	const { of, format, example } = EU_VAT_COUNTRIES[country];
+	return format.test(number) ? undefined : `un numero IVA ${of} è ${country} seguito da ${example}`;
 }
 
-export function isEuVatCountry(code: string): code is EuVatCountry {
+function isEuVatCountry(code: string): code is EuVatCountry {
 	return Object.hasOwn(EU_VAT_COUNTRIES, code);
 }
 
 /**
  * What a number is, read the way people write it:
  * - vat: a VAT number for the VIES, with its country (from its prefix, `country`, or 11 digits alone: Italy);
- * - codice_fiscale: 16 characters, a person's codice fiscale;
+ * - ente: an Italian numeric codice fiscale of a body (8 or 9 first), written right: not a partita IVA, never in the VIES;
+ * - codice_fiscale: 16 characters, a person's codice fiscale, «IT» in front dropped;
  * - each with the problem found on paper, if any.
  * GR is read as EL; GB, CH and the like are named as outside the VIES.
  */
-export type TaxId =
+type TaxId =
 	| { readonly kind: "vat"; readonly country: EuVatCountry; readonly number: string; readonly problem?: string }
+	| { readonly kind: "ente"; readonly number: string }
 	| { readonly kind: "codice_fiscale"; readonly code: string; readonly checked: CodiceFiscale | { readonly problem: string } }
 	| { readonly kind: "unknown"; readonly problem: string };
 
+/** The start of a person's codice fiscale: 6 letters, the year (digits or omocodia letters), the month letter. */
+const CODICE_FISCALE_START = /^[A-Z]{6}[0-9LMNP-V]{2}[A-Z]/;
+
 export function parseTaxId(text: string, country?: string): TaxId {
 	const value = normalizeTaxId(text);
-	const asked = country === undefined ? undefined : normalizeTaxId(country) === "GR" ? "EL" : normalizeTaxId(country);
+	const given = country === undefined ? undefined : normalizeTaxId(country);
+	const asked = given === "GR" ? "EL" : given;
 	if (value === "") return { kind: "unknown", problem: "manca il numero" };
 	if (value.length > 30) return { kind: "unknown", problem: "il numero è troppo lungo per una partita IVA o un codice fiscale" };
 	if (!/^[A-Z0-9+*]+$/.test(value)) return { kind: "unknown", problem: "il numero ha caratteri che non stanno in una partita IVA né in un codice fiscale" };
-	if (asked !== undefined && !isEuVatCountry(asked)) return { kind: "unknown", problem: OTHER_PREFIXES[asked] ?? `${asked} non è un paese del VIES (i paesi dell'Unione europea, EL per la Grecia, XI per l'Irlanda del Nord)` };
-	if (/^[A-Z]{6}[0-9LMNP-V]{2}[A-Z]/.test(value) && (asked === undefined || asked === "IT")) return { kind: "codice_fiscale", code: value, checked: checkCodiceFiscale(value) };
+	if (asked !== undefined && !isEuVatCountry(asked)) return { kind: "unknown", problem: otherPrefix(asked) ?? `${asked} non è un paese del VIES (i paesi dell'Unione europea, EL per la Grecia, XI per l'Irlanda del Nord)` };
+	if (asked === undefined || asked === "IT") {
+		// «IT» in front of a codice fiscale is a habit from partite IVA: dropped.
+		const code = value.length === 18 && value.startsWith("IT") && CODICE_FISCALE_START.test(value.slice(2)) ? value.slice(2) : value;
+		if (CODICE_FISCALE_START.test(code)) return { kind: "codice_fiscale", code, checked: checkCodiceFiscale(code) };
+	}
 	const prefix = value.slice(0, 2) === "GR" ? "EL" : value.slice(0, 2);
-	if (/^[A-Z]{2}/.test(value) && (isEuVatCountry(prefix) || OTHER_PREFIXES[prefix] !== undefined)) {
-		if (!isEuVatCountry(prefix)) return { kind: "unknown", problem: OTHER_PREFIXES[prefix] as string };
+	if (/^[A-Z]{2}/.test(value) && (isEuVatCountry(prefix) || otherPrefix(prefix) !== undefined)) {
+		if (!isEuVatCountry(prefix)) return { kind: "unknown", problem: otherPrefix(prefix) as string };
 		// A French number's two check characters may be letters that look like a prefix (FR + «DE123456789»).
 		if (asked !== undefined && asked !== prefix) return euVatProblem(asked, value) === undefined ? vat(asked, value) : { kind: "unknown", problem: `il numero comincia con ${prefix}, ma il paese indicato è ${asked}` };
 		return vat(prefix, value.slice(2));
@@ -185,7 +210,9 @@ export function parseTaxId(text: string, country?: string): TaxId {
 	return { kind: "unknown", problem: "il numero non sembra una partita IVA né un codice fiscale: per un numero estero serve il prefisso del paese (DE, FR…)" };
 }
 
+/** A VAT number with its problem; an Italian one starting with 8 or 9 and written right is a body's codice fiscale. */
 function vat(country: EuVatCountry, number: string): TaxId {
 	const problem = euVatProblem(country, number);
+	if (country === "IT" && problem === undefined && /^[89]/.test(number)) return { kind: "ente", number };
 	return { kind: "vat", country, number, ...(problem === undefined ? {} : { problem }) };
 }
