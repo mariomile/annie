@@ -6,15 +6,19 @@ import { DocumentError, type DocumentText } from "./documents.ts";
  * most `timeoutMs` and `memoryMb` of one worker, never the event loop that serves every tenant.
  * At most `MAX_WORKERS` at once in the process; the others wait their turn.
  */
-export const DOCUMENT_READER_LIMITS = { timeoutMs: 20_000, memoryMb: 512, maxWorkers: 2 } as const;
+export const DOCUMENT_READER_LIMITS = { timeoutMs: 20_000, memoryMb: 512, maxWorkers: 2, waitMs: 45_000 } as const;
 
 const AGAIN = "non sono riuscita a leggerlo ora, riprova tra poco";
 
 let running = 0;
 const waiting: (() => void)[] = [];
 
-export async function readDocumentText(name: string, data: Uint8Array, options: { timeoutMs?: number } = {}): Promise<DocumentText> {
-	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await new Promise<void>((resolve) => waiting.push(resolve));
+/**
+ * `waitMs`: how long to wait for a free worker before giving up with "riprova tra poco", so
+ * documents from the web cannot keep a person's file waiting without end.
+ */
+export async function readDocumentText(name: string, data: Uint8Array, options: { timeoutMs?: number; waitMs?: number } = {}): Promise<DocumentText> {
+	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
 	running++;
 	try {
 		return await inWorker(name, data, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs);
@@ -22,6 +26,21 @@ export async function readDocumentText(name: string, data: Uint8Array, options: 
 		running--;
 		waiting.shift()?.();
 	}
+}
+
+function turn(waitMs: number): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const go = () => {
+			clearTimeout(timer);
+			resolve();
+		};
+		const timer = setTimeout(() => {
+			const at = waiting.indexOf(go);
+			if (at >= 0) waiting.splice(at, 1);
+			reject(new DocumentError(AGAIN));
+		}, waitMs);
+		waiting.push(go);
+	});
 }
 
 function inWorker(name: string, data: Uint8Array, timeoutMs: number): Promise<DocumentText> {

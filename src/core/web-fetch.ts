@@ -16,7 +16,9 @@ export type WebFetchOptions = {
 	/** Whether an address may be connected to; public addresses only unless a test says otherwise. */
 	readonly addressAllowed?: (address: string) => boolean;
 	readonly maxBytes?: number;
-	/** The whole request, however slowly the server trickles. */
+	/** A different limit by the answer's content type and address (documents are larger than pages); maxBytes otherwise. */
+	readonly maxBytesFor?: (contentType: string, url: URL) => number | undefined;
+	/** The whole request, redirects included, however slowly the server trickles. */
 	readonly timeoutMs?: number;
 	readonly maxRedirects?: number;
 	/** false: a redirect comes back as it is (the browser follows it, through us again). */
@@ -66,8 +68,11 @@ export type WebPage = {
 	readonly status: number;
 	readonly contentType: string;
 	readonly bytes: Buffer;
+	/** The bytes as UTF-8, decoded on first use: a document of 20 MB never needs it. */
 	readonly body: string;
 	readonly truncated: boolean;
+	/** The Content-Disposition header, where a download says its file name. */
+	readonly disposition?: string;
 	/** Set on a redirect that was not followed. */
 	readonly location?: string;
 	readonly setCookies: readonly string[];
@@ -79,16 +84,37 @@ export class WebFetchRefused extends Error {
 	override readonly name = "WebFetchRefused";
 }
 
+/** Bodies larger than a page being received at once, in the whole process: documents add up. */
+const LARGE_BODIES = { maxBytes: 100 * 1024 * 1024 };
+let largeBytes = 0;
+
+type Answer = Omit<WebPage, "url" | "body">;
+
+/** The page with its text decoded only if someone reads it. */
+function pageOf(answer: Answer, url: string, location?: string): WebPage {
+	let text: string | undefined;
+	return {
+		...answer,
+		url,
+		...(location === undefined ? {} : { location }),
+		get body() {
+			text ??= answer.bytes.toString("utf8");
+			return text;
+		},
+	};
+}
+
 export async function webFetch(url: string, options: WebFetchOptions): Promise<WebPage> {
 	let current = url;
 	let send = options.send;
+	const until = Date.now() + (options.timeoutMs ?? 15_000);
 	for (let hop = 0; hop <= (options.maxRedirects ?? 5); hop++) {
 		const target = checkedUrl(current, options);
-		const answer = await get(target, { ...options, send });
+		const answer = await get(target, { ...options, send }, until);
 		options.cookies?.take(target, answer.setCookies);
 		if (answer.status >= 300 && answer.status < 400 && answer.location !== undefined) {
 			const next = new URL(answer.location, target).toString();
-			if (options.followRedirects === false) return { ...answer, url: target.toString(), location: next };
+			if (options.followRedirects === false) return pageOf(answer, target.toString(), next);
 			// 307 and 308 keep the method and the body; the others turn into a GET. A form goes
 			// only where the person approved it: never on to another origin with its body.
 			if (answer.status !== 307 && answer.status !== 308) send = undefined;
@@ -96,7 +122,7 @@ export async function webFetch(url: string, options: WebFetchOptions): Promise<W
 			current = next;
 			continue;
 		}
-		return { ...answer, url: target.toString() };
+		return pageOf(answer, target.toString());
 	}
 	throw new WebFetchRefused("troppi redirect");
 }
@@ -117,10 +143,11 @@ export function checkedUrl(raw: string, options: Pick<WebFetchOptions, "hostAllo
 	return url;
 }
 
-function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> {
+function get(url: URL, options: WebFetchOptions, until: number): Promise<Answer> {
 	const allowed = options.addressAllowed ?? publicAddress;
 	const maxBytes = options.maxBytes ?? 2 * 1024 * 1024;
 	const timeoutMs = options.timeoutMs ?? 15_000;
+	const left = Math.max(1, until - Date.now());
 	// The check runs on the address the socket connects to.
 	const lookup = (hostname: string, opts: object, callback: (error: Error | null, address: string | LookupAddress[], family?: number) => void) => {
 		dnsLookup(hostname, { ...opts, all: true }, (error, addresses) => {
@@ -133,6 +160,11 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 		});
 	};
 	return new Promise((resolve, reject) => {
+		let counted = 0;
+		const release = () => {
+			largeBytes -= counted;
+			counted = 0;
+		};
 		const send = url.protocol === "https:" ? httpsRequest : httpRequest;
 		const headers: Record<string, string> = { "user-agent": USER_AGENT, accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "accept-encoding": "identity" };
 		const cookie = options.cookies?.header(url);
@@ -145,38 +177,66 @@ function get(url: URL, options: WebFetchOptions): Promise<Omit<WebPage, "url">> 
 			const status = res.statusCode ?? 0;
 			const contentType = String(res.headers["content-type"] ?? "");
 			const setCookies = res.headers["set-cookie"] ?? [];
+			const disposition = res.headers["content-disposition"];
+			const limit = status >= 300 && status < 400 ? maxBytes : (options.maxBytesFor?.(contentType, url) ?? maxBytes);
+			// A large body counts against the process's budget while it arrives.
+			const large = limit > 2 * 1024 * 1024;
 			const done = (bytes: Buffer, truncated: boolean, location?: string) => {
 				clearTimeout(deadline);
-				resolve({ status, contentType, bytes, body: bytes.toString("utf8"), truncated, setCookies, ...(location === undefined ? {} : { location }) });
+				release();
+				resolve({ status, contentType, bytes, truncated, setCookies, ...(location === undefined ? {} : { location }), ...(disposition === undefined ? {} : { disposition }) });
 			};
 			if (status >= 300 && status < 400 && res.headers.location) {
 				res.resume();
 				return done(Buffer.alloc(0), false, res.headers.location);
 			}
+			// One buffer of the announced size when there is one: no second copy at the end.
+			const announced = Number(res.headers["content-length"]);
+			let into = Number.isSafeInteger(announced) && announced > 0 && announced <= limit ? Buffer.allocUnsafe(announced) : undefined;
 			const chunks: Buffer[] = [];
 			let size = 0;
 			let truncated = false;
+			const collected = () => (into !== undefined ? into.subarray(0, size) : Buffer.concat(chunks));
 			res.on("data", (chunk: Buffer) => {
 				if (truncated) return;
-				size += chunk.length;
-				if (size > maxBytes) {
-					truncated = true;
-					chunks.push(chunk.subarray(0, chunk.length - (size - maxBytes)));
-					res.destroy();
-					return done(Buffer.concat(chunks), true);
+				if (large) {
+					counted += chunk.length;
+					largeBytes += chunk.length;
+					if (largeBytes > LARGE_BODIES.maxBytes) {
+						res.destroy();
+						release();
+						clearTimeout(deadline);
+						return reject(new WebFetchRefused("troppi documenti in arrivo insieme, riprova tra poco"));
+					}
 				}
-				chunks.push(chunk);
+				const room = limit - size;
+				const part = chunk.length > room ? chunk.subarray(0, room) : chunk;
+				if (into !== undefined && size + part.length > into.length) {
+					// The server sent more than it said: back to pieces.
+					chunks.push(into.subarray(0, size));
+					into = undefined;
+				}
+				if (into !== undefined) part.copy(into, size);
+				else chunks.push(part);
+				size += part.length;
+				if (chunk.length > room) {
+					truncated = true;
+					res.destroy();
+					return done(collected(), true);
+				}
 			});
-			res.on("end", () => done(Buffer.concat(chunks), truncated));
+			res.on("end", () => done(collected(), truncated));
 			res.on("error", (error) => {
 				clearTimeout(deadline);
+				release();
 				reject(error);
 			});
 		});
 		// A total deadline: a server sending a byte at a time never trips an idle timeout.
-		const deadline = setTimeout(() => req.destroy(new WebFetchRefused(`la pagina non arriva in ${timeoutMs / 1000} secondi`)), timeoutMs);
+		const deadline = setTimeout(() => req.destroy(new WebFetchRefused(`la pagina non arriva in ${timeoutMs / 1000} secondi`)), left);
 		req.on("error", (error) => {
 			clearTimeout(deadline);
+			release();
 			reject(error);
 		});
 		req.end(options.send?.body);

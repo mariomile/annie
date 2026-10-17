@@ -52,6 +52,19 @@ describe("web fetch", () => {
 		const started = Date.now();
 		await expect(webFetch(`http://127.0.0.1:${(slow.address() as AddressInfo).port}/`, { hostAllowed: all, addressAllowed: localOnly, timeoutMs: 500 })).rejects.toThrow(/non arriva in 0.5 secondi/);
 		expect(Date.now() - started).toBeLessThan(2_000);
+		// The deadline is for the whole request: redirects that each take a while do not each get it.
+		let hops = 0;
+		const stepping = createServer((_req, res) => {
+			hops++;
+			setTimeout(() => {
+				res.writeHead(302, { location: `/n${hops}` });
+				res.end();
+			}, 200);
+		});
+		await new Promise<void>((resolve) => stepping.listen(0, "127.0.0.1", () => resolve()));
+		closers.push(() => new Promise((r) => stepping.close(() => r())));
+		await expect(webFetch(`http://127.0.0.1:${(stepping.address() as AddressInfo).port}/`, { hostAllowed: all, addressAllowed: localOnly, timeoutMs: 500 })).rejects.toThrow(/non arriva in 0.5 secondi/);
+		expect(hops).toBeLessThanOrEqual(3);
 		const parsed = Date.now();
 		pageText(`${"<style".repeat(60_000)}${"<!--".repeat(60_000)}`);
 		expect(Date.now() - parsed).toBeLessThan(1_000);
