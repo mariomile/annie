@@ -285,7 +285,7 @@ class PiDurableSession implements EngineSession {
 		try {
 			const settled = await submission.wait(context);
 			if (settled.status === "done" && settled.type === "input") {
-				reply = { status: "answered", threadKey, submissionId, text: await this.answerText(settled) };
+				reply = { status: "answered", threadKey, submissionId, ...(await this.answer(settled)) };
 			} else {
 				reply = { status: "unanswered", threadKey, submissionId, reason: settled.reason ?? settled.status };
 			}
@@ -302,13 +302,13 @@ class PiDurableSession implements EngineSession {
 		}
 	}
 
-	private async answerText(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<string> {
+	private async answer(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<{ text: string; model?: ModelSelection }> {
 		const conversation = await this.harness.conversation(settled.conversationId, context);
 		// A read-only commit, as in the pi-durable README.
 		const entry = await conversation?.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 		const message = entry?.model?.[0] as Message | undefined;
-		if (message?.role !== "assistant") return "";
-		return message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+		if (message?.role !== "assistant") return { text: "" };
+		return { text: message.content.map((block) => (block.type === "text" ? block.text : "")).join(""), model: { provider: message.provider, modelId: message.model } };
 	}
 }
 

@@ -94,7 +94,7 @@ export function connectChannel(
 				});
 				if (audio !== undefined) return adapter.sendVoice?.({ ...base, text, audio });
 			}
-			return adapter.send({ ...base, text });
+			return adapter.send({ ...base, text, ...(reply.status === "answered" && reply.model !== undefined ? { model: reply.model } : {}) });
 		};
 		sending()
 			.then(

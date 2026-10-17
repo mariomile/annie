@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
+import type { ModelSelection } from "./registry.ts";
 
 /**
  * One engine submission and its reply. Written when the submission is admitted (no `reply`
@@ -15,7 +16,7 @@ export type OutboxEntry = {
 	readonly threadId: string;
 	/** Undefined while the engine has not answered (as far as this outbox knows). */
 	readonly reply?:
-		| { readonly status: "answered"; readonly text: string }
+		| { readonly status: "answered"; readonly text: string; readonly model?: ModelSelection }
 		| { readonly status: "unanswered"; readonly reason: string }
 		/** A workspace file the instance sends to the thread. */
 		| { readonly status: "file"; readonly path: string; readonly caption?: string };

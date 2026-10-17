@@ -22,7 +22,8 @@ describe("a chat with its own model (engine)", () => {
 		expect(await session.threadModel("web:t1")).toEqual(DEV);
 		let next = reply(session);
 		await session.submit("web:t1", "ciao");
-		expect(await next).toMatchObject({ status: "answered", text: expect.stringContaining("ciao") });
+		// The reply says which model wrote it.
+		expect(await next).toMatchObject({ status: "answered", text: expect.stringContaining("ciao"), model: DEV });
 		// Another chat keeps the instance's model.
 		next = reply(session);
 		await session.submit("web:t2", "ciao");
@@ -197,7 +198,10 @@ describe("choosing a chat's model from the console", () => {
 		await api(`/api/instances/annie/threads/${thread.id}/model`, "PUT", { provider: "xai", modelId: "grok-4.7" });
 		await annie.runtime.secrets("default").delete(modelApiKeySecret("xai"));
 		expect(await ask(api, thread.id, "ci sei?")).toContain("ci sei?");
-		expect((await api(`/api/instances/annie/threads/${thread.id}`)).model).toBeUndefined();
+		const shown = await api(`/api/instances/annie/threads/${thread.id}`);
+		expect(shown.model).toBeUndefined();
+		// The reply says it was the instance's model that wrote it, by name.
+		expect(shown.entries.find((e: { from: string }) => e.from === "annie").model).toEqual({ ...DEV, name: expect.any(String) });
 		// The key back: the chat's own model again.
 		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "xai-key-0001");
 		expect((await api(`/api/instances/annie/threads/${thread.id}`)).model).toMatchObject(GROK);

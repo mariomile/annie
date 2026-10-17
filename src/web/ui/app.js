@@ -1281,7 +1281,9 @@ async function viewChat(main) {
 				)
 			: null;
 		const listen = entry.from === "annie" && entry.text ? listenButton(entry.text) : null;
-		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at), listen), pictures, entry.text || entry.file || !pictures ? body : null);
+		// Which model wrote the reply: the chat's own, or the instance's when that could not answer.
+		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
+		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at), by, listen), pictures, entry.text || entry.file || !pictures ? body : null);
 		transcript.append(el);
 		return el;
 	};

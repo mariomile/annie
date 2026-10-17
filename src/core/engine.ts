@@ -54,7 +54,14 @@ export interface EngineSession {
 }
 
 export type EngineReply =
-	| { readonly status: "answered"; readonly threadKey: string; readonly submissionId: string; readonly text: string }
+	| {
+			readonly status: "answered";
+			readonly threadKey: string;
+			readonly submissionId: string;
+			readonly text: string;
+			/** The model that wrote the answer: the chat's, or the instance's when the chat's could not answer. */
+			readonly model?: ModelSelection;
+	  }
 	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string };
 
 /** A picture for the model, already checked (src/core/images.ts). */

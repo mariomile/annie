@@ -67,6 +67,8 @@ export type OutboundMessage = {
 	readonly possibleDuplicate?: boolean;
 	/** Buttons, in one row, under the message (under its last piece if it is split). */
 	readonly buttons?: readonly ActionButton[];
+	/** The model that wrote this reply (provider and model ID), for channels that show it. */
+	readonly model?: { readonly provider: string; readonly modelId: string };
 };
 
 /** A file to deliver through a channel. */
