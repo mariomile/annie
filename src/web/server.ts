@@ -17,6 +17,7 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { type ConnectorAction, ConnectorActionError, type ConnectorActionResult } from "../core/connector-actions.ts";
+import { documentKind, documentLabel } from "../core/documents.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -449,7 +450,9 @@ export function createWebApp(options: WebAppOptions): Server {
 		const unique = taken ? name.replace(/(\.[^.]*)?$/, (ext) => `-${randomUUID().slice(0, 8)}${ext}`) : name;
 		const file = await workspaceCall(() => workspace.write(`uploads/${unique}`, data));
 		await runtime.audit(tenantId).append({ type: "web.upload", instanceId: params[0], personId: (person as Person).id, path: file.path, bytes: file.size });
-		return { file };
+		// The chat notes a document as one, so the model knows file_read gives its text.
+		const kind = documentKind(unique, data);
+		return { file, ...(kind === undefined ? {} : { document: documentLabel(kind) }) };
 	});
 	route("DELETE", "/api/instances/:id/files", "person", async ({ person, params, url }) => {
 		await instanceAccess(person as Person, params[0] as string);

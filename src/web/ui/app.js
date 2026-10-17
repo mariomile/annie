@@ -1151,10 +1151,11 @@ async function viewChat(main) {
 			drawTray();
 			try {
 				const name = f.name || `incollata.${f.type.slice("image/".length).replace("jpeg", "jpg")}`;
-				const { file: saved } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(name)}`, { method: "PUT", raw: f });
+				const { file: saved, document: docLabel } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(name)}`, { method: "PUT", raw: f });
 				if (isPicture) pending.push(saved.path);
 				else {
-					input.value = `${input.value ? `${input.value}\n` : ""}[File caricato nel workspace: ${saved.path}] `;
+					const note = docLabel ? `[Documento ${docLabel} nel workspace: ${saved.path}. Leggilo con file_read]` : `[File caricato nel workspace: ${saved.path}]`;
+					input.value = `${input.value ? `${input.value}\n` : ""}${note} `;
 					store(`annie.draft.${threadId}`, input.value);
 					toast(`Caricato ${saved.path}`);
 				}
@@ -2082,7 +2083,7 @@ async function viewFiles(main) {
 	});
 	const total = files.reduce((n, f) => n + f.size, 0);
 	mount(main, 
-		head(inst.name, h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che le date. ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
+		head(inst.name, h("h1", "File"), `Il workspace di ${inst.name}: i file che crea e quelli che le date (legge anche PDF, Word, Excel e PowerPoint). ${files.length} file, ${fmt.bytes(total)}.`, h("label.btn.accent", "Carica un file", upload)),
 		h(
 			"div.card",
 			files.length

@@ -113,6 +113,10 @@ _Avoid_: disco, storage, cartella
 Una foto o un'immagine che l'istanza guarda: quelle che le persone mandano in un messaggio (al massimo 4, fino a 20 MB ciascuna, JPEG, PNG, GIF o WebP riconosciute dal contenuto, rimpicciolite se il modello le vuole più piccole) e quelle del workspace che riapre da sola. Restano nel workspace sotto `uploads/`.
 _Avoid_: allegato (è qualunque file), media, vision
 
+**Documento**:
+Un PDF, Word, Excel, PowerPoint o OpenDocument nel workspace, di solito mandato da una persona. Annie ne legge il testo con `file_read`: pagine, fogli e diapositive restano distinti, la formattazione no. Una scansione non ha testo da leggere. Vedi ADR 0026.
+_Avoid_: allegato (è qualunque file), file binario
+
 **Task programmato**:
 Un'istruzione che un'istanza esegue da sola a un'ora stabilita, una volta o a ripetizione, consegnando il risultato a un thread.
 _Avoid_: cron, job, promemoria, routine
