@@ -183,10 +183,13 @@ describe("web console", () => {
 		const asked = await anna(`/api/instances/ops/files/raw?path=${encodeURIComponent(svg)}&inline=1`);
 		expect(asked.headers.get("content-disposition")).toMatch(/^attachment;/);
 		expect(asked.headers.get("content-type")).not.toContain("svg");
-		// A picture that is not one still reaches the model as text only, with the reason.
-		expect((await post({ text: "e questo?", images: [svg] })).status).toBe(200);
-		await waitFor(() => entries.length === 4 || (void anna(`/api/instances/ops/threads/${thread.id}`).then((r) => (entries = r.body.entries ?? [])), false));
-		expect(entries[3].text).toContain(`[Immagini non mostrate: ${svg} (non è un'immagine JPEG, PNG, GIF o WebP)]`);
+		// What the page sends must be a picture: anything else is refused before it reaches anyone.
+		const refused = await post({ text: "e questo?", images: [svg] });
+		expect(refused.status).toBe(400);
+		expect(refused.body.error).toContain("non è un'immagine");
+		// Two uploads with the same name never overwrite each other: messages point at their photos by path.
+		const again = (await raw("scontrino.png", PNG)).body.file.path;
+		expect(again).toMatch(/^uploads\/scontrino-[0-9a-f]{8}\.png$/);
 	});
 
 	it("a member sees and deletes only the tasks that act for them", async () => {

@@ -22,7 +22,7 @@ import type { AnnieRuntime } from "../core/runtime.ts";
 import { type Schedule, ScheduleError, schedulePerson } from "../core/schedules.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
 import { WorkspaceError } from "../core/workspace.ts";
-import { IMAGE_LIMITS, imageType } from "../core/images.ts";
+import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/images.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
@@ -319,10 +319,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const paths = Array.isArray(body.images) ? body.images : [];
 		if (paths.length > IMAGE_LIMITS.perMessage || paths.some((p) => typeof p !== "string" || !/^uploads\/[^/]{1,130}$/.test(p))) throw new HttpError(400, `Al massimo ${IMAGE_LIMITS.perMessage} immagini caricate, da uploads/`);
 		if ((text === "" && paths.length === 0) || text.length > 20_000) throw new HttpError(400, "Messaggio vuoto o troppo lungo");
+		const channel = channelOf(params[0] as string);
+		const thread = await channel.thread(params[1] as string);
+		if (thread === undefined || thread.personId !== (person as Person).id) throw new HttpError(400, "Conversazione non trovata");
 		const workspace = runtime.workspace(tenantId, params[0] as string);
-		const images = await Promise.all((paths as string[]).map(async (path) => ({ path, data: new Uint8Array(await workspaceCall(() => workspace.read(path))) })));
+		const images = [];
+		for (const path of paths as string[]) {
+			const file = await workspaceCall(() => workspace.stat(path));
+			if (file === undefined) throw new HttpError(400, `${path} non c'è`);
+			if (file.size > IMAGE_LIMITS.maxBytes) throw new HttpError(400, `${path} ${IMAGE_TOO_BIG}`);
+			const data = new Uint8Array(await workspaceCall(() => workspace.read(path)));
+			const problem = imageProblem(data);
+			if (problem !== undefined) throw new HttpError(400, `${path} ${problem}`);
+			images.push({ path, data });
+		}
 		try {
-			return { entry: await channelOf(params[0] as string).post(params[1] as string, (person as Person).id, text, undefined, images) };
+			return { entry: await channel.post(params[1] as string, (person as Person).id, text, undefined, images) };
 		} catch (error) {
 			if (error instanceof UserNotAllowed) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questa istanza");
 			if (error instanceof EgressDenied) throw new HttpError(403, "Questa istanza non accetta messaggi dal web");
@@ -362,7 +374,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		// A picture can be shown in the page (thumbnails in the chat): only one whose bytes are a JPEG, PNG, GIF or WebP, never SVG.
 		const picture = url.searchParams.get("inline") === "1" ? imageType(data) : undefined;
 		if (picture !== undefined) {
-			res.writeHead(200, { "content-type": picture, "content-length": data.length, "content-disposition": "inline", "x-content-type-options": "nosniff", "cache-control": "private, max-age=300" });
+			res.writeHead(200, { "content-type": picture, "content-length": data.length, "content-disposition": "inline", "x-content-type-options": "nosniff", "cache-control": "no-store" });
 			res.end(data);
 			return STREAMED;
 		}
@@ -380,7 +392,11 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (!member && (person as Person).role !== "owner") throw new HttpError(403, "Forbidden");
 		const name = (url.searchParams.get("name") ?? "file").replace(/[^\w.\- ]+/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";
 		const data = await readBody(req, MAX_UPLOAD);
-		const file = await workspaceCall(() => runtime.workspace(tenantId, params[0] as string).write(`uploads/${name}`, data));
+		const workspace = runtime.workspace(tenantId, params[0] as string);
+		// Never over an earlier upload: messages point at their photos by path (phones call them all image.jpg).
+		const taken = (await workspaceCall(() => workspace.stat(`uploads/${name}`))) !== undefined;
+		const unique = taken ? name.replace(/(\.[^.]*)?$/, (ext) => `-${randomUUID().slice(0, 8)}${ext}`) : name;
+		const file = await workspaceCall(() => workspace.write(`uploads/${unique}`, data));
 		await runtime.audit(tenantId).append({ type: "web.upload", instanceId: params[0], personId: (person as Person).id, path: file.path, bytes: file.size });
 		return { file };
 	});

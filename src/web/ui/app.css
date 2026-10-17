@@ -264,6 +264,9 @@ pre.code { margin: 0; padding: 12px 14px; background: var(--bg-2); border: 1px s
 .tray .chip { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--surface); }
 .tray .chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tray .chip button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--fg) 70%, transparent); color: var(--surface); font-size: 14px; line-height: 20px; cursor: pointer; }
+.tray .chip.loading { background: linear-gradient(90deg, var(--hover), var(--active), var(--hover)); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.msg .gone { font-size: 12px; color: var(--fg-3); padding: 6px 8px; border: 1px dashed var(--border-2); border-radius: 8px; }
 .msg .pics { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
 .msg .pics img { max-width: 220px; max-height: 220px; border-radius: 8px; border: 1px solid var(--border); display: block; object-fit: cover; }
 .welcome { margin: auto; text-align: center; max-width: 460px; padding: 0 16px; }

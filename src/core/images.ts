@@ -1,16 +1,14 @@
 /**
  * Pictures the model looks at: photos people send, and images in the workspace an instance
- * opens with image_view. Recognized by their bytes, not by name or declared type, and capped
- * so a message stays within what the model providers accept.
+ * opens with image_view. Recognized by their bytes, not by name or declared type. A photo
+ * too big for the model is shrunk on the way to it (the engine does that); the workspace
+ * keeps the original.
  */
 
-/** Model providers take up to about 5 MB per image once encoded: 3.75 MB of bytes is under that. */
-export const IMAGE_LIMITS = { maxBytes: 3_750_000, perMessage: 4 } as const;
+/** Up to 4 pictures a message, each up to 20 MB as stored (what a Telegram bot may download, and a web upload). */
+export const IMAGE_LIMITS = { maxBytes: 20 * 1024 * 1024, perMessage: 4 } as const;
 
 export type ImageMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
-
-/** A picture for the model: where it is in the workspace, its type and its bytes. */
-export type ModelImage = { readonly path: string; readonly mimeType: ImageMime; readonly data: Uint8Array };
 
 /** The image type of these bytes, or undefined if they are not a JPEG, PNG, GIF or WebP. */
 export function imageType(data: Uint8Array): ImageMime | undefined {
@@ -23,9 +21,12 @@ export function imageType(data: Uint8Array): ImageMime | undefined {
 	return undefined;
 }
 
+/** What is said of a picture over the size limit. */
+export const IMAGE_TOO_BIG = "è più grande di 20 MB";
+
 /** Why these bytes cannot go to the model as a picture, or undefined if they can. */
 export function imageProblem(data: Uint8Array): string | undefined {
 	if (imageType(data) === undefined) return "non è un'immagine JPEG, PNG, GIF o WebP";
-	if (data.length > IMAGE_LIMITS.maxBytes) return `è più grande di ${(IMAGE_LIMITS.maxBytes / 1_000_000).toFixed(2).replace(".", ",")} MB`;
+	if (data.length > IMAGE_LIMITS.maxBytes) return IMAGE_TOO_BIG;
 	return undefined;
 }

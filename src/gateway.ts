@@ -68,7 +68,7 @@ export function connectChannel(
  * checks them). Only for allowed users: the core decides that on submit, so files of a
  * stranger are dropped here, before they touch the disk.
  */
-async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): Promise<InboundMessage & { images?: { path: string; data: Uint8Array }[] }> {
+async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): Promise<InboundMessage> {
 	if (message.attachments === undefined || message.attachments.length === 0) return message;
 	const record = await runtime.registry.getInstance(message.tenantId, message.instanceId);
 	const allowed = (record.allowedUsers[message.channel] ?? []).includes(message.userId);
@@ -86,7 +86,7 @@ async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): 
 	}
 	const note = notes.join("\n");
 	const { attachments: _files, ...rest } = message;
-	return { ...rest, text: message.text === "" ? note : `${message.text}\n\n${note}`, ...(images.length === 0 ? {} : { images }) };
+	return { ...rest, text: message.text === "" ? note : `${message.text}\n\n${note}`, ...(images.length === 0 ? {} : { images: [...(message.images ?? []), ...images] }) };
 }
 
 function errorMessage(error: unknown): string {

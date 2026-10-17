@@ -71,7 +71,9 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	if (count?.[1] !== undefined) {
 		return fauxAssistantMessage(fauxToolCall("slow_counter", { n: Number(count[1]) }), { stopReason: "toolUse" });
 	}
-	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}»${last?.role === "user" ? imagesSeen(last.content) : ""}`);
+	// Pictures of earlier messages still in the request: old ones should have left it.
+	const earlier = messages.filter((m) => m !== last && m.role !== "assistant" && typeof m.content !== "string" && m.content.some((c) => c.type === "image")).length;
+	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}»${last?.role === "user" ? imagesSeen(last.content) : ""}${earlier === 0 ? "" : ` [${earlier} ${earlier === 1 ? "messaggio precedente" : "messaggi precedenti"} con immagini]`}`);
 }
 
 /** The pictures of a message as the model received them: how many, of which type and size. */

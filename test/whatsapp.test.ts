@@ -94,8 +94,9 @@ describe("WhatsApp adapter", () => {
 				{ from: "393331234567", id: "wamid.1", type: "text", text: { body: "Ciao Annie" } },
 				{ from: "393331234567", id: "wamid.2", type: "document", document: { id: "media-in-1", filename: "preventivo.pdf", caption: "Guarda qui" } },
 				{ from: "393331234567", id: "wamid.3", type: "interactive", interactive: { type: "button_reply", button_reply: { id: "tool:0123456789ab:approved", title: "Approva" } } },
-				{ from: "393331234567", id: "wamid.4", type: "sticker", sticker: { id: "x" } },
+				{ from: "393331234567", id: "wamid.4", type: "sticker", sticker: { id: "x", animated: true } },
 				{ from: "393331234567", id: "wamid.6", type: "image", image: { id: "media-photo", mime_type: "image/jpeg", caption: "Lo scontrino" } },
+				{ from: "393331234567", id: "wamid.7", type: "sticker", sticker: { id: "media-photo", mime_type: "image/webp" } },
 			]),
 		);
 		await wa.handleWebhook(delivery([{ from: "393331234567", id: "wamid.5", type: "text", text: { body: "altro numero" } }], "999"));
@@ -103,8 +104,11 @@ describe("WhatsApp adapter", () => {
 			["Ciao Annie", "393331234567", true, "wamid.1"],
 			["Guarda qui", "393331234567", true, "wamid.2"],
 			["Lo scontrino", "393331234567", true, "wamid.6"],
+			["", "393331234567", true, "wamid.7"],
 		]);
 		expect(inbound[2]?.attachments?.map((a) => [a.name, a.data.length])).toEqual([["foto.jpg", 12]]);
+		// A still sticker is a picture too; an animated one is skipped.
+		expect(inbound[3]?.attachments?.map((a) => a.name)).toEqual(["sticker.jpg"]);
 		expect(inbound[1]?.attachments?.[0]?.name).toBe("preventivo.pdf");
 		expect(Buffer.from(inbound[1]?.attachments?.[0]?.data ?? []).toString()).toBe("%PDF-");
 		expect(taps).toEqual([expect.objectContaining({ channel: "whatsapp", userId: "393331234567", data: "tool:0123456789ab:approved", actionId: "wamid.3" })]);

@@ -101,6 +101,10 @@ _Avoid_: tool generato, skill autogenerata
 I file di un'istanza: quelli che crea, quelli che le persone le caricano, quelli che invia.
 _Avoid_: disco, storage, cartella
 
+**Immagine**:
+Una foto o un'immagine che l'istanza guarda: quelle che le persone mandano in un messaggio (al massimo 4, fino a 20 MB ciascuna, JPEG, PNG, GIF o WebP riconosciute dal contenuto, rimpicciolite se il modello le vuole più piccole) e quelle del workspace che riapre da sola. Restano nel workspace sotto `uploads/`.
+_Avoid_: allegato (è qualunque file), media, vision
+
 **Task programmato**:
 Un'istruzione che un'istanza esegue da sola a un'ora stabilita, una volta o a ripetizione, consegnando il risultato a un thread.
 _Avoid_: cron, job, promemoria, routine

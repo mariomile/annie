@@ -13,13 +13,17 @@ import {
 	defineDoc,
 	defineExtension,
 	defineTool,
+	GenerationTask,
 	Harness,
+	hook,
 	type Submission,
 	type SubmissionId,
 	type SettledSubmissionRecord,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
 import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
 import { createProvider } from "./pi-durable-models.ts";
 
@@ -59,7 +63,14 @@ export const piDurableEngine: DurableEngine = {
 		models.setProvider(provider);
 
 		const registry = createRegistry();
-		registry.install(defineExtension({ name: "annie", tools: options.tools.map(toPiTool) }));
+		registry.install(
+			defineExtension({
+				name: "annie",
+				tools: options.tools.map(toPiTool),
+				// Old pictures leave the request, not the history: a long thread does not resend every photo.
+				hooks: [hook(GenerationTask, { beforeRequest: ({ messages }) => ({ messages: withRecentImages(messages, RECENT_IMAGE_MESSAGES) }) })],
+			}),
+		);
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		const harness = await Harness.open(storage, { models, registry }, context);
@@ -91,7 +102,7 @@ class PiDurableSession implements EngineSession {
 			if (existing !== undefined) return { submissionId: String(existing.id) };
 		}
 		const submission = await conversation.submit(
-			{ type: "input", content: images.length === 0 ? text : [{ type: "text", text }, ...images.map(toPiImage)], ...(requestId === undefined ? {} : { requestId }) },
+			{ type: "input", content: images.length === 0 ? text : [{ type: "text", text }, ...(await Promise.all(images.map(toPiImage)))], ...(requestId === undefined ? {} : { requestId }) },
 			context,
 		);
 		this.track(submission, threadKey);
@@ -252,11 +263,43 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 				},
 			});
 			if (typeof result === "string") return { output: [{ type: "text", text: result }] };
-			return { output: [{ type: "text", text: result.text }, ...result.images.map(toPiImage)] };
+			return { output: [{ type: "text", text: result.text }, ...(await Promise.all(result.images.map(toPiImage)))] };
 		},
 	});
 }
 
-function toPiImage(image: EngineImage): { type: "image"; data: string; mimeType: string } {
-	return { type: "image", data: Buffer.from(image.data).toString("base64"), mimeType: image.mimeType };
+/**
+ * A picture as the model takes it: as it is when it fits, otherwise turned upright, scaled and
+ * re-encoded until it does (Photon, in a worker thread, loaded on the first big photo). One
+ * that cannot be made to fit becomes a line saying so.
+ */
+async function toPiImage(image: EngineImage): Promise<{ type: "image"; data: string; mimeType: string } | { type: "text"; text: string }> {
+	if (Math.ceil(image.data.length / 3) * 4 <= DEFAULT_IMAGE_LIMITS.maxBytes) return { type: "image", data: Buffer.from(image.data).toString("base64"), mimeType: image.mimeType };
+	photon ??= createNodePhotonImages();
+	const prepared = await (await photon).prepare(image.data, image.mimeType, DEFAULT_IMAGE_LIMITS).catch(() => undefined);
+	if (prepared === undefined) return { type: "text", text: "[Immagine troppo grande: non si è riusciti a ridurla]" };
+	return { type: "image", data: prepared.data, mimeType: prepared.mimeType };
+}
+
+let photon: Promise<ImageProcessor> | undefined;
+
+/** How many of the newest messages carrying pictures still show them to the model. */
+export const RECENT_IMAGE_MESSAGES = 2;
+
+/**
+ * The messages with pictures only in the newest `keep` that carry any; older ones get a line
+ * saying a picture was there, so the model can reopen it from the workspace with image_view.
+ */
+export function withRecentImages(messages: readonly Message[], keep: number): readonly Message[] {
+	let seen = 0;
+	const out = [...messages];
+	for (let i = out.length - 1; i >= 0; i--) {
+		const message = out[i] as Message;
+		if (message.role === "assistant" || typeof message.content === "string" || !message.content.some((c) => c.type === "image")) continue;
+		seen += 1;
+		if (seen <= keep) continue;
+		const content = message.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[Immagine vista prima: non più allegata, riaprila con image_view se serve]" } : c));
+		out[i] = { ...message, content } as Message;
+	}
+	return out;
 }
