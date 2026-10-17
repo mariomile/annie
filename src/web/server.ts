@@ -23,6 +23,7 @@ import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
+import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
@@ -375,6 +376,8 @@ export function createWebApp(options: WebAppOptions): Server {
 					schedules: owner ? schedules.length : schedules.filter((s) => mine(s, p)).length,
 					watches: owner ? watches.length : watches.filter((w) => mineWatch(w, p)).length,
 					memories: runtime.memory(tenantId, r.id).list().filter((m) => m.about === SHARED || m.about === subjectOf("web", p.id)).length,
+					// Which agenti may write to it (ADR 0042): the owner's to decide, so the owner's to see.
+					...(owner ? { acceptsFrom: r.egress.channels.includes(AGENT_CHANNEL) ? (r.allowedUsers[AGENT_CHANNEL] ?? []) : [] } : {}),
 				};
 			}),
 		);
@@ -1063,6 +1066,24 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.secrets(tenantId).set(name, body.value);
 		await runtime.audit(tenantId).append({ type: "secret.set", instanceId: params[0], name });
 		return { ok: true };
+	});
+	// --- agenti that write to each other (ADR 0042): who may write to this one ---
+	route("PUT", "/api/instances/:id/agents", "owner", async ({ person, params, req }) => {
+		const id = params[0] as string;
+		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Agente inesistente");
+		});
+		const body = (await readJson(req)) as { from?: unknown };
+		if (!Array.isArray(body.from)) throw new HttpError(400, "Serve l'elenco degli agenti");
+		// A segreteria has no conversations of its own: it can neither ask nor be asked.
+		if (options.segreterie?.has(id)) throw new HttpError(400, "La segreteria non scrive agli altri agenti");
+		const known = new Set<string>((await runtime.registry.listInstances(tenantId)).map((r) => r.id).filter((x) => !options.segreterie?.has(x)));
+		const from = [...new Set(body.from.map(String))].filter((x) => x !== String(record.id) && known.has(x));
+		await runtime.registry.setAllowedUsers(tenantId, id, AGENT_CHANNEL, from);
+		const channels = record.egress.channels.filter((c) => c !== AGENT_CHANNEL);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, channels: from.length === 0 ? channels : [...channels, AGENT_CHANNEL] });
+		await runtime.audit(tenantId).append({ type: "agents.allowed", instanceId: id, personId: (person as Person).id, allowed: from.length, from: from.join(",") });
+		return { from };
 	});
 	route("GET", "/api/instances/:id/settings", "owner", async ({ params }) => {
 		const r = await runtime.registry.getInstance(tenantId, params[0] as string);

@@ -771,6 +771,32 @@ function webActionsCard(inst, allowed) {
 	);
 }
 
+/** Which other agenti may write to this one (ADR 0042). Each tick saves at once. */
+function agentsCard(inst, settings) {
+	const others = state.instances.filter((i) => i.id !== inst.id && !i.hasSegreteria);
+	const allowed = new Set(settings.egress.channels.includes("agente") ? (settings.allowedUsers.agente ?? []) : []);
+	const boxes = others.map((o) => {
+		const box = h("input", { type: "checkbox", checked: allowed.has(o.id) || undefined });
+		box.onchange = async () => {
+			try {
+				const from = others.filter((x, i) => boxes[i].box.checked).map((x) => x.id);
+				await api(`/api/instances/${inst.id}/agents`, { method: "PUT", body: { from } });
+				toast(box.checked ? `${o.name} può scrivere a ${inst.name}` : `${o.name} non può più scrivere a ${inst.name}`);
+			} catch (error) {
+				box.checked = !box.checked;
+				toast(error.message, true);
+			}
+		};
+		return { box, row: h("label.row-gap", box, h("span", agentLabel(o))) };
+	});
+	return h(
+		"div.card.pad",
+		h("h3", "Agenti che possono scrivergli"),
+		h("p.muted", `Un agente spuntato può chiedere aiuto a ${inst.name} mentre lavora: ${inst.name} risponde con i suoi strumenti e solo la memoria condivisa, e la risposta torna nella chat da cui era partita la domanda. Le conversazioni tra agenti non compaiono in chat; in Attività resta traccia di ogni messaggio. Per farli collaborare tutti insieme usa «Fate squadra» nella pagina Agenti.`),
+		others.length === 0 ? h("p.muted", "Non ci sono altri agenti: creane uno dalla pagina Agenti.") : boxes.map((b) => b.row),
+	);
+}
+
 /** The instance's computer (ADR 0013): a terminal with no network. */
 function computerCard(inst, allowed, problem) {
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
@@ -3157,6 +3183,20 @@ async function viewAgents(main) {
 		go(view);
 	};
 	const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+	const writesTo = (a) => agents.filter((x) => x.acceptsFrom?.includes(a.id)).map((x) => x.name);
+	// «Fate squadra»: every agente may ask every other one; the per-agente card in Impostazioni stays the fine control.
+	const team = agents.filter((a) => !state.instances.find((i) => i.id === a.id)?.hasSegreteria);
+	const together = team.length > 1 && team.every((a) => team.every((x) => x.id === a.id || a.acceptsFrom?.includes(x.id)));
+	const setTeam = async (on) => {
+		try {
+			for (const a of team) await api(`/api/instances/${a.id}/agents`, { method: "PUT", body: { from: on ? team.filter((x) => x.id !== a.id).map((x) => x.id) : [] } });
+			toast(on ? "Ora gli agenti possono chiedersi aiuto tra loro" : "Gli agenti non si scrivono più tra loro");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	const teamButton = owner && team.length > 1 ? h("button.btn.ghost", { title: "Ogni agente può chiedere aiuto agli altri mentre lavora", onclick: () => setTeam(!together) }, together ? "Separa gli agenti" : "Fate squadra") : null;
 	const card = (a) =>
 		h(
 			`article.card.agent${a.id === state.instance?.id ? ".current" : ""}`,
@@ -3165,8 +3205,10 @@ async function viewAgents(main) {
 				"div.agent-body",
 				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
 				a.tagline ? h("p", a.tagline) : null,
-				h("p.muted.small", [a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web").join(", ")].filter(Boolean).join(" · ")),
+				h("p.muted.small", [a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web" && c !== "agente").join(", ")].filter(Boolean).join(" · ")),
 				h("p.muted.small", [plural(a.schedules, "task", "task"), plural(a.watches, "sentinella", "sentinelle"), plural(a.memories, "ricordo", "ricordi")].join(" · ")),
+				a.acceptsFrom?.length ? h("p.muted.small", `Gli scrivono: ${a.acceptsFrom.map((id) => agents.find((x) => x.id === id)?.name ?? id).join(", ")}`) : null,
+				owner && writesTo(a).length ? h("p.muted.small", `Può scrivere a: ${writesTo(a).join(", ")}`) : null,
 			),
 			h(
 				"div.agent-actions",
@@ -3176,7 +3218,7 @@ async function viewAgents(main) {
 		);
 	mount(
 		main,
-		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente") : null),
+		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("div.row-gap", teamButton, h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente")) : null),
 		agents.length === 0 ? h("div.empty", h("b", "Nessun agente"), owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
 	);
 }
@@ -3256,6 +3298,7 @@ async function viewSettings(main) {
 				images.available ? anchor("immagini", imagesCard(inst, images.host, images.maxPerDay, (settings.egress.connectors ?? []).includes("image_generation"))) : null,
 				anchor("siti", webCard(inst, settings.egress.web ?? [])),
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
+				anchor("agenti", agentsCard(inst, settings)),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
 			),
 			h(

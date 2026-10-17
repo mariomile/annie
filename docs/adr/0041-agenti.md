@@ -28,5 +28,5 @@ Quasi tutto c'era già: un'istanza è un agente con il suo modello, le sue conve
 
 ## Conseguenze
 
-- Gli agenti si parleranno tra loro (ADR successiva): il nome e il compito sono quello che un agente vede degli altri.
+- Gli agenti si scrivono tra loro (ADR 0042): il nome e il compito sono quello che un agente vede degli altri.
 - Telegram e WhatsApp non cambiano: ogni agente ha già il suo bot. La faccia e il nome nei canali sono quelli del bot.
