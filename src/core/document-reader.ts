@@ -14,6 +14,11 @@ export const DOCUMENT_READER_LIMITS = { timeoutMs: 20_000, memoryMb: 512, maxWor
 
 const AGAIN = "non sono riuscita a leggerlo ora, riprova tra poco";
 
+/** A failure that says nothing about the file (no worker free, a worker lost): reading it again later may work. */
+export function isTransient(error: unknown): boolean {
+	return error instanceof DocumentError && error.message === AGAIN;
+}
+
 let running = 0;
 const waiting: (() => void)[] = [];
 

@@ -28,7 +28,7 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
 }
 
 /** Tools that only read: the only ones that run in a brief's thread. */
-const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "file_list", "file_read", "image_view", "schedule_list", "watch_list"]);
+const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list"]);
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or
