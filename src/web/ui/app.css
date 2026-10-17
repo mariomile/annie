@@ -383,3 +383,13 @@ ol.steps .stack { display: grid; gap: 8px; }
 .offline-bar[hidden] { display: none; }
 .flash { animation: flash 1.6s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 3px transparent; } }
+
+/* Google writes waiting for the person, above the chat box */
+.asks { margin: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; max-height: 45vh; overflow: auto; }
+.asks[hidden] { display: none; }
+.google-ask table.fields td:first-child { width: 120px; color: var(--fg-3); white-space: nowrap; vertical-align: top; }
+.google-ask table.fields td { padding: 6px 10px; overflow-wrap: anywhere; }
+.google-ask pre.letter { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 14px; margin: 10px 0 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); max-height: 260px; overflow: auto; }
+.google-ask.compact { padding: 12px 14px; border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.google-ask.compact h3 { font-size: 14px; }
+@media (max-width: 640px) { .google-ask table.fields td:first-child { width: 84px; } .asks { max-height: 38vh; } .asks .google-ask pre.letter { max-height: 160px; } }

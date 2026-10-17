@@ -7,7 +7,8 @@ import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
-import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
@@ -112,6 +113,11 @@ export class AnnieRuntime {
 	/** The forms an instance asked to send (web_submit). */
 	webActions(tenant: string, instance: string): WebActionStore {
 		return new WebActionStore(webActionsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Writes to people's Google accounts waiting for (or past) their decision (ADR 0021). */
+	googleActions(tenant: string, instance: string): GoogleActionStore {
+		return new GoogleActionStore(googleActionsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** The tools proposti of an instance. */

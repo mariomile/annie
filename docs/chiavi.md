@@ -66,17 +66,18 @@ In alternativa il bot si collega anche dalla console: Impostazioni → Telegram.
 
 ### 4. Google per persona: `ANNIE_GOOGLE_CLIENT_ID`, `ANNIE_GOOGLE_CLIENT_SECRET`
 
-Serve perché ognuno colleghi il proprio Gmail e Calendar dalla console, in sola lettura.
+Serve perché ognuno colleghi il proprio Gmail e Calendar dalla console: in lettura e, con `ANNIE_GOOGLE_WRITE=1`, anche per far preparare ad Annie mail ed eventi, che partono solo quando la persona li approva ([ADR 0021](adr/0021-google-scrivere-con-approvazione.md)).
 
 1. Nello stesso progetto Google Cloud abilita anche **Google Calendar API**.
 2. **Credentials → Create credentials → OAuth client ID**, tipo *Web application*. Redirect URI:
    - in locale: `http://localhost:8080/oauth/google/callback`;
    - su un server: `https://<tuo-dominio>/oauth/google/callback`;
    - in Annie Cloud: `https://<dominio-del-control-plane>/oauth/google/callback`.
-3. Client ID e secret vanno in `ANNIE_GOOGLE_CLIENT_ID` e `ANNIE_GOOGLE_CLIENT_SECRET`. Facoltativo: `ANNIE_GOOGLE_SERVICES` (`gmail,calendar`, oppure `calendar` da solo).
+3. Client ID e secret vanno in `ANNIE_GOOGLE_CLIENT_ID` e `ANNIE_GOOGLE_CLIENT_SECRET`. Facoltativi: `ANNIE_GOOGLE_SERVICES` (`gmail,calendar`, oppure `calendar` da solo) e `ANNIE_GOOGLE_WRITE=1` (scrivere, con approvazione). Con la scrittura, nella schermata di consenso aggiungi anche gli scope `gmail.compose` e `calendar.events`.
 4. Pubblicazione dell'app (**OAuth consent screen → Publish app**):
    - `calendar.readonly` richiede una verifica di pochi giorni;
    - `gmail.readonly` richiede una valutazione di sicurezza annuale da un assessor approvato da Google. Va chiesto un preventivo.
+   - con `ANNIE_GOOGLE_WRITE=1`: `calendar.events` sta nella stessa verifica di `calendar.readonly`, `gmail.compose` nella stessa valutazione di `gmail.readonly`.
 5. Domini: `accounts.google.com`, `oauth2.googleapis.com`, `openidconnect.googleapis.com`, `gmail.googleapis.com`, `www.googleapis.com`.
 
 ### 5. Annie Cloud su Railway: `RAILWAY_API_TOKEN`

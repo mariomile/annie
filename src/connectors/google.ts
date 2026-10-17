@@ -2,12 +2,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import type { TenantSecrets } from "../core/secrets.ts";
+import { EgressDenied } from "../core/errors.ts";
 import { ConnectorHttpError, requestJson } from "./http.ts";
 
 /**
- * What Annie can read of a person's Google account; never send or change. Google rates
- * gmail.readonly "restricted" (a public app needs a yearly third-party security assessment) and
- * calendar.readonly "sensitive" (a verification of days), so the operator chooses which to ask.
+ * What Annie can read of a person's Google account. Google rates gmail.readonly "restricted" (a
+ * public app needs a yearly third-party security assessment) and calendar.readonly "sensitive" (a
+ * verification of days), so the operator chooses which to ask. Writing (ADR 0021) is asked only
+ * when the operator turns it on, and every write waits for the person's approval.
  */
 export type GoogleService = "gmail" | "calendar";
 export const GOOGLE_SERVICES: readonly GoogleService[] = ["gmail", "calendar"];
@@ -15,6 +17,17 @@ export const GOOGLE_SCOPE: Readonly<Record<GoogleService, string>> = {
 	gmail: "https://www.googleapis.com/auth/gmail.readonly",
 	calendar: "https://www.googleapis.com/auth/calendar.readonly",
 };
+/** Writing, with approval: drafts and sending mail (no reading or deleting), and events. */
+export const GOOGLE_WRITE_SCOPE: Readonly<Record<GoogleService, string>> = {
+	gmail: "https://www.googleapis.com/auth/gmail.compose",
+	calendar: "https://www.googleapis.com/auth/calendar.events",
+};
+
+/** The scopes asked for these services, with writing or without. */
+export function googleScopes(services: readonly GoogleService[], write: boolean): string[] {
+	return [...services.map((service) => GOOGLE_SCOPE[service]), ...(write ? services.map((service) => GOOGLE_WRITE_SCOPE[service]) : [])];
+}
+
 /** Who the account is: the address shown to the person. */
 const IDENTITY_SCOPES = ["openid", "email"];
 
@@ -30,6 +43,8 @@ export type GoogleClientConfig = {
 	/** Where Google sends the person back: this server's, or the control plane's in Annie Cloud. */
 	readonly redirectUrl: string;
 	readonly services: readonly GoogleService[];
+	/** Ask to write too (ANNIE_GOOGLE_WRITE): every write still waits for the person's approval. */
+	readonly write?: boolean;
 };
 
 /** A person's connected account, as shown to them. The refresh token lives in the secret store. */
@@ -118,7 +133,7 @@ export class GoogleOAuth {
 			client_id: this.config.clientId,
 			redirect_uri: this.config.redirectUrl,
 			response_type: "code",
-			scope: [...IDENTITY_SCOPES, ...this.config.services.map((service) => GOOGLE_SCOPE[service])].join(" "),
+			scope: [...IDENTITY_SCOPES, ...googleScopes(this.config.services, this.config.write === true)].join(" "),
 			access_type: "offline",
 			// Without consent Google gives a refresh token only the first time.
 			prompt: "consent",
@@ -143,7 +158,8 @@ export class GoogleOAuth {
 		const body = (await response.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string; scope?: string; error?: string };
 		if (!response.ok || body.access_token === undefined || body.refresh_token === undefined) throw new GoogleConsentError(`Google non ha accettato il collegamento${body.error === undefined ? "" : ` (${body.error})`}: riprova.`);
 		const scopes = (body.scope ?? "").split(" ").filter((s) => s !== "");
-		if (this.config.services.some((service) => !scopes.includes(GOOGLE_SCOPE[service]))) {
+		// Reading is needed; writing is not: without it the account only reads (Annie says so when asked to write).
+		if (googleScopes(this.config.services, false).some((scope) => !scopes.includes(scope))) {
 			await this.revoke(body.refresh_token);
 			const what = this.config.services.length > 1 ? "ha bisogno di tutti i permessi richiesti (posta e calendario)" : `ha bisogno del permesso di leggere ${this.config.services[0] === "gmail" ? "la posta" : "il calendario"}`;
 			throw new GoogleConsentError(`Per usare Google, Annie ${what}: riprova lasciando spuntati i permessi.`);
@@ -164,13 +180,55 @@ export class GoogleConsentError extends Error {
 
 export type MailSummary = { readonly id: string; readonly from: string; readonly subject: string; readonly date: string; readonly snippet: string; readonly unread: boolean };
 export type MailMessage = MailSummary & { readonly to: string; readonly text: string };
-export type CalendarEvent = { readonly id: string; readonly summary: string; readonly start: string; readonly end: string; readonly location?: string; readonly attendees: readonly string[] };
+export type CalendarEvent = {
+	readonly id: string;
+	readonly summary: string;
+	readonly start: string;
+	readonly end: string;
+	/** True when start and end are days (end exclusive, as Google keeps it). */
+	readonly allDay: boolean;
+	readonly location?: string;
+	/** "Name <address>" or the address. */
+	readonly attendees: readonly string[];
+	readonly attendeeEmails: readonly string[];
+	/** An occurrence of a recurring event: its series. */
+	readonly recurringEventId?: string;
+	/** The series itself (its own recurrence rules). */
+	readonly recurring: boolean;
+	readonly etag?: string;
+};
 
 type Header = { name: string; value: string };
 type Part = { mimeType?: string; headers?: Header[]; body?: { data?: string }; parts?: Part[] };
-type Message = { id: string; snippet?: string; labelIds?: string[]; payload?: Part };
+type Message = { id: string; threadId?: string; snippet?: string; labelIds?: string[]; payload?: Part };
+type ApiEvent = {
+	id: string;
+	etag?: string;
+	summary?: string;
+	location?: string;
+	htmlLink?: string;
+	recurringEventId?: string;
+	recurrence?: string[];
+	start?: { dateTime?: string; date?: string };
+	end?: { dateTime?: string; date?: string };
+	attendees?: { email?: string; displayName?: string; self?: boolean; resource?: boolean }[];
+};
 
-/** One person's Gmail and Calendar, read only, over an egress-guarded fetch. */
+/** What a reply needs of the message it answers. */
+export type ReplyTarget = { readonly id: string; readonly threadId: string; readonly from: string; readonly replyTo: string; readonly to: string; readonly cc: string; readonly subject: string; readonly date: string; readonly messageId: string; readonly references: string };
+
+/** What Google calendar event ids are made of (base32hex, "_" before an occurrence's time): never a path. */
+export const EVENT_ID_PATTERN = /^[A-Za-z0-9_]{1,1024}$/;
+
+/** The time of an event as Google takes it: a day (all day) or a moment, with its zone when it has no offset. */
+export type EventTime = { readonly date: string } | { readonly dateTime: string; readonly timeZone?: string };
+
+/** A write that may have reached Google: never "not done", never repeated. */
+export class GoogleUncertain extends Error {
+	override readonly name = "GoogleUncertain";
+}
+
+/** One person's Gmail and Calendar over an egress-guarded fetch. Writes are called only for an approved action. */
 export class GoogleClient {
 	private token: { value: string; expiresAt: number } | undefined;
 
@@ -201,18 +259,78 @@ export class GoogleClient {
 
 	async events(from: string, to: string, max: number): Promise<CalendarEvent[]> {
 		const params = new URLSearchParams({ timeMin: from, timeMax: to, maxResults: String(max), singleEvents: "true", orderBy: "startTime" });
-		const body = await this.get<{ items?: { id: string; summary?: string; location?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string }; attendees?: { email?: string; displayName?: string }[] }[] }>(
-			`https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
-			"calendar events",
-		);
-		return (body.items ?? []).map((e) => ({
-			id: e.id,
-			summary: e.summary ?? "(senza titolo)",
-			start: e.start?.dateTime ?? e.start?.date ?? "",
-			end: e.end?.dateTime ?? e.end?.date ?? "",
-			...(e.location === undefined ? {} : { location: e.location }),
-			attendees: (e.attendees ?? []).map((a) => a.displayName ?? a.email ?? "").filter((a) => a !== ""),
-		}));
+		const body = await this.get<{ items?: ApiEvent[] }>(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`, "calendar events");
+		return (body.items ?? []).map(calendarEvent);
+	}
+
+	async event(id: string): Promise<CalendarEvent> {
+		return calendarEvent(await this.get<ApiEvent>(eventUrl(id), "calendar event"));
+	}
+
+	/** The headers a reply to message `id` needs. */
+	async replyTarget(id: string): Promise<ReplyTarget> {
+		const names = ["From", "Reply-To", "To", "Cc", "Subject", "Date", "Message-ID", "References"].map((n) => `metadataHeaders=${n}`).join("&");
+		const m = await this.get<Message>(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=metadata&${names}`, "mail metadata");
+		const h = (name: string) => header(m.payload, name);
+		return { id: m.id, threadId: m.threadId ?? "", from: h("From"), replyTo: h("Reply-To"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: h("Date"), messageId: h("Message-ID"), references: h("References") };
+	}
+
+	async sendMail(raw: string, threadId?: string): Promise<{ id: string }> {
+		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw, ...(threadId === undefined ? {} : { threadId }) }, "mail send");
+	}
+
+	async createDraft(raw: string, threadId?: string): Promise<{ id: string }> {
+		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", { message: { raw, ...(threadId === undefined ? {} : { threadId }) } }, "mail draft");
+	}
+
+	/** `notify`: Google writes to the guests (sendUpdates=all), or tells nobody. */
+	async createEvent(event: Record<string, unknown>, notify: boolean): Promise<{ id: string; htmlLink?: string }> {
+		return this.write("POST", `${EVENTS}?sendUpdates=${notify ? "all" : "none"}`, event, "calendar create");
+	}
+
+	/** `etag`: the event as the person saw it; changed since, Google refuses (412) and nothing happens. */
+	async updateEvent(id: string, change: Record<string, unknown>, notify: boolean, etag?: string): Promise<{ id: string; htmlLink?: string }> {
+		return this.write("PATCH", `${eventUrl(id)}?sendUpdates=${notify ? "all" : "none"}`, change, "calendar update", etag);
+	}
+
+	async deleteEvent(id: string, notify: boolean, etag?: string): Promise<void> {
+		await this.write("DELETE", `${eventUrl(id)}?sendUpdates=${notify ? "all" : "none"}`, undefined, "calendar delete", etag);
+	}
+
+	/**
+	 * One write, never retried by itself: the token comes first, so failing to get it is "not
+	 * done". Once the request leaves, no answer or a server error is GoogleUncertain; a refusal
+	 * (4xx) is not done. A 401 is the one retry: Google did nothing with an expired token.
+	 */
+	private async write<T>(method: "POST" | "PATCH" | "DELETE", url: string, body: unknown, operation: string, etag?: string): Promise<T> {
+		for (let attempt = 0; ; attempt++) {
+			const token = await this.accessToken();
+			let response: Response;
+			try {
+				response = await this.options.fetch(url, {
+					method,
+					headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }), ...(etag === undefined ? {} : { "if-match": etag }) },
+					...(body === undefined ? {} : { body: JSON.stringify(body) }),
+					// A request that hangs would hold the decision for good: past this, the outcome is unknown.
+					signal: AbortSignal.timeout(30_000),
+				});
+			} catch (error) {
+				if (error instanceof EgressDenied) throw error;
+				throw new GoogleUncertain("la richiesta è partita ma Google non ha risposto");
+			}
+			if (response.status === 401 && attempt === 0) {
+				this.token = undefined;
+				continue;
+			}
+			if (response.status >= 500) throw new GoogleUncertain(`Google ha risposto con un errore suo (${response.status})`);
+			if (response.status === 412) throw new ConnectorHttpError("google", operation, 412, "l'evento è cambiato da quando l'hai visto: chiedi di nuovo");
+			if (!response.ok) {
+				// Only the status and Google's reason code: its message can repeat what was sent.
+				const reason = ((await response.json().catch(() => ({}))) as { error?: { errors?: { reason?: string }[] } }).error?.errors?.[0]?.reason ?? "";
+				throw new ConnectorHttpError("google", operation, response.status, /^\w{1,60}$/.test(reason) ? reason : "");
+			}
+			return (response.status === 204 ? undefined : await response.json().catch(() => ({}))) as T;
+		}
 	}
 
 	private async get<T>(url: string, operation: string): Promise<T> {
@@ -251,6 +369,31 @@ export class GoogleNotConnected extends Error {
 	constructor() {
 		super("Google is not connected for this person");
 	}
+}
+
+const EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+/** One event's address; the id is checked here too, so nothing but an event is ever reached. */
+function eventUrl(id: string): string {
+	if (!EVENT_ID_PATTERN.test(id)) throw new Error("calendar: invalid event id");
+	return `${EVENTS}/${id}`;
+}
+
+function calendarEvent(e: ApiEvent): CalendarEvent {
+	const guests = (e.attendees ?? []).filter((a) => a.resource !== true);
+	return {
+		id: e.id,
+		summary: e.summary ?? "(senza titolo)",
+		start: e.start?.dateTime ?? e.start?.date ?? "",
+		end: e.end?.dateTime ?? e.end?.date ?? "",
+		allDay: e.start?.dateTime === undefined && e.start?.date !== undefined,
+		...(e.location === undefined ? {} : { location: e.location }),
+		attendees: guests.map((a) => (a.displayName && a.email ? `${a.displayName} <${a.email}>` : (a.email ?? a.displayName ?? ""))).filter((a) => a !== ""),
+		attendeeEmails: guests.map((a) => a.email ?? "").filter((a) => a !== ""),
+		...(e.recurringEventId === undefined ? {} : { recurringEventId: e.recurringEventId }),
+		recurring: (e.recurrence?.length ?? 0) > 0,
+		...(e.etag === undefined ? {} : { etag: e.etag }),
+	};
 }
 
 function header(part: Part | undefined, name: string): string {
