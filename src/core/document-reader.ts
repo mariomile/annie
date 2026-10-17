@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { DocumentError, type DocumentText } from "./documents.ts";
+import type { MadeDocument, MakeInput } from "./make-document.ts";
 import type { PdfPageImage } from "./pdf-text.ts";
 
 /**
@@ -43,6 +44,19 @@ export async function readPdfPage(data: Uint8Array, page: number, options: { tim
 	}
 }
 
+/** A Word, Excel or PDF file made in a worker like the reading (ADR 0029): a huge table or picture costs one worker, not the event loop. */
+export async function makeDocumentFile(input: MakeInput, options: { timeoutMs?: number; waitMs?: number } = {}): Promise<MadeDocument & { data: Buffer }> {
+	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
+	running++;
+	try {
+		const made = await inWorker<MadeDocument>({ name: "documento", data: new Uint8Array(0), make: input }, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs, "made");
+		return { ...made, data: Buffer.from(made.data.buffer, made.data.byteOffset, made.data.byteLength) };
+	} finally {
+		running--;
+		waiting.shift()?.();
+	}
+}
+
 function turn(waitMs: number): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		const go = () => {
@@ -58,7 +72,7 @@ function turn(waitMs: number): Promise<void> {
 	});
 }
 
-function inWorker<T>(input: { name: string; data: Uint8Array; page?: number }, timeoutMs: number, key: "document" | "image"): Promise<T> {
+function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; make?: MakeInput }, timeoutMs: number, key: "document" | "image" | "made"): Promise<T> {
 	// From source (tsx, the tests) the worker is TypeScript that Node runs by stripping the types, so
 	// its files use only erasable syntax; built, it is JavaScript.
 	const source = import.meta.url.endsWith(".ts");
@@ -81,13 +95,13 @@ function inWorker<T>(input: { name: string; data: Uint8Array; page?: number }, t
 			void worker.terminate();
 			outcome();
 		};
-		const timer = setTimeout(() => settle(() => reject(new DocumentError("il documento è troppo complesso da leggere"))), timeoutMs);
-		worker.on("message", (message: { document?: T; image?: T; error?: string }) =>
+		const timer = setTimeout(() => settle(() => reject(new DocumentError(key === "made" ? "il documento è troppo lungo da creare" : "il documento è troppo complesso da leggere"))), timeoutMs);
+		worker.on("message", (message: { document?: T; image?: T; made?: T; error?: string }) =>
 			settle(() => (message[key] !== undefined ? resolve(message[key]) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
 		);
 		// A worker that fails is our problem, not the file's: the person can try again.
 		worker.on("error", (error: Error & { code?: string }) =>
-			settle(() => reject(new DocumentError(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? "il documento è troppo grande da leggere" : AGAIN))),
+			settle(() => reject(new DocumentError(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? `il documento è troppo grande da ${key === "made" ? "creare" : "leggere"}` : AGAIN))),
 		);
 		worker.on("exit", () => settle(() => reject(new DocumentError(AGAIN))));
 	});

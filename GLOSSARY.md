@@ -121,6 +121,10 @@ _Avoid_: allegato (è qualunque file), file binario
 Un PDF fatto di immagini delle pagine, senza testo: lo scanner dell'ufficio, un fax, una foto salvata in PDF. Annie ne guarda le pagine con `image_view` e legge da sé. Vedi ADR 0028.
 _Avoid_: OCR (Annie non fa OCR, guarda), PDF immagine
 
+**Documento creato**:
+Un file Word, Excel o PDF che Annie scrive nel workspace con `document_create`, partendo da Markdown o da un CSV: un preventivo, una lettera, un listino, un report. Lo manda con `file_send`. Vedi ADR 0029.
+_Avoid_: export, report (il report di ricerca è un'altra cosa, ADR 0022), template
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
