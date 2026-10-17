@@ -153,6 +153,37 @@ describe("pnpm start (startAnnie)", () => {
 		expect(settings.persona).toEqual({ emoji: "🧭", tone: "formale", named: true });
 	});
 
+	it("agenti write to each other (ADR 0042): only those allowed, and the answer comes back to the conversation", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "ricerca", name: "Ricercatore", persona: { emoji: "🔎", tagline: "Cerca fornitori" } });
+		const thread = (await api("/api/instances/annie/threads", {})).thread;
+		const entries = async () => (await api(`/api/instances/annie/threads/${thread.id}`)).entries as { from: string; text?: string }[];
+		const say = (text: string) => api(`/api/instances/annie/threads/${thread.id}/messages`, { text });
+		await say("/tool agent_list {}");
+		await until(async () => (await entries()).some((e) => e.text?.includes("Nessun altro agente accetta i tuoi messaggi")));
+		await say('/tool agent_message {"agent":"ricerca","message":"Trova tre fornitori di carta"}');
+		await until(async () => (await entries()).some((e) => e.text?.includes("Errore: nessun altro agente accetta")));
+		const put = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "PUT", headers: { "x-annie": "1", "content-type": "application/json", cookie: api.cookie }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<{ from?: string[] }>);
+		expect((await put("/api/instances/ricerca/agents", { from: ["annie", "ricerca", "ignoto"] })).from).toEqual(["annie"]);
+		expect((await annie.runtime.registry.getInstance("default", "ricerca")).egress.channels).toContain("agente");
+		expect((await api("/api/agents")).agents[1].acceptsFrom).toEqual(["annie"]);
+		await say("/tool agent_list {}");
+		await until(async () => (await entries()).some((e) => e.text?.includes("- Ricercatore (ricerca): Cerca fornitori")));
+		await say('/tool agent_message {"agent":"Ricercatore","message":"Trova tre fornitori di carta"}');
+		await until(async () => (await entries()).some((e) => e.text?.includes("Messaggio mandato a «Ricercatore»")));
+		// Ricercatore got it in a conversation of its own, and its answer came back here as a notice.
+		await until(async () => (await entries()).some((e) => e.from === "annie" && e.text?.includes("[Risposta dell'agente «Ricercatore» (ricerca)]")));
+		const audit = await annie.runtime.audit("default").read();
+		expect(audit.some((e) => e.type === "message.received" && e.instanceId === "ricerca" && e.channel === "agente" && e.userId === "annie")).toBe(true);
+		expect(audit.some((e) => e.type === "notice.submitted" && e.instanceId === "annie" && e.source === "agent" && e.from === "ricerca")).toBe(true);
+		// Taken back: the next message is refused, and nothing reaches Ricercatore.
+		await put("/api/instances/ricerca/agents", { from: [] });
+		expect((await annie.runtime.registry.getInstance("default", "ricerca")).egress.channels).not.toContain("agente");
+		await say('/tool agent_message {"agent":"ricerca","message":"Ancora"}');
+		await until(async () => (await entries()).filter((e) => e.text?.includes("Errore: nessun altro agente accetta")).length === 2);
+	});
+
 	it("the owner creates an instance from the console: chat works at once and after a restart", async () => {
 		const dataDir = tempDataDir();
 		const first = await boot(dataDir);
