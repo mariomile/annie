@@ -18,6 +18,7 @@ Annie è «pronta al 100%» quando ognuna di queste voci è vera e verificata da
 - [x] **Task programmati**: una volta o a ripetizione, creati dalle persone o dall'istanza stessa; eseguiti anche dopo un riavvio; risultato consegnato al thread.
 - [x] **Tool proposti**: l'istanza scrive un tool, un approvatore lo approva su Telegram o web, gira in sandbox con egress dichiarato (ADR 0002).
 - [x] **Approvazioni** in un unico posto, visibili su Telegram (pulsanti) e web.
+- [x] **Il modello di ogni chat**: dalla pillola nel box della console, e su Telegram e WhatsApp con `/modello` (per esempio `/modello google`, `/modello istanza`), fra i provider che l'owner ha permesso (ADR 0036, ADR 0037).
 
 ## 3. Interfaccia web
 

@@ -35,6 +35,7 @@ import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
 import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
+import { ChatModels } from "./core/chat-models.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
@@ -521,6 +522,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	}
 
 	// --- channels ---
+	const chatModels = new ChatModels(runtime, tenant, { models: providerModels, serverModelKeys: Object.keys(config.modelApiKeys) });
 	const conversational = (await runtime.registry.listInstances(tenant)).filter((r) => r.id !== segreteriaId);
 	const webChannels = new Map<string, WebChannel>();
 	const attachWebChannel = (record: InstanceRecord) => {
@@ -558,7 +560,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
 		});
-		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, bot, action), voiceOf(instance)));
+		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, { onAction: (action) => onApprovalTap(instance, bot, action), voice: voiceOf(instance), models: chatModels }));
 		telegrams.set(instance, bot);
 		if (webhookSecret !== undefined) telegramHooks.set(instance, { secret: webhookSecret, handle: (update) => bot.handleUpdate(update as TelegramUpdate) });
 		return bot;
@@ -788,7 +790,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...voiceFor(instance),
 			...(options.whatsappApiBase === undefined ? {} : { apiBase: options.whatsappApiBase }),
 		});
-		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, (action) => onApprovalTap(instance, adapter, action), voiceOf(instance)));
+		whatsappUnsubscribes.set(instance, connectChannel(runtime, adapter, { tenantId: tenant, instanceId: instance }, log, { onAction: (action) => onApprovalTap(instance, adapter, action), voice: voiceOf(instance), models: chatModels }));
 		whatsapps.set(instance, adapter);
 		return adapter;
 	}

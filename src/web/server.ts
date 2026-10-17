@@ -22,13 +22,14 @@ import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
-import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
+import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
 import { ConnectorHttpError } from "../connectors/http.ts";
 import { instanceId } from "../core/ids.ts";
-import type { InstanceRecord } from "../core/registry.ts";
+import type { InstanceRecord, ModelSelection } from "../core/registry.ts";
+import { type ChatModelChoice, ChatModelRefused, ChatModels } from "../core/chat-models.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import { modelApiKeySecret } from "../core/secrets.ts";
 import { type Schedule, ScheduleError, schedulePerson, threadPerson } from "../core/schedules.ts";
@@ -385,7 +386,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		const { record } = await instanceAccess(person as Person, params[0] as string);
 		const provider = (await chatProviders(record, person as Person)).find((p) => p.id === params[1]);
 		if (provider === undefined) throw new HttpError(404, "Provider non disponibile");
-		return { models: chatModels(provider.id) };
+		if (options.models === undefined) throw new HttpError(404, "Provider non disponibile");
+		return { models: chats.models(provider.id) };
 	});
 	route("PUT", "/api/instances/:id/threads/:thread/model", "person", async ({ person, params, req }) => {
 		const { record } = await instanceAccess(person as Person, params[0] as string);
@@ -987,55 +989,29 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 	// --- the model (ADR 0032): any provider Annie offers, with the server's key or the owner's ---
-	const keyOf = async (provider: string): Promise<"server" | "saved" | "missing"> =>
-		(options.serverModelKeys ?? []).includes(provider) ? "server" : (await runtime.secrets(tenantId).get(modelApiKeySecret(provider))) === undefined ? "missing" : "saved";
+	const chats = new ChatModels(runtime, tenantId, { models: (provider) => options.models?.(provider) ?? [], serverModelKeys: options.serverModelKeys ?? [] });
+	const keyOf = (provider: string) => chats.keyOf(provider);
 	const offeredModels = (provider: string) => {
 		if (modelProvider(provider) === undefined || options.models === undefined) throw new HttpError(404, "Provider non disponibile");
 		return options.models(provider);
 	};
-	/**
-	 * The providers a person may give one of their chats: with a key, and allowed for the instance;
-	 * the owner also sees the ones with a key still to allow.
-	 */
-	const chatProviders = async (record: InstanceRecord, person: Person): Promise<{ id: string; label: string; defaultModel: string; allowed: boolean }[]> => {
-		const allowed = (id: string) => record.egress.modelProviders.includes(id);
-		const keyed = [];
-		for (const p of MODEL_PROVIDERS) if ((allowed(p.id) || person.role === "owner") && (await keyOf(p.id)) !== "missing") keyed.push({ id: p.id, label: p.label, defaultModel: p.defaultModel, allowed: allowed(p.id) });
-		// The local model only while the instance itself runs on it (a development setup).
-		return record.model.provider === DEV_PROVIDER ? [...keyed, { id: DEV_PROVIDER, label: "Modello di prova", defaultModel: DEV_MODEL_ID, allowed: true }] : keyed;
-	};
-	const chatModels = (provider: string) => (provider === DEV_PROVIDER && options.models !== undefined ? options.models(provider) : offeredModels(provider));
-	/** A model with its name, so the console shows it without the provider's catalog. */
-	const named = (model: { provider: string; modelId: string }) => {
-		let name: string | undefined;
-		try {
-			name = options.models?.(model.provider).find((m) => m.id === model.modelId)?.name;
-		} catch {}
-		return { provider: model.provider, modelId: model.modelId, name: name ?? model.modelId };
-	};
-	type ChatModelChoice = { readonly provider: string; readonly modelId: string; readonly allowed: boolean };
+	// A chat's own model (ADR 0036): the same choices as from Telegram and WhatsApp.
+	const chatProviders = (record: InstanceRecord, person: Person) => chats.providers(record, person.role === "owner");
+	const named = (model: ModelSelection) => chats.named(model);
 	/** `{provider, modelId}` from a person, checked against what they may give a chat. */
 	const chatModelChoice = async (record: InstanceRecord, person: Person, body: unknown): Promise<ChatModelChoice> => {
-		const { provider: id, modelId } = (typeof body === "object" && body !== null ? body : {}) as { provider?: unknown; modelId?: unknown };
-		if (typeof id !== "string" || typeof modelId !== "string") throw new HttpError(400, "Serve un provider e un modello");
-		const provider = (await chatProviders(record, person)).find((p) => p.id === id);
-		if (provider === undefined) throw new HttpError(400, "Per questo provider non c'è una chiave che la chat possa usare");
-		if (!chatModels(provider.id).some((m) => m.id === modelId)) throw new HttpError(400, `${provider.label} non ha il modello «${modelId}»`);
-		return { provider: provider.id, modelId, allowed: provider.allowed };
+		const { provider, modelId } = (typeof body === "object" && body !== null ? body : {}) as { provider?: unknown; modelId?: unknown };
+		if (typeof provider !== "string" || typeof modelId !== "string") throw new HttpError(400, "Serve un provider e un modello");
+		return chats.choice(record, person.role === "owner", { provider, modelId }).catch((error: unknown) => {
+			throw error instanceof ChatModelRefused ? new HttpError(400, error.message) : error;
+		});
 	};
-	/** Give one of the person's chats its model (undefined: the instance's). The owner's choice allows a new provider. */
-	const giveChatModel = async (record: InstanceRecord, person: Person, threadId: string, choice: ChatModelChoice | undefined) => {
-		if (choice !== undefined && !choice.allowed) await runtime.registry.allowModelProvider(tenantId, record.id, choice.provider);
-		const model = choice === undefined ? undefined : { provider: choice.provider, modelId: choice.modelId };
-		try {
-			await runtime.setChatModel(tenantId, record.id, { channel: "web", threadId }, model, person.id);
-		} catch (error) {
-			// Disallowed, or its key removed, since the check above.
-			if (error instanceof EgressDenied) throw new HttpError(409, "Questo provider non è più disponibile per le chat");
-			throw error;
-		}
-		return model === undefined ? undefined : named(model);
-	};
+	/** Give one of the person's chats its model (undefined: the instance's). */
+	const giveChatModel = (record: InstanceRecord, person: Person, threadId: string, choice: ChatModelChoice | undefined) =>
+		chats.give(record, { channel: "web", threadId }, choice, person.id).catch((error: unknown) => {
+			// Disallowed, or its key removed, since the check.
+			throw error instanceof EgressDenied ? new HttpError(409, "Questo provider non è più disponibile per le chat") : error;
+		});
 	route("GET", "/api/instances/:id/model", "owner", async ({ params }) => {
 		const record = await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
 			throw new HttpError(404, "Istanza inesistente");

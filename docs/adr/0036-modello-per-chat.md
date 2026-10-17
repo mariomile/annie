@@ -21,4 +21,4 @@ Con [ADR 0032](0032-qualsiasi-modello.md) l'owner sceglie il modello dell'istanz
 
 - La spesa di una chat dipende dal modello scelto: l'elenco mostra il prezzo di ognuno, e un membro sceglie solo fra i provider che l'owner ha permesso.
 - Il modello si allinea a ogni messaggio: un cambio mentre Annie sta già lavorando può valere per il resto di quel turno. È accettato: la scelta è della chat, e il turno successivo la usa comunque. Costa una scrittura in più nella base dati per messaggio.
-- Telegram e WhatsApp per ora usano il modello dell'istanza: il motore è pronto, manca il comando per sceglierlo da lì.
+- Su Telegram e WhatsApp si sceglie con il comando `/modello` ([ADR 0037](0037-modello-dai-canali.md)).
