@@ -198,6 +198,20 @@ Senza queste variabili Annie risponde sempre per iscritto. Con queste, a chi le 
 
 Va bene qualunque servizio con la stessa API di OpenAI (`POST /audio/speech` che risponde in OGG Opus); per un altro servizio indica anche il modello e la voce.
 
+### 15. Immagini: `ANNIE_IMAGE_URL` e `ANNIE_IMAGE_API_KEY`
+
+Senza queste variabili Annie non crea immagini. Con queste, quando glielo chiedono crea illustrazioni, loghi e volantini e ritocca le foto che le mandano ([ADR 0023](adr/0023-immagini-su-richiesta.md)). Al servizio vanno la descrizione e, per un ritocco, la foto, fuori dall'Unione Europea nel caso di OpenAI.
+
+1. https://platform.openai.com → entra con l'account di Buildrs → **Billing**: un metodo di pagamento. Si paga a immagine, secondo qualità e misura: controlla il listino aggiornato su https://openai.com/api/pricing prima di accendere. Per `gpt-image-1` OpenAI può chiedere di verificare l'organizzazione (**Settings → Organization → Verify**).
+2. **API keys → Create new secret key**, nome `annie-immagini`. Può essere la stessa delle risposte a voce, ma una chiave separata si revoca da sola. La chiave va in `ANNIE_IMAGE_API_KEY`.
+3. `ANNIE_IMAGE_URL=https://api.openai.com/v1`. Modello `gpt-image-1` se non indichi altro in `ANNIE_IMAGE_MODEL`; con `dall-e-3` Annie crea immagini ma non ritocca foto e non fa sfondi trasparenti.
+4. Facoltativo: `ANNIE_IMAGE_MAX_PER_DAY`, le immagini al giorno per ogni account (100 se non lo metti). Contano solo le immagini fatte: un rifiuto del servizio non le consuma.
+5. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
+6. Poi, in ogni istanza: Impostazioni → **Immagini** → spunta «Consenti le immagini a questa istanza».
+7. Dominio: `api.openai.com`.
+
+Va bene qualunque servizio con la stessa API di OpenAI (`POST /images/generations` e `/images/edits`, immagini in `b64_json`); per un altro servizio indica anche il modello.
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -213,6 +227,7 @@ Va bene qualunque servizio con la stessa API di OpenAI (`POST /audio/speech` che
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
 | Ricerca sul web | `api.search.brave.com` |
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
+| Immagini | `api.openai.com` (o il servizio scelto) |
 | Telefono | `api.twilio.com` (o la regione scelta) |
 
 ## Cosa succede dopo

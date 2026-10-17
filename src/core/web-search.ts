@@ -108,14 +108,24 @@ async function capped(response: Response, max: number): Promise<string> {
  * again): a loop or a task gone wrong cannot spend the operator's quota.
  */
 export function dailyLimit(max: number, now: () => Date = () => new Date()): (tenant: string) => boolean {
-	const used = new Map<string, number>();
+	const counter = dailyCounter(max, now);
 	return (tenant) => {
-		const key = `${tenant} ${now().toISOString().slice(0, 10)}`;
-		const count = used.get(key) ?? 0;
-		if (count >= max) return false;
-		if (used.size > 1000) used.clear();
-		used.set(key, count + 1);
+		if (counter.left(tenant) < 1) return false;
+		counter.spend(tenant, 1);
 		return true;
+	};
+}
+
+/** The same daily count, read and spent apart: what is spent only when it worked (pictures). */
+export function dailyCounter(max: number, now: () => Date = () => new Date()): { left(tenant: string): number; spend(tenant: string, n: number): void } {
+	const used = new Map<string, number>();
+	const keyOf = (tenant: string) => `${tenant} ${now().toISOString().slice(0, 10)}`;
+	return {
+		left: (tenant) => Math.max(0, max - (used.get(keyOf(tenant)) ?? 0)),
+		spend: (tenant, n) => {
+			if (used.size > 1000) used.clear();
+			used.set(keyOf(tenant), (used.get(keyOf(tenant)) ?? 0) + n);
+		},
 	};
 }
 

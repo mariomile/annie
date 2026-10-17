@@ -106,7 +106,7 @@ export type WebAppOptions = {
 	/** Replies can go back as voice notes, made by this service (ADR 0020); the owner allows it per instance. */
 	readonly speech?: { readonly host: string; readonly voice: string };
 	/** The image service, when the operator set one (ADR 0023). */
-	readonly images?: { readonly host: string };
+	readonly images?: { readonly host: string; readonly maxPerDay: number };
 	/** The server's web search service (ADR 0017), by host; each owner turns it on per instance. */
 	readonly search?: { readonly host: string };
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
@@ -825,6 +825,7 @@ export function createWebApp(options: WebAppOptions): Server {
 				tried,
 				channel: connected.some((c) => (record.allowedUsers[c] ?? []).length > 0),
 				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
+				images: (record.egress.connectors ?? []).includes(IMAGE_CONNECTOR),
 				people: others.length > 0,
 				// What this server offers, so the console does not count a step nobody can take here.
 				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined, images: options.images !== undefined },
@@ -976,7 +977,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 
 	// --- owner: pictures on request for an instance (requests and pictures to change go to the operator's image service) ---
-	route("GET", "/api/images", "owner", async () => (options.images === undefined ? { available: false } : { available: true, host: options.images.host }));
+	route("GET", "/api/images", "owner", async () => (options.images === undefined ? { available: false } : { available: true, host: options.images.host, maxPerDay: options.images.maxPerDay }));
 	route("PUT", "/api/instances/:id/images", "owner", async ({ params, req }) => {
 		if (options.images === undefined) throw new HttpError(501, "La generazione di immagini non è configurata su questo server");
 		const id = params[0] as string;

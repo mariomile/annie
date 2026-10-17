@@ -152,7 +152,15 @@ export class TelegramAdapter implements ChannelAdapter {
 		// A JPEG or PNG Telegram takes as a photo shows in the chat; anything else is a document.
 		const photo = isPhoto(file.data, TELEGRAM_MAX_PHOTO);
 		form.set(photo ? "photo" : "document", new Blob([Uint8Array.from(file.data)], photo ? { type: imageType(file.data) as string } : {}), file.name);
-		await this.call(photo ? "sendPhoto" : "sendDocument", form);
+		try {
+			await this.call(photo ? "sendPhoto" : "sendDocument", form);
+		} catch (error) {
+			// A picture Telegram will not take as a photo (too long, too thin) still goes, as a document.
+			if (!photo || !(error instanceof ChannelRefused) || error.retryable) throw error;
+			form.delete("photo");
+			form.set("document", new Blob([Uint8Array.from(file.data)]), file.name);
+			await this.call("sendDocument", form);
+		}
 	}
 
 	/** sendVoice, multipart, with the text as caption where it fits; a longer text follows as a message. */

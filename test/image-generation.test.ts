@@ -49,19 +49,32 @@ describe("image generation service", () => {
 	it("asks for one image of the chosen shape with the key in a header, and gives back its bytes", async () => {
 		const service = await fakeImages();
 		const generate = imageGenerator(config(service.url));
-		expect(await generate("a lighthouse at dawn, watercolor", { shape: "portrait" })).toEqual(PNG);
+		expect(await generate("a lighthouse at dawn, watercolor", { shape: "portrait" })).toEqual([Buffer.from(PNG)]);
 		expect(service.asked[0]).toEqual({ path: "/v1/images/generations", auth: `Bearer ${KEY}`, json: { model: "gpt-image-1", prompt: "a lighthouse at dawn, watercolor", n: 1, size: "1024x1536" } });
 		await generate("x y", { shape: "landscape" });
 		expect(service.asked[1]?.json?.size).toBe("1536x1024");
 		// DALL·E 3 has its own sizes and must be asked for the bytes.
 		await imageGenerator(config(service.url, "dall-e-3"))("x y", { shape: "portrait" });
 		expect(service.asked[2]?.json).toMatchObject({ size: "1024x1792", response_format: "b64_json" });
+		// Variations, no background, a quality.
+		await generate("a fox logo", { count: 2, transparent: true, quality: "low" });
+		expect(service.asked[3]?.json).toEqual({ model: "gpt-image-1", prompt: "a fox logo", n: 2, size: "1024x1024", quality: "low", background: "transparent", output_format: "png" });
+		// DALL·E 3 makes one picture a request, and cannot retouch or leave out the background: said before asking.
+		const before = service.asked.length;
+		expect(await imageGenerator(config(service.url, "dall-e-3"))("x y", { count: 3 })).toHaveLength(3);
+		expect(service.asked.slice(before).map((a) => a.json?.n)).toEqual([1, 1, 1]);
+		await expect(imageGenerator(config(service.url, "dall-e-3"))("x y", { from: { data: JPEG, name: "a.jpg" } })).rejects.toThrow("non ritocca");
+		await expect(imageGenerator(config(service.url, "dall-e-3"))("x y", { transparent: true })).rejects.toThrow("sfondi trasparenti");
+		expect(service.asked).toHaveLength(before + 3);
 	});
 
 	it("changes a picture: the picture goes as a file with the request", async () => {
 		const service = await fakeImages();
-		expect(await imageGenerator(config(service.url))("make the sky purple", { shape: "square", from: { data: JPEG, name: "foto.jpg" } })).toEqual(PNG);
+		expect(await imageGenerator(config(service.url))("make the sky purple", { shape: "square", from: { data: JPEG, name: "foto.jpg" } })).toEqual([Buffer.from(PNG)]);
 		expect(service.asked[0]).toEqual({ path: "/v1/images/edits", auth: `Bearer ${KEY}`, form: { model: "gpt-image-1", prompt: "make the sky purple", size: "1024x1024", image: { name: "foto.jpg", type: "image/jpeg", size: JPEG.length } } });
+		// Without a shape, a retouched photo keeps its proportions.
+		await imageGenerator(config(service.url))("warmer light", { from: { data: JPEG, name: "foto.jpg" } });
+		expect(service.asked[1]?.form?.size).toBe("auto");
 	});
 
 	it("says why it failed in plain words, never with the key or the request", async () => {
@@ -76,13 +89,18 @@ describe("image generation service", () => {
 		];
 		for (const [status, body, words] of cases) {
 			const service = await fakeImages(() => ({ status, body }));
-			const error = await imageGenerator(config(service.url))("a secret prompt", { shape: "square" }).catch((e: unknown) => e);
+			const error = await imageGenerator(config(service.url))("a secret prompt", {}).catch((e: unknown) => e);
 			expect(error, words).toBeInstanceOf(ImageGenerationError);
 			expect(String(error)).toContain(words);
 			expect(String(error)).not.toContain("secret");
 			expect(String(error)).not.toContain(KEY);
 		}
-		await expect(imageGenerator(config("http://127.0.0.1:1/v1"))("x y", { shape: "square" })).rejects.toThrow("non risponde");
+		await expect(imageGenerator(config("http://127.0.0.1:1/v1"))("x y", {})).rejects.toThrow("non risponde");
+		// A run stopped meanwhile stops the request.
+		const stopped = new AbortController();
+		stopped.abort();
+		const service = await fakeImages();
+		await expect(imageGenerator(config(service.url))("x y", { signal: stopped.signal })).rejects.toThrow(ImageGenerationError);
 	});
 
 	it("is configured with a key and an address; gpt-image-1 for OpenAI; cells of Annie Cloud get it", () => {
@@ -101,10 +119,12 @@ describe("image generation service", () => {
 describe("pictures in chats", () => {
 	it("Telegram sends a JPEG or PNG as a photo, anything else as a document", async () => {
 		const calls: { method: string; field: string; caption?: string }[] = [];
+		let refusePhotos = false;
 		const telegramFetch = (async (url: string | URL | Request, init?: RequestInit) => {
 			const method = String(url).slice(String(url).lastIndexOf("/") + 1);
 			const form = init?.body as FormData;
 			calls.push({ method, field: form.has("photo") ? "photo" : "document", ...(form.has("caption") ? { caption: String(form.get("caption")) } : {}) });
+			if (refusePhotos && method === "sendPhoto") return Response.json({ ok: false, error_code: 400, description: "Bad Request: PHOTO_INVALID_DIMENSIONS" }, { status: 400 });
 			return Response.json({ ok: true, result: { message_id: 1 } });
 		}) as typeof fetch;
 		const adapter = new TelegramAdapter({ token: "1:T", tenantId: "default", instanceId: "annie", fetch: telegramFetch });
@@ -118,19 +138,32 @@ describe("pictures in chats", () => {
 			{ method: "sendDocument", field: "document" },
 			{ method: "sendDocument", field: "document" },
 		]);
+		// A picture Telegram will not take as a photo still arrives, as a document with its caption.
+		refusePhotos = true;
+		await adapter.sendFile({ ...base, name: "striscia.png", data: PNG, caption: "Lunga" });
+		expect(calls.slice(-2)).toEqual([
+			{ method: "sendPhoto", field: "photo", caption: "Lunga" },
+			{ method: "sendDocument", field: "document", caption: "Lunga" },
+		]);
 	});
 
 	it("WhatsApp sends a JPEG or PNG as an image", async () => {
 		const sent: Record<string, unknown>[] = [];
+		let refuseImages = false;
 		const graphFetch = (async (url: string | URL | Request, init?: RequestInit) => {
 			if (String(url).endsWith("/media")) return Response.json({ id: "media-1" });
-			sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			sent.push(body);
+			if (refuseImages && body.type === "image") return Response.json({ error: { code: 131053, message: "Media upload error" } }, { status: 400 });
 			return Response.json({ messages: [{ id: "wamid.x" }] });
 		}) as typeof fetch;
 		const wa = new WhatsAppAdapter({ accessToken: "EAAGtoken0123456789", phoneNumberId: "123", appSecret: "s", verifyToken: "v", tenantId: "default", instanceId: "annie", fetch: graphFetch });
 		const base = { tenantId: "default", instanceId: "annie", channel: "whatsapp", threadId: "393331234567", idempotencyKey: "k" };
 		await wa.sendFile({ ...base, name: "faro.png", data: PNG, caption: "Il faro" });
 		expect(sent.at(-1)).toMatchObject({ type: "image", image: { id: "media-1", caption: "Il faro" } });
+		refuseImages = true;
+		await wa.sendFile({ ...base, name: "faro.png", data: PNG, caption: "Il faro" });
+		expect(sent.at(-1)).toMatchObject({ type: "document", document: { id: "media-1", filename: "faro.png", caption: "Il faro" } });
 	});
 });
 
@@ -138,7 +171,7 @@ describe("image generation in an instance", () => {
 	it("is off until the owner turns it on; then it makes the picture, saves it and sends it; the audit never has the request", async () => {
 		const service = await fakeImages();
 		const { annie, api, reply, entries, dataDir, base } = await boot(tempDataDir(), { ANNIE_IMAGE_URL: service.url, ANNIE_IMAGE_API_KEY: KEY, ANNIE_IMAGE_MODEL: "gpt-image-1", ANNIE_IMAGE_MAX_PER_DAY: "2" });
-		expect(await api("/api/images")).toMatchObject({ available: true, host: new URL(service.url).host });
+		expect(await api("/api/images")).toMatchObject({ available: true, host: new URL(service.url).host, maxPerDay: 2 });
 		const ask = '/tool image_generate {"prompt":"a red fox reading a newspaper, flat illustration","shape":"square"}';
 		expect(await reply(ask)).toContain("la generazione di immagini non è attiva per questa istanza");
 		expect(service.asked).toHaveLength(0);
@@ -161,14 +194,14 @@ describe("image generation in an instance", () => {
 		expect(await reply('/tool image_generate {"prompt":"change it","from":"manca.png"}')).toContain("Errore");
 		expect(service.asked).toHaveLength(2);
 
-		// The day's pictures are counted for the account.
+		// The day's pictures are counted for the account: two made, none left.
 		expect(await reply('/tool image_generate {"prompt":"one more picture"}')).toContain("per oggi le immagini di questo account sono finite");
 		expect(service.asked).toHaveLength(2);
 
 		const audit = readFileSync(join(dataDir, "tenants", "default", "audit.jsonl"), "utf8");
 		expect(audit).toContain('"type":"images.allowed"');
-		expect(audit).toMatch(/"type":"image.generated","changed":false/);
-		expect(audit).toMatch(/"type":"image.generated","changed":true/);
+		expect(audit).toMatch(/"type":"image.generated","changed":false,"count":1/);
+		expect(audit).toMatch(/"type":"image.generated","changed":true,"count":1/);
 		expect(audit).not.toContain("fox");
 		expect(audit).not.toContain(KEY);
 
@@ -179,11 +212,21 @@ describe("image generation in an instance", () => {
 		expect((await fetch(`${base}/api/instances/annie/images`, { method: "PUT", headers: { cookie, "x-annie": "1" }, body: JSON.stringify({ allowed: true }) })).status).toBe(403);
 	});
 
-	it("a refusal of the service reaches the model in plain words", async () => {
-		const service = await fakeImages(() => ({ status: 400, body: { error: { code: "moderation_blocked", message: "no" } } }));
-		const { api, reply } = await boot(tempDataDir(), { ANNIE_IMAGE_URL: service.url, ANNIE_IMAGE_API_KEY: KEY, ANNIE_IMAGE_MODEL: "gpt-image-1" });
+	it("a refusal of the service reaches the model in plain words and costs none of the day's pictures; variations come with their caption", async () => {
+		let refuse = true;
+		const service = await fakeImages((asked) =>
+			refuse ? { status: 400, body: { error: { code: "moderation_blocked", message: "no" } } } : { body: { data: Array.from({ length: Number(asked.json?.n ?? 1) }, () => ({ b64_json: Buffer.from(PNG).toString("base64") })) } },
+		);
+		const { api, reply, entries } = await boot(tempDataDir(), { ANNIE_IMAGE_URL: service.url, ANNIE_IMAGE_API_KEY: KEY, ANNIE_IMAGE_MODEL: "gpt-image-1", ANNIE_IMAGE_MAX_PER_DAY: "2" });
 		await api("/api/instances/annie/images", { allowed: true }, "PUT");
-		expect(await reply('/tool image_generate {"prompt":"something"}')).toMatch(/Errore: il servizio di immagini ha rifiutato la richiesta per i suoi limiti sui contenuti/);
+		expect(await reply('/tool image_generate {"prompt":"something"}')).toMatch(/Errore: il servizio di immagini ha rifiutato la richiesta per i suoi limiti sui contenuti: riformula/);
+		expect(await reply('/tool image_generate {"prompt":"something"}')).toMatch(/limiti sui contenuti/);
+		refuse = false;
+		expect(await reply('/tool image_generate {"prompt":"logo","count":3}')).toContain("per oggi restano 2 immagini a questo account");
+		const made = await reply('/tool image_generate {"prompt":"logo","count":2,"caption":"Due proposte"}');
+		expect(made).toMatch(/^Fatto\. 2 immagini create e inviate in questa conversazione: immagini\/logo-[\w-]+-1\.png, immagini\/logo-[\w-]+-2\.png\. Non serve altro testo/);
+		const files = (await entries()).flatMap((e) => (e.file === undefined ? [] : [e.file]));
+		expect(files.map((f) => (f as { caption?: string }).caption)).toEqual(["Due proposte 1/2", "Due proposte 2/2"]);
 	});
 
 	it("is not offered by a server without an image service", async () => {
@@ -207,7 +250,7 @@ async function boot(dataDir: string, env: Record<string, string> = {}) {
 		return { status: res.status, ...((await res.json()) as any) };
 	};
 	const thread = (await api("/api/instances/annie/threads", {})).thread;
-	const entries = async () => (await api(`/api/instances/annie/threads/${thread.id}`)).entries as { from: string; text?: string; file?: { path: string } }[];
+	const entries = async () => (await api(`/api/instances/annie/threads/${thread.id}`)).entries as { from: string; text?: string; file?: { path: string; caption?: string } }[];
 	const reply = async (text: string): Promise<string> => {
 		const answers = async () => (await entries()).filter((e) => e.from === "annie" && e.text !== undefined);
 		const before = (await answers()).length;

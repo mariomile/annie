@@ -145,6 +145,10 @@ _Avoid_: watcher, monitor, alert
 La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
 _Avoid_: computer, automazione del browser, agente web
 
+**Immagine su richiesta**:
+Un'immagine che Annie crea da una descrizione o ritoccando una foto che le hanno mandato, con il servizio di immagini dell'operatore, solo nelle istanze dove l'owner lo consente. Arriva in chat e resta in `immagini/` del workspace.
+_Avoid_: AI art, generazione
+
 **Report di ricerca**:
 Il file Markdown che Annie scrive quando le chiedono di approfondire un tema: più ricerche, le pagine migliori dei siti consentiti, e un testo dove ogni fatto rimanda a una fonte numerata del suo dossier. L'elenco delle fonti lo scrive il codice, non il modello.
 _Avoid_: deep research, ricerca profonda

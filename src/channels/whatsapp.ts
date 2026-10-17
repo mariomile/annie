@@ -149,6 +149,7 @@ const MIME: Record<string, string> = {
 	md: "text/plain",
 	json: "text/plain",
 	png: "image/png",
+	webp: "image/webp",
 	jpg: "image/jpeg",
 	jpeg: "image/jpeg",
 };
@@ -339,12 +340,19 @@ export class WhatsAppAdapter implements ChannelAdapter {
 		if (uploaded.id === undefined) throw new Error("WhatsApp media upload returned no id");
 		const caption = [file.possibleDuplicate === true ? DUPLICATE_NOTICE : undefined, file.caption].filter(Boolean).join("\n\n");
 		const captioned = caption === "" ? {} : { caption: caption.slice(0, MAX_CAPTION) };
-		await this.call("POST", `/${this.options.phoneNumberId}/messages`, {
-			messaging_product: "whatsapp",
-			recipient_type: "individual",
-			to: file.threadId,
-			...(photo ? { type: "image", image: { id: uploaded.id, ...captioned } } : { type: "document", document: { id: uploaded.id, filename: file.name, ...captioned } }),
-		});
+		const to = { messaging_product: "whatsapp", recipient_type: "individual", to: file.threadId };
+		const asDocument = { ...to, type: "document", document: { id: uploaded.id, filename: file.name, ...captioned } };
+		if (!photo) {
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, asDocument);
+			return;
+		}
+		try {
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, { ...to, type: "image", image: { id: uploaded.id, ...captioned } });
+		} catch (error) {
+			// A picture WhatsApp will not show still goes, as a document.
+			if (!(error instanceof ChannelRefused) || error.retryable) throw error;
+			await this.call("POST", `/${this.options.phoneNumberId}/messages`, asDocument);
+		}
 	}
 
 	/**

@@ -29,7 +29,7 @@ import { createGoogleTools } from "./core/tools/google-tools.ts";
 import { createImageTools } from "./core/tools/image-tools.ts";
 import { createResearchTools } from "./core/tools/research-tools.ts";
 import { createWebTools } from "./core/tools/web-tools.ts";
-import { braveSearch, dailyLimit } from "./core/web-search.ts";
+import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
 import { type Browser, BrowseSessions } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { decideToolProposal, decideWebAction, NotAnApprover } from "./core/approvals.ts";
@@ -158,7 +158,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const searchesLeft = dailyLimit(config.webSearch?.maxPerDay ?? 0);
 	// Pictures on request (ADR 0023): one service for the whole server, a daily count per account.
 	const generateImage = config.images === undefined ? undefined : imageGenerator(config.images, options.imageFetch);
-	const imagesLeft = dailyLimit(config.images?.maxPerDay ?? 0);
+	const imagesLeft = dailyCounter(config.images?.maxPerDay ?? 0);
 	/** The search service as an instance's tools use it: the tenant's daily count, an audit line per search. */
 	const searchFor = (record: InstanceRecord) => ({
 		run: search as NonNullable<typeof search>,
@@ -379,7 +379,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							policy: policyOf(record),
 							workspace: runtime.workspace(record.tenantId, record.id),
 							generate: generateImage,
-							allow: () => imagesLeft(record.tenantId),
+							left: () => imagesLeft.left(record.tenantId),
+							spend: (n) => imagesLeft.spend(record.tenantId, n),
 							sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f),
 							record: async (event) => {
 								await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
@@ -799,7 +800,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		...(config.transcription === undefined ? {} : { voice: { host: new URL(config.transcription.url).host } }),
 		...(config.speech === undefined ? {} : { speech: { host: new URL(config.speech.url).host, voice: config.speech.voice } }),
 		...(config.webSearch === undefined ? {} : { search: { host: new URL(config.webSearch.url).host } }),
-		...(config.images === undefined ? {} : { images: { host: new URL(config.images.url).host } }),
+		...(config.images === undefined ? {} : { images: { host: new URL(config.images.url).host, maxPerDay: config.images.maxPerDay } }),
 		sendWebAction: sendForInstance,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
 		...(config.google === undefined || googleAccounts === undefined
