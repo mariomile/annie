@@ -1,4 +1,5 @@
 import type { AnnieTool } from "../engine.ts";
+import { addDays } from "../italian-calendar.ts";
 import { capitalized, italianDay, italianNumber } from "../italian-format.ts";
 import { untrusted } from "../untrusted.ts";
 import { type CurrentWeather, type DayForecast, type Forecast, type HourForecast, MAX_FORECAST_DAYS, type Place, type Weather, WeatherError, weatherWords, wetCode } from "../weather.ts";
@@ -273,11 +274,6 @@ function partCode(hours: readonly HourForecast[]): number | undefined {
 function range(min: number, max: number): string {
 	if (min === max) return `${min} °C`;
 	return min < 0 ? `da ${min} a ${max} °C` : `${min}-${max} °C`;
-}
-
-/** 2026-10-17 plus 1 → 2026-10-18. */
-function addDays(date: string, days: number): string {
-	return new Date(Date.parse(`${date}T00:00:00Z`) + days * 24 * 3600_000).toISOString().slice(0, 10);
 }
 
 /** US states and DC by their postal abbreviation, for "Paris, TX". */

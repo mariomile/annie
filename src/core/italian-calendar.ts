@@ -70,7 +70,17 @@ export function todayIn(timeZone: string, now: Date = new Date()): string {
 	return localMinute(now, timeZone).slice(0, 10);
 }
 
+/** The months' Italian names, January first. */
+export const MONTH_NAMES = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"] as const;
+
 export type Holiday = { readonly date: string; readonly name: string };
+
+/**
+ * The first year the holidays below are right for: 2 June has been a holiday on its own day again
+ * only since 2001, and the calendars before (Epifania off from 1977 to 1985, the older religious
+ * holidays) differed.
+ */
+export const HOLIDAYS_SINCE = 2001;
 
 /** The fixed national holidays (law 260/1949 as amended), month-day and name. */
 const FIXED_HOLIDAYS: readonly (readonly [string, string])[] = [
@@ -90,10 +100,9 @@ const FIXED_HOLIDAYS: readonly (readonly [string, string])[] = [
 const SAN_FRANCESCO_SINCE = 2026;
 
 /**
- * Italy's national holidays of `year` in date order: today's calendar applied to every year (the
- * calendars before 2001 differed: 2 June moved to a Sunday from 1977 to 2000, Epifania off from
- * 1977 to 1985), 4 October from 2026. A `patrono` (MM-DD) adds the local patron saint's day,
- * unless it is already a holiday.
+ * Italy's national holidays of `year` in date order, 4 October from 2026: right from
+ * HOLIDAYS_SINCE on, and callers keep to those years. A `patrono` (MM-DD) adds the local patron
+ * saint's day, unless it is already a holiday.
  */
 export function italianHolidays(year: number, patrono?: string): Holiday[] {
 	const easter = easterSunday(year);
@@ -136,3 +145,33 @@ export function openWeekday(date: string, week: WorkingWeek = {}): boolean {
 export function workingDay(date: string, week: WorkingWeek = {}): boolean {
 	return openWeekday(date, week) && holidayOn(date, week.patrono) === undefined;
 }
+
+/**
+ * The patron saint's day of the main capoluoghi only, by the city's name in lower case without
+ * accents, MM-DD: for any other town the person gives the day.
+ */
+export const PATRONI: Readonly<Record<string, string>> = {
+	milano: "12-07",
+	roma: "06-29",
+	torino: "06-24",
+	genova: "06-24",
+	firenze: "06-24",
+	napoli: "09-19",
+	bologna: "10-04",
+	venezia: "04-25",
+	bari: "12-06",
+	palermo: "07-15",
+	cagliari: "10-30",
+	trieste: "11-03",
+	trento: "06-26",
+	verona: "05-21",
+	padova: "06-13",
+	perugia: "01-29",
+	ancona: "05-04",
+	"l'aquila": "06-10",
+	catania: "02-05",
+	brescia: "02-15",
+	bergamo: "08-26",
+	parma: "01-13",
+	modena: "01-31",
+};
