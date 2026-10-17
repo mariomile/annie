@@ -659,9 +659,14 @@ function modelCard(inst, current, providers) {
 
 /** «Claude Sonnet 5.5 · foto · ragiona · entrata $3 · uscita $15 per M token»: what tells two models apart. */
 function modelLabel(m, withId) {
+	return `${withId ? `${m.name} (${m.id})` : m.name} · ${modelFacts(m)}`;
+}
+
+/** What a model does and costs: «foto · ragiona · entrata $3 · uscita $15 per M token». */
+function modelFacts(m) {
 	const usd = (n) => `$${n < 1 ? Number(n.toFixed(2)) : Math.round(n * 10) / 10}`;
 	const price = m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
-	return [withId ? `${m.name} (${m.id})` : m.name, m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
+	return [m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
 }
 
 /** Owner: voice messages of this instance transcribed by the server's service. */
@@ -886,6 +891,7 @@ function render() {
 	const item = PALETTE.find((p) => p.id === view) ?? PALETTE.find((p) => p.id === "chat");
 	if (item.owner && state.me.role !== "owner") return go("chat");
 	closeMenu();
+	closeModelMenu();
 	const main = h("main", { id: "main", class: item.id === "chat" ? "is-chat" : "is-page" });
 	const shell = h(
 		`div.shell${store("annie.rail") === "closed" ? ".collapsed" : ""}`,
@@ -1237,7 +1243,6 @@ async function viewChat(main) {
 	}
 	const threadId = route().rest[0];
 	chatModelCache.clear();
-	closeModelMenu();
 	const conversation = h("section.conversation");
 	mount(main, conversation);
 	if (!threadId) return landing(inst, conversation);
@@ -1329,7 +1334,7 @@ async function viewChat(main) {
 		}
 		void refreshThreads().then(renderRail);
 	}, modelPill(inst, model, async (picked) => {
-		await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/model`, { method: "PUT", body: picked ?? {} });
+		await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/model`, { method: "PUT", body: picked ? { provider: picked.provider, modelId: picked.modelId } : {} });
 	}));
 	conversation.append(transcript, h("div.dock", asks, box.el));
 	transcript.scrollTop = transcript.scrollHeight;
@@ -1344,11 +1349,10 @@ async function viewChat(main) {
 /** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
 function landing(inst, conversation) {
 	conversation.classList.add("empty-chat");
-	// A model picked before the first message: given to the conversation it opens.
+	// A model picked before the first message: the conversation it opens is created with it.
 	let picked;
 	const box = chatBox(inst, `new.${inst.id}`, conversation, async (text, images) => {
-		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
-		if (picked) await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(thread.id)}/model`, { method: "PUT", body: picked });
+		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: picked ? { model: { provider: picked.provider, modelId: picked.modelId } } : {} });
 		store(`annie.draft.${thread.id}`, text);
 		if (images.length) store(`annie.pending.${thread.id}`, JSON.stringify(images));
 		store(`annie.autosend.${thread.id}`, "1");
@@ -1406,56 +1410,77 @@ function cached(map, key, load) {
 
 /**
  * The chat's model (ADR 0036), a pill in the message box as on Grok: the instance's, or a model of
- * a provider this person may use. `current` undefined: the instance's. `save(model | undefined)`
- * stores the choice; when it throws, the pill goes back and the error is said.
+ * a provider this person may use. `current` ({provider, modelId, name}) undefined: the instance's.
+ * `save(model | undefined)` stores a choice; choices are saved one after the other, and when the
+ * newest fails the pill shows the last one saved and the error is said.
  */
 function modelPill(inst, current, save) {
 	let chosen = current;
-	const label = h("span.model-name", "Modello");
+	let saved = current;
+	let instanceModel;
+	let picks = 0;
+	let saving = Promise.resolve();
+	const label = h("span.model-name", current?.name ?? "Modello");
 	const pill = h("button.model-pill", { type: "button", "aria-haspopup": "listbox", "aria-expanded": "false", title: "Modello di questa chat" }, label, icon("down"));
-	const nameOf = async (m) => (await chatModelList(inst, m.provider).catch(() => [])).find((x) => x.id === m.modelId)?.name ?? m.modelId;
-	const draw = async () => {
-		const shown = chosen ?? (await chatModelChoices(inst).catch(() => undefined))?.instanceModel;
-		label.textContent = shown ? await nameOf(shown) : "Modello";
+	const draw = () => {
+		const shown = chosen ?? instanceModel;
+		label.textContent = shown?.name ?? "Modello";
 		pill.classList.toggle("own", chosen !== undefined);
 		pill.setAttribute("aria-label", `Modello di questa chat: ${label.textContent}${chosen ? "" : " (quello dell'istanza)"}`);
 	};
-	const pick = async (model) => {
+	const pick = (model) => {
 		closeModelMenu();
-		const before = chosen;
-		chosen = model;
-		void draw();
-		try {
-			await save(model);
-		} catch (error) {
-			chosen = before;
-			void draw();
-			toast(error.message, true);
-		}
 		pill.focus();
+		chosen = model;
+		draw();
+		const mine = ++picks;
+		saving = saving.then(async () => {
+			try {
+				await save(model);
+				saved = model;
+				// An owner's pick may have allowed a provider: the list says so next time.
+				chatModelCache.delete(inst.id);
+			} catch (error) {
+				if (mine !== picks) return;
+				chosen = saved;
+				draw();
+				toast(error.message, true);
+			}
+		});
 	};
 	pill.addEventListener("click", () => {
 		if (!closeModelMenu()) void openModelMenu(inst, pill, chosen, pick);
 	});
-	void draw();
+	void chatModelChoices(inst)
+		.then((choices) => {
+			instanceModel = choices.instanceModel;
+			draw();
+		})
+		.catch(() => {});
+	draw();
 	return pill;
 }
 
 /** The list of models under the pill: search, the instance's model, then each provider's. */
 async function openModelMenu(inst, pill, chosen, pick) {
-	const search = h("input", { type: "search", placeholder: "Cerca un modello", autocomplete: "off", "aria-label": "Cerca un modello" });
-	const list = h("div.model-list", { role: "listbox", "aria-label": "Modelli" });
-	const menu = h("div.model-menu", search, list);
+	const listId = `model-list-${Date.now()}`;
+	const search = h("input", { type: "search", placeholder: "Cerca un modello", autocomplete: "off", "aria-label": "Cerca un modello", "aria-controls": listId });
+	const list = h("div.model-list", { id: listId, role: "listbox", "aria-label": "Modelli" });
+	const status = h("p.muted.model-empty", { role: "status" });
+	const menu = h("div.model-menu", search, list, status);
 	document.body.append(menu);
 	pill.setAttribute("aria-expanded", "true");
+	pill.setAttribute("aria-controls", listId);
 	const place = () => {
 		const r = pill.getBoundingClientRect();
+		const view = window.visualViewport;
+		const height = view?.height ?? window.innerHeight;
 		const width = Math.min(320, window.innerWidth - 16);
 		menu.style.width = `${width}px`;
 		menu.style.left = `${Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8))}px`;
 		// Upwards from the box at the bottom of a chat; downwards when there is more room below.
 		const above = r.top - 14;
-		const below = window.innerHeight - r.bottom - 14;
+		const below = height - r.bottom - 14;
 		const up = above >= 280 || above >= below;
 		menu.style.maxHeight = `${Math.min(420, up ? above : below)}px`;
 		menu.style.bottom = up ? `${window.innerHeight - r.top + 6}px` : "";
@@ -1463,28 +1488,36 @@ async function openModelMenu(inst, pill, chosen, pick) {
 		menu.style.transformOrigin = up ? "bottom right" : "top right";
 	};
 	place();
-	search.focus();
+	// On a phone the search waits for a tap: focusing it would open the keyboard over the list.
+	const touch = window.matchMedia("(pointer: coarse)").matches;
+	if (!touch) search.focus();
 	const option = (text, note, selected, onPick) =>
 		h("button.model-option", { type: "button", role: "option", "aria-selected": selected ? "true" : "false", onclick: onPick }, h("span", h("span.model-option-name", text), note ? h("small", note) : null), selected ? icon("check") : null);
-	const price = (m) => (m.inputUsd > 0 || m.outputUsd > 0 ? `$${Number(m.inputUsd.toFixed(2))} / $${Number(m.outputUsd.toFixed(2))} per M token` : "gratis");
 	let catalogs = [];
 	const fill = () => {
 		const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
 		const match = (m, p) => words.every((w) => `${m.name} ${m.id} ${p.label}`.toLowerCase().includes(w));
-		const groups = catalogs
-			.map(({ provider, models }) => [provider, models.filter((m) => match(m, provider))])
-			.filter(([, models]) => models.length > 0)
-			.map(([provider, models]) => [
-				h("div.model-group", provider.label, provider.allowed ? null : h("small", " · sceglierlo lo permette all'istanza")),
-				// The provider's suggested model first, then its catalog as it comes.
-				[...models].sort((a, b) => (b.id === provider.defaultModel) - (a.id === provider.defaultModel)).map((m) => option(m.name, price(m), chosen?.provider === provider.id && chosen?.modelId === m.id, () => pick({ provider: provider.id, modelId: m.id }))),
-			]);
-		mount(
-			list,
-			words.length === 0 ? option("Modello dell'istanza", "lo sceglie l'owner in Impostazioni", chosen === undefined, () => pick(undefined)) : null,
-			groups,
-			groups.length === 0 && words.length > 0 ? h("p.muted.model-empty", "Nessun modello trovato") : null,
-		);
+		const groups = catalogs.map(({ provider, models, error }, i) => {
+			const shown = (models ?? []).filter((m) => match(m, provider));
+			if (error === undefined && shown.length === 0) return null;
+			const head = `model-group-${i}`;
+			// Two models with the same name (one is a dated version) are told apart by their id.
+			const names = new Map();
+			for (const m of shown) names.set(m.name, (names.get(m.name) ?? 0) + 1);
+			// The provider's suggested model first, then its catalog as it comes.
+			const ordered = [...shown].sort((a, b) => (b.id === provider.defaultModel) - (a.id === provider.defaultModel));
+			return h(
+				"div",
+				{ role: "group", "aria-labelledby": head },
+				h("div.model-group", { id: head }, provider.label, provider.allowed ? null : h("small", " · sceglierlo lo permette all'istanza")),
+				error === undefined
+					? ordered.map((m) => option(names.get(m.name) > 1 ? `${m.name} (${m.id})` : m.name, modelFacts(m), chosen?.provider === provider.id && chosen?.modelId === m.id, () => pick({ provider: provider.id, modelId: m.id, name: m.name })))
+					: h("small.model-error", "Elenco non disponibile ora"),
+			);
+		});
+		mount(list, words.length === 0 ? option("Modello dell'istanza", "lo sceglie l'owner in Impostazioni", chosen === undefined, () => pick(undefined)) : null, groups);
+		status.textContent = words.length > 0 && groups.every((g) => g === null) ? "Nessun modello trovato" : "";
+		status.hidden = status.textContent === "";
 	};
 	search.addEventListener("input", fill);
 	menu.addEventListener("keydown", (e) => {
@@ -1494,10 +1527,16 @@ async function openModelMenu(inst, pill, chosen, pick) {
 			e.preventDefault();
 			closeModelMenu();
 			pill.focus();
-		} else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+		} else if (e.key === "Tab") closeModelMenu();
+		else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
 			e.preventDefault();
 			all[(i + (e.key === "ArrowDown" ? 1 : -1) + all.length) % all.length]?.focus();
-		} else if (e.key === "Enter" && document.activeElement === search) {
+		} else if (e.key === "Home" || e.key === "End") {
+			if (document.activeElement === search) return;
+			e.preventDefault();
+			all[e.key === "Home" ? 1 : all.length - 1]?.focus();
+		} else if (e.key === "Enter" && document.activeElement === search && search.value.trim() !== "") {
+			// Enter in the search takes the first model found; with nothing typed it does nothing.
 			e.preventDefault();
 			list.querySelector("button")?.click();
 		}
@@ -1507,20 +1546,27 @@ async function openModelMenu(inst, pill, chosen, pick) {
 	};
 	document.addEventListener("pointerdown", away);
 	window.addEventListener("resize", place);
+	window.visualViewport?.addEventListener("resize", place);
 	menu.cleanup = () => {
 		document.removeEventListener("pointerdown", away);
 		window.removeEventListener("resize", place);
+		window.visualViewport?.removeEventListener("resize", place);
 		pill.setAttribute("aria-expanded", "false");
+		pill.removeAttribute("aria-controls");
 	};
-	mount(list, h("p.muted.model-empty", "Carico i modelli…"));
+	status.textContent = "Carico i modelli…";
 	try {
-		const choices = await chatModelChoices(inst);
-		catalogs = await Promise.all(choices.providers.map(async (provider) => ({ provider, models: await chatModelList(inst, provider.id) })));
+		const { providers } = await chatModelChoices(inst);
+		// One provider that does not answer leaves the others listed.
+		const settled = await Promise.allSettled(providers.map((provider) => chatModelList(inst, provider.id)));
+		catalogs = providers.map((provider, i) => (settled[i].status === "fulfilled" ? { provider, models: settled[i].value } : { provider, error: settled[i].reason }));
 	} catch (error) {
-		mount(list, h("p.muted.model-empty", error.message));
+		status.textContent = error.message;
 		return;
 	}
-	if (menu.isConnected) fill();
+	if (!menu.isConnected) return;
+	fill();
+	if (touch) list.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
 }
 
 /** Closes the model list; true when one was open. */

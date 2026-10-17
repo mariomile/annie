@@ -42,6 +42,28 @@ describe("a chat with its own model (engine)", () => {
 		await session.close();
 	});
 
+	it("leaves a chat's model the policy no longer allows, or this version no longer offers, to the instance's", async () => {
+		const storageDir = tempDataDir();
+		let usable = true;
+		const open = () => piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [], modelUsable: async () => usable });
+		let session = await open();
+		await session.setThreadModel("web:t1", GROK);
+		usable = false;
+		let next = reply(session);
+		await session.submit("web:t1", "ciao");
+		expect(await next).toMatchObject({ status: "answered", text: expect.stringContaining("ciao") });
+		// Still stored: it comes back once allowed again.
+		expect(await session.threadModel("web:t1")).toEqual(GROK);
+		await session.setThreadModel("web:t1", { provider: "gone-provider", modelId: "x" });
+		await session.close();
+		usable = true;
+		session = await open();
+		next = reply(session);
+		await session.submit("web:t1", "ancora");
+		expect(await next).toMatchObject({ status: "answered", text: expect.stringContaining("ancora") });
+		await session.close();
+	});
+
 	it("reaches a provider the instance does not run on", async () => {
 		const session = await piDurableEngine.open({ storageDir: tempDataDir(), model: DEV, apiKey: async () => undefined, tools: [] });
 		await session.setThreadModel("web:t1", GROK);
@@ -101,7 +123,7 @@ describe("choosing a chat's model from the console", () => {
 	it("lists the providers a chat may use: with a key and allowed, and for the owner those still to allow", async () => {
 		const { annie, api, base } = await boot({ GEMINI_API_KEY: "server-key-0001" });
 		const listed = await api("/api/instances/annie/chat-models");
-		expect(listed.instanceModel).toEqual(DEV);
+		expect(listed.instanceModel).toEqual({ ...DEV, name: expect.any(String) });
 		expect(listed.providers).toEqual([
 			{ id: "google", label: "Google (Gemini)", defaultModel: "gemini-3.5-flash", allowed: false },
 			{ id: "faux", label: "Modello di prova", defaultModel: "annie-dev", allowed: true },
@@ -125,7 +147,7 @@ describe("choosing a chat's model from the console", () => {
 		expect((await api(path)).model).toBeUndefined();
 		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "xai-key-0001");
 		expect(await api(`${path}/model`, "PUT", { provider: "xai", modelId: "grok-4.7" })).toMatchObject({ status: 200, model: GROK });
-		expect((await api(path)).model).toEqual(GROK);
+		expect((await api(path)).model).toEqual({ ...GROK, name: expect.stringContaining("Grok") });
 		expect((await annie.runtime.registry.getInstance("default", "annie")).egress.modelProviders).toEqual(["faux", "xai"]);
 		// The other chat still answers with the instance's model.
 		expect(await ask(api, other.id, "ciao")).toContain("ciao");
@@ -135,7 +157,18 @@ describe("choosing a chat's model from the console", () => {
 		expect(await ask(api, thread.id, "eccomi")).toContain("eccomi");
 		const audit = JSON.stringify(await annie.runtime.audit("default").read());
 		expect(audit).toContain("chat.model.updated");
+		expect(audit).toContain("instance.model_provider.allowed");
 		expect(audit).not.toContain("xai-key-0001");
+	});
+
+	it("a chat opened from the empty page gets its model with it, and a refused model opens none", async () => {
+		const { annie, api } = await boot();
+		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "xai-key-0001");
+		expect((await api("/api/instances/annie/threads", "POST", { model: { provider: "xai", modelId: "grok-99" } })).status).toBe(400);
+		expect((await api("/api/instances/annie/threads")).threads).toEqual([]);
+		const opened = await api("/api/instances/annie/threads", "POST", { model: GROK });
+		expect(opened.model).toMatchObject(GROK);
+		expect((await api(`/api/instances/annie/threads/${opened.thread.id}`)).model).toMatchObject(GROK);
 	});
 
 	it("refuses a model the provider lacks, a provider without a key, another person's chat, and a member allowing a provider", async () => {
@@ -146,6 +179,7 @@ describe("choosing a chat's model from the console", () => {
 		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "xai-key-0001");
 		expect((await api(path, "PUT", { provider: "xai", modelId: "grok-99" })).status).toBe(400);
 		expect((await api(path, "PUT", { provider: "nope", modelId: "x" })).status).toBe(400);
+		expect((await api(path, "PUT", { modelId: "grok-4.7" })).status).toBe(400);
 		const added = await api("/api/people", "POST", { name: "Giulia" });
 		await allow(annie, added.person.id);
 		const giulia = await client(base, added.link);
@@ -156,7 +190,7 @@ describe("choosing a chat's model from the console", () => {
 		expect((await giulia(`/api/instances/annie/threads/${mine.id}/model`, "PUT", { provider: "faux", modelId: "annie-dev" })).status).toBe(200);
 	});
 
-	it("a chat whose provider lost its key answers with the instance's model again", async () => {
+	it("a chat whose provider lost its key answers with the instance's model meanwhile", async () => {
 		const { annie, api } = await boot();
 		const { thread } = await api("/api/instances/annie/threads", "POST", {});
 		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "xai-key-0001");
@@ -164,6 +198,8 @@ describe("choosing a chat's model from the console", () => {
 		await annie.runtime.secrets("default").delete(modelApiKeySecret("xai"));
 		expect(await ask(api, thread.id, "ci sei?")).toContain("ci sei?");
 		expect((await api(`/api/instances/annie/threads/${thread.id}`)).model).toBeUndefined();
-		expect(JSON.stringify(await annie.runtime.audit("default").read())).toContain("chat.model.reset");
+		// The key back: the chat's own model again.
+		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "xai-key-0001");
+		expect((await api(`/api/instances/annie/threads/${thread.id}`)).model).toMatchObject(GROK);
 	});
 });

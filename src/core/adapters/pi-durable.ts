@@ -249,11 +249,25 @@ class PiDurableSession implements EngineSession {
 		}, context);
 	}
 
-	/** The chat's own model or the instance's, with its provider registered. */
+	/**
+	 * The chat's own model while it can answer, otherwise the instance's; its provider registered.
+	 * A provider this version no longer offers counts as one that cannot answer.
+	 */
 	private async modelOf(threadKey: string): Promise<ModelSelection> {
-		const model = (await this.threadModel(threadKey)) ?? this.options.model;
-		if (this.models.getProvider(model.provider) === undefined) this.models.setProvider(createProvider(model.provider));
-		return model;
+		const own = await this.threadModel(threadKey);
+		if (own !== undefined && this.register(own.provider) && ((await this.options.modelUsable?.(own.provider)) ?? true)) return own;
+		this.register(this.options.model.provider);
+		return this.options.model;
+	}
+
+	private register(provider: string): boolean {
+		if (this.models.getProvider(provider) !== undefined) return true;
+		try {
+			this.models.setProvider(createProvider(provider));
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/** Each submission is tracked, and so replied to, at most once per session. */

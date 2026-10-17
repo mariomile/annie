@@ -138,18 +138,34 @@ export class TenantRegistry {
 
 	/**
 	 * Run the instance on another model, and allow its provider: added to the providers the
-	 * owner already allowed, never in their place. Takes effect the next time the instance is opened.
+	 * owner already allowed, never in their place. The model takes effect the next time the
+	 * instance is opened; the provider's key is reachable at once (the engine reads the policy as stored).
 	 */
 	async setModel(tenant: string, id: string, model: ModelSelection): Promise<InstanceRecord> {
 		const current = await this.getInstance(tenant, id);
-		const modelProviders = current.egress.modelProviders.includes(model.provider) ? current.egress.modelProviders : [...current.egress.modelProviders, model.provider];
-		const record: InstanceRecord = { ...current, model: { provider: model.provider, modelId: model.modelId }, egress: { ...current.egress, modelProviders } };
+		const record: InstanceRecord = { ...current, model: { provider: model.provider, modelId: model.modelId }, egress: withModelProvider(current.egress, model.provider) };
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
 		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.model.updated", instanceId: record.id, modelProvider: model.provider, modelId: model.modelId });
 		return record;
 	}
 
-	/** Replace the egress policy. Takes effect the next time the instance is opened. */
+	/**
+	 * Allow one more model provider, keeping the rest of the policy as stored now: for a chat's own
+	 * model (ADR 0036). Takes effect at once.
+	 */
+	async allowModelProvider(tenant: string, id: string, provider: string): Promise<InstanceRecord> {
+		const current = await this.getInstance(tenant, id);
+		if (current.egress.modelProviders.includes(provider)) return current;
+		const record: InstanceRecord = { ...current, egress: withModelProvider(current.egress, provider) };
+		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.model_provider.allowed", instanceId: record.id, modelProvider: provider });
+		return record;
+	}
+
+	/**
+	 * Replace the egress policy. Model providers take effect at once (the engine reads the policy as
+	 * stored); channels, connectors and sites the next time the instance is opened.
+	 */
 	async setEgress(tenant: string, id: string, egress: EgressPolicy): Promise<InstanceRecord> {
 		const current = await this.getInstance(tenant, id);
 		const record: InstanceRecord = { ...current, egress };
@@ -197,4 +213,8 @@ async function listDirs(dir: string): Promise<string[]> {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
 	}
+}
+
+function withModelProvider(egress: EgressPolicy, provider: string): EgressPolicy {
+	return egress.modelProviders.includes(provider) ? egress : { ...egress, modelProviders: [...egress.modelProviders, provider] };
 }

@@ -328,8 +328,13 @@ export class AnnieRuntime {
 		const secrets = this.secrets(record.tenantId);
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
 		// A model can answer: its provider allowed by the policy now, and a key for it (none for the local one).
-		const reachable = async (provider: string) =>
-			(await fresh()).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (await secrets.get(modelApiKeySecret(provider))) !== undefined);
+		const reachable = async (provider: string) => {
+			try {
+				return (await fresh()).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (await secrets.get(modelApiKeySecret(provider))) !== undefined);
+			} catch {
+				return false;
+			}
+		};
 		const storageDir = engineDir(this.options.dataDir, record.tenantId, record.id);
 		await mkdir(storageDir, { recursive: true });
 		// Before anything touches the instance's storage: one process per instance.
@@ -343,6 +348,7 @@ export class AnnieRuntime {
 				model: record.model,
 				// Only this tenant's secrets, and only for providers the policy allows now.
 				apiKey: async (provider) => ((await fresh()).egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined),
+				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
 				...(record.instructions === undefined ? {} : { instructions: record.instructions }),
 			});
@@ -392,7 +398,7 @@ export class AnnieInstance {
 		private readonly releaseTools: () => Promise<void>,
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
-		/** The provider is allowed now and has a key: a chat's own model on it can answer. */
+		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
 		private readonly reachable: (provider: string) => Promise<boolean>,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
 		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants },
@@ -520,9 +526,13 @@ export class AnnieInstance {
 		return this.admit(request);
 	}
 
-	/** The model a chat answers with instead of the instance's (ADR 0036), when it has one. */
-	chatModel(channel: string, threadId: string): Promise<ModelSelection | undefined> {
-		return this.session.threadModel(threadKey(channel, threadId));
+	/**
+	 * The model a chat answers with instead of the instance's (ADR 0036), when it has one that can
+	 * answer now: one whose provider was disallowed or lost its key leaves the instance's answering.
+	 */
+	async chatModel(channel: string, threadId: string): Promise<ModelSelection | undefined> {
+		const own = await this.session.threadModel(threadKey(channel, threadId));
+		return own !== undefined && (await this.reachable(own.provider)) ? own : undefined;
 	}
 
 	/** Give a chat its own model, from its next message; undefined: the instance's again. */
@@ -534,14 +544,7 @@ export class AnnieInstance {
 
 	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }, images: readonly EngineImage[] = []): Promise<{ submissionId: string }> {
 		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
-		const thread = threadKey(request.channel, request.threadId);
-		// A chat's own model whose provider was since disallowed, or lost its key: the instance's answers.
-		const own = await this.session.threadModel(thread);
-		if (own !== undefined && !(await this.reachable(own.provider))) {
-			await this.session.setThreadModel(thread, undefined);
-			await this.audit.append({ type: "chat.model.reset", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, modelProvider: own.provider });
-		}
-		const { submissionId } = await this.session.submit(thread, request.text, requestId, images);
+		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId, images);
 		// Record the admitted submission in the outbox: if the process dies after the engine
 		// has answered and before the reply is in the outbox, resume() reattaches it by ID.
 		const key = this.replyKey(submissionId);
