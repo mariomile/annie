@@ -3,6 +3,7 @@ import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
 import { TIMESTAMP_STYLES, type TimestampStyle, type TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
+import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, modelProvider as offeredProvider } from "../core/model-providers.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;
 	readonly modelProvider: string;
@@ -17,13 +18,17 @@ export type TelegramConfig = {
 };
 
 export const DEFAULT_MODEL_PROVIDER = "anthropic";
-export const DEFAULT_MODEL_ID = "claude-sonnet-5-5";
 
-/** Env var holding the API key of each provider. */
-export const MODEL_KEY_ENV: Readonly<Record<string, string>> = {
-	anthropic: "ANTHROPIC_API_KEY",
-	openai: "OPENAI_API_KEY",
-};
+/** ANNIE_MODEL_PROVIDER and ANNIE_MODEL_ID, checked; `keyEnv` is undefined for the local model. */
+function modelChoice(env: Readonly<Record<string, string | undefined>>): { modelProvider: string; modelId: string; keyEnv: string | undefined } {
+	const modelProvider = nonEmpty(env.ANNIE_MODEL_PROVIDER) ?? DEFAULT_MODEL_PROVIDER;
+	if (modelProvider === DEV_PROVIDER) return { modelProvider, modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? DEV_MODEL_ID, keyEnv: undefined };
+	const offered = offeredProvider(modelProvider);
+	if (offered === undefined) {
+		throw new ConfigError(`ANNIE_MODEL_PROVIDER="${modelProvider}" is not supported. Use one of: ${[...MODEL_PROVIDERS.map((p) => p.id), DEV_PROVIDER].join(", ")}`);
+	}
+	return { modelProvider, modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? offered.defaultModel, keyEnv: offered.keyEnv };
+}
 
 export class ConfigError extends Error {
 	override readonly name = "ConfigError";
@@ -35,18 +40,9 @@ export function loadTelegramConfig(env: Readonly<Record<string, string | undefin
 	const telegramBotToken = nonEmpty(env.TELEGRAM_BOT_TOKEN);
 	if (telegramBotToken === undefined) missing.push("TELEGRAM_BOT_TOKEN");
 
-	const modelProvider = nonEmpty(env.ANNIE_MODEL_PROVIDER) ?? DEFAULT_MODEL_PROVIDER;
-	let modelApiKey: string | undefined;
-	if (modelProvider !== "faux") {
-		const keyEnv = MODEL_KEY_ENV[modelProvider];
-		if (keyEnv === undefined) {
-			throw new ConfigError(
-				`ANNIE_MODEL_PROVIDER="${modelProvider}" is not supported. Use one of: ${[...Object.keys(MODEL_KEY_ENV), "faux"].join(", ")}`,
-			);
-		}
-		modelApiKey = nonEmpty(env[keyEnv]);
-		if (modelApiKey === undefined) missing.push(keyEnv);
-	}
+	const { modelProvider, modelId, keyEnv } = modelChoice(env);
+	const modelApiKey = keyEnv === undefined ? undefined : nonEmpty(env[keyEnv]);
+	if (keyEnv !== undefined && modelApiKey === undefined) missing.push(keyEnv);
 
 	const allowedRaw = nonEmpty(env.ANNIE_TELEGRAM_ALLOWED_USERS);
 	const telegramAllowedUsers = allowedRaw?.split(",").map((id) => id.trim()).filter((id) => id !== "");
@@ -63,7 +59,7 @@ export function loadTelegramConfig(env: Readonly<Record<string, string | undefin
 	return {
 		telegramBotToken: telegramBotToken as string,
 		modelProvider,
-		modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? (modelProvider === "faux" ? "annie-dev" : DEFAULT_MODEL_ID),
+		modelId,
 		modelApiKey,
 		dataDir: nonEmpty(env.ANNIE_DATA_DIR) ?? "data",
 		tenantId: nonEmpty(env.ANNIE_TENANT_ID) ?? "default",
@@ -139,7 +135,8 @@ export type AnnieConfig = {
 	readonly instanceName: string;
 	readonly modelProvider: string;
 	readonly modelId: string;
-	readonly modelApiKey: string | undefined;
+	/** Provider → the key the operator gave for it (ANTHROPIC_API_KEY, GEMINI_API_KEY, ...). */
+	readonly modelApiKeys: Readonly<Record<string, string>>;
 	readonly timeZone: string;
 	readonly web: { readonly host: string; readonly port: number; readonly publicUrl: string | undefined };
 	readonly telegram:
@@ -222,14 +219,10 @@ export function loadComputerConfig(env: Readonly<Record<string, string | undefin
 /** Reads the configuration of `pnpm start`. Only the model key is required; Telegram and the segreteria are optional. */
 export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>>): AnnieConfig {
 	const missing: string[] = [];
-	const modelProvider = nonEmpty(env.ANNIE_MODEL_PROVIDER) ?? DEFAULT_MODEL_PROVIDER;
-	let modelApiKey: string | undefined;
-	if (modelProvider !== "faux") {
-		const keyEnv = MODEL_KEY_ENV[modelProvider];
-		if (keyEnv === undefined) throw new ConfigError(`ANNIE_MODEL_PROVIDER="${modelProvider}" is not supported. Use one of: ${[...Object.keys(MODEL_KEY_ENV), "faux"].join(", ")}`);
-		modelApiKey = nonEmpty(env[keyEnv]);
-		if (modelApiKey === undefined) missing.push(keyEnv);
-	}
+	const { modelProvider, modelId, keyEnv } = modelChoice(env);
+	if (keyEnv !== undefined && nonEmpty(env[keyEnv]) === undefined) missing.push(keyEnv);
+	// Every key the operator gave: the owner can switch the model to any of these providers.
+	const modelApiKeys: Record<string, string> = Object.fromEntries(MODEL_PROVIDERS.flatMap((p) => (nonEmpty(env[p.keyEnv]) === undefined ? [] : [[p.id, nonEmpty(env[p.keyEnv]) as string]])));
 	const ids = (name: string): readonly string[] | undefined => {
 		const raw = nonEmpty(env[name]);
 		if (raw === undefined) return undefined;
@@ -365,8 +358,8 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		instanceId: nonEmpty(env.ANNIE_INSTANCE_ID) ?? "annie",
 		instanceName: nonEmpty(env.ANNIE_INSTANCE_NAME) ?? "Annie",
 		modelProvider,
-		modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? (modelProvider === "faux" ? "annie-dev" : DEFAULT_MODEL_ID),
-		modelApiKey,
+		modelId,
+		modelApiKeys,
 		timeZone,
 		web: { host: nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1", port, publicUrl },
 		telegram,

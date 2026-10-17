@@ -5,26 +5,71 @@
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { cerebrasProvider } from "@earendil-works/pi-ai/providers/cerebras";
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { fireworksProvider } from "@earendil-works/pi-ai/providers/fireworks";
+import { googleProvider } from "@earendil-works/pi-ai/providers/google";
+import { groqProvider } from "@earendil-works/pi-ai/providers/groq";
+import { huggingfaceProvider } from "@earendil-works/pi-ai/providers/huggingface";
+import { metaProvider } from "@earendil-works/pi-ai/providers/meta";
+import { minimaxProvider } from "@earendil-works/pi-ai/providers/minimax";
+import { mistralProvider } from "@earendil-works/pi-ai/providers/mistral";
+import { moonshotaiProvider } from "@earendil-works/pi-ai/providers/moonshotai";
+import { nvidiaProvider } from "@earendil-works/pi-ai/providers/nvidia";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { togetherProvider } from "@earendil-works/pi-ai/providers/together";
+import { vercelAIGatewayProvider } from "@earendil-works/pi-ai/providers/vercel-ai-gateway";
+import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
+import { zaiProvider } from "@earendil-works/pi-ai/providers/zai";
 import { MEMORY_NOTE_MARKER } from "../memory.ts";
+import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo } from "../model-providers.ts";
 
-export const FAUX_PROVIDER = "faux";
-export const FAUX_MODEL_ID = "annie-dev";
+export const FAUX_PROVIDER = DEV_PROVIDER;
+export const FAUX_MODEL_ID = DEV_MODEL_ID;
 
-export const SUPPORTED_PROVIDERS = ["anthropic", "openai", FAUX_PROVIDER] as const;
+/** pi-ai's factory for each provider Annie offers (MODEL_PROVIDERS), and the local model. */
+const FACTORIES: Readonly<Record<string, () => Provider>> = {
+	anthropic: anthropicProvider,
+	openai: openaiProvider,
+	google: googleProvider,
+	xai: xaiProvider,
+	mistral: mistralProvider,
+	deepseek: deepseekProvider,
+	moonshotai: moonshotaiProvider,
+	zai: zaiProvider,
+	minimax: minimaxProvider,
+	meta: metaProvider,
+	openrouter: openrouterProvider,
+	"vercel-ai-gateway": vercelAIGatewayProvider,
+	groq: groqProvider,
+	cerebras: cerebrasProvider,
+	together: togetherProvider,
+	fireworks: fireworksProvider,
+	huggingface: huggingfaceProvider,
+	nvidia: nvidiaProvider,
+	[FAUX_PROVIDER]: createDevModel,
+};
 
 export function createProvider(id: string): Provider {
-	switch (id) {
-		case "anthropic":
-			return anthropicProvider();
-		case "openai":
-			return openaiProvider();
-		case FAUX_PROVIDER:
-			return createDevModel();
-		default:
-			throw new Error(`Unsupported model provider "${id}". Supported: ${SUPPORTED_PROVIDERS.join(", ")}`);
+	const factory = Object.hasOwn(FACTORIES, id) ? FACTORIES[id] : undefined;
+	if (factory === undefined) throw new Error(`Unsupported model provider "${id}". Supported: ${[...MODEL_PROVIDERS.map((p) => p.id), FAUX_PROVIDER].join(", ")}`);
+	return factory();
+}
+
+const catalogs = new Map<string, readonly ModelInfo[]>();
+
+/** The chat models of a provider, from pi-ai's catalog, as plain data. Built once per provider. */
+export function providerModels(id: string): readonly ModelInfo[] {
+	let models = catalogs.get(id);
+	if (models === undefined) {
+		models = createProvider(id)
+			.getModels()
+			.map((m) => ({ id: m.id, name: m.name, images: m.input.includes("image"), reasoning: m.reasoning, contextWindow: m.contextWindow, inputUsd: m.cost.input, outputUsd: m.cost.output }));
+		catalogs.set(id, models);
 	}
+	return models;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { DEFAULT_LEAD_STATUS } from "../connectors/hubspot.ts";
 import { computerLabel, createComputerProvider } from "../computer/create.ts";
+import { DEV_PROVIDER, modelProvider } from "../core/model-providers.ts";
 import type { AnnieConfig } from "./config.ts";
 
 /**
@@ -61,13 +62,15 @@ async function reach(call: Call, url: string, init?: RequestInit): Promise<Respo
 }
 
 async function modelCheck(config: AnnieConfig, call: Call): Promise<string> {
-	if (config.modelProvider === "faux") return "modello locale di sviluppo, nessuna chiave";
-	const key = config.modelApiKey ?? "";
+	if (config.modelProvider === DEV_PROVIDER) return "modello locale di sviluppo, nessuna chiave";
+	const key = config.modelApiKeys[config.modelProvider] ?? "";
+	const variable = modelProvider(config.modelProvider)?.keyEnv ?? "la chiave del modello";
+	// The providers whose model list is checked here; the others prove the key at the first reply.
+	if (config.modelProvider !== "anthropic" && config.modelProvider !== "openai") return `chiave presente in ${variable}, modello ${config.modelId}: la prima risposta in chat la verifica`;
 	const response =
 		config.modelProvider === "anthropic"
 			? await reach(call, "https://api.anthropic.com/v1/models", { headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } })
 			: await reach(call, "https://api.openai.com/v1/models", { headers: { authorization: `Bearer ${key}` } });
-	const variable = config.modelProvider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
 	if (response.status === 401 || response.status === 403) throw new CheckFailed(`chiave rifiutata: controlla ${variable}`);
 	if (!response.ok) throw new CheckFailed(`il provider risponde ${response.status}`);
 	const models = ((await response.json()) as { data?: { id: string }[] }).data?.map((m) => m.id) ?? [];

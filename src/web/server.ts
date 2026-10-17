@@ -21,6 +21,7 @@ import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
@@ -28,6 +29,7 @@ import { ConnectorHttpError } from "../connectors/http.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
+import { modelApiKeySecret } from "../core/secrets.ts";
 import { type Schedule, ScheduleError, schedulePerson, threadPerson } from "../core/schedules.ts";
 import { firstLook, parseAmount, type Watch, WatchError, watchUrl } from "../core/watches.ts";
 import { checkedUrl } from "../core/web-fetch.ts";
@@ -159,6 +161,10 @@ export type WebAppOptions = {
 		readonly canWrite?: (personId: string) => boolean;
 		readonly runAction?: (instanceId: string) => (action: GoogleAction) => Promise<GoogleActionResult>;
 	};
+	/** The models of a provider Annie offers (ADR 0032); without it, the model cannot be changed here. */
+	readonly models?: (provider: string) => readonly ModelInfo[];
+	/** Providers whose key the operator gave the server: the owner uses it and cannot replace it. */
+	readonly serverModelKeys?: readonly string[];
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -953,6 +959,53 @@ export function createWebApp(options: WebAppOptions): Server {
 		});
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
+	});
+	// --- the model (ADR 0032): any provider Annie offers, with the server's key or the owner's ---
+	const keyOf = async (provider: string): Promise<"server" | "saved" | "missing"> =>
+		(options.serverModelKeys ?? []).includes(provider) ? "server" : (await runtime.secrets(tenantId).get(modelApiKeySecret(provider))) === undefined ? "missing" : "saved";
+	const offeredModels = (provider: string) => {
+		if (modelProvider(provider) === undefined || options.models === undefined) throw new HttpError(404, "Provider non disponibile");
+		return options.models(provider);
+	};
+	route("GET", "/api/instances/:id/model", "owner", async ({ params }) => {
+		const record = await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		return { model: record.model, providers: await Promise.all(MODEL_PROVIDERS.map(async (p) => ({ ...p, key: await keyOf(p.id) }))) };
+	});
+	route("GET", "/api/models/:provider", "owner", async ({ params }) => ({ models: offeredModels(params[0] as string) }));
+	route("PUT", "/api/instances/:id/model", "owner", async ({ params, req }) => {
+		const id = params[0] as string;
+		await runtime.registry.getInstance(tenantId, id).catch(() => {
+			throw new HttpError(404, "Istanza inesistente");
+		});
+		const body = (await readJson(req)) as { provider?: unknown; modelId?: unknown; apiKey?: unknown };
+		const provider = typeof body.provider === "string" ? modelProvider(body.provider) : undefined;
+		if (provider === undefined) throw new HttpError(400, "Scegli un provider dall'elenco");
+		const modelId = typeof body.modelId === "string" ? body.modelId : "";
+		if (!offeredModels(provider.id).some((m) => m.id === modelId)) throw new HttpError(400, `${provider.label} non ha il modello «${modelId}»`);
+		const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+		const key = await keyOf(provider.id);
+		if (apiKey !== "") {
+			if (key === "server") throw new HttpError(400, `La chiave di ${provider.label} la mette il server: non serve la tua`);
+			if (!/^\S{8,500}$/.test(apiKey)) throw new HttpError(400, "La chiave non sembra giusta: incollala intera, senza spazi");
+			await runtime.secrets(tenantId).set(modelApiKeySecret(provider.id), apiKey);
+			await runtime.audit(tenantId).append({ type: "secret.set", instanceId: id, name: modelApiKeySecret(provider.id) });
+		} else if (key === "missing") {
+			throw new HttpError(400, `Serve la chiave di ${provider.label}`);
+		}
+		const record = await runtime.registry.setModel(tenantId, id, { provider: provider.id, modelId });
+		await runtime.reopen(tenantId, id);
+		return { model: record.model };
+	});
+	route("DELETE", "/api/model-keys/:provider", "owner", async ({ params }) => {
+		const provider = modelProvider(params[0] as string);
+		if (provider === undefined || (await keyOf(provider.id)) !== "saved") throw new HttpError(404, "Nessuna chiave salvata per questo provider");
+		const users = (await runtime.registry.listInstances(tenantId)).filter((r) => r.model.provider === provider.id);
+		if (users.length > 0) throw new HttpError(409, `La usa ${users.map((r) => r.name).join(", ")}: prima scegli un altro modello`);
+		await runtime.secrets(tenantId).delete(modelApiKeySecret(provider.id));
+		await runtime.audit(tenantId).append({ type: "secret.deleted", name: modelApiKeySecret(provider.id) });
+		return { removed: true };
 	});
 	// --- primo avvio: what is left to make the instance useful, checked from the real settings ---
 	route("GET", "/api/instances/:id/setup", "owner", async ({ person, params }) => {
