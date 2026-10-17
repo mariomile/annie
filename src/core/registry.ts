@@ -55,6 +55,13 @@ export type CreateInstanceInput = {
  * data directory. This is what a future owner dashboard reads and writes.
  */
 export class TenantRegistry {
+	/**
+	 * Creations of the same instance in this process, one after the other: an orphan folder is set
+	 * aside before the record is written, so two creations at once could set aside each other's
+	 * folder between its mkdir and its write. In turn, the second finds the record and loses cleanly.
+	 */
+	private readonly creating = new Map<string, Promise<unknown>>();
+
 	constructor(readonly dataDir: string) {}
 
 	async createTenant(input: { id: string; name: string }): Promise<TenantRecord> {
@@ -80,10 +87,22 @@ export class TenantRegistry {
 	async createInstance(tenant: string, input: CreateInstanceInput): Promise<InstanceRecord> {
 		const owner = await this.getTenant(tenant);
 		const id = instanceId(input.id);
-		await this.setAsideOrphan(owner.id, id);
+		const key = `${owner.id}/${id}`;
+		const before = this.creating.get(key) ?? Promise.resolve();
+		const run = before.catch(() => undefined).then(() => this.writeInstance(owner.id, id, input));
+		this.creating.set(key, run);
+		try {
+			return await run;
+		} finally {
+			if (this.creating.get(key) === run) this.creating.delete(key);
+		}
+	}
+
+	private async writeInstance(tenant: TenantId, id: InstanceId, input: CreateInstanceInput): Promise<InstanceRecord> {
+		await this.setAsideOrphan(tenant, id);
 		const record: InstanceRecord = {
 			id,
-			tenantId: owner.id,
+			tenantId: tenant,
 			name: input.name,
 			model: input.model,
 			egress: input.egress ?? DENY_ALL,
@@ -93,8 +112,8 @@ export class TenantRegistry {
 			...(input.persona === undefined || Object.keys(input.persona).length === 0 ? {} : { persona: input.persona }),
 			createdAt: new Date().toISOString(),
 		};
-		await writeJsonExclusive(instanceFile(this.dataDir, owner.id, id), record);
-		await new AuditLog(this.dataDir, owner.id).append({
+		await writeJsonExclusive(instanceFile(this.dataDir, tenant, id), record);
+		await new AuditLog(this.dataDir, tenant).append({
 			type: "instance.created",
 			instanceId: id,
 			modelProvider: input.model.provider,
