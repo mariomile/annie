@@ -40,7 +40,7 @@ import { WorkspaceError } from "../core/workspace.ts";
 import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/images.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
-import { WebChannel, type WebEvent } from "./channel.ts";
+import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
 import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
 import { REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
@@ -375,7 +375,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (thread === undefined || thread.personId !== (person as Person).id) throw new HttpError(404, "No such thread");
 		// The transcript reads without the instance: one that cannot open shows no model.
 		const model = await runtime.chatModel(tenantId, record.id, "web", thread.id).catch(() => undefined);
-		return { thread, entries: await channel.transcript(thread.id), ...(model === undefined ? {} : { model: named(model) }) };
+		return { thread, entries: (await channel.transcript(thread.id)).map(shown), ...(model === undefined ? {} : { model: named(model) }) };
 	});
 	// --- a chat's own model (ADR 0036): among the providers with a key that the owner allowed ---
 	route("GET", "/api/instances/:id/chat-models", "person", async ({ person, params }) => {
@@ -435,7 +435,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		res.write(": connected\n\n");
 		const listeners: [WebChannel, (e: WebEvent) => void][] = [];
 		const attach = (channel: WebChannel) => {
-			const listener = (event: WebEvent) => res.write(`event: entry\ndata: ${JSON.stringify(event)}\n\n`);
+			const listener = (event: WebEvent) => res.write(`event: entry\ndata: ${JSON.stringify({ ...event, entry: shown(event.entry) })}\n\n`);
 			channel.events.on(p.id, listener);
 			listeners.push([channel, listener]);
 		};
@@ -998,6 +998,8 @@ export function createWebApp(options: WebAppOptions): Server {
 	// A chat's own model (ADR 0036): the same choices as from Telegram and WhatsApp.
 	const chatProviders = (record: InstanceRecord, person: Person) => chats.providers(record, person.role === "owner");
 	const named = (model: ModelSelection) => chats.named(model);
+	/** An entry with the name of the model that wrote it. */
+	const shown = (entry: WebEntry): WebEntry => (entry.model === undefined ? entry : { ...entry, model: named(entry.model) });
 	/** `{provider, modelId}` from a person, checked against what they may give a chat. */
 	const chatModelChoice = async (record: InstanceRecord, person: Person, body: unknown): Promise<ChatModelChoice> => {
 		const { provider, modelId } = (typeof body === "object" && body !== null ? body : {}) as { provider?: unknown; modelId?: unknown };

@@ -57,7 +57,8 @@ export type Reply = {
 	/** The submission this reply answers; messages Annie sends by herself carry "message" or "file". */
 	readonly submissionId: string;
 } & (
-	| { readonly status: "answered"; readonly text: string }
+	/** `model`: the one that wrote the answer, when the engine says. */
+	| { readonly status: "answered"; readonly text: string; readonly model?: ModelSelection }
 	| { readonly status: "unanswered"; readonly reason: string }
 	/** A file of the instance's workspace to send to the thread. */
 	| { readonly status: "file"; readonly path: string; readonly caption?: string }
@@ -699,7 +700,9 @@ export class AnnieInstance {
 		const { channel, threadId } = parseThreadKey(engineReply.threadKey);
 		const key = this.replyKey(engineReply.submissionId);
 		const reply: OutboxEntry["reply"] =
-			engineReply.status === "answered" ? { status: "answered", text: engineReply.text } : { status: "unanswered", reason: engineReply.reason };
+			engineReply.status === "answered"
+				? { status: "answered", text: engineReply.text, ...(engineReply.model === undefined ? {} : { model: engineReply.model }) }
+				: { status: "unanswered", reason: engineReply.reason };
 		await this.serial(key, async () => {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;

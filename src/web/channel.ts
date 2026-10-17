@@ -16,6 +16,8 @@ export type WebEntry = {
 	readonly file?: { readonly path: string; readonly caption?: string };
 	/** Pictures the person sent with the message, by workspace path. */
 	readonly images?: readonly string[];
+	/** The model that wrote Annie's reply; `name` is added for the console, never stored. */
+	readonly model?: { readonly provider: string; readonly modelId: string; readonly name?: string };
 };
 
 export type WebEvent = { readonly instanceId: string; readonly threadId: string; readonly entry: WebEntry };
@@ -133,7 +135,7 @@ export class WebChannel implements ChannelAdapter {
 	}
 
 	async send(message: OutboundMessage): Promise<void> {
-		await this.deliver(message.threadId, message.idempotencyKey, { text: message.text });
+		await this.deliver(message.threadId, message.idempotencyKey, { text: message.text, ...(message.model === undefined ? {} : { model: message.model }) });
 	}
 
 	async sendFile(file: OutboundFile): Promise<void> {
@@ -141,7 +143,7 @@ export class WebChannel implements ChannelAdapter {
 		await this.deliver(file.threadId, file.idempotencyKey, { file: { path: file.path ?? file.name, ...(file.caption === undefined ? {} : { caption: file.caption }) } });
 	}
 
-	private async deliver(threadId: string, key: string, body: { text?: string; file?: WebEntry["file"] }): Promise<void> {
+	private async deliver(threadId: string, key: string, body: Pick<WebEntry, "text" | "file" | "model">): Promise<void> {
 		if (!THREAD_ID.test(threadId)) throw new Error(`Not a web thread: ${threadId}`);
 		const id = `r_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
 		const entry = await this.serial(threadId, async () => {

@@ -60,7 +60,7 @@ describe("reply outbox (in process)", () => {
 		const key = channel.sent[0]?.idempotencyKey;
 		expect(key).toMatch(/^reply:/);
 		// At send time: on disk, not yet delivered.
-		expect(atSend).toEqual([expect.objectContaining({ key, channel: "test", threadId: "t1", attempts: 1, reply: { status: "answered", text: ANSWER } })]);
+		expect(atSend).toEqual([expect.objectContaining({ key, channel: "test", threadId: "t1", attempts: 1, reply: { status: "answered", text: ANSWER, model: { provider: "faux", modelId: "annie-dev" } } })]);
 		expect(atSend[0]?.deliveredAt).toBeUndefined();
 		// After the channel's ok: delivered.
 		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ key, attempts: 1, deliveredAt: expect.any(String) })]);
@@ -400,7 +400,7 @@ describe("reply outbox across a SIGKILL (real child processes, fake Telegram)", 
 		const first = worker("start", dataDir, callsFile, "hang-before");
 		await first.waitForLine("SENDING");
 		// The reply is on disk before the request leaves.
-		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ channel: "telegram", threadId: "42", attempts: 1, reply: { status: "answered", text: ANSWER } })]);
+		expect(outboxEntries(dataDir)).toEqual([expect.objectContaining({ channel: "telegram", threadId: "42", attempts: 1, reply: { status: "answered", text: ANSWER, model: { provider: "faux", modelId: "annie-dev" } } })]);
 		await kill9(first);
 		expect(sendMessages(callsFile)).toEqual([]);
 
