@@ -15,7 +15,7 @@ export const DEFAULT_RATES_URL = "https://www.ecb.europa.eu/stats/eurofxref";
 /** The first day of the reference rates. */
 export const FIRST_RATES_DATE = "1999-01-04";
 /** Frankfurt's time (the same as Rome's) when the day's rates are out. */
-export const PUBLICATION_TIME = "16:00";
+const PUBLICATION_TIME = "16:00";
 /** Frankfurt's time after which a working day without rates is taken as a day without them. */
 const GIVE_UP_TIME = "18:00";
 
@@ -65,6 +65,8 @@ const HISTORY: Source = { file: "eurofxref-hist.xml", ttlMs: 6 * HOUR, maxBytes:
 const FAILURE_TTL_MS = 2 * MINUTE;
 /** After 16:00 a day's file without today is asked again at most this often, until 18:00. */
 const RETRY_AFTER_PUBLICATION_MS = 5 * MINUTE;
+/** After 18:00, for a late publication, at most this often until midnight. */
+const RETRY_LATE_MS = HOUR;
 /** Days the 90-day file reaches back. */
 const RECENT_DAYS = 90;
 /** How far back a trend may start. */
@@ -139,14 +141,6 @@ export function ecbRates(config: ExchangeRatesConfig, fetchImpl: typeof fetch = 
 			return { since, until: end, days: days.filter((d) => d.date >= first.date && d.date <= last.date) };
 		},
 	};
-}
-
-/** Units of `to` for one unit of `from`, through the euro; undefined when the ECB does not publish one of them that day. */
-export function rateBetween(day: DayRates, from: string, to: string): number | undefined {
-	const perEuro = (currency: string) => (currency === "EUR" ? 1 : day.rates.get(currency));
-	const fromRate = perEuro(from);
-	const toRate = perEuro(to);
-	return fromRate === undefined || toRate === undefined ? undefined : toRate / fromRate;
 }
 
 const TAG = /<Cube\b([^<>]*)>/g;
@@ -232,14 +226,15 @@ type Clock = { readonly today: string; readonly time: string };
 
 /**
  * The day's file is fresh while it has the last publication due (the last working day up to
- * today, today only from 16:00). Without it: asked again every 5 minutes from 16:00, then once
- * after 18:00, and from there kept: that day the ECB published nothing.
+ * today, today only from 16:00). Without it: asked again every 5 minutes from 16:00, every hour
+ * from 18:00 until midnight for a late publication, and from there kept: that day the ECB
+ * published nothing.
  */
 function dailyFresh(entry: Entry, at: number, clock: Clock): boolean {
 	const expected = expectedPublication(clock);
 	if ((entry.latest ?? "") >= expected) return true;
 	const giveUp = `${expected} ${GIVE_UP_TIME}`;
-	if (`${clock.today} ${clock.time}` >= giveUp) return entry.local >= giveUp;
+	if (`${clock.today} ${clock.time}` >= giveUp) return entry.local >= giveUp && (clock.today !== expected || at - entry.at < RETRY_LATE_MS);
 	return entry.local >= `${expected} ${PUBLICATION_TIME}` && at - entry.at < RETRY_AFTER_PUBLICATION_MS;
 }
 

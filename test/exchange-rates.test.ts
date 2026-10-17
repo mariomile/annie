@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { readOnlyInBriefs } from "../src/core/brief.ts";
 import type { ToolContext } from "../src/core/engine.ts";
-import { DEFAULT_RATES_URL, ecbRates, parseEcbXml, rateBetween, targetHoliday, targetWorkingDay } from "../src/core/exchange-rates.ts";
+import { DEFAULT_RATES_URL, ecbRates, parseEcbXml, targetHoliday, targetWorkingDay } from "../src/core/exchange-rates.ts";
 import { italianDate, italianMoney, MAX_MONEY } from "../src/core/italian-format.ts";
 import { createExchangeTools } from "../src/core/tools/exchange-tools.ts";
 import { runChecks } from "../src/main/check.ts";
@@ -62,6 +62,8 @@ const HISTORY = histXml([
 	["2024-05-16", RATES],
 	["2024-05-17", { ...RATES, USD: 1.0844 }],
 	["2025-03-03", RATES],
+	["2025-10-31", { ...RATES, BGN: 1.9558 }],
+	["2025-11-03", { ...RATES, BGN: 1.9558 }],
 	["2025-12-23", RATES],
 	["2025-12-24", { ...RATES, USD: 1.1777 }],
 	["2025-12-29", RATES],
@@ -125,10 +127,6 @@ describe("ECB reference rates: the XML", () => {
 		const days = parseEcbXml(HISTORY);
 		expect(days[0]?.date).toBe("2021-05-05");
 		expect(days.at(-1)?.date).toBe("2026-10-16");
-		if (day === undefined) throw new Error("no day");
-		expect(rateBetween(day, "EUR", "USD")).toBe(1.0812);
-		expect(rateBetween(day, "EUR", "EUR")).toBe(1);
-		expect(rateBetween(day, "RUB", "EUR")).toBeUndefined();
 	});
 
 	it("drops whatever is not a plain rate, a real currency code and a real date: hostile files change nothing else", () => {
@@ -186,7 +184,7 @@ describe("ECB reference rates: the XML", () => {
 		expect(await exchangeTool(fakeEcb({ "eurofxref-daily.xml": cut })).run({ from: "USD" })).toBe("Errore: il servizio dei cambi della BCE ha mandato un file illeggibile.");
 	});
 
-	it("2 MB of unterminated comments parse in linear time and yield nothing", () => {
+	it("a 2 MB file of junk parses in linear time and yields nothing", () => {
 		const start = performance.now();
 		expect(parseEcbXml(`${ENVELOPE_START}${"<!--".repeat(512 * 1024)}${ENVELOPE_END}`)).toEqual([]);
 		expect(parseEcbXml("<!--".repeat(512 * 1024))).toEqual([]);
@@ -276,9 +274,9 @@ describe("ECB reference rates: which file, which day", () => {
 	it("around 16:00: fresh at 15:59, asked again at 16:01, then every five minutes until today's rates arrive", async () => {
 		const fake = fakeEcb({ ...FILES, "eurofxref-daily.xml": dailyXml("2026-10-15") });
 		const { run, clock } = exchangeTool(fake, friday("15:59"));
-		expect(await run({ from: "USD" })).toContain("Oggi la BCE pubblica verso le 16: vale ieri.");
+		expect(await run({ from: "USD" })).toContain("Oggi la BCE pubblica verso le 16: vale il cambio di ieri.");
 		clock.now = friday("16:01");
-		expect(await run({ from: "USD" })).toContain("Oggi alle 16 la BCE non ha ancora pubblicato: vale ieri.");
+		expect(await run({ from: "USD" })).toContain("Oggi alle 16 la BCE non ha ancora pubblicato: vale il cambio di ieri.");
 		expect(fake.count("eurofxref-daily.xml")).toBe(2);
 		clock.now = friday("16:04");
 		await run({ from: "USD" });
@@ -297,11 +295,34 @@ describe("ECB reference rates: which file, which day", () => {
 		const { run, clock } = exchangeTool(fake, friday("17:58"));
 		await run({ from: "USD" });
 		clock.now = friday("18:30");
-		expect(await run({ from: "USD" })).toBe("Cambio BCE del 15/10/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR). Oggi la BCE non ha pubblicato cambi: vale ieri.");
+		expect(await run({ from: "USD" })).toBe("Cambio BCE del 15/10/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR). Oggi la BCE non ha pubblicato cambi: vale il cambio di ieri.");
 		expect(fake.count("eurofxref-daily.xml")).toBe(2);
-		clock.now = friday("23:50");
+		clock.now = friday("19:00");
 		await run({ from: "USD" });
 		expect(fake.count("eurofxref-daily.xml")).toBe(2);
+		clock.now = friday("19:31");
+		await run({ from: "USD" });
+		expect(fake.count("eurofxref-daily.xml")).toBe(3);
+	});
+
+	it("a late publication after 18:00 is seen within the hour; after midnight the file is kept", async () => {
+		const fake = fakeEcb({ ...FILES, "eurofxref-daily.xml": dailyXml("2026-10-15") });
+		const { run, clock } = exchangeTool(fake, friday("18:29"));
+		await run({ from: "USD" });
+		fake.files["eurofxref-daily.xml"] = dailyXml("2026-10-16");
+		clock.now = friday("19:00");
+		expect(await run({ from: "USD" })).toContain("Oggi la BCE non ha pubblicato cambi: vale il cambio di ieri.");
+		clock.now = friday("19:30");
+		expect(await run({ from: "USD" })).toBe("Cambio BCE del 16/10/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR).");
+		expect(fake.count("eurofxref-daily.xml")).toBe(2);
+		const never = fakeEcb({ ...FILES, "eurofxref-daily.xml": dailyXml("2026-10-15") });
+		const late = exchangeTool(never, friday("23:30"));
+		await late.run({ from: "USD" });
+		late.clock.now = new Date("2026-10-17T00:40:00+02:00");
+		await late.run({ from: "USD" });
+		late.clock.now = new Date("2026-10-17T10:00:00+02:00");
+		expect(await late.run({ from: "USD" })).toContain("Oggi è sabato e la BCE non pubblica: vale quello di giovedì 15/10/2026.");
+		expect(never.count("eurofxref-daily.xml")).toBe(1);
 	});
 
 	it("the 90 days' file for a recent date, the history only for an older one, or one the 90 days do not reach", async () => {
@@ -340,11 +361,12 @@ describe("ECB reference rates: which file, which day", () => {
 });
 
 describe("Italian money", () => {
-	it("two decimals, points for thousands, never an exponent; refused from 1e15", () => {
+	it("two decimals, points for thousands, never an exponent; refused from 9e13", () => {
 		expect(italianMoney(1234.5)).toBe("1.234,50");
 		expect(italianMoney(0.1 + 0.2)).toBe("0,30");
-		expect(italianMoney(1e14)).toBe("100.000.000.000.000,00");
-		expect(italianMoney(999_999_999_999_999)).toBe("999.999.999.999.999,00");
+		expect(italianMoney(89_999_999_999_999.5)).toBe("89.999.999.999.999,50");
+		expect(italianMoney(16234, 0)).toBe("16.234");
+		expect(() => italianMoney(1e14)).toThrow(RangeError);
 		expect(() => italianMoney(MAX_MONEY)).toThrow(RangeError);
 		expect(() => italianMoney(Number.NaN)).toThrow(RangeError);
 		expect(italianDate("2026-01-04")).toBe("04/01/2026");
@@ -354,7 +376,7 @@ describe("Italian money", () => {
 describe("exchange_rate", () => {
 	it("today, a Saturday, no date: the conversion, then the ECB's figure first, and why Friday", async () => {
 		const { run } = exchangeTool(fakeEcb());
-		expect(await run({ from: "USD", amount: 1250 })).toBe("1.250,00 USD = 1.156,12 EUR\nCambio BCE del 16/10/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR). Oggi è sabato e la BCE non pubblica: vale venerdì 16/10/2026.");
+		expect(await run({ from: "USD", amount: 1250 })).toBe("1.250,00 USD = 1.156,12 EUR\nCambio BCE del 16/10/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR). Oggi è sabato e la BCE non pubblica: vale quello di venerdì 16/10/2026.");
 	});
 
 	it("on a weekday when today's rate is out: no reason", async () => {
@@ -365,23 +387,23 @@ describe("exchange_rate", () => {
 
 	it("an invoice dated on a Saturday, a holiday, or a skipped day: the day used and why", async () => {
 		const { run } = exchangeTool(fakeEcb());
-		expect(await run({ from: "USD", amount: 1250, date: "2026-10-10" })).toBe("1.250,00 USD = 1.162,79 EUR\nCambio BCE del 09/10/2026: 1 EUR = 1,075 USD (1 USD = 0,9302 EUR). Sabato 10/10/2026 la BCE non pubblica: vale venerdì 09/10/2026.");
-		expect(await run({ from: "USD", date: "2025-12-25" })).toBe("Cambio BCE del 24/12/2025: 1 EUR = 1,1777 USD (1 USD = 0,8491 EUR). Il 25/12/2025 era festivo per la BCE: vale mercoledì 24/12/2025.");
-		expect(await run({ from: "USD", date: "2026-09-16" })).toContain(" Il 16/09/2026 la BCE non ha pubblicato cambi: vale martedì 15/09/2026.");
+		expect(await run({ from: "USD", amount: 1250, date: "2026-10-10" })).toBe("1.250,00 USD = 1.162,79 EUR\nCambio BCE del 09/10/2026: 1 EUR = 1,075 USD (1 USD = 0,9302 EUR). Sabato 10/10/2026 la BCE non pubblica: vale quello di venerdì 09/10/2026.");
+		expect(await run({ from: "USD", date: "2025-12-25" })).toBe("Cambio BCE del 24/12/2025: 1 EUR = 1,1777 USD (1 USD = 0,8491 EUR). Il 25/12/2025 era festivo per la BCE: vale quello di mercoledì 24/12/2025.");
+		expect(await run({ from: "USD", date: "2026-09-16" })).toContain(" Il 16/09/2026 la BCE non ha pubblicato cambi: vale quello di martedì 15/09/2026.");
 	});
 
 	it("on a TARGET holiday today it never says the rates come out at 16:00", async () => {
 		const files = { ...FILES, "eurofxref-daily.xml": dailyXml("2026-12-24") };
 		for (const time of ["10:00", "17:00", "19:00"]) {
 			const answer = await exchangeTool(fakeEcb(files), new Date(`2026-12-25T${time}:00+01:00`)).run({ from: "USD" });
-			expect(answer).toBe("Cambio BCE del 24/12/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR). Oggi è festivo per la BCE: vale giovedì 24/12/2026.");
+			expect(answer).toBe("Cambio BCE del 24/12/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR). Oggi è festivo per la BCE: vale quello di giovedì 24/12/2026.");
 		}
 	});
 
 	it("euro and yen: rates as published, 4 significant digits below 1", async () => {
 		const { run } = exchangeTool(fakeEcb());
-		expect(await run({ from: "EUR", to: "JPY", amount: 100, date: "2026-10-16" })).toBe("100,00 EUR = 16.234,00 JPY\nCambio BCE del 16/10/2026: 1 EUR = 162,34 JPY (1 JPY = 0,006160 EUR).");
-		expect(await run({ from: "JPY", amount: 5000, date: "2026-10-16" })).toBe("5.000,00 JPY = 30,80 EUR\nCambio BCE del 16/10/2026: 1 EUR = 162,34 JPY (1 JPY = 0,006160 EUR).");
+		expect(await run({ from: "EUR", to: "JPY", amount: 100, date: "2026-10-16" })).toBe("100,00 EUR = 16.234 JPY\nCambio BCE del 16/10/2026: 1 EUR = 162,34 JPY (1 JPY = 0,006160 EUR).");
+		expect(await run({ from: "JPY", amount: 5000, date: "2026-10-16" })).toBe("5.000 JPY = 30,80 EUR\nCambio BCE del 16/10/2026: 1 EUR = 162,34 JPY (1 JPY = 0,006160 EUR).");
 	});
 
 	it("between two other currencies through the euro", async () => {
@@ -397,6 +419,9 @@ describe("exchange_rate", () => {
 			"1.250,00 USD = 1.156,12 EUR\n2.150,50 USD = 1.988,99 EUR\nTotale: 3.400,50 USD = 3.145,11 EUR\nCambio BCE del 16/10/2026: 1 EUR = 1,0812 USD (1 USD = 0,9249 EUR).",
 		);
 		expect(await run({ from: "GBP", date: "2026-10-16" })).toBe("Cambio BCE del 16/10/2026: 1 EUR = 0,8642 GBP (1 GBP = 1,1571 EUR).");
+		expect((await run({ from: "USD", amounts: [0.1, 0.2], date: "2026-10-16" })).split("\n")[2]).toBe("Totale: 0,30 USD = 0,27 EUR");
+		expect((await run({ from: "USD", amounts: [0.105, 0.2], date: "2026-10-16" })).split("\n")[2]).toBe("Totale: 0,305 USD = 0,28 EUR");
+		expect((await run({ from: "EUR", to: "JPY", amounts: [10, 20.5], date: "2026-10-16" })).split("\n")).toEqual(["10,00 EUR = 1.623 JPY", "20,50 EUR = 3.328 JPY", "Totale: 30,50 EUR = 4.951 JPY", "Cambio BCE del 16/10/2026: 1 EUR = 162,34 JPY (1 JPY = 0,006160 EUR)."]);
 		expect(await run({ from: "USD", amounts: Array.from({ length: 21 }, () => 1) })).toBe("Errore: gli importi sono numeri da 0 a un miliardo, al più 20.");
 		expect(await run({ from: "USD", amount: 1, amounts: [1] })).toBe("Errore: usa amount per un importo, amounts per più importi, non tutti e due.");
 	});
@@ -428,16 +453,16 @@ describe("exchange_rate", () => {
 	it("old euro-area currencies at their fixed irrevocable rate; with the euro nothing is downloaded", async () => {
 		const fake = fakeEcb();
 		const { run } = exchangeTool(fake);
-		expect(await run({ from: "ITL", amount: 1_000_000 })).toBe("1.000.000,00 ITL = 516,46 EUR\nCambio fisso irrevocabile: 1 EUR = 1.936,27 ITL (1 ITL = 0,0005165 EUR).");
+		expect(await run({ from: "ITL", amount: 1_000_000 })).toBe("1.000.000 ITL = 516,46 EUR\nCambio fisso irrevocabile: 1 EUR = 1.936,27 ITL (1 ITL = 0,0005165 EUR).");
 		expect(await run({ from: "EUR", to: "DEM", amount: 100, date: "2001-06-01" })).toBe("100,00 EUR = 195,58 DEM\nCambio fisso irrevocabile: 1 EUR = 1,95583 DEM (1 DEM = 0,5113 EUR).");
 		expect(await run({ from: "FRF", amount: 655.957 })).toContain("655,957 FRF = 100,00 EUR");
-		expect(await run({ from: "ESP", amount: 166386 })).toContain("166.386,00 ESP = 1.000,00 EUR");
+		expect(await run({ from: "ESP", amount: 166386 })).toContain("166.386 ESP = 1.000,00 EUR");
 		expect(await run({ from: "HRK", amount: 753.45, date: "2024-05-17" })).toContain("753,45 HRK = 100,00 EUR\nCambio fisso irrevocabile: 1 EUR = 7,5345 HRK");
 		expect(await run({ from: "BGN", amount: 195.583 })).toContain("195,583 BGN = 100,00 EUR\nCambio fisso irrevocabile: 1 EUR = 1,95583 BGN");
 		expect(await run({ from: "ITL", to: "DEM", amount: 1936.27 })).toContain("1.936,27 ITL = 1,96 DEM");
 		expect(fake.asked).toHaveLength(0);
 		expect(await run({ from: "ITL", to: "USD", amount: 1_000_000, date: "2026-10-16" })).toBe(
-			"1.000.000,00 ITL = 558,39 USD\nCambio BCE del 16/10/2026: 1 EUR = 1,0812 USD; cambio fisso irrevocabile: 1 EUR = 1.936,27 ITL; quindi 1 ITL = 0,0005584 USD (1 USD = 1.790,8528 ITL).",
+			"1.000.000 ITL = 558,39 USD\nCambio BCE del 16/10/2026: 1 EUR = 1,0812 USD; cambio fisso irrevocabile: 1 EUR = 1.936,27 ITL; quindi 1 ITL = 0,0005584 USD (1 USD = 1.790,8528 ITL).",
 		);
 		expect(await run({ from: "ITL", date: "2026-10-18" })).toBe("Errore: la data è nel futuro: i cambi di un giorno escono quel giorno verso le 16:00.");
 	});
@@ -455,17 +480,29 @@ describe("exchange_rate", () => {
 		const fake = fakeEcb();
 		const { run } = exchangeTool(fake);
 		expect(await run({ from: "USD", since: "2026-09-01" })).toBe(
-			"Andamento BCE di 1 USD in EUR dal 01/09/2026 al 16/10/2026: all'inizio 0,9091, alla fine 0,9249; minimo 0,8929 il 10/09/2026, massimo 0,9302 il 09/10/2026.\nIl dollaro USA si è rafforzato sull'euro dell'1,74%.",
+			"Andamento BCE di 1 USD in EUR dal 01/09/2026 al 16/10/2026: all'inizio 0,9091, alla fine 0,9249; minimo 0,8929 il 10/09/2026, massimo 0,9302 il 09/10/2026.\nIl dollaro USA si è rafforzato rispetto all'euro dell'1,74%.",
 		);
 		expect([fake.count("eurofxref-hist-90d.xml"), fake.count("eurofxref-hist.xml")]).toEqual([1, 0]);
-		expect(await run({ from: "EUR", to: "GBP", since: "2025-12-23", date: "2026-04-07" })).toContain("L'euro si è rafforzato sulla sterlina britannica dell'1,83%.");
+		expect(await run({ from: "EUR", to: "GBP", since: "2025-12-23", date: "2026-04-07" })).toContain("L'euro si è rafforzato rispetto alla sterlina britannica dell'1,83%.");
 		expect(fake.count("eurofxref-hist.xml")).toBe(1);
-		expect(await run({ from: "GBP", since: "2025-12-23", date: "2026-04-07" })).toContain("La sterlina britannica si è indebolita sull'euro dell'1,8%.");
+		expect(await run({ from: "GBP", since: "2025-12-23", date: "2026-04-07" })).toContain("La sterlina britannica si è indebolita rispetto all'euro dell'1,8%.");
 		expect(await run({ from: "JPY", since: "2025-12-23", date: "2025-12-29" })).toContain("Lo yen giapponese è rimasto invariato rispetto all'euro.");
+		expect(await run({ from: "USD", since: "2026-10-10", date: "2026-10-11" })).toBe("Errore: tra le due date la BCE non ha pubblicato nuovi cambi.");
 		expect(await run({ from: "USD", since: "2025-10-01" })).toBe("Errore: un andamento parte al più da un anno fa.");
 		expect(await run({ from: "USD", since: "2026-10-17" })).toBe("Errore: since va prima della data finale.");
 		expect(await run({ from: "USD", since: "2026-09-01", amount: 5 })).toBe("Errore: since dà l'andamento del cambio: senza importi.");
 		expect(await run({ from: "RUB", since: "2026-09-01" })).toBe("Errore: la BCE ha sospeso il cambio del rublo dal 02/03/2022 (ultimo: 01/03/2022).");
+	});
+
+	it("since with old euro-area currencies: the lev across its switch to the fixed rate, the lira following the dollar", async () => {
+		const { run } = exchangeTool(fakeEcb());
+		const lev = await run({ from: "BGN", since: "2025-11-01" });
+		expect(lev).toContain("Andamento BCE di 1 BGN in EUR dal 31/10/2025 al 16/10/2026: all'inizio 0,5113, alla fine 0,5113;");
+		expect(lev).toContain("Il lev bulgaro è rimasto invariato rispetto all'euro.");
+		expect(await run({ from: "ITL", to: "USD", since: "2026-09-01" })).toBe(
+			"Andamento BCE di 1 ITL in USD dal 01/09/2026 al 16/10/2026: all'inizio 0,0005681, alla fine 0,0005584; minimo 0,0005552 il 09/10/2026, massimo 0,0005784 il 10/09/2026.\nLa lira italiana si è indebolita rispetto al dollaro USA dell'1,71%.",
+		);
+		expect(await run({ from: "BGN", since: "2025-12-23", date: "2025-12-29" })).toBe("Errore: la BCE non ha un cambio per BGN il 23/12/2025; dal 01/01/2026 vale il cambio fisso irrevocabile 1 EUR = 1,95583 BGN.");
 	});
 
 	it("refuses what is not a currency before any download", async () => {

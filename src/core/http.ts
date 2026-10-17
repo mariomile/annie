@@ -6,7 +6,7 @@
 
 export type HttpProblem = { readonly kind: "status"; readonly status: number } | { readonly kind: "unreachable" | "too_big" | "unreadable" };
 
-export type GetInit = {
+type GetInit = {
 	readonly fetch: typeof fetch;
 	readonly headers?: Record<string, string>;
 	/** Larger bodies are refused unread. */

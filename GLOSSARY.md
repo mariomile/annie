@@ -157,6 +157,10 @@ _Avoid_: checklist, todo, elenco puntato
 Quello che dà `weather`: le condizioni di adesso, le fasce di oggi e domani (notte, mattina, pomeriggio, sera) e le previsioni giorno per giorno fino a 16 giorni compreso oggi, per un posto cercato per nome. Acceso dall'operatore con `ANNIE_WEATHER`. Vedi ADR 0039.
 _Avoid_: previsioni del tempo (quando si intende il tool), forecast
 
+**Cambio BCE**:
+Il tasso di riferimento dell'euro pubblicato dalla Banca Centrale Europea nei giorni lavorativi verso le 16:00, che `exchange_rate` usa per convertire importi, oggi o alla data di una fattura. Per un giorno senza pubblicazione vale l'ultimo giorno lavorativo prima. Acceso dall'operatore con `ANNIE_EXCHANGE_RATES`. Vedi ADR 0040.
+_Avoid_: tasso di mercato, quotazione (quando si intende il cambio BCE)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

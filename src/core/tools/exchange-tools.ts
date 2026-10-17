@@ -1,5 +1,5 @@
 import type { AnnieTool } from "../engine.ts";
-import { addDays, checkDate, type DayRates, type ExchangeRates, ExchangeRateError, FIRST_RATES_DATE, type RatesOn, type RatesSeries, rateBetween } from "../exchange-rates.ts";
+import { addDays, checkDate, type DayRates, type ExchangeRates, ExchangeRateError, FIRST_RATES_DATE, type RatesOn, type RatesSeries } from "../exchange-rates.ts";
 import { formatResult, italianDate, italianMoney, italianWeekday, MAX_MONEY } from "../italian-format.ts";
 
 export type ExchangeToolsOptions = { readonly rates: ExchangeRates };
@@ -58,6 +58,8 @@ const LEGACY: Readonly<Record<string, { readonly perEuro: number; readonly since
 	HRK: { perEuro: 7.5345, since: "2023-01-01" },
 	BGN: { perEuro: 1.95583, since: "2026-01-01" },
 };
+/** Currencies written without decimals (ISO 4217 minor unit 0, and the forint as it is used): amounts to the unit. */
+const NO_DECIMALS = new Set(["JPY", "KRW", "ISK", "HUF", "ITL", "ESP"]);
 const LEGACY_NAMES: Readonly<Record<string, string>> = { ITL: "la lira italiana", DEM: "il marco tedesco", FRF: "il franco francese", ESP: "la peseta spagnola" };
 
 /** Crypto-assets people ask about: not currencies, and the ECB publishes none. */
@@ -154,9 +156,9 @@ async function answer(rates: ExchangeRates, request: Request): Promise<string> {
 	if (request.kind === "list") return listAnswer((await rates.rateOn(request.date)).day);
 	if (request.kind === "trend") return trendAnswer(await rates.series(request.since, request.date), request.from, request.to);
 	const asked = request.date ?? rates.today();
-	checkDate(asked, rates.today());
 	// Between the euro and its old currencies the rate is fixed: nothing to download.
 	if ([request.from, request.to].every((code) => code === "EUR" || legacyOn(code, asked) !== undefined)) {
+		checkDate(asked, rates.today());
 		return convertAnswer(undefined, request.from, request.to, request.amounts, asked);
 	}
 	return convertAnswer(await rates.rateOn(request.date), request.from, request.to, request.amounts, asked);
@@ -190,20 +192,31 @@ function convertAnswer(found: RatesOn | undefined, from: string, to: string, amo
 	return [...conversions, `${rateLine(legs, from, to, rate, found?.day.date)}${reason}`].join("\n");
 }
 
-/** «1.250,00 USD = 1.073,70 EUR» for each amount; for several, the total of the cents shown. */
+/** «1.250,00 USD = 1.073,70 EUR» for each amount; for several, the total of what is shown. */
 function conversionLines(amounts: readonly number[], from: string, to: string, rate: number): string[] | string {
-	const converted = amounts.map((amount) => Math.round(amount * rate * 100) / 100);
-	const total = converted.reduce((sum, value) => sum + value, 0);
+	const converted = amounts.map((amount) => rounded(amount * rate, to));
+	const total = rounded(converted.reduce((sum, value) => sum + value, 0), to);
 	if (converted.some((value) => value >= MAX_MONEY) || total >= MAX_MONEY) return "Errore: il risultato è troppo grande per scriverlo al centesimo.";
-	const lines = amounts.map((amount, i) => `${amountText(amount)} ${from} = ${italianMoney(converted[i] as number)} ${to}`);
+	const lines = amounts.map((amount, i) => `${amountText(amount, from)} ${from} = ${italianMoney(converted[i] as number, decimalsOf(to))} ${to}`);
 	if (amounts.length === 1) return lines;
+	// Amounts given to the cent add up to the cent, without 0,1 + 0,2 showing as 0,30000000000000004.
 	const sum = amounts.reduce((s, a) => s + a, 0);
-	return [...lines, `Totale: ${amountText(sum)} ${from} = ${italianMoney(total)} ${to}`];
+	return [...lines, `Totale: ${amountText(amounts.every((a) => rounded(a, from) === a) ? rounded(sum, from) : sum, from)} ${from} = ${italianMoney(total, decimalsOf(to))} ${to}`];
 }
 
-/** The amount as given: to the cent, or with its own decimals when it has more. */
-function amountText(amount: number): string {
-	return Math.round(amount * 100) / 100 === amount ? italianMoney(amount) : formatResult(amount);
+function decimalsOf(code: string): number {
+	return NO_DECIMALS.has(code) ? 0 : 2;
+}
+
+/** To the cent, or to the unit for a currency without decimals. */
+function rounded(value: number, code: string): number {
+	const scale = 10 ** decimalsOf(code);
+	return Math.round(value * scale) / scale;
+}
+
+/** The amount as given: to the cent (the unit), or with its own decimals when it has more. */
+function amountText(amount: number, code: string): string {
+	return rounded(amount, code) === amount ? italianMoney(amount, decimalsOf(code)) : formatResult(amount);
 }
 
 /**
@@ -232,8 +245,8 @@ function rateText(rate: number): string {
 /** Why the rate is of another day, in a short sentence. */
 function reasonText(found: RatesOn): string {
 	const { asked, today, day, fallback } = found;
-	const used = `${italianWeekday(day.date)} ${italianDate(day.date)}`;
-	const sinceToday = day.date === addDays(today, -1) ? "ieri" : used;
+	const used = `quello di ${italianWeekday(day.date)} ${italianDate(day.date)}`;
+	const sinceToday = day.date === addDays(today, -1) ? "il cambio di ieri" : used;
 	switch (fallback) {
 		case "weekend":
 			return asked === today ? `Oggi è ${italianWeekday(asked)} e la BCE non pubblica: vale ${used}.` : `${capitalized(italianWeekday(asked))} ${italianDate(asked)} la BCE non pubblica: vale ${used}.`;
@@ -250,9 +263,11 @@ function reasonText(found: RatesOn): string {
 	}
 }
 
-/** Why there is no rate for `code`: the rouble's suspension, or not among the ECB's currencies. */
+/** Why there is no rate for `code`: the rouble's suspension, an old euro-area currency before its fixed rate, or not among the ECB's currencies. */
 function unpublished(code: string, date: string): string {
 	if (code === "RUB" && date > RUB_LAST) return `la BCE ha sospeso il cambio del rublo dal 02/03/2022 (ultimo: ${italianDate(RUB_LAST)}).`;
+	const legacy = LEGACY[code];
+	if (legacy !== undefined) return `la BCE non ha un cambio per ${code} il ${italianDate(date)}; dal ${italianDate(legacy.since)} vale il cambio fisso irrevocabile 1 EUR = ${formatResult(legacy.perEuro)} ${code}.`;
 	return `${code} non è tra le valute della BCE del ${italianDate(date)}: per vederle chiama exchange_rate con list.`;
 }
 
@@ -265,13 +280,15 @@ function listAnswer(day: DayRates): string {
 
 /** Start, end, lowest and highest of 1 `from` in `to`, and the change, said as one currency gaining on the other. */
 function trendAnswer(series: RatesSeries, from: string, to: string): string {
+	if (series.days.length < 2) return "Errore: tra le due date la BCE non ha pubblicato nuovi cambi.";
 	for (const day of [series.days[0], series.days.at(-1)]) {
-		const code = [from, to].find((c) => c !== "EUR" && day?.rates.has(c) !== true);
+		const code = [from, to].find((c) => day === undefined || perEuroOn(day, c) === undefined);
 		if (code !== undefined) return `Errore: ${unpublished(code, day?.date ?? series.until)}`;
 	}
 	const points = series.days.flatMap((day) => {
-		const rate = rateBetween(day, from, to);
-		return rate === undefined ? [] : [{ date: day.date, rate }];
+		const fromRate = perEuroOn(day, from);
+		const toRate = perEuroOn(day, to);
+		return fromRate === undefined || toRate === undefined ? [] : [{ date: day.date, rate: toRate / fromRate }];
 	});
 	const first = points[0] as { date: string; rate: number };
 	const last = points.at(-1) as { date: string; rate: number };
@@ -284,22 +301,27 @@ function trendAnswer(series: RatesSeries, from: string, to: string): string {
 	].join("\n");
 }
 
-/** «Il dollaro USA si è rafforzato sull'euro del 3,2%», with the article and the agreement each name needs. */
+/** Units of `code` for one euro that day: published, or fixed once the euro replaced it. */
+function perEuroOn(day: DayRates, code: string): number | undefined {
+	return code === "EUR" ? 1 : (legacyOn(code, day.date) ?? day.rates.get(code));
+}
+
+/** «Il dollaro USA si è rafforzato rispetto all'euro del 3,2%», with the article and the agreement each name needs. */
 function changeText(from: string, to: string, change: number): string {
 	const subject = NAMES[from] ?? LEGACY_NAMES[from] ?? from;
 	const feminine = subject.startsWith("la ");
 	const percent = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 2 }).format(Math.abs(change));
-	if (percent === "0") return `${capitalized(subject)} è ${feminine ? "rimasta invariata" : "rimasto invariato"} rispetto ${joined("a", NAMES[to] ?? to)}.`;
+	const against = `rispetto ${toThe(NAMES[to] ?? LEGACY_NAMES[to] ?? to)}`;
+	if (percent === "0") return `${capitalized(subject)} è ${feminine ? "rimasta invariata" : "rimasto invariato"} ${against}.`;
 	const verb = change > 0 ? (feminine ? "rafforzata" : "rafforzato") : feminine ? "indebolita" : "indebolito";
-	return `${capitalized(subject)} si è ${verb} ${joined("su", NAMES[to] ?? to)} ${of(percent)}%.`;
+	return `${capitalized(subject)} si è ${verb} ${against} ${of(percent)}%.`;
 }
 
-/** The preposition joined to the name's article: «sull'euro», «sul dollaro», «allo yen», «alla sterlina». */
-function joined(preposition: "a" | "su", name: string): string {
-	const stem = preposition === "a" ? "al" : "sul";
-	if (name.startsWith("l'")) return `${stem}l'${name.slice(2)}`;
+/** «a» joined to the name's article: «all'euro», «al dollaro», «allo yen», «alla sterlina». */
+function toThe(name: string): string {
+	if (name.startsWith("l'")) return `all'${name.slice(2)}`;
 	const ending = { il: "", lo: "lo", la: "la" }[name.split(" ")[0] ?? ""];
-	return ending === undefined ? `${preposition} ${name}` : `${stem}${ending} ${withoutArticle(name)}`;
+	return ending === undefined ? `a ${name}` : `al${ending} ${withoutArticle(name)}`;
 }
 
 /** «dello 0,5», «dell'1,5», «dell'8», «dell'11», «del 3,2». */

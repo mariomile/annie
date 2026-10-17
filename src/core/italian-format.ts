@@ -4,12 +4,11 @@
  */
 
 const NUMBER = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
-const MONEY = new Intl.NumberFormat("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: true });
 const DAY = new Intl.DateTimeFormat("it-IT", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
 const WEEKDAY = new Intl.DateTimeFormat("it-IT", { weekday: "long", timeZone: "UTC" });
 
-/** Amounts from this on are refused by italianMoney: past it a double no longer holds the cents. */
-export const MAX_MONEY = 1e15;
+/** Amounts from this on are refused by italianMoney: a double holds exact cents only up to Number.MAX_SAFE_INTEGER / 100, about 9e13. */
+export const MAX_MONEY = 9e13;
 
 /** 12,5: at most one decimal, with a comma. */
 export function italianNumber(value: number): string {
@@ -23,10 +22,10 @@ export function formatResult(value: number, decimals?: number): string {
 	return new Intl.NumberFormat("it-IT", decimals === undefined ? { maximumFractionDigits: 10, useGrouping: true } : { minimumFractionDigits: decimals, maximumFractionDigits: decimals, useGrouping: true }).format(exact);
 }
 
-/** 1.234.567,89: money to the cent, never in exponent notation; a RangeError from MAX_MONEY on. */
-export function italianMoney(value: number): string {
+/** 1.234.567,89: money to the cent (or to the unit, with 0 decimals), never in exponent notation; a RangeError from MAX_MONEY on. */
+export function italianMoney(value: number, decimals = 2): string {
 	if (!Number.isFinite(value) || Math.abs(value) >= MAX_MONEY) throw new RangeError("amount too large to write to the cent");
-	return MONEY.format(value);
+	return new Intl.NumberFormat("it-IT", { minimumFractionDigits: decimals, maximumFractionDigits: decimals, useGrouping: true }).format(value);
 }
 
 /** 2026-10-17 → sabato 17 ottobre; the first of the month is 1º. */
