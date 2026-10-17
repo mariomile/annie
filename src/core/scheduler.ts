@@ -1,12 +1,15 @@
 import { UserNotAllowed } from "./errors.ts";
 import { schedulePerson, type ScheduleStore } from "./schedules.ts";
+import { checkWatches, type WatchStore } from "./watches.ts";
 
 export type SchedulerTarget = {
 	readonly tenantId: string;
 	readonly instanceId: string;
 	readonly store: ScheduleStore;
 	/** Admit the run into the instance (AnnieRuntime.submitScheduled). */
-	readonly submit: (request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" }) => Promise<unknown>;
+	readonly submit: (request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" }) => Promise<unknown>;
+	/** The instance's sentinelle and how to read a page under its policy (ADR 0018). */
+	readonly watches?: { readonly store: WatchStore; readonly read: (url: string) => Promise<{ title: string; text: string }> };
 };
 
 /**
@@ -23,10 +26,11 @@ export class Scheduler {
 		private readonly log: (message: string) => void = console.error,
 	) {}
 
-	/** One pass over every instance. Returns the runs admitted. */
+	/** One pass over every instance: schedules, then sentinelle. Returns the runs admitted. */
 	async tick(now = new Date()): Promise<number> {
 		let fired = 0;
-		for (const target of await this.targets()) {
+		const targets = await this.targets();
+		for (const target of targets) {
 			for (const schedule of await target.store.due(now)) {
 				const plannedFor = schedule.nextRunAt as string;
 				try {
@@ -53,6 +57,9 @@ export class Scheduler {
 				}
 			}
 		}
+		const watching = targets.flatMap((t) => (t.watches === undefined ? [] : [{ tenantId: t.tenantId, instanceId: t.instanceId, store: t.watches.store, read: t.watches.read, submit: t.submit }]));
+		// A page that does not answer must not stop the schedules: they ran first.
+		if (watching.length > 0) fired += await checkWatches(watching, now, this.log).catch((error: unknown) => (this.log(`watches: ${error instanceof Error ? error.message : String(error)}`), 0));
 		return fired;
 	}
 

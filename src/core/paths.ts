@@ -61,6 +61,10 @@ export function schedulesDir(dataDir: string, tenant: TenantId, instance: Instan
 	return join(instanceDir(dataDir, tenant, instance), "schedules");
 }
 
+export function watchesDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
+	return join(instanceDir(dataDir, tenant, instance), "watches");
+}
+
 export function workspaceDir(dataDir: string, tenant: TenantId, instance: InstanceId): string {
 	return join(instanceDir(dataDir, tenant, instance), "workspace");
 }

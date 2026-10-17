@@ -125,6 +125,10 @@ _Avoid_: whitelist, domini, navigazione libera
 La ricerca che un'istanza fa con il servizio di ricerca del server (Brave Search) per notizie, prezzi e fatti che cambiano: titoli, indirizzi ed estratti, che apre poi con la lettura dai siti consentiti. La accende l'owner istanza per istanza; al servizio vanno solo le parole cercate.
 _Avoid_: Google, motore, browsing
 
+**Sentinella**:
+Una pagina che un'istanza controlla da sola ogni tanto (da 30 minuti a una settimana), per una conversazione: tutta la pagina, la parte vicino a una frase, o un prezzo con una soglia sotto o sopra. Scrive nella conversazione solo quando qualcosa è cambiato, una volta per cambiamento; legge solo dai siti consentiti.
+_Avoid_: watcher, monitor, alert
+
 **Browser**:
 La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e scrive per usare siti costruiti in JavaScript. Legge e basta: quello che invia passa da un'azione sul web. Gira nella cella, non nel computer.
 _Avoid_: computer, automazione del browser, agente web

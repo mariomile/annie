@@ -180,7 +180,7 @@ main { min-width: 0; padding: 0 clamp(16px, 3.2vw, 40px) 40px; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field > span { font-size: 13px; font-weight: 500; color: var(--fg); }
 .field small { color: var(--fg-3); font-size: 12px; }
-input[type="text"], input[type="url"], input[type="password"], input[type="datetime-local"], select, textarea {
+input[type="text"], input[type="url"], input[type="number"], input[type="password"], input[type="datetime-local"], select, textarea {
 	width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); font-size: 13.5px;
 	box-shadow: var(--shadow-sm); transition: border-color 0.12s, box-shadow 0.12s;
 }
@@ -368,3 +368,4 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 .field.inline { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 0; }
 .field.inline input { width: auto; }
 p.warn { color: var(--warn); }
+.subhead { margin: 28px 0 10px; font-size: 15px; font-weight: 600; }

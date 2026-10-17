@@ -13,7 +13,7 @@ export function createScheduleTools(options: { readonly store: ScheduleStore; re
 			name: "schedule_create",
 			description:
 				"Schedule an instruction for yourself to run later, once (at) or repeatedly (cron), with the result sent to this conversation. " +
-				"Use it for reminders, recurring reports and checks. cron has 5 fields in the given time zone, e.g. '30 8 * * 1-5' = weekdays at 8:30.",
+				"Use it for reminders and recurring reports; to be told when a page or a price changes, use watch_create instead. cron has 5 fields in the given time zone, e.g. '30 8 * * 1-5' = weekdays at 8:30.",
 			parameters: {
 				type: "object",
 				properties: {

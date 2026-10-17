@@ -13,14 +13,16 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
-import { WEB_HOST_PATTERN } from "../core/policy.ts";
+import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
 import { ConnectorHttpError } from "../connectors/http.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
-import { type Schedule, ScheduleError, schedulePerson } from "../core/schedules.ts";
+import { type Schedule, ScheduleError, schedulePerson, threadPerson } from "../core/schedules.ts";
+import { firstLook, parseAmount, type Watch, WatchError, watchUrl } from "../core/watches.ts";
+import { checkedUrl } from "../core/web-fetch.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
 import { WorkspaceError } from "../core/workspace.ts";
 import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/images.ts";
@@ -79,6 +81,8 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** Read a page under an instance's policy, for a sentinella's first look (ADR 0018). */
+	readonly watchRead?: (instanceId: string, url: string) => Promise<{ title: string; text: string }>;
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
 	readonly telegramHooks?: ReadonlyMap<string, { readonly secret: string; readonly handle: (update: unknown) => Promise<void> }>;
 	/** The Telegram bot of each instance, connected by the owner from the console. */
@@ -504,6 +508,76 @@ export function createWebApp(options: WebAppOptions): Server {
 		const schedule = await store.get(params[1] as string);
 		if (schedule === undefined || (p.role !== "owner" && !mine(schedule, p))) throw new HttpError(404, "No such task");
 		return { removed: await store.remove(schedule.id) };
+	});
+
+	// --- sentinelle (ADR 0018) ---
+	route("GET", "/api/instances/:id/watches", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const all = await runtime.watches(tenantId, record.id).list();
+		// Like tasks: a member sees the sentinelle that write to them; the owner sees all.
+		return { watches: (p.role === "owner" ? all : all.filter((w) => mineWatch(w, p))).map(publicWatch) };
+	});
+	route("POST", "/api/instances/:id/watches", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const { record, member } = await instanceAccess(p, params[0] as string);
+		// It writes to the person by itself: only someone who may talk to the instance.
+		if (!member) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questa istanza");
+		const body = (await readJson(req)) as { url?: unknown; what?: unknown; below?: unknown; above?: unknown; everyMinutes?: unknown; threadId?: unknown };
+		const thread = await channelOf(record.id).thread(String(body.threadId ?? ""));
+		if (thread === undefined || thread.personId !== p.id) throw new HttpError(400, "Scegli una tua chat dove ricevere gli avvisi");
+		const amount = (v: unknown, label: string) => {
+			if (v === undefined || v === null || String(v).trim() === "") return undefined;
+			const n = parseAmount(String(v));
+			if (n === undefined) throw new HttpError(400, `${label}: scrivi un numero, per esempio 49,90`);
+			return n;
+		};
+		const below = amount(body.below, "Sotto");
+		const above = amount(body.above, "Sopra");
+		const every = body.everyMinutes === undefined ? undefined : Number(body.everyMinutes);
+		const what = typeof body.what === "string" && body.what.trim() !== "" ? body.what.replace(/\s+/g, " ").trim() : undefined;
+		try {
+			const url = watchUrl(String(body.url ?? ""));
+			try {
+				// The owner's list of sites; internal addresses are refused by the first look's read.
+				checkedUrl(url, { hostAllowed: (host) => webHostAllowed(record.egress, host), addressAllowed: () => true });
+			} catch {
+				throw new HttpError(400, `${new URL(url).host} non è tra i siti che questa istanza può leggere: aggiungilo in Impostazioni → Navigazione web`);
+			}
+			const watch = { ...(what === undefined ? {} : { what }), ...(below === undefined ? {} : { below }), ...(above === undefined ? {} : { above }) };
+			if ((below !== undefined || above !== undefined) && what === undefined) throw new WatchError("Per un avviso sul prezzo scrivi in «Cosa guardare» la frase che sta subito prima del prezzo, per esempio «Prezzo»");
+			const store = runtime.watches(tenantId, record.id);
+			// The first look now: a page that does not open or a phrase that is not there is said at once.
+			const read = options.watchRead;
+			const first = read === undefined ? undefined : await firstLook((u) => read(record.id, u), url, watch, new Date());
+			const created = await store.create({ url, ...watch, ...(every === undefined ? {} : { everyMinutes: every }), channel: "web", threadId: thread.id, createdBy: { kind: "person", channel: "web", userId: p.id }, ...(first === undefined ? {} : { last: first }) });
+			await runtime.audit(tenantId).append({ type: "watch.created", instanceId: record.id, personId: p.id, watchId: created.id, host: new URL(url).host });
+			return { watch: publicWatch(created) };
+		} catch (error) {
+			if (error instanceof WatchError) throw new HttpError(400, `${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}`);
+			throw error;
+		}
+	});
+	// Again after it stopped: failures cleared, checked at the next pass.
+	route("POST", "/api/instances/:id/watches/:wid/resume", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const store = runtime.watches(tenantId, record.id);
+		const watch = await store.get(params[1] as string);
+		if (watch === undefined || (p.role !== "owner" && !mineWatch(watch, p))) throw new HttpError(404, "Nessuna sentinella così");
+		const { disabledReason: _r, lastError: _e, pending: _p, candidate: _c, ...rest } = watch;
+		await store.update({ ...rest, failures: 0, notifiedAt: [], nextCheckAt: new Date().toISOString() });
+		return { watch: publicWatch((await store.get(watch.id)) ?? watch) };
+	});
+	route("DELETE", "/api/instances/:id/watches/:wid", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const store = runtime.watches(tenantId, record.id);
+		const watch = await store.get(params[1] as string);
+		if (watch === undefined || (p.role !== "owner" && !mineWatch(watch, p))) throw new HttpError(404, "Nessuna sentinella così");
+		const removed = await store.remove(watch.id);
+		if (removed) await runtime.audit(tenantId).append({ type: "watch.deleted", instanceId: record.id, personId: p.id, watchId: watch.id, host: new URL(watch.url).host });
+		return { removed };
 	});
 
 	// --- tools proposti ---
@@ -1221,6 +1295,18 @@ const STREAMED = Symbol("streamed");
 function mine(schedule: Schedule, person: Person): boolean {
 	const who = schedulePerson(schedule);
 	return who?.channel === "web" && who.userId === person.id;
+}
+
+/** A sentinella that writes to this person (the same rule as for tasks). */
+function mineWatch(watch: Watch, person: Person): boolean {
+	const who = threadPerson(watch);
+	return who?.channel === "web" && who.userId === person.id;
+}
+
+/** A sentinella for the console: without the page text it keeps to compare. */
+function publicWatch(watch: Watch) {
+	const { last, pending: _p, candidate: _c, ...rest } = watch;
+	return { ...rest, ...(last === undefined ? {} : { last: { at: last.at, excerpt: last.excerpt, ...(last.price === undefined ? {} : { price: last.price }), ...(last.side === undefined ? {} : { side: last.side }) } }) };
 }
 
 function securityHeaders(res: ServerResponse): void {
