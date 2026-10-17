@@ -177,6 +177,10 @@ _Avoid_: tasso di mercato, quotazione (quando si intende il cambio BCE)
 Il file RSS o Atom pubblico di un giornale, da cui `news_headlines` prende i titoli recenti con fonte, ora e link. La lista la sceglie l'operatore (`ANNIE_NEWS_FEEDS`), con una di partenza; acceso con `ANNIE_NEWS`. Vedi ADR 0043.
 _Avoid_: notiziario, rassegna stampa (quando si intendono i titoli dei feed)
 
+**VIES**:
+Il servizio della Commissione europea che dice se un numero IVA è attivo per gli scambi intra-UE, con nome e indirizzo quando il paese li dà; `vat_check` lo usa con `ANNIE_VAT_CHECK`. «Non attiva nel VIES» non vuol dire che la partita IVA non esista. Vedi ADR 0046.
+_Avoid_: registro delle partite IVA, anagrafe tributaria
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
