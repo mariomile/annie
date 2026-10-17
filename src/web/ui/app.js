@@ -117,10 +117,12 @@ const fmt = {
 	usd: (n) => `$${n.toFixed(n < 1 ? 3 : 2)}`,
 };
 
+/** Reads with one argument, writes with two; null removes the key. */
 function store(key, value) {
 	try {
 		if (value === undefined) return localStorage.getItem(key) ?? undefined;
-		localStorage.setItem(key, value);
+		if (value === null) localStorage.removeItem(key);
+		else localStorage.setItem(key, value);
 	} catch {
 		return undefined;
 	}
@@ -340,7 +342,8 @@ function connectEvents() {
 		void refreshCounters();
 		if (state.onEntry?.(event)) return;
 		state.unread.add(event.threadId);
-		if (route().view !== "chat") toast("Nuova risposta di Annie");
+		const { view, rest } = route();
+		if (view !== "chat" || rest[0] !== event.threadId) toast("Nuova risposta di Annie");
 		renderRail();
 		void refreshThreads().then(renderRail);
 	});
@@ -356,6 +359,7 @@ function applyTheme(next) {
 
 // ---------- login ----------
 function renderLogin(error) {
+	closeMenu();
 	state.events?.close();
 	mount($app, 
 		h(
@@ -866,11 +870,10 @@ function renderRail() {
 				"a",
 				{ href: `#/chat/${encodeURIComponent(t.id)}`, "aria-current": current ? "page" : undefined, title: t.title, onclick: closeRailOnPhone },
 				h("span.label", t.title),
-				state.unread.has(t.id) ? h("span.dot", { "aria-label": "non letto" }) : null,
+				state.unread.has(t.id) ? [h("span.dot", { "aria-hidden": "true" }), h("span.sr", "non letto")] : null,
 			),
 		);
 	}
-	const unreadElsewhere = [...state.unread].some((id) => !(state.threads ?? []).some((t) => t.id === id));
 	mount(
 		rail,
 		h(
@@ -880,7 +883,7 @@ function renderRail() {
 		),
 		h(
 			"div.rail-actions",
-			h("a.rail-btn", { href: "#/chat", "aria-current": view === "chat" && !rest[0] ? "page" : undefined, onclick: closeRailOnPhone }, icon("compose"), h("span.label", "Nuova chat"), unreadElsewhere ? h("span.dot", { "aria-label": "risposte non lette" }) : null),
+			h("a.rail-btn", { href: "#/chat", "aria-current": view === "chat" && !rest[0] ? "page" : undefined, onclick: closeRailOnPhone }, icon("compose"), h("span.label", "Nuova chat")),
 			h("button.rail-btn", { onclick: openPalette, "aria-label": "Vai a una sezione" }, icon("search"), h("span.label", "Cerca"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
 		),
 		state.instances.length > 1
@@ -895,6 +898,8 @@ function renderRail() {
 								state.instance = state.instances.find((i) => i.id === e.target.value);
 								store("annie.instance", state.instance.id);
 								state.threads = [];
+								// A conversation of the other instance does not exist here.
+								if (route().rest[0] && route().view === "chat") go("chat");
 								void refreshSetup().then(render);
 								render();
 							},
@@ -909,7 +914,7 @@ function renderRail() {
 			"div.rail-foot",
 			h(
 				"button.who-id",
-				{ onclick: (e) => openMenu(e.currentTarget), "aria-haspopup": "menu", title: "Account e gestione" },
+				{ onclick: openMenu, "aria-haspopup": "menu", "aria-expanded": document.querySelector(".menu") ? "true" : "false", title: "Account e gestione" },
 				h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)),
 				h("span.who-text", h("span.name", state.me.name), h("span.role", state.instance?.name ?? (state.me.role === "owner" ? "Owner" : "Membro"))),
 				icon("more"),
@@ -919,20 +924,35 @@ function renderRail() {
 }
 
 /** The account menu: spend, management sections, account, theme, exit. */
-function openMenu(anchorEl) {
+function openMenu() {
 	if (closeMenu()) return;
+	// The sidebar is drawn again on every reply: always the button that is on the page now.
+	const anchor = () => document.querySelector("button.who-id");
 	const owner = state.me.role === "owner";
 	const u = state.usage;
 	const share = u ? Math.min(1, u.todayUsd / u.hardUsd) : 0;
 	const { view } = route();
-	const entry = (iconName, label, onclick, current) => h("button", { role: "menuitem", onclick: () => (closeMenu(), closeRailOnPhone(), onclick()), "aria-current": current ? "page" : undefined }, icon(iconName), h("span", label));
+	const entry = (iconName, label, action, current) =>
+		h(
+			"button",
+			{
+				role: "menuitem",
+				"aria-current": current ? "page" : undefined,
+				onclick: () => {
+					closeMenu();
+					closeRailOnPhone();
+					action();
+				},
+			},
+			icon(iconName),
+			h("span", label),
+		);
 	const section = (id) => {
 		const item = PALETTE.find((p) => p.id === id);
-		return (!item.owner || owner) ? entry(id, item.label, () => go(id), view === id) : null;
+		return !item.owner || owner ? entry(id, item.label, () => go(id), view === id) : null;
 	};
 	const menu = h(
 		"div.menu",
-		{ role: "menu", "aria-label": "Account e gestione" },
 		h("div.menu-head", h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)), h("div", h("div.name", state.me.name), h("div.role", `${owner ? "Owner" : "Membro"}${state.me.twoFactor ? " · verifica attiva" : ""}`))),
 		u
 			? h(
@@ -942,48 +962,58 @@ function openMenu(anchorEl) {
 					h("div.row", h("span.muted", `soglia ${fmt.usd(u.softUsd)}`), h("span.muted", `tetto ${fmt.usd(u.hardUsd)}`)),
 				)
 			: null,
-		h("hr"),
-		section("connettori"),
-		section("impostazioni"),
-		section("persone"),
-		section("attivita"),
-		owner ? entry("plus", "Nuova istanza", instanceForm) : null,
-		installOffer && !installed() ? entry("install", "Installa l'app", install) : null,
-		h("hr"),
-		entry("account", "Il tuo account", accountDialog),
-		entry("theme", "Tema chiaro/scuro", cycleTheme),
-		entry("logout", "Esci", async () => {
-			await api("/api/logout", { method: "POST" }).catch(() => {});
-			state.me = undefined;
-			renderLogin();
-		}),
+		h(
+			"div",
+			{ role: "menu", "aria-label": "Account e gestione" },
+			h("hr", { role: "separator" }),
+			section("connettori"),
+			section("impostazioni"),
+			section("persone"),
+			section("attivita"),
+			owner ? entry("plus", "Nuova istanza", instanceForm) : null,
+			installOffer && !installed() ? entry("install", "Installa l'app", install) : null,
+			h("hr", { role: "separator" }),
+			entry("account", "Il tuo account", accountDialog),
+			entry("theme", "Tema chiaro/scuro", cycleTheme),
+			entry("logout", "Esci", async () => {
+				await api("/api/logout", { method: "POST" }).catch(() => {});
+				state.me = undefined;
+				renderLogin();
+			}),
+		),
 	);
 	document.body.append(menu);
 	const bar = menu.querySelector(".spend .bar i");
 	if (bar) bar.style.width = `${Math.max(2, Number(bar.dataset.w) * 100)}%`;
-	const r = anchorEl.getBoundingClientRect();
+	const r = anchor().getBoundingClientRect();
 	menu.style.left = `${Math.max(8, r.left)}px`;
 	menu.style.bottom = `${Math.max(8, window.innerHeight - r.top + 6)}px`;
+	anchor().setAttribute("aria-expanded", "true");
 	menu.querySelector("button")?.focus();
+	// The button toggles by itself: a press on it is not «away».
 	const away = (e) => {
-		if (!menu.contains(e.target) && !anchorEl.contains(e.target)) closeMenu();
+		if (!menu.contains(e.target) && !e.target.closest?.("button.who-id")) closeMenu();
 	};
 	const keys = (e) => {
+		if (!menu.contains(document.activeElement)) return;
 		if (e.key === "Escape") {
+			e.preventDefault();
 			closeMenu();
-			anchorEl.focus();
-		} else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+			anchor()?.focus();
+		} else if (e.key === "Tab") closeMenu();
+		else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
 			e.preventDefault();
 			const all = [...menu.querySelectorAll("button")];
 			const i = all.indexOf(document.activeElement);
 			all[(i + (e.key === "ArrowDown" ? 1 : -1) + all.length) % all.length]?.focus();
 		}
 	};
-	setTimeout(() => document.addEventListener("pointerdown", away), 0);
+	document.addEventListener("pointerdown", away);
 	document.addEventListener("keydown", keys);
 	menu.cleanup = () => {
 		document.removeEventListener("pointerdown", away);
 		document.removeEventListener("keydown", keys);
+		anchor()?.setAttribute("aria-expanded", "false");
 	};
 }
 
@@ -1090,13 +1120,16 @@ function needInstance(main) {
 }
 
 // ---------- chat ----------
+/** A workspace picture shown in the page (not downloaded). */
+const pictureUrl = (inst, path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
+
 const HINTS = ["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"];
 
 async function viewChat(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
 	if (!inst.canChat) {
-		mount(main, h("div.welcome", h("h2", "Chat non disponibile"), h("p", state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza.")));
+		mount(main, h("section.conversation.empty-chat", h("div.welcome", h("h2", "Chat non disponibile"), h("p", state.me.role === "owner" ? "Aggiungi te stesso alle persone che possono scrivere a questa istanza, in Impostazioni." : "Non sei tra le persone che possono scrivere a questa istanza."))));
 		return;
 	}
 	const threadId = route().rest[0];
@@ -1108,7 +1141,7 @@ async function viewChat(main) {
 	const { entries } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	let typing;
-	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
+	const picture = (path) => pictureUrl(inst, path);
 	// A file to download; also what a picture that does not show (deleted, not really a picture) becomes.
 	const fileLink = (file) => h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
 	const show = (entry) => {
@@ -1191,15 +1224,11 @@ async function viewChat(main) {
 		}
 		void refreshThreads().then(renderRail);
 	});
-	if (store(`annie.photo.${threadId}`) === "1") {
-		store(`annie.photo.${threadId}`, "");
-		box.input.placeholder = "Aggiungi la foto con la graffetta, trascinala qui o incollala";
-	}
 	conversation.append(transcript, h("div.dock", asks, box.el));
 	transcript.scrollTop = transcript.scrollHeight;
 	// A message written on the empty chat: sent as soon as its conversation opens.
-	if (store(`annie.autosend.${threadId}`) === "1") {
-		store(`annie.autosend.${threadId}`, "");
+	if (main.isConnected && store(`annie.autosend.${threadId}`) === "1") {
+		store(`annie.autosend.${threadId}`, null);
 		void box.submit();
 	}
 	box.input.focus();
@@ -1208,10 +1237,10 @@ async function viewChat(main) {
 /** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
 function landing(inst, conversation) {
 	conversation.classList.add("empty-chat");
-	const box = chatBox(inst, "new", conversation, async (text, images) => {
+	const box = chatBox(inst, `new.${inst.id}`, conversation, async (text, images) => {
 		const { thread } = await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: {} });
 		store(`annie.draft.${thread.id}`, text);
-		store(`annie.pending.${thread.id}`, JSON.stringify(images));
+		if (images.length) store(`annie.pending.${thread.id}`, JSON.stringify(images));
 		store(`annie.autosend.${thread.id}`, "1");
 		go("chat", thread.id);
 	});
@@ -1226,7 +1255,7 @@ function landing(inst, conversation) {
 			h("p", "Di cosa hai bisogno?"),
 			box.el,
 			h(
-				"div.hints",
+				"div.hints.ideas",
 				HINTS.map((t) =>
 					h(
 						"button",
@@ -1255,7 +1284,7 @@ function landing(inst, conversation) {
  * when onSend throws, they come back and the error is said.
  */
 function chatBox(inst, key, dropZone, onSend) {
-	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
+	const picture = (path) => pictureUrl(inst, path);
 	const draftKey = `annie.draft.${key}`;
 	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
 	// Photos uploaded for the next message: shown above the box until it is sent, kept with the draft.
@@ -1276,7 +1305,7 @@ function chatBox(inst, key, dropZone, onSend) {
 		sendButton.disabled = uploading > 0 || sending || (!input.value.trim() && pending.length === 0);
 	};
 	const drawTray = () => {
-		store(pendingKey, JSON.stringify(pending));
+		store(pendingKey, pending.length ? JSON.stringify(pending) : null);
 		tray.hidden = pending.length === 0 && uploading === 0;
 		ready();
 		mount(tray, 
@@ -1299,7 +1328,7 @@ function chatBox(inst, key, dropZone, onSend) {
 		input.value = "";
 		fit();
 		drawTray();
-		store(draftKey, "");
+		store(draftKey, null);
 		try {
 			await onSend(text, images);
 		} catch (error) {

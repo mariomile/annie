@@ -1,0 +1,21 @@
+# Console web: chat al centro
+
+Dal 17 ottobre 2026 la console è pulita come le chat dei grandi assistenti (Mario: «qualcosa di molto pulito come grok bot»). Si apre sulla chat; tutto il resto è a uno o due clic, niente è stato tolto.
+
+## Com'è fatta
+
+- **Chat vuota**: saluto, la casella al centro e qualche idea sotto. Quello che si scrive (anche con foto) apre una conversazione nuova e parte lì: bozza, foto e un segnale «invia appena aperta» passano dal `localStorage` della conversazione nuova (`annie.draft.<id>`, `annie.pending.<id>`, `annie.autosend.<id>`), così riaprire la pagina non lo rimanda. Le idee riempiono la casella, non creano conversazioni vuote.
+- **Conversazione**: una colonna sola da 768px; i messaggi della persona in una bolla a destra, quelli di Annie come testo pieno. La casella è un campo arrotondato con la graffetta (file e foto, anche trascinati o incollati) e l'invio tondo, spento finché non c'è niente da mandare. Le card da approvare (Google e connettori) restano sopra la casella.
+- **Barra laterale**: Nuova chat, Cerca (⌘K/Ctrl K, tutte le sezioni), Primi passi, Approvazioni con il conteggio, Task e sentinelle, File, Memoria, Segreteria se c'è, poi le conversazioni raggruppate per Oggi, Ieri, Ultimi 7 giorni, Ultimi 30 giorni, Più vecchie, con il pallino per quelle non lette. Con più istanze, il selettore sta sopra. Sul computer si chiude e resta chiusa (`annie.rail`); sul telefono è un cassetto con lo sfondo scuro che si chiude toccandolo.
+- **Menu dell'account** (in fondo alla barra): spesa di oggi, Connettori, Impostazioni, Persone, Attività e spesa, Nuova istanza, Installa l'app (quando il browser lo offre), Il tuo account, Tema, Esci. Le voci dell'owner restano solo dell'owner.
+- **Colori**: bianco e nero, senza accento; verde, giallo e rosso solo per gli stati.
+
+## Verificato
+
+Chromium (playwright-core), computer, telefono e tema scuro, nessun errore in console: invio dalla chat vuota (una volta sola, non rimandato dopo un ricarica), conversazione nuova in cima alla barra ed evidenziata, invio spento a casella vuota, foto nel vassoio e mandata, menu con tutte le voci e la spesa, Esc che lo chiude, ogni sezione che si apre, barra chiusa ricordata e riaperta, cassetto del telefono.
+
+## Review indipendente
+
+Due revisori separati (standard e sicurezza, spec e uso). Corretti: le idee della chat vuota cambiavano anche i modelli di istruzioni in Impostazioni e i promemoria in Task (e sul telefono ne nascondevano alcuni); bozza e foto della chat vuota erano comuni a tutte le istanze; sul telefono una risposta in un'altra conversazione non si notava (ora c'è l'avviso anche dentro la chat); un invio automatico poteva sparire dallo schermo quando la pagina si ridisegnava all'avvio; cambiando istanza con una conversazione aperta compariva «No such thread»; il menu dell'account restava aperto sulla schermata di accesso, non si chiudeva più dal suo pulsante dopo un aggiornamento della barra e teneva i tasti anche con il fuoco altrove; pallini «non letto» senza testo per i lettori di schermo; chiavi del `localStorage` mai tolte; codice morto (`annie.photo.*`); l'ombra del cassetto chiuso sul bordo del telefono.
+
+Lasciato: se l'invio dalla chat vuota fallisce resta una conversazione «Nuova chat» vuota con la bozza dentro (non c'è un'API per cancellare una conversazione); i dati della console si ricaricano a ogni cambio di pagina, come prima.

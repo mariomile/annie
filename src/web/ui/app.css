@@ -53,10 +53,10 @@
 }
 :root[data-theme="dark"] {
 	--bg: #121212; --bg-2: #0c0c0c; --surface: #1a1a1a; --hover: #222222; --active: #2a2a2a;
-		--border: #262626; --border-2: #343434; --fg: #f4f4f4; --fg-2: #a6a6a6; --fg-3: #737373;
-		--accent: #f4f4f4; --accent-fg: #0d0d0d; --accent-soft: #232323;
-		--ok: #4ac26b; --ok-soft: #10261a; --warn: #e0a440; --warn-soft: #2a2010; --bad: #f47067; --bad-soft: #2d1416;
-		--primary: #f4f4f4; --primary-fg: #0d0d0d;
+	--border: #262626; --border-2: #343434; --fg: #f4f4f4; --fg-2: #a6a6a6; --fg-3: #737373;
+	--accent: #f4f4f4; --accent-fg: #0d0d0d; --accent-soft: #232323;
+	--ok: #4ac26b; --ok-soft: #10261a; --warn: #e0a440; --warn-soft: #2a2010; --bad: #f47067; --bad-soft: #2d1416;
+	--primary: #f4f4f4; --primary-fg: #0d0d0d;
 	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
 	--shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
 	--shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 24px 64px -12px rgba(0, 0, 0, 0.8);
@@ -317,9 +317,12 @@ main.is-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: col
 .welcome .composer textarea { min-height: 56px; }
 .welcome p.aside { font-size: 13px; margin: 18px 0 0; color: var(--fg-3); }
 .welcome p.aside a { color: var(--fg-2); }
-.hints { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
-.hints button { border: 1px solid var(--border); background: transparent; border-radius: 99px; padding: 7px 14px; cursor: pointer; color: var(--fg-2); font-size: 13px; line-height: 1.4; transition: border-color 0.12s, color 0.12s, background 0.12s; }
-.hints button:hover { border-color: var(--border-2); color: var(--fg); background: var(--hover); }
+.hints { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; text-align: left; }
+.hints button { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 10px 12px; cursor: pointer; color: var(--fg-2); font-size: 13px; line-height: 1.4; box-shadow: var(--shadow-sm); transition: border-color 0.12s, color 0.12s, background 0.12s; }
+.hints button:hover { border-color: var(--border-2); color: var(--fg); background: var(--bg-2); }
+.hints.ideas { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 16px; }
+.hints.ideas button { background: transparent; border-radius: 99px; padding: 7px 14px; box-shadow: none; }
+.hints.ideas button:hover { background: var(--hover); }
 
 /* ---------- segreteria ---------- */
 .pratiche { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -390,8 +393,8 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 	.shell, .shell.collapsed { grid-template-columns: minmax(0, 1fr); }
 	.shell.collapsed .rail { visibility: visible; }
 	.shell.collapsed .peek, .rail .collapse { display: none; }
-	.rail { position: fixed; inset: 0 auto 0 0; width: min(300px, 86vw); z-index: 40; transform: translateX(-102%); transition: transform 0.2s ease; box-shadow: var(--shadow-lg); }
-	.shell.open .rail { transform: none; }
+	.rail { position: fixed; inset: 0 auto 0 0; width: min(300px, 86vw); z-index: 40; transform: translateX(-102%); transition: transform 0.2s ease; }
+	.shell.open .rail { transform: none; box-shadow: var(--shadow-lg); }
 	.shell.open .scrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, 0.35); }
 	.topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: saturate(180%) blur(12px); }
 	.topbar b { font-size: 15px; font-weight: 600; letter-spacing: -0.015em; }
@@ -405,7 +408,8 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 	.composer textarea { font-size: 16px; }
 	.welcome { padding-bottom: 6vh; }
 	.welcome h2 { font-size: 24px; }
-	.hints button:nth-child(n + 4) { display: none; }
+	.hints { grid-template-columns: 1fr; }
+	.hints.ideas button:nth-child(n + 4) { display: none; }
 	.lead { grid-template-columns: 110px 1fr; }
 	.letter { padding: 16px; font-size: 14px; }
 	.letter .subject { margin: 0 -16px 12px; padding-left: 16px; padding-right: 16px; }
