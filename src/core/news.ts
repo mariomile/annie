@@ -1,14 +1,19 @@
 /**
  * News headlines for instances: the RSS and Atom feeds of public newspapers and agencies, chosen
- * by the operator (a short built-in list by default). Only those fixed addresses are fetched:
- * nothing the person writes, a topic included, leaves the server. Feeds are read with a few
- * linear-time scans, never an XML library, and everything they say is untrusted text.
+ * by the operator (a short built-in list by default). Only those fixed addresses are fetched, and
+ * a redirect only to a public https address: nothing the person writes, a topic included, leaves
+ * the server. Feeds are read with a few linear-time scans, never an XML library, and everything
+ * they say is untrusted text.
  */
-import { getText, type HttpProblem } from "./http.ts";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import { decodeEntities, withoutBlocks } from "./html-text.ts";
+import { getText, type HttpProblem, type RedirectRule } from "./http.ts";
 import { pool } from "./pool.ts";
+import { publicAddress } from "./web-fetch.ts";
 
 /** The sections a feed can be tagged with: what people ask for («le ultime di economia»). */
-export const NEWS_SECTIONS = ["ultima ora", "italia", "mondo", "economia", "tecnologia", "sport"] as const;
+export const NEWS_SECTIONS = ["ultima ora", "italia", "politica", "mondo", "economia", "tecnologia", "sport"] as const;
 export type NewsSection = (typeof NEWS_SECTIONS)[number];
 
 export type NewsFeed = {
@@ -34,11 +39,16 @@ export const MAX_FEED_NAME = 40;
 export const DEFAULT_NEWS_FEEDS: readonly NewsFeed[] = [
 	{ name: "ANSA Ultima ora", url: "https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", section: "ultima ora" },
 	{ name: "Rai News", url: "https://www.rainews.it/rss/tutti", section: "ultima ora" },
+	{ name: "Sky TG24", url: "https://tg24.sky.it/rss/tg24.xml", section: "ultima ora" },
+	{ name: "Corriere della Sera", url: "https://xml2.corriereobjects.it/rss/homepage.xml", section: "italia" },
+	{ name: "la Repubblica", url: "https://www.repubblica.it/rss/homepage/rss2.0.xml", section: "italia" },
 	{ name: "Il Post", url: "https://www.ilpost.it/feed/", section: "italia" },
 	{ name: "ANSA Cronaca", url: "https://www.ansa.it/sito/notizie/cronaca/cronaca_rss.xml", section: "italia" },
+	{ name: "ANSA Politica", url: "https://www.ansa.it/sito/notizie/politica/politica_rss.xml", section: "politica" },
 	{ name: "ANSA Mondo", url: "https://www.ansa.it/sito/notizie/mondo/mondo_rss.xml", section: "mondo" },
 	{ name: "BBC World", url: "https://feeds.bbci.co.uk/news/world/rss.xml", section: "mondo" },
 	{ name: "ANSA Economia", url: "https://www.ansa.it/sito/notizie/economia/economia_rss.xml", section: "economia" },
+	{ name: "Il Sole 24 Ore", url: "https://www.ilsole24ore.com/rss/economia.xml", section: "economia" },
 	{ name: "ANSA Tecnologia", url: "https://www.ansa.it/sito/notizie/tecnologia/tecnologia_rss.xml", section: "tecnologia" },
 	{ name: "BBC Technology", url: "https://feeds.bbci.co.uk/news/technology/rss.xml", section: "tecnologia" },
 	{ name: "ANSA Sport", url: "https://www.ansa.it/sito/notizie/sport/sport_rss.xml", section: "sport" },
@@ -50,49 +60,66 @@ export type Headline = {
 	readonly link?: string;
 	/** Plain text, at most SUMMARY_CHARS. */
 	readonly summary?: string;
-	/** Milliseconds since the epoch; undefined when the feed gave no date that can be trusted. */
+	/** Milliseconds since the epoch; undefined when the feed gave no date that parses. */
 	readonly published?: number;
+	/** The feed gave a day without a time: published is that day's midnight UTC, and no time is shown. */
+	readonly dateOnly?: true;
 };
 
 export type FeedResult = { readonly feed: NewsFeed; readonly headlines: readonly Headline[] } | { readonly feed: NewsFeed; readonly error: string };
 
+export type ReadOptions = {
+	/** Return what has arrived by then, the others named as late; they go on filling the cache. */
+	readonly deadlineMs?: number;
+};
+
 export type News = {
 	readonly feeds: readonly NewsFeed[];
-	/** The headlines of each feed, in the feeds' order: a feed that fails is named, never thrown. */
-	read(feeds: readonly NewsFeed[]): Promise<FeedResult[]>;
+	/** The headlines of each feed, in the feeds' order: a feed that fails or is late is named, never thrown. */
+	read(feeds: readonly NewsFeed[], options?: ReadOptions): Promise<FeedResult[]>;
+};
+
+export type NewsOptions = {
+	/** Each feed's own time, redirects and body included: 6 seconds for a person waiting, more for pnpm annie check. */
+	readonly timeoutMs?: number;
+	/** Tests: the addresses of a host a redirect points to. */
+	readonly resolve?: (host: string) => Promise<readonly string[]>;
 };
 
 /** A failed download or a file that is not a feed: a reason in Italian, never the address. */
-export class NewsError extends Error {}
+class NewsError extends Error {}
 
 const MINUTE = 60_000;
 /** A feed is a few hundred kilobytes at most; past this it is not a feed. */
 const MAX_BYTES = 2 * 1024 * 1024;
-const TIMEOUT_MS = 15_000;
+const TIMEOUT_MS = 6_000;
 /** Feeds fetched at once: enough for the list in a few seconds, without a burst. */
 const CONCURRENCY = 4;
 /** A feed is kept this long: news moves, but not by the minute. */
 const TTL_MS = 10 * MINUTE;
 /** A failed feed is answered with the same error for this long, without asking again. */
 const FAILURE_TTL_MS = 2 * MINUTE;
+/** Redirects followed, at most: a moved feed takes one or two. */
+const MAX_REDIRECTS = 3;
 /** Items read from one feed, at most. */
 export const MAX_ITEMS = 100;
 export const SUMMARY_CHARS = 240;
 const TITLE_CHARS = 300;
 const LINK_CHARS = 2000;
-/** A date this far ahead of the clock is a clock out of step and taken as now; further ahead, a date not to trust. */
-const FUTURE_SLACK_MS = 10 * MINUTE;
+export const LATE = "non ha risposto in tempo";
 
 type Entry = { readonly at: number; readonly result: Promise<Headline[]>; failed?: boolean };
 
 /** The feeds in config, each kept in memory for ten minutes (a failure for two), fetched four at a time. */
-export function feedNews(config: NewsConfig, fetchImpl: typeof fetch = fetch, now: () => Date = () => new Date()): News {
+export function feedNews(config: NewsConfig, fetchImpl: typeof fetch = fetch, now: () => Date = () => new Date(), options: NewsOptions = {}): News {
 	const cache = new Map<string, Entry>();
+	const redirects = feedRedirects(options.resolve ?? systemResolve);
+	const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
 	const load = (feed: NewsFeed): Promise<Headline[]> => {
 		const at = now().getTime();
 		const hit = cache.get(feed.url);
 		if (hit !== undefined && at - hit.at < (hit.failed === true ? FAILURE_TTL_MS : TTL_MS)) return hit.result;
-		const entry: Entry = { at, result: fetchFeed(feed, fetchImpl, now) };
+		const entry: Entry = { at, result: fetchFeed(feed, { fetchImpl, now, timeoutMs, redirects }) };
 		entry.result.catch(() => {
 			entry.failed = true;
 		});
@@ -101,26 +128,68 @@ export function feedNews(config: NewsConfig, fetchImpl: typeof fetch = fetch, no
 	};
 	return {
 		feeds: config.feeds,
-		read: (feeds) =>
-			pool(feeds, CONCURRENCY, async (feed): Promise<FeedResult> => {
+		async read(feeds, { deadlineMs } = {}) {
+			const settled = new Map<NewsFeed, FeedResult>();
+			const all = pool(feeds, CONCURRENCY, async (feed): Promise<FeedResult> => {
+				let result: FeedResult;
 				try {
-					return { feed, headlines: await load(feed) };
+					result = { feed, headlines: await load(feed) };
 				} catch (error) {
-					return { feed, error: error instanceof NewsError ? error.message : "non risponde" };
+					result = { feed, error: error instanceof NewsError ? error.message : "non risponde" };
 				}
-			}),
+				settled.set(feed, result);
+				return result;
+			});
+			if (deadlineMs === undefined) return all;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const late = new Promise<undefined>((resolve) => {
+				timer = setTimeout(() => resolve(undefined), deadlineMs);
+			});
+			const done = await Promise.race([all, late]);
+			clearTimeout(timer);
+			return done ?? feeds.map((feed) => settled.get(feed) ?? { feed, error: LATE });
+		},
 	};
 }
 
-async function fetchFeed(feed: NewsFeed, fetchImpl: typeof fetch, now: () => Date): Promise<Headline[]> {
-	const xml = await getText(new URL(feed.url), { fetch: fetchImpl, headers: { accept: "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8" }, maxBytes: MAX_BYTES, timeoutMs: TIMEOUT_MS }, newsError);
+type Fetching = { readonly fetchImpl: typeof fetch; readonly now: () => Date; readonly timeoutMs: number; readonly redirects: RedirectRule };
+
+async function fetchFeed(feed: NewsFeed, { fetchImpl, now, timeoutMs, redirects }: Fetching): Promise<Headline[]> {
+	const accept = "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8";
+	const xml = await getText(new URL(feed.url), { fetch: fetchImpl, headers: { accept }, maxBytes: MAX_BYTES, timeoutMs, redirect: redirects }, newsError);
 	if (!looksLikeFeed(xml)) throw new NewsError("non ha mandato un feed");
 	return parseFeed(xml, feed.url, now().getTime());
 }
 
 function newsError(problem: HttpProblem): NewsError {
 	if (problem.kind === "status") return new NewsError(`risponde ${problem.status}`);
-	return new NewsError({ unreachable: "non risponde", too_big: "ha mandato un file troppo grande", unreadable: "ha mandato un file illeggibile" }[problem.kind]);
+	return new NewsError({ unreachable: "non risponde", too_big: "ha mandato un file troppo grande", unreadable: "ha mandato un file illeggibile", redirect: "rimanda a un indirizzo non consentito" }[problem.kind]);
+}
+
+/**
+ * A feed that moved is followed, at most three times, only to https on the standard port and
+ * only to a host whose every address is public (no loopback, private network or cloud metadata
+ * endpoint): an operator's feed cannot be turned into a probe of the server's network.
+ */
+function feedRedirects(resolve: (host: string) => Promise<readonly string[]>): RedirectRule {
+	return {
+		max: MAX_REDIRECTS,
+		async allowed(url) {
+			if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || (url.port !== "" && url.port !== "443")) return false;
+			const host = url.hostname.replace(/^\[|\]$/g, "");
+			if (isIP(host) !== 0) return publicAddress(host);
+			try {
+				const addresses = await resolve(host);
+				return addresses.length > 0 && addresses.every(publicAddress);
+			} catch {
+				return false;
+			}
+		},
+	};
+}
+
+async function systemResolve(host: string): Promise<string[]> {
+	return (await lookup(host, { all: true })).map((a) => a.address);
 }
 
 /**
@@ -135,24 +204,43 @@ export function looksLikeFeed(text: string): boolean {
 
 /**
  * The items of an RSS 2.0 or 1.0 feed, or the entries of an Atom one, in the feed's order, at most
- * MAX_ITEMS. Each needs a title; a link counts only when http(s) (resolved against the feed's
- * address), and a date only when it parses and is not more than ten minutes ahead of `now` (up to
- * ten minutes ahead it is taken as now). Every scan moves forward with indexOf, so any input, a
- * hostile one included, is read in linear time.
+ * MAX_ITEMS. Each needs a title; a link counts only when http(s), a relative one resolved against
+ * the feed's address without its query (which may hold the operator's token); a date only when it
+ * parses. Every scan moves forward with indexOf, so any input, a hostile one included, is read in
+ * linear time.
  */
-export function parseFeed(xml: string, base: string, now: number): Headline[] {
-	const atom = !/<(?:rss|rdf:RDF)[\s>]/.test(xml.slice(0, 4096)) && /<feed[\s>]/.test(xml.slice(0, 4096));
+export function parseFeed(xml: string, feedUrl: string, now: number): Headline[] {
+	const head = xml.slice(0, 4096);
+	const atom = !/<(?:rss|rdf:RDF)[\s>]/.test(head) && /<feed[\s>]/.test(head);
+	const base = new URL(feedUrl);
+	base.search = "";
+	base.hash = "";
 	const headlines: Headline[] = [];
 	for (const block of elements(xml, atom ? "entry" : "item")) {
-		const title = clip(plainText(inner(block, ["title"]) ?? ""), TITLE_CHARS);
+		const title = clip(feedText(inner(block, ["title"]) ?? ""), TITLE_CHARS);
 		if (title === "") continue;
-		const link = atom ? atomLink(block, base) : webLink(plainText(inner(block, ["link"]) ?? "") || guidLink(block), base);
-		const summary = clip(plainText(inner(block, atom ? ["summary", "content"] : ["description", "content:encoded"]) ?? ""), SUMMARY_CHARS);
-		const published = trustedDate(parseDate(plainText(inner(block, atom ? ["published", "updated"] : ["pubDate", "dc:date"]) ?? "")), now);
-		headlines.push({ title, ...(link === undefined ? {} : { link }), ...(summary === "" ? {} : { summary }), ...(published === undefined ? {} : { published }) });
+		const rssLink = () => webLink(feedText(inner(block, ["link"]) ?? ""), base) ?? guidLink(block);
+		const link = atom ? atomLink(block, base) : rssLink();
+		const summary = clip(feedText(inner(block, atom ? ["summary", "content"] : ["description", "content:encoded"]) ?? ""), SUMMARY_CHARS);
+		const date = parseDate(feedText(inner(block, atom ? ["published", "updated"] : ["pubDate", "dc:date"]) ?? ""));
+		headlines.push({
+			title,
+			...(link === undefined ? {} : { link }),
+			...(summary === "" ? {} : { summary }),
+			...(date === undefined ? {} : { published: notAfter(date.at, now) }),
+			...(date?.dateOnly === true ? { dateOnly: true as const } : {}),
+		});
 		if (headlines.length >= MAX_ITEMS) break;
 	}
 	return headlines;
+}
+
+/**
+ * A date ahead of the clock is taken as now, however far ahead: the story stays, shown as just
+ * published, and a feed with a wrong clock cannot put its stories above everyone's for days.
+ */
+function notAfter(at: number, now: number): number {
+	return Math.min(at, now);
 }
 
 /** The contents of each `<tag …>…</tag>` in turn; an element left open ends the scan. */
@@ -190,25 +278,25 @@ function inner(block: string, tags: readonly string[]): string | undefined {
 }
 
 /** An Atom entry's link: the first `rel="alternate"` or without rel, else the first with an href. */
-function atomLink(block: string, base: string): string | undefined {
+function atomLink(block: string, base: URL): string | undefined {
 	const links = [...block.matchAll(/<link\b([^<>]*)>/g)].map(([, attributes = ""]) => ({ rel: attribute(attributes, "rel"), href: attribute(attributes, "href") }));
 	const chosen = links.find((l) => l.href !== undefined && (l.rel === undefined || l.rel === "alternate")) ?? links.find((l) => l.href !== undefined);
 	return chosen?.href === undefined ? undefined : webLink(decodeEntities(chosen.href), base);
 }
 
-/** An RSS guid when it is a permalink: the link of feeds that leave `<link>` out. */
-function guidLink(block: string): string {
+/** An RSS guid as the link of feeds that leave `<link>` out: only a permalink that is a whole http(s) address on its own. */
+function guidLink(block: string): string | undefined {
 	const match = /<guid\b([^<>]*)>/.exec(block);
-	if (match === null || attribute(match[1] ?? "", "isPermaLink") === "false") return "";
-	return plainText(inner(block, ["guid"]) ?? "");
+	if (match === null || attribute(match[1] ?? "", "isPermaLink") === "false") return undefined;
+	return webLink(feedText(inner(block, ["guid"]) ?? ""));
 }
 
 function attribute(attributes: string, name: string): string | undefined {
 	return new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attributes)?.slice(1).find((v) => v !== undefined);
 }
 
-/** An http(s) address, resolved against the feed's; anything else (javascript:, data:…) is no link. */
-function webLink(raw: string, base: string): string | undefined {
+/** An http(s) address, resolved against `base` when given; anything else (javascript:, data:…) is no link. */
+function webLink(raw: string, base?: URL): string | undefined {
 	const text = raw.trim();
 	if (text === "" || text.length > LINK_CHARS) return undefined;
 	try {
@@ -220,16 +308,20 @@ function webLink(raw: string, base: string): string | undefined {
 }
 
 /**
+ * Characters that hide or reorder text: controls, soft hyphen, bidirectional marks and overrides,
+ * zero-width and invisible operators, variation selectors, the byte order mark and the tag
+ * characters (which can spell hidden instructions).
+ */
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
+
+/**
  * The text of a feed field: CDATA unwrapped, entities decoded, then tags (and what scripts and
- * styles hold) dropped, twice, since many feeds escape their HTML once more; control characters
+ * styles hold) dropped, twice, since many feeds escape their HTML once more; invisible characters
  * and runs of spaces become one space.
  */
-export function plainText(raw: string): string {
+function feedText(raw: string): string {
 	const once = stripTags(unwrapCdata(raw));
-	return stripTags(decodeEntities(once))
-		.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
+	return stripTags(decodeEntities(once)).replace(INVISIBLE, " ").replace(/\s+/g, " ").trim();
 }
 
 /** CDATA sections as their literal text, entities decoded outside them. An unclosed one runs to the end. */
@@ -247,93 +339,9 @@ function unwrapCdata(raw: string): string {
 	}
 }
 
-/** Tags out, and the contents of script and style with them. `[^<>]` keeps the scan linear. */
+/** Script and style out with what they hold, then whatever looks like a tag: «spread >150» and «a < b» stay. `[^<>]` keeps the scan linear. */
 function stripTags(text: string): string {
-	return dropBlocks(text, ["script", "style"]).replace(/<[^<>]*>/g, " ");
-}
-
-/** `<script…>…</script>` and the like removed whole; an unclosed one takes the rest. */
-function dropBlocks(text: string, tags: readonly string[]): string {
-	let out = text;
-	for (const tag of tags) {
-		const lower = out.toLowerCase();
-		if (!lower.includes(`<${tag}`)) continue;
-		let kept = "";
-		let from = 0;
-		for (;;) {
-			const start = lower.indexOf(`<${tag}`, from);
-			if (start < 0) {
-				kept += out.slice(from);
-				break;
-			}
-			kept += `${out.slice(from, start)} `;
-			const end = lower.indexOf(`</${tag}`, start);
-			if (end < 0) break;
-			const close = lower.indexOf(">", end);
-			from = close < 0 ? out.length : close + 1;
-		}
-		out = kept;
-	}
-	return out;
-}
-
-/** The named entities feeds use, beyond XML's five: Italian letters, quotes and dashes. */
-const ENTITIES: Readonly<Record<string, string>> = {
-	amp: "&",
-	lt: "<",
-	gt: ">",
-	quot: '"',
-	apos: "'",
-	nbsp: " ",
-	agrave: "à",
-	aacute: "á",
-	egrave: "è",
-	eacute: "é",
-	igrave: "ì",
-	iacute: "í",
-	ograve: "ò",
-	oacute: "ó",
-	ugrave: "ù",
-	uacute: "ú",
-	Agrave: "À",
-	Egrave: "È",
-	Eacute: "É",
-	Igrave: "Ì",
-	Ograve: "Ò",
-	Ugrave: "Ù",
-	ccedil: "ç",
-	ntilde: "ñ",
-	auml: "ä",
-	ouml: "ö",
-	uuml: "ü",
-	szlig: "ß",
-	lsquo: "‘",
-	rsquo: "’",
-	ldquo: "“",
-	rdquo: "”",
-	laquo: "«",
-	raquo: "»",
-	ndash: "–",
-	mdash: "—",
-	hellip: "…",
-	middot: "·",
-	bull: "•",
-	euro: "€",
-	pound: "£",
-	deg: "°",
-	copy: "©",
-	reg: "®",
-	trade: "™",
-};
-
-/** Named and numeric entities; an unknown name stays as written, a code point that is not a character becomes a space. */
-export function decodeEntities(text: string): string {
-	if (!text.includes("&")) return text;
-	return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z][a-zA-Z0-9]{1,31}));/g, (whole, decimal?: string, hex?: string, name?: string) => {
-		if (name !== undefined) return ENTITIES[name] ?? whole;
-		const code = decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? "", 16);
-		return code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) || code < 0x20 ? " " : String.fromCodePoint(code);
-	});
+	return withoutBlocks(text, ["script", "style"]).replace(/<\/?[A-Za-z!][^<>]*>/g, " ");
 }
 
 /** At most `max` characters, cut at a space with an ellipsis. */
@@ -344,39 +352,46 @@ function clip(text: string, max: number): string {
 	return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-/** RFC 822's zones, and the European ones Italian feeds write though the RFC has no name for them. */
-const ZONES: Readonly<Record<string, number>> = { UT: 0, UTC: 0, GMT: 0, Z: 0, EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7, WET: 0, WEST: 1, BST: 1, CET: 1, CEST: 2 };
-const RFC822 = /^(?:[A-Za-z]{3,9},?\s+)?(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{2}|\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(?:([+-])(\d{2}):?(\d{2})|([A-Za-z]{1,5}))?$/;
+/** Month abbreviations in English (RFC 822) and in Italian, which Italian feeds write too. */
+const MONTHS = new Map<string, number>([..."jan feb mar apr may jun jul aug sep oct nov dec".split(" ").map((m, i) => [m, i] as const), ..."gen feb mar apr mag giu lug ago set ott nov dic".split(" ").map((m, i) => [m, i] as const)]);
+/** RFC 822's zones, and the European ones feeds write though the RFC has no name for them. */
+const ZONES = new Map<string, number>(Object.entries({ UT: 0, UTC: 0, GMT: 0, Z: 0, EST: -5, EDT: -4, CST: -6, CDT: -5, MST: -7, MDT: -6, PST: -8, PDT: -7, WET: 0, WEST: 1, BST: 1, CET: 1, CEST: 2, EET: 2, EEST: 3 }));
+/** The weekday in front (Sat, sab, sabato) is skipped, with or without a comma and a space after it. */
+const RFC822 = /^(?:\p{L}{3,9}\.?,?\s*)?(\d{1,2})\s+(\p{L}{3})\p{L}*\.?\s+(\d{2}|\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(?:([+-])(\d{2}):?(\d{2})|([A-Za-z]{1,5}))?$/u;
 const ISO8601 = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:[.,]\d{1,9})?)?)?\s*(?:(Z)|([+-])(\d{2}):?(\d{2}))?$/i;
 
+export type FeedDate = { readonly at: number; readonly dateOnly: boolean };
+
 /**
- * An RFC 822 date (RSS's pubDate: «Sat, 17 Oct 2026 14:32:00 +0200») or an ISO 8601 one (Atom,
- * dc:date: «2026-10-17T14:32:00Z»), in milliseconds; a time without a zone is UTC. Undefined for
- * anything else, or a day or time that does not exist.
+ * An RFC 822 date (RSS's pubDate: «Sat, 17 Oct 2026 14:32:00 +0200», also with Italian names:
+ * «sab, 17 ott 2026») or an ISO 8601 one (Atom, dc:date: «2026-10-17T14:32:00Z», or a day alone),
+ * in milliseconds; a time without a zone is UTC. Undefined for anything else, or a day or time
+ * that does not exist.
  */
-export function parseDate(text: string): number | undefined {
+export function parseDate(text: string): FeedDate | undefined {
 	const value = text.trim();
 	if (value === "" || value.length > 64) return undefined;
 	const rfc = RFC822.exec(value);
 	if (rfc !== null) {
 		const [, day, monthName = "", yearText = "", hour, minute, second, sign, zoneHours, zoneMinutes, zoneName] = rfc;
-		const month = MONTHS.indexOf(monthName.toLowerCase());
+		const month = MONTHS.get(monthName.toLowerCase());
 		const year = yearText.length === 2 ? (Number(yearText) < 50 ? 2000 : 1900) + Number(yearText) : Number(yearText);
 		let offset = 0;
 		if (sign !== undefined) offset = (sign === "-" ? -1 : 1) * (Number(zoneHours) * 60 + Number(zoneMinutes));
 		else if (zoneName !== undefined) {
-			const hours = ZONES[zoneName.toUpperCase()];
+			const hours = ZONES.get(zoneName.toUpperCase());
 			if (hours === undefined) return undefined;
 			offset = hours * 60;
 		}
-		return month < 0 ? undefined : utc(year, month, Number(day), Number(hour), Number(minute), Number(second ?? 0), offset);
+		const at = month === undefined ? undefined : utc(year, month, Number(day), Number(hour), Number(minute), Number(second ?? 0), offset);
+		return at === undefined ? undefined : { at, dateOnly: false };
 	}
 	const iso = ISO8601.exec(value);
 	if (iso === null) return undefined;
 	const [, year, month, day, hour, minute, second, , sign, zoneHours, zoneMinutes] = iso;
 	const offset = sign === undefined ? 0 : (sign === "-" ? -1 : 1) * (Number(zoneHours) * 60 + Number(zoneMinutes));
-	return utc(Number(year), Number(month) - 1, Number(day), Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0), offset);
+	const at = utc(Number(year), Number(month) - 1, Number(day), Number(hour ?? 0), Number(minute ?? 0), Number(second ?? 0), offset);
+	return at === undefined ? undefined : { at, dateOnly: hour === undefined };
 }
 
 /** The instant, when every field is in range (no 30 February, no 25:00). */
@@ -386,11 +401,4 @@ function utc(year: number, month: number, day: number, hour: number, minute: num
 	const check = new Date(local);
 	if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month || check.getUTCDate() !== day) return undefined;
 	return local - offsetMinutes * MINUTE;
-}
-
-/** Up to ten minutes ahead: a clock out of step, taken as now. Further ahead: not a date to trust. */
-function trustedDate(at: number | undefined, now: number): number | undefined {
-	if (at === undefined) return undefined;
-	if (at <= now) return at;
-	return at - now <= FUTURE_SLACK_MS ? now : undefined;
 }
