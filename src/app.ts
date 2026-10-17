@@ -187,6 +187,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// The weather: one service for the whole server, on when the operator set ANNIE_WEATHER=1.
 	const weather = config.weather === undefined ? undefined : openMeteo(config.weather, options.weatherFetch);
 	const weatherLeft = dailyCounter(config.weather?.maxPerDay ?? 0);
+	// Tries, failed ones included: three times the day's calls, so a loop cannot hammer the service.
+	const weatherTries = dailyLimit((config.weather?.maxPerDay ?? 0) * 3);
 	// Pictures on request (ADR 0023): one service for the whole server, a daily count per account.
 	const generateImage = config.images === undefined ? undefined : imageGenerator(config.images, options.imageFetch);
 	const imagesLeft = dailyCounter(config.images?.maxPerDay ?? 0);
@@ -456,6 +458,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					: createWeatherTools({
 							weather,
 							left: () => weatherLeft.left(record.tenantId),
+							attempt: () => weatherTries(record.tenantId),
 							spend: () => weatherLeft.spend(record.tenantId, 1),
 							record: async (days) => {
 								await runtime.audit(record.tenantId).append({ type: "weather.ran", instanceId: record.id, days });

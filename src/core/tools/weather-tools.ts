@@ -6,6 +6,8 @@ export type WeatherToolsOptions = {
 	readonly weather: Weather;
 	/** Weather calls the account may still make today. */
 	readonly left: () => number;
+	/** Whether the account may still try today, failures included; counts this try if so. */
+	readonly attempt: () => boolean;
 	/** Counts one call: only once a forecast came back. */
 	readonly spend: () => void;
 	/** One line in the audit per forecast: how many days, never the place. */
@@ -57,6 +59,8 @@ export function createWeatherTools(options: WeatherToolsOptions): AnnieTool[] {
 				if (name.length < 2) return "Errore: manca il nome del posto: scrivi la città, e se serve la provincia o la regione dopo una virgola.";
 				return ctx.step("weather", async () => {
 					if (options.left() < 1) return "Errore: per oggi le richieste meteo di questo account sono finite. Dillo, senza inventare previsioni.";
+					// Failures count too, apart: a loop of bad places cannot hammer the service.
+					if (!options.attempt()) return "Errore: per oggi i tentativi meteo di questo account sono finiti, anche quelli non riusciti. Non riprovare: dillo, senza inventare previsioni.";
 					try {
 						const places = distinct(await options.weather.geocode(name, country));
 						if (places.length === 0) return `Errore: non trovo «${asked}»: prova con il nome della città, o aggiungi la provincia o la regione dopo una virgola.`;
@@ -75,13 +79,14 @@ export function createWeatherTools(options: WeatherToolsOptions): AnnieTool[] {
 	];
 }
 
-type Choice = { readonly place: Place; readonly others: readonly Place[]; readonly tie: boolean };
+/** Why this place: the most populated, Italy over a far bigger place abroad, or none bigger than another. */
+type Choice = { readonly place: Place; readonly others: readonly Place[]; readonly reason: "population" | "italy" | "tie" };
 
-/** Each place once: the same name in the same region and province is the same place. */
+/** Each place once: the same name in the same region, province and country is the same place. */
 function distinct(places: readonly Place[]): Place[] {
 	const seen = new Set<string>();
 	return places.filter((p) => {
-		const key = [p.name, p.admin1, p.admin2].map((v) => fold(v ?? "")).join("|");
+		const key = [p.name, p.admin1, p.admin2, p.countryCode].map((v) => fold(v ?? "")).join("|");
 		if (seen.has(key)) return false;
 		seen.add(key);
 		return true;
@@ -89,30 +94,51 @@ function distinct(places: readonly Place[]): Place[] {
 }
 
 /**
- * The place meant: those matching every hint (none: undefined), else the Italian ones if any and
- * no country was asked; then the most populated, the first on a tie. Others are named only when
- * the choice is close: a tenth of the population or more, or populations unknown.
+ * The place meant: those matching every hint (none: undefined), then the most populated, the
+ * first on a tie. Without a hint or a country, an Italian place wins unless the best one abroad is
+ * more than ten times bigger; the one passed over, either way, is always named. Others are named
+ * when the choice is close: more than a tenth of the population, or the chosen one's unknown.
  */
 function choosePlace(places: readonly Place[], hints: readonly string[], country: string | undefined): Choice | undefined {
-	let pool = places;
-	if (hints.length > 0) pool = places.filter((p) => hints.every((hint) => matchesHint(p, hint)));
-	else if (country === undefined && places.some((p) => p.countryCode === "IT")) pool = places.filter((p) => p.countryCode === "IT");
-	const [place, ...rest] = [...pool].sort((a, b) => b.population - a.population);
-	if (place === undefined) return undefined;
-	const close = (p: Place) => place.population === 0 || p.population === 0 || p.population * 10 > place.population;
-	const others = rest.filter(close).slice(0, MAX_ALTERNATIVES);
-	return { place, others, tie: rest[0] !== undefined && rest[0].population === place.population };
+	const pool = hints.length === 0 ? places : places.filter((p) => hints.every((hint) => hintMatcher(hint, places)(p)));
+	const sorted = [...pool].sort((a, b) => b.population - a.population);
+	const first = sorted[0];
+	if (first === undefined) return undefined;
+	let place = first;
+	let passedOver: Place | undefined;
+	if (hints.length === 0 && country === undefined) {
+		const italian = sorted.find((p) => p.countryCode === "IT");
+		const abroad = sorted.find((p) => p.countryCode !== "IT");
+		if (italian !== undefined && abroad !== undefined) {
+			place = italian.population * 10 >= abroad.population ? italian : abroad;
+			passedOver = place === italian ? (abroad.population > italian.population ? abroad : undefined) : italian;
+		}
+	}
+	const rest = sorted.filter((p) => p !== place);
+	const close = rest.filter((p) => p !== passedOver && (place.population === 0 || p.population * 10 > place.population));
+	const others = [...(passedOver === undefined ? [] : [passedOver]), ...close].slice(0, MAX_ALTERNATIVES);
+	const reason = place !== first ? "italy" : rest[0] !== undefined && rest[0].population === place.population ? "tie" : "population";
+	return { place, others, reason };
 }
 
-/** Two letters: the country code, or a US state's abbreviation (TX). Longer: part of the region, province or country. */
-function matchesHint(p: Place, hint: string): boolean {
+/**
+ * What one hint after the comma asks for. Two letters: an Italian province's sigla when one of
+ * the places is in it (FR is Frosinone if there is one), else the country code or a US state's
+ * abbreviation (TX). Longer: a word in the region, province or country.
+ */
+function hintMatcher(hint: string, places: readonly Place[]): (p: Place) => boolean {
 	const words = fold(hint);
-	if (words.length === 2) {
-		const code = words.toUpperCase();
-		const states = [US_STATES[code], US_STATES_IN_ITALIAN[code]].flatMap((state) => (state === undefined ? [] : [fold(state)]));
-		return p.countryCode === code || (p.countryCode === "US" && p.admin1 !== undefined && states.includes(fold(p.admin1)));
-	}
-	return [p.admin1, p.admin2, p.country].some((v) => v !== undefined && fold(v).includes(words));
+	if (words.length !== 2) return (p) => [p.admin1, p.admin2, p.country].some((v) => v !== undefined && fold(v).includes(words));
+	const code = words.toUpperCase();
+	const inProvince = (p: Place) => p.countryCode === "IT" && p.admin2 !== undefined && (PROVINCES[code] ?? []).some((name) => wordIn(fold(name), fold(p.admin2 as string)));
+	if (places.some(inProvince)) return inProvince;
+	const states = [US_STATES[code], US_STATES_IN_ITALIAN[code]].flatMap((state) => (state === undefined ? [] : [fold(state)]));
+	return (p) => p.countryCode === code || (p.countryCode === "US" && p.admin1 !== undefined && states.includes(fold(p.admin1)));
+}
+
+/** "roma" in "citta metropolitana di roma capitale", but "enna" not in "ravenna". */
+function wordIn(word: string, text: string): boolean {
+	return new RegExp(`(^|[^a-z])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`).test(text);
 }
 
 /** A hint that matches none of the places found: list them and let the person say which. */
@@ -131,7 +157,7 @@ function fold(text: string): string {
 
 /** The answer: where (fenced), when, now, then each day, with today and tomorrow by part of the day. */
 function weatherAnswer(choice: Choice, forecast: Forecast): string {
-	const { place, others, tie } = choice;
+	const { place, others, reason } = choice;
 	const where = [`Luogo: ${placeLabel(place)}`, ...(others.length === 0 ? [] : [`Altri luoghi con questo nome: ${others.map(placeLabel).join("; ")}`])].join("\n");
 	const now = forecast.current;
 	const today = now?.time.slice(0, 10) ?? forecast.days[0]?.date;
@@ -139,14 +165,23 @@ function weatherAnswer(choice: Choice, forecast: Forecast): string {
 	const note =
 		others.length === 0
 			? []
-			: [tie ? `Ci sono più luoghi con questo nome e non so quale sia il più grande: ho preso il primo. Dillo, e se conta chiedi quale intendono; poi ${HOW_TO_PICK}.` : `Ho usato il luogo più popoloso: dillo, con le alternative; se intendevano un altro, ${HOW_TO_PICK}.`];
+			: [
+					{
+						tie: `Ci sono più luoghi con questo nome e non so quale sia il più grande: ho preso il primo. Dillo, e se conta chiedi quale intendono; poi ${HOW_TO_PICK}.`,
+						italy: `Ho preferito il luogo in Italia, anche se all'estero ce n'è uno più grande: dillo, con le alternative; se intendevano un altro, ${HOW_TO_PICK}.`,
+						population: `Ho usato il luogo più popoloso: dillo, con le alternative; se intendevano un altro, ${HOW_TO_PICK}.`,
+					}[reason],
+				];
 	const tomorrow = today === undefined ? undefined : addDays(today, 1);
+	const todayParts = today === undefined ? [] : partLines(today, true, forecast.hours, now, false);
+	// Asked before 6, tonight is today's 0-6; after, the coming night is tomorrow's.
+	const tonightShown = todayParts.some((line) => line.startsWith(PARTS[0].today));
 	const lines = [
 		untrusted(where),
 		`${when}fonte: Open-Meteo.`,
 		...note,
 		...(now === undefined ? [] : [nowLine(now)]),
-		...forecast.days.flatMap((day) => [dayLine(day, today), ...(day.date === today || day.date === tomorrow ? partLines(day.date, day.date === today, forecast.hours, now) : [])]),
+		...forecast.days.flatMap((day) => [dayLine(day, today), ...(day.date === today ? todayParts : day.date === tomorrow ? partLines(day.date, false, forecast.hours, now, tonightShown) : [])]),
 	];
 	return lines.join("\n");
 }
@@ -161,10 +196,10 @@ function placeLabel(p: Place): string {
 const degrees = (n: number) => `${italianNumber(n)} °C`;
 const whole = (n: number) => Math.round(n) || 0;
 const kmh = (n: number) => `${Math.round(n)} km/h`;
-/** «probabilità di pioggia 85%, precipitazioni 4,6 mm»: without a chance of 10% or less, or 0 mm. */
+/** «probabilità di precipitazioni 85%, precipitazioni 4,6 mm»: without a chance of 10% or less, or 0 mm. */
 function rain(chance: number | undefined, mm: number | undefined): string[] {
 	return [
-		...(chance !== undefined && chance > 10 ? [`probabilità di pioggia ${Math.round(chance)}%`] : []),
+		...(chance !== undefined && chance > 10 ? [`probabilità di precipitazioni ${Math.round(chance)}%`] : []),
 		...(mm !== undefined && italianNumber(mm) !== "0" ? [`precipitazioni ${italianNumber(mm)} mm`] : []),
 	];
 }
@@ -207,8 +242,8 @@ const PARTS = [
 	{ from: 18, to: 24, today: "Stasera", tomorrow: "Domani sera" },
 ] as const;
 
-/** One line per part of the day with hours ahead: «Stasera: pioggia debole, 13-15 °C, …». */
-function partLines(date: string, isToday: boolean, hours: readonly HourForecast[], now: CurrentWeather | undefined): string[] {
+/** One line per part of the day with hours ahead: «Stasera: pioggia debole, 13-15 °C, …». Tomorrow's 0-6 is «Stanotte» unless today's is shown. */
+function partLines(date: string, isToday: boolean, hours: readonly HourForecast[], now: CurrentWeather | undefined, tonightShown: boolean): string[] {
 	const fromHour = isToday && now !== undefined ? `${now.time.slice(0, 13)}:00` : "";
 	const ofDay = hours.filter((h) => h.time.startsWith(date) && h.time >= fromHour);
 	return PARTS.flatMap((part) => {
@@ -221,7 +256,7 @@ function partLines(date: string, isToday: boolean, hours: readonly HourForecast[
 		const chances = inPart.flatMap((h) => (h.rainChance === undefined ? [] : [h.rainChance]));
 		const mm = inPart.reduce((sum, h) => sum + (h.precipitation ?? 0), 0);
 		const parts = [weatherWords(partCode(inPart)), ...(temps.length === 0 ? [] : [range(Math.min(...temps), Math.max(...temps))]), ...rain(chances.length === 0 ? undefined : Math.max(...chances), mm)];
-		return [`${isToday ? part.today : part.tomorrow}: ${parts.join(", ")}.`];
+		return [`${isToday || (part.from === 0 && !tonightShown) ? part.today : part.tomorrow}: ${parts.join(", ")}.`];
 	});
 }
 
@@ -314,4 +349,119 @@ const US_STATES_IN_ITALIAN: Readonly<Record<string, string>> = {
 	SC: "Carolina del Sud",
 	SD: "Dakota del Sud",
 	WV: "Virginia Occidentale",
+};
+
+/**
+ * Italian provinces by their sigla, as words the service's province name (admin2, in Italian)
+ * contains: "Roma" in «Città metropolitana di Roma Capitale», "Bolzano" in «Provincia autonoma
+ * di Bolzano». Sud Sardegna also under the provinces it replaced, which the service may still use.
+ */
+const PROVINCES: Readonly<Record<string, readonly string[]>> = {
+	AG: ["Agrigento"],
+	AL: ["Alessandria"],
+	AN: ["Ancona"],
+	AO: ["Aosta"],
+	AP: ["Ascoli Piceno"],
+	AQ: ["Aquila"],
+	AR: ["Arezzo"],
+	AT: ["Asti"],
+	AV: ["Avellino"],
+	BA: ["Bari"],
+	BG: ["Bergamo"],
+	BI: ["Biella"],
+	BL: ["Belluno"],
+	BN: ["Benevento"],
+	BO: ["Bologna"],
+	BR: ["Brindisi"],
+	BS: ["Brescia"],
+	BT: ["Barletta"],
+	BZ: ["Bolzano"],
+	CA: ["Cagliari"],
+	CB: ["Campobasso"],
+	CE: ["Caserta"],
+	CH: ["Chieti"],
+	CL: ["Caltanissetta"],
+	CN: ["Cuneo"],
+	CO: ["Como"],
+	CR: ["Cremona"],
+	CS: ["Cosenza"],
+	CT: ["Catania"],
+	CZ: ["Catanzaro"],
+	EN: ["Enna"],
+	FC: ["Forlì-Cesena", "Forlì"],
+	FE: ["Ferrara"],
+	FG: ["Foggia"],
+	FI: ["Firenze"],
+	FM: ["Fermo"],
+	FR: ["Frosinone"],
+	GE: ["Genova"],
+	GO: ["Gorizia"],
+	GR: ["Grosseto"],
+	IM: ["Imperia"],
+	IS: ["Isernia"],
+	KR: ["Crotone"],
+	LC: ["Lecco"],
+	LE: ["Lecce"],
+	LI: ["Livorno"],
+	LO: ["Lodi"],
+	LT: ["Latina"],
+	LU: ["Lucca"],
+	MB: ["Monza"],
+	MC: ["Macerata"],
+	ME: ["Messina"],
+	MI: ["Milano"],
+	MN: ["Mantova"],
+	MO: ["Modena"],
+	MS: ["Massa"],
+	MT: ["Matera"],
+	NA: ["Napoli"],
+	NO: ["Novara"],
+	NU: ["Nuoro"],
+	OR: ["Oristano"],
+	PA: ["Palermo"],
+	PC: ["Piacenza"],
+	PD: ["Padova"],
+	PE: ["Pescara"],
+	PG: ["Perugia"],
+	PI: ["Pisa"],
+	PN: ["Pordenone"],
+	PO: ["Prato"],
+	PR: ["Parma"],
+	PT: ["Pistoia"],
+	PU: ["Pesaro"],
+	PV: ["Pavia"],
+	PZ: ["Potenza"],
+	RA: ["Ravenna"],
+	RC: ["Reggio Calabria", "Reggio di Calabria"],
+	RE: ["Reggio Emilia", "Reggio nell'Emilia"],
+	RG: ["Ragusa"],
+	RI: ["Rieti"],
+	RM: ["Roma"],
+	RN: ["Rimini"],
+	RO: ["Rovigo"],
+	SA: ["Salerno"],
+	SI: ["Siena"],
+	SO: ["Sondrio"],
+	SP: ["Spezia"],
+	SR: ["Siracusa"],
+	SS: ["Sassari"],
+	SU: ["Sud Sardegna", "Carbonia", "Medio Campidano"],
+	SV: ["Savona"],
+	TA: ["Taranto"],
+	TE: ["Teramo"],
+	TN: ["Trento"],
+	TO: ["Torino"],
+	TP: ["Trapani"],
+	TR: ["Terni"],
+	TS: ["Trieste"],
+	TV: ["Treviso"],
+	UD: ["Udine"],
+	VA: ["Varese"],
+	VB: ["Verbano"],
+	VC: ["Vercelli"],
+	VE: ["Venezia"],
+	VI: ["Vicenza"],
+	VR: ["Verona"],
+	VT: ["Viterbo"],
+	VV: ["Vibo Valentia"],
 };

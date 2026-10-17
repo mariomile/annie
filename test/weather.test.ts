@@ -6,7 +6,7 @@ import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { createWeatherTools } from "../src/core/tools/weather-tools.ts";
 import { italianDay, italianNumber, openMeteo, WEATHER_CODES, type WeatherConfig, WeatherError, weatherWords } from "../src/core/weather.ts";
-import { dailyCounter } from "../src/core/web-search.ts";
+import { dailyCounter, dailyLimit } from "../src/core/web-search.ts";
 import { runChecks } from "../src/main/check.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
@@ -32,8 +32,22 @@ const place = (name: string, admin1: string, admin2: string | undefined, country
 });
 const ROMA = place("Roma", "Lazio", "Roma", "Italia", "IT", 2318895, 41.89193, 12.51133);
 const GEOCODING: Record<string, unknown[]> = {
-	// Roma, Texas comes first: Italian places win when no country is asked.
-	Roma: [place("Roma", "Texas", "Starr", "Stati Uniti", "US", 11561, 26.4, -99.0), ROMA],
+	// Roma, Texas comes first: Italian places win when no country is asked. Roma, Treviso has no
+	// population: not close to a city of two million.
+	Roma: [place("Roma", "Texas", "Starr", "Stati Uniti", "US", 11561, 26.4, -99.0), ROMA, place("Roma", "Veneto", "Treviso", "Italia", "IT", undefined, 45.7, 12.2)],
+	// Nice is thirty times Nizza Monferrato: Nice, with the Italian one named.
+	Nizza: [
+		place("Nizza Monferrato", "Piemonte", "Asti", "Italia", "IT", 10_200, 44.77, 8.36),
+		place("Nizza", "Provenza-Alpi-Costa Azzurra", "Alpi Marittime", "Francia", "FR", 342_669, 43.7, 7.27),
+		place("Nizza di Sicilia", "Sicilia", "Messina", "Italia", "IT", 3_700, 37.99, 15.41),
+	],
+	// Invented: an Italian place a tenth or more of the foreign one is preferred, the other named.
+	Lione: [place("Lione", "Alvernia-Rodano-Alpi", "Metropoli di Lione", "Francia", "FR", 500_000, 45.76, 4.83), place("Lione", "Lombardia", "Provincia di Bergamo", "Italia", "IT", 60_000, 45.7, 9.67)],
+	// Province sigle: RM is Rome's metropolitan city; FR is Frosinone when one of them is there.
+	Ciampino: [place("Ciampino", "Lazio", "Città metropolitana di Roma Capitale", "Italia", "IT", 38_000, 41.8, 12.6)],
+	Frosinone: [place("Frosinone", "Île-de-France", "Essonne", "Francia", "FR", 1_000_000, 48.6, 2.3), place("Frosinone", "Lazio", "Provincia di Frosinone", "Italia", "IT", 46_000, 41.64, 13.35)],
+	// EN is Enna, a word: not the "enna" in Ravenna.
+	Borghetto: [place("Borghetto", "Emilia-Romagna", "Provincia di Ravenna", "Italia", "IT", 900, 44.4, 12.1), place("Borghetto", "Sicilia", "Libero consorzio comunale di Enna", "Italia", "IT", 300, 37.5, 14.3)],
 	// Texas first: the most populated wins, not the first listed; Paris, France is far bigger.
 	Paris: [
 		place("Paris", "Texas", "Lamar", "Stati Uniti", "US", 24171, 33.66094, -95.55551),
@@ -101,15 +115,15 @@ const EXPECTED_ROMA = [
 	"<<<fine dati dal web TAG>>>",
 	"sabato 17 ottobre, alle 14:15 (ora locale); fonte: Open-Meteo.",
 	"Adesso: parzialmente nuvoloso, 18,4 °C (percepiti 15,9 °C), umidità 62%, vento 12 km/h (raffiche 25 km/h), nessuna precipitazione.",
-	"Oggi, sabato 17 ottobre: parzialmente nuvoloso, min 11 °C, max 20 °C, probabilità di pioggia 70%, precipitazioni 2,4 mm, vento fino a 15 km/h, UV 3,4, alba 07:21, tramonto 18:32.",
+	"Oggi, sabato 17 ottobre: parzialmente nuvoloso, min 11 °C, max 20 °C, probabilità di precipitazioni 70%, precipitazioni 2,4 mm, vento fino a 15 km/h, UV 3,4, alba 07:21, tramonto 18:32.",
 	"Oggi pomeriggio: parzialmente nuvoloso, 18-19 °C.",
-	"Stasera: pioggia debole, 13-16 °C, probabilità di pioggia 70%, precipitazioni 2,4 mm.",
-	"Domani, domenica 18 ottobre: pioggia debole, min 10 °C, max 16 °C, probabilità di pioggia 80%, precipitazioni 4,2 mm, vento fino a 23 km/h.",
-	"Domani notte (0-6): coperto, 12 °C, probabilità di pioggia 20%.",
-	"Domani mattina: pioggia debole, 11-14 °C, probabilità di pioggia 80%, precipitazioni 3 mm.",
-	"Domani pomeriggio: rovesci deboli, 15-16 °C, probabilità di pioggia 60%, precipitazioni 1,2 mm.",
+	"Stasera: pioggia debole, 13-16 °C, probabilità di precipitazioni 70%, precipitazioni 2,4 mm.",
+	"Domani, domenica 18 ottobre: pioggia debole, min 10 °C, max 16 °C, probabilità di precipitazioni 80%, precipitazioni 4,2 mm, vento fino a 23 km/h.",
+	"Stanotte (0-6): coperto, 12 °C, probabilità di precipitazioni 20%.",
+	"Domani mattina: pioggia debole, 11-14 °C, probabilità di precipitazioni 80%, precipitazioni 3 mm.",
+	"Domani pomeriggio: rovesci deboli, 15-16 °C, probabilità di precipitazioni 60%, precipitazioni 1,2 mm.",
 	"Domani sera: poco nuvoloso, 11-13 °C.",
-	"Lunedì 19 ottobre: temporale, min 10 °C, max 14 °C, probabilità di pioggia 95%, precipitazioni 12,3 mm, vento fino a 40 km/h.",
+	"Lunedì 19 ottobre: temporale, min 10 °C, max 14 °C, probabilità di precipitazioni 95%, precipitazioni 12,3 mm, vento fino a 40 km/h.",
 ].join("\n");
 
 /** Sixteen days from 1 November: days past the seventh are a trend. */
@@ -146,7 +160,8 @@ function fakeOpenMeteo(answers: { geocoding?: Answer; forecast?: Answer } = {}) 
 function weatherTool(fake: ReturnType<typeof fakeOpenMeteo>, options: { max?: number; now?: () => Date } = {}) {
 	const recorded: number[] = [];
 	const counter = dailyCounter(options.max ?? 100, options.now);
-	const [tool] = createWeatherTools({ weather: openMeteo(CONFIG, fake.fetch), left: () => counter.left("acme"), spend: () => counter.spend("acme", 1), record: async (days) => void recorded.push(days) });
+	const tries = dailyLimit((options.max ?? 100) * 3, options.now);
+	const [tool] = createWeatherTools({ weather: openMeteo(CONFIG, fake.fetch), left: () => counter.left("acme"), attempt: () => tries("acme"), spend: () => counter.spend("acme", 1), record: async (days) => void recorded.push(days) });
 	if (tool === undefined) throw new Error("no tool");
 	const steps = new Map<string, unknown>();
 	const ctx = (callId: string): ToolContext => ({
@@ -228,7 +243,7 @@ describe("Open-Meteo", () => {
 			expect(String(error)).not.toContain("open-meteo");
 			return (error as Error).message;
 		};
-		expect(await failing(Response.json({ error: true, reason: KEY }, { status: 429 }))).toContain("troppe richieste");
+		expect(await failing(Response.json({ error: true, reason: KEY }, { status: 429 }))).toBe("il servizio meteo ha raggiunto il limite di richieste, riprova più tardi");
 		// A refusal with a key is the key; without one, most likely the free tier's terms.
 		expect(await failing(Response.json({ reason: KEY }, { status: 401 }))).toBe("il servizio meteo rifiuta la chiave del server");
 		expect(await failing(Response.json({}, { status: 403 }), false)).toBe("il servizio meteo rifiuta la richiesta: per un uso commerciale serve un piano a pagamento e ANNIE_WEATHER_API_KEY");
@@ -294,6 +309,7 @@ describe("the weather tool", () => {
 		const { run } = weatherTool(fake);
 		const roma = await run({ place: "Roma" });
 		expect(roma).not.toContain("Texas");
+		expect(roma).not.toContain("Treviso");
 		expect(fake.asked[0]?.params.countryCode).toBe(undefined);
 		// Paris, France is a hundred times Paris, Texas: no alternatives, no note.
 		const paris = await run({ place: "Paris", days: 1 });
@@ -302,6 +318,26 @@ describe("the weather tool", () => {
 		expect(fake.asked.at(-1)?.params).toMatchObject({ latitude: "48.85341", timezone: "Europe/Paris", forecast_days: "1" });
 		// Asked for, Roma, Texas it is.
 		expect(fenced(await run({ place: "Roma", country: "US" })).inside).toBe("Luogo: Roma, Starr, Texas, Stati Uniti");
+	});
+
+	it("does not hide a big city abroad behind a small Italian one, and names the one passed over either way", async () => {
+		const { run } = weatherTool(fakeOpenMeteo());
+		const nizza = await run({ place: "Nizza", days: 1 });
+		expect(fenced(nizza).inside).toBe("Luogo: Nizza, Alpi Marittime, Provenza-Alpi-Costa Azzurra, Francia\nAltri luoghi con questo nome: Nizza Monferrato, Asti, Piemonte, Italia");
+		expect(nizza).toContain("Ho usato il luogo più popoloso");
+		const lione = await run({ place: "Lione", days: 1 });
+		expect(fenced(lione).inside).toBe("Luogo: Lione, Provincia di Bergamo, Lombardia, Italia\nAltri luoghi con questo nome: Lione, Metropoli di Lione, Alvernia-Rodano-Alpi, Francia");
+		expect(lione).toContain("Ho preferito il luogo in Italia, anche se all'estero ce n'è uno più grande");
+	});
+
+	it("reads an Italian province's sigla first, then a country code", async () => {
+		const { run } = weatherTool(fakeOpenMeteo());
+		expect(fenced(await run({ place: "Ciampino, RM" })).inside).toBe("Luogo: Ciampino, Città metropolitana di Roma Capitale, Lazio, Italia");
+		expect(fenced(await run({ place: "Frosinone, FR" })).inside).toBe("Luogo: Frosinone, Provincia di Frosinone, Lazio, Italia");
+		// No Italian Paris: FR is France.
+		expect(fenced(await run({ place: "Paris, FR" })).inside).toBe("Luogo: Paris, Parigi, Île-de-France, Francia");
+		expect(fenced(await run({ place: "Borghetto, EN" })).inside).toBe("Luogo: Borghetto, Libero consorzio comunale di Enna, Sicilia, Italia");
+		expect(fenced(await run({ place: "Borghetto, RA" })).inside).toBe("Luogo: Borghetto, Provincia di Ravenna, Emilia-Romagna, Italia");
 	});
 
 	it("names the others when the choice is close, inside the fence", async () => {
@@ -383,6 +419,23 @@ describe("the weather tool", () => {
 		expect(await run({ place: "Roma" }, "call-4")).toContain("Adesso:");
 	});
 
+	it("limits tries too, failed ones included, at three times the day's calls", async () => {
+		const fake = fakeOpenMeteo();
+		const { run, left } = weatherTool(fake, { max: 1 });
+		for (let i = 0; i < 3; i++) expect(await run({ place: "Xyzzyville" })).toContain("non trovo");
+		expect(left()).toBe(1);
+		expect(await run({ place: "Roma" })).toBe("Errore: per oggi i tentativi meteo di questo account sono finiti, anche quelli non riusciti. Non riprovare: dillo, senza inventare previsioni.");
+		expect(fake.asked).toHaveLength(3);
+	});
+
+	it("asked at 03:00, tonight is today's 0-6 and tomorrow's is «Domani notte»", async () => {
+		const time = Array.from({ length: 48 }, (_, i) => new Date(Date.UTC(2026, 9, 17, 3 + i)).toISOString().slice(0, 16));
+		const night = { ...FORECAST, current: { ...FORECAST.current, time: "2026-10-17T03:00", is_day: 0 }, hourly: { time, temperature_2m: time.map(() => 8), weather_code: time.map(() => 0) } };
+		const lines = (await weatherTool(fakeOpenMeteo({ forecast: Response.json(night) })).run({ place: "Roma", days: 2 })).split("\n");
+		expect(lines.filter((l) => /^(Stanotte|Domani notte)/.test(l))).toEqual(["Stanotte (0-6): sereno, 8 °C.", "Domani notte (0-6): sereno, 8 °C."]);
+		expect(lines).toContain("Adesso: parzialmente nuvoloso (è notte), 18,4 °C (percepiti 15,9 °C), umidità 62%, vento 12 km/h (raffiche 25 km/h), nessuna precipitazione.");
+	});
+
 	it("a failed forecast spends nothing and records nothing", async () => {
 		const fake = fakeOpenMeteo({ forecast: new Response("busy", { status: 500 }) });
 		const { run, left, recorded } = weatherTool(fake);
@@ -402,6 +455,11 @@ describe("weather configuration", () => {
 		expect(
 			loadAnnieConfig({ ...base, ANNIE_WEATHER: "1", ANNIE_WEATHER_URL: "https://customer-api.open-meteo.com/v1/forecast", ANNIE_WEATHER_GEOCODING_URL: "http://localhost:8080/v1/search", ANNIE_WEATHER_API_KEY: KEY, ANNIE_WEATHER_MAX_PER_DAY: "50" }).weather,
 		).toEqual({ forecastUrl: "https://customer-api.open-meteo.com/v1/forecast", geocodingUrl: "http://localhost:8080/v1/search", apiKey: KEY, maxPerDay: 50 });
+	});
+
+	it("with a paid plan's key: the customer forecast host by default, and the plan's geocoding address required", () => {
+		expect(() => loadAnnieConfig({ ...base, ANNIE_WEATHER: "1", ANNIE_WEATHER_API_KEY: KEY })).toThrow("ANNIE_WEATHER_API_KEY needs ANNIE_WEATHER_GEOCODING_URL: the geocoding address Open-Meteo gives with the plan");
+		expect(loadAnnieConfig({ ...base, ANNIE_WEATHER: "1", ANNIE_WEATHER_API_KEY: KEY, ANNIE_WEATHER_GEOCODING_URL: "https://geo.example/v1/search" }).weather).toEqual({ forecastUrl: "https://customer-api.open-meteo.com/v1/forecast", geocodingUrl: "https://geo.example/v1/search", apiKey: KEY, maxPerDay: 200 });
 	});
 
 	it("refuses bad values, naming the variable and never the key", () => {
@@ -447,14 +505,17 @@ describe("weather configuration", () => {
 		for (const name of ["ANNIE_WEATHER", "ANNIE_WEATHER_URL", "ANNIE_WEATHER_GEOCODING_URL", "ANNIE_WEATHER_API_KEY", "ANNIE_WEATHER_MAX_PER_DAY"]) expect(passed).toContain(`"${name}"`);
 	});
 
-	it("pnpm annie check finds a place, with no key needed; a refused key is named, never printed", async () => {
+	it("pnpm annie check finds a place and a one-day forecast, with no key needed; a refused key is named, never printed", async () => {
 		const fake = fakeOpenMeteo();
 		const meteo = (results: Awaited<ReturnType<typeof runChecks>>) => results.find((r) => r.name === "Meteo");
 		const passing = meteo(await runChecks(loadAnnieConfig({ ...base, ANNIE_WEATHER: "1" }), fake.fetch));
-		expect(passing).toMatchObject({ ok: true, detail: expect.stringContaining("geocoding-api.open-meteo.com risponde") });
+		expect(passing).toMatchObject({ ok: true, detail: "geocoding-api.open-meteo.com e api.open-meteo.com rispondono" });
 		expect(fake.asked[0]?.params).toEqual({ name: "Roma", count: "1", format: "json" });
+		expect(fake.asked[1]).toMatchObject({ path: "/v1/forecast", params: { forecast_days: "1", latitude: "41.89", longitude: "12.51" } });
+		const broken = fakeOpenMeteo({ forecast: new Response("down", { status: 502 }) });
+		expect(meteo(await runChecks(loadAnnieConfig({ ...base, ANNIE_WEATHER: "1" }), broken.fetch))).toMatchObject({ ok: false, detail: "il servizio risponde 502: controlla ANNIE_WEATHER_URL" });
 		const refused = fakeOpenMeteo({ geocoding: Response.json({ reason: KEY }, { status: 403 }) });
-		const failing = meteo(await runChecks(loadAnnieConfig({ ...base, ANNIE_WEATHER: "1", ANNIE_WEATHER_API_KEY: KEY }), refused.fetch));
+		const failing = meteo(await runChecks(loadAnnieConfig({ ...base, ANNIE_WEATHER: "1", ANNIE_WEATHER_API_KEY: KEY, ANNIE_WEATHER_GEOCODING_URL: "https://geo.example/v1/search" }), refused.fetch));
 		expect(failing).toMatchObject({ ok: false, detail: expect.stringContaining("ANNIE_WEATHER_API_KEY") });
 		expect(JSON.stringify(failing)).not.toContain(KEY);
 	});

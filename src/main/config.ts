@@ -1,5 +1,5 @@
 import type { WebSearchConfig } from "../core/web-search.ts";
-import { DEFAULT_FORECAST_URL, DEFAULT_GEOCODING_URL, type WeatherConfig } from "../core/weather.ts";
+import { DEFAULT_FORECAST_URL, DEFAULT_GEOCODING_URL, PAID_FORECAST_URL, type WeatherConfig } from "../core/weather.ts";
 import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
 import { TIMESTAMP_STYLES, type TimestampStyle, type TranscriberConfig } from "../channels/voice.ts";
@@ -204,12 +204,16 @@ function loadWeatherConfig(env: Readonly<Record<string, string | undefined>>): W
 		if (overrides.length > 0) throw new ConfigError(`${overrides.join(", ")} set without ANNIE_WEATHER=1`);
 		return undefined;
 	}
-	const forecastUrl = serviceUrl("ANNIE_WEATHER_URL", nonEmpty(env.ANNIE_WEATHER_URL) ?? DEFAULT_FORECAST_URL, DEFAULT_FORECAST_URL);
-	const geocodingUrl = serviceUrl("ANNIE_WEATHER_GEOCODING_URL", nonEmpty(env.ANNIE_WEATHER_GEOCODING_URL) ?? DEFAULT_GEOCODING_URL, DEFAULT_GEOCODING_URL);
+	const apiKey = nonEmpty(env.ANNIE_WEATHER_API_KEY);
+	// A paid plan: its forecast host by default; its geocoding address is the one Open-Meteo gives.
+	const forecastDefault = apiKey === undefined ? DEFAULT_FORECAST_URL : PAID_FORECAST_URL;
+	const forecastUrl = serviceUrl("ANNIE_WEATHER_URL", nonEmpty(env.ANNIE_WEATHER_URL) ?? forecastDefault, forecastDefault);
+	const geocoding = nonEmpty(env.ANNIE_WEATHER_GEOCODING_URL);
+	if (apiKey !== undefined && geocoding === undefined) throw new ConfigError("ANNIE_WEATHER_API_KEY needs ANNIE_WEATHER_GEOCODING_URL: the geocoding address Open-Meteo gives with the plan");
+	const geocodingUrl = serviceUrl("ANNIE_WEATHER_GEOCODING_URL", geocoding ?? DEFAULT_GEOCODING_URL, DEFAULT_GEOCODING_URL);
 	// Tool calls, each one a geocoding and a forecast request.
 	const maxPerDay = Number(nonEmpty(env.ANNIE_WEATHER_MAX_PER_DAY) ?? "200");
 	if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_WEATHER_MAX_PER_DAY: a whole number from 1 to 100000");
-	const apiKey = nonEmpty(env.ANNIE_WEATHER_API_KEY);
 	return { forecastUrl, geocodingUrl, ...(apiKey === undefined ? {} : { apiKey }), maxPerDay };
 }
 

@@ -10,7 +10,6 @@ export type GetJsonInit = {
 	readonly headers?: Record<string, string>;
 	/** Larger bodies are refused unread. */
 	readonly maxBytes: number;
-	readonly timeoutMs?: number;
 };
 
 /** Thrown by `capped` only, turned into the caller's error by getJson. */
@@ -20,7 +19,7 @@ class BodyTooLarge extends Error {}
 export async function getJson(url: URL, init: GetJsonInit, error: (problem: HttpProblem) => Error): Promise<object> {
 	let response: Response;
 	try {
-		response = await init.fetch(url, { headers: { accept: "application/json", ...init.headers }, signal: AbortSignal.timeout(init.timeoutMs ?? 15_000) });
+		response = await init.fetch(url, { headers: { accept: "application/json", ...init.headers }, signal: AbortSignal.timeout(15_000) });
 	} catch {
 		throw error({ kind: "unreachable" });
 	}

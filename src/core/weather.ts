@@ -19,6 +19,8 @@ export type WeatherConfig = {
 
 export const DEFAULT_FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 export const DEFAULT_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
+/** A paid plan's forecast host, with the key as apikey. */
+export const PAID_FORECAST_URL = "https://customer-api.open-meteo.com/v1/forecast";
 /** The longest forecast Open-Meteo gives, in days, today included. */
 export const MAX_FORECAST_DAYS = 16;
 /** Hours of hourly forecast, from now: enough for tonight and tomorrow. */
@@ -137,7 +139,7 @@ function weatherError(withKey: boolean): (problem: HttpProblem) => WeatherError 
 		}
 		const { status } = problem;
 		if (status === 401 || status === 403) return new WeatherError(withKey ? "il servizio meteo rifiuta la chiave del server" : "il servizio meteo rifiuta la richiesta: per un uso commerciale serve un piano a pagamento e ANNIE_WEATHER_API_KEY");
-		if (status === 429) return new WeatherError("troppe richieste al servizio meteo in poco tempo, riprova fra poco");
+		if (status === 429) return new WeatherError("il servizio meteo ha raggiunto il limite di richieste, riprova più tardi");
 		if (status === 400) return new WeatherError("il servizio meteo non accetta la richiesta");
 		return new WeatherError(`il servizio meteo risponde ${status}`);
 	};

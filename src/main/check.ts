@@ -122,17 +122,20 @@ async function searchCheck(config: { url: string; apiKey: string; country: strin
 	return `chiave valida, ${url.host} risponde`;
 }
 
-/** One place everyone has: the service answers (with the key, on a commercial plan). No forecast is asked. */
-async function weatherCheck(config: { geocodingUrl: string; apiKey?: string }, call: Call): Promise<string> {
-	const url = new URL(config.geocodingUrl);
-	url.searchParams.set("name", "Roma");
-	url.searchParams.set("count", "1");
-	url.searchParams.set("format", "json");
-	if (config.apiKey !== undefined) url.searchParams.set("apikey", config.apiKey);
-	const response = await reach(call, url.toString(), { headers: { accept: "application/json" } });
-	if (response.status === 401 || response.status === 403) throw new CheckFailed("chiave rifiutata: controlla ANNIE_WEATHER_API_KEY");
-	if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ANNIE_WEATHER_GEOCODING_URL`);
-	return `${url.host} risponde${config.apiKey === undefined ? "" : ", chiave valida"} (previsioni non provate: chiedi il meteo)`;
+/** One place and a one-day forecast for it: both addresses answer (with the key, on a paid plan). Bodies are not read. */
+async function weatherCheck(config: { forecastUrl: string; geocodingUrl: string; apiKey?: string }, call: Call): Promise<string> {
+	const geocoding = new URL(config.geocodingUrl);
+	for (const [name, value] of [["name", "Roma"], ["count", "1"], ["format", "json"]]) geocoding.searchParams.set(name as string, value as string);
+	const forecast = new URL(config.forecastUrl);
+	for (const [name, value] of [["latitude", "41.89"], ["longitude", "12.51"], ["daily", "weather_code"], ["forecast_days", "1"]]) forecast.searchParams.set(name as string, value as string);
+	for (const [url, variable] of [[geocoding, "ANNIE_WEATHER_GEOCODING_URL"], [forecast, "ANNIE_WEATHER_URL"]] as const) {
+		if (config.apiKey !== undefined) url.searchParams.set("apikey", config.apiKey);
+		const response = await reach(call, url.toString(), { headers: { accept: "application/json" } });
+		await response.body?.cancel().catch(() => {});
+		if (response.status === 401 || response.status === 403) throw new CheckFailed(config.apiKey === undefined ? "richiesta rifiutata: per un uso commerciale serve un piano e ANNIE_WEATHER_API_KEY" : "chiave rifiutata: controlla ANNIE_WEATHER_API_KEY");
+		if (!response.ok) throw new CheckFailed(`il servizio risponde ${response.status}: controlla ${variable}`);
+	}
+	return `${geocoding.host} e ${forecast.host} rispondono${config.apiKey === undefined ? "" : ", chiave valida"}`;
 }
 
 async function telegramCheck(token: string, call: Call): Promise<string> {
