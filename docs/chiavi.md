@@ -214,16 +214,16 @@ Senza queste variabili Annie non crea immagini. Con queste, quando glielo chiedo
 
 Va bene qualunque servizio con la stessa API di OpenAI (`POST /images/generations` e `/images/edits`, immagini in `b64_json`); per un altro servizio indica anche il modello.
 
-### 16. Meteo: `ANNIE_WEATHER=1` (chiave solo per uso commerciale)
+### 16. Meteo: `ANNIE_WEATHER=1` (e una chiave per un uso aziendale)
 
-Senza questa variabile Annie non sa che tempo fa. Con `ANNIE_WEATHER=1` risponde a «che tempo fa a Roma?» o «piove domani a Milano?» con le condizioni di adesso e le previsioni fino a 16 giorni (tool `weather`). Il servizio è Open-Meteo, con server in UE: gli vanno solo il nome del posto e le sue coordinate.
+Senza questa variabile Annie non sa che tempo fa. Con `ANNIE_WEATHER=1` risponde a «che tempo fa a Roma?», «piove stasera a Milano?» o «meteo del weekend a Torino» con le condizioni di adesso, le fasce di oggi e domani (notte, mattina, pomeriggio, sera) e le previsioni fino a 16 giorni (tool `weather`). Il servizio è Open-Meteo, con server in Europa e in Nord America: gli vanno solo il nome del posto e le sue coordinate. I dati gratuiti sono sotto licenza CC BY 4.0: Annie cita Open-Meteo quando dà le previsioni.
 
-1. Per l'uso non commerciale non serve niente altro: basta `ANNIE_WEATHER=1`.
-2. Per l'uso commerciale (Annie Cloud a pagamento, un cliente) serve un piano: https://open-meteo.com/en/pricing (prezzi e limiti aggiornati sulla stessa pagina: controllali prima di scegliere). La chiave va in `ANNIE_WEATHER_API_KEY`, e gli indirizzi diventano quelli `customer-`: `ANNIE_WEATHER_URL=https://customer-api.open-meteo.com/v1/forecast` e `ANNIE_WEATHER_GEOCODING_URL=https://customer-geocoding-api.open-meteo.com/v1/search`.
-3. Facoltativo: `ANNIE_WEATHER_MAX_PER_DAY`, le richieste meteo al giorno per ogni account (500 se non lo metti).
+1. **Uso gratuito: solo privato o non commerciale.** Basta `ANNIE_WEATHER=1`. Limiti del piano gratuito: 10.000 chiamate al giorno, 5.000 all'ora, 600 al minuto, 300.000 al mese. Ogni richiesta meteo di Annie fa 2 chiamate (cerca il posto, poi le previsioni), e Open-Meteo conta come frazioni di chiamata in più le richieste con molte variabili o molti giorni.
+2. **Uso aziendale (anche self-host in un'azienda, e Annie Cloud) serve un piano a pagamento e la sua chiave**: https://open-meteo.com/en/pricing (prezzi e limiti aggiornati sulla stessa pagina: controllali prima di scegliere). La chiave va in `ANNIE_WEATHER_API_KEY` e l'indirizzo delle previsioni diventa `ANNIE_WEATHER_URL=https://customer-api.open-meteo.com/v1/forecast` (Annie aggiunge `&apikey=` da sola). Per la ricerca dei posti usa l'indirizzo che ti dà Open-Meteo con il piano, in `ANNIE_WEATHER_GEOCODING_URL`.
+3. Facoltativo: `ANNIE_WEATHER_MAX_PER_DAY`, le richieste meteo (chiamate al tool, 2 chiamate al servizio ciascuna) al giorno per ogni account: 200 se non lo metti. Contano solo quelle andate a buon fine.
 4. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
 5. `pnpm annie check` cerca un posto e dice se il servizio risponde (e se la chiave va, quando c'è).
-6. Domini: `api.open-meteo.com` e `geocoding-api.open-meteo.com` (con un piano, `customer-api.open-meteo.com` e `customer-geocoding-api.open-meteo.com`).
+6. Domini: `api.open-meteo.com` e `geocoding-api.open-meteo.com`; con un piano, `customer-api.open-meteo.com` e il dominio di ricerca che ti indica Open-Meteo.
 
 ## Domini da consentire nella sessione cloud
 
@@ -239,7 +239,7 @@ Senza questa variabile Annie non sa che tempo fa. Con `ANNIE_WEATHER=1` risponde
 | WhatsApp | `graph.facebook.com`, `lookaside.fbsbx.com` |
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
 | Ricerca sul web | `api.search.brave.com` |
-| Meteo | `api.open-meteo.com`, `geocoding-api.open-meteo.com` (con un piano, le stesse con `customer-` davanti) |
+| Meteo | `api.open-meteo.com`, `geocoding-api.open-meteo.com` (con un piano, `customer-api.open-meteo.com` e il dominio di ricerca indicato da Open-Meteo) |
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
 | Immagini | `api.openai.com` (o il servizio scelto) |
 | Telefono | `api.twilio.com` (o la regione scelta) |

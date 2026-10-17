@@ -1,29 +1,35 @@
 /**
- * Weather for instances: Open-Meteo (EU) finds a place by name, then gives its conditions now
- * and a forecast day by day. No key for non-commercial use; a commercial plan adds one (and
- * customer- hosts). Only the place name and its coordinates leave the server.
+ * Weather for instances: Open-Meteo (servers in Europe and North America) finds a place by
+ * name, then gives its conditions now, the next hours and a forecast day by day. Free only for
+ * private, non-commercial use; a business needs a plan and its key. Only the place name and its
+ * coordinates leave the server.
  */
-import { capped, plain } from "./web-search.ts";
+import { getJson, type HttpProblem, plain } from "./http.ts";
 
 export type WeatherConfig = {
 	/** The forecast endpoint, e.g. https://api.open-meteo.com/v1/forecast. */
 	readonly forecastUrl: string;
 	/** The geocoding endpoint, e.g. https://geocoding-api.open-meteo.com/v1/search. */
 	readonly geocodingUrl: string;
-	/** Only for a commercial plan: sent as the apikey parameter. */
+	/** A paid plan's key: sent as the apikey parameter. */
 	readonly apiKey?: string;
-	/** Weather requests a tenant may make in a day, all its instances together. */
+	/** Weather tool calls a tenant may make in a day, all its instances together. */
 	readonly maxPerDay: number;
 };
 
 export const DEFAULT_FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 export const DEFAULT_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search";
-/** The longest forecast Open-Meteo gives, in days. */
+/** The longest forecast Open-Meteo gives, in days, today included. */
 export const MAX_FORECAST_DAYS = 16;
+/** Hours of hourly forecast, from now: enough for tonight and tomorrow. */
+const FORECAST_HOURS = 48;
 
 export type Place = {
 	readonly name: string;
+	/** The region, e.g. Lazio, Texas. */
 	readonly admin1?: string;
+	/** The province or county, e.g. Roma. */
+	readonly admin2?: string;
 	readonly country?: string;
 	/** Two capital letters, e.g. IT. */
 	readonly countryCode?: string;
@@ -48,6 +54,15 @@ export type CurrentWeather = {
 	readonly isDay?: boolean;
 };
 
+export type HourForecast = {
+	/** Local time at the place, YYYY-MM-DDTHH:MM. */
+	readonly time: string;
+	readonly code?: number;
+	readonly temperature?: number;
+	readonly rainChance?: number;
+	readonly precipitation?: number;
+};
+
 export type DayForecast = {
 	/** YYYY-MM-DD, local. */
 	readonly date: string;
@@ -63,12 +78,12 @@ export type DayForecast = {
 	readonly uvMax?: number;
 };
 
-export type Forecast = { readonly current?: CurrentWeather; readonly days: readonly DayForecast[] };
+export type Forecast = { readonly current?: CurrentWeather; readonly hours: readonly HourForecast[]; readonly days: readonly DayForecast[] };
 
 export type Weather = {
-	/** Up to five places with this name, in this country (two letters) if given. */
+	/** Up to ten places with this name, in this country (two letters) if given. */
 	geocode(name: string, country?: string): Promise<Place[]>;
-	/** Now and `days` days from today, 1 to 16. */
+	/** Now, the next 48 hours, and `days` days from today (today included), 1 to 16. */
 	forecast(place: Place, days: number): Promise<Forecast>;
 };
 
@@ -78,19 +93,21 @@ export class WeatherError extends Error {}
 /** A place and a forecast are a few kilobytes: anything past this is not an answer. */
 const MAX_BODY = 1024 * 1024;
 const CURRENT = ["temperature_2m", "apparent_temperature", "relative_humidity_2m", "precipitation", "weather_code", "wind_speed_10m", "wind_gusts_10m", "is_day"];
+const HOURLY = ["temperature_2m", "precipitation_probability", "precipitation", "weather_code"];
 const DAILY = ["weather_code", "temperature_2m_max", "temperature_2m_min", "precipitation_sum", "precipitation_probability_max", "wind_speed_10m_max", "sunrise", "sunset", "uv_index_max"];
 
 /** Open-Meteo's geocoding and forecast APIs (the same APIs at any address, for tests). */
 export function openMeteo(config: WeatherConfig, fetchImpl: typeof fetch = fetch): Weather {
-	const get = async (endpoint: string, params: Record<string, string>): Promise<unknown> => {
+	const error = weatherError(config.apiKey !== undefined);
+	const get = (endpoint: string, params: Record<string, string>): Promise<object> => {
 		const url = new URL(endpoint);
 		for (const [name, value] of Object.entries(params)) url.searchParams.set(name, value);
 		if (config.apiKey !== undefined) url.searchParams.set("apikey", config.apiKey);
-		return fetchJson(url, fetchImpl);
+		return getJson(url, { fetch: fetchImpl, maxBytes: MAX_BODY }, error);
 	};
 	return {
 		async geocode(name, country) {
-			const body = await get(config.geocodingUrl, { name, count: "5", language: "it", format: "json", ...(country === undefined ? {} : { countryCode: country }) });
+			const body = await get(config.geocodingUrl, { name, count: "10", language: "it", format: "json", ...(country === undefined ? {} : { countryCode: country }) });
 			const results = (body as { results?: unknown }).results;
 			return Array.isArray(results) ? results.flatMap(placeOf) : [];
 		},
@@ -99,70 +116,49 @@ export function openMeteo(config: WeatherConfig, fetchImpl: typeof fetch = fetch
 				latitude: String(place.latitude),
 				longitude: String(place.longitude),
 				current: CURRENT.join(","),
+				hourly: HOURLY.join(","),
 				daily: DAILY.join(","),
 				timezone: place.timezone ?? "auto",
 				forecast_days: String(Math.min(MAX_FORECAST_DAYS, Math.max(1, Math.floor(days)))),
+				forecast_hours: String(FORECAST_HOURS),
 			});
-			const { current, daily } = body as { current?: unknown; daily?: unknown };
+			const { current, hourly, daily } = body as { current?: unknown; hourly?: unknown; daily?: unknown };
 			const now = currentOf(current);
-			return { ...(now === undefined ? {} : { current: now }), days: daysOf(daily) };
+			return { ...(now === undefined ? {} : { current: now }), hours: hoursOf(hourly), days: daysOf(daily) };
 		},
 	};
 }
 
-/** One request, its JSON parsed; every failure as a WeatherError in Italian. */
-async function fetchJson(url: URL, fetchImpl: typeof fetch): Promise<unknown> {
-	let text: string;
-	try {
-		const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
-		if (!response.ok) {
-			await response.body?.cancel().catch(() => {});
-			throw new WeatherError(statusReason(response.status));
+/** Each failure in Italian. A refusal without a key is most likely the free tier's terms. */
+function weatherError(withKey: boolean): (problem: HttpProblem) => WeatherError {
+	return (problem) => {
+		if (problem.kind !== "status") {
+			return new WeatherError({ unreachable: "il servizio meteo non risponde", too_big: "il servizio meteo ha mandato una risposta troppo grande", unreadable: "il servizio meteo ha risposto in modo illeggibile" }[problem.kind]);
 		}
-		text = await capped(response, MAX_BODY, () => new WeatherError("il servizio meteo ha mandato una risposta troppo grande"));
-	} catch (error) {
-		if (error instanceof WeatherError) throw error;
-		throw new WeatherError("il servizio meteo non risponde");
-	}
-	try {
-		const body: unknown = JSON.parse(text);
-		if (typeof body !== "object" || body === null) throw new Error("not an object");
-		return body;
-	} catch {
-		throw new WeatherError("il servizio meteo ha risposto in modo illeggibile");
-	}
-}
-
-function statusReason(status: number): string {
-	if (status === 401 || status === 403) return "il servizio meteo rifiuta la chiave del server";
-	if (status === 429) return "troppe richieste al servizio meteo in poco tempo, riprova fra poco";
-	if (status === 400) return "il servizio meteo non accetta la richiesta";
-	return `il servizio meteo risponde ${status}`;
+		const { status } = problem;
+		if (status === 401 || status === 403) return new WeatherError(withKey ? "il servizio meteo rifiuta la chiave del server" : "il servizio meteo rifiuta la richiesta: per un uso commerciale serve un piano a pagamento e ANNIE_WEATHER_API_KEY");
+		if (status === 429) return new WeatherError("troppe richieste al servizio meteo in poco tempo, riprova fra poco");
+		if (status === 400) return new WeatherError("il servizio meteo non accetta la richiesta");
+		return new WeatherError(`il servizio meteo risponde ${status}`);
+	};
 }
 
 function placeOf(item: unknown): Place[] {
+	if (typeof item !== "object" || item === null) return [];
 	const r = item as Record<string, unknown>;
-	const name = text(r.name, 100);
+	const name = text(r.name);
 	const latitude = finite(r.latitude);
 	const longitude = finite(r.longitude);
 	if (name === undefined || latitude === undefined || longitude === undefined || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return [];
-	const admin1 = text(r.admin1, 100);
-	const country = text(r.country, 100);
-	const countryCode = typeof r.country_code === "string" && /^[A-Za-z]{2}$/.test(r.country_code) ? r.country_code.toUpperCase() : undefined;
-	const timezone = typeof r.timezone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){0,2}$/.test(r.timezone) ? r.timezone : undefined;
+	const fields = {
+		admin1: text(r.admin1),
+		admin2: text(r.admin2),
+		country: text(r.country),
+		countryCode: typeof r.country_code === "string" && /^[A-Za-z]{2}$/.test(r.country_code) ? r.country_code.toUpperCase() : undefined,
+		timezone: typeof r.timezone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){0,2}$/.test(r.timezone) ? r.timezone : undefined,
+	};
 	const population = finite(r.population);
-	return [
-		{
-			name,
-			...(admin1 === undefined ? {} : { admin1 }),
-			...(country === undefined ? {} : { country }),
-			...(countryCode === undefined ? {} : { countryCode }),
-			latitude,
-			longitude,
-			...(timezone === undefined ? {} : { timezone }),
-			population: population !== undefined && population > 0 ? population : 0,
-		},
-	];
+	return [{ name, ...defined(fields), latitude, longitude, population: population !== undefined && population > 0 ? population : 0 }];
 }
 
 function currentOf(value: unknown): CurrentWeather | undefined {
@@ -183,13 +179,27 @@ function currentOf(value: unknown): CurrentWeather | undefined {
 	return { time, ...defined(fields) };
 }
 
-function daysOf(value: unknown): DayForecast[] {
-	if (typeof value !== "object" || value === null) return [];
+/** The value of each field at row i of Open-Meteo's column arrays. */
+function columns(value: unknown): { times: unknown[]; at: (field: string, i: number) => unknown } {
+	if (typeof value !== "object" || value === null) return { times: [], at: () => undefined };
 	const d = value as Record<string, unknown>;
-	if (!Array.isArray(d.time)) return [];
-	const at = (field: string, i: number): unknown => (Array.isArray(d[field]) ? (d[field] as unknown[])[i] : undefined);
-	return d.time.slice(0, MAX_FORECAST_DAYS).flatMap((date: unknown, i: number) => {
-		if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
+	return { times: Array.isArray(d.time) ? d.time : [], at: (field, i) => (Array.isArray(d[field]) ? (d[field] as unknown[])[i] : undefined) };
+}
+
+function hoursOf(value: unknown): HourForecast[] {
+	const { times, at } = columns(value);
+	return times.slice(0, FORECAST_HOURS).flatMap((t, i) => {
+		const time = localTime(t);
+		if (time === undefined) return [];
+		const fields = { code: wmo(at("weather_code", i)), temperature: finite(at("temperature_2m", i)), rainChance: finite(at("precipitation_probability", i)), precipitation: finite(at("precipitation", i)) };
+		return [{ time, ...defined(fields) }];
+	});
+}
+
+function daysOf(value: unknown): DayForecast[] {
+	const { times, at } = columns(value);
+	return times.slice(0, MAX_FORECAST_DAYS).flatMap((date, i) => {
+		if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || localTime(`${date}T00:00`) === undefined) return [];
 		const fields = {
 			code: wmo(at("weather_code", i)),
 			min: finite(at("temperature_2m_min", i)),
@@ -214,14 +224,17 @@ function finite(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function text(value: unknown, max: number): string | undefined {
-	const clean = plain(value).slice(0, max);
+function text(value: unknown): string | undefined {
+	const clean = plain(value).slice(0, 100);
 	return clean === "" ? undefined : clean;
 }
 
-/** YYYY-MM-DDTHH:MM, as Open-Meteo writes local times. */
+/** YYYY-MM-DDTHH:MM, as Open-Meteo writes local times, and a real date and time (no 30 February). */
 function localTime(value: unknown): string | undefined {
-	return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value) ? value.slice(0, 16) : undefined;
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return undefined;
+	const minute = value.slice(0, 16);
+	const parsed = Date.parse(`${minute}:00Z`);
+	return !Number.isNaN(parsed) && new Date(parsed).toISOString().slice(0, 16) === minute ? minute : undefined;
 }
 
 function wmo(value: unknown): number | undefined {
@@ -267,6 +280,11 @@ export function weatherWords(code: number | undefined): string {
 	return WEATHER_CODES[code] ?? `condizioni con codice ${code}`;
 }
 
+/** Drizzle, rain, snow, showers or a storm: what wins over clouds in a part of the day. */
+export function wetCode(code: number): boolean {
+	return code >= 51;
+}
+
 const NUMBER = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
 const DAY = new Intl.DateTimeFormat("it-IT", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
 
@@ -275,7 +293,7 @@ export function italianNumber(value: number): string {
 	return NUMBER.format(value);
 }
 
-/** 2026-10-17 → sabato 17 ottobre. */
+/** 2026-10-17 → sabato 17 ottobre; the first of the month is 1º. */
 export function italianDay(date: string): string {
-	return DAY.format(new Date(`${date}T00:00:00Z`));
+	return DAY.format(new Date(`${date}T00:00:00Z`)).replace(/ 1 /, " 1º ");
 }

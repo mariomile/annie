@@ -4,6 +4,8 @@
  * the operator's, the query is the only thing that leaves.
  */
 
+import { getJson, type HttpProblem, plain } from "./http.ts";
+
 /** The instance's switch: in its egress connectors, set by the owner. */
 export const WEB_SEARCH_CONNECTOR = "web_search";
 
@@ -34,6 +36,15 @@ export type WebSearch = (query: string, options?: SearchOptions) => Promise<Sear
 /** The service refused or failed: a reason the model can pass on, never the key. */
 export class WebSearchError extends Error {}
 
+/** What went wrong, in words the model can pass on. */
+function searchError(problem: HttpProblem): WebSearchError {
+	if (problem.kind === "status") {
+		const { status } = problem;
+		return new WebSearchError(status === 401 || status === 403 ? "il servizio di ricerca rifiuta la chiave del server" : status === 429 ? "troppe ricerche in poco tempo, riprova fra poco" : `il servizio di ricerca risponde ${status}`);
+	}
+	return new WebSearchError({ unreachable: "il servizio di ricerca non risponde", too_big: "il servizio di ricerca ha mandato una risposta troppo grande", unreadable: "il servizio di ricerca ha risposto in modo illeggibile" }[problem.kind]);
+}
+
 const FRESHNESS = { day: "pd", week: "pw", month: "pm", year: "py" } as const;
 /** Ten results are a few kilobytes: anything past this is not an answer. */
 const MAX_BODY = 1024 * 1024;
@@ -48,28 +59,9 @@ export function braveSearch(config: WebSearchConfig, fetchImpl: typeof fetch = f
 		url.searchParams.set("search_lang", config.language);
 		url.searchParams.set("text_decorations", "false");
 		if (options.freshness !== undefined) url.searchParams.set("freshness", FRESHNESS[options.freshness]);
-		let response: Response;
-		let text: string;
-		try {
-			response = await fetchImpl(url, { headers: { accept: "application/json", "x-subscription-token": config.apiKey }, signal: AbortSignal.timeout(15_000) });
-			if (!response.ok) {
-				await response.body?.cancel().catch(() => {});
-				throw new WebSearchError(
-					response.status === 401 || response.status === 403 ? "il servizio di ricerca rifiuta la chiave del server" : response.status === 429 ? "troppe ricerche in poco tempo, riprova fra poco" : `il servizio di ricerca risponde ${response.status}`,
-				);
-			}
-			text = await capped(response, MAX_BODY, () => new WebSearchError("il servizio di ricerca ha mandato una risposta troppo grande"));
-		} catch (error) {
-			if (error instanceof WebSearchError) throw error;
-			throw new WebSearchError("il servizio di ricerca non risponde");
-		}
-		let body: { web?: { results?: unknown[] } };
-		try {
-			body = JSON.parse(text) as typeof body;
-		} catch {
-			throw new WebSearchError("il servizio di ricerca ha risposto in modo illeggibile");
-		}
-		return (body.web?.results ?? []).flatMap((item) => {
+		const body = (await getJson(url, { fetch: fetchImpl, headers: { "x-subscription-token": config.apiKey }, maxBytes: MAX_BODY }, searchError)) as { web?: { results?: unknown[] } };
+		const results = body.web?.results;
+		return (Array.isArray(results) ? results : []).flatMap((item) => {
 			const r = item as { title?: unknown; url?: unknown; description?: unknown; age?: unknown };
 			if (typeof r.url !== "string" || !/^https?:\/\//.test(r.url)) return [];
 			return [
@@ -82,25 +74,6 @@ export function braveSearch(config: WebSearchConfig, fetchImpl: typeof fetch = f
 			];
 		});
 	};
-}
-
-/** The body as text, refused past `max` bytes with the caller's error. */
-export async function capped(response: Response, max: number, tooBig: () => Error): Promise<string> {
-	const reader = response.body?.getReader();
-	if (reader === undefined) return "";
-	const chunks: Uint8Array[] = [];
-	let size = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		size += value.length;
-		if (size > max) {
-			await reader.cancel().catch(() => {});
-			throw tooBig();
-		}
-		chunks.push(value);
-	}
-	return Buffer.concat(chunks).toString("utf8");
 }
 
 /**
@@ -127,14 +100,4 @@ export function dailyCounter(max: number, now: () => Date = () => new Date()): {
 			used.set(keyOf(tenant), (used.get(keyOf(tenant)) ?? 0) + n);
 		},
 	};
-}
-
-/** Text without tags or entities the service may still put in. */
-export function plain(value: unknown): string {
-	if (typeof value !== "string") return "";
-	return value
-		.replace(/<[^>]*>/g, "")
-		.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, e: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", nbsp: " " })[e] ?? "")
-		.replace(/\s+/g, " ")
-		.trim();
 }

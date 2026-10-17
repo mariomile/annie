@@ -166,7 +166,7 @@ export type AnnieConfig = {
 	readonly images: ImageGenerationConfig | undefined;
 	/** Web search for the instances (ADR 0017): Brave Search, or the same API elsewhere; off if unset. */
 	readonly webSearch: WebSearchConfig | undefined;
-	/** The weather tool (Open-Meteo, or the same APIs elsewhere), when the operator turns it on with ANNIE_WEATHER=1. */
+	/** The weather tool (Open-Meteo, or the same APIs elsewhere), when the operator turns it on with ANNIE_WEATHER=1; maxPerDay counts tool calls. */
 	readonly weather: WeatherConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
@@ -175,8 +175,26 @@ export type AnnieConfig = {
 };
 
 /**
+ * An operator's service address: https, or http on this machine only. No user name or password
+ * (keys have their own variables), no query or fragment, a valid port. Returned as given.
+ */
+function serviceUrl(name: string, value: string, example: string): string {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		throw new ConfigError(`${name}: an https address with a valid host and port, e.g. ${example}`);
+	}
+	const local = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+	if ((url.protocol !== "https:" && !local) || /\s/.test(value) || url.port === "0") throw new ConfigError(`${name}: an https address (http only on localhost), e.g. ${example}`);
+	if (url.username !== "" || url.password !== "") throw new ConfigError(`${name}: no user name or password in the address, e.g. ${example}`);
+	if (/[?#]/.test(value)) throw new ConfigError(`${name}: an address without a query or a fragment, e.g. ${example}`);
+	return value;
+}
+
+/**
  * ANNIE_WEATHER=1 and its overrides: place names and coordinates leave the server only when
- * the operator says so. Open-Meteo needs no key for non-commercial use.
+ * the operator says so. Open-Meteo is free only for private, non-commercial use: a business sets a plan's key.
  */
 function loadWeatherConfig(env: Readonly<Record<string, string | undefined>>): WeatherConfig | undefined {
 	const on = nonEmpty(env.ANNIE_WEATHER);
@@ -186,14 +204,10 @@ function loadWeatherConfig(env: Readonly<Record<string, string | undefined>>): W
 		if (overrides.length > 0) throw new ConfigError(`${overrides.join(", ")} set without ANNIE_WEATHER=1`);
 		return undefined;
 	}
-	const url = (name: string, fallback: string) => {
-		const value = nonEmpty(env[name]) ?? fallback;
-		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(value) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(value)) throw new ConfigError(`${name}: an https address, e.g. ${fallback}`);
-		return value;
-	};
-	const forecastUrl = url("ANNIE_WEATHER_URL", DEFAULT_FORECAST_URL);
-	const geocodingUrl = url("ANNIE_WEATHER_GEOCODING_URL", DEFAULT_GEOCODING_URL);
-	const maxPerDay = Number(nonEmpty(env.ANNIE_WEATHER_MAX_PER_DAY) ?? "500");
+	const forecastUrl = serviceUrl("ANNIE_WEATHER_URL", nonEmpty(env.ANNIE_WEATHER_URL) ?? DEFAULT_FORECAST_URL, DEFAULT_FORECAST_URL);
+	const geocodingUrl = serviceUrl("ANNIE_WEATHER_GEOCODING_URL", nonEmpty(env.ANNIE_WEATHER_GEOCODING_URL) ?? DEFAULT_GEOCODING_URL, DEFAULT_GEOCODING_URL);
+	// Tool calls, each one a geocoding and a forecast request.
+	const maxPerDay = Number(nonEmpty(env.ANNIE_WEATHER_MAX_PER_DAY) ?? "200");
 	if (!Number.isInteger(maxPerDay) || maxPerDay < 1 || maxPerDay > 100_000) throw new ConfigError("ANNIE_WEATHER_MAX_PER_DAY: a whole number from 1 to 100000");
 	const apiKey = nonEmpty(env.ANNIE_WEATHER_API_KEY);
 	return { forecastUrl, geocodingUrl, ...(apiKey === undefined ? {} : { apiKey }), maxPerDay };
@@ -290,7 +304,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	let transcription: TranscriberConfig | undefined;
 	if (transcribeUrl !== undefined || transcribeKey !== undefined) {
 		if (transcribeUrl === undefined || transcribeKey === undefined) throw new ConfigError("Set both ANNIE_TRANSCRIBE_URL and ANNIE_TRANSCRIBE_API_KEY, or neither");
-		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(transcribeUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(transcribeUrl)) throw new ConfigError("ANNIE_TRANSCRIBE_URL: an https address, e.g. https://api.mistral.ai/v1");
+		serviceUrl("ANNIE_TRANSCRIBE_URL", transcribeUrl, "https://api.mistral.ai/v1");
 		// Mistral's model unless told otherwise: a service in the EU.
 		const model = nonEmpty(env.ANNIE_TRANSCRIBE_MODEL) ?? (transcribeUrl.includes("api.mistral.ai") ? "voxtral-mini-latest" : transcribeUrl.includes("api.openai.com") ? "whisper-1" : undefined);
 		if (model === undefined) throw new ConfigError("ANNIE_TRANSCRIBE_MODEL: the model of this transcription service");
@@ -313,7 +327,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	let speech: SpeakerConfig | undefined;
 	if (speechUrl !== undefined || speechKey !== undefined) {
 		if (speechUrl === undefined || speechKey === undefined) throw new ConfigError("Set both ANNIE_SPEECH_URL and ANNIE_SPEECH_API_KEY, or neither");
-		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(speechUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(speechUrl)) throw new ConfigError("ANNIE_SPEECH_URL: an https address, e.g. https://api.openai.com/v1");
+		serviceUrl("ANNIE_SPEECH_URL", speechUrl, "https://api.openai.com/v1");
 		const openai = speechUrl.includes("api.openai.com");
 		const model = nonEmpty(env.ANNIE_SPEECH_MODEL) ?? (openai ? "gpt-4o-mini-tts" : undefined);
 		if (model === undefined) throw new ConfigError("ANNIE_SPEECH_MODEL: the model of this speech service");
@@ -332,7 +346,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	let images: ImageGenerationConfig | undefined;
 	if (imageUrl !== undefined || imageKey !== undefined) {
 		if (imageUrl === undefined || imageKey === undefined) throw new ConfigError("Set both ANNIE_IMAGE_URL and ANNIE_IMAGE_API_KEY, or neither");
-		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(imageUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(imageUrl)) throw new ConfigError("ANNIE_IMAGE_URL: an https address, e.g. https://api.openai.com/v1");
+		serviceUrl("ANNIE_IMAGE_URL", imageUrl, "https://api.openai.com/v1");
 		const model = nonEmpty(env.ANNIE_IMAGE_MODEL) ?? (imageUrl.includes("api.openai.com") ? "gpt-image-1" : undefined);
 		if (model === undefined) throw new ConfigError("ANNIE_IMAGE_MODEL: the model of this image service");
 		const maxPerDay = Number(nonEmpty(env.ANNIE_IMAGE_MAX_PER_DAY) ?? "100");
@@ -342,8 +356,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	const searchKey = nonEmpty(env.ANNIE_SEARCH_API_KEY);
 	let webSearch: WebSearchConfig | undefined;
 	if (searchKey !== undefined) {
-		const url = nonEmpty(env.ANNIE_SEARCH_URL) ?? "https://api.search.brave.com/res/v1/web/search";
-		if (!/^https:\/\/[^\s/]+(\/\S*)?$/.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/\S*)?$/.test(url)) throw new ConfigError("ANNIE_SEARCH_URL: an https address, e.g. https://api.search.brave.com/res/v1/web/search");
+		const url = serviceUrl("ANNIE_SEARCH_URL", nonEmpty(env.ANNIE_SEARCH_URL) ?? "https://api.search.brave.com/res/v1/web/search", "https://api.search.brave.com/res/v1/web/search");
 		const country = (nonEmpty(env.ANNIE_SEARCH_COUNTRY) ?? "IT").toUpperCase();
 		if (!/^([A-Z]{2}|ALL)$/.test(country)) throw new ConfigError("ANNIE_SEARCH_COUNTRY: two letters (IT, FR, US…) or ALL");
 		const language = (nonEmpty(env.ANNIE_SEARCH_LANG) ?? "it").toLowerCase();
