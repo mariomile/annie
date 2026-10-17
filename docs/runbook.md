@@ -212,6 +212,14 @@ Un computer senza comandi per 10 minuti si ferma da solo e costa solo il volume;
 
 Tetti per tenant: 2 comandi alla volta, 10 computer, una copia di file alla volta. `pnpm cloud computers` elenca i computer di ogni tenant con la sua app Fly; `pnpm cloud computers delete <tenant>` li cancella, macchine e file, quando un account se ne va.
 
+## 6k. La console come app
+
+- **Installare**: serve l'indirizzo https della console (`ANNIE_PUBLIC_URL`); su http i browser non la installano, e la console funziona lo stesso nella scheda. Su iPhone e iPad: Safari, Condividi, «Aggiungi alla schermata Home».
+- **Entrare nell'app su iPhone**: l'app ha una sessione sua, separata da Safari. Chi tocca il link in una mail entra in Safari; nell'app incolla il link nella schermata di accesso («Hai il link ma sei nell'app?»).
+- **Cosa resta sul telefono**: solo la shell (pagina, script, stile, font, icone), mai `/api`, file o conversazioni. Il service worker chiede sempre prima alla rete, quindi un aggiornamento arriva al primo avvio online.
+- **Il proxy** non deve tenere in cache `/sw.js` né `/manifest.webmanifest` (Annie li manda con `no-cache`). Dopo aver cambiato l'elenco dei file della shell in `sw.js`, cambia il nome `CACHE` lì dentro.
+- **«Primi passi» spariti**: Impostazioni → Primi passi, oppure `#/inizia`. Il «Nascondi» vale per istanza e per browser (chiave `annie.setup.hidden` nel localStorage).
+
 ## 7. Connettori MCP
 
 Pagina Connettori (owner): un server MCP via HTTP (URL) o locale (comando). Un header o una variabile segreta viene salvata nel secret store del tenant e non è più visibile. Annie riapre l'istanza e mostra quanti tool ha trovato. Un connettore raggiunge solo il suo host, e solo finché è consentito nella egress policy (casella «Consenti»). I connettori locali sono processi sul server di Annie: solo comandi di cui ti fidi.
@@ -256,4 +264,5 @@ Le risposte rimaste a metà ripartono dall'outbox; quelle che potrebbero arrivar
 | La segreteria non legge la posta | Refresh token Gmail scaduto (`invalid_grant` nei log): rigenera il token. |
 | `does not allow connector "hubspot"` all'avvio | La egress policy dell'istanza è stata ristretta: Annie non la allarga da sola. Correggi `instance.json` o usa un'altra istanza. |
 | Le risposte web arrivano solo ricaricando | Il proxy bufferizza `/api/events`: disattiva il buffering. |
+| La console dice «Non riesco a raggiungere Annie» | Il server non risponde (riavvio, cella che si sveglia): riprova da sola ogni 10 secondi. Se resta, guarda i log del server. |
 | Annie ha smesso di usare il modello | Tetto di spesa giornaliero raggiunto (Attività e spesa). Riprende il giorno dopo. |

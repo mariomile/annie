@@ -32,6 +32,14 @@ _Avoid_: admin, supervisore
 Il link con cui una persona entra nella console web. È la sua chiave: chi lo ha entra come lei. Rigenerarlo chiude le sessioni aperte.
 _Avoid_: password, invito
 
+**Console**:
+Le pagine web di Annie, per l'owner e le persone. Si apre dal browser o si installa come app (sulla schermata Home o sul desktop, a schermo intero); senza rete l'app mostra solo che è offline, mai dati salvati.
+_Avoid_: dashboard, PWA (nei testi per le persone)
+
+**Primi passi**:
+La pagina che l'owner trova aprendo la console finché non ha provato Annie: i passi che la rendono utile (modello, istruzioni, primo messaggio, telefono, web, team, app), ciascuno «fatto» quando le impostazioni vere lo dicono. Si nascondono per istanza, in quel browser, e si ritrovano in Impostazioni.
+_Avoid_: onboarding, wizard, setup
+
 **Verifica in due passaggi**:
 Per chi la attiva, il link personale da solo non basta: serve anche il codice di sei cifre dell'app di autenticazione del telefono (TOTP). L'owner può toglierla a chi ha perso il telefono.
 _Avoid_: MFA, OTP (nei testi per le persone)

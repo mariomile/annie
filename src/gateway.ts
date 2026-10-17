@@ -2,6 +2,9 @@ import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMe
 import { imageType } from "./core/images.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
+/** What a person reads when the model gave no answer; «Primi passi» does not count it as a reply. */
+export const REPLY_FAILED = "Non sono riuscita a rispondere. Riprova tra poco.";
+
 /**
  * Connects a channel adapter, bound to one instance, to the core: inbound messages become
  * submissions; replies of that instance on that channel go back out through it, and only
@@ -45,7 +48,7 @@ export function connectChannel(
 				return adapter.sendFile({ ...base, name, data, path: reply.path, ...(reply.caption === undefined ? {} : { caption: reply.caption }) });
 			}
 			if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
-			const text = reply.status === "answered" ? reply.text : "Non sono riuscita a rispondere. Riprova tra poco.";
+			const text = reply.status === "answered" ? reply.text : REPLY_FAILED;
 			return adapter.send({ ...base, text });
 		};
 		sending()

@@ -134,7 +134,9 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await api("/api/instances", { id: "../x", name: "X" })).error).toMatch(/ID/);
 		expect((await api("/api/instances", { id: "vuota", name: "  " })).error).toMatch(/nome/);
 		const settings = (await api("/api/instances/vendite/settings")).settings;
-		expect(settings.instructions).toBe("Rispondi sulle offerte.");
+		// The owner's words go after what Annie can do (ADR 0019), not in its place.
+		expect(settings.instructions.startsWith("Sei Annie")).toBe(true);
+		expect(settings.instructions.endsWith("Informazioni su chi ti usa:\nRispondi sulle offerte.")).toBe(true);
 		expect(settings.egress).toEqual({ modelProviders: ["faux"], channels: ["web"] });
 		const thread = (await api("/api/instances/vendite/threads", {})).thread;
 		await api(`/api/instances/vendite/threads/${thread.id}/messages`, { text: "ciao vendite" });

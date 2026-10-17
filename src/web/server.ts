@@ -29,6 +29,8 @@ import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/im
 import type { SegreteriaService } from "../segreteria/service.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEvent } from "./channel.ts";
+import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
+import { REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
 
@@ -81,6 +83,10 @@ export type WebAppOptions = {
 	/** Send cookies with Secure (behind https). */
 	readonly secureCookies: boolean;
 	readonly defaultTimeZone: string;
+	/** The instructions a new instance starts with: «Primi passi» asks the owner to add their own. */
+	readonly defaultInstructions?: string;
+	/** The channels of an instance that are connected now (no network call): «Primi passi» reads them. */
+	readonly connectedChannels?: (instanceId: string) => readonly string[];
 	/** Read a page under an instance's policy, for a sentinella's first look (ADR 0018). */
 	readonly watchRead?: (instanceId: string, url: string) => Promise<{ title: string; text: string }>;
 	/** Telegram bots in webhook mode, by instance: the secret Telegram sends, and where the update goes. */
@@ -161,12 +167,18 @@ const STATIC: Record<string, string> = {
 	"/app.js": "app.js",
 	"/app.css": "app.css",
 	"/icon.svg": "icon.svg",
+	"/icon-192.png": "icon-192.png",
+	"/icon-512.png": "icon-512.png",
+	"/icon-maskable-512.png": "icon-maskable-512.png",
+	"/apple-touch-icon.png": "apple-touch-icon.png",
+	"/manifest.webmanifest": "manifest.webmanifest",
+	"/sw.js": "sw.js",
 	"/fonts/geist-latin.woff2": "fonts/geist-latin.woff2",
 	"/fonts/geist-latin-ext.woff2": "fonts/geist-latin-ext.woff2",
 	"/fonts/geist-mono-latin.woff2": "fonts/geist-mono-latin.woff2",
 	"/fonts/geist-mono-latin-ext.woff2": "fonts/geist-mono-latin-ext.woff2",
 };
-const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
+const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 /** The web console and web channel of one tenant. */
 export function createWebApp(options: WebAppOptions): Server {
@@ -274,7 +286,10 @@ export function createWebApp(options: WebAppOptions): Server {
 		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown };
 		const id = typeof body.id === "string" ? body.id.trim() : "";
 		const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
-		const instructions = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions.slice(0, 20_000) : undefined;
+		const given = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions : undefined;
+		if (given !== undefined && options.defaultInstructions !== undefined && given.length > ABOUT_MAX) throw new HttpError(400, `Istruzioni troppo lunghe: al massimo ${ABOUT_MAX} caratteri`);
+		// Like «Primi passi»: the owner's words go after the defaults, so what Annie can do stays said.
+		const instructions = given === undefined ? undefined : options.defaultInstructions === undefined ? given.slice(0, INSTRUCTIONS_MAX) : withAbout(options.defaultInstructions, given);
 		try {
 			instanceId(id);
 		} catch {
@@ -738,11 +753,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { settings: { name: r.name, instructions: r.instructions ?? "", model: r.model, egress: r.egress, allowedUsers: r.allowedUsers, approvers: r.approvers ?? {} } };
 	});
 	route("PUT", "/api/instances/:id/settings", "owner", async ({ params, req }) => {
-		const body = (await readJson(req)) as { name?: string; instructions?: string; webPeople?: string[]; webApprovers?: string[] };
+		const body = (await readJson(req)) as { name?: string; instructions?: string; about?: unknown; webPeople?: string[]; webApprovers?: string[] };
 		const id = params[0] as string;
 		const people = new Set((await options.people.list()).map((p) => p.id));
 		const pick = (list: unknown) => (Array.isArray(list) ? list.map(String).filter((x) => people.has(x)) : undefined);
 		const record = await runtime.registry.getInstance(tenantId, id);
+		// From «Primi passi»: who the owner is, as one block after the instructions, replaced on each save.
+		let about: string | undefined;
+		if (body.about !== undefined) {
+			if (typeof body.instructions === "string") throw new HttpError(400, "Manda le istruzioni o le informazioni su di te, non tutte e due");
+			const text = typeof body.about === "string" ? body.about.trim() : "";
+			if (text === "") throw new HttpError(400, "Scrivi due righe su di te o sulla tua azienda");
+			if (text.length > ABOUT_MAX) throw new HttpError(400, `Al massimo ${ABOUT_MAX} caratteri`);
+			if (/\[[^\]\n]{1,60}\]/.test(text)) throw new HttpError(400, "Sostituisci le parti tra parentesi quadre con i tuoi dati");
+			about = withAbout(record.instructions ?? options.defaultInstructions ?? "", text);
+			if (about.length > INSTRUCTIONS_MAX) throw new HttpError(400, "Le istruzioni sono già al limite: accorciale in Impostazioni");
+		}
 		const webPeople = pick(body.webPeople);
 		const webApprovers = pick(body.webApprovers);
 		if (webPeople !== undefined) {
@@ -752,10 +778,43 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.updateInstance(tenantId, id, {
 			...(typeof body.name === "string" ? { name: body.name.slice(0, 80) } : {}),
 			...(typeof body.instructions === "string" ? { instructions: body.instructions.slice(0, 20_000) || null } : {}),
+			...(about === undefined ? {} : { instructions: about }),
 			...(webApprovers === undefined ? {} : { approvers: { ...(record.approvers ?? {}), web: webApprovers } }),
 		});
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
+	});
+	// --- primo avvio: what is left to make the instance useful, checked from the real settings ---
+	route("GET", "/api/instances/:id/setup", "owner", async ({ person, params }) => {
+		const me = person as Person;
+		const { record } = await instanceAccess(me, params[0] as string);
+		// Cheap on purpose: the console asks on every open. No network, at most a few transcripts.
+		let tried = false;
+		if (record.egress.channels.includes("web")) {
+			const channel = channelOf(record.id);
+			for (const thread of (await channel.threads(me.id)).slice(0, 5)) {
+				if ((await channel.transcript(thread.id)).some((e) => e.from === "annie" && e.text !== REPLY_FAILED)) {
+					tried = true;
+					break;
+				}
+			}
+		}
+		// A channel counts once someone can write to it: an empty «chi può scrivere» refuses everyone.
+		const connected = options.connectedChannels?.(record.id) ?? [];
+		const others = (record.allowedUsers.web ?? []).filter((id) => id !== me.id);
+		return {
+			setup: {
+				// The local development model answers with an echo: a real model is the operator's key.
+				model: record.model.provider !== "faux",
+				instructions: ownInstructions(record.instructions ?? undefined, options.defaultInstructions),
+				tried,
+				channel: connected.some((c) => (record.allowedUsers[c] ?? []).length > 0),
+				web: (record.egress.web ?? []).length > 0 || (record.egress.connectors ?? []).includes(WEB_SEARCH_CONNECTOR),
+				people: others.length > 0,
+				// What this server offers, so the console does not count a step nobody can take here.
+				can: { search: options.search !== undefined, transcription: options.voice !== undefined },
+			},
+		};
 	});
 	// --- memoria: each person sees what the instance remembers about them, and the shared facts ---
 	const subjectOfPerson = (p: Person) => subjectOf("web", p.id);
@@ -1282,7 +1341,9 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
 		const data = await readFile(join(options.uiDir, name));
-		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": name === "index.html" ? "no-store" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300" });
+		// The service worker is checked for a new version at every visit.
+		const cache = name === "index.html" ? "no-store" : name === "sw.js" ? "no-cache" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
+		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": cache });
 		res.end(data);
 	}
 
@@ -1310,7 +1371,7 @@ function publicWatch(watch: Watch) {
 }
 
 function securityHeaders(res: ServerResponse): void {
-	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+	res.setHeader("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
 	res.setHeader("x-content-type-options", "nosniff");
 	res.setHeader("referrer-policy", "no-referrer");
 	res.setHeader("x-frame-options", "DENY");

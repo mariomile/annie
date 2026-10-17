@@ -6,11 +6,20 @@
 	<meta name="color-scheme" content="light dark">
 	<meta name="referrer" content="no-referrer">
 	<title>Annie</title>
+	<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+	<meta name="theme-color" content="#08090a" media="(prefers-color-scheme: dark)">
+	<meta name="mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="default">
+	<meta name="apple-mobile-web-app-title" content="Annie">
 	<link rel="icon" href="/icon.svg" type="image/svg+xml">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+	<link rel="manifest" href="/manifest.webmanifest">
 	<link rel="preload" href="/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
 	<link rel="stylesheet" href="/app.css">
 </head>
 <body>
+	<div id="offline" class="offline-bar" role="status" hidden>Sei offline: quello che scrivi non parte finché non torni in rete.</div>
 	<div id="app" aria-live="polite"></div>
 	<div id="toasts" role="status" aria-live="polite"></div>
 	<noscript>Annie ha bisogno di JavaScript.</noscript>
