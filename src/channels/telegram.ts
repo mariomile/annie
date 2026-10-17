@@ -28,6 +28,8 @@ export type TelegramAdapterOptions = {
 	 * `url`, with `secretToken` in a header. A process that can sleep (a cell) needs this.
 	 */
 	readonly webhook?: { readonly url: string; readonly secretToken: string };
+	/** The bot's commands, for the menu Telegram shows next to the message box. Set on start. */
+	readonly commands?: readonly TelegramCommand[];
 	/** Voice messages to text; without it Annie is told transcription is off. */
 	readonly transcribe?: Transcribe;
 };
@@ -81,6 +83,9 @@ export type TelegramUpdate = {
 /** A voice note, an audio file or a video, as Telegram describes it. */
 type TelegramSound = { file_id: string; duration?: number; mime_type?: string; file_size?: number; file_name?: string };
 
+/** A command in the bot's menu: `command` without the slash, lowercase letters, digits and _. */
+export type TelegramCommand = { readonly command: string; readonly description: string };
+
 type TelegramResponse<T> = { ok: true; result: T } | { ok: false; description?: string; error_code?: number };
 
 /** Telegram Bot API over long polling (getUpdates) or a webhook, with plain fetch. */
@@ -111,6 +116,10 @@ export class TelegramAdapter implements ChannelAdapter {
 
 	async start(): Promise<void> {
 		if (this.loop !== undefined) return;
+		// Only the menu: the commands work without it, so a failure is no reason not to start.
+		if (this.options.commands !== undefined) {
+			await this.call("setMyCommands", { commands: this.options.commands }).catch((error: unknown) => this.options.log?.(`telegram: setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`));
+		}
 		const webhook = this.options.webhook;
 		if (webhook !== undefined) {
 			// Updates come to handleUpdate from now on. Telegram keeps them up to a day if we are down.

@@ -188,6 +188,23 @@ describe("Telegram adapter (mocked fetch)", () => {
 		expect(api.calls.length).toBe(callsAfterStop);
 	});
 
+	it("puts its commands in the bot's menu on start, and starts even when Telegram refuses them", async () => {
+		// The fake answers setMyCommands with a 404: the menu is lost, the bot still runs.
+		const api = fakeTelegram([[textUpdate(1, 42, 1, "uno")]]);
+		const logs: string[] = [];
+		const commands = [{ command: "modello", description: "Scegli il modello di questa chat" }];
+		const adapter = new TelegramAdapter({ token: TOKEN, tenantId: "acme", instanceId: "ops", fetch: api.fetch, retryDelayMs: 1, commands, log: (line) => logs.push(line) });
+		const inbound: InboundMessage[] = [];
+		adapter.onInbound(async (message) => {
+			inbound.push(message);
+		});
+		await adapter.start();
+		await waitFor(() => inbound.length === 1);
+		await adapter.stop();
+		expect(api.calls[0]).toEqual({ method: "setMyCommands", body: { commands } });
+		expect(logs.some((line) => line.includes("setMyCommands failed"))).toBe(true);
+	});
+
 	it("end to end: a Telegram message reaches the core and the reply goes back to the same chat, once", async () => {
 		const { runtime } = await runtimeWithInstance({ egress: { modelProviders: ["faux"], channels: ["telegram"] } });
 		// The same message delivered twice (as Telegram does after a crash before the offset is confirmed).
