@@ -3,7 +3,7 @@ import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
 import { TIMESTAMP_STYLES, type TimestampStyle, type TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
-import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, modelProvider as offeredProvider } from "../core/model-providers.ts";
+import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, modelProvider as offeredProvider, providerIds } from "../core/model-providers.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;
 	readonly modelProvider: string;
@@ -25,7 +25,7 @@ function modelChoice(env: Readonly<Record<string, string | undefined>>): { model
 	if (modelProvider === DEV_PROVIDER) return { modelProvider, modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? DEV_MODEL_ID, keyEnv: undefined };
 	const offered = offeredProvider(modelProvider);
 	if (offered === undefined) {
-		throw new ConfigError(`ANNIE_MODEL_PROVIDER="${modelProvider}" is not supported. Use one of: ${[...MODEL_PROVIDERS.map((p) => p.id), DEV_PROVIDER].join(", ")}`);
+		throw new ConfigError(`ANNIE_MODEL_PROVIDER="${modelProvider}" is not supported. Use one of: ${providerIds().join(", ")}`);
 	}
 	return { modelProvider, modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? offered.defaultModel, keyEnv: offered.keyEnv };
 }

@@ -1,7 +1,9 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import { createProvider, providerModels } from "../src/core/adapters/pi-durable-models.ts";
+import type { EngineReply, EngineSession } from "../src/core/engine.ts";
 import { MODEL_PROVIDERS } from "../src/core/model-providers.ts";
 import { modelApiKeySecret } from "../src/core/secrets.ts";
 import { ConfigError, loadAnnieConfig, loadTelegramConfig } from "../src/main/config.ts";
@@ -24,6 +26,25 @@ describe("model providers", () => {
 		expect(providerModels("faux").map((m) => m.id)).toEqual(["annie-dev"]);
 		expect(() => providerModels("amazon-bedrock")).toThrow(/Unsupported model provider/);
 		expect(() => createProvider("nope")).toThrow(/Unsupported model provider/);
+	});
+});
+
+describe("an old thread after the model changes", () => {
+	const reply = (session: EngineSession) => new Promise<EngineReply>((resolve) => session.onReply(resolve));
+	it("answers with the instance's new model, not the one it was started with", async () => {
+		const storageDir = tempDataDir();
+		const open = (model: { provider: string; modelId: string }) => piDurableEngine.open({ storageDir, model, apiKey: async () => undefined, tools: [] });
+		// Started on a provider without a key: it cannot answer.
+		let session = await open({ provider: "xai", modelId: "grok-4.7" });
+		let next = reply(session);
+		await session.submit("web:t1", "ciao");
+		expect(await next).toMatchObject({ status: "unanswered" });
+		await session.close();
+		session = await open({ provider: "faux", modelId: "annie-dev" });
+		next = reply(session);
+		await session.submit("web:t1", "ancora");
+		expect(await next).toMatchObject({ status: "answered", text: expect.stringContaining("ancora") });
+		await session.close();
 	});
 });
 
@@ -80,7 +101,7 @@ describe("choosing the model from the console", () => {
 		const { api } = await boot({ GEMINI_API_KEY: "server-key" });
 		const { model, providers } = await api("/api/instances/annie/model");
 		expect(model).toEqual({ provider: "faux", modelId: "annie-dev" });
-		expect(providers.map((p: { id: string }) => p.id)).toEqual(MODEL_PROVIDERS.map((p) => p.id));
+		for (const p of MODEL_PROVIDERS) expect(providers.map((x: { id: string }) => x.id)).toContain(p.id);
 		expect(providers.find((p: { id: string }) => p.id === "google")).toEqual({ id: "google", label: "Google (Gemini)", keyEnv: "GEMINI_API_KEY", defaultModel: "gemini-3.5-flash", key: "server" });
 		expect(providers.find((p: { id: string }) => p.id === "xai").key).toBe("missing");
 		const { models } = await api("/api/models/xai");
@@ -103,8 +124,9 @@ describe("choosing the model from the console", () => {
 		const audit = JSON.stringify(await annie.runtime.audit("default").read());
 		expect(audit).toContain("instance.model.updated");
 		expect(audit).not.toContain("xai-secret-123");
-		// A second change on the same provider needs no key again.
+		// A second change on the same provider needs no key again, and allows it once.
 		expect((await api("/api/instances/annie/model", "PUT", { provider: "xai", modelId: "grok-4.6" })).status).toBe(200);
+		expect((await annie.runtime.registry.getInstance("default", "annie")).egress.modelProviders).toEqual(["faux", "xai"]);
 	});
 
 	it("refuses a model the provider does not have, a provider without a key, and the server's own keys", async () => {
@@ -115,11 +137,31 @@ describe("choosing the model from the console", () => {
 		const keyless = await api("/api/instances/annie/model", "PUT", { provider: "mistral", modelId: "mistral-large-latest" });
 		expect(keyless).toMatchObject({ status: 400, error: expect.stringContaining("chiave") });
 		expect((await api("/api/instances/annie/model", "PUT", { provider: "openai", modelId: "gpt-5.5", apiKey: "mine-0001" })).status).toBe(400);
-		expect((await api("/api/instances/annie/model", "PUT", { provider: "xai", modelId: "grok-4.7", apiKey: "too short" })).status).toBe(400);
+		for (const apiKey of ["with space", "short", "x".repeat(501)]) expect((await api("/api/instances/annie/model", "PUT", { provider: "xai", modelId: "grok-4.7", apiKey })).status).toBe(400);
+		expect((await api("/api/instances/nope/model", "PUT", { provider: "xai", modelId: "grok-4.7", apiKey: "xai-key-0001" })).status).toBe(404);
 		expect((await annie.runtime.registry.getInstance("default", "annie")).model.provider).toBe("faux");
 		// The server's key is enough on its own.
 		expect((await api("/api/instances/annie/model", "PUT", { provider: "openai", modelId: "gpt-5.5" })).status).toBe(200);
 		expect(await annie.runtime.secrets("default").get(modelApiKeySecret("openai"))).toBe("server-openai");
+		// The server's key is the operator's to take away.
+		expect((await api("/api/model-keys/openai", "DELETE")).status).toBe(409);
+	});
+
+	it("a key the operator takes out of the environment leaves the account at the next start", async () => {
+		const dataDir = tempDataDir();
+		const start = async (env: Record<string, string>) => {
+			const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", ...env });
+			const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 3_600_000, log: () => {} });
+			running.push(annie);
+			return annie;
+		};
+		let annie = await start({ OPENROUTER_API_KEY: "or-server-key" });
+		await annie.runtime.secrets("default").set(modelApiKeySecret("xai"), "owner-own-key");
+		await annie.stop();
+		annie = await start({});
+		expect(await annie.runtime.secrets("default").get(modelApiKeySecret("openrouter"))).toBeUndefined();
+		// The owner's own key stays.
+		expect(await annie.runtime.secrets("default").get(modelApiKeySecret("xai"))).toBe("owner-own-key");
 	});
 
 	it("removes a saved key only when no instance uses that provider", async () => {

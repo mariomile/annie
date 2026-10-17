@@ -52,3 +52,8 @@ export const MODEL_PROVIDERS: readonly ModelProvider[] = [
 export function modelProvider(id: string): ModelProvider | undefined {
 	return MODEL_PROVIDERS.find((p) => p.id === id);
 }
+
+/** Every value ANNIE_MODEL_PROVIDER takes: the offered providers, then the local model. */
+export function providerIds(): string[] {
+	return [...MODEL_PROVIDERS.map((p) => p.id), DEV_PROVIDER];
+}

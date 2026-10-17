@@ -21,7 +21,7 @@ import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
-import { MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
+import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
@@ -990,7 +990,8 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (key === "server") throw new HttpError(400, `La chiave di ${provider.label} la mette il server: non serve la tua`);
 			if (!/^\S{8,500}$/.test(apiKey)) throw new HttpError(400, "La chiave non sembra giusta: incollala intera, senza spazi");
 			await runtime.secrets(tenantId).set(modelApiKeySecret(provider.id), apiKey);
-			await runtime.audit(tenantId).append({ type: "secret.set", instanceId: id, name: modelApiKeySecret(provider.id) });
+			// A key is the whole account's, not this instance's.
+			await runtime.audit(tenantId).append({ type: "secret.set", name: modelApiKeySecret(provider.id) });
 		} else if (key === "missing") {
 			throw new HttpError(400, `Serve la chiave di ${provider.label}`);
 		}
@@ -1000,7 +1001,9 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	route("DELETE", "/api/model-keys/:provider", "owner", async ({ params }) => {
 		const provider = modelProvider(params[0] as string);
-		if (provider === undefined || (await keyOf(provider.id)) !== "saved") throw new HttpError(404, "Nessuna chiave salvata per questo provider");
+		const key = provider === undefined ? "missing" : await keyOf(provider.id);
+		if (provider === undefined || key === "missing") throw new HttpError(404, "Nessuna chiave salvata per questo provider");
+		if (key === "server") throw new HttpError(409, `La chiave di ${provider.label} è del server: la toglie chi lo gestisce`);
 		const users = (await runtime.registry.listInstances(tenantId)).filter((r) => r.model.provider === provider.id);
 		if (users.length > 0) throw new HttpError(409, `La usa ${users.map((r) => r.name).join(", ")}: prima scegli un altro modello`);
 		await runtime.secrets(tenantId).delete(modelApiKeySecret(provider.id));
@@ -1027,8 +1030,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		const others = (record.allowedUsers.web ?? []).filter((id) => id !== me.id);
 		return {
 			setup: {
-				// The local development model answers with an echo: a real model is the operator's key.
-				model: record.model.provider !== "faux",
+				// The local development model answers with an echo: the owner picks a real one in Impostazioni.
+				model: record.model.provider !== DEV_PROVIDER,
 				instructions: ownInstructions(record.instructions ?? undefined, options.defaultInstructions),
 				tried,
 				channel: connected.some((c) => (record.allowedUsers[c] ?? []).length > 0),

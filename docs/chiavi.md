@@ -17,7 +17,7 @@ Questa guida serve a dare ad Annie quello che le manca per la prova dal vivo e p
 
 ## Le chiavi, in ordine di priorità
 
-### 1. Modello: `ANTHROPIC_API_KEY` (indispensabile)
+### 1. Modello: `ANTHROPIC_API_KEY` o la chiave di un altro provider (indispensabile)
 
 1. Vai su https://console.anthropic.com (può rimandarti alla nuova console della piattaforma) ed entra con l'account di Buildrs.
 2. **Settings → API Keys → Create Key**, nome `annie-dev`.
@@ -25,7 +25,7 @@ Questa guida serve a dare ad Annie quello che le manca per la prova dal vivo e p
 4. Consigliato: in **Settings → Limits** metti un tetto di spesa mensile, per esempio 50 dollari. Annie ha anche il suo tetto giornaliero.
 5. Dominio da consentire: `api.anthropic.com`.
 
-Al posto di Anthropic, o accanto, va bene uno qualsiasi dei provider di [ADR 0032](adr/0032-qualsiasi-modello.md): `OPENAI_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY` e gli altri del catalogo (`src/core/model-providers.ts`). `ANNIE_MODEL_PROVIDER` dice quale usa la prima istanza; ogni chiave messa qui l'owner la può usare da Impostazioni → Modello AI, dove può anche incollare una chiave sua.
+Al posto di Anthropic, o accanto, va bene uno qualsiasi dei 18 provider di [ADR 0032](adr/0032-qualsiasi-modello.md), che ha la tabella con il nome di ogni variabile e il dominio da consentire. `ANNIE_MODEL_PROVIDER` dice quale usa la prima istanza; ogni chiave messa qui l'owner la può usare da Impostazioni → Modello AI, dove può anche incollare una chiave sua. La segreteria commerciale vuole comunque `ANTHROPIC_API_KEY`.
 
 ### 2. Telegram: `TELEGRAM_BOT_TOKEN` e gli ID delle persone
 
@@ -218,7 +218,7 @@ Va bene qualunque servizio con la stessa API di OpenAI (`POST /images/generation
 
 | Servizio | Domini |
 |---|---|
-| Modello | `api.anthropic.com` |
+| Modello | `api.anthropic.com`, o il dominio del provider scelto (tabella in [ADR 0032](adr/0032-qualsiasi-modello.md)) |
 | Telegram | `api.telegram.org` |
 | Gmail (segreteria) | `gmail.googleapis.com`, `oauth2.googleapis.com` |
 | HubSpot | `api.hubapi.com` |

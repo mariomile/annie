@@ -24,10 +24,7 @@ import { vercelAIGatewayProvider } from "@earendil-works/pi-ai/providers/vercel-
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { zaiProvider } from "@earendil-works/pi-ai/providers/zai";
 import { MEMORY_NOTE_MARKER } from "../memory.ts";
-import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo } from "../model-providers.ts";
-
-export const FAUX_PROVIDER = DEV_PROVIDER;
-export const FAUX_MODEL_ID = DEV_MODEL_ID;
+import { DEV_MODEL_ID, DEV_PROVIDER, type ModelInfo, providerIds } from "../model-providers.ts";
 
 /** pi-ai's factory for each provider Annie offers (MODEL_PROVIDERS), and the local model. */
 const FACTORIES: Readonly<Record<string, () => Provider>> = {
@@ -49,12 +46,12 @@ const FACTORIES: Readonly<Record<string, () => Provider>> = {
 	fireworks: fireworksProvider,
 	huggingface: huggingfaceProvider,
 	nvidia: nvidiaProvider,
-	[FAUX_PROVIDER]: createDevModel,
+	[DEV_PROVIDER]: createDevModel,
 };
 
 export function createProvider(id: string): Provider {
 	const factory = Object.hasOwn(FACTORIES, id) ? FACTORIES[id] : undefined;
-	if (factory === undefined) throw new Error(`Unsupported model provider "${id}". Supported: ${[...MODEL_PROVIDERS.map((p) => p.id), FAUX_PROVIDER].join(", ")}`);
+	if (factory === undefined) throw new Error(`Unsupported model provider "${id}". Supported: ${providerIds().join(", ")}`);
 	return factory();
 }
 
@@ -82,7 +79,7 @@ export function providerModels(id: string): readonly ModelInfo[] {
  * - anything else → echoes the message, saying which pictures came with it
  */
 function createDevModel(): Provider {
-	const faux = fauxProvider({ provider: FAUX_PROVIDER, models: [{ id: FAUX_MODEL_ID, name: "Annie dev (deterministic)" }] });
+	const faux = fauxProvider({ provider: DEV_PROVIDER, models: [{ id: DEV_MODEL_ID, name: "Annie dev (deterministic)" }] });
 	// Faux responses are consumed one per request; this step re-queues itself forever.
 	const step = (context: { messages: Message[] }): AssistantMessage => {
 		faux.appendResponses([step]);

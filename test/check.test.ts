@@ -29,6 +29,14 @@ const healthy: Record<string, Route> = {
 };
 
 describe("pnpm annie check", () => {
+	it("a provider without a model list here: the key is there, the first reply proves it", async () => {
+		const net = internet({});
+		const [model] = await runChecks(loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "google", GEMINI_API_KEY: "g-secret" }), net.fetch);
+		expect(model).toMatchObject({ name: "Modello (google)", ok: true, detail: expect.stringContaining("GEMINI_API_KEY") });
+		expect(JSON.stringify(model)).not.toContain("g-secret");
+		expect(net.calls).toEqual([]);
+	});
+
 	it("all services answer: every check passes and says what it found", async () => {
 		const net = internet(healthy);
 		const results = await runChecks(loadAnnieConfig(ENV), net.fetch);

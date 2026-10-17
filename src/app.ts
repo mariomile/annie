@@ -51,7 +51,7 @@ import { customToolName, type ToolProposal } from "./core/proposals.ts";
 import type { InstanceRecord } from "./core/registry.ts";
 import { AnnieRuntime, type ToolSet } from "./core/runtime.ts";
 import { Scheduler } from "./core/scheduler.ts";
-import { modelApiKeySecret, TenantSecrets } from "./core/secrets.ts";
+import { syncServerModelKeys, TenantSecrets } from "./core/secrets.ts";
 import { createCustomTools } from "./core/tools/custom-tools.ts";
 import { createChartTools } from "./core/tools/chart-tools.ts";
 import { TranscriptionNotAllowed } from "./core/recordings.ts";
@@ -501,8 +501,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		if (config.telegram.allowedUsers !== undefined) await runtime.registry.setAllowedUsers(tenant, config.instanceId, "telegram", config.telegram.allowedUsers);
 		if (config.telegram.approvers !== undefined) await runtime.registry.updateInstance(tenant, config.instanceId, { approvers: { ...(record.approvers ?? {}), telegram: [...config.telegram.approvers] } });
 	}
-	// The operator's keys: written at every start, so changing one in the environment takes effect.
-	for (const [provider, key] of Object.entries(config.modelApiKeys)) await runtime.secrets(tenant).set(modelApiKeySecret(provider), key);
+	// The operator's keys: written at every start, and those taken out of the environment deleted.
+	await syncServerModelKeys(runtime.secrets(tenant), config.modelApiKeys);
 	// The bot in .env belongs to the general instance; bots connected from the console live in the secret store too.
 	if (config.telegram !== undefined) await runtime.secrets(tenant).set(telegramTokenSecret(config.instanceId), config.telegram.token);
 	const people = new PeopleStore(tenantDir(config.dataDir, toTenantId(tenant)));

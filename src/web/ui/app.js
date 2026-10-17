@@ -570,49 +570,70 @@ function modelCard(inst, current, providers) {
 	const offered = providers.some((p) => p.id === current.provider);
 	const provider = h(
 		"select",
-		{ "aria-label": "Provider" },
+		// The local development model is not offered: the instance keeps it until the owner picks another.
 		offered ? null : h("option", { value: current.provider, selected: "selected" }, "Modello di prova"),
 		providers.map((p) => h("option", { value: p.id, selected: p.id === current.provider ? "selected" : undefined }, p.label)),
 	);
-	const model = h("select", { "aria-label": "Modello" });
-	const key = h("input", { type: "password", autocomplete: "off", class: "mono" });
-	const keyRow = h("label.field", h("span", "Chiave API"), key, h("small"));
-	const status = h("span.chip");
+	const filter = h("input", { type: "search", placeholder: "Cerca un modello", autocomplete: "off" });
+	const model = h("select");
+	const key = h("input", { type: "password", autocomplete: "off", class: "mono", "aria-describedby": `model-key-${inst.id}` });
+	const hint = h("small", { id: `model-key-${inst.id}` });
+	const keyRow = h("label.field", h("span", "Chiave API"), key, hint);
+	const filterRow = h("label.field", h("span", "Cerca"), filter);
+	const status = h("span.chip", { "aria-live": "polite" });
+	const submit = h("button.btn.accent", "Usa questo modello");
 	const forget = h("button.btn.ghost", "Togli la chiave");
+	let models = [];
+	let asked = 0;
 	const chosen = () => providers.find((p) => p.id === provider.value);
-	// The models are asked for when a provider is picked: some have hundreds.
+	const fill = (wanted) => {
+		const words = filter.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+		const shown = models.filter((m) => m.id === wanted || words.every((w) => `${m.name} ${m.id}`.toLowerCase().includes(w)));
+		// Two models with the same name (one is a dated version) are told apart by their id.
+		const names = new Map();
+		for (const m of models) names.set(m.name, (names.get(m.name) ?? 0) + 1);
+		mount(model, shown.map((m) => h("option", { value: m.id, selected: m.id === wanted ? "selected" : undefined }, modelLabel(m, names.get(m.name) > 1))));
+		submit.disabled = shown.length === 0;
+	};
+	// The models are asked for when a provider is picked: some have hundreds. Only the last answer counts.
 	const showModels = async () => {
 		const p = chosen();
-		if (p === undefined) {
-			// The local development model is not offered: the instance keeps it until the owner picks another.
-			mount(model, h("option", { value: current.modelId }, `${current.modelId} (modello di prova)`));
-		} else {
-			const { models } = await api(`/api/models/${encodeURIComponent(p.id)}`);
-			const wanted = p.id === current.provider ? current.modelId : p.defaultModel;
-			const sorted = [...models].sort((a, b) => a.name.localeCompare(b.name));
-			mount(model, sorted.map((m) => h("option", { value: m.id, selected: m.id === wanted ? "selected" : undefined }, modelLabel(m))));
-		}
+		const ask = ++asked;
+		submit.disabled = true;
 		const state = p?.key ?? "server";
 		status.textContent = p === undefined ? "Modello di prova" : KEY_STATE[state];
-		status.className = `chip${state === "missing" ? " warn" : " ok"}`;
+		status.className = `chip${p === undefined || state === "missing" ? " warn" : " ok"}`;
 		key.disabled = state === "server";
 		key.value = "";
-		key.placeholder = state === "server" ? "Gestita da chi gestisce il server" : state === "saved" ? "Incollane una nuova per cambiarla" : `La tua chiave ${p.label}`;
-		keyRow.querySelector("small").textContent = state === "server" ? "Il server ha già la chiave di questo provider." : `Resta sul server con le altre chiavi dell'account e non torna più su questa pagina. In alternativa chi gestisce il server la mette in ${p.keyEnv}.`;
+		key.placeholder = state === "server" ? "La mette chi gestisce il server" : state === "saved" ? "Incollane una nuova per cambiarla" : `La tua chiave ${p.label}`;
+		hint.textContent = state === "server" ? "Il server ha già la chiave di questo provider." : `Resta sul server con le altre chiavi dell'account e non torna più su questa pagina. In alternativa chi gestisce il server la mette in ${p?.keyEnv}.`;
 		keyRow.hidden = p === undefined;
 		forget.hidden = state !== "saved";
+		filter.value = "";
+		if (p === undefined) {
+			models = [];
+			filterRow.hidden = true;
+			mount(model, h("option", { value: current.modelId }, current.modelId));
+			return;
+		}
+		const answer = await api(`/api/models/${encodeURIComponent(p.id)}`);
+		if (ask !== asked) return;
+		models = [...answer.models].sort((a, b) => a.name.localeCompare(b.name));
+		filterRow.hidden = models.length <= 20;
+		fill(p.id === current.provider ? current.modelId : p.defaultModel);
 	};
 	provider.addEventListener("change", () => showModels().catch((error) => toast(error.message, true)));
-	const save = async () => {
+	filter.addEventListener("input", () => fill(model.value));
+	submit.addEventListener("click", async () => {
 		try {
 			const body = { provider: provider.value, modelId: model.value, ...(key.value.trim() ? { apiKey: key.value.trim() } : {}) };
 			const { model: saved } = await api(`/api/instances/${inst.id}/model`, { method: "PUT", body });
-			toast(`Annie ora usa ${model.selectedOptions[0]?.textContent.split(" · ")[0] ?? saved.modelId}`);
+			toast(`Annie ora usa ${models.find((m) => m.id === saved.modelId)?.name ?? saved.modelId}`);
 			render();
 		} catch (error) {
 			toast(error.message, true);
 		}
-	};
+	});
 	forget.addEventListener("click", () =>
 		confirmDialog("Togliere la chiave?", `La chiave di ${chosen()?.label} viene cancellata dal server. Le istanze che la usano vanno prima spostate su un altro modello.`, "Togli", async () => {
 			await api(`/api/model-keys/${encodeURIComponent(provider.value)}`, { method: "DELETE" });
@@ -623,20 +644,22 @@ function modelCard(inst, current, providers) {
 	const card = h(
 		"div.card.pad",
 		h("div.row-gap", h("h3", "Modello AI"), status),
-		h("p.muted", "Il modello con cui Annie pensa e risponde: Claude, GPT, Gemini, Grok, Mistral, DeepSeek, Kimi, o uno dei tanti di OpenRouter. Cambiarlo non tocca chat, file e memoria."),
+		h("p.muted", "Il modello con cui Annie pensa e risponde: Claude, GPT, Gemini, Grok, Mistral, DeepSeek, Kimi, o uno dei tanti di OpenRouter. Cambiarlo non tocca chat, file e memoria: anche le chat vecchie continuano con il nuovo modello."),
 		h("label.field", h("span", "Provider"), provider),
+		filterRow,
 		h("label.field", h("span", "Modello"), model),
 		keyRow,
-		h("div.actions", h("button.btn.accent", { onclick: save }, "Usa questo modello"), forget),
+		h("div.actions", submit, forget),
 	);
 	showModels().catch((error) => toast(error.message, true));
 	return card;
 }
 
-/** «Claude Sonnet 5.5 · foto · ragiona · $3/$15»: what tells two models apart, prices per million tokens. */
-function modelLabel(m) {
-	const usd = (n) => `$${n < 1 ? n.toFixed(2).replace(/0$/, "") : Math.round(n * 10) / 10}`;
-	return [m.name, m.images ? "foto" : null, m.reasoning ? "ragiona" : null, m.inputUsd > 0 || m.outputUsd > 0 ? `${usd(m.inputUsd)}/${usd(m.outputUsd)} per M token` : null].filter(Boolean).join(" · ");
+/** «Claude Sonnet 5.5 · foto · ragiona · entrata $3 · uscita $15 per M token»: what tells two models apart. */
+function modelLabel(m, withId) {
+	const usd = (n) => `$${n < 1 ? Number(n.toFixed(2)) : Math.round(n * 10) / 10}`;
+	const price = m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
+	return [withId ? `${m.name} (${m.id})` : m.name, m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
 }
 
 /** Owner: voice messages of this instance transcribed by the server's service. */
@@ -2763,7 +2786,7 @@ async function viewSettings(main) {
 		api("/api/computer").catch(() => ({ available: false })),
 		api("/api/speech").catch(() => ({ available: false })),
 		api("/api/images").catch(() => ({ available: false })),
-		api(`/api/instances/${inst.id}/model`),
+		api(`/api/instances/${inst.id}/model`).catch(() => undefined),
 	]);
 	const name = h("input", { type: "text", value: settings.name });
 	const instructions = h("textarea", { rows: 9, value: settings.instructions });
@@ -2798,7 +2821,7 @@ async function viewSettings(main) {
 			h(
 				"div.stack",
 				h("div.card.pad", h("label.field", h("span", "Nome"), name), h("label.field", h("span", "Istruzioni"), instructions, h("small", "Il carattere e le regole di Annie per questa istanza."))),
-				anchor("modello", modelCard(inst, models.model, models.providers)),
+				models === undefined ? null : anchor("modello", modelCard(inst, models.model, models.providers)),
 				tg === undefined ? null : anchor("telegram", telegramCard(inst, tg.telegram)),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
 				tel === undefined ? null : phoneCard(inst, tel.phone),
