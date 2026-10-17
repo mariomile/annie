@@ -276,11 +276,13 @@ export class AnnieRuntime {
 	 */
 	async reopen(tenant: string, instance: string): Promise<{ pending: number; undelivered: number; reattached: number }> {
 		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
+		if (this.removing.has(key)) throw new NotFound(`Instance "${instanceId(instance)}" is being deleted`);
 		const previous = this.instances.get(key);
 		// The map holds the reopening at once: a submit meanwhile waits for the new instance
 		// instead of hitting the old one's lock, and a second reopen queues behind this one.
 		const next = (async () => {
 			await (await previous?.catch(() => undefined))?.close();
+			if (this.removing.has(key)) throw new NotFound(`Instance "${instanceId(instance)}" is being deleted`);
 			return this.open(tenant, instance);
 		})();
 		next.catch(() => {
@@ -299,14 +301,21 @@ export class AnnieRuntime {
 	 */
 	async removeInstance(tenant: string, instance: string): Promise<void> {
 		const key = `${tenantId(tenant)}/${instanceId(instance)}`;
-		await this.registry.getInstance(tenant, instance);
+		if (this.removing.has(key)) throw new NotFound(`Instance "${instanceId(instance)}" is being deleted`);
 		this.removing.add(key);
 		try {
+			const record = await this.registry.getInstance(tenant, instance);
 			const open = this.instances.get(key);
 			this.instances.delete(key);
 			await (await open?.catch(() => undefined))?.close();
 			this.participantStores.delete(key);
-			await this.registry.deleteInstance(tenant, instance);
+			// Another process with the instance open (the CLI, a bot run on its own) stops the deletion here.
+			const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
+			try {
+				await this.registry.deleteInstance(tenant, instance);
+			} finally {
+				lock.release();
+			}
 		} finally {
 			this.removing.delete(key);
 		}

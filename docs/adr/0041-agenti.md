@@ -13,6 +13,7 @@ Quasi tutto c'era già: un'istanza è un agente con il suo modello, le sue conve
 - **Nuovo agente.** Il modulo parte da un modello (Da zero, Assistente, Ricercatore, Scrittore, Analista, Assistenza clienti) che riempie nome, emoji, compito, tono e istruzioni: si cambia tutto prima di creare. I modelli stanno nella console, non nel server: sono solo un aiuto a compilare.
 - **Una persona sola per volta.** `PUT` sostituisce tutta la personalità, non la fonde: la console la manda sempre intera.
 - **Impostazioni.** La card «Personalità» sostituisce quella con nome e istruzioni: emoji e nome sulla stessa riga, compito, tono, istruzioni.
+- **Eliminare un agente**: dalla console, con il nome da scrivere per conferma ([ADR 0046](0046-eliminare-un-agente.md)).
 - **API.** `POST /api/instances` e `PUT /api/instances/:id/settings` accettano `persona`; `GET /api/instances` aggiunge `emoji` e `tagline` quando ci sono; `GET /api/agents` dà la pagina Agenti. Un nome vuoto in Impostazioni non cancella più il nome.
 
 ## Scartato
@@ -23,7 +24,6 @@ Quasi tutto c'era già: un'istanza è un agente con il suo modello, le sue conve
 
 ## Da fare
 
-- Cancellare un agente: dalla console, con il nome da scrivere per conferma ([ADR 0046](0046-eliminare-un-agente.md)).
 - Le istruzioni in Impostazioni mostrano anche quelle predefinite: sarebbe più chiaro modificare solo la parte dell'owner, come in Primi passi.
 
 ## Conseguenze

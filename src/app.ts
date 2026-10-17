@@ -1115,12 +1115,23 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		back: (instanceId, threadId) => panelAct(instanceId, threadId, (key, guard) => browseSessions.view(key, guard, { back: true, person: true })),
 	};
 	/**
-	 * Delete an agente for good (ADR 0046): first everything that reaches it from outside stops
-	 * (web, other agenti, bots, numbers, automations), then the core closes it and removes its
-	 * folder, then what it kept elsewhere goes: its keys, its browsers, its computer and screen,
-	 * and the other agenti's permission to hear from it (a new agente with the same ID starts with none).
+	 * Delete an agente for good (ADR 0046). First everything that reaches it from outside stops
+	 * (web, other agenti, bots, numbers, automations) and what it holds outside its folder goes:
+	 * its keys, sign-ins left halfway, the other agenti's permission to hear from it. So if the
+	 * deletion stops before the folder, the agente stays but disconnected, and deleting again is
+	 * safe. Then the core closes it and removes its folder; last its browsers, computer and screen.
+	 * One deletion per agente at a time: a second request waits for the first.
 	 */
-	async function deleteAgente(id: string): Promise<void> {
+	const deleting = new Map<string, Promise<void>>();
+	const deleteAgente = (id: string): Promise<void> => {
+		let running = deleting.get(id);
+		if (running === undefined) {
+			running = deleteNow(id).finally(() => deleting.delete(id));
+			deleting.set(id, running);
+		}
+		return running;
+	};
+	async function deleteNow(id: string): Promise<void> {
 		const record = await runtime.registry.getInstance(tenant, id);
 		const hooked = telegramHooks.has(id);
 		const bot = telegrams.get(id);
@@ -1132,20 +1143,34 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		webUnsubscribes.delete(id);
 		webChannels.delete(id);
 		agentChannels.delete(id);
-		await runtime.removeInstance(tenant, id);
-		const warn = (what: string) => (error: unknown) => log(`annie: deleting ${id}: ${what} not removed: ${error instanceof Error ? error.message : String(error)}`);
-		const secrets = runtime.secrets(tenant);
-		for (const name of await secrets.names()) if (ownSecret(name, id)) await secrets.delete(name).catch(warn(`key ${name}`));
-		await browseSessions.closeScope(`${record.tenantId}/${record.id}`).catch(warn("browsers"));
-		await computer?.reset(computerKey(tenant, id)).catch(warn("computer"));
-		if (desktop !== undefined && !desktop.shared) await desktop.reset(computerKey(tenant, id)).catch(warn("screen"));
 		connections.delete(id);
 		agentRates.delete(id);
 		voicePrefs.delete(id);
 		for (const key of googleClients.keys()) if (key.startsWith(`${id}:`)) googleClients.delete(key);
+		oauth?.forgetInstance(id);
+		await forgetAgente(id);
+		await runtime.removeInstance(tenant, id);
+		const warn = (what: string) => (error: unknown) => log(`annie: deleting ${id}: ${what} not removed: ${error instanceof Error ? error.message : String(error)}`);
+		await browseSessions.closeScope(`${record.tenantId}/${record.id}`).catch(warn("browsers"));
+		await computer?.reset(computerKey(tenant, id)).catch(warn("computer"));
+		if (desktop !== undefined && !desktop.shared) await desktop.reset(computerKey(tenant, id)).catch(warn("screen"));
+	}
+
+	/**
+	 * Drop what an agente ID holds outside its folder: its keys, and the other agenti's permission
+	 * to hear from it. Run before a deletion, and again before an agente is created with that ID,
+	 * in case a deletion was cut short: a new agente never inherits the old one's bots or trust.
+	 */
+	async function forgetAgente(id: string): Promise<void> {
+		const secrets = runtime.secrets(tenant);
+		for (const name of await secrets.names()) if (ownSecret(name, id)) await secrets.delete(name);
 		for (const other of await runtime.registry.listInstances(tenant)) {
 			const from = other.allowedUsers[AGENT_CHANNEL];
-			if (from?.includes(id)) await runtime.registry.setAllowedUsers(tenant, other.id, AGENT_CHANNEL, from.filter((x) => x !== id)).catch(warn(`permission of ${other.id}`));
+			if (other.id === id || !from?.includes(id)) continue;
+			const left = from.filter((x) => x !== id);
+			await runtime.registry.setAllowedUsers(tenant, other.id, AGENT_CHANNEL, left);
+			// Like the Agenti page: nobody left to hear from, no channel.
+			if (left.length === 0) await runtime.registry.setEgress(tenant, other.id, { ...other.egress, channels: other.egress.channels.filter((c) => c !== AGENT_CHANNEL) });
 		}
 	}
 
@@ -1333,6 +1358,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 		// Same model as the general instance; web only, open to the owner who creates it.
 		createInstance: async ({ id, name, instructions, persona, ownerId }) => {
+			await forgetAgente(id);
 			const general = await runtime.registry.getInstance(tenant, config.instanceId);
 			const record = await runtime.registry.createInstance(tenant, {
 				id,

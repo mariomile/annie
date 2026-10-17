@@ -869,7 +869,7 @@ function deleteCard(inst) {
 		const dialog = h(
 			"dialog",
 			h("h3", `Eliminare ${inst.name}?`),
-			h("p", `Se ne vanno le sue conversazioni, la sua memoria, i file del suo workspace, i task programmati e le sentinelle, le richieste in attesa e i connettori. Il bot Telegram, il numero WhatsApp e il telefono si scollegano, il suo computer e il suo schermo si spengono e si svuotano, e gli altri agenti non possono più scrivergli. Non si può annullare.`),
+			h("p", `Se ne vanno le sue conversazioni, la sua memoria, i file del suo workspace, i task programmati e le sentinelle, le richieste in attesa e i connettori. Bot Telegram, numero WhatsApp e telefono si scollegano, e il computer e lo schermo, se li ha, si spengono e si svuotano. Gli altri agenti non ricevono più messaggi da lui, e le risposte che gli dovevano ancora vanno perse. Non si può annullare.`),
 			h("label.field", h("span", `Per confermare scrivi «${inst.name}»`), typed),
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 		);
@@ -879,7 +879,7 @@ function deleteCard(inst) {
 				await api(`/api/instances/${inst.id}`, { method: "DELETE", body: { confirm: typed.value } });
 				dialog.close();
 				if (store("annie.instance") === inst.id) store("annie.instance", null);
-				toast(`${inst.name} eliminato`);
+				toast(`Agente «${inst.name}» eliminato`);
 				await refreshInstances();
 				go("agenti");
 			} catch (error) {

@@ -80,6 +80,7 @@ export class TenantRegistry {
 	async createInstance(tenant: string, input: CreateInstanceInput): Promise<InstanceRecord> {
 		const owner = await this.getTenant(tenant);
 		const id = instanceId(input.id);
+		await this.setAsideOrphan(owner.id, id);
 		const record: InstanceRecord = {
 			id,
 			tenantId: owner.id,
@@ -196,11 +197,16 @@ export class TenantRegistry {
 	 */
 	async deleteInstance(tenant: string, id: string): Promise<void> {
 		const record = await this.getInstance(tenant, id);
-		const aside = join(removedDir(this.dataDir, record.tenantId), `${record.id}-${randomBytes(6).toString("hex")}`);
-		await mkdir(dirname(aside), { recursive: true });
-		await rename(instanceDir(this.dataDir, record.tenantId, record.id), aside);
+		try {
+			await this.setAside(record.tenantId, record.id);
+		} catch (error) {
+			// Deleted meanwhile by someone else.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new NotFound(`Instance "${record.id}" not found in tenant "${record.tenantId}"`);
+			throw error;
+		}
 		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.deleted", instanceId: record.id, name: record.name });
-		await this.purgeRemoved(record.tenantId);
+		// The instance is gone already: files that resist are removed at the next start.
+		await this.purgeRemoved(record.tenantId).catch(() => {});
 	}
 
 	/** Remove what deleted instances left aside. */
@@ -208,10 +214,30 @@ export class TenantRegistry {
 		await rm(removedDir(this.dataDir, tenantId(tenant)), { recursive: true, force: true });
 	}
 
+	/** Move an instance's folder out of `instances/` in one step. */
+	private async setAside(tenant: TenantId, id: InstanceId): Promise<void> {
+		const aside = join(removedDir(this.dataDir, tenant), `${id}-${randomBytes(6).toString("hex")}`);
+		await mkdir(dirname(aside), { recursive: true });
+		await rename(instanceDir(this.dataDir, tenant, id), aside);
+	}
+
+	/**
+	 * A folder with no record: files a late writer put back after the instance was deleted. A new
+	 * instance with the same ID starts without them.
+	 */
+	private async setAsideOrphan(tenant: TenantId, id: InstanceId): Promise<void> {
+		if ((await readJson(instanceFile(this.dataDir, tenant, id))) !== undefined) return;
+		await this.setAside(tenant, id).catch((error: unknown) => {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		});
+	}
+
 	async listInstances(tenant: string): Promise<InstanceRecord[]> {
 		const t = tenantId(tenant);
 		const ids = await listDirs(join(tenantDir(this.dataDir, t), "instances"));
-		return Promise.all(ids.map((id) => this.getInstance(t, id)));
+		// A folder without its record (being deleted, or put back by a late write) is not an instance.
+		const records = await Promise.all(ids.map((id) => this.getInstance(t, id).catch((error: unknown) => (error instanceof NotFound ? undefined : Promise.reject(error)))));
+		return records.filter((r) => r !== undefined);
 	}
 }
 
