@@ -446,7 +446,7 @@ describe("the weather tool", () => {
 });
 
 describe("weather configuration", () => {
-	const base = { ANNIE_DATA_DIR: "/tmp/annie-weather", ANNIE_MODEL_PROVIDER: "faux" };
+	const base = { ANNIE_DATA_DIR: "/tmp/annie-weather", ANNIE_MODEL_PROVIDER: "faux", ANNIE_EXCHANGE_RATES: "0" };
 
 	it("is off unless the operator sets ANNIE_WEATHER=1; Open-Meteo and 200 calls a day by default", () => {
 		expect(loadAnnieConfig(base).weather).toBeUndefined();

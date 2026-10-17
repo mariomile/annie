@@ -26,12 +26,14 @@ const healthy: Record<string, Route> = {
 	"oauth2.googleapis.com": () => Response.json({ access_token: "at", scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send" }),
 	"gmail.googleapis.com": () => Response.json({ emailAddress: "vendite@azienda.example" }),
 	"api.hubapi.com": () => Response.json({ name: "hs_lead_status", options: [{ value: "NEW" }, { value: "ATTEMPTED_TO_CONTACT" }, { value: "UNQUALIFIED" }] }),
+	// The day's ECB file, dated today: the exchange rates are on unless ANNIE_EXCHANGE_RATES=0.
+	"www.ecb.europa.eu": () => new Response(`<Cube><Cube time='${new Date().toISOString().slice(0, 10)}'><Cube currency='USD' rate='1.0812'/><Cube currency='CHF' rate='0.9384'/></Cube></Cube>`),
 };
 
 describe("pnpm annie check", () => {
 	it("a provider without a model list here: the key is there, the first reply proves it", async () => {
 		const net = internet({});
-		const [model] = await runChecks(loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "google", GEMINI_API_KEY: "g-secret" }), net.fetch);
+		const [model] = await runChecks(loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "google", GEMINI_API_KEY: "g-secret", ANNIE_EXCHANGE_RATES: "0" }), net.fetch);
 		expect(model).toMatchObject({ name: "Modello (google)", ok: true, detail: expect.stringContaining("GEMINI_API_KEY") });
 		expect(JSON.stringify(model)).not.toContain("g-secret");
 		expect(net.calls).toEqual([]);
@@ -46,6 +48,7 @@ describe("pnpm annie check", () => {
 			["Telegram (segreteria)", true],
 			["Gmail", true],
 			["HubSpot", true],
+			["Cambi", true],
 		]);
 		expect(results.find((r) => r.name === "Gmail")?.detail).toContain("vendite@azienda.example");
 		expect(results.find((r) => r.name === "Telegram (segreteria)")?.detail).toContain("@segreteria_bot");
@@ -100,7 +103,7 @@ describe("pnpm annie check", () => {
 
 	it("only checks what is configured; the local model needs no network", async () => {
 		const net = internet({});
-		const results = await runChecks(loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "faux" }), net.fetch);
+		const results = await runChecks(loadAnnieConfig({ ANNIE_MODEL_PROVIDER: "faux", ANNIE_EXCHANGE_RATES: "0" }), net.fetch);
 		expect(results).toEqual([{ name: "Modello (faux)", ok: true, detail: "modello locale di sviluppo, nessuna chiave" }]);
 		expect(net.calls).toEqual([]);
 	});
