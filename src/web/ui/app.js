@@ -1323,10 +1323,12 @@ async function viewChat(main) {
 		stopTyping();
 		show(event.entry);
 		if (event.entry.from === "annie") void drawAsks();
+		browser.lively();
 		transcript.scrollTop = transcript.scrollHeight;
 		return true;
 	};
 	const box = chatBox(inst, threadId, conversation, async (text, images) => {
+		browser.lively();
 		const bubble = show({ from: "person", text, images, at: new Date().toISOString() });
 		const listed = state.threads.find((t) => t.id === threadId);
 		if (listed && listed.title === "Nuova chat") {
@@ -1443,15 +1445,23 @@ function browserPanel(inst, threadId) {
 		}
 	};
 	back.onclick = () => void go({ back: true });
-	// While the chat is on screen: a light question, often while the panel is open, rarely otherwise; a picture only after a change.
+	// While the chat is on screen: a light question, often while the panel is open or the conversation
+	// is moving (a message sent or arrived in the last two minutes), rarely otherwise; a picture only after a change.
 	let ticks = 0;
+	let livelyUntil = 0;
 	const timer = setInterval(() => {
 		if (!el.isConnected) return clearInterval(timer);
 		ticks += 1;
-		if (document.visibilityState === "visible" && (!el.hidden || ticks % 4 === 0)) void refresh();
+		if (document.visibilityState === "visible" && (!el.hidden || Date.now() < livelyUntil || ticks % 4 === 0)) void refresh();
 	}, 2000);
 	void refresh();
-	return { el, toggle };
+	return {
+		el,
+		toggle,
+		lively: () => {
+			livelyUntil = Date.now() + 120_000;
+		},
+	};
 }
 
 /** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
