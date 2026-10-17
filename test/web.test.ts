@@ -159,6 +159,12 @@ describe("web console", () => {
 		const docx = readFileSync(new URL("./fixtures/docs/preventivo.docx", import.meta.url));
 		const doc = await anna("/api/instances/ops/files/raw?name=preventivo.docx", { method: "PUT", body: docx, headers: { "content-type": "application/octet-stream" } });
 		expect(doc.body).toMatchObject({ file: { path: "uploads/preventivo.docx" }, document: "Word" });
+		// The note the console puts in the message: the same words as on Telegram and WhatsApp.
+		expect(up.body.note).toBe("[File caricato nel workspace: uploads/_.._listino.csv]");
+		expect(doc.body.note).toBe("[Documento Word nel workspace: uploads/preventivo.docx. Leggilo con file_read]");
+		const m4a = readFileSync(new URL("./fixtures/audio/riunione.m4a", import.meta.url));
+		const recording = await anna("/api/instances/ops/files/raw?name=riunione.m4a", { method: "PUT", body: m4a, headers: { "content-type": "application/octet-stream" } });
+		expect(recording.body.note).toBe("[Registrazione M4A, 00:30 nel workspace: uploads/riunione.m4a]");
 	});
 
 	it("a member sends photos with a message: the model sees them, the transcript shows them, and only real images are served inline", async () => {
