@@ -6,7 +6,8 @@ import { pageText, publicAddress, webFetch } from "../web-fetch.ts";
 import { WEB_SEARCH_CONNECTOR, type SearchResult, WebSearchError } from "../web-search.ts";
 import { pool } from "../pool.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { refusal, untrusted, type WebToolsOptions } from "./web-tools.ts";
+import { untrusted } from "../untrusted.ts";
+import { refusal, type WebToolsOptions } from "./web-tools.ts";
 
 /** Pages read for one dossier, at most; and at most this many from one site. */
 const MAX_PAGES = 8;

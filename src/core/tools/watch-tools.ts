@@ -1,6 +1,7 @@
 import type { AnnieTool } from "../engine.ts";
 import { threadPerson } from "../schedules.ts";
-import { firstLook, formatNumber, untrustedPage, type Watch, WatchError, WATCH_LIMITS, type WatchStore, watchUrl } from "../watches.ts";
+import { untrusted } from "../untrusted.ts";
+import { firstLook, formatNumber, type Watch, WatchError, WATCH_LIMITS, type WatchStore, watchUrl } from "../watches.ts";
 
 export type WatchToolsOptions = {
 	readonly store: WatchStore;
@@ -133,6 +134,6 @@ function describeNew(w: Watch, first: { price?: number; side?: string; excerpt: 
 	const head = `Sentinella ${w.id} attiva su ${new URL(w.url).host}: ${condition(w)}, controllo ogni ${w.everyMinutes} minuti. Scrivo qui quando c'è qualcosa.`;
 	const whatsapp = w.channel === "whatsapp" ? "\nSu WhatsApp un avviso arriva subito solo entro 24 ore dall'ultimo messaggio della persona: dopo, può restare in attesa finché non scrive. Diglielo." : "";
 	const price = first.price === undefined ? "" : `\nPrezzo letto adesso: ${formatNumber(first.price)}.${first.side === "below" || first.side === "above" ? " La condizione è già vera adesso: dillo alla persona." : ""}`;
-	const seen = first.excerpt === "" ? "" : `\n${untrustedPage(`Quello che guardo adesso: ${first.excerpt}`)}`;
+	const seen = first.excerpt === "" ? "" : `\n${untrusted(`Quello che guardo adesso: ${first.excerpt}`)}`;
 	return `${head}${price}${seen}${whatsapp}`;
 }

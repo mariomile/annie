@@ -214,6 +214,17 @@ Senza queste variabili Annie non crea immagini. Con queste, quando glielo chiedo
 
 Va bene qualunque servizio con la stessa API di OpenAI (`POST /images/generations` e `/images/edits`, immagini in `b64_json`); per un altro servizio indica anche il modello.
 
+### 16. Meteo: `ANNIE_WEATHER=1` (e una chiave per un uso aziendale)
+
+Senza questa variabile Annie non sa che tempo fa. Con `ANNIE_WEATHER=1` risponde a «che tempo fa a Roma?», «piove stasera a Milano?» o «meteo del weekend a Torino» con le condizioni di adesso, le fasce di oggi e domani (notte, mattina, pomeriggio, sera) e le previsioni fino a 16 giorni (tool `weather`). Il servizio è Open-Meteo, con server in Europa e in Nord America: gli vanno solo il nome del posto e le sue coordinate. I dati gratuiti sono sotto licenza CC BY 4.0: Annie cita Open-Meteo quando dà le previsioni.
+
+1. **Uso gratuito: solo privato o non commerciale.** Basta `ANNIE_WEATHER=1`. Limiti del piano gratuito: 10.000 chiamate al giorno, 5.000 all'ora, 600 al minuto, 300.000 al mese. Ogni richiesta meteo di Annie fa 2 chiamate (cerca il posto, poi le previsioni), e Open-Meteo conta come frazioni di chiamata in più le richieste con molte variabili o molti giorni.
+2. **Per l'uso aziendale (anche self-host in un'azienda, e Annie Cloud) serve un piano a pagamento e la sua chiave**: https://open-meteo.com/en/pricing (prezzi e limiti aggiornati sulla stessa pagina: controllali prima di scegliere). La chiave va in `ANNIE_WEATHER_API_KEY`: con la chiave le previsioni vanno da sole a `https://customer-api.open-meteo.com/v1/forecast` (Annie aggiunge `&apikey=`; `ANNIE_WEATHER_URL` solo per un altro indirizzo), e `ANNIE_WEATHER_GEOCODING_URL` diventa obbligatoria: l'indirizzo di ricerca dei posti che ti dà Open-Meteo con il piano.
+3. Facoltativo: `ANNIE_WEATHER_MAX_PER_DAY`, le richieste meteo (chiamate al tool, 2 chiamate al servizio ciascuna) al giorno per ogni account: 200 se non lo metti. Contano solo quelle andate a buon fine; i tentativi, anche falliti, si fermano al triplo, così un errore ripetuto non consuma il piano.
+4. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
+5. `pnpm annie check` cerca un posto e chiede le previsioni di un giorno: dice se i due indirizzi rispondono (e se la chiave va, quando c'è).
+6. Domini: `api.open-meteo.com` e `geocoding-api.open-meteo.com`; con un piano, `customer-api.open-meteo.com` e il dominio di ricerca che ti indica Open-Meteo.
+
 ## Domini da consentire nella sessione cloud
 
 | Servizio | Domini |
@@ -228,6 +239,7 @@ Va bene qualunque servizio con la stessa API di OpenAI (`POST /images/generation
 | WhatsApp | `graph.facebook.com`, `lookaside.fbsbx.com` |
 | Vocali | `api.mistral.ai` (o il servizio scelto) |
 | Ricerca sul web | `api.search.brave.com` |
+| Meteo | `api.open-meteo.com`, `geocoding-api.open-meteo.com` (con un piano, `customer-api.open-meteo.com` e il dominio di ricerca indicato da Open-Meteo) |
 | Risposte a voce | `api.openai.com` (o il servizio scelto) |
 | Immagini | `api.openai.com` (o il servizio scelto) |
 | Telefono | `api.twilio.com` (o la regione scelta) |
