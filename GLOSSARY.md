@@ -181,6 +181,10 @@ _Avoid_: notiziario, rassegna stampa (quando si intendono i titoli dei feed)
 Il servizio della Commissione europea che dice se un numero IVA è attivo per gli scambi intra-UE, con nome e indirizzo quando il paese li dà; `vat_check` lo usa con `ANNIE_VAT_CHECK`. «Non attiva nel VIES» non vuol dire che la partita IVA non esista. Vedi ADR 0047.
 _Avoid_: registro delle partite IVA, anagrafe tributaria
 
+**Scadenza fine mese**:
+Una scadenza di fattura come «60 gg d.f.f.m.»: Annie conta i giorni dalla data fattura e poi va all'ultimo giorno del mese; alcuni gestionali contano invece a mesi, e `date_calc` dà anche quella data quando è diversa. Una scadenza festiva non viene spostata. Vedi ADR 0048.
+_Avoid_: fine mese commerciale, scadenza a 30 giorni come mese
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

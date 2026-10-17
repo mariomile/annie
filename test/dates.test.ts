@@ -183,7 +183,15 @@ describe("reading dates", () => {
 		expect(parsePatrono("Milano")).toEqual({ day: "12-07", city: "Milano" });
 		expect(parsePatrono("l'aquila")).toEqual({ day: "06-10", city: "L'Aquila" });
 		expect(parsePatrono("NAPOLI")).toEqual({ day: "09-19", city: "Napoli" });
-		expect(dateError(() => parsePatrono("Bolzano"))).toContain("un capoluogo di regione");
+		expect(parsePatrono("Aosta")).toEqual({ day: "09-07", city: "Aosta" });
+		expect(dateError(() => parsePatrono("Bolzano"))).toContain("o uno dei capoluoghi della tabella; per gli altri comuni scrivi il giorno, per esempio 07/12");
+	});
+
+	it("reads a patron saint's day day first, also with a dash", () => {
+		expect(parsePatrono("07-06")).toEqual({ day: "06-07" });
+		expect(parsePatrono("29-06")).toEqual({ day: "06-29" });
+		expect(parsePatrono("7.6")).toEqual({ day: "06-07" });
+		expect(dateError(() => parsePatrono("06-29"))).toBe("29 non è un mese");
 	});
 });
 
@@ -291,6 +299,11 @@ describe("invoice due dates", () => {
 		expect(dueDates("2026-12-31", [60], { endOfMonth: true }).map((d) => [d.date, d.byMonths])).toEqual([["2027-03-31", "2027-02-28"]]);
 		expect(dueDates("2027-03-31", [30], { endOfMonth: false }).map((d) => d.date)).toEqual(["2027-04-30"]);
 		expect(dueDates("2028-01-31", [30], { endOfMonth: true })[0]?.byMonths).toBe("2028-02-29");
+	});
+
+	it("drops the month count when it lands past 2200", () => {
+		// 01/11/2200 + 60 days is 31/12/2200; two months on, its end of month would be 31/01/2201.
+		expect(dueDates("2200-11-01", [60], { endOfMonth: true })).toEqual([{ days: 60, date: "2200-12-31" }]);
 	});
 
 	it("«giorno fisso» moves to that day of the following month, the last when shorter", () => {
@@ -424,7 +437,8 @@ describe("date_calc", () => {
 		expect(await run({ op: "due", date: "15/10/2026", days: "30 df 60 fm" })).toBe("Errore: days mescola d.f. e f.m. su rate diverse: chiedi le rate una alla volta.");
 		expect(await run({ op: "due", date: "15/10/2026", days: "30 gg FM 10", fixed_day: 15 })).toBe("Errore: days dice giorno fisso 10 ma fixed_day è 15.");
 		expect(await run({ op: "due", date: "15/10/2026", days: "60 fine mese", end_of_month: false })).toBe("Errore: days dice fine mese ma end_of_month è false.");
-		expect(await run({ op: "due", date: "15/10/2026", days: "30 df 10" })).toContain("Errore: days sono i giorni di pagamento");
+		expect(await run({ op: "due", date: "15/10/2026", days: "30 df 10" })).toBe("Errore: il giorno fisso nel testo va dopo f.m.; con data fattura usa fixed_day.");
+		expect(await run({ op: "due", date: "15/10/2026", days: "30 gg circa" })).toContain("Errore: days sono i giorni di pagamento");
 	});
 
 	it("due: giorno fisso with d.f. through the tool", async () => {
@@ -465,6 +479,10 @@ describe("date_calc", () => {
 		expect(await run({ op: "holidays", year: 2030 })).not.toContain("legge 151/2025");
 		expect(await run({ op: "holidays", year: 1990 })).toBe("Errore: il calendario dei festivi di Annie vale dal 2001: per gli anni prima i festivi erano diversi.");
 		expect(await run({ op: "holidays", year: 2027, patrono: "Roma" })).toContain("• martedì 29/06/2027 Santo patrono di Roma");
+		const leap = await run({ op: "holidays", year: 2027, patrono: "29/02" });
+		expect(leap).toContain("Festività nazionali del 2027 con il patrono (13):");
+		expect(leap).toMatch(/\nIl patrono \(29\/02\) nel 2027 non cade: non è un anno bisestile\.$/);
+		expect(await run({ op: "holidays", year: 2028, patrono: "29/02" })).toContain("• martedì 29/02/2028 Santo patrono");
 	});
 
 	it("info: a written weekday that does not match is warned about; before 2001 no festivo or lavorativo", async () => {
@@ -478,6 +496,8 @@ describe("date_calc", () => {
 		expect(await run({ op: "age", date: "3/4/1990" })).toBe("Chi è nato martedì 03/04/1990 ha 36 anni. Il prossimo compleanno (37) è sabato 03/04/2027, fra 168 giorni.");
 		expect(await run({ op: "age", date: "3/4" })).toBe("Errore: manca l'anno nella data «3/4»: scrivilo per intero, come 03/04/1990.");
 		expect(await run({ op: "age", date: "17/10/1980" })).toContain("compie 46 anni oggi");
+		expect(await run({ op: "age", date: "03/04/1990", to: "01/01/1990" })).toBe("Errore: la data di riferimento viene prima della data di nascita.");
+		expect(await run({ op: "age", date: "03/04/2030" })).toBe("Errore: la data di nascita è nel futuro.");
 		expect(await run({ op: "age", date: "oggi" })).toBe("È nato oggi, sabato 17/10/2026: il primo compleanno sarà domenica 17/10/2027.");
 		expect(await run({ op: "age", date: "29/02/2004" })).toContain("Il prossimo compleanno (23) è domenica 28/02/2027, fra 134 giorni. Nato il 29 febbraio: negli anni non bisestili qui il compleanno si conta il 28 febbraio.");
 	});

@@ -144,7 +144,7 @@ export type Patrono = {
 	readonly city?: string;
 };
 
-/** The patron saint's day: a capoluogo of the table («Milano»), or a day, 29/06, «29 giugno», 06-29. */
+/** The patron saint's day: a capoluogo of the table («Milano»), or a day, 29/06, 29-06, «29 giugno». */
 export function parsePatrono(text: string): Patrono {
 	const t = cleaned(text).body;
 	const city = cleaned(text, true).body;
@@ -152,13 +152,12 @@ export function parsePatrono(text: string): Patrono {
 	if (day !== undefined) return { day, city: city.replace(/(^|[\s'-])([a-z])/g, (_, before: string, letter: string) => `${before}${letter.toUpperCase()}`) };
 	let dayOfMonth: number | undefined;
 	let month: number | undefined;
-	let m = /^(\d{1,2})[/.](\d{1,2})$/.exec(t);
+	// Day first, as in every date the person writes: 07-06 is 7 June.
+	let m = /^(\d{1,2})[/.-](\d{1,2})$/.exec(t);
 	if (m !== null) [dayOfMonth, month] = [Number(m[1]), Number(m[2])];
 	m = /^(\d{1,2}) (?:di )?([a-z]+)$/.exec(t);
 	if (m !== null) [dayOfMonth, month] = [Number(m[1]), monthNumber(m[2] as string)];
-	m = /^(\d{2})-(\d{2})$/.exec(t);
-	if (m !== null) [month, dayOfMonth] = [Number(m[1]), Number(m[2])];
-	if (dayOfMonth === undefined || month === undefined) throw new DateError(`non riconosco il patrono${shown(text)}: scrivi il giorno, come 29/06 o «29 giugno», o un capoluogo di regione`);
+	if (dayOfMonth === undefined || month === undefined) throw new DateError(`non riconosco il patrono${shown(text)}: scrivi il giorno, come 29/06 o «29 giugno», o uno dei capoluoghi della tabella; per gli altri comuni scrivi il giorno, per esempio 07/12`);
 	checkDay(dayOfMonth, month, undefined);
 	return { day: isoDate(2000, month, dayOfMonth).slice(5) };
 }
@@ -348,7 +347,8 @@ export function dueDates(invoice: string, days: readonly number[], terms: DueTer
 	};
 	return days.map((n) => {
 		const date = inRange(settle(addDays(invoice, n)));
-		const byMonths = terms.endOfMonth && n > 0 && n % 30 === 0 ? settle(addMonths(invoice, n / 30).date) : undefined;
+		const counted = terms.endOfMonth && n > 0 && n % 30 === 0 ? settle(addMonths(invoice, n / 30).date) : undefined;
+		const byMonths = counted !== undefined && Number(counted.slice(0, 4)) <= LAST_YEAR ? counted : undefined;
 		let slip: DueDate["slip"];
 		if (!workingDay(date, week)) {
 			let to = addDays(date, 1);

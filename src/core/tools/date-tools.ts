@@ -1,6 +1,6 @@
 import { addMonths, addTo, ageOn, type CountedHoliday, DateError, type DateReading, dayOfYear, dueDates, holidaysKnown, isoWeek, LAST_YEAR, MAX_AMOUNT, NO_HOLIDAYS, parseMonth, type Patrono, parsePatrono, type ReadDate, readDate, span, UNITS, type Unit, workingDaysIn } from "../dates.ts";
 import type { AnnieTool } from "../engine.ts";
-import { daysBetween, daysInMonth, type Holiday, HOLIDAYS_SINCE, holidayOn, isoDate, italianHolidays, leapYear, MONTH_NAMES, todayIn, weekdayOf, type WorkingWeek, workingDay } from "../italian-calendar.ts";
+import { daysBetween, daysInMonth, type Holiday, HOLIDAYS_SINCE, holidayOn, isoDate, italianHolidays, leapYear, MONTH_NAMES, realDate, todayIn, weekdayOf, type WorkingWeek, workingDay } from "../italian-calendar.ts";
 import { capitalized, italianDate, italianWeekday } from "../italian-format.ts";
 
 export type DateToolsOptions = {
@@ -219,9 +219,8 @@ function dueSpecOf(value: unknown): DueSpec | string {
 	const tags = new Set<string>();
 	while (tokens[i] === "FM" || tokens[i] === "DF") tags.add(tokens[i++] as string);
 	const fixedDay = isNumber(tokens[i]) ? Number(tokens[i++]) : undefined;
-	if (i < tokens.length || (fixedDay !== undefined && !tags.has("FM"))) {
-		return tokens.includes("FM") && tokens.includes("DF") ? "days mescola d.f. e f.m. su rate diverse: chiedi le rate una alla volta" : wrong;
-	}
+	if (i < tokens.length) return tokens.includes("FM") && tokens.includes("DF") ? "days mescola d.f. e f.m. su rate diverse: chiedi le rate una alla volta" : wrong;
+	if (fixedDay !== undefined && !tags.has("FM")) return tags.has("DF") ? "il giorno fisso nel testo va dopo f.m.; con data fattura usa fixed_day" : wrong;
 	if (fixedDay !== undefined && (fixedDay < 1 || fixedDay > 31)) return "il giorno fisso dopo f.m. va da 1 a 31";
 	const days = checkedDays(numbers);
 	if (days === undefined) return wrong;
@@ -390,10 +389,12 @@ function holidaysAnswer(year: number, patrono: Patrono | undefined, names: Names
 	const days = italianHolidays(year, patrono?.day);
 	const note = (h: Holiday) => (h.date.endsWith("-10-04") && h.name.startsWith("San Francesco") && SAN_FRANCESCO_NEWS.has(year) ? " (di nuovo festivo dal 2026, legge 151/2025)" : "");
 	const withPatrono = patrono === undefined ? "" : patrono.city === undefined ? " con il patrono" : ` con il patrono di ${patrono.city}`;
-	return `Festività nazionali del ${year}${withPatrono} (${days.length}):\n${days.map((h) => `• ${dayText(h.date)} ${names(h.name)}${note(h)}`).join("\n")}`;
+	const missing = patrono !== undefined && !realDate(`${year}-${patrono.day}`) ? `\nIl patrono (29/02) nel ${year} non cade: non è un anno bisestile.` : "";
+	return `Festività nazionali del ${year}${withPatrono} (${days.length}):\n${days.map((h) => `• ${dayText(h.date)} ${names(h.name)}${note(h)}`).join("\n")}${missing}`;
 }
 
 function ageAnswer(birth: string, on: string, today: string): string {
+	if (birth > on && on !== today) throw new DateError("la data di riferimento viene prima della data di nascita");
 	if (birth === on) return on === today ? `È nato oggi, ${dayText(birth)}: il primo compleanno sarà ${dayText(addMonths(birth, 12).date)}.` : `Il ${italianDate(on)} è il giorno della nascita.`;
 	const age = ageOn(birth, on);
 	const when = on === today ? "" : ` il ${italianDate(on)}`;

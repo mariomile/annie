@@ -174,4 +174,8 @@ export const PATRONI: Readonly<Record<string, string>> = {
 	bergamo: "08-26",
 	parma: "01-13",
 	modena: "01-31",
+	aosta: "09-07",
+	potenza: "05-30",
+	campobasso: "04-23",
+	catanzaro: "07-16",
 };
