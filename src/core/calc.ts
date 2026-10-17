@@ -80,13 +80,6 @@ export function compileExpression(expression: string): { names: string[]; run: (
 	return { names, run: (values) => new Parser(list, values).run() };
 }
 
-/** A result as it is read in Italy, to 12 significant digits: 1.234,5; with `decimals` exactly that many. */
-export function formatResult(value: number, decimals?: number): string {
-	const exact = Number(value.toPrecision(12));
-	if (Math.abs(exact) >= 1e15 || (exact !== 0 && Math.abs(exact) < 1e-9)) return exact.toExponential(6).replace(".", ",");
-	return new Intl.NumberFormat("it-IT", decimals === undefined ? { maximumFractionDigits: 10, useGrouping: true } : { minimumFractionDigits: decimals, maximumFractionDigits: decimals, useGrouping: true }).format(exact);
-}
-
 function tokens(text: string): Token[] {
 	const out: Token[] = [];
 	// A comma is a decimal comma when the arguments are split by «;» or when no function is called.

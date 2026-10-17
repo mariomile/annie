@@ -37,7 +37,7 @@ export async function runChecks(config: AnnieConfig, fetchImpl: typeof fetch = f
 	const weather = config.weather;
 	if (weather !== undefined) checks.push(check("Meteo", () => weatherCheck(weather, call)));
 	const rates = config.exchangeRates;
-	if (rates !== undefined) checks.push(check("Cambi", () => exchangeRatesCheck(rates, fetchImpl)));
+	if (rates !== undefined) checks.push(check("Cambi", () => exchangeRatesCheck(rates, call)));
 	const computer = config.computer;
 	if (computer !== undefined) checks.push(check(`Computer (${computerLabel(computer)})`, () => computerCheck(config, computer)));
 	return Promise.all(checks);
@@ -142,8 +142,10 @@ async function weatherCheck(config: { forecastUrl: string; geocodingUrl: string;
 }
 
 /** The day's file of reference rates, downloaded and read: the host answers and the file makes sense. */
-async function exchangeRatesCheck(config: ExchangeRatesConfig, fetchImpl: typeof fetch): Promise<string> {
+async function exchangeRatesCheck(config: ExchangeRatesConfig, call: Call): Promise<string> {
 	const host = new URL(config.url).host;
+	// The check's own call and timeout, like the other checks.
+	const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => call(String(input), init)) as typeof fetch;
 	try {
 		const { day } = await ecbRates(config, fetchImpl).rateOn();
 		return `${host} risponde, cambi del ${day.date} per ${day.rates.size} valute`;

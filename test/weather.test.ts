@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import type { ToolContext } from "../src/core/engine.ts";
+import { italianDay, italianNumber } from "../src/core/italian-format.ts";
 import { createWeatherTools } from "../src/core/tools/weather-tools.ts";
-import { italianDay, italianNumber, openMeteo, WEATHER_CODES, type WeatherConfig, WeatherError, weatherWords } from "../src/core/weather.ts";
+import { openMeteo, WEATHER_CODES, type WeatherConfig, WeatherError, weatherWords } from "../src/core/weather.ts";
 import { dailyCounter, dailyLimit } from "../src/core/web-search.ts";
 import { runChecks } from "../src/main/check.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
@@ -446,7 +447,7 @@ describe("the weather tool", () => {
 });
 
 describe("weather configuration", () => {
-	const base = { ANNIE_DATA_DIR: "/tmp/annie-weather", ANNIE_MODEL_PROVIDER: "faux", ANNIE_EXCHANGE_RATES: "0" };
+	const base = { ANNIE_DATA_DIR: "/tmp/annie-weather", ANNIE_MODEL_PROVIDER: "faux" };
 
 	it("is off unless the operator sets ANNIE_WEATHER=1; Open-Meteo and 200 calls a day by default", () => {
 		expect(loadAnnieConfig(base).weather).toBeUndefined();

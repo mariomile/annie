@@ -286,16 +286,3 @@ export function weatherWords(code: number | undefined): string {
 export function wetCode(code: number): boolean {
 	return code >= 51;
 }
-
-const NUMBER = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
-const DAY = new Intl.DateTimeFormat("it-IT", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
-
-/** 12,5: at most one decimal, with a comma. */
-export function italianNumber(value: number): string {
-	return NUMBER.format(value);
-}
-
-/** 2026-10-17 → sabato 17 ottobre; the first of the month is 1º. */
-export function italianDay(date: string): string {
-	return DAY.format(new Date(`${date}T00:00:00Z`)).replace(/ 1 /, " 1º ");
-}

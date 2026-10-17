@@ -225,16 +225,17 @@ Senza questa variabile Annie non sa che tempo fa. Con `ANNIE_WEATHER=1` risponde
 5. `pnpm annie check` cerca un posto e chiede le previsioni di un giorno: dice se i due indirizzi rispondono (e se la chiave va, quando c'è).
 6. Domini: `api.open-meteo.com` e `geocoding-api.open-meteo.com`; con un piano, `customer-api.open-meteo.com` e il dominio di ricerca che ti indica Open-Meteo.
 
-### 17. Cambi delle valute: niente da fare (`ANNIE_EXCHANGE_RATES=0` per spegnerli)
+### 17. Cambi delle valute: `ANNIE_EXCHANGE_RATES=1`
 
-Annie converte le valute con i cambi di riferimento ufficiali della Banca centrale europea (tool `exchange_rate`): «quanto fanno 1.250 dollari in euro?», «a quanto sta la sterlina?», anche alla data di una fattura. I cambi escono verso le 16:00 nei giorni lavorativi, per una trentina di valute contro l'euro.
+Senza questa variabile Annie non ha i cambi. Con `ANNIE_EXCHANGE_RATES=1` converte le valute con i cambi di riferimento ufficiali della Banca centrale europea (tool `exchange_rate`): «quanto fanno 1.250 dollari in euro?», «a quanto sta la sterlina?», anche alla data di una fattura, più importi insieme con il totale, l'andamento fino a un anno indietro e l'elenco delle valute del giorno. La BCE pubblica i cambi verso le 16:00 nei giorni lavorativi TARGET: nel 2026 sono 29 valute contro l'euro (non c'è più il lev bulgaro, perché la Bulgaria è entrata nell'euro il 1º gennaio 2026). Il cambio del rublo è sospeso dal 2 marzo 2022. Per le vecchie valute dell'area euro (lira, marco, franco francese, peseta, kuna, lev) Annie usa il cambio fisso irrevocabile.
 
-1. **Sono attivi di default e non serve una chiave.** Annie scarica solo i file pubblici della BCE: non parte niente di chi scrive.
-2. Per spegnerli, per esempio su un server senza internet: `ANNIE_EXCHANGE_RATES=0`.
-3. Facoltativo, solo per i test o per un mirror con gli stessi file: `ANNIE_EXCHANGE_RATES_URL` (di default `https://www.ecb.europa.eu/stats/eurofxref`).
-4. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
-5. `pnpm annie check` scarica i cambi del giorno e dice di che data sono.
-6. Dominio: `www.ecb.europa.eu`.
+La BCE pubblica questi cambi solo a titolo informativo: non valgono per le operazioni di mercato, e una banca o una carta applicano il proprio cambio. Annie cita la fonte («Cambio BCE del …»).
+
+1. **Non serve una chiave.** Annie scarica solo i file pubblici della BCE: non parte niente di chi scrive. Si accende con `ANNIE_EXCHANGE_RATES=1`, come ogni servizio esterno.
+2. Facoltativo, solo per i test o per un mirror con gli stessi file: `ANNIE_EXCHANGE_RATES_URL` (di default `https://www.ecb.europa.eu/stats/eurofxref`).
+3. In Annie Cloud basta metterle sul control plane: passano a tutte le celle.
+4. `pnpm annie check` scarica i cambi del giorno e dice di che data sono.
+5. Dominio: `www.ecb.europa.eu`.
 
 ## Domini da consentire nella sessione cloud
 
