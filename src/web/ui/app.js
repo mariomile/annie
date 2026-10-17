@@ -122,7 +122,7 @@ const PALETTE = [
 	{ id: "chat", label: "Chat", group: "Lavoro" },
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
-	{ id: "task", label: "Task programmati", group: "Lavoro" },
+	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
 	{ id: "file", label: "File", group: "Lavoro" },
 	{ id: "memoria", label: "Memoria", group: "Lavoro" },
 	{ id: "connettori", label: "Connettori", group: "Gestione", owner: true },
@@ -1223,8 +1223,9 @@ async function viewApprovals(main) {
 async function viewTasks(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ schedules }, threads, briefState] = await Promise.all([
+	const [{ schedules }, { watches }, threads, briefState] = await Promise.all([
 		api(`/api/instances/${inst.id}/schedules`),
+		api(`/api/instances/${inst.id}/watches`),
 		inst.canChat ? api(`/api/instances/${inst.id}/threads`).then((r) => r.threads) : Promise.resolve([]),
 		api(`/api/instances/${inst.id}/brief`).catch(() => undefined),
 	]);
@@ -1306,7 +1307,7 @@ async function viewTasks(main) {
 		}
 	};
 	main.replaceChildren(
-		head(inst.name, h("h1", "Task programmati"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione. Il risultato arriva nella chat scelta."),
+		head(inst.name, h("h1", "Task e sentinelle"), "Istruzioni che Annie esegue da sola, una volta o a ripetizione, e pagine che controlla per te. Il risultato arriva nella chat scelta."),
 		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
@@ -1319,7 +1320,104 @@ async function viewTasks(main) {
 					: h("p.muted", "Apri prima una conversazione in Chat: il risultato dei task arriva lì."),
 			),
 		),
+		...watchSection(inst, watches, threads),
 	);
+}
+
+/** Sentinelle: pages Annie checks by itself, writing to a chat when they change or a price crosses a threshold. */
+function watchSection(inst, watches, threads) {
+	const condition = (w) => {
+		const near = w.what ? ` (cerca «${w.what}»)` : "";
+		if (w.below != null && w.above != null) return `Prezzo${near} sotto ${w.below} o sopra ${w.above}`;
+		if (w.below != null) return `Prezzo${near} sotto ${w.below}`;
+		if (w.above != null) return `Prezzo${near} sopra ${w.above}`;
+		return w.what ? `Cambiamenti vicino a «${w.what}»` : "Qualsiasi cambiamento";
+	};
+	const status = (w) => {
+		if (w.disabledReason) return h("span.chip.bad", "ferma");
+		if (w.failures > 0) return h("span.chip.warn", { title: w.lastError || "" }, `errore ${w.failures}×`);
+		return h("span.chip.ok", "attiva");
+	};
+	const host = (url) => {
+		try {
+			return new URL(url).host;
+		} catch {
+			return url;
+		}
+	};
+	const table = h(
+		"table.ledger",
+		h("thead", h("tr", h("th", "Pagina"), h("th", "Avvisa per"), h("th", "Ultimo controllo"), h("th", ""))),
+		h(
+			"tbody",
+			watches.map((w) =>
+				h(
+					"tr",
+					h("td", h("a", { href: w.url, target: "_blank", rel: "noopener noreferrer" }, host(w.url)), h("div.mono.muted", `${w.id} · ogni ${w.everyMinutes} min${w.createdBy.kind === "instance" ? " · creata da Annie" : ""}`)),
+					h("td", condition(w), w.last?.price != null ? h("div.mono.muted", `ora ${w.last.price}`) : null, w.disabledReason ? h("div.muted", w.disabledReason) : null),
+					h("td.mono", w.lastCheckAt ? fmt.time(w.lastCheckAt) : "in arrivo", " ", status(w)),
+					h(
+						"td",
+						h(
+							"button.btn.small.danger",
+							{
+								onclick: async () => {
+									await api(`/api/instances/${inst.id}/watches/${w.id}`, { method: "DELETE" });
+									toast("Sentinella eliminata");
+									render();
+								},
+							},
+							"Elimina",
+						),
+					),
+				),
+			),
+		),
+	);
+	const url = h("input", { type: "url", placeholder: "https://negozio.it/prodotto" });
+	const what = h("input", { type: "text", placeholder: "Es. Prezzo, Disponibilità (facoltativo)", maxlength: 200 });
+	const below = h("input", { type: "number", min: 0, step: "0.01", placeholder: "Es. 50 (facoltativo)" });
+	const every = h(
+		"select",
+		[
+			[30, "Ogni 30 minuti"],
+			[60, "Ogni ora"],
+			[180, "Ogni 3 ore"],
+			[720, "Ogni 12 ore"],
+			[1440, "Ogni giorno"],
+		].map(([value, label]) => h("option", { value, ...(value === 60 ? { selected: true } : {}) }, label)),
+	);
+	const thread = h("select", threads.map((t) => h("option", { value: t.id }, t.title)));
+	const create = async () => {
+		try {
+			await api(`/api/instances/${inst.id}/watches`, { method: "POST", body: { url: url.value, what: what.value, below: below.value, everyMinutes: Number(every.value), threadId: thread.value } });
+			toast("Sentinella attiva: ti scrivo quando cambia");
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	return [
+		h("h2.subhead", "Sentinelle"),
+		h(
+			"div.grid-2",
+			h("div.card", watches.length ? table : h("div.empty", h("b", "Nessuna sentinella"), "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
+			h(
+				"div.card.pad",
+				h("h3", "Nuova sentinella"),
+				threads.length
+					? [
+							h("label.field", h("span", "Pagina da controllare"), url),
+							h("label.field", h("span", "Cosa guardare"), what, h("small", "Senza frase Annie guarda tutta la pagina.")),
+							h("label.field", h("span", "Avvisami se il prezzo scende sotto"), below),
+							h("label.field", h("span", "Quanto spesso"), every),
+							h("label.field", h("span", "Avvisi nella chat"), thread),
+							h("button.btn.accent", { onclick: create }, "Attiva"),
+						]
+					: h("p.muted", "Apri prima una conversazione in Chat: gli avvisi arrivano lì."),
+			),
+		),
+	];
 }
 
 /** The person's brief del mattino: on, off, and at what time. */

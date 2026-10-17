@@ -13,14 +13,15 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
-import { WEB_HOST_PATTERN } from "../core/policy.ts";
+import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
 import { ConnectorHttpError } from "../connectors/http.ts";
 import { instanceId } from "../core/ids.ts";
 import type { InstanceRecord } from "../core/registry.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
-import { type Schedule, ScheduleError, schedulePerson } from "../core/schedules.ts";
+import { type Schedule, ScheduleError, schedulePerson, threadPerson } from "../core/schedules.ts";
+import { type Watch, WatchError, watchUrl } from "../core/watches.ts";
 import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
 import { WorkspaceError } from "../core/workspace.ts";
 import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/images.ts";
@@ -504,6 +505,51 @@ export function createWebApp(options: WebAppOptions): Server {
 		const schedule = await store.get(params[1] as string);
 		if (schedule === undefined || (p.role !== "owner" && !mine(schedule, p))) throw new HttpError(404, "No such task");
 		return { removed: await store.remove(schedule.id) };
+	});
+
+	// --- sentinelle (ADR 0018) ---
+	route("GET", "/api/instances/:id/watches", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const all = await runtime.watches(tenantId, record.id).list();
+		// Like tasks: a member sees the sentinelle that write to them; the owner sees all.
+		return { watches: (p.role === "owner" ? all : all.filter((w) => mineWatch(w, p))).map(publicWatch) };
+	});
+	route("POST", "/api/instances/:id/watches", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { url?: unknown; what?: unknown; below?: unknown; above?: unknown; everyMinutes?: unknown; threadId?: unknown };
+		const thread = await channelOf(record.id).thread(String(body.threadId ?? ""));
+		if (thread === undefined || thread.personId !== p.id) throw new HttpError(400, "Scegli una tua chat dove ricevere gli avvisi");
+		const number = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+		try {
+			const url = watchUrl(String(body.url ?? ""));
+			const host = new URL(url).hostname;
+			if (!webHostAllowed(record.egress, host)) throw new HttpError(400, `${host} non è tra i siti che questa istanza può leggere: aggiungilo in Impostazioni`);
+			const watch = await runtime.watches(tenantId, record.id).create({
+				url,
+				...(typeof body.what === "string" && body.what.trim() !== "" ? { what: body.what } : {}),
+				...(number(body.below) === undefined ? {} : { below: number(body.below) as number }),
+				...(number(body.above) === undefined ? {} : { above: number(body.above) as number }),
+				...(number(body.everyMinutes) === undefined ? {} : { everyMinutes: number(body.everyMinutes) as number }),
+				channel: "web",
+				threadId: thread.id,
+				createdBy: { kind: "person", channel: "web", userId: p.id },
+			});
+			await runtime.audit(tenantId).append({ type: "watch.created", instanceId: record.id, personId: p.id, watchId: watch.id, host });
+			return { watch: publicWatch(watch) };
+		} catch (error) {
+			if (error instanceof WatchError) throw new HttpError(400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/watches/:wid", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { record } = await instanceAccess(p, params[0] as string);
+		const store = runtime.watches(tenantId, record.id);
+		const watch = await store.get(params[1] as string);
+		if (watch === undefined || (p.role !== "owner" && !mineWatch(watch, p))) throw new HttpError(404, "Nessuna sentinella così");
+		return { removed: await store.remove(watch.id) };
 	});
 
 	// --- tools proposti ---
@@ -1218,6 +1264,17 @@ export function createWebApp(options: WebAppOptions): Server {
 const STREAMED = Symbol("streamed");
 
 /** A task that acts for this person on the web (they created it, or it writes to their thread). */
+function mineWatch(watch: Watch, person: Person): boolean {
+	const who = threadPerson(watch);
+	return who?.channel === "web" && who.userId === person.id;
+}
+
+/** A sentinella for the console: without the page text it keeps to compare. */
+function publicWatch(watch: Watch) {
+	const { last, ...rest } = watch;
+	return { ...rest, ...(last === undefined ? {} : { last: { at: last.at, excerpt: last.excerpt, ...(last.price === undefined ? {} : { price: last.price }) } }) };
+}
+
 function mine(schedule: Schedule, person: Person): boolean {
 	const who = schedulePerson(schedule);
 	return who?.channel === "web" && who.userId === person.id;

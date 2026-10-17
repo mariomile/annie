@@ -7,10 +7,11 @@ import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
-import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { customToolsDir, engineDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
+import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { type InstanceRecord, TenantRegistry } from "./registry.ts";
@@ -154,6 +155,11 @@ export class AnnieRuntime {
 		return new ScheduleStore(schedulesDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
+	/** The sentinelle of an instance: pages it checks by itself (ADR 0018). */
+	watches(tenant: string, instance: string): WatchStore {
+		return new WatchStore(watchesDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
 	/** The files of an instance. Reading them needs no open instance. */
 	workspace(tenant: string, instance: string): Workspace {
 		return new Workspace(workspaceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
@@ -192,7 +198,7 @@ export class AnnieRuntime {
 	async submitScheduled(
 		tenant: string,
 		instance: string,
-		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" },
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
@@ -439,7 +445,8 @@ export class AnnieInstance {
 		scheduleId: string;
 		/** The person it acts for: must still be allowed, or the run is refused. */
 		onBehalfOf: { channel: string; userId: string } | undefined;
-		kind?: "brief";
+		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID. */
+		kind?: "brief" | "watch";
 	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
@@ -457,7 +464,8 @@ export class AnnieInstance {
 			}
 			throw error;
 		}
-		await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
+		if (request.kind === "watch") await this.audit.append({ type: "watch.fired", instanceId: this.record.id, watchId: request.scheduleId, channel: request.channel, threadId: request.threadId });
+		else await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
 		// The person's own memories only in a thread with them alone: a console thread, or a
 		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
 		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);

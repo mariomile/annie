@@ -121,14 +121,19 @@ export class ScheduleStore {
  * writes to (a Telegram private chat, a WhatsApp chat, a web thread). Undefined: nobody to answer for it.
  */
 export function schedulePerson(schedule: Schedule): { channel: string; userId: string } | undefined {
-	if (schedule.createdBy.kind === "person") return { channel: schedule.createdBy.channel, userId: schedule.createdBy.userId };
-	if (schedule.channel === "telegram" && /^\d+$/.test(schedule.threadId)) return { channel: "telegram", userId: schedule.threadId };
+	return threadPerson(schedule);
+}
+
+/** The same rule for anything that writes to a conversation by itself (a schedule, a sentinella). */
+export function threadPerson(item: { readonly createdBy: Schedule["createdBy"]; readonly channel: string; readonly threadId: string }): { channel: string; userId: string } | undefined {
+	if (item.createdBy.kind === "person") return { channel: item.createdBy.channel, userId: item.createdBy.userId };
+	if (item.channel === "telegram" && /^\d+$/.test(item.threadId)) return { channel: "telegram", userId: item.threadId };
 	// A WhatsApp chat is one person, whose number is the thread.
-	if (schedule.channel === "whatsapp" && /^\d+$/.test(schedule.threadId)) return { channel: "whatsapp", userId: schedule.threadId };
+	if (item.channel === "whatsapp" && /^\d+$/.test(item.threadId)) return { channel: "whatsapp", userId: item.threadId };
 	// A phone conversation is the caller's number.
-	if (schedule.channel === "phone" && /^\+\d{7,15}$/.test(schedule.threadId)) return { channel: "phone", userId: schedule.threadId };
-	const owner = schedule.threadId.split(".")[0] ?? "";
-	if (schedule.channel === "web" && /^p_[0-9a-f]{12}$/.test(owner)) return { channel: "web", userId: owner };
+	if (item.channel === "phone" && /^\+\d{7,15}$/.test(item.threadId)) return { channel: "phone", userId: item.threadId };
+	const owner = item.threadId.split(".")[0] ?? "";
+	if (item.channel === "web" && /^p_[0-9a-f]{12}$/.test(owner)) return { channel: "web", userId: owner };
 	return undefined;
 }
 
