@@ -6,6 +6,7 @@ import { ChannelRefused } from "../channels/types.ts";
 import { SPEECH_CONNECTOR } from "../channels/speech.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
+import { decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
@@ -129,8 +130,16 @@ export type WebAppOptions = {
 	};
 	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
 	readonly cell?: { readonly secret: string; readonly state: () => Promise<CellState> };
-	/** People connect their own Google account (Gmail and Calendar, read only). */
-	readonly google?: { readonly oauth: GoogleOAuth; readonly accounts: GoogleAccounts; readonly services: readonly GoogleService[]; readonly forget: (personId: string) => void };
+	/** People connect their own Google account (Gmail and Calendar): read, and write with their approval when `write` (ADR 0021). */
+	readonly google?: {
+		readonly oauth: GoogleOAuth;
+		readonly accounts: GoogleAccounts;
+		readonly services: readonly GoogleService[];
+		readonly forget: (personId: string) => void;
+		readonly write?: boolean;
+		readonly canWrite?: (personId: string) => boolean;
+		readonly runAction?: (instanceId: string) => (action: GoogleAction) => Promise<GoogleActionResult>;
+	};
 	/** Create an instance with its web channel, open for `ownerId` (owner only). */
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; ownerId: string }) => Promise<void>;
 	readonly log?: (message: string) => void;
@@ -855,7 +864,16 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (options.google === undefined) throw new HttpError(501, "Google non è configurato su questo server");
 		return options.google;
 	};
-	route("GET", "/api/google", "person", async ({ person }) => ({ available: options.google !== undefined, services: options.google?.services ?? [], account: options.google?.accounts.get((person as Person).id) ?? null }));
+	route("GET", "/api/google", "person", async ({ person }) => {
+		const p = person as Person;
+		const account = options.google?.accounts.get(p.id);
+		return {
+			available: options.google !== undefined,
+			services: options.google?.services ?? [],
+			write: options.google?.write === true,
+			account: account === undefined ? null : { ...account, canWrite: options.google?.canWrite?.(p.id) ?? false },
+		};
+	});
 	route("POST", "/api/google/start", "person", async ({ person }) => ({ url: googleOf().oauth.start((person as Person).id) }));
 	route("POST", "/api/google/finish", "person", async ({ person, req }) => {
 		const p = person as Person;
@@ -898,6 +916,28 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, GOOGLE_CONNECTOR] : others });
 		await runtime.audit(tenantId).append({ type: "google.allowed", instanceId: id, allowed: body.allowed });
 		return { allowed: body.allowed };
+	});
+
+	// --- writes to a person's Google account (ADR 0021): only that person sees and decides them ---
+	route("GET", "/api/instances/:id/google-actions", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		return { actions: (await runtime.googleActions(tenantId, params[0] as string).list()).filter((a) => a.personId === p.id) };
+	});
+	route("POST", "/api/instances/:id/google-actions/:aid/decision", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { decision?: string };
+		if (body.decision !== "approved" && body.decision !== "rejected") throw new HttpError(400, "decision: approved | rejected");
+		const run = options.google?.runAction;
+		if (run === undefined) throw new HttpError(501, "Google non può scrivere su questo server");
+		try {
+			return { action: await decideGoogleAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, p.id, run(params[0] as string)) };
+		} catch (error) {
+			// Someone else's request is, for this person, one that does not exist.
+			if (error instanceof GoogleActionError) throw new HttpError(404, "Richiesta inesistente");
+			throw error;
+		}
 	});
 
 	// --- owner: voice messages transcribed for an instance (the audio leaves for the operator's service) ---

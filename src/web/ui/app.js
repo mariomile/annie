@@ -310,6 +310,8 @@ async function refreshCounters() {
 		}
 		// Forms to send: a person sees and decides their own, an approver everyone's.
 		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/web-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
+		// Writes to the person's own Google account: theirs alone.
+		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
 		state.pendingApprovals = pending;
 		renderRail();
 	} catch {
@@ -429,20 +431,30 @@ async function finishGoogle() {
 	}
 }
 
+async function connectGoogle() {
+	try {
+		location.assign((await api("/api/google/start", { method: "POST", body: {} })).url);
+	} catch (error) {
+		toast(error.message, true);
+	}
+}
+
 /** The person's own Google account, in the account dialog. */
 function googleSection() {
 	const box = h("div.card.pad.stack");
 	const draw = async () => {
-		const { available, account, services } = await api("/api/google");
+		const { available, account, services, write } = await api("/api/google");
 		if (!available) return box.remove();
 		const what = services.length > 1 ? "la tua posta e il tuo calendario" : services[0] === "gmail" ? "la tua posta" : "il tuo calendario";
 		if (account) {
 			mount(box, 
 				h("div.kicker", "Google"),
 				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
-				h("p.muted", `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
+				h("p.muted", write && account.canWrite ? `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Può preparare mail ed eventi, che partono solo quando li approvi tu.` : `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
+				write && !account.canWrite ? h("p", "Per far preparare ad Annie mail ed eventi (che approvi tu), ricollega Google lasciando spuntati tutti i permessi.") : null,
 				h(
 					"div.actions",
+					write && !account.canWrite ? h("button.btn.accent", { onclick: () => void connectGoogle() }, "Ricollega Google") : null,
 					h(
 						"button.btn.danger",
 						{
@@ -460,23 +472,8 @@ function googleSection() {
 		}
 		mount(box, 
 			h("div.kicker", "Google"),
-			h("p", `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
-			h(
-				"div.actions",
-				h(
-					"button.btn.accent",
-					{
-						onclick: async () => {
-							try {
-								location.assign((await api("/api/google/start", { method: "POST", body: {} })).url);
-							} catch (error) {
-								toast(error.message, true);
-							}
-						},
-					},
-					"Collega Google",
-				),
-			),
+			h("p", write ? `Collega Google: Annie potrà leggere ${what} quando glielo chiedi dalla console, e preparare mail ed eventi che partono solo dopo la tua approvazione.` : `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
+			h("div.actions", h("button.btn.accent", { onclick: () => void connectGoogle() }, "Collega Google")),
 		);
 	};
 	void draw().catch(() => box.remove());
@@ -499,7 +496,7 @@ function googleCard(inst, allowed) {
 	return h(
 		"div.card.pad",
 		h("h3", "Google"),
-		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questa istanza di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console."),
+		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questa istanza di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console. Se il server lo permette, anche di preparare mail ed eventi: partono solo quando quella persona li approva."),
 		h("label.row-gap", toggle, h("span", "Consenti Google a questa istanza")),
 	);
 }
@@ -1009,6 +1006,15 @@ async function viewChat(main) {
 		return el;
 	};
 	for (const e of entries) show(e);
+	// Google writes this conversation asked for: decided here, above the box, without leaving the chat.
+	const asks = h("div.asks", { hidden: true });
+	const drawAsks = async () => {
+		const { actions } = await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }));
+		const waiting = actions.filter((a) => a.status === "pending" && a.thread?.threadId === threadId);
+		asks.hidden = waiting.length === 0;
+		mount(asks, ...waiting.map((a) => googleActionCard(inst, a, () => void drawAsks(), true)));
+	};
+	void drawAsks();
 	const stopTyping = () => {
 		typing?.remove();
 		typing = undefined;
@@ -1024,6 +1030,7 @@ async function viewChat(main) {
 		if (event.threadId !== threadId) return false;
 		stopTyping();
 		show(event.entry);
+		if (event.entry.from === "annie") void drawAsks();
 		transcript.scrollTop = transcript.scrollHeight;
 		return true;
 	};
@@ -1146,6 +1153,7 @@ async function viewChat(main) {
 	drawTray();
 	conversation.append(
 		transcript,
+		asks,
 		tray,
 		h("div.composer", h("label.btn.ghost.attach", { title: "Carica un file o una foto" }, "File", file), input, sendButton),
 	);
@@ -1348,6 +1356,10 @@ async function viewApprovals(main) {
 	};
 	const pendingActions = actions.filter((a) => a.status === "pending");
 	const decidedActions = actions.filter((a) => a.status !== "pending").reverse();
+	const { actions: googleActions } = await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }));
+	const afterGoogle = () => setTimeout(() => void refreshCounters().then(render), 600);
+	const pendingGoogle = googleActions.filter((a) => a.status === "pending").map((a) => googleActionCard(inst, a, afterGoogle));
+	const decidedGoogle = googleActions.filter((a) => a.status !== "pending").reverse().slice(0, 20).map((a) => googleActionCard(inst, a, afterGoogle));
 	// Everything waiting for this person, in one place: drafts of every segreteria they approve too.
 	const drafts = [];
 	for (const s of state.instances.filter((i) => i.hasSegreteria && i.isApprover)) {
@@ -1376,16 +1388,98 @@ async function viewApprovals(main) {
 			);
 	}
 	mount(main, 
-		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
+		head(inst.name, h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Annie prepara sul tuo Google, le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
 		h(
 			"div.stack",
 			drafts,
+			pendingGoogle,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le bozze della segreteria, i moduli da inviare e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."),
-			decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
+			drafts.length || pendingGoogle.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te, le bozze della segreteria, i moduli da inviare e i tool che Annie propone compaiono qui (e su Telegram o WhatsApp)."),
+			decidedGoogle.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
+}
+
+// ---------- Google: scrivere con approvazione ----------
+const GOOGLE_KIND = {
+	"mail.send": ["Mail da inviare", "Invia la mail"],
+	"mail.draft": ["Bozza da salvare in Gmail", "Salva la bozza"],
+	"calendar.create": ["Evento da creare", "Crea l'evento"],
+	"calendar.update": ["Evento da modificare", "Modifica l'evento"],
+	"calendar.delete": ["Evento da cancellare", "Cancella l'evento"],
+};
+const GOOGLE_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"], rejected: ["bad", "Rifiutato"], expired: ["bad", "Scaduto"], uncertain: ["bad", "Esito incerto"], running: ["ok", "In corso"] };
+
+/** An event time as Google takes it, for reading: "gio 16 ott, 10:00" as written (in the event's own zone), or the day. */
+function eventWhen(t) {
+	if (!t) return "";
+	const text = typeof t === "string" ? t : (t.date ?? t.dateTime ?? "");
+	const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(text);
+	if (!m) return text;
+	const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString("it-IT", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+	return m[4] ? `${day}, ${m[4]}:${m[5]}` : `${day}, tutto il giorno`;
+}
+
+/** Start → end, the end's day left out when it is the same. */
+function eventSpan(start, end) {
+	const a = eventWhen(start);
+	const b = eventWhen(end);
+	const [dayA] = a.split(", ");
+	return b.startsWith(`${dayA}, `) && !b.endsWith("tutto il giorno") ? `${a} → ${b.slice(dayA.length + 2)}` : `${a} → ${b}`;
+}
+
+/**
+ * A write to the person's Google account, as they decide it: everything that will happen, word
+ * for word. `compact` in the chat, where the conversation already says why.
+ */
+function googleActionCard(inst, a, after, compact = false) {
+	const [title, verb] = GOOGLE_KIND[a.kind] ?? ["Richiesta", "Approva"];
+	const rows = [];
+	const row = (label, value) => value && rows.push(h("tr", h("td", label), h("td", value)));
+	if (a.mail) {
+		row("Da", a.account);
+		row("A", a.mail.to.join(", "));
+		row("Cc", a.mail.cc.join(", "));
+		row("Oggetto", a.mail.subject || "(senza oggetto)");
+		if (a.mail.inReplyTo) row("In risposta", "alla mail ricevuta, nello stesso filo");
+	} else {
+		const e = a.event ?? {};
+		row("Calendario", a.account);
+		if (a.current) row("Ora", `${a.current.summary} · ${eventSpan(a.current.start, a.current.end)}`);
+		row(a.kind === "calendar.update" ? "Nuovo titolo" : "Titolo", e.summary);
+		if (e.start) row(a.kind === "calendar.update" ? "Nuovo orario" : "Quando", eventSpan(e.start, e.end));
+		row("Luogo", e.location);
+		if (e.attendees) row("Invitati", e.attendees.length ? e.attendees.join(", ") : "nessuno");
+		row("Descrizione", e.description);
+		if (a.kind !== "calendar.create" || e.attendees?.length) row("Avvisi", a.notify ? "Google scrive agli invitati" : "nessuno viene avvisato");
+	}
+	const el = h(
+		`article.card.pad.dossier.google-ask${compact ? ".compact" : ""}`,
+		h("header", h("div", h("div.kicker", `${title} · richiesta ${a.id}`), h("h3", a.reason)), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		h("table.ledger.fields", h("tbody", rows)),
+		a.mail ? h("pre.letter", a.mail.body) : null,
+		a.result && (a.result.error || a.result.link) ? h("p.muted", a.result.error ?? h("a", { href: a.result.link, target: "_blank", rel: "noopener" }, "Apri in Google Calendar")) : null,
+		a.status !== "pending" && GOOGLE_STAMP[a.status] ? h(`div.stamp.${GOOGLE_STAMP[a.status][0]}`, GOOGLE_STAMP[a.status][1]) : null,
+	);
+	if (a.status === "pending") {
+		const buttons = [];
+		const decide = async (decision) => {
+			for (const b of buttons) b.disabled = true;
+			try {
+				const { action } = await api(`/api/instances/${inst.id}/google-actions/${a.id}/decision`, { method: "POST", body: { decision } });
+				const words = { done: "Fatto", rejected: "Rifiutata: non l'ho fatto", failed: "Non è riuscito: Annie ti dice perché", uncertain: "Esito incerto: controlla in Google", expired: "Richiesta scaduta" };
+				toast(words[action.status] ?? action.status, action.status === "failed" || action.status === "uncertain");
+				after();
+			} catch (error) {
+				for (const b of buttons) b.disabled = false;
+				toast(error.message, true);
+			}
+		};
+		buttons.push(h(`button.btn${a.kind === "calendar.delete" ? ".danger" : ".accent"}`, { onclick: () => decide("approved") }, verb), h("button.btn.ghost", { onclick: () => decide("rejected") }, "Rifiuta"));
+		el.append(h("div.actions", ...buttons, compact ? null : h("span.muted", "Succede una volta sola, esattamente così. Scade fra 24 ore.")));
+	}
+	return el;
 }
 
 // ---------- ascolta ----------

@@ -154,7 +154,7 @@ export type AnnieConfig = {
 	/** Running as a cell of Annie Cloud: set by the control plane. */
 	readonly cell: { readonly secret: string | undefined };
 	/** The OAuth client people connect their Google account with (Gmail and Calendar, read only). */
-	readonly google: { readonly clientId: string; readonly clientSecret: string; readonly redirectUrl: string; readonly services: readonly GoogleService[] } | undefined;
+	readonly google: { readonly clientId: string; readonly clientSecret: string; readonly redirectUrl: string; readonly services: readonly GoogleService[]; readonly write: boolean } | undefined;
 	/** Chromium for web_screenshot; Playwright's own if unset. */
 	readonly chromiumPath: string | undefined;
 	/** The operator accepts Chromium without its sandbox where the sandbox cannot start (ADR 0009). */
@@ -257,7 +257,9 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		const services = (nonEmpty(env.ANNIE_GOOGLE_SERVICES) ?? GOOGLE_SERVICES.join(",")).split(",").map((x) => x.trim()).filter((x) => x !== "");
 		const unknown = services.filter((x) => !(GOOGLE_SERVICES as readonly string[]).includes(x));
 		if (services.length === 0 || unknown.length > 0) throw new ConfigError(`ANNIE_GOOGLE_SERVICES: a comma-separated list of ${GOOGLE_SERVICES.join(", ")}${unknown.length > 0 ? `; unknown: ${unknown.join(", ")}` : ""}`);
-		google = { clientId: googleId, clientSecret: googleSecret, redirectUrl, services: [...new Set(services)] as GoogleService[] };
+		const write = nonEmpty(env.ANNIE_GOOGLE_WRITE) ?? "0";
+		if (!["0", "1", "true", "false"].includes(write)) throw new ConfigError("ANNIE_GOOGLE_WRITE: 1 to let people approve mail and events Annie writes for them, 0 (default) to only read");
+		google = { clientId: googleId, clientSecret: googleSecret, redirectUrl, services: [...new Set(services)] as GoogleService[], write: write === "1" || write === "true" };
 	}
 	const transcribeUrl = nonEmpty(env.ANNIE_TRANSCRIBE_URL);
 	const transcribeKey = nonEmpty(env.ANNIE_TRANSCRIBE_API_KEY);
