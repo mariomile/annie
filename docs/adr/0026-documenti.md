@@ -29,6 +29,6 @@ Chi lavora in una piccola azienda manda ad Annie soprattutto documenti: un preve
 - Un documento ricevuto da fuori può contenere istruzioni nascoste (testo bianco in un PDF) come una pagina web: è recintato come dati, e le azioni delicate restano dietro un'approvazione.
 - I PDF escono nell'ordine in cui il testo è scritto nel file, che di solito è quello di lettura ma non sempre: un modulo che disegna prima tutte le etichette e poi tutti i valori li dà separati, una tabella disegnata per colonne esce per colonne. Riordinare per posizione sulla pagina rovinerebbe i testi su due colonne; si può fare con più casi di prova.
 - Le formule di Excel danno l'ultimo valore salvato dal programma che le ha scritte; un file creato da uno script senza valori in cache le mostra vuote.
-- Le scansioni non si leggono senza OCR: Annie lo dice e propone il computer (pagine in immagini, poi `image_view`) o una foto.
+- Le scansioni non si leggono senza OCR: Annie lo dice e propone il computer (pagine in immagini, poi `image_view`) o una foto. Dalla settimana 34 Annie ne guarda direttamente le pagine (ADR 0028).
 - I numeri dei fogli OpenDocument escono come li ha scritti il programma che ha salvato il file (anche con il punto decimale); quelli di Excel sono riformattati all'italiana.
 - Un worker per lettura costa circa 100 ms di avvio; il testo resta in memoria per i pezzi successivi.
