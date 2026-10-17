@@ -12,7 +12,7 @@ import { PeopleStore, SessionStore } from "../src/web/auth.ts";
 import { WebChannel } from "../src/web/channel.ts";
 import { createWebApp } from "../src/web/server.ts";
 import { totp } from "../src/web/totp.ts";
-import { FAUX_MODEL, tempDataDir, waitFor } from "./helpers.ts";
+import { FAUX_MODEL, PNG, tempDataDir, waitFor } from "./helpers.ts";
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -154,6 +154,39 @@ describe("web console", () => {
 		expect(down.body).toBe("a,b\n1,2\n");
 		expect(down.headers.get("content-disposition")).toMatch(/^attachment;/);
 		expect((await anna("/api/instances/ops/files/raw?path=../../people.json")).status).toBe(400);
+	});
+
+	it("a member sends photos with a message: the model sees them, the transcript shows them, and only real images are served inline", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const raw = (name: string, body: Uint8Array | string) => anna(`/api/instances/ops/files/raw?name=${name}`, { method: "PUT", body, headers: { "content-type": "application/octet-stream" } });
+		const photo = (await raw("scontrino.png", PNG)).body.file.path;
+		const svg = (await raw("logo.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>")).body.file.path;
+		const thread = (await anna("/api/instances/ops/threads", { method: "POST", body: "{}" })).body.thread;
+		const post = (body: unknown) => anna(`/api/instances/ops/threads/${thread.id}/messages`, { method: "POST", body: JSON.stringify(body) });
+		// Only uploads/, at most four, never an empty message without them.
+		expect((await post({ text: "", images: ["../people.json"] })).status).toBe(400);
+		expect((await post({ text: "x", images: ["memoria/note.md"] })).status).toBe(400);
+		expect((await post({ text: "x", images: Array(5).fill(photo) })).status).toBe(400);
+		expect((await post({ text: "" })).status).toBe(400);
+		expect((await post({ text: "", images: [photo] })).status).toBe(200);
+		let entries: any[] = [];
+		await waitFor(() => entries.length === 2 || (void anna(`/api/instances/ops/threads/${thread.id}`).then((r) => (entries = r.body.entries ?? [])), false));
+		expect(entries[0]).toMatchObject({ from: "person", text: "", images: [photo] });
+		expect(entries[1].text).toBe(`Annie (modello locale di sviluppo): hai scritto «[Immagine nel workspace: ${photo}]» e mandato 1 immagine (image/png, 20 byte)`);
+		expect((await anna("/api/instances/ops/threads")).body.threads[0].title).toBe("Foto");
+		const inline = await anna(`/api/instances/ops/files/raw?path=${encodeURIComponent(photo)}&inline=1`);
+		expect(inline.headers.get("content-type")).toBe("image/png");
+		expect(inline.headers.get("content-disposition")).toBe("inline");
+		expect(inline.headers.get("x-content-type-options")).toBe("nosniff");
+		// An SVG can carry script: always a download, never shown by the page.
+		const asked = await anna(`/api/instances/ops/files/raw?path=${encodeURIComponent(svg)}&inline=1`);
+		expect(asked.headers.get("content-disposition")).toMatch(/^attachment;/);
+		expect(asked.headers.get("content-type")).not.toContain("svg");
+		// A picture that is not one still reaches the model as text only, with the reason.
+		expect((await post({ text: "e questo?", images: [svg] })).status).toBe(200);
+		await waitFor(() => entries.length === 4 || (void anna(`/api/instances/ops/threads/${thread.id}`).then((r) => (entries = r.body.entries ?? [])), false));
+		expect(entries[3].text).toContain(`[Immagini non mostrate: ${svg} (non è un'immagine JPEG, PNG, GIF o WebP)]`);
 	});
 
 	it("a member sees and deletes only the tasks that act for them", async () => {

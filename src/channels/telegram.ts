@@ -1,3 +1,4 @@
+import { imageType } from "../core/images.ts";
 import { audioName, type Transcribe, tooLong, voiceText } from "./voice.ts";
 import { DUPLICATE_NOTICE, splitText as splitPieces } from "./text.ts";
 import { type ActionButton, type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage, type OutboundFile, type OutboundMessage } from "./types.ts";
@@ -53,6 +54,8 @@ export type TelegramUpdate = {
 		text?: string;
 		caption?: string;
 		document?: { file_id: string; file_name?: string; file_size?: number };
+		/** The same photo in several sizes, smallest first. */
+		photo?: { file_id: string; file_size?: number; width?: number; height?: number }[];
 		voice?: TelegramSound;
 		audio?: TelegramSound;
 	};
@@ -197,7 +200,8 @@ export class TelegramAdapter implements ChannelAdapter {
 		const message = update.message;
 		if (message === undefined || this.handler === undefined) return;
 		const sound = message.voice ?? message.audio;
-		if (message.text === undefined && message.document === undefined && sound === undefined) return;
+		const photo = largest(message.photo);
+		if (message.text === undefined && message.document === undefined && sound === undefined && photo === undefined) return;
 		const userId = String(message.from?.id ?? message.chat.id);
 		const mayDownload = (await this.options.mayDownload?.(userId)) ?? true;
 		let text = message.text ?? message.caption ?? "";
@@ -207,6 +211,11 @@ export class TelegramAdapter implements ChannelAdapter {
 			text = [words, text].filter(Boolean).join("\n\n");
 		}
 		const attachments = message.document === undefined || !mayDownload ? [] : [await this.download(message.document)];
+		if (photo !== undefined && mayDownload) {
+			const file = await this.download({ file_id: photo.file_id, ...(photo.file_size === undefined ? {} : { file_size: photo.file_size }) });
+			// Named by what it is: Telegram sends photos as JPEG, but the bytes decide.
+			attachments.push({ name: `foto.${(imageType(file.data) ?? "image/jpeg").slice("image/".length).replace("jpeg", "jpg")}`, data: file.data });
+		}
 		await this.handler({
 			tenantId: this.options.tenantId,
 			instanceId: this.options.instanceId,
@@ -331,4 +340,9 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 			resolve();
 		}, { once: true });
 	});
+}
+
+/** The biggest size of a photo, by pixels: the one the model reads best. */
+function largest(sizes: readonly { file_id: string; file_size?: number; width?: number; height?: number }[] | undefined) {
+	return sizes?.reduce((best, size) => ((size.width ?? 0) * (size.height ?? 0) >= (best.width ?? 0) * (best.height ?? 0) ? size : best));
 }

@@ -772,7 +772,7 @@ async function viewChat(main) {
 				h("p", "Annie risponde, prepara file, programma promemoria e usa i connettori della tua azienda. Le azioni delicate passano sempre da un'approvazione."),
 				h(
 					"div.hints",
-					["Riassumi in punti il file che ti carico", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t) }, t)),
+					["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"].map((t) => h("button", { onclick: () => newThread(t) }, t)),
 				),
 			),
 		);
@@ -783,11 +783,15 @@ async function viewChat(main) {
 	const { entries } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	let typing;
+	const picture = (path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
 	const show = (entry) => {
 		const body = entry.file
 			? h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(entry.file.path)}` }, h("span.ext", (entry.file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", entry.file.path.split("/").pop()), entry.file.caption ? h("div.muted", entry.file.caption) : null))
 			: h("div.body", entry.text ?? "");
-		transcript.append(h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at)), body));
+		const pictures = entry.images?.length
+			? h("div.pics", entry.images.map((path) => h("a", { href: picture(path), target: "_blank", rel: "noopener" }, h("img", { src: picture(path), alt: path.split("/").pop(), loading: "lazy" }))))
+			: null;
+		transcript.append(h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at)), pictures, entry.text || entry.file || !pictures ? body : null));
 	};
 	for (const e of entries) show(e);
 	const stopTyping = () => {
@@ -809,22 +813,38 @@ async function viewChat(main) {
 		return true;
 	};
 	const input = h("textarea", { rows: 1, placeholder: "Scrivi ad Annie…", title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(`annie.draft.${threadId}`) ?? "" });
+	// Photos uploaded for the next message: shown above the box until it is sent.
+	const pending = [];
+	const tray = h("div.tray", { hidden: true });
+	const drawTray = () => {
+		tray.hidden = pending.length === 0;
+		tray.replaceChildren(
+			...pending.map((p, i) =>
+				h("span.chip", h("img", { src: picture(p), alt: "" }), h("button", { "aria-label": `Togli ${p.split("/").pop()}`, onclick: () => { pending.splice(i, 1); drawTray(); } }, "×")),
+			),
+		);
+	};
 	const send = async () => {
 		const text = input.value.trim();
-		if (!text) return;
+		if (!text && pending.length === 0) return;
+		const sent = pending.splice(0);
+		const images = sent;
 		input.value = "";
 		input.style.height = "auto";
+		drawTray();
 		store(`annie.draft.${threadId}`, "");
-		show({ from: "person", text, at: new Date().toISOString() });
+		show({ from: "person", text, images, at: new Date().toISOString() });
 		const current = list.querySelector('[aria-current="true"] .t');
-		if (current && current.textContent === "Nuova chat") current.textContent = text.replace(/\s+/g, " ").slice(0, 60);
+		if (current && current.textContent === "Nuova chat") current.textContent = text ? text.replace(/\s+/g, " ").slice(0, 60) : "Foto";
 		startTyping();
 		try {
-			await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: { text } });
+			await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/messages`, { method: "POST", body: images.length ? { text, images } : { text } });
 		} catch (error) {
 			stopTyping();
 			toast(error.message, true);
 			input.value = text;
+			pending.unshift(...sent);
+			drawTray();
 		}
 	};
 	input.addEventListener("keydown", (e) => {
@@ -838,23 +858,35 @@ async function viewChat(main) {
 		input.style.height = "auto";
 		input.style.height = `${Math.min(220, input.scrollHeight)}px`;
 	});
-	const file = h("input", { type: "file", class: "sr", "aria-label": "Carica un file" });
+	const file = h("input", { type: "file", class: "sr", multiple: true, "aria-label": "Carica un file o una foto" });
+	const PICTURES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 	file.addEventListener("change", async () => {
-		const f = file.files?.[0];
-		if (!f) return;
-		try {
-			const { file: saved } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(f.name)}`, { method: "PUT", raw: f });
-			input.value = `${input.value ? `${input.value}\n` : ""}[File caricato nel workspace: ${saved.path}] `;
-			input.focus();
-			toast(`Caricato ${saved.path}`);
-		} catch (error) {
-			toast(error.message, true);
+		for (const f of [...(file.files ?? [])]) {
+			const isPicture = PICTURES.includes(f.type) && f.size <= 3_750_000;
+			if (isPicture && pending.length >= 4) {
+				toast("Al massimo 4 foto per messaggio", true);
+				continue;
+			}
+			try {
+				const { file: saved } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(f.name)}`, { method: "PUT", raw: f });
+				if (isPicture) {
+					pending.push(saved.path);
+					drawTray();
+				} else {
+					input.value = `${input.value ? `${input.value}\n` : ""}[File caricato nel workspace: ${saved.path}] `;
+					toast(`Caricato ${saved.path}`);
+				}
+			} catch (error) {
+				toast(error.message, true);
+			}
 		}
+		input.focus();
 		file.value = "";
 	});
 	conversation.append(
 		transcript,
-		h("div.composer", h("label.btn.ghost.attach", { title: "Carica un file" }, "File", file), input, h("button.btn.accent", { onclick: send }, "Invia")),
+		tray,
+		h("div.composer", h("label.btn.ghost.attach", { title: "Carica un file o una foto" }, "File", file), input, h("button.btn.accent", { onclick: send }, "Invia")),
 	);
 	transcript.scrollTop = transcript.scrollHeight;
 	input.focus();

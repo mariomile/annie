@@ -14,6 +14,8 @@ export type WebEntry = {
 	readonly text?: string;
 	/** A workspace file the instance sent. */
 	readonly file?: { readonly path: string; readonly caption?: string };
+	/** Pictures the person sent with the message, by workspace path. */
+	readonly images?: readonly string[];
 };
 
 export type WebEvent = { readonly instanceId: string; readonly threadId: string; readonly entry: WebEntry };
@@ -99,12 +101,14 @@ export class WebChannel implements ChannelAdapter {
 	}
 
 	/** A person writes in their thread. Rejects if the core does not admit it. */
-	async post(threadId: string, personId: string, text: string, attachments?: InboundMessage["attachments"]): Promise<WebEntry> {
+	async post(threadId: string, personId: string, text: string, attachments?: InboundMessage["attachments"], images: readonly { readonly path: string; readonly data: Uint8Array }[] = []): Promise<WebEntry> {
 		const thread = await this.thread(threadId);
 		if (thread === undefined || thread.personId !== personId) throw new Error("No such thread");
 		if (this.handler === undefined) throw new Error("Web channel not connected");
 		const handler = this.handler;
-		const entry: WebEntry = { id: `m_${randomBytes(8).toString("hex")}`, at: new Date().toISOString(), from: "person", text };
+		const entry: WebEntry = { id: `m_${randomBytes(8).toString("hex")}`, at: new Date().toISOString(), from: "person", text, ...(images.length === 0 ? {} : { images: images.map((i) => i.path) }) };
+		// The instance is told where each picture is, so it can come back to it later (image_view).
+		const said = [text, ...images.map((i) => `[Immagine nel workspace: ${i.path}]`)].filter(Boolean).join("\n\n");
 		// Annie's answer can be ready before this message is written down: the thread's writes go
 		// one at a time, so the answer always lands after the question.
 		return this.serial(threadId, async () => {
@@ -114,14 +118,15 @@ export class WebChannel implements ChannelAdapter {
 			channel: this.name,
 			threadId,
 			userId: personId,
-			text,
+			text: said,
 			// A console thread belongs to one person.
 			privateThread: true,
 			messageId: entry.id,
 			...(attachments === undefined ? {} : { attachments }),
+			...(images.length === 0 ? {} : { images }),
 			});
 			await this.append(threadId, entry);
-			const title = thread.title === "Nuova chat" && text.trim() !== "" ? text.trim().replace(/\s+/g, " ").slice(0, 60) : thread.title;
+			const title = thread.title === "Nuova chat" ? (text.trim() !== "" ? text.trim().replace(/\s+/g, " ").slice(0, 60) : images.length > 0 ? "Foto" : thread.title) : thread.title;
 			await this.saveThread({ ...thread, title, updatedAt: entry.at });
 			return entry;
 		});

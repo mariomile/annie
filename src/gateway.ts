@@ -1,4 +1,5 @@
 import { type ChannelAdapter, ChannelRefused, type InboundAction, type InboundMessage } from "./channels/types.ts";
+import { imageType } from "./core/images.ts";
 import type { AnnieRuntime } from "./core/index.ts";
 
 /**
@@ -63,25 +64,29 @@ export function connectChannel(
 
 /**
  * Store the files of an inbound message in the instance's workspace, under uploads/, and
- * tell the instance where they are. Only for allowed users: the core decides that on submit,
- * so files of a stranger are dropped here, before they touch the disk.
+ * tell the instance where they are; pictures also go to the model with the message (the core
+ * checks them). Only for allowed users: the core decides that on submit, so files of a
+ * stranger are dropped here, before they touch the disk.
  */
-async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): Promise<InboundMessage> {
+async function withAttachments(runtime: AnnieRuntime, message: InboundMessage): Promise<InboundMessage & { images?: { path: string; data: Uint8Array }[] }> {
 	if (message.attachments === undefined || message.attachments.length === 0) return message;
 	const record = await runtime.registry.getInstance(message.tenantId, message.instanceId);
 	const allowed = (record.allowedUsers[message.channel] ?? []).includes(message.userId);
 	if (!allowed) return { ...message, attachments: [] };
 	const workspace = runtime.workspace(message.tenantId, message.instanceId);
-	const saved: string[] = [];
+	const notes: string[] = [];
+	const images: { path: string; data: Uint8Array }[] = [];
 	for (const file of message.attachments) {
 		const safe = file.name.replace(/[^\w.\- ]+/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";
 		const path = `uploads/${message.messageId?.replace(/[^\w-]/g, "_") ?? Date.now()}-${safe}`;
 		await workspace.write(path, file.data);
-		saved.push(path);
+		const picture = imageType(file.data) !== undefined;
+		if (picture) images.push({ path, data: file.data });
+		notes.push(picture ? `[Immagine nel workspace: ${path}]` : `[File caricato nel workspace: ${path}]`);
 	}
-	const note = saved.map((p) => `[File caricato nel workspace: ${p}]`).join("\n");
+	const note = notes.join("\n");
 	const { attachments: _files, ...rest } = message;
-	return { ...rest, text: message.text === "" ? note : `${message.text}\n\n${note}` };
+	return { ...rest, text: message.text === "" ? note : `${message.text}\n\n${note}`, ...(images.length === 0 ? {} : { images }) };
 }
 
 function errorMessage(error: unknown): string {

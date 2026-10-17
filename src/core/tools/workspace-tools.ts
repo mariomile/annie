@@ -1,4 +1,5 @@
 import type { AnnieTool } from "../engine.ts";
+import { imageProblem, imageType } from "../images.ts";
 import { type Workspace, WorkspaceError } from "../workspace.ts";
 
 export type WorkspaceToolsOptions = {
@@ -45,6 +46,25 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
 					if (data.includes(0)) return `${String(args.path)} è un file binario (${data.length} byte): non posso leggerlo come testo.`;
 					const text = data.toString("utf8");
 					return text.length > MAX_READ ? `${text.slice(0, MAX_READ)}\n[... troncato: ${text.length} caratteri in tutto]` : text;
+				} catch (error) {
+					return fail(error);
+				}
+			},
+		},
+		{
+			name: "image_view",
+			description:
+				"Look at an image in your workspace (JPEG, PNG, GIF or WebP): a photo someone sent earlier, a screenshot, a chart you made with the computer. " +
+				"Photos sent with the current message you already see; use this for any other.",
+			parameters: { type: "object", properties: { path: pathParam }, required: ["path"], additionalProperties: false },
+			replaySafe: true,
+			async execute(args) {
+				try {
+					const path = String(args.path);
+					const data = await workspace.read(path);
+					const problem = imageProblem(data);
+					if (problem !== undefined) return `Errore: ${path} ${problem}.`;
+					return { text: `Ecco ${path} (${imageType(data)}, ${data.length} byte).`, images: [{ mimeType: imageType(data) as string, data }] };
 				} catch (error) {
 					return fail(error);
 				}

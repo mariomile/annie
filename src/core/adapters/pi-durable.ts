@@ -20,7 +20,7 @@ import {
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { AnnieTool, DurableEngine, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
+import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
 import { createProvider } from "./pi-durable-models.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -79,7 +79,7 @@ class PiDurableSession implements EngineSession {
 		private readonly options: EngineOpenOptions,
 	) {}
 
-	async submit(threadKey: string, text: string, requestId?: string): Promise<{ submissionId: string }> {
+	async submit(threadKey: string, text: string, requestId?: string, images: readonly EngineImage[] = []): Promise<{ submissionId: string }> {
 		// Submitting starts Pi's scheduler: reattach the previous process's open work first.
 		await this.recover();
 		const conversationId = await this.conversationFor(threadKey);
@@ -91,7 +91,7 @@ class PiDurableSession implements EngineSession {
 			if (existing !== undefined) return { submissionId: String(existing.id) };
 		}
 		const submission = await conversation.submit(
-			{ type: "input", content: text, ...(requestId === undefined ? {} : { requestId }) },
+			{ type: "input", content: images.length === 0 ? text : [{ type: "text", text }, ...images.map(toPiImage)], ...(requestId === undefined ? {} : { requestId }) },
 			context,
 		);
 		this.track(submission, threadKey);
@@ -238,7 +238,7 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 			const threads = (await api.snapshot(ThreadsDoc, callContext))?.threads ?? {};
 			const threadKey = Object.entries(threads).find(([, id]) => id === Number(api.conversationId))?.[0];
 			const at = threadKey?.indexOf(":") ?? -1;
-			const text = await tool.execute(args, {
+			const result = await tool.execute(args, {
 				callId: `${api.conversationId}/${api.callId}`,
 				...(threadKey === undefined || at < 0 ? {} : { thread: { channel: threadKey.slice(0, at), threadId: threadKey.slice(at + 1) } }),
 				signal: callContext.abortSignal ?? new AbortController().signal,
@@ -251,7 +251,12 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 					return (await api.memo<{ value: T }>(name, { value } as never, callContext)).value;
 				},
 			});
-			return { output: [{ type: "text", text }] };
+			if (typeof result === "string") return { output: [{ type: "text", text: result }] };
+			return { output: [{ type: "text", text: result.text }, ...result.images.map(toPiImage)] };
 		},
 	});
+}
+
+function toPiImage(image: EngineImage): { type: "image"; data: string; mimeType: string } {
+	return { type: "image", data: Buffer.from(image.data).toString("base64"), mimeType: image.mimeType };
 }

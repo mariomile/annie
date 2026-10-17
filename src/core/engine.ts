@@ -23,11 +23,11 @@ export type EngineOpenOptions = {
 
 export interface EngineSession {
 	/**
-	 * Durably admit `text` into the conversation identified by `threadKey` (created on first use).
-	 * Resolves once admitted; the answer arrives through `onReply`. The same `requestId`
-	 * on the same thread is admitted once, also across restarts.
+	 * Durably admit `text`, and the pictures that came with it, into the conversation identified
+	 * by `threadKey` (created on first use). Resolves once admitted; the answer arrives through
+	 * `onReply`. The same `requestId` on the same thread is admitted once, also across restarts.
 	 */
-	submit(threadKey: string, text: string, requestId?: string): Promise<{ submissionId: string }>;
+	submit(threadKey: string, text: string, requestId?: string, images?: readonly EngineImage[]): Promise<{ submissionId: string }>;
 	/** Continue whatever a previous process left unfinished; replies arrive through `onReply`. */
 	resume(): Promise<{ pending: number }>;
 	/**
@@ -45,6 +45,12 @@ export type EngineReply =
 	| { readonly status: "answered"; readonly threadKey: string; readonly submissionId: string; readonly text: string }
 	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string };
 
+/** A picture for the model, already checked (src/core/images.ts). */
+export type EngineImage = { readonly mimeType: string; readonly data: Uint8Array };
+
+/** What a tool gives the model: text, or text with pictures (image_view). */
+export type ToolResult = string | { readonly text: string; readonly images: readonly EngineImage[] };
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /** An engine-agnostic tool. `parameters` is a JSON Schema object. */
@@ -57,7 +63,7 @@ export type AnnieTool = {
 	 * stored result instead of running again. false: the model gets an "interrupted" result.
 	 */
 	readonly replaySafe: boolean;
-	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
+	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 };
 
 export type ToolContext = {
