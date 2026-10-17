@@ -1468,10 +1468,10 @@ function chatBox(inst, key, dropZone, onSend) {
 			drawTray();
 			try {
 				const name = f.name || `incollata.${f.type.slice("image/".length).replace("jpeg", "jpg")}`;
-				const { file: saved, document: docLabel } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(name)}`, { method: "PUT", raw: f });
+				const { file: saved, note } = await api(`/api/instances/${inst.id}/files/raw?name=${encodeURIComponent(name)}`, { method: "PUT", raw: f });
 				if (isPicture) pending.push(saved.path);
 				else {
-					const note = docLabel ? `[Documento ${docLabel} nel workspace: ${saved.path}. Leggilo con file_read]` : `[File caricato nel workspace: ${saved.path}]`;
+					// The server's words for the file (a document, a recording): the same on every channel.
 					input.value = `${input.value ? `${input.value}\n` : ""}${note} `;
 					store(draftKey, input.value);
 					fit();

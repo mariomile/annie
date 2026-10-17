@@ -15,6 +15,7 @@ import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAd
 import { CONNECTOR_CATALOG, type CatalogEntry } from "../connectors/catalog.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
+import { attachmentNote } from "../core/attachment-note.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
 import { type ConnectorAction, ConnectorActionError, type ConnectorActionResult } from "../core/connector-actions.ts";
 import { documentKind, documentLabel } from "../core/documents.ts";
@@ -457,11 +458,10 @@ export function createWebApp(options: WebAppOptions): Server {
 		const unique = taken ? name.replace(/(\.[^.]*)?$/, (ext) => `-${randomUUID().slice(0, 8)}${ext}`) : name;
 		const file = await workspaceCall(() => workspace.write(`uploads/${unique}`, data));
 		await runtime.audit(tenantId).append({ type: "web.upload", instanceId: params[0], personId: (person as Person).id, path: file.path, bytes: file.size });
-		// The chat notes a document as one, so the model knows file_read gives its text.
+		// The note the console puts in the message: the same words Telegram and WhatsApp files get.
 		const kind = documentKind(unique, data);
-		// A recording is told apart with its length, for the note the console puts in the message (ADR 0033).
 		const recording = kind === undefined ? recordingLabel(data) : undefined;
-		return { file, ...(kind === undefined ? {} : { document: documentLabel(kind) }), ...(recording === undefined ? {} : { recording }) };
+		return { file, note: attachmentNote(file.path, data), ...(kind === undefined ? {} : { document: documentLabel(kind) }), ...(recording === undefined ? {} : { recording }) };
 	});
 	route("DELETE", "/api/instances/:id/files", "person", async ({ person, params, url }) => {
 		await instanceAccess(person as Person, params[0] as string);
