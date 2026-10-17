@@ -26,5 +26,5 @@ Fino alla settimana 25 Annie leggeva posta e calendario di chi le scrive, ma per
 - `gmail.compose` è «restricted» come `gmail.readonly`, e `calendar.events` è «sensitive» come `calendar.readonly`: la verifica di Google per un'app pubblica non cambia livello, ma la schermata di consenso elenca più permessi.
 - Chi ha già collegato Google deve ricollegarlo per scrivere; finché non lo fa, Annie glielo dice quando prova.
 - Una scrittura con esito incerto non si chiarisce da sola: Annie non controlla in Gmail se la mail è partita.
-- Una richiesta scaduta lo dice la card quando la si apre; la conversazione non riceve un avviso.
+- Una richiesta scaduta lo dice la card quando la si apre; dalla settimana 31 la conversazione riceve anche un avviso, una volta ([week31.md](../week31.md)).
 - Nessuna modifica di una serie intera partendo da un'occorrenza: serve l'id della serie.

@@ -18,7 +18,7 @@ Perché adesso: compilare il modulo di contatto di un fornitore, prenotare un ap
 
 - Chi ha chiesto l'azione la può decidere solo finché può ancora scrivere all'istanza.
 - L'owner accende le azioni per istanza (Impostazioni, «Azioni sul web»); spente di default, come canali e connettori. I siti restano quelli della navigazione.
-- Una richiesta scade dopo 24 ore. Al massimo 20 in attesa per istanza.
+- Una richiesta scade dopo 24 ore (dalla settimana 31 la conversazione che l'ha chiesta riceve un avviso, una volta: vedi [week31.md](../week31.md)). Al massimo 20 in attesa per istanza.
 - Niente file da caricare, niente moduli `GET` (per quelli basta `web_read` con l'indirizzo), niente pagine costruite da JavaScript.
 - Nella chat del brief del mattino `web_submit` non gira, come gli altri tool che agiscono.
 

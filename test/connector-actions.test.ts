@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import type { CatalogEntry } from "../src/connectors/catalog.ts";
 import { needsApproval } from "../src/connectors/mcp.ts";
+import { webActionReport } from "../src/core/approvals.ts";
 import { ConnectorActionStore, connectorActionReport, fitsInChat } from "../src/core/connector-actions.ts";
+import { WebActionStore } from "../src/core/web-actions.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { createDemoServer } from "./fixtures/mcp-demo-server.ts";
 import { tempDataDir } from "./helpers.ts";
@@ -152,6 +154,41 @@ describe("connector tools that change something wait for a person (ADR 0025)", (
 		expect(other.notes).toEqual([]);
 	});
 
+	it("a request nobody decides in 24 hours is told to the conversation once, and can no longer be approved", async () => {
+		const d = await demo();
+		const { annie, api, chat } = await boot(d.url);
+		const { reply } = await chat(api);
+		await reply(NOTE("dimenticata"));
+		const later = new Date(Date.now() + 24 * 3600_000 + 60_000);
+		// Count Annie's replies before the sweep, which may answer quickly.
+		const told = reply("", 1);
+		await new Promise((r) => setTimeout(r, 200));
+		await annie.scheduler.tick(later);
+		expect(await told).toMatch(/Esito della richiesta [0-9a-f]{12} su Demo\] Nessuno l'ha approvata né rifiutata entro 24 ore: è scaduta e non è stata fatta[\s\S]*Crea una nota: Segno la nota/);
+		await annie.scheduler.tick(new Date(later.getTime() + 60_000));
+		const audit = (await annie.runtime.audit("default").read()) as { type: string }[];
+		expect(audit.filter((e) => e.type === "connector_action.expired")).toHaveLength(1);
+		const store = annie.runtime.connectorActions("default", "annie");
+		const [action] = await store.list(later);
+		expect(action).toMatchObject({ status: "expired", expiryTold: true });
+		const decided = await store.decide((action as { id: string }).id, "approved", { channel: "owner", userId: "owner" }, async () => ({ text: "no" }), later);
+		expect(decided.action.status).toBe("expired");
+		expect(d.notes).toEqual([]);
+	});
+
+	it("a request that expired long ago (Annie was off) is closed without a notice", async () => {
+		const d = await demo();
+		const { annie, api, chat } = await boot(d.url);
+		const { reply } = await chat(api);
+		await reply(NOTE("vecchia"));
+		await annie.scheduler.tick(new Date(Date.now() + 31 * 3600_000));
+		const audit = (await annie.runtime.audit("default").read()) as { type: string; told?: boolean; reason?: string }[];
+		expect(audit.filter((e) => e.type === "connector_action.expired")).toEqual([expect.objectContaining({ told: false, reason: "stale" })]);
+		const thread = (await api("/api/instances/annie/threads")).threads[0];
+		const entries = (await api(`/api/instances/annie/threads/${thread.id}`)).entries as { from: string }[];
+		expect(entries.filter((e) => e.from === "annie")).toHaveLength(1);
+	});
+
 	it("another person can neither see nor decide someone's request; the owner can", async () => {
 		const d = await demo();
 		const { annie, api, loginWith, chat } = await boot(d.url);
@@ -239,6 +276,23 @@ describe("connector action store", () => {
 		}, later);
 		expect(decided.action.status).toBe("expired");
 		expect(runs).toBe(0);
+	});
+
+	it("every approval queue lists what expired untold, once", async () => {
+		const store = new WebActionStore(mkdtempSync(join(tmpdir(), "wa-")));
+		const start = new Date("2026-10-17T10:00:00Z");
+		const action = await store.propose({ pageUrl: "https://e.it/c", action: "https://e.it/send", values: { a: "b" }, shown: [["a", "b"]], fingerprint: "f", reason: "r" } as never, start);
+		const later = new Date(start.getTime() + 24 * 3600_000 + 1);
+		expect(await store.expiredUntold(start)).toEqual([]);
+		const [expired] = await store.expiredUntold(later);
+		expect(expired?.id).toBe(action.id);
+		expect(webActionReport(expired as never)).toContain("è scaduta e il modulo per e.it non è partito");
+		expect(webActionReport(expired as never)).toContain("Non riproporla da sola");
+		expect((await store.claimExpired(action.id, later))?.expiryTold).toBe(true);
+		// Told once: a second sweep claims nothing.
+		expect(await store.claimExpired(action.id, later)).toBeUndefined();
+		expect(await store.expiredUntold(later)).toEqual([]);
+		expect((await store.get(action.id, later))?.status).toBe("expired");
 	});
 
 	it("tells the model who decided, and what not to do next", () => {

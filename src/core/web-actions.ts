@@ -29,6 +29,8 @@ export type WebAction = {
 	/** The person whose private conversation asked for it ("channel:userId"): they may decide. */
 	readonly requester?: string;
 	readonly proposedAt: string;
+	/** The conversation was told it expired undecided. */
+	readonly expiryTold?: true;
 	readonly decidedBy?: { readonly channel: string; readonly userId: string };
 	readonly decidedAt?: string;
 	readonly result?: WebActionResult;
@@ -87,6 +89,15 @@ export class WebActionStore {
 		const decided = await this.queue.decide(id, decision, () => {}, { decidedBy: by }, run, now);
 		if (decided.missing) throw new WebActionError(`nessuna azione ${id}`);
 		return decided;
+	}
+
+	/** Nobody decided in time and the conversation does not know yet. */
+	expiredUntold(now = new Date()): Promise<WebAction[]> {
+		return this.queue.expiredUntold(now);
+	}
+
+	claimExpired(id: string, now = new Date()): Promise<WebAction | undefined> {
+		return this.queue.claimExpired(id, now);
 	}
 
 	/** At start: an action left running by a dead process may or may not have been sent. */

@@ -4,7 +4,7 @@ Aggiornato al 17 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 30, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 31, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -59,6 +59,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Immagini su richiesta: crea e ritocca immagini, varianti, sfondo trasparente; le foto arrivano come foto su Telegram e WhatsApp (settimana 28, [week28.md](week28.md), [ADR 0023](adr/0023-immagini-su-richiesta.md)). Serve `ANNIE_IMAGE_API_KEY` ([chiavi](chiavi.md) §15)
 - [x] Connettori in un clic: una galleria di servizi noti (Notion, Linear, Jira, Stripe, GitHub e altri) che si collegano entrando con l'account o con un token (settimana 29, [week29.md](week29.md), [ADR 0024](adr/0024-connettori-in-un-clic.md)). Serve `ANNIE_PUBLIC_URL` in https
 - [x] Azioni dei connettori con approvazione: gli strumenti dei servizi collegati che cambiano qualcosa aspettano che chi l'ha chiesto o un approvatore approvi la richiesta esatta (settimana 30, [week30.md](week30.md), [ADR 0025](adr/0025-azioni-dei-connettori-con-approvazione.md))
+- [x] Avviso quando una richiesta da approvare scade: la conversazione che l'ha chiesta lo sa, una volta (settimana 31, [week31.md](week31.md))
 
 ### Prima di rendere pubblico il repo
 
