@@ -275,7 +275,6 @@ function range(min: number, max: number): string {
 	return min < 0 ? `da ${min} a ${max} °C` : `${min}-${max} °C`;
 }
 
-
 /** 2026-10-17 plus 1 → 2026-10-18. */
 function addDays(date: string, days: number): string {
 	return new Date(Date.parse(`${date}T00:00:00Z`) + days * 24 * 3600_000).toISOString().slice(0, 10);

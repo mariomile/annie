@@ -26,7 +26,7 @@ Un tool, `vat_check`, con due livelli.
 ## Sicurezza
 
 - Il numero va al VIES solo dopo il controllo formale, normalizzato a lettere e cifre e codificato in un solo segmento dell'indirizzo.
-- Nome e indirizzo restituiti dal VIES sono dati dall'esterno, dentro il recinto. Il recinto ora neutralizza le sequenze `<<<` e `>>>` nel contenuto, per tutti gli strumenti, così un testo non può imitarne la chiusura.
+- Nome e indirizzo restituiti dal VIES sono dati dall'esterno, dentro il recinto. Il recinto ora neutralizza nel contenuto le sequenze che imitano i suoi segni di apertura e chiusura, per tutti gli strumenti (anche mail e computer); il codice con `>>>` o `<<<` resta com'è.
 - Un codice d'errore sconosciuto non si ripete in chat.
 - La cache è per account: un altro cliente dello stesso server non vede quando un numero è stato controllato.
 - Nessun audit e nessun log con il numero: non cambia niente, come meteo e cambi.

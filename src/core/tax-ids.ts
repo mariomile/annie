@@ -53,8 +53,12 @@ function otherPrefix(code: string): string | undefined {
 	return Object.hasOwn(OTHER_PREFIXES, code) ? OTHER_PREFIXES[code] : undefined;
 }
 
-/** «P.IVA:», «partita IVA», «VAT number», «C.F.», «codice fiscale» in front: a label, not part of the number. A separator must follow, so a code starting with CF stays whole. */
-const LABEL = /^\s*(?:p\.?\s*iva|partita\s+iva|vat(?:\s+number)?|c\.\s*f\.|cf|codice\s+fiscale)(?:\s*:\s*|\s+|(?=\d))/i;
+/**
+ * «P.IVA:», «partita IVA n.», «P.I.», «VAT number», «C.F.», «Cod. Fisc.», «codice fiscale» in
+ * front: a label, not part of the number. A separator must follow, so a code starting with CF
+ * (a surname like Cafiero) stays whole.
+ */
+const LABEL = /^\s*(?:p\.?\s*iva|partita\s+iva|vat(?:\s+number)?|p\.\s*i\.|c\.\s*f\.|cf|cod\.?\s*fisc\.?|codice\s+fiscale)(?:\s+n\.?|\s*n\.)?(?:\s*:\s*|\s+|(?=\d))/i;
 
 /** A leading label out, then spaces, dots, dashes and slashes, letters in capitals: «P.IVA: it 007.431-10157» → «IT00743110157». */
 export function normalizeTaxId(text: string): string {
@@ -193,9 +197,10 @@ export function parseTaxId(text: string, country?: string): TaxId {
 	if (!/^[A-Z0-9+*]+$/.test(value)) return { kind: "unknown", problem: "il numero ha caratteri che non stanno in una partita IVA né in un codice fiscale" };
 	if (asked !== undefined && !isEuVatCountry(asked)) return { kind: "unknown", problem: otherPrefix(asked) ?? `${asked} non è un paese del VIES (i paesi dell'Unione europea, EL per la Grecia, XI per l'Irlanda del Nord)` };
 	if (asked === undefined || asked === "IT") {
-		// «IT» in front of a codice fiscale is a habit from partite IVA: dropped.
-		const code = value.length === 18 && value.startsWith("IT") && CODICE_FISCALE_START.test(value.slice(2)) ? value.slice(2) : value;
-		if (CODICE_FISCALE_START.test(code)) return { kind: "codice_fiscale", code, checked: checkCodiceFiscale(code) };
+		// «IT» and a letter: a codice fiscale with the partite IVA's habit in front (an Italian VAT
+		// number has only digits, and no codice fiscale starts with IT). Dropped; the rest is checked as one, short or not.
+		if (/^IT[A-Z]/.test(value)) return { kind: "codice_fiscale", code: value.slice(2), checked: checkCodiceFiscale(value.slice(2)) };
+		if (CODICE_FISCALE_START.test(value)) return { kind: "codice_fiscale", code: value, checked: checkCodiceFiscale(value) };
 	}
 	const prefix = value.slice(0, 2) === "GR" ? "EL" : value.slice(0, 2);
 	if (/^[A-Z]{2}/.test(value) && (isEuVatCountry(prefix) || otherPrefix(prefix) !== undefined)) {

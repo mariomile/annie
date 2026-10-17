@@ -178,8 +178,8 @@ function viesError(code: string, country: EuVatCountry): ViesError {
 	const state = EU_VAT_COUNTRIES[country].of;
 	switch (code) {
 		case "INVALID_INPUT":
-			// Only numbers written right are sent: a refusal is the VIES's, not the number's.
-			return new ViesError("INVALID_INPUT", "il VIES non accetta il numero in questo momento");
+			// Only numbers written right are sent: the member state checks more than the shape tax-ids.ts knows.
+			return new ViesError("INVALID_INPUT", "il VIES rifiuta questo numero (il suo Stato membro ha regole più strette)");
 		case "MS_UNAVAILABLE":
 			return new ViesError("MS_UNAVAILABLE", `il servizio ${state} non risponde al VIES in questo momento (succede spesso di notte e nei fine settimana)`);
 		case "MS_MAX_CONCURRENT_REQ":

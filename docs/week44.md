@@ -24,9 +24,11 @@ Prima revisione (sicurezza e risposte), corretta:
 - I numeri che cominciano con 8 o 9 saltavano il controllo dell'ufficio e andavano al VIES: ora sono enti, detti come tali, senza VIES.
 - La cache era condivisa fra clienti dello stesso server: ora è per account. Aggiunta la quota per server.
 - Codici d'errore del VIES ripetuti fuori dal recinto, omocodia in ordine sbagliato, matricola tutta a zero, Irlanda del Nord: corretti.
-- Il recinto dei dati esterni ora neutralizza `<<<` e `>>>` per tutti gli strumenti.
+- Il recinto dei dati esterni ora neutralizza i testi che imitano i suoi segni, per tutti gli strumenti; la seconda revisione l'ha ristretto ai soli segni, perché cambiare ogni `>>>` rovinava codice e mail citate.
 - Testi: «dell'Italia» e non «di Italia», «numero IVA» per i paesi esteri, il rimando all'Agenzia anche senza VIES, il secolo ambiguo del codice fiscale, istruzioni che escludono la ricerca sul web.
 - Funzioni di formattazione condivise in `italian-format.ts`.
+
+Seconda revisione, corretta: recinto ristretto ai segni veri (anche per mail e computer), nessun «va bene» per una partita IVA non attiva nel VIES, altre etichette tolte («P.I.», «Cod. Fisc.»), il brief che non va mai al VIES anche senza conversazione nota, codici degli enti senza «IT» davanti.
 
 ## Da fare
 

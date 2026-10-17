@@ -334,4 +334,3 @@ function of(percent: string): string {
 function withoutArticle(name: string): string {
 	return name.replace(/^(il |lo |la |l')/, "");
 }
-
