@@ -1,0 +1,45 @@
+name: Desktop app
+# Installers for macOS, Windows and Linux, in a draft release. By hand, or with a desktop-v* tag.
+# Unsigned until the signing secrets exist (docs/desktop.md, «Firma»).
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Linux libraries
+        if: matrix.platform == 'ubuntu-22.04'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - run: pnpm install --frozen-lockfile
+        working-directory: desktop
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: desktop
+          tauriScript: pnpm tauri
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'desktop-v__VERSION__' }}
+          releaseName: Annie desktop __VERSION__
+          releaseDraft: true

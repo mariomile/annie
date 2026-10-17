@@ -87,6 +87,10 @@ Legge la casella Gmail ogni minuto, prepara per ogni richiesta di preventivo una
 | `ANNIE_MAIL_POLL_SECONDS` | no | `60` |
 | `ANNIE_REQUIRE_VAT_NUMBER` | no | `false` |
 
+## App desktop
+
+Annie per Mac, Windows e Linux, con l'icona nella barra e una scorciatoia da qualsiasi app: [docs/desktop.md](docs/desktop.md).
+
 ## Struttura
 
 ```text
@@ -101,6 +105,7 @@ src/channels/                 interfaccia ChannelAdapter, adapter Telegram (puls
 src/connectors/               MCP, Gmail, HubSpot, fetch con egress
 src/segreteria/               pipeline, modello, callback, schede, servizio, avvio
 src/web/                      server HTTP, accesso, canale web, console (ui/: HTML, CSS, JS, font)
+desktop/                      app desktop Tauri: una finestra sul server (docs/desktop.md)
 src/gateway.ts                collega canali e nucleo
 evals/segreteria/             35 casi, controlli deterministici (CI), giudice notturno
 test/                         test (vitest), con processi figli reali per i crash

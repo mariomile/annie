@@ -1,0 +1,7 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"description": "The bundled connect page only. The Annie server's own pages get no access to the app: Tauri gives remote content no IPC unless a capability names it, and none does.",
+	"windows": ["main"],
+	"permissions": ["core:default"]
+}
