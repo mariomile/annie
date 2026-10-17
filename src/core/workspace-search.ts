@@ -1,7 +1,7 @@
 import { isTransient } from "./document-reader.ts";
 import type { DocumentTexts } from "./document-texts.ts";
 import { DocumentError, type DocumentKind, documentKind, documentLabel, documentSectionAt, documentSectionLines, looksLikeDocument, oldFormatAdvice } from "./documents.ts";
-import { type FileMatch, matchFile, type Passage, rankMatches } from "./file-search.ts";
+import { type FileMatch, matchFile, type Passage, type QueryTerm, rankMatches } from "./file-search.ts";
 import { pool } from "./pool.ts";
 import type { Workspace, WorkspaceFile } from "./workspace.ts";
 
@@ -27,22 +27,26 @@ const NO_WORDS = /\.(?:mp3|m4a|mp4|m4v|mov|avi|mkv|wav|ogg|oga|opus|flac|webm|am
 /** Documents read in parallel: as many as the document workers. */
 const PARALLEL = 2;
 
-export type FoundPassage = Passage & { /** The page, sheet or slide, for a document. */ readonly section?: string };
+export type FoundPassage = Passage & { /** The page, sheet or slide of a document; the minute of a transcript. */ readonly section?: string };
 
 export type Found = Omit<FileMatch, "passages"> & { readonly label?: string; readonly passages: readonly FoundPassage[] };
 
 export type SearchOutcome = {
+	/** Files in the workspace, or in the folder searched. */
+	readonly files: number;
 	/** Files whose words were searched. */
 	readonly searched: number;
 	/** Every matching file, best first. */
 	readonly found: readonly Found[];
 	/** Documents whose text could not be read, with the reason. */
 	readonly unread: readonly { readonly path: string; readonly why: string }[];
+	/** Documents with no words in them (scans), newest first: their pages can be looked at. */
+	readonly noText: readonly string[];
 	/** Files left out by the limits: too many, too big together, or out of time. */
 	readonly leftOut: number;
 };
 
-type Read = { readonly kind: "text"; readonly text: string; readonly document?: DocumentKind } | { readonly kind: "unread"; readonly why: string } | { readonly kind: "none" };
+type Read = { readonly kind: "text"; readonly text: string; readonly document?: DocumentKind } | { readonly kind: "unread"; readonly why: string } | { readonly kind: "notext" } | { readonly kind: "none" };
 
 /**
  * The query's terms looked for in the workspace (or a folder of it): the text of text files and of
@@ -52,21 +56,23 @@ type Read = { readonly kind: "text"; readonly text: string; readonly document?: 
 export async function searchWorkspace(input: {
 	readonly workspace: Workspace;
 	readonly texts: DocumentTexts;
-	readonly terms: readonly string[];
+	readonly terms: readonly QueryTerm[];
 	readonly folder: string;
 	readonly limits: SearchLimits;
 	readonly signal: AbortSignal;
 	readonly progress?: (text: string) => void;
 }): Promise<SearchOutcome> {
 	const { workspace, texts, terms, limits, signal } = input;
-	const files = (await workspace.list(input.folder)).sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
+	const files = newestFirst(await workspace.list(input.folder));
 	const considered = files.slice(0, limits.files);
 	if (considered.length >= 50) input.progress?.(`Cerco in ${considered.length} file…`);
 	const started = performance.now();
 	let bytes = 0;
 	let leftOut = files.length - considered.length;
 	let searched = 0;
+	let looked = 0;
 	const unread: { path: string; why: string }[] = [];
+	const noText: WorkspaceFile[] = [];
 	const results = await pool(considered, PARALLEL, async (file): Promise<Found | undefined> => {
 		signal.throwIfAborted();
 		const wordless = NO_WORDS.test(file.path);
@@ -75,27 +81,62 @@ export async function searchWorkspace(input: {
 			return undefined;
 		}
 		if (!wordless) bytes += file.size;
+		looked++;
 		const read = wordless ? ({ kind: "none" } as const) : await readText(workspace, texts, file);
 		if (read.kind === "unread") unread.push({ path: file.path, why: read.why });
+		if (read.kind === "notext") noText.push(file);
 		if (read.kind === "text") searched++;
 		return matchRead(file, read.kind === "text" ? read : { text: "" }, terms, limits.passages);
 	});
-	return { searched, found: rankMatches(results.filter((r): r is Found => r !== undefined)), unread: unread.sort((a, b) => a.path.localeCompare(b.path)), leftOut };
+	return {
+		files: files.length,
+		searched,
+		found: rankMatches(
+			results.filter((r): r is Found => r !== undefined),
+			looked,
+		),
+		unread: unread.sort((a, b) => a.path.localeCompare(b.path)),
+		noText: newestFirst(noText).map((f) => f.path),
+		leftOut,
+	};
 }
 
-/** How a file answers the query, with a document's kind and the page, sheet or slide of each passage. */
-function matchRead(file: WorkspaceFile, read: { readonly text: string; readonly document?: DocumentKind }, terms: readonly string[], passages: number): Found | undefined {
+function newestFirst(files: readonly WorkspaceFile[]): WorkspaceFile[] {
+	return [...files].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
+}
+
+/**
+ * How a file answers the query, with a document's kind and where each passage is: the page, sheet
+ * or slide of a document, the minute of a transcript (its passages start with «[04:10]»).
+ */
+function matchRead(file: WorkspaceFile, read: { readonly text: string; readonly document?: DocumentKind }, terms: readonly QueryTerm[], passages: number): Found | undefined {
 	const { text, document } = read;
-	const match = matchFile({ path: file.path, modifiedAt: file.modifiedAt, text, ...(document === undefined ? {} : { walls: documentSectionLines(text) }) }, terms, passages);
-	if (match === undefined || document === undefined) return match;
+	const walls = document === undefined ? stampedLines(text) : documentSectionLines(text);
+	const match = matchFile({ path: file.path, modifiedAt: file.modifiedAt, text, walls }, terms, passages);
+	if (match === undefined) return undefined;
+	const where = (at: number) => (document === undefined ? minuteAt(text, at) : documentSectionAt(text, at));
 	return {
 		...match,
-		label: documentLabel(document),
+		...(document === undefined ? {} : { label: documentLabel(document) }),
 		passages: match.passages.map((p) => {
-			const section = documentSectionAt(text, p.hit);
+			const section = where(p.hit);
 			return section === undefined ? p : { ...p, section };
 		}),
 	};
+}
+
+/** Where a transcript's passages start: a passage shown stays within the one its words are in. */
+function stampedLines(text: string): { start: number; end: number }[] {
+	return [...text.matchAll(STAMP)].map((m) => ({ start: m.index, end: m.index }));
+}
+
+const STAMP = /^\[\d{1,2}:\d{2}(?::\d{2})?\]/gm;
+
+/** «minuto 04:10»: the stamp of the transcript passage that holds `at`, if the text has stamps. */
+function minuteAt(text: string, at: number): string | undefined {
+	const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+	const stamp = /^\[(\d{1,2}:\d{2}(?::\d{2})?)\]/.exec(text.slice(lineStart, lineStart + 12));
+	return stamp === null ? undefined : `minuto ${stamp[1]}`;
 }
 
 /** A file's words: its text, a document's extracted text, or why there are none to search. */
@@ -110,6 +151,7 @@ async function readText(workspace: Workspace, texts: DocumentTexts, file: Worksp
 	if (document !== undefined || looksLikeDocument(file.path)) {
 		try {
 			const doc = await texts.text(file.path, data);
+			if (!/[\p{L}\p{N}]/u.test(doc.text.replace(/^(?:--- Pagina \d+ ---|## (?:Foglio|Diapositiva) .*)$/gm, ""))) return { kind: "notext" };
 			return { kind: "text", text: doc.text, document: doc.kind };
 		} catch (error) {
 			if (!(error instanceof DocumentError)) throw error;

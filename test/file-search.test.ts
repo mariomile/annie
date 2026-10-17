@@ -19,19 +19,37 @@ describe("folding and queries", () => {
 		expect(fold("Perché la FATTURA è già")).toBe("perche la fattura e gia");
 	});
 
-	it("keeps quoted words together, drops single letters and repeats", () => {
-		expect(parseQuery('Fattura "condizioni  di pagamento" fattura a «Rossi Srl»')).toEqual(["fattura", "condizioni di pagamento", "rossi srl"]);
-		expect(parseQuery("a")).toEqual(["a"]);
-		expect(parseQuery("  ¿?  ")).toEqual([]);
-		expect(parseQuery("uno due tre quattro cinque sei sette otto nove dieci")).toHaveLength(8);
+	it("folds curly apostrophes to plain ones, still the same length", () => {
+		expect(fold("dell’ordine l‘IVA")).toBe("dell'ordine l'iva");
 	});
 
-	it("matches the start of words only, and a phrase across a line break", () => {
-		const text = fold("I grossi ordini di Rossi.\nCondizioni di\npagamento: 30 giorni");
-		expect(findHits(text, ["rossi"]).map((h) => h.at)).toEqual([text.indexOf("rossi.")]);
-		expect(findHits(text, ["condizioni di pagamento"])).toHaveLength(1);
-		expect(findHits(text, ["ordin"])).toHaveLength(1);
-		expect(findHits(text, ["(x)"])).toEqual([]);
+	it("keeps quoted words together, drops stopwords, single letters and repeats", () => {
+		const words = (q: string) => parseQuery(q).map((t) => t.word);
+		expect(words('Fattura "condizioni  di pagamento" fattura a «Rossi Srl» “piano B”')).toEqual(["fattura", "condizioni di pagamento", "rossi srl", "piano b"]);
+		expect(words("trovami la fattura di Rossi")).toEqual(["fattura", "rossi"]);
+		expect(words("cosa diceva il contratto sul recesso?")).toEqual(["contratto", "recesso"]);
+		expect(words("l'IVA dell’ordine")).toEqual(["iva", "ordine"]);
+		expect(words("di")).toEqual(["di"]);
+		expect(words("a")).toEqual(["a"]);
+		expect(words("  ¿?  ")).toEqual([]);
+		expect(words("uno due tre quattro cinque sei sette otto nove dieci")).toHaveLength(8);
+	});
+
+	it("searches long words without their ending, names and numbers whole", () => {
+		const stems = (q: string) => parseQuery(q).map((t) => t.stem);
+		expect(stems("fatture contratti banche Rossi 42 preventivo")).toEqual(["fattur", "contratt", "banc", "rossi", "42", "preventiv"]);
+		expect(stems('"fatture di ottobre"')).toEqual(["fatture di ottobre"]);
+	});
+
+	it("matches the start of words only, a phrase across a line break or a comma, a number whole", () => {
+		const term = (q: string) => parseQuery(q);
+		const text = fold("I grossi ordini di Rossi.\nCondizioni di\npagamento: 30 giorni. Rossi, Mario. Fattura n. 420 e 42/2026");
+		expect(findHits(text, term("rossi")).map((h) => h.at)).toEqual([text.indexOf("rossi."), text.indexOf("rossi,")]);
+		expect(findHits(text, term('"condizioni di pagamento"'))).toHaveLength(1);
+		expect(findHits(text, term('"rossi mario"'))).toHaveLength(1);
+		expect(findHits(text, term("ordine"))).toHaveLength(1);
+		expect(findHits(text, term("42")).map((h) => h.at)).toEqual([text.indexOf("42/")]);
+		expect(findHits(text, term("(x)"))).toEqual([]);
 	});
 });
 
@@ -39,7 +57,7 @@ describe("passages and ranking", () => {
 	const long = `${"Premessa generica. ".repeat(40)}Il cliente Rossi chiede la fattura entro venerdì. ${"Testo di riempimento. ".repeat(40)}Il bonifico arriva a 30 giorni. ${"Altro testo. ".repeat(40)}`;
 
 	it("cuts passages around the hits, one per term not seen yet, at offsets file_read can use", () => {
-		const hits = findHits(fold(long), ["rossi", "fattura", "bonifico"]);
+		const hits = findHits(fold(long), parseQuery("rossi fattura bonifico"));
 		const found = passagesAround(long, hits, 3);
 		expect(found).toHaveLength(2);
 		expect(found[0]?.text).toContain("Rossi chiede la fattura");
@@ -47,15 +65,18 @@ describe("passages and ranking", () => {
 		for (const p of found) expect(long.slice(p.at)).toContain(p.text.replace(/^…|…$/g, "").slice(0, 20));
 	});
 
-	it("ranks files with every word first, then words in the name, then the newest", () => {
-		const terms = ["fattura", "rossi"];
-		const a = matchFile({ path: "note.md", modifiedAt: "2026-10-01T00:00:00Z", text: "fattura per Rossi" }, terms, 3);
-		const b = matchFile({ path: "fattura-rossi.md", modifiedAt: "2026-09-01T00:00:00Z", text: "fattura per Rossi" }, terms, 3);
-		const c = matchFile({ path: "altro.md", modifiedAt: "2026-10-10T00:00:00Z", text: "solo la fattura" }, terms, 3);
-		const d = matchFile({ path: "vecchio.md", modifiedAt: "2026-01-01T00:00:00Z", text: "fattura per Rossi" }, terms, 3);
-		expect(matchFile({ path: "x.md", modifiedAt: "2026-10-10T00:00:00Z", text: "niente" }, terms, 3)).toBeUndefined();
+	it("ranks files with every word first, then the rarer words, then words in the name, then the newest", () => {
+		const terms = parseQuery("fattura rossi");
+		const file = (path: string, modifiedAt: string, text: string) => matchFile({ path, modifiedAt, text }, terms, 3);
+		const a = file("note.md", "2026-10-01T00:00:00Z", "fattura per Rossi");
+		const b = file("fattura-rossi.md", "2026-09-01T00:00:00Z", "fattura per Rossi");
+		const c = file("altro.md", "2026-10-10T00:00:00Z", "solo la fattura");
+		const d = file("vecchio.md", "2026-01-01T00:00:00Z", "fattura per Rossi");
+		const e = file("bianchi.md", "2026-10-12T00:00:00Z", "fatture di Bianchi");
+		const f = file("call.md", "2026-01-02T00:00:00Z", "telefonata con Rossi");
+		expect(file("x.md", "2026-10-10T00:00:00Z", "niente")).toBeUndefined();
 		expect(c?.missing).toEqual(["rossi"]);
-		expect(rankMatches([c, d, a, b].filter((m) => m !== undefined)).map((m) => m.path)).toEqual(["fattura-rossi.md", "note.md", "vecchio.md", "altro.md"]);
+		expect(rankMatches([c, d, a, b, e, f].filter((m) => m !== undefined), 10).map((m) => m.path)).toEqual(["fattura-rossi.md", "note.md", "vecchio.md", "call.md", "bianchi.md", "altro.md"]);
 	});
 });
 
@@ -105,7 +126,7 @@ describe("file_search", () => {
 
 	it("finds words without accents or case, a phrase, a sheet, a file by its name", async () => {
 		const { search } = await setup();
-		expect(await search({ query: "CAFFE" })).toMatch(/1\. trascrizioni\/riunione\.md[^\n]*\n {3}\[offset \d+\] …?[^\n]*\[04:10\] \*\*Voce 2:\*\* Rossi vuole lo sconto sul caffè/);
+		expect(await search({ query: "CAFFE" })).toMatch(/1\. trascrizioni\/riunione\.md[^\n]*\n {3}\[minuto 04:10, offset \d+\] …\[04:10\] \*\*Voce 2:\*\* Rossi vuole lo sconto sul caffè entro venerdì\.…\n/);
 		expect(await search({ query: "caffe" })).toContain("uploads/contratto.docx (Word,");
 		expect(await search({ query: '"condizioni di pagamento"' })).toContain("uploads/7_1-fattura.pdf");
 		expect(await search({ query: '"pagamento condizioni"' })).toContain("[Nessun file contiene");
@@ -118,12 +139,34 @@ describe("file_search", () => {
 	it("says which words a file lacks when none has them all, and when nothing matches", async () => {
 		const { search } = await setup();
 		const partial = await search({ query: "rossi zebra" });
-		expect(partial).toContain("nessun file ha tutte le parole, questi ne hanno alcune");
+		expect(partial).toContain("nessun file le ha tutte, questi ne hanno alcune");
 		expect(partial).toContain("senza «zebra»");
 		const none = await search({ query: "zebra" });
-		expect(none).toMatch(/^\[Nessun file contiene «zebra» \(cercato in 4 file\)\. Prova parole diverse o solo il loro inizio/);
+		expect(none).toMatch(/^\[Nessun file contiene «zebra» \(cercato in 4 file\)\. Prova una volta con l'inizio della parola \(fattur\) o un sinonimo, prima di dire che non c'è\./);
 		expect(none).toContain("uploads/vecchio.xls (è in un formato vecchio che non so leggere)");
 		expect(await search({ query: '" "' })).toBe("Errore: scrivi almeno una parola da cercare.");
+	});
+
+	it("understands a whole question, and counts files and words in good Italian", async () => {
+		const { search, workspace } = await setup();
+		expect(await search({ query: "trovami la fattura di Rossi" })).toMatch(/^\[Cercato «fattura» «rossi» in 4 file: nessun file le ha tutte/);
+		expect(await search({ query: "cosa diceva il contratto sul pagamento?" })).toContain("[Cercato «contratto» «pagamento» in 4 file: nessun file le ha tutte");
+		expect(await search({ query: "fatture" })).toContain("uploads/7_1-fattura.pdf (PDF,");
+		expect(await search({ query: "rossi sconto" })).toContain("in 4 file: un file le contiene tutte, un altro solo in parte.");
+		expect(await search({ query: "rossi" })).toContain("in 4 file: 2 file la contengono.");
+		await workspace.write("note/iva.md", "Ricordarsi dell’IVA sull’ordine di Bianchi.");
+		expect(await search({ query: "l'IVA dell'ordine" })).toContain("1. note/iva.md (modificato il ");
+	});
+
+	it("names the scans it could not search, and says when there is nothing to search", async () => {
+		const { search, workspace } = await setup();
+		await workspace.write("uploads/9_1-documento.pdf", doc("scansione-jpeg.pdf"));
+		const answer = await search({ query: "fattura rossi" });
+		expect(answer).toContain("Un documento è una scansione, senza testo da cercare: se quello che cerchi può essere lì, guardalo con image_view");
+		expect(answer).toContain("Scansioni senza testo: uploads/9_1-documento.pdf.");
+		expect(await search({ query: "rossi", folder: "vuota" })).toBe("Nella cartella vuota non ci sono file: cerca senza folder, o guarda le cartelle con file_list.");
+		const empty = createWorkspaceTools({ workspace: new Workspace(mkdtempSync(join(tmpdir(), "annie-search-"))), sendFile: async () => {} }).find((t) => t.name === "file_search");
+		expect(await empty?.execute({ query: "fattura" }, context())).toBe("Il workspace è vuoto: non c'è ancora nessun file da cercare.");
 	});
 
 	it("keeps the files' words inside the fence, and searches one folder when asked", async () => {
@@ -139,7 +182,7 @@ describe("file_search", () => {
 	it("leaves out the oldest files past the limits and says so", async () => {
 		const { search } = await setup({ ...SEARCH_LIMITS, bytes: 400 });
 		const answer = await search({ query: "rossi" });
-		expect(answer).toMatch(/La ricerca non è arrivata a \d+ file, i più vecchi \(troppi o troppo grandi\): restringi con folder/);
+		expect(answer).toMatch(/La ricerca non è arrivata a \d+ file, i più vecchi \(i file sono troppi o troppo grandi\): restringi con folder/);
 		expect(answer).toContain("trascrizioni/riunione.md");
 	});
 

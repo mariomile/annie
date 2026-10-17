@@ -3,7 +3,7 @@ import { readPdfPage } from "../document-reader.ts";
 import { DocumentTexts } from "../document-texts.ts";
 import { DocumentError, type DocumentText, documentKind, documentLabel, documentPartsLabel, documentSectionAt, looksLikeDocument, oldFormatAdvice } from "../documents.ts";
 import type { AnnieTool } from "../engine.ts";
-import { parseQuery, QUERY_LIMITS } from "../file-search.ts";
+import { parseQuery, QUERY_LIMITS, type QueryTerm } from "../file-search.ts";
 import { imageProblem, imageType } from "../images.ts";
 import { type Workspace, WorkspaceError } from "../workspace.ts";
 import { SEARCH_LIMITS, type SearchLimits, type SearchOutcome, searchWorkspace } from "../workspace-search.ts";
@@ -76,13 +76,17 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
 			name: "file_search",
 			description:
 				"Search the words inside the files of your workspace and their names: notes, reports, transcripts, files people sent (PDF, Word, Excel, PowerPoint, text, CSV). " +
-				"Use it when the person asks where something is, what a document said about something, or for a file they do not name («la fattura di Rossi», «cosa diceva il contratto sul recesso»). " +
-				"A word matches the start of words, without accents or case: fattur finds Fattura and fatture. Words in quotes match together as a phrase. Files with all the words come first, newest first among equals. " +
-				"Each passage comes with its offset: read on from there with file_read. Scanned PDFs and photos have no text to search: look at them with image_view.",
+				"Use it when the person asks where something is, what a document said about something, or for a file they name only in part («la fattura di Rossi», «cosa diceva il contratto sul recesso», «in quale riunione abbiamo parlato dello sconto»); file_list is for what files there are. " +
+				"Pass 1 to 4 key words (names, numbers, distinctive nouns: rossi fattura, contratto recesso), not the whole question: articles, prepositions and words like trova or diceva are ignored. " +
+				"Words match the start of words, without accents or case, and long words also their singular or plural (fatture finds fattura). Words in quotes match together as a phrase. " +
+				"Write numbers and amounts as the document would (42, 1.234,56). There is no OR: for alternatives (fattura, preventivo) search again. " +
+				"Files with all the words come first, then those with the rarer ones. Each passage comes with its offset: read on from there with file_read. " +
+				"For a transcript the passage shows its minute: tell the person («al minuto 04:10»). Scanned PDFs have no text: the answer lists them, look at them with image_view. " +
+				"If nothing is found, try once more with the start of a word or a synonym before saying it is not there.",
 			parameters: {
 				type: "object",
 				properties: {
-					query: { type: "string", minLength: 1, maxLength: QUERY_LIMITS.chars, description: 'Words to find, e.g. fattura rossi, or "condizioni di recesso"' },
+					query: { type: "string", minLength: 1, maxLength: QUERY_LIMITS.chars, description: 'Key words to find, e.g. rossi fattura, or "condizioni di recesso" for a phrase' },
 					folder: { type: "string", maxLength: 300, description: "Search only this folder, e.g. trascrizioni; empty for all" },
 				},
 				required: ["query"],
@@ -90,12 +94,12 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
 			},
 			replaySafe: true,
 			async execute(args, ctx) {
-				const query = String(args.query).trim();
-				const terms = parseQuery(query);
+				const terms = parseQuery(String(args.query));
 				if (terms.length === 0) return "Errore: scrivi almeno una parola da cercare.";
+				const folder = typeof args.folder === "string" ? args.folder.trim() : "";
 				try {
-					const outcome = await searchWorkspace({ workspace, texts, terms, folder: typeof args.folder === "string" ? args.folder : "", limits: options.searchLimits ?? SEARCH_LIMITS, signal: ctx.signal, progress: (t) => ctx.progress(t) });
-					return searchAnswer(query, terms, outcome, options.searchLimits ?? SEARCH_LIMITS);
+					const outcome = await searchWorkspace({ workspace, texts, terms, folder, limits: options.searchLimits ?? SEARCH_LIMITS, signal: ctx.signal, progress: (t) => ctx.progress(t) });
+					return searchAnswer(terms, folder, outcome, options.searchLimits ?? SEARCH_LIMITS);
 				} catch (error) {
 					return fail(error);
 				}
@@ -188,11 +192,19 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
  * passages, the file names and why a document could not be read inside it, since they are the
  * files' own words.
  */
-function searchAnswer(query: string, terms: readonly string[], outcome: SearchOutcome, limits: SearchLimits): string {
+function searchAnswer(terms: readonly QueryTerm[], folder: string, outcome: SearchOutcome, limits: SearchLimits): string {
+	if (outcome.files === 0) return folder === "" ? "Il workspace è vuoto: non c'è ancora nessun file da cercare." : `Nella cartella ${folder} non ci sono file: cerca senza folder, o guarda le cartelle con file_list.`;
+	const words = terms.map((t) => `«${t.word}»`).join(" ");
 	const all = outcome.found.filter((f) => f.found === terms.length);
-	const have = (n: number) => `${n === 1 ? "un file" : `${n} file`} ${terms.length === 1 ? "la" : "le"} ${n === 1 ? "contiene" : "contengono"}${terms.length === 1 ? "" : " tutte"}`;
-	const leftOut = outcome.leftOut > 0 ? ` La ricerca non è arrivata a ${outcome.leftOut === 1 ? "un file, il più vecchio" : `${outcome.leftOut} file, i più vecchi`} (troppi o troppo grandi): restringi con folder o con parole più precise.` : "";
-	const scope = `in ${outcome.searched === 1 ? "un file" : `${outcome.searched} file`}`;
+	const partial = outcome.found.length - all.length;
+	const files = (n: number) => (n === 1 ? "un file" : `${n} file`);
+	const have = `${files(all.length)} ${terms.length === 1 ? "la" : "le"} ${all.length === 1 ? "contiene" : "contengono"}${terms.length === 1 ? "" : " tutte"}`;
+	const others = partial === 0 ? "" : partial === 1 ? ", un altro solo in parte" : `, altri ${partial} solo in parte`;
+	const notes = [
+		outcome.noText.length === 0 ? "" : `${outcome.noText.length === 1 ? "Un documento è una scansione" : `${outcome.noText.length} documenti sono scansioni`}, senza testo da cercare: se quello che cerchi può essere lì, guardalo con image_view (sono nell'elenco).`,
+		outcome.unread.length === 0 ? "" : `${outcome.unread.length === 1 ? "Un documento non si è potuto leggere" : `${outcome.unread.length} documenti non si sono potuti leggere`}: il motivo è nell'elenco.`,
+		outcome.leftOut === 0 ? "" : `La ricerca non è arrivata a ${outcome.leftOut === 1 ? "un file, il più vecchio" : `${outcome.leftOut} file, i più vecchi`} (i file sono troppi o troppo grandi): restringi con folder o con parole più precise.`,
+	].filter((n) => n !== "");
 	const lines: string[] = [];
 	const shown = outcome.found.slice(0, limits.results);
 	shown.forEach((f, i) => {
@@ -202,17 +214,17 @@ function searchAnswer(query: string, terms: readonly string[], outcome: SearchOu
 		for (const p of f.passages) lines.push(`   [${p.section === undefined ? "" : `${p.section}, `}offset ${p.at}] ${p.text}`);
 	});
 	if (outcome.found.length > shown.length) lines.push(`… e altri ${outcome.found.length - shown.length} file.`);
+	if (outcome.noText.length > 0) lines.push(`Scansioni senza testo: ${outcome.noText.slice(0, 5).join("; ")}${outcome.noText.length > 5 ? ` e altre ${outcome.noText.length - 5}` : ""}.`);
 	if (outcome.unread.length > 0) lines.push(`Non letti: ${outcome.unread.slice(0, 5).map((u) => `${u.path} (${u.why})`).join("; ")}${outcome.unread.length > 5 ? ` e altri ${outcome.unread.length - 5}` : ""}.`);
-	const unread = outcome.unread.length === 0 ? "" : ` ${outcome.unread.length === 1 ? "Un documento non si è potuto leggere" : `${outcome.unread.length} documenti non si sono potuti leggere`}: il motivo è nell'elenco.`;
-	if (outcome.found.length === 0) {
-		const head = `[Nessun file contiene «${query}» (cercato ${scope}). Prova parole diverse o solo il loro inizio (fattur per fattura e fatture); le scansioni e le foto non hanno testo da cercare.${unread}${leftOut}]`;
-		return lines.length === 0 ? head : fenced(head, lines);
-	}
+	const read = "Per leggere dal punto trovato: file_read con il percorso e l'offset.";
 	const head =
-		all.length > 0
-			? `[Cercato «${query}» ${scope}: ${have(all.length)}${outcome.found.length > all.length ? `, altri ${outcome.found.length - all.length} solo in parte` : ""}. Per leggere dal punto trovato: file_read con il percorso e l'offset.${unread}${leftOut}]`
-			: `[Cercato «${query}» ${scope}: nessun file ha tutte le parole, questi ne hanno alcune (accanto, quelle che mancano). Per leggere dal punto trovato: file_read con il percorso e l'offset.${unread}${leftOut}]`;
-	return fenced(head, lines);
+		outcome.found.length === 0
+			? `Nessun file contiene ${words} (cercato in ${files(outcome.searched)}). Prova una volta con l'inizio della parola (fattur) o un sinonimo, prima di dire che non c'è.`
+			: all.length > 0
+				? `Cercato ${words} in ${files(outcome.searched)}: ${have}${others}. ${read}`
+				: `Cercato ${words} in ${files(outcome.searched)}: nessun file le ha tutte, questi ne hanno alcune (accanto, quelle che mancano). ${read}`;
+	const said = `[${[head, ...notes].join(" ")}]`;
+	return lines.length === 0 ? said : fenced(said, lines);
 }
 
 function fenced(head: string, lines: readonly string[]): string {

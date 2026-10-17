@@ -19,21 +19,63 @@ const HITS_PER_TERM = 200;
 const BEFORE = 80;
 const AFTER = 160;
 
+/** A word or phrase of the query: as the person wrote it (folded), and the form searched. */
+export type QueryTerm = {
+	readonly word: string;
+	/** The start searched: a long word without its ending, so «fatture» finds «fattura». */
+	readonly stem: string;
+	/** In quotes: the words match together, in this order. */
+	readonly phrase: boolean;
+};
+
 /**
- * The query's words, folded: what is in quotes stays one phrase, a word repeated counts once.
- * Single letters are dropped (they would match half the text) unless nothing else is left.
+ * Words that say nothing about a file: articles, prepositions, common verbs and the words of a
+ * request («trovami», «diceva»). Left out of a query unless it holds nothing else, or they are in quotes.
  */
-export function parseQuery(query: string): string[] {
+const STOPWORDS = new Set(
+	(
+		"il lo la i gli le un uno una di del dello della dei degli delle dell a al allo alla ai agli alle all da dal dallo dalla dai dagli dalle dall " +
+		"in nel nello nella nei negli nelle nell con col su sul sullo sulla sui sugli sulle sull per tra fra e ed o od ma se che chi cui non piu " +
+		"come dove quando quale quali quanto quanta cosa ci si mi ti vi ne c e sono ho hai ha abbiamo avete hanno era erano stato stata " +
+		"questo questa questi queste quello quella quelli quelle mio mia miei mie tuo tua suo sua nostro nostra loro " +
+		"trova trovami cerca cercami dimmi mostrami fammi dammi mandami vedere detto diceva dice parlato parlare file documento documenti"
+	).split(" "),
+);
+
+/** Shortest word whose ending is dropped: shorter ones (names like «Rossi», «Verdi») stay whole. */
+const STEM_FROM = 6;
+
+/**
+ * The query's words and phrases, folded: what is in quotes stays one phrase, a word repeated
+ * counts once, the part after an apostrophe is the word («dell'ordine» is «ordine»). Stopwords and
+ * single letters are dropped unless nothing else is left.
+ */
+export function parseQuery(query: string): QueryTerm[] {
 	const text = fold(query.slice(0, QUERY_LIMITS.chars));
-	const raw: string[] = [];
-	for (const m of text.matchAll(/"([^"]*)"|«([^»]*)»|(\S+)/g)) {
-		const quoted = m[1] ?? m[2];
-		const term = (quoted ?? m[3] ?? "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/\s+/g, " ");
-		if (term !== "") raw.push(term);
+	const raw: { word: string; phrase: boolean }[] = [];
+	for (const m of text.matchAll(/"([^"]*)"|«([^»]*)»|“([^”]*)”|„([^“”]*)[“”]|(\S+)/g)) {
+		const quoted = m[1] ?? m[2] ?? m[3] ?? m[4];
+		const words = quoted === undefined ? (m[5] ?? "").split("'").slice(-1) : [quoted];
+		for (const w of words) {
+			const word = trim(w).replace(/\s+/g, " ");
+			if (word !== "") raw.push({ word, phrase: quoted !== undefined && word.includes(" ") });
+		}
 	}
-	const unique = [...new Set(raw)];
-	const long = unique.filter((t) => [...t].length > 1);
-	return (long.length > 0 ? long : unique).slice(0, QUERY_LIMITS.terms);
+	const unique = [...new Map(raw.map((t) => [t.word, t])).values()];
+	const telling = unique.filter((t) => t.phrase || ([...t.word].length > 1 && !STOPWORDS.has(t.word)));
+	return (telling.length > 0 ? telling : unique).slice(0, QUERY_LIMITS.terms).map((t) => ({ ...t, stem: t.phrase ? t.word : stem(t.word) }));
+}
+
+/** Punctuation around a word, not inside it: «Rossi,» is «Rossi», «42/2026» stays. */
+function trim(word: string): string {
+	return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+/** A long Italian word without its ending vowel (two letters for -che, -chi, -ghe, -ghi). */
+function stem(word: string): string {
+	if ([...word].length < STEM_FROM || !/^\p{L}+$/u.test(word)) return word;
+	if (/[cg]h[ei]$/.test(word)) return word.slice(0, -2);
+	return /[aeio]$/.test(word) ? word.slice(0, -1) : word;
 }
 
 const folded = new Map<string, string>();
@@ -44,12 +86,12 @@ function foldChar(c: string): string {
 	if (known !== undefined) return known;
 	const base = c.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase();
 	const lower = c.toLowerCase();
-	const out = base.length === c.length ? base : lower.length === c.length ? lower : c;
+	const out = /^[‘’ʼ]$/.test(c) ? "'" : base.length === c.length ? base : lower.length === c.length ? lower : c;
 	if (folded.size < 5000) folded.set(c, out);
 	return out;
 }
 
-/** The text in lower case and without accents, character for character as long as the original. */
+/** The text in lower case, without accents and with plain apostrophes, character for character as long as the original. */
 export function fold(text: string): string {
 	return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)).replace(/[^\x00-\x7f]/gu, foldChar);
 }
@@ -58,12 +100,15 @@ export type Hit = { readonly at: number; readonly term: number };
 
 /**
  * Where the terms start a word in the folded text, in order; at most HITS_PER_TERM per term. The
- * words of a phrase may be apart by any space, a line break included.
+ * words of a phrase may be apart by spaces, line breaks and punctuation («Rossi, Mario»); a number
+ * matches whole at its end too, so 42 is not 420.
  */
-export function findHits(text: string, terms: readonly string[]): Hit[] {
+export function findHits(text: string, terms: readonly QueryTerm[]): Hit[] {
 	const hits: Hit[] = [];
 	terms.forEach((term, index) => {
-		const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&").replace(/ /g, "\\s+")}`, "gu");
+		const words = term.stem.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"));
+		const end = /\p{N}$/u.test(term.stem) ? "(?!\\p{N})" : "";
+		const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${words.join("[\\s\\p{P}]+")}${end}`, "gu");
 		let count = 0;
 		for (let m = pattern.exec(text); m !== null && count < HITS_PER_TERM; m = pattern.exec(text), count++) hits.push({ at: m.index, term: index });
 	});
@@ -121,39 +166,48 @@ function cut(text: string, start: number, end: number, hit: number): Passage {
 
 export type FileMatch = {
 	readonly path: string;
-	/** How many of the query's terms the file has, in its name or its text. */
+	/** For each of the query's terms, whether the file has it, in its name or its text. */
+	readonly has: readonly boolean[];
+	/** How many of the query's terms the file has. */
 	readonly found: number;
-	/** The terms it lacks, as the query wrote them (folded). */
+	/** The terms it lacks, as the person wrote them (folded). */
 	readonly missing: readonly string[];
-	readonly score: number;
+	/** How many terms are in the file's name. */
+	readonly inName: number;
+	/** How often the terms occur, on a log scale so a long file does not win by length. */
+	readonly frequency: number;
 	readonly passages: readonly Passage[];
 	readonly modifiedAt: string;
 };
 
-/**
- * How a file answers the query: its text's hits and its name. A file with none of the terms is no
- * match. More terms found ranks first, then a term in the name, then how often the terms occur.
- */
-export function matchFile(file: { readonly path: string; readonly modifiedAt: string; readonly text: string; readonly walls?: readonly { readonly start: number; readonly end: number }[] }, terms: readonly string[], maxPassages: number): FileMatch | undefined {
+/** How a file answers the query: its text's hits and its name. A file with none of the terms is no match. */
+export function matchFile(file: { readonly path: string; readonly modifiedAt: string; readonly text: string; readonly walls?: readonly { readonly start: number; readonly end: number }[] }, terms: readonly QueryTerm[], maxPassages: number): FileMatch | undefined {
 	const hits = findHits(fold(file.text), terms);
-	const name = fold(file.path.split("/").at(-1) ?? file.path);
-	const inName = new Set(findHits(name, terms).map((h) => h.term));
+	const inName = new Set(findHits(fold(file.path.split("/").at(-1) ?? file.path), terms).map((h) => h.term));
 	const inText = new Set(hits.map((h) => h.term));
-	const found = terms.filter((_, i) => inName.has(i) || inText.has(i)).length;
+	const has = terms.map((_, i) => inName.has(i) || inText.has(i));
+	const found = has.filter(Boolean).length;
 	if (found === 0) return undefined;
-	const counts = terms.map((_, i) => hits.filter((h) => h.term === i).length);
-	const frequency = counts.reduce((n, c) => n + Math.log2(1 + c), 0);
 	return {
 		path: file.path,
+		has,
 		found,
-		missing: terms.filter((_, i) => !inName.has(i) && !inText.has(i)),
-		score: found * 1000 + inName.size * 100 + Math.min(frequency, 99),
+		missing: terms.filter((_, i) => !has[i]).map((t) => t.word),
+		inName: inName.size,
+		frequency: terms.reduce((n, _, i) => n + Math.log2(1 + hits.filter((h) => h.term === i).length), 0),
 		passages: passagesAround(file.text, hits, maxPassages, file.walls),
 		modifiedAt: file.modifiedAt,
 	};
 }
 
-/** Best first; between equals, the file changed last. */
-export function rankMatches(matches: readonly FileMatch[]): FileMatch[] {
-	return [...matches].sort((a, b) => b.score - a.score || b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
+/**
+ * Best first: more terms found; then the rarer terms, among the `searched` files, so a file with
+ * «recesso» beats one with only «contratto»; then terms in the name, how often they occur, and the
+ * file changed last.
+ */
+export function rankMatches<M extends FileMatch>(matches: readonly M[], searched: number): M[] {
+	const terms = matches[0]?.has.length ?? 0;
+	const weight = Array.from({ length: terms }, (_, i) => Math.log2(1 + Math.max(searched, matches.length) / Math.max(1, matches.filter((m) => m.has[i]).length)));
+	const rarity = (m: M) => m.has.reduce((n, has, i) => n + (has ? (weight[i] ?? 0) : 0), 0);
+	return [...matches].sort((a, b) => b.found - a.found || rarity(b) - rarity(a) || b.inName - a.inName || b.frequency - a.frequency || b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
 }
