@@ -831,7 +831,7 @@ function desktopCard(inst, allowed, desktop) {
 	toggle.onchange = async () => {
 		try {
 			await api(`/api/instances/${inst.id}/desktop-allowed`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può usare il suo schermo" : "Schermo spento");
+			toast(toggle.checked ? `${inst.name} può usare il suo schermo` : "Schermo spento");
 		} catch (error) {
 			toggle.checked = !toggle.checked;
 			toast(error.message, true);
@@ -852,10 +852,10 @@ function desktopCard(inst, allowed, desktop) {
 	return h(
 		"div.card.pad",
 		h("h3", "Schermo"),
-		h("p.muted", `Annie ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
+		h("p.muted", `${inst.name} ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
 		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
 		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
-		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo schermo")),
+		h("label.row-gap", toggle, h("span", "Consenti lo schermo a questo agente")),
 		desktop.shared ? null : h("div.actions", h("button.btn.ghost", { onclick: reset }, "Riavvia lo schermo")),
 	);
 }
