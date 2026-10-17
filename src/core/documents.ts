@@ -28,6 +28,34 @@ export function documentLabel(kind: DocumentKind): string {
 	return LABEL[kind];
 }
 
+const PART_NAMES: Record<DocumentKind, readonly [string, string]> = {
+	pdf: ["pagina", "pagine"],
+	docx: ["parte", "parti"],
+	odt: ["parte", "parti"],
+	xlsx: ["foglio", "fogli"],
+	ods: ["foglio", "fogli"],
+	pptx: ["diapositiva", "diapositive"],
+	odp: ["diapositiva", "diapositive"],
+};
+
+/** «2 pagine», «1 foglio», «3 diapositive». */
+export function documentPartsLabel(kind: DocumentKind, parts: number): string {
+	return `${parts} ${PART_NAMES[kind][parts === 1 ? 0 : 1]}`;
+}
+
+/** The page, sheet or slide a piece starts in; for a sheet also its first row, usually the headings. */
+export function documentSectionAt(text: string, at: number): string | undefined {
+	let found: RegExpExecArray | undefined;
+	const marker = /^(?:--- (Pagina \d+) ---|## (Foglio «[^»\n]*»|Diapositiva \d+)[^\n]*)$/gm;
+	for (let m = marker.exec(text); m !== null && m.index < at; m = marker.exec(text)) found = m;
+	if (found === undefined) return undefined;
+	const name = found[1] ?? found[2] ?? "";
+	if (!name.startsWith("Foglio")) return name;
+	const lineEnd = text.indexOf("\n", found.index);
+	const first = lineEnd < 0 ? "" : (text.slice(lineEnd + 1, lineEnd + 401).split("\n")[0] ?? "");
+	return first === "" ? name : `${name}, prima riga: ${first}`;
+}
+
 /** What kind of document this is, from its bytes (the name only breaks ties among ZIP files). */
 export function documentKind(name: string, data: Uint8Array): DocumentKind | undefined {
 	const zip0 = data[0] === 0x50 && data[1] === 0x4b && data[2] === 0x03 && data[3] === 0x04;

@@ -189,6 +189,13 @@ describe("documents made to be slow or huge", () => {
 		await expect(readDocumentText("x.pdf", Buffer.from("niente"))).rejects.toThrow(DocumentError);
 		expect((await readDocumentText("fattura.pdf", fixture("fattura.pdf"))).text).toContain("Totale: 1.234,56 €");
 	});
+
+	it("a document waiting too long for a free reader is told to try again, and the queue goes on", async () => {
+		const busy = [readDocumentText("fattura.pdf", fixture("fattura.pdf")), readDocumentText("fattura.pdf", fixture("fattura.pdf"))];
+		await expect(readDocumentText("fattura.pdf", fixture("fattura.pdf"), { waitMs: 1 })).rejects.toThrow(/riprova tra poco/);
+		await Promise.all(busy);
+		expect((await readDocumentText("fattura.pdf", fixture("fattura.pdf"), { waitMs: 1 })).parts).toBe(2);
+	});
 });
 
 /** A one-entry ZIP whose index claims `size` bytes. */

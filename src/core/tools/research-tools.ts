@@ -1,5 +1,7 @@
 import type { AnnieTool } from "../engine.ts";
 import { type EgressPolicy, webHostAllowed } from "../policy.ts";
+import { DocumentError, type DocumentText, documentKind, documentLabel, documentPartsLabel } from "../documents.ts";
+import { documentLimit, urlFileName, webDocument } from "../web-documents.ts";
 import { pageText, publicAddress, webFetch } from "../web-fetch.ts";
 import { WEB_SEARCH_CONNECTOR, type SearchResult, WebSearchError } from "../web-search.ts";
 import { type Workspace, WorkspaceError } from "../workspace.ts";
@@ -15,6 +17,10 @@ const MAX_DOSSIER = 24;
 const PARALLEL_READS = 4;
 /** Characters of each page kept in the dossier, and of the whole answer. */
 const EXCERPT = 2_500;
+/** A document found by a search, at most: smaller than one opened on purpose, they are read several at once. */
+const RESEARCH_DOCUMENT_BYTES = 10 * 1024 * 1024;
+/** A document found by a search gets less of the shared reader than one a person sends. */
+const RESEARCH_DOCUMENT_READ = { timeoutMs: 5_000, waitMs: 10_000 } as const;
 const MAX_ANSWER = 20_000;
 /** Results asked of each search. */
 const PER_QUERY = 8;
@@ -200,14 +206,32 @@ async function gather(options: ResearchToolsOptions, policy: EgressPolicy, addre
 		const snippetOnly = (note: string) => ({ title: result.title || result.url, url: result.url, ...(result.age ? { age: result.age } : {}), read: false, note, text: result.snippet });
 		if (skip !== undefined) return snippetOnly(skip);
 		try {
-			const page = await webFetch(result.url, guard);
+			const page = await webFetch(result.url, { ...guard, maxBytesFor: (type, url) => (documentLimit(type, url) === undefined ? undefined : RESEARCH_DOCUMENT_BYTES) });
 			// A page that is gone is not a source; one that refuses us still has its search excerpt.
 			if (page.status === 404 || page.status === 410) return undefined;
 			if (page.status >= 400) return snippetOnly(`la pagina ha risposto ${page.status}`);
 			const type = page.contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-			if (type !== "text/html" && type !== "text/plain") return snippetOnly(type === "application/pdf" ? "è un PDF" : "non è una pagina di testo");
-			const { title, text } = type === "text/html" ? pageText(page.body) : { title: "", text: page.body };
-			const kept = excerpt(text, terms, EXCERPT);
+			let read: { title: string; text: string };
+			let kept: string;
+			// The content decides: a PDF the server calls text/plain is still a PDF.
+			if ((type === "text/html" || type === "text/plain") && documentKind(urlFileName(page.url), page.bytes) === undefined) {
+				read = type === "text/html" ? pageText(page.body) : { title: "", text: page.body };
+				kept = excerpt(read.text, terms, EXCERPT);
+			} else {
+				// A report, a regulation, a price list in PDF: often the best source there is (ADR 0027).
+				const doc = await webDocument(page, RESEARCH_DOCUMENT_READ).catch((error: unknown) => {
+					if (error instanceof DocumentError) return error;
+					throw error;
+				});
+				if (doc instanceof DocumentError) return snippetOnly(`il documento non si legge: ${doc.message}`);
+				if (doc === undefined) return snippetOnly("non è una pagina di testo");
+				if (doc.text === "") return snippetOnly("il documento non ha testo (forse una scansione)");
+				read = { title: "", text: doc.text };
+				const what = `${documentLabel(doc.kind)}${doc.parts === undefined ? "" : `, ${documentPartsLabel(doc.kind, doc.parts)}`}`;
+				const passages = excerpt(documentPassages(doc), terms, EXCERPT);
+				kept = passages === "" ? "" : `[${what}]\n${passages}`;
+			}
+			const { title } = read;
 			if (kept === "") return snippetOnly("la pagina non ha testo");
 			return { title: (title || result.title || page.url).slice(0, 300), url: page.url, ...(result.age ? { age: result.age } : {}), read: true, text: kept };
 		} catch (error) {
@@ -300,6 +324,43 @@ async function freePath(workspace: Workspace, stem: string, ext: string): Promis
 }
 
 /** The passages of a page that match the question, in page order, up to `max` characters; the page's start when none does. */
+/**
+ * A document as passages for the excerpt: a few lines at a time (a document's lines are short: a
+ * total, a row), each with where it is, a page or a sheet with its first row (the column names).
+ */
+export function documentPassages(doc: DocumentText): string {
+	const out: string[] = [];
+	let where = "";
+	let header: string | undefined;
+	let wantHeader = false;
+	let lines: string[] = [];
+	const flush = () => {
+		if (lines.length > 0) out.push(`${where === "" ? "" : `[${where}] `}${header === undefined ? "" : `${header} | `}${lines.join(" | ")}`);
+		lines = [];
+	};
+	for (const raw of doc.text.split("\n")) {
+		const line = raw.trim();
+		if (line === "") continue;
+		const section = /^(?:--- (Pagina \d+) ---|## (Foglio «[^»]*»|Diapositiva \d+))/.exec(line);
+		if (section !== null) {
+			flush();
+			where = section[1] ?? section[2] ?? "";
+			header = undefined;
+			wantHeader = section[2]?.startsWith("Foglio") === true;
+			continue;
+		}
+		if (wantHeader) {
+			header = line.slice(0, 200);
+			wantHeader = false;
+			continue;
+		}
+		lines.push(line);
+		if (lines.length >= 3) flush();
+	}
+	flush();
+	return out.join("\n");
+}
+
 export function excerpt(text: string, query: string | readonly string[], max: number): string {
 	const terms = typeof query === "string" ? termsOf(query, true) : query;
 	const paragraphs = text

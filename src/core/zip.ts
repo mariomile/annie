@@ -56,7 +56,7 @@ export class Zip {
 		const entry = this.entries.get(name);
 		if (entry === undefined) return undefined;
 		if ((entry.flags & 1) !== 0) throw new ZipError("archivio protetto da password");
-		if (entry.size > ZIP_LIMITS.maxEntryBytes) throw new ZipError(`${name} è troppo grande da aprire`);
+		if (entry.size > ZIP_LIMITS.maxEntryBytes) throw new ZipError("una parte dell'archivio è troppo grande da aprire");
 		if (this.read + entry.size > ZIP_LIMITS.maxTotalBytes) throw new ZipError("l'archivio è troppo grande da aprire");
 		const at = entry.offset;
 		if (at + 30 > this.data.length || this.data.readUInt32LE(at) !== 0x04034b50) throw new ZipError("archivio rovinato");
@@ -70,7 +70,7 @@ export class Zip {
 				// The size in the index is a claim: the inflater stops at the limit whatever it says.
 				out = inflateRawSync(raw, { maxOutputLength: Math.min(ZIP_LIMITS.maxEntryBytes, Math.max(entry.size, 1)) });
 			} catch {
-				throw new ZipError(`${name} non si decomprime`);
+				throw new ZipError("una parte dell'archivio non si decomprime");
 			}
 		} else throw new ZipError(`compressione ${entry.method} non supportata`);
 		this.read += out.length;

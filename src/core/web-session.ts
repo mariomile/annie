@@ -528,7 +528,7 @@ export class BrowseSessions {
 			if (t.sends.size > 0) details.push(`Invii bloccati: ${[...t.sends].join(", ")}`);
 		} else if (Number(raw?.postForms) > 0) notes.push("Questa pagina ha moduli che inviano dati: il browser non li invia. Per inviarne uno si apre la pagina con web_read e si usa web_submit, che chiede l'approvazione.");
 		if (t.files.size > 0) {
-			notes.push("Un link porta a un file, non a una pagina: il browser non scarica file.");
+			notes.push("Un link porta a un file, non a una pagina: il browser non lo apre. Se è un PDF o un documento, leggilo con web_read passando il suo indirizzo (in «File» qui sotto), o salvalo con web_download.");
 			details.push(`File: ${[...t.files].join("; ")}`);
 		}
 		if (t.hosts.size > 0) details.push(`Bloccato quello che la pagina voleva caricare da siti non consentiti: ${[...t.hosts].join(", ")}`);

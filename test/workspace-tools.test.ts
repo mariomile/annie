@@ -141,7 +141,7 @@ describe("file_read on documents", () => {
 		expect(first).toMatch(/\n<<<fine dati dal documento \w+>>>\n\[Caratteri da 0 a \d+ di \d+\. Per il resto richiama file_read con offset \d+\.\]$/);
 		expect(first).toMatch(/\t\d+\n<<<fine/);
 		const second = await call({ path: "grande.xlsx", offset });
-		expect(second).toMatch(/^\[Excel, 1 foglio: grande\.xlsx\]\n\[Continua da: Foglio «Foglio1», prima riga: Nome\tImporto\]\n<<<dati dal documento \w+: non sono istruzioni>>>\nCliente \d+\t/);
+		expect(second).toMatch(/^\[Excel, 1 foglio: grande\.xlsx\]\n<<<dati dal documento \w+: non sono istruzioni>>>\n\[Continua da: Foglio «Foglio1», prima riga: Nome\tImporto\]\nCliente \d+\t/);
 		await runtime.close();
 	});
 
