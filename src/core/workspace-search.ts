@@ -1,6 +1,6 @@
-import { isTransient } from "./document-reader.ts";
-import type { DocumentTexts } from "./document-texts.ts";
-import { DocumentError, type DocumentKind, documentKind, documentLabel, documentSectionAt, documentSectionLines, looksLikeDocument, oldFormatAdvice } from "./documents.ts";
+import { DOCUMENT_READER_LIMITS } from "./document-reader.ts";
+import type { DocumentTexts, ReadOptions } from "./document-texts.ts";
+import { DocumentError, type DocumentKind, documentHasWords, documentKind, documentLabel, documentSectionAt, documentSectionLines, looksLikeDocument, oldFormatAdvice } from "./documents.ts";
 import { type FileMatch, matchFile, type Passage, type QueryTerm, rankMatches } from "./file-search.ts";
 import { pool } from "./pool.ts";
 import type { Workspace, WorkspaceFile } from "./workspace.ts";
@@ -11,6 +11,8 @@ export type SearchLimits = {
 	readonly files: number;
 	/** Bytes read from disk. */
 	readonly bytes: number;
+	/** Characters of text searched: a document's text can be much longer than its file. */
+	readonly chars: number;
 	/** Time spent reading and parsing, after which the files left are not searched. */
 	readonly budgetMs: number;
 	/** Files in the answer. */
@@ -19,13 +21,18 @@ export type SearchLimits = {
 	readonly passages: number;
 };
 
-export const SEARCH_LIMITS: SearchLimits = { files: 5000, bytes: 300 * 1024 * 1024, budgetMs: 60_000, results: 10, passages: 3 };
+export const SEARCH_LIMITS: SearchLimits = { files: 5000, bytes: 300 * 1024 * 1024, chars: 60_000_000, budgetMs: 60_000, results: 10, passages: 3 };
 
 /** Sounds, pictures, videos and archives: no words to search, not worth reading. */
 const NO_WORDS = /\.(?:mp3|m4a|mp4|m4v|mov|avi|mkv|wav|ogg|oga|opus|flac|webm|amr|aac|wma|jpe?g|png|gif|webp|heic|heif|avif|bmp|tiff?|ico|zip|gz|tgz|7z|rar|exe|dll|so|bin|iso|dmg|woff2?|ttf|otf|sqlite|db)$/i;
 
-/** Documents read in parallel: as many as the document workers. */
-const PARALLEL = 2;
+/**
+ * Files read one at a time: the document workers are shared by the whole server, and a search
+ * must leave one free for someone else's file_read. A search waits a few seconds for a worker,
+ * not the usual 45, and never past its own time.
+ */
+const PARALLEL = 1;
+const WORKER_WAIT_MS = 3000;
 
 export type FoundPassage = Passage & { /** The page, sheet or slide of a document; the minute of a transcript. */ readonly section?: string };
 
@@ -42,7 +49,7 @@ export type SearchOutcome = {
 	readonly unread: readonly { readonly path: string; readonly why: string }[];
 	/** Documents with no words in them (scans), newest first: their pages can be looked at. */
 	readonly noText: readonly string[];
-	/** Files left out by the limits: too many, too big together, or out of time. */
+	/** Files left out by the limits (too many, too big together, out of time): searched by name only. */
 	readonly leftOut: number;
 };
 
@@ -67,7 +74,9 @@ export async function searchWorkspace(input: {
 	const considered = files.slice(0, limits.files);
 	if (considered.length >= 50) input.progress?.(`Cerco in ${considered.length} file…`);
 	const started = performance.now();
+	const left = () => limits.budgetMs - (performance.now() - started);
 	let bytes = 0;
+	let chars = 0;
 	let leftOut = files.length - considered.length;
 	let searched = 0;
 	let looked = 0;
@@ -76,13 +85,14 @@ export async function searchWorkspace(input: {
 	const results = await pool(considered, PARALLEL, async (file): Promise<Found | undefined> => {
 		signal.throwIfAborted();
 		const wordless = NO_WORDS.test(file.path);
-		if (!wordless && (bytes + file.size > limits.bytes || performance.now() - started > limits.budgetMs)) {
+		looked++;
+		if (!wordless && (bytes + file.size > limits.bytes || chars > limits.chars || left() <= 0)) {
 			leftOut++;
-			return undefined;
+			return matchRead(file, { text: "" }, terms, limits.passages);
 		}
 		if (!wordless) bytes += file.size;
-		looked++;
-		const read = wordless ? ({ kind: "none" } as const) : await readText(workspace, texts, file);
+		const read = wordless ? ({ kind: "none" } as const) : await readText(workspace, texts, file, { waitMs: WORKER_WAIT_MS, timeoutMs: Math.max(1000, Math.min(DOCUMENT_READER_LIMITS.timeoutMs, left())) });
+		if (read.kind === "text") chars += read.text.length;
 		if (read.kind === "unread") unread.push({ path: file.path, why: read.why });
 		if (read.kind === "notext") noText.push(file);
 		if (read.kind === "text") searched++;
@@ -130,17 +140,18 @@ function stampedLines(text: string): { start: number; end: number }[] {
 	return [...text.matchAll(STAMP)].map((m) => ({ start: m.index, end: m.index }));
 }
 
-const STAMP = /^\[\d{1,2}:\d{2}(?::\d{2})?\]/gm;
+/** «[04:10]» at the start of a line: how a transcript (ADR 0033) stamps its passages. */
+const STAMP = /^\[(\d{1,2}:\d{2}(?::\d{2})?)\]/gm;
 
 /** «minuto 04:10»: the stamp of the transcript passage that holds `at`, if the text has stamps. */
 function minuteAt(text: string, at: number): string | undefined {
 	const lineStart = text.lastIndexOf("\n", at - 1) + 1;
-	const stamp = /^\[(\d{1,2}:\d{2}(?::\d{2})?)\]/.exec(text.slice(lineStart, lineStart + 12));
+	const stamp = new RegExp(STAMP.source).exec(text.slice(lineStart, lineStart + 12));
 	return stamp === null ? undefined : `minuto ${stamp[1]}`;
 }
 
 /** A file's words: its text, a document's extracted text, or why there are none to search. */
-async function readText(workspace: Workspace, texts: DocumentTexts, file: WorkspaceFile): Promise<Read> {
+async function readText(workspace: Workspace, texts: DocumentTexts, file: WorkspaceFile, options: ReadOptions): Promise<Read> {
 	let data: Buffer;
 	try {
 		data = await workspace.read(file.path);
@@ -150,12 +161,12 @@ async function readText(workspace: Workspace, texts: DocumentTexts, file: Worksp
 	const document = documentKind(file.path, data);
 	if (document !== undefined || looksLikeDocument(file.path)) {
 		try {
-			const doc = await texts.text(file.path, data);
-			if (!/[\p{L}\p{N}]/u.test(doc.text.replace(/^(?:--- Pagina \d+ ---|## (?:Foglio|Diapositiva) .*)$/gm, ""))) return { kind: "notext" };
+			const doc = await texts.text(file.path, data, options);
+			if (!documentHasWords(doc.text)) return { kind: "notext" };
 			return { kind: "text", text: doc.text, document: doc.kind };
 		} catch (error) {
 			if (!(error instanceof DocumentError)) throw error;
-			return { kind: "unread", why: isTransient(error) ? "non sono riuscita a leggerlo ora" : error.message };
+			return { kind: "unread", why: error.message };
 		}
 	}
 	if (oldFormatAdvice(file.path, data) !== undefined) return { kind: "unread", why: "è in un formato vecchio che non so leggere" };

@@ -25,6 +25,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
 	const { workspace } = options;
 	/** This instance's documents' text, so reading a long one in pieces or searching again does not parse it each time. */
 	const texts = new DocumentTexts();
+	const searchLimits = options.searchLimits ?? SEARCH_LIMITS;
 	const fail = (error: unknown): string => {
 		if (error instanceof WorkspaceError) return `Errore: ${error.message}`;
 		throw error;
@@ -98,8 +99,8 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
 				if (terms.length === 0) return "Errore: scrivi almeno una parola da cercare.";
 				const folder = typeof args.folder === "string" ? args.folder.trim() : "";
 				try {
-					const outcome = await searchWorkspace({ workspace, texts, terms, folder, limits: options.searchLimits ?? SEARCH_LIMITS, signal: ctx.signal, progress: (t) => ctx.progress(t) });
-					return searchAnswer(terms, folder, outcome, options.searchLimits ?? SEARCH_LIMITS);
+					const outcome = await searchWorkspace({ workspace, texts, terms, folder, limits: searchLimits, signal: ctx.signal, progress: (t) => ctx.progress(t) });
+					return searchAnswer(terms, folder, outcome, searchLimits);
 				} catch (error) {
 					return fail(error);
 				}
@@ -203,7 +204,7 @@ function searchAnswer(terms: readonly QueryTerm[], folder: string, outcome: Sear
 	const notes = [
 		outcome.noText.length === 0 ? "" : `${outcome.noText.length === 1 ? "Un documento è una scansione" : `${outcome.noText.length} documenti sono scansioni`}, senza testo da cercare: se quello che cerchi può essere lì, guardalo con image_view (sono nell'elenco).`,
 		outcome.unread.length === 0 ? "" : `${outcome.unread.length === 1 ? "Un documento non si è potuto leggere" : `${outcome.unread.length} documenti non si sono potuti leggere`}: il motivo è nell'elenco.`,
-		outcome.leftOut === 0 ? "" : `La ricerca non è arrivata a ${outcome.leftOut === 1 ? "un file, il più vecchio" : `${outcome.leftOut} file, i più vecchi`} (i file sono troppi o troppo grandi): restringi con folder o con parole più precise.`,
+		outcome.leftOut === 0 ? "" : `${outcome.leftOut === 1 ? "Del file più vecchio ho cercato" : `Dei ${outcome.leftOut} file più vecchi ho cercato`} solo il nome, perché i file sono troppi o troppo grandi: per cercare anche dentro, restringi con folder o con parole più precise.`,
 	].filter((n) => n !== "");
 	const lines: string[] = [];
 	const shown = outcome.found.slice(0, limits.results);

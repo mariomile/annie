@@ -41,6 +41,24 @@ describe("folding and queries", () => {
 		expect(stems('"fatture di ottobre"')).toEqual(["fatture di ottobre"]);
 	});
 
+	it("does not stem words written with a capital, nor take «perché» for a word", () => {
+		expect(parseQuery("Bianchi perché preventivi").map((t) => t.stem)).toEqual(["bianchi", "preventiv"]);
+	});
+
+	it("finds accents written as separate marks, as macOS writes file names", () => {
+		const text = fold("il re\u0301sume\u0301 di Mario");
+		expect(findHits(text, parseQuery("résumé"))).toHaveLength(1);
+		expect(findHits(text, parseQuery("resume"))).toHaveLength(1);
+	});
+
+	it("a phrase full of punctuation is matched in linear time", () => {
+		const terms = parseQuery('"a - - - - - - - - - - - - - - - - - - - - zz"');
+		expect(terms.map((t) => t.stem)).toEqual(["a zz"]);
+		const started = performance.now();
+		findHits(fold(`a ${"- ".repeat(5000)}`), terms);
+		expect(performance.now() - started).toBeLessThan(500);
+	});
+
 	it("matches the start of words only, a phrase across a line break or a comma, a number whole", () => {
 		const term = (q: string) => parseQuery(q);
 		const text = fold("I grossi ordini di Rossi.\nCondizioni di\npagamento: 30 giorni. Rossi, Mario. Fattura n. 420 e 42/2026");
@@ -63,6 +81,15 @@ describe("passages and ranking", () => {
 		expect(found[0]?.text).toContain("Rossi chiede la fattura");
 		expect(found[1]?.text).toContain("bonifico");
 		for (const p of found) expect(long.slice(p.at)).toContain(p.text.replace(/^…|…$/g, "").slice(0, 20));
+	});
+
+	it("shows other places of a single word, and copes with a text full of page lines", () => {
+		const text = ["Rossi qui.", ...Array.from({ length: 30 }, () => "riempimento ".repeat(20)), "Rossi ancora.", ...Array.from({ length: 30 }, () => "altro ".repeat(40)), "Rossi infine."].join("\n");
+		expect(passagesAround(text, findHits(fold(text), parseQuery("rossi")), 3)).toHaveLength(3);
+		const pages = Array.from({ length: 200_000 }, (_, i) => `--- Pagina ${i + 1} ---\nRossi`).join("\n");
+		const walls = [...pages.matchAll(/^--- Pagina \d+ ---$/gm)].map((m) => ({ start: m.index, end: m.index + m[0].length }));
+		const match = matchFile({ path: "x.pdf", modifiedAt: "2026-10-10T00:00:00Z", text: pages, walls }, parseQuery("rossi"), 3);
+		expect(match?.passages[0]?.text).toBe("…Rossi…");
 	});
 
 	it("ranks files with every word first, then the rarer words, then words in the name, then the newest", () => {
@@ -182,7 +209,8 @@ describe("file_search", () => {
 	it("leaves out the oldest files past the limits and says so", async () => {
 		const { search } = await setup({ ...SEARCH_LIMITS, bytes: 400 });
 		const answer = await search({ query: "rossi" });
-		expect(answer).toMatch(/La ricerca non è arrivata a \d+ file, i più vecchi \(i file sono troppi o troppo grandi\): restringi con folder/);
+		expect(answer).toMatch(/Dei \d+ file più vecchi ho cercato solo il nome, perché i file sono troppi o troppo grandi: per cercare anche dentro, restringi con folder/);
+		expect(await search({ query: "contratto" })).toContain("uploads/contratto.docx (modificato il ");
 		expect(answer).toContain("trascrizioni/riunione.md");
 	});
 
@@ -212,6 +240,30 @@ describe("document texts", () => {
 		transient = false;
 		expect((await texts.text("lento.pdf", Buffer.from("l"))).text).toBe("testo di lento.pdf");
 		expect(reads).toBe(4);
+	});
+
+	it("shares one read between callers asking at once, and counts it once", async () => {
+		let reads = 0;
+		const texts = new DocumentTexts(3000, async () => {
+			reads++;
+			await new Promise((r) => setTimeout(r, 10));
+			return { kind: "pdf", text: "x".repeat(1200) };
+		});
+		await Promise.all([texts.text("a.pdf", Buffer.from("a")), texts.text("a.pdf", Buffer.from("a"))]);
+		await texts.text("b.pdf", Buffer.from("b"));
+		await texts.text("a.pdf", Buffer.from("a"));
+		expect(reads).toBe(2);
+	});
+
+	it("does not keep a document longer than half its size", async () => {
+		let reads = 0;
+		const texts = new DocumentTexts(2000, async () => {
+			reads++;
+			return { kind: "pdf", text: "x".repeat(1500) };
+		});
+		await texts.text("a.pdf", Buffer.from("a"));
+		await texts.text("a.pdf", Buffer.from("a"));
+		expect(reads).toBe(2);
 	});
 
 	it("forgets the least recently used past its size", async () => {

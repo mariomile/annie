@@ -61,6 +61,11 @@ export function documentSectionLines(text: string): { start: number; end: number
 	return [...text.matchAll(sectionMarker())].map((m) => ({ start: m.index, end: m.index + m[0].length }));
 }
 
+/** Whether a document's text has any word beyond the page and sheet lines: a scan has none. */
+export function documentHasWords(text: string): boolean {
+	return /[\p{L}\p{N}]/u.test(text.replace(sectionMarker(), ""));
+}
+
 /** «--- Pagina 3 ---», «## Foglio «Ordini» (4 righe…)», «## Diapositiva 2…»: how documentText marks the parts. */
 function sectionMarker(): RegExp {
 	return /^(?:--- (Pagina \d+) ---|## (Foglio «[^»\n]*»|Diapositiva \d+)[^\n]*)$/gm;
