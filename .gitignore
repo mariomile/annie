@@ -7,3 +7,5 @@ data/
 
 evals/segreteria/last-report/
 data-cloud/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
