@@ -462,13 +462,15 @@ async function readWebDocument(page: WebPage, offset: number): Promise<DocumentT
 function documentPiece(url: string, doc: DocumentText, offset: number): string {
 	const label = `${documentLabel(doc.kind)}${doc.parts === undefined ? "" : `, ${documentPartsLabel(doc.kind, doc.parts)}`}`;
 	const note = doc.note === undefined ? "" : `\n[${doc.note}]`;
-	if (doc.text === "") return `${untrusted(`URL: ${url}\nDocumento ${label}`)}\nNel documento non c'è testo da leggere.${note}`;
+	// A scan: its pages are looked at from the workspace (ADR 0028).
+	const scan = doc.kind === "pdf" && /non (ha|hanno|contiene) testo/.test(doc.note ?? "") ? "\n[Le pagine senza testo si guardano dal workspace: prima salva il PDF con web_download.]" : "";
+	if (doc.text === "") return `${untrusted(`URL: ${url}\nDocumento ${label}`)}\nNel documento non c'è testo da leggere.${note}${scan}`;
 	const { body, tail } = pieceOf(doc.text, offset, MAX_DOCUMENT_TEXT);
 	if (body === "") return tail;
 	// Where this piece starts (a sheet, a page) is the document's own text: inside the fence.
 	const where = offset > 0 ? documentSectionAt(doc.text, offset) : undefined;
 	const keep = tail === "" || offset > 0 ? "" : " Se serve tutto, salvalo con web_download e leggilo con file_read.";
-	return `${untrusted(`URL: ${url}\nDocumento ${label}${where === undefined ? "" : `\n[Continua da: ${where}]`}\n\n${body}`)}${tail === "" ? "" : `\n${tail}${keep}`}${offset === 0 ? note : ""}`;
+	return `${untrusted(`URL: ${url}\nDocumento ${label}${where === undefined ? "" : `\n[Continua da: ${where}]`}\n\n${body}`)}${tail === "" ? "" : `\n${tail}${keep}`}${offset === 0 ? `${note}${scan}` : ""}`;
 }
 
 /** At most `max` characters from offset, cut at a line end when one is near, and where to go on from. */

@@ -4,7 +4,7 @@ Aggiornato al 17 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 33, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 34, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -62,7 +62,8 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Avviso quando una richiesta da approvare scade: la conversazione che l'ha chiesta lo sa, una volta (settimana 31, [week31.md](week31.md))
 - [x] Leggere i documenti: PDF, Word, Excel, PowerPoint e OpenDocument mandati in chat o nel workspace, a pezzi se sono lunghi (settimana 32, [week32.md](week32.md), [ADR 0026](adr/0026-documenti.md))
 - [x] PDF e documenti trovati sul web: `web_read` li legge, `web_download` li salva nel workspace, la ricerca approfondita ne usa il testo (settimana 33, [week33.md](week33.md), [ADR 0027](adr/0027-documenti-dal-web.md))
-- [ ] Scansioni: leggere il testo delle immagini nei PDF (OCR), oggi solo dal computer di Annie
+- [x] Scansioni: Annie guarda le pagine dei PDF scansionati con `image_view` e ne legge il testo da sé (settimana 34, [week34.md](week34.md), [ADR 0028](adr/0028-pagine-scansionate.md))
+- [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo
 

@@ -72,8 +72,8 @@ describe("reading the documents people send", () => {
 	});
 
 	it("a scanned page is named, with what to do about it", () => {
-		expect(documentText("scansione.pdf", fixture("scansione.pdf")).note).toBe("La pagina 1 non ha testo (forse una scansione o un'immagine).");
-		expect(documentText("x.pdf", syntheticPdf({ content: "q Q" })).note).toMatch(/^Il PDF non contiene testo: è probabilmente una scansione\. Se hai il computer, .*pdftoppm.*image_view/);
+		expect(documentText("scansione.pdf", fixture("scansione.pdf")).note).toBe("La pagina 1 non ha testo (forse una scansione o un'immagine): guardala con image_view (page 1).");
+		expect(documentText("x.pdf", syntheticPdf({ content: "q Q" })).note).toBe("Il PDF non contiene testo: è probabilmente una scansione. Guarda le pagine con image_view (il percorso del PDF e page) e leggi tu cosa dicono.");
 	});
 
 	it("PowerPoint: slides in the order shown", () => {

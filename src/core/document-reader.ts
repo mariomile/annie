@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { DocumentError, type DocumentText } from "./documents.ts";
+import type { PdfPageImage } from "./pdf-text.ts";
 
 /**
  * Reads a document in a worker thread (ADR 0026), so a file made to be slow or huge costs at
@@ -21,7 +22,21 @@ export async function readDocumentText(name: string, data: Uint8Array, options: 
 	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
 	running++;
 	try {
-		return await inWorker(name, data, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs);
+		return await inWorker<DocumentText>({ name, data }, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs, "document");
+	} finally {
+		running--;
+		waiting.shift()?.();
+	}
+}
+
+/** The picture on a page of a PDF (a scan), read in a worker like the text (ADR 0028). */
+export async function readPdfPage(data: Uint8Array, page: number, options: { timeoutMs?: number; waitMs?: number } = {}): Promise<PdfPageImage> {
+	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
+	running++;
+	try {
+		const image = await inWorker<PdfPageImage>({ name: "pagina.pdf", data, page }, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs, "image");
+		// Transferred as Uint8Arrays: Buffers again for whoever reads them.
+		return { ...image, images: image.images.map((i) => ({ ...i, data: Buffer.from(i.data.buffer, i.data.byteOffset, i.data.byteLength) })) };
 	} finally {
 		running--;
 		waiting.shift()?.();
@@ -43,12 +58,12 @@ function turn(waitMs: number): Promise<void> {
 	});
 }
 
-function inWorker(name: string, data: Uint8Array, timeoutMs: number): Promise<DocumentText> {
+function inWorker<T>(input: { name: string; data: Uint8Array; page?: number }, timeoutMs: number, key: "document" | "image"): Promise<T> {
 	// From source (tsx, the tests) the worker is TypeScript that Node runs by stripping the types, so
 	// its files use only erasable syntax; built, it is JavaScript.
 	const source = import.meta.url.endsWith(".ts");
 	const worker = new Worker(new URL(source ? "./document-worker.ts" : "./document-worker.js", import.meta.url), {
-		workerData: { name, data },
+		workerData: input,
 		execArgv: [],
 		resourceLimits: { maxOldGenerationSizeMb: DOCUMENT_READER_LIMITS.memoryMb, maxYoungGenerationSizeMb: 64 },
 		stdout: true,
@@ -57,7 +72,7 @@ function inWorker(name: string, data: Uint8Array, timeoutMs: number): Promise<Do
 	// Whatever the worker prints (Node's warnings) is drained, never shown.
 	worker.stdout.resume();
 	worker.stderr.resume();
-	return new Promise<DocumentText>((resolve, reject) => {
+	return new Promise<T>((resolve, reject) => {
 		let settled = false;
 		const settle = (outcome: () => void) => {
 			if (settled) return;
@@ -67,8 +82,8 @@ function inWorker(name: string, data: Uint8Array, timeoutMs: number): Promise<Do
 			outcome();
 		};
 		const timer = setTimeout(() => settle(() => reject(new DocumentError("il documento è troppo complesso da leggere"))), timeoutMs);
-		worker.on("message", (message: { document?: DocumentText; error?: string }) =>
-			settle(() => (message.document !== undefined ? resolve(message.document) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
+		worker.on("message", (message: { document?: T; image?: T; error?: string }) =>
+			settle(() => (message[key] !== undefined ? resolve(message[key]) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
 		);
 		// A worker that fails is our problem, not the file's: the person can try again.
 		worker.on("error", (error: Error & { code?: string }) =>

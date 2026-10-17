@@ -117,6 +117,10 @@ _Avoid_: allegato (è qualunque file), media, vision
 Un PDF, Word, Excel, PowerPoint o OpenDocument nel workspace, di solito mandato da una persona. Annie ne legge il testo con `file_read`: pagine, fogli e diapositive restano distinti, la formattazione no. Una scansione non ha testo da leggere. Vedi ADR 0026.
 _Avoid_: allegato (è qualunque file), file binario
 
+**Scansione**:
+Un PDF fatto di immagini delle pagine, senza testo: lo scanner dell'ufficio, un fax, una foto salvata in PDF. Annie ne guarda le pagine con `image_view` e legge da sé. Vedi ADR 0028.
+_Avoid_: OCR (Annie non fa OCR, guarda), PDF immagine
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
