@@ -178,7 +178,7 @@ Il file RSS o Atom pubblico di un giornale, da cui `news_headlines` prende i tit
 _Avoid_: notiziario, rassegna stampa (quando si intendono i titoli dei feed)
 
 **VIES**:
-Il servizio della Commissione europea che dice se un numero IVA è attivo per gli scambi intra-UE, con nome e indirizzo quando il paese li dà; `vat_check` lo usa con `ANNIE_VAT_CHECK`. «Non attiva nel VIES» non vuol dire che la partita IVA non esista. Vedi ADR 0046.
+Il servizio della Commissione europea che dice se un numero IVA è attivo per gli scambi intra-UE, con nome e indirizzo quando il paese li dà; `vat_check` lo usa con `ANNIE_VAT_CHECK`. «Non attiva nel VIES» non vuol dire che la partita IVA non esista. Vedi ADR 0047.
 _Avoid_: registro delle partite IVA, anagrafe tributaria
 
 **Download**:
