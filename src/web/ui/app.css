@@ -300,6 +300,26 @@ ul.task-list { list-style: none; margin: 0; padding: 6px; }
 .task-row .icon-btn.task-remove:hover { color: var(--bad); background: var(--bad-soft); }
 .task-row:hover .task-remove, .task-row:focus-within .task-remove { opacity: 1; }
 @media (hover: none) { .task-row .task-remove { opacity: 1; } }
+/* Attività: the audit day by day, rows like the tasks, the details as name and value. */
+.audit { padding: 16px 14px 10px; }
+.audit-filter { padding: 0 6px; }
+.audit-day + .audit-day { margin-top: 10px; }
+.audit-day h3 { margin: 6px 14px 2px; font-size: 12.5px; font-weight: 600; color: var(--fg-3); text-transform: capitalize; }
+.audit-day .task-list { padding: 0; }
+.audit-row { padding: 8px 14px; gap: 12px; }
+.audit-row .fold-glyph { width: 28px; height: 28px; border-radius: 8px; }
+.audit-row .fold-glyph .icon { width: 15px; height: 15px; }
+.audit-row .task-text { gap: 1px; }
+.audit-row .task-text b { font-size: 13px; }
+.audit-times { margin-left: 8px; padding: 1px 7px; border-radius: 99px; background: var(--bg-2); border: 1px solid var(--border); font: 500 11px/1.4 var(--mono); color: var(--fg-2); vertical-align: 1px; }
+.audit-row.bad .task-text b, .audit-row.bad .fold-glyph { color: var(--bad); }
+.audit-row.bad .fold-glyph { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 25%, transparent); }
+.audit-pairs { display: flex; flex-wrap: wrap; gap: 2px 12px; font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+.audit-pairs i { font-style: normal; color: var(--fg-3); margin-right: 5px; opacity: 0.8; }
+.audit-pairs span { color: var(--fg-2); }
+.audit-when { flex: none; font: 12px/1 var(--mono); color: var(--fg-3); padding-top: 4px; }
+.audit-more { display: flex; justify-content: center; padding: 8px 0 4px; }
+.audit-more .btn[hidden] { display: none; }
 /* Memoria: the same rows as the tasks, the whole sentence shown; the archivio folds under them. */
 .memory-list .task-text b { display: block; font-weight: 450; -webkit-line-clamp: unset; overflow: visible; }
 .memory-archive { margin: 4px 6px 6px; border: 1px solid var(--border); border-radius: 12px; }
