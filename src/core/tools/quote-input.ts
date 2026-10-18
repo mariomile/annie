@@ -36,14 +36,17 @@ export function cleanText(value: unknown, max: number, name: string, lines = fal
 	return text;
 }
 
-/** A decimal as given, or why not: «1.250» reads two ways and is asked, not guessed. */
-export function readAmount(value: unknown, decimals: number, what: string): string | undefined | Problem {
+/**
+ * A decimal as given, or why not: «1.250» reads two ways and is asked, not guessed. What is not
+ * digits and separators is echoed inside `fence` (the quotes' by default; the expenses pass theirs).
+ */
+export function readAmount(value: unknown, decimals: number, what: string, fence: (text: string) => string = fenced): string | undefined | Problem {
 	if (value === undefined) return undefined;
 	if (typeof value !== "number" && typeof value !== "string") return { problem: `${what}: dammi un numero` };
 	const read = readDecimal(value, decimals);
 	// Echoed as written only when it is digits and separators; anything else inside the fence.
 	const text = String(value);
-	const said = /^[\d .,€%-]{1,20}$/.test(text) ? `«${text}»` : fenced(text.slice(0, 20));
+	const said = /^[\d .,€%-]{1,20}$/.test(text) ? `«${text}»` : fence(text.slice(0, 20));
 	if (read === AMBIGUOUS) return { problem: `${what}: ${said} può voler dire migliaia o decimali. Chiedi a chi ti scrive, o passa il valore come numero JSON (1250 o 1.25)` };
 	if (read === undefined) return { problem: `${what}: ${said} non è un numero che so leggere (al più ${decimals} decimali, senza segno meno)` };
 	return read;

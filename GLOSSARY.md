@@ -217,6 +217,10 @@ _Avoid_: offerta, quotazione
 Un file del workspace mandato con una mail di Annie (preventivo, fattura, documento). La card di approvazione mostra percorso e dimensione; all'approvazione il file deve essere identico a quello chiesto. Vedi ADR 0056.
 _Avoid_: attachment
 
+**Spesa**:
+Un costo registrato con `expenses` (S-AAAA-NNNN): data, totale IVA compresa, IVA, fornitore, categoria, pagamento e, se c'è, lo scontrino nel workspace. La **prima nota** mette in fila le spese e gli incassi delle fatture pagate con il saldo. Vedi ADR 0057.
+_Avoid_: expense, costo, uscita (per la singola spesa)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

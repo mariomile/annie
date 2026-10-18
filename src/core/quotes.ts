@@ -6,8 +6,8 @@
  */
 import { addDays, realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
-import { hasControlChars } from "./plain-text.ts";
 import { CASSA_KINDS, type Cassa, type CassaKind, type SumLine, type SumOptions, VAT_RATES, type VatRate } from "./quote-sums.ts";
+import { isMarker, isText, optText } from "./stored-fields.ts";
 import { fold } from "./text-match.ts";
 
 export class QuoteError extends Error {
@@ -179,9 +179,6 @@ const REVISION = /^\d{4}-\d{3,6}-R\d{1,2}$/;
 const FILE = /^preventivi\/[A-Za-z0-9-]{1,120}\.(?:pdf|docx)$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-const isText = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !hasControlChars(v);
-const optText = (v: unknown, max: number) => v === undefined || isText(v, max);
-const isMarker = (v: unknown): v is Marker => typeof v === "object" && v !== null && isText((v as Marker).by, 200) && isText((v as Marker).at, 40);
 const percent = (v: unknown, below100: boolean) => typeof v === "string" && PERCENT.test(v) && Number(v) > 0 && (below100 ? Number(v) < 100 : Number(v) <= 100);
 
 function validLine(v: unknown): boolean {

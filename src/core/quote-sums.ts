@@ -126,7 +126,7 @@ export function scaled(value: string, scale: number): bigint {
 }
 
 /** numerator / denominator rounded half up, both positive. */
-function halfUp(numerator: bigint, denominator: bigint): bigint {
+export function halfUp(numerator: bigint, denominator: bigint): bigint {
 	return (numerator * 2n + denominator) / (denominator * 2n);
 }
 
@@ -144,7 +144,7 @@ export function lineCents(line: SumLine): bigint {
 }
 
 /** The imponibile in a gross amount at `rate`. */
-function netOf(gross: bigint, rate: VatRate): bigint {
+export function netOf(gross: bigint, rate: VatRate): bigint {
 	return halfUp(gross * 100n, BigInt(100 + rate));
 }
 
