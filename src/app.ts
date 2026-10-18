@@ -811,8 +811,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	});
 	// «Esegui da solo» (ADR 0058): each reply in the conversation of a scheda may be followed by «go on».
 	runtime.onReply((reply) => {
-		if (reply.tenantId !== tenant || reply.channel !== "web") return;
-		void boardWork.afterReply(reply.instanceId, reply.threadId, reply.deliveryId).catch((error: unknown) => log(`annie: board after reply in ${reply.threadId}: ${error instanceof Error ? error.message : String(error)}`));
+		// Only answers to what was written in the conversation: not files or messages sent mid-turn.
+		if (reply.tenantId !== tenant || reply.channel !== "web" || reply.status === "file" || reply.submissionId === "message") return;
+		void boardWork.afterReply(reply.instanceId, reply.threadId, reply.deliveryId, reply.status === "unanswered" ? reply.reason : undefined).catch((error: unknown) => log(`annie: board after reply in ${reply.threadId}: ${error instanceof Error ? error.message : String(error)}`));
 	});
 	// A scheda to review (ADR 0051): when it is the owner's, a line in the owner's chat with the main agente too.
 	boardWork.events.on("review", (review: BoardReview) => {

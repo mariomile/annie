@@ -484,7 +484,7 @@ export function createWebApp(options: WebAppOptions): Server {
 			cards,
 			agents: agents.map((r) => ({ id: r.id, name: r.name, ...(r.persona?.emoji === undefined ? {} : { emoji: r.persona.emoji }), canAssign: r.egress.channels.includes("web") && (r.allowedUsers.web ?? []).includes(p.id) })),
 			people: Object.fromEntries([...involved].map((id) => [id, names.get(id) ?? "una persona"])),
-			autoRounds: BOARD_LIMITS.autoRounds,
+			auto: { replies: BOARD_LIMITS.autoRounds, hours: BOARD_LIMITS.autoMs / 3_600_000 },
 		};
 	});
 	route("POST", "/api/board", "person", async ({ person, req }) => {

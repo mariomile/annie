@@ -42,7 +42,13 @@ export type Card = {
 	/** The conversation of the assignee where it is worked, and the person it is with. */
 	readonly work?: { readonly agent: string; readonly threadId: string; readonly personId: string };
 	/** «Esegui da solo» (ADR 0058): the agente is told to go on after each reply, `rounds` times so far since `since`. */
-	readonly auto?: { readonly rounds: number; readonly since: string };
+	readonly auto?: {
+		/** Replies of the agente since it started alone (or was sent back). */
+		readonly rounds: number;
+		readonly since: string;
+		/** The last reply counted: one handed over again after a restart is not counted twice. */
+		readonly last?: string;
+	};
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
 	readonly updatedAt: string;

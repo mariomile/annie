@@ -338,7 +338,7 @@ describe("pnpm start (startAnnie)", () => {
 		const { annie, base, telegram } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
 		await api("/api/instances", { id: "ricerca", name: "Ricercatore" });
-		expect((await api("/api/board")).autoRounds).toBe(10);
+		expect((await api("/api/board")).auto).toEqual({ replies: 10, hours: 2 });
 		const { card } = await api("/api/board", { title: "Fornitori carta", assignee: "ricerca", auto: true });
 		expect(card).toMatchObject({ status: "in_corso", auto: { rounds: 0 } });
 		const entries = async () => (await api(`/api/instances/ricerca/threads/${card.work.threadId}`)).entries as { from: string; text?: string }[];
@@ -347,7 +347,7 @@ describe("pnpm start (startAnnie)", () => {
 		const goOn = (await entries()).filter((e) => e.text?.startsWith("[Scheda #1] Vai avanti da solo"));
 		expect(goOn).toHaveLength(10);
 		const stopped = (await api("/api/board")).cards[0];
-		expect(stopped.events.at(-1)).toMatchObject({ kind: "comment", by: { kind: "agent", id: "ricerca" }, text: expect.stringMatching(/dopo 10 giri/) });
+		expect(stopped.events.at(-1)).toMatchObject({ kind: "comment", by: { kind: "agent", id: "ricerca" }, text: expect.stringMatching(/dopo 10 risposte/) });
 		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text.startsWith("Scheda #1 da rivedere: Fornitori carta")));
 		// Nothing more is posted once it is in review.
 		await new Promise((r) => setTimeout(r, 300));

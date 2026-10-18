@@ -3321,13 +3321,14 @@ async function viewBoard(main) {
 			return false;
 		}
 	};
+	const aloneLabel = `Lavora da solo fino alla fine, senza aspettare le tue risposte (al massimo ${data.auto.replies} risposte o ${data.auto.hours} ore, poi va in «Da rivedere»)`;
 	// Dragged to another column (ADR 0051): the same moves as the buttons of the scheda.
 	const moveTo = async (c, status) => {
 		if (status === c.status) return;
 		if (status === "in_corso" && c.status === "da_fare") {
 			if (!c.assignee || !agentOf(c.assignee)?.canAssign) return toast("Affidala prima a un agente a cui puoi scrivere", true);
 			try {
-				await api(`/api/board/${c.id}/start`, { method: "POST", body: { auto: c.auto !== undefined } });
+				await api(`/api/board/${c.id}/start`, { method: "POST" });
 				toast(`${agentOf(c.assignee).name} ci sta lavorando`);
 				render();
 			} catch (error) {
@@ -3365,7 +3366,7 @@ async function viewBoard(main) {
 				"span.board-meta",
 				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
 				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
-				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: giro ${c.auto.rounds} di ${data.autoRounds}` }, "da solo") : null,
+				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
 			),
 		);
 	const columns = h(
@@ -3449,7 +3450,7 @@ async function viewBoard(main) {
 		const moves = [];
 		// «Esegui da solo» (ADR 0058): the agente goes on without waiting for answers, then to review.
 		const alone = h("input", { type: "checkbox", checked: c.auto !== undefined });
-		const aloneRow = h("label.row-gap", alone, h("span", `Lavora da solo fino alla fine (al massimo ${data.autoRounds} giri, poi va in «Da rivedere»)`));
+		const aloneRow = h("label.board-alone", alone, h("span", aloneLabel));
 		if (c.status === "da_rivedere") {
 			moves.push(h("button.btn.accent", { onclick: act(withComment({ status: "fatto" }), `Scheda #${c.n} approvata`) }, icon("check"), "Approva"));
 			moves.push(
@@ -3495,14 +3496,15 @@ async function viewBoard(main) {
 				if (!(await save(c, { auto: alone.checked }, alone.checked ? `${agentOf(c.assignee)?.name ?? "L'agente"} va avanti da solo` : "Ora l'agente aspetta le tue risposte"))) alone.checked = !alone.checked;
 			});
 		const canDelete = state.me.role === "owner" || (c.createdBy.kind === "person" && c.createdBy.id === state.me.id);
-		dialog.append(
+		// Without what is not there: append would write «null».
+		const parts = [
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			h("h3", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
 			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status)),
 			moves.length ? h("div.actions", moves) : null,
 			startable || working ? aloneRow : null,
-			working && c.auto ? h("p.muted.small", `Giro ${c.auto.rounds} di ${data.autoRounds}.`) : null,
+			working && c.auto ? h("p.muted.small", `Risposte senza di te: ${c.auto.rounds} di ${data.auto.replies}.`) : null,
 			events.length ? h("ul.board-events", events.map(line)) : null,
 			h("label.field", h("span", "Commento"), comment),
 			h(
@@ -3541,7 +3543,8 @@ async function viewBoard(main) {
 						)
 					: null,
 			),
-		);
+		];
+		dialog.append(...parts.filter((x) => x !== null));
 		dialog.addEventListener("close", () => dialog.remove());
 		document.body.append(dialog);
 		dialog.showModal();
@@ -3557,7 +3560,7 @@ async function viewBoard(main) {
 		const assignee = h("select", h("option", { value: "" }, "Nessuno, per ora"), data.agents.filter((a) => a.canAssign).map((a) => h("option", { value: a.id }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
 		const priority = h("select", PRIORITIES.map(([v, l]) => h("option", { value: v, selected: v === "normale" ? "selected" : undefined }, l)));
 		const alone = h("input", { type: "checkbox" });
-		const aloneRow = h("label.row-gap", { hidden: true }, alone, h("span", `Lavora da solo fino alla fine (al massimo ${data.autoRounds} giri, poi va in «Da rivedere»)`));
+		const aloneRow = h("label.board-alone", { hidden: true }, alone, h("span", aloneLabel));
 		assignee.addEventListener("change", () => (aloneRow.hidden = !assignee.value));
 		const ok = h("button.btn.accent", "Crea");
 		const dialog = h(

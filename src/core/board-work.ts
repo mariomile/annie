@@ -78,16 +78,21 @@ export class BoardWork {
 		// else it goes back to «Da fare», to start again with them.
 		const sentBack = person !== undefined && change.status === "in_corso" && (before.status === "da_rivedere" || before.status === "fatto");
 		const toWorker = work !== undefined && person === work.personId && before.assignee === work.agent && (await this.deps.canChat(work.agent, person));
-		const status = (change.assignee === null && before.status === "in_corso") || (sentBack && !toWorker) ? { status: "da_fare" as const } : {};
-		if (change.auto !== undefined && (by.kind !== "person" || (work !== undefined && !toWorker))) throw new BoardError("Decide se l'agente lavora da solo chi ci lavora con lui");
+		// Back in «Da fare», or to another agente: whoever starts it again decides whether it works alone.
+		const status = (change.assignee === null && before.status === "in_corso") || (sentBack && !toWorker) ? { status: "da_fare" as const, auto: null } : handedOver ? { auto: null } : {};
+		if (change.auto !== undefined && !toWorker) throw new BoardError("Decide se l'agente lavora da solo chi ci lavora con lui, dopo averla avviata");
+		// Asked again while already so: nothing changes, the count goes on.
+		const { auto: asked, ...rest } = change;
+		const turnedOn = asked != null && before.auto === undefined;
+		const auto = asked === undefined || (asked === null) === (before.auto === undefined) ? {} : { auto: asked };
 		// Sent back to an agente working alone: it starts counting again.
-		const again = sentBack && toWorker && before.auto !== undefined ? { auto: { rounds: 0, since: new Date().toISOString() } } : {};
-		const card = this.deps.store.update(before.id, { ...change, ...status, ...again }, by);
+		const again = sentBack && toWorker && (before.auto !== undefined || turnedOn) ? { auto: { rounds: 0, since: new Date().toISOString() } } : {};
+		const card = this.deps.store.update(before.id, { ...rest, ...auto, ...status, ...again }, by);
 		if (by.kind === "agent" && card.status === "da_rivedere" && before.status !== "da_rivedere") await this.reviewed(card);
 		if (handedOver && person !== undefined) return this.start(card, person, by);
 		if (!toWorker || work === undefined) return card;
 		// Turned on while it waits for an answer: it goes on at once.
-		if (change.auto && before.auto === undefined && card.status === "in_corso") await this.tell(card, goOn(card));
+		if (turnedOn && !sentBack && card.status === "in_corso") await this.tell(card, goOn(card));
 		const comment = change.comment?.trim();
 		if (sentBack) {
 			const name = (await this.deps.personName(work.personId)) ?? "Chi te l'ha affidata";
@@ -112,26 +117,25 @@ export class BoardWork {
 	/**
 	 * «Esegui da solo» (ADR 0058): after each reply of the agente in the conversation of a scheda
 	 * still In corso, it is told to go on, as long as rounds and time last; then the scheda goes to
-	 * «Da rivedere» with what happened, for a person to look at. `deliveryId` keeps a reply sent
-	 * again after a restart from counting twice.
+	 * «Da rivedere» with what happened, for a person to look at. So it does when the agente could
+	 * not answer (`failed`, the reason) or cannot be told to go on. `deliveryId` keeps a reply
+	 * handed over again after a restart from counting twice.
 	 */
-	async afterReply(agent: string, threadId: string, deliveryId: string): Promise<void> {
-		if (this.seen.has(deliveryId)) return;
-		this.seen.add(deliveryId);
-		if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value as string);
+	async afterReply(agent: string, threadId: string, deliveryId: string, failed?: string): Promise<void> {
 		const card = this.deps.store.list().find((c) => c.work?.agent === agent && c.work.threadId === threadId && c.assignee === agent);
-		if (card?.auto === undefined || card.status !== "in_corso") return;
+		if (card?.auto === undefined || card.status !== "in_corso" || card.auto.last === deliveryId) return;
 		const self: CardActor = { kind: "agent", id: agent };
-		const over = card.auto.rounds >= BOARD_LIMITS.autoRounds || Date.now() - Date.parse(card.auto.since) > BOARD_LIMITS.autoMs;
-		if (over) {
-			const stopped = this.deps.store.update(card.id, { status: "da_rivedere", comment: `Lavorando da solo si è fermato dopo ${card.auto.rounds} giri senza spostarla in «Da rivedere»: guarda la conversazione e decidi se rimandarla indietro.` }, self);
-			return this.reviewed(stopped);
+		const stop = async (why: string) => this.reviewed(this.deps.store.update(card.id, { status: "da_rivedere", comment: `Lavorando da solo si è fermato ${why}: guarda la conversazione e decidi se rimandarla indietro.` }, self));
+		if (failed !== undefined) return stop(`perché non è riuscito a rispondere (${failed})`);
+		if (card.auto.rounds >= BOARD_LIMITS.autoRounds || Date.now() - Date.parse(card.auto.since) > BOARD_LIMITS.autoMs)
+			return stop(`dopo ${card.auto.rounds} risposte senza spostarla in «Da rivedere»`);
+		const next = this.deps.store.update(card.id, { auto: { ...card.auto, rounds: card.auto.rounds + 1, last: deliveryId } }, self);
+		try {
+			await this.deps.post(agent, threadId, card.work?.personId as string, goOn(next));
+		} catch (error) {
+			await stop(`perché non sono riuscito a dirgli di andare avanti (${error instanceof Error ? error.message : String(error)})`);
 		}
-		const next = this.deps.store.update(card.id, { auto: { ...card.auto, rounds: card.auto.rounds + 1 } }, self);
-		await this.tell(next, goOn(card));
 	}
-
-	private readonly seen = new Set<string>();
 
 	/** Moved to «Da rivedere» by its agente: who worked on it with this agente reviews it; with nobody, the owners. */
 	private async reviewed(card: Card): Promise<void> {
@@ -160,7 +164,7 @@ export class BoardWork {
 			return started;
 		} catch (error) {
 			// Nobody is working on it: it waits in «Da fare».
-			this.deps.store.update(card.id, { status: "da_fare", work: null }, by);
+			this.deps.store.update(card.id, { status: "da_fare", work: null, auto: null }, by);
 			throw new BoardError(`Non sono riuscito a passarla a ${(await this.deps.agentName(agent)) ?? agent}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
