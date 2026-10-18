@@ -18,3 +18,5 @@ Branch `week-47`. Annie legge le fatture elettroniche dello SdI, XML o firmate `
 ## Revisioni
 
 Prima revisione, corretta: una busta `.p7m` costruita apposta bloccava il thread principale per secondi (ora si legge solo l'inizio e ogni byte una volta), caratteri di controllo e di direzione dai riferimenti numerici, segni del recinto nei documenti, importi passati per numeri a virgola mobile, date non valide. Il riepilogo ora apre con una riga che dice tutto, spiega nota di credito, split payment, reverse charge, ritenute e contributi, dice quale scadenza conta, mostra il dovuto, ordini, DDT, CIG e CUP, rate e codici di pagamento; legge la fattura semplificata e i documenti firmati che non sono fatture.
+
+Seconda revisione, corretta: riconoscere un Word o un Excel firmati legge solo l'inizio della busta, file firmati grandi a pezzi piccoli si leggono, nomi dei file scaricati (`x.xml.p7m`), caratteri di direzione tolti anche se scritti nel testo, segni del recinto neutralizzati anche in tabelle e ricerche, testi firmati `.txt.p7m` e `.csv.p7m`, fatture oltre 20 MB lette come XML, scadenze «fine mese più giorni».

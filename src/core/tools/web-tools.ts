@@ -508,15 +508,23 @@ const RISKY = new Set(["exe", "com", "bat", "cmd", "scr", "msi", "dll", "ps1", "
 const NAMED = new Set(["pdf", "docx", "xlsx", "pptx", "odt", "ods", "odp", "doc", "xls", "ppt", "png", "jpg", "jpeg", "gif", "webp", "txt", "csv", "json", "xml", "p7m", "zip", ...RISKY]);
 const BY_TYPE: Record<string, string> = { "text/plain": "txt", "text/csv": "csv", "application/json": "json", "application/xml": "xml", "text/xml": "xml", "application/zip": "zip" };
 
-/** The name with the extension its bytes call for (a PDF ends in .pdf whatever the address said). */
+/**
+ * The name with the extension its bytes call for (a PDF ends in .pdf whatever the address said).
+ * A signed file's `real` ends in .p7m (xml.p7m): the name's own .p7m is set aside before comparing,
+ * so a.docx.p7m holding a workbook becomes a.xlsx.p7m, and x.xml.p7m that is not signed x.xml.
+ */
 function withExtension(name: string, real: string | undefined, contentType: string): string {
+	if (real !== undefined) {
+		const signed = real.endsWith(".p7m");
+		const inner = signed ? real.slice(0, -".p7m".length) : real;
+		const bare = name.replace(/\.p7m$/i, "");
+		const match = /\.([A-Za-z0-9]{1,5})$/.exec(bare);
+		const ext = match?.[1]?.toLowerCase();
+		if (ext === inner || (inner === "jpg" && ext === "jpeg")) return signed === (bare !== name) ? name : `${bare}${signed ? ".p7m" : ""}`;
+		return `${ext !== undefined && NAMED.has(ext) && match !== null ? bare.slice(0, match.index) : bare}.${real}`;
+	}
 	const match = /\.([A-Za-z0-9]{1,5})$/.exec(name);
 	const ext = match?.[1]?.toLowerCase();
-	const base = match === null ? name : name.slice(0, match.index);
-	if (real !== undefined) {
-		if (ext === real || (real === "jpg" && ext === "jpeg") || name.toLowerCase().endsWith(`.${real}`)) return name;
-		return `${ext !== undefined && NAMED.has(ext) ? base : name}.${real}`;
-	}
 	if (ext === undefined) {
 		const byType = BY_TYPE[contentType];
 		return byType === undefined ? name : `${name}.${byType}`;
@@ -531,5 +539,6 @@ async function freePath(workspace: Workspace, path: string, data: Buffer): Promi
 	const same = there.size === data.length && (await workspace.read(path).catch(() => undefined))?.equals(data) === true;
 	if (same) return path;
 	const hash = createHash("sha256").update(data).digest("hex").slice(0, 8);
-	return path.replace(/(\.[^./]*)?$/, (ext) => `-${hash}${ext}`);
+	// Before the whole extension of a signed file: fattura-ab12cd34.xml.p7m.
+	return path.replace(/((?:\.[A-Za-z0-9]{1,5})?\.p7m|\.[^./]*)?$/i, (ext) => `-${hash}${ext}`);
 }

@@ -15,9 +15,12 @@ export class P7mError extends Error {
 /** The deepest nesting read; a SignedData needs about 6 levels, chunked content a few more. */
 const MAX_DEPTH = 32;
 
-/** Elements read in one envelope, and chunks of content: real files have a few dozen and a few thousand. */
-const MAX_ELEMENTS = 100_000;
-const MAX_CHUNKS = 100_000;
+/**
+ * Chunks of content, and elements read in one envelope (each chunk is one): real files have a few
+ * thousand chunks and a few dozen other elements, and MAX_P7M_BYTES in chunks of 160 bytes still read.
+ */
+const MAX_CHUNKS = 200_000;
+const MAX_ELEMENTS = MAX_CHUNKS + 1000;
 
 /** How much of a binary envelope is looked at to tell what it holds: the content starts in the first few hundred bytes. */
 const SNIFF_BYTES = 256 * 1024;
@@ -110,12 +113,21 @@ export function signedContentStart(data: Uint8Array, bytes: number): Uint8Array 
 	return undefined;
 }
 
-/** The envelope as bytes: binary as it is, base64 decoded (checked whole, so no garbage is decoded). */
+const TOO_BIG = "il file firmato è troppo grande da leggere";
+
+/**
+ * The envelope as bytes: binary as it is, base64 decoded (checked whole, so no garbage is
+ * decoded). Either way at most MAX_P7M_BYTES of envelope.
+ */
 function binary(data: Uint8Array): Uint8Array {
-	if (data.length > MAX_P7M_BYTES) throw new P7mError("il file firmato è troppo grande da leggere");
-	if (isBinaryEnvelope(data)) return data;
+	if (isBinaryEnvelope(data)) {
+		if (data.length > MAX_P7M_BYTES) throw new P7mError(TOO_BIG);
+		return data;
+	}
 	if (base64Start(data) === undefined) throw new P7mError("non è un file firmato digitalmente (.p7m) che so aprire");
-	let text = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("latin1");
+	// Base64 is a third longer than the bytes it holds, a little more with its line breaks.
+	if (data.length > MAX_P7M_BYTES * 1.4) throw new P7mError(TOO_BIG);
+	let text = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("latin1").replace(UTF8_BOM, "");
 	const begin = /^\s*-----BEGIN [A-Z0-9 ]{1,40}-----/.exec(text);
 	if (begin !== null) {
 		const end = text.indexOf("-----END", begin[0].length);
@@ -124,16 +136,21 @@ function binary(data: Uint8Array): Uint8Array {
 	if (!/^[A-Za-z0-9+/=\s]*$/.test(text)) throw new P7mError(BROKEN);
 	const bytes = Buffer.from(text, "base64");
 	if (!isBinaryEnvelope(bytes)) throw new P7mError(BROKEN);
+	if (bytes.length > MAX_P7M_BYTES) throw new P7mError(TOO_BIG);
 	return bytes;
 }
 
+/** A UTF-8 byte order mark read as latin1: some programs put one before the base64 text. */
+const UTF8_BOM = /^\xef\xbb\xbf/;
+
 /**
- * The start of a base64 envelope as text, at most `max` characters, PEM line out: «MI» is how a
- * DER SEQUENCE with a long length begins in base64. Undefined when the bytes do not start like one.
+ * The start of a base64 envelope as text, at most `max` characters, byte order mark and PEM line
+ * out: «MI» is how a DER SEQUENCE with a long length begins in base64. Undefined when the bytes
+ * do not start like one.
  */
 function base64Start(data: Uint8Array, max = 128): string | undefined {
 	const head = Buffer.from(data.buffer, data.byteOffset, Math.min(data.byteLength, max + 128)).toString("latin1");
-	let text = head.trimStart();
+	let text = head.replace(UTF8_BOM, "").trimStart();
 	if (text.startsWith("-----BEGIN ")) {
 		const lineEnd = text.indexOf("\n");
 		if (lineEnd < 0 || !/^-----BEGIN [A-Z0-9 ]{1,40}-----\s*$/.test(text.slice(0, lineEnd))) return undefined;

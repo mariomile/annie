@@ -105,7 +105,7 @@ export const TIPO_RITENUTA: Readonly<Record<string, { readonly kind: "ritenuta" 
 	RT03: { kind: "contributo", who: "INPS" },
 	RT04: { kind: "contributo", who: "ENASARCO" },
 	RT05: { kind: "contributo", who: "ENPAM" },
-	RT06: { kind: "contributo", who: "altro" },
+	RT06: { kind: "contributo", who: "altra cassa" },
 };
 
 /** The commonest causali of the Certificazione Unica (CausalePagamento); the others are left out rather than shown as a bare letter. */

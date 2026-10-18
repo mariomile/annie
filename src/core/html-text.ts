@@ -106,13 +106,35 @@ const ENTITIES = new Map<string, string>(
 	}),
 );
 
-/** Named and numeric entities in one pass; an unknown name stays as written, a code point that is not a printable character becomes a space. */
+/**
+ * Named and numeric entities in one pass; an unknown name stays as written, a code point that is
+ * not a printable character becomes a space. &#128; to &#159; are read as Windows-1252, as browsers
+ * do (&#150; is «–», &#128; «€»): pages written on Windows have them.
+ */
 export function decodeEntities(text: string): string {
 	if (!text.includes("&")) return text;
 	return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z][a-zA-Z0-9]{1,31}));/g, (whole, decimal?: string, hex?: string, name?: string) => {
 		if (name !== undefined) return ENTITIES.get(name) ?? whole;
-		return referencedCharacter(decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? "", 16), false);
+		const code = decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? "", 16);
+		return referencedCharacter(code >= 0x80 && code <= 0x9f ? windows1252(code) : code, false);
 	});
+}
+
+/** Windows-1252's bytes 0x80 to 0x9F; the five it leaves unused (·) stay controls, and become spaces. */
+const WINDOWS_1252 = "€·‚ƒ„…†‡ˆ‰Š‹Œ·Ž··‘’“”•–—˜™š›œ·žŸ";
+
+/** The character a Windows-1252 byte from 0x80 to 0x9F stands for. */
+function windows1252(byte: number): number {
+	const char = WINDOWS_1252[byte - 0x80] as string;
+	return char === "·" ? byte : (char.codePointAt(0) as number);
+}
+
+/** Characters that reorder the text around them without showing (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069). */
+const BIDI_CONTROLS = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/** The text without bidi controls: an IBAN or an amount reads as written, not reversed. */
+export function withoutBidiControls(text: string): string {
+	return text.replace(BIDI_CONTROLS, "");
 }
 
 /**

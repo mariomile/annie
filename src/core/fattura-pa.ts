@@ -11,6 +11,7 @@ import { endOfMonth } from "./dates.ts";
 import { CAUSALE_PAGAMENTO, CONDIZIONI_PAGAMENTO, CREDIT_NOTES, coded, ESIGIBILITA, INTEGRATIONS, MODALITA_PAGAMENTO, NATURA, naturaNote, REGIME_FISCALE, TIPO_CASSA, TIPO_DOCUMENTO, TIPO_RITENUTA } from "./fattura-pa-codes.ts";
 import { addDays, realDate } from "./italian-calendar.ts";
 import { capitalized, italianDate, italianWeekday } from "./italian-format.ts";
+import { withoutBidiControls } from "./html-text.ts";
 import { checkCodiceFiscale, EU_VAT_COUNTRIES, euVatProblem, type EuVatCountry, partitaIvaProblem } from "./tax-ids.ts";
 import { child, children, decodeXml, descendant, parseXml, type XmlElement, XmlError, xmlRoot } from "./xml-tree.ts";
 
@@ -18,7 +19,7 @@ export class FatturaError extends Error {
 	override readonly name = "FatturaError";
 }
 
-/** The largest invoice read, in bytes: SdI's own limit is 5 MB, a lotto sent by other channels may be larger. */
+/** The largest invoice summed up, in bytes: SdI's own limit is 5 MB, a lotto sent by other channels may be larger. */
 export const MAX_FATTURA_BYTES = 20 * 1024 * 1024;
 
 /** Elements in one file, and their nesting: an invoice of a thousand lines has about ten thousand, 7 deep. */
@@ -41,6 +42,8 @@ const NAMESPACE = "ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/";
 
 const ROOTS = new Set(["FatturaElettronica", "FatturaElettronicaSemplificata"]);
 
+const CREDIT_NOTE = "È una nota di credito: storna in tutto o in parte la fattura collegata; gli importi sono a favore del cliente, non da pagare al fornitore.";
+
 const DOCTYPE = "la fattura contiene una dichiarazione DOCTYPE, che le fatture dello SdI non hanno: per sicurezza non la leggo. Chiedi il file originale al fornitore o scaricalo dal cassetto fiscale.";
 
 /**
@@ -59,10 +62,19 @@ function fatturaRoot(text: string): ReturnType<typeof xmlRoot> {
 
 /**
  * The invoice's summary from its XML; `signed` when it came out of a .p7m. A FatturaError in
- * Italian when it cannot be read.
+ * Italian when it cannot be read. Past MAX_FATTURA_BYTES no summary: the XML as it is, to read in
+ * pieces, with the attachments' contents left out and a note saying so.
  */
-export function fatturaText(data: Uint8Array, signed: boolean): { text: string; parts?: number } {
-	if (data.length > MAX_FATTURA_BYTES) throw new FatturaError("la fattura è troppo grande da leggere");
+export function fatturaText(data: Uint8Array, signed: boolean): { text: string; parts?: number; note?: string } {
+	if (data.length > MAX_FATTURA_BYTES) {
+		let attachments = false;
+		const text = withoutBidiControls(decodeXml(data)).replace(/<Attachment>[^<]*/g, () => {
+			attachments = true;
+			return "<Attachment>[allegato non mostrato]";
+		});
+		const note = `La fattura è troppo grande per il riepilogo (oltre ${MAX_FATTURA_BYTES / 1024 / 1024} MB): questo è il suo XML com'è${attachments ? ", senza il contenuto degli allegati" : ""}.`;
+		return { text, note: signed ? `Firma digitale presente, non verificata. ${note}` : note };
+	}
 	const xml = decodeXml(data);
 	const root = fatturaRoot(xml);
 	if (root === undefined) throw new FatturaError("non è una fattura elettronica che so leggere");
@@ -241,7 +253,7 @@ function ordinaryBody(body: XmlElement): Body {
 	const credit = type !== undefined && CREDIT_NOTES.has(type);
 	const out: string[] = [];
 	if (type !== undefined) out.push(`Tipo documento: ${coded(TIPO_DOCUMENTO, type)}`);
-	if (credit) out.push("È una nota di credito: storna in tutto o in parte la fattura collegata; gli importi sono a favore del cliente, non da pagare al fornitore.");
+	if (credit) out.push(CREDIT_NOTE);
 	if (type !== undefined && INTEGRATIONS.has(type)) out.push("È un documento di integrazione per il reverse charge, non è una fattura da pagare.");
 	const number = value(general, "Numero");
 	const issued = date(value(general, "Data"));
@@ -277,7 +289,7 @@ function simplifiedBody(body: XmlElement): Body {
 	const credit = type !== undefined && CREDIT_NOTES.has(type);
 	const out: string[] = [];
 	if (type !== undefined) out.push(`Tipo documento: ${coded(TIPO_DOCUMENTO, type)}`);
-	if (credit) out.push("È una nota di credito: storna in tutto o in parte la fattura collegata; gli importi sono a favore del cliente, non da pagare al fornitore.");
+	if (credit) out.push(CREDIT_NOTE);
 	const number = value(general, "Numero");
 	const issued = date(value(general, "Data"));
 	out.push(...defined([labelled("Numero:", number), labelled("Data:", issued), currency === "EUR" ? undefined : `Divisa: ${currency}`]));
@@ -445,14 +457,16 @@ function withholdingLine(el: XmlElement, currency: string): string {
 	return `${title}${parts === undefined ? "" : `: ${parts}`}: la trattiene il cliente e la versa all'Erario`;
 }
 
-/** The payment terms and instalments; `due` is the first due date, for the headline. */
+/** The payment terms and instalments; `due` is the first due date, for the headline («prima scadenza» when there are instalments). */
 function paymentLines(payments: XmlElement[], currency: string, credit: boolean): { lines: string[]; due?: string } {
 	const out: string[] = [];
 	const dues: string[] = [];
+	let instalments = 0;
 	for (const payment of payments) {
 		const terms = coded(CONDIZIONI_PAGAMENTO, value(payment, "CondizioniPagamento")) ?? "condizioni non indicate";
 		out.push("", credit ? `Pagamento indicato (rimborso o storno a favore del cliente): ${terms}` : `Pagamento: ${terms}`);
 		const details = children(payment, "DettaglioPagamento");
+		instalments += details.length;
 		details.forEach((detail, i) => {
 			const raw = value(detail, "DataScadenzaPagamento");
 			if (raw !== undefined && realDate(raw)) dues.push(raw);
@@ -472,7 +486,7 @@ function paymentLines(payments: XmlElement[], currency: string, credit: boolean)
 		});
 	}
 	const first = dues.sort()[0];
-	const due = first === undefined ? undefined : `${dues.length > 1 ? "prima scadenza" : "scadenza"} ${italianDate(first)}`;
+	const due = first === undefined ? undefined : `${instalments > 1 ? "prima scadenza" : "scadenza"} ${italianDate(first)}`;
 	return { lines: out, ...(due === undefined ? {} : { due }) };
 }
 
@@ -487,18 +501,23 @@ function dueText(detail: XmlElement): string | undefined {
 	const from = fromRaw !== undefined && realDate(fromRaw) ? fromRaw : undefined;
 	const daysRaw = value(detail, "GiorniTerminiPagamento");
 	const days = daysRaw !== undefined && /^\d{1,3}$/.test(daysRaw) && Number(daysRaw) > 0 ? Number(daysRaw) : undefined;
+	// A date of reference that does not exist (2026-02-30) is said as written, and said not valid.
 	const start = fromRaw === undefined ? undefined : `dal ${date(fromRaw)}`;
+	const invalid = fromRaw !== undefined && from === undefined;
 	if (raw === undefined) {
-		if (days !== undefined) return `a ${days} giorni ${start ?? "(data di partenza non indicata)"}`;
-		return labelled("termini", start);
+		const said = start === undefined ? undefined : `${start}${invalid ? " (data non valida)" : ""}`;
+		if (days !== undefined) return `a ${days} giorni ${said ?? "(data di partenza non indicata)"}`;
+		return labelled("termini", said);
 	}
 	if (!realDate(raw)) return `scadenza ${raw} (data non valida)`;
 	const due = `scadenza ${italianWeekday(raw)} ${italianDate(raw)}`;
-	if (days === undefined) return start === undefined ? due : `${due} (termini ${start})`;
-	if (from === undefined) return `${due} (a ${days} giorni, data di partenza non indicata)`;
+	const inside = start === undefined ? undefined : `${start}${invalid ? ", data non valida" : ""}`;
+	if (days === undefined) return inside === undefined ? due : `${due} (termini ${inside})`;
+	if (from === undefined) return `${due} (a ${days} giorni${inside === undefined ? ", data di partenza non indicata" : ` ${inside}`})`;
 	const plain = addDays(from, days);
 	if (plain === raw) return `${due} (${days} giorni ${start})`;
 	if (endOfMonth(plain) === raw) return `${due} (${days} giorni fine mese ${start})`;
+	if (addDays(endOfMonth(from), days) === raw) return `${due} (fine mese più ${days} giorni ${start})`;
 	return `${due}, come scritta in fattura (${days} giorni ${start} sarebbero ${italianWeekday(plain)} ${italianDate(plain)})`;
 }
 
@@ -541,7 +560,7 @@ function value(el: XmlElement | undefined, path: string): string | undefined {
 
 function ownText(el: XmlElement | undefined): string | undefined {
 	if (el === undefined) return undefined;
-	const text = el.text.replace(/\s+/g, " ").trim();
+	const text = withoutBidiControls(el.text).replace(/\s+/g, " ").trim();
 	if (text === "") return undefined;
 	return text.length > MAX_VALUE ? `${text.slice(0, MAX_VALUE)}…` : text;
 }
