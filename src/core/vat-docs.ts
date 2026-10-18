@@ -19,7 +19,7 @@
  * without a date, or without summary rows that read (a simplified invoice, a row that does not read).
  */
 import { type FatturaDocument, type FatturaParty, toUnits } from "./fattura-pa.ts";
-import { type Invoice, invoiceKey, vatOf } from "./invoices.ts";
+import { type Invoice, invoiceKey, paidDay, vatOf } from "./invoices.ts";
 import { halfUpSigned } from "./quote-sums.ts";
 import { salesTotals } from "./sales-invoice-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
@@ -125,7 +125,7 @@ function fromRegister(register: readonly Invoice[], known: ReadonlySet<string>, 
 				esigibilita: esigibilitaOf(x.r.esigibilita),
 			}),
 		);
-		const paidDays = i.instalments.map((n) => (n.paid === undefined ? undefined : dayOf(n.paid.at)));
+		const paidDays = i.instalments.map((n) => (n.paid === undefined ? undefined : paidDay(n.paid, dayOf)));
 		const paidOn = i.paid && paidDays.every((d) => d !== undefined) ? (paidDays as string[]).sort().at(-1) : undefined;
 		const side = i.side === "active" && !i.doc.integration ? "sale" : "purchase";
 		docs.push({

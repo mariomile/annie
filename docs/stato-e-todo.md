@@ -4,7 +4,7 @@ Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 59, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 60, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -98,6 +98,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Clienti: una scheda per cliente con referenti, canale preferito e note, fatturato e incassato letti dai registri, classifica e concentrazione, clienti fermi, ricontatti con promemoria e unione dei doppioni (settimana 57, [week57.md](week57.md), [ADR 0071](adr/0071-clienti.md))
 - [x] Fatture in uscita: la fattura elettronica XML da preventivi, ore o righe dette, con numerazione, forfettario o IVA, bollo, cassa e ritenuta, note di credito, emessa solo dopo il sì e pronta da caricare (settimana 58, [week58.md](week58.md), [ADR 0072](adr/0072-fatture-in-uscita.md))
 - [x] Liquidazione IVA: per l'ordinario l'IVA da versare ogni mese o trimestre dalle fatture emesse e ricevute, scadenze e codici degli F24, acconto di dicembre, detraibilità, e gli F24 dell'IVA nella previsione di cassa (settimana 59, [week59.md](week59.md), [ADR 0077](adr/0077-liquidazione-iva.md))
+- [x] Estratto conto: CSV, Excel o CAMT della banca, ogni movimento spiegato con fatture, spese, rinnovi, F24 e giroconti, fatture segnate incassate nel giorno della banca dopo un sì, commissioni fra le spese e saldo nella previsione di cassa (settimana 60, [week60.md](week60.md), [ADR 0078](adr/0078-estratto-conto.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))

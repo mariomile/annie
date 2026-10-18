@@ -68,10 +68,21 @@ export type Company = Marker & {
 };
 
 /**
+ * A paid mark: who marked it and when. `on`: the day the money moved, when a bank statement says
+ * it (bank.ts, `source` «bank»); without it the day marked is the day paid.
+ */
+export type PaidMark = Marker & { readonly on?: string; readonly source?: "bank" };
+
+/** The day an instalment counts as paid: the bank's day when there is one, else the day it was marked where the instance is. */
+export function paidDay(mark: PaidMark, dayOf: (at: string) => string): string {
+	return mark.on ?? dayOf(mark.at);
+}
+
+/**
  * What is paid of one invoice: all of it (`all`) but the instalments in `except`, or the
  * instalments marked one by one. For a credit note, paid means used.
  */
-export type PaidEntry = { readonly invoice: string; readonly all?: Marker; readonly except?: readonly number[]; readonly instalments?: readonly (Marker & { readonly n: number })[] };
+export type PaidEntry = { readonly invoice: string; readonly all?: PaidMark; readonly except?: readonly number[]; readonly instalments?: readonly (PaidMark & { readonly n: number })[] };
 
 /** The instalments of an invoice, from 1. */
 export function instalmentRange(count: number): number[] {
@@ -88,11 +99,13 @@ export function paidSet(entry: PaidEntry | undefined, count: number): Set<number
 	return new Set((entry.instalments ?? []).map((m) => m.n).filter((n) => n >= 1 && n <= count));
 }
 
-/** Who marked instalment `n` paid, and when. */
-function markerOf(entry: PaidEntry | undefined, n: number): Marker | undefined {
+/** Who marked instalment `n` paid, and when (and the bank's day, when a statement said it). */
+function markerOf(entry: PaidEntry | undefined, n: number): PaidMark | undefined {
 	if (entry?.all !== undefined) return entry.all;
 	const one = entry?.instalments?.find((m) => m.n === n);
-	return one === undefined ? undefined : { by: one.by, at: one.at };
+	if (one === undefined) return undefined;
+	const { n: _n, ...mark } = one;
+	return mark;
 }
 
 /**
@@ -200,7 +213,7 @@ export type Instalment = {
 	readonly dueText?: string;
 	readonly method?: string;
 	readonly iban?: string;
-	readonly paid?: Marker;
+	readonly paid?: PaidMark;
 	/** Past the document's total: not counted (see `mismatch`). */
 	readonly extra?: boolean;
 };

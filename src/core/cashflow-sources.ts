@@ -61,7 +61,9 @@
  *   11th: plus the instalments to collect marked paid after it,
  *   less the expenses recorded after it (dated from its day), less the supplier invoices marked
  *   paid after it that no expense stands for, less the autoPay charges after its day not recorded;
- *   never the voci. Not when the balance is older than CASHFLOW_LIMITS.maxDays.
+ *   never the voci. Not when the balance is older than CASHFLOW_LIMITS.maxDays. What a bank
+ *   statement dated (an instalment confirmed from it, with its day; an expense recorded from
+ *   it) counts by that day instead: only when after the balance's day, which holds it already.
  */
 import { AVERAGE_DAYS, AVERAGE_MIN_DAYS, type Balance, CASHFLOW_LIMITS, type CashItem, itemAmountAt, itemRecurrence, type Kind, STALE_OVERDUE_DAYS } from "./cashflow.ts";
 import { NEAR_DAYS, providerMatches, renewalSeries, sameAmount, similarName } from "./cashflow-items.ts";
@@ -70,10 +72,10 @@ import { words } from "./name-keys.ts";
 import type { Expense } from "./expenses.ts";
 import { cents as expenseCents } from "./expense-sums.ts";
 import { payDay } from "./invoice-sums.ts";
-import { type Instalment, type Invoice, matchesParty, openAmount, partyKey, vatOf } from "./invoices.ts";
+import { type Instalment, type Invoice, matchesParty, openAmount, paidDay, partyKey, vatOf } from "./invoices.ts";
 import { addDays, daysBetween, MONTH_NAMES } from "./italian-calendar.ts";
 import { latest, type Quote, quoteTotalsOf } from "./quotes.ts";
-import { halfUp, scaled } from "./quote-sums.ts";
+import { eurosToCents, halfUp, scaled } from "./quote-sums.ts";
 import { nearOccurrence, type Recurrence, recurringDates } from "./recurrence.ts";
 import { amountAt, effectiveDue, occurrences } from "./renewal-dates.ts";
 import type { Renewal } from "./renewals.ts";
@@ -555,6 +557,33 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario, ...(skipTaxes !== false ? { taxes } : {}) };
 }
 
+/** A movement of the bank's statement: its day, its signed amount, what holds it («inv:KEY», «other», nothing), a proposal on it. */
+export type StatementMovement = { readonly date: string; readonly amount: string; readonly target?: string; readonly proposed?: true };
+
+/** Whether an invoice other than `key` has an instalment still open of `cents` (signed), dated by `day`. */
+function otherOpen(invoices: readonly Invoice[], key: string, cents: bigint, day: string): boolean {
+	return invoices.some((inv) => inv.key !== key && !inv.credit && inv.side !== undefined && inv.doc.date !== undefined && inv.doc.date <= day && inv.instalments.some((i) => i.paid === undefined && i.amount !== undefined && unitsToCents(i.amount) * (inv.side === "active" ? 1n : -1n) === cents));
+}
+
+/**
+ * Whether a statement whose balance is of `balanceDate` shows the payment of `invoice`: a movement
+ * of the same signed amount dated from the invoice's day to the balance's, unexplained or explained
+ * by that invoice (confirmed, or matched by itself). A movement with only a proposal counts as
+ * unexplained unless another open invoice of `invoices` has its amount, dated on or before it: then
+ * it may be that one's, and is left aside. Never for an invoice dated after the balance, nor one
+ * without a date.
+ */
+export function inStatement(invoice: Invoice, cents: bigint, balanceDate: string, statement: readonly StatementMovement[], invoices: readonly Invoice[] = []): boolean {
+	return statementAt(invoice, cents, balanceDate, statement, invoices) >= 0;
+}
+
+/** The index of the movement of inStatement, -1 when none. */
+export function statementAt(invoice: Invoice, cents: bigint, balanceDate: string, statement: readonly StatementMovement[], invoices: readonly Invoice[] = []): number {
+	const date = invoice.doc.date;
+	if (date === undefined || date > balanceDate) return -1;
+	return statement.findIndex((m) => m.date >= date && m.date <= balanceDate && eurosToCents(m.amount) === cents && (m.target === `inv:${invoice.key}` || (m.target === undefined && (m.proposed !== true || !otherOpen(invoices, invoice.key, cents, m.date)))));
+}
+
 /** An instalment marked paid after the balance: what it was, how much, the day. */
 export type RolledInvoice = { readonly invoice: Invoice; readonly instalment: { readonly n: number; readonly count: number }; readonly cents: bigint; readonly date: string };
 
@@ -576,9 +605,10 @@ export type Rolled = {
 
 /**
  * The balance brought to `now` (see the choices above); undefined when nothing moved, or when it
- * is older than CASHFLOW_LIMITS.maxDays (it is said to be old instead).
+ * is older than CASHFLOW_LIMITS.maxDays (it is said to be old instead). `statement`: the bank's
+ * movements (bank.ts statementOf), read only for a balance from a statement.
  */
-export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string): Rolled | undefined {
+export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string, statement: readonly StatementMovement[] = []): Rolled | undefined {
 	if (daysBetween(balance.date, today) > CASHFLOW_LIMITS.maxDays) return undefined;
 	// From min(when it was said, the end of its day): an instant counts when it is after the saying, or on a later local day; never after now. Instants that do not parse are skipped.
 	const said = Date.parse(balance.at);
@@ -588,14 +618,22 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		if (Number.isNaN(t) || Number.isNaN(until) || t > until) return false;
 		return (!Number.isNaN(said) && t > said) || dayOf(at) > balance.date;
 	};
+	// What a bank statement dated (a paid mark's `on`, an expense from the statement) is in any balance of that day or later: it counts only when dated after the balance's day, and never when said after now.
+	const bankAfter = (day: string, at: string) => {
+		const t = Date.parse(at);
+		return day > balance.date && day <= today && !Number.isNaN(t) && !Number.isNaN(until) && t <= until;
+	};
+	// An invoice marked paid by hand: from the end of the balance's day, as week 55 says; for a statement's balance, not when the statement shows its payment (inStatement).
+	const handAfter = (at: string, invoice: Invoice, cents: bigint) => after(at) && !(balance.source === "bank" && inStatement(invoice, cents, balance.date, statement, invoices));
 	const incassi: RolledInvoice[] = [];
 	const paidPassive: RolledInvoice[] = [];
-	const recorded = expenses.filter((e) => after(e.at) && e.date >= balance.date);
+	const recorded = expenses.filter((e) => (e.source === "bank" ? bankAfter(e.date, e.at) : after(e.at) && e.date >= balance.date));
 	for (const invoice of invoices) {
 		if (invoice.credit || invoice.doc.integration || invoice.side === undefined || invoice.doc.currency !== "EUR") continue;
 		for (const i of invoice.instalments) {
-			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n || !after(i.paid.at)) continue;
-			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: dayOf(i.paid.at) };
+			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
+			if (i.paid.on === undefined ? !handAfter(i.paid.at, invoice, unitsToCents(i.amount) * (invoice.side === "active" ? 1n : -1n)) : !bankAfter(i.paid.on, i.paid.at)) continue;
+			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: paidDay(i.paid, dayOf) };
 			if (invoice.side === "active") incassi.push(row);
 			// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).
 			else if (!expenses.some((e) => invoiceOf(e, [invoice], 5, () => row.date) !== undefined || (sameCents(expenseCents(e.amount), row.cents) && Math.abs(daysBetween(e.date, row.date)) <= 5))) paidPassive.push(row);

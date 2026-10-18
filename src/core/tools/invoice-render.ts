@@ -4,9 +4,10 @@
  */
 import { amountText } from "../invoice-sums.ts";
 import { dayShort } from "../invoice-windows.ts";
-import type { Instalment, Invoice } from "../invoices.ts";
+import { type Instalment, type Invoice, paidDay } from "../invoices.ts";
+import { dayOfIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
-import { answer, fenced, footer, type Loaded, markDay, type ReadArgs, type View } from "./invoice-fence.ts";
+import { answer, fenced, footer, type Loaded, type ReadArgs, type View } from "./invoice-fence.ts";
 import { counterparties, docLabel, filtered, joinedWords, MAX_ROWS, partyName, short, worthText } from "./invoice-words.ts";
 
 export function listAnswer(loaded: Loaded, args: ReadArgs, view: View): string {
@@ -40,7 +41,8 @@ function dueSummary(invoice: Invoice, today: string): string | undefined {
 export function status(invoice: Invoice, timeZone: string): string {
 	if (invoice.doc.integration) return "integrazione per il reverse charge, niente da pagare";
 	const marked = invoice.instalments.filter((i) => i.paid !== undefined);
-	const at = (i: Instalment | undefined) => (i?.paid === undefined ? "" : ` il ${markDay(i.paid.at, timeZone)}`);
+	// The bank's day when the mark came from the estratto conto, else the day it was marked.
+	const at = (i: Instalment | undefined) => (i?.paid === undefined ? "" : ` il ${italianDate(paidDay(i.paid, dayOfIn(timeZone)))}`);
 	const negative = invoice.negative ? "importo negativo, conta come nota di credito, " : "";
 	if (invoice.credit) return `${negative}${invoice.paid ? `già scalata (segnata${at(marked[0])})` : "da scalare"}`;
 	const mismatch = invoice.mismatch ? ", rate che non tornano con il totale" : "";

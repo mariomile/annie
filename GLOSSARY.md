@@ -281,6 +281,10 @@ _Avoid_: invoice, fattura emessa (per la bozza)
 Il conto che chi è in regime ordinario fa ogni mese o trimestre: IVA delle fatture emesse meno quella detraibile delle fatture ricevute, più il credito o il saldo che passa dal periodo prima. Se è a debito si versa con l'F24. Annie la stima con `vat_settlement`. Vedi ADR 0077.
 _Avoid_: VAT settlement, dichiarazione (per la liquidazione periodica)
 
+**Estratto conto**:
+Il file con i movimenti del conto che la banca dà (CSV, Excel o CAMT.053). Annie lo legge con `bank_statement` e spiega ogni movimento; l'abbinamento a una fattura, una spesa, un rinnovo o un F24 è sicuro o debole (solo l'importo) e cambia gli altri registri solo dopo un sì. Vedi ADR 0078.
+_Avoid_: bank statement, movimenti bancari (per il file)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

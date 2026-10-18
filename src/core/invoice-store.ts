@@ -9,7 +9,8 @@
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validAddress } from "./email-address.ts";
-import { type Company, INVOICE_LIMITS, REGIMES, InvoiceError, instalmentRange, type Marker, type PaidEntry, paidSet } from "./invoices.ts";
+import { type Company, INVOICE_LIMITS, REGIMES, InvoiceError, instalmentRange, type Marker, type PaidEntry, type PaidMark, paidSet } from "./invoices.ts";
+import { realDate } from "./italian-calendar.ts";
 import { updateJsonFile } from "./locked-json.ts";
 import { bookKey, type Contact, isText, type ReminderEntry, type ReminderItem, ReminderLimit, type ReminderMade, validContacts, validReminders, withContact, withoutPaidBefore, withReminders } from "./reminder-book.ts";
 
@@ -91,9 +92,10 @@ export class InvoiceStore {
 	 * Mark `invoice`, which has `count` instalments (1 when it has none), paid or not: one
 	 * instalment, or all of it. How many instalments changed, and the entry there was before. The
 	 * reminders stay (history); those of invoices paid in full over a year ago go (prunedOf).
-	 * InvoiceError when the store is full or does not read.
+	 * `on` and `source`: the day the money moved and where that is said (a bank statement), kept
+	 * on the mark so the incasso counts on that day. InvoiceError when the store is full or does not read.
 	 */
-	mark(input: { invoice: string; count: number; instalment?: number; paid: boolean } & Marker): { changed: number; before?: PaidEntry } {
+	mark(input: { invoice: string; count: number; instalment?: number; paid: boolean; on?: string; source?: "bank" } & Marker): { changed: number; before?: PaidEntry } {
 		const { invoice, count, instalment } = input;
 		let result: { changed: number; before?: PaidEntry } = { changed: 0 };
 		this.update((book) => {
@@ -103,7 +105,8 @@ export class InvoiceStore {
 			const changed = targets.filter((n) => was.has(n) !== input.paid).length;
 			result = { changed, ...(before === undefined ? {} : { before }) };
 			if (changed === 0) return book;
-			const made: Marker = { by: input.by, at: input.at };
+			const made: PaidMark = { by: input.by, at: input.at, ...(input.on === undefined ? {} : { on: input.on }), ...(input.source === undefined ? {} : { source: input.source }) };
+			if (!isPaidMark(made)) throw new InvoiceError("il giorno del pagamento non è valido");
 			const next = nextEntry(before, { invoice, count, ...(instalment === undefined ? {} : { instalment }), paid: input.paid, made });
 			if (before === undefined && book.paid.length >= INVOICE_LIMITS.marks) {
 				throw new InvoiceError(`ci sono già ${INVOICE_LIMITS.marks} fatture segnate pagate, il massimo: non ne segno altre. Togli il segno a quelle vecchie con op mark_unpaid`);
@@ -186,7 +189,7 @@ function limited<T>(work: () => T): T {
 }
 
 /** The entry after a change; undefined when nothing stays paid. */
-function nextEntry(before: PaidEntry | undefined, change: { invoice: string; count: number; instalment?: number; paid: boolean; made: Marker }): PaidEntry | undefined {
+function nextEntry(before: PaidEntry | undefined, change: { invoice: string; count: number; instalment?: number; paid: boolean; made: PaidMark }): PaidEntry | undefined {
 	const { invoice, count, instalment, paid, made } = change;
 	if (instalment === undefined) return paid ? { invoice, all: before?.all ?? made } : undefined;
 	if (before?.all !== undefined) {
@@ -211,6 +214,12 @@ function bookOf(text: string): Book | undefined {
 }
 
 const isMarker = (v: unknown): v is Marker => typeof v === "object" && v !== null && isText((v as Marker).by) && isText((v as Marker).at);
+/** A paid mark: a Marker, with the bank's day (a real ISO day) and its source when a statement said it. */
+const isPaidMark = (v: unknown): v is PaidMark => {
+	if (!isMarker(v)) return false;
+	const { on, source } = v as PaidMark;
+	return (on === undefined || (typeof on === "string" && /^\d{4}-\d{2}-\d{2}$/.test(on) && realDate(on))) && (source === undefined || source === "bank");
+};
 const isN = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 1000;
 
 function validCompany(company: unknown): boolean {
@@ -236,7 +245,7 @@ function validBook(raw: unknown): Book | undefined {
 			isText(e.invoice) &&
 			(e.all === undefined || isMarker(e.all)) &&
 			(e.except === undefined || (Array.isArray(e.except) && e.except.every(isN))) &&
-			(e.instalments === undefined || (Array.isArray(e.instalments) && e.instalments.every((m: unknown) => isMarker(m) && isN((m as { n?: unknown }).n)))),
+			(e.instalments === undefined || (Array.isArray(e.instalments) && e.instalments.every((m: unknown) => isPaidMark(m) && isN((m as { n?: unknown }).n)))),
 	);
 	return entries ? (raw as Book) : undefined;
 }

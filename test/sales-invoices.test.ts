@@ -883,7 +883,7 @@ describe("review fixes", () => {
 	});
 
 	it("U8: the brief reads the invoices' compact line, within the instruction's limit", async () => {
-		expect(BRIEF_INSTRUCTION).toContain("14. Le fatture in uscita (sales_invoices con op list e compact true): come le ore.");
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bsales_invoices \(list\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		expect(await setup().run({ op: "list", compact: true })).toBe("Niente da segnalare sulle fatture: nel brief non scrivere niente sulle fatture.");
 	});
@@ -1122,7 +1122,7 @@ describe("second pass", () => {
 	});
 
 	it("U5: the brief reads the invoices like the hours", () => {
-		expect(BRIEF_INSTRUCTION).toContain("14. Le fatture in uscita (sales_invoices con op list e compact true): come le ore.");
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bsales_invoices \(list\)[,.]/);
 	});
 
 	it("U6: one question under three headings, only the missing ones", async () => {

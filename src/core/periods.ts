@@ -111,7 +111,9 @@ function said(text: string): string {
  * anno». A month or a quarter without a year is the latest one begun (this one or before).
  * PeriodError otherwise.
  */
-export function readPeriod(text: string, today: string): Period {
+export function readPeriod(written: string, today: string): Period {
+	// A leading article goes: «il mese scorso», «l'anno scorso», «la settimana scorsa» («I trimestre» keeps its roman one).
+	const text = written.replace(/^\s*(?:(?:il|lo|la|gli|le)\s+|l['’]\s*)/i, "");
 	const t = fold(text).replace(/\s+/g, " ").trim();
 	const year = Number(today.slice(0, 4));
 	const thisQuarter = quarterPeriod(year, quarterOf(today));
