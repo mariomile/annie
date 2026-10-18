@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 
 /**
- * The board (ADR 0049): the tenant's schede, in four columns, each assignable to an agente.
+ * The board (ADR 0050): the tenant's schede, in four columns, each assignable to an agente.
  * One board per tenant, because a scheda moves between agenti. A scheda assigned to an agente is
  * worked in a console conversation of that agente with the person who handed it over; the
  * agente moves it to «Da rivedere» and a person moves it to «Fatto».

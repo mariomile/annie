@@ -25,11 +25,11 @@ Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in
 _Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
 
 **Board**:
-La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Vedi ADR 0049.
+La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Vedi ADR 0050.
 _Avoid_: kanban (nei testi per le persone), backlog, issue tracker
 
 **Scheda** (della board):
-Una cosa da fare sulla board, con numero (#12), titolo, descrizione, priorità, l'agente a cui è affidata e la sua cronologia di spostamenti e commenti. Vedi ADR 0049.
+Una cosa da fare sulla board, con numero (#12), titolo, descrizione, priorità, l'agente a cui è affidata e la sua cronologia di spostamenti e commenti. Vedi ADR 0050.
 _Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
 
 **Messaggio tra agenti**:

@@ -17,6 +17,7 @@ function setup(over: Partial<BoardWorkDeps> = {}) {
 		agentName: async (id) => ({ ricerca: "Ricercatore", vendite: "Vendite" })[id],
 		canChat: async (agent, person) => person === "p_anna" && agent !== "vendite",
 		isOwner: async (person) => person === "p_owner",
+		owners: async () => ["p_owner"],
 		personName: async (id) => (id === "p_anna" ? "Anna" : undefined),
 		openThread: async (agent, personId, title, reuse) => {
 			opened.push({ agent, personId, title, ...(reuse === undefined ? {} : { reuse }) });
@@ -32,7 +33,7 @@ function setup(over: Partial<BoardWorkDeps> = {}) {
 
 const ctx = (threadId?: string) => ({ step: <T>(_k: string, run: () => Promise<T>) => run(), progress: () => {}, signal: new AbortController().signal, callId: "c1", ...(threadId === undefined ? {} : { thread: { channel: "web", threadId } }) }) as never;
 
-describe("the board (ADR 0049)", () => {
+describe("the board (ADR 0050)", () => {
 	it("numbers schede, records what happens, and finds them by number", () => {
 		const { store } = setup();
 		const a = store.create({ title: "  Preventivo   Rossi ", description: "Tre righe\r\nsotto" }, anna);
@@ -162,6 +163,25 @@ describe("the board (ADR 0049)", () => {
 		// Handed over again: a new conversation of that agente.
 		const again = await work.change(c.id, { assignee: "ricerca" }, anna, "p_anna");
 		expect(again).toMatchObject({ status: "in_corso", work: { agent: "ricerca", threadId: "t3" } });
+	});
+
+	it("an agente finishing a scheda tells who reviews it: the person it works with, or the owners (ADR 0051)", async () => {
+		const { work, store } = setup();
+		const reviews: { n: number; people: readonly string[] }[] = [];
+		work.events.on("review", (r) => reviews.push({ n: r.card.n, people: r.people }));
+		const a = await work.create({ title: "Con Anna", assignee: "ricerca" }, anna, "p_anna");
+		await work.change(a.id, { status: "da_rivedere", comment: "Fatto" }, ricerca, undefined);
+		// Once: a comment while it waits says nothing new.
+		await work.change(a.id, { comment: "Aggiungo una riga" }, ricerca, undefined);
+		const b = store.create({ title: "Mai avviata", assignee: "ricerca" }, anna);
+		await work.change(b.id, { status: "da_rivedere" }, ricerca, undefined);
+		// A person moving it there reviews it already.
+		const c = await work.create({ title: "A mano", assignee: "ricerca" }, anna, "p_anna");
+		await work.change(c.id, { status: "da_rivedere" }, anna, "p_anna");
+		expect(reviews).toEqual([
+			{ n: 1, people: ["p_anna"] },
+			{ n: 2, people: ["p_owner"] },
+		]);
 	});
 
 	it("a deleted agente leaves its schede to nobody", async () => {

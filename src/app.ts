@@ -86,7 +86,7 @@ import { connectChannel } from "./gateway.ts";
 import type { AnnieConfig } from "./main/config.ts";
 import { type RunningSegreteria, startSegreteria } from "./segreteria/boot.ts";
 import { BoardStore } from "./core/board.ts";
-import { BoardWork } from "./core/board-work.ts";
+import { type BoardReview, BoardWork } from "./core/board-work.ts";
 import { createBoardTools } from "./core/tools/board-tools.ts";
 import { PeopleStore, SessionStore } from "./web/auth.ts";
 import { WebChannel } from "./web/channel.ts";
@@ -683,7 +683,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		});
 	};
 	for (const record of conversational) attachWebChannel(record);
-	// --- the board (ADR 0049): schede handed to agenti, worked in a console conversation ---
+	// --- the board (ADR 0050): schede handed to agenti, worked in a console conversation ---
 	const boardWork = new BoardWork({
 		store: board,
 		agentName: async (agent) => (agent === segreteriaId ? undefined : (await runtime.registry.getInstance(tenant, agent).catch(() => undefined))?.name),
@@ -692,6 +692,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			return record !== undefined && webChannels.has(agent) && record.egress.channels.includes("web") && (record.allowedUsers.web ?? []).includes(personId);
 		},
 		isOwner: async (personId) => (await people.get(personId))?.role === "owner",
+		owners: async () => (await people.list()).filter((p) => p.role === "owner").map((p) => p.id),
 		personName: async (personId) => (await people.get(personId))?.name,
 		openThread: async (agent, personId, title, reuse) => {
 			const channel = webChannels.get(agent);
@@ -705,6 +706,27 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await channel.post(threadId, personId, text);
 		},
 	});
+	// A scheda to review (ADR 0051): when it is the owner's, a line in the owner's chat with the main agente too.
+	boardWork.events.on("review", (review: BoardReview) => {
+		void noticeReview(review).catch((error: unknown) => log(`annie: notice for scheda #${review.card.n} not sent: ${error instanceof Error ? error.message : String(error)}`));
+	});
+	async function noticeReview({ card, people: to }: BoardReview): Promise<void> {
+		if (!(await Promise.all(to.map(async (id) => (await people.get(id))?.role === "owner"))).some(Boolean)) return;
+		const record = await runtime.registry.getInstance(tenant, config.instanceId);
+		const agent = card.assignee === undefined ? undefined : (await runtime.registry.getInstance(tenant, card.assignee).catch(() => undefined))?.name;
+		// The agente's words on this move, not an older round's.
+		const moved = card.events.findLastIndex((e) => e.kind === "status" && e.status === "da_rivedere");
+		const summary = card.events.slice(moved).find((e) => e.kind === "comment" && e.by.kind === "agent" && e.by.id === card.assignee)?.text;
+		const text = `Scheda #${card.n} da rivedere: ${card.title}${agent === undefined ? "" : `\n${agent} l'ha finita`}${summary === undefined ? "." : `: ${summary.length > 300 ? `${summary.slice(0, 300)}[...]` : summary}`}\n\nApprovala o rimandala indietro dalla Board della console.`;
+		for (const adapter of [telegrams.get(config.instanceId), whatsapps.get(config.instanceId)]) {
+			if (adapter === undefined) continue;
+			for (const chat of record.approvers?.[adapter.name] ?? []) {
+				await adapter
+					.send({ tenantId: tenant, instanceId: config.instanceId, channel: adapter.name, threadId: chat, idempotencyKey: `board-review:${card.id}:${card.updatedAt}:${chat}`, text })
+					.catch((error: unknown) => log(`annie: notice for scheda #${card.n} to ${adapter.name} ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`));
+			}
+		}
+	}
 	// --- Telegram: at most one bot per instance ---
 	const telegramHooks = new Map<string, { secret: string; handle: (update: unknown) => Promise<void> }>();
 	const telegramUnsubscribes = new Map<string, () => void>();

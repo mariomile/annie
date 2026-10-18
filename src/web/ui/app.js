@@ -142,6 +142,8 @@ const state = {
 	instance: undefined,
 	usage: undefined,
 	pendingApprovals: 0,
+	/** Schede waiting for this person's review (ADR 0051). */
+	boardReview: 0,
 	unread: new Set(),
 	/** The current instance's conversations, newest first, for the sidebar. */
 	threads: [],
@@ -155,7 +157,7 @@ const PALETTE = [
 	{ id: "inizia", label: "Primi passi", group: "Lavoro", owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft },
 	{ id: "chat", label: "Chat", group: "Lavoro" },
 	{ id: "agenti", label: "Agenti", group: "Lavoro", count: () => (state.instances.length > 1 ? state.instances.length : 0) },
-	{ id: "board", label: "Board", group: "Lavoro" },
+	{ id: "board", label: "Board", group: "Lavoro", count: () => state.boardReview },
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
 	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
@@ -336,9 +338,20 @@ async function refreshCounters() {
 		// Writes to the person's own Google account: theirs alone.
 		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
 		state.pendingApprovals = pending;
+		state.boardReview = await boardReviewCount();
 		renderRail();
 	} catch {
 		/* shown on next render */
+	}
+}
+
+/** Schede an agente finished that this person reviews: those worked with them, or with nobody for the owner. */
+async function boardReviewCount() {
+	try {
+		const { cards } = await api("/api/board");
+		return cards.filter((c) => c.status === "da_rivedere" && (c.work?.agent === c.assignee ? c.work.personId === state.me.id : state.me.role === "owner")).length;
+	} catch {
+		return 0;
 	}
 }
 
@@ -355,6 +368,12 @@ function connectEvents() {
 		if (view !== "chat" || rest[0] !== event.threadId) toast("Nuova risposta di Annie");
 		renderRail();
 		void refreshThreads().then(renderRail);
+	});
+	es.addEventListener("board", (e) => {
+		const event = JSON.parse(e.data);
+		void refreshCounters();
+		if (route().view === "board" && !document.querySelector("dialog[open]")) return render();
+		toast(`Scheda #${event.n} da rivedere: ${event.title}`);
 	});
 	state.events = es;
 }
@@ -992,7 +1011,7 @@ function accountDialog() {
 
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
-const SIDEBAR = new Set(["inizia", "agenti", "segreteria", "approvazioni", "task", "file", "memoria"]);
+const SIDEBAR = new Set(["inizia", "agenti", "board", "segreteria", "approvazioni", "task", "file", "memoria"]);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -3262,7 +3281,7 @@ function agentForm() {
 	name.focus();
 }
 
-// ---------- board (ADR 0049) ----------
+// ---------- board (ADR 0050) ----------
 const BOARD_COLUMNS = [
 	["da_fare", "Da fare"],
 	["in_corso", "In corso"],
@@ -3294,10 +3313,45 @@ async function viewBoard(main) {
 			return false;
 		}
 	};
+	// Dragged to another column (ADR 0051): the same moves as the buttons of the scheda.
+	const moveTo = async (c, status) => {
+		if (status === c.status) return;
+		if (status === "in_corso" && c.status === "da_fare") {
+			if (!c.assignee || !agentOf(c.assignee)?.canAssign) return toast("Affidala prima a un agente a cui puoi scrivere", true);
+			try {
+				await api(`/api/board/${c.id}/start`, { method: "POST" });
+				toast(`${agentOf(c.assignee).name} ci sta lavorando`);
+				render();
+			} catch (error) {
+				toast(error.message, true);
+			}
+			return;
+		}
+		// Sent back from review: with what to change, written in the scheda.
+		if (status === "in_corso" && c.status === "da_rivedere") return cardDialog(c, true);
+		await save(c, { status }, `Scheda #${c.n} in «${BOARD_COLUMNS.find(([v]) => v === status)[1]}»`);
+	};
 	const tile = (c) =>
 		h(
-			`button.board-card${c.priority === "alta" ? ".alta" : ""}`,
-			{ type: "button", onclick: () => cardDialog(c) },
+			// A div, not a button: Firefox does not drag buttons.
+			`div.board-card${c.priority === "alta" ? ".alta" : ""}`,
+			{
+				role: "button",
+				tabindex: "0",
+				draggable: "true",
+				onclick: () => cardDialog(c),
+				onkeydown: (e) => {
+					if (e.key !== "Enter" && e.key !== " ") return;
+					e.preventDefault();
+					cardDialog(c);
+				},
+				ondragstart: (e) => {
+					e.dataTransfer.setData("text/x-scheda", c.id);
+					e.dataTransfer.effectAllowed = "move";
+					e.currentTarget.classList.add("dragging");
+				},
+				ondragend: (e) => e.currentTarget.classList.remove("dragging"),
+			},
 			h("span.board-title", h("span.muted.mono", `#${c.n} `), c.title),
 			h(
 				"span.board-meta",
@@ -3309,17 +3363,34 @@ async function viewBoard(main) {
 		"div.board",
 		BOARD_COLUMNS.map(([status, label]) => {
 			const cards = data.cards.filter((c) => c.status === status).sort((a, b) => (status === "fatto" ? b.updatedAt.localeCompare(a.updatedAt) : (b.priority === "alta") - (a.priority === "alta") || a.n - b.n));
-			return h(
+			const col = h(
 				`section.board-col.${status}`,
-				{ "aria-label": label },
+				{
+					"aria-label": label,
+					ondragover: (e) => {
+						if (!e.dataTransfer.types.includes("text/x-scheda")) return;
+						e.preventDefault();
+						col.classList.add("drop");
+					},
+					ondragleave: (e) => {
+						if (!col.contains(e.relatedTarget)) col.classList.remove("drop");
+					},
+					ondrop: (e) => {
+						e.preventDefault();
+						col.classList.remove("drop");
+						const card = data.cards.find((x) => x.id === e.dataTransfer.getData("text/x-scheda"));
+						if (card) void moveTo(card, status);
+					},
+				},
 				h("h2", label, h("span.muted", String(cards.length))),
 				cards.length ? cards.map(tile) : h("p.muted.small", status === "da_rivedere" ? "Qui arrivano le schede finite dagli agenti, da approvare." : "Nessuna scheda"),
 			);
+			return col;
 		}),
 	);
 
 	// One scheda: what it asks, who has it, what happened, and the moves a person makes.
-	const cardDialog = (c) => {
+	const cardDialog = (c, sendBack = false) => {
 		const mine = c.work?.personId === state.me.id;
 		const assignable = data.agents.filter((a) => a.canAssign || a.id === c.assignee);
 		const assignee = h("select", { "aria-label": "Assegnata a" }, h("option", { value: "" }, "Nessuno"), assignable.map((a) => h("option", { value: a.id, selected: a.id === c.assignee ? "selected" : undefined }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
@@ -3454,6 +3525,10 @@ async function viewBoard(main) {
 		dialog.addEventListener("close", () => dialog.remove());
 		document.body.append(dialog);
 		dialog.showModal();
+		if (sendBack) {
+			comment.focus();
+			toast("Scrivi cosa va cambiato e premi Rimanda indietro");
+		}
 	};
 
 	const newCard = () => {

@@ -26,7 +26,7 @@ import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import { BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
-import type { BoardWork } from "../core/board-work.ts";
+import type { BoardReview, BoardWork } from "../core/board-work.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
@@ -200,7 +200,7 @@ export type WebAppOptions = {
 	readonly createInstance?: (input: { id: string; name: string; instructions: string | undefined; persona: Persona; ownerId: string }) => Promise<void>;
 	/** Delete an agente for good (ADR 0046); never the general one, nor a segreteria. */
 	readonly deleteInstance?: { readonly main: string; readonly run: (id: string) => Promise<void> };
-	/** The board (ADR 0049). */
+	/** The board (ADR 0050). */
 	readonly board?: { readonly store: BoardStore; readonly work: BoardWork };
 	readonly log?: (message: string) => void;
 };
@@ -445,7 +445,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 
-	// --- the board (ADR 0049) ---
+	// --- the board (ADR 0050) ---
 	// The owner sees every scheda; a member those they created or work on, and those of the agenti they can talk to.
 	const boardOf = () => {
 		if (options.board === undefined) throw new HttpError(501, "La board non è disponibile su questo server");
@@ -676,11 +676,17 @@ export function createWebApp(options: WebAppOptions): Server {
 		};
 		for (const channel of options.channels.values()) attach(channel);
 		streamAttachers.add(attach);
+		// A scheda of this person an agente finished (ADR 0051): the console tells them.
+		const review = ({ card, people }: BoardReview) => {
+			if (people.includes(p.id)) res.write(`event: board\ndata: ${JSON.stringify({ kind: "review", id: card.id, n: card.n, title: card.title })}\n\n`);
+		};
+		options.board?.work.events.on("review", review);
 		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
 		await new Promise<void>((resolve) => req.on("close", resolve));
 		clearInterval(ping);
 		streamAttachers.delete(attach);
 		for (const [channel, listener] of listeners) channel.events.off(p.id, listener);
+		options.board?.work.events.off("review", review);
 		return STREAMED;
 	});
 
