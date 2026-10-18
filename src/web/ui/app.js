@@ -1939,13 +1939,16 @@ function modelPill(inst, current, save) {
 	let instanceModel;
 	let picks = 0;
 	let saving = Promise.resolve();
-	const label = h("span.model-name", current?.name ?? "Modello");
+	// The name without what is in brackets: «Claude Sonnet 4 (Anthropic)» reads «Claude Sonnet 4»; the full name is in the tooltip.
+	const short = (name) => name.replace(/\s*\([^)]*\)\s*$/, "") || name;
+	const label = h("span.model-name", short(current?.name ?? "Modello"));
 	const pill = h("button.model-pill", { type: "button", "aria-haspopup": "listbox", "aria-expanded": "false", title: "Modello di questa chat" }, label, icon("down"));
 	const draw = () => {
 		const shown = chosen ?? instanceModel;
-		label.textContent = shown?.name ?? "Modello";
+		label.textContent = short(shown?.name ?? "Modello");
+		pill.title = shown?.name ? `Modello di questa chat: ${shown.name}` : "Modello di questa chat";
 		pill.classList.toggle("own", chosen !== undefined);
-		pill.setAttribute("aria-label", `Modello di questa chat: ${label.textContent}${chosen ? "" : " (quello dell'agente)"}`);
+		pill.setAttribute("aria-label", `Modello di questa chat: ${shown?.name ?? "Modello"}${chosen ? "" : " (quello dell'agente)"}`);
 	};
 	const pick = (model) => {
 		closeModelMenu();

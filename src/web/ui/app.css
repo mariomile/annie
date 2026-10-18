@@ -405,12 +405,17 @@ main.is-chat { position: relative; }
 	background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-lg); animation: pop 0.12s ease-out;
 }
 .command-menu[hidden] { display: none; }
+/* Two rows like Grok's: the text across the whole box, then the paperclip on the left and model and send on the right. */
 .composer {
-	display: flex; gap: 4px; align-items: flex-end; padding: 8px; border: 1px solid var(--border); border-radius: 26px; background: var(--surface);
+	display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "text text text text" "attach . extra send";
+	column-gap: 4px; row-gap: 2px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 26px; background: var(--surface);
 	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 28px -12px rgba(0, 0, 0, 0.14); transition: border-color 0.12s, box-shadow 0.12s;
 }
 .composer:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--fg) 4%, transparent), 0 12px 40px -16px rgba(0, 0, 0, 0.5); }
-.composer textarea { flex: 1; min-height: 40px; max-height: 220px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 9px 6px; font-size: 15px; line-height: 1.5; }
+.composer textarea { grid-area: text; min-height: 40px; max-height: 220px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 8px 10px 4px; font-size: 15px; line-height: 1.5; }
+.composer .attach { grid-area: attach; }
+.composer .send { grid-area: send; }
+.composer .model-pill { grid-area: extra; }
 .composer textarea:hover { border: 0; }
 .composer textarea:focus { box-shadow: none; }
 .composer .attach, .composer .send { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; border: 0; cursor: pointer; transition: background 0.12s, color 0.12s, opacity 0.12s; }
@@ -424,7 +429,7 @@ main.is-chat { position: relative; }
 .composer .send .icon { stroke-width: 2.25; }
 /* the chat's model: a quiet pill next to send, its list opening upwards */
 .composer .model-pill {
-	flex: none; display: flex; align-items: center; gap: 4px; max-width: 168px; height: 40px; padding: 0 10px 0 12px; border: 0; border-radius: 20px;
+	flex: none; display: flex; align-items: center; gap: 4px; max-width: 240px; height: 36px; padding: 0 10px 0 12px; border: 0; border-radius: 20px;
 	background: transparent; color: var(--fg-2); font-size: 13.5px; cursor: pointer; transition: background 0.12s, color 0.12s;
 }
 .composer .model-pill:hover, .composer .model-pill[aria-expanded="true"] { background: var(--hover); color: var(--fg); }
@@ -452,12 +457,12 @@ main.is-chat { position: relative; }
 .model-empty { padding: 10px; font-size: 13px; margin: 0; }
 .model-error { display: block; padding: 2px 10px 8px; font-size: 12px; color: var(--fg-3); }
 @media (max-width: 560px) {
-	.composer .model-pill { max-width: 110px; padding: 0 8px; }
+	.composer .model-pill { max-width: 200px; padding: 0 8px; }
 	/* 16px keeps phones from zooming into the field. */
 	.model-menu input[type="search"] { font-size: 16px; }
 }
 @media (max-width: 400px) {
-	.composer .model-pill { max-width: 96px; }
+	.composer .model-pill { max-width: 170px; }
 }
 
 .tray { margin: 0 0 8px; display: flex; gap: 6px; flex-wrap: wrap; }
