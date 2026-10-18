@@ -11,6 +11,8 @@ import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
 import { bookKey, type ReminderEntry, type ReminderMark } from "./reminder-book.ts";
 import { checkVatNumber } from "./tax-ids.ts";
+import { absCents, shareOut, unitsCents } from "./quote-sums.ts";
+import { TAX_WITHHOLDINGS } from "./withholding-rules.ts";
 import { fold } from "./text-match.ts";
 
 export const INVOICE_LIMITS = {
@@ -255,6 +257,8 @@ export type Invoice = {
 	readonly publicAdmin?: true;
 	/** Without instalments, under split payment: what is counted is the total less the VAT the administration pays to the State. */
 	readonly splitNet?: true;
+	/** What the customer withholds, in cents (DatiRitenuta): the ritenute d'acconto (RT01, RT02) and the contributions (RT03 to RT06); the income counted for the forfettario's taxes adds the contributions back (cash-book.ts). */
+	readonly withheld?: { readonly tax: bigint; readonly contributions: bigint };
 };
 
 /** The register: every document of the files found, the same invoice once (the newest file), newest invoice first. */
@@ -274,7 +278,8 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 			}
 			const total = doc.total === undefined ? undefined : toUnits(doc.total);
 			const negative = !doc.credit && total !== undefined && total < 0n;
-			const counted = countedInstalments(doc, total);
+			const counted = countedInstalments(doc, total, side);
+			const withheld = withheldOf(doc);
 			const entry = entries.get(key);
 			const done = paidSet(entry, counted.list.length);
 			const instalments = counted.list.map((i): Instalment => {
@@ -297,6 +302,7 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 				paid: done.size === counted.list.length,
 				...(reminded.has(bookKey(key)) ? { reminders: reminded.get(bookKey(key)) } : {}),
 				...(counted.splitNet ? { splitNet: true as const } : {}),
+				...(withheld === undefined ? {} : { withheld }),
 				...(fattura.pec === undefined ? {} : { pec: fattura.pec }),
 				...(fattura.publicAdmin === true ? { publicAdmin: true as const } : {}),
 			});
@@ -315,28 +321,50 @@ function splitNet(doc: FatturaDocument): bigint | undefined {
 	const total = toUnits(doc.total);
 	const vat = toUnits(doc.splitVat);
 	if (total === undefined || vat === undefined) return undefined;
-	const abs = (n: bigint) => (n < 0n ? -n : n);
-	const net = abs(total) - abs(vat);
+	const net = absCents(total) - absCents(vat);
 	if (net < 0n || vat === 0n) return undefined;
 	return total < 0n ? -net : net;
 }
 
 /**
- * Without instalments, what the customer pays when it withholds something (DatiRitenuta: the
- * ritenuta d'acconto, the contributions): the total (or the split payment's net) less what is
- * withheld, which the customer pays to the State, never to the supplier. Signs aside, with the
- * total's sign; undefined when nothing is withheld or it is more than the total.
+ * Without instalments, what the customer pays to the owner on an invoice the owner issued, when it
+ * withholds something (DatiRitenuta: the ritenuta d'acconto, the contributions): the total less
+ * what is withheld (and less the IVA under split payment), which the customer pays to the State.
+ * Only when the total is the gross, the summary rows' imponibile plus imposta within a cent; a
+ * total written already net (the gross less what is withheld, the split IVA too or not) is left
+ * as written. Signs aside, with the total's sign; undefined when nothing applies.
  */
-function withheldNet(doc: FatturaDocument, split: bigint | undefined): bigint | undefined {
-	if (doc.withholdings === undefined || doc.withholdings.length === 0) return undefined;
-	const base = split ?? (doc.total === undefined ? undefined : toUnits(doc.total));
-	if (base === undefined) return undefined;
-	const abs = (n: bigint) => (n < 0n ? -n : n);
+function withheldNet(doc: FatturaDocument): bigint | undefined {
+	if (doc.withholdings === undefined || doc.withholdings.length === 0 || doc.vatRows === undefined || doc.total === undefined) return undefined;
+	const total = toUnits(doc.total);
+	if (total === undefined) return undefined;
+	let gross = 0n;
+	for (const r of doc.vatRows) gross += absCents(toUnits(r.taxable) ?? 0n) + absCents(toUnits(r.tax) ?? 0n);
 	let withheld = 0n;
-	for (const w of doc.withholdings) withheld += abs(toUnits(w.amount) ?? 0n);
-	const net = abs(base) - withheld;
-	if (withheld === 0n || net < 0n) return undefined;
-	return base < 0n ? -net : net;
+	for (const w of doc.withholdings) withheld += absCents(toUnits(w.amount) ?? 0n);
+	const split = absCents(doc.splitVat === undefined ? 0n : (toUnits(doc.splitVat) ?? 0n));
+	const t = absCents(total);
+	const cent = 1_000_000n;
+	const near = (a: bigint, b: bigint) => absCents(a - b) <= cent;
+	let net: bigint | undefined;
+	if (near(t, gross)) net = t - split - withheld;
+	else if (near(t, gross - withheld - split)) net = t;
+	else if (split > 0n && near(t, gross - withheld)) net = t - split;
+	if (withheld === 0n || net === undefined || net < 0n) return undefined;
+	return total < 0n ? -net : net;
+}
+
+/** What is withheld on a document, in cents: the ritenute d'acconto (RT01, RT02) and the contributions (RT03 to RT06); undefined when nothing is. */
+function withheldOf(doc: FatturaDocument): Invoice["withheld"] {
+	if (doc.withholdings === undefined || doc.withholdings.length === 0) return undefined;
+	let tax = 0n;
+	let contributions = 0n;
+	for (const w of doc.withholdings) {
+		const cents = absCents(unitsCents(toUnits(w.amount) ?? 0n));
+		if (w.type !== undefined && TAX_WITHHOLDINGS.includes(w.type)) tax += cents;
+		else contributions += cents;
+	}
+	return { tax, contributions };
 }
 
 /**
@@ -345,11 +373,11 @@ function withheldNet(doc: FatturaDocument, split: bigint | undefined): bigint | 
  * date and amount are alternatives (two IBANs, two ways to pay): one each is kept. If they still
  * add up to more, they are counted in order up to the total, and the invoice is flagged.
  */
-function countedInstalments(doc: FatturaDocument, total: bigint | undefined): { list: Instalment[]; mismatch: boolean; splitNet: boolean } {
+function countedInstalments(doc: FatturaDocument, total: bigint | undefined, side: Side | undefined): { list: Instalment[]; mismatch: boolean; splitNet: boolean } {
 	const bare = doc.toPay === undefined && doc.instalments.length === 0;
 	const split = bare ? splitNet(doc) : undefined;
-	// Without instalments the payment is the total less what the customer withholds (a ritenuta d'acconto, a contribution), never the gross.
-	const net = bare ? withheldNet(doc, split) : undefined;
+	// Without instalments, an invoice the owner issued is paid at the total less what the customer withholds (a ritenuta d'acconto, a contribution), never the gross. One received stays at the gross: the owner pays the ritenuta too, by F24.
+	const net = bare && side === "active" ? withheldNet(doc) : undefined;
 	const whole = doc.toPay ?? (net !== undefined ? fromUnits(net) : split === undefined ? doc.total : fromUnits(split));
 	const raw: readonly FatturaInstalment[] = doc.instalments.length > 0 ? doc.instalments : [whole === undefined ? {} : { amount: whole }];
 	const flip = doc.credit || (total !== undefined && total < 0n);
@@ -452,6 +480,18 @@ export function openAmount(invoice: Invoice): bigint {
 export function countedAmount(invoice: Invoice): bigint | undefined {
 	const amounts = invoice.instalments.filter((i) => !i.extra && i.amount !== undefined).map((i) => i.amount as bigint);
 	return amounts.length === 0 ? undefined : amounts.reduce((n, a) => n + a, 0n);
+}
+
+/**
+ * `cents` of an invoice (a ritenuta, a contribution) shared out over its instalments in proportion
+ * to each one's amount (quote-sums.ts shareOut: half up, the rest on the last), in the instalments'
+ * order; an instalment past the total or without an amount takes nothing, unless none has one.
+ */
+export function instalmentShares(invoice: Pick<Invoice, "instalments">, cents: bigint): bigint[] {
+	return shareOut(
+		cents,
+		invoice.instalments.map((i) => (i.extra === true || i.amount === undefined ? 0n : absCents(i.amount))),
+	);
 }
 
 export function paidAmount(invoice: Invoice): bigint {

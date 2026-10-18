@@ -294,7 +294,7 @@ La parte del compenso (di solito il 20% dell'imponibile; per gli agenti il 23% s
 _Avoid_: withholding tax, trattenuta (per la ritenuta)
 
 **CU (Certificazione Unica)**:
-Il documento con cui il cliente certifica, entro il 16 marzo dell'anno dopo, i compensi pagati e le ritenute trattenute. La persona dice ad Annie i due importi, Annie li salva (CU-NNNN) e li confronta con le sue fatture, spiegando la differenza quando può.
+Il documento con cui il cliente certifica, entro il 16 marzo dell'anno dopo, i compensi pagati e le ritenute trattenute. La persona dice ad Annie i due importi, Annie li salva (CU-NNNN, da togliere con lo stesso codice se detta per sbaglio) e li confronta con le sue fatture, spiegando la differenza quando può. L'anno della CU è quello dei pagamenti: la CU 2026 certifica i compensi del 2025.
 _Avoid_: certificazione dei compensi, 770 (per la CU)
 
 **Download**:

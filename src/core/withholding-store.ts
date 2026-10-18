@@ -3,7 +3,8 @@
  * person said (client, year, compensi lordi, ritenute), the next progressive and the ids of the
  * calls that wrote (a call run again writes nothing twice). Changed under the shared file lock
  * through json-book.ts, with the copy `withholding.json.bak`. A CU said again for the same client
- * and year (a CU sostitutiva) takes the place of the one before, with the same id. Read never
+ * and year (a CU sostitutiva) takes the place of the one before, with the same id; a CU removed
+ * leaves its id used. Read never
  * throws: a file that does not read is `broken`, and nothing is written over it.
  */
 import { join } from "node:path";
@@ -14,7 +15,8 @@ type Book = { readonly next: number; readonly cus: readonly CuRecord[]; readonly
 
 export type WithholdingBook = { readonly cus: readonly CuRecord[]; readonly broken: boolean };
 
-export const WITHHOLDING_BROKEN = "le CU salvate (withholding.json) non si leggono: non le cambio, perché andrebbero perse. Va sistemato il file, o rimessa la copia withholding.json.bak, nella cartella dell'agente";
+/** Said to the person: never the file's name (the operator finds it, withholding.json, and its copy .bak, in the agent's folder). */
+export const WITHHOLDING_BROKEN = "le CU salvate non si leggono: non le cambio, perché andrebbero perse. Va sistemato il loro file, o rimessa la sua copia, nella cartella dell'agente";
 
 const EMPTY: Book = { next: 1, cus: [], calls: [] };
 
@@ -49,7 +51,8 @@ export class WithholdingStore {
 		let out: Recorded | undefined;
 		updateBook(this.book, (book) => {
 			if (book.calls.includes(callId)) {
-				const cu = book.cus.find((c) => c.callId === callId);
+				// Its CU, or what took its place since (a CU sostitutiva said by another call).
+				const cu = book.cus.find((c) => c.callId === callId) ?? book.cus.find((c) => c.client.key === key && c.year === year);
 				if (cu === undefined) throw new WithholdingError("questa richiesta ha già scritto, ma la CU non c'è più: ridimmela");
 				out = { cu, kind: "again" };
 				return book;
@@ -57,7 +60,8 @@ export class WithholdingStore {
 			const calls = [...book.calls, callId].slice(-WITHHOLDING_LIMITS.calls);
 			const same = book.cus.find((c) => c.client.key === key && c.year === year);
 			if (same !== undefined) {
-				const cu = checked(make(same.id));
+				const made = make(same.id);
+				const cu = checked({ ...made, replaced: made.at });
 				out = { cu, kind: "replaced" };
 				return { ...book, cus: book.cus.map((c) => (c === same ? cu : c)), calls };
 			}
@@ -67,6 +71,22 @@ export class WithholdingStore {
 			return { next: book.next + 1, cus: [...book.cus, cu], calls };
 		});
 		return out as Recorded;
+	}
+
+	/** Remove the CU `id`; its id stays used. Asked again, it says the CU is gone; one never recorded is unknown. */
+	remove(id: string): { readonly kind: "removed"; readonly cu: CuRecord } | { readonly kind: "gone" | "unknown" } {
+		let out: { readonly kind: "removed"; readonly cu: CuRecord } | { readonly kind: "gone" | "unknown" } = { kind: "unknown" };
+		updateBook(this.book, (book) => {
+			const cu = book.cus.find((c) => c.id === id);
+			if (cu === undefined) {
+				const n = idNumber(id);
+				out = { kind: n >= 1 && n < book.next ? "gone" : "unknown" };
+				return book;
+			}
+			out = { kind: "removed", cu };
+			return { ...book, cus: book.cus.filter((c) => c !== cu) };
+		});
+		return out;
 	}
 }
 

@@ -4,6 +4,8 @@ import { biggest, comparedTo, deltas, lastMonths, monthsOf, readAgainst, signedP
 import { figuresIn, type Presence, presenceOf, receivablesOf, type Sources, sourcesOf } from "../business-report-sums.ts";
 import type { TaxSetting } from "../business-report-taxes.ts";
 import { topCategories, topClients } from "../business-report-top.ts";
+import { statementOf } from "../bank.ts";
+import type { BankStore } from "../bank-store.ts";
 import type { ClientCard } from "../clients.ts";
 import type { ClientStore } from "../client-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
@@ -12,7 +14,7 @@ import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { type Invoice, register } from "../invoices.ts";
 import { dayOfIn, todayIn } from "../italian-calendar.ts";
-import { currentMonth, previousPeriod } from "../periods.ts";
+import { currentMonth, previousPeriod, spanWords } from "../periods.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { REGIME_FORFETTARIO, REGIME_ORDINARIO } from "../sales-invoice-rules.ts";
 import type { SalesInvoiceStore } from "../sales-invoice-store.ts";
@@ -22,8 +24,9 @@ import { isProblem } from "../text-input.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import type { VatStore } from "../vat-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
+import { bankReceipts } from "../withholding-sums.ts";
 import { type Asked, readAsked, readMonths } from "./business-report-input.ts";
-import { BRIEF_NOTHING, briefLine, compareAnswer, EMPTY, loadNotes, reportCsv, spanWords, summaryAnswer, topAnswer, trendAnswer } from "./business-report-render.ts";
+import { BRIEF_NOTHING, briefLine, compareAnswer, EMPTY, loadNotes, reportCsv, summaryAnswer, topAnswer, trendAnswer } from "./business-report-render.ts";
 
 /** What the report did, for the audit: the op and how many rows, never names, amounts, periods or dates. Only the export writes. */
 export type BusinessReportEvent = { readonly type: "business_report.exported"; readonly op: "export"; readonly count: number };
@@ -41,6 +44,8 @@ export type BusinessReportToolsOptions = {
 	readonly clients?: Pick<ClientStore, "read">;
 	readonly taxes?: Pick<TaxStore, "read">;
 	readonly vat?: Pick<VatStore, "read">;
+	/** The bank statement: an invoice it says was paid gross has no ritenuta trattenuta. */
+	readonly bank?: Pick<BankStore, "read">;
 	readonly timeZone: string;
 	readonly record?: (event: BusinessReportEvent) => Promise<void>;
 	/** Tests: the clock. */
@@ -129,6 +134,7 @@ export function createBusinessReportTools(options: BusinessReportToolsOptions): 
 		const hours = options.timesheet?.read();
 		const clientBook = options.clients?.read();
 		const vatBook = options.vat?.read();
+		const bankBook = options.bank?.read();
 		const sources = sourcesOf(
 			{
 				...(invoices === undefined ? {} : { invoices }),
@@ -138,6 +144,7 @@ export function createBusinessReportTools(options: BusinessReportToolsOptions): 
 				...(hours?.broken === true ? {} : { entries: hours?.entries ?? [] }),
 				marks: vatBook === undefined || vatBook.broken ? [] : vatBook.marks,
 				tax: taxSetting(book.broken ? undefined : book.company, vatBook),
+				...(bankBook === undefined || bankBook.broken ? {} : { received: bankReceipts(statementOf(bankBook.movements, bankBook.matches)) }),
 			},
 			day,
 			dayOf,

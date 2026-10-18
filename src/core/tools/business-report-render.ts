@@ -16,20 +16,14 @@ import { hm, hoursText } from "../durations.ts";
 import { type CategoryTotal, cents as expenseCents } from "../expense-sums.ts";
 import { euros, n1 } from "../format-words.ts";
 import { partyName } from "../invoices.ts";
-import { daysInMonth, MONTH_NAMES } from "../italian-calendar.ts";
+import { MONTH_NAMES } from "../italian-calendar.ts";
 import { capitalized, signOf, withDate, withPercent } from "../italian-format.ts";
-import { spanWords } from "../periods.ts";
+import { lastDay, monthLabel, spanWords } from "../periods.ts";
 import { fenced } from "./business-report-input.ts";
 
 /** Said once in every answer that shows taxes. */
 export const TAX_NOTE = "Le tasse sono una stima: verificale con il commercialista.";
 const REPEAT = "Ripeti cifre e date come sono scritte, non rifare i conti a mente.";
-
-const lastDay = (from: string) => `${from.slice(0, 8)}${String(daysInMonth(Number(from.slice(0, 4)), Number(from.slice(5, 7)))).padStart(2, "0")}`;
-const monthLabel = (day: string) => `${MONTH_NAMES[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
-
-/** The span in words: periods.ts' (the ritenute say their periods with it too). */
-export { spanWords };
 
 /** A month of a trend: «novembre 2025», «ottobre 2026 (fino al 18)». */
 function monthWords(span: Span): string {
@@ -87,7 +81,7 @@ function figureLines(f: Figures, presence: Presence): string[] {
 			lines.push(`• Fatturato: ${euros(f.fatturato.cents)} di imponibile (${parts.join(", ")})`);
 		}
 		if (f.incassato !== undefined) lines.push(`• Incassato: ${euros(f.incassato)}`);
-		if (f.ritenute !== undefined && f.ritenute !== 0n) lines.push(`• Ritenute trattenute dai clienti: ${euros(f.ritenute)}, sono un credito per la dichiarazione`);
+		if (f.ritenute !== undefined && f.ritenute !== 0n) lines.push(`• Ritenute trattenute dai clienti: ${euros(f.ritenute)} (credito per la dichiarazione)`);
 	}
 	if (!presence.expenses) lines.push("• Spese: nessuna registrata.");
 	else if (f.spese !== undefined) {

@@ -24,6 +24,22 @@ export type NamedFound<T> = { readonly kind: "exact"; readonly item: T; readonly
 const ID = /^(?:CL|FU)-\d{4,6}$/;
 const CF = /^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/;
 
+/** A tax id as said: the partita IVA's key (clients.ts vatKey) and the codice fiscale (a company's is its 11 digits). */
+export type TaxId = { readonly vat?: string; readonly cf?: string };
+
+/**
+ * A partita IVA or a codice fiscale as a person writes it («P.IVA IT 000…», «cf XQZ…», labels,
+ * spaces and dots out); undefined when `said` is neither.
+ */
+export function taxIdOf(said: string): TaxId | undefined {
+	const compact = said.trim().replace(/[\s.\-/]/g, "").replace(/^(?:piva|partitaiva|cf|codicefiscale):?/i, "").toUpperCase();
+	if (CF.test(compact)) return { cf: compact };
+	if (!/^(?:[A-Z]{2})?\d{8,12}$/.test(compact)) return undefined;
+	const vat = vatKey(compact);
+	const cf = /^\d{11}$/.test(compact) ? compact : undefined;
+	return vat === undefined && cf === undefined ? undefined : { ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }) };
+}
+
 export function findNamed<T>(candidates: readonly Candidate<T>[], said: string, maxName: number): NamedFound<T> {
 	const t = said.trim();
 	const id = t.toUpperCase();
@@ -31,11 +47,9 @@ export function findNamed<T>(candidates: readonly Candidate<T>[], said: string, 
 		const c = candidates.find((x) => x.ids?.includes(id) === true);
 		return c === undefined ? { kind: "none" } : { kind: "exact", item: c.item, respelled: false };
 	}
-	// Labels out: «P.IVA», «partita IVA», «C.F.», «cf», «codice fiscale» (spaces and dots are gone already).
-	const compact = t.replace(/[\s.\-/]/g, "").replace(/^(?:piva|partitaiva|cf|codicefiscale):?/i, "").toUpperCase();
-	if (/^(?:[A-Z]{2})?\d{8,12}$/.test(compact) || CF.test(compact)) {
-		const v = vatKey(compact);
-		const c = candidates.find((x) => (v !== undefined && x.vat === v) || x.cf === compact);
+	const tax = taxIdOf(t);
+	if (tax !== undefined) {
+		const c = candidates.find((x) => (tax.vat !== undefined && x.vat === tax.vat) || (tax.cf !== undefined && x.cf === tax.cf));
 		if (c !== undefined) return { kind: "exact", item: c.item, respelled: false };
 	}
 	// A name may belong to more than one client (the same name, other tax ids): all of them are kept.

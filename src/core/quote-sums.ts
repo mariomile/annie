@@ -153,6 +153,37 @@ export function unitsToCents(units: bigint): bigint {
 	return (units * 2n + 1_000_000n) / 2_000_000n;
 }
 
+/** The size of an amount, its sign aside: one helper for cents and hundred-millionths alike. */
+export function absCents(n: bigint): bigint {
+	return n < 0n ? -n : n;
+}
+
+/** An invoice's hundred-millionths in cents, half up away from zero, the sign kept (a credit note's −2,5 cents → −3). */
+export function unitsCents(units: bigint): bigint {
+	return halfUpSigned(units, 1_000_000n);
+}
+
+/**
+ * `total` shared out in proportion to `weights` (not negative), each share half up, the rest on
+ * the last weight so the shares add up to `total`; equal weights when they add up to zero. The
+ * sign of `total` is kept on every share.
+ */
+export function shareOut(total: bigint, weights: readonly bigint[]): bigint[] {
+	if (weights.length === 0) return [];
+	const sum = weights.reduce((n, w) => n + w, 0n);
+	const use = sum > 0n ? weights : weights.map(() => 1n);
+	const all = sum > 0n ? sum : BigInt(weights.length);
+	const size = absCents(total);
+	let left = size;
+	const shares = use.map((w, i) => {
+		// Never more than what is left, so no share goes below zero; the last takes the rest.
+		const share = i === use.length - 1 ? left : halfUp(size * w, all) < left ? halfUp(size * w, all) : left;
+		left -= share;
+		return share;
+	});
+	return total < 0n ? shares.map((s) => -s) : shares;
+}
+
 /** `cents` × `percent` (a decimal string, 2 decimals at most) / 100, half up. */
 function percentOf(cents: bigint, percent: string): bigint {
 	return halfUp(cents * scaled(percent, 2), 10_000n);

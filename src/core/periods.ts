@@ -202,11 +202,14 @@ export function underWay(p: Period, today: string): boolean {
 /** A span of days: the period, or the part of it up to today. */
 export type Span = { readonly from: string; readonly to: string };
 
-/** «dal 01/10/2026 al 18/10/2026», elided before 8 and 11: «dall'08/10/2026 all'11/10/2026». */
+/** The last day of the month of `day`: «2028-02-01» → «2028-02-29». */
+export const lastDay = (day: string): string => `${day.slice(0, 8)}${String(daysInMonth(Number(day.slice(0, 4)), Number(day.slice(5, 7)))).padStart(2, "0")}`;
+
+/** The month of `day` in words: «ottobre 2026». */
+export const monthLabel = (day: string): string => `${MONTH_NAMES[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
+
 /** «ottobre 2026», «ottobre 2026 fino al 18», «3º trimestre 2026», «2026», «dal 1º gennaio al 18 ottobre 2026». */
 export function spanWords(span: Span): string {
-	const lastDay = (day: string) => `${day.slice(0, 8)}${String(daysInMonth(Number(day.slice(0, 4)), Number(day.slice(5, 7)))).padStart(2, "0")}`;
-	const monthLabel = (day: string) => `${MONTH_NAMES[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
 	const { from, to } = span;
 	const year = from.slice(0, 4);
 	const firstOfMonth = from.slice(8) === "01";
@@ -219,7 +222,7 @@ export function spanWords(span: Span): string {
 	return `${short} ${withDate("al", to)}`;
 }
 
-/** «dal 01/10/2026 al 18/10/2026»: a span in a table or a short line. */
+/** «dal 01/10/2026 al 18/10/2026», elided before 8 and 11 («dall'08/10/2026 all'11/10/2026»): a span in a table or a short line. */
 export function spanText(from: string, to: string): string {
 	const elided = (day: string) => /^(?:08|11)\//.test(day);
 	const f = italianDate(from);

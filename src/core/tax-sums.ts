@@ -86,11 +86,12 @@ export type Incassi = {
 	readonly unreadable: number;
 };
 
-/** The incassi of `year` up to `to` (default its last day): by the day marked paid, in euros. */
+/** The incassi of `year` up to `to` (default its last day): by the day marked paid, in euros, the contributions the customers withheld (RT03 to RT06) added back. */
 export function incassiOf(invoices: readonly Invoice[], year: number, dayOf: (at: string) => string, to = `${year}-12-31`): Incassi {
 	if (to < `${year}-01-01`) return { cents: 0n, count: 0, otherCurrency: 0, unreadable: 0 };
 	const book = cashBook(invoices, [], { from: `${year}-01-01`, to }, dayOf);
-	return { cents: book.totalIn, count: book.rows.length, otherCurrency: book.otherCurrency, unreadable: book.unreadable };
+	// The income, not only what came in: the contributions a customer withheld (an agent's ENASARCO) are compensi too.
+	return { cents: book.totalIn + book.contributions, count: book.rows.length, otherCurrency: book.otherCurrency, unreadable: book.unreadable };
 }
 
 /** The incassi of each year, read once: this year up to `today`, a year to come none. */

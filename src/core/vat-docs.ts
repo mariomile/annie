@@ -20,7 +20,7 @@
  */
 import { type FatturaDocument, type FatturaParty, toUnits } from "./fattura-pa.ts";
 import { type Invoice, invoiceKey, paidOnOf, vatOf } from "./invoices.ts";
-import { halfUpSigned } from "./quote-sums.ts";
+import { absCents, unitsCents } from "./quote-sums.ts";
 import { salesTotals } from "./sales-invoice-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
 import type { DeductMark } from "./vat.ts";
@@ -53,8 +53,6 @@ export type VatDoc = {
 
 export type LeftOut = { readonly noSide: number; readonly foreign: number; readonly noDate: number; readonly noRows: number };
 
-/** Hundred-millionths to cents, half up away from zero. */
-const centsOf = (units: bigint): bigint => halfUpSigned(units, 1_000_000n);
 
 const esigibilitaOf = (code: string | undefined): Esigibilita => (code === "S" || code === "D" ? code : "I");
 
@@ -114,14 +112,13 @@ function fromRegister(register: readonly Invoice[], known: ReadonlySet<string>, 
 			left.noRows++;
 			continue;
 		}
-		const abs = (n: bigint) => (n < 0n ? -n : n);
-		const signed = (n: bigint) => (i.credit ? -abs(n) : n);
+		const signed = (n: bigint) => (i.credit ? -absCents(n) : n);
 		const rows = read.map(
 			(x): VatRow => ({
-				rate: String(Number(centsOf(x.rate as bigint)) / 100),
+				rate: String(Number(unitsCents(x.rate as bigint)) / 100),
 				...(x.r.natura === undefined ? {} : { natura: x.r.natura }),
-				taxable: signed(centsOf(x.taxable as bigint)),
-				tax: signed(centsOf(x.tax as bigint)),
+				taxable: signed(unitsCents(x.taxable as bigint)),
+				tax: signed(unitsCents(x.tax as bigint)),
 				esigibilita: esigibilitaOf(x.r.esigibilita),
 			}),
 		);

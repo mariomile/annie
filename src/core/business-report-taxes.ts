@@ -57,8 +57,9 @@ function forfettario(s: TaxSources & { readonly invoices: readonly Invoice[] }, 
 		// This year's share as the taxes tool takes it: on the year projected to its end, so a year's fixed contributions are not all put on the incassi so far; past years on their incassi.
 		const e = part.year === current ? yearEstimate(inputs, part.year) : yearEstimate(inputs, part.year, inputs.incassi(part.year).cents);
 		if (e.incassi <= 0n) continue;
-		// The same incassi the taxes count: the cash book's, by the day paid.
-		const inPart = cashBook(s.invoices, [], part, s.dayOf).totalIn;
+		// The income the taxes count: what came in and the contributions the customers withheld (the incassato stays what came in).
+		const book = cashBook(s.invoices, [], part, s.dayOf);
+		const inPart = book.totalIn + book.contributions;
 		cents += halfUp(inPart * e.total, e.incassi);
 		if (e.setAsidePercent !== undefined) percent = e.setAsidePercent;
 	}

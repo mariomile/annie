@@ -41,7 +41,8 @@ import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
 import type { WorkEntry } from "./timesheet.ts";
 import type { DeductMark } from "./vat.ts";
 import { type VatDoc, vatDocs } from "./vat-docs.ts";
-import { type WithheldDoc, withheldDocs } from "./withholding-docs.ts";
+import { ritenutaBetween, type WithheldDoc, withheldDocs } from "./withholding-docs.ts";
+import { paidGrossByBank } from "./withholding-sums.ts";
 
 /** What the registers read; a register that does not read is undefined. */
 export type ReportRegisters = {
@@ -53,6 +54,8 @@ export type ReportRegisters = {
 	/** La liquidazione IVA's deductibility marks (none when its store does not read). */
 	readonly marks: readonly DeductMark[];
 	readonly tax: TaxSetting;
+	/** What the bank statement says came in for each invoice (withholding-sums.ts bankReceipts), when it reads. */
+	readonly received?: ReadonlyMap<string, bigint>;
 };
 
 /** The registers, with the documents gathered once, today and the local day of an instant. */
@@ -81,6 +84,8 @@ export function sourcesOf(r: ReportRegisters, today: string, dayOf: (at: string)
 	const uncounted = (r.invoices ?? []).filter((i) => i.side === "active" && !i.doc.integration && !keys.has(i.key)).length;
 	const paid = paidSupplierInstalments(r.invoices ?? [], dayOf);
 	const pairing = { paid, ...supplierPairing(paid, r.expenses ?? []) };
+	// unreadable_vat is the ordinario whose liquidazione IVA's store does not read (business-report-tools.ts
+	// taxSetting): the regime is known, and the ritenute never read that store, so they still count.
 	const ordinario = r.tax.kind === "ordinario" || (r.tax.kind === "none" && r.tax.why === "unreadable_vat");
 	const withheld = ordinario && docs !== undefined ? withheldDocs(r.sales ?? [], r.invoices ?? [], dayOf).docs : undefined;
 	return { ...r, ...(docs === undefined ? {} : { docs }), uncounted, today, dayOf, pairing, ...(withheld === undefined ? {} : { withheld }) };
@@ -143,7 +148,9 @@ function quotesIn(quotes: readonly Quote[], span: Span): NonNullable<Figures["pr
 export function figuresIn(s: Sources, span: Span): Figures {
 	const fatturato = s.docs === undefined ? undefined : fatturatoIn(s.docs, span);
 	const incassato = s.invoices === undefined ? undefined : collectedIn({ invoices: s.invoices }, span.from, span.to, s.dayOf).cents;
-	const ritenute = s.withheld?.filter((d) => d.paidOn !== undefined && within(d.paidOn, span)).reduce((n, d) => n + d.ritenuta, 0n);
+	// Each instalment's share in its own day; an invoice the bank says was paid gross has none (the ritenute tool agrees).
+	const received = s.received ?? new Map<string, bigint>();
+	const ritenute = s.withheld?.filter((d) => !paidGrossByBank(d, received)).reduce((n, d) => n + ritenutaBetween(d, span.from, span.to), 0n);
 	let spese: Figures["spese"];
 	if (s.expenses !== undefined) {
 		const own = totalsOf(s.expenses, span);

@@ -5,7 +5,7 @@
  * the deadline of a year's CU); the sums are in withholding-sums.ts.
  */
 import { addDays, workingDay } from "./italian-calendar.ts";
-import { halfUp, scaled } from "./quote-sums.ts";
+import { absCents, halfUp, scaled } from "./quote-sums.ts";
 
 /**
  * Lavoro autonomo (professionals): 20% of the compenso (art. 25, comma 1, DPR 600/1973). The
@@ -28,6 +28,17 @@ export const AGENT_CAUSALI: readonly string[] = ["Q", "R"];
 
 /** TipoRitenuta of FatturaPA that are a ritenuta d'acconto on income (RT01 persone fisiche, RT02 persone giuridiche); RT03 to RT06 are contributions withheld, not a credit for the dichiarazione (specifiche tecniche FatturaPA 1.2). */
 export const TAX_WITHHOLDINGS: readonly string[] = ["RT01", "RT02"];
+
+/**
+ * The casse previdenziali whose contributo integrativo (TC01 to TC21 of FatturaPA) is not a compenso:
+ * it goes to the cassa, outside the ritenuta's base and the CU's compensi. TC22, the rivalsa INPS
+ * of the gestione separata, is part of the compenso and of the ritenuta's base (art. 25 DPR 600/1973
+ * on the fee; circolare INPS 13/2002 on the rivalsa; specifiche tecniche FatturaPA 1.2). Da verificare
+ * for each cassa's own rules.
+ */
+export function integrativoFund(type: string | undefined): boolean {
+	return type !== undefined && /^TC(?:0[1-9]|1\d|2[01])$/.test(type);
+}
 
 /**
  * The customer (sostituto d'imposta) pays the ritenuta with F24 by the 16th of the month after the
@@ -55,8 +66,7 @@ export const CU_DUE = "03-16";
  */
 export const CREDIT_RULE = "art. 22 TUIR";
 
-/** The brief speaks about missing CU from the day after the deadline to the end of March. */
-export const BRIEF_FROM = "03-17";
+/** The brief speaks about missing CU from the day after the deadline (cuDeadline) to the end of March. */
 export const BRIEF_TO = "03-31";
 
 /** How a ritenuta is computed: the professional's 20% of the compenso, an agent's 23% on 50% or 20% of the provvigioni, or another rate on the whole base. */
@@ -88,9 +98,8 @@ export function ritenutaOf(base: bigint, rule: RitenutaRule): bigint {
  * base that is not the compenso).
  */
 export function ruleOf(base: bigint, ritenuta: bigint): RitenutaRule | undefined {
-	const abs = (n: bigint) => (n < 0n ? -n : n);
 	const rules: RitenutaRule[] = [{ kind: "professional" }, { kind: "agent" }, { kind: "agent", reduced: true }];
-	return rules.find((r) => abs(ritenutaOf(abs(base), r) - abs(ritenuta)) <= 1n);
+	return rules.find((r) => absCents(ritenutaOf(absCents(base), r) - absCents(ritenuta)) <= 1n);
 }
 
 /** The CU of the payments of `year`: due on 16 March of the next year, moved to the next working day. */
@@ -105,8 +114,8 @@ export function cuLate(year: number, today: string): boolean {
 	return today > cuDeadline(year);
 }
 
-/** Whether the brief speaks about the missing CU today, and of which year: from 17 to 31 March, the year before. */
+/** Whether the brief speaks about the missing CU today, and of which year: the year before, from the day after its deadline to 31 March. */
 export function briefYear(today: string): number | undefined {
-	const md = today.slice(5);
-	return md >= BRIEF_FROM && md <= BRIEF_TO ? Number(today.slice(0, 4)) - 1 : undefined;
+	const year = Number(today.slice(0, 4)) - 1;
+	return cuLate(year, today) && today.slice(5) <= BRIEF_TO ? year : undefined;
 }

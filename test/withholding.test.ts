@@ -7,19 +7,25 @@ import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import type { BankMatch, BankMovement } from "../src/core/bank.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { figuresIn, sourcesOf } from "../src/core/business-report-sums.ts";
+import { cashBook } from "../src/core/cash-book.ts";
 import { invoiceFlows } from "../src/core/cashflow-sources.ts";
+import { FORM_NOTE, taxIdOf } from "../src/core/client-find.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Invoice, type Regime, register } from "../src/core/invoices.ts";
 import { dayOfIn } from "../src/core/italian-calendar.ts";
+import { lastDay, monthLabel } from "../src/core/periods.ts";
+import { shareOut } from "../src/core/quote-sums.ts";
 import type { SalesBook } from "../src/core/sales-invoice-store.ts";
 import type { SalesInvoice } from "../src/core/sales-invoices.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { createBusinessReportTools } from "../src/core/tools/business-report-tools.ts";
 import { createWithholdingTools, type WithholdingEvent } from "../src/core/tools/withholding-tools.ts";
-import { BRIEF_NOTHING, FORFETTARIO } from "../src/core/tools/withholding-render.ts";
+import { BRIEF_NOTHING, FORFETTARIO, SIMILAR_NOTE } from "../src/core/tools/withholding-render.ts";
+import { incassiOf, yearEstimate } from "../src/core/tax-sums.ts";
+import type { TaxProfile } from "../src/core/taxes.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { type CuRecord, cuId, WITHHOLDING_LIMITS, withholdingAgentReads, withholdingCallReads } from "../src/core/withholding.ts";
 import { withheldDocs } from "../src/core/withholding-docs.ts";
@@ -35,6 +41,8 @@ const CLIENT3 = { name: "Cliente Tre Srl", vat: "11111110018" };
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
+/** When the CU of 2026 can be said: 10 February 2027. */
+const LATER = new Date("2027-02-10T09:00:00Z");
 const dayOf = dayOfIn("Europe/Rome");
 let calls = 0;
 const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
@@ -244,6 +252,15 @@ describe("ritenute: the rules and their sources", () => {
 		expect(briefYear("2027-03-17")).toBe(2026);
 		expect(briefYear("2027-03-31")).toBe(2026);
 		expect(briefYear("2027-04-01")).toBeUndefined();
+		// The brief's window opens the day after the deadline, wherever a weekend moves it: 16 March 2030 is a Saturday, 16 March 2031 a Sunday.
+		expect(cuDeadline(2029)).toBe("2030-03-18");
+		expect(briefYear("2030-03-18")).toBeUndefined();
+		expect(briefYear("2030-03-19")).toBe(2029);
+		expect(briefYear("2030-03-31")).toBe(2029);
+		expect(cuDeadline(2030)).toBe("2031-03-17");
+		expect(briefYear("2031-03-17")).toBeUndefined();
+		expect(briefYear("2031-03-18")).toBe(2030);
+		expect(briefYear("2031-04-01")).toBeUndefined();
 		const rules = readFileSync(join(import.meta.dirname, "../src/core/withholding-rules.ts"), "utf8");
 		for (const source of ["art. 25, comma 1, DPR 600/1973", "art. 25-bis", "art. 4, comma 6-quater, DPR 322/1998", "art. 22, comma 1, lett. c, TUIR", "art. 18, comma 1, D.Lgs. 241/1997", "Da verificare"]) expect(rules).toContain(source);
 	});
@@ -298,10 +315,11 @@ describe("ritenute: the year's summary, principio di cassa", () => {
 		expect(answer.split("\n")[0]).toBe("Ritenute d'acconto del 2026 finora, sulle fatture pagate nell'anno (conta il giorno dell'incasso, non la data della fattura):");
 		// R1 200 + R2 400 − NC1 20 + R7 100 (C1) + R3 115 + S-1 300 (C2) + R5 60 + R6 200 (C3).
 		expect(answer).toContain("• Trattenute dai clienti: 1.355,00 € su 7.200,00 € di compensi (7 fatture, 1 nota di credito, 3 clienti).");
-		expect(answer).toContain("• Credito per la dichiarazione: 1.155,00 €: tolti 200,00 € di una fattura che il cliente ha pagato al lordo, senza trattenere (lo dice l'estratto conto).");
+		expect(answer).toContain("• Credito per la dichiarazione dei redditi del 2027 (redditi 2026): 1.155,00 €. Ho tolto 200,00 € di una fattura che il cliente ha pagato al lordo, senza trattenere (lo dice l'estratto conto).");
 		expect(answer).toContain("Una fattura con ritenuta del 2026 non è ancora segnata pagata: la ritenuta conta nell'anno in cui il cliente paga.");
-		expect(answer).toContain("codice tributo 1040");
-		expect(answer).toContain("entro il 16 marzo 2027");
+		// The F24 is the client's business: only when the CU comes.
+		expect(answer).not.toContain("1040");
+		expect(answer).toContain("Il cliente te le certifica nella CU entro il 16 marzo 2027.");
 		expect(fences(answer)).toHaveLength(1);
 		expect(inside(answer)).toContain("Cliente Uno Srl: 680,00 € di ritenute su 3.400,00 € (3 fatture, 1 nota di credito)");
 		expect(inside(answer)).toContain("Cliente Due Srl: 415,00 € di ritenute su 2.500,00 € (2 fatture)");
@@ -316,7 +334,7 @@ describe("ritenute: the year's summary, principio di cassa", () => {
 		const answer = await s.run({ op: "summary", year: 2025 });
 		expect(answer.split("\n")[0]).toContain("del 2025,");
 		expect(answer).toContain("• Trattenute dai clienti: 100,00 € su 500,00 € di compensi (1 fattura, 1 cliente).");
-		expect(answer).toContain("• Credito per la dichiarazione: 100,00 €.");
+		expect(answer).toContain("• Credito per la dichiarazione dei redditi del 2026 (redditi 2025): 100,00 €.");
 		const summary = yearSummary(withheldDocs([sale()], await s.registerNow(), dayOf).docs, 2025, new Map());
 		expect(summary.ritenuta).toBe(10_000n);
 		// R1 and R5 are dated 2025 but paid in 2026: not open, not counted.
@@ -365,7 +383,7 @@ describe("ritenute: did the client pay the net?", () => {
 	it("by the scadenzario only: the invoice's figure, never called proof", async () => {
 		const s = await setup();
 		const r2 = await s.run({ op: "check_payment", number: "R2" });
-		expect(r2).toContain("Lo scadenzario conta 2.040,00 €: è l'importo netto che chiede la fattura, non quello arrivato davvero");
+		expect(r2).toContain("Pagata il 1º aprile 2026. Lo scadenzario conta 2.040,00 €, ma è il netto che chiede la fattura, non quello arrivato davvero. Per saperlo carica l'estratto conto o dimmi quanto è arrivato.");
 		// Without payment data, what the client pays is the total less the ritenuta, never the gross.
 		expect(await s.run({ op: "check_payment", number: "R1" })).toContain("Lo scadenzario conta 1.020,00 €");
 	});
@@ -395,12 +413,24 @@ describe("ritenute: did the client pay the net?", () => {
 	it("every invoice paid in a period, counted by outcome, rows in one fence", async () => {
 		const s = await setup({ bank: BANK });
 		const answer = await s.run({ op: "check_payment", period: "2026" });
-		expect(answer).toContain("7 fatture con ritenuta pagate (dal 1º gennaio al 18 ottobre 2026): 1 al lordo, senza ritenuta trattenuta, 1 con un importo diverso, 5 senza l'importo arrivato (solo lo scadenzario).");
+		expect(answer).toContain("7 fatture con ritenuta pagate (dal 1º gennaio al 18 ottobre 2026): 1 al lordo, senza ritenuta trattenuta, 1 con un importo diverso, 5 da verificare (manca l'estratto conto).");
 		expect(fences(answer)).toHaveLength(1);
 		expect(inside(answer)).toContain("fattura R6 del 1º agosto 2026, Cliente Tre Srl: netto 1.020,00 €, arrivati 1.220,00 €, al lordo, ritenuta non trattenuta");
+		expect(inside(answer)).toContain("fattura R2 del 10 marzo 2026, Cliente Uno Srl: netto 2.040,00 €, da verificare");
 		expect(answer).toContain("non è un credito per te");
 		expect(await s.run({ op: "check_payment", period: "agosto 2026" })).toContain("Una fattura con ritenuta pagata (agosto 2026)");
 		expect(await s.run({ op: "check_payment", period: "febbraio 2026" })).toContain("Nessuna fattura con ritenuta pagata (febbraio 2026).");
+		// All from the scadenzario: the count and what is needed, not the list.
+		const register = await (await setup()).run({ op: "check_payment", period: "2026" });
+		expect(register).toBe(
+			[
+				"7 fatture con ritenuta pagate (dal 1º gennaio al 18 ottobre 2026): lo scadenzario conta il netto che chiede la fattura, non quello arrivato davvero.",
+				"Per sapere cosa è arrivato davvero serve l'estratto conto: caricalo, o dimmi quanto è arrivato per una fattura.",
+				"Ripeti cifre e date come sono scritte, non rifare i conti a mente.",
+			].join("\n"),
+		);
+		// A client alone: that client's payments this year.
+		expect(await s.run({ op: "check_payment", client: "Cliente Tre" })).toContain("2 fatture con ritenuta pagate (dal 1º gennaio al 18 ottobre 2026)");
 		const keys = bankReceipts([{ amount: "1220", target: `inv:${s.keys.R6}` }, { amount: "-50", target: `inv:${s.keys.R6}` }, { amount: "10", target: "other" }]);
 		expect([...keys.values()]).toEqual([122_000n]);
 	});
@@ -408,39 +438,48 @@ describe("ritenute: did the client pay the net?", () => {
 
 describe("ritenute: the CU", () => {
 	it("recorded, stored as said, compared: it matches", async () => {
-		const s = await setup();
-		const answer = await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: "3.400", withheld: 680 });
+		const s = await setup({ now: LATER });
+		const answer = await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: "3.400", withheld: 680 });
 		expect(answer).toContain("Salvata la CU del 2026 del cliente nel riquadro (CU-0001): compensi 3.400,00 €, ritenute 680,00 €.");
+		expect(answer).toContain(FORM_NOTE);
 		expect(answer).toContain("Torna con le mie fatture: 680,00 € di ritenute su 3 fatture pagate nel 2026.");
 		expect(fences(answer)).toHaveLength(1);
 		expect(outside(answer)).not.toContain(CLIENT1.name);
 		const book = s.store.read();
 		expect(book.cus).toHaveLength(1);
 		expect(book.cus[0]).toMatchObject({ id: "CU-0001", year: 2026, gross: "3400", withheld: "680", client: { name: CLIENT1.name, vat: `IT${CLIENT1.vat}`, key: `IT${CLIENT1.vat}` }, by: "web:p_000000000001" });
+		expect(book.cus[0]?.replaced).toBeUndefined();
 		expect(existsSync(join(s.dir, "withholding.json.bak"))).toBe(true);
-		expect(s.events).toEqual([{ type: "withholding.changed", op: "cu", count: 1 }]);
+		expect(s.events).toEqual([{ type: "withholding.changed", op: "record_cu", count: 1 }]);
 	});
 
-	it("the same call twice writes once; the same client and year again replaces it with the same id", async () => {
-		const s = await setup();
-		const ctx = fresh("same-call");
-		await s.run({ op: "cu", client: CLIENT2.vat, year: 2026, gross: 2500, withheld: 415 }, ctx);
-		const again = await s.run({ op: "cu", client: CLIENT2.vat, year: 2026, gross: 2500, withheld: 415 }, ctx);
+	it("the same call twice writes once; the same client and year again replaces it with the same id; the first call run again after that is still the same call", async () => {
+		const s = await setup({ now: LATER });
+		const first = { op: "record_cu", client: CLIENT2.vat, year: 2026, gross: 2500, withheld: 415 };
+		await s.run(first, fresh("same-call"));
+		const again = await s.run(first, fresh("same-call"));
 		expect(again).toContain("era già salvata (CU-0001)");
 		expect(s.store.read().cus).toHaveLength(1);
 		expect(s.events).toHaveLength(1);
-		const replaced = await s.run({ op: "cu", client: "cliente due", year: 2026, gross: 2600, withheld: 415 });
+		s.at("2027-02-11T09:00:00Z");
+		const replaced = await s.run({ op: "record_cu", client: "cliente due", year: 2026, gross: 2600, withheld: 415 });
 		expect(replaced).toContain("Ho sostituito la CU del 2026 del cliente nel riquadro (CU-0001) con questa");
 		// The ritenute match; the compensi differ.
 		expect(replaced).toContain("Torna con le mie fatture");
 		expect(replaced).toContain("I compensi invece differiscono di 100,00 €");
+		// The CU sostitutiva says when it took the place of the first one.
+		expect(s.store.read().cus).toEqual([expect.objectContaining({ id: "CU-0001", gross: "2600", replaced: "2027-02-11T09:00:00.000Z" })]);
+		// The first call run again: nothing written, «already saved», the CU that holds now.
+		const replay = await s.run(first, fresh("same-call"));
+		expect(replay.split("\n")[0]).toBe("La CU del 2026 del cliente nel riquadro era già salvata (CU-0001): compensi 2.600,00 €, ritenute 415,00 €.");
 		expect(s.store.read().cus.map((c) => c.gross)).toEqual(["2600"]);
+		expect(s.events).toHaveLength(2);
 	});
 
 	it("an invoice of December paid in January explains the CU of the year before", async () => {
 		const s = await setup();
 		// Cliente Tre certified R0 and R5 in 2025, R5 by its date: Annie counts it in 2026.
-		const answer = await s.run({ op: "cu", client: "Cliente Tre", year: 2025, gross: 800, withheld: 160 });
+		const answer = await s.run({ op: "record_cu", client: "Cliente Tre", year: 2025, gross: 800, withheld: 160 });
 		expect(answer).toContain("Non torna: la CU dice 60,00 € di ritenute in più delle mie (100,00 € su 1 fattura pagata nel 2025).");
 		expect(answer).toContain("La differenza si spiega con le fatture nel riquadro.");
 		expect(inside(answer)).toContain("fattura R5 del 20 dicembre 2025: ritenuta 60,00 €, pagata nel 2026: è nella CU di quell'anno");
@@ -448,41 +487,96 @@ describe("ritenute: the CU", () => {
 	});
 
 	it("a gross payment, a credit note, nothing that explains it (maybe invoices missing)", async () => {
-		const s = await setup({ bank: BANK });
-		const gross = await s.run({ op: "cu", client: "Cliente Tre", year: 2026, gross: 300, withheld: 60 });
+		const s = await setup({ bank: BANK, now: LATER });
+		const gross = await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 300, withheld: 60 });
 		expect(gross).toContain("Non torna: la CU dice 200,00 € di ritenute in meno delle mie");
 		expect(inside(gross)).toContain("fattura R6 del 1º agosto 2026: ritenuta 200,00 €, pagata al lordo secondo l'estratto conto: il cliente non ha trattenuto");
-		const credit = await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: 3500, withheld: 700 });
+		const credit = await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 3500, withheld: 700 });
 		expect(credit).toContain("La differenza si spiega con le fatture nel riquadro.");
 		expect(inside(credit)).toContain("nota di credito NC1 del 10 aprile 2026: ritenuta −20,00 €, la tolgo io: forse il cliente non l'ha tolta");
 		expect(inside(credit)).not.toContain("R8");
-		const missing = await s.run({ op: "cu", client: "Cliente Due", year: 2026, gross: 3000, withheld: 515 });
+		const missing = await s.run({ op: "record_cu", client: "Cliente Due", year: 2026, gross: 3000, withheld: 515 });
 		expect(missing).toContain("Forse mancano fatture nel workspace");
 	});
 
-	it("a client close to several is asked; one unknown is recorded as said and said", async () => {
+	it("a client close to several is asked; the only one close is taken and said; one not in the invoices only by partita IVA or codice fiscale", async () => {
 		const files = { ...FILES, "f/r9.xml": xml(COMPANY, { name: "Cliente Uno Sas", vat: "00000040014" }, { number: "R9", date: "2026-02-01", taxable: "100.00", ritenute: r20("20.00"), pay: "102.00" }) };
-		const s = await setup({ files });
-		const asked = await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: 100, withheld: 20 });
-		expect(asked).toContain("Errore: non so quale cliente intendi");
+		const s = await setup({ files, now: LATER });
+		const asked = await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 100, withheld: 20 });
+		expect(asked).toContain("Errore: non so quale cliente intendi, ce ne sono 2 con un nome simile");
 		expect(fences(asked)).toHaveLength(1);
 		expect(s.store.read().cus).toHaveLength(0);
-		const unknown = await s.run({ op: "cu", client: "Studio Sconosciuto", year: 2026, gross: 100, withheld: 20 });
-		expect(unknown).toContain("Nelle mie fatture non c'è nessuna ritenuta di questo cliente");
-		expect(s.store.read().cus[0]?.client).toEqual({ name: "Studio Sconosciuto", key: "nome:studio sconosciuto" });
+		// One only with a similar name: taken, and the person is asked to make sure.
+		const one = await (await setup({ now: LATER })).run({ op: "record_cu", client: "Cliente Unoo Srl", year: 2026, gross: 3400, withheld: 680 });
+		expect(one).toContain(SIMILAR_NOTE);
+		expect(inside(one)).toContain(`cliente: ${CLIENT1.name}`);
+		expect(one).not.toContain("ce ne sono 1");
+		// A name of no client: never saved as said.
+		const byName = await s.run({ op: "record_cu", client: "Studio Sconosciuto", year: 2026, gross: 100, withheld: 20 });
+		expect(byName.split("\n")[0]).toBe("Errore: nelle mie fatture non c'è nessun cliente con questo nome (nel riquadro): dammi la partita IVA del cliente come la scrive la CU.");
+		expect(inside(byName)).toBe("Studio Sconosciuto");
+		expect(s.store.read().cus).toHaveLength(0);
+		// Without Cliente Tre's invoices, its partita IVA is a client Annie has nothing of: saved by it.
+		const { "f/r0.xml": _r0, "f/r5.xml": _r5, "f/r6.xml": _r6, ...noTre } = FILES;
+		const t = await setup({ files: noTre, now: LATER });
+		const byVat = await t.run({ op: "record_cu", client: `P.IVA IT ${CLIENT3.vat}`, year: 2026, gross: 100, withheld: 20 });
+		expect(byVat).toContain("Salvata la CU del 2026 del cliente nel riquadro (CU-0001)");
+		expect(byVat).toContain("Nelle mie fatture non c'è nessuna ritenuta di questo cliente: la confronto quando ci saranno le sue fatture. Se l'hai salvata per sbaglio, dimmi di togliere la CU-0001.");
+		expect(t.store.read().cus[0]?.client).toEqual({ name: `P.IVA IT${CLIENT3.vat}`, vat: `IT${CLIENT3.vat}`, key: `IT${CLIENT3.vat}` });
+		await t.run({ op: "record_cu", client: `cf ${COMPANY.cf}`, year: 2026, gross: 100, withheld: 20 });
+		expect(t.store.read().cus[1]?.client).toMatchObject({ name: `codice fiscale ${COMPANY.cf}`, cf: COMPANY.cf });
+	});
+
+	it("a CU said by mistake is removed by its id, once; its id is never used again", async () => {
+		const s = await setup({ now: LATER });
+		await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
+		const removed = await s.run({ op: "cu_remove", id: " cu-0001 " });
+		expect(removed.split("\n")[0]).toBe("Ho tolto la CU CU-0001 del 2026 del cliente nel riquadro: compensi 3.400,00 €, ritenute 680,00 €.");
+		expect(inside(removed)).toBe(`cliente: ${CLIENT1.name}`);
+		expect(outside(removed)).not.toContain(CLIENT1.name);
+		expect(s.store.read().cus).toHaveLength(0);
+		expect(await s.run({ op: "cu_remove", id: "CU-0001" })).toBe("La CU CU-0001 non c'è più: è già stata tolta.");
+		expect(await s.run({ op: "cu_remove", id: "CU-0009" })).toBe("Errore: non ho nessuna CU CU-0009: chiedimi le CU dell'anno per vedere i codici.");
+		expect(await s.run({ op: "cu_remove", id: "Rossi" })).toContain("Errore: dimmi quale CU togliere con il suo codice, come CU-0001");
+		expect(await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 })).toContain("(CU-0002)");
+		// The audit: the op and how many, nothing else.
+		expect(s.events).toEqual([
+			{ type: "withholding.changed", op: "record_cu", count: 1 },
+			{ type: "withholding.changed", op: "cu_remove", count: 1 },
+			{ type: "withholding.changed", op: "record_cu", count: 1 },
+		]);
+		expect(withholdingCallReads({ op: "cu_remove" })).toBe(false);
+		writeFileSync(join(s.dir, "withholding.json"), "{rotto");
+		expect(await s.run({ op: "cu_remove", id: "CU-0002" })).toContain("Errore: le CU salvate non si leggono");
+		expect(readFileSync(join(s.dir, "withholding.json"), "utf8")).toBe("{rotto");
 	});
 
 	it("the CU's figures read as amounts: zero ritenute allowed, nonsense refused inside the fence", async () => {
-		const s = await setup();
-		expect(await s.run({ op: "cu", client: "Cliente Tre", year: 2026, gross: 1300, withheld: 0 })).toContain("ritenute 0,00 €");
-		expect(await s.run({ op: "cu", client: "Cliente Tre", year: 2026, gross: 0, withheld: 0 })).toContain("Errore: i compensi lordi: più di zero");
-		expect(await s.run({ op: "cu", client: "Cliente Tre", year: 2026, gross: 100, withheld: 200 })).toContain("Errore: le ritenute sono più dei compensi");
-		expect(await s.run({ op: "cu", client: "Cliente Tre", year: 2026, withheld: 2 })).toContain("Errore: dimmi i compensi lordi");
-		expect(await s.run({ op: "cu", year: 2026, gross: 1, withheld: 0 })).toContain("Errore: dimmi di quale cliente è la CU");
-		expect(await s.run({ op: "cu", client: "Cliente Tre", year: 2026, gross: "100 USD", withheld: 0 })).toContain("Errore");
-		// The default year is last year's.
-		await s.run({ op: "cu", client: "Cliente Tre", gross: 500, withheld: 100 });
-		expect(s.store.read().cus.find((c) => c.year === 2025)).toBeDefined();
+		const s = await setup({ now: LATER });
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 1300, withheld: 0 })).toContain("ritenute 0,00 €");
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 0, withheld: 0 })).toContain("Errore: i compensi lordi: più di zero");
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 100, withheld: 200 })).toContain("Errore: le ritenute sono più dei compensi");
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, withheld: 2 })).toContain("Errore: dimmi i compensi lordi come li scrive la CU");
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 2 })).toContain("Errore: dimmi le ritenute come le scrive la CU");
+		expect(await s.run({ op: "record_cu", year: 2026, gross: 1, withheld: 0 })).toContain("Errore: dimmi di quale cliente è la CU");
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: "100 USD", withheld: 0 })).toContain("Errore");
+	});
+
+	it("the CU's year is the year of the payments: last year by default, this year's refused with the year on the form explained", async () => {
+		const s = await setup({ now: LATER });
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: 2027, gross: 100, withheld: 20 })).toBe(
+			"Errore: la CU dei compensi del 2027 arriva nel 2028. Se sulla CU c'è scritto «2027», è quella dei compensi del 2026: ridimmela con l'anno 2026.",
+		);
+		expect(await s.run({ op: "record_cu", client: "Cliente Tre", year: "quest'anno", gross: 100, withheld: 20 })).toContain("Errore: la CU dei compensi del 2027 arriva nel 2028.");
+		expect(s.store.read().cus).toHaveLength(0);
+		await s.run({ op: "record_cu", client: "Cliente Tre", gross: 1300, withheld: 260 });
+		expect(s.store.read().cus.map((c) => c.year)).toEqual([2026]);
+		const description = JSON.stringify(s.tool.description) + JSON.stringify(s.tool.parameters);
+		expect(description).toContain("the year before the one printed on the CU form");
+		expect(description).toContain("«quanto credito ho per la dichiarazione?»");
+		expect(description).toContain("→ summary with last year");
+		expect(description).toContain("«la CU di Rossi torna?»");
+		expect(description).toContain("a client alone → check_payment with client: that client's payments this year");
 	});
 
 	it("compareCu: a cent per invoice is the same", async () => {
@@ -495,28 +589,31 @@ describe("ritenute: the CU", () => {
 });
 
 describe("ritenute: the CU still to come", () => {
-	it("last year's by default: the deadline gone, late", async () => {
+	it("last year's by default, said so: the deadline gone, late", async () => {
 		const s = await setup();
 		const answer = await s.run({ op: "cu_list" });
-		expect(answer).toContain("CU del 2025 (scadenza 16 marzo 2026, passata: chi non l'ha mandata è in ritardo): ne manca 1 su 1 cliente con ritenute.");
+		expect(answer.split("\n")[0]).toBe("CU del 2025, l'anno scorso: non mi hai detto l'anno. Manca quella dell'unico cliente con ritenute (scadenza 16 marzo 2026, passata: chi non l'ha mandata è in ritardo).");
 		expect(inside(answer)).toContain("Cliente Tre Srl: manca, in ritardo (ritenute 100,00 €)");
 		expect(fences(answer)).toHaveLength(1);
 		expect(answer).toContain("Chiedile ai clienti");
+		expect(await s.run({ op: "cu_list", year: 2025 })).toContain("CU del 2025 (scadenza 16 marzo 2026, passata: chi non l'ha mandata è in ritardo): manca quella dell'unico cliente con ritenute.");
 	});
 
-	it("this year's: who will send it, the ones received compared", async () => {
-		const s = await setup();
-		await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
-		await s.run({ op: "cu", client: "Cliente Due", year: 2026, gross: 2500, withheld: 500 });
+	it("this year's: all missing, then the ones received compared, the first reason beside each that does not match", async () => {
+		const s = await setup({ bank: BANK, now: LATER });
+		expect(await s.run({ op: "cu_list", year: 2026 })).toContain("CU del 2026 (scadenza 16 marzo 2027): mancano tutte e 3, una per cliente con ritenute.");
+		await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
+		await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 300, withheld: 60 });
 		const answer = await s.run({ op: "cu_list", year: 2026 });
-		expect(answer).toContain("CU del 2026 (arriveranno dopo la fine dell'anno, entro il 16 marzo 2027): ne manca 1 su 3 clienti con ritenute.");
-		expect(inside(answer)).toContain("Cliente Uno Srl: ricevuta, torna");
-		expect(inside(answer)).toContain("Cliente Due Srl: ricevuta, non torna (differenza 85,00 €)");
-		expect(inside(answer)).toContain("Cliente Tre Srl: manca (ritenute 260,00 €)");
-		expect(answer).toContain("Una CU non torna con le mie fatture");
+		expect(answer).toContain("CU del 2026 (scadenza 16 marzo 2027): ne manca 1 su 3 clienti con ritenute.");
+		expect(inside(answer)).toContain("Cliente Uno Srl: ricevuta (CU-0001), torna");
+		expect(inside(answer)).toContain("Cliente Tre Srl: ricevuta (CU-0002), non torna (differenza −200,00 €): forse fattura R6 del 1º agosto 2026, pagata al lordo secondo l'estratto conto: il cliente non ha trattenuto");
+		expect(inside(answer)).toContain("Cliente Due Srl: manca (ritenute 415,00 €)");
+		expect(answer).toContain("Una CU non torna con le mie fatture: il perché più probabile è nel riquadro, accanto al cliente.");
+		expect(answer).not.toContain("chiedimi di confrontarla");
 		const list = cuList(withheldDocs([sale()], await s.registerNow(), dayOf).docs, s.store.read().cus, 2026, "2027-03-20", new Map());
 		expect(list.late).toBe(true);
-		expect(list.missing.map((m) => m.client.name)).toEqual([CLIENT3.name]);
+		expect(list.missing.map((m) => m.client.name)).toEqual([CLIENT2.name]);
 	});
 });
 
@@ -527,15 +624,15 @@ describe("ritenute: the brief", () => {
 		expect(await s.run({ op: "cu_list", compact: true })).toBe("Mancano 3 CU per il 2026: chiedile ai clienti.");
 		expect(readdirSync(s.dir).sort()).toEqual(before);
 		expect(existsSync(join(s.dir, "withholding.json"))).toBe(false);
-		await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
-		await s.run({ op: "cu", client: "Cliente Due", year: 2026, gross: 2500, withheld: 415 });
+		await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
+		await s.run({ op: "record_cu", client: "Cliente Due", year: 2026, gross: 2500, withheld: 415 });
 		expect(await s.run({ op: "cu_list", compact: true })).toBe("Manca 1 CU per il 2026: chiedile ai clienti.");
 		s.at("2027-03-16T08:00:00Z");
 		expect(await s.run({ op: "cu_list", compact: true })).toBe(BRIEF_NOTHING);
 		s.at("2027-04-01T08:00:00Z");
 		expect(await s.run({ op: "cu_list", compact: true })).toBe(BRIEF_NOTHING);
 		s.at("2027-03-31T08:00:00Z");
-		await s.run({ op: "cu", client: "Cliente Tre", year: 2026, gross: 1300, withheld: 260 });
+		await s.run({ op: "record_cu", client: "Cliente Tre", year: 2026, gross: 1300, withheld: 260 });
 		expect(await s.run({ op: "cu_list", compact: true })).toBe(BRIEF_NOTHING);
 	});
 
@@ -544,12 +641,14 @@ describe("ritenute: the brief", () => {
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "cu_list", compact: true }, fresh()))).toContain("Mancano 3 CU");
 		expect(String(await briefed?.execute({ op: "summary", year: 2026 }, fresh()))).toContain("Trattenute dai clienti");
-		expect(String(await briefed?.execute({ op: "cu", client: "Cliente Uno", gross: 1, withheld: 0 }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "record_cu", client: "Cliente Uno", gross: 1, withheld: 0 }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "cu_remove", id: "CU-0001" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(String(await briefed?.execute({ op: "export" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(existsSync(join(s.dir, "withholding.json"))).toBe(false);
 		expect(existsSync(join(s.root, "ritenute"))).toBe(false);
 		expect(withholdingCallReads({ op: "check_payment" })).toBe(true);
-		expect(withholdingCallReads({ op: "cu" })).toBe(false);
+		expect(withholdingCallReads({ op: "record_cu" })).toBe(false);
+		expect(withholdingCallReads({ op: "cu_remove" })).toBe(false);
 		expect(withholdingCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bwithholding \(cu_list\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
@@ -572,7 +671,7 @@ describe("ritenute: another agente", () => {
 		expect(totals).toContain("• Trattenute dai clienti: 1.355,00 €");
 		expect(fences(totals)).toHaveLength(0);
 		for (const n of NAMES) expect(totals).not.toContain(n);
-		for (const args of [{ op: "cu_list" }, { op: "check_payment", number: "R2" }, { op: "cu", client: "Cliente Uno", gross: 1, withheld: 0 }, { op: "export" }]) {
+		for (const args of [{ op: "cu_list" }, { op: "check_payment", number: "R2" }, { op: "record_cu", client: "Cliente Uno", gross: 1, withheld: 0 }, { op: "cu_remove", id: "CU-0001" }, { op: "export" }]) {
 			expect(await s.run(args, agent())).toContain("Errore: a un altro agente do solo i totali delle ritenute dell'anno");
 		}
 		expect(s.store.read().cus).toHaveLength(0);
@@ -587,8 +686,10 @@ describe("ritenute: the store", () => {
 		const path = join(s.dir, "withholding.json");
 		writeFileSync(path, "{non è json");
 		expect(s.store.read()).toEqual({ cus: [], broken: true });
-		const answer = await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: 1, withheld: 0 });
-		expect(answer).toContain("Errore: le CU salvate (withholding.json) non si leggono");
+		const answer = await s.run({ op: "record_cu", client: "Cliente Tre", year: 2025, gross: 1, withheld: 0 });
+		expect(answer).toContain("Errore: le CU salvate non si leggono: non le cambio, perché andrebbero perse.");
+		// The person never sees the file's name.
+		expect(answer).not.toContain("withholding.json");
 		expect(() => s.store.record("x", "k", 2026, (id) => ({ id, client: { name: "A", key: "k" }, year: 2026, gross: "1", withheld: "0", callId: "x", by: "u", at: NOW.toISOString() }))).toThrow(/non si leggono/);
 		expect(readFileSync(path, "utf8")).toBe("{non è json");
 		expect(await s.run({ op: "cu_list", year: 2026 })).toContain("Le CU salvate non si leggono: le conto tutte come mancanti.");
@@ -623,40 +724,57 @@ describe("ritenute: the export for the commercialista", () => {
 	it("a CSV under ritenute/, named from the dates, never over another, cells made inert, the audit with op and count only", async () => {
 		const hostile = { name: "=HYPERLINK(\"http://x\";\"a\")", vat: "00000040014" };
 		const files = { ...FILES, "f/h.xml": xml(COMPANY, hostile, { number: "+H1", date: "2026-02-01", taxable: "100.00", ritenute: r20("20.00"), pay: "102.00" }) };
-		const s = await setup({ files, paid: { ...PAID, "+H1": "2026-02-10T10:00:00.000Z" } });
-		await s.run({ op: "cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
+		const s = await setup({ files, paid: { ...PAID, "+H1": "2026-02-10T10:00:00.000Z" }, now: LATER });
+		await s.run({ op: "record_cu", client: "Cliente Uno", year: 2026, gross: 3400, withheld: 680 });
 		const answer = await s.run({ op: "export", year: 2026 });
-		expect(answer).toContain("Salvato ritenute/ritenute-2026-01-01_2026-10-18.csv: le ritenute del 2026");
-		const csv = readFileSync(join(s.root, "ritenute/ritenute-2026-01-01_2026-10-18.csv"), "utf8");
-		expect(csv.startsWith("﻿Cliente;P.IVA o codice fiscale;Documento;Numero;Data;Pagata il;Anno di cassa;Compensi;Ritenuta;Regola;")).toBe(true);
+		expect(answer).toContain("Salvato ritenute/ritenute-2026-01-01_2026-12-31.csv: le ritenute del 2026, una riga");
+		const csv = readFileSync(join(s.root, "ritenute/ritenute-2026-01-01_2026-12-31.csv"), "utf8");
+		expect(csv.startsWith("\uFEFFCliente;P.IVA o codice fiscale;Documento;Numero;Data;Pagata il;Anni di cassa;Compensi;Ritenuta;Regola;Totale;Netto da ricevere;Compensi del 2026;Ritenuta del 2026;Ricevuto;")).toBe(true);
 		expect(csv).toContain(`"'=HYPERLINK(""http://x"";""a"")";IT00000040014;fattura;'+H1;2026-02-01;2026-02-10;2026;100,00;20,00;20% sul compenso;`);
-		expect(csv).toContain("Cliente Due Srl;IT00000030015;fattura;R3;2026-05-05;2026-06-01;2026;1000,00;115,00;23% sul 50% (agenti);1220,00;1105,00;1105,00;scadenzario;al netto;;;non ricevuta");
+		// From the scadenzario only: to verify, never «al netto».
+		expect(csv).toContain("Cliente Due Srl;IT00000030015;fattura;R3;2026-05-05;2026-06-01;2026;1000,00;115,00;23% sul 50% (agenti);1220,00;1105,00;1000,00;115,00;1105,00;scadenzario;da verificare (manca l'estratto conto);;;non ricevuta");
 		expect(csv).toContain("Cliente Uno Srl;IT00000020016;nota di credito;NC1;2026-04-10;2026-04-15;2026;-100,00;-20,00;");
 		expect(csv).toMatch(/Cliente Uno Srl;[^\r]*;R2;[^\r]*;680,00;0,00;torna\r\n/);
 		// R8 is dated 2026, not paid: listed to say why it is not counted.
-		expect(csv).toContain("Cliente Uno Srl;IT00000020016;fattura;R8;2026-10-01;non pagata;;");
+		expect(csv).toContain("Cliente Uno Srl;IT00000020016;fattura;R8;2026-10-01;non pagata;;1000,00;200,00;20% sul compenso;1220,00;1020,00;;;;;;;;\r\n");
 		// A December invoice paid in January is 2026's.
 		expect(csv).toContain(";R1;2025-12-15;2026-01-10;2026;");
+		// The year's total of the rows counted: 1.375 € of ritenute on 7.300 € (Cliente Uno, Due, Tre and the hostile one).
+		expect(csv).toContain("Totale 2026;;;;;;;;;;;;7300,00;1375,00;;;;;;\r\n");
 		await s.run({ op: "export", year: 2026 });
-		expect(readdirSync(join(s.root, "ritenute")).sort()).toEqual(["ritenute-2026-01-01_2026-10-18-2.csv", "ritenute-2026-01-01_2026-10-18.csv"]);
+		expect(readdirSync(join(s.root, "ritenute")).sort()).toEqual(["ritenute-2026-01-01_2026-12-31-2.csv", "ritenute-2026-01-01_2026-12-31.csv"]);
 		expect(s.events).toEqual([
-			{ type: "withholding.changed", op: "cu", count: 1 },
+			{ type: "withholding.changed", op: "record_cu", count: 1 },
 			{ type: "withholding.changed", op: "export", count: 10 },
 			{ type: "withholding.changed", op: "export", count: 10 },
 		]);
 		for (const e of s.events) expect(Object.keys(e).sort()).toEqual(["count", "op", "type"]);
-		expect(await s.run({ op: "export" })).toContain("Salvato ritenute/ritenute-2025-01-01_2025-12-31.csv");
+		// Last year by default, said so.
+		expect(await s.run({ op: "export" })).toContain("Salvato ritenute/ritenute-2026-01-01_2026-12-31-3.csv: le ritenute del 2026 (l'anno scorso: non mi hai detto l'anno), una riga");
 		expect(await s.run({ op: "export", year: 2019 })).toContain("Nel 2019 non ho fatture con ritenuta d'acconto");
+	});
+
+	it("the CU's columns only on the rows of that CU's year; an invoice of December paid in January is «nella CU del 2026»", async () => {
+		const s = await setup({ now: LATER });
+		await s.run({ op: "record_cu", client: "Cliente Tre", year: 2025, gross: 500, withheld: 100 });
+		await s.run({ op: "export", year: 2025 });
+		const csv = readFileSync(join(s.root, "ritenute/ritenute-2025-01-01_2025-12-31.csv"), "utf8");
+		expect(csv).toMatch(/Cliente Tre Srl;[^\r]*;R0;[^\r]*;500,00;100,00;[^\r]*;100,00;0,00;torna\r\n/);
+		expect(csv).toMatch(/Cliente Tre Srl;[^\r]*;R5;2025-12-20;2026-01-15;2026;[^\r]*;;;[^\r]*;nella CU del 2026\r\n/);
+		expect(csv).toMatch(/Cliente Uno Srl;[^\r]*;R1;2025-12-15;2026-01-10;2026;[^\r]*;nella CU del 2026\r\n/);
+		expect(csv).toContain("Totale 2025;;;;;;;;;;;;500,00;100,00;;;;;;\r\n");
 	});
 });
 
 describe("ritenute: the forfettario", () => {
 	it("every op says the ritenute do not apply, and stops", async () => {
 		const s = await setup({ regime: "forfettario" });
-		for (const op of ["summary", "check_payment", "cu_list", "export"]) expect(await s.run({ op })).toBe(FORFETTARIO);
-		expect(await s.run({ op: "cu", client: "Cliente Uno", gross: 100, withheld: 20 })).toBe(FORFETTARIO);
+		for (const op of ["summary", "check_payment", "cu_list", "export", "cu_remove"]) expect(await s.run({ op })).toBe(FORFETTARIO);
+		expect(await s.run({ op: "record_cu", client: "Cliente Uno", gross: 100, withheld: 20 })).toBe(FORFETTARIO);
 		expect(s.store.read().cus).toHaveLength(0);
-		expect(FORFETTARIO).toContain("L. 190/2014, art. 1, comma 67");
+		expect(FORFETTARIO).toBe(
+			"Nel regime forfettario i clienti non trattengono la ritenuta d'acconto (L. 190/2014, art. 1, comma 67): non c'è niente da controllare né credito per la dichiarazione. La CU, se un cliente te la manda, ha solo i compensi, senza ritenute.",
+		);
 	});
 });
 
@@ -693,7 +811,130 @@ describe("ritenute: the other registers", () => {
 		const [report] = createBusinessReportTools({ workspace: new Workspace(s.root), invoices: new InvoiceStore(s.dir), sales: { read: () => salesBook([sale()]) }, expenses: { read: () => ({ expenses: [], broken: false }) }, timeZone: "Europe/Rome", now: () => NOW });
 		const answer = String(await report?.execute({ op: "summary", period: "gennaio 2026" }, fresh()));
 		expect(answer).toContain("• Incassato: 1.326,00 €");
-		expect(answer).toContain("• Ritenute trattenute dai clienti: 260,00 €, sono un credito per la dichiarazione");
+		expect(answer).toContain("• Ritenute trattenute dai clienti: 260,00 € (credito per la dichiarazione)");
+	});
+});
+
+describe("ritenute: the review's money fixes", () => {
+	it("shareOut: in proportion, half up, the rest on the last, never more than the total, with its sign", () => {
+		expect(shareOut(20_000n, [51_000n, 51_000n])).toEqual([10_000n, 10_000n]);
+		expect(shareOut(10_000n, [1n, 1n, 1n])).toEqual([3_333n, 3_333n, 3_334n]);
+		expect(shareOut(-10_000n, [1n, 2n])).toEqual([-3_333n, -6_667n]);
+		expect(shareOut(5n, [0n, 0n])).toEqual([3n, 2n]);
+		expect(shareOut(1n, [1n, 1n, 1n])).toEqual([0n, 0n, 1n]);
+		expect(shareOut(7n, [])).toEqual([]);
+	});
+
+	it("U11: one reading of a partita IVA or codice fiscale as said; one last day and month label", () => {
+		expect(taxIdOf(`P.IVA IT ${CLIENT1.vat}`)).toEqual({ vat: `IT${CLIENT1.vat}` });
+		expect(taxIdOf(`partita IVA: ${CLIENT1.vat.slice(0, 5)} ${CLIENT1.vat.slice(5)}`)).toEqual({ vat: `IT${CLIENT1.vat}`, cf: CLIENT1.vat });
+		expect(taxIdOf(`c.f. ${COMPANY.cf.toLowerCase()}`)).toEqual({ cf: COMPANY.cf });
+		expect(taxIdOf("Studio Sconosciuto")).toBeUndefined();
+		expect(taxIdOf("12")).toBeUndefined();
+		expect(lastDay("2028-02-01")).toBe("2028-02-29");
+		expect(monthLabel("2026-10-18")).toBe("ottobre 2026");
+	});
+
+	it("M1: a received invoice with a ritenuta is paid gross by the company (the ritenuta goes to the F24): its instalment stays 1.220", async () => {
+		const passive = xml(CLIENT1, COMPANY, { number: "P9", date: "2026-03-01", taxable: "1000.00", ritenute: r20("200.00") });
+		const s = await setup({ files: { "f/p9.xml": passive }, paid: {}, sales: [] });
+		const [p9] = await s.registerNow();
+		expect(p9?.side).toBe("passive");
+		expect(p9?.instalments.map((n) => n.amount)).toEqual([122_000_000_000n]);
+		expect(invoiceFlows([p9 as Invoice], TODAY, "2026-12-31", false).undated.out).toBe(122_000n);
+	});
+
+	it("L1: an ImportoTotaleDocumento written already net is not netted twice", async () => {
+		const net = xml(COMPANY, CLIENT1, { number: "N1", date: "2026-03-01", taxable: "1000.00", ritenute: r20("200.00") }).replace("<ImportoTotaleDocumento>1220.00", "<ImportoTotaleDocumento>1020.00");
+		const s = await setup({ files: { "f/n1.xml": net }, paid: {}, sales: [] });
+		const [n1] = await s.registerNow();
+		expect(n1?.instalments.map((n) => n.amount)).toEqual([102_000_000_000n]);
+		expect(await s.run({ op: "check_payment", number: "N1" })).toContain("totale 1.220,00 €, ritenuta 200,00 €, netto da ricevere 1.020,00 €.");
+		// A total that is neither the gross nor the net is left as written.
+		const odd = xml(COMPANY, CLIENT1, { number: "N2", date: "2026-03-01", taxable: "1000.00", ritenute: r20("200.00") }).replace("<ImportoTotaleDocumento>1220.00", "<ImportoTotaleDocumento>1100.00");
+		const t = await setup({ files: { "f/n2.xml": odd }, paid: {}, sales: [] });
+		expect((await t.registerNow())[0]?.instalments.map((n) => n.amount)).toEqual([110_000_000_000n]);
+	});
+
+	it("M2: an agent's ENASARCO withheld: the payment expected stays the net, the income for the taxes counts it", async () => {
+		const files = { "f/a1.xml": xml(COMPANY, CLIENT1, { number: "A1", date: "2025-03-01", taxable: "1000.00", ritenute: [{ amount: "85.00", type: "RT04", rate: "8.50", causale: "A" }] }) };
+		const s = await setup({ files, paid: { A1: "2025-03-20T10:00:00.000Z" }, regime: "forfettario", sales: [] });
+		const reg = await s.registerNow();
+		expect(reg[0]?.instalments.map((n) => n.amount)).toEqual([113_500_000_000n]);
+		expect(reg[0]?.withheld).toEqual({ tax: 0n, contributions: 8_500n });
+		const book = cashBook(reg, [], { from: "2025-01-01", to: "2025-12-31" }, dayOf);
+		expect(book.totalIn).toBe(113_500n);
+		expect(book.contributions).toBe(8_500n);
+		expect(incassiOf(reg, 2025, dayOf).cents).toBe(122_000n);
+		// The business report: incassato what came in, the forfettario's taxes on the whole income.
+		const profile: TaxProfile = { coefficient: "78", rate: "15", startYear: 2020, pension: { kind: "gestione_separata" }, by: "u", at: NOW.toISOString() };
+		const sources = sourcesOf({ invoices: reg, sales: [], marks: [], tax: { kind: "forfettario", profile, years: [] } }, TODAY, dayOf);
+		const f = figuresIn(sources, { from: "2025-01-01", to: "2025-12-31" });
+		expect(f.incassato).toBe(113_500n);
+		const estimate = yearEstimate({ profile, figures: [], incassi: (y) => incassiOf(reg, y, dayOf), today: TODAY }, 2025, 122_000n);
+		expect(f.tasse).toMatchObject({ kind: "forfettario", cents: estimate.total });
+	});
+
+	it("M3: an invoice paid across two years counts each instalment's share in its own year, the part paid when not all is", async () => {
+		const two = xml(COMPANY, CLIENT1, { number: "T1", date: "2025-11-10", taxable: "1000.00", ritenute: r20("200.00"), pay: "510.00" }).replace(
+			"</DettaglioPagamento>",
+			"</DettaglioPagamento><DettaglioPagamento><ModalitaPagamento>MP05</ModalitaPagamento><DataScadenzaPagamento>2026-01-10</DataScadenzaPagamento><ImportoPagamento>510.00</ImportoPagamento></DettaglioPagamento>",
+		);
+		const s = await setup({ files: { "f/t1.xml": two }, paid: {}, sales: [], now: LATER });
+		const marks = new InvoiceStore(s.dir);
+		const key = s.keys.T1 as string;
+		marks.mark({ invoice: key, count: 2, instalment: 1, paid: true, by: "test:u", at: "2025-12-15T10:00:00.000Z" });
+		// Only December's paid: 2025 counts its share, and says the rest is to come.
+		const partly = await s.run({ op: "summary", year: 2025 });
+		expect(partly).toContain("• Trattenute dai clienti: 100,00 € su 500,00 € di compensi (1 fattura, 1 cliente).");
+		expect(partly).toContain("Una fattura è pagata solo in parte: conto la parte pagata, nell'anno in cui è arrivata.");
+		marks.mark({ invoice: key, count: 2, instalment: 2, paid: true, by: "test:u", at: "2026-01-12T10:00:00.000Z" });
+		expect(await s.run({ op: "summary", year: 2025 })).toContain("• Trattenute dai clienti: 100,00 € su 500,00 €");
+		expect(await s.run({ op: "summary", year: 2026 })).toContain("• Trattenute dai clienti: 100,00 € su 500,00 €");
+		// The client certified 2025's share: it matches.
+		expect(await s.run({ op: "record_cu", client: "Cliente Uno", year: 2025, gross: 500, withheld: 100 })).toContain("Torna con le mie fatture: 100,00 € di ritenute su 1 fattura pagata nel 2025.");
+		// The client certified it all in 2025: January's share explains it.
+		const whole = await s.run({ op: "record_cu", client: "Cliente Uno", year: 2025, gross: 1000, withheld: 200 });
+		expect(inside(whole)).toContain("fattura T1 del 10 novembre 2025: ritenuta 100,00 €, pagata in parte nel 2026: quella parte è nella CU di quell'anno");
+		// The business report counts each share in its own span.
+		const sources = sourcesOf({ invoices: await s.registerNow(), sales: [], marks: [], tax: { kind: "ordinario" } }, "2027-02-10", dayOf);
+		expect(figuresIn(sources, { from: "2025-01-01", to: "2025-12-31" }).ritenute).toBe(10_000n);
+		expect(figuresIn(sources, { from: "2026-01-01", to: "2026-12-31" }).ritenute).toBe(10_000n);
+	});
+
+	it("L5: a cassa's contributo integrativo (TC01 to TC21) is no compenso; the rivalsa INPS (TC22) is", async () => {
+		const fund = (type: string) => `<DatiCassaPrevidenziale><TipoCassa>${type}</TipoCassa><AlCassa>4.00</AlCassa><ImportoContributoCassa>40.00</ImportoContributoCassa><ImponibileCassa>1000.00</ImponibileCassa><AliquotaIVA>22.00</AliquotaIVA></DatiCassaPrevidenziale>`;
+		const withFund = (number: string, type: string) => xml(COMPANY, CLIENT1, { number, date: "2026-02-01", taxable: "1040.00", ritenute: r20("200.00"), pay: "1068.80" }).replace("<ImportoTotaleDocumento>", `${fund(type)}<ImportoTotaleDocumento>`);
+		const s = await setup({ files: { "f/c1.xml": withFund("C1", "TC01"), "f/c2.xml": withFund("C2", "TC22") }, paid: {}, sales: [] });
+		const { docs } = withheldDocs([], await s.registerNow(), dayOf);
+		expect(docs.find((d) => d.number === "C1")?.compensi).toBe(100_000n);
+		expect(docs.find((d) => d.number === "C2")?.compensi).toBe(104_000n);
+	});
+
+	it("UX7: the business report leaves out the ritenuta of an invoice the bank says was paid gross, as the ritenute tool does", async () => {
+		const s = await setup({ bank: BANK });
+		const invoices = await s.registerNow();
+		const bank = BANK(s.keys);
+		const received = bankReceipts(bank.movements.map((m) => ({ amount: m.amount, target: `inv:${bank.matches.find((x) => x.movement === m.id)?.target}` })));
+		const sources = sourcesOf({ invoices, sales: [sale()], marks: [], tax: { kind: "ordinario" }, received }, TODAY, dayOf);
+		// 1.355 less R6's 200: the credit the summary says.
+		expect(figuresIn(sources, { from: "2026-01-01", to: TODAY }).ritenute).toBe(115_500n);
+		expect(await s.run({ op: "summary" })).toContain("1.155,00 €.");
+		const [report] = createBusinessReportTools({
+			workspace: new Workspace(s.root),
+			invoices: new InvoiceStore(s.dir),
+			sales: { read: () => salesBook([sale()]) },
+			expenses: { read: () => ({ expenses: [], broken: false }) },
+			bank: { read: () => ({ next: { movement: 1, import: 1 }, movements: bank.movements, imports: [], matches: bank.matches, calls: [], broken: false }) },
+			timeZone: "Europe/Rome",
+			now: () => NOW,
+		});
+		// August: only R6, paid gross: no ritenute line.
+		const august = String(await report?.execute({ op: "summary", period: "agosto 2026" }, fresh()));
+		expect(august).toContain("• Incassato: 1.020,00 €");
+		expect(august).not.toContain("Ritenute trattenute");
+		const july = String(await report?.execute({ op: "summary", period: "luglio 2026" }, fresh()));
+		expect(july).toContain("• Ritenute trattenute dai clienti: 300,00 € (credito per la dichiarazione)");
 	});
 });
 
@@ -703,10 +944,11 @@ describe("ritenute: the answers", () => {
 			expect(readFileSync(join(import.meta.dirname, "../src/core", f), "utf8")).not.toMatch(NO_EM_DASH);
 		}
 		const s = await setup({ bank: BANK });
-		const answers = [await s.run({ op: "summary" }), await s.run({ op: "check_payment", period: "2026" }), await s.run({ op: "cu_list", year: 2026 }), await s.run({ op: "cu", client: "Cliente Tre", year: 2025, gross: 800, withheld: 160 })];
+		const answers = [await s.run({ op: "summary" }), await s.run({ op: "check_payment", period: "2026" }), await s.run({ op: "cu_list", year: 2026 }), await s.run({ op: "cu_list" }), await s.run({ op: "record_cu", client: "Cliente Tre", year: 2025, gross: 800, withheld: 160 }), await s.run({ op: "cu_remove", id: "CU-0001" })];
 		for (const a of answers) {
 			expect(a).not.toMatch(NO_EM_DASH);
-			expect(outside(a)).not.toMatch(/\b(?:withheld|gross|check_payment|cu_list|op|year)\b/);
+			expect(outside(a)).not.toMatch(/\b(?:withheld|gross|check_payment|cu_list|record_cu|cu_remove|op|year|id)\b/);
+			expect(a).not.toContain("withholding.json");
 			expect(fences(a).length).toBeLessThanOrEqual(1);
 		}
 		expect(await s.run({ op: "nope" })).toContain("Errore: op è una di queste");

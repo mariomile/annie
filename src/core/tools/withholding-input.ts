@@ -55,9 +55,7 @@ export function readPaidPeriod(value: unknown, today: string): Period | Problem 
 
 /** An invoice's number as written («12», «2026/12», «FV-3»). */
 export function readNumber(value: unknown): string | undefined | Problem {
-	const t = cleanText(value, 40, "il numero della fattura");
-	if (isProblem(t)) return t;
-	return t;
+	return cleanText(value, 40, "il numero della fattura");
 }
 
 /** A client as the person names them: a name, a partita IVA or a codice fiscale. */
@@ -70,13 +68,17 @@ export function readClient(value: unknown, required: boolean): string | undefine
 
 const FOREIGN = "la CU è in euro: dammi gli importi in euro come li scrive la CU";
 
-/** An amount of the CU in euros (the compensi lordi, the ritenute): «0» is a ritenuta too, when the client withheld nothing. */
+/**
+ * An amount of the CU in euros (the compensi lordi, the ritenute): «0» is a ritenuta too, when the
+ * client withheld nothing. `what` with its article: «i compensi lordi», «le ritenute».
+ */
 export function readCuAmount(value: unknown, what: string, zero: boolean): string | Problem {
-	if (value === undefined) return { problem: `dimmi ${what} come li scrive la CU` };
+	const asked = `dimmi ${what} come ${what.startsWith("le ") ? "le" : "li"} scrive la CU`;
+	if (value === undefined) return { problem: asked };
 	const plain = plainEuros(value);
 	if (zero && (plain === 0 || (typeof plain === "string" && /^\s*(?:€\s*)?0+(?:[.,]0{1,2})?\s*(?:€|euro?)?\s*$/i.test(plain)))) return "0";
 	const read = readEuros(plain, { fence: fenced, max: WITHHOLDING_LIMITS.maxEuros, foreign: FOREIGN, negative: `${what}: un importo senza segno meno`, zero: `${what}: più di zero` });
-	if (read === undefined) return { problem: `dimmi ${what} come li scrive la CU` };
+	if (read === undefined) return { problem: asked };
 	return isProblem(read) ? { problem: read.problem.replace(/^amount: /, `${what}: `) } : read;
 }
 

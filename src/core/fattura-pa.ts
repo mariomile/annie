@@ -92,7 +92,12 @@ export type FatturaDocument = {
 	readonly vatRows?: readonly FatturaVatRow[];
 	/** What the customer withholds (DatiRitenuta), each whose amount reads: the ritenute d'acconto (withholding-docs.ts) and the contributions withheld. */
 	readonly withholdings?: readonly FatturaWithholding[];
+	/** The casse previdenziali charged (DatiCassaPrevidenziale), each whose amount reads: TipoCassa and ImportoContributoCassa (canonical decimals). */
+	readonly funds?: readonly FatturaFund[];
 };
+
+/** One DatiCassaPrevidenziale as written: TC01 to TC21 a cassa's contributo integrativo, TC22 the rivalsa INPS. */
+export type FatturaFund = { readonly type?: string; readonly amount: string };
 
 /** One DatiRitenuta as written: TipoRitenuta (RT01, RT02 ritenute d'acconto; RT03 to RT06 contributions), ImportoRitenuta (canonical decimals), AliquotaRitenuta, CausalePagamento. */
 export type FatturaWithholding = { readonly type?: string; readonly amount: string; readonly rate?: string; readonly causale?: string };
@@ -219,6 +224,7 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const taxable = summaryTaxable(body);
 	const vatRows = summaryRows(body);
 	const withholdings = withholdingsOf(general);
+	const funds = fundsOf(general);
 	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
@@ -227,8 +233,20 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 		instalments,
 		...(vatRows === undefined ? {} : { vatRows }),
 		...(withholdings.length === 0 ? {} : { withholdings }),
+		...(funds.length === 0 ? {} : { funds }),
 	};
 	return { doc, body, instalmentOf };
+}
+
+/** The DatiCassaPrevidenziale of a document whose ImportoContributoCassa reads. */
+function fundsOf(general: XmlElement | undefined): FatturaFund[] {
+	const out: FatturaFund[] = [];
+	for (const el of children(general, "DatiCassaPrevidenziale").slice(0, MAX_VAT_ROWS)) {
+		const units = toUnits(value(el, "ImportoContributoCassa") ?? "");
+		if (units === undefined) continue;
+		out.push({ amount: fromUnits(units), ...optional({ type: value(el, "TipoCassa") }) });
+	}
+	return out;
 }
 
 /** The DatiRitenuta of a document whose ImportoRitenuta reads (a document has at most a few). */

@@ -17,7 +17,7 @@ export class WithholdingError extends Error {
 	override readonly name = "WithholdingError";
 }
 
-export const WITHHOLDING_OPS = ["summary", "check_payment", "cu", "cu_list", "export"] as const;
+export const WITHHOLDING_OPS = ["summary", "check_payment", "record_cu", "cu_remove", "cu_list", "export"] as const;
 export type WithholdingOp = (typeof WITHHOLDING_OPS)[number];
 
 export const WITHHOLDING_LIMITS = {
@@ -38,7 +38,7 @@ export const WITHHOLDING_LIMITS = {
 	maxEuros: MAX_EUROS,
 } as const;
 
-/** The ops that only read: they run in a brief's thread (brief.ts). The CU recorded and the export write. */
+/** The ops that only read: they run in a brief's thread (brief.ts). A CU recorded or removed and the export write. */
 const READ_OPS: readonly WithholdingOp[] = ["summary", "check_payment", "cu_list"];
 
 export function withholdingCallReads(args: Record<string, unknown>): boolean {
