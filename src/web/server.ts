@@ -23,6 +23,7 @@ import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { parseSkillMd, type Skill, SkillError, toSkillMd } from "../core/skills.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import { BOARD_LIMITS, BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
@@ -1421,6 +1422,38 @@ export function createWebApp(options: WebAppOptions): Server {
 		const removed = runtime.memory(tenantId, params[0] as string).remove(params[1] as string, (m) => m.about === subjectOfPerson(p) || (m.about === SHARED && p.role === "owner"));
 		if (removed === undefined) throw new HttpError(404, "Memoria non trovata");
 		await runtime.audit(tenantId).append({ type: "memory.forgotten", instanceId: params[0], personId: p.id, memoryId: removed.id });
+		return { ok: true };
+	});
+
+	// --- skill (ADR 0059): everyone who talks to an agente sees its skills; each saves and deletes their own, the owner all ---
+	route("GET", "/api/instances/:id/skills", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const store = runtime.skills(tenantId, params[0] as string);
+		// Who saved it only to the owner: from a chat it is a phone number or a Telegram ID.
+		const shown = ({ createdBy, ...s }: Skill) => ({ ...s, ...(p.role === "owner" ? { createdBy } : {}), mine: createdBy === subjectOfPerson(p), canEdit: p.role === "owner" || createdBy === subjectOfPerson(p), skillMd: toSkillMd(s) });
+		return { skills: store.list().map(shown), drafts: store.drafts().filter((d) => d.createdBy === subjectOfPerson(p)).map(shown) };
+	});
+	route("PUT", "/api/instances/:id/skills", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { name?: unknown; description?: unknown; body?: unknown; skillMd?: unknown };
+		try {
+			const input = typeof body.skillMd === "string" ? parseSkillMd(body.skillMd) : { name: String(body.name ?? ""), description: String(body.description ?? ""), body: String(body.body ?? "") };
+			const { skill, replaced } = runtime.skills(tenantId, params[0] as string).save({ ...input, by: subjectOfPerson(p) }, (existing) => p.role === "owner" || existing.createdBy === subjectOfPerson(p));
+			await runtime.audit(tenantId).append({ type: "skill.saved", instanceId: params[0], personId: p.id, skill: skill.name, replaced, source: "person" });
+			return { skill, replaced };
+		} catch (error) {
+			if (error instanceof SkillError) throw new HttpError(/un'altra persona/.test(error.message) ? 409 : 400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/skills/:name", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const removed = runtime.skills(tenantId, params[0] as string).remove(params[1] as string, (s) => p.role === "owner" || s.createdBy === subjectOfPerson(p));
+		if (removed === undefined) throw new HttpError(404, "Skill non trovata, o salvata da un'altra persona");
+		await runtime.audit(tenantId).append({ type: "skill.deleted", instanceId: params[0], personId: p.id, skill: removed.name, source: "person" });
 		return { ok: true };
 	});
 

@@ -371,3 +371,33 @@ describe("web console: memoria", () => {
 	});
 });
 
+describe("web console: skill", () => {
+	it("everyone with access sees an agente's skills; each saves and deletes their own, the owner every one", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const luca = await h.as(h.luca.token);
+		const saved = await anna("/api/instances/ops/skills", { method: "PUT", body: JSON.stringify({ name: "Chiusura del mese", description: "Quando chiedono di chiudere il mese", body: "1. Elenca le fatture scadute" }) });
+		expect(saved.status).toBe(200);
+		expect(saved.body.skill.name).toBe("chiusura-del-mese");
+		const listed = (await luca("/api/instances/ops/skills")).body.skills;
+		expect(listed).toEqual([expect.objectContaining({ name: "chiusura-del-mese", mine: false, canEdit: false })]);
+		expect(listed[0].skillMd).toContain("name: chiusura-del-mese");
+		// Another person cannot overwrite or delete it.
+		expect((await luca("/api/instances/ops/skills", { method: "PUT", body: JSON.stringify({ name: "chiusura-del-mese", description: "x", body: "y" }) })).status).toBe(409);
+		expect(listed[0].createdBy).toBeUndefined();
+		expect((await luca("/api/instances/ops/skills/chiusura-del-mese", { method: "DELETE" })).status).toBe(404);
+		// A SKILL.md comes in as it is.
+		const imported = await luca("/api/instances/ops/skills", { method: "PUT", body: JSON.stringify({ skillMd: "---\nname: reclamo\ndescription: Risposta a un reclamo\n---\nScusati e proponi una soluzione." }) });
+		expect(imported.body.skill).toEqual(expect.objectContaining({ name: "reclamo", body: "Scusati e proponi una soluzione." }));
+		expect((await luca("/api/instances/ops/skills", { method: "PUT", body: JSON.stringify({ skillMd: "senza intestazione" }) })).status).toBe(400);
+		const owner = await h.as(h.owner.token);
+		expect((await owner("/api/instances/ops/skills")).body.skills[0].createdBy).toBe(`web:${h.anna.person.id}`);
+		// The owner may replace anyone's.
+		expect((await owner("/api/instances/ops/skills", { method: "PUT", body: JSON.stringify({ name: "chiusura-del-mese", description: "Nuova", body: "z" }) })).body.replaced).toBe(true);
+		expect((await luca("/api/instances/ops/skills/100%25", { method: "DELETE" })).status).toBe(404);
+		expect((await owner("/api/instances/ops/skills/chiusura-del-mese", { method: "DELETE" })).status).toBe(200);
+		expect(h.runtime.skills("acme", "ops").list().map((s) => s.name)).toEqual(["reclamo"]);
+		expect(await h.runtime.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "skill.deleted", skill: "chiusura-del-mese", personId: h.owner.person.id }));
+		expect(JSON.stringify(await h.runtime.audit("acme").read())).not.toContain("Scusati");
+	});
+});

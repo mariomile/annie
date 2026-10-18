@@ -22,7 +22,9 @@ import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { DEV_PROVIDER } from "./model-providers.ts";
+import { AGENT_CHANNEL } from "./agent-messages.ts";
 import { withPersona } from "./persona.ts";
+import { activateCommand, SkillError, SkillStore, skillCatalog, skillCommand, withSkill } from "./skills.ts";
 import { type InstanceRecord, type ModelSelection, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
 
@@ -157,6 +159,11 @@ export class AnnieRuntime {
 	/** The memoria of an instance: what it remembers about each person, and shared facts. */
 	memory(tenant: string, instance: string): MemoryStore {
 		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The skills of an instance (ADR 0059): procedures its people saved, shared by all of them. */
+	skills(tenant: string, instance: string): SkillStore {
+		return new SkillStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** The liste of an instance: each person's and the shared ones. */
@@ -407,8 +414,10 @@ export class AnnieRuntime {
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
 		let toolSet: ToolSet = [];
-		// Its own instructions, then who it is (ADR 0041).
-		const instructions = withPersona(record.instructions, record.name, record.persona);
+		// Its own instructions, then who it is (ADR 0041), then its skills as they are now (ADR 0059).
+		const own = withPersona(record.instructions, record.name, record.persona);
+		const skills = this.skills(record.tenantId, record.id);
+		const instructions = () => `${own === undefined || own === "" ? "" : `${own}\n\n`}${skillCatalog(skills.list())}`;
 		try {
 			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
@@ -418,7 +427,7 @@ export class AnnieRuntime {
 				apiKey: async (provider) => ((await fresh()).egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined),
 				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
-				...(instructions === undefined ? {} : { instructions }),
+				instructions,
 			});
 		} catch (error) {
 			if ("close" in toolSet) await toolSet.close().catch(() => {});
@@ -436,7 +445,7 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id) }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id), skills }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -469,7 +478,7 @@ export class AnnieInstance {
 		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
 		private readonly reachable: (provider: string) => Promise<boolean>,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
-		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore },
+		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore },
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -530,7 +539,43 @@ export class AnnieInstance {
 			this.memory.participants.clear(key);
 			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)));
 		}
-		return this.admit({ ...message, text: `${request.text}${skipped}${note}` }, images);
+		const text = await this.withSkills(request, privateThread === true);
+		return this.admit({ ...message, text: `${text}${skipped}${note}` }, images);
+	}
+
+	/**
+	 * The skills in a person's message (ADR 0059). «/nome» of one: its steps go with their words.
+	 * «/attiva-skill nome»: the draft they had the agente write becomes a skill. Only here, from a
+	 * message the person wrote in a chat with them alone; never from a scheduled run, a notice or
+	 * another agente, so a page or a mail the agente read cannot turn a draft on.
+	 */
+	private async withSkills(request: Omit<SubmitRequest, "tenantId" | "instanceId">, alone: boolean): Promise<string> {
+		const skills = this.memory.skills;
+		const activating = activateCommand(request.text);
+		if (activating !== undefined) {
+			if (!alone || request.channel === AGENT_CHANNEL) return `${request.text}\n\n[Le skill si attivano solo in una conversazione con una persona sola: dillo in una riga.]`;
+			const by = subjectOf(request.channel, request.userId);
+			const mine = skills.drafts().filter((d) => d.createdBy === by);
+			const name = activating === "" && mine.length === 1 ? (mine[0] as { name: string }).name : activating;
+			if (name === "") return `${request.text}\n\n[Ha scritto il comando senza il nome. Le sue bozze: ${mine.map((d) => d.name).join(", ") || "nessuna"}. Diglielo in una riga.]`;
+			let result: { skill: { name: string }; replaced: boolean } | undefined;
+			try {
+				result = skills.activate(name, by);
+			} catch (error) {
+				if (!(error instanceof SkillError)) throw error;
+				return `${request.text}\n\n[La skill non si è attivata: ${error.message}. Diglielo in una riga.]`;
+			}
+			if (result === undefined) {
+				const active = skills.get(name);
+				return `${request.text}\n\n[${active !== undefined ? `La skill «${active.name}» è già attiva.` : `Non c'è una sua bozza «${name}» da attivare; le sue bozze: ${mine.map((d) => d.name).join(", ") || "nessuna"}.`} Diglielo in una riga.]`;
+			}
+			await this.audit.append({ type: "skill.activated", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, userId: request.userId, skill: result.skill.name, replaced: result.replaced });
+			return `${request.text}\n\n[La persona ha attivato la skill «${result.skill.name}»${result.replaced ? " (nuova versione)" : ""}: da ora la vedi fra le tue skill e si lancia con /${result.skill.name}. Confermalo in una riga.]`;
+		}
+		const command = skillCommand(request.text, skills.list());
+		if (command === undefined) return request.text;
+		await this.audit.append({ type: "skill.used", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, skill: command.skill.name });
+		return withSkill(request.text, command.skill, command.rest);
 	}
 
 	/**

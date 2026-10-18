@@ -87,6 +87,7 @@ import { createAgentTools } from "./core/tools/agent-tools.ts";
 import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core/agent-messages.ts";
 import { AgentChannel } from "./channels/agents.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
+import { createSkillTools } from "./core/tools/skill-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWatchTools } from "./core/tools/watch-tools.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
@@ -633,6 +634,14 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 				...createMemoryTools({
 					store: runtime.memory(record.tenantId, record.id),
+					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
+					},
+				}),
+				...createSkillTools({
+					store: runtime.skills(record.tenantId, record.id),
+					workspace: runtime.workspace(record.tenantId, record.id),
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
