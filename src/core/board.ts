@@ -82,7 +82,12 @@ export type CheckItem = { readonly id: string; readonly text: string; readonly d
 /** One change to the checklist: an item added, ticked, unticked or removed (by its id, or its number from 1). */
 export type CheckChange = { readonly add: string } | { readonly item: string; readonly done: boolean } | { readonly item: string; readonly remove: true };
 
-type BoardFile = { readonly next: number; readonly cards: readonly Card[] };
+type BoardFile = {
+	readonly next: number;
+	readonly cards: readonly Card[];
+	/** The week (Rome, «2026-10-19», its Monday) whose summary was sent (ADR 0081). */
+	readonly digest?: string;
+};
 
 export const BOARD_LIMITS = {
 	/** Schede not yet «Fatto». */
@@ -185,7 +190,7 @@ export class BoardStore {
 				updatedAt: at,
 				events: [{ at, by, kind: "created", ...(input.assignee === undefined ? {} : { assignee: input.assignee }) }],
 			};
-			return { next: board.next + 1, cards: [...board.cards, made] };
+			return { ...board, next: board.next + 1, cards: [...board.cards, made] };
 		});
 		return made as Card;
 	}
@@ -264,6 +269,17 @@ export class BoardStore {
 			return { ...board, cards: keepDone(cards) };
 		});
 		return changed as Card;
+	}
+
+	/** Takes the week's summary (ADR 0081): true once per `week`, so two sweeps send it once. */
+	claimDigest(week: string): boolean {
+		let claimed = false;
+		updateJsonFile<BoardFile>(this.file, { next: 1, cards: [] }, (board) => {
+			if (board.digest === week) return board;
+			claimed = true;
+			return { ...board, digest: week };
+		});
+		return claimed;
 	}
 
 	remove(id: string): void {

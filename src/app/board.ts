@@ -1,6 +1,6 @@
 import type { ChannelAdapter } from "../channels/types.ts";
 import { BoardError, type BoardStore } from "../core/board.ts";
-import { type BoardReview, BoardWork } from "../core/board-work.ts";
+import { type BoardDigest, type BoardReview, BoardWork } from "../core/board-work.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import type { PeopleStore } from "../web/auth.ts";
 import type { WebChannel } from "../web/channel.ts";
@@ -76,6 +76,20 @@ export function startBoard(w: BoardWiring): BoardWork {
 			}
 		}
 	};
+	// The week's summary (ADR 0081): to the main agente's approvers, like the reviews.
+	work.events.on("digest", ({ week, text }: BoardDigest) => {
+		void (async () => {
+			const record = await runtime.registry.getInstance(tenant, w.main);
+			for (const adapter of w.ownerChats()) {
+				if (adapter === undefined) continue;
+				for (const chat of record.approvers?.[adapter.name] ?? []) {
+					await adapter
+						.send({ tenantId: tenant, instanceId: w.main, channel: adapter.name, threadId: chat, idempotencyKey: `board-digest:${week}:${chat}`, text })
+						.catch((error: unknown) => log(`annie: board summary to ${adapter.name} ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`));
+				}
+			}
+		})().catch((error: unknown) => log(`annie: board summary not sent: ${error instanceof Error ? error.message : String(error)}`));
+	});
 	work.events.on("review", (review: BoardReview) => {
 		void noticeReview(review).catch((error: unknown) => log(`annie: notice for scheda #${review.card.n} not sent: ${error instanceof Error ? error.message : String(error)}`));
 	});

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BOARD_LIMITS, BoardError, BoardStore, dueText } from "../src/core/board.ts";
-import { BoardWork, type BoardWorkDeps } from "../src/core/board-work.ts";
+import { digestText, digestWeek } from "../src/core/board-digest.ts";
+import { type BoardDigest, BoardWork, type BoardWorkDeps } from "../src/core/board-work.ts";
 import { createBoardTools } from "../src/core/tools/board-tools.ts";
 import { tempDataDir } from "./helpers.ts";
 
@@ -649,6 +650,53 @@ describe("the board (ADR 0050)", () => {
 			const listed = await tool("board_list").execute({}, ctx("chat1"));
 			expect(listed).toMatch(/#4 \[Da fare\] \(priorità alta\) Urgente.*\n#2 \[Da fare\] \(in ritardo di \d+ giorni, 2020-01-10\) Fattura Bianchi.*\n#1 \[In corso\] \(.*2026-10-30\) Fornitori carta.*\n#3 \[Da fare\] Senza data/);
 			expect(await tool("board_create").execute({ title: "x", due: "domani" }, ctx("chat1"))).toMatch(/^Errore: La scadenza è un giorno/);
+		});
+	});
+
+	describe("the week's summary (ADR 0081)", () => {
+		it("is for Monday from 9 in Rome only", () => {
+			expect(digestWeek(new Date("2026-10-26T08:05:00Z"))).toBe("2026-10-26");
+			expect(digestWeek(new Date("2026-10-26T21:00:00Z"))).toBe("2026-10-26");
+			// 8:30 in Rome, then Sunday and Tuesday.
+			expect(digestWeek(new Date("2026-10-26T07:30:00Z"))).toBeUndefined();
+			expect(digestWeek(new Date("2026-10-25T10:00:00Z"))).toBeUndefined();
+			expect(digestWeek(new Date("2026-10-27T10:00:00Z"))).toBeUndefined();
+		});
+
+		it("says what was closed, what is open, what is late and what waits for a review", () => {
+			const store = new BoardStore(tempDataDir());
+			const names = (id: string) => ({ ricerca: "Ricercatore" })[id];
+			expect(digestText(store.list(), new Date(), names)).toBeUndefined();
+			const done = store.create({ title: "Chiusa" }, anna);
+			store.update(done.id, { status: "fatto" }, anna);
+			const closedAt = Date.parse(store.get(done.id)?.events.at(-1)?.at as string);
+			store.create({ title: "Fattura Bianchi", assignee: "ricerca", due: "2020-01-10" }, anna);
+			store.create({ title: "Più avanti", due: "2099-01-10" }, anna);
+			const review = store.create({ title: "Bozza sito", assignee: "gone" }, anna);
+			store.update(review.id, { status: "da_rivedere" }, anna);
+			const text = digestText(store.list(), new Date(closedAt + 86_400_000), names);
+			expect(text).toMatch(/^La board, questa settimana\.\nUna scheda chiusa negli ultimi 7 giorni\.\nAperte: 2 da fare, 0 in corso, 1 da rivedere\.\n/);
+			expect(text).toMatch(/In ritardo:\n- #2 Fattura Bianchi \(Ricercatore\), in ritardo di \d+ giorni/);
+			expect(text).toContain("Da rivedere:\n- #4 Bozza sito (agente eliminato)");
+			expect(text).not.toContain("Più avanti");
+			// A week later the closed one is out of it.
+			expect(digestText(store.list(), new Date(closedAt + 8 * 86_400_000), names)).toContain("Nessuna scheda chiusa negli ultimi 7 giorni.");
+			for (let i = 0; i < 6; i++) store.create({ title: `Vecchia ${i}`, due: "2020-02-01" }, anna);
+			expect(digestText(store.list(), new Date(closedAt), names)).toContain("- e altre 2");
+		});
+
+		it("goes once per week, and not when the board is empty", async () => {
+			const { work, store } = setup();
+			const sent: BoardDigest[] = [];
+			work.events.on("digest", (d: BoardDigest) => sent.push(d));
+			expect(await work.digest(new Date("2026-10-26T08:05:00Z"))).toBeUndefined();
+			store.create({ title: "Preventivo" }, anna);
+			// Already claimed for this Monday, even with nothing to say.
+			expect(await work.digest(new Date("2026-10-26T10:00:00Z"))).toBeUndefined();
+			expect(await work.digest(new Date("2026-11-02T07:30:00Z"))).toBeUndefined();
+			expect(await work.digest(new Date("2026-11-02T08:30:00Z"))).toContain("Aperte: 1 da fare");
+			expect(await work.digest(new Date("2026-11-02T12:00:00Z"))).toBeUndefined();
+			expect(sent).toEqual([{ week: "2026-11-02", text: expect.stringContaining("Aperte: 1 da fare") }]);
 		});
 	});
 });

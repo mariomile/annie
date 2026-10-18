@@ -1421,6 +1421,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			);
 			// Scadenze of the day (ADR 0074).
 			await boardWork.noticeDue(now).catch((error: unknown) => log(`board: scadenze not told: ${error instanceof Error ? error.message : String(error)}`));
+			// The week on the board, Monday morning (ADR 0081).
+			await boardWork.digest(now).catch((error: unknown) => log(`board: summary not made: ${error instanceof Error ? error.message : String(error)}`));
 			// Schede that waited for others now done (ADR 0076), if a close was missed.
 			await boardWork.release().catch((error: unknown) => log(`board: schede in attesa not started: ${error instanceof Error ? error.message : String(error)}`));
 		},

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { digestText, digestWeek } from "./board-digest.ts";
 import { BOARD_LIMITS, type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore, dueIn, dueLabel, dueText, STATUS_LABEL, waitingFor } from "./board.ts";
 
 /**
@@ -29,6 +30,8 @@ export type BoardWorkDeps = {
 
 /** A scheda an agente moved to «Da rivedere», and the people to tell (ADR 0051). */
 export type BoardReview = { readonly card: Card; readonly people: readonly string[] };
+/** The week's summary (ADR 0081): the Monday it is for and its text. */
+export type BoardDigest = { readonly week: string; readonly text: string };
 
 /** The hour (Rome) from which the scadenze of the day are told (ADR 0074). */
 export const DUE_NOTICE_HOUR = 9;
@@ -37,7 +40,8 @@ export class BoardWork {
 	/**
 	 * "review": a BoardReview, for the console and the owner's chat; "due": a BoardReview of a scheda
 	 * due today or late (ADR 0074); "started": a BoardReview of a scheda that started by itself once
-	 * what it came after was done (ADR 0076), for the person it started with.
+	 * what it came after was done (ADR 0076), for the person it started with; "digest": the week's
+	 * summary, a BoardDigest, for the owner's chat (ADR 0081).
 	 */
 	readonly events = new EventEmitter();
 
@@ -248,6 +252,21 @@ export class BoardWork {
 			});
 		}
 		return told;
+	}
+
+	/**
+	 * The week's summary (ADR 0081): on Monday from 9 in Rome, once per week, the board in a few lines
+	 * for the owner's chat; nothing when the board had nothing in the week. Returns the text sent.
+	 */
+	async digest(now = new Date()): Promise<string | undefined> {
+		const week = digestWeek(now);
+		if (week === undefined || !this.deps.store.claimDigest(week)) return undefined;
+		const cards = this.deps.store.list();
+		const names = new Map<string, string | undefined>();
+		for (const id of new Set(cards.map((c) => c.assignee).filter((a): a is string => a !== undefined))) names.set(id, await this.deps.agentName(id));
+		const text = digestText(cards, now, (id) => names.get(id));
+		if (text !== undefined) this.events.emit("digest", { week, text } satisfies BoardDigest);
+		return text;
 	}
 
 	/**
