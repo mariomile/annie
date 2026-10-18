@@ -114,7 +114,6 @@ export const JUNE_DEADLINES: Readonly<Record<number, { readonly due: string; rea
 export const JUNE_DUE = "06-30";
 export const JUNE_ALTERNATIVE_DAYS = 30;
 export const JUNE_EXTRA_DEFAULT = "0.40";
-export const FERRAGOSTO = { from: "08-01", to: "08-20" } as const;
 
 /** Days before an F24 the morning brief says it. */
 export const BRIEF_DAYS = 10;

@@ -29,7 +29,7 @@
 import { cashBook } from "./cash-book.ts";
 import { dayOfYear, paymentSlip } from "./dates.ts";
 import type { Invoice } from "./invoices.ts";
-import { addDays, daysBetween, leapYear } from "./italian-calendar.ts";
+import { addDays, daysBetween, FERRAGOSTO, leapYear } from "./italian-calendar.ts";
 import { halfUp, scaled } from "./quote-sums.ts";
 import {
 	ACCONTO_FIRST_MIN_CENTS,
@@ -37,7 +37,6 @@ import {
 	ACCONTO_NONE_MAX_CENTS,
 	ARTIGIANI_REDUCTION_PERCENT,
 	CALENDAR_DAYS,
-	FERRAGOSTO,
 	GS_ACCONTO_FIRST_PERCENT,
 	GS_ACCONTO_PERCENT,
 	GS_MASSIMALE,

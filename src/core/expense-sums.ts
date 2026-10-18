@@ -6,12 +6,10 @@
  */
 import { CATEGORIES, type Category, type Expense, ExpenseError } from "./expenses.ts";
 import { inPeriod, type Span } from "./periods.ts";
-import { centsDecimal, netOf, scaled, type VatRate } from "./quote-sums.ts";
+import { centsDecimal, eurosToCents, netOf, type VatRate } from "./quote-sums.ts";
 
-/** A canonical decimal string («42.5») in cents. */
-export function cents(value: string): bigint {
-	return scaled(value, 2);
-}
+/** A canonical decimal string («42.5») in cents (quote-sums.ts). */
+export const cents = eurosToCents;
 
 /** Cents back to a canonical decimal string: 4250n → «42.5». Never negative: a stored amount is not. */
 export function centsValue(value: bigint): string {

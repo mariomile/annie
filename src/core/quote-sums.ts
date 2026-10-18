@@ -138,6 +138,16 @@ export function halfUp(numerator: bigint, denominator: bigint): bigint {
 	return (numerator * 2n + denominator) / (denominator * 2n);
 }
 
+/** `numerator` / `denominator` (positive), half up away from zero, the sign kept: −2,5 → −3. */
+export function halfUpSigned(numerator: bigint, denominator: bigint): bigint {
+	return numerator < 0n ? -halfUp(-numerator, denominator) : halfUp(numerator, denominator);
+}
+
+/** A canonical decimal string of euros («42.5», «-3») in cents: the one helper the registers share. */
+export function eurosToCents(value: string): bigint {
+	return scaled(value, 2);
+}
+
 /** `cents` × `percent` (a decimal string, 2 decimals at most) / 100, half up. */
 function percentOf(cents: bigint, percent: string): bigint {
 	return halfUp(cents * scaled(percent, 2), 10_000n);

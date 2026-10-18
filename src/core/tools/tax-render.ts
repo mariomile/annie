@@ -404,14 +404,15 @@ const PLAIN_WHAT: Readonly<Record<PlainDeadline["what"], string>> = {
 	imposte_novembre: "secondo acconto delle imposte",
 };
 
-/** The regime ordinario, or no profile: the dates without amounts. */
-export function plainAnswer(dates: readonly PlainDeadline[], ordinario: boolean): string {
+/** The regime ordinario, or no profile: the dates without amounts; the ordinario's IVA is vat_settlement's. */
+export function plainAnswer(all: readonly PlainDeadline[], ordinario: boolean): string {
+	const dates = all.filter((d) => !d.what.startsWith("iva_"));
 	const lines = [
 		ordinario ? "Sei in regime ordinario: so stimare solo le tasse del forfettario, quindi non ti do importi." : "Non ho ancora il tuo profilo del forfettario: senza, non stimo nessun importo.",
 		"Le date dei prossimi 12 mesi, senza importi:",
 		...dates.map((d) => `• ${capitalized(whenText(d))}: ${PLAIN_WHAT[d.what]}.`),
 	];
-	if (ordinario) lines.push("Per gli importi chiedi al commercialista.");
+	if (ordinario) lines.push("Per l'IVA (importi, codici, scadenze) chiama vat_settlement.", "Per gli importi delle imposte chiedi al commercialista.");
 	else lines.push("Per le stime chiedi a chi ti scrive il coefficiente (o che attività fa), l'aliquota (15% o 5% per una nuova attività) e la cassa dei contributi, poi salvali nel profilo delle tasse.");
 	return lines.join("\n");
 }

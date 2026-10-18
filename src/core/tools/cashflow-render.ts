@@ -60,7 +60,7 @@ export function movementLabel(m: Movement, today: string, fullDates = false): st
 		case "average":
 			return "spesa media stimata";
 		case "tax":
-			return `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
+			return m.tax?.iva === true ? m.tax.what : `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
 	}
 }
 
@@ -105,6 +105,8 @@ export type View = {
 	readonly potential?: { readonly minutes: number; readonly cents: bigint; readonly unpriced: number };
 	/** The F24 estimated from the tax profile are in the forecast. */
 	readonly taxes?: true;
+	/** The F24 of the IVA estimated by la liquidazione IVA are in the forecast (the ordinario). */
+	readonly vat?: true;
 	/** A voce of the person's that is an estimated F24: the voce counts. */
 	readonly taxTwins?: readonly TaxTwin[];
 	/** An expense with a tax name well below the F24 near it: the estimate stays. */
@@ -165,7 +167,8 @@ function totalsLine(p: Projection, kind: Kind, v: View): string | undefined {
 	if (total === 0n) return undefined;
 	const parts = ORDER.flatMap((s) => {
 		const cents = p.bySource.get(`${kind}:${s}`);
-		const words = SOURCE_WORDS[`${kind}:${s}`];
+		// The F24 of the IVA alone (the ordinario) are not «tasse».
+		const words = s === "tax" && v.vat === true ? "IVA stimata (F24)" : SOURCE_WORDS[`${kind}:${s}`];
 		if (cents === undefined || cents === 0n || words === undefined) return [];
 		let extra = "";
 		if (kind === "in" && s === "invoice" && v.includeOverdue) {
@@ -358,13 +361,14 @@ function assumptions(p: Projection, v: View): string[] {
 			a.renewalPayments > 0 ? `${n1(a.renewalPayments, "1 pagamento", "# pagamenti")} di rinnovi` : undefined,
 			a.lookalikes > 0 ? `${n1(a.lookalikes, "1 spesa che sembra", "# spese che sembrano")} un rinnovo o una voce` : undefined,
 			a.invoices > 0 ? `${n1(a.invoices, "1 fattura di fornitore", "# fatture di fornitori")} già nelle scadenze` : undefined,
-			(a.taxes ?? 0) > 0 ? `${n1(a.taxes ?? 0, "1 pagamento di tasse", "# pagamenti di tasse")} già nelle tasse stimate` : undefined,
+			(a.taxes ?? 0) > 0 ? (v.vat === true ? `${n1(a.taxes ?? 0, "1 F24 dell'IVA", "# F24 dell'IVA")} già nell'IVA stimata` : `${n1(a.taxes ?? 0, "1 pagamento di tasse", "# pagamenti di tasse")} già nelle tasse stimate`) : undefined,
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}
 	if (v.quotes !== undefined && v.quotes.count > 0) out.push(`preventivi accettati attesi ${QUOTE_PAY_DAYS} giorni dopo l'accettazione e non prima di ${QUOTE_MIN_DAYS} giorni da oggi, meno quanto già fatturato`);
 	if (p.days.length > 31) out.push("le entrate senza fattura, preventivo o voce non ci sono, quindi manca il lavoro ancora da fatturare");
 	if (v.taxes === true) out.push("tasse stimate (F24) dal profilo del forfettario con il metodo storico, una stima da verificare con il commercialista", "stipendi e rate non registrati non ci sono");
+	else if (v.vat === true) out.push("IVA da versare (F24) stimata dalla liquidazione IVA sulle fatture, una stima da verificare con il commercialista", "altre tasse, stipendi e rate non registrati non ci sono");
 	else out.push("tasse, stipendi e rate non registrati non ci sono");
 	return out;
 }

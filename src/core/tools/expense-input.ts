@@ -18,7 +18,8 @@ import { fold } from "../text-match.ts";
 import type { Workspace } from "../workspace.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
 import { fenced } from "./expense-render.ts";
-import { readCategoryWith, readEuros, readMethod } from "./field-input.ts";
+import { readEuros } from "../money-input.ts";
+import { readCategoryWith, readMethod } from "./field-input.ts";
 import { readAmount } from "./quote-input.ts";
 import { cleanText, isProblem, type Problem } from "../text-input.ts";
 

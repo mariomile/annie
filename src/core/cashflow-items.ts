@@ -14,7 +14,8 @@ import { scaled } from "./quote-sums.ts";
 import { nearOccurrence, type Recurrence } from "./recurrence.ts";
 import { currentAmount, effectiveDue } from "./renewal-dates.ts";
 import { type Renewal, renewalName } from "./renewals.ts";
-import { readFrequency, readItemAmount, readItemFields, readKind, readUntil } from "./tools/cashflow-input.ts";
+import { readItemAmount } from "./money-input.ts";
+import { readFrequency, readItemFields, readKind, readUntil } from "./tools/cashflow-input.ts";
 import { isProblem } from "./text-input.ts";
 import type { Fenced } from "./untrusted.ts";
 

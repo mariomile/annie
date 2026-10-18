@@ -417,8 +417,11 @@ describe("taxes: the tool", () => {
 		const ord = await setup({ regime: "ordinario" });
 		const answer = await ord.run({ op: "estimate" });
 		expect(answer).toContain("Sei in regime ordinario: so stimare solo le tasse del forfettario, quindi non ti do importi.");
-		expect(answer).toContain("• Il 16 novembre 2026: IVA trimestrale.");
-		expect(answer).toContain("• Il 16 marzo 2027: IVA annuale.");
+		// The IVA is vat_settlement's: no IVA rows here, only the imposte.
+		expect(answer).not.toContain("IVA trimestrale");
+		expect(answer).not.toContain("IVA annuale");
+		expect(answer).toContain("Per l'IVA (importi, codici, scadenze) chiama vat_settlement.");
+		expect(answer).toContain("• Il 30 novembre 2026: secondo acconto delle imposte.");
 		expect(answer).not.toContain("€");
 		expect(await ord.run(CONSULENTE)).toContain("Errore: risulti in regime ordinario");
 		expect(await ord.run({ op: "calendar", compact: true })).toBe("Niente da segnalare sulle tasse: nel brief non scrivere niente sulle tasse.");
@@ -736,7 +739,7 @@ describe("taxes: the review fixes", () => {
 	it("9. the cashflow says voci are for the F24 the taxes do not estimate", async () => {
 		const s = await setup();
 		const [cash] = createCashflowTools({ workspace: new Workspace(s.root), store: new CashflowStore(s.dir), invoices: new InvoiceStore(s.dir), expenses: s.expenses, renewals: new RenewalStore(s.dir), timesheet: { read: () => NO_HOURS }, timeZone: "Europe/Rome", whoIs: () => "u" });
-		expect(cash?.description).toContain("«F24 non stimati da taxes»");
+		expect(cash?.description).toContain("Voci (add_item) are only for F24 not estimated by taxes or vat_settlement (other taxes; the IVA only when the person wants to fix its amount: the voce then counts instead of the estimate.");
 		expect(cash?.description).toContain("replaces the estimate, or its part when well below it");
 	});
 
@@ -1057,7 +1060,7 @@ describe("taxes: the second review", () => {
 
 describe("taxes in the app", () => {
 	it("is offered to every instance, the instructions say when to use it and the cashflow voci, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("stimare le tasse del forfettario (taxes:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("stimare le tasse (taxes, nel forfettario; nell'ordinario per l'IVA usa vat_settlement:");
 		expect(DEFAULT_INSTRUCTIONS).toContain("un F24 che la persona vuole fissare con il suo importo va in cashflow con op add_item");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });

@@ -30,6 +30,8 @@ const MAX_DEPTH = 64;
 const MAX_LINES = 50;
 const MAX_BODIES = 100;
 const MAX_REFERENCES = 10;
+/** Summary rows (DatiRiepilogo) kept per document, one per rate and nature: a real invoice has a handful. Past this the document does not read for the IVA. */
+export const MAX_VAT_ROWS = 100;
 
 /** The longest value shown: a line's description may be 1000 characters. */
 const MAX_VALUE = 1000;
@@ -86,7 +88,12 @@ export type FatturaDocument = {
 	readonly splitVat?: string;
 	/** The imponibile: the sum of the summary rows' ImponibileImporto, when there are any and each reads. */
 	readonly taxable?: string;
+	/** The summary rows (DatiRiepilogo), when there are any and each one's imponibile and imposta read: what the liquidazione IVA counts (vat-docs.ts). */
+	readonly vatRows?: readonly FatturaVatRow[];
 };
+
+/** One summary row as written: the rate, the nature of a row without VAT (N6.x: reverse charge), imponibile and imposta, and the EsigibilitaIVA (I immediate, D deferred, S split payment). */
+export type FatturaVatRow = { readonly rate: string; readonly natura?: string; readonly taxable: string; readonly tax: string; readonly esigibilita?: string };
 
 /**
  * What a file says, structured: the summary is written from it; `count` is every document,
@@ -205,12 +212,14 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const toPay = paidSum(instalments);
 	const splitVat = splitPaymentVat(body);
 	const taxable = summaryTaxable(body);
+	const vatRows = summaryRows(body);
 	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
 		integration: type !== undefined && INTEGRATIONS.has(type),
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments,
+		...(vatRows === undefined ? {} : { vatRows }),
 	};
 	return { doc, body, instalmentOf };
 }
@@ -226,6 +235,21 @@ function summaryTaxable(body: XmlElement): bigint | undefined {
 		sum += units;
 	}
 	return sum;
+}
+
+/** The summary rows, each with its rate, imponibile and imposta read (canonical decimals), its nature and esigibilità as written; undefined without rows, past MAX_VAT_ROWS, or when one does not read. */
+function summaryRows(body: XmlElement): FatturaVatRow[] | undefined {
+	const rows = children(child(body, "DatiBeniServizi"), "DatiRiepilogo");
+	if (rows.length === 0 || rows.length > MAX_VAT_ROWS) return undefined;
+	const out: FatturaVatRow[] = [];
+	for (const row of rows) {
+		const rate = toUnits(value(row, "AliquotaIVA") ?? "");
+		const taxable = toUnits(value(row, "ImponibileImporto") ?? "");
+		const tax = toUnits(value(row, "Imposta") ?? "");
+		if (rate === undefined || taxable === undefined || tax === undefined) return undefined;
+		out.push({ rate: fromUnits(rate), ...optional({ natura: value(row, "Natura"), esigibilita: value(row, "EsigibilitaIVA") }), taxable: fromUnits(taxable), tax: fromUnits(tax) });
+	}
+	return out;
 }
 
 /** The VAT of the summary rows under split payment (EsigibilitaIVA S), when there are any and each reads. */
