@@ -852,6 +852,12 @@ ol.steps .stack > .choices { margin-bottom: 2px; }
 
 /* board (ADR 0050) */
 .board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 8px; }
+@media (max-width: 560px) {
+	/* On a phone the board is one lane at a time, with the next peeking in; a swipe snaps to it. */
+	.board { grid-template-columns: repeat(4, 84%); scroll-snap-type: x mandatory; scroll-padding-inline: 16px; margin-inline: -16px; padding-inline: 16px; scrollbar-width: none; }
+	.board::-webkit-scrollbar { display: none; }
+	.board-col { scroll-snap-align: start; }
+}
 /* columns are open lanes, the schede are the surfaces; each lane has its dot */
 .board-col { background: color-mix(in srgb, var(--bg-2) 60%, transparent); border: 1px solid transparent; border-radius: 14px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 160px; transition: background 0.15s, border-color 0.15s; }
 .board-col h2 { margin: 4px 6px 6px; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
