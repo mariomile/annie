@@ -39,6 +39,19 @@ const THREAD_ID = /^p_[0-9a-f]{12}\.[0-9a-f]{12}$/;
  * person's ID); its transcript lives with the instance. Replies carry an idempotency key, so
  * a reply resent after a crash is shown once.
  */
+/**
+ * A new chat's title from its first message. A command reads as words, without its JSON
+ * arguments: «/chiusura-del-mese ottobre» is «Chiusura del mese ottobre».
+ */
+export function chatTitle(text: string): string {
+	const said = text.trim().replace(/\s+/g, " ");
+	const command = /^\/([\w-]+)\s*(.*)$/u.exec(said);
+	if (command === null) return said.slice(0, 60);
+	const [, name = "", rest = ""] = command;
+	const words = [name.replace(/[-_]+/g, " ").trim(), rest.split(/[[{]/)[0]?.trim()].filter(Boolean).join(" ");
+	return (words.charAt(0).toUpperCase() + words.slice(1)).slice(0, 60) || said.slice(0, 60);
+}
+
 export class WebChannel implements ChannelAdapter {
 	readonly name = "web";
 	readonly surfacesRefusals = true;
@@ -144,7 +157,7 @@ export class WebChannel implements ChannelAdapter {
 			...(command === undefined ? {} : { command }),
 			});
 			await this.append(threadId, entry);
-			const title = thread.title === "Nuova chat" ? (text.trim() !== "" ? text.trim().replace(/\s+/g, " ").slice(0, 60) : images.length > 0 ? "Foto" : thread.title) : thread.title;
+			const title = thread.title === "Nuova chat" ? (text.trim() !== "" ? chatTitle(text) : images.length > 0 ? "Foto" : thread.title) : thread.title;
 			await this.saveThread({ ...thread, title, updatedAt: entry.at });
 			return entry;
 		});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WebChannel } from "../src/web/channel.ts";
+import { WebChannel, chatTitle } from "../src/web/channel.ts";
 import { tempDataDir } from "./helpers.ts";
 
 describe("web channel", () => {
@@ -18,5 +18,13 @@ describe("web channel", () => {
 			["person", "domanda"],
 			["annie", "risposta"],
 		]);
+	});
+
+	it("a chat started with a command is titled in words", () => {
+		expect(chatTitle("  ciao   annie ")).toBe("ciao annie");
+		expect(chatTitle("/chiusura-del-mese ottobre")).toBe("Chiusura del mese ottobre");
+		expect(chatTitle('/tool tool_propose {"name":"cambio_eur"}')).toBe("Tool tool_propose");
+		expect(chatTitle("/modello")).toBe("Modello");
+		expect(chatTitle("/ cosa")).toBe("/ cosa");
 	});
 });
