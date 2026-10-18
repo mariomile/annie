@@ -11,7 +11,7 @@ import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
 import type { Expense } from "../src/core/expenses.ts";
-import { withPercent } from "../src/core/italian-format.ts";
+import { toMonth, withPercent } from "../src/core/italian-format.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
@@ -21,9 +21,9 @@ import { RenewalStore } from "../src/core/renewal-store.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { TaxStore } from "../src/core/tax-store.ts";
 import * as sums from "../src/core/tax-sums.ts";
-import { accontiOn, type CalendarInputs, calendar, contributiOf, estimate, type Incassi, juneDays, limitOf, plainCalendar, projected, ricaviOf, taxPayments } from "../src/core/tax-sums.ts";
+import { accontiOn, type CalendarInputs, calendar, contributiOf, estimate, keptPercent, type Incassi, juneDays, limitOf, plainCalendar, projected, ricaviOf, taxPayments } from "../src/core/tax-sums.ts";
 import * as taxRules from "../src/core/taxes.ts";
-import { ACCONTO_SINGLE_BELOW_CENTS, GROUPS, GS_RATE_YEAR, groupOfAteco, groupOfWords, IVS_YEARS, type Pension, rateFor, taxAgentReads, taxCallReads, type TaxProfile } from "../src/core/taxes.ts";
+import { ACCONTO_SINGLE_BELOW_CENTS, GROUPS, GS_RATE_YEAR, groupOfAteco, groupOfWords, IVS_YEARS, type Pension, rateFor, taxAgentReads, taxCallReads, type TaxProfile, yearValues } from "../src/core/taxes.ts";
 import type { TimesheetBook } from "../src/core/timesheet-store.ts";
 import { createCashflowTools } from "../src/core/tools/cashflow-tools.ts";
 import * as render from "../src/core/tools/tax-render.ts";
@@ -906,12 +906,127 @@ describe("taxes: the second review", () => {
 		const forecast = await s.cash({ op: "forecast", horizon: "fine anno", include_average_spend: false });
 		expect(forecast).toContain("Uscite 3.000,00 €: voci aggiunte 50,00 €; tasse stimate (F24) 2.950,00 €.");
 		expect(cashInside(forecast)).toContain("• F24 novembre (voce C-0001), 50,00 €: voce 50,00 € contro una stima di 3.000,00 € per l'F24 del 30 novembre: conto la voce e i 2.950,00 € che restano della stima");
-		s.expenses.add(2026, "y1", (id) => expense(id, "2026-10-17", "100", { note: "F24 acconto" }));
+		s.expenses.add(2026, "y1", (id) => expense(id, "2026-11-24", "100", { note: "F24 acconto" }));
 		s.at("2026-11-25");
 		const maybe = await s.cash({ op: "forecast", horizon: "fine anno", include_average_spend: false });
-		expect(maybe).toContain("XXX");
+		expect(maybe).toContain("Uscite 3.000,00 €: voci aggiunte 50,00 €; tasse stimate (F24) 2.950,00 €.");
+		expect(cashInside(maybe)).toContain("Forse doppioni, conto la stima dell'F24:\n• spesa del 24/11 F24 acconto, 100,00 €: forse è l'F24 del 30 novembre stimato a 3.000,00 €, ma è molto meno");
+		expect(cashOutside(maybe)).toContain("Una spesa sembra un F24 ma è molto più bassa della stima: tengo la stima. Chiedi a chi ti scrive se l'F24 è già pagato.");
+		expect(cashOutside(maybe)).not.toContain("F24 acconto");
+	});
+	it("2. the June F24 with this year's acconti said paid does not become late; otherwise it stays, «se non l'hai già pagato, dimmelo»", async () => {
+		const figures = [{ year: 2025, imposta: "3000", contributi: "6000", accontiImposta: "2000", accontiContributi: "4000" }];
+		expect(calendar(inputs(profile(), "2026-07-25", { figures })).some((d) => d.late !== undefined)).toBe(true);
+		const told = [...figures, { year: 2026, accontiImposta: "1200" }];
+		expect(calendar(inputs(profile(), "2026-07-25", { figures: told })).some((d) => d.kind === "giugno" && d.due.startsWith("2026"))).toBe(false);
+		expect(taxPayments(inputs(profile(), "2026-07-25", { figures: told }), "2026-08-31")).toEqual([]);
+		// Zero said is not «paid»: the F24 stays, the cashflow label asks.
+		const zero = [...figures, { year: 2026, accontiImposta: "0" }];
+		expect(taxPayments(inputs(profile(), "2026-07-25", { figures: zero }), "2026-08-31").map((p) => p.what)).toEqual(["saldo e primo acconto, se non l'hai già pagato, dimmelo"]);
+	});
+
+	it("3. the 50% for those first registered in 2025 through 2027, then 35% with the reduction or nothing; only with the activity started in 2025", async () => {
+		const fifty = { kind: "commercianti", reduction: false, new2025: true } as const;
+		expect([keptPercent(fifty, 2026), keptPercent(fifty, 2027), keptPercent(fifty, 2028), keptPercent({ ...fifty, reduction: true }, 2028)]).toEqual([50n, 50n, 100n, 65n]);
+		expect(taxRules.NEW_2025_LAST_YEAR).toBe(2027);
+		const later = fattura(BETA, GAMMA, { number: "T-8", date: "2028-01-10", total: "20000.00", rate: [{ amount: "20000.00", due: "2028-01-31" }] });
+		const s = await setup({ files: { ...FILES, "f/t8.xml": later }, paid: { ...PAID, "T-8": "2028-01-20T10:00:00.000Z" } });
+		const refused = await s.run({ ...CONSULENTE, activity: "commercio", pension: "commercianti", first_registered_2025: true });
+		expect(refused).toBe("Non l'ho salvato: la riduzione del 50% vale solo per chi si è iscritto all'INPS per la prima volta nel 2025, e l'attività risulta aperta nel 2020. Chiedi a chi ti scrive quale dei due è giusto.");
+		expect(existsSync(join(s.dir, "taxes.json"))).toBe(false);
+		const asked = await s.run({ op: "set_profile", activity: "commercio", pension: "commercianti", first_registered_2025: true });
+		expect(asked).toBe("La riduzione del 50% vale per chi si è iscritto all'INPS per la prima volta nel 2025: chiedi a chi ti scrive se ha aperto l'attività nel 2025.");
+		for (const text of [refused, asked]) expect(text).not.toMatch(NO_OPS);
+		const saved = await s.run({ op: "set_profile", activity: "commercio", pension: "commercianti", first_registered_2025: true, start_year: 2025 });
+		expect(saved).toContain("ridotti del 50% fino al 2027 per l'iscrizione nel 2025; valori INPS del 2026.");
+		s.at("2027-03-01");
+		expect(await s.run({ op: "estimate", year: 2026 })).toContain("ridotti del 50% fino al 2027 per l'iscrizione nel 2025");
+		s.at("2028-03-01");
+		const after = await s.run({ op: "estimate" });
+		expect(after).toContain("Contributi INPS come commerciante");
+		expect(after).not.toContain("ridotti del 50%");
+	});
+
+	it("4. the profile keeps only the person's figures; the year's INPS values are read when computing, the closest earlier year said; the 2024 massimale", async () => {
+		expect(taxRules.GS_MASSIMALE[2024]).toBe("119650");
+		expect(contributiOf({ kind: "gestione_separata" }, 15_000_000n, 2024).total).toBe(3_119_276n);
+		expect(yearValues(IVS_YEARS, 2030).year).toBe(2026);
+		expect(yearValues(IVS_YEARS, 2026).year).toBe(2026);
+		const next = fattura(BETA, GAMMA, { number: "T-8", date: "2027-01-10", total: "20000.00", rate: [{ amount: "20000.00", due: "2027-01-31" }] });
+		const s = await setup({ files: { ...FILES, "f/t8.xml": next }, paid: { ...PAID, "T-8": "2027-01-20T10:00:00.000Z" } });
+		await s.run({ op: "set_profile", activity: "commercio", pension: "artigiani", start_year: 2020, reduction: true });
+		expect(s.store.read().profile?.pension).toEqual({ kind: "artigiani", reduction: true });
+		s.at("2027-02-01");
+		const answer = await s.run({ op: "estimate" });
+		expect(answer).toContain("Per il 2027 uso i valori INPS del 2026: verifica quelli dell'anno.");
+		// Said by the person: theirs, no note.
+		await s.run({ op: "set_profile", pension_fixed: "4600", minimale: "19000", pension_rate: "24" });
+		expect(s.store.read().profile?.pension).toEqual({ kind: "artigiani", fixed: "4600", rate: "24", minimale: "19000", reduction: true });
+		expect(await s.run({ op: "estimate" })).not.toContain("uso i valori INPS");
+	});
+
+	it("5. the 2026 June deadline keeps its values and says where they come from", () => {
+		expect(juneDays(2026)).toMatchObject({ due: "2026-07-20", alternative: "2026-08-20", extra: "0.80" });
+		const source = readFileSync(join(import.meta.dirname, "..", "src", "core", "taxes.ts"), "utf8");
+		expect(source).toContain("Art. 6 DL 89/2026 (poi abrogato da L. 113/2026 che ne ha ripreso gli effetti; maggiorazione 0,80% secondo ecnews, informazionefiscale, ItaliaOggi; da verificare in Gazzetta)");
+	});
+
+	it("6. previsionale: every acconto deadline of both methods, «non verseresti niente»; the saldo said with its year; a credit when the acconti are more than the tax", async () => {
+		const s = await setup();
+		await s.run(CONSULENTE);
+		await s.run(SAID_2025);
+		const prev = await s.run({ op: "calendar", method: "previsionale", expected_income: "1000" });
+		expect(prev.split("\n").slice(0, 2)).toEqual([
+			"A luglio hai versato 1.000,00 € di primo acconto d'imposta e 2.000,00 € di contributi, con il metodo storico.",
+			"Con il metodo previsionale a novembre non verseresti niente invece di 1.000,00 € di acconto d'imposta, e 2.000,00 € di acconto dei contributi.",
+		]);
+		// Paid in July 3.000 €, due on 1.000 € of incassi 203,35 € of contributions and no imposta.
+		expect(prev).toContain("Gli acconti del 2026 superano le tasse stimate dell'anno: a credito circa 2.796,65 €, da usare in compensazione: verifica col commercialista.");
+		expect(prev).toContain("Acconti del 2026 e saldo del 2026 (si versa nel 2027) con il metodo previsionale");
+		expect(prev).toContain("È una stima");
+		// The storico calendar on the same figures: no credit said, the projection is too rough.
+		expect(await s.run({ op: "calendar" })).not.toContain("a credito");
+	});
+
+	it("7. «ad agosto», «a novembre»; the cashflow says an F24 paid is not counted", () => {
+		expect(["2026-08-20", "2026-11-30", "2026-04-30", "2026-10-01", "2026-06-30"].map(toMonth)).toEqual(["ad agosto", "a novembre", "ad aprile", "ad ottobre", "a giugno"]);
+	});
+
+	it("8. the CSV says where each figure comes from: «fatture» for the incassi, «predefinito» for a rate not said, «dal codice ATECO» for a coefficient from the code", async () => {
+		const s = await setup();
+		await s.run({ op: "set_profile", activity: "70.22", pension: "gestione separata", start_year: 2020 });
+		expect(s.store.read().profile).toMatchObject({ group: "professionali", groupFrom: "ateco" });
+		expect(s.store.read().profile?.rate).toBeUndefined();
+		await s.run({ op: "export" });
+		const rows = readFileSync(join(s.root, "tasse", "tasse-2026-al-2026-10-18.csv"), "utf8").slice(1).split("\r\n");
+		expect(rows.find((r) => r.startsWith("Profilo;;Coefficiente"))?.endsWith(";dal codice ATECO")).toBe(true);
+		expect(rows).toContain("Profilo;;Imposta sostitutiva 15% nel 2026;;predefinito");
+		expect(rows.filter((r) => r.startsWith("Incassi;")).every((r) => r.endsWith(";fatture"))).toBe(true);
+	});
+
+	it("9. the brief: a band crossed in the last 3 days; past 100.000 € one short line every day until the end of the year", async () => {
+		const big = fattura(BETA, GAMMA, { number: "T-7", date: "2026-02-01", total: "110000.00", rate: [{ amount: "110000.00", due: "2026-02-28" }] });
+		const s = await setup({ files: { "f/t7.xml": big }, paid: { "T-7": "2026-02-20T10:00:00.000Z" } });
+		await s.run(CONSULENTE);
+		// Crossed in February, still said in October and on the last day of the year; gone with the new year's incassi.
+		const line = "Tasse: oltre 100.000 € di ricavi, fuori dal forfettario da quest'anno (stima). Nel brief riporta questo in una riga.";
+		expect(await s.run({ op: "calendar", compact: true })).toBe(line);
+		s.at("2026-12-31");
+		expect(await s.run({ op: "calendar", compact: true })).toContain("Tasse: oltre 100.000 € di ricavi, fuori dal forfettario da quest'anno (stima).");
+		s.at("2027-01-04");
+		expect(await s.run({ op: "calendar", compact: true })).not.toContain("100.000");
+	});
+
+	it("10. the deadline parts under «•» are indented with a dash that is not a list marker", async () => {
+		const s = await setup();
+		await s.run(CONSULENTE);
+		await s.run(SAID_2025);
+		const lines = (await s.run({ op: "calendar" })).split("\n");
+		expect(lines.some((l) => l.startsWith("  – "))).toBe(true);
+		expect(lines.some((l) => /^\s+[-*] /.test(l))).toBe(false);
 	});
 });
+
 
 describe("taxes in the app", () => {
 	it("is offered to every instance, the instructions say when to use it and the cashflow voci, the audit holds no values", async () => {

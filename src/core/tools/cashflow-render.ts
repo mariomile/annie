@@ -148,9 +148,9 @@ function expenseText(e: Expense, today: string): string {
 	return `spesa ${withShortDate("del", e.date, today)} ${[e.supplier, e.note].filter((x) => x !== undefined).join(", ") || e.id}, ${euros(scaled(e.amount, 2))}`;
 }
 
-/** «spesa del 3 ott INPS, 50,00 €: forse è l'F24 del 20 agosto stimato a 3.000,00 €, ma è molto meno: conto la stima»; to be fenced. */
+/** «spesa del 24/11 F24 acconto, 100,00 €: forse è l'F24 del 30 novembre stimato a 3.000,00 €, ma è molto meno»; to be fenced. */
 function taxMaybeRow(m: TaxMaybe, today: string): string {
-	return `• ${expenseText(m.expense, today)}: forse è l'F24 ${withNearDate("del", m.tax.date, today)} stimato a ${euros(m.tax.cents)}, ma è molto meno: conto la stima`;
+	return `• ${expenseText(m.expense, today)}: forse è l'F24 ${withNearDate("del", m.tax.date, today)} stimato a ${euros(m.tax.cents)}, ma è molto meno`;
 }
 
 /** The one fence of an answer: every list that names someone. */
@@ -281,7 +281,8 @@ function forecastSections(p: Projection, v: View): Section[] {
 		...section(`Da incassare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleIn(v).map(row)),
 		...section(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleOut(v).map(row)),
 		...section("Probabili doppioni:", [...v.duplicates.map((d) => duplicateRow(d, today)), ...(v.taxTwins ?? []).map((t) => taxTwinRow(t, today))]),
-		...section("Forse doppioni, contati tutti e due:", [...(v.maybe ?? []).map((d) => duplicateRow(d, today, true)), ...(v.taxMaybe ?? []).map((m) => taxMaybeRow(m, today))]),
+		...section("Forse doppioni, contati tutti e due:", (v.maybe ?? []).map((d) => duplicateRow(d, today, true))),
+		...section("Forse doppioni, conto la stima dell'F24:", (v.taxMaybe ?? []).map((m) => taxMaybeRow(m, today))),
 		...section(`Preventivi accettati da più di ${QUOTE_STALE_DAYS} giorni:`, (v.quotes?.old ?? []).map((o) => `• ${o.quote.customer.name}, preventivo accettato ${o.quote.number}, ${euros(o.cents)} non ancora fatturati. È ancora da fare o da fatturare?`)),
 	];
 }
@@ -302,7 +303,7 @@ function summaryLines(v: View): string[] {
 	const twins = v.duplicates.length + (v.taxTwins?.length ?? 0);
 	if (twins > 0) out.push(`Probabili doppioni, contati una volta sola: ${twins}.`);
 	const taxMaybe = v.taxMaybe?.length ?? 0;
-	if (taxMaybe > 0) out.push(`${n1(taxMaybe, "Una spesa sembra un F24 ma è molto più bassa della stima", "# spese sembrano F24 ma sono molto più basse della stima")}: tengo la stima. Se l'F24 è già pagato, chiedi a chi ti scrive di dirmelo.`);
+	if (taxMaybe > 0) out.push(`${n1(taxMaybe, "Una spesa sembra un F24 ma è molto più bassa della stima", "# spese sembrano F24 ma sono molto più basse della stima")}: tengo la stima. Chiedi a chi ti scrive se l'F24 è già pagato.`);
 	const maybe = v.maybe?.length ?? 0;
 	if (maybe > 0) out.push(`${n1(maybe, "Una fattura di un fornitore forse è il pagamento di un rinnovo", "# fatture di fornitori forse sono il pagamento di un rinnovo")}: per ora conto sia la fattura sia il rinnovo. Chiedi a chi ti scrive se è lo stesso pagamento: se sì, va indicato il fornitore nel rinnovo.`);
 	const old = v.quotes?.old ?? [];
