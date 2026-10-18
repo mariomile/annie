@@ -115,7 +115,7 @@ export class BoardWork {
 	}
 
 	/**
-	 * «Esegui da solo» (ADR 0058): after each reply of the agente in the conversation of a scheda
+	 * «Esegui da solo» (ADR 0061): after each reply of the agente in the conversation of a scheda
 	 * still In corso, it is told to go on, as long as rounds and time last; then the scheda goes to
 	 * «Da rivedere» with what happened, for a person to look at. So it does when the agente could
 	 * not answer (`failed`, the reason) or cannot be told to go on. `deliveryId` keeps a reply
