@@ -317,7 +317,13 @@ main.is-chat { position: relative; }
 .msg .picture .muted { font-size: 13px; margin-top: 4px; }
 
 /* the message box: one rounded field, paperclip on the left, round send on the right */
-.box { width: 100%; }
+.box { width: 100%; position: relative; }
+/* the commands a message can start with, over the box */
+.command-menu {
+	position: absolute; left: 8px; right: 8px; bottom: calc(100% + 6px); z-index: 30; max-height: 280px; overflow-y: auto; padding: 6px; border-radius: 14px;
+	background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-lg); animation: pop 0.12s ease-out;
+}
+.command-menu[hidden] { display: none; }
 .composer {
 	display: flex; gap: 4px; align-items: flex-end; padding: 8px; border: 1px solid var(--border); border-radius: 26px; background: var(--surface);
 	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 28px -12px rgba(0, 0, 0, 0.14); transition: border-color 0.12s, box-shadow 0.12s;
