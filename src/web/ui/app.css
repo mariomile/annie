@@ -900,8 +900,14 @@ dialog.board-dialog:focus { outline: none; }
 
 /* stanze (ADR 0063): who speaks, the agenti to call, the stanza's own notes */
 .room-head { display: flex; align-items: center; gap: 10px; padding: 12px max(16px, calc((100% - var(--column)) / 2)); border-bottom: 1px solid var(--border); }
-.room-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-head .room-faces { min-width: 26px; }
+.room-head .room-faces .face + .face { margin-left: -10px; filter: drop-shadow(-2px 0 0 var(--bg)); }
+.room-head-text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.room-head-text b, .room-head-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-head-text small { font-size: 12.5px; color: var(--fg-3); }
+.room-head .room-remove:hover { color: var(--bad); background: var(--bad-soft); }
 .msg .meta .who { color: var(--fg); font-weight: 600; }
+.msg .meta .who[style] { color: color-mix(in srgb, var(--agent) 72%, var(--fg)); }
 .room-note { align-self: center; max-width: 520px; text-align: center; font-size: 13px; color: var(--fg-3); }
 .room-agents { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .room-agents .chip { cursor: pointer; padding: 3px 10px 3px 4px; gap: 6px; }
