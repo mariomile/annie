@@ -4816,8 +4816,8 @@ async function viewAgents(main) {
 		}
 	};
 	const teamButton = owner && team.length > 1 ? h("button.btn.ghost", { title: "Ogni agente può chiedere aiuto agli altri mentre lavora", onclick: () => setTeam(!together) }, together ? "Separa gli agenti" : "Fate squadra") : null;
-	const card = (a) =>
-		h(
+	const card = (a) => {
+		const el = h(
 			`article.card.agent${a.id === state.instance?.id ? ".current" : ""}`,
 			h("div.agent-face", face(a, 60)),
 			h(
@@ -4835,6 +4835,10 @@ async function viewAgents(main) {
 				owner ? h("button.btn.small.ghost", { onclick: () => switchTo(a, "impostazioni") }, "Personalità e impostazioni") : null,
 			),
 		);
+		// Each card glows in its agente's colour, so the faces read as a team and not as a list.
+		el.style.setProperty("--glow", faceColor(a));
+		return el;
+	};
 	mount(
 		main,
 		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("div.row-gap", teamButton, h("button.btn.ghost", { title: "Più agenti già pronti a lavorare insieme", onclick: () => teamsForm() }, "Squadre pronte"), h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente")) : null),

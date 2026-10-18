@@ -753,7 +753,9 @@ ol.steps .stack > .choices { margin-bottom: 2px; }
 .card.agent.current { border-color: var(--border-2); box-shadow: var(--shadow); }
 .card.agent { grid-template-columns: 64px 1fr; gap: 4px 16px; padding: 20px; border-radius: 16px; transition: border-color 0.15s, transform 0.2s cubic-bezier(.22, 1, .36, 1); }
 .card.agent:hover { transform: translateY(-1px); }
-.card.agent:hover { border-color: var(--border-2); }
+.card.agent { background: radial-gradient(120% 160px at 0% 0%, color-mix(in srgb, var(--glow, var(--fg)) 11%, transparent), transparent 70%), var(--surface); }
+.card.agent:hover { border-color: color-mix(in srgb, var(--glow, var(--fg)) 35%, var(--border)); }
+.card.agent.current { border-color: color-mix(in srgb, var(--glow, var(--fg)) 28%, var(--border)); }
 .agent-face { grid-row: span 2; }
 .card.agent:hover .agent-face .face { transform: rotate(-5deg) scale(1.05); }
 .agent-face .face { transition: transform 0.25s cubic-bezier(.22, 1, .36, 1); }
