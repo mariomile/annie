@@ -50,6 +50,7 @@ import type { SegreteriaService } from "../segreteria/service.ts";
 import type { BrowserState } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
+import { type Room, type RoomEntry, RoomError, type RoomEvent, type Rooms } from "./rooms.ts";
 import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
 import { REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
@@ -120,6 +121,8 @@ export type WebAppOptions = {
 	readonly sessions: SessionStore;
 	/** The web channel of each instance that has one. */
 	readonly channels: ReadonlyMap<string, WebChannel>;
+	/** Stanze with more agenti (ADR 0063); without them the console shows none. */
+	readonly rooms?: Rooms;
 	readonly connectors: (instanceId: string) => ConnectorStore;
 	readonly connectorStatus: (instanceId: string) => readonly ConnectorStatus[];
 	readonly segreterie?: ReadonlyMap<string, SegreteriaService>;
@@ -344,10 +347,12 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 
 	// --- instances ---
+	/** Whether this person may write to the instance from the console. */
+	const canChatWith = (r: InstanceRecord, p: Person) => options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web");
 	const describeInstance = async (r: InstanceRecord, p: Person) => ({
 		id: r.id,
 		name: r.name,
-		canChat: options.channels.has(r.id) && (r.allowedUsers.web ?? []).includes(p.id) && r.egress.channels.includes("web"),
+		canChat: canChatWith(r, p),
 		isApprover: await isApprover(runtime, tenantId, r.id, approverOf(p)),
 		hasSegreteria: options.segreterie?.has(r.id) ?? false,
 		...(r.persona?.emoji === undefined ? {} : { emoji: r.persona.emoji }),
@@ -689,12 +694,15 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (people.includes(p.id)) res.write(`event: board\ndata: ${JSON.stringify({ kind: "review", id: card.id, n: card.n, title: card.title })}\n\n`);
 		};
 		options.board?.work.events.on("review", review);
+		const roomEntry = (event: RoomEvent) => res.write(`event: room\ndata: ${JSON.stringify({ roomId: event.roomId, entry: shownInRoom(event.entry) })}\n\n`);
+		options.rooms?.events.on(p.id, roomEntry);
 		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
 		await new Promise<void>((resolve) => req.on("close", resolve));
 		clearInterval(ping);
 		streamAttachers.delete(attach);
 		for (const [channel, listener] of listeners) channel.events.off(p.id, listener);
 		options.board?.work.events.off("review", review);
+		options.rooms?.events.off(p.id, roomEntry);
 		return STREAMED;
 	});
 
@@ -1461,6 +1469,67 @@ export function createWebApp(options: WebAppOptions): Server {
 		const removed = runtime.memory(tenantId, params[0] as string).remove(params[1] as string, (m) => m.about === subjectOfPerson(p) || (m.about === SHARED && p.role === "owner"));
 		if (removed === undefined) throw new HttpError(404, "Memoria non trovata");
 		await runtime.audit(tenantId).append({ type: "memory.forgotten", instanceId: params[0], personId: p.id, memoryId: removed.id });
+		return { ok: true };
+	});
+
+	// --- stanze (ADR 0063): one person's, with the agenti they can write to ---
+	const roomsOf = () => {
+		if (options.rooms === undefined) throw new HttpError(501, "Le stanze non sono disponibili su questo server");
+		return options.rooms;
+	};
+	const shownInRoom = (entry: RoomEntry): RoomEntry => (entry.model === undefined ? entry : { ...entry, model: named(entry.model) });
+	const roomView = async (room: Room, p: Person) => ({
+		id: room.id,
+		title: room.title,
+		updatedAt: room.updatedAt,
+		agents: await Promise.all(
+			room.seats.map(async (s) => {
+				const record = await runtime.registry.getInstance(tenantId, s.instanceId).catch(() => undefined);
+				return { instanceId: s.instanceId, name: record?.name ?? s.instanceId, ...(record?.persona?.emoji === undefined ? {} : { emoji: record.persona.emoji }), present: record !== undefined && canChatWith(record, p) };
+			}),
+		),
+	});
+	const roomError = (error: unknown): never => {
+		if (error instanceof RoomError) throw new HttpError(400, error.message);
+		if (error instanceof UserNotAllowed) throw new HttpError(403, "Non sei tra le persone che possono scrivere a uno di questi agenti");
+		if (error instanceof EgressDenied) throw new HttpError(403, "Uno di questi agenti non accetta messaggi dal web");
+		throw error;
+	};
+	route("GET", "/api/rooms", "person", async ({ person }) => {
+		const p = person as Person;
+		return { rooms: await Promise.all((await roomsOf().list(p.id)).map((r) => roomView(r, p))) };
+	});
+	route("POST", "/api/rooms", "person", async ({ person, req }) => {
+		const p = person as Person;
+		const body = (await readJson(req)) as { title?: unknown; agents?: unknown };
+		const agents = Array.isArray(body.agents) ? body.agents.filter((a): a is string => typeof a === "string") : [];
+		try {
+			const room = await roomsOf().create(p.id, String(body.title ?? ""), agents);
+			await runtime.audit(tenantId).append({ type: "room.created", personId: p.id, roomId: room.id, agents: room.seats.length });
+			return { room: await roomView(room, p) };
+		} catch (error) {
+			return roomError(error);
+		}
+	});
+	route("GET", "/api/rooms/:room", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const opened = await roomsOf().open(p.id, params[0] as string);
+		if (opened === undefined) throw new HttpError(404, "Stanza non trovata");
+		return { room: await roomView(opened.room, p), entries: opened.entries.map(shownInRoom) };
+	});
+	route("POST", "/api/rooms/:room/messages", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const body = (await readJson(req)) as { text?: unknown };
+		try {
+			return { entry: await roomsOf().post(p.id, params[0] as string, String(body.text ?? "")) };
+		} catch (error) {
+			return roomError(error);
+		}
+	});
+	route("DELETE", "/api/rooms/:room", "person", async ({ person, params }) => {
+		const p = person as Person;
+		if (!(await roomsOf().remove(p.id, params[0] as string))) throw new HttpError(404, "Stanza non trovata");
+		await runtime.audit(tenantId).append({ type: "room.deleted", personId: p.id, roomId: params[0] });
 		return { ok: true };
 	});
 

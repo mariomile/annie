@@ -51,6 +51,7 @@ const ICONS = {
 	file: ["M14 3H6v18h12V7Z", "M14 3v4h4"],
 	memoria: ["M12 4a4 4 0 0 0-4 4v1a3 3 0 0 0-2 5.2V16a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4v-1.8A3 3 0 0 0 16 9V8a4 4 0 0 0-4-4Z", "M12 4v16"],
 	automazioni: ["M13 3 5 14h6l-1 7 8-11h-6Z"],
+	stanze: ["M8 10h.01M12 10h.01M16 10h.01", "M21 11a8 8 0 0 1-11.5 7.2L4 20l1.4-4.6A8 8 0 1 1 21 11Z"],
 	skill: ["M5 4h10l4 4v12H5Z", "M9 12h6M9 16h4", "M14 4v4h4"],
 	connettori: ["M9 3v5M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4"],
 	impostazioni: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 5v4M9 15v4"],
@@ -162,6 +163,7 @@ const PALETTE = [
 	{ id: "inizia", label: "Primi passi", group: "Lavoro", owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft },
 	{ id: "chat", label: "Chat", group: "Lavoro" },
 	{ id: "agenti", label: "Agenti", group: "Lavoro", count: () => (state.instances.length > 1 ? state.instances.length : 0) },
+	{ id: "stanze", label: "Stanze", group: "Lavoro", when: () => state.instances.filter((i) => i.canChat).length > 1 },
 	{ id: "board", label: "Board", group: "Lavoro", count: () => state.boardReview },
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
@@ -375,6 +377,11 @@ function connectEvents() {
 		if (view !== "chat" || rest[0] !== event.threadId) toast("Nuova risposta di Annie");
 		renderRail();
 		void refreshThreads().then(renderRail);
+	});
+	es.addEventListener("room", (e) => {
+		const event = JSON.parse(e.data);
+		if (state.onRoom?.(event)) return;
+		if (event.entry.from === "agent") toast("Nuova risposta in una stanza");
 	});
 	es.addEventListener("board", (e) => {
 		const event = JSON.parse(e.data);
@@ -1018,7 +1025,7 @@ function accountDialog() {
 
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
-const SIDEBAR = new Set(["inizia", "agenti", "board", "segreteria", "approvazioni", "task", "automazioni", "file", "memoria", "skill"]);
+const SIDEBAR = new Set(["inizia", "agenti", "stanze", "board", "segreteria", "approvazioni", "task", "automazioni", "file", "memoria", "skill"]);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -1027,7 +1034,7 @@ function render() {
 	if (item.owner && state.me.role !== "owner") return go("chat");
 	closeMenu();
 	closeModelMenu();
-	const main = h("main", { id: "main", class: item.id === "chat" ? "is-chat" : "is-page" });
+	const main = h("main", { id: "main", class: item.id === "chat" || (item.id === "stanze" && route().rest[0]) ? "is-chat" : "is-page" });
 	const shell = h(
 		`div.shell${store("annie.rail") === "closed" ? ".collapsed" : ""}`,
 		h(
@@ -1050,7 +1057,8 @@ function render() {
 	renderRail();
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
-	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, automazioni: viewAutomations, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	state.onRoom = undefined;
+	const views = { inizia: viewStart, chat: viewChat, stanze: viewRooms, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, automazioni: viewAutomations, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -2960,6 +2968,134 @@ async function viewMemory(main) {
 			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
+}
+
+// ---------- stanze (ADR 0063) ----------
+async function viewRooms(main) {
+	const roomId = route().rest[0];
+	if (roomId) return viewRoom(main, roomId);
+	const { rooms } = await api("/api/rooms");
+	const chatty = state.instances.filter((i) => i.canChat);
+	const form = h("div.card.pad.stack", { hidden: true });
+	const create = () => {
+		const title = h("input", { type: "text", maxlength: 80, placeholder: "Es. Bando regionale" });
+		const boxes = chatty.map((i) => ({ id: i.id, box: h("input", { type: "checkbox" }), label: `${i.emoji ? `${i.emoji} ` : ""}${i.name}` }));
+		const save = async () => {
+			const agents = boxes.filter((b) => b.box.checked).map((b) => b.id);
+			if (agents.length < 2) return toast("Scegli almeno due agenti", true);
+			try {
+				const { room } = await api("/api/rooms", { method: "POST", body: { title: title.value, agents } });
+				go("stanze", room.id);
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		mount(
+			form,
+			h("h3", "Nuova stanza"),
+			h("label.field", h("span", "Nome"), title, h("small", "Se lo lasci vuoto, la stanza prende i nomi degli agenti.")),
+			h("div.field", h("span", "Agenti (da 2 a 5)"), boxes.map((b) => h("label.row-gap", b.box, h("span", b.label)))),
+			h("div.actions", h("button.btn.accent", { onclick: save }, "Crea"), h("button.btn.ghost", { onclick: () => (form.hidden = true) }, "Annulla")),
+		);
+		form.hidden = false;
+		title.focus();
+	};
+	const names = (r) => r.agents.map((a) => `${a.emoji ? `${a.emoji} ` : ""}${a.name}`).join(", ");
+	mount(
+		main,
+		head("Lavoro", h("h1", "Stanze"), "Una conversazione con più agenti insieme. Scrivi @nome per chiamarne uno, @tutti per tutti; senza nome risponde l'ultimo che ha parlato. Un agente può chiamare in causa un altro. Le stanze sono solo tue.", chatty.length > 1 ? h("button.btn.accent", { onclick: create }, icon("plus"), "Nuova stanza") : null),
+		h(
+			"div.stack",
+			form,
+			h(
+				"div.card",
+				rooms.length
+					? h("table.ledger", h("tbody", rooms.map((r) => h("tr", h("td", h("a", { href: `#/stanze/${encodeURIComponent(r.id)}` }, h("b", r.title)), h("div.muted", names(r))), h("td.mono.muted", fmt.time(r.updatedAt))))))
+					: h("div.empty", h("b", "Nessuna stanza"), "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
+			),
+		),
+	);
+}
+
+async function viewRoom(main, roomId) {
+	const { room, entries } = await api(`/api/rooms/${encodeURIComponent(roomId)}`);
+	const agentOf = (id) => room.agents.find((a) => a.instanceId === id);
+	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
+	const fileLink = (instanceId, file) => h("a.file", { href: `/api/instances/${encodeURIComponent(instanceId)}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
+	const typing = h("div.typing", { "aria-label": "Un agente sta scrivendo" }, h("i"), h("i"), h("i"));
+	const show = (entry) => {
+		if (entry.from === "note") return transcript.append(h("div.room-note", entry.text));
+		if (entry.from === "person") return transcript.append(h("div.msg.person", h("div.meta", fmt.time(entry.at)), h("div.body", entry.text)));
+		const agent = agentOf(entry.instanceId);
+		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
+		transcript.append(h("div.msg.annie", h("div.meta", h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`), h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
+	};
+	for (const e of entries) show(e);
+	state.onRoom = (event) => {
+		if (event.roomId !== roomId) return false;
+		if (event.entry.from === "person") return true;
+		// An answer ends the wait; one that calls another agente starts the next on the server.
+		typing.remove();
+		show(event.entry);
+		transcript.scrollTop = transcript.scrollHeight;
+		return true;
+	};
+	const present = room.agents.filter((a) => a.present);
+	const input = h("textarea", { rows: 1, placeholder: `Scrivi alla stanza, @${present[0]?.name.split(/\s+/)[0].toLowerCase() ?? "nome"} per chiamare un agente…`, "aria-label": "Messaggio" });
+	const send = h("button.send", { "aria-label": "Invia", disabled: true }, icon("send"));
+	const fit = () => {
+		input.style.height = "auto";
+		input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+		send.disabled = !input.value.trim();
+	};
+	const submit = async () => {
+		const text = input.value.trim();
+		if (!text) return;
+		input.value = "";
+		fit();
+		show({ from: "person", text, at: new Date().toISOString() });
+		transcript.scrollTop = transcript.scrollHeight;
+		try {
+			await api(`/api/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", body: { text } });
+			// The dots stay until an agente answers.
+			transcript.append(typing);
+			transcript.scrollTop = transcript.scrollHeight;
+		} catch (error) {
+			input.value = text;
+			fit();
+			toast(error.message, true);
+		}
+	};
+	input.addEventListener("input", fit);
+	input.addEventListener("keydown", (e) => {
+		if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+			e.preventDefault();
+			void submit();
+		}
+	});
+	send.addEventListener("click", () => void submit());
+	// One tap to call an agente: its @name at the start of the message.
+	const call = (a) => {
+		const handle = `@${a.name.split(/\s+/)[0].toLowerCase()} `;
+		if (!input.value.includes(handle.trim())) input.value = `${handle}${input.value}`;
+		input.focus();
+		fit();
+	};
+	const chips = h("div.room-agents", room.agents.map((a) => h(`button.chip${a.present ? "" : ".gone"}`, { onclick: () => call(a), disabled: !a.present, title: a.present ? `Chiama ${a.name}` : `${a.name} non è più disponibile` }, `${a.emoji ? `${a.emoji} ` : ""}${a.name}`)), h("button.chip", { onclick: () => ((input.value = `@tutti ${input.value}`), input.focus(), fit()) }, "@tutti"));
+	const remove = () =>
+		confirmDialog(`Cancellare la stanza «${room.title}»?`, "La conversazione sparisce per te. Gli agenti non ne terranno traccia nelle loro chat.", "Cancella", async () => {
+			try {
+				await api(`/api/rooms/${encodeURIComponent(roomId)}`, { method: "DELETE" });
+				go("stanze");
+			} catch (error) {
+				toast(error.message, true);
+			}
+		});
+	const header = h("div.room-head", h("a.icon-btn", { href: "#/stanze", "aria-label": "Tutte le stanze" }, icon("back")), h("b", room.title), h("button.btn.small.ghost", { onclick: remove }, "Cancella"));
+	if (entries.length === 0) transcript.append(h("div.room-note", `Nella stanza: ${room.agents.map((a) => a.name).join(", ")}. Scrivi @nome per chiamarne uno, @tutti per tutti.`));
+	mount(main, h("section.conversation", header, transcript, h("div.dock", chips, h("div.box", h("div.composer", input, send)))));
+	transcript.scrollTop = transcript.scrollHeight;
+	input.focus();
 }
 
 // ---------- automazioni (ADR 0060) ----------

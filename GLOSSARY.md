@@ -108,6 +108,10 @@ _Avoid_: gateway, integrazione
 Una conversazione su un canale: una chat Telegram, una chat nell'interfaccia web.
 _Avoid_: sessione, chat (nel codice)
 
+**Stanza**:
+Una conversazione della console fra una persona e da 2 a 5 agenti: la persona chiama chi le serve con @nome, ogni agente risponde dal suo posto (una sua conversazione con la persona, nascosta fra le chat) e può chiamarne un altro. Vedi ADR 0063.
+_Avoid_: gruppo (è di Telegram e WhatsApp), room
+
 **Chiamata**:
 Una telefonata al numero Twilio di un'istanza, a turni: la persona parla, Annie risponde a voce. Il thread è il numero di chi chiama, quindi una chiamata continua la conversazione delle precedenti.
 _Avoid_: sessione vocale

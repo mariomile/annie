@@ -5,7 +5,15 @@ import { join } from "node:path";
 import type { ChannelAdapter, InboundMessage, OutboundFile, OutboundMessage } from "../channels/types.ts";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 
-export type WebThread = { readonly id: string; readonly personId: string; readonly title: string; readonly createdAt: string; readonly updatedAt: string };
+export type WebThread = {
+	readonly id: string;
+	readonly personId: string;
+	readonly title: string;
+	readonly createdAt: string;
+	readonly updatedAt: string;
+	/** The stanza this thread is the agente's seat in (ADR 0063): not in the person's chats, its replies go to the stanza. */
+	readonly room?: string;
+};
 
 export type WebEntry = {
 	readonly id: string;
@@ -21,6 +29,8 @@ export type WebEntry = {
 };
 
 export type WebEvent = { readonly instanceId: string; readonly threadId: string; readonly entry: WebEntry };
+/** A reply in a seat of a stanza, emitted as "room" instead of to the person. */
+export type WebRoomEvent = WebEvent & { readonly room: string };
 
 const THREAD_ID = /^p_[0-9a-f]{12}\.[0-9a-f]{12}$/;
 
@@ -55,9 +65,9 @@ export class WebChannel implements ChannelAdapter {
 		return THREAD_ID.test(threadId) ? threadId.split(".")[0] : undefined;
 	}
 
-	async createThread(personId: string, title = "Nuova chat"): Promise<WebThread> {
+	async createThread(personId: string, title = "Nuova chat", room?: string): Promise<WebThread> {
 		const now = new Date().toISOString();
-		const thread: WebThread = { id: `${personId}.${randomBytes(6).toString("hex")}`, personId, title: title.slice(0, 80), createdAt: now, updatedAt: now };
+		const thread: WebThread = { id: `${personId}.${randomBytes(6).toString("hex")}`, personId, title: title.slice(0, 80), createdAt: now, updatedAt: now, ...(room === undefined ? {} : { room }) };
 		await this.saveThread(thread);
 		return thread;
 	}
@@ -73,7 +83,8 @@ export class WebChannel implements ChannelAdapter {
 		const out: WebThread[] = [];
 		for (const name of names) {
 			if (!name.endsWith(".json") || !name.startsWith(`${personId}.`)) continue;
-			out.push(JSON.parse(await readFile(join(this.dir, "threads", name), "utf8")) as WebThread);
+			const thread = JSON.parse(await readFile(join(this.dir, "threads", name), "utf8")) as WebThread;
+			if (thread.room === undefined) out.push(thread);
 		}
 		return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	}
@@ -146,15 +157,18 @@ export class WebChannel implements ChannelAdapter {
 	private async deliver(threadId: string, key: string, body: Pick<WebEntry, "text" | "file" | "model">): Promise<void> {
 		if (!THREAD_ID.test(threadId)) throw new Error(`Not a web thread: ${threadId}`);
 		const id = `r_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
-		const entry = await this.serial(threadId, async () => {
+		const done = await this.serial(threadId, async () => {
 			if ((await this.transcript(threadId)).some((e) => e.id === id)) return undefined; // resent after a crash
 			const entry: WebEntry = { id, at: new Date().toISOString(), from: "annie", ...body };
 			await this.append(threadId, entry);
 			const thread = await this.thread(threadId);
 			if (thread !== undefined) await this.saveThread({ ...thread, updatedAt: entry.at });
-			return entry;
+			return { entry, room: thread?.room };
 		});
-		if (entry !== undefined) this.events.emit(WebChannel.ownerOf(threadId) ?? "", { instanceId: this.instance.instanceId, threadId, entry } satisfies WebEvent);
+		if (done === undefined) return;
+		const event: WebEvent = { instanceId: this.instance.instanceId, threadId, entry: done.entry };
+		if (done.room !== undefined) this.events.emit("room", { ...event, room: done.room } satisfies WebRoomEvent);
+		else this.events.emit(WebChannel.ownerOf(threadId) ?? "", event);
 	}
 
 	private readonly writing = new Map<string, Promise<unknown>>();

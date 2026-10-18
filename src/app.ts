@@ -101,6 +101,7 @@ import { type BoardReview, BoardWork } from "./core/board-work.ts";
 import { createBoardTools } from "./core/tools/board-tools.ts";
 import { PeopleStore, SessionStore } from "./web/auth.ts";
 import { WebChannel } from "./web/channel.ts";
+import { RoomStore, Rooms } from "./web/rooms.ts";
 import { type BrowserPanel, BrowserPanelError, createWebApp } from "./web/server.ts";
 
 export const DEFAULT_INSTRUCTIONS = `Sei Annie, l'assistente sempre attiva di un'azienda italiana. Rispondi nella lingua di chi ti scrive, in modo diretto e cortese.
@@ -809,10 +810,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const conversational = (await runtime.registry.listInstances(tenant)).filter((r) => r.id !== segreteriaId);
 	const webChannels = new Map<string, WebChannel>();
 	const webUnsubscribes = new Map<string, () => void>();
+	/** Whether this person may write to this agente from the console now, and its name. */
+	const consoleAgentName = async (agent: string, personId: string) => {
+		const record = await runtime.registry.getInstance(tenant, agent).catch(() => undefined);
+		return record !== undefined && webChannels.has(agent) && record.egress.channels.includes("web") && (record.allowedUsers.web ?? []).includes(personId) ? record.name : undefined;
+	};
+	// --- stanze (ADR 0063): a person and a few agenti in one conversation ---
+	const rooms = new Rooms(new RoomStore(join(tenantDir(config.dataDir, toTenantId(tenant)), "rooms")), { channel: (id) => webChannels.get(id), reachable: (personId, id) => consoleAgentName(id, personId) }, log);
 	const attachWebChannel = (record: InstanceRecord) => {
 		const channel = new WebChannel({ tenantId: tenant, instanceId: record.id }, instanceDir(config.dataDir, record.tenantId, record.id));
 		const offWeb = connectChannel(runtime, channel, { tenantId: tenant, instanceId: record.id }, log);
 		webChannels.set(record.id, channel);
+		rooms.attach(channel);
 		const agents = new AgentChannel({ tenantId: tenant, instanceId: record.id }, (answer) => relayAgentAnswer(runtime, tenant, record.id, answer));
 		const offAgents = connectChannel(runtime, agents, { tenantId: tenant, instanceId: record.id }, log);
 		agentChannels.set(record.id, agents);
@@ -826,10 +835,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const boardWork = new BoardWork({
 		store: board,
 		agentName: async (agent) => (agent === segreteriaId ? undefined : (await runtime.registry.getInstance(tenant, agent).catch(() => undefined))?.name),
-		canChat: async (agent, personId) => {
-			const record = await runtime.registry.getInstance(tenant, agent).catch(() => undefined);
-			return record !== undefined && webChannels.has(agent) && record.egress.channels.includes("web") && (record.allowedUsers.web ?? []).includes(personId);
-		},
+		canChat: async (agent, personId) => (await consoleAgentName(agent, personId)) !== undefined,
 		isOwner: async (personId) => (await people.get(personId))?.role === "owner",
 		owners: async () => (await people.list()).filter((p) => p.role === "owner").map((p) => p.id),
 		personName: async (personId) => (await people.get(personId))?.name,
@@ -1393,6 +1399,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		people,
 		sessions: new SessionStore(tenantDir(config.dataDir, toTenantId(tenant))),
 		channels: webChannels,
+		rooms,
 		connectors: connectorStore,
 		connectorStatus: (id) => connections.get(id)?.status() ?? [],
 		models: providerModels,

@@ -554,3 +554,12 @@ dialog.board-dialog { max-width: 600px; }
 .board-events { list-style: none; margin: 16px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 28vh; overflow: auto; border-top: 1px solid var(--border); padding-top: 12px; }
 .board-events div { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 @media (max-width: 760px) { .board { grid-template-columns: repeat(4, minmax(240px, 80vw)); scroll-snap-type: x mandatory; } .board-col { scroll-snap-align: start; } .board-fields { grid-template-columns: 1fr; } }
+
+/* stanze (ADR 0063): who speaks, the agenti to call, the stanza's own notes */
+.room-head { display: flex; align-items: center; gap: 10px; padding: 12px max(16px, calc((100% - var(--column)) / 2)); border-bottom: 1px solid var(--border); }
+.room-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg .meta .who { color: var(--fg); font-weight: 600; }
+.room-note { align-self: center; max-width: 520px; text-align: center; font-size: 13px; color: var(--fg-3); }
+.room-agents { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.room-agents .chip { cursor: pointer; }
+.room-agents .chip.gone { opacity: 0.5; cursor: default; text-decoration: line-through; }
