@@ -22,8 +22,9 @@ import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { DEV_PROVIDER } from "./model-providers.ts";
+import { AGENT_CHANNEL } from "./agent-messages.ts";
 import { withPersona } from "./persona.ts";
-import { SkillStore, skillCatalog, skillCommand, withSkill } from "./skills.ts";
+import { activateCommand, SkillError, SkillStore, skillCatalog, skillCommand, withSkill } from "./skills.ts";
 import { type InstanceRecord, type ModelSelection, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
 
@@ -538,11 +539,43 @@ export class AnnieInstance {
 			this.memory.participants.clear(key);
 			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)));
 		}
-		// «/nome» of one of its skills: the steps go with the person's words (ADR 0058).
-		const command = skillCommand(request.text, this.memory.skills.list());
-		if (command !== undefined) await this.audit.append({ type: "skill.used", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, skill: command.skill.name });
-		const text = command === undefined ? request.text : withSkill(request.text, command.skill, command.rest);
+		const text = await this.withSkills(request, privateThread === true);
 		return this.admit({ ...message, text: `${text}${skipped}${note}` }, images);
+	}
+
+	/**
+	 * The skills in a person's message (ADR 0058). «/nome» of one: its steps go with their words.
+	 * «/attiva-skill nome»: the draft they had the agente write becomes a skill. Only here, from a
+	 * message the person wrote in a chat with them alone; never from a scheduled run, a notice or
+	 * another agente, so a page or a mail the agente read cannot turn a draft on.
+	 */
+	private async withSkills(request: Omit<SubmitRequest, "tenantId" | "instanceId">, alone: boolean): Promise<string> {
+		const skills = this.memory.skills;
+		const activating = activateCommand(request.text);
+		if (activating !== undefined) {
+			if (!alone || request.channel === AGENT_CHANNEL) return `${request.text}\n\n[Le skill si attivano solo in una conversazione con una persona sola: dillo in una riga.]`;
+			const by = subjectOf(request.channel, request.userId);
+			const mine = skills.drafts().filter((d) => d.createdBy === by);
+			const name = activating === "" && mine.length === 1 ? (mine[0] as { name: string }).name : activating;
+			if (name === "") return `${request.text}\n\n[Ha scritto il comando senza il nome. Le sue bozze: ${mine.map((d) => d.name).join(", ") || "nessuna"}. Diglielo in una riga.]`;
+			let result: { skill: { name: string }; replaced: boolean } | undefined;
+			try {
+				result = skills.activate(name, by);
+			} catch (error) {
+				if (!(error instanceof SkillError)) throw error;
+				return `${request.text}\n\n[La skill non si è attivata: ${error.message}. Diglielo in una riga.]`;
+			}
+			if (result === undefined) {
+				const active = skills.get(name);
+				return `${request.text}\n\n[${active !== undefined ? `La skill «${active.name}» è già attiva.` : `Non c'è una sua bozza «${name}» da attivare; le sue bozze: ${mine.map((d) => d.name).join(", ") || "nessuna"}.`} Diglielo in una riga.]`;
+			}
+			await this.audit.append({ type: "skill.activated", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, userId: request.userId, skill: result.skill.name, replaced: result.replaced });
+			return `${request.text}\n\n[La persona ha attivato la skill «${result.skill.name}»${result.replaced ? " (nuova versione)" : ""}: da ora la vedi fra le tue skill e si lancia con /${result.skill.name}. Confermalo in una riga.]`;
+		}
+		const command = skillCommand(request.text, skills.list());
+		if (command === undefined) return request.text;
+		await this.audit.append({ type: "skill.used", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, skill: command.skill.name });
+		return withSkill(request.text, command.skill, command.rest);
 	}
 
 	/**
