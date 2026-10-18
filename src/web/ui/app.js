@@ -5116,56 +5116,57 @@ async function viewPeople(main) {
 			h(
 				"div.card",
 				h(
-					"table.ledger",
-					h("thead", h("tr", h("th", "Persona"), h("th", "Ruolo"), h("th", "Dal"), h("th", ""))),
-					h(
-						"tbody",
-						people.map((p) =>
+					"ul.task-list.people-list",
+					people.map((p) =>
+						h(
+							"li.task-row.person-row",
+							monogram(p.name),
 							h(
-								"tr",
-								h("td", p.name, h("div.mono.muted", p.id)),
-								h("td", h("div.row-gap", h(`span.chip${p.role === "owner" ? ".accent" : ""}`, p.role === "owner" ? "owner" : "membro"), p.twoFactor ? h("span.chip.ok", "Verifica in 2 passaggi") : null)),
-								h("td.mono", fmt.day(p.createdAt)),
+								"div.task-text",
+								h("b", p.name, p.id === state.me.id ? h("span.chip", "tu") : null),
+								h("small", p.role === "owner" ? "Owner" : "Membro", ` · dal ${fmt.day(p.createdAt)}`, p.twoFactor ? " · verifica in 2 passaggi" : ""),
+							),
+							h(
+								"div.person-actions",
 								h(
-									"td.row-gap",
-									h(
-										"button.btn.small.ghost",
-										{
-											onclick: () =>
-												confirmDialog(`Nuovo link per ${p.name}?`, "Il link attuale e le sue sessioni smettono di funzionare.", "Genera", async () => {
-													const { link } = await api(`/api/people/${p.id}/link`, { method: "POST" });
-													showLink(`Nuovo link per ${p.name}`, link);
-												}),
-										},
-										"Nuovo link",
-									),
-									p.twoFactor && p.id !== state.me.id
-										? h(
-												"button.btn.small.ghost",
-												{
-													onclick: () =>
-														confirmDialog(`Togliere la verifica in due passaggi a ${p.name}?`, "Per chi ha perso il telefono: potrà entrare con il solo link e riattivarla.", "Togli", async () => {
-															await api(`/api/people/${p.id}/2fa/reset`, { method: "POST" });
-															render();
-														}),
-												},
-												"Togli verifica",
-											)
-										: null,
-									p.id !== state.me.id
-										? h(
-												"button.btn.small.danger",
-												{
-													onclick: () =>
-														confirmDialog(`Rimuovere ${p.name}?`, "Non potrà più entrare.", "Rimuovi", async () => {
-															await api(`/api/people/${p.id}`, { method: "DELETE" });
-															render();
-														}),
-												},
-												"Rimuovi",
-											)
-										: null,
+									"button.btn.small.ghost",
+									{
+										onclick: () =>
+											confirmDialog(`Nuovo link per ${p.name}?`, "Il link attuale e le sue sessioni smettono di funzionare.", "Genera", async () => {
+												const { link } = await api(`/api/people/${p.id}/link`, { method: "POST" });
+												showLink(`Nuovo link per ${p.name}`, link);
+											}),
+									},
+									"Nuovo link",
 								),
+								p.twoFactor && p.id !== state.me.id
+									? h(
+											"button.btn.small.ghost",
+											{
+												onclick: () =>
+													confirmDialog(`Togliere la verifica in due passaggi a ${p.name}?`, "Per chi ha perso il telefono: potrà entrare con il solo link e riattivarla.", "Togli", async () => {
+														await api(`/api/people/${p.id}/2fa/reset`, { method: "POST" });
+														render();
+													}),
+											},
+											"Togli verifica",
+										)
+									: null,
+								p.id !== state.me.id
+									? h(
+											"button.icon-btn.task-remove",
+											{
+												title: `Rimuovi ${p.name}`,
+												"aria-label": `Rimuovi ${p.name}`,
+												onclick: () =>
+													confirmDialog(`Rimuovere ${p.name}?`, "Non potrà più entrare.", "Rimuovi", async () => {
+														await api(`/api/people/${p.id}`, { method: "DELETE" });
+														render();
+													}),
+											},
+											icon("trash"),
+										)
+									: null,
 							),
 						),
 					),

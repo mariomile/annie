@@ -300,6 +300,15 @@ ul.task-list { list-style: none; margin: 0; padding: 6px; }
 .task-row .icon-btn.task-remove:hover { color: var(--bad); background: var(--bad-soft); }
 .task-row:hover .task-remove, .task-row:focus-within .task-remove { opacity: 1; }
 @media (hover: none) { .task-row .task-remove { opacity: 1; } }
+/* Persone: one row each, the initial as a round tile, actions at the right. */
+.person-row { align-items: center; }
+.person-row .monogram { width: 34px; height: 34px; border-radius: 50%; }
+.person-row .task-text b .chip { margin-left: 6px; }
+.person-actions { flex: none; display: flex; align-items: center; gap: 4px; }
+@media (max-width: 560px) {
+	.person-row { flex-wrap: wrap; }
+	.person-actions { width: 100%; padding-left: 48px; }
+}
 /* Attività: the audit day by day, rows like the tasks, the details as name and value. */
 .audit { padding: 16px 14px 10px; }
 .audit-filter { padding: 0 6px; }
