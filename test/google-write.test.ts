@@ -197,6 +197,8 @@ describe("Google: scrivere con approvazione", () => {
 		const sent = google.writes()[0];
 		expect(JSON.parse(sent?.body ?? "{}").threadId).toBe("t1");
 		expect(rawOf(sent)).toContain("In-Reply-To: <abc@cliente.it>\r\nReferences: <abc@cliente.it>\r\n");
+		// The outcome notice lands in the thread on its own: wait for it, or the next reply() could take it for Annie's answer.
+		await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${replyAction.id}`));
 		await reply(owner, thread.id, tool("google_mail_send", { to: ["luca@example.com"], subject: "Bozza", body: "Da rivedere", draft: true, reason: "Bozza per Luca" }));
 		const draft = (await owner("/api/instances/annie/google-actions")).actions.find((a: { kind: string }) => a.kind === "mail.draft");
 		expect((await owner(`/api/instances/annie/google-actions/${draft.id}/decision`, { decision: "approved" })).action.status).toBe("done");

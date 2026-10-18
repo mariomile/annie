@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { AnnieTool } from "../engine.ts";
 import { type EgressPolicy, webHostAllowed } from "../policy.ts";
 import { readForm, type WebAction, WebActionError, WEB_ACTIONS_CONNECTOR, type WebActionStore } from "../web-actions.ts";
-import { DocumentError, type DocumentText, documentKind, documentLabel, documentPartsLabel, documentSectionAt, oldFormatAdvice } from "../documents.ts";
+import { DocumentError, type DocumentText, documentExtension, documentKind, documentLabel, documentPartsLabel, documentSectionAt, oldFormatAdvice } from "../documents.ts";
 import { imageType } from "../images.ts";
 import { dispositionName, documentLimit, documentLinks, safeFileName, urlFileName, WEB_DOCUMENT_MAX_BYTES, webDocument } from "../web-documents.ts";
 import { CookieJar, checkedUrl, pageText, publicAddress, USER_AGENT, type WebPage, WebFetchRefused, webFetch } from "../web-fetch.ts";
@@ -160,7 +160,7 @@ export function createWebTools(options: WebToolsOptions): AnnieTool[] {
 							return "Errore: a questo indirizzo c'è una pagina web, non un file. Aprila con web_read per trovare il link al documento (o con web_browse se serve accedere).";
 						const given = typeof args.name === "string" ? safeFileName(args.name.trim().replace(/^download\//i, ""), "") : "";
 						const chosen = given || dispositionName(page.disposition) || urlFileName(page.url);
-						const real = kind ?? (image === undefined ? undefined : image.slice("image/".length).replace("jpeg", "jpg"));
+						const real = kind !== undefined ? documentExtension(kind, page.bytes) : image === undefined ? undefined : image.slice("image/".length).replace("jpeg", "jpg");
 						const path = await freePath(options.workspace, `download/${withExtension(chosen, real, type)}`, page.bytes);
 						const file = await options.workspace.write(path, page.bytes);
 						await options.recordDownload?.({ path: file.path, bytes: file.size });
@@ -465,7 +465,7 @@ async function readWebDocument(page: WebPage, offset: number): Promise<DocumentT
 	const advice = oldFormatAdvice(urlFileName(page.url), page.bytes);
 	if (advice !== undefined) return `Errore: ${advice} Per tenerlo o mandarlo, salvalo con web_download.`;
 	if (imageType(page.bytes) !== undefined) return "Errore: è un'immagine, non una pagina. Per guardarla salvala con web_download e poi usa image_view.";
-	return "Errore: non è una pagina di testo né un documento che so leggere (PDF, Word, Excel, PowerPoint, OpenDocument).";
+	return "Errore: non è una pagina di testo né un documento che so leggere (PDF, Word, Excel, PowerPoint, OpenDocument, fatture elettroniche XML o .p7m).";
 }
 
 /** A piece of a document from the web, fenced like a page, with how to read on outside the fence. */
@@ -505,18 +505,26 @@ function looksLikeHtml(type: string, bytes: Buffer): boolean {
 /** Extensions that would run or render if someone opened the file: a file whose bytes say nothing gets .txt after them. */
 const RISKY = new Set(["exe", "com", "bat", "cmd", "scr", "msi", "dll", "ps1", "sh", "vbs", "js", "mjs", "jar", "apk", "app", "html", "htm", "xhtml", "svg", "hta", "lnk"]);
 /** Extensions that name a file type, replaced when the bytes say otherwise. */
-const NAMED = new Set(["pdf", "docx", "xlsx", "pptx", "odt", "ods", "odp", "doc", "xls", "ppt", "png", "jpg", "jpeg", "gif", "webp", "txt", "csv", "json", "xml", "zip", ...RISKY]);
+const NAMED = new Set(["pdf", "docx", "xlsx", "pptx", "odt", "ods", "odp", "doc", "xls", "ppt", "png", "jpg", "jpeg", "gif", "webp", "txt", "csv", "json", "xml", "p7m", "zip", ...RISKY]);
 const BY_TYPE: Record<string, string> = { "text/plain": "txt", "text/csv": "csv", "application/json": "json", "application/xml": "xml", "text/xml": "xml", "application/zip": "zip" };
 
-/** The name with the extension its bytes call for (a PDF ends in .pdf whatever the address said). */
+/**
+ * The name with the extension its bytes call for (a PDF ends in .pdf whatever the address said).
+ * A signed file's `real` ends in .p7m (xml.p7m): the name's own .p7m is set aside before comparing,
+ * so a.docx.p7m holding a workbook becomes a.xlsx.p7m, and x.xml.p7m that is not signed x.xml.
+ */
 function withExtension(name: string, real: string | undefined, contentType: string): string {
+	if (real !== undefined) {
+		const signed = real.endsWith(".p7m");
+		const inner = signed ? real.slice(0, -".p7m".length) : real;
+		const bare = name.replace(/\.p7m$/i, "");
+		const match = /\.([A-Za-z0-9]{1,5})$/.exec(bare);
+		const ext = match?.[1]?.toLowerCase();
+		if (ext === inner || (inner === "jpg" && ext === "jpeg")) return signed === (bare !== name) ? name : `${bare}${signed ? ".p7m" : ""}`;
+		return `${ext !== undefined && NAMED.has(ext) && match !== null ? bare.slice(0, match.index) : bare}.${real}`;
+	}
 	const match = /\.([A-Za-z0-9]{1,5})$/.exec(name);
 	const ext = match?.[1]?.toLowerCase();
-	const base = match === null ? name : name.slice(0, match.index);
-	if (real !== undefined) {
-		if (ext === real || (real === "jpg" && ext === "jpeg")) return name;
-		return `${ext !== undefined && NAMED.has(ext) ? base : name}.${real}`;
-	}
 	if (ext === undefined) {
 		const byType = BY_TYPE[contentType];
 		return byType === undefined ? name : `${name}.${byType}`;
@@ -531,5 +539,6 @@ async function freePath(workspace: Workspace, path: string, data: Buffer): Promi
 	const same = there.size === data.length && (await workspace.read(path).catch(() => undefined))?.equals(data) === true;
 	if (same) return path;
 	const hash = createHash("sha256").update(data).digest("hex").slice(0, 8);
-	return path.replace(/(\.[^./]*)?$/, (ext) => `-${hash}${ext}`);
+	// Before the whole extension of a signed file: fattura-ab12cd34.xml.p7m.
+	return path.replace(/((?:\.[A-Za-z0-9]{1,5})?\.p7m|\.[^./]*)?$/i, (ext) => `-${hash}${ext}`);
 }

@@ -1,7 +1,8 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { ChartError, type ChartSpec, drawChart } from "./charts.ts";
-import { DocumentError, documentText } from "./documents.ts";
+import { DocumentError, documentText, unsignedData } from "./documents.ts";
 import { MakeError, type MakeInput, makeDocument } from "./make-document.ts";
+import { P7mError } from "./p7m.ts";
 import { PdfError, pdfPageImage } from "./pdf-text.ts";
 import { type TableQuery, TableError, queryTable } from "./tables.ts";
 
@@ -17,9 +18,10 @@ try {
 	else if (chart !== undefined) parentPort?.postMessage({ made: drawChart(chart) });
 	else if (make !== undefined) parentPort?.postMessage({ made: makeDocument(make) });
 	else if (page !== undefined) {
-		const image = pdfPageImage(Buffer.from(data), page);
+		// A signed PDF (.pdf.p7m): the pages of what was signed.
+		const image = pdfPageImage(Buffer.from(unsignedData(data)), page);
 		parentPort?.postMessage({ image });
 	} else parentPort?.postMessage({ document: documentText(name, data) });
 } catch (error) {
-	parentPort?.postMessage({ error: error instanceof DocumentError || error instanceof PdfError || error instanceof MakeError || error instanceof ChartError || error instanceof TableError ? error.message : table !== undefined ? "non sono riuscita ad analizzarla" : chart !== undefined ? "non sono riuscita a disegnarlo" : make !== undefined ? "non sono riuscita a crearlo" : "il file è rovinato" });
+	parentPort?.postMessage({ error: error instanceof DocumentError || error instanceof PdfError || error instanceof P7mError || error instanceof MakeError || error instanceof ChartError || error instanceof TableError ? error.message : table !== undefined ? "non sono riuscita ad analizzarla" : chart !== undefined ? "non sono riuscita a disegnarlo" : make !== undefined ? "non sono riuscita a crearlo" : "il file è rovinato" });
 }

@@ -9,7 +9,7 @@ import type { WebPage } from "./web-fetch.ts";
  */
 export const WEB_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
 
-const DOCUMENT_TYPE = /^application\/(pdf|x-pdf|octet-stream|msword|vnd\.openxmlformats-officedocument\.[\w.+-]+|vnd\.oasis\.opendocument\.[\w.+-]+|vnd\.ms-[\w.+-]+|zip|force-download|download)$|^binary\/octet-stream$/;
+const DOCUMENT_TYPE = /^application\/(pdf|x-pdf|pkcs7-mime|x-pkcs7-mime|octet-stream|msword|vnd\.openxmlformats-officedocument\.[\w.+-]+|vnd\.oasis\.opendocument\.[\w.+-]+|vnd\.ms-[\w.+-]+|zip|force-download|download)$|^binary\/octet-stream$/;
 
 /** Answers that may be a document, by content type or by the address's extension: these may be larger than a page. */
 export function documentLimit(contentType: string, url?: URL): number | undefined {
@@ -63,7 +63,13 @@ export function dispositionName(header: string | undefined): string | undefined 
 	return name === "" ? undefined : name;
 }
 
-/** Links on a page to documents (PDF, Office, OpenDocument, CSV): absolute, once each, at most `max`. */
+/**
+ * An electronic invoice's file name as the SdI gives it: country, the sender's tax id, «_» and a
+ * progressive (IT01234567890_00001.xml). Other .xml links (feeds, sitemaps) are not documents.
+ */
+const INVOICE_NAME = /\/[A-Z]{2}[A-Za-z0-9]{1,28}_[A-Za-z0-9]{1,5}\.xml$/;
+
+/** Links on a page to documents (PDF, Office, OpenDocument, CSV, signed files, electronic invoices): absolute, once each, at most `max`. */
 export function documentLinks(html: string, base: string, max = 20): string[] {
 	const out = new Set<string>();
 	for (const tag of html.matchAll(/<(?:a|iframe|embed|object)\s[^>]{0,2000}>/gi)) {
@@ -78,7 +84,7 @@ export function documentLinks(html: string, base: string, max = 20): string[] {
 		}
 		if (url.protocol !== "http:" && url.protocol !== "https:") continue;
 		url.hash = "";
-		if (!/\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|csv)$/i.test(url.pathname)) continue;
+		if (!/\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|csv|p7m)$/i.test(url.pathname) && !INVOICE_NAME.test(url.pathname)) continue;
 		out.add(url.toString());
 		if (out.size >= max) break;
 	}

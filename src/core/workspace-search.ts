@@ -1,6 +1,6 @@
 import { DOCUMENT_READER_LIMITS } from "./document-reader.ts";
 import type { DocumentTexts, ReadOptions } from "./document-texts.ts";
-import { DocumentError, type DocumentKind, documentHasWords, documentKind, documentLabel, documentSectionAt, documentSectionLines, looksLikeDocument, oldFormatAdvice } from "./documents.ts";
+import { DocumentError, type DocumentKind, documentHasWords, documentKind, documentLabel, documentSectionAt, documentSectionLines, looksLikeDocument, oldFormatAdvice, signedPlainText } from "./documents.ts";
 import { type FileMatch, matchFile, type Passage, rankMatches } from "./file-search.ts";
 import type { QueryTerm } from "./text-match.ts";
 import { pool } from "./pool.ts";
@@ -159,8 +159,10 @@ async function readText(workspace: Workspace, texts: DocumentTexts, file: Worksp
 	} catch {
 		return { kind: "none" }; // removed or replaced while the search ran
 	}
-	const document = documentKind(file.path, data);
-	if (document !== undefined || looksLikeDocument(file.path)) {
+	const signed = signedPlainText(file.path, data);
+	if (signed !== undefined) return { kind: "text", text: signed.text };
+	// The name first: telling a document by its bytes costs more than a look at its name.
+	if (looksLikeDocument(file.path) || documentKind(file.path, data) !== undefined) {
 		try {
 			const doc = await texts.text(file.path, data, options);
 			if (!documentHasWords(doc.text)) return { kind: "notext" };
