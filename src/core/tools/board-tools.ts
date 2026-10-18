@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { BOARD_LIMITS, type Card, CARD_PRIORITIES, CARD_STATUSES, type CardPriority, type CardStatus, type CheckChange, BoardError, type BoardStore, dueDay, dueIn, dueLabel, dueText, STATUS_LABEL, waitingFor } from "../board.ts";
+import { digestText } from "../board-digest.ts";
 import { type BoardWork, checklistText } from "../board-work.ts";
 import type { AnnieTool } from "../engine.ts";
 
@@ -85,6 +86,17 @@ export function createBoardTools(options: {
 					.sort((a, b) => Number(b.priority === "alta") - Number(a.priority === "alta") || (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.n - b.n);
 				if (cards.length === 0) return args.mine === true ? "Non hai schede assegnate." : "Nessuna scheda.";
 				return fenced(cards.map((c) => line(all, c, seen)).join("\n"));
+			},
+		},
+		{
+			name: "board_summary",
+			description: "The week on the board in a few lines, the same the owner gets on Monday morning: how many schede were closed in the last 7 days, how many are open per column, which are late and which wait for a review. Use it when someone asks how the board or the work is going; board_list for every scheda.",
+			parameters: { type: "object", properties: {}, additionalProperties: false },
+			replaySafe: true,
+			async execute(_args, ctx) {
+				const all = await options.agents();
+				const text = digestText(await visible(ctx.thread), new Date(), (id) => all.find((a) => a.id === id)?.name);
+				return text === undefined ? "La board è vuota: nessuna scheda aperta e nessuna chiusa negli ultimi 7 giorni." : fenced(text);
 			},
 		},
 		{
