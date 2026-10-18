@@ -7,7 +7,7 @@ import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { CASHFLOW_LIMITS, type CashItem, cashflowAgentReads, cashflowCallReads, isSignedAmount, parseItemId, signedCents, validBalance } from "../src/core/cashflow.ts";
 import { buckets, firstBelow, project } from "../src/core/cashflow-projection.ts";
-import { applyChanges, averageSpend, datesOf, dedupe, invoiceFlows, type Movement, quoteFlows, renewalFlows, rollForward } from "../src/core/cashflow-sources.ts";
+import { applyChanges, averageSpend, datesOf, dedupe, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, voceDuplicates } from "../src/core/cashflow-sources.ts";
 import { CashflowStore, latestBalance } from "../src/core/cashflow-store.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
@@ -352,7 +352,9 @@ describe("cashflow sources", () => {
 		expect(rollForward(balance, now, TODAY, [], [], [{ ...canva, charges: [{ date: "2026-10-12", callId: "x", expense: "S-9" }] }], (at) => at.slice(0, 10))).toBeUndefined();
 		expect(rollForward(balance, now, TODAY, [], [e("S-6", "2026-10-13", "12.30", "2026-10-10T10:00:00.000Z")], [canva], (at) => at.slice(0, 10))).toBeUndefined();
 		// Nothing after it: nothing to roll. Older than the longest horizon: never rolled.
-		expect(rollForward({ ...balance, date: "2026-10-17", at: now }, now, TODAY, [], expenses, [], (at) => at.slice(0, 10))).toBeUndefined();
+		expect(rollForward({ ...balance, date: TODAY, at: now }, now, TODAY, [], expenses, [], (at) => at.slice(0, 10))).toBeUndefined();
+		// Said today for yesterday: from the end of yesterday, so today's expense counts (r3-1).
+		expect(rollForward({ ...balance, date: "2026-10-17", at: now }, now, TODAY, [], expenses, [], (at) => at.slice(0, 10))).toMatchObject({ expenses: 500n, expenseCount: 1 });
 		expect(rollForward({ ...balance, date: "2025-10-01" }, now, TODAY, [], expenses, [canva], (at) => at.slice(0, 10))).toBeUndefined();
 	});
 
@@ -1222,6 +1224,73 @@ describe("cashflow, week 55 second round", () => {
 		const list = [voce("C-0001", "Rata mutuo"), voce("C-0002", "Stipendio")];
 		expect(items.findItem({ name: "mutuo" }, list, (i) => i.id, f)).toEqual({ item: list[0] });
 		expect(items.findItem({ name: "mut" }, list, (i) => i.id, f)).toEqual({ error: expect.stringContaining("nessuna voce") });
+	});
+});
+
+describe("cashflow, week 55 third pass", () => {
+	const base = { category: "software e abbonamenti" as const, by: "u", at: NOW.toISOString() };
+	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+	const day = (at: string) => at.slice(0, 10);
+
+	it("r3-1, 3: a backdated balance counts from the end of its day; instants compare as times, and one that does not parse is skipped", () => {
+		const [g1] = register([found("g1.xml", G1)], [], company);
+		const paid = register([found("g1.xml", G1)], [{ invoice: g1?.key as string, all: { by: "u", at: "2026-10-12T10:00:00.000Z" } }], company);
+		const e = (id: string, date: string, amount: string, at: string): Expense => ({ id, date, amount, category: "altro", by: "u", at });
+		const expenses = [
+			e("S-1", "2026-10-14", "40", "2026-10-14T10:00:00.000Z"),
+			// Recorded on the balance's day, before its end: in the balance.
+			e("S-2", "2026-10-10", "9", "2026-10-10T10:00:00.000Z"),
+			// Not an instant: skipped.
+			e("S-3", "2026-10-15", "7", "boh"),
+			// The same instant written with an offset: compared as a time, not as text.
+			e("S-4", "2026-10-16", "3", "2026-10-16T12:00:00+02:00"),
+		];
+		// «Al 10 ottobre avevo 5.000», said today.
+		const r = rollForward({ amount: "5000", date: "2026-10-10", by: "u", at: NOW.toISOString() }, NOW.toISOString(), TODAY, paid, expenses, [], day);
+		expect(r?.incassi.map((x) => [x.invoice.doc.number, x.date])).toEqual([["B-70", "2026-10-12"]]);
+		expect(r).toMatchObject({ expenses: 4300n, expenseCount: 2, net: 122_000n - 4300n });
+		// Said on its own day at 18:00: from then, as before.
+		const same = rollForward({ amount: "5000", date: "2026-10-10", by: "u", at: "2026-10-10T18:00:00.000Z" }, NOW.toISOString(), TODAY, paid, expenses, [], day);
+		expect(same?.expenseCount).toBe(2);
+		// A balance whose own instant does not parse still counts from the end of its day.
+		expect(rollForward({ amount: "5000", date: "2026-10-10", by: "u", at: "x" }, NOW.toISOString(), TODAY, paid, expenses, [], day)?.expenseCount).toBe(2);
+	});
+
+	it("r3-2: only the occurrence of a voce that is a renewal's payment goes, and each renewal payment pairs once", () => {
+		const voce: CashItem = { id: "C-0001", kind: "out", amount: "300", name: "Commercialista", date: "2026-10-20", months: 1, day: 20, by: "u", at: NOW.toISOString() };
+		const renewal: Renewal = { ...base, id: "R-0001", name: "Commercialista Bianchi", amount: "300", months: 3, due: "2026-10-22", day: 22, autoRenew: true, status: "active" };
+		const items = itemFlows([voce], TODAY, "2027-01-16");
+		const ren = renewalFlows([renewal], TODAY, "2027-01-16").movements;
+		const d = voceDuplicates(items, ren);
+		expect(d.duplicates.map((x) => [x.other.date, x.renewal.date])).toEqual([["2026-10-20", "2026-10-22"]]);
+		expect(d.items.map((m) => m.date)).toEqual(["2026-11-20", "2026-12-20"]);
+		// Two voci near one payment: only the closest pairs.
+		const twin: CashItem = { ...voce, id: "C-0002", date: "2026-10-23", months: undefined, day: undefined } as CashItem;
+		const both = voceDuplicates([...itemFlows([voce], TODAY, "2026-10-31"), ...itemFlows([twin], TODAY, "2026-10-31")], ren);
+		expect(both.duplicates.map((x) => x.other.item?.id)).toEqual(["C-0001"]);
+		expect(both.items.map((m) => m.item?.id)).toEqual(["C-0002"]);
+	});
+
+	it("r3-4: a renewal without a provider and a supplier with a word of its name, same amount within 15 days: «forse è lo stesso pagamento», nothing dropped", async () => {
+		const canva: Renewal = { ...base, id: "R-0001", name: "Canva Pro", amount: "12", months: 1, due: "2026-11-01", day: 1, autoRenew: true, status: "active" };
+		const inv = (name: string, due: string): Movement => ({ date: due, kind: "out", cents: 1200n, source: "invoice", due, invoice: { supplier: { name }, customer: { name: "Beta" }, doc: { number: "CV-1" } } as never });
+		const flows = (movements: Movement[]) => ({ movements, late: [], latePay: [], stale: [], undated: { count: 0, in: 0n, out: 0n }, otherCurrency: 0, unreadable: 0, noSide: 0, creditLeft: { in: 0n, out: 0n } });
+		const ren = renewalFlows([canva], TODAY, "2026-12-31");
+		const d = dedupe(flows([inv("Canva Pty Ltd", "2026-11-03")]), ren, [canva], TODAY);
+		expect(d.duplicates).toHaveLength(0);
+		expect(d.maybe.map((x) => x.renewal.date)).toEqual(["2026-11-01"]);
+		expect(d.renewals?.movements).toHaveLength(2);
+		expect(d.invoices.movements).toHaveLength(1);
+		expect(dedupe(flows([inv("Canvas Srl", "2026-11-03")]), ren, [canva], TODAY).maybe).toHaveLength(0);
+		expect(dedupe(flows([inv("Canva Pty Ltd", "2026-11-20")]), ren, [canva], TODAY).maybe.map((x) => x.renewal.date)).toEqual(["2026-12-01"]);
+		const s = setup({ files: { "f/cv.xml": fattura({ name: "Canva Pty Ltd" }, BETA, { number: "CV-1", date: "2026-10-01", total: "12.00", rate: [{ amount: "12.00", due: "2026-11-03" }] }) } });
+		await s.renewal({ op: "add", name: "Canva Pro", amount: "12", frequency: "mensile", due: "01/11/2026", auto_renew: true });
+		await s.run({ op: "set_balance", amount: 1000 });
+		const answer = await s.run({ op: "forecast", include_average_spend: false });
+		expect(answer).toContain("Uscite 24,00 €: fatture da pagare 12,00 €; rinnovi e abbonamenti 12,00 €.");
+		expect(inside(answer)).toContain("Forse doppioni, contati tutti e due:\n• fatt. CV-1 a Canva Pty Ltd, 12,00 €: forse è lo stesso pagamento del 1º novembre di Canva Pro (rinnovo R-0001)");
+		expect(outside(answer)).toContain("Una fattura di un fornitore forse è il pagamento di un rinnovo: per ora conto sia la fattura sia il rinnovo.");
+		expect(outside(answer)).not.toContain("Canva");
 	});
 });
 

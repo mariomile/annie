@@ -17,10 +17,12 @@
  *   of that payment. One waiting for the person's word is said, not put on a day.
  * - Duplicates: a supplier invoice not overdue that is a renewal's payment (the provider's
  *   partita IVA, or its whole name, in the supplier's; the amount within 5%; the closest payment
- *   within min(15 days, half the period)) counts once, as the invoice. An overdue supplier invoice
- *   of an autoPay renewal, due within 5 days of one of its charges, is paid by direct debit. A voce
- *   that is a renewal's payment (5%, a word of the name, within 5 days) counts once, as the renewal.
- *   All are listed.
+ *   within min(15 days, half the period)) counts once, as the invoice. A renewal without a
+ *   provider whose name shares a whole word with the supplier's, at the same amount within 15
+ *   days: maybe the same payment, listed, both counted. An overdue supplier invoice of an autoPay
+ *   renewal, due within 5 days of one of its charges, is paid by direct debit. An occurrence of a
+ *   voce that is a renewal's payment (5%, a word of the name, within 5 days) counts once, as the
+ *   renewal; each renewal payment pairs once, the closest first. All are listed.
  * - Quotes: the latest revision of each accepted quote, what the customer pays less the invoices to
  *   that customer dated from the first revision's date on (each invoice once), expected
  *   QUOTE_PAY_DAYS after acceptance and never before QUOTE_MIN_DAYS from today; accepted more than
@@ -33,7 +35,9 @@
  *   AVERAGE_DAYS, half up to the cent.
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
  *   up to `until`, at the amount of that day.
- * - A balance is brought to now by instant: plus the instalments to collect marked paid after it,
+ * - A balance is brought to now by instant, from min(when it was said, the end of its day in the
+ *   instance's time zone) — a balance said today for 10 October counts what was marked from the
+ *   11th: plus the instalments to collect marked paid after it,
  *   less the expenses recorded after it (dated from its day), less the supplier invoices marked
  *   paid after it that no expense stands for, less the autoPay charges after its day not recorded;
  *   never the voci. Not when the balance is older than CASHFLOW_LIMITS.maxDays.
@@ -238,7 +242,7 @@ function pairDays(r: Renewal): number {
  * the invoice stays. The overdue supplier invoices of an autoPay renewal near one of its charges:
  * paid by direct debit, out of the overdue and of the movements. See the choices above.
  */
-export function dedupe(invoices: InvoiceFlows, renewals: RenewalFlows | undefined, all: readonly Renewal[], today: string): { readonly invoices: InvoiceFlows; readonly renewals: RenewalFlows | undefined; readonly duplicates: readonly Duplicate[]; readonly autoPaid: readonly Movement[] } {
+export function dedupe(invoices: InvoiceFlows, renewals: RenewalFlows | undefined, all: readonly Renewal[], today: string): { readonly invoices: InvoiceFlows; readonly renewals: RenewalFlows | undefined; readonly duplicates: readonly Duplicate[]; readonly maybe: readonly Duplicate[]; readonly autoPaid: readonly Movement[] } {
 	const autoPay = all.filter((r) => r.status === "active" && r.autoPay === true && r.provider !== undefined);
 	const debited = (m: Movement) => {
 		const invoice = m.invoice;
@@ -276,23 +280,56 @@ export function dedupe(invoices: InvoiceFlows, renewals: RenewalFlows | undefine
 		duplicates.push({ other: m, renewal: kept[best] as Movement });
 		kept.splice(best, 1);
 	}
+	// A renewal without a provider and a supplier sharing a whole word of its name: said, nothing dropped.
+	const paired = new Set(duplicates.map((d) => d.other));
+	const asked = new Set<Movement>();
+	const maybe: Duplicate[] = [];
+	for (const m of invoices.movements) {
+		const name = m.invoice?.supplier.name;
+		if (m.kind !== "out" || m.late === true || paired.has(m) || name === undefined) continue;
+		let best: Movement | undefined;
+		let bestDays = Number.POSITIVE_INFINITY;
+		for (const r of kept) {
+			if (asked.has(r) || r.renewal === undefined || r.renewal.provider !== undefined || !similarName(name, r.renewal.name) || !sameAmount(m.cents, r.cents)) continue;
+			const days = Math.abs(daysBetween(m.date, r.date));
+			if (days <= 15 && days < bestDays) {
+				best = r;
+				bestDays = days;
+			}
+		}
+		if (best === undefined) continue;
+		asked.add(best);
+		maybe.push({ other: m, renewal: best });
+	}
 	const fixed: InvoiceFlows = gone.size === 0 ? invoices : { ...invoices, movements: invoices.movements.filter((m) => !gone.has(m)), latePay: invoices.latePay.filter((m) => !gone.has(m)), stale: invoices.stale.filter((m) => !gone.has(m)) };
-	return { invoices: fixed, renewals: renewals === undefined ? undefined : { ...renewals, movements: kept }, duplicates, autoPaid };
+	return { invoices: fixed, renewals: renewals === undefined ? undefined : { ...renewals, movements: kept }, duplicates, maybe, autoPaid };
 }
 
-/** The voci that are a renewal's payment (see the choices above): their movements go, the renewal's stay; each pair once. */
+/** The occurrences of voci that are a renewal's payment (see the choices above): those occurrences go, the renewal's stay; each renewal payment pairs once, the closest. */
 export function voceDuplicates(items: readonly Movement[], renewals: readonly Movement[]): { readonly items: Movement[]; readonly duplicates: Duplicate[] } {
-	const gone = new Set<string>();
+	const gone = new Set<Movement>();
+	const used = new Set<Movement>();
 	const duplicates: Duplicate[] = [];
 	for (const m of items) {
 		const voce = m.item;
-		if (voce === undefined || voce.kind !== "out" || gone.has(voce.id)) continue;
-		const twin = renewals.find((r) => r.renewal !== undefined && sameAmount(m.cents, r.cents) && (similarName(voce.name, r.renewal.name) || (r.renewal.provider !== undefined && similarName(voce.name, r.renewal.provider))) && Math.abs(daysBetween(m.date, r.date)) <= NEAR_DAYS);
-		if (twin === undefined) continue;
-		gone.add(voce.id);
-		duplicates.push({ other: m, renewal: twin });
+		if (voce === undefined || voce.kind !== "out") continue;
+		let best: Movement | undefined;
+		let bestDays = Number.POSITIVE_INFINITY;
+		for (const r of renewals) {
+			if (used.has(r) || r.renewal === undefined || !sameAmount(m.cents, r.cents)) continue;
+			if (!similarName(voce.name, r.renewal.name) && !(r.renewal.provider !== undefined && similarName(voce.name, r.renewal.provider))) continue;
+			const days = Math.abs(daysBetween(m.date, r.date));
+			if (days <= NEAR_DAYS && days < bestDays) {
+				best = r;
+				bestDays = days;
+			}
+		}
+		if (best === undefined) continue;
+		used.add(best);
+		gone.add(m);
+		duplicates.push({ other: m, renewal: best });
 	}
-	return { items: items.filter((m) => m.item === undefined || !gone.has(m.item.id)), duplicates };
+	return { items: items.filter((m) => !gone.has(m)), duplicates };
 }
 
 export type QuoteFlows = {
@@ -511,7 +548,14 @@ export type Rolled = {
  */
 export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string): Rolled | undefined {
 	if (daysBetween(balance.date, today) > CASHFLOW_LIMITS.maxDays) return undefined;
-	const after = (at: string) => at > balance.at && at <= now;
+	// From min(when it was said, the end of its day): an instant counts when it is after the saying, or on a later local day; never after now. Instants that do not parse are skipped.
+	const said = Date.parse(balance.at);
+	const until = Date.parse(now);
+	const after = (at: string) => {
+		const t = Date.parse(at);
+		if (Number.isNaN(t) || Number.isNaN(until) || t > until) return false;
+		return (!Number.isNaN(said) && t > said) || dayOf(at) > balance.date;
+	};
 	const incassi: RolledInvoice[] = [];
 	const paidPassive: RolledInvoice[] = [];
 	const recorded = expenses.filter((e) => after(e.at) && e.date >= balance.date);

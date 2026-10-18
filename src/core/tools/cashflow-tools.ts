@@ -372,7 +372,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const renewalBook = options.renewals.read();
 		const rawInvoices = invoiceFlows(invoices, day, end, o.includeOverdue);
 		const rawRenewals = renewalBook.broken ? undefined : renewalFlows(renewalBook.renewals, day, end);
-		const { invoices: inv, renewals: ren, duplicates: invoiceTwins, autoPaid } = dedupe(rawInvoices, rawRenewals, renewalBook.broken ? [] : renewalBook.renewals, day);
+		const { invoices: inv, renewals: ren, duplicates: invoiceTwins, maybe, autoPaid } = dedupe(rawInvoices, rawRenewals, renewalBook.broken ? [] : renewalBook.renewals, day);
 		// A voce that is a renewal's payment: the renewal counts.
 		const voci = voceDuplicates(itemFlows(book.items, day, end), ren?.movements ?? []);
 		const duplicates = [...invoiceTwins, ...voci.duplicates];
@@ -400,6 +400,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 			invoices: inv,
 			invoiceNotes: { companySet: invoiceBook.company !== undefined, broken: invoiceBook.broken, unread: scan.unread.length, found: invoices.length },
 			duplicates,
+			maybe,
 			autoPaid,
 			...(ren === undefined ? {} : { renewals: ren }),
 			renewalsBroken: renewalBook.broken,

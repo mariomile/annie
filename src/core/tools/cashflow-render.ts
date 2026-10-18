@@ -89,6 +89,8 @@ export type View = {
 	readonly invoiceNotes: { readonly companySet: boolean; readonly broken: boolean; readonly unread: number; readonly found: number };
 	/** A supplier invoice that is a renewal's payment (the invoice counts), or a voce that is (the renewal counts). */
 	readonly duplicates: readonly Duplicate[];
+	/** A supplier invoice and a renewal without a provider that may be one payment: both counted, asked about. */
+	readonly maybe?: readonly Duplicate[];
 	readonly autoPaid: readonly Movement[];
 	readonly renewals?: RenewalFlows;
 	readonly renewalsBroken: boolean;
@@ -226,10 +228,10 @@ function rolledRow(r: RolledInvoice, today: string, kind: Kind): string {
 }
 
 /** «fatt. CV-1 a Canva Pty Ltd, 12,00 €: è il pagamento del 1º novembre di Canva Pro (rinnovo R-0001)», to be fenced. */
-function duplicateRow(d: Duplicate, today: string): string {
+function duplicateRow(d: Duplicate, today: string, maybe = false): string {
 	const r = d.renewal.renewal;
 	const of = r === undefined ? "un rinnovo" : `${r.name} (rinnovo ${r.id})`;
-	return `• ${movementLabel(d.other, today)}, ${euros(d.other.cents)}: è il pagamento ${withNearDate("del", d.renewal.date, today)} di ${of}`;
+	return `• ${movementLabel(d.other, today)}, ${euros(d.other.cents)}: ${maybe ? "forse è lo stesso pagamento" : "è il pagamento"} ${withNearDate("del", d.renewal.date, today)} di ${of}`;
 }
 
 const staleIn = (v: View) => (v.invoices?.stale ?? []).filter((m) => m.kind === "in");
@@ -248,6 +250,7 @@ function forecastSections(p: Projection, v: View): Section[] {
 		...section(`Da incassare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleIn(v).map(row)),
 		...section(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleOut(v).map(row)),
 		...section("Probabili doppioni:", v.duplicates.map((d) => duplicateRow(d, today))),
+		...section("Forse doppioni, contati tutti e due:", (v.maybe ?? []).map((d) => duplicateRow(d, today, true))),
 		...section(`Preventivi accettati da più di ${QUOTE_STALE_DAYS} giorni:`, (v.quotes?.old ?? []).map((o) => `• ${o.quote.customer.name}, preventivo accettato ${o.quote.number}, ${euros(o.cents)} non ancora fatturati. È ancora da fare o da fatturare?`)),
 	];
 }
@@ -266,6 +269,8 @@ function summaryLines(v: View): string[] {
 	if (oldOut.length > 0) out.push(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni e fuori dalla previsione: ${euros(sum(oldOut))} (${rate(oldOut.length)}). ${n1(oldOut.length, "È stata pagata", "Sono state pagate")}?`);
 	if (v.autoPaid.length > 0) out.push(`${n1(v.autoPaid.length, "Una fattura scaduta di un fornitore ha", "# fatture scadute di fornitori hanno")} l'addebito automatico di un rinnovo: ${n1(v.autoPaid.length, "la conto pagata", "le conto pagate")}.`);
 	if (v.duplicates.length > 0) out.push(`Probabili doppioni, contati una volta sola: ${v.duplicates.length}.`);
+	const maybe = v.maybe?.length ?? 0;
+	if (maybe > 0) out.push(`${n1(maybe, "Una fattura di un fornitore forse è il pagamento di un rinnovo", "# fatture di fornitori forse sono il pagamento di un rinnovo")}: per ora conto sia la fattura sia il rinnovo. Chiedi a chi ti scrive se è lo stesso pagamento: se sì, va indicato il fornitore nel rinnovo.`);
 	const old = v.quotes?.old ?? [];
 	if (old.length > 0) out.push(`${n1(old.length, "Un preventivo accettato", "# preventivi accettati")} da più di ${QUOTE_STALE_DAYS} giorni non ${n1(old.length, "è contato", "sono contati")}: ${euros(sum(old))}. Chiedi a chi ti scrive se ${n1(old.length, "è", "sono")} ancora da fare o da fatturare.`);
 	return out;
