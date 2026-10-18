@@ -41,6 +41,8 @@ export type Card = {
 	readonly assignee?: string;
 	/** The conversation of the assignee where it is worked, and the person it is with. */
 	readonly work?: { readonly agent: string; readonly threadId: string; readonly personId: string };
+	/** «Esegui da solo» (ADR 0058): the agente is told to go on after each reply, `rounds` times so far since `since`. */
+	readonly auto?: { readonly rounds: number; readonly since: string };
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
 	readonly updatedAt: string;
@@ -59,6 +61,9 @@ export const BOARD_LIMITS = {
 	description: 4000,
 	comment: 2000,
 	events: 100,
+	/** «Esegui da solo»: at most this many «go on» per start, and for at most this long. */
+	autoRounds: 10,
+	autoMs: 2 * 60 * 60 * 1000,
 } as const;
 
 export class BoardError extends Error {
@@ -73,6 +78,7 @@ export type CardChange = {
 	/** null: nobody. */
 	readonly assignee?: string | null;
 	readonly work?: Card["work"] | null;
+	readonly auto?: Card["auto"] | null;
 	readonly comment?: string;
 	/** Refused unless the scheda is still in this column: two starts at once start it once. */
 	readonly from?: CardStatus;
@@ -148,6 +154,10 @@ export class BoardStore {
 			if (change.work !== undefined) {
 				const { work: _work, ...rest } = next;
 				next = change.work === null ? rest : { ...rest, work: change.work };
+			}
+			if (change.auto !== undefined) {
+				const { auto: _auto, ...rest } = next;
+				next = change.auto === null ? rest : { ...rest, auto: change.auto };
 			}
 			if (change.status !== undefined && change.status !== card.status) {
 				next = { ...next, status: change.status };

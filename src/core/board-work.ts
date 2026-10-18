@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore } from "./board.ts";
+import { BOARD_LIMITS, type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore } from "./board.ts";
 
 /**
  * What happens on the board besides storing it (ADR 0050): a person handing a scheda to an
@@ -54,10 +54,11 @@ export class BoardWork {
 	 * by an agente (from a chat, perhaps prompted by something it read) it waits in «Da fare» for
 	 * a person to look at it and start it.
 	 */
-	async create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string }, by: CardActor, personId: string | undefined): Promise<Card> {
-		if (input.assignee !== undefined) await this.checkAgent(input.assignee, by.kind === "person" ? personId : undefined);
-		const card = this.deps.store.create(input, by);
-		return input.assignee !== undefined && by.kind === "person" && personId !== undefined ? this.start(card, personId, by) : card;
+	async create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; auto?: boolean }, by: CardActor, personId: string | undefined): Promise<Card> {
+		const { auto, ...fields } = input;
+		if (fields.assignee !== undefined) await this.checkAgent(fields.assignee, by.kind === "person" ? personId : undefined);
+		const card = this.deps.store.create(fields, by);
+		return fields.assignee !== undefined && by.kind === "person" && personId !== undefined ? this.start(card, personId, by, auto) : card;
 	}
 
 	/**
@@ -78,18 +79,15 @@ export class BoardWork {
 		const sentBack = person !== undefined && change.status === "in_corso" && (before.status === "da_rivedere" || before.status === "fatto");
 		const toWorker = work !== undefined && person === work.personId && before.assignee === work.agent && (await this.deps.canChat(work.agent, person));
 		const status = (change.assignee === null && before.status === "in_corso") || (sentBack && !toWorker) ? { status: "da_fare" as const } : {};
-		const card = this.deps.store.update(before.id, { ...change, ...status }, by);
-		if (by.kind === "agent" && card.status === "da_rivedere" && before.status !== "da_rivedere") {
-			// Who worked on it with this agente reviews it; with nobody, the owners.
-			const people = work !== undefined && work.agent === card.assignee ? [work.personId] : await this.deps.owners();
-			try {
-				this.events.emit("review", { card, people } satisfies BoardReview);
-			} catch {
-				// A notice that fails does not undo the move: the scheda is in «Da rivedere».
-			}
-		}
+		if (change.auto !== undefined && (by.kind !== "person" || (work !== undefined && !toWorker))) throw new BoardError("Decide se l'agente lavora da solo chi ci lavora con lui");
+		// Sent back to an agente working alone: it starts counting again.
+		const again = sentBack && toWorker && before.auto !== undefined ? { auto: { rounds: 0, since: new Date().toISOString() } } : {};
+		const card = this.deps.store.update(before.id, { ...change, ...status, ...again }, by);
+		if (by.kind === "agent" && card.status === "da_rivedere" && before.status !== "da_rivedere") await this.reviewed(card);
 		if (handedOver && person !== undefined) return this.start(card, person, by);
 		if (!toWorker || work === undefined) return card;
+		// Turned on while it waits for an answer: it goes on at once.
+		if (change.auto && before.auto === undefined && card.status === "in_corso") await this.tell(card, goOn(card));
 		const comment = change.comment?.trim();
 		if (sentBack) {
 			const name = (await this.deps.personName(work.personId)) ?? "Chi te l'ha affidata";
@@ -102,23 +100,62 @@ export class BoardWork {
 	 * Start the work on a scheda waiting in «Da fare», with this person: claimed first, so two
 	 * presses of Avvia start it once; back in «Da fare» if the agente cannot be reached.
 	 */
-	async startWaiting(id: string, personId: string, by: CardActor): Promise<Card> {
+	async startWaiting(id: string, personId: string, by: CardActor, auto?: boolean): Promise<Card> {
 		const card = this.deps.store.get(id);
 		if (card === undefined) throw new BoardError("Scheda inesistente");
 		if (card.assignee === undefined) throw new BoardError("Assegna prima la scheda a un agente");
 		await this.checkAgent(card.assignee, personId);
 		const claimed = this.deps.store.update(card.id, { from: "da_fare", status: "in_corso" }, by);
-		return this.start(claimed, personId, by);
+		return this.start(claimed, personId, by, auto);
 	}
 
-	/** Open (or reopen) the conversation and hand the brief over; if that fails, back to «Da fare». */
-	private async start(card: Card, personId: string, by: CardActor): Promise<Card> {
+	/**
+	 * «Esegui da solo» (ADR 0058): after each reply of the agente in the conversation of a scheda
+	 * still In corso, it is told to go on, as long as rounds and time last; then the scheda goes to
+	 * «Da rivedere» with what happened, for a person to look at. `deliveryId` keeps a reply sent
+	 * again after a restart from counting twice.
+	 */
+	async afterReply(agent: string, threadId: string, deliveryId: string): Promise<void> {
+		if (this.seen.has(deliveryId)) return;
+		this.seen.add(deliveryId);
+		if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value as string);
+		const card = this.deps.store.list().find((c) => c.work?.agent === agent && c.work.threadId === threadId && c.assignee === agent);
+		if (card?.auto === undefined || card.status !== "in_corso") return;
+		const self: CardActor = { kind: "agent", id: agent };
+		const over = card.auto.rounds >= BOARD_LIMITS.autoRounds || Date.now() - Date.parse(card.auto.since) > BOARD_LIMITS.autoMs;
+		if (over) {
+			const stopped = this.deps.store.update(card.id, { status: "da_rivedere", comment: `Lavorando da solo si è fermato dopo ${card.auto.rounds} giri senza spostarla in «Da rivedere»: guarda la conversazione e decidi se rimandarla indietro.` }, self);
+			return this.reviewed(stopped);
+		}
+		const next = this.deps.store.update(card.id, { auto: { ...card.auto, rounds: card.auto.rounds + 1 } }, self);
+		await this.tell(next, goOn(card));
+	}
+
+	private readonly seen = new Set<string>();
+
+	/** Moved to «Da rivedere» by its agente: who worked on it with this agente reviews it; with nobody, the owners. */
+	private async reviewed(card: Card): Promise<void> {
+		const work = card.work;
+		const people = work !== undefined && work.agent === card.assignee ? [work.personId] : await this.deps.owners();
+		try {
+			this.events.emit("review", { card, people } satisfies BoardReview);
+		} catch {
+			// A notice that fails does not undo the move: the scheda is in «Da rivedere».
+		}
+	}
+
+	/**
+	 * Open (or reopen) the conversation and hand the brief over; if that fails, back to «Da fare».
+	 * `auto` turns «Esegui da solo» on or off; left out, it stays as it was, counting again.
+	 */
+	private async start(card: Card, personId: string, by: CardActor, auto?: boolean): Promise<Card> {
 		const agent = card.assignee as string;
 		await this.checkAgent(agent, personId);
 		const reuse = card.work?.agent === agent && card.work.personId === personId ? card.work.threadId : undefined;
 		try {
 			const threadId = await this.deps.openThread(agent, personId, `#${card.n} ${card.title}`, reuse);
-			const started = this.deps.store.update(card.id, { work: { agent, threadId, personId }, status: "in_corso" }, by);
+			const alone = auto ?? card.auto !== undefined;
+			const started = this.deps.store.update(card.id, { work: { agent, threadId, personId }, status: "in_corso", auto: alone ? { rounds: 0, since: new Date().toISOString() } : null }, by);
 			await this.deps.post(agent, threadId, personId, cardBrief(started));
 			return started;
 		} catch (error) {
@@ -144,6 +181,11 @@ export class BoardWork {
 	}
 }
 
+/** «Esegui da solo»: what the agente is told after each reply. */
+function goOn(card: Card): string {
+	return `[Scheda #${card.n}] Vai avanti da solo: finché la scheda è In corso nessuno ti risponde. Fai il passo successivo; quando hai finito, o se ti manca qualcosa di indispensabile, spostala in «Da rivedere» con board_update e un riassunto.`;
+}
+
 /**
  * The brief an agente gets when a scheda is handed to it. A scheda an agente wrote is fenced:
  * the person who started it chose to, but its words are still the agente's, not theirs.
@@ -155,6 +197,9 @@ export function cardBrief(card: Card): string {
 	return [
 		`[Scheda #${card.n} dalla board] ${card.title}`,
 		description,
+		card.auto === undefined
+			? undefined
+			: "Lavori da solo: chi te l'ha affidata non risponde finché la scheda è In corso, quindi non fare domande e decidi tu con buon senso. Ti dirò io di andare avanti dopo ogni tua risposta.",
 		"Lavoraci in questa conversazione. Quando hai finito, scrivi qui il risultato e sposta la scheda in «Da rivedere» con board_update, con un riassunto di una o due righe: chi te l'ha affidata la rivede e la chiude. Se ti blocchi o ti manca qualcosa, dillo qui e lascia un commento sulla scheda.",
 	]
 		.filter((x) => x !== undefined)

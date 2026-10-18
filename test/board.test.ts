@@ -232,4 +232,81 @@ describe("the board (ADR 0050)", () => {
 		// With nobody from the console, only its own schede.
 		expect(await tool("ricerca", "board_list").execute({}, { ...(ctx() as object), thread: { channel: "telegram", threadId: "7" } } as never)).not.toContain("Riservata");
 	});
+
+	describe("«Esegui da solo» (ADR 0058)", () => {
+		it("after each reply the agente is told to go on; moved to «Da rivedere», it stops", async () => {
+			const { work, store, posts } = setup();
+			const reviews: unknown[] = [];
+			work.events.on("review", (r) => reviews.push(r));
+			const card = await work.create({ title: "Fornitori carta", assignee: "ricerca", auto: true }, anna, "p_anna");
+			expect(card.auto).toMatchObject({ rounds: 0 });
+			expect(posts[0]?.text).toMatch(/Lavori da solo: .*non fare domande/);
+			await work.afterReply("ricerca", "t1", "d1");
+			expect(posts[1]).toMatchObject({ agent: "ricerca", threadId: "t1", personId: "p_anna" });
+			expect(posts[1]?.text).toMatch(/^\[Scheda #1\] Vai avanti da solo/);
+			expect(store.get(card.id)?.auto?.rounds).toBe(1);
+			// The same reply again (a restart): counted once.
+			await work.afterReply("ricerca", "t1", "d1");
+			expect(posts).toHaveLength(2);
+			// Another conversation, or another agente: nothing.
+			await work.afterReply("ricerca", "t9", "d2");
+			await work.afterReply("vendite", "t1", "d3");
+			expect(posts).toHaveLength(2);
+			await work.change(card.id, { status: "da_rivedere", comment: "Tre preventivi" }, ricerca, undefined);
+			expect(reviews).toHaveLength(1);
+			await work.afterReply("ricerca", "t1", "d4");
+			expect(posts).toHaveLength(2);
+		});
+
+		it("out of rounds, or of time: to «Da rivedere» with what happened, for the person to look at", async () => {
+			const { work, store, posts } = setup();
+			const reviews: { card: { status: string }; people: string[] }[] = [];
+			work.events.on("review", (r) => reviews.push(r));
+			const card = await work.create({ title: "x", assignee: "ricerca", auto: true }, anna, "p_anna");
+			for (let i = 0; i < BOARD_LIMITS.autoRounds; i++) await work.afterReply("ricerca", "t1", `d${i}`);
+			expect(posts).toHaveLength(1 + BOARD_LIMITS.autoRounds);
+			expect(store.get(card.id)?.status).toBe("in_corso");
+			await work.afterReply("ricerca", "t1", "last");
+			const stopped = store.get(card.id);
+			expect(stopped?.status).toBe("da_rivedere");
+			expect(stopped?.events.at(-1)).toMatchObject({ kind: "comment", by: ricerca, text: expect.stringMatching(/dopo 10 giri/) });
+			expect(reviews).toEqual([{ card: expect.objectContaining({ status: "da_rivedere" }), people: ["p_anna"] }]);
+			expect(posts).toHaveLength(1 + BOARD_LIMITS.autoRounds);
+			// Sent back: it counts again from zero.
+			await work.change(card.id, { status: "in_corso", comment: "Manca il terzo" }, anna, "p_anna");
+			expect(store.get(card.id)?.auto?.rounds).toBe(0);
+			// Time: two hours after it started, the next reply stops it.
+			const since = new Date(Date.now() - BOARD_LIMITS.autoMs - 1000).toISOString();
+			store.update(card.id, { auto: { rounds: 0, since } }, anna);
+			await work.afterReply("ricerca", "t1", "late");
+			expect(store.get(card.id)?.status).toBe("da_rivedere");
+		});
+
+		it("without it, a reply changes nothing; turned on while it works, the agente goes on at once", async () => {
+			const { work, store, posts } = setup();
+			const card = await work.create({ title: "x", assignee: "ricerca" }, anna, "p_anna");
+			expect(card.auto).toBeUndefined();
+			expect(posts[0]?.text).not.toMatch(/Lavori da solo/);
+			await work.afterReply("ricerca", "t1", "d1");
+			expect(posts).toHaveLength(1);
+			await work.change(card.id, { auto: { rounds: 0, since: new Date().toISOString() } }, anna, "p_anna");
+			expect(posts[1]?.text).toMatch(/Vai avanti da solo/);
+			await work.change(card.id, { auto: null }, anna, "p_anna");
+			expect(store.get(card.id)?.auto).toBeUndefined();
+			await work.afterReply("ricerca", "t1", "d2");
+			expect(posts).toHaveLength(2);
+		});
+
+		it("who decides: the person working with the agente, never the agente; Avvia can turn it on", async () => {
+			const { work, store } = setup({ canChat: async (agent, person) => (person === "p_anna" || person === "p_bea") && agent !== "vendite" });
+			const card = await work.create({ title: "x", assignee: "ricerca" }, anna, "p_anna");
+			const on = { auto: { rounds: 0, since: new Date().toISOString() } };
+			await expect(work.change(card.id, on, ricerca, undefined)).rejects.toThrow(/Decide se l'agente lavora da solo/);
+			await expect(work.change(card.id, on, { kind: "person", id: "p_bea" }, "p_bea")).rejects.toThrow(/Decide se l'agente lavora da solo/);
+			const waiting = await work.create({ title: "y", assignee: "ricerca" }, ricerca, undefined);
+			const started = await work.startWaiting(waiting.id, "p_anna", anna, true);
+			expect(started).toMatchObject({ status: "in_corso", auto: { rounds: 0 } });
+			expect(store.get(card.id)?.auto).toBeUndefined();
+		});
+	});
 });
