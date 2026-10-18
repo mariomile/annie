@@ -39,7 +39,7 @@ Caso → expected:
 
 Metriche e soglie (spec §7.2): schema 100%; micro-F1 campi ≥ 0.85; exact-match lead ≥ 0.60; classificazione accuracy (proposta ≥ 0.95, nessuno spam classificato preventivo); check deterministici bozza 100% su `prices`, `register`, `mustAsk`, `mustNotMention`; judge media ≥ 3.5.
 
-Distribuzione: 5 completi · 5+1 dati mancanti (033: tenant con P.IVA obbligatoria) · 3 registro · 3 prezzo · 2 multi + 1 multi su thread · 1 allegato · 2 lingua · 2 spam + 3 non commerciali (024, 025, 034) · 2 thread · 2 titoli/PII + 1 PII forte (035) · 1 encoding · 1 mittente invalido · 1 duplicato. Totale 35.
+Distribuzione: 5 completi · 5+1 dati mancanti (033: tenant con P.IVA obbligatoria) · 3 registro · 3 prezzo · 2 multi + 1 multi su thread · 1 allegato · 2 lingua · 2 spam + 3 non commerciali (024, 025, 034) · 2 thread · 2 titoli/PII + 1 PII forte (035) · 1 encoding · 1 mittente invalido · 1 duplicato · 2 P.IVA errata (036 italiana, 037 estera in inglese). Totale 37.
 
 ## Copertura: criteri di accettazione e casi limite → casi
 
@@ -50,7 +50,7 @@ Distribuzione: 5 completi · 5+1 dati mancanti (033: tenant con P.IVA obbligator
 | §7.1-3 Allowlist (A8: ignorato e registrato anche su pratica chiusa) | — | test motore (non dataset) |
 | §7.1-4 Idempotenza ingresso | 032 (dopo 001) | 0 pratiche/upsert extra |
 | §7.1-5..10 Idempotenza invio, Approva/Modifica/Scarta, Modifica in linea, crash, doppione, tenant | — | test motore/integrazione (Ship), non qualità modello |
-| §7.2-11 Schema lead 100% | tutti con lead (27 casi), 030 | Ajv su `lead.schema.json` |
+| §7.2-11 Schema lead 100% | tutti con lead (32 casi), 030 | Ajv su `lead.schema.json` |
 | §7.2-12 Estrazione F1/exact | 001–021, 026–031 | confronto gold |
 | §7.2-13 Dati mancanti → domande, niente prezzi | 006, 007, 008, 009, 010, 012, 016, 018, 019, 021, 029 | `mustAsk` + `prices` |
 | §7.2-14 Multi-richiesta: 1 pratica, 1 upsert, bozza a punti | 017, 018, (027 su thread) | `multiRequest` + flow |
@@ -62,6 +62,7 @@ Distribuzione: 5 completi · 5+1 dati mancanti (033: tenant con P.IVA obbligator
 | §6 Stessa mail al restart | 032 | flow |
 | §6 Mail senza mittente valido (A2) | 031 | `failed`, solo log, avviso senza pulsanti, nessun lead |
 | §6 Dati mancanti (qty, sede, P.IVA, product) | 006 qty · 007 sede · 033 P.IVA (tenant) · 008 P.IVA non chiesta · 009 product · 010 più campi | mustAsk |
+| P.IVA errata al controllo formale (offline) | 036 italiana con etichetta, IT e spazi · 037 tedesca con la forma sbagliata | `vatNumberInvalid` in mustAsk, numero mai ripetuto, richiesta di ricontrollo esente da `mustNotAskVatNumber`; `run.ts` confronta la P.IVA dell'euristica col gold |
 | §6 Più richieste nella stessa mail | 017, 018 | multiRequest |
 | §6 Risposta a thread già gestito | 026, 027 | flow + scheda «Nuova mail sul thread» |
 | §6 Spam / non-preventivo | 022 newsletter · 023 phishing con esca «preventivo» · 024 fornitore · 025 amministrativa | classificazione |

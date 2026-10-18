@@ -16,6 +16,10 @@ export type PraticaStatus =
 	| "failed"
 	| "logged";
 
+/**
+ * What the draft asks the customer for. vatNumberInvalid: a VAT number was given but fails the
+ * formal check (tax-ids.ts, offline): asked to double-check it, and never kept as vatNumber.
+ */
 export type MissingField =
 	| "fullName"
 	| "company"
@@ -24,6 +28,7 @@ export type MissingField =
 	| "quantity"
 	| "deliverySite"
 	| "vatNumber"
+	| "vatNumberInvalid"
 	| "budget"
 	| "deadline";
 
@@ -47,6 +52,7 @@ export type LeadFields = {
 	readonly productOrService: string | null;
 	readonly quantity?: string | null;
 	readonly urgency?: string | null;
+	/** Only a number that passes the formal check, normalized (Italian: 11 digits; foreign: with its prefix). */
 	readonly vatNumber?: string | null;
 	readonly originalLanguage?: "it" | "en" | "it+en" | "other";
 	readonly missingFields: readonly MissingField[];

@@ -1,7 +1,8 @@
 /**
  * Deterministic eval runner for PR CI (no model keys).
  * Builds fixture drafts from gold expectations and runs checks.json
- * (prices, register, mustAsk, multi, PII).
+ * (prices, register, mustAsk, multi, PII), and checks the VAT number the heuristics keep or
+ * flag as wrong against the gold lead.
  */
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -80,6 +81,7 @@ const checks = await loadChecks(root);
 let checkFails = 0;
 let schemaFails = 0;
 let flowFails = 0;
+let vatFails = 0;
 const report: unknown[] = [];
 
 for (const c of cases) {
@@ -188,18 +190,28 @@ for (const c of cases) {
 	}
 
 	classifyInbound(mail);
-	extractLead(mail, g.tenantConfig);
+	const extracted = extractLead(mail, g.tenantConfig);
+	// The VAT number is checked on paper by the heuristics too: kept only when written right, a wrong one asked again.
+	if (g.lead) {
+		const goldVat = (g.lead.vatNumber as string | null | undefined) ?? null;
+		const goldInvalid = ((g.lead.missingFields as string[] | undefined) ?? []).includes("vatNumberInvalid");
+		const invalid = extracted.missingFields.includes("vatNumberInvalid");
+		if (extracted.vatNumber !== goldVat || invalid !== goldInvalid) {
+			vatFails++;
+			report.push({ id: c.id, error: "vatNumber", expected: { vatNumber: goldVat, invalid: goldInvalid }, got: { vatNumber: extracted.vatNumber, invalid } });
+		}
+	}
 }
 
 const outDir = join(root, "last-report");
 await mkdir(outDir, { recursive: true });
 await writeFile(
 	join(outDir, "last-report.json"),
-	`${JSON.stringify({ cases: cases.length, checkFails, schemaFails, flowFails, report }, null, "\t")}\n`,
+	`${JSON.stringify({ cases: cases.length, checkFails, schemaFails, flowFails, vatFails, report }, null, "\t")}\n`,
 );
 
-console.log(`eval:segreteria cases=${cases.length} checkFails=${checkFails} schemaFails=${schemaFails} flowFails=${flowFails}`);
-if (checkFails > 0 || schemaFails > 0 || flowFails > 0) {
+console.log(`eval:segreteria cases=${cases.length} checkFails=${checkFails} schemaFails=${schemaFails} flowFails=${flowFails} vatFails=${vatFails}`);
+if (checkFails > 0 || schemaFails > 0 || flowFails > 0 || vatFails > 0) {
 	console.error(JSON.stringify(report.filter((r) => r && typeof r === "object" && ("error" in r || "checkFails" in r)), null, 2));
 	process.exit(1);
 }

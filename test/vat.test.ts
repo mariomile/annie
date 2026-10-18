@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { readOnlyInBriefs } from "../src/core/brief.ts";
 import type { ToolContext } from "../src/core/engine.ts";
-import { checkCodiceFiscale, EU_VAT_COUNTRIES, euVatProblem, normalizeTaxId, parseTaxId, partitaIvaProblem } from "../src/core/tax-ids.ts";
+import { checkCodiceFiscale, checkVatNumber, EU_VAT_COUNTRIES, euVatProblem, normalizeTaxId, parseTaxId, partitaIvaProblem } from "../src/core/tax-ids.ts";
 import { createVatTools } from "../src/core/tools/vat-tools.ts";
 import { fence, inertMarkers, untrusted } from "../src/core/untrusted.ts";
 import { answerOf, DEFAULT_VIES_URL, viesCheckUrl, viesClient, ViesError, type ViesOptions } from "../src/core/vies.ts";
@@ -263,8 +263,9 @@ describe("tax ids: EU VAT numbers", () => {
 		expect(parseTaxId("123456789", "gr")).toEqual({ kind: "vat", country: "EL", number: "123456789" });
 		expect(parseTaxId("123456789", "DE")).toEqual({ kind: "vat", country: "DE", number: "123456789" });
 		expect(parseTaxId("00743110157")).toEqual({ kind: "vat", country: "IT", number: "00743110157" });
-		expect(parseTaxId("GB123456789")).toEqual({ kind: "unknown", problem: "il Regno Unito non è più nel VIES dal 2021: lì c'è solo l'Irlanda del Nord, con il prefisso XI" });
-		expect(parseTaxId("CHE123456789", "CH")).toMatchObject({ kind: "unknown", problem: expect.stringContaining("Svizzera") });
+		expect(parseTaxId("GB123456789")).toEqual({ kind: "outside_vies", country: "GB", number: "123456789", problem: "il Regno Unito non è più nel VIES dal 2021: lì c'è solo l'Irlanda del Nord, con il prefisso XI" });
+		expect(parseTaxId("CHE123456789", "CH")).toMatchObject({ kind: "outside_vies", country: "CH", number: "E123456789", problem: expect.stringContaining("Svizzera") });
+		expect(parseTaxId("123456789", "NO")).toMatchObject({ kind: "outside_vies", country: "NO", number: "123456789" });
 		expect(parseTaxId("DE12345678", "FR")).toEqual({ kind: "unknown", problem: "il numero comincia con DE, ma il paese indicato è FR" });
 		expect(parseTaxId("DE123456789", "XX")).toMatchObject({ kind: "unknown", problem: expect.stringContaining("XX non è un paese del VIES") });
 		// A French number's check characters may look like a prefix.
@@ -273,6 +274,61 @@ describe("tax ids: EU VAT numbers", () => {
 		expect(parseTaxId("123456789")).toEqual({ kind: "unknown", problem: "il numero ha 9 cifre: una partita IVA italiana ne ha 11; per un numero estero serve il prefisso del paese (DE, FR…)" });
 		expect(parseTaxId("")).toEqual({ kind: "unknown", problem: "manca il numero" });
 		expect(parseTaxId("IT<script>")).toMatchObject({ kind: "unknown", problem: expect.stringContaining("caratteri") });
+	});
+});
+
+describe("tax ids: a VAT number as a customer writes it", () => {
+	const good = withCheckDigit("0123456090");
+	const wrong = `${good.slice(0, 10)}${(Number(good[10]) + 1) % 10}`;
+
+	it("keeps an Italian one as 11 digits, whatever label, prefix and separators came with it", () => {
+		for (const text of [good, `IT ${good}`, `P.IVA: ${good.slice(0, 3)} ${good.slice(3, 6)} ${good.slice(6, 9)} ${good.slice(9)}`, `partita IVA n. it${good}`]) {
+			expect(checkVatNumber(text), text).toEqual({ number: good });
+		}
+	});
+
+	it("says what is wrong with a mistyped or short one", () => {
+		expect(checkVatNumber(`IT ${wrong}`)).toEqual({ problem: expect.stringContaining("cifra di controllo") });
+		expect(checkVatNumber("0123456789")).toEqual({ problem: expect.stringContaining("10 cifre") });
+		expect(checkVatNumber("P.IVA in arrivo")).toHaveProperty("problem");
+	});
+
+	it("keeps a foreign one with the right shape, prefix included; flags a wrong shape", () => {
+		expect(checkVatNumber("DE 123 456 789")).toEqual({ number: "DE123456789" });
+		expect(checkVatNumber("GR123456789")).toEqual({ number: "EL123456789" });
+		expect(checkVatNumber("ATU12345678")).toEqual({ number: "ATU12345678" });
+		expect(checkVatNumber("DE12345678")).toEqual({ problem: "un numero IVA della Germania è DE seguito da 9 cifre" });
+	});
+
+	it("keeps a body's codice fiscale (8 or 9 first)", () => {
+		const ente = withCheckDigit("8001234056");
+		expect(checkVatNumber(ente)).toEqual({ number: ente });
+	});
+
+	it("outside the VIES: GB, CHE and NO with their check digits, SM in its shape; other text with those letters is no VAT number", () => {
+		// 980 7806 84: HMRC's own example; 8·9 + 7·8 + 6·0 + 5·7 + 4·8 + 3·0 + 2·6 + 84 = 291 = 3 · 97.
+		expect(checkVatNumber("GB 980 7806 84")).toEqual({ number: "GB980780684" });
+		expect(checkVatNumber("GB980780684001")).toEqual({ number: "GB980780684001" });
+		expect(checkVatNumber("GB980780685")).toEqual({ problem: expect.stringContaining("Regno Unito") });
+		// CHE 123.456.78x: 1·5 + 2·4 + 3·3 + 4·2 + 5·7 + 6·6 + 7·5 + 8·4 = 168, 168 mod 11 = 3, 11 - 3 = 8.
+		expect(checkVatNumber("CHE-123.456.788 MWST")).toEqual({ number: "CHE123456788" });
+		expect(checkVatNumber("CHE123456788 TVA")).toEqual({ number: "CHE123456788" });
+		expect(checkVatNumber("CHE-123.456.789")).toEqual({ problem: expect.stringContaining("della Svizzera") });
+		// NO 12345678x: 1·3 + 2·2 + 3·7 + 4·6 + 5·5 + 6·4 + 7·3 + 8·2 = 138, 138 mod 11 = 6, 11 - 6 = 5.
+		expect(checkVatNumber("NO 123 456 785 MVA")).toEqual({ number: "NO123456785" });
+		expect(checkVatNumber("NO123456789")).toEqual({ problem: expect.stringContaining("della Norvegia") });
+		// CHE 100.000.01x: 1·5 + 1·4 = 9, 11 - 9 = 2.
+		expect(checkVatNumber("CHE100000012")).toEqual({ number: "CHE100000012" });
+		// NO 00000006x: 6·2 = 12, a remainder of 1, so the check digit would be 10: no such number, whatever the last digit.
+		for (const digit of "0123456789") expect(checkVatNumber(`NO00000006${digit}`), digit).toHaveProperty("problem");
+		expect(checkVatNumber("SM 12345")).toEqual({ number: "SM12345" });
+		for (const text of ["None", "Not given", "Smith", "SMITH", "GB12345", "CHE12345", "NO 12345", "SM123456"]) expect(checkVatNumber(text), text).toBeUndefined();
+	});
+
+	it("a person's codice fiscale, right or wrong, is no VAT number: never «partita IVA non corretta»", () => {
+		expect(checkVatNumber(CF_MAN)).toBeUndefined();
+		expect(checkVatNumber(`IT${CF_WOMAN}`)).toBeUndefined();
+		expect(checkVatNumber(`${CF_MAN.slice(0, 15)}${CF_MAN[15] === "A" ? "B" : "A"}`)).toBeUndefined();
 	});
 });
 

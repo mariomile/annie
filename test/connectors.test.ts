@@ -219,6 +219,17 @@ describe("HubSpot adapter (mocked fetch)", () => {
 		expect(note.associations).toEqual([{ to: { id: "501" }, types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202 }] }]);
 	});
 
+	it("names a wrong VAT number in the note in words, never the number", async () => {
+		const api = fakeApi({
+			"POST api.hubapi.com/crm/v3/objects/contacts/batch/upsert": () => Response.json({ status: "COMPLETE", results: [{ id: "501", new: true }] }),
+			"POST api.hubapi.com/crm/v3/objects/notes": () => Response.json({ id: "n1" }),
+		});
+		const crm = new HubSpotCrmAdapter({ accessToken: async () => "pat-1", fetch: api.fetch, now: () => 0 });
+		await crm.upsertLead("acme", { ...lead, vatNumber: null, missingFields: ["quantity", "vatNumberInvalid"] }, "idem-1");
+		const note = api.calls[1]?.body as { properties: { hs_note_body: string } };
+		expect(note.properties.hs_note_body).toContain("Dati mancanti: quantity, P.IVA da ricontrollare.");
+	});
+
 	it("creates the contact when there is no email", async () => {
 		const api = fakeApi({
 			"POST api.hubapi.com/crm/v3/objects/contacts": () => Response.json({ id: "777" }),

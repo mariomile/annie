@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta preventivo arredo studio",
     "receivedAt": "2026-10-15T11:00:00+02:00",
-    "body": "Spett.le azienda, lo Studio Legale Sala di Como necessita di librerie su misura per la sala riunioni. Gradirei un preventivo e un sopralluogo. P.IVA 04142434445. Avv. Beatrice Sala",
+    "body": "Spett.le azienda, lo Studio Legale Sala di Como necessita di librerie su misura per la sala riunioni. Gradirei un preventivo e un sopralluogo. P.IVA 04142430455. Avv. Beatrice Sala",
     "from": "Avv. Beatrice Sala <b.sala@studiolegale-sala.example>"
   },
   "expected": {
@@ -33,7 +33,7 @@
       ],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "04142434445"
+      "vatNumber": "04142430455"
     },
     "requests": [
       {

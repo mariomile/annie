@@ -1,6 +1,7 @@
 import type { InboundMail } from "../connectors/types.ts";
 import type { LeadFields, MissingField, TenantSegreteriaConfig } from "../core/practice.ts";
 import { extractEmailAddress } from "./classify.ts";
+import { vatInMail, vatToAsk } from "./vat.ts";
 
 const TITLE_RE = /\b(Dott\.ssa|Dott\.|Avv\.|Ing\.|Arch\.|Prof\.ssa|Prof\.|Geom\.|Rag\.)\s+/i;
 
@@ -41,8 +42,7 @@ export function extractLead(
 	const urgency =
 		/(?:entro|scadenza|urgente|consegna)\s+([^\n.]{3,40})/i.exec(body)?.[1]?.trim() ?? null;
 
-	const vat =
-		/(?:p\.?\s*iva|partita\s*iva)\s*[:\-]?\s*(\d{11})/i.exec(body)?.[1] ?? null;
+	const vat = vatInMail(body);
 
 	const deliverySite =
 		/(?:sede|consegna presso|installazione|indirizzo)\s*[:\-]?\s*([^\n.]{3,60})/i.exec(body)?.[1]?.trim();
@@ -61,8 +61,8 @@ export function extractLead(
 	if (!deliverySite) missing.push("deliverySite");
 	if (!hasBudgetMention) missing.push("budget");
 	if (!urgency) missing.push("deadline");
-	const isPrivate = !company;
-	if (tenantConfig.requireVatNumber && !isPrivate && !vat) missing.push("vatNumber");
+	const vatAsk = vatToAsk(vat, tenantConfig.requireVatNumber === true, company !== null);
+	if (vatAsk !== undefined) missing.push(vatAsk);
 
 	const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
 
@@ -75,7 +75,7 @@ export function extractLead(
 		productOrService: product,
 		quantity,
 		urgency,
-		vatNumber: vat,
+		vatNumber: vat.vatNumber,
 		originalLanguage: lang,
 		missingFields: missing,
 		source: "email",

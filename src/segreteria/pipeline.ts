@@ -19,6 +19,7 @@ import type { ModelClient } from "../core/completion.ts";
 import type { ChecksConfig } from "./checks.ts";
 import { analyzeMail, draftReply, type MailAnalysis, type ModelCall } from "./model.ts";
 import * as copy from "./telegram-copy.ts";
+import { vatInMail } from "./vat.ts";
 
 export type PipelineDeps = {
 	tenantId: string;
@@ -348,7 +349,9 @@ async function draftWithModel(
 	}
 	const requests = analysis?.requests ?? [];
 	try {
-		const draft = await draftReply(deps.model.client, deps.roles.draft, { mail, lead, requests, checks: deps.model.checks }, (call) => recordModelCall(deps, call));
+		// The VAT number as written: from the model's reading, or the heuristics' when the model could not read the mail.
+		const vatAsWritten = analysis?.vatAsWritten ?? [vatInMail(mail.bodyText).asWritten].filter((text): text is string => text !== undefined);
+		const draft = await draftReply(deps.model.client, deps.roles.draft, { mail, lead, requests, checks: deps.model.checks, vatAsWritten }, (call) => recordModelCall(deps, call));
 		if (draft.source === "model") return draft;
 		await deps.audit.append({ type: "draft.fallback", instanceId: deps.instanceId, mailMessageId: mail.messageId, failures: [...new Set(draft.failures.map((f) => f.check))].join(",") });
 		return { ...draft, note: "Bozza standard: quella del modello non passava i controlli (prezzi, tono o dati)." };

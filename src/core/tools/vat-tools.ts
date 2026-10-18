@@ -61,7 +61,7 @@ export function createVatTools(options: VatToolsOptions): AnnieTool[] {
 				if (typeof args.country === "string" && !/^[A-Za-z]{2}$/.test(args.country)) return "Errore: country sono le due lettere del paese (DE, FR, EL per la Grecia…).";
 				if (args.number.length > MAX_INPUT) return "Errore: il numero è troppo lungo per una partita IVA o un codice fiscale.";
 				const id = parseTaxId(args.number, args.country);
-				if (id.kind === "unknown") return `Errore: ${id.problem}.`;
+				if (id.kind === "unknown" || id.kind === "outside_vies") return `Errore: ${id.problem}.`;
 				if (id.kind === "codice_fiscale") return codiceFiscaleAnswer(id.code, id.checked, (options.now ?? (() => new Date()))());
 				if (id.kind === "ente") return enteAnswer(id.number);
 				const label = labelOf(id.country, id.number);
