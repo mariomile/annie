@@ -1,6 +1,6 @@
 # Settimana 56: tasse del forfettario
 
-Branch `week-56`. Per chi è nel regime forfettario Annie stima imposta sostitutiva e contributi dagli incassi, dice quanto mettere da parte, quando scadono gli F24 e di quanto, e li mette nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0069](adr/0069-tasse-del-forfettario.md).
+Branch `week-56`. Per chi è nel regime forfettario Annie stima imposta sostitutiva e contributi dagli incassi, dice quanto mettere da parte, quando scadono gli F24 e di quanto, e li mette nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0070](adr/0070-tasse-del-forfettario.md).
 
 ## Cosa cambia per chi usa Annie
 

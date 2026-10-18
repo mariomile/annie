@@ -258,7 +258,7 @@ Un movimento che la persona dice ad Annie per la previsione di cassa, registrato
 _Avoid_: cashflow item, movimento (per la voce)
 
 **Profilo fiscale**:
-Come è tassata una persona nel regime forfettario, salvato con `taxes`: coefficiente di redditività (dal gruppo o dal codice ATECO), imposta al 15% o al 5%, anno di inizio, cassa previdenziale (gestione separata, artigiani, commercianti, cassa professionale) e le cifre dette dell'anno prima. Le aliquote dell'anno non stanno nel profilo. Vedi ADR 0069.
+Come è tassata una persona nel regime forfettario, salvato con `taxes`: coefficiente di redditività (dal gruppo o dal codice ATECO), imposta al 15% o al 5%, anno di inizio, cassa previdenziale (gestione separata, artigiani, commercianti, cassa professionale) e le cifre dette dell'anno prima. Le aliquote dell'anno non stanno nel profilo. Vedi ADR 0070.
 _Avoid_: tax profile, regime (per il profilo)
 
 **Download**:
