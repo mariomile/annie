@@ -2924,7 +2924,7 @@ async function viewStart(main) {
 		if (gap) instructions.setSelectionRange(gap.index, gap.index + gap[0].length);
 	};
 	const extra = {
-		instructions: () => h("div.stack", h("div.hints", TEMPLATES.map(([label, text]) => h("button", { type: "button", onclick: () => fill(text) }, label))), instructions, h("div.row-gap", save)),
+		instructions: () => h("div.stack", h("div.choices", { role: "group", "aria-label": "Parti da un esempio" }, TEMPLATES.map(([label, text]) => h("button", { type: "button", onclick: () => fill(text) }, label))), instructions, h("div.row-gap", save)),
 		tried: () =>
 			h(
 				"button.btn.small",
@@ -2954,6 +2954,11 @@ async function viewStart(main) {
 					),
 	};
 	const done = steps.filter((s) => s.done).length;
+	// The first step left is the one to do now: it gets the accent, the others wait in line.
+	const next = steps.find((s) => !s.done);
+	const bar = h("div.steps-bar", h("span"));
+	bar.firstChild.style.setProperty("width", `${Math.round((done / steps.length) * 100)}%`);
+	const progress = h("div.steps-progress", { role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(done), "aria-label": "Primi passi fatti" }, bar);
 	mount(
 		main,
 		head(
@@ -2973,15 +2978,20 @@ async function viewStart(main) {
 				"Nascondi",
 			),
 		),
+		progress,
 		h(
 			"ol.steps",
-			steps.map((step) =>
+			steps.map((step, i) =>
 				h(
-					`li.card.pad${step.done ? ".done" : ""}`,
-					h("div.row-gap", step.done ? h("span.chip.ok", "fatto") : h("span.chip", "da fare"), h("b", step.title)),
-					h("p.muted", step.text),
-					!step.done && extra[step.id] ? extra[step.id]() : null,
-					!step.done && step.go ? h("button.btn.small", { onclick: () => go(...step.go) }, "Vai") : null,
+					`li.step${step.done ? ".done" : ""}${step === next ? ".next" : ""}`,
+					h("span.step-mark", { "aria-hidden": "true" }, step.done ? icon("check") : String(i + 1)),
+					h(
+						"div.step-text",
+						h("b", step.title, step.done ? h("span.visually-hidden", " (fatto)") : null),
+						step.done ? null : h("p", step.text),
+						!step.done && extra[step.id] ? extra[step.id]() : null,
+					),
+					!step.done && step.go ? h(`button.btn.small${step === next ? ".accent" : ".ghost"}`, { onclick: () => go(...step.go) }, "Vai") : null,
 				),
 			),
 		),

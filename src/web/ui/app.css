@@ -642,10 +642,34 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 .field.inline input { width: auto; }
 p.warn { color: var(--warn); }
 .subhead { margin: 28px 0 10px; font-size: 15px; font-weight: 600; }
-ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; max-width: 760px; }
-ol.steps li p { margin: 6px 0 10px; }
-ol.steps li.done { opacity: 0.7; }
+/* Primi passi: a progress bar, then one list of numbered rows; the step to do now stands out, done ones shrink to a line. */
+.steps-progress { max-width: 760px; margin: 0 0 18px; }
+.steps-bar { height: 6px; border-radius: 99px; background: var(--bg-2); border: 1px solid var(--border); overflow: hidden; }
+.steps-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--fg); transition: width 0.5s cubic-bezier(.22, 1, .36, 1); }
+ol.steps { list-style: none; margin: 0; padding: 0; max-width: 760px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden; }
+ol.steps li.step { display: grid; grid-template-columns: 30px 1fr auto; gap: 14px; align-items: start; padding: 16px 18px; }
+ol.steps li.step + li.step { border-top: 1px solid var(--border); }
+.step-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border-2); color: var(--fg-2); font: 600 13px/1 var(--mono); }
+.step-mark .icon { width: 16px; height: 16px; stroke-width: 2.4; }
+.step-text { min-width: 0; padding-top: 4px; }
+.step-text > b { font-weight: 600; }
+.step-text > p { margin: 4px 0 0; color: var(--fg-2); line-height: 1.55; }
+.step-text > .stack, .step-text > .btn, .step-text > p.muted { margin-top: 12px; }
+li.step > .btn { margin-top: 1px; }
+li.step.next { background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--fg) 6%, transparent), transparent 60%); }
+li.step.next .step-mark { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+li.step.done { padding-block: 11px; }
+li.step.done .step-mark { width: 22px; height: 22px; margin: 0 4px; border-color: transparent; background: var(--ok-soft); color: var(--ok); }
+li.step.done .step-mark .icon { width: 13px; height: 13px; }
+li.step.done .step-text { padding-top: 1px; }
+li.step.done .step-text > b { font-weight: 500; color: var(--fg-3); }
 ol.steps .stack { display: grid; gap: 8px; }
+ol.steps .stack > .choices { margin-bottom: 2px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 560px) {
+	ol.steps li.step { grid-template-columns: 30px 1fr; padding: 14px; }
+	li.step > .btn { grid-column: 2; justify-self: start; }
+}
 .offline-bar { padding: 6px 12px; text-align: center; font-size: 12.5px; background: var(--warn-soft); color: var(--warn); }
 .offline-bar[hidden] { display: none; }
 .flash { animation: flash 1.6s ease-out; }
