@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { readForm, WEB_ACTION_LIMITS, type WebAction, WebActionStore, sendWebAction } from "../src/core/web-actions.ts";
 import { CookieJar, publicAddress, webFetch } from "../src/core/web-fetch.ts";
@@ -163,7 +163,8 @@ describe("web action store", () => {
 		const crashed = await store.propose(input);
 		// The send never finishes: the process "dies" with the action running on disk.
 		void store.decide(crashed.id, "approved", by, () => new Promise(() => {}));
-		await new Promise((r) => setTimeout(r, 20));
+		// Wait for "running" to reach disk rather than a fixed pause: on a slow runner 20ms was not enough.
+		await vi.waitFor(async () => expect((await new WebActionStore(dir).get(crashed.id))?.status).toBe("running"));
 		expect((await new WebActionStore(dir).settleInterrupted()).map((x) => x.id)).toEqual([crashed.id]);
 		expect((await store.get(crashed.id))?.status).toBe("uncertain");
 	});
