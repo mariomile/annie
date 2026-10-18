@@ -205,6 +205,7 @@ describe("the board (ADR 0050)", () => {
 		];
 		const tool = (self: string, name: string) => createBoardTools({ self, store, work, agents, personOf: (t) => (t.channel === "web" && t.threadId.startsWith("chat") ? "p_anna" : undefined) }).find((t) => t.name === name) as { execute: (a: Record<string, unknown>, c: never) => Promise<string> };
 		expect(await tool("annie", "board_list").execute({}, ctx())).toBe("Nessuna scheda.");
+		expect(await tool("annie", "board_summary").execute({}, ctx("chat1"))).toMatch(/^La board è vuota/);
 		// From Anna's conversation with Annie: the scheda goes to Ricercatore, who starts at once.
 		expect(await tool("annie", "board_create").execute({ title: "Fornitori carta", description: "Tre preventivi", assignee: "Ricercatore" }, ctx("chat1"))).toBe("Scheda #1 creata e assegnata a Ricercatore: parte quando una persona la avvia dalla board.");
 		expect(posts).toEqual([]);
@@ -214,6 +215,9 @@ describe("the board (ADR 0050)", () => {
 		store.create({ title: "Riservata", assignee: "vendite" }, { kind: "person", id: "p_owner" });
 		expect(await tool("annie", "board_list").execute({}, ctx("chat1"))).not.toContain("Riservata");
 		expect(await tool("annie", "board_show").execute({ card: "2" }, ctx("chat1"))).toMatch(/non trovata/);
+		// The week in a few lines (ADR 0081), of what she sees.
+		const summary = await tool("annie", "board_summary").execute({}, ctx("chat1"));
+		expect(summary).toMatch(/<<<dalla board [0-9a-f]+: .*>>>\nLa board, questa settimana\.\nNessuna scheda chiusa negli ultimi 7 giorni\.\nAperte: 0 da fare, 1 in corso, 0 da rivedere\.\n<<<fine board/);
 		expect(await tool("annie", "board_create").execute({ title: "x", assignee: "Ignoto" }, ctx("chat1"))).toMatch(/^Errore: nessun agente «Ignoto»/);
 		const listed = await tool("ricerca", "board_list").execute({ mine: true }, ctx());
 		expect(listed).toMatch(/<<<dalla board [0-9a-f]+: .*>>>\n#1 \[In corso\] Fornitori carta: assegnata a Ricercatore\n<<<fine board/);

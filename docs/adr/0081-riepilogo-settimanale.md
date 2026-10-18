@@ -8,6 +8,7 @@ La board avvisa quando una scheda va rivista ([ADR 0051](0051-board-trascinare-e
 - **Una volta a settimana**: il giro del pianificatore prende la settimana nel file della board (`digest`), quindi due giri o un riavvio non lo mandano due volte. Se Annie era spenta il lunedì, aspetta il lunedì dopo: un riepilogo arrivato il giovedì non serve più a pianificare la settimana.
 - **Niente messaggio se la board non ha avuto nulla**: nessuna scheda aperta e nessuna chiusa nella settimana.
 - **Solo numeri e titoli**: niente commenti né descrizioni, che restano nella console.
+- **Anche a richiesta**: lo stesso riepilogo è il tool `board_summary`, così a «come va la board?» un agente risponde in poche righe invece di elencare ogni scheda. Mostra solo le schede che vede chi chiede, come `board_list`, recintate come dati.
 
 ## Alternative scartate
 
