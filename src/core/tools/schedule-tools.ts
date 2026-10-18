@@ -1,14 +1,60 @@
-import type { AnnieTool } from "../engine.ts";
+import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { nextRun, parseCron } from "../cron.ts";
+import type { AnnieTool, ToolContext } from "../engine.ts";
+import { addDays, todayIn } from "../italian-calendar.ts";
 import { ScheduleError, type ScheduleStore } from "../schedules.ts";
+
+type ScheduleToolsOptions = { readonly store: ScheduleStore; readonly defaultTimeZone: string; readonly now?: () => Date };
+
+/** A reminder another tool makes for the person: on `day` (ISO) at `hour` where the instance is, in the call's conversation. */
+export type ReminderInput = { readonly day: string; readonly hour: number; readonly instruction: string };
+
+/**
+ * The tasks programmati for another tool (a client's ricontatto): the same store and limits as
+ * schedule_create, the same refusals (no conversation, another agente, the phone). `remind` makes
+ * a one-off task keyed by the calling tool's callId and `key`, so a call run again finds the one
+ * it made instead of making another; `cancel` removes one (false when it is gone already).
+ */
+export type ReminderSeam = {
+	readonly remind: (input: ReminderInput, key: string, ctx: ToolContext) => Promise<{ readonly id: string; readonly at: string } | { readonly problem: string }>;
+	readonly cancel: (id: string) => Promise<boolean>;
+};
 
 /**
  * Tools to create, list and delete tasks programmati. A task created in a conversation
  * delivers its results to that same conversation.
  */
-export function createScheduleTools(options: { readonly store: ScheduleStore; readonly defaultTimeZone: string; readonly now?: () => Date }): AnnieTool[] {
+export function createScheduleTools(options: ScheduleToolsOptions): AnnieTool[] {
+	return schedulesOf(options).tools;
+}
+
+/** The schedule tools, and the same schedules' reminders for another tool. */
+export function schedulesOf(options: ScheduleToolsOptions): { readonly tools: AnnieTool[]; readonly reminders: ReminderSeam } {
 	const { store } = options;
 	const now = options.now ?? (() => new Date());
-	return [
+	const timeZone = options.defaultTimeZone;
+	const reminders: ReminderSeam = {
+		async remind(input, key, ctx) {
+			const thread = ctx.thread;
+			if (thread === undefined) return { problem: "un promemoria va creato in una conversazione" };
+			if (thread.channel === AGENT_CHANNEL) return { problem: "in una richiesta di un altro agente non programmo promemoria" };
+			if (thread.channel === "phone") return { problem: "al telefono non programmo promemoria, perché non chiamo per prima" };
+			const callId = `${ctx.callId}:${key}`;
+			const made = (await store.list()).find((s) => s.callId === callId);
+			if (made !== undefined) return { id: made.id, at: made.nextRunAt ?? ("at" in made.when ? made.when.at : "") };
+			const at = reminderTime(input, now(), timeZone);
+			if (at === undefined) return { problem: "il giorno del promemoria è già passato" };
+			try {
+				const s = await store.create({ instruction: input.instruction, channel: thread.channel, threadId: thread.threadId, when: { at: at.toISOString() }, createdBy: { kind: "instance" }, callId }, now());
+				return { id: s.id, at: s.nextRunAt ?? at.toISOString() };
+			} catch (error) {
+				if (error instanceof ScheduleError) return { problem: "non ho potuto programmare il promemoria: ci sono già troppi task programmati, o la data non va" };
+				throw error;
+			}
+		},
+		cancel: (id) => store.remove(id),
+	};
+	const tools: AnnieTool[] = [
 		{
 			name: "schedule_create",
 			description:
@@ -79,4 +125,17 @@ export function createScheduleTools(options: { readonly store: ScheduleStore; re
 			},
 		},
 	];
+	return { tools, reminders };
+}
+
+/** The instant of `hour` on `day` where the instance is; for today past that hour, in two minutes; undefined for a day gone. */
+function reminderTime(input: ReminderInput, now: Date, timeZone: string): Date | undefined {
+	const today = todayIn(timeZone, now);
+	if (input.day < today) return undefined;
+	const [, month, day] = input.day.split("-").map(Number);
+	// From the day before (never before now), so a day next year is not taken for this year's.
+	const from = new Date(Math.max(now.getTime(), Date.parse(`${addDays(input.day, -1)}T12:00:00Z`)));
+	const next = nextRun(parseCron(`0 ${input.hour} ${day} ${month} *`), from, timeZone);
+	if (todayIn(timeZone, next) === input.day) return next;
+	return input.day === today ? new Date(now.getTime() + 2 * 60_000) : undefined;
 }

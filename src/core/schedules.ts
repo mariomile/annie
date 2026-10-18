@@ -20,6 +20,8 @@ export type Schedule = {
 	readonly createdAt: string;
 	/** A brief del mattino: one per person and instance, turned on and off from the console. */
 	readonly kind?: "brief";
+	/** The tool call that made it through a seam (a client's ricontatto): a call run again finds it instead of making another. */
+	readonly callId?: string;
 };
 
 export type NewSchedule = {
@@ -29,6 +31,7 @@ export type NewSchedule = {
 	readonly when: Schedule["when"];
 	readonly createdBy: Schedule["createdBy"];
 	readonly kind?: "brief";
+	readonly callId?: string;
 };
 
 /** Limits that keep a runaway instance from flooding itself. */
