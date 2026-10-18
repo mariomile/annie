@@ -2,9 +2,11 @@ import { randomBytes } from "node:crypto";
 import { type EventTime, GoogleUncertain } from "../connectors/google.ts";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
 import { validAddress } from "./email-address.ts";
+import { attachmentsLine, type MailAttachment } from "./mail-attachments.ts";
 import type { ReminderItem } from "./reminder-book.ts";
 import type { AnnieRuntime } from "./runtime.ts";
 
+export { mimeMessage } from "./mail-mime.ts";
 export { validAddress };
 
 /**
@@ -19,6 +21,8 @@ export type MailDraft = {
 	readonly cc: readonly string[];
 	readonly subject: string;
 	readonly body: string;
+	/** Files of the workspace, as checked when asked: sent only if still the same (mail-attachments.ts). */
+	readonly attachments?: readonly MailAttachment[];
 	/** Answering a message: the reply stays in its Gmail thread; who and what it answers is on the card. */
 	readonly inReplyTo?: {
 		readonly id: string;
@@ -147,47 +151,6 @@ export class GoogleActionStore {
 	}
 }
 
-/** One header value: no line breaks; outside ASCII, RFC 2047 encoded-words of at most 75 characters, folded. */
-function headerValue(value: string): string {
-	if (/[\r\n]/.test(value)) throw new GoogleActionError("un'intestazione della mail non può andare a capo");
-	if (/^[\x20-\x7e]*$/.test(value)) return value;
-	const words: string[] = [];
-	let chunk = "";
-	// 39 bytes of UTF-8 become 52 of base64: with "=?UTF-8?B?", "?=" and "Subject: ", 73. Characters are never split.
-	for (const char of value) {
-		if (Buffer.byteLength(chunk + char) > 39) {
-			words.push(chunk);
-			chunk = "";
-		}
-		chunk += char;
-	}
-	if (chunk !== "") words.push(chunk);
-	return words.map((w) => `=?UTF-8?B?${Buffer.from(w, "utf8").toString("base64")}?=`).join("\r\n ");
-}
-
-/** The ids of a References header as a reply carries them: well-formed ones only, the last ten, folded. */
-function references(previous: string, messageId: string): string {
-	const ids = [...`${previous} ${messageId}`.matchAll(/<[\x21-\x3b\x3d\x3f-\x7e]{1,250}>/g)].map((m) => m[0]);
-	return [...new Set(ids)].slice(-10).join("\r\n ");
-}
-
-/** The mail as Gmail takes it (RFC 2822): plain text, UTF-8. The sender is the account itself. */
-export function mimeMessage(mail: MailDraft): string {
-	if ([...mail.to, ...mail.cc].some((a) => !validAddress(a))) throw new GoogleActionError("indirizzo non valido");
-	const replyId = mail.inReplyTo === undefined ? "" : (/^<[\x21-\x3b\x3d\x3f-\x7e]{1,250}>$/.exec(mail.inReplyTo.messageId.trim())?.[0] ?? "");
-	const lines = [
-		`To: ${mail.to.join(", ")}`,
-		...(mail.cc.length === 0 ? [] : [`Cc: ${mail.cc.join(", ")}`]),
-		`Subject: ${headerValue(mail.subject)}`,
-		...(replyId === "" ? [] : [`In-Reply-To: ${replyId}`, `References: ${references(mail.inReplyTo?.references ?? "", replyId)}`]),
-		"MIME-Version: 1.0",
-		"Content-Type: text/plain; charset=UTF-8",
-		"Content-Transfer-Encoding: base64",
-	];
-	const body = Buffer.from(mail.body, "utf8").toString("base64").replace(/.{76}/g, "$&\r\n");
-	return `${lines.join("\r\n")}\r\n\r\n${body}`;
-}
-
 /** A local date-time ("YYYY-MM-DDTHH:MM:SS") of an instant in `timeZone`. */
 function localIn(instantMs: number, timeZone: string): string {
 	const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(instantMs).map((p) => [p.type, p.value]));
@@ -217,13 +180,28 @@ export function instant(time: EventTime): number {
 	return Date.parse(/(Z|[+-]\d{2}:\d{2})$/.test(time.dateTime) ? time.dateTime : `${time.dateTime}Z`);
 }
 
+/**
+ * The action as the console shows it. The card prints the reason line as it is: the attachments'
+ * names and sizes go there, after Annie's reason (never their contents).
+ */
+export function cardView(action: GoogleAction): GoogleAction {
+	const line = attachmentsLine(action.mail?.attachments ?? []);
+	return line === "" ? action : { ...action, reason: `${action.reason} · ${line}` };
+}
+
+/** «, con 2 allegati». */
+function withAttachments(mail: MailDraft | undefined): string {
+	const n = mail?.attachments?.length ?? 0;
+	return n === 0 ? "" : n === 1 ? ", con 1 allegato" : `, con ${n} allegati`;
+}
+
 /** The action in one line, for the card and for Annie. */
 export function googleActionTitle(action: Pick<GoogleAction, "kind" | "mail" | "event" | "current">): string {
 	switch (action.kind) {
 		case "mail.send":
-			return action.mail?.inReplyTo === undefined ? `Inviare una mail a ${action.mail?.to.join(", ")}` : `Rispondere a ${action.mail.to.join(", ")}`;
+			return (action.mail?.inReplyTo === undefined ? `Inviare una mail a ${action.mail?.to.join(", ")}` : `Rispondere a ${action.mail.to.join(", ")}`) + withAttachments(action.mail);
 		case "mail.draft":
-			return `Salvare una bozza per ${action.mail?.to.join(", ")}`;
+			return `Salvare una bozza per ${action.mail?.to.join(", ")}${withAttachments(action.mail)}`;
 		case "calendar.create":
 			return `Creare l'evento «${action.event?.summary ?? ""}»`;
 		case "calendar.update":
@@ -249,7 +227,7 @@ export async function decideGoogleAction(
 ): Promise<GoogleAction> {
 	const audit = runtime.audit(tenant);
 	const { action, changed } = await runtime.googleActions(tenant, instance).decide(id, decision, personId, async (running) => {
-		await audit.append({ type: "google_action.approved", instanceId: instance, actionId: id, kind: running.kind, recipients: (running.mail?.to.length ?? 0) + (running.mail?.cc.length ?? 0) + (running.event?.attendees?.length ?? 0), personId });
+		await audit.append({ type: "google_action.approved", instanceId: instance, actionId: id, kind: running.kind, recipients: (running.mail?.to.length ?? 0) + (running.mail?.cc.length ?? 0) + (running.event?.attendees?.length ?? 0), ...(running.mail?.attachments === undefined ? {} : { attachments: running.mail.attachments.length }), personId });
 		return run(running);
 	});
 	if (!changed) return action;

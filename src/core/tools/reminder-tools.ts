@@ -15,9 +15,12 @@ import { sumsText } from "../invoice-sums.ts";
 import { BROKEN_WRITE, type InvoiceStore, REMINDERS_BROKEN } from "../invoice-store.ts";
 import { dayOfIn, todayIn } from "../italian-calendar.ts";
 import { bookKey, type Contact, nextLevel, type ReminderItem, type ReminderLevel } from "../reminder-book.ts";
+import type { MailAttachment } from "../mail-attachments.ts";
+import type { Workspace } from "../workspace.ts";
 import { ambiguous, fenced, type Loaded, markDay, notFound } from "./invoice-fence.ts";
 import { companyText } from "./invoice-words.ts";
 import { customersNamed, type Debtor, debtors, invoicesOf, isLate, lastFormal, letters, marksOn, namedInvoice, remindedOn } from "./reminder-debtors.ts";
+import { invoiceFiles, letterAttachments } from "./reminder-attachments.ts";
 import { mailtoLink, parseRate, paymentOf, type Rate, recipientOf } from "./reminder-sources.ts";
 import { asksSomething, composeReminder, LEVEL_NAMES, MAX_NOTE, MAX_REMINDERS, oneLine, type ReminderDraft, type ReminderTerms } from "./reminder-text.ts";
 
@@ -28,7 +31,7 @@ export type Thread = { readonly channel: string; readonly threadId: string };
 const MAX_FULL = 3;
 
 /** A mail asked for: what the approval card shows, and what to record once it is sent. */
-export type ReminderProposal = { readonly thread: Thread; readonly to: string; readonly subject: string; readonly body: string; readonly reason: string; readonly reminders: readonly ReminderItem[]; readonly key: string };
+export type ReminderProposal = { readonly thread: Thread; readonly to: string; readonly subject: string; readonly body: string; readonly reason: string; readonly reminders: readonly ReminderItem[]; readonly attachments?: readonly MailAttachment[]; readonly key: string };
 
 /**
  * How reminders are sent: through the approval card of the person's own mail account. `check`
@@ -52,6 +55,8 @@ type ReminderDeps = {
 	readonly who: (ctx: ToolContext) => string;
 	readonly record?: (event: ReminderEvent) => Promise<void>;
 	readonly mail?: ReminderMail;
+	/** Where the invoice files are: what attach_invoice attaches. */
+	readonly workspace?: Workspace;
 };
 
 /** Without the paid marks and the reminders sent, a reminder could go to who paid, or twice: none is written. */
@@ -63,7 +68,7 @@ const NO_COMPANY = "Errore: per i solleciti serve sapere qual è l'azienda di ch
 const PHONE_LEAD = "Da qui non posso inviare mail. Ti mando ogni sollecito in un messaggio a parte: tienilo premuto per copiarlo, oppure tocca il link per aprirlo già pronto nella tua posta.";
 
 /** The arguments of the reminder ops, typed; a problem in Italian otherwise. */
-type ReminderArgs = { number?: string; party?: string; path?: string; email?: string; terms: ReminderTerms; send: boolean };
+type ReminderArgs = { number?: string; party?: string; path?: string; email?: string; terms: ReminderTerms; send: boolean; attach: boolean };
 
 function reminderArgs(args: Record<string, unknown>): ReminderArgs | { problem: string } {
 	const text = (name: string) => (typeof args[name] === "string" && (args[name] as string).trim() !== "" ? (args[name] as string).trim() : undefined);
@@ -78,7 +83,7 @@ function reminderArgs(args: Record<string, unknown>): ReminderArgs | { problem: 
 	}
 	const within = args.pay_within;
 	if (within !== undefined && !(Number.isInteger(within) && (within as number) >= 1 && (within as number) <= 90)) return { problem: "pay_within è un numero di giorni, da 1 a 90" };
-	for (const flag of ["send", "compensation"] as const) if (args[flag] !== undefined && typeof args[flag] !== "boolean") return { problem: `${flag} è true o false` };
+	for (const flag of ["send", "compensation", "attach_invoice"] as const) if (args[flag] !== undefined && typeof args[flag] !== "boolean") return { problem: `${flag} è true o false` };
 	if (args.note !== undefined && (typeof args.note !== "string" || args.note.length > MAX_NOTE)) return { problem: `note è un testo di al più ${MAX_NOTE} caratteri` };
 	const email = text("email")?.toLowerCase();
 	if (email !== undefined && !validAddress(email)) return { problem: "email non è un indirizzo valido" };
@@ -92,7 +97,7 @@ function reminderArgs(args: Record<string, unknown>): ReminderArgs | { problem: 
 	const number = text("number");
 	const party = text("party");
 	const path = text("path");
-	return { ...(number === undefined ? {} : { number }), ...(party === undefined ? {} : { party }), ...(path === undefined ? {} : { path }), ...(email === undefined ? {} : { email }), terms, send: args.send === true };
+	return { ...(number === undefined ? {} : { number }), ...(party === undefined ? {} : { party }), ...(path === undefined ? {} : { path }), ...(email === undefined ? {} : { email }), terms, send: args.send === true, attach: args.attach_invoice === true };
 }
 
 /** The customers the call means, with remarks (another customer the words fit), or the answer that says why there are none. */
@@ -250,7 +255,9 @@ export async function reminderAnswer(args: Record<string, unknown>, ctx: ToolCon
 	if (unavailable !== undefined || ctx.thread === undefined || deps.mail === undefined) {
 		const why = unavailable ?? "questa conversazione non ha un account di posta";
 		const how = `Di' a chi ti scrive: «${PHONE_LEAD}» Poi manda un messaggio per ogni sollecito con soltanto la riga «Oggetto: …», il testo della lettera e il link: le righe che iniziano con A:, Nota: e --- sono per te e non vanno incollate. Per gli altri clienti digli di chiederti "sollecito per <nome>". Quando l'ha mandato, annotalo con op reminder_sent.`;
-		return `${savedText}Non posso inviare mail da qui (${why}): niente è stato inviato né annotato. ${how}\n${draftsBlock(drafts, extra, true)}`;
+		const files = a.attach && deps.workspace !== undefined ? await invoiceFiles(deps.workspace, drafts.flatMap((d) => invoicesOf(d.debtor))) : [];
+		const attach = files.length === 0 ? "" : ` Le fatture non posso allegarle a quei messaggi: digli «l'allegato puoi mandarlo da qui con file_send» e manda i file elencati in fondo con file_send.`;
+		return `${savedText}Non posso inviare mail da qui (${why}): niente è stato inviato né annotato. ${how}${attach}\n${draftsBlock(drafts, files.length === 0 ? extra : [...extra, `File delle fatture: ${files.join(", ")}`], true)}`;
 	}
 	return savedText + (await queue(drafts, extra, a, ctx, deps, { today, dayOf, thread: ctx.thread, mail: deps.mail }));
 }
@@ -276,12 +283,21 @@ async function queue(drafts: readonly ReminderDraft[], extra: readonly string[],
 			full++;
 			continue;
 		}
+		let attachments: readonly MailAttachment[] = [];
+		if (a.attach) {
+			const files = deps.workspace === undefined ? { problem: "qui non posso allegare file" } : await letterAttachments(deps.workspace, invoicesOf(draft.debtor));
+			if ("problem" in files) {
+				skipped.push(`• ${customerName(draft.debtor)} (livello ${draft.level}): non preparato, ${files.problem}.`);
+				continue;
+			}
+			attachments = files;
+		}
 		// Each request in a step of its own, keyed by the call and the letter: a rerun finds the same request, never a second one.
 		const id = letterId(draft);
 		const made = await ctx.step(`propose:${id}`, async (): Promise<{ id: string } | { full: true }> => {
 			const reason = oneLine(`Sollecito di pagamento (livello ${draft.level}) a ${customerName(draft.debtor)}`, 300);
 			try {
-				return await env.mail.propose({ thread: env.thread, to: draft.to as string, subject: draft.subject, body: draft.body, reason, reminders: draft.items, key: `${ctx.callId}:${id}` });
+				return await env.mail.propose({ thread: env.thread, to: draft.to as string, subject: draft.subject, body: draft.body, reason, reminders: draft.items, ...(attachments.length === 0 ? {} : { attachments }), key: `${ctx.callId}:${id}` });
 			} catch (error) {
 				if (error instanceof GoogleActionError) return { full: true };
 				throw error;
@@ -302,7 +318,7 @@ async function queue(drafts: readonly ReminderDraft[], extra: readonly string[],
 			asked.length === 1
 				? "Ho preparato una richiesta di invio: la persona la vede nella card qui in chat e decide lei (scade fra 24 ore)."
 				: `Ho preparato ${asked.length} richieste di invio: la persona le vede nelle card qui in chat e decide lei, una per una (scadono fra 24 ore).`;
-		parts.push(`${lead} Parte solo ciò che approva, e il sollecito si annota allora. Non dire che è inviato finché non arriva l'esito. Riferisci in breve le note.`);
+		parts.push(`${lead}${a.attach ? " Le fatture sono allegate: la card mostra nomi e dimensioni dei file." : ""} Parte solo ciò che approva, e il sollecito si annota allora. Non dire che è inviato finché non arriva l'esito. Riferisci in breve le note.`);
 	}
 	if (full > 0) parts.push(`${asked.length > 0 ? `Per gli altri ${full}` : `Per ${full === 1 ? "questo cliente" : `questi ${full} clienti`}`} ci sono troppe richieste in attesa: falle decidere e riprova.`);
 	const lines = asked.flatMap(({ draft, id }) => [`• ${customerName(draft.debtor)}, livello ${draft.level}, indirizzo: ${draft.to} (richiesta ${id})`, ...draft.notes.map((n) => `  Nota: ${n}.`)]);
@@ -316,7 +332,7 @@ async function queue(drafts: readonly ReminderDraft[], extra: readonly string[],
 }
 
 /** Arguments that only make sense for writing a letter: reminder_sent refuses them rather than ignore them. */
-const LETTER_ONLY = ["send", "email", "compensation", "interest_rate", "pay_within", "note"] as const;
+const LETTER_ONLY = ["send", "email", "compensation", "interest_rate", "pay_within", "note", "attach_invoice"] as const;
 
 /** «Era già annotato oggi…»: by an approved mail from the console, or by the person's own word. */
 function alreadyToday(mail: boolean, level: number): string {

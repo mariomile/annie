@@ -1,10 +1,12 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { GOOGLE_SCOPE, GOOGLE_WRITE_SCOPE } from "../src/connectors/google.ts";
 import { GoogleActionStore, mimeMessage } from "../src/core/google-actions.ts";
+import { instanceId, tenantId } from "../src/core/ids.ts";
+import { workspaceDir } from "../src/core/paths.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
 
@@ -64,6 +66,7 @@ function fakeGoogle() {
 			});
 		if (url.pathname === "/gmail/v1/users/me/messages/send" && method === "POST") return Response.json({ id: "sent1", threadId: "t1" });
 		if (url.pathname === "/gmail/v1/users/me/drafts" && method === "POST") return Response.json({ id: "d1" });
+		if (url.pathname === "/upload/gmail/v1/users/me/messages/send" && method === "POST" && url.searchParams.get("uploadType") === "multipart") return Response.json({ id: "sent2", threadId: "t1" });
 		if (url.pathname === "/calendar/v3/calendars/primary/events" && method === "POST") return Response.json({ id: "new1", htmlLink: "https://www.google.com/calendar/event?eid=new1" });
 		if (url.pathname === "/calendar/v3/calendars/primary/events/e2_20261019") {
 			if (method === "GET")
@@ -357,5 +360,69 @@ describe("Google: scrivere con approvazione", () => {
 			return { done: "x" };
 		});
 		expect(mimeMessage({ to: ["a@b.it"], cc: [], subject: "Ciao", body: "x" })).toContain("Content-Type: text/plain; charset=UTF-8");
+	});
+
+	it("attachments: the card names them, the approval sends exactly those bytes; a file changed or gone since is not sent; the audit only counts them", async () => {
+		const { owner, thread, google, dataDir } = await ready();
+		const root = workspaceDir(dataDir, tenantId("default"), instanceId("annie"));
+		const pdf = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(5000, 7)]);
+		mkdirSync(join(root, "contratti"), { recursive: true });
+		writeFileSync(join(root, "contratti", "Contratto Rossi è firmato.pdf"), pdf);
+		writeFileSync(join(root, "contratti", "b.pdf"), pdf);
+		writeFileSync(join(root, "contratti", "c.pdf"), pdf);
+		const asked = await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", body: "Ecco il contratto.", attachments: ["contratti/Contratto Rossi è firmato.pdf"], reason: "Contratto a Rossi" }));
+		expect(asked).toMatch(/Richiesta [0-9a-f]{12} pronta: rispondere a rossi@cliente.it, con 1 allegato/);
+		const [action] = (await owner("/api/instances/annie/google-actions")).actions;
+		expect(action.reason).toBe("Contratto a Rossi · Allegato: Contratto Rossi è firmato.pdf (5 KB)");
+		expect(action.mail.attachments).toEqual([{ path: "contratti/Contratto Rossi è firmato.pdf", name: "Contratto Rossi è firmato.pdf", size: pdf.length, sha256: expect.stringMatching(/^[0-9a-f]{64}$/), contentType: "application/pdf" }]);
+		const decided = await owner(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "approved" });
+		expect(decided.action).toMatchObject({ status: "done", reason: expect.stringContaining("Allegato:") });
+		const raw = rawOf(google.writes()[0]);
+		expect(JSON.parse(google.writes()[0]?.body ?? "{}").threadId).toBe("t1");
+		const boundary = /boundary="([^"]+)"/.exec(raw)?.[1] as string;
+		const [, text, file] = raw.split(`--${boundary}`);
+		expect(Buffer.from((text as string).split("\r\n\r\n")[1] as string, "base64").toString("utf8")).toBe("Ecco il contratto.");
+		expect(file).toContain("filename*=UTF-8''Contratto%20Rossi%20%C3%A8%20firmato.pdf");
+		expect(Buffer.from((file as string).split("\r\n\r\n")[1] as string, "base64").equals(pdf)).toBe(true);
+		await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${action.id}`));
+		// Changed after the request, or gone: the approval fails and says why.
+		await reply(owner, thread.id, tool("google_mail_send", { to: ["luca@example.com"], subject: "B", body: "b", attachments: ["contratti/b.pdf"], reason: "Uno" }));
+		await reply(owner, thread.id, tool("google_mail_send", { to: ["luca@example.com"], subject: "C", body: "c", attachments: ["contratti/c.pdf"], reason: "Due" }));
+		const [, changed, gone] = (await owner("/api/instances/annie/google-actions")).actions;
+		writeFileSync(join(root, "contratti", "b.pdf"), Buffer.concat([pdf.subarray(0, 100), Buffer.alloc(pdf.length - 100, 8)]));
+		writeFileSync(join(root, "contratti", "c.pdf"), "");
+		for (const a of [changed, gone]) {
+			const out = (await owner(`/api/instances/annie/google-actions/${a.id}/decision`, { decision: "approved" })).action;
+			expect(out).toMatchObject({ status: "failed", result: { error: expect.stringContaining("il file è cambiato dopo la richiesta: chiedi di nuovo") } });
+		}
+		expect(google.writes()).toHaveLength(1);
+		for (const a of [changed, gone]) await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${a.id}`));
+		// What cannot be attached is refused before anything is asked.
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x", body: "y", attachments: ["../secret.pdf"], reason: "prova" }))).toContain("Errore: non posso allegare");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x", body: "y", attachments: ["run.sh"], reason: "prova" }))).toContain("Errore: non allego «run.sh»");
+		expect((await owner("/api/instances/annie/google-actions")).actions).toHaveLength(3);
+		const audit = readFileSync(join(dataDir, "tenants", "default", "audit.jsonl"), "utf8");
+		expect(audit).toMatch(/"type":"google_action.approved"[^\n]*"attachments":1/);
+		for (const secret of ["Contratto", "contratti", "rossi@cliente.it"]) expect(audit).not.toContain(secret);
+	});
+
+	it("a large attachment goes through Gmail's upload endpoint, with the thread in the metadata", async () => {
+		const { owner, thread, google, dataDir } = await ready();
+		const root = workspaceDir(dataDir, tenantId("default"), instanceId("annie"));
+		mkdirSync(root, { recursive: true });
+		const big = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(5 * 1024 * 1024, 1)]);
+		writeFileSync(join(root, "grande.pdf"), big);
+		await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", body: "Il file grande.", attachments: ["grande.pdf"], reason: "File grande" }));
+		const [action] = (await owner("/api/instances/annie/google-actions")).actions;
+		expect((await owner(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "approved" })).action.status).toBe("done");
+		const [sent] = google.writes();
+		expect(`${sent?.url.pathname}?${sent?.url.searchParams}`).toBe("/upload/gmail/v1/users/me/messages/send?uploadType=multipart");
+		const outer = /^--(annie_upload_[0-9a-f]+)\r\n/.exec(sent?.body ?? "")?.[1] as string;
+		const [, meta, message] = (sent?.body ?? "").split(`--${outer}`);
+		expect(JSON.parse((meta as string).split("\r\n\r\n")[1] as string)).toEqual({ threadId: "t1" });
+		expect(message).toContain("Content-Type: message/rfc822\r\n\r\nTo: rossi@cliente.it\r\n");
+		const inner = /boundary="([^"]+)"/.exec(message as string)?.[1] as string;
+		const file = (message as string).split(`--${inner}`)[2] as string;
+		expect(Buffer.from(file.split("\r\n\r\n")[1] as string, "base64").equals(big)).toBe(true);
 	});
 });

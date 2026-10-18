@@ -123,6 +123,11 @@ export class QuoteStore {
 		this.changeQuote(number, ({ pendingFile: _, ...quote }) => ({ ...quote, file }));
 	}
 
+	/** The customer's address, given to send the quote: kept on it for the next time. */
+	setEmail(number: string, email: string): void {
+		this.changeQuote(number, (quote) => ({ ...quote, customer: { ...quote.customer, email } }));
+	}
+
 	private changeQuote(number: string, change: (quote: Quote) => Quote): void {
 		this.update((book) => {
 			const quote = book.quotes.find((q) => q.number === number);

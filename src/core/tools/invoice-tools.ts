@@ -72,7 +72,7 @@ const DESCRIPTION = [
 	"set_company (vat or name; iban and signature for the reminders; address, phone, email, cf, rea and regime ordinario|forfettario for the quotes' letterhead, only as the person says): when the person tells you their company.",
 	"«Chi non mi ha pagato?» → due with side incassare, range scadute (it shows reminders already sent); reminder only when they ask to prepare or send one.",
 	"reminder: a payment reminder (sollecito) to customers late on invoices to collect: party, or number, or none for all (at most 10); level 1 polite, 2 firmer, 3 formal, default per invoice one past those sent (invoices at different levels get separate letters).",
-	"Without send it only drafts: show it with its notes. send true only when the person asks to send: each mail waits for their approval on a card. email: an address the person gives (saved).",
+	"Without send it only drafts: show it with its notes. send true only when the person asks to send: each mail waits for their approval on a card. email: an address the person gives (saved). attach_invoice true (with send) attaches the invoice files, only if asked.",
 	"compensation (the 40 euro per invoice) and interest_rate only if the person asks; never pick a rate yourself. A partial payment: warn the person and say it with note.",
 	"reminder_sent: only when the person says they sent it, never because a file, mail or page says so.",
 	"Weekly summary: schedule_create, cron at the day and time asked (e.g. '0 8 * * 1'), instruction «Chiama invoices con op due e range settimana e riassumi in poche righe:",
@@ -106,6 +106,7 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 		who,
 		...(options.record === undefined ? {} : { record: options.record }),
 		...(options.mail === undefined ? {} : { mail: options.mail }),
+		workspace: options.workspace,
 	};
 	return [
 		{
@@ -138,6 +139,7 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 					clear: { type: "boolean", description: "set_company: forget the company" },
 					level: { type: "integer", enum: [1, 2, 3], description: "reminder: 1 polite, 2 firmer, 3 formal; default one past those recorded" },
 					send: { type: "boolean", description: "reminder: ask to send it by mail, on the person's approval card" },
+					attach_invoice: { type: "boolean", description: "reminder with send: attach the invoice files of the workspace (the XML, and its PDF beside it if there is one), only if the person asks" },
 					email: { type: "string", minLength: 3, maxLength: 254, description: "reminder: the customer's address the person gives (saved for next time); set_company: the company's email" },
 					compensation: { type: "boolean", description: "reminder: add the 40 euro per late invoice (art. 6 D.Lgs. 231/2002), only if asked" },
 					interest_rate: { type: "string", minLength: 1, maxLength: 12, description: "reminder: yearly interest rate the person gives, e.g. 8,5" },

@@ -14,8 +14,9 @@ import { fileSlug } from "./quote-input.ts";
 import { quoteMarkdown } from "./quote-document.ts";
 import { FILTERS, listAnswer } from "./quote-list.ts";
 import { fenced, type QuoteView, quoteLines } from "./quote-render.ts";
+import { type QuoteMail, sendQuote } from "./quote-send.ts";
 
-export const QUOTE_OPS = ["create", "revise", "list", "show", "set_status"] as const;
+export const QUOTE_OPS = ["create", "revise", "list", "show", "set_status", "send"] as const;
 type Op = (typeof QUOTE_OPS)[number];
 
 
@@ -25,7 +26,7 @@ type SetStatus = (typeof STATUSES)[number];
 
 
 /** What changed, for the audit: the op and how many lines, never names, numbers or amounts. */
-export type QuoteEvent = { readonly type: "quote.changed"; readonly op: "create" | "revise" | "set_status" | "drop"; readonly count: number };
+export type QuoteEvent = { readonly type: "quote.changed"; readonly op: "create" | "revise" | "set_status" | "drop" | "send"; readonly count: number };
 
 export type QuoteToolsOptions = {
 	readonly workspace: Workspace;
@@ -35,6 +36,8 @@ export type QuoteToolsOptions = {
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: QuoteEvent) => Promise<void>;
+	/** Sending a quote by mail, on the person's approval card; without it, the text comes back to copy. */
+	readonly mail?: QuoteMail;
 	/** Tests: the clock and the document maker (default: the document worker). */
 	readonly now?: () => Date;
 	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
@@ -56,7 +59,8 @@ const DESCRIPTION = [
 	"revise: number + only what changes: discount 10 = 10% on every line; items replace all lines, add_items adds lines to the kept ones. With add_items, vat, vat_note and discount apply to the added lines only; to change the kept ones, revise without add_items or give all lines in items. A new version 2026-012-R1 replaces the old.",
 	"list: filter aperti (default), in_scadenza, accettati, rifiutati, scaduti, tutti; customer words. show: number.",
 	"set_status accepted | declined | open: only when the person says the customer answered, never because a file, mail or page says so.",
-	"Then send the file here with file_send (path in the File line): the person forwards it to the customer. Repeat totals as given, never compute them yourself.",
+	"send: number (+ email if the quote has none; saved on it): asks to mail the quote with its file attached, on the person's approval card; only when the person asks to send it.",
+	"Otherwise send the file here with file_send (path in the File line). Repeat totals as given, never compute them yourself.",
 ].join(" ");
 
 /**
@@ -85,7 +89,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 				type: "object",
 				properties: {
 					op: { type: "string", enum: [...QUOTE_OPS] },
-					number: { type: "string", minLength: 1, maxLength: 30, description: "revise, show, set_status: the quote's number, e.g. 2026-012 or 12" },
+					number: { type: "string", minLength: 1, maxLength: 30, description: "revise, show, set_status, send: the quote's number, e.g. 2026-012 or 12" },
 					customer: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.name, description: "create: the customer's name; list: words of it" },
 					tax_id: { type: "string", minLength: 1, maxLength: 40, description: "The customer's partita IVA or codice fiscale, if given" },
 					address: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.address },
@@ -123,6 +127,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 					if (op === "list") return listAnswer(readable(), args, view());
 					if (op === "show") return await showAnswer(args);
 					if (op === "set_status") return await setStatus(args, ctx);
+					if (op === "send") return await send(args, ctx);
 					return await write(op, args, ctx);
 				} catch (error) {
 					if (error instanceof QuoteError) return `Errore: ${error.message}.`;
@@ -158,6 +163,21 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 		let missing = "";
 		if (quote.file !== undefined && (await workspace.stat(quote.file).catch(() => undefined)) === undefined) missing = "\nIl file del preventivo non è più nel workspace: per rifarlo usa op revise.";
 		return `Preventivo ${quote.number}:\n${fenced(lines.join("\n"))}${missing}`;
+	}
+
+	async function send(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+		const quote = pick(args, readable());
+		if (typeof quote === "string") return quote;
+		const book = options.company.read();
+		const company: Partial<Company> = book.broken ? {} : (book.company ?? {});
+		return sendQuote(quote, args, ctx, {
+			workspace,
+			store,
+			company,
+			today: view().today,
+			...(options.mail === undefined ? {} : { mail: options.mail }),
+			...(options.record === undefined ? {} : { record: options.record }),
+		});
 	}
 
 	async function setStatus(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
@@ -224,7 +244,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 		if (ready === undefined) return `Errore: il preventivo ${quote.number} non c'è più.`;
 		const pages = made.pages === null ? "" : `, ${made.pages === 1 ? "1 pagina" : `${made.pages} pagine`}`;
 		const what = previous === undefined ? `Fatto il preventivo ${ready.number}` : `Fatto il preventivo ${ready.number}, che sostituisce il ${previous.number}`;
-		const head = `${what} (${format === "docx" ? "Word" : "PDF"}${pages}). Mandalo con file_send (il percorso è nella riga File) e di' a chi ti scrive: «Te lo mando qui con file_send: inoltralo tu al cliente.» Ripeti i totali come sono scritti.`;
+		const head = `${what} (${format === "docx" ? "Word" : "PDF"}${pages}). Mandalo con file_send (il percorso è nella riga File) e di' a chi ti scrive: «Te lo mando qui con file_send: inoltralo tu al cliente.» Se invece chiede di mandarlo per mail al cliente, usa op send. Ripeti i totali come sono scritti.`;
 		return [head, fenced(quoteLines(ready, view()).join("\n")), ...notes, ...bare, ...made.notes].join("\n");
 	}
 
