@@ -83,6 +83,7 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		// «Si ripete»: no scheda now, one at each time, worked with this person.
 		if (body.repeat !== undefined && body.repeat !== null) {
 			if (!assignee) throw new HttpError(400, "Una scheda che si ripete va affidata a un agente");
+			if (due) throw new HttpError(400, "Una scheda che si ripete non ha una scadenza");
 			const routines = routinesOf();
 			let routine: Routine;
 			try {

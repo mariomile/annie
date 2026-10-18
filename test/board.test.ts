@@ -454,33 +454,42 @@ describe("the board (ADR 0050)", () => {
 			expect(() => store.create({ title: "x", due: "26/10/2026" }, anna)).toThrow(BoardError);
 			const moved = store.update(c.id, { due: "2026-10-30" }, anna);
 			expect(moved.due).toBe("2026-10-30");
-			expect(moved.events.at(-1)).toMatchObject({ kind: "edited", text: "scadenza a venerdì 30 ottobre" });
+			expect(moved.events.at(-1)).toMatchObject({ kind: "edited", due: "2026-10-30" });
 			// The same day again: nothing recorded.
 			expect(store.update(c.id, { due: "2026-10-30" }, anna).events).toHaveLength(moved.events.length);
 			// Another field changed: the scadenza stays.
 			expect(store.update(c.id, { title: "Preventivo Rossi srl" }, anna).due).toBe("2026-10-30");
 			const off = store.update(c.id, { due: null }, anna);
 			expect(off.due).toBeUndefined();
-			expect(off.events.at(-1)?.text).toBe("scadenza tolta");
+			expect(off.events.at(-1)).toMatchObject({ kind: "edited", due: null });
+			expect(() => store.update(c.id, { due: 20261030 as never }, anna)).toThrow(/formato 2026-10-26/);
 			// 22:30 UTC on 25 October is 23:30 in Rome, still the 25th; 23:30 UTC is already the 26th there.
 			expect(dueText("2026-10-26", new Date("2026-10-25T22:30:00Z"))).toBe("scade domani");
 			expect(dueText("2026-10-26", new Date("2026-10-25T23:30:00Z"))).toBe("scade oggi");
 			expect(dueText("2026-10-26", new Date("2026-10-27T10:00:00Z"))).toBe("in ritardo di un giorno");
 			expect(dueText("2026-10-26", new Date("2026-10-30T10:00:00Z"))).toBe("in ritardo di 4 giorni");
-			expect(dueText("2026-10-30", new Date("2026-10-26T10:00:00Z"))).toBe("scade venerdì 30 ottobre");
+			expect(dueText("2026-10-30", new Date("2026-10-26T10:00:00Z"))).toBe("scade fra 4 giorni");
+			// Across the night the clocks go forward: still whole days.
+			expect(dueText("2026-03-30", new Date("2026-03-28T23:30:00Z"))).toBe("scade domani");
 		});
 
 		it("the agente gets it in the brief, sees it in the list, the nearest first, and sets it when creating", async () => {
 			const { work, store, posts } = setup();
 			await work.create({ title: "Fornitori carta", assignee: "ricerca", due: "2026-10-30" }, anna, "p_anna");
-			expect(posts[0]?.text).toMatch(/\n\nScadenza: venerdì 30 ottobre \((scade|in ritardo).*\)\.\n\n/);
+			expect(posts[0]?.text).toMatch(/\n\nScadenza: venerdì 30 ottobre \((scade|in ritardo)[^)]*\)\.\n\n/);
+			expect(posts[0]?.text).not.toMatch(/\(scade venerdì/);
 			const agents = async () => [{ id: "ricerca", name: "Ricercatore" }];
 			const tool = (name: string) => createBoardTools({ self: "ricerca", store, work, agents, personOf: () => "p_anna" }).find((t) => t.name === name) as { execute: (a: Record<string, unknown>, c: never) => Promise<string> };
-			expect(await tool("board_create").execute({ title: "Fattura Bianchi", due: "2020-01-10" }, ctx("chat1"))).toMatch(/^Scheda #2 creata/);
-			expect(store.get("2")?.due).toBe("2020-01-10");
+			// A day already gone, as from a wrong year: refused, with why.
+			expect(await tool("board_create").execute({ title: "Fattura Bianchi", due: "2020-01-10" }, ctx("chat1"))).toMatch(/^Errore: la scadenza venerdì 10 gennaio 2020 è già passata/);
+			const soon = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+			expect(await tool("board_create").execute({ title: "Fattura Bianchi", due: soon }, ctx("chat1"))).toMatch(new RegExp(`^Scheda #2, scadenza \\S+ \\d+º? \\S+ ${soon.slice(0, 4)}, creata in «Da fare»`));
 			store.create({ title: "Senza data" }, anna);
+			store.create({ title: "Urgente", priority: "alta" }, anna);
+			// Moved by a person to a day gone: late, listed after the priorità alta.
+			store.update(store.get("2")?.id as string, { due: "2020-01-10" }, anna);
 			const listed = await tool("board_list").execute({}, ctx("chat1"));
-			expect(listed).toMatch(/#2 \[Da fare\] \(in ritardo di \d+ giorni, 2020-01-10\) Fattura Bianchi.*\n#1 \[In corso\] \(.*2026-10-30\) Fornitori carta.*\n#3 \[Da fare\] Senza data/);
+			expect(listed).toMatch(/#4 \[Da fare\] \(priorità alta\) Urgente.*\n#2 \[Da fare\] \(in ritardo di \d+ giorni, 2020-01-10\) Fattura Bianchi.*\n#1 \[In corso\] \(.*2026-10-30\) Fornitori carta.*\n#3 \[Da fare\] Senza data/);
 			expect(await tool("board_create").execute({ title: "x", due: "domani" }, ctx("chat1"))).toMatch(/^Errore: La scadenza è un giorno/);
 		});
 	});

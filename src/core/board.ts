@@ -28,6 +28,8 @@ export type CardEvent = {
 	readonly status?: CardStatus;
 	/** The agente assigned; null: nobody. */
 	readonly assignee?: string | null;
+	/** An «edited» that moved the scadenza (ADR 0070): the new day; null: taken off. */
+	readonly due?: string | null;
 	readonly text?: string;
 };
 
@@ -174,7 +176,7 @@ export class BoardStore {
 				const { due: _due, ...rest } = next;
 				const kept = dueMoved ? (due === null ? undefined : due) : card.due;
 				next = { ...rest, title, description, priority: change.priority ?? card.priority, ...(kept === undefined ? {} : { due: kept }) };
-				events.push({ at, by, kind: "edited", ...(dueMoved ? { text: due === null ? "scadenza tolta" : `scadenza a ${dueLabel(due as string)}` } : {}) });
+				events.push({ at, by, kind: "edited", ...(dueMoved ? { due } : {}) });
 			}
 			if (change.assignee !== undefined && (change.assignee ?? undefined) !== card.assignee) {
 				const { assignee: _old, work: _work, ...rest } = next;
@@ -246,7 +248,8 @@ export class BoardStore {
 }
 
 /** A real day, YYYY-MM-DD, or a BoardError. */
-export function dueDay(input: string): string {
+export function dueDay(input: unknown): string {
+	if (typeof input !== "string") throw new BoardError("La scadenza è un giorno nel formato 2026-10-26");
 	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.trim());
 	const day = m === null ? undefined : new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
 	if (m === null || day === undefined || day.toISOString().slice(0, 10) !== input.trim() || Number(m[1]) < 2000 || Number(m[1]) > 2100) throw new BoardError("La scadenza è un giorno nel formato 2026-10-26");
@@ -263,13 +266,13 @@ export function dueIn(due: string, now = new Date()): number {
 	return Math.round((Date.parse(`${due}T00:00:00Z`) - Date.parse(`${todayIn("Europe/Rome", now)}T00:00:00Z`)) / 86_400_000);
 }
 
-/** «scade oggi», «in ritardo di 3 giorni», «scade lunedì 26 ottobre»: for an open scheda. */
+/** «scade oggi», «in ritardo di 3 giorni», «scade fra 5 giorni»: for an open scheda, next to its day. */
 export function dueText(due: string, now = new Date()): string {
 	const days = dueIn(due, now);
 	if (days < 0) return days === -1 ? "in ritardo di un giorno" : `in ritardo di ${-days} giorni`;
 	if (days === 0) return "scade oggi";
 	if (days === 1) return "scade domani";
-	return `scade ${dueLabel(due)}`;
+	return `scade fra ${days} giorni`;
 }
 
 /** The most recent «Fatto» schede stay, the older ones go. */

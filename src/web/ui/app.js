@@ -3916,9 +3916,12 @@ function whenNext(iso) {
 const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
 /** A scheda's scadenza (ADR 0070), counted in Rome's days: { days, text, level } with level late, soon or later. */
 function dueInfo(due) {
-	const today = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Rome" });
+	const part = (type) => parts.find((p) => p.type === type).value;
+	const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+	const today = `${part("year")}-${part("month")}-${part("day")}`;
 	const days = Math.round((Date.parse(`${due}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
-	const label = new Date(`${due}T12:00:00Z`).toLocaleDateString("it-IT", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" });
+	// The year only when it is not this one.
+	const label = new Date(`${due}T12:00:00Z`).toLocaleDateString("it-IT", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short", ...(due.slice(0, 4) === today.slice(0, 4) ? {} : { year: "numeric" }) });
 	const text = days < 0 ? (days === -1 ? "in ritardo di un giorno" : `in ritardo di ${-days} giorni`) : days === 0 ? "scade oggi" : days === 1 ? "scade domani" : `scade ${label}`;
 	return { days, text, label, level: days < 0 ? "late" : days <= 1 ? "soon" : "later" };
 }
@@ -4043,7 +4046,7 @@ async function viewBoard(main) {
 		);
 		const due = h("input", { type: "date", value: c.due ?? "", "aria-label": "Scadenza" });
 		const comment = h("textarea", { rows: 2, placeholder: c.status === "da_rivedere" ? "Cosa va cambiato, se la rimandi indietro" : mine && c.status === "in_corso" ? "Arriva anche all'agente, nella conversazione" : "Un commento" });
-		const events = c.events.filter((e) => e.kind !== "edited" || e.text).slice(-30);
+		const events = c.events.filter((e) => e.kind !== "edited" || e.due !== undefined).slice(-30);
 		const line = (e) =>
 			h(
 				"li",
@@ -4059,9 +4062,9 @@ async function viewBoard(main) {
 									? `l'ha assegnata a ${agentOf(e.assignee)?.name ?? "un agente"}`
 									: `ha tolto l'assegnazione${e.text ? ` (${e.text})` : ""}`
 								: e.kind === "edited"
-									? e.text === "scadenza tolta"
-										? "ha tolto la scadenza"
-										: `ha messo la ${e.text}`
+									? e.due
+										? `ha messo la scadenza a ${dueInfo(e.due).label}`
+										: "ha tolto la scadenza"
 									: e.text,
 				),
 			);
@@ -4156,7 +4159,7 @@ async function viewBoard(main) {
 						),
 					)
 				: null,
-			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status), h("label.field", h("span", "Scadenza"), due)),
+			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status), c.status === "fatto" ? null : h("label.field", h("span", "Scadenza"), due)),
 			c.due && c.status !== "fatto" ? h(`p.small.board-due-line.${dueInfo(c.due).level}`, `${dueInfo(c.due).text[0].toUpperCase()}${dueInfo(c.due).text.slice(1)}.`) : null,
 			moves.length ? h("div.actions", moves) : null,
 			startable || working ? aloneRow : null,
@@ -4172,7 +4175,9 @@ async function viewBoard(main) {
 							const body = withComment({});
 							if (assignee.value !== (c.assignee ?? "")) body.assignee = assignee.value;
 							if (status.value !== c.status) body.status = status.value;
-							if (due.value !== (c.due ?? "")) body.due = due.value || null;
+							// A date half typed reads as empty: it would take the scadenza off.
+							if (due.validity.badInput) return toast("La scadenza non è una data completa", true);
+							if (c.status !== "fatto" && due.value !== (c.due ?? "")) body.due = due.value || null;
 							if (Object.keys(body).length === 0) return dialog.close();
 							void act(body, "Scheda aggiornata")();
 						},
@@ -4270,6 +4275,7 @@ async function viewBoard(main) {
 					render();
 					return;
 				}
+				if (due.validity.badInput) throw new Error("La scadenza non è una data completa");
 				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}), ...(due.value ? { due: due.value } : {}) } });
 				dialog.close();
 				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : `Scheda #${card.n} creata`);
