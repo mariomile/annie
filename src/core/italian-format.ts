@@ -108,6 +108,11 @@ function vowelNumber(value: string): boolean {
 	return whole === "1" || whole === "11" || whole.startsWith("8");
 }
 
+/** The sign of a change, amounts and percents alike: «+», or the minus «−» (U+2212) euros writes. */
+export function signOf(negative: boolean): string {
+	return negative ? "\u2212" : "+";
+}
+
 /** A percentage after its article or preposition, elided where Italian elides: «il 29%», «l'80%», «al 26,07%», «all'82%», «lo 0,40%». `value`: a number or a decimal with a point. */
 export function withPercent(preposition: "il" | "al", value: string | number): string {
 	const v = String(value);

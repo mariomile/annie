@@ -1005,6 +1005,27 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 	});
 });
 
+describe("cashflow, week 61: supplier payments an expense may stand for", () => {
+	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+
+	it("2: a payment and an expense with another supplier's name and the same amount are both taken off, and said as maybe the same payment", async () => {
+		const A3 = fattura(ALFA, BETA, { number: "A-3", date: "2026-09-20", total: "250.00", rate: [{ amount: "250.00", due: "2026-10-20" }] });
+		const s = setup({ files: { "f/a3.xml": A3 } });
+		s.at("2026-10-17");
+		await s.run({ op: "set_balance", amount: 1000, date: "10/10/2026" });
+		s.at(TODAY);
+		await s.spend({ op: "add", amount: 250, date: "18/10/2026", supplier: "Negozio Prova" });
+		const book = new InvoiceStore(s.dir);
+		const [invoice] = register([found("f/a3.xml", A3)], [], company);
+		book.mark({ invoice: invoice?.key as string, count: 1, paid: true, by: "u", at: "2026-10-18T07:00:00.000Z" });
+		const answer = await s.run({ op: "forecast", include_average_spend: false });
+		const out = outside(answer);
+		expect(out).toContain("Una fattura di un fornitore pagata forse è già tra le spese con un altro nome: per ora conto tutte e due. Chiedi a chi ti scrive se è lo stesso pagamento.");
+		expect(inside(answer)).toContain("Forse doppioni, contati tutti e due:\n• fatt. A-3 ad Alfa Forniture S.r.l., 250,00 €: forse è lo stesso pagamento della spesa «Negozio Prova» del 18/10");
+		expect(out).not.toContain("Negozio Prova");
+	});
+});
+
 describe("cashflow, week 55 second round", () => {
 	const base = { category: "software e abbonamenti" as const, by: "u", at: NOW.toISOString() };
 	const f = (t: string) => `<<${t}>>`;

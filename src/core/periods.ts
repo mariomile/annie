@@ -8,7 +8,7 @@
  */
 import { DateError, isoWeek, parseMonth } from "./dates.ts";
 import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES, realDate, weekdayOf } from "./italian-calendar.ts";
-import { italianDate } from "./italian-format.ts";
+import { italianDate, signOf } from "./italian-format.ts";
 import { halfUp } from "./quote-sums.ts";
 import { fold } from "./text-match.ts";
 
@@ -223,12 +223,12 @@ export function comparedSpans(p: Period, today: string): { readonly now: Span; r
 	return { now: { from: p.from, to: today }, before: { from: prev.from, to: end > prev.to ? prev.to : end }, partial: true };
 }
 
-/** «+12,5%» or «-3%» from `before` to `now`, to one decimal, half away from zero; undefined when before is zero. */
+/** «+12,5%» or «−3%» (italian-format.ts signOf) from `before` to `now`, to one decimal, half away from zero; undefined when before is zero. */
 export function percentChange(now: bigint, before: bigint): string | undefined {
 	if (before === 0n) return undefined;
 	const diff = now - before;
 	const abs = diff < 0n ? -diff : diff;
 	const tenths = halfUp(abs * 1000n, before);
 	const text = `${tenths / 10n}${tenths % 10n === 0n ? "" : `,${tenths % 10n}`}`;
-	return `${diff < 0n ? "-" : "+"}${text}%`;
+	return `${signOf(diff < 0n)}${text}%`;
 }
