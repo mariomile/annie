@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
-import { type BankMovement, bankAgentReads, bankCallReads, BANK_LIMITS } from "../src/core/bank.ts";
+import { type BankImport, type BankMovement, bankAgentReads, bankCallReads, BANK_LIMITS, delDay } from "../src/core/bank.ts";
+import { longWords, rowFates } from "../src/core/bank-dedup.ts";
 import { matchMovements, type MatchInputs, nameWords, saysName, saysNumber } from "../src/core/bank-match.ts";
 import { maskSensitive, parseStatement, type Parsed } from "../src/core/bank-parse.ts";
 import { BankStore } from "../src/core/bank-store.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { cashBook, unitsToCents as cashUnitsToCents } from "../src/core/cash-book.ts";
-import { invoiceFlows, rollForward } from "../src/core/cashflow-sources.ts";
+import { inStatement, invoiceFlows, rollForward } from "../src/core/cashflow-sources.ts";
 import { CashflowStore, latestBalance } from "../src/core/cashflow-store.ts";
 import { validBalance } from "../src/core/cashflow.ts";
 import { collectedIn } from "../src/core/client-sums.ts";
@@ -29,7 +30,7 @@ import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { incassiOf } from "../src/core/tax-sums.ts";
 import { createBankTools, type BankEvent } from "../src/core/tools/bank-tools.ts";
 import { readIds } from "../src/core/tools/bank-input.ts";
-import { BRIEF_NOTHING, briefAnswer, stateWords } from "../src/core/tools/bank-render.ts";
+import { askAnswer, BRIEF_NOTHING, briefAnswer, stateWords } from "../src/core/tools/bank-render.ts";
 import { expensesOf } from "../src/core/tools/expense-tools.ts";
 import { status as invoiceStatus } from "../src/core/tools/invoice-render.ts";
 import { Workspace } from "../src/core/workspace.ts";
@@ -244,7 +245,7 @@ describe("reading statements", () => {
 		s.put("banca/strano.csv", "Giorno;Testo;Valore\n05/10/2026;Bonifico da Cliente Uno Srl;1.220,00");
 		const asked = await s.run({ op: "import", path: "banca/strano.csv" });
 		expect(asked).toContain("Ecco le colonne, con i primi valori:");
-		expect(asked).toMatch(/<<<dati dell'estratto conto [0-9a-f]+: [^>]*>>>\nA: Giorno — 05\/10\/2026\nB: Testo — Bonifico da Cliente Uno Srl\nC: Valore — 1\.220,00/);
+		expect(asked).toMatch(/<<<dati dell'estratto conto [0-9a-f]+: [^>]*>>>\nA, Giorno: 05\/10\/2026\nB, Testo: Bonifico da Cliente Uno Srl\nC, Valore: 1\.220,00/);
 		expect(asked).toContain("«Quale colonna è il giorno dell'operazione, quale la descrizione, e l'importo è in una colonna sola o diviso tra entrate e uscite?»");
 		expect(s.store.read().movements).toHaveLength(0);
 		// Told which column is which, by name or letter.
@@ -306,7 +307,7 @@ describe("keeping each movement once", () => {
 		s.put("banca/b.csv", [head, "05/10/2026;BONIFICO DA CLIENTE UNO SRL FT FV-12;1.220,00;2.215,00", "20/10/2026;PRELIEVO ATM;-100,00;2.115,00"].join("\n"));
 		await s.run({ op: "import", path: "banca/a.csv" });
 		const second = await s.run({ op: "import", path: "banca/b.csv" });
-		expect(second).toContain("un movimento nuovo, 1 già caricati prima");
+		expect(second).toContain("un movimento nuovo, uno già caricato prima (non lo ripeto)");
 		expect(s.store.read().movements.map((m) => m.date)).toEqual(["2026-09-28", "2026-10-05", "2026-10-20"]);
 		expect(s.store.read().imports.map((i) => [i.added, i.duplicates])).toEqual([
 			[2, 0],
@@ -421,8 +422,8 @@ describe("matching", () => {
 		// The same expense explains one movement only.
 		expect(by.get("B-000002")).toBeUndefined();
 		expect(by.get("B-000003")).toMatchObject({ state: "auto", target: { kind: "renewal", target: "R-0001" } });
-		expect(by.get("B-000004")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24: acconto imposta sostitutiva (come la stima delle tasse del 16 ottobre)" } });
-		expect(by.get("B-000005")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24 (tasse o contributi)" } });
+		expect(by.get("B-000004")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24 per acconto imposta sostitutiva, come la stima delle tasse del 16 ottobre" } });
+		expect(by.get("B-000005")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24 per tasse o contributi" } });
 		expect(by.get("B-000006")?.target?.kind).toBe("transfer");
 		expect(by.get("B-000007")?.target?.kind).toBe("transfer");
 		expect(by.get("B-000008")?.target?.kind).toBe("withdrawal");
@@ -612,7 +613,7 @@ describe("the tool", () => {
 		expect(String(await briefed.execute({ op: "confirm", all: true }, fresh()))).toContain("legge soltanto");
 		expect(s.invoices.read().paid).toHaveLength(0);
 		expect(bankCallReads({ op: "summary" }) && !bankCallReads({ op: "confirm" })).toBe(true);
-		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\bbank_statement \(summary\)\./);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bbank_statement \(summary\)\./);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		expect(DEFAULT_INSTRUCTIONS).toContain("leggere l'estratto conto della banca (bank_statement:");
 	});
@@ -821,7 +822,7 @@ describe("week 60 review", () => {
 	});
 
 	it("L3: «-1,200» with nothing Italian in the column is English thousands; mixed ways are asked", () => {
-		const p = parsed("t.csv", ["Data;Descrizione;Importo", "05/10/2026;A;-1,200", "06/10/2026;B;300"].join("\n"));
+		const p = parsed("t.csv", ["Data,Descrizione,Importo", '05/10/2026,A,"-1,200"', "06/10/2026,B,300"].join("\n"));
 		expect(p.rows.map((r) => r.cents)).toEqual([-120000n, 30000n]);
 		const mixed = ["Data;Descrizione;Importo", "05/10/2026;A;-1,200", "07/10/2026;C;45,50"].join("\n");
 		expect(parseStatement("t.csv", new TextEncoder().encode(mixed))).toMatchObject({ kind: "ask", why: expect.stringContaining("virgola") });
@@ -861,7 +862,7 @@ describe("week 60 review", () => {
 		await s.run({ op: "import", path: "banca/e.csv" });
 		const t = await s.run({ op: "totals", month: "ottobre 2026" });
 		expect(t).toContain("A ottobre 2026, secondo la banca: entrate 0,00 €, uscite 1.244,55 €");
-		expect(t).toContain("(esclusi 500,00 € di giroconti tra i tuoi conti)");
+		expect(t).toContain("(2 movimenti, esclusi 500,00 € di giroconti tra i tuoi conti).");
 	});
 
 	it("U4, U5: weak proposals in their own block; the confirm says which invoices were marked, on which day", async () => {
@@ -886,7 +887,7 @@ describe("week 60 review", () => {
 	});
 
 	it("U7: one line for the tools that speak only when they have something, the restored words", () => {
-		expect(BRIEF_INSTRUCTION).toContain("9. Con compact true, riporta la riga solo se il tool segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary).");
+		expect(BRIEF_INSTRUCTION).toContain("9. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary).");
 		for (const words of ["il nome e quante voci restano", "sai in che città vive", "Se Google non è collegato o non è consentito"]) expect(BRIEF_INSTRUCTION).toContain(words);
 		expect(BRIEF_INSTRUCTION).not.toContain("come le ore");
 	});
@@ -954,5 +955,290 @@ describe("week 60 review", () => {
 	it("A3: one helper turns an invoice's units into cents", () => {
 		expect(cashUnitsToCents).toBe(unitsToCents);
 		expect(unitsToCents(122_000_000_000n)).toBe(122_000n);
+	});
+});
+
+describe("week 60 second review", () => {
+	const imp = (id: string, layout: string | undefined, format: "csv" | "camt" | "xlsx" = "csv"): BankImport => ({ id, file: "x.csv", from: "2026-10-01", to: "2026-10-31", rows: 1, added: 1, duplicates: 0, format, ...(layout === undefined ? {} : { layout }), by: "x", at: "y" });
+	const row = (hash: string, date: string, cents: bigint, description: string) => ({ hash, date, cents, description });
+	const kept = (id: number, hash: string, date: string, amount: string, description: string, seq = 1, importId = "I-0001"): BankMovement => ({ id: `B-${String(id).padStart(6, "0")}`, hash, seq, date, amount, description, importId });
+	const invoiceAt = (key: string, date: string | undefined) => ({ key, doc: { date } }) as unknown as Invoice;
+	const ask = (csv: string, o: Parameters<typeof parseStatement>[2] = {}) => parseStatement("a.csv", new TextEncoder().encode(csv), o);
+
+	it("S1, U8: rowFates absorbs the kept movement of a hash hit, so a second row is never eaten by it", () => {
+		const imports = [imp("I-0001", "csv:aaaaaaaaaaaa")];
+		const twins = [kept(1, "h1", "2026-10-05", "-10", "ADDEBITO ALFA", 1), kept(2, "h1", "2026-10-05", "-10", "ADDEBITO ALFA", 2)];
+		const fates = rowFates(twins, imports, [row("h1", "2026-10-05", -1000n, "ADDEBITO ALFA"), row("h1", "2026-10-05", -1000n, "ADDEBITO ALFA"), row("h1", "2026-10-05", -1000n, "ADDEBITO ALFA")], "csv:aaaaaaaaaaaa");
+		expect(fates).toEqual([{ kind: "loaded" }, { kind: "loaded" }, { kind: "new", seq: 3 }]);
+		// The kept movement taken by its hash twin is not taken again by another export's row of the same day and amount.
+		const one = [kept(1, "h1", "2026-10-05", "-10", "PAGAMENTO ALFA SRL")];
+		expect(rowFates(one, imports, [row("h1", "2026-10-05", -1000n, "PAGAMENTO ALFA SRL"), row("h2", "2026-10-05", -1000n, "ALFA SRL")], "camt")).toEqual([{ kind: "loaded" }, { kind: "new", seq: 1 }]);
+	});
+
+	it("S1, U8: the bank's generic words never make two movements one; the fuzzy path only for another layout", () => {
+		expect([...longWords("BONIFICO A FAVORE DI ALFA SEPA DISPOSIZIONE PAGAMENTO ADDEBITO")]).toEqual(["alfa"]);
+		const imports = [imp("I-0001", "csv:aaaaaaaaaaaa")];
+		const old = [kept(1, "h1", "2026-10-08", "-366", "BONIFICO A FAVORE DI ALFA")];
+		const beta = row("h2", "2026-10-08", -36600n, "BONIFICO A FAVORE DI BETA");
+		expect(rowFates(old, imports, [beta], "csv:bbbbbbbbbbbb")).toEqual([{ kind: "new", seq: 1, maybe: "B-000001" }]);
+		// A meaningful word shared, another layout: the same movement.
+		expect(rowFates(old, imports, [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:bbbbbbbbbbbb")).toEqual([{ kind: "loaded" }]);
+		// The same layout: a different hash is a different movement, never fuzzy, never «maybe».
+		expect(rowFates(old, imports, [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:aaaaaaaaaaaa")).toEqual([{ kind: "new", seq: 1 }]);
+		// An import recorded before layouts: compared by format.
+		expect(rowFates(old, [imp("I-0001", undefined)], [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:cccccccccccc")).toEqual([{ kind: "new", seq: 1 }]);
+		expect(rowFates(old, [imp("I-0001", undefined)], [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "camt")).toEqual([{ kind: "loaded" }]);
+	});
+
+	it("S1: the same file loaded again keeps every one of two identical rows once", async () => {
+		const s = await setup();
+		const csv = ["Data;Descrizione;Importo", "13/10/2026;ADDEBITO SDD PALESTRA;-39,00", "13/10/2026;ADDEBITO SDD PALESTRA;-39,00"].join("\n");
+		s.put("banca/p.csv", csv);
+		await s.run({ op: "import", path: "banca/p.csv" });
+		s.put("banca/q.csv", `${csv}\n13/10/2026;ADDEBITO SDD PALESTRA;-39,00`);
+		expect(await s.run({ op: "import", path: "banca/q.csv" })).toContain("un movimento nuovo, 2 già caricati prima");
+		expect(s.store.read().movements).toHaveLength(3);
+	});
+
+	it("S2: a statement's balance skips a hand mark only for a movement of the same signed amount, from the invoice's day to the balance's, not held by another target", () => {
+		const inv = invoiceAt("k1", "2026-10-01");
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "500" }])).toBe(true);
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "500", target: "inv:k1" }])).toBe(true);
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "500", target: "inv:k2" }])).toBe(false);
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "500", target: "other" }])).toBe(false);
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "-500" }])).toBe(false);
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-09-30", amount: "500" }])).toBe(false);
+		expect(inStatement(inv, 50000n, "2026-10-31", [{ date: "2026-11-01", amount: "500" }])).toBe(false);
+		// An invoice dated after the balance: never in it.
+		expect(inStatement(invoiceAt("k3", "2026-11-02"), 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "500" }])).toBe(false);
+		expect(inStatement(invoiceAt("k4", undefined), 50000n, "2026-10-31", [{ date: "2026-10-10", amount: "500" }])).toBe(false);
+	});
+
+	it("S2: week 55's rule for a statement's balance too: a mark before the balance is never added, one after it is, unless the statement has it", async () => {
+		const s = await setup({ files: { ...BASE_FILES, "fatture/fv13.xml": out({ number: "FV-13", date: "2026-10-02", total: "500.00" }) } });
+		const reg0 = await s.reg();
+		const key = (n: string) => (reg0.find((i) => i.doc.number === n) as Invoice).key;
+		const balance = { amount: "1000", date: "2026-10-31", source: "bank" as const, by: "test:u", at: "2026-11-01T08:00:00Z" };
+		s.invoices.mark({ invoice: key("FV-12"), count: 1, paid: true, by: "test:u", at: "2026-10-30T10:00:00Z" });
+		s.invoices.mark({ invoice: key("FV-13"), count: 1, paid: true, by: "test:u", at: "2026-11-03T10:00:00Z" });
+		const reg = await s.reg();
+		const roll = (statement: { date: string; amount: string; target?: string }[]) => rollForward(balance, NOW.toISOString(), "2026-11-05", reg, [], [], dayOf, statement)?.incassi.map((r) => r.invoice.doc.number) ?? [];
+		// FV-12 marked before the balance was set: never added; FV-13 after it, no movement: added.
+		expect(roll([])).toEqual(["FV-13"]);
+		// The statement has FV-13's 500 €: in the balance already.
+		expect(roll([{ date: "2026-10-20", amount: "500" }])).toEqual([]);
+		// The movement is held by another target: FV-13 is added.
+		expect(roll([{ date: "2026-10-20", amount: "500", target: "other" }])).toEqual(["FV-13"]);
+		expect(roll([{ date: "2026-10-20", amount: "500", target: "inv:another" }])).toEqual(["FV-13"]);
+	});
+
+	it("S2: never skipped for an invoice dated after the balance's day; the set_balance warning follows the same rule", async () => {
+		const s = await setup({ files: { ...BASE_FILES, "fatture/p8.xml": fattura(SUPPLIER, COMPANY, { number: "P-8", date: "2026-10-03", total: "45.50" }), "fatture/p9.xml": fattura(SUPPLIER, COMPANY, { number: "P-9", date: "2026-10-25", total: "45.50" }) } });
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		const reg0 = await s.reg();
+		const key = (n: string) => (reg0.find((i) => i.doc.number === n) as Invoice).key;
+		s.invoices.mark({ invoice: key("P-8"), count: 1, paid: true, by: "test:u", at: "2026-11-01T10:00:00Z" });
+		s.invoices.mark({ invoice: key("P-9"), count: 1, paid: true, by: "test:u", at: "2026-11-01T10:00:00Z" });
+		const preview = await s.run({ op: "set_balance" });
+		expect(preview).toContain("fattura P-8: segnata pagata a mano il 1º novembre 2026, ma nell'estratto conto c'è B-000002 dello stesso importo del 12 ottobre 2026");
+		expect(preview).not.toContain("fattura P-9");
+		const statement = [{ date: "2026-10-12", amount: "-45.5" }];
+		const balance = { amount: "5754", date: "2026-10-20", source: "bank" as const, by: "test:u", at: "2026-10-31T08:00:00Z" };
+		const rolled = rollForward(balance, NOW.toISOString(), "2026-11-05", await s.reg(), [], [], dayOf, statement);
+		expect(rolled?.paidPassive.map((r) => r.invoice.doc.number)).toEqual(["P-9"]);
+	});
+
+	it("S3: a cut word only as the description's last; a one-word name is weak without the number; two words or the partita IVA are strong", async () => {
+		expect(saysName(nameWords("BONIFICO MARIO ROSSI"), "Rossini Mario")).toBe(false);
+		expect(saysName(nameWords("BONIF. COSTA ACCREDITO"), "Costantini")).toBe(false);
+		expect(saysName(nameWords("BONIFICO MARIO ROSSI"), "Rossi Mario")).toBe(true);
+		const files = {
+			"f/c.xml": fattura(COMPANY, { name: "Costantini", vat: OTHER.vat }, { number: "FV-77", date: "2026-09-01", total: "310.00" }),
+			"f/b.xml": fattura(COMPANY, { name: "Bonifacio Srl", vat: "00000040013" }, { number: "FV-78", date: "2026-09-02", total: "420.00" }),
+			"f/r.xml": fattura(COMPANY, { name: "Rossi Mario", vat: CLIENT.vat }, { number: "FV-79", date: "2026-09-03", total: "530.00" }),
+		};
+		const s = await setup({ files });
+		const base = { invoices: await s.reg(), expenses: [], renewals: [], taxes: [], used: new Set<string>(), refused: new Map() };
+		const one = (description: string, amount: string) => matchMovements({ ...base, movements: [movement(1, "2026-10-05", amount, description)] }, true)[0];
+		expect(one("BONIFICO DA COSTA", "310")?.strong).toBeUndefined();
+		expect(one("ACCREDITO BONIF", "420")?.strong).toBeUndefined();
+		expect(one("BONIFICO COSTANTINI", "310")?.strong).toBeUndefined();
+		expect(one("BONIFICO COSTANTINI FT FV-77", "310")).toMatchObject({ state: "auto", strong: true });
+		expect(one(`BONIFICO P.IVA ${OTHER.vat}`, "310")).toMatchObject({ state: "auto", strong: true });
+		expect(one("BONIFICO DA MARIO ROSSI", "530")).toMatchObject({ state: "auto", strong: true });
+		expect(one("BONIFICO DA ROSSINI MARIO", "530")?.strong).toBeUndefined();
+	});
+
+	it("S4: same drops a copy loaded twice and its proposals, only on confirm; refused for different movements or both confirmed", async () => {
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		s.put("banca/d.csv", ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00"].join("\n"));
+		await s.run({ op: "import", path: "banca/d.csv" });
+		expect(await s.run({ op: "same", ids: ["B-000003", "B-000004"] })).toContain("Non sono lo stesso movimento");
+		const preview = await s.run({ op: "same", ids: ["5", "3"] });
+		expect(preview).toContain("Tolgo B-000005 come copia di B-000003");
+		expect(s.store.read().movements).toHaveLength(5);
+		expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true })).toContain("Fatto: tolto B-000005, la copia di B-000003");
+		const after = s.store.read();
+		expect(after.movements.map((m) => m.id)).not.toContain("B-000005");
+		expect(after.matches.some((m) => m.movement === "B-000005")).toBe(false);
+		expect(s.events.at(-1)).toEqual({ type: "bank.changed", op: "same", count: 1 });
+		const two = await setup();
+		two.put("banca/p.csv", ["Data;Descrizione;Importo", "13/10/2026;ADDEBITO SDD PALESTRA;-39,00", "13/10/2026;ADDEBITO SDD PALESTRA;-39,00"].join("\n"));
+		await two.run({ op: "import", path: "banca/p.csv" });
+		await two.run({ op: "to_expense", ids: ["B-000001", "B-000002"], confirm: true, anyway: true });
+		expect(await two.run({ op: "same", ids: ["B-000001", "B-000002"], confirm: true })).toContain("sono confermati tutti e due");
+		expect(two.store.read().movements).toHaveLength(2);
+	});
+
+	it("S5: the bank's bare words after the rent and the shipping; its phrases before the rent", () => {
+		expect(matchCategory("commissioni corriere")).toBe("spedizioni");
+		expect(matchCategory("spedizione con commissione")).toBe("spedizioni");
+		expect(matchCategory("bolletta luce commissione")).toBe("affitto e utenze");
+		expect(matchCategory("competenze affitto")).toBe("affitto e utenze");
+		expect(matchCategory("canone conto")).toBe("banca e commissioni");
+		expect(matchCategory("spese tenuta conto")).toBe("banca e commissioni");
+		expect(matchCategory("commissioni")).toBe("banca e commissioni");
+		expect(matchCategory("canone")).toBe("affitto e utenze");
+	});
+
+	it("S6: English names with every date's parts up to 12: day_first asked, unless said", () => {
+		const csv = ["Date,Description,Amount", "10/05/2026,Card payment,-4.50", "10/06/2026,Transfer,12.00"].join("\n");
+		expect(ask(csv)).toMatchObject({ kind: "ask", need: "day_first" });
+		const us = ask(csv, { dayFirst: false });
+		expect(us.kind === "rows" && us.rows.map((r) => r.date)).toEqual(["2026-10-05", "2026-10-06"]);
+		const it_ = ask(csv, { dayFirst: true });
+		expect(it_.kind === "rows" && it_.rows.map((r) => r.date)).toEqual(["2026-05-10", "2026-06-10"]);
+		// Italian names: day/month, as always.
+		const ita = ask(["Data;Descrizione;Importo", "10/05/2026;POS;-4,50"].join("\n"));
+		expect(ita.kind === "rows" && ita.rows[0]?.date).toBe("2026-05-10");
+	});
+
+	it("U1: the acconto hint skips an invoice held by a live match, prefers the numbered one, and is recomputed after refuse", async () => {
+		const files = { ...BASE_FILES, "fatture/fv20.xml": out({ number: "FV-20", date: "2026-10-03", total: "2000.00" }) };
+		const s = await setup({ files });
+		const invoices = await s.reg();
+		const key = (n: string) => (invoices.find((i) => i.doc.number === n) as Invoice).key;
+		const base = { invoices, expenses: [], renewals: [], taxes: [], refused: new Map() };
+		const hint = (description: string, used: Set<string>) => matchMovements({ ...base, used, movements: [movement(1, "2026-10-06", "600", description)] }, false)[0];
+		expect(hint("BONIFICO DA CLIENTE UNO SRL ACCONTO", new Set())).toMatchObject({ state: "hint", note: "partial", target: { target: key("FV-12") } });
+		expect(hint("BONIFICO DA CLIENTE UNO SRL ACCONTO", new Set([`inv:${key("FV-12")}`]))).toMatchObject({ state: "hint", target: { target: key("FV-20") } });
+		expect(hint("BONIFICO DA CLIENTE UNO SRL ACCONTO FT FV-20", new Set())).toMatchObject({ state: "hint", target: { target: key("FV-20") } });
+		s.put("banca/a.csv", ["Data;Descrizione;Importo", "05/10/2026;BONIFICO DA CLIENTE UNO SRL ACCONTO;600,00", "06/10/2026;BONIFICO DA CLIENTE UNO SRL SALDO;1.220,00"].join("\n"));
+		await s.run({ op: "import", path: "banca/a.csv" });
+		const hintOf = () => s.store.read().matches.find((m) => m.movement === "B-000001" && m.state === "hint")?.target;
+		expect(s.store.read().matches.find((m) => m.movement === "B-000002" && m.state === "proposed")?.target).toBe(key("FV-12"));
+		expect(hintOf()).toBe(key("FV-20"));
+		await s.run({ op: "refuse", ids: ["B-000002"] });
+		expect(hintOf()).toBe(key("FV-12"));
+	});
+
+	it("U2: remove_import shows first, takes out a file's movements and matches on confirm, and is refused with the confirmed ones named", async () => {
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		s.put("banca/e.csv", DARE_AVERE_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		await s.run({ op: "import", path: "banca/e.csv" });
+		expect(await s.run({ op: "remove_import", import_id: "I-0009" })).toContain("Errore");
+		const preview = await s.run({ op: "remove_import", import_id: "i-0002" });
+		expect(preview).toContain("Tolgo l'estratto conto I-0002 (dal 2 ottobre 2026 al 28 ottobre 2026, 3 movimenti portati da quel file)");
+		expect(s.store.read().imports).toHaveLength(2);
+		const removed = s.store.read().movements.filter((m) => m.importId === "I-0002").map((m) => m.id);
+		expect(await s.run({ op: "remove_import", import_id: "I-0002", confirm: true })).toContain("Fatto: tolto l'estratto conto I-0002");
+		const after = s.store.read();
+		expect(after.imports.map((i) => i.id)).toEqual(["I-0001"]);
+		expect(after.movements.some((m) => removed.includes(m.id))).toBe(false);
+		expect(after.matches.some((m) => removed.includes(m.movement))).toBe(false);
+		await s.run({ op: "confirm", all: true });
+		const refused = await s.run({ op: "remove_import", import_id: "I-0001", confirm: true });
+		expect(refused).toContain("Non lo tolgo: questi movimenti sono confermati");
+		expect(refused).toContain("B-000003, B-000004");
+		expect(s.store.read().movements).toHaveLength(4);
+	});
+
+	it("U2: a «;» file whose every amount is «d,ddd» asks what the comma is", () => {
+		const csv = ["Data;Descrizione;Importo", "05/10/2026;A;-1,200", "06/10/2026;B;2,500"].join("\n");
+		expect(ask(csv)).toMatchObject({ kind: "ask", need: "decimal_comma" });
+		const told = ask(csv, { decimalComma: false });
+		expect(told.kind === "rows" && told.rows.map((r) => r.cents)).toEqual([-120000n, 250000n]);
+	});
+
+	it("U3, U4: the closing question by what is unclear; the columns as «A, Data: v1, v2», no em dash", () => {
+		const mixed = ask(["Data;Descrizione;Importo", "10/13/2026;A;-1,00", "13/10/2026;B;-2,00"].join("\n"));
+		const comma = ask(["Data;Descrizione;Importo", "05/10/2026;A;-1,200", "06/10/2026;B;2,500"].join("\n"));
+		const cols = ask("Giorno;Cosa;Valore\n03/10/2026;X;1,00\n05/10/2026;Y;2,00");
+		if (mixed.kind !== "ask" || comma.kind !== "ask" || cols.kind !== "ask") throw new Error("not asked");
+		expect(askAnswer(mixed)).toContain("giorno/mese, come in Italia, o mese/giorno");
+		expect(askAnswer(mixed)).toContain("day_first true");
+		expect(askAnswer(comma)).toContain("decimal_comma true");
+		expect(askAnswer(cols)).toContain("Quale colonna è il giorno dell'operazione");
+		expect(askAnswer(cols)).toContain("A, Giorno: 03/10/2026, 05/10/2026");
+		for (const a of [mixed, comma, cols]) expect(askAnswer(a)).not.toContain("—");
+	});
+
+	it("U4: no em dash in the files this week made", () => {
+		for (const f of ["bank-dedup.ts", "bank-columns.ts", "bank-parse.ts", "bank-match.ts", "bank.ts", "tools/bank-remove.ts", "tools/bank-render.ts", "tools/bank-confirm.ts", "tools/bank-tools.ts", "tools/bank-input.ts"]) {
+			expect(readFileSync(join(import.meta.dirname, "../src/core", f), "utf8")).not.toContain("—");
+		}
+	});
+
+	it("U5: the brief's line 9, under the length limit", () => {
+		expect(BRIEF_INSTRUCTION).toContain("9. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: timesheet (summary)");
+		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
+	});
+
+	it("U6: the confirm names 5 marks, then «e altre N (list con status matched)»", async () => {
+		const files: Record<string, string> = {};
+		const lines = ["Data;Descrizione;Importo"];
+		for (let n = 1; n <= 7; n++) {
+			files[`f/${n}.xml`] = out({ number: `FV-3${n}`, date: "2026-09-01", total: `${100 + n}.00` });
+			lines.push(`0${n}/10/2026;BONIFICO DA CLIENTE UNO SRL FT FV-3${n};${100 + n},00`);
+		}
+		const s = await setup({ files });
+		s.put("banca/m.csv", lines.join("\n"));
+		await s.run({ op: "import", path: "banca/m.csv" });
+		const done = await s.run({ op: "confirm", all: true });
+		expect(done).toContain("FV-35");
+		expect(done).not.toContain("FV-36");
+		expect(done).toContain("; e altre 2 (list con status matched)");
+	});
+
+	it("U7: «non la/le confermo» by the count, «dell'8 ottobre», one bracket in the totals, the F24 label, the bank's synonyms", async () => {
+		const one = await setup({ files: { "f/c.xml": out({ number: "FV-40", date: "2026-09-10", total: "77.00" }) } });
+		one.put("banca/x.csv", ["Data;Descrizione;Importo", "04/10/2026;BONIFICO;77,00"].join("\n"));
+		await one.run({ op: "import", path: "banca/x.csv" });
+		expect(await one.run({ op: "confirm", all: true })).toContain("Questa proposta coincide solo per l'importo: non la confermo");
+		const two = await setup({ files: { "f/c.xml": out({ number: "FV-40", date: "2026-09-10", total: "77.00" }), "f/d.xml": out({ number: "FV-41", date: "2026-09-11", total: "88.00" }) } });
+		two.put("banca/x.csv", ["Data;Descrizione;Importo", "04/10/2026;BONIFICO;77,00", "05/10/2026;BONIFICO;88,00"].join("\n"));
+		await two.run({ op: "import", path: "banca/x.csv" });
+		expect(await two.run({ op: "confirm", all: true })).toContain("Queste proposte coincidono solo per l'importo: non le confermo");
+		expect(delDay("2026-10-08")).toBe("dell'8 ottobre");
+		expect(delDay("2026-10-11")).toBe("dell'11 ottobre");
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		s.expenses.add(2026, "x1", (id) => ({ id, date: "2026-10-08", amount: "45.5", category: "altro", by: "test:u", at: NOW.toISOString() }));
+		expect(await s.run({ op: "to_expense", ids: ["B-000002"] })).toContain("(forse c'è già la spesa S-2026-0001 dell'8 ottobre: chiedi prima)");
+		const e = await setup();
+		e.put("banca/e.csv", DARE_AVERE_CSV);
+		await e.run({ op: "import", path: "banca/e.csv" });
+		expect(await e.run({ op: "list", status: "matched" })).toContain("F24 per tasse o contributi (abbinato)");
+		const totals = await e.run({ op: "totals", month: "ottobre 2026" });
+		expect(totals.match(/\(/g)?.length).toBe(1);
+		for (const w of ["banca", "bancomat canone", "canone bancomat"]) expect(matchCategory(w)).toBe("banca e commissioni");
+	});
+
+	it("U8: askAnswer in bank-render, the dedup pure in bank-dedup, bank-input reads the roles from bank-columns", async () => {
+		expect(typeof askAnswer).toBe("function");
+		expect(typeof rowFates).toBe("function");
+		const input = readFileSync(join(import.meta.dirname, "../src/core/tools/bank-input.ts"), "utf8");
+		expect(input).toContain('from "../bank-columns.ts"');
+		const parse = (await import("../src/core/bank-parse.ts")) as Record<string, unknown>;
+		expect(parse.ROLES).toBeUndefined();
+		const tools = readFileSync(join(import.meta.dirname, "../src/core/tools/bank-tools.ts"), "utf8");
+		expect(tools).not.toContain("function askAnswer");
+		expect(tools).not.toContain("function longWords");
 	});
 });

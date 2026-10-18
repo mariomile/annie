@@ -12,7 +12,30 @@ import { daysBetween, MONTH_NAMES } from "../italian-calendar.ts";
 import { italianDate, withDate } from "../italian-format.ts";
 import { eurosToCents } from "../quote-sums.ts";
 import { fold } from "../text-match.ts";
+import type { Ask, AskNeed } from "../bank-parse.ts";
 import { fenced } from "./bank-input.ts";
+
+/** Letters of a column: A…Z, AA… */
+const letter = (i: number): string => (i < 26 ? String.fromCharCode(65 + i) : `${letter(Math.floor(i / 26) - 1)}${String.fromCharCode(65 + (i % 26))}`);
+
+/** The question to put to the person, by what is not clear. */
+const QUESTIONS: Readonly<Record<AskNeed, string>> = {
+	columns: "Chiedi a chi ti scrive: «Quale colonna è il giorno dell'operazione, quale la descrizione, e l'importo è in una colonna sola o diviso tra entrate e uscite?», poi ripeti import con columns (per nome o per lettera, come {\"date\": \"A\", \"description\": \"B\", \"amount\": \"C\"}).",
+	day_first: "Chiedi a chi ti scrive: «Le date del file sono scritte giorno/mese, come in Italia, o mese/giorno, all'inglese?», poi ripeti import con day_first true (giorno/mese) o false (mese/giorno).",
+	decimal_comma: "Chiedi a chi ti scrive: «Negli importi la virgola separa i decimali (1.234,56) o le migliaia (1,234.56)?», poi ripeti import con decimal_comma true (decimali) o false (migliaia).",
+};
+
+/** What is not clear in a file: the columns with their first values (or the first row of a file without names), fenced, and the question for it. */
+export function askAnswer(a: Ask): string {
+	if (a.noHeader) return ["Il file non ha i nomi delle colonne; ecco la prima riga:", fenced(a.header.map((h, i) => `${letter(i)}: ${h || "(vuota)"}`).join("\n")), QUESTIONS.columns].join("\n");
+	const values = (i: number) =>
+		a.samples
+			.map((r) => r[i] ?? "")
+			.filter((v) => v.trim() !== "")
+			.join(", ");
+	const lines = a.header.map((h, i) => `${letter(i)}, ${h || "(senza nome)"}${values(i) === "" ? "" : `: ${values(i)}`}`);
+	return [`Non sono sicura di come leggere il file (${a.why}). Ecco le colonne, con i primi valori:`, fenced(lines.join("\n")), QUESTIONS[a.need]].join("\n");
+}
 
 export type Counts = { readonly total: number; readonly matched: number; readonly toConfirm: number; readonly unexplained: number };
 
@@ -118,9 +141,9 @@ export const ROW_CAP_NOTE = "Il file ha più righe di quante ne leggo in una vol
 const rows = (n: number) => (n === 1 ? "una riga" : `${n} righe`);
 
 export function importAnswer(f: ImportFacts): string {
-	const lines = [`Estratto conto ${withDate("dal", f.from)} ${withDate("al", f.to)} (${f.format === "camt" ? "CAMT.053" : f.format === "xlsx" ? "Excel" : "CSV"}): ${f.added === 1 ? "un movimento nuovo" : `${f.added} movimenti nuovi`}${f.duplicates > 0 ? `, ${f.duplicates} già caricati prima (non li ripeto)` : ""}.`, countLine("Movimenti caricati", f.counts)];
+	const lines = [`Estratto conto ${withDate("dal", f.from)} ${withDate("al", f.to)} (${f.format === "camt" ? "CAMT.053" : f.format === "xlsx" ? "Excel" : "CSV"}): ${f.added === 1 ? "un movimento nuovo" : `${f.added} movimenti nuovi`}${f.duplicates === 1 ? ", uno già caricato prima (non lo ripeto)" : f.duplicates > 1 ? `, ${f.duplicates} già caricati prima (non li ripeto)` : ""}.`, countLine("Movimenti caricati", f.counts)];
 	if (f.assumed !== undefined) lines.push(f.assumed);
-	if (f.maybeLoaded.length > 0) lines.push("Forse già caricati (stesso giorno e stesso importo di un movimento di un estratto conto di prima, ma con un'altra descrizione): li ho tenuti, chiedi a chi ti scrive se sono lo stesso movimento.", fenced(f.maybeLoaded.map(([a, b]) => `${a.id} e ${b.id}, ${withDate("del", a.date)}: ${signed(eurosToCents(a.amount))}`).join("\n")));
+	if (f.maybeLoaded.length > 0) lines.push("Forse già caricati (stesso giorno e stesso importo di un movimento di un estratto conto di prima, ma con un'altra descrizione): li ho tenuti: chiedi a chi ti scrive se sono lo stesso movimento e, dopo il sì, same con i due ids e confirm true.", fenced(f.maybeLoaded.map(([a, b]) => `${a.id} e ${b.id}, ${withDate("del", a.date)}: ${signed(eurosToCents(a.amount))}`).join("\n")));
 	if (f.auto > 0) lines.push(`Come mi hai chiesto, ho segnato da sola ${f.auto === 1 ? "una fattura sicura" : `${f.auto} fatture sicure`} con il giorno della banca.`);
 	if (f.skipped > 0) lines.push(`Ho saltato ${rows(f.skipped)} senza data o importo (totali, note).`);
 	if (f.badDates > 0) lines.push(`${rows(f.badDates)} con un importo ma una data che non leggo: ${f.badDates === 1 ? "l'ho lasciata fuori, controllala" : "le ho lasciate fuori, controllale"} nel file.`.replace(/^./, (c) => c.toUpperCase()));
@@ -165,12 +188,13 @@ const monthLabel = (key: string) => `${MONTH_NAMES[Number(key.slice(5, 7)) - 1]}
 
 export function totalsAnswer(t: { readonly months: readonly MonthTotal[]; readonly transfers: bigint }, label: string | undefined): string {
 	if (t.months.length === 0 && t.transfers === 0n) return label === undefined ? "Non ho ancora movimenti dell'estratto conto: chiedi a chi ti scrive di caricare il file della banca." : `Non ho movimenti dell'estratto conto per ${label}.`;
-	const figures = (m: MonthTotal) => `entrate ${euros(m.inCents)}, uscite ${euros(m.outCents)}, saldo del mese ${m.inCents >= m.outCents ? "+" : ""}${euros(m.inCents - m.outCents)} (${m.count} ${m.count === 1 ? "movimento" : "movimenti"})`;
-	const left = t.transfers > 0n ? ` (esclusi ${euros(t.transfers)} di giroconti tra i tuoi conti)` : "";
+	const left = t.transfers > 0n ? `esclusi ${euros(t.transfers)} di giroconti tra i tuoi conti` : "";
+	const figures = (m: MonthTotal, also: string) => `entrate ${euros(m.inCents)}, uscite ${euros(m.outCents)}, saldo del mese ${m.inCents >= m.outCents ? "+" : ""}${euros(m.inCents - m.outCents)} (${m.count} ${m.count === 1 ? "movimento" : "movimenti"}${also === "" ? "" : `, ${also}`})`;
 	const after = "Sono i movimenti caricati dagli estratti conto: un giorno mancante nei file manca anche qui.";
 	const only = t.months[0];
-	if (label !== undefined && t.months.length === 1 && only !== undefined && monthLabel(only.month) === label) return [`A ${label}, secondo la banca: ${figures(only)}${left}.`, after].join("\n");
-	return [`Secondo la banca${label === undefined ? "" : ` (${label})`}${left}:`, ...t.months.slice(0, 12).map((m) => `${monthLabel(m.month)}: ${figures(m)}`), after].join("\n");
+	if (label !== undefined && t.months.length === 1 && only !== undefined && monthLabel(only.month) === label) return [`A ${label}, secondo la banca: ${figures(only, left)}.`, after].join("\n");
+	const head = [label, left].filter((x) => x !== undefined && x !== "").join(", ");
+	return [`Secondo la banca${head === "" ? "" : ` (${head})`}:`, ...t.months.slice(0, 12).map((m) => `${monthLabel(m.month)}: ${figures(m, "")}`), after].join("\n");
 }
 
 /** Charges alike within TWIN_DAYS: the same amount out and the same description, maybe taken twice. */

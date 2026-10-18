@@ -508,7 +508,7 @@ describe("taxes: the brief, another agente, audit, fence, CSV, a broken file", (
 		// The limit only when the incassi of the last 7 days crossed a band: 70.000 € marked paid on 20 February.
 		b.at("2026-02-22");
 		expect(await b.run({ op: "calendar", compact: true })).toBe("Tasse: sei all'82% del limite di 85.000 € di ricavi del forfettario (stima). Nel brief riporta questo in una riga.");
-		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\btaxes \(calendar\)[,.]/);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\btaxes \(calendar\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 	});
 

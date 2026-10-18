@@ -13,15 +13,13 @@
  */
 import { createHash } from "node:crypto";
 import { BANK_LIMITS, BankError } from "./bank.ts";
-import { type Columns, type ColumnsSaid, detect, type Found, said } from "./bank-columns.ts";
+import { type Columns, type ColumnsSaid, detect, type Found, norm, said } from "./bank-columns.ts";
 import { spreadsheetRows } from "./documents.ts";
 import { parseCsv } from "./make-xlsx.ts";
 import { oneLine } from "./plain-text.ts";
 import { dayOf, tableNumber } from "./tables.ts";
 import { fold } from "./text-match.ts";
 import { attribute, child, children, decodeXml, descendant, parseXml, xmlRoot, type XmlElement } from "./xml-tree.ts";
-
-export { type ColumnsSaid, ROLES, type Role } from "./bank-columns.ts";
 
 export type ParsedRow = {
 	readonly date: string;
@@ -53,10 +51,15 @@ export type Parsed = {
 	readonly otherCurrency: number;
 	/** What was taken without asking, to say. */
 	readonly assumed?: string;
+	/** The file's shape: its format and its header (another export of the same account has another). */
+	readonly layout: string;
 };
 
 /** Not clear: the header found (or the first row, when there is no header) and the first values under it, masked and cut, to be fenced; and why. */
-export type Ask = { readonly kind: "ask"; readonly header: readonly string[]; readonly samples: readonly (readonly string[])[]; readonly noHeader: boolean; readonly why: string };
+export type Ask = { readonly kind: "ask"; readonly header: readonly string[]; readonly samples: readonly (readonly string[])[]; readonly noHeader: boolean; readonly why: string; readonly need: AskNeed };
+
+/** What the person is asked: which column is which, how dates are written, or what the comma is in the amounts. */
+export type AskNeed = "columns" | "day_first" | "decimal_comma";
 
 /** A cell from the file: at most BANK_LIMITS.cell characters, on one line, without control or format characters. */
 export function cleanCell(cell: string): string {
@@ -109,6 +112,7 @@ export function parseStatement(name: string, data: Uint8Array, o: Options = {}):
 	if (root !== undefined || /\.xml$/i.test(name)) return camt(data, o.ownIbans ?? []);
 	let sheet: string[][];
 	let format: "csv" | "xlsx" = "csv";
+	let semicolon = false;
 	let sheets: ReturnType<typeof spreadsheetRows>;
 	try {
 		sheets = spreadsheetRows(name, data, BANK_LIMITS.rows + 100);
@@ -121,44 +125,50 @@ export function parseStatement(name: string, data: Uint8Array, o: Options = {}):
 		sheet = visible?.rows.map((r) => r.map(cleanCell)) ?? [];
 	} else {
 		if (!/\.(?:csv|txt|tsv)$/i.test(name)) throw new BankError("leggo l'estratto conto in CSV, Excel (.xlsx) o CAMT.053 (.xml)");
-		sheet = parseCsv(new TextDecoder("utf-8").decode(data)).map((r) => r.slice(0, 60).map(cleanCell));
+		const text = new TextDecoder("utf-8").decode(data);
+		sheet = parseCsv(text).map((r) => r.slice(0, 60).map(cleanCell));
+		semicolon = text.split(/\r?\n/, 40).some((l) => l.includes(";"));
 	}
-	return table(sheet, format, o);
+	return table(sheet, format, semicolon, o);
 }
 
 /** What to ask about: the row shown and the first two rows with something under it, masked and cut. */
-function ask(rows: readonly (readonly string[])[], f: { header: readonly string[]; at: number; why: string; noHeader?: true }): Ask {
+function ask(rows: readonly (readonly string[])[], f: { header: readonly string[]; at: number; why: string; noHeader?: true }, need: AskNeed = "columns"): Ask {
 	const shown = (r: readonly string[]) => r.slice(0, 30).map((c) => maskSensitive(c).text.slice(0, 40));
 	const below = rows.slice(f.at + (f.noHeader === true ? 0 : 1)).filter((r) => r.some((c) => c.trim() !== ""));
-	return { kind: "ask", header: shown(f.header), samples: below.slice(f.noHeader === true ? 1 : 0, f.noHeader === true ? 3 : 2).map(shown), noHeader: f.noHeader === true, why: f.why };
+	return { kind: "ask", header: shown(f.header), samples: below.slice(f.noHeader === true ? 1 : 0, f.noHeader === true ? 3 : 2).map(shown), noHeader: f.noHeader === true, why: f.why, need };
 }
 
-function table(rows: string[][], format: "csv" | "xlsx", o: Options): Parsed | Ask {
+function table(rows: string[][], format: "csv" | "xlsx", semicolon: boolean, o: Options): Parsed | Ask {
 	const found: Found = o.columns !== undefined && Object.keys(o.columns).length > 0 ? said(rows, o.columns) : detect(rows);
 	if ("why" in found) return ask(rows, found);
 	const { at } = found;
 	let cols: Columns = found.cols;
 	const body = rows.slice(at + 1);
-	const whyAsk = (why: string) => ask(rows, { header: rows[at] ?? [], at, why });
-	const order = o.dayFirst === undefined ? dateOrder(body.map((r) => r[cols.date] ?? "")) : o.dayFirst ? "dmy" : "mdy";
-	if (order === "ask") return whyAsk("nella colonna della data alcune date sembrano giorno/mese e altre mese/giorno: chiedi come sono scritte e ripeti con day_first");
+	const whyAsk = (why: string, need: AskNeed = "columns") => ask(rows, { header: rows[at] ?? [], at, why }, need);
+	const amountCells = [cols.amount, cols.debit, cols.credit].flatMap((c) => (c === undefined ? [] : body.map((r) => r[c] ?? "")));
+	const dates = o.dayFirst === undefined ? dateOrder(body.map((r) => r[cols.date] ?? "")) : o.dayFirst ? "dmy" : "mdy";
+	if (dates === "ask") return whyAsk("nella colonna della data alcune date sembrano giorno/mese e altre mese/giorno", "day_first");
+	// Every date could be either way: an English header with nothing Italian in the amounts does not decide.
+	if (dates === "open" && cols.dateEnglish === true && !amountCells.some(italianAmount)) return whyAsk("le date possono essere giorno/mese o mese/giorno e niente nel file lo dice", "day_first");
+	const order = dates === "mdy" ? "mdy" : "dmy";
 	const styles = new Map<number, "it" | "en">();
 	for (const c of [cols.amount, cols.debit, cols.credit]) {
 		if (c === undefined) continue;
-		const s = o.decimalComma === undefined ? decimalStyle(body.map((r) => r[c] ?? "")) : o.decimalComma ? "it" : "en";
-		if (s === "ask") return whyAsk("non capisco se negli importi la virgola separa i decimali o le migliaia: chiedi e ripeti con decimal_comma");
+		const s = o.decimalComma === undefined ? decimalStyle(body.map((r) => r[c] ?? ""), semicolon) : o.decimalComma ? "it" : "en";
+		if (s === "ask") return whyAsk("non capisco se negli importi la virgola separa i decimali o le migliaia", "decimal_comma");
 		styles.set(c, s);
 	}
 	if (cols.balance !== undefined) {
 		// A running balance that does not read clearly is only left out: it is not needed for the movements.
-		const s = o.decimalComma === undefined ? decimalStyle(body.map((r) => r[cols.balance as number] ?? "")) : o.decimalComma ? "it" : "en";
+		const s = o.decimalComma === undefined ? decimalStyle(body.map((r) => r[cols.balance as number] ?? ""), semicolon) : o.decimalComma ? "it" : "en";
 		if (s === "ask") cols = { ...cols, balance: undefined };
 		else styles.set(cols.balance, s);
 	}
 	const num = (r: readonly string[], c: number | undefined): bigint | undefined | null => {
 		if (c === undefined) return undefined;
 		const t = (r[c] ?? "").trim();
-		if (t === "" || /^[-–—]$/.test(t)) return undefined;
+		if (t === "" || /^[-\u2013\u2014]$/.test(t)) return undefined;
 		const n = tableNumber(t, styles.get(c) === "en");
 		if (n === undefined || (n.unit !== undefined && n.unit !== "€") || !Number.isFinite(n.value) || Math.abs(n.value) > BANK_LIMITS.maxAmount) return null;
 		return BigInt(Math.round(n.value * 100));
@@ -208,7 +218,9 @@ function table(rows: string[][], format: "csv" | "xlsx", o: Options): Parsed | A
 	}
 	if (out.length === 0) return whyAsk("sotto l'intestazione non trovo movimenti con una data e un importo che so leggere");
 	if (closing === undefined && cols.balance !== undefined) closing = lastBalance(out);
-	return finish(format, out, closing, { truncated, skipped, badDates, bothSides, otherCurrency: 0, ...(cols.assumed === undefined ? {} : { assumed: cols.assumed }) });
+	const shape = at >= 0 ? (rows[at] ?? []).map(norm).join("|") : `colonne ${JSON.stringify(cols)}`;
+	const layout = `${format}:${createHash("sha256").update(shape).digest("hex").slice(0, 12)}`;
+	return finish(format, out, closing, { truncated, skipped, badDates, bothSides, otherCurrency: 0, layout, ...(cols.assumed === undefined ? {} : { assumed: cols.assumed }) });
 }
 
 /** The description's columns joined, a part another one holds already left out («Descrizione» in «Descrizione completa»). */
@@ -233,7 +245,7 @@ function row(date: string, valueDate: string | undefined, cents: bigint, text: s
 	};
 }
 
-type Counts = Pick<Parsed, "truncated" | "skipped" | "badDates" | "bothSides" | "otherCurrency" | "assumed">;
+type Counts = Pick<Parsed, "truncated" | "skipped" | "badDates" | "bothSides" | "otherCurrency" | "assumed" | "layout">;
 
 function finish(format: Parsed["format"], rows: ParsedRow[], closing: { cents: bigint; date: string } | undefined, counts: Counts): Parsed {
 	const days = rows.map((r) => r.date).sort();
@@ -263,7 +275,7 @@ function closingOf(r: readonly string[], order: "dmy" | "mdy"): { cents: bigint;
 		const t = c.trim();
 		const d = isoOf(t, order) ?? isoOf(/(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}-\d{2})/.exec(t)?.[1] ?? "", order);
 		if (d !== undefined) date = d;
-		const style = decimalStyle([t]);
+		const style = decimalStyle([t], false);
 		const n = tableNumber(t, style === "en");
 		if (n !== undefined && dayOf(t) === undefined && Math.abs(n.value) <= BANK_LIMITS.maxAmount) cents = BigInt(Math.round(n.value * 100));
 	}
@@ -277,12 +289,19 @@ function signOf(cell: string): bigint | undefined {
 	return undefined;
 }
 
+/** An amount written the Italian way: «1.234,56», «45,5». */
+const italianAmount = (cell: string) => {
+	const t = cell.replace(/[^\d.,]/g, "");
+	return /\d\.\d{3},\d/.test(t) || /\d,\d{1,2}$/.test(t);
+};
+
 /**
  * How a column writes its amounts: the Italian way (1.234,56), the English (1,234.56), or not
- * clear. «-1,200» alone reads as English thousands when nothing in the column is Italian; with
- * Italian amounts beside it, or both ways in one column, it is asked.
+ * clear. «-1,200» alone reads as English thousands when nothing in the column is Italian, except
+ * in a file separated by «;» (an Italian export, where it may be 1,2 written with three decimals);
+ * with Italian amounts beside it, or both ways in one column, it is asked.
  */
-export function decimalStyle(cells: readonly string[]): "it" | "en" | "ask" {
+export function decimalStyle(cells: readonly string[], semicolon: boolean): "it" | "en" | "ask" {
 	let it = 0;
 	let en = 0;
 	let commaThousands = 0;
@@ -297,23 +316,29 @@ export function decimalStyle(cells: readonly string[]): "it" | "en" | "ask" {
 	if (it > 0 && en > 0) return "ask";
 	if (en > 0) return dotThousands > 0 ? "ask" : "en";
 	if (it > 0) return commaThousands > 0 ? "ask" : "it";
-	if (commaThousands > 0) return dotThousands > 0 ? "ask" : "en";
+	if (commaThousands > 0) return dotThousands > 0 || semicolon ? "ask" : "en";
 	return "it";
 }
 
 const SLASHED = /^\s*(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})\b/;
 
-/** Day/month (Italian) unless a value has its second part over 12 (month/day, as English files write it); both: not clear. */
-export function dateOrder(cells: readonly string[]): "dmy" | "mdy" | "ask" {
+/**
+ * Day/month (Italian) when a value has its first part over 12, month/day (as English files write
+ * it) when one has its second part over 12; both: not clear (ask); written as day/month or
+ * month/day but none decides: open; none written that way (ISO dates): dmy.
+ */
+export function dateOrder(cells: readonly string[]): "dmy" | "mdy" | "ask" | "open" {
 	let dmy = false;
 	let mdy = false;
+	let slashed = false;
 	for (const c of cells) {
 		const m = SLASHED.exec(c);
 		if (m === null) continue;
+		slashed = true;
 		if (Number(m[1]) > 12) dmy = true;
 		if (Number(m[3]) > 12) mdy = true;
 	}
-	return dmy && mdy ? "ask" : mdy ? "mdy" : "dmy";
+	return dmy && mdy ? "ask" : mdy ? "mdy" : dmy || !slashed ? "dmy" : "open";
 }
 
 function isoOf(text: string, order: "dmy" | "mdy" = "dmy"): string | undefined {
@@ -384,5 +409,5 @@ function camt(data: Uint8Array, ownIbans: readonly string[]): Parsed {
 		}
 	}
 	if (out.length === 0) throw new BankError(otherCurrency > 0 ? "nel CAMT.053 ci sono solo movimenti in una valuta diversa dall'euro: non li leggo" : "nel CAMT.053 non trovo movimenti");
-	return finish("camt", out, closing, { truncated, skipped, badDates: 0, bothSides: 0, otherCurrency });
+	return finish("camt", out, closing, { truncated, skipped, badDates: 0, bothSides: 0, otherCurrency, layout: "camt" });
 }

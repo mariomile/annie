@@ -557,6 +557,20 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario, ...(skipTaxes !== false ? { taxes } : {}) };
 }
 
+/** A movement of the bank's statement: its day, its signed amount, what holds it («inv:KEY», «other», nothing). */
+export type StatementMovement = { readonly date: string; readonly amount: string; readonly target?: string };
+
+/**
+ * Whether a statement whose balance is of `balanceDate` shows the payment of `invoice`: a movement
+ * of the same signed amount dated from the invoice's day to the balance's, unexplained or explained
+ * by that invoice. Never for an invoice dated after the balance, nor one without a date.
+ */
+export function inStatement(invoice: Invoice, cents: bigint, balanceDate: string, statement: readonly StatementMovement[]): boolean {
+	const date = invoice.doc.date;
+	if (date === undefined || date > balanceDate) return false;
+	return statement.some((m) => m.date >= date && m.date <= balanceDate && eurosToCents(m.amount) === cents && (m.target === undefined || m.target === `inv:${invoice.key}`));
+}
+
 /** An instalment marked paid after the balance: what it was, how much, the day. */
 export type RolledInvoice = { readonly invoice: Invoice; readonly instalment: { readonly n: number; readonly count: number }; readonly cents: bigint; readonly date: string };
 
@@ -579,9 +593,9 @@ export type Rolled = {
 /**
  * The balance brought to `now` (see the choices above); undefined when nothing moved, or when it
  * is older than CASHFLOW_LIMITS.maxDays (it is said to be old instead). `statement`: the bank's
- * movements (signed amounts), read only for a balance from a statement.
+ * movements (bank.ts statementOf), read only for a balance from a statement.
  */
-export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string, statement: readonly { readonly date: string; readonly amount: string }[] = []): Rolled | undefined {
+export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string, statement: readonly StatementMovement[] = []): Rolled | undefined {
 	if (daysBetween(balance.date, today) > CASHFLOW_LIMITS.maxDays) return undefined;
 	// From min(when it was said, the end of its day): an instant counts when it is after the saying, or on a later local day; never after now. Instants that do not parse are skipped.
 	const said = Date.parse(balance.at);
@@ -596,14 +610,8 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		const t = Date.parse(at);
 		return day > balance.date && day <= today && !Number.isNaN(t) && !Number.isNaN(until) && t <= until;
 	};
-	// A statement's balance holds every movement of the statement up to its day: an invoice marked paid by hand counts only when marked after the balance was set, and never when the statement has its amount on or before the balance's day (the payment is in it).
-	const inStatement = (cents: bigint) => statement.some((m) => m.date <= balance.date && eurosToCents(m.amount) === cents);
-	const handAfter = (at: string, cents: bigint) => {
-		if (balance.source !== "bank") return after(at);
-		if (inStatement(cents)) return false;
-		const t = Date.parse(at);
-		return !Number.isNaN(said) && !Number.isNaN(t) && !Number.isNaN(until) && t > said && t <= until;
-	};
+	// An invoice marked paid by hand: from the end of the balance's day, as week 55 says; for a statement's balance, not when the statement shows its payment (inStatement).
+	const handAfter = (at: string, invoice: Invoice, cents: bigint) => after(at) && !(balance.source === "bank" && inStatement(invoice, cents, balance.date, statement));
 	const incassi: RolledInvoice[] = [];
 	const paidPassive: RolledInvoice[] = [];
 	const recorded = expenses.filter((e) => (e.source === "bank" ? bankAfter(e.date, e.at) : after(e.at) && e.date >= balance.date));
@@ -611,7 +619,7 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		if (invoice.credit || invoice.doc.integration || invoice.side === undefined || invoice.doc.currency !== "EUR") continue;
 		for (const i of invoice.instalments) {
 			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
-			if (i.paid.on === undefined ? !handAfter(i.paid.at, unitsToCents(i.amount) * (invoice.side === "active" ? 1n : -1n)) : !bankAfter(i.paid.on, i.paid.at)) continue;
+			if (i.paid.on === undefined ? !handAfter(i.paid.at, invoice, unitsToCents(i.amount) * (invoice.side === "active" ? 1n : -1n)) : !bankAfter(i.paid.on, i.paid.at)) continue;
 			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: paidDay(i.paid, dayOf) };
 			if (invoice.side === "active") incassi.push(row);
 			// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).

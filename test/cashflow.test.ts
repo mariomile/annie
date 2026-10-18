@@ -904,7 +904,7 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 		const stale = await old.run({ op: "forecast", compact: true });
 		expect(stale).toContain("Cassa: il saldo del conto è del 1º settembre 2026, 47 giorni fa: chiedi quello di oggi.");
 		for (const text of [hint, red, stale]) expect(text).not.toMatch(NO_OPS);
-		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\bcashflow \(forecast\)[,.]/);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bcashflow \(forecast\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 	});
 

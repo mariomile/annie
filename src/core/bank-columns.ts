@@ -23,6 +23,8 @@ export type Columns = {
 	readonly balance?: number;
 	/** What was taken without asking, to say: two «Data» columns, the first the data contabile. */
 	readonly assumed?: string;
+	/** The date column has an English name («Date», «Booking date»): a day/month order nothing decides is asked. */
+	readonly dateEnglish?: true;
 };
 
 /** The header's row and its columns; or the row to show and why the columns are not clear (noHeader: the file starts with data). */
@@ -49,7 +51,9 @@ export const norm = (cell: string): string =>
 		.replace(/[^a-z0-9]+/g, " ")
 		.trim();
 
-type Hit = { readonly role: Role; readonly rank: number; readonly col: number };
+type Hit = { readonly role: Role; readonly rank: number; readonly col: number; readonly name?: string };
+
+const ENGLISH_DATES = new Set(["booking date", "posting date", "transaction date", "date"]);
 
 /** The roles of a header row: each cell's role and rank, when its name is known. */
 function rolesOf(header: readonly string[]): Hit[] {
@@ -57,7 +61,7 @@ function rolesOf(header: readonly string[]): Hit[] {
 	header.forEach((cell, col) => {
 		const n = norm(cell);
 		const role = ROLES.find((r) => NAMES[r].some(([name]) => name === n));
-		if (role !== undefined) out.push({ role, rank: NAMES[role].find(([name]) => name === n)?.[1] ?? 1, col });
+		if (role !== undefined) out.push({ role, rank: NAMES[role].find(([name]) => name === n)?.[1] ?? 1, col, name: n });
 		else if (DESCRIPTION_WORDS.test(n)) out.push({ role: "description", rank: 1, col });
 	});
 	return out;
@@ -121,7 +125,8 @@ function columnsOf(roles: readonly Hit[]): Columns | string {
 	const description = of("description").map((d) => d.col);
 	if (description.length === 0) return "manca la colonna della descrizione (o causale)";
 	const n = (key: string, v: number | string | undefined) => (typeof v === "number" ? { [key]: v } : {});
-	return { date: (first[0] as Hit).col, description, ...n("valueDate", value), ...n("amount", amount), ...n("debit", debit), ...n("credit", credit), ...n("sign", sign), ...n("balance", balance), ...(assumed === undefined ? {} : { assumed }) };
+	const english = ENGLISH_DATES.has((first[0] as Hit).name ?? "");
+	return { date: (first[0] as Hit).col, description, ...(english ? { dateEnglish: true as const } : {}), ...n("valueDate", value), ...n("amount", amount), ...n("debit", debit), ...n("credit", credit), ...n("sign", sign), ...n("balance", balance), ...(assumed === undefined ? {} : { assumed }) };
 }
 
 const isRef = (v: string) => /^\s*(?:[A-Za-z]{1,2}|\d{1,2})\s*$/.test(v);

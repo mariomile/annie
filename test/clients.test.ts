@@ -742,7 +742,7 @@ describe("clients in the brief", () => {
 		await t.run({ op: "follow_up", client: "Rossi Srl", when: "domani" }, fresh(undefined, { channel: "phone", threadId: "+393331234567" }));
 		t.at("2026-10-19T05:00:00Z");
 		expect(await t.run({ op: "list", compact: true })).toContain("Clienti: 1 ricontatto da fare oggi; è nel riquadro.");
-		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\bclients \(list\)[,.]/);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bclients \(list\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		const [wrapped] = readOnlyInBriefs([s.tool], async () => true);
 		if (wrapped === undefined) throw new Error("no tool");

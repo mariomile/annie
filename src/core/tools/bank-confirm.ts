@@ -6,7 +6,8 @@
  * store. Every write is a step of the call, so a call run again writes nothing twice; an invoice
  * already marked paid is never marked again.
  */
-import { BANK_LIMITS, type BankMatch, type BankMovement, BankError, dayWords, EXPENSE_DAYS, isLive, type MatchTarget } from "../bank.ts";
+import { BANK_LIMITS, type BankMatch, type BankMovement, BankError, dayWords, delDay, EXPENSE_DAYS, isLive, type MatchTarget, statementOf } from "../bank.ts";
+import { inStatement } from "../cashflow-sources.ts";
 import { latestBalance } from "../cashflow-store.ts";
 import type { ToolContext } from "../engine.ts";
 import { CATEGORIES, type Category, matchCategory } from "../expenses.ts";
@@ -85,11 +86,17 @@ export async function applyPicks(d: BankDeps, ctx: ToolContext, chosen: readonly
 	return { done: ok, notes };
 }
 
-/** «segnate incassate la fattura 21 di Rossi (3 ottobre) e la 23 di Verdi (6 ottobre); segnata pagata la N-88 di Tipografia Neri (10 ottobre)». */
+/** At most these invoices named in a confirm's answer; the others counted. */
+const NAMED = 5;
+
+/** «segnate incassate la fattura 21 di Rossi (3 ottobre) e la 23 di Verdi (6 ottobre); segnata pagata la N-88 di Tipografia Neri (10 ottobre)»; past NAMED, «e altre 3 (list con status matched)». */
 function markedSentence(done: readonly ChosenMatch[]): string {
 	let first = true;
+	const invoices = [...done.filter((p) => p.target.kind === "invoice_in"), ...done.filter((p) => p.target.kind === "invoice_out")];
+	const named = invoices.slice(0, NAMED);
+	const rest = invoices.length - named.length;
 	const group = (kind: "invoice_in" | "invoice_out", one: string, many: string) => {
-		const list = done.filter((p) => p.target.kind === kind);
+		const list = named.filter((p) => p.target.kind === kind);
 		if (list.length === 0) return [];
 		const items = list.map((p) => {
 			const w = markedWords(p.target.label, p.movement.date, first);
@@ -98,7 +105,8 @@ function markedSentence(done: readonly ChosenMatch[]): string {
 		});
 		return [`${list.length === 1 ? one : many} ${items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} e ${items.at(-1)}`}`];
 	};
-	return [...group("invoice_in", "segnata incassata", "segnate incassate"), ...group("invoice_out", "segnata pagata", "segnate pagate")].join("; ");
+	const said = [...group("invoice_in", "segnata incassata", "segnate incassate"), ...group("invoice_out", "segnata pagata", "segnate pagate")].join("; ");
+	return rest === 0 ? said : `${said}; e ${rest === 1 ? "un'altra" : `altre ${rest}`} (list con status matched)`;
 }
 
 /** confirm: the proposals named (ids, a choice for an «ask»), or all the sure ones (all true); one that matches only the amount needs weak_ok. */
@@ -130,11 +138,14 @@ export async function confirmOp(d: BankDeps, args: Record<string, unknown>, ctx:
 		} else if (isWeak(m) && args.weak_ok !== true) weak.push(`${id}: ${signed(eurosToCents(movement.amount))} ${withDate("del", movement.date)} → ${m.label}`);
 		else chosen.push({ movement, target: targetOf(m), ...(m.strong === true ? { strong: true as const } : {}) });
 	}
-	const weakLines = weak.length === 0 ? [] : [`${weak.length === 1 ? "Questa proposta coincide" : "Queste proposte coincidono"} solo per l'importo: non le confermo insieme alle altre. Chiedi a chi ti scrive una per una, con l'importo e il giorno; dopo il sì su una, ripeti con quell'id e weak_ok true.`, fenced(weak.join("\n"))];
+	const weakLines = weak.length === 0 ? [] : [`${weak.length === 1 ? "Questa proposta coincide solo per l'importo: non la confermo" : "Queste proposte coincidono solo per l'importo: non le confermo"} insieme alle altre. Chiedi a chi ti scrive una per una, con l'importo e il giorno; dopo il sì su una, ripeti con quell'id e weak_ok true.`, fenced(weak.join("\n"))];
 	if (chosen.length === 0) return [notes.length === 0 && weak.length === 0 ? "Non ci sono proposte da confermare." : "Non ho confermato niente.", ...notes, ...weakLines].join("\n");
 	if (chosen.length > BANK_LIMITS.batch) return `Errore: al più ${BANK_LIMITS.batch} conferme alla volta: dai gli ids.`;
 	const r = await applyPicks(d, ctx, chosen, "confirmed", ctx.callId);
-	if (r.done.length > 0) await d.audit(ctx, "confirm", r.done.length);
+	if (r.done.length > 0) {
+		await d.audit(ctx, "confirm", r.done.length);
+		await d.rehint(ctx);
+	}
 	const marked = markedSentence(r.done);
 	const others = r.done.filter((p) => !isInvoice(p.target)).length;
 	const head = r.done.length === 0 ? "Non ho confermato niente." : `Fatto: ${r.done.length === 1 ? "un abbinamento confermato" : `${r.done.length} abbinamenti confermati`}${marked === "" ? "" : ", con il giorno della banca"}${others > 0 && marked !== "" ? ` (${others === 1 ? "uno non è una fattura" : `${others} non sono fatture`})` : ""}.`;
@@ -163,6 +174,7 @@ export async function refuseOp(d: BankDeps, args: Record<string, unknown>, ctx: 
 		return true;
 	});
 	await d.audit(ctx, "refuse", found.length);
+	await d.rehint(ctx);
 	return `Fatto: ${found.length === 1 ? "proposta scartata" : `${found.length} proposte scartate`}; ${found.length === 1 ? "il movimento resta" : "i movimenti restano"} senza spiegazione e non la ripropongo.`;
 }
 
@@ -190,7 +202,7 @@ export async function toExpenseOp(d: BankDeps, args: Record<string, unknown>, ct
 	const plan = chosen.map((m) => {
 		const cents = -eurosToCents(m.amount);
 		const like = recorded.find((e) => eurosToCents(e.amount) === cents && Math.abs(daysBetween(e.date, m.date)) <= EXPENSE_DAYS);
-		const warn = like !== undefined ? ` (forse c'è già la spesa ${like.id} del ${dayWords(like.date)}: chiedi prima)` : doubled.has(m.id) ? " (forse addebito doppio: chiedi prima)" : "";
+		const warn = like !== undefined ? ` (forse c'è già la spesa ${like.id} ${delDay(like.date)}: chiedi prima)` : doubled.has(m.id) ? " (forse addebito doppio: chiedi prima)" : "";
 		return { m, cents, warn, category: (said ?? matchCategory(m.description) ?? "altro") as Category };
 	});
 	const line = (p: (typeof plan)[number]) => `${p.m.id} · ${dayWords(p.m.date)} · ${euros(p.cents)} · ${p.m.description} → ${p.category}${p.warn}`;
@@ -229,9 +241,14 @@ export async function toExpenseOp(d: BankDeps, args: Record<string, unknown>, ct
 	return lines.join("\n");
 }
 
-/** Invoices marked paid by hand after the statement's closing day whose amount the statement has on or before it: the payment is in the balance already. */
+/**
+ * Invoices marked paid by hand after the statement's closing day whose payment the statement shows
+ * (cashflow-sources.ts inStatement: the same signed amount from the invoice's day to the closing
+ * day, unexplained or explained by that invoice): it is in the balance already.
+ */
 async function handMarked(d: BankDeps, ctx: ToolContext, closingDate: string): Promise<string[]> {
 	const book = d.readable();
+	const statement = statementOf(book.movements, book.matches);
 	const dayOf = dayOfIn(d.options.timeZone);
 	const out: string[] = [];
 	for (const inv of await d.register(ctx)) {
@@ -239,7 +256,9 @@ async function handMarked(d: BankDeps, ctx: ToolContext, closingDate: string): P
 		for (const r of inv.instalments) {
 			if (r.paid === undefined || r.paid.on !== undefined || r.amount === undefined || dayOf(r.paid.at) <= closingDate) continue;
 			const cents = unitsToCents(r.amount) * (inv.side === "active" ? 1n : -1n);
-			const m = book.movements.find((x) => x.date <= closingDate && eurosToCents(x.amount) === cents);
+			if (!inStatement(inv, cents, closingDate, statement)) continue;
+			const at = statement.findIndex((x) => x.date >= (inv.doc.date ?? "") && x.date <= closingDate && eurosToCents(x.amount) === cents && (x.target === undefined || x.target === `inv:${inv.key}`));
+			const m = book.movements[at];
 			if (m !== undefined) out.push(`fattura ${inv.doc.number ?? "senza numero"}: segnata ${inv.side === "active" ? "incassata" : "pagata"} a mano ${withDate("il", dayOf(r.paid.at))}, ma nell'estratto conto c'è ${m.id} dello stesso importo ${withDate("del", m.date)}`);
 		}
 	}

@@ -12,6 +12,7 @@
  * characters stay), and every text from it is fenced as data in the answers.
  */
 import { MONTH_NAMES, realDate } from "./italian-calendar.ts";
+import { withDate } from "./italian-format.ts";
 import type { Marker } from "./marker.ts";
 import { MAX_EUROS } from "./money-input.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
@@ -112,6 +113,8 @@ export type BankImport = Marker & {
 	/** The closing balance saved as the cashflow's balance, by whom and when. */
 	readonly balanceSet?: Marker;
 	readonly format: "csv" | "xlsx" | "camt";
+	/** The file's shape (its format and header): another export of the same movements has another (bank-dedup.ts). */
+	readonly layout?: string;
 	/** The call that loaded it: a call run again finds it. */
 	readonly callId?: string;
 };
@@ -177,7 +180,7 @@ export function validImport(v: unknown): v is BankImport {
 	for (const n of [i.rows, i.added, i.duplicates]) if (!Number.isInteger(n) || n < 0 || n > BANK_LIMITS.rows) return false;
 	if (i.closing !== undefined && (typeof i.closing !== "object" || i.closing === null || !isSigned(i.closing.amount) || !isDay(i.closing.date))) return false;
 	if (i.balanceSet !== undefined && !isMarker(i.balanceSet)) return false;
-	return (i.format === "csv" || i.format === "xlsx" || i.format === "camt") && optText(i.callId, 200);
+	return (i.format === "csv" || i.format === "xlsx" || i.format === "camt") && optText(i.callId, 200) && optText(i.layout, 80);
 }
 
 function validTarget(v: unknown): v is MatchTarget {
@@ -205,8 +208,25 @@ export function validSettings(v: unknown): v is BankSettings {
 
 export const validCall = (v: unknown): boolean => typeof v === "string" && isText(v, 200);
 
+/**
+ * The statement's movements as the cash forecast reads them (cashflow-sources.ts): the day, the
+ * signed amount and what holds it: «inv:KEY» for an invoice, «other» for anything else live
+ * (an expense, an F24, a transfer…), nothing when unexplained.
+ */
+export function statementOf(movements: readonly BankMovement[], matches: readonly BankMatch[]): { readonly date: string; readonly amount: string; readonly target?: string }[] {
+	const held = new Map<string, string>();
+	for (const m of matches) if (isLive(m)) held.set(m.movement, (m.kind === "invoice_in" || m.kind === "invoice_out") && m.target !== undefined ? `inv:${m.target}` : "other");
+	return movements.map((m) => {
+		const target = held.get(m.id);
+		return { date: m.date, amount: m.amount, ...(target === undefined ? {} : { target }) };
+	});
+}
+
 /** «3 ottobre»: a day in a sentence or a label, without the year. */
 export const dayWords = (iso: string): string => `${Number(iso.slice(8, 10))} ${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]}`;
+
+/** «del 3 ottobre», «dell'8 ottobre»: a day after «del» in a sentence, without the year. */
+export const delDay = (iso: string): string => withDate("del", iso).replace(/ \d{4}$/, "");
 
 /** «B-000012». */
 export const movementId = (n: number): string => `B-${String(n).padStart(6, "0")}`;

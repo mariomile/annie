@@ -6,8 +6,9 @@
  * - An invoice is a candidate only when the amount is its residual or one of its open instalments
  *   (to the cent, ±0,01), dated on or before the movement, still open (an instalment marked paid
  *   is never one), not a credit note, not already taken by another movement. Strong only when the
- *   description also names the party (its name, every word of it in any order, or its partita
- *   IVA); the invoice's number alone, with the amount, stays weak. One strong candidate is
+ *   description also names the party surely: its partita IVA, or its name of two or more words
+ *   (every word, in any order); a one-word name only with the invoice's number too. The number
+ *   alone, with the amount, stays weak. One strong candidate is
  *   proposed; alike ones of the same party (same amount), the oldest, and said (two equal
  *   instalments of one invoice: the first); otherwise the person is asked. Without a candidate, a
  *   description naming a party with an open invoice larger than the amount is a hint: maybe an
@@ -23,7 +24,7 @@
  *
  * Nothing here writes: the tools keep the outcomes and write the other registers only on a yes.
  */
-import { BANK_LIMITS, type BankMovement, dayWords, EXPENSE_DAYS, type MatchNote, type MatchTarget, NEAR_DAYS } from "./bank.ts";
+import { BANK_LIMITS, type BankMovement, delDay, EXPENSE_DAYS, type MatchNote, type MatchTarget, NEAR_DAYS } from "./bank.ts";
 import type { Expense } from "./expenses.ts";
 import { euros } from "./format-words.ts";
 import { type Invoice, nameKey, openAmount, partyKey, partyName } from "./invoices.ts";
@@ -78,16 +79,27 @@ const near = (cents: bigint, other: bigint) => (cents > other ? cents - other : 
 /** The words of a name or a description to compare: folded, «&» as «e», legal forms out (nameKey). */
 export const nameWords = (text: string): string[] => nameKey(text.replace(/&/g, " e ")).split(" ").filter((w) => w !== "");
 
+/** The words of a name that count: 3 or more characters. */
+const nameParts = (name: string | undefined): string[] => (name === undefined ? [] : nameWords(name).filter((w) => w.length >= 3));
+
 /**
  * A name said in the description: every word of 3 or more characters of the name is there, in any
- * order («Gallo Mario» in «MARIO GALLO»); a word the bank cut is enough from its first 5 characters
- * («ROSSI ARREDAM» for «Rossi Arredamenti»).
+ * order («Gallo Mario» in «MARIO GALLO»). Only the description's last word may be cut by the bank,
+ * and only as the name's last word, from its first 5 characters («ROSSI ARREDAM» for «Rossi
+ * Arredamenti»; never «MARIO ROSSI» for «Rossini Mario»).
  */
 export function saysName(descWords: readonly string[], name: string | undefined): boolean {
-	if (name === undefined) return false;
-	const want = nameWords(name).filter((w) => w.length >= 3);
+	const want = nameParts(name);
 	if (want.length === 0) return false;
-	return want.every((w) => descWords.some((d) => d === w || (d.length >= 5 && w.startsWith(d))));
+	const lastAt = descWords.length - 1;
+	return want.every((w, k) => descWords.some((d, at) => d === w || (at === lastAt && k === want.length - 1 && d.length >= 5 && w.startsWith(d))));
+}
+
+/** The party named surely: its partita IVA; or its name of 2 or more words; a name of one word only with the invoice's number too. */
+function namesParty(descWords: readonly string[], description: string, party: { readonly name?: string; readonly vat?: { readonly code: string } }, number: string | undefined): boolean {
+	if (saysVat(description, party.vat?.code)) return true;
+	if (!saysName(descWords, party.name)) return false;
+	return nameParts(party.name).length >= 2 || saysNumber(description, number);
 }
 
 function saysVat(description: string, code: string | undefined): boolean {
@@ -135,7 +147,7 @@ function invoiceCandidates(m: BankMovement, c: bigint, i: MatchInputs, used: Rea
 	for (const inv of i.invoices) {
 		if (!openOfSide(inv, side, m.date)) continue;
 		const party = sideParty(inv, side);
-		const strong = saysName(descWords, party.name) || saysVat(m.description, party.vat?.code);
+		const strong = namesParty(descWords, m.description, party, inv.doc.number);
 		const numbered = saysNumber(m.description, inv.doc.number);
 		const kind = side === "in" ? ("invoice_in" as const) : ("invoice_out" as const);
 		const push = (n: number | undefined, cents: bigint) => {
@@ -176,17 +188,17 @@ function decide(m: BankMovement, list: readonly Cand[], autoWhenStrong: boolean)
 	return { movement: m.id, state: isStrong && autoWhenStrong ? "auto" : "proposed", target: one.cand.target, ...(isStrong ? { strong: true as const } : {}), ...(one.note === undefined ? {} : { note: one.note }) };
 }
 
-/** A party named in the description with an open invoice of its side larger than the amount: maybe an acconto. */
-function partialHint(m: BankMovement, c: bigint, i: MatchInputs, descWords: readonly string[]): Outcome | undefined {
+/**
+ * A party named in the description with an open invoice of its side larger than the amount, not
+ * held by another movement: maybe an acconto. The invoice whose number is written, else the oldest.
+ */
+function partialHint(m: BankMovement, c: bigint, i: MatchInputs, used: ReadonlySet<string>, descWords: readonly string[]): Outcome | undefined {
 	const side = c > 0n ? "in" : "out";
 	const abs = c < 0n ? -c : c;
-	const named = i.invoices.filter((inv) => {
-		if (!openOfSide(inv, side, m.date)) return false;
-		const party = sideParty(inv, side);
-		return (saysName(descWords, party.name) || saysVat(m.description, party.vat?.code)) && unitsToCents(openAmount(inv)) > abs;
-	});
-	if (named.length === 0 || new Set(named.map((inv) => partyKey(sideParty(inv, side)))).size > 1) return undefined;
-	const oldest = [...named].sort((a, b) => (a.doc.date ?? "").localeCompare(b.doc.date ?? ""))[0] as Invoice;
+	const named = i.invoices.filter((inv) => openOfSide(inv, side, m.date) && free(`inv:${inv.key}`, used) && namesParty(descWords, m.description, sideParty(inv, side), inv.doc.number) && unitsToCents(openAmount(inv)) > abs);
+	const numbered = named.filter((inv) => saysNumber(m.description, inv.doc.number));
+	if (named.length === 0 || (numbered.length !== 1 && new Set(named.map((inv) => partyKey(sideParty(inv, side)))).size > 1)) return undefined;
+	const oldest = numbered.length === 1 ? (numbered[0] as Invoice) : ([...named].sort((a, b) => (a.doc.date ?? "").localeCompare(b.doc.date ?? ""))[0] as Invoice);
 	const label = `${invoiceLabel(oldest, undefined, side)} (${euros(unitsToCents(openAmount(oldest)))})`.slice(0, BANK_LIMITS.label);
 	return { movement: m.id, state: "hint", note: "partial", target: { kind: side === "in" ? "invoice_in" : "invoice_out", target: oldest.key, label } };
 }
@@ -208,7 +220,7 @@ function expenseOutcome(m: BankMovement, abs: bigint, i: MatchInputs, used: Read
 	const list: Cand[] = [];
 	for (const e of i.expenses) {
 		if (!near(eurosToCents(e.amount), abs) || Math.abs(daysBetween(e.date, m.date)) > EXPENSE_DAYS) continue;
-		const target: MatchTarget = { kind: "expense", target: e.id, label: `spesa ${e.id}${e.supplier === undefined ? "" : ` di ${e.supplier}`} (${dayWords(e.date)})`.slice(0, BANK_LIMITS.label) };
+		const target: MatchTarget = { kind: "expense", target: e.id, label: `spesa ${e.id}${e.supplier === undefined ? "" : ` di ${e.supplier}`} ${delDay(e.date)}`.slice(0, BANK_LIMITS.label) };
 		const key = targetKey(target);
 		if (used.has(key) || refused?.has(key) === true) continue;
 		list.push(cand(target, saysName(descWords, e.supplier), e.date, abs));
@@ -222,7 +234,7 @@ function renewalOutcome(m: BankMovement, abs: bigint, i: MatchInputs, descWords:
 	for (const r of i.renewals) {
 		const amount = r.amountFrom !== undefined && m.date >= r.amountFrom.from ? r.amountFrom.amount : r.amount;
 		if (amount === undefined || !near(eurosToCents(amount), abs)) continue;
-		const target: MatchTarget = { kind: "renewal", target: r.id, label: `rinnovo ${r.name}${r.provider === undefined ? "" : ` (${r.provider})`}`.slice(0, BANK_LIMITS.label) };
+		const target: MatchTarget = { kind: "renewal", target: r.id, label: `rinnovo ${r.name}${r.provider === undefined ? "" : `, ${r.provider}`}`.slice(0, BANK_LIMITS.label) };
 		if (refused?.has(targetKey(target)) === true) continue;
 		const strong = saysName(descWords, r.name) || saysName(descWords, r.provider);
 		const dayGap = Math.abs(Number(m.date.slice(8, 10)) - Math.min(r.day, 28));
@@ -244,7 +256,7 @@ function f24Outcome(m: BankMovement, c: bigint, i: MatchInputs): Outcome | undef
 	if (!F24.test(fold(m.description))) return undefined;
 	const abs = -c;
 	const estimate = i.taxes.find((t) => near(t.cents, abs) && Math.abs(daysBetween(t.date, m.date)) <= NEAR_DAYS);
-	const label = estimate === undefined ? "F24 (tasse o contributi)" : `F24: ${estimate.what} (come la stima delle tasse del ${dayWords(estimate.date)})`;
+	const label = estimate === undefined ? "F24 per tasse o contributi" : `F24 per ${estimate.what}, come la stima delle tasse ${delDay(estimate.date)}`;
 	const target: MatchTarget = { kind: "f24", label: label.slice(0, BANK_LIMITS.label) };
 	return invoiceOfAmount(m, c, i) ? { movement: m.id, state: "proposed", target } : { movement: m.id, state: "auto", target, strong: true };
 }
@@ -258,6 +270,8 @@ export function matchMovements(i: MatchInputs, autoInvoices: boolean): Outcome[]
 	const used = new Set(i.used);
 	const out: Outcome[] = [];
 	const ordered = [...i.movements].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+	// The acconto hints after every match: an invoice a later movement takes is not hinted for an earlier one.
+	const unexplained: { readonly m: BankMovement; readonly c: bigint; readonly descWords: readonly string[] }[] = [];
 	for (const m of ordered) {
 		const c = eurosToCents(m.amount);
 		const abs = c < 0n ? -c : c;
@@ -269,11 +283,18 @@ export function matchMovements(i: MatchInputs, autoInvoices: boolean): Outcome[]
 		else {
 			o = decide(m, invoiceCandidates(m, c, i, used, descWords), autoInvoices);
 			if (o === undefined && c < 0n) o = f24Outcome(m, c, i) ?? expenseOutcome(m, abs, i, used, descWords) ?? renewalOutcome(m, abs, i, descWords);
-			if (o === undefined) o = partialHint(m, c, i, descWords);
 		}
-		if (o === undefined) continue;
+		if (o === undefined) {
+			unexplained.push({ m, c, descWords });
+			continue;
+		}
 		if (o.target !== undefined && o.state !== "hint" && holdsTarget(o.target.kind)) used.add(targetKey(o.target));
 		out.push(o);
 	}
-	return out;
+	for (const { m, c, descWords } of unexplained) {
+		const hint = partialHint(m, c, i, used, descWords);
+		if (hint !== undefined) out.push(hint);
+	}
+	const at = new Map(ordered.map((m, k) => [m.id, k]));
+	return out.sort((a, b) => (at.get(a.movement) ?? 0) - (at.get(b.movement) ?? 0));
 }

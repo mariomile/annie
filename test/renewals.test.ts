@@ -598,7 +598,7 @@ describe("renewals: what moves by itself and what waits", () => {
 		const later = inside(await s.run({ op: "upcoming", compact: true }));
 		expect(later).toContain("• da pagare entro il 12 marzo 2027: Assicurazione auto (UnipolSai), 480,00 €");
 		expect(later).toContain("• da pagare dal 31 gennaio 2027: Vigilanza");
-		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\brenewals \(upcoming\)[,.]/);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\brenewals \(upcoming\)[,.]/);
 	});
 
 	it("agendaOf leaves cancelled renewals out", () => {
