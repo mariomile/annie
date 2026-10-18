@@ -318,6 +318,23 @@ export function paymentSlip(date: string, patrono?: string): { readonly to: stri
 	return { to, ...(holiday === undefined ? {} : { holiday }) };
 }
 
+/** «cade di sabato», «è festivo (Natale)»: why a day is not a working day. */
+export function offDayWhy(date: string, holiday: string | undefined): string {
+	return holiday === undefined ? `cade di ${italianWeekday(date)}` : `è festivo (${holiday})`;
+}
+
+/**
+ * What to say of a payment due on a day it cannot be made, in one place for date_calc and the
+ * scadenzario: «cade di sabato: il pagamento slitta di solito al primo giorno lavorativo, lunedì
+ * 02/11/2026», or compact for a phone, «sabato: slitta a lun 02/11», «festivo, Immacolata
+ * Concezione: slitta a mer 09/12». `day` writes the day it moves to; `holiday` names the holiday.
+ */
+export function slipPhrase(date: string, slip: { readonly to: string; readonly holiday?: string }, options: { readonly day: (date: string) => string; readonly holiday?: (name: string) => string; readonly compact?: boolean }): string {
+	const holiday = slip.holiday === undefined ? undefined : (options.holiday?.(slip.holiday) ?? slip.holiday);
+	if (options.compact === true) return `${holiday === undefined ? italianWeekday(date) : `festivo, ${holiday}`}: slitta a ${options.day(slip.to)}`;
+	return `${offDayWhy(date, holiday)}: il pagamento slitta di solito al primo giorno lavorativo, ${options.day(slip.to)}`;
+}
+
 export type DueTerms = {
 	/** «fine mese» (f.m.): after counting the days, the end of that month. */
 	readonly endOfMonth: boolean;

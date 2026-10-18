@@ -32,7 +32,7 @@ const NO_WORDS = /\.(?:mp3|m4a|mp4|m4v|mov|avi|mkv|wav|ogg|oga|opus|flac|webm|am
  * must leave one free for someone else's file_read. A search waits a few seconds for a worker,
  * not the usual 45, and never past its own time.
  */
-export const PARALLEL = 1;
+const PARALLEL = 1;
 export const WORKER_WAIT_MS = 3000;
 
 export type FoundPassage = Passage & { /** The page, sheet or slide of a document; the minute of a transcript. */ readonly section?: string };

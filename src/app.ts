@@ -453,6 +453,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					store: runtime.invoices(record.tenantId, record.id),
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
+					isBriefThread,
 					record: async (event) => {
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},

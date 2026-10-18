@@ -1,6 +1,6 @@
 import type { AuditRecord } from "./audit.ts";
 import type { AnnieTool } from "./engine.ts";
-import { INVOICE_READ_OPS } from "./invoices.ts";
+import { invoiceCallReads } from "./invoices.ts";
 
 /**
  * The brief del mattino: a task programmato of the person, in their own console thread, that
@@ -45,11 +45,11 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
 const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate", "news_headlines", "vat_check", "date_calc"]);
 
 /**
- * Tools that read with some ops and write with others: only the reading ops run in a brief's
- * thread. invoices reads the workspace's invoices (due, by_party, list) like file_read; marking
- * paid and setting the company write.
+ * Tools that read with some calls and write with others: only the reading calls run in a brief's
+ * thread. invoices reads the workspace's invoices (due, by_party, list, and set_company with no
+ * arguments, which shows the company) like file_read; marking paid and setting the company write.
  */
-const READ_ONLY_OPS: ReadonlyMap<string, ReadonlySet<string>> = new Map([["invoices", INVOICE_READ_OPS]]);
+const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = new Map([["invoices", invoiceCallReads]]);
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or
@@ -62,7 +62,7 @@ export function readOnlyInBriefs(tools: readonly AnnieTool[], isBriefThread: (th
 			: {
 					...tool,
 					execute: async (args, ctx) => {
-						if (READ_ONLY_OPS.get(tool.name)?.has(String(args.op)) === true) return tool.execute(args, ctx);
+						if (READS.get(tool.name)?.(args) === true) return tool.execute(args, ctx);
 						if (ctx.thread !== undefined && (await isBriefThread(ctx.thread))) return "Errore: nella chat del brief del mattino Annie legge soltanto. Per agire, scrivile in un'altra conversazione.";
 						return tool.execute(args, ctx);
 					},

@@ -112,18 +112,22 @@ export function fatturaText(data: Uint8Array, signed: boolean): { text: string; 
 		return { text, note: signed ? `Firma digitale presente, non verificata. ${note}` : note };
 	}
 	const { invoice, attrs } = parsed(decodeXml(data));
-	const { fattura, supplier, customer, bodies } = readInvoice(invoice, signed);
+	const { fattura, details, documents } = readInvoice(invoice, signed);
+	const { supplier, customer } = fattura;
 	const head = child(invoice, "FatturaElettronicaHeader");
 	const out: string[] = [];
-	const read = fattura.documents.map((doc, i) => (fattura.simplified ? simplifiedBody(bodies[i] as XmlElement, doc) : ordinaryBody(bodies[i] as XmlElement, doc)));
+	const read = documents.map((d) => (fattura.simplified ? simplifiedBody(d) : ordinaryBody(d)));
 	const first = read[0];
 	if (fattura.count === 1 && first !== undefined) out.push(headline(first, supplier, customer));
 	else out.push(`Lotto di ${fattura.count} documenti${supplier.name === undefined ? "" : ` da ${supplier.name}`}${customer.name === undefined ? "" : ` a ${customer.name}`}`);
 	if (signed) out.push("Firma digitale presente, non verificata.");
-	out.push("", ...partyLines("Fornitore (cedente/prestatore)", supplier, true));
+	out.push("", ...partyLines("Fornitore (cedente/prestatore)", supplier, details.supplier, true));
 	const representative = child(head, "RappresentanteFiscale");
-	if (representative !== undefined) out.push("", ...partyLines("Rappresentante fiscale del fornitore", ordinaryParty(representative), false));
-	out.push("", ...partyLines("Cliente (cessionario/committente)", customer, false));
+	if (representative !== undefined) {
+		const read = ordinaryParty(representative);
+		out.push("", ...partyLines("Rappresentante fiscale del fornitore", read.party, read.details, false));
+	}
+	out.push("", ...partyLines("Cliente (cessionario/committente)", customer, details.customer, false));
 	out.push(...issuer(head));
 	read.forEach((body, i) => {
 		out.push("");
@@ -148,40 +152,49 @@ function parsed(xml: string): { invoice: XmlElement; attrs: string } {
 	}
 }
 
-/** The parties and documents read once, for both the structured content and the summary; `bodies` are the documents' elements, in the same order. */
-function readInvoice(invoice: XmlElement, signed: boolean): { fattura: Fattura; supplier: Party; customer: Party; bodies: XmlElement[] } {
+/**
+ * A document as read: its data, its element, and which instalment each DettaglioPagamento
+ * element became, so the summary writes each payment line from its own instalment.
+ */
+type ReadDocument = { readonly doc: FatturaDocument; readonly body: XmlElement; readonly instalmentOf: ReadonlyMap<XmlElement, FatturaInstalment> };
+
+/** The parties and documents read once, for both the structured content and the summary; the parties' addresses and the like only for the summary. */
+function readInvoice(invoice: XmlElement, signed: boolean): { fattura: Fattura; details: { supplier: PartyDetails; customer: PartyDetails }; documents: ReadDocument[] } {
 	const simplified = invoice.name === "FatturaElettronicaSemplificata";
 	const head = child(invoice, "FatturaElettronicaHeader");
 	const supplier = simplified ? simplifiedSupplier(child(head, "CedentePrestatore")) : ordinaryParty(child(head, "CedentePrestatore"));
 	const customer = simplified ? simplifiedCustomer(child(head, "CessionarioCommittente")) : ordinaryParty(child(head, "CessionarioCommittente"));
 	const all = children(invoice, "FatturaElettronicaBody");
-	const bodies = all.slice(0, MAX_BODIES);
-	const documents = bodies.map((body) => (simplified ? simplifiedDocument(body) : ordinaryDocument(body)));
-	return { fattura: { simplified, signed, supplier: publicParty(supplier), customer: publicParty(customer), documents, count: all.length }, supplier, customer, bodies };
-}
-
-function publicParty(p: Party): FatturaParty {
-	return { ...(p.name === undefined ? {} : { name: p.name }), ...(p.vat === undefined ? {} : { vat: p.vat }), ...(p.fiscal === undefined ? {} : { fiscal: p.fiscal }) };
+	const documents = all.slice(0, MAX_BODIES).map((body) => (simplified ? simplifiedDocument(body) : ordinaryDocument(body)));
+	return {
+		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length },
+		details: { supplier: supplier.details, customer: customer.details },
+		documents,
+	};
 }
 
 /** An ordinary document's data: type, number, date, totals and the instalments of every DatiPagamento in order. */
-function ordinaryDocument(body: XmlElement): FatturaDocument {
+function ordinaryDocument(body: XmlElement): ReadDocument {
 	const general = descendant(body, "DatiGenerali/DatiGeneraliDocumento");
 	const type = value(general, "TipoDocumento");
-	const details = children(body, "DatiPagamento").flatMap((p) => children(p, "DettaglioPagamento"));
-	const instalments = details.map((d) => optional({ amount: value(d, "ImportoPagamento"), due: value(d, "DataScadenzaPagamento"), method: value(d, "ModalitaPagamento"), iban: value(d, "IBAN") }));
+	const instalmentOf = new Map<XmlElement, FatturaInstalment>();
+	for (const detail of children(body, "DatiPagamento").flatMap((p) => children(p, "DettaglioPagamento"))) {
+		instalmentOf.set(detail, optional({ amount: value(detail, "ImportoPagamento"), due: value(detail, "DataScadenzaPagamento"), method: value(detail, "ModalitaPagamento"), iban: value(detail, "IBAN") }));
+	}
+	const instalments = [...instalmentOf.values()];
 	const toPay = paidSum(instalments);
-	return {
+	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
 		integration: type !== undefined && INTEGRATIONS.has(type),
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments,
 	};
+	return { doc, body, instalmentOf };
 }
 
 /** A simplified document's data: its total is the sum of its lines, VAT included, when each reads; no instalments. */
-function simplifiedDocument(body: XmlElement): FatturaDocument {
+function simplifiedDocument(body: XmlElement): ReadDocument {
 	const general = descendant(body, "DatiGenerali/DatiGeneraliDocumento");
 	const type = value(general, "TipoDocumento");
 	const rows = children(body, "DatiBeniServizi");
@@ -191,38 +204,34 @@ function simplifiedDocument(body: XmlElement): FatturaDocument {
 		const units = amount === undefined ? undefined : toUnits(amount);
 		sum = sum === undefined || units === undefined ? undefined : sum + units;
 	}
-	return {
+	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: sum === undefined || rows.length === 0 ? undefined : fromUnits(sum) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
 		integration: type !== undefined && INTEGRATIONS.has(type),
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments: [],
 	};
+	return { doc, body, instalmentOf: new Map() };
 }
 
 /** What a document of the file says, read: its data, the due date for the headline and its lines. */
 type Body = { readonly doc: FatturaDocument; readonly due?: string; readonly lines: string[] };
 
 /** «Fattura n. 2026/0153 del 15/10/2026 da Alfa S.r.l. a Beta Srl, totale 1.342,00 €, scadenza 30/11/2026». */
-function headline(body: Body, supplier: Party, customer: Party): string {
+function headline(body: Body, supplier: FatturaParty, customer: FatturaParty): string {
 	const { type, number, currency } = body.doc;
 	const kind = type === undefined ? "Documento" : capitalized(Object.hasOwn(TIPO_DOCUMENTO, type) ? (TIPO_DOCUMENTO[type] as string) : `documento ${type}`);
 	const what = joined([kind, labelled("n.", number), labelled("del", date(body.doc.date)), labelled("da", supplier.name), labelled("a", customer.name)], " ");
 	return joined([what, labelled("totale", money(body.doc.total, currency)), body.due]) ?? kind;
 }
 
-/** A supplier or a customer, as either kind of invoice gives it. */
-type Party = {
-	readonly name?: string;
-	readonly vat?: { readonly country?: string; readonly code: string };
-	readonly fiscal?: string;
-	readonly sede?: XmlElement;
-	readonly regime?: string;
-	readonly rea?: XmlElement;
-	readonly contacts?: XmlElement;
-};
+/** What the summary says of a party beyond who it is: address, regime, REA, contacts. */
+type PartyDetails = { readonly sede?: XmlElement; readonly regime?: string; readonly rea?: XmlElement; readonly contacts?: XmlElement };
 
-function ordinaryParty(el: XmlElement | undefined): Party {
+/** A supplier or a customer, as either kind of invoice gives it. */
+type ReadParty = { readonly party: FatturaParty; readonly details: PartyDetails };
+
+function ordinaryParty(el: XmlElement | undefined): ReadParty {
 	const data = child(el, "DatiAnagrafici");
 	const registry = child(data, "Anagrafica");
 	return party({
@@ -237,7 +246,7 @@ function ordinaryParty(el: XmlElement | undefined): Party {
 }
 
 /** The simplified invoice keeps the supplier's data directly under CedentePrestatore. */
-function simplifiedSupplier(el: XmlElement | undefined): Party {
+function simplifiedSupplier(el: XmlElement | undefined): ReadParty {
 	return party({
 		name: value(el, "Denominazione") ?? joined([value(el, "Nome"), value(el, "Cognome")], " "),
 		vatOf: child(el, "IdFiscaleIVA"),
@@ -249,32 +258,33 @@ function simplifiedSupplier(el: XmlElement | undefined): Party {
 }
 
 /** And the customer's under IdentificativiFiscali and AltriDatiIdentificativi. */
-function simplifiedCustomer(el: XmlElement | undefined): Party {
+function simplifiedCustomer(el: XmlElement | undefined): ReadParty {
 	const ids = child(el, "IdentificativiFiscali");
 	const other = child(el, "AltriDatiIdentificativi");
 	return party({ name: value(other, "Denominazione") ?? joined([value(other, "Nome"), value(other, "Cognome")], " "), vatOf: child(ids, "IdFiscaleIVA"), fiscal: value(ids, "CodiceFiscale"), sede: child(other, "Sede") });
 }
 
-function party(found: { name?: string; vatOf?: XmlElement; fiscal?: string; sede?: XmlElement; regime?: string; rea?: XmlElement; contacts?: XmlElement }): Party {
+function party(found: { name?: string; vatOf?: XmlElement; fiscal?: string; sede?: XmlElement; regime?: string; rea?: XmlElement; contacts?: XmlElement }): ReadParty {
 	const code = value(found.vatOf, "IdCodice");
 	const country = value(found.vatOf, "IdPaese");
-	const out: { -readonly [K in keyof Party]: Party[K] } = {};
-	if (found.name !== undefined) out.name = found.name;
-	if (code !== undefined) out.vat = country === undefined ? { code } : { country, code };
-	if (found.fiscal !== undefined) out.fiscal = found.fiscal;
-	if (found.sede !== undefined) out.sede = found.sede;
-	if (found.regime !== undefined) out.regime = found.regime;
-	if (found.rea !== undefined) out.rea = found.rea;
-	if (found.contacts !== undefined) out.contacts = found.contacts;
-	return out;
+	const vat = code === undefined ? undefined : country === undefined ? { code } : { country, code };
+	return {
+		party: { ...(found.name === undefined ? {} : { name: found.name }), ...(vat === undefined ? {} : { vat }), ...(found.fiscal === undefined ? {} : { fiscal: found.fiscal }) },
+		details: {
+			...(found.sede === undefined ? {} : { sede: found.sede }),
+			...(found.regime === undefined ? {} : { regime: found.regime }),
+			...(found.rea === undefined ? {} : { rea: found.rea }),
+			...(found.contacts === undefined ? {} : { contacts: found.contacts }),
+		},
+	};
 }
 
 /** A party's lines: name, tax ids checked on paper, address, regime, REA, contacts. */
-function partyLines(title: string, p: Party, supplier: boolean): string[] {
+function partyLines(title: string, p: FatturaParty, d: PartyDetails, supplier: boolean): string[] {
 	const out = [`${title}: ${p.name ?? "nome non indicato"}`];
 	if (p.vat !== undefined) out.push(`- Partita IVA: ${p.vat.country ?? ""}${p.vat.code}${vatProblem(p.vat.country, p.vat.code)}`);
 	if (p.fiscal !== undefined) out.push(`- Codice fiscale: ${p.fiscal}${fiscalProblem(p.fiscal)}`);
-	const { sede } = p;
+	const { sede } = d;
 	if (sede !== undefined) {
 		const street = joined([value(sede, "Indirizzo"), value(sede, "NumeroCivico")], " ");
 		const province = value(sede, "Provincia");
@@ -283,12 +293,12 @@ function partyLines(title: string, p: Party, supplier: boolean): string[] {
 		if (address !== undefined) out.push(`- Sede: ${address}`);
 	}
 	if (supplier) {
-		const regime = coded(REGIME_FISCALE, p.regime);
+		const regime = coded(REGIME_FISCALE, d.regime);
 		if (regime !== undefined) out.push(regime.startsWith("regime ") ? `- ${capitalized(regime)}` : `- Regime fiscale: ${regime}`);
-		const rea = joined([value(p.rea, "Ufficio"), value(p.rea, "NumeroREA")], " ");
-		if (rea !== undefined) out.push(`- REA: ${rea}${value(p.rea, "StatoLiquidazione") === "LS" ? " (in liquidazione)" : ""}`);
+		const rea = joined([value(d.rea, "Ufficio"), value(d.rea, "NumeroREA")], " ");
+		if (rea !== undefined) out.push(`- REA: ${rea}${value(d.rea, "StatoLiquidazione") === "LS" ? " (in liquidazione)" : ""}`);
 	}
-	const contacts = joined([labelled("tel.", value(p.contacts, "Telefono")), labelled("email", value(p.contacts, "Email"))]);
+	const contacts = joined([labelled("tel.", value(d.contacts, "Telefono")), labelled("email", value(d.contacts, "Email"))]);
 	if (contacts !== undefined) out.push(`- Contatti: ${contacts}`);
 	return out;
 }
@@ -316,7 +326,7 @@ function warning(problem: string | undefined): string {
 
 /** Who issued the invoice when not the supplier: a third party, or the customer on the supplier's behalf. */
 function issuer(head: XmlElement | undefined): string[] {
-	const third = ordinaryParty(child(head, "TerzoIntermediarioOSoggettoEmittente"));
+	const third = ordinaryParty(child(head, "TerzoIntermediarioOSoggettoEmittente")).party;
 	const who = value(head, "SoggettoEmittente");
 	const name = joined([third.name, third.vat === undefined ? undefined : `P.IVA ${third.vat.country ?? ""}${third.vat.code}`]);
 	if (who === "CC") return ["", "Emessa dal cliente per conto del fornitore."];
@@ -334,7 +344,7 @@ function transmission(head: XmlElement | undefined, attrs: string, simplified: b
 }
 
 /** One document of an ordinary invoice, from its data and its element: references, lines, VAT, totals, payment, attachments. */
-function ordinaryBody(body: XmlElement, doc: FatturaDocument): Body {
+function ordinaryBody({ doc, body, instalmentOf }: ReadDocument): Body {
 	const generalData = child(body, "DatiGenerali");
 	const general = child(generalData, "DatiGeneraliDocumento");
 	const { type, credit, integration, currency } = doc;
@@ -357,14 +367,14 @@ function ordinaryBody(body: XmlElement, doc: FatturaDocument): Body {
 	out.push(...lineLines(goods, currency));
 	out.push(...summaryLines(goods, currency));
 	out.push(...totalLines(general, doc, !(credit || integration)));
-	const payment = paymentLines(children(body, "DatiPagamento"), doc);
+	const payment = paymentLines(children(body, "DatiPagamento"), doc, instalmentOf);
 	out.push(...payment.lines, ...attachmentLines(body));
 	const due = credit || integration ? undefined : payment.due;
 	return { doc, ...(due === undefined ? {} : { due }), lines: out };
 }
 
 /** One document of a simplified invoice: lines with the VAT inside the amount, the invoice it corrects. */
-function simplifiedBody(body: XmlElement, doc: FatturaDocument): Body {
+function simplifiedBody({ doc, body }: ReadDocument): Body {
 	const generalData = child(body, "DatiGenerali");
 	const general = child(generalData, "DatiGeneraliDocumento");
 	const { type, currency } = doc;
@@ -533,7 +543,7 @@ function withholdingLine(el: XmlElement, currency: string): string {
 }
 
 /** The payment terms and instalments; `due` is the first due date, for the headline («prima scadenza» when there are instalments). */
-function paymentLines(payments: XmlElement[], doc: FatturaDocument): { lines: string[]; due?: string } {
+function paymentLines(payments: XmlElement[], doc: FatturaDocument, instalmentOf: ReadonlyMap<XmlElement, FatturaInstalment>): { lines: string[]; due?: string } {
 	const { currency, credit } = doc;
 	const out: string[] = [];
 	const dues: string[] = [];
@@ -544,8 +554,7 @@ function paymentLines(payments: XmlElement[], doc: FatturaDocument): { lines: st
 		const details = children(payment, "DettaglioPagamento");
 		instalments += details.length;
 		details.forEach((detail, i) => {
-			// The document's instalments are these details, in the same order.
-			const instalment = doc.instalments[instalments - details.length + i] ?? {};
+			const instalment = instalmentOf.get(detail) ?? {};
 			const raw = instalment.due;
 			if (raw !== undefined && realDate(raw)) dues.push(raw);
 			const parts = joined([

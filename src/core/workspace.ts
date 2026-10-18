@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 
@@ -48,6 +48,21 @@ export class Workspace {
 		const stat = await this.statFile(file);
 		if (stat === undefined) throw new WorkspaceError(`File not found: ${this.normalize(path)}`);
 		return readFile(file);
+	}
+
+	/** The first `bytes` bytes of a file (fewer when it is shorter): enough to tell what it is without reading all of it. */
+	async readStart(path: string, bytes: number): Promise<Buffer> {
+		const file = this.resolve(path);
+		const stat = await this.statFile(file);
+		if (stat === undefined) throw new WorkspaceError(`File not found: ${this.normalize(path)}`);
+		const handle = await open(file, "r");
+		try {
+			const buffer = Buffer.alloc(Math.min(bytes, stat.size));
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+			return buffer.subarray(0, bytesRead);
+		} finally {
+			await handle.close();
+		}
 	}
 
 	async stat(path: string): Promise<WorkspaceFile | undefined> {
