@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +8,8 @@ import { readOnlyInBriefs } from "../src/core/brief.ts";
 import { DocumentError, documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
-import { InvoiceScanner, type ReadFattura } from "../src/core/invoice-scan.ts";
-import { INVOICE_LIMITS, invoiceCallReads, invoiceKey, InvoiceStore } from "../src/core/invoices.ts";
+import { InvoiceScanner, type ReadFattura, type ScanLimits } from "../src/core/invoice-scan.ts";
+import { INVOICE_LIMITS, invoiceCallReads, invoiceKey, InvoiceStore, matchesParty } from "../src/core/invoices.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { createInvoiceTools, type InvoiceEvent } from "../src/core/tools/invoice-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
@@ -85,7 +85,14 @@ function writeFiles(root: string, files: Record<string, string | Uint8Array>): v
 	}
 }
 
-type SetupOptions = { read?: ReadFattura; record?: (e: InvoiceEvent) => Promise<void>; isBriefThread?: () => Promise<boolean> };
+type SetupOptions = {
+	read?: ReadFattura;
+	record?: (e: InvoiceEvent) => Promise<void>;
+	isBriefThread?: () => Promise<boolean>;
+	whoIs?: () => string | undefined;
+	now?: Date;
+	limits?: ScanLimits;
+};
 
 /** The tool on a workspace of its own, reading invoices on this thread unless `read` says otherwise; `reads` counts the files read. */
 function setup(files: Record<string, string | Uint8Array> = {}, o: SetupOptions = {}) {
@@ -99,7 +106,8 @@ function setup(files: Record<string, string | Uint8Array> = {}, o: SetupOptions 
 		workspace,
 		store,
 		timeZone: "Europe/Rome",
-		whoIs: () => "test:u",
+		whoIs: o.whoIs ?? (() => "test:u"),
+		...(o.limits === undefined ? {} : { limits: o.limits }),
 		record:
 			o.record ??
 			(async (e) => {
@@ -112,7 +120,7 @@ function setup(files: Record<string, string | Uint8Array> = {}, o: SetupOptions 
 				reads.push(name);
 				return documentFattura(data);
 			}),
-		now: () => NOW,
+		now: () => o.now ?? NOW,
 	});
 	if (tool === undefined) throw new Error("no tool");
 	return { dir, workspace, store, events, reads, tool, run: async (args: Record<string, unknown>, c: ToolContext = ctx) => String(await tool.execute(args, c)) };
@@ -163,7 +171,7 @@ describe("the scadenzario: due", () => {
 				"Totale da pagare, scadute comprese: 1.153,50 € (1.253,50 € meno la nota di credito di 100,00 €).",
 				"",
 				"Da incassare:",
-				"• sab 31/10 (sabato: slitta a lun 02/11): 99,90 € da Gamma Hotel S.p.A., fatt. B-77",
+				"• sab 31/10 (slitta a lun 02/11): 99,90 € da Gamma Hotel S.p.A., fatt. B-77",
 			].join("\n"),
 		);
 		expect(answer).not.toContain("set_company");
@@ -183,7 +191,7 @@ describe("the scadenzario: due", () => {
 		expect(data.split("\n")[0]).toBe(summary);
 		expect(data).toContain("\nDa Alfa Forniture S.r.l. e Delta Carni Srl a Beta Ristorazione Srl:\n• lun 12/10 (da 6 giorni): 626,75 €, fornitore Alfa Forniture S.r.l., fatt. 2026/0153 rata 1/2\n");
 		expect(data).toContain("Totale da Alfa Forniture S.r.l. e Delta Carni Srl a Beta Ristorazione Srl, scadute comprese: 1.163,50 € (1.263,50 € meno la nota di credito di 100,00 €).");
-		expect(data).toContain("\nDa Beta Ristorazione Srl a Gamma Hotel S.p.A.:\n• sab 31/10 (sabato: slitta a lun 02/11): 99,90 €, fatt. B-77");
+		expect(data).toContain("\nDa Beta Ristorazione Srl a Gamma Hotel S.p.A.:\n• sab 31/10 (slitta a lun 02/11): 99,90 €, fatt. B-77");
 		expect(data).not.toMatch(/da pagare|da incassare|→/);
 		expect(data).toContain("La partita IVA IT03311220036 (Beta Ristorazione Srl) compare in tutte le fatture.");
 		// The hint outside the fence, word for word, and the partita IVA only inside.
@@ -220,6 +228,9 @@ describe("the scadenzario: due", () => {
 		expect(december).not.toContain("giorni)");
 		// September asked in October is this year's, not next year's.
 		expect(inside(await run({ op: "due", month: "settembre" })).split("\n")[0]).toBe("A settembre: da pagare 7,00 €.");
+		// December asked in October is the coming one; April, six months either way, the coming one too.
+		expect((await run({ op: "due", month: "dicembre" })).split("\n")[0]).toBe("Scadenze di dicembre (fatture trovate: 6).");
+		expect(inside(await run({ op: "due", month: "aprile" })).split("\n")[0]).toBe("Ad aprile 2027: nessuna rata aperta.");
 		expect(inside(await run({ op: "due", month: "novembre" })).split("\n")[0]).toBe("A novembre: da pagare 626,75 €.");
 		expect(inside(await run({ op: "due", month: "settembre 2027" })).split("\n")[0]).toBe("A settembre 2027: nessuna rata aperta.");
 		expect(inside(await run({ op: "due", from: "1/9", to: "15/11" })).split("\n")[0]).toBe("Dal 01/09 al 15/11: da pagare 1.260,50 €; da incassare 99,90 €.");
@@ -239,7 +250,7 @@ describe("the scadenzario: due", () => {
 		await run({ op: "set_company", vat: "03311220036" });
 		const data = inside(await run({ op: "due", range: "settimana" }));
 		expect(data).toContain("• ven 16/10 (da 2 giorni): 30,00 € ad Alfa Forniture S.r.l., fatt. W-2");
-		expect(data).toContain("• sab 17/10 (sabato: slitta a lun 19/10): 40,00 € ad Alfa Forniture S.r.l., fatt. W-1");
+		expect(data).toContain("• sab 17/10 (slitta a lun 19/10): 40,00 € ad Alfa Forniture S.r.l., fatt. W-1");
 		expect(data.split("\n")[0]).toBe("Fino a domenica 25/10: da pagare 40,00 €, più 30,00 € già scaduti.");
 		expect(inside(await run({ op: "due", range: "scadute" }))).not.toContain("W-1");
 	});
@@ -249,11 +260,50 @@ describe("the scadenzario: due", () => {
 		const { run } = setup({ ...ALL, "grossa.xml": grossa });
 		await run({ op: "set_company", vat: "03311220036" });
 		const data = inside(await run({ op: "due" }));
-		expect(data).toContain("Totale da pagare, scadute comprese: 0,00 € (1.253,50 € meno le note di credito di 2.100,00 €; restano 846,50 € di note di credito da scalare).");
+		expect(data).toContain("Totale da pagare, scadute comprese: 0,00 € (1.253,50 € meno le note di credito di 1.253,50 €; restano 846,50 € di note di credito da scalare).");
 		const november = inside(await run({ op: "due", month: "novembre" }));
 		expect(november).toContain("• nota di credito NC 2026/10 del 06/10 di Alfa Forniture S.r.l. da scalare: 2.000,00 €");
 		expect(november).not.toContain("Totale");
 		expect(november.split("\n")[0]).toBe("A novembre: da pagare 626,75 €.");
+	});
+
+	it("a month or a day without a year is the closest to today: December asked in January is the one just gone", async () => {
+		const dicembre = fattura({ from: ALFA, to: BETA, number: "DIC-1", date: "2026-11-01", total: "5.00", rate: [{ amount: "5.00", due: "2026-12-15" }] });
+		const { run } = setup({ "d.xml": dicembre }, { now: new Date("2027-01-10T08:00:00Z") });
+		const lead = "A dicembre 2026: da Alfa Forniture S.r.l. a Beta Ristorazione Srl: 5,00 €.";
+		expect(inside(await run({ op: "due", month: "dicembre" })).split("\n")[0]).toBe(lead);
+		expect(inside(await run({ op: "due", from: "1/12", to: "31/12" })).split("\n")[0]).toBe("Dal 01/12/2026 al 31/12/2026: da Alfa Forniture S.r.l. a Beta Ristorazione Srl: 5,00 €.");
+		// Across the new year: from 20 December to 10 January.
+		expect(inside(await run({ op: "due", from: "20/12", to: "10/1" })).split("\n")[0]).toBe("Dal 20/12/2026 al 10/01: nessuna rata aperta.");
+	});
+
+	it("a credit note comes off only its own party's total: one from Alfa does not lower what is owed to Gamma", async () => {
+		const alfa = fattura({ from: ALFA, to: BETA, number: "A-1", date: "2026-10-01", total: "50.00", rate: [{ amount: "50.00", due: "2026-10-12" }] });
+		const gamma = fattura({ from: GAMMA, to: BETA, number: "G-1", date: "2026-10-01", total: "200.00", rate: [{ amount: "200.00", due: "2026-10-14" }] });
+		const { run } = setup({ "a.xml": alfa, "g.xml": gamma, "n.xml": NOTA });
+		await run({ op: "set_company", vat: "03311220036" });
+		const due = inside(await run({ op: "due" }));
+		expect(due).toContain("Totale da pagare, scadute comprese: 200,00 € (250,00 € meno la nota di credito di 50,00 €; restano 50,00 € di note di credito da scalare).");
+		const parties = inside(await run({ op: "by_party" }));
+		expect(parties).toContain("• Alfa Forniture S.r.l. (IT02987650013): aperto 0,00 € (50,00 € meno la nota di credito di 50,00 €; restano 50,00 € di note di credito da scalare) su una fattura");
+		expect(parties).toContain("• Gamma Hotel S.p.A. (IT01234567897): aperto 200,00 € su una fattura");
+		expect(parties).toContain("Totale aperto: da pagare 200,00 € (ogni nota di credito scalata dalla sua controparte).");
+	});
+
+	it("without the company, shows at most five directions and counts the others", async () => {
+		const files: Record<string, string> = {};
+		const customers = [BETA, GAMMA, DELTA, ALFA, { name: "Epsilon Srl", vat: "00488410010" }, { name: "Zeta Srl", vat: "01114601006" }, { name: "Eta Srl", vat: "02241850367" }];
+		customers.forEach((c, i) => {
+			const from = c === ALFA ? BETA : ALFA;
+			files[`c${i}.xml`] = fattura({ from, to: c, number: `C-${i}`, date: "2026-10-01", total: `${i + 1}.00`, rate: [{ amount: `${i + 1}.00`, due: "2026-10-20" }] });
+		});
+		const { run } = setup(files);
+		const data = inside(await run({ op: "due" }));
+		expect(data.split("\n")[0]).toMatch(/; e altri 2 gruppi\.$/);
+		expect(data.match(/^Da .*:$/gm)).toHaveLength(5);
+		expect(data).toContain("E altri 2 gruppi di fatture (fornitori di altri clienti) non mostrati: filtra con party.");
+		// The biggest first.
+		expect(data.match(/^Da .*:$/gm)?.[0]).toBe("Da Alfa Forniture S.r.l. a Eta Srl:");
 	});
 
 	it("caps the rows at 30 and counts the rest", async () => {
@@ -291,9 +341,17 @@ describe("the scadenzario: by_party and list", () => {
 				"Da incassare:",
 				"• Gamma Hotel S.p.A. (IT01234567897): aperto 99,90 € su una fattura",
 				"",
-				"Totale aperto: da pagare 1.303,70 €; da incassare 99,90 € (note di credito già scalate).",
+				"Totale aperto: da pagare 1.303,70 €; da incassare 99,90 € (ogni nota di credito scalata dalla sua controparte).",
 			].join("\n"),
 		);
+	});
+
+	it("a 16-letter name is a name, not a codice fiscale", async () => {
+		expect(matchesParty({ name: "Alfa Forniture Srl" }, "Alfa Forniture Srl")).toBe(true);
+		expect(matchesParty({ name: "Rossi Mario", fiscal: "RSSMRA85T10A562S" }, "rssmra85t10a562s")).toBe(true);
+		expect(matchesParty({ name: "Rossi Mario", fiscal: "RSSMRA85T10A562S" }, "Alfa Forniture Srl")).toBe(false);
+		const { run } = setup(ALL);
+		expect(inside(await run({ op: "by_party", party: "Alfa Forniture Srl" }))).toContain("• da Alfa Forniture S.r.l. (IT02987650013) a Beta Ristorazione Srl (IT03311220036): aperto");
 	});
 
 	it("one party: its open instalments without its name on each row, the credit note, the IBAN once", async () => {
@@ -363,6 +421,10 @@ describe("the scadenzario: by_party and list", () => {
 		expect(data).toContain("• ven 20/11: 20,00 € a Gamma Hotel S.p.A., fatt. BAD-1 rata 2/2 (rate che non tornano con il totale)");
 		expect(data.split("\n")[0]).toBe("Fino a giovedì 17/12: da pagare 300,00 €.");
 		expect(inside(await run({ op: "list", party: "gamma" }))).toContain("aperta (da pagare), rate che non tornano con il totale");
+		// The list says what each one counts for: the alternatives once, the wrong ones up to the total.
+		const list = inside(await run({ op: "list" }));
+		expect(list).toContain("fattura ALT-1: da pagare ad Alfa Forniture S.r.l., 200,00 €\n  2 rate, la prossima aperta mar 10/11");
+		expect(list).toContain("fattura BAD-1: da pagare a Gamma Hotel S.p.A., 100,00 €");
 	});
 });
 
@@ -377,7 +439,7 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 		const marker = { by: "test:u", at: NOW.toISOString() };
 		expect(store.read().paid).toEqual([{ invoice: key, instalments: [{ n: 1, ...marker }] }]);
 		expect(inside(await run({ op: "due" }))).not.toContain("da 6 giorni");
-		expect(inside(await run({ op: "list", party: "alfa" }))).toContain("pagata in parte (1 rate su 2) (da pagare)");
+		expect(inside(await run({ op: "list", party: "alfa" }))).toContain("pagata in parte (1 rata su 2) (da pagare)");
 		expect(inside(await run({ op: "mark_paid", number: "2026/0153", party: "alfa forniture" }))).toContain(": segnata pagata.");
 		expect(store.read().paid).toEqual([{ invoice: key, all: marker }]);
 		expect(await run({ op: "mark_paid", path: "fatture/ricevuta.xml" })).toMatch(/^Era già segnata pagata \(il 18\/10\/2026\)/);
@@ -392,8 +454,8 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 			{ type: "invoice.marked", op: "mark_unpaid", count: 1 },
 		]);
 		expect(JSON.parse(readFileSync(join(dir, "invoices.json"), "utf8")).company).toEqual({ vat: "IT03311220036", ...marker });
-		// Never written without the copy before.
-		expect(existsSync(join(dir, "invoices.json.bak"))).toBe(true);
+		// The copy holds the last state written.
+		expect(readFileSync(join(dir, "invoices.json.bak"), "utf8")).toBe(readFileSync(join(dir, "invoices.json"), "utf8"));
 	});
 
 	it("golden: a credit note marked is used, said so, and no longer taken off", async () => {
@@ -463,6 +525,12 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 		fail = false;
 		expect(String(await tool.execute({ op: "mark_paid", number: "B-77", party: "gamma" }, durable))).toMatch(/^Fatto, annotato il 18\/10\/2026/);
 		expect(events).toEqual([{ type: "invoice.marked", op: "mark_paid", count: 1 }]);
+	});
+
+	it("in a group thread the mark says which group, since the engine does not say who wrote", async () => {
+		const { run, store } = setup(ALL, { whoIs: () => undefined });
+		await run({ op: "mark_paid", number: "B-77", party: "gamma" });
+		expect(store.read().paid[0]?.all?.by).toBe("test:t1");
 	});
 
 	it("a mark's day is the instance's: 00:30 in Rome is the next day of UTC", async () => {
@@ -546,7 +614,7 @@ describe("the scadenzario: reading the workspace", () => {
 		const file = join(dir, "workspace", "fatture", "emessa.xml");
 		writeFileSync(file, EMESSA.replaceAll("99.90", "199.90"));
 		utimesSync(file, new Date("2026-10-18T09:00:00Z"), new Date("2026-10-18T09:00:00Z"));
-		expect(inside(await run({ op: "due" }))).toContain("• sab 31/10 (sabato: slitta a lun 02/11): 199,90 €, fatt. B-77");
+		expect(inside(await run({ op: "due" }))).toContain("• sab 31/10 (slitta a lun 02/11): 199,90 €, fatt. B-77");
 		expect(reads).toEqual(["fatture/emessa.xml"]);
 	});
 
@@ -603,6 +671,47 @@ describe("the scadenzario: reading the workspace", () => {
 		// In the tool: inside the fence.
 		const { run } = setup({ "a.xml": RICEVUTA, "b.xml": EMESSA }, { read: async (name, data) => (name === "b.xml" ? Promise.reject(new DocumentError("non sono riuscita a leggerlo ora, riprova tra poco")) : documentFattura(data)) });
 		expect(inside(await run({ op: "list" }))).toContain("1 fattura non letta adesso, riprova tra poco.");
+	});
+
+	it("backs off only a file that used its whole time; a read cut short by the scan's budget is tried again", async () => {
+		const dir = temp();
+		writeFiles(join(dir, "w"), { "lento.xml": EMESSA });
+		const reads: string[] = [];
+		const read: ReadFattura = async (name) => {
+			reads.push(name);
+			throw new DocumentError("il documento è troppo complesso da leggere");
+		};
+		const scanner = new InvoiceScanner(new Workspace(join(dir, "w")), { read, limits: { files: 5000, bytes: 1e9, budgetMs: 5000 } });
+		await scanner.scan(new AbortController().signal);
+		await scanner.scan(new AbortController().signal);
+		expect(reads).toEqual(["lento.xml", "lento.xml"]);
+	});
+
+	it("keeps the cache within its memory bound: past it, the rest is left for later and counted", async () => {
+		const dir = temp();
+		writeFiles(join(dir, "w"), { "a.xml": RICEVUTA, "b.xml": EMESSA, "c.xml": SENZA });
+		const scanner = new InvoiceScanner(new Workspace(join(dir, "w")), { read: async (_n, data) => documentFattura(data), maxWeight: 5 });
+		const outcome = await scanner.scan(new AbortController().signal);
+		expect([outcome.invoices.length, outcome.leftOut]).toEqual([2, 1]);
+		const { run } = setup(ALL, { limits: { files: 0, bytes: 1e9, budgetMs: 60_000 } });
+		expect(await run({ op: "due" })).toContain("4 file non li ho guardati per i limiti di tempo, dimensione o memoria (i più vecchi): li guardo alla prossima richiesta.");
+	});
+
+	it("a scan shared with a turn that is stopped: the other turn scans for itself", async () => {
+		const dir = temp();
+		writeFiles(join(dir, "w"), { "a.xml": RICEVUTA, "b.xml": EMESSA });
+		const read: ReadFattura = async (_n, data, o) => {
+			await new Promise((r) => setTimeout(r, 30));
+			o.signal?.throwIfAborted();
+			return documentFattura(data);
+		};
+		const scanner = new InvoiceScanner(new Workspace(join(dir, "w")), { read });
+		const stopped = new AbortController();
+		const first = scanner.scan(stopped.signal);
+		const second = scanner.scan(new AbortController().signal);
+		stopped.abort(new Error("fermata"));
+		await expect(first).rejects.toThrow("fermata");
+		expect((await second).invoices).toHaveLength(2);
 	});
 
 	it("a lotto past 100 documents and a document past 100 instalments say what was read, inside the fence", async () => {

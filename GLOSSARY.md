@@ -201,6 +201,10 @@ _Avoid_: partita IVA inesistente, partita IVA non attiva
 Il file XML FatturaPA che passa dallo SdI, a volte firmato come `.xml.p7m`; Annie lo legge come un documento e ne fa un riepilogo in italiano, senza verificare la firma. La scadenza che conta è quella scritta in fattura. Vedi ADR 0052.
 _Avoid_: e-fattura, XML della fattura, fattura digitale
 
+**Scadenzario**:
+L'elenco delle rate delle fatture elettroniche del workspace, da pagare o da incassare, con le scadute e quelle segnate pagate; lo tiene lo strumento `invoices`. Le note di credito si tolgono dal dovuto. Vedi ADR 0053.
+_Avoid_: agenda dei pagamenti, prima nota
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

@@ -60,7 +60,7 @@ export type BookState = { readonly company?: Company; readonly paid: readonly Pa
 
 const BROKEN_WRITE = "lo stato delle fatture pagate (invoices.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
 
-/** What is paid and the company of one instance, in `invoices.json`, changed under the shared file lock, with a .bak of the file before each change. */
+/** What is paid and the company of one instance, in `invoices.json`, changed under the shared file lock; `invoices.json.bak` keeps the last state written. */
 export class InvoiceStore {
 	private readonly file: string;
 	constructor(instanceDir: string) {
@@ -114,21 +114,24 @@ export class InvoiceStore {
 		return result;
 	}
 
+	/** The change under the lock; then a copy of what was written, the last good state, in invoices.json.bak. */
 	private update(change: (book: Book) => Book): void {
 		if (this.read().broken) throw new InvoiceError(BROKEN_WRITE);
+		let changed = false;
 		try {
 			updateJsonFile<unknown>(this.file, { paid: [] }, (raw) => {
 				const book = validBook(raw);
 				if (book === undefined) throw new InvoiceError(BROKEN_WRITE);
 				const next = change(book);
-				if (next !== book && existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`);
-				return next === book ? raw : next;
+				changed = next !== book;
+				return changed ? next : raw;
 			});
 		} catch (error) {
 			// Changed into something unreadable meanwhile.
 			if (error instanceof SyntaxError) throw new InvoiceError(BROKEN_WRITE);
 			throw error;
 		}
+		if (changed && existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`);
 	}
 }
 
@@ -238,10 +241,13 @@ function partyIdentity(party: FatturaParty): string | undefined {
 	return name === "" ? undefined : `nome:${name}`;
 }
 
+/** A person's codice fiscale, omocodia letters included: a 16-letter name («Alfa Forniture Srl») is not one. */
+const CODICE_FISCALE = /^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/;
+
 /** What the person wrote about a party: a partita IVA or codice fiscale (its digits), or words that start words of the name. */
 export function matchesParty(party: FatturaParty, query: string): boolean {
 	const compact = query.replace(/[\s.-]+/g, "").toUpperCase();
-	if (/^(?:[A-Z]{2})?\d{11}$/.test(compact) || /^[A-Z0-9]{16}$/.test(compact)) {
+	if (/^(?:[A-Z]{2})?\d{11}$/.test(compact) || CODICE_FISCALE.test(compact)) {
 		const digits = compact.replace(/^[A-Z]{2}(?=\d{11}$)/, "");
 		return party.vat?.code.toUpperCase() === digits || party.fiscal?.toUpperCase() === digits || vatOf(party) === compact;
 	}
@@ -461,6 +467,12 @@ export function addTo(sums: Sums, currency: string, units: bigint): void {
 /** What is still open of an invoice (not paid, not past the total), in its currency. */
 export function openAmount(invoice: Invoice): bigint {
 	return invoice.instalments.reduce((n, i) => (i.paid === undefined && !i.extra && i.amount !== undefined ? n + i.amount : n), 0n);
+}
+
+/** What the invoice is worth as counted: its instalments up to the total (alternatives once); undefined when no amount reads. */
+export function countedAmount(invoice: Invoice): bigint | undefined {
+	const amounts = invoice.instalments.filter((i) => !i.extra && i.amount !== undefined).map((i) => i.amount as bigint);
+	return amounts.length === 0 ? undefined : amounts.reduce((n, a) => n + a, 0n);
 }
 
 export function paidAmount(invoice: Invoice): bigint {

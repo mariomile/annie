@@ -58,22 +58,46 @@ type Kept = { readonly entry: Entry; readonly weight: number; scan: number };
 
 /**
  * Every scan of the process reads one file at a time in one worker, in turn: the document workers
- * are shared by the whole server, and file_read and file_search must always find one free.
+ * are shared by the whole server, and file_read and file_search must always find one free. The
+ * turn's signal reaches the wait for the lane and the read itself.
  */
 let lane: Promise<void> = Promise.resolve();
 
-async function inLane<T>(work: () => Promise<T>): Promise<T> {
+/**
+ * `work` when the reads before it are done. A turn stopped while it waits leaves at once; its
+ * place is given up only when the read before it is over, so two reads never overlap.
+ */
+async function inLane<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
 	const before = lane;
 	let release = () => {};
 	lane = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	await before;
 	try {
+		await untilAborted(before, signal);
 		return await work();
 	} finally {
-		release();
+		void before.then(release);
 	}
+}
+
+/** `promise`, or the signal's reason as soon as it aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	signal.throwIfAborted();
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", abort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", abort);
+				reject(error);
+			},
+		);
+	});
 }
 
 /**
@@ -87,27 +111,32 @@ export class InvoiceScanner {
 	private readonly read: ReadFattura;
 	private readonly maxEntries: number;
 	private readonly now: () => number;
+	private readonly maxWeight: number;
 	private readonly entries = new Map<string, Kept>();
 	private readonly backoff = new Map<string, number>();
 	private weight = 0;
 	private scans = 0;
 	private running: Promise<ScanOutcome> | undefined;
 
-	constructor(workspace: Workspace, options: { readonly limits?: ScanLimits; readonly read?: ReadFattura; readonly now?: () => number } = {}) {
+	/** `maxWeight`, for tests: the memory bound, SCAN_LIMITS.weight otherwise. */
+	constructor(workspace: Workspace, options: { readonly limits?: ScanLimits; readonly read?: ReadFattura; readonly now?: () => number; readonly maxWeight?: number } = {}) {
 		this.workspace = workspace;
 		this.limits = options.limits ?? SEARCH_LIMITS;
 		this.read = options.read ?? readFattura;
 		this.maxEntries = Math.max(SCAN_LIMITS.entries, this.limits.files);
 		this.now = options.now ?? Date.now;
+		this.maxWeight = options.maxWeight ?? SCAN_LIMITS.weight;
 	}
 
 	async scan(signal: AbortSignal, progress?: (text: string) => void): Promise<ScanOutcome> {
-		if (this.running !== undefined) {
+		while (this.running !== undefined) {
+			const other = this.running;
 			try {
-				return await this.running;
+				return await untilAborted(other, signal);
 			} catch (error) {
-				// The other turn was stopped: this one scans for itself.
+				// This turn was stopped; or the other one was: then this one scans, unless a third already does.
 				if (signal.aborted) throw error;
+				if (this.running === other) this.running = undefined;
 			}
 		}
 		const running = this.run(signal, progress);
@@ -142,17 +171,19 @@ export class InvoiceScanner {
 					busy++;
 					continue;
 				}
-				if (bytes + file.size > this.limits.bytes || left() <= 0) {
+				// Past the time, the bytes, or the memory the cache may take (once what this scan does not use is gone): left for the next call.
+				if (this.weight >= this.maxWeight) this.evict(scan);
+				if (bytes + Math.min(file.size, SCAN_LIMITS.detectBytes) > this.limits.bytes || left() <= 0 || this.weight >= this.maxWeight) {
 					leftOut++;
 					continue;
 				}
-				bytes += file.size;
-				const entry = await this.readFile(file, key, left, signal);
-				if (entry === undefined) {
+				const read = await this.readFile(file, key, left, signal);
+				bytes += read.bytes;
+				if (read.entry === undefined) {
 					busy++;
 					continue;
 				}
-				kept = this.keep(key, entry);
+				kept = this.keep(key, read.entry);
 				// Between files the event loop serves everyone else.
 				await new Promise((resolve) => setImmediate(resolve));
 			} else {
@@ -170,32 +201,35 @@ export class InvoiceScanner {
 		return { invoices, candidates: files.length, unread, busy, leftOut, cut };
 	}
 
-	/** What the file is; undefined when it went away meanwhile or could not be read now. */
-	private async readFile(file: WorkspaceFile, key: string, left: () => number, signal: AbortSignal): Promise<Entry | undefined> {
+	/**
+	 * What the file is, and the bytes read to tell; no entry when it went away meanwhile or could
+	 * not be read now. A file that ran out of its whole time waits before it is tried again; one
+	 * cut short by the scan's budget does not.
+	 */
+	private async readFile(file: WorkspaceFile, key: string, left: () => number, signal: AbortSignal): Promise<{ entry?: Entry; bytes: number }> {
 		let start: Buffer;
 		try {
 			start = await this.workspace.readStart(file.path, SCAN_LIMITS.detectBytes);
 		} catch {
-			return undefined;
+			return { bytes: 0 };
 		}
-		if (!looksLikeFattura(start)) return { kind: "other" };
+		if (!looksLikeFattura(start)) return { entry: { kind: "other" }, bytes: start.length };
 		let data: Buffer;
 		try {
 			data = start.length < file.size ? await this.workspace.read(file.path) : start;
 		} catch {
-			return undefined;
+			return { bytes: start.length };
 		}
+		const bytes = data.length;
+		const timeoutMs = Math.max(1000, Math.min(DOCUMENT_READER_LIMITS.timeoutMs, left()));
 		try {
-			const fattura = await inLane(() => {
-				signal.throwIfAborted();
-				return this.read(file.path, data, { waitMs: WORKER_WAIT_MS, timeoutMs: Math.max(1000, Math.min(DOCUMENT_READER_LIMITS.timeoutMs, left())), signal });
-			});
-			return trimmed(fattura);
+			const fattura = await inLane(() => this.read(file.path, data, { waitMs: WORKER_WAIT_MS, timeoutMs, signal }), signal);
+			return { entry: trimmed(fattura), bytes };
 		} catch (error) {
 			if (!(error instanceof DocumentError)) throw error;
-			if (isTimeout(error)) this.backoff.set(key, this.now() + SCAN_LIMITS.backoffMs);
-			if (isTransient(error)) return undefined;
-			return { kind: "unread", why: error.message };
+			if (isTimeout(error) && timeoutMs >= DOCUMENT_READER_LIMITS.timeoutMs) this.backoff.set(key, this.now() + SCAN_LIMITS.backoffMs);
+			if (isTransient(error)) return { bytes };
+			return { entry: { kind: "unread", why: error.message }, bytes };
 		}
 	}
 
@@ -210,7 +244,7 @@ export class InvoiceScanner {
 	/** The least recently used go, past the limits; never one this scan used, so a big workspace does not read itself over and over. */
 	private evict(scan: number): void {
 		for (const [key, kept] of this.entries) {
-			if (this.entries.size <= this.maxEntries && this.weight <= SCAN_LIMITS.weight) break;
+			if (this.entries.size <= this.maxEntries && this.weight <= this.maxWeight) break;
 			if (kept.scan === scan) continue;
 			this.entries.delete(key);
 			this.weight -= kept.weight;
