@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore } from "./board.ts";
 
 /**
- * What happens on the board besides storing it (ADR 0049): a person handing a scheda to an
+ * What happens on the board besides storing it (ADR 0050): a person handing a scheda to an
  * agente starts the work in a console conversation of that agente with that person, as if the
  * person had written the brief there; what the person adds later goes into the same
  * conversation. The person must be allowed to talk to the agente: the board gives no one an
@@ -16,6 +17,8 @@ export type BoardWorkDeps = {
 	readonly canChat: (agent: string, personId: string) => Promise<boolean>;
 	/** Whether the person is the tenant's owner, who sees every scheda. */
 	readonly isOwner: (personId: string) => Promise<boolean>;
+	/** The owners' IDs: who hears of a scheda to review that nobody was working on with its agente. */
+	readonly owners: () => Promise<readonly string[]>;
 	/** The person's name, for what goes into the conversation. */
 	readonly personName: (personId: string) => Promise<string | undefined>;
 	/** A conversation of `agent` with the person: `reuse` when it still exists, a new one otherwise. */
@@ -24,8 +27,17 @@ export type BoardWorkDeps = {
 	readonly post: (agent: string, threadId: string, personId: string, text: string) => Promise<void>;
 };
 
+/** A scheda an agente moved to «Da rivedere», and the people to tell (ADR 0051). */
+export type BoardReview = { readonly card: Card; readonly people: readonly string[] };
+
 export class BoardWork {
-	constructor(private readonly deps: BoardWorkDeps) {}
+	/** "review": a BoardReview, for the console and the owner's chat. */
+	readonly events = new EventEmitter();
+
+	constructor(private readonly deps: BoardWorkDeps) {
+		// One listener per open console.
+		this.events.setMaxListeners(1000);
+	}
 
 	/**
 	 * Whether the person sees the scheda: the owner all of them, the others those they created or
@@ -67,6 +79,15 @@ export class BoardWork {
 		const toWorker = work !== undefined && person === work.personId && before.assignee === work.agent && (await this.deps.canChat(work.agent, person));
 		const status = (change.assignee === null && before.status === "in_corso") || (sentBack && !toWorker) ? { status: "da_fare" as const } : {};
 		const card = this.deps.store.update(before.id, { ...change, ...status }, by);
+		if (by.kind === "agent" && card.status === "da_rivedere" && before.status !== "da_rivedere") {
+			// Who worked on it with this agente reviews it; with nobody, the owners.
+			const people = work !== undefined && work.agent === card.assignee ? [work.personId] : await this.deps.owners();
+			try {
+				this.events.emit("review", { card, people } satisfies BoardReview);
+			} catch {
+				// A notice that fails does not undo the move: the scheda is in «Da rivedere».
+			}
+		}
 		if (handedOver && person !== undefined) return this.start(card, person, by);
 		if (!toWorker || work === undefined) return card;
 		const comment = change.comment?.trim();

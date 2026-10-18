@@ -19,9 +19,8 @@ Con più agenti ([ADR 0041](0041-agenti.md)) che si scrivono ([ADR 0042](0042-ag
 
 - **Un esecutore che prende le schede da solo, in coda** (come i daemon di multica): avrebbe bisogno di una persona per conto di cui lavorare, per approvazioni, connettori e costi. Con la conversazione della persona che affida la scheda ogni regola che c'è già vale anche qui.
 - **Una board per agente**: una scheda non potrebbe passare da un agente all'altro, e la persona dovrebbe guardare in più posti.
-- **Trascinare le schede fra le colonne**: per ora la colonna si cambia dalla scheda aperta, che funziona uguale sul telefono. Si può aggiungere dopo.
+- **Trascinare le schede fra le colonne** era rimandato: aggiunto con [ADR 0051](0051-board-trascinare-e-avvisi.md).
 
 ## Da fare
 
-- Trascinare le schede fra le colonne sul computer.
-- Avvisare la persona (notifica della console o del telefono) quando una sua scheda arriva in Da rivedere.
+- ~~Trascinare le schede fra le colonne sul computer~~ e ~~avvisare quando una scheda arriva in Da rivedere~~: fatti, [ADR 0051](0051-board-trascinare-e-avvisi.md).

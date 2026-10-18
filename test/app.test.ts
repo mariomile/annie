@@ -261,8 +261,8 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await api("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
 	});
 
-	it("the board (ADR 0049): a scheda handed to an agente is worked in its conversation, reviewed and closed by a person", async () => {
-		const { annie, base } = await boot(tempDataDir());
+	it("the board (ADR 0050): a scheda handed to an agente is worked in its conversation, reviewed and closed by a person", async () => {
+		const { annie, base, telegram } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
 		await api("/api/instances", { id: "ricerca", name: "Ricercatore", persona: { emoji: "🔎" } });
 		await api("/api/instances", { id: "vendite", name: "Vendite" });
@@ -290,6 +290,8 @@ describe("pnpm start (startAnnie)", () => {
 		// Ricercatore finishes and moves it; it cannot close it.
 		await api(`/api/instances/ricerca/threads/${threadId}/messages`, { text: '/tool board_update {"status":"da_rivedere","comment":"Tre preventivi nel file"}' });
 		await until(async () => (await api("/api/board")).cards[0].status === "da_rivedere");
+		// The owner hears it in the chat with the main agente too (ADR 0051).
+		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text.startsWith("Scheda #1 da rivedere: Fornitori carta\nRicercatore l'ha finita: Tre preventivi nel file")));
 		await api(`/api/instances/ricerca/threads/${threadId}/messages`, { text: '/tool board_update {"status":"fatto"}' });
 		await until(async () => (await entries()).some((e) => e.text?.includes("must be equal to one of the allowed values")));
 		expect((await api("/api/board")).cards[0].status).toBe("da_rivedere");
