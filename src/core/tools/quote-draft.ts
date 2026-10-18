@@ -5,8 +5,8 @@
  * should hear (a bollo to consider, a ritenuta on the forfettario, data taken from a past quote).
  */
 import type { Company } from "../invoices.ts";
-import { DEFAULT_VALID_DAYS, customerKey, QUOTE_LIMITS, type Quote, type QuoteCustomer } from "../quotes.ts";
-import { BOLLO_THRESHOLD_CENTS, bolloDue, quoteTotals, zeroRateCents } from "../quote-sums.ts";
+import { DEFAULT_VALID_DAYS, customerKey, QUOTE_LIMITS, type Quote, type QuoteCustomer, type QuoteLine } from "../quotes.ts";
+import { BOLLO_THRESHOLD_CENTS, bolloDue, lineCents, quoteTotals, zeroRateCents } from "../quote-sums.ts";
 import { cleanText, type GivenLine, isProblem, readCassa, readCustomer, readItems, readPercent, readVat, type Wide, withDefaults } from "./quote-input.ts";
 import { euros, fenced } from "./quote-render.ts";
 
@@ -28,25 +28,13 @@ export function draftOf(args: Record<string, unknown>, context: { readonly previ
 	if (isProblem(discount)) return `Errore: ${discount.problem}.`;
 	const wide: Wide = { ...(vat === undefined ? {} : { vat }), ...(vatNote === undefined ? {} : { vatNote }), ...(discount === undefined ? {} : { discount }) };
 
-	if (previous === undefined && args.add_items !== undefined) return "Errore: add_items serve per aggiungere voci a un preventivo che c'è già (op revise); qui usa items.";
-	if (args.items !== undefined && args.add_items !== undefined) return "Errore: items sostituisce tutte le voci, add_items le aggiunge: usane uno.";
-	let given: GivenLine[];
-	if (args.items !== undefined || previous === undefined) {
-		const items = readItems(args.items);
-		if (isProblem(items)) return `Errore: ${items.problem}.`;
-		given = items;
-	} else {
-		const kept = previous.lines.map((l): GivenLine => ({ ...l, own: false }));
-		const added = args.add_items === undefined ? [] : readItems(args.add_items, "add_items");
-		if (isProblem(added)) return `Errore: ${added.problem}.`;
-		if (kept.length + added.length > QUOTE_LIMITS.lines) return `Errore: al massimo ${QUOTE_LIMITS.lines} voci in un preventivo.`;
-		given = [...kept, ...added];
-	}
-	const lines = withDefaults(given, wide, forfettario);
-	if (isProblem(lines)) return `Errore: ${lines.problem}.`;
+	const lines = linesOf(args, previous, wide, forfettario);
+	if (typeof lines === "string") return lines;
 	if ("missing" in lines) {
 		return `Non ho ancora fatto il preventivo: manca l'aliquota IVA di queste voci: ${fenced(lines.missing.map((d) => `• ${d}`).join("\n"))}\nChiedi a chi ti scrive, nominando le voci: ${ASK_RATE} Non sceglierla tu.`;
 	}
+	const nothing = lines.findIndex((l) => lineCents(l) === 0n);
+	if (nothing >= 0) return `Errore: la voce ${nothing + 1} vale meno di mezzo centesimo: ricontrolla quantità e prezzo con chi ti scrive.`;
 
 	const notes: string[] = [];
 	let old: QuoteCustomer | undefined = previous?.customer;
@@ -88,6 +76,7 @@ export function draftOf(args: Record<string, unknown>, context: { readonly previ
 		notes.push(`Ho tolto il bollo: gli importi senza IVA non superano più ${euros(BOLLO_THRESHOLD_CENTS)}.`);
 	}
 	if (!bollo && bolloDue(plain)) notes.push(`Gli importi senza IVA superano ${euros(BOLLO_THRESHOLD_CENTS)}: di solito in fattura va il bollo da 2 €. Se chi ti scrive lo vuole nel preventivo, rifallo con bollo true; non deciderlo tu.`);
+	if (forfettario && lines.some((l) => l.vat > 0)) notes.push("Con il regime forfettario di solito non si applica l'IVA: l'ho messa come è stata detta, ma chiedi conferma a chi ti scrive.");
 	if (ritenuta && forfettario) notes.push("Di solito sui compensi in regime forfettario la ritenuta d'acconto non si applica: l'ho messa perché è stata chiesta, ma chiedi conferma a chi ti scrive.");
 	for (const rate of plain.byDifference) notes.push(`Per far tornare i prezzi IVA inclusa, l'IVA al ${rate}% è calcolata per differenza: può differire di un centesimo dal ${rate}% dell'imponibile.`);
 
@@ -108,6 +97,31 @@ export function draftOf(args: Record<string, unknown>, context: { readonly previ
 		...(keptNotes === undefined ? {} : { notes: keptNotes }),
 	};
 	return { quote, notes };
+}
+
+/**
+ * The lines: the items given, or on revise the kept ones plus add_items. With add_items the
+ * quote-wide vat, vat_note and discount go on the added lines only; with neither items nor
+ * add_items they go on every kept line («rifallo con lo sconto del 10%»).
+ */
+function linesOf(args: Record<string, unknown>, previous: Quote | undefined, wide: Wide, forfettario: boolean): QuoteLine[] | { missing: string[] } | string {
+	if (previous === undefined && args.add_items !== undefined) return "Errore: add_items serve per aggiungere voci a un preventivo che c'è già (op revise); qui usa items.";
+	if (args.items !== undefined && args.add_items !== undefined) return "Errore: items sostituisce tutte le voci, add_items le aggiunge: usane uno.";
+	const done = (lines: ReturnType<typeof withDefaults>) => (isProblem(lines) ? `Errore: ${lines.problem}.` : lines);
+	if (args.items !== undefined || previous === undefined) {
+		const items = readItems(args.items);
+		return isProblem(items) ? `Errore: ${items.problem}.` : done(withDefaults(items, wide, forfettario));
+	}
+	const kept = previous.lines.map((l): GivenLine => ({ ...l, own: false }));
+	if (args.add_items === undefined) return done(withDefaults(kept, wide, forfettario));
+	const added = readItems(args.add_items, "add_items");
+	if (isProblem(added)) return `Errore: ${added.problem}.`;
+	if (kept.length + added.length > QUOTE_LIMITS.lines) return `Errore: al massimo ${QUOTE_LIMITS.lines} voci in un preventivo.`;
+	const old = done(withDefaults(kept, {}, forfettario));
+	if (typeof old === "string" || "missing" in old) return old;
+	const fresh = withDefaults(added, wide, forfettario);
+	if (isProblem(fresh)) return `Errore: ${fresh.problem.replace(/^riga (\d+)/, (_, n) => `riga ${kept.length + Number(n)}`)}.`;
+	return "missing" in fresh ? fresh : [...old, ...fresh];
 }
 
 /** The tax id, address and email of the last quote to a customer with this name, for what the call does not give. */

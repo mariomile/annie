@@ -27,7 +27,7 @@ import { dueAnswer } from "./invoice-due.ts";
 import { ambiguous, fenced, type Loaded, markDay, none, notFound, type ReadArgs, type View } from "./invoice-fence.ts";
 import { listAnswer, markedText } from "./invoice-render.ts";
 import { companyText } from "./invoice-words.ts";
-import { companyExtras, extrasLines, extrasText, savedExtras, touchesExtras } from "./invoice-company.ts";
+import { companyExtras, extrasLines, extrasText, sameCompany, savedExtras, touchesExtras } from "./invoice-company.ts";
 import { type ReminderEvent, type ReminderMail, reminderAnswer, reminderSentAnswer, type Thread } from "./reminder-tools.ts";
 import { MAX_NOTE } from "./reminder-text.ts";
 
@@ -228,9 +228,17 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 				at: now().toISOString(),
 			};
 			if (given.vat === undefined && given.name === undefined) return { text: "Errore: dai la partita IVA (vat) o il nome (name) dell'azienda.", set: false };
-			// The other details already saved stay, unless given again: read and written under one lock.
-			const company = store.changeCompany((old) => ({ ...savedExtras(old), ...given })) as Company;
-			const said = `Ora so che l'azienda è ${fenced(companyText(company))}: le fatture in cui è cliente sono da pagare, quelle in cui è fornitore da incassare.`;
+			// The same company keeps the other details saved, unless given again; another company starts
+			// without them (an address or IBAN of the one before would go on its quotes). Under one lock.
+			let dropped = false;
+			const company = store.changeCompany((old) => {
+				const same = sameCompany(old, given);
+				dropped = !same && touchesExtras(savedExtras(old));
+				return { ...(same ? savedExtras(old) : {}), ...given };
+			}) as Company;
+			const also = extra ? `\nSalvato anche ${fenced(extrasText(extras))}.` : "";
+			const gone = dropped ? "\nÈ un'altra azienda: ho tolto i dati della precedente (indirizzo, telefono, email, codice fiscale, REA, regime, IBAN, firma) che non mi hai ridato; chiedi a chi ti scrive quelli nuovi." : "";
+			const said = `Ora so che l'azienda è ${fenced(companyText(company))}: le fatture in cui è cliente sono da pagare, quelle in cui è fornitore da incassare.${also}${gone}`;
 			return { text: said, set: true };
 		});
 		if (!done.set) return done.text;

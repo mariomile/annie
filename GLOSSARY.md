@@ -209,6 +209,10 @@ _Avoid_: agenda dei pagamenti, prima nota
 La mail che chiede a un cliente di pagare fatture scadute, in tre livelli: promemoria, secondo sollecito, sollecito formale (costituzione in mora). Annie la prepara con `invoices` op `reminder`, la manda solo dopo l'approvazione e la annota nello scadenzario. Vedi ADR 0054.
 _Avoid_: diffida, recupero crediti
 
+**Preventivo**:
+L'offerta numerata a un cliente, con righe, IVA, validità e riquadro per l'accettazione, fatta con lo strumento `quotes` e salvata in PDF o Word nel workspace. Una revisione tiene il numero (`2026-012-R1`). Vedi ADR 0055.
+_Avoid_: offerta, quotazione
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

@@ -6,6 +6,7 @@
  */
 import { addDays, realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
+import { hasControlChars } from "./plain-text.ts";
 import { CASSA_KINDS, type Cassa, type CassaKind, type SumLine, type SumOptions, VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { fold } from "./text-match.ts";
 
@@ -37,6 +38,9 @@ export const QUOTE_LIMITS = {
 } as const;
 
 export const DEFAULT_VALID_DAYS = 30;
+
+/** «In scadenza»: open quotes whose validity ends within these days (the list's filter and the brief). */
+export const QUOTE_SOON_DAYS = 3;
 
 /** The note of a line at 0% for an owner in the regime forfettario. */
 export const FORFETTARIO_NOTE = "operazione effettuata ai sensi dell'art. 1, commi 54-89, L. 190/2014 (regime forfettario), senza applicazione dell'IVA";
@@ -81,8 +85,10 @@ export type Quote = Marker & {
 	/** For a superseded quote: the revision that replaced it, and the status it had (given back if that revision is dropped). */
 	readonly replacedBy?: string;
 	readonly before?: { readonly status: Exclude<QuoteStatus, "superseded">; readonly mark?: Marker };
-	/** The document in the workspace. */
+	/** The document in the workspace; without it the quote is still being made («in preparazione»). */
 	readonly file?: string;
+	/** Where its document is being written: recorded before the write, so a call run again writes over its own file. */
+	readonly pendingFile?: string;
 	/** The tool call that made it: a call run again after a crash finds it instead of making another. */
 	readonly callId?: string;
 };
@@ -163,7 +169,6 @@ export function matchesCustomer(quote: Quote, words: string): boolean {
 		.every((w) => name.includes(` ${w}`));
 }
 
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/;
 const QUANTITY = /^\d{1,12}(?:\.\d{1,3})?$/;
 const PRICE = /^\d{1,12}(?:\.\d{1,4})?$/;
 const PERCENT = /^\d{1,3}(?:\.\d{1,2})?$/;
@@ -172,7 +177,7 @@ const REVISION = /^\d{4}-\d{3,6}-R\d{1,2}$/;
 const FILE = /^preventivi\/[A-Za-z0-9-]{1,120}\.(?:pdf|docx)$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-const isText = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !CONTROL.test(v);
+const isText = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !hasControlChars(v);
 const optText = (v: unknown, max: number) => v === undefined || isText(v, max);
 const isMarker = (v: unknown): v is Marker => typeof v === "object" && v !== null && isText((v as Marker).by, 200) && isText((v as Marker).at, 40);
 const percent = (v: unknown, below100: boolean) => typeof v === "string" && PERCENT.test(v) && Number(v) > 0 && (below100 ? Number(v) < 100 : Number(v) <= 100);
@@ -214,7 +219,7 @@ export function validQuote(v: unknown): v is Quote {
 	if (q.cassa !== undefined && (!validCassa(q.cassa) || q.pricesIncludeVat === true)) return false;
 	if (q.deposit !== undefined && !percent(q.deposit, true)) return false;
 	if (!optText(q.terms, QUOTE_LIMITS.terms) || !optText(q.notes, QUOTE_LIMITS.notes) || !optText(q.delivery, QUOTE_LIMITS.delivery) || !optText(q.callId, 200)) return false;
-	if (q.file !== undefined && (typeof q.file !== "string" || !FILE.test(q.file))) return false;
+	for (const path of [q.file, q.pendingFile]) if (path !== undefined && (typeof path !== "string" || !FILE.test(path))) return false;
 	if (!STATUSES.includes(q.status)) return false;
 	if (q.statusMark !== undefined && !isMarker(q.statusMark)) return false;
 	if (q.status !== "superseded") return q.replacedBy === undefined && q.before === undefined;

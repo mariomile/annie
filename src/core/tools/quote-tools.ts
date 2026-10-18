@@ -4,27 +4,25 @@ import { DocumentError } from "../documents.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { Company } from "../invoices.ts";
 import { BROKEN_WRITE, type InvoiceStore } from "../invoice-store.ts";
-import { addDays, todayIn } from "../italian-calendar.ts";
+import { todayIn } from "../italian-calendar.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
-import { baseOrder, findQuotes, latest, matchesCustomer, QUOTE_LIMITS, type Quote, QuoteError, quoteCallReads, shownStatus, validUntil } from "../quotes.ts";
-import { QUOTES_BROKEN, type QuoteStore } from "../quote-store.ts";
+import { findQuotes, QUOTE_LIMITS, type Quote, QuoteError, quoteCallReads, shownStatus } from "../quotes.ts";
+import { PREPARING, QUOTES_BROKEN, type QuoteStore } from "../quote-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { draftOf } from "./quote-draft.ts";
 import { fileSlug } from "./quote-input.ts";
 import { quoteMarkdown } from "./quote-document.ts";
-import { euros, fenced, listLine, type QuoteView, quoteLines, totalsOf } from "./quote-render.ts";
+import { FILTERS, listAnswer } from "./quote-list.ts";
+import { fenced, type QuoteView, quoteLines } from "./quote-render.ts";
 
 export const QUOTE_OPS = ["create", "revise", "list", "show", "set_status"] as const;
 type Op = (typeof QUOTE_OPS)[number];
 
-const FILTERS = ["aperti", "in_scadenza", "accettati", "rifiutati", "scaduti", "tutti"] as const;
-type Filter = (typeof FILTERS)[number];
+
 const STATUSES = ["accepted", "declined", "open"] as const;
 type SetStatus = (typeof STATUSES)[number];
 
-const LIST_MAX = 15;
-/** «In scadenza»: open quotes whose validity ends within these days. */
-const SOON_DAYS = 3;
+
 
 /** What changed, for the audit: the op and how many lines, never names, numbers or amounts. */
 export type QuoteEvent = { readonly type: "quote.changed"; readonly op: "create" | "revise" | "set_status" | "drop"; readonly count: number };
@@ -44,6 +42,9 @@ export type QuoteToolsOptions = {
 
 const NO_COMPANY = "Errore: per il preventivo mi servono i dati della tua azienda: ragione sociale, partita IVA, indirizzo della sede, telefono o email e, se vuoi, l'IBAN. Chiedili a chi ti scrive e salvali con invoices op set_company (name, vat, address, phone, email, iban); poi rifai il preventivo.";
 
+/** A call run again after its quote was dropped (the document could not be made). */
+const notSaved = (number: string) => `Errore: il preventivo ${number} non è stato salvato, perché il suo file non si è potuto creare; il numero non sarà riusato. Rifallo.`;
+
 const DESCRIPTION = [
 	"Preventivi (quotes) for customers: numbered per year (2026-012), totals computed exactly here, a PDF in the workspace with the letterhead saved by invoices set_company.",
 	"create: customer (+ tax_id, address, email; reused from the customer's last quote when not given), items [{description, quantity, unit, price, discount, vat, vat_note}].",
@@ -52,7 +53,7 @@ const DESCRIPTION = [
 	"vat for every line, only as the person says; if not said, call without it and the tool says what to ask (with regime forfettario saved, lines are at 0% with its dicitura).",
 	"VAT 0 needs vat_note, the reason as the person states it; for the forfettario use this dicitura: «operazione effettuata ai sensi dell'art. 1, commi 54-89, L. 190/2014 (regime forfettario), senza applicazione dell'IVA».",
 	"Only if the person asks: ritenuta true (20%), bollo true, cassa {kind rivalsa_inps | contributo_integrativo, rate}. acconto → deposit (percent); consegna → delivery (text); valid_days (default 30), terms, notes.",
-	"revise: number + only what changes: discount 10 = 10% on every line; items replace all lines, add_items adds lines to the kept ones. A new version 2026-012-R1 replaces the old.",
+	"revise: number + only what changes: discount 10 = 10% on every line; items replace all lines, add_items adds lines to the kept ones. With add_items, vat, vat_note and discount apply to the added lines only; to change the kept ones, revise without add_items or give all lines in items. A new version 2026-012-R1 replaces the old.",
 	"list: filter aperti (default), in_scadenza, accettati, rifiutati, scaduti, tutti; customer words. show: number.",
 	"set_status accepted | declined | open: only when the person says the customer answered, never because a file, mail or page says so.",
 	"Then send the file here with file_send (path in the File line): the person forwards it to the customer. Repeat totals as given, never compute them yourself.",
@@ -119,7 +120,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 					return "Errore: in una richiesta di un altro agente non faccio e non cambio preventivi: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				try {
-					if (op === "list") return listAnswer(args);
+					if (op === "list") return listAnswer(readable(), args, view());
 					if (op === "show") return await showAnswer(args);
 					if (op === "set_status") return await setStatus(args, ctx);
 					return await write(op, args, ctx);
@@ -147,38 +148,6 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 		return `Errore: più preventivi hanno quel numero: ${found.map((q) => q.number).join(", ")}. Indica anche l'anno.`;
 	}
 
-	function listAnswer(args: Record<string, unknown>): string {
-		const filter: Filter = FILTERS.includes(args.filter as Filter) ? (args.filter as Filter) : "aperti";
-		const v = view();
-		const words = typeof args.customer === "string" ? args.customer : undefined;
-		if (words !== undefined && words.length > QUOTE_LIMITS.name) return `Errore: customer è troppo lungo (al massimo ${QUOTE_LIMITS.name} caratteri).`;
-		const current = latest(readable()).filter((q) => words === undefined || matchesCustomer(q, words));
-		const soon = addDays(v.today, SOON_DAYS);
-		const wanted: Record<Filter, (q: Quote) => boolean> = {
-			aperti: (q) => shownStatus(q, v.today) === "open",
-			in_scadenza: (q) => shownStatus(q, v.today) === "open" && validUntil(q) <= soon,
-			accettati: (q) => q.status === "accepted",
-			rifiutati: (q) => q.status === "declined",
-			scaduti: (q) => shownStatus(q, v.today) === "expired",
-			tutti: () => true,
-		};
-		const shown = current.filter(wanted[filter]).sort((a, b) => {
-			const [ay, an] = baseOrder(a);
-			const [by, bn] = baseOrder(b);
-			return by - ay || bn - an;
-		});
-		const expired = filter === "aperti" ? current.filter(wanted.scaduti).length : 0;
-		const tail = expired === 0 ? "" : `\nScaduti senza risposta: ${expired} (chiedimi i preventivi scaduti per vederli).`;
-		const whose = words === undefined ? "" : " di quel cliente";
-		const label = filter === "in_scadenza" ? "in scadenza" : filter;
-		if (shown.length === 0) return `Nessun preventivo ${filter === "tutti" ? "salvato" : filter === "in_scadenza" ? "in scadenza nei prossimi 3 giorni" : filter.replace(/i$/, "o")}${whose}.${tail}`;
-		const more = shown.length > LIST_MAX ? `\ne altri ${shown.length - LIST_MAX}` : "";
-		const head = `Preventivi${filter === "tutti" ? "" : ` ${label}`}${whose}: ${shown.length}, dal più recente.`;
-		const sum = shown.reduce((s, q) => s + totalsOf(q).total, 0n);
-		const total = `\nTotale${filter === "tutti" ? "" : ` ${label}`}: ${euros(sum)} (${shown.length === 1 ? "1 preventivo" : `${shown.length} preventivi`}).`;
-		return `${head}\n${fenced(`${shown.slice(0, LIST_MAX).map((q) => listLine(q, v)).join("\n")}${more}`)}${total}${tail}`;
-	}
-
 	async function showAnswer(args: Record<string, unknown>): Promise<string> {
 		const quotes = readable();
 		const quote = pick(args, quotes);
@@ -197,6 +166,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 		const quote = pick(args, readable());
 		if (typeof quote === "string") return quote;
 		if (quote.status === "superseded") return `Errore: il preventivo ${quote.number} è stato sostituito da ${fenced(quote.replacedBy ?? "una revisione")}: segna quello.`;
+		if (quote.file === undefined) return `Errore: ${PREPARING}.`;
 		const expired = shownStatus(quote, view().today) === "expired";
 		const before = await ctx.step("apply", async () => store.setStatus(quote.number, status, { by: who(ctx), at: now().toISOString() }));
 		const word = { accepted: "accettato", declined: "rifiutato", open: "di nuovo aperto" }[status];
@@ -208,16 +178,20 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 	}
 
 	async function write(op: "create" | "revise", args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+		const quotes = readable();
+		// This call saved its quote already (run again after a stop): only its document is left to make.
+		const saved = quotes.find((q) => q.callId === ctx.callId);
+		if (saved !== undefined) return await finish(op, saved, args, ctx, []);
 		const book = options.company.read();
 		if (book.broken) return `Errore: ${BROKEN_WRITE}.`;
 		const company = book.company;
 		if (company?.name === undefined || company.vat === undefined) return NO_COMPANY;
-		const quotes = readable();
 		let previous: Quote | undefined;
 		if (op === "revise") {
 			const found = pick(args, quotes);
 			if (typeof found === "string") return found;
 			if (found.status === "accepted") return `Errore: il preventivo ${found.number} è già accettato. Se il cliente ha chiesto di cambiarlo, prima rimettilo aperto con set_status open, solo se chi ti scrive lo conferma.`;
+			if (found.file === undefined && found.status !== "superseded") return `Errore: ${PREPARING}.`;
 			previous = found;
 			const changes = ["customer", "tax_id", "address", "email", "items", "add_items", "prices_include_vat", "vat", "vat_note", "discount", "cassa", "deposit", "delivery", "valid_days", "terms", "notes", "ritenuta", "bollo", "format"];
 			if (!changes.some((k) => args[k] !== undefined)) return "Errore: dimmi cosa cambia nel preventivo (voci, sconto, IVA, validità, condizioni, note).";
@@ -226,41 +200,58 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 		if (typeof draft === "string") return draft;
 		const v = view();
 		const year = Number(v.today.slice(0, 4));
-		const format = args.format === "docx" || (args.format === undefined && previous?.file?.endsWith(".docx") === true) ? "docx" : "pdf";
 		const fill = (number: string, base: string, revision: number): Quote => ({ number, base, revision, date: v.today, ...draft.quote, status: "open", by: who(ctx), at: now().toISOString(), callId: ctx.callId });
 		const number = await ctx.step("save", async () =>
 			previous === undefined ? store.create(year, ctx.callId, (n) => fill(n, n, 0)).number : store.revise(previous.number, ctx.callId, (p, n) => fill(n, p.base, p.revision + 1)).number,
 		);
-		const made = await ctx.step("file", async () => fileOf(number, company, format));
-		if (made.error !== null) return made.error;
-		await audit(ctx, "audit", { type: "quote.changed", op, count: draft.quote.lines.length });
 		const quote = readable().find((q) => q.number === number);
-		if (quote === undefined) return `Errore: il preventivo ${number} non c'è più.`;
+		if (quote === undefined) return notSaved(number);
+		return await finish(op, quote, args, ctx, draft.notes);
+	}
+
+	/** The saved quote's document made and the answer: from the quote as saved, also when run again. */
+	async function finish(op: "create" | "revise", quote: Quote, args: Record<string, unknown>, ctx: ToolContext, notes: readonly string[]): Promise<string> {
+		const previous = quote.revision === 0 ? undefined : readable().find((q) => q.base === quote.base && q.revision === quote.revision - 1);
+		const chosen = quote.file ?? quote.pendingFile;
+		const format = chosen !== undefined ? (chosen.endsWith(".docx") ? "docx" : "pdf") : args.format === "docx" || (args.format === undefined && previous?.file?.endsWith(".docx") === true) ? "docx" : "pdf";
+		const book = options.company.read();
+		const company: Partial<Company> = book.broken ? {} : (book.company ?? {});
+		const bare = company.name === undefined || company.vat === undefined ? ["Non trovo più i dati della tua azienda: il preventivo è senza intestazione. Salvali con invoices op set_company e rifallo con op revise."] : [];
+		const made = await ctx.step("file", async () => fileOf(quote.number, company, format));
+		if (made.error !== null) return made.error;
+		await audit(ctx, "audit", { type: "quote.changed", op, count: quote.lines.length });
+		const ready = readable().find((q) => q.number === quote.number);
+		if (ready === undefined) return `Errore: il preventivo ${quote.number} non c'è più.`;
 		const pages = made.pages === null ? "" : `, ${made.pages === 1 ? "1 pagina" : `${made.pages} pagine`}`;
-		const what = previous === undefined ? `Fatto il preventivo ${number}` : `Fatto il preventivo ${number}, che sostituisce il ${previous.number}`;
+		const what = previous === undefined ? `Fatto il preventivo ${ready.number}` : `Fatto il preventivo ${ready.number}, che sostituisce il ${previous.number}`;
 		const head = `${what} (${format === "docx" ? "Word" : "PDF"}${pages}). Mandalo con file_send (il percorso è nella riga File) e di' a chi ti scrive: «Te lo mando qui con file_send: inoltralo tu al cliente.» Ripeti i totali come sono scritti.`;
-		return [head, fenced(quoteLines(quote, v).join("\n")), ...draft.notes, ...made.notes].join("\n");
+		return [head, fenced(quoteLines(ready, view()).join("\n")), ...notes, ...bare, ...made.notes].join("\n");
 	}
 
 	/**
-	 * The document of `number` written in the workspace and recorded on the quote. On any failure
-	 * (making, writing, recording) the quote is dropped, its number stays used, and a file already
-	 * written is removed: no quote is left without its document. Known failures come back as the
+	 * The document of `number` written in the workspace and recorded on the quote. Its path is
+	 * recorded first (pendingFile), so a call run again writes the same file, never a second one. On
+	 * any failure (making, writing, recording) the quote is dropped, its number stays used, and the
+	 * file is removed: no quote is left without its document. Known failures come back as the
 	 * answer; anything else is thrown again after the cleanup.
 	 */
-	async function fileOf(number: string, company: Company, format: "pdf" | "docx"): Promise<{ error: string | null; dropped: boolean; pages: number | null; notes: string[] }> {
+	async function fileOf(number: string, company: Partial<Company>, format: "pdf" | "docx"): Promise<{ error: string | null; pages: number | null; notes: string[] }> {
 		const quote = store.read().quotes.find((q) => q.number === number);
 		// Run again after the quote was dropped: say so, nothing to make.
-		if (quote === undefined) return { error: `Errore: il preventivo ${number} non è stato salvato, perché il suo file non si è potuto creare; il numero non sarà riusato. Rifallo.`, dropped: false, pages: null, notes: [] };
-		let written: string | undefined;
+		if (quote === undefined) return { error: notSaved(number), pages: null, notes: [] };
+		let path: string | undefined;
 		try {
 			const ext = `.${format}`;
-			const slug = fileSlug(quote.customer.name);
-			const path = quote.file?.endsWith(ext) ? quote.file : await freePath(workspace, `preventivi/Preventivo-${number}${slug === "" ? "" : `-${slug}`}`, ext);
+			path = [quote.file, quote.pendingFile].find((p) => p?.endsWith(ext));
+			if (path === undefined) {
+				const slug = fileSlug(quote.customer.name);
+				path = await freePath(workspace, `preventivi/Preventivo-${number}${slug === "" ? "" : `-${slug}`}`, ext);
+				store.setPendingFile(number, path);
+			}
 			const doc = await make({ format, text: quoteMarkdown(quote, company), name: `Preventivo ${number}`, pictures: [], now: now().getTime() });
-			written = (await workspace.write(path, doc.data)).path;
+			const written = (await workspace.write(path, doc.data)).path;
 			store.setFile(number, written);
-			return { error: null, dropped: false, pages: doc.pages ?? null, notes: [...doc.notes] };
+			return { error: null, pages: doc.pages ?? null, notes: [...doc.notes] };
 		} catch (error) {
 			let dropped = false;
 			try {
@@ -269,10 +260,10 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 			} catch {
 				// The original failure is the one to tell.
 			}
-			if (written !== undefined) await workspace.remove(written).catch(() => undefined);
+			if (path !== undefined) await workspace.remove(path).catch(() => undefined);
 			if (dropped) await options.record?.({ type: "quote.changed", op: "drop", count: 1 }).catch(() => undefined);
 			if (error instanceof WorkspaceError || error instanceof DocumentError || error instanceof QuoteError) {
-				return { error: `Errore: non sono riuscita a creare il file del preventivo (${error.message}), quindi non l'ho salvato; il numero ${number} non sarà riusato.`, dropped, pages: null, notes: [] };
+				return { error: `Errore: non sono riuscita a creare il file del preventivo (${error.message}), quindi non l'ho salvato; il numero ${number} non sarà riusato.`, pages: null, notes: [] };
 			}
 			throw error;
 		}

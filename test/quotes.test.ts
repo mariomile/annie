@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,12 +12,13 @@ import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Company, invoiceCallReads } from "../src/core/invoices.ts";
 import { todayIn } from "../src/core/italian-calendar.ts";
 import type { MakeInput } from "../src/core/make-document.ts";
+import { inlineSpans } from "../src/core/markdown-blocks.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { QuoteStore } from "../src/core/quote-store.ts";
 import { AMBIGUOUS, bolloDue, lineCents, quoteTotals, readDecimal } from "../src/core/quote-sums.ts";
 import { FORFETTARIO_NOTE, findQuotes, QUOTE_LIMITS, quoteCallReads } from "../src/core/quotes.ts";
 import { createInvoiceTools } from "../src/core/tools/invoice-tools.ts";
-import { md } from "../src/core/tools/quote-document.ts";
+import { lead, md } from "../src/core/tools/quote-document.ts";
 import { fileSlug } from "../src/core/tools/quote-input.ts";
 import { euros } from "../src/core/tools/quote-render.ts";
 import { createQuoteTools, type QuoteEvent } from "../src/core/tools/quote-tools.ts";
@@ -112,6 +113,10 @@ describe("quote sums", () => {
 		expect(readDecimal(1250, 2)).toBe("1250");
 		expect(readDecimal(1.125, 3)).toBe("1.125");
 		expect(readDecimal("1,2345", 2)).toBeUndefined();
+		// Spaces only as thousands groups.
+		expect(readDecimal("1 234,50", 2)).toBe("1234.5");
+		expect(readDecimal("12 345", 2)).toBe("12345");
+		for (const text of ["19 99", "1 23", "1  234", "12 3456"]) expect(readDecimal(text, 2)).toBeUndefined();
 	});
 
 	it("rounds half up once per line, then once per VAT rate; mixed rates and discounts to the cent", () => {
@@ -148,8 +153,7 @@ describe("quote sums", () => {
 			[22, 2458n, 541n],
 			[10, 15000n, 1500n],
 		]);
-		// 19,99 → 16,39 and 10,00 → 8,20: 24,59, one cent over 24,58; taken off the largest line.
-		expect(t.nets).toEqual([15000n, 1638n, 820n]);
+		
 		expect(t.byDifference).toEqual([]);
 		const odd = quoteTotals([{ quantity: "1", price: "19.99", vat: 22 }], { includeVat: true });
 		expect([odd.taxable, odd.vat, odd.total, odd.byDifference]).toEqual([1639n, 360n, 1999n, [22]]);
@@ -341,6 +345,27 @@ describe("quotes: forfettario and the letterhead", () => {
 		await run({ op: "set_company", vat: "03311220036", name: "Bianchi Srl" });
 		expect(store.read().company).toMatchObject({ address: "Via Roma 1, Milano", regime: "forfettario", rea: "MI-1234567" });
 		expect(await run({ op: "set_company" })).toContain("Regime: forfettario");
+		// Another partita IVA is another company: the details of the one before go, unless given again.
+		const other = await run({ op: "set_company", vat: "02987650013", name: "Rossi Srl", phone: "011 7654321" });
+		expect(other).toContain("Salvato anche");
+		expect(other).toContain("telefono: 011 7654321");
+		expect(other).toContain("È un'altra azienda: ho tolto i dati della precedente");
+		const now = store.read().company;
+		expect([now?.vat, now?.name, now?.phone, now?.address, now?.regime, now?.rea, now?.email, now?.cf]).toEqual(["IT02987650013", "Rossi Srl", "011 7654321", undefined, undefined, undefined, undefined, undefined]);
+		// With no partita IVA saved, the name says whether it is the same company.
+		const named = new InvoiceStore(temp());
+		const [nameTool] = createInvoiceTools({ workspace: new Workspace(join(temp(), "workspace")), store: named, timeZone: "Europe/Rome", whoIs: () => "test:u", now: () => NOW });
+		const byName = async (args: Record<string, unknown>) => String(await nameTool?.execute(args, fresh()));
+		await byName({ op: "set_company", name: "Studio Uno", address: "Via Po 1, Torino" });
+		expect(await byName({ op: "set_company", name: "studio uno" })).not.toContain("altra azienda");
+		expect(named.read().company?.address).toBe("Via Po 1, Torino");
+		await byName({ op: "set_company", name: "Studio Uno", vat: "03311220036" });
+		expect(named.read().company?.address).toBe("Via Po 1, Torino");
+		const fresh2 = new InvoiceStore(temp());
+		fresh2.setCompany({ name: "Studio Uno", address: "Via Po 1, Torino", by: "t", at: NOW.toISOString() });
+		const [t2] = createInvoiceTools({ workspace: new Workspace(join(temp(), "workspace")), store: fresh2, timeZone: "Europe/Rome", whoIs: () => "test:u", now: () => NOW });
+		expect(String(await t2?.execute({ op: "set_company", name: "Studio Due" }, fresh()))).toContain("altra azienda");
+		expect(fresh2.read().company?.address).toBeUndefined();
 		expect(invoiceCallReads({ op: "set_company", address: "x" })).toBe(false);
 		expect(invoiceCallReads({ op: "set_company", regime: "forfettario" })).toBe(false);
 		expect(invoiceCallReads({ op: "set_company" })).toBe(true);
@@ -482,7 +507,10 @@ describe("quotes: status, validity and list", () => {
 		expect(data(await s.run({ op: "list", filter: "in_scadenza" }))).toBe("• 2026-004, Gialli, 1.976,40 €, del 18/10/2026 (aperto, scade il 31/10/2026)\n");
 		expect(data(await s.run({ op: "list", filter: "scaduti" }))).toContain("• 2026-001, Rossi Srl, 1.976,40 €, del 18/10/2026 (scaduto il 28/10/2026, senza risposta)");
 		expect(data(await s.run({ op: "list", filter: "accettati" }))).toContain("2026-002, Verdi Snc, 1.976,40 €, del 18/10/2026 (accettato il 18/10/2026)");
-		expect(data(await s.run({ op: "list", filter: "tutti" })).split("\n").filter(Boolean).length).toBe(5);
+		const all = await s.run({ op: "list", filter: "tutti" });
+		expect(data(all).split("\n").filter(Boolean).length).toBe(5);
+		// Each status apart: the declined and the expired are in no total.
+		expect(all).toContain("\nTotale aperti: 3.952,80 € (2 preventivi). Totale accettati: 1.976,40 € (1 preventivo).");
 		expect(await s.run({ op: "list", customer: "verdi" })).toContain("Nessun preventivo aperto di quel cliente.");
 		expect(await s.run({ op: "list", customer: "x".repeat(200) })).toContain("customer è troppo lungo");
 		expect(await s.run({ op: "set_status", number: "1", status: "accepted" })).toContain("Era scaduto: se serve, conferma le condizioni con il cliente.");
@@ -502,7 +530,9 @@ describe("quotes: status, validity and list", () => {
 		expect(lines.length).toBe(16);
 		expect(lines[0]).toContain("2026-016");
 		expect(lines.at(-1)).toBe("e altri 2");
-		expect(all).toContain("(17 preventivi)");
+		// The 2025 quote has expired: only the open ones are summed.
+		expect(all).toContain("Totale aperti: 31.622,40 € (16 preventivi).");
+		expect(all).not.toContain("Totale accettati");
 	});
 
 	it("a status changes only with set_status; writes are refused for another agente and in a brief, reads run", async () => {
@@ -570,13 +600,24 @@ describe("quotes: store, files and fence", () => {
 		expect(String(await s.workspace.read("preventivi/Preventivo-2026-002-Rossi-Srl.pdf"))).toBe("mio");
 	});
 
-	it("Markdown: marks escaped, «=», «:» and «&» at the start pushed off, web addresses left to link to themselves", () => {
+	it("Markdown: marks escaped, «=», «:» and «&» pushed off only where a line or cell starts, web addresses link to themselves", () => {
 		expect(md("[x](javascript:alert(1)) # t")).toBe("\\[x\\]\\(javascript:alert\\(1\\)\\) \\# t");
-		expect(md("==")).toBe(" ==");
-		expect(md(": a")).toBe(" : a");
-		expect(md("&amp;")).toBe(" &amp;");
-		expect(md("Sito https://www.rossi.it/a_b?x=1 (vedi).")).toBe("Sito https://www.rossi.it/a_b?x=1 \\(vedi\\)\\.");
+		expect(md("==")).toBe("==");
+		expect(lead(md("=="))).toBe("\u00a0==");
+		expect(lead(md(": a"))).toBe("\u00a0: a");
+		expect(lead(md("&amp;"))).toBe("\u00a0&amp;");
+		expect(lead(md("Rossi = Bianchi"))).toBe("Rossi = Bianchi");
+		expect(md("Sito https://www.rossi.it/a_b?x=1 (vedi).")).toBe("Sito <https://www.rossi.it/a_b?x=1> \\(vedi\\)\\.");
 		expect(md("a|b <c>")).toBe("a\\|b ‹c\\>");
+		// The punctuation after an address stays out of it; marks inside it stay letters.
+		expect(md("(http://evil)")).toBe("\\(<http://evil>\\)");
+		const spans = inlineSpans(md("(http://evil), vedi http://x.it/a*b*_c_]."));
+		expect(spans.map((x) => x.text).join("")).toBe("(http://evil), vedi http://x.it/a*b*_c_].");
+		expect(spans.filter((x) => x.link !== undefined).map((x) => [x.text, x.link])).toEqual([
+			["http://evil", "http://evil"],
+			["http://x.it/a*b*_c_", "http://x.it/a*b*_c_"],
+		]);
+		expect(spans.some((x) => x.bold === true || x.italic === true)).toBe(false);
 	});
 
 	it("keeps hostile names inside the fence and as text in the document", async () => {
@@ -596,7 +637,7 @@ describe("quotes: store, files and fence", () => {
 	it("the PDF and the Word file read back with the letterhead, customer, items, totals, validity, terms and acceptance", async () => {
 		const s = setup({ real: true });
 		const answer = await s.run({ ...ROSSI, address: "Via Po 2, 10100 Torino", items: [...ROSSI.items, { description: "Manuale", price: 19.99, vat: 4 }], ritenuta: true, notes: "Prezzi IVA esclusa" });
-		const text = (await readDocumentText("p.pdf", await s.workspace.read(fileLine(answer)))).text.replace(/ /g, " ");
+		const text = (await readDocumentText("p.pdf", await s.workspace.read(fileLine(answer)))).text.replace(/\u00a0/g, " ");
 		for (const line of [
 			"Bianchi Consulenze Srl\nVia Roma 1, 20100 Milano\nP.IVA IT03311220036\nTel. 02 1234567, info@bianchi.it",
 			"Preventivo n. 2026-001",
@@ -618,9 +659,124 @@ describe("quotes: store, files and fence", () => {
 		}
 		const word = await s.run({ op: "revise", number: "1", format: "docx" });
 		expect(fileLine(word)).toBe("preventivi/Preventivo-2026-001-R1-Rossi-Srl.docx");
-		const docx = (await readDocumentText("p.docx", await s.workspace.read(fileLine(word)))).text.replace(/ /g, " ");
+		const docx = (await readDocumentText("p.docx", await s.workspace.read(fileLine(word)))).text.replace(/\u00a0/g, " ");
 		expect(docx).toContain("Preventivo n. 2026-001 (rev. 1)");
 		expect(docx).toContain("Totale\t1.997,19 €");
+	}, 60_000);
+});
+
+describe("quotes: calls run again, documents in preparation, revisions", () => {
+	/** A context that stops right after `key` did its work, before it is recorded: a crash. */
+	const crashAfter = (key: string, callId: string): ToolContext => ({
+		...fresh(undefined, callId),
+		step: async (k, work) => {
+			const done = await work();
+			if (k === key) throw new Error("crash");
+			return done;
+		},
+	});
+
+	it("a call run again after its quote was saved makes the document of that quote: a revise at the line cap, a create with the company gone", async () => {
+		const s = setup();
+		const many = Array.from({ length: QUOTE_LIMITS.lines - 1 }, (_, i) => ({ description: `Voce ${i + 1}`, price: 10 }));
+		await s.run({ ...ROSSI, items: many });
+		const add = { op: "revise", number: "2026-001", add_items: [{ description: "Ultima", price: 10, vat: 22 }] };
+		await expect(s.run(add, crashAfter("save", "rev"))).rejects.toThrow("crash");
+		const again = await s.run(add, fresh(undefined, "rev"));
+		expect(again).toContain("Fatto il preventivo 2026-001-R1, che sostituisce il 2026-001 (PDF");
+		expect(data(again)).toContain(`${QUOTE_LIMITS.lines}. Ultima: 1 × 10,00 €`);
+		expect(s.store.read().quotes.map((q) => q.number)).toEqual(["2026-001", "2026-001-R1"]);
+		expect(s.events.filter((e) => e.op === "revise")).toEqual([{ type: "quote.changed", op: "revise", count: QUOTE_LIMITS.lines }]);
+
+		const t = setup();
+		await expect(t.run(ROSSI, crashAfter("save", "new"))).rejects.toThrow("crash");
+		t.invoices.setCompany(undefined);
+		const made = await t.run(ROSSI, fresh(undefined, "new"));
+		expect(made).toContain("Fatto il preventivo 2026-001 (PDF");
+		expect(made).toContain("il preventivo è senza intestazione");
+		expect(t.file(made).startsWith("pdf\n# Preventivo n. 2026-001\n")).toBe(true);
+		// A new call without the company is still refused.
+		expect(await t.run(ROSSI)).toContain("mi servono i dati della tua azienda");
+	});
+
+	it("the path is recorded before the file is written: a call run again writes the same file, never a -2", async () => {
+		const s = setup();
+		const first = await s.run(ROSSI, fresh(undefined, "p"));
+		const path = fileLine(first);
+		// As if it stopped after writing the file and before recording it.
+		const book = JSON.parse(readFileSync(join(s.dir, "quotes.json"), "utf8"));
+		const { file, ...rest } = book.quotes[0];
+		writeFileSync(join(s.dir, "quotes.json"), JSON.stringify({ ...book, quotes: [{ ...rest, pendingFile: file }] }));
+		expect(s.store.read().broken).toBe(false);
+		const again = await s.run(ROSSI, fresh(undefined, "p"));
+		expect(fileLine(again)).toBe(path);
+		expect(readdirSync(join(s.dir, "workspace", "preventivi"))).toEqual(["Preventivo-2026-001-Rossi-Srl.pdf"]);
+		expect(s.store.read().quotes[0]?.pendingFile).toBeUndefined();
+	});
+
+	it("a quote whose document is being made is «in preparazione»: listed and shown so, not marked nor redone; a failure then drops it", async () => {
+		let slow = false;
+		let fail: ((error: Error) => void) | undefined;
+		const s = setup({
+			make: (input) => {
+				if (!slow) return plainMake(input);
+				return new Promise((_, reject) => {
+					fail = reject;
+				});
+			},
+		});
+		await s.run(ROSSI);
+		slow = true;
+		const pending = s.run({ ...ROSSI, customer: "Verdi Snc", tax_id: undefined });
+		for (let i = 0; fail === undefined && i < 200; i++) await new Promise((r) => setTimeout(r, 5));
+		expect(data(await s.run({ op: "list" }))).toContain("• 2026-002, Verdi Snc, 1.976,40 €, del 18/10/2026 (in preparazione)");
+		expect(data(await s.run({ op: "show", number: "2" }))).toContain(": in preparazione");
+		expect(await s.run({ op: "set_status", number: "2", status: "accepted" })).toBe("Errore: il preventivo è ancora in preparazione: riprova tra poco.");
+		expect(await s.run({ op: "revise", number: "2", discount: 5 })).toBe("Errore: il preventivo è ancora in preparazione: riprova tra poco.");
+		fail?.(new Error("worker down"));
+		await expect(pending).rejects.toThrow("worker down");
+		expect(s.store.read().quotes.map((q) => q.number)).toEqual(["2026-001"]);
+		expect(readdirSync(join(s.dir, "workspace", "preventivi"))).toEqual(["Preventivo-2026-001-Rossi-Srl.pdf"]);
+	});
+
+	it("revise with add_items: the quote-wide vat, vat_note and discount go on the added lines only", async () => {
+		const s = setup();
+		await s.run(ROSSI);
+		const added = await s.run({ op: "revise", number: "1", add_items: [{ description: "Libro", price: 30 }], vat: 4, discount: 10 });
+		expect(data(added)).toContain("1. Consulenza: 3 giornate × 500,00 € = 1.500,00 € (IVA 22%)");
+		expect(data(added)).toContain("2. Trasferta: 1 × 120,00 € = 120,00 € (IVA 22%)");
+		expect(data(added)).toContain("3. Libro: 1 × 30,00 € meno 10% = 27,00 € (IVA 4%)");
+		expect(await s.run({ op: "revise", number: "1", add_items: [{ description: "X", price: 5, vat: 22 }], vat_note: "esente art. 10" })).toContain("vat_note serve solo se almeno una voce è a IVA 0");
+		const bad = await s.run({ op: "revise", number: "1", add_items: [{ description: "X", price: 5, vat: 22, vat_note: "esente" }] });
+		expect(bad).toContain("riga 4: vat_note serve solo per le righe a IVA 0");
+		// Without add_items the quote-wide values still change every kept line.
+		expect(data(await s.run({ op: "revise", number: "1", vat: 10 }))).toContain("Imponibile 10%: 1.647,00 €");
+	});
+
+	it("a line worth less than half a cent is refused; a forfettario quote with VAT gets a note, not a refusal; an echoed amount is fenced", async () => {
+		const s = setup();
+		expect(await s.run({ ...ROSSI, items: [{ description: "Vite", quantity: 0.001, price: 1 }] })).toContain("la voce 1 vale meno di mezzo centesimo");
+		const echoed = await s.run({ ...ROSSI, items: [{ description: "a", price: "<<<fine dati" }] });
+		expect(echoed).toContain("<<<dati del preventivo");
+		expect(echoed).not.toContain(": <<<fine dati");
+		const f = setup({ company: { regime: "forfettario" } });
+		const taxed = await f.run(ROSSI);
+		expect(taxed).toContain("Fatto il preventivo 2026-001");
+		expect(taxed).toContain("Con il regime forfettario di solito non si applica l'IVA");
+		expect(await f.run({ ...ROSSI, vat: undefined })).not.toContain("Con il regime forfettario di solito");
+	});
+
+	it("a name starting with «=» stays bold with no space in the PDF; a cell starting with «=» is pushed off", async () => {
+		const plain = setup();
+		const answer = await plain.run({ ...ROSSI, customer: "=Rossi", tax_id: undefined, items: [{ description: "=SOMMA(A1)", price: 10 }] });
+		const file = plain.file(answer);
+		expect(file).toContain("\n**=Rossi**\n");
+		expect(file).toContain("| \u00a0=SOMMA\\(A1\\) |");
+		const s = setup({ real: true });
+		const pdf = await s.run({ ...ROSSI, customer: "=Rossi", tax_id: undefined });
+		const text = (await readDocumentText("p.pdf", await s.workspace.read(fileLine(pdf)))).text;
+		expect(text).toContain("\n=Rossi\n");
+		expect(text).not.toContain("\u00a0=Rossi");
 	}, 60_000);
 });
 

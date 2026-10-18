@@ -7,6 +7,7 @@ import { validAddress } from "../email-address.ts";
 import { validIban } from "../iban.ts";
 import { COMPANY_LIMITS } from "../invoice-store.ts";
 import { type Company, REGIMES, type Regime } from "../invoices.ts";
+import { CONTROL_CHARS } from "../plain-text.ts";
 import { checkCodiceFiscale, partitaIvaProblem } from "../tax-ids.ts";
 
 export type CompanyExtras = { ibans?: string[]; signature?: string; address?: string; phone?: string; email?: string; cf?: string; rea?: string; regime?: Regime };
@@ -16,7 +17,7 @@ const EXTRA_KEYS = ["ibans", "signature", "address", "phone", "email", "cf", "re
 const PHONE = /^\+?[\d\s./()-]{6,30}$/;
 const REA = /^([A-Z]{2})[\s-]*(\d{1,7})$/;
 
-const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+const oneLine = (text: string) => text.replace(/\n/g, " ").replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
 
 /** The extras given to set_company, checked; or what is wrong. */
 export function companyExtras(args: Record<string, unknown>): CompanyExtras | { problem: string } {
@@ -84,6 +85,18 @@ export function companyExtras(args: Record<string, unknown>): CompanyExtras | { 
 /** Whether any extra is given. */
 export function touchesExtras(extras: CompanyExtras): boolean {
 	return EXTRA_KEYS.some((k) => extras[k] !== undefined);
+}
+
+/**
+ * Whether the partita IVA or name given is the company already saved: the same partita IVA, or
+ * with none saved the same name (a partita IVA added to the saved name, or a new name for the
+ * saved partita IVA, is the same company too). Only then its other details stay.
+ */
+export function sameCompany(old: Company | undefined, given: { vat?: string; name?: string }): boolean {
+	if (old === undefined) return false;
+	const sameName = (a?: string, b?: string) => a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
+	if (given.vat !== undefined) return old.vat === undefined ? given.name === undefined || sameName(old.name, given.name) : old.vat === given.vat;
+	return old.vat !== undefined || sameName(old.name, given.name);
 }
 
 /** The extras already saved, kept when the partita IVA or the name is given again. */

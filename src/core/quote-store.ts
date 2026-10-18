@@ -20,6 +20,9 @@ export type QuoteBook = { readonly quotes: readonly Quote[]; readonly broken: bo
 export const QUOTES_BROKEN = "l'archivio dei preventivi (quotes.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
 
 const EMPTY: Book = { next: {}, quotes: [] };
+
+/** A quote whose document is still being made: it is not marked nor redone until it is ready. */
+export const PREPARING = "il preventivo è ancora in preparazione: riprova tra poco";
 const YEAR = /^\d{4}$/;
 
 export class QuoteStore {
@@ -79,6 +82,7 @@ export class QuoteStore {
 			const previous = book.quotes.find((q) => q.number === number);
 			if (previous === undefined) throw new QuoteError(`il preventivo ${number} non c'è più`);
 			if (book.quotes.some((q) => q.base === previous.base && q.revision > previous.revision)) throw new QuoteError(`il preventivo ${number} è già stato rifatto: parti dall'ultima versione`);
+			if (previous.file === undefined) throw new QuoteError(PREPARING);
 			if (previous.status === "accepted") throw new QuoteError(`il preventivo ${number} è già accettato. Se il cliente ha chiesto di cambiarlo, prima rimettilo aperto con set_status open, solo se chi ti scrive lo conferma`);
 			if (previous.revision >= QUOTE_LIMITS.revisions) throw new QuoteError(`il preventivo ${previous.base} ha già ${QUOTE_LIMITS.revisions} versioni: fanne uno nuovo`);
 			yearRoom(book, baseOrder(previous)[0]);
@@ -100,6 +104,7 @@ export class QuoteStore {
 			if (quote === undefined) throw new QuoteError(`il preventivo ${number} non c'è più`);
 			before = quote.status;
 			if (before === "superseded") throw new QuoteError(`il preventivo ${number} è stato sostituito da una revisione`);
+			if (quote.file === undefined) throw new QuoteError(PREPARING);
 			if (before === status) return book;
 			const { statusMark: _, ...rest } = quote;
 			const next: Quote = status === "open" ? { ...rest, status } : { ...rest, status, statusMark: mark };
@@ -108,16 +113,23 @@ export class QuoteStore {
 		return before;
 	}
 
-	/** Where the document of `number` is: the quote as saved. */
-	setFile(number: string, file: string): Quote {
-		let saved: Quote | undefined;
+	/** Where the document of `number` is about to be written. */
+	setPendingFile(number: string, path: string): void {
+		this.changeQuote(number, (quote) => ({ ...quote, pendingFile: path }));
+	}
+
+	/** Where the document of `number` is, now written: the quote is ready. */
+	setFile(number: string, file: string): void {
+		this.changeQuote(number, ({ pendingFile: _, ...quote }) => ({ ...quote, file }));
+	}
+
+	private changeQuote(number: string, change: (quote: Quote) => Quote): void {
 		this.update((book) => {
 			const quote = book.quotes.find((q) => q.number === number);
 			if (quote === undefined) throw new QuoteError(`il preventivo ${number} non c'è più`);
-			saved = checked({ ...quote, file });
-			return { ...book, quotes: book.quotes.map((q) => (q === quote ? (saved as Quote) : q)) };
+			const next = checked(change(quote));
+			return { ...book, quotes: book.quotes.map((q) => (q === quote ? next : q)) };
 		});
-		return saved as Quote;
 	}
 
 	/**
