@@ -1,7 +1,7 @@
 /**
  * I clienti: one card per client with only what the person said (how they write the name, the
  * partita IVA or codice fiscale, other names, the referenti with role, phone, email and preferred
- * channel, the address, labels, dated notes and the ricontatti to do). Everything else Annie knows
+ * channel, the address, labels, dated notes, the ricontatti to do and the contacts had). Everything else Annie knows
  * about a client (invoices, solleciti, quotes, hours) stays in its own register and is read, never
  * copied here: a client seen in those registers is a client even without a card. Kept per
  * instance in `clients.json` (client-store.ts); the reading of the registers in client-sums.ts.
@@ -29,6 +29,8 @@ export const CLIENT_LIMITS = {
 	/** Ricontatti kept per card: the oldest done ones go first past it. */
 	followUps: 50,
 	followUpChars: 300,
+	/** Contacts had kept per card: the oldest go first past it. */
+	log: 100,
 	name: 120,
 	role: 60,
 	address: 200,
@@ -53,15 +55,22 @@ export const FOLLOW_UP_HOUR = 9;
 /** How far ahead a ricontatto may be set, in days. */
 export const FOLLOW_UP_MAX_DAYS = 2 * 366;
 
-/** The ops that only read: another agente may ask them, and they run in the brief. */
-const CLIENT_READ_OPS = ["show", "list", "top", "dormant"] as const;
+/** The ops that only read: they run in the brief. */
+const CLIENT_READ_OPS = ["show", "list", "top", "dormant", "agenda"] as const;
 
 export function clientCallReads(args: Record<string, unknown>): boolean {
 	return CLIENT_READ_OPS.some((o) => o === args.op);
 }
 
-/** The same rule for another agente: the reading ops only. */
-export const clientAgentReads = clientCallReads;
+/**
+ * What another agente may ask: the figures, never the person's data. The ranking, the clients not
+ * heard from, the brief's line, and one client's card cut to its name and figures (the tool cuts
+ * it); never the list of names with labels, the agenda of ricontatti, nor a write.
+ */
+export function clientAgentReads(args: Record<string, unknown>): boolean {
+	if (args.op === "top" || args.op === "dormant" || args.op === "show") return true;
+	return args.op === "list" && args.compact === true;
+}
 
 export const CHANNELS = ["telefono", "whatsapp", "email", "pec", "telegram", "di persona"] as const;
 export type Channel = (typeof CHANNELS)[number];
@@ -90,9 +99,20 @@ export type FollowUp = Marker & {
 	readonly done?: Marker;
 	/** The call that marked it done: a call run again finds it. */
 	readonly doneCall?: string;
-	/** The task programmato that reminds the person (schedules.ts). */
+	/** The task programmato that reminds the person (schedules.ts), and the key it was made with: only that task is ever removed. */
 	readonly scheduleId?: string;
+	readonly scheduleCall?: string;
+	/** The call that made it: a call run again finds it. */
 	readonly callId?: string;
+};
+
+/** A contact had with the client (a call, a meeting): the day, how it went, the ricontatto it left. */
+export type ContactEntry = Marker & {
+	readonly date: string;
+	readonly note?: string;
+	/** The ricontatto it marked done, or the one it fixed next. */
+	readonly done?: string;
+	readonly next?: string;
 };
 
 export type ClientCard = Marker & {
@@ -109,6 +129,8 @@ export type ClientCard = Marker & {
 	readonly tags: readonly string[];
 	readonly notes: readonly ClientNote[];
 	readonly followUps: readonly FollowUp[];
+	/** The contacts had, oldest first: they count as activity (a note does not). */
+	readonly log?: readonly ContactEntry[];
 	readonly edited?: Marker;
 };
 
@@ -218,7 +240,14 @@ function validFollowUp(v: unknown): v is FollowUp {
 	if (typeof f.id !== "string" || !FOLLOW_UP_ID.test(f.id) || !isDay(f.date)) return false;
 	if (f.text !== undefined && !isText(f.text, CLIENT_LIMITS.followUpChars)) return false;
 	if (f.done !== undefined && !isMarker(f.done)) return false;
-	return optText(f.scheduleId, 40) && optText(f.callId, 200) && optText(f.doneCall, 200) && (f.doneCall === undefined || f.done !== undefined);
+	return optText(f.scheduleId, 40) && optText(f.scheduleCall, 240) && optText(f.callId, 200) && optText(f.doneCall, 200) && (f.doneCall === undefined || f.done !== undefined);
+}
+
+function validEntry(v: unknown): v is ContactEntry {
+	if (!isMarker(v)) return false;
+	const e = v as ContactEntry;
+	if (!isDay(e.date) || (e.note !== undefined && !isText(e.note, CLIENT_LIMITS.noteChars))) return false;
+	return [e.done, e.next].every((id) => id === undefined || (typeof id === "string" && FOLLOW_UP_ID.test(id)));
 }
 
 /** A card as stored, checked field by field: what does not have this shape makes the store unreadable. */
@@ -234,6 +263,7 @@ export function validCard(v: unknown): v is ClientCard {
 	if (!Array.isArray(c.tags) || c.tags.length > CLIENT_LIMITS.tags || !c.tags.every((t) => plainText(t, CLIENT_LIMITS.tagChars))) return false;
 	if (!Array.isArray(c.notes) || c.notes.length > CLIENT_LIMITS.notes || !c.notes.every(validNote)) return false;
 	if (!Array.isArray(c.followUps) || c.followUps.length > CLIENT_LIMITS.followUps || !c.followUps.every(validFollowUp)) return false;
+	if (c.log !== undefined && (!Array.isArray(c.log) || c.log.length > CLIENT_LIMITS.log || !c.log.every(validEntry))) return false;
 	return c.edited === undefined || isMarker(c.edited);
 }
 

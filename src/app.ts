@@ -548,7 +548,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				},
 			});
 			// The clients' ricontatti remind the person through the tasks programmati: one store, one scheduler.
-			const schedules = schedulesOf({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone });
+			const schedules = schedulesOf({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone, whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread) });
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createDocumentTools({ workspace: runtime.workspace(record.tenantId, record.id) }),

@@ -84,6 +84,8 @@ export type FatturaDocument = {
 	readonly instalments: readonly FatturaInstalment[];
 	/** Split payment (EsigibilitaIVA S): the VAT the public administration pays to the State, not to the supplier. */
 	readonly splitVat?: string;
+	/** The imponibile: the sum of the summary rows' ImponibileImporto, when there are any and each reads. */
+	readonly taxable?: string;
 };
 
 /**
@@ -202,14 +204,28 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const instalments = [...instalmentOf.values()];
 	const toPay = paidSum(instalments);
 	const splitVat = splitPaymentVat(body);
+	const taxable = summaryTaxable(body);
 	const doc: FatturaDocument = {
-		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat) }),
+		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
 		integration: type !== undefined && INTEGRATIONS.has(type),
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments,
 	};
 	return { doc, body, instalmentOf };
+}
+
+/** The imponibile of the summary rows (DatiRiepilogo/ImponibileImporto), when there are any and each reads. */
+function summaryTaxable(body: XmlElement): bigint | undefined {
+	const rows = children(child(body, "DatiBeniServizi"), "DatiRiepilogo");
+	if (rows.length === 0) return undefined;
+	let sum = 0n;
+	for (const row of rows) {
+		const units = toUnits(value(row, "ImponibileImporto") ?? "");
+		if (units === undefined) return undefined;
+		sum += units;
+	}
+	return sum;
 }
 
 /** The VAT of the summary rows under split payment (EsigibilitaIVA S), when there are any and each reads. */
