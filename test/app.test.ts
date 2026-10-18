@@ -261,6 +261,36 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await api("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
 	});
 
+	it("schede that come back (ADR 0069): set from the board, made at their time and started with who set them", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "ricerca", name: "Ricercatore" });
+		const send = (method: string, path: string, body?: unknown, cookie = api.cookie) =>
+			// biome-ignore lint: test
+			fetch(`${base}${path}`, { method, headers: { "x-annie": "1", "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(async (r) => ({ status: r.status, ...((await r.json()) as any) }));
+		expect((await api("/api/board", { title: "Report", repeat: { every: "giorno", time: "9:00" } })).error).toMatch(/affidata a un agente/);
+		expect((await api("/api/board", { title: "Report", assignee: "ricerca", repeat: { every: "settimana", time: "9:00" } })).error).toMatch(/giorno della settimana/);
+		const { routine } = await api("/api/board", { title: "Report vendite", description: "Le vendite della settimana", assignee: "ricerca", auto: true, repeat: { every: "settimana", time: "9:00", day: 1 } });
+		expect(routine).toMatchObject({ title: "Report vendite", whenText: "ogni lunedì alle 9:00", auto: true, assignee: "ricerca" });
+		const board = await api("/api/board");
+		expect(board.cards).toEqual([]);
+		expect(board.routines.map((r: { id: string }) => r.id)).toEqual([routine.id]);
+		// Its time comes: a scheda, In corso with the owner, alone.
+		await annie.scheduler.tick(new Date(Date.parse(routine.next) + 1000));
+		const [card] = (await api("/api/board")).cards;
+		expect(card).toMatchObject({ title: "Report vendite", status: "in_corso", work: { agent: "ricerca" } });
+		expect(card.auto).toBeDefined();
+		// Paused, and started again from now; only who set it, or the owner, sees and changes it.
+		expect((await send("PUT", `/api/board/routines/${routine.id}`, { paused: true })).routine.paused).toBe(true);
+		const { link } = await api("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		expect((await member("/api/board")).routines).toEqual([]);
+		expect((await send("DELETE", `/api/board/routines/${routine.id}`, undefined, member.cookie)).status).toBe(404);
+		expect((await send("PUT", `/api/board/routines/${routine.id}`, { paused: false })).routine.paused).toBeUndefined();
+		expect((await send("DELETE", `/api/board/routines/${routine.id}`)).ok).toBe(true);
+		expect((await api("/api/board")).routines).toEqual([]);
+	}, 30_000);
+
 	it("the board (ADR 0050): a scheda handed to an agente is worked in its conversation, reviewed and closed by a person", async () => {
 		const { annie, base, telegram } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);

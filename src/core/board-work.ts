@@ -219,7 +219,8 @@ export class BoardWork {
 		}
 	}
 
-	private async checkAgent(agent: string, personId: string | undefined): Promise<void> {
+	/** Refuses unless the agente takes schede and, with a person, that person may talk to it. */
+	async checkAgent(agent: string, personId: string | undefined): Promise<void> {
 		const name = await this.deps.agentName(agent);
 		if (name === undefined) throw new BoardError(`Agente «${agent}» inesistente`);
 		if (personId !== undefined && !(await this.deps.canChat(agent, personId))) throw new BoardError(`Non puoi affidare schede a ${name}: non sei tra le persone che possono scrivergli`);

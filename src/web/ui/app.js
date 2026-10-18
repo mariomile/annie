@@ -3898,6 +3898,18 @@ const BOARD_COLUMNS = [
 	["da_rivedere", "Da rivedere"],
 	["fatto", "Fatto"],
 ];
+const REPEATS = [
+	["", "No, una volta sola"],
+	["giorno", "Ogni giorno"],
+	["feriali", "Dal lunedì al venerdì"],
+	["settimana", "Ogni settimana"],
+	["mese", "Ogni mese"],
+];
+/** «lunedì 20 ott, 09:00»: when a scheda that comes back is made next. */
+function whenNext(iso) {
+	return new Date(iso).toLocaleString("it-IT", { timeZone: "Europe/Rome", weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
 const PRIORITIES = [
 	["bassa", "Bassa"],
 	["normale", "Normale"],
@@ -4188,22 +4200,52 @@ async function viewBoard(main) {
 		const parent = h("select", h("option", { value: "" }, "Nessuna"), parents.map((x) => h("option", { value: x.id }, `#${x.n} ${x.title}`)));
 		const alone = h("input", { type: "checkbox" });
 		const aloneRow = h("label.board-alone", { hidden: true }, alone, h("span", aloneLabel));
-		assignee.addEventListener("change", () => (aloneRow.hidden = !assignee.value));
+		// «Si ripete» (ADR 0069): only for a scheda handed to an agente.
+		const every = h("select", REPEATS.map(([v, l]) => h("option", { value: v }, l)));
+		const time = h("input", { type: "time", value: "09:00", step: "300", "aria-label": "Ora" });
+		const weekday = h("select", { "aria-label": "Giorno" }, WEEKDAYS.map((d, i) => h("option", { value: String(i + 1) }, d)));
+		const monthday = h("select", { "aria-label": "Giorno del mese" }, Array.from({ length: 28 }, (_, i) => h("option", { value: String(i + 1) }, `il ${i + 1}`)));
+		const repeatWhen = h("div.board-repeat-when", { hidden: true }, weekday, monthday, h("span", "alle"), time);
+		const repeatRow = h("div.field", { hidden: true }, h("span", "Si ripete"), h("div.board-repeat", every, repeatWhen));
+		const drawRepeat = () => {
+			repeatWhen.hidden = !every.value;
+			weekday.hidden = every.value !== "settimana";
+			monthday.hidden = every.value !== "mese";
+			ok.textContent = every.value ? "Programma" : "Crea";
+			if (parentRow) parentRow.hidden = Boolean(every.value);
+		};
+		every.addEventListener("change", drawRepeat);
+		assignee.addEventListener("change", () => {
+			aloneRow.hidden = !assignee.value;
+			repeatRow.hidden = !assignee.value;
+			if (!assignee.value) every.value = "";
+			drawRepeat();
+		});
 		const ok = h("button.btn.accent", "Crea");
+		const parentRow = parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null;
 		const dialog = h(
 			"dialog.board-dialog",
 			h("h3", "Nuova scheda"),
 			h("label.field", h("span", "Titolo"), title),
 			h("label.field", h("span", "Descrizione"), description),
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
-			parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null,
-			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito."),
+			repeatRow,
+			parentRow,
+			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito. Se si ripete, ogni volta nasce una scheda nuova che parte con te, come se premessi Avvia."),
 			aloneRow,
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 		);
 		ok.onclick = async () => {
 			ok.disabled = true;
 			try {
+				if (every.value) {
+					const repeat = { every: every.value, time: time.value, ...(every.value === "settimana" ? { day: Number(weekday.value) } : every.value === "mese" ? { day: Number(monthday.value) } : {}) };
+					const { routine } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, assignee: assignee.value, auto: alone.checked, repeat } });
+					dialog.close();
+					toast(`Si ripete ${routine.whenText}: la prima volta ${whenNext(routine.next)}`);
+					render();
+					return;
+				}
 				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}) } });
 				dialog.close();
 				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : `Scheda #${card.n} creata`);
@@ -4219,19 +4261,59 @@ async function viewBoard(main) {
 		title.focus();
 	};
 
+	// Schede that come back (ADR 0069): who set them sees them above the columns, and pauses or removes them.
+	const routineRow = (r) => {
+		const agent = agentOf(r.assignee);
+		const toggle = async () => {
+			try {
+				await api(`/api/board/routines/${r.id}`, { method: "PUT", body: { paused: !r.paused } });
+				toast(r.paused ? "Riparte alla prossima volta" : "In pausa: non nascono schede finché non la riprendi");
+				render();
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		const remove = () =>
+			confirmDialog("Non ripeterla più?", `«${r.title}» non crea più schede. Quelle già create restano sulla board.`, "Togli", () =>
+				api(`/api/board/routines/${r.id}`, { method: "DELETE" })
+					.then(() => {
+						toast("Non si ripete più");
+						render();
+					})
+					.catch((error) => toast(error.message, true)),
+			);
+		const last = r.last ? data.cards.find((c) => c.id === r.last) : undefined;
+		return h(
+			`li.board-routine${r.paused ? ".paused" : ""}`,
+			face(r.assignee),
+			h(
+				"div",
+				h("b", r.title),
+				h(
+					"p.muted.small",
+					[agent ? agent.name : "agente non disponibile", r.whenText, r.personId === state.me.id ? null : `impostata da ${data.people[r.personId] ?? "una persona"}`, r.paused ? "in pausa" : `la prossima ${whenNext(r.next)}`, r.auto ? "da solo" : null, last ? `ultima #${last.n}` : null].filter(Boolean).join(" · "),
+				),
+				r.problem ? h("p.small.board-routine-problem", `L'ultima volta non è partita: ${r.problem}.`) : null,
+			),
+			h("div.row-gap", h("button.btn.small.ghost", { onclick: toggle }, r.paused ? "Riprendi" : "Pausa"), h("button.btn.small.ghost", { onclick: remove }, "Togli")),
+		);
+	};
+	const routines = data.routines?.length ? h("details.board-routines", { open: store("annie.board.routines") !== "0" ? "" : undefined, ontoggle: (e) => store("annie.board.routines", e.currentTarget.open ? "1" : "0") }, h("summary", `Si ripetono (${data.routines.length})`), h("ul", data.routines.map(routineRow))) : null;
 	mount(
 		main,
 		head("Annie", h("h1", "Board"), "Le cose da fare, affidate agli agenti. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la sposta in «Da rivedere»; poi una persona la chiude, o la rimanda indietro con un commento. Puoi anche chiedere in chat: «mettilo in board per Ricercatore», e avviarla da qui.", h("button.btn.accent", { onclick: newCard }, icon("plus"), "Nuova scheda")),
+		routines,
 		columns,
 	);
 	// The agenti move schede while the page is open: it follows them, unless a scheda is open.
-	const shown = JSON.stringify(data.cards.map((c) => [c.id, c.updatedAt]));
+	const look = (d) => JSON.stringify([d.cards.map((c) => [c.id, c.updatedAt]), (d.routines ?? []).map((r) => [r.id, r.next, r.problem, r.paused, r.last])]);
+	const shown = look(data);
 	const timer = setInterval(async () => {
 		if (!main.isConnected) return clearInterval(timer);
 		if (document.querySelector("dialog[open]") || document.hidden) return;
 		try {
 			const next = await api("/api/board");
-			if (main.isConnected && JSON.stringify(next.cards.map((c) => [c.id, c.updatedAt])) !== shown) render();
+			if (main.isConnected && look(next) !== shown) render();
 		} catch {
 			/* next round */
 		}

@@ -30,6 +30,7 @@ import { checkPersona, cleanName, type Persona, PersonaError } from "../core/per
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import type { BoardStore } from "../core/board.ts";
 import type { ScreenViews } from "../core/screen-views.ts";
+import type { RoutineStore } from "../core/board-routines.ts";
 import type { BoardReview, BoardWork } from "../core/board-work.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -214,7 +215,7 @@ export type WebAppOptions = {
 	/** Delete an agente for good (ADR 0046); never the general one, nor a segreteria. */
 	readonly deleteInstance?: { readonly main: string; readonly run: (id: string) => Promise<void> };
 	/** The board (ADR 0050). */
-	readonly board?: { readonly store: BoardStore; readonly work: BoardWork };
+	readonly board?: { readonly store: BoardStore; readonly work: BoardWork; readonly routines?: RoutineStore };
 	readonly log?: (message: string) => void;
 };
 
@@ -1857,6 +1858,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (params[0] === (person as Person).id) throw new HttpError(400, "Non puoi eliminare te stesso");
 		const removed = await options.people.remove(params[0] as string);
 		await options.sessions.endAllOf(params[0] as string);
+		// What they set to come back on the board stops: nobody would work it with them (ADR 0069).
+		options.board?.routines?.pausePerson(params[0] as string);
 		await runtime.audit(tenantId).append({ type: "person.removed", personId: params[0] });
 		return { removed };
 	});
