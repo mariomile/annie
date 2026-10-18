@@ -1,0 +1,69 @@
+/**
+ * The arithmetic of the rinnovi, exact: amounts are canonical decimal strings read into bigint
+ * cents, never floats. The yearly cost of a renewal is its amount × the periods in a year
+ * (12 / months): exact for mensile (×12), bimestrale (×6), trimestrale (×4), quadrimestrale (×3),
+ * semestrale (×2), annuale (×1); for any other period (biennale, ogni 18 mesi…) amount × 12 /
+ * months in cents, rounded half up per renewal. Totals add those yearly costs; the monthly
+ * equivalent of a total is the yearly total / 12, rounded half up once.
+ */
+import { CATEGORIES, type Category, type Renewal } from "./renewals.ts";
+import { halfUp, scaled } from "./quote-sums.ts";
+
+/** A canonical decimal string («480», «12.5») in cents. */
+export function cents(value: string): bigint {
+	return scaled(value, 2);
+}
+
+/** The yearly cost of `amount` cents every `months` months, half up to the cent. */
+export function yearlyCents(amount: bigint, months: number): bigint {
+	return halfUp(amount * 12n, BigInt(months));
+}
+
+/** The yearly cost of a renewal; undefined without an amount. */
+export function yearlyOf(r: Pick<Renewal, "amount" | "months">): bigint | undefined {
+	return r.amount === undefined ? undefined : yearlyCents(cents(r.amount), r.months);
+}
+
+/** The monthly equivalent of a yearly total, half up. */
+export function monthlyOf(yearly: bigint): bigint {
+	return halfUp(yearly, 12n);
+}
+
+export type CategoryCost = { readonly category: Category; readonly yearly: bigint; readonly count: number };
+
+export type Costs = {
+	/** The renewals counted, with an amount. */
+	readonly count: number;
+	readonly yearly: bigint;
+	readonly monthly: bigint;
+	/** Largest first; a tie by the list's order. */
+	readonly categories: readonly CategoryCost[];
+	/** Largest yearly cost first, at most `top`. */
+	readonly biggest: readonly { readonly renewal: Renewal; readonly yearly: bigint }[];
+	/** The renewals without an amount: not in the totals. */
+	readonly withoutAmount: readonly Renewal[];
+};
+
+/** The costs of the renewals given (the caller picks the active ones). */
+export function costsOf(renewals: readonly Renewal[], top = 5): Costs {
+	const byCategory = new Map<Category, { yearly: bigint; count: number }>();
+	const priced: { renewal: Renewal; yearly: bigint }[] = [];
+	const withoutAmount: Renewal[] = [];
+	let yearly = 0n;
+	for (const r of renewals) {
+		const y = yearlyOf(r);
+		if (y === undefined) {
+			withoutAmount.push(r);
+			continue;
+		}
+		yearly += y;
+		priced.push({ renewal: r, yearly: y });
+		const seen = byCategory.get(r.category) ?? { yearly: 0n, count: 0 };
+		byCategory.set(r.category, { yearly: seen.yearly + y, count: seen.count + 1 });
+	}
+	const categories = [...byCategory]
+		.map(([category, s]) => ({ category, ...s }))
+		.sort((a, b) => (a.yearly === b.yearly ? CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) : a.yearly > b.yearly ? -1 : 1));
+	const biggest = priced.sort((a, b) => (a.yearly === b.yearly ? a.renewal.id.localeCompare(b.renewal.id) : a.yearly > b.yearly ? -1 : 1)).slice(0, top);
+	return { count: priced.length, yearly, monthly: monthlyOf(yearly), categories, biggest, withoutAmount };
+}

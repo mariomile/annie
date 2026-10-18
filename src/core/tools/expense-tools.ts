@@ -1,7 +1,7 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { cashBook } from "../cash-book.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
-import { CATEGORIES, type Category, DOC_TYPES, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
+import { CATEGORIES, type Category, DOC_TYPES, type Method, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
 import { EXPENSES_BROKEN, type ExpenseStore } from "../expense-store.ts";
 import { inPeriod, type Period, PeriodError, periodOf, underWay } from "../periods.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -63,6 +63,33 @@ function sameDraft(draft: ExpenseDraft, e: Expense): boolean {
  * this tool's; suppliers, notes and receipt paths come from the person and are fenced.
  */
 export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
+	return expensesOf(options).tools;
+}
+
+/** An expense another tool records for the person (renewals' payments): already read and checked by that tool. */
+export type ExpenseRecordInput = {
+	/** The total paid, VAT included: a canonical decimal string («480», «12.5»). */
+	readonly amount: string;
+	/** ISO day paid, not after today. */
+	readonly date: string;
+	readonly category: Category;
+	readonly supplier?: string;
+	readonly method?: Method;
+	readonly note?: string;
+};
+
+/** The expense recorded (or found, on a call run again), as its id and line to be fenced; or why not. */
+export type ExpenseRecorded = { readonly id: string; readonly line: string } | { readonly problem: string };
+
+/**
+ * The expenses' own add for another tool: the same checks, numbering and audit. The expense is
+ * keyed by the calling tool's callId (with «:expense»), so a call run again finds it instead of
+ * recording a second one.
+ */
+export type RecordExpense = (input: ExpenseRecordInput, ctx: ToolContext) => Promise<ExpenseRecorded>;
+
+/** The expenses tool, and the same expenses' add for another tool. */
+export function expensesOf(options: ExpenseToolsOptions): { readonly tools: AnnieTool[]; readonly record: RecordExpense } {
 	const { store, workspace, timeZone } = options;
 	const now = options.now ?? (() => new Date());
 	const scanner = options.scanner ?? new InvoiceScanner(workspace);
@@ -76,7 +103,28 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 		});
 	};
 	const text = (max: number, description: string) => ({ type: "string", minLength: 1, maxLength: max, description });
-	return [
+	const record: RecordExpense = async (input, ctx) => {
+		const callId = `${ctx.callId}:expense`;
+		try {
+			const saved = readable().find((e) => e.callId === callId);
+			if (saved !== undefined) return { id: saved.id, line: expenseLine(saved) };
+			if (input.date > today()) return { problem: "una spesa si registra quando è fatta: la data non può essere futura" };
+			const applied = applyFields({ amount: input.amount, date: input.date, category: { category: input.category }, ...(input.supplier === undefined ? {} : { supplier: input.supplier }), ...(input.method === undefined ? {} : { method: input.method }), ...(input.note === undefined ? {} : { note: input.note }) });
+			if ("problem" in applied) return applied;
+			const { draft } = applied;
+			const id = await ctx.step("expense:save", async () => store.add(Number(draft.date.slice(0, 4)), callId, (n) => ({ id: n, ...draft, by: who(ctx), at: now().toISOString(), callId })).id);
+			await ctx.step("expense:audit", async () => {
+				await options.record?.({ type: "expense.changed", op: "add", count: 1 });
+				return true;
+			});
+			const expense = readable().find((e) => e.id === id);
+			return expense === undefined ? { problem: `la spesa ${id} non c'è più` } : { id, line: expenseLine(expense) };
+		} catch (error) {
+			if (error instanceof ExpenseError) return { problem: error.message };
+			throw error;
+		}
+	};
+	const tools: AnnieTool[] = [
 		{
 			name: "expenses",
 			description: DESCRIPTION,
@@ -137,6 +185,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 			},
 		},
 	];
+	return { tools, record };
 
 	function readable(): readonly Expense[] {
 		const book = store.read();
