@@ -772,7 +772,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							desktop,
 							key: computerKey(record.tenantId, record.id),
 							policy: policyOf(record),
-							seen: (thread, png, action) => screens.set(record.id, thread, png, action),
+							// Only the console's conversations: nobody watches the others there.
+							seen: (thread, png, action, askedAt) => {
+								if (thread.channel === "web") screens.set(record.id, thread, png, action, askedAt);
+							},
 							record: async (event) => {
 								await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
 							},
@@ -1470,11 +1473,19 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		runConnectorAction,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
 		screens,
-		...(desktop === undefined ? {} : { desktop: { reset: async (id: string) => {
-						screens.forget(id);
-						await desktop.reset(computerKey(tenant, id));
+		...(desktop === undefined
+			? {}
+			: {
+					desktop: {
+						reset: async (id: string) => {
+							screens.forget(id);
+							await desktop.reset(computerKey(tenant, id));
+						},
+						check: () => desktop.check(),
+						network: desktop.network,
+						shared: desktop.shared,
 					},
-					check: () => desktop.check(), network: desktop.network, shared: desktop.shared } }),
+				}),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {

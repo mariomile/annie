@@ -8,7 +8,8 @@ Con lo Schermo ([ADR 0045](0045-schermo-cua.md)) l'agente lavora su un desktop L
 - **Solo guardare.** Nessun clic né tasto dal pannello: chi vuole correggere scrive in chat. Il pannello lo ricorda, insieme al fatto che prima di inviare, pagare o accedere l'agente si ferma e chiede.
 - **Si vede solo quello che l'agente ha già visto**: le schermate che prende dopo ogni azione e con desktop_look. Guardare il pannello non avvia il desktop né scatta foto in più, quindi non costa nulla e non sveglia un container fermo.
 - **Per conversazione**: la schermata la vede chi sta in quella conversazione con l'agente, e nessun altro, nemmeno l'owner dalla conversazione di un'altra persona. Se il desktop è condiviso tra agenti, la schermata è quella che l'agente ha visto lui stesso in quel momento.
-- **In memoria, le ultime 300 conversazioni**. Dopo un riavvio di Annie, o se l'owner azzera lo schermo o elimina l'agente, il pannello sparisce fino alla prossima azione. La console chiede ogni 2 secondi se c'è una schermata nuova (ogni 10 col pannello chiuso) e scarica l'immagine solo quando è cambiata.
+- **In memoria, le ultime 300 conversazioni**. Dopo un riavvio di Annie, o se l'owner azzera lo schermo o elimina l'agente, il pannello sparisce fino alla prossima azione. La console chiede ogni 2 secondi se c'è una schermata nuova, col pannello aperto o mentre la conversazione si muove, ogni 10 altrimenti, e mai per un agente senza schermo; scarica l'immagine solo quando è cambiata. Restano solo le conversazioni della console (le altre nessuno le guarda), e al massimo 200 MB di schermate.
+- **Il testo scritto non si vede mai**: dopo desktop_type il pannello dice quanti caratteri, e un tasto che è un carattere (anche con maiuscolo) è «Premuto un tasto.», così un codice battuto tasto per tasto non compare.
 
 ## Alternative scartate
 

@@ -16,8 +16,8 @@ export type DesktopToolsOptions = {
 	readonly log?: (message: string) => void;
 	/** How long the screen gets to change after an action before it is looked at (default 700 ms). */
 	readonly settleMs?: number;
-	/** Each screenshot taken in a conversation, with what was just done: the console shows it live (ADR 0067). */
-	readonly seen?: (thread: { readonly channel: string; readonly threadId: string }, png: Uint8Array, action: string | undefined) => void;
+	/** Each screenshot taken in a conversation, with what was just done and when it was asked for: the console shows it live (ADR 0067). */
+	readonly seen?: (thread: { readonly channel: string; readonly threadId: string }, png: Uint8Array, action: string | undefined, askedAt: number) => void;
 };
 
 /** The last screenshot's size and the screen's: coordinates read on the first are clicked on the second. */
@@ -75,6 +75,7 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 
 	/** The screen now, as the model sees it; its size kept for the next click. */
 	const look = async (ctx: ToolContext, action?: string): Promise<{ text: string; images: EngineImage[] }> => {
+		const askedAt = Date.now();
 		const state = await desktop.call(key, "get_desktop_state", { max_image_dimension: DESKTOP_LIMITS.maxImageDimension }, ctx.signal);
 		const image = state.images.find((i) => i.mimeType === "image/png");
 		const size = image === undefined ? undefined : pngSize(Buffer.from(image.data));
@@ -83,7 +84,7 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 		if (image.data.length > DESKTOP_LIMITS.maxImageBytes) throw new DesktopError(`lo schermo ha mandato un'immagine di ${Math.round(image.data.length / 1024 / 1024)} MB, troppo pesante`);
 		const original = (name: string) => (typeof state.structured?.[name] === "number" ? (state.structured[name] as number) : undefined);
 		view = { imageWidth: size.width, imageHeight: size.height, screenWidth: original("screenshot_original_width") ?? size.width, screenHeight: original("screenshot_original_height") ?? size.height };
-		if (ctx.thread !== undefined) options.seen?.(ctx.thread, image.data, action);
+		if (ctx.thread !== undefined) options.seen?.(ctx.thread, image.data, action, askedAt);
 		const said = state.text.trim().slice(0, DESKTOP_LIMITS.maxTextChars);
 		const head = `Lo schermo adesso, ${size.width}×${size.height} pixel: x e y per desktop_click e desktop_scroll si leggono su questa immagine, da 0,0 in alto a sinistra.`;
 		return { text: said === "" ? head : `${head}\n${fenced(said)}`, images: [image] };
@@ -232,7 +233,9 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 					if (combo === undefined) return "Errore: key è un tasto (Return, Tab, a, F5…) o una combinazione come ctrl+l; modifiers solo ctrl, alt, shift, super.";
 					if (combo.length === 1) await desktop.call(key, "press_key", { key: combo[0], ...scope }, ctx.signal);
 					else await desktop.call(key, "hotkey", { keys: combo, ...scope }, ctx.signal);
-					return { done: `Premuto ${combo.join("+")}.`, event: { action: "key" } };
+					// A character, alone or with shift, is not named: typed one key at a time it would spell out a code in the console (ADR 0067).
+					const character = combo.slice(0, -1).every((m) => m === "shift") && (combo.at(-1) ?? "").length === 1;
+					return { done: character ? "Premuto un tasto." : `Premuto ${combo.join("+")}.`, event: { action: "key" } };
 				}),
 		},
 		{

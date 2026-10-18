@@ -233,6 +233,10 @@ describe("the desktop's tools", () => {
 			["hotkey", { keys: ["ctrl", "shift", "t"], scope: "desktop" }],
 		]);
 		expect(await tool("desktop_key").execute({ key: "a b" }, ctxWithSteps().ctx)).toMatch(/^Errore: /);
+		// A character is not named, so keys pressed one by one do not spell out a code in the console.
+		expect(textOf(await tool("desktop_key").execute({ key: "4" }, ctxWithSteps().ctx))).toMatch(/^Premuto un tasto\./);
+		expect(textOf(await tool("desktop_key").execute({ key: "shift+a" }, ctxWithSteps().ctx))).toMatch(/^Premuto un tasto\./);
+		expect(textOf(await tool("desktop_key").execute({ key: "ctrl+l" }, ctxWithSteps().ctx))).toMatch(/^Premuto ctrl\+l\./);
 	});
 
 	it("desktop_key: common names of keys and modifiers become the ones the desktop knows", async () => {
@@ -582,10 +586,12 @@ describe("the desktop in an agente", () => {
 	it("the console shows the screen live, only to the person of the conversation, and forgets it when the screen is reset", async () => {
 		const fake = fakeDesktop();
 		const { api, base, cookie } = await annie(fake.desktop);
-		await api("/api/instances/annie/desktop-allowed", { allowed: true }, "PUT");
 		const thread = (await api("/api/instances/annie/threads", {})).thread;
 		const screen = `/api/instances/annie/threads/${thread.id}/screen`;
-		expect(await api(screen)).toEqual({ status: 200, screen: null });
+		// Without the screen the console stops asking.
+		expect(await api(screen)).toEqual({ status: 200, on: false, screen: null });
+		await api("/api/instances/annie/desktop-allowed", { allowed: true }, "PUT");
+		expect(await api(screen)).toEqual({ status: 200, on: true, screen: null });
 		expect((await fetch(`${base}${screen}.png`, { headers: { cookie, "x-annie": "1" } })).status).toBe(404);
 		await api(`/api/instances/annie/threads/${thread.id}/messages`, { text: "/tool desktop_click {\"x\":10,\"y\":20}" });
 		for (const start = Date.now(); (await api(screen)).screen === null; ) {
