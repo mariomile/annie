@@ -1350,6 +1350,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await runRoutines({ routines, work: boardWork, board, personExists: async (id) => (await people.get(id)) !== undefined, audit: (event) => runtime.audit(tenant).append(event), log }, now).catch((error: unknown) =>
 				log(`board: routines not run: ${error instanceof Error ? error.message : String(error)}`),
 			);
+			// Scadenze of the day (ADR 0074).
+			await boardWork.noticeDue(now).catch((error: unknown) => log(`board: scadenze not told: ${error instanceof Error ? error.message : String(error)}`));
 		},
 	);
 	scheduler.start(options.schedulerIntervalMs ?? 30_000);
