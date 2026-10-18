@@ -15,6 +15,7 @@
  * written back only on the next change. Kept per instance in `renewals.json` (renewal-store.ts);
  * sums in renewal-sums.ts.
  */
+import type { Category as ExpenseCategory } from "./expenses.ts";
 import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
 import { saysPhrase, words } from "./name-keys.ts";
@@ -69,6 +70,24 @@ export const CATEGORIES = [
 	"altro",
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
+
+/**
+ * The expenses' category of a renewal's payment (record_expense): the same where the expenses have
+ * it, the closest otherwise, «altro» where there is none (insurance, memberships, licences,
+ * service contracts). The person can change it with expenses op edit.
+ */
+export const EXPENSE_CATEGORY: Readonly<Record<Category, ExpenseCategory>> = {
+	"software e abbonamenti": "software e abbonamenti",
+	"dominio e hosting": "software e abbonamenti",
+	assicurazione: "altro",
+	"affitto e leasing": "affitto e utenze",
+	utenze: "affitto e utenze",
+	"telefono e internet": "telefono e internet",
+	"associazioni e quote": "altro",
+	"licenze e permessi": "altro",
+	"contratti di servizio": "altro",
+	altro: "altro",
+};
 
 /**
  * Whole words (folded) and phrases that mean a category, tried in this order: the specific ones

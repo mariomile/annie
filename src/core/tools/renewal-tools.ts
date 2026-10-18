@@ -1,12 +1,11 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
-import type { Category as ExpenseCategory } from "../expenses.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
-import { italianLongDate as long } from "../italian-format.ts";
+import { italianLongDate as long, withDate } from "../italian-format.ts";
 import { agendaOf, amountAt, deadlineFor, effectiveDue, effectiveTermEnd, lastCharge, movesBySelf, nextDue, normalised, noticeAlerts, noticeDeadline, placeDue, readDue, remindDays } from "../renewal-dates.ts";
 import { costsOf } from "../renewal-sums.ts";
 import { RENEWALS_BROKEN, type RenewalStore } from "../renewal-store.ts";
-import { CATEGORIES, type Category, findRenewals, lookalike, matchCategory, RENEWAL_LIMITS, type Renewal, RenewalError, type Roll, renewalCallReads, renewalMatches } from "../renewals.ts";
+import { CATEGORIES, type Category, EXPENSE_CATEGORY, findRenewals, lookalike, matchCategory, RENEWAL_LIMITS, type Renewal, RenewalError, type Roll, renewalCallReads, renewalMatches } from "../renewals.ts";
 import { METHODS } from "../payment-methods.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
@@ -15,6 +14,8 @@ import { sameDraft } from "./field-input.ts";
 import { isProblem } from "./quote-input.ts";
 import { applyFields, editsSomething, readFields, readPeriodAmount } from "./renewal-input.ts";
 import { briefAnswer, fenced, listAnswer, renewalLine, renewalsCsv, summaryAnswer, upcomingAnswer} from "./renewal-render.ts";
+
+export { EXPENSE_CATEGORY };
 
 const RENEWAL_OPS = ["add", "list", "upcoming", "summary", "renewed", "paid", "cancel", "reactivate", "edit", "remove", "export"] as const;
 type Op = (typeof RENEWAL_OPS)[number];
@@ -28,23 +29,6 @@ const MAX_DAYS = 366;
 /** What changed, for the audit: the op and how many renewals (or rows), never names, amounts, dates, notes or paths. */
 export type RenewalEvent = { readonly type: "renewal.changed"; readonly op: "add" | "edit" | "renewed" | "charge" | "cancel" | "reactivate" | "remove" | "export"; readonly count: number };
 
-/**
- * The expenses' category of a renewal's payment (record_expense): the same where the expenses have
- * it, the closest otherwise, «altro» where there is none (insurance, memberships, licences,
- * service contracts). The person can change it with expenses op edit.
- */
-export const EXPENSE_CATEGORY: Readonly<Record<Category, ExpenseCategory>> = {
-	"software e abbonamenti": "software e abbonamenti",
-	"dominio e hosting": "software e abbonamenti",
-	assicurazione: "altro",
-	"affitto e leasing": "affitto e utenze",
-	utenze: "affitto e utenze",
-	"telefono e internet": "telefono e internet",
-	"associazioni e quote": "altro",
-	"licenze e permessi": "altro",
-	"contratti di servizio": "altro",
-	altro: "altro",
-};
 
 export type RenewalToolsOptions = {
 	readonly workspace: Workspace;
@@ -246,7 +230,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		const end = effectiveTermEnd(r, day);
 		const by = deadlineFor(r, end);
 		if (by >= day) return [];
-		return [`Il termine per disdire la scadenza del ${long(end)} era il ${long(by)}: questa si rinnova. Di' a chi ti scrive: «Per la scadenza del ${long(end)} il termine per disdire è passato (era il ${long(by)}).»`];
+		return [`Il termine per disdire la scadenza ${withDate("del", end)} era ${withDate("il", by)}: questa si rinnova. Di' a chi ti scrive: «Per la scadenza ${withDate("del", end)} il termine per disdire è passato (era ${withDate("il", by)}).»`];
 	}
 
 	async function add(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
@@ -375,11 +359,11 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 				if (problem !== undefined) return `Errore: ${problem}.`;
 				return expenseOnlyAnswer(found, await payForRoll(found, rolledToday, pay, ctx));
 			}
-			if (found.due >= day) return `La spesa di questo pagamento è già registrata: ${rolledToday.expense}. La scadenza resta il ${long(found.due)}.`;
+			if (found.due >= day) return `La spesa di questo pagamento è già registrata: ${rolledToday.expense}. La scadenza resta ${withDate("il", found.due)}.`;
 		}
 		if (!advance && found.due >= day && (rolledToday !== undefined || addDays(found.due, -remindDays(found)) > day)) {
-			const why = rolledToday !== undefined ? "È già stato segnato come pagato oggi" : `La prossima scadenza è il ${long(found.due)}, ancora lontana`;
-			return `Errore: ${why}: risulta già pagato fino al ${long(found.due)}. Non segnarlo di nuovo. Se chi ti scrive vuole solo registrare una spesa, usa expenses op add; se ha davvero pagato in anticipo la scadenza del ${long(found.due)}, rifai con advance true.`;
+			const why = rolledToday !== undefined ? "È già stato segnato come pagato oggi" : `La prossima scadenza è ${withDate("il", found.due)}, ancora lontana`;
+			return `Errore: ${why}: risulta già pagato fino ${withDate("al", found.due)}. Non segnarlo di nuovo. Se chi ti scrive vuole solo registrare una spesa, usa expenses op add; se ha davvero pagato in anticipo la scadenza ${withDate("del", found.due)}, rifai con advance true.`;
 		}
 		if (want) {
 			const input = expenseInput(found, found.due, pay, amountAt(found, found.due));
@@ -428,27 +412,27 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 
 	function rolledAnswer(r: Renewal, roll: Roll, rec: ExpenseRecorded | undefined, want: boolean): string {
 		const day = today();
-		const lines = [`Fatto: ${r.id} segnato come pagato o rinnovato. La prossima scadenza ora è il ${long(roll.to)} (era il ${long(roll.from)}).`, fenced(renewalLine(r, day))];
-		if (r.due < day) lines.push(`Anche la scadenza del ${long(r.due)} è passata: chiedi a chi ti scrive se ha pagato anche quella; se sì, rifai op renewed.`);
+		const lines = [`Fatto: ${r.id} segnato come pagato o rinnovato. La prossima scadenza ora è ${withDate("il", roll.to)} (era ${withDate("il", roll.from)}).`, fenced(renewalLine(r, day))];
+		if (r.due < day) lines.push(`Anche la scadenza ${withDate("del", r.due)} è passata: chiedi a chi ti scrive se ha pagato anche quella; se sì, rifai op renewed.`);
 		if (rec !== undefined) lines.push(...expenseLines(rec, true));
 		else if (!want && options.expenses !== undefined) lines.push("Se chi ti scrive vuole anche la spesa nel registro, rifai renewed con record_expense true: oggi registra solo la spesa, senza spostare di nuovo la scadenza.");
 		return lines.join("\n");
 	}
 
 	function expenseOnlyAnswer(r: Renewal, rec: ExpenseRecorded): string {
-		const gone = r.due < today() ? [`La scadenza del ${long(r.due)} è ancora passata: se chi ti scrive ha pagato anche quella, rifai renewed con advance true.`] : [];
-		return [`${r.id} era già segnato come pagato oggi: la scadenza resta il ${long(r.due)}, non l'ho spostata.`, ...expenseLines(rec, false), ...gone].join("\n");
+		const gone = r.due < today() ? [`La scadenza ${withDate("del", r.due)} è ancora passata: se chi ti scrive ha pagato anche quella, rifai renewed con advance true.`] : [];
+		return [`${r.id} era già segnato come pagato oggi: la scadenza resta ${withDate("il", r.due)}, non l'ho spostata.`, ...expenseLines(rec, false), ...gone].join("\n");
 	}
 
 	/** An autoPay renewal: nothing moves; with record_expense, the last charge becomes an expense, once. */
 	async function charge(r: Renewal, want: boolean, pay: Payment, ctx: ToolContext): Promise<string> {
 		const day = today();
-		if (!want) return `${r.id} si paga da solo: la scadenza va avanti da sola (prossimo addebito il ${long(effectiveDue(r, day))}), non serve segnarlo. Se chi ti scrive vuole registrare la spesa dell'ultimo addebito, rifai con record_expense true.`;
+		if (!want) return `${r.id} si paga da solo: la scadenza va avanti da sola (prossimo addebito ${withDate("il", effectiveDue(r, day))}), non serve segnarlo. Se chi ti scrive vuole registrare la spesa dell'ultimo addebito, rifai con record_expense true.`;
 		// The charge resolved once: a rerun records the same one even on another day.
 		const date = (await ctx.step("resolve", async () => lastCharge(r, day) ?? null)) ?? undefined;
-		if (date === undefined) return `Errore: per ${r.id} non è ancora partito nessun addebito: il primo è il ${long(effectiveDue(r, day))}. Non c'è una spesa da registrare.`;
+		if (date === undefined) return `Errore: per ${r.id} non è ancora partito nessun addebito: il primo è ${withDate("il", effectiveDue(r, day))}. Non c'è una spesa da registrare.`;
 		const recorded = r.charges?.find((c) => c.date === date);
-		if (recorded !== undefined) return `La spesa dell'addebito del ${long(date)} è già registrata: ${recorded.expense}. Il prossimo addebito è il ${long(effectiveDue(r, day))}.`;
+		if (recorded !== undefined) return `La spesa dell'addebito ${withDate("del", date)} è già registrata: ${recorded.expense}. Il prossimo addebito è ${withDate("il", effectiveDue(r, day))}.`;
 		const charged: Payment = { ...pay, day: pay.day === day ? date : pay.day };
 		const paid = amountAt(r, date);
 		const input = expenseInput(r, date, charged, paid);
@@ -466,7 +450,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 	}
 
 	function chargedAnswer(r: Renewal, date: string, rec: ExpenseRecorded): string {
-		return [`${r.id} si paga da solo: la spesa è dell'addebito del ${long(date)}; il prossimo addebito è il ${long(effectiveDue(r, today()))}.`, ...expenseLines(rec, false)].join("\n");
+		return [`${r.id} si paga da solo: la spesa è dell'addebito ${withDate("del", date)}; il prossimo addebito è ${withDate("il", effectiveDue(r, today()))}.`, ...expenseLines(rec, false)].join("\n");
 	}
 
 	async function cancel(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
@@ -478,7 +462,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		const found = pick(args, "active", true);
 		if (typeof found === "string") {
 			const done = typeof args.id === "string" ? findRenewals(readable(), args.id).filter((r) => r.status === "cancelled") : [];
-			return done.length === 1 && done[0]?.cancelled !== undefined ? `Il rinnovo ${done[0].id} era già segnato come disdetto il ${long(done[0].cancelled.on)}.` : found;
+			return done.length === 1 && done[0]?.cancelled !== undefined ? `Il rinnovo ${done[0].id} era già segnato come disdetto ${withDate("il", done[0].cancelled.on)}.` : found;
 		}
 		const on = readPastDay(args.date, today(), CANCEL_DAY);
 		if (isProblem(on)) return `Errore: ${on.problem}.`;
@@ -498,7 +482,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		await audit(ctx, "cancel", 1);
 		const renewal = readable().find((r) => r.id === found.id);
 		if (renewal === undefined) return `Errore: il rinnovo ${found.id} non c'è più.`;
-		const late = by !== undefined && on.date > by ? [`Il termine per disdire era il ${long(by)}. Di' a chi ti scrive: «La disdetta è arrivata dopo il termine del ${long(by)}: controlla con il fornitore se la scadenza del ${long(end)} si paga ancora.»`] : [];
+		const late = by !== undefined && on.date > by ? [`Il termine per disdire era ${withDate("il", by)}. Di' a chi ti scrive: «La disdetta è arrivata dopo il termine ${withDate("del", by)}: controlla con il fornitore se la scadenza ${withDate("del", end)} si paga ancora.»`] : [];
 		return cancelledAnswer(renewal, late);
 	}
 
@@ -542,10 +526,10 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		const day = today();
 		const late = movesBySelf(r)
 			? r.cancelled === undefined && r.start === r.due && r.due >= day
-				? [`Riparte dal ${long(r.due)}: i periodi in cui era disdetto non li conto né come addebitati né come da pagare. Se chi ti scrive ha pagato qualcosa in quel tempo, registralo con expenses op add.`]
+				? [`Riparte ${withDate("dal", r.due)}: i periodi in cui era disdetto non li conto né come addebitati né come da pagare. Se chi ti scrive ha pagato qualcosa in quel tempo, registralo con expenses op add.`]
 				: []
 			: r.due < day
-				? [`La scadenza del ${long(r.due)} è passata: chiedi a chi ti scrive la prossima scadenza e correggila con op edit (due).`]
+				? [`La scadenza ${withDate("del", r.due)} è passata: chiedi a chi ti scrive la prossima scadenza e correggila con op edit (due).`]
 				: [];
 		return [`Fatto, ${r.id} è di nuovo attivo.`, fenced(renewalLine(r, today())), ...late].join("\n");
 	}

@@ -7,8 +7,8 @@ import { toUnits } from "../fattura-pa.ts";
 import { unitsText } from "../invoice-sums.ts";
 import { dayOfIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
-import { type Quote, type QuoteLine, type ShownStatus, STATUS_WORDS, shownStatus, validUntil } from "../quotes.ts";
-import { decimalText, type QuoteTotals, quoteTotals, RITENUTA_RATE } from "../quote-sums.ts";
+import { type Quote, type QuoteLine, quoteTotalsOf, type ShownStatus, STATUS_WORDS, shownStatus, validUntil } from "../quotes.ts";
+import { decimalText, type QuoteTotals, RITENUTA_RATE } from "../quote-sums.ts";
 import { fence } from "../untrusted.ts";
 
 /** Today and the instance's time zone: what a status and its day are read against. */
@@ -30,13 +30,7 @@ export function priceText(price: string): string {
 }
 
 export function totalsOf(quote: Pick<Quote, "lines" | "ritenuta" | "bollo" | "pricesIncludeVat" | "cassa" | "deposit">): QuoteTotals {
-	return quoteTotals(quote.lines, {
-		...(quote.ritenuta === true ? { ritenuta: true } : {}),
-		...(quote.bollo === true ? { bollo: true } : {}),
-		...(quote.pricesIncludeVat === true ? { includeVat: true } : {}),
-		...(quote.cassa === undefined ? {} : { cassa: quote.cassa }),
-		...(quote.deposit === undefined ? {} : { deposit: quote.deposit }),
-	});
+	return quoteTotalsOf(quote);
 }
 
 const A_CORPO = /^a\s+corpo$/i;

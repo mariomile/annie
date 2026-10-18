@@ -6,7 +6,7 @@
  */
 import { addDays, realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
-import { CASSA_KINDS, type Cassa, type CassaKind, type SumLine, type SumOptions, VAT_RATES, type VatRate } from "./quote-sums.ts";
+import { CASSA_KINDS, type Cassa, type CassaKind, type QuoteTotals, quoteTotals, type SumLine, type SumOptions, VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
 import { fold } from "./text-match.ts";
 
@@ -94,6 +94,17 @@ export type Quote = Marker & {
 	/** When a mail with it went to the customer, approved by the person (quotes op send). */
 	readonly sentAt?: string;
 };
+
+/** A quote's totals, with its own options (ritenuta, bollo, prices with VAT, cassa, acconto). */
+export function quoteTotalsOf(quote: Pick<Quote, "lines" | "ritenuta" | "bollo" | "pricesIncludeVat" | "cassa" | "deposit">): QuoteTotals {
+	return quoteTotals(quote.lines, {
+		...(quote.ritenuta === true ? { ritenuta: true } : {}),
+		...(quote.bollo === true ? { bollo: true } : {}),
+		...(quote.pricesIncludeVat === true ? { includeVat: true } : {}),
+		...(quote.cassa === undefined ? {} : { cassa: quote.cassa }),
+		...(quote.deposit === undefined ? {} : { deposit: quote.deposit }),
+	});
+}
 
 /** «2026-012»: the year and its progressive number, three digits at least. */
 export function quoteNumber(year: number, n: number): string {

@@ -66,3 +66,19 @@ const MONTHS_LONG = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno
 export function italianLongDate(date: string): string {
 	return `${Number(date.slice(8, 10))} ${MONTHS_LONG[Number(date.slice(5, 7)) - 1]} ${date.slice(0, 4)}`;
 }
+
+/** The prepositions a date follows in a sentence, and their elided forms before «8» and «11». */
+const ELIDED: Readonly<Record<DatePreposition, string>> = { il: "l'", del: "dell'", dal: "dall'", al: "all'", nel: "nell'", sul: "sull'" };
+export type DatePreposition = "il" | "del" | "dal" | "al" | "nel" | "sul";
+
+/**
+ * A date after its preposition, as Italian writes it: «il 12 marzo 2027», «l'8 marzo 2027»,
+ * «dall'11 ottobre 2026», «il 1º gennaio 2027» (the first of the month is an ordinal).
+ */
+export function withDate(preposition: DatePreposition, date: string): string {
+	const day = Number(date.slice(8, 10));
+	const rest = italianLongDate(date).slice(String(day).length);
+	if (day === 1) return `${preposition} 1º${rest}`;
+	if (day === 8 || day === 11) return `${ELIDED[preposition]}${day}${rest}`;
+	return `${preposition} ${day}${rest}`;
+}

@@ -13,7 +13,7 @@ import { addDays, daysBetween, weekdayOf } from "./italian-calendar.ts";
 
 /** Up to this many days the table is by week; beyond, by month. */
 export const WEEKLY_MAX_DAYS = 92;
-export const TOP_MOVEMENTS = 5;
+export const TOP_MOVEMENTS = 3;
 
 export type DayRow = {
 	readonly date: string;

@@ -289,7 +289,6 @@ export function placeDue(due: Due, months: number, today: string): Due {
 	return due;
 }
 
-export { rollDate };
 
 /** The due date after this one: one period on from the due date (not from today). */
 export function nextDue(r: Pick<Renewal, "due" | "months" | "day">): string {

@@ -8,14 +8,12 @@
  */
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { addDays } from "../italian-calendar.ts";
-import { italianDate, italianLongDate as long } from "../italian-format.ts";
+import { italianDate, italianLongDate as long, withDate } from "../italian-format.ts";
 import { type Agenda, type AgendaItem, agendaEmpty, amountAt, currentAmount, effectiveDue, effectiveTermEnd, frequencyText, monthsText, noticeDeadline, noticeText, perPeriodText } from "../renewal-dates.ts";
 import { type Costs, cents, yearlyOf } from "../renewal-sums.ts";
 import type { Category, Renewal } from "../renewals.ts";
 import { fence } from "../untrusted.ts";
-import { euros } from "./expense-render.ts";
-
-export { euros };
+import { euros, renewalName as who } from "../format-words.ts";
 
 /** Rows in one answer; the rest are counted. */
 export const MAX_ROWS = 40;
@@ -33,17 +31,13 @@ export function amountText(r: Renewal, today: string): string {
 	return amount === undefined ? "importo non indicato" : `${euros(cents(amount))} ${perPeriodText(r.months)}`;
 }
 
-/** The renewal's name, with its provider when it has one: to be fenced. */
-export function who(r: Renewal): string {
-	return `${r.name}${r.provider === undefined ? "" : ` (${r.provider})`}`;
-}
 
 /** Where the renewal stands as of today. */
 function stateText(r: Renewal, today: string): string {
-	if (r.status === "cancelled" && r.cancelled !== undefined) return `disdetto il ${long(r.cancelled.on)}${r.cancelled.ends === undefined ? "" : `, valido fino al ${long(r.cancelled.ends)}`}`;
-	if (r.trial === true && r.due >= today) return `prova gratuita fino al ${long(r.due)}: disdici prima se non lo vuoi`;
+	if (r.status === "cancelled" && r.cancelled !== undefined) return `disdetto ${withDate("il", r.cancelled.on)}${r.cancelled.ends === undefined ? "" : `, valido fino ${withDate("al", r.cancelled.ends)}`}`;
+	if (r.trial === true && r.due >= today) return `prova gratuita fino ${withDate("al", r.due)}: disdici prima se non lo vuoi`;
 	if (r.autoPay === true) return `prossimo addebito ${long(effectiveDue(r, today))}`;
-	if (r.due < today) return r.autoRenew ? `da pagare dal ${long(r.due)} (si è rinnovato da solo)` : `scaduto il ${long(r.due)}: dimmi se l'hai rinnovato o lasciato scadere`;
+	if (r.due < today) return r.autoRenew ? `da pagare ${withDate("dal", r.due)} (si è rinnovato da solo)` : `scaduto ${withDate("il", r.due)}: dimmi se l'hai rinnovato o lasciato scadere`;
 	return `prossima scadenza ${long(effectiveDue(r, today))}`;
 }
 
@@ -56,11 +50,11 @@ export function renewalLine(r: Renewal, today: string): string {
 	const parts = [
 		head,
 		stateText(r, today),
-		...(r.amountFrom === undefined || effectiveDue(r, today) >= r.amountFrom.from ? [] : [`dal ${long(r.amountFrom.from)}: ${euros(cents(r.amountFrom.amount))}`]),
+		...(r.amountFrom === undefined || effectiveDue(r, today) >= r.amountFrom.from ? [] : [`${withDate("dal", r.amountFrom.from)}: ${euros(cents(r.amountFrom.amount))}`]),
 		...(r.autoPay === true ? ["si paga da solo"] : []),
 		...(r.autoRenew ? ["si rinnova da solo"] : []),
-		...(deadline !== undefined ? [`disdetta entro il ${long(deadline)}`] : r.autoRenew && notice !== undefined ? [`disdetta con ${notice} di preavviso`] : []),
-		...(r.termMonths === undefined ? [] : [`contratto di ${monthsText(r.termMonths)} fino al ${long(effectiveTermEnd(r, today))}`]),
+		...(deadline !== undefined ? [`disdetta entro ${withDate("il", deadline)}`] : r.autoRenew && notice !== undefined ? [`disdetta con ${notice} di preavviso`] : []),
+		...(r.termMonths === undefined ? [] : [`contratto di ${monthsText(r.termMonths)} fino ${withDate("al", effectiveTermEnd(r, today))}`]),
 		...(r.note === undefined ? [] : [`nota: ${r.note.replace(/\n/g, " ")}`]),
 		...(r.document === undefined ? [] : [`documento: ${r.document}`]),
 		r.id,
@@ -118,24 +112,24 @@ function agendaLines(a: Agenda): string[] {
 	const section = (items: readonly AgendaItem[], one: string, many: string, line: (i: AgendaItem) => string) => {
 		if (items.length > 0) out.push(header(items.length, one, many), fenced(items.map(line).join("\n")));
 	};
-	section(a.overdue, "Scaduto, da confermare:", "Scaduti, da confermare:", (i) => `• ${who(i.renewal)}: scaduto il ${long(i.date)} (${paymentsText(i, "scadenze")}) · ${i.renewal.id}`);
-	section(a.cancelBy, "Da disdire entro:", "Da disdire entro:", (i) => `• ${who(i.renewal)}: entro il ${long(i.date)}, altrimenti si rinnova il ${long(effectiveTermEnd(i.renewal, i.date))} · ${i.renewal.id}`);
-	section(a.trials, "Prova gratuita che finisce:", "Prove gratuite che finiscono:", (i) => `• ${who(i.renewal)}: la prova finisce il ${long(i.date)}: disdici prima se non lo vuoi · ${i.renewal.id}`);
-	section(a.charges, "Addebito automatico:", "Addebiti automatici:", (i) => `• ${who(i.renewal)}: il ${long(i.date)}, ${paymentsText(i, "addebiti")} · ${i.renewal.id}`);
-	section(a.renews, "Si rinnova da solo (poi da pagare):", "Si rinnovano da soli (poi da pagare):", (i) => `• ${who(i.renewal)}: il ${long(i.date)}, ${paymentsText(i, "scadenze")} · ${i.renewal.id}`);
-	section(a.toPay, "Da pagare:", "Da pagare:", (i) => `• ${who(i.renewal)}: ${i.since === true ? `dal ${long(i.date)} (si è rinnovato da solo)` : `entro il ${long(i.date)}`}, ${paymentsText(i, "scadenze")} · ${i.renewal.id}`);
+	section(a.overdue, "Scaduto, da confermare:", "Scaduti, da confermare:", (i) => `• ${who(i.renewal)}: scaduto ${withDate("il", i.date)} (${paymentsText(i, "scadenze")}) · ${i.renewal.id}`);
+	section(a.cancelBy, "Da disdire entro:", "Da disdire entro:", (i) => `• ${who(i.renewal)}: entro ${withDate("il", i.date)}, altrimenti si rinnova ${withDate("il", effectiveTermEnd(i.renewal, i.date))} · ${i.renewal.id}`);
+	section(a.trials, "Prova gratuita che finisce:", "Prove gratuite che finiscono:", (i) => `• ${who(i.renewal)}: la prova finisce ${withDate("il", i.date)}: disdici prima se non lo vuoi · ${i.renewal.id}`);
+	section(a.charges, "Addebito automatico:", "Addebiti automatici:", (i) => `• ${who(i.renewal)}: ${withDate("il", i.date)}, ${paymentsText(i, "addebiti")} · ${i.renewal.id}`);
+	section(a.renews, "Si rinnova da solo (poi da pagare):", "Si rinnovano da soli (poi da pagare):", (i) => `• ${who(i.renewal)}: ${withDate("il", i.date)}, ${paymentsText(i, "scadenze")} · ${i.renewal.id}`);
+	section(a.toPay, "Da pagare:", "Da pagare:", (i) => `• ${who(i.renewal)}: ${i.since === true ? `${withDate("dal", i.date)} (si è rinnovato da solo)` : `entro ${withDate("il", i.date)}`}, ${paymentsText(i, "scadenze")} · ${i.renewal.id}`);
 	return out;
 }
 
 /** What is coming up in the next `days` days, with the overdue ones and the total of every payment in the window. */
 export function upcomingAnswer(a: Agenda, days: number, today: string): string {
 	const until = addDays(today, days);
-	if (agendaEmpty(a)) return `Nei prossimi ${days} giorni (fino al ${long(until)}) niente da pagare, nessuna disdetta da mandare e niente di scaduto.`;
+	if (agendaEmpty(a)) return `Nei prossimi ${days} giorni (fino ${withDate("al", until)}) niente da pagare, nessuna disdetta da mandare e niente di scaduto.`;
 	const paying = [...a.overdue, ...a.charges, ...a.renews, ...a.toPay];
 	const total = paying.reduce((s, i) => s + (i.total ?? 0n), 0n);
 	const unknown = paying.filter((i) => i.total === undefined).length;
 	const gone = a.overdue.length > 0 || a.toPay.some((i) => i.since === true);
-	const lines = [`Rinnovi nei prossimi ${days} giorni (fino al ${long(until)}):`, ...agendaLines(a)];
+	const lines = [`Rinnovi nei prossimi ${days} giorni (fino ${withDate("al", until)}):`, ...agendaLines(a)];
 	if (paying.length > 0) lines.push(`Totale da pagare o addebitato, ${gone ? "scadute e nel periodo" : "nel periodo"}, contando ogni scadenza: ${euros(total)}${unknown === 0 ? "" : ` (più ${count(unknown)} senza importo)`}.`);
 	if (a.overdue.length > 0) lines.push(OVERDUE_ASK);
 	lines.push("Ripeti date e importi come sono scritti; per un promemoria a un'ora precisa c'è schedule_create.");
@@ -150,12 +144,12 @@ export function briefAnswer(a: Agenda): string {
 		return value === undefined ? "" : `, ${euros(cents(value))}`;
 	};
 	const rows = [
-		...a.overdue.map((i) => `• scaduto il ${long(i.date)}: ${who(i.renewal)} (dimmi se l'hai rinnovato o lasciato scadere)`),
-		...a.cancelBy.map((i) => `• da disdire entro il ${long(i.date)}: ${who(i.renewal)}`),
-		...a.trials.map((i) => `• la prova finisce il ${long(i.date)}: ${who(i.renewal)} (disdici prima se non lo vuoi)`),
-		...a.charges.map((i) => `• addebito il ${long(i.date)}: ${who(i.renewal)}${amount(i)}`),
-		...a.renews.map((i) => `• si rinnova da solo il ${long(i.date)}: ${who(i.renewal)}${amount(i)}`),
-		...a.toPay.map((i) => `• da pagare ${i.since === true ? "dal" : "entro il"} ${long(i.date)}: ${who(i.renewal)}${amount(i)}`),
+		...a.overdue.map((i) => `• scaduto ${withDate("il", i.date)}: ${who(i.renewal)} (dimmi se l'hai rinnovato o lasciato scadere)`),
+		...a.cancelBy.map((i) => `• da disdire entro ${withDate("il", i.date)}: ${who(i.renewal)}`),
+		...a.trials.map((i) => `• la prova finisce ${withDate("il", i.date)}: ${who(i.renewal)} (disdici prima se non lo vuoi)`),
+		...a.charges.map((i) => `• addebito ${withDate("il", i.date)}: ${who(i.renewal)}${amount(i)}`),
+		...a.renews.map((i) => `• si rinnova da solo ${withDate("il", i.date)}: ${who(i.renewal)}${amount(i)}`),
+		...a.toPay.map((i) => `• da pagare ${i.since === true ? withDate("dal", i.date) : `entro ${withDate("il", i.date)}`}: ${who(i.renewal)}${amount(i)}`),
 	];
 	const shown = rows.slice(0, 8);
 	return ["Rinnovi da segnalare:", fenced(`${shown.join("\n")}${rows.length > shown.length ? `\ne altri ${rows.length - shown.length}` : ""}`), "Nel brief riporta questo in una o due righe, con i nomi come sono scritti."].join("\n");
