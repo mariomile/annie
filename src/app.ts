@@ -50,7 +50,7 @@ import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
 import { MODEL_COMMAND } from "./model-command.ts";
-import { decideConnectorAction, decideToolProposal, decideWebAction, NotAnApprover, webActionReport } from "./core/approvals.ts";
+import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { type GoogleAction, type GoogleActionResult, googleActionReport, googleActionTitle } from "./core/google-actions.ts";
@@ -106,7 +106,7 @@ import { type RunningSegreteria, startSegreteria } from "./segreteria/boot.ts";
 import { BoardStore } from "./core/board.ts";
 import { RoutineStore, runRoutines } from "./core/board-routines.ts";
 import { createBoardTools } from "./core/tools/board-tools.ts";
-import { startBoard } from "./app/board.ts";
+import { approveFromChat, startBoard } from "./app/board.ts";
 import { PeopleStore, SessionStore } from "./web/auth.ts";
 import { WebChannel } from "./web/channel.ts";
 import { RoomStore, Rooms } from "./web/rooms.ts";
@@ -1171,6 +1171,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	}
 
 	async function onApprovalTap(instance: string, adapter: ChannelAdapter, action: InboundAction): Promise<void> {
+		if (action.data.startsWith("board:")) return onBoardTap(instance, adapter, action);
 		const mcpAction = /^mcp:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
 		if (mcpAction !== null) return onConnectorActionTap(instance, adapter, action, mcpAction[1] as string, mcpAction[2] as "approved" | "rejected");
 		const web = /^web:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
@@ -1192,6 +1193,20 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			// Not an approver: silence (audited in decideToolProposal).
 			if (!(error instanceof NotAnApprover)) throw error;
 		}
+	}
+
+	/** «Approva» under a scheda to review (ADR 0079): only in the main agente's chat, only from its approvers. */
+	async function onBoardTap(instance: string, adapter: ChannelAdapter, action: InboundAction): Promise<void> {
+		if (instance !== config.instanceId) return;
+		const by = { channel: adapter.name, userId: action.userId };
+		if (!(await isApprover(runtime, tenant, instance, by))) {
+			await runtime.audit(tenant).append({ type: "user.denied", instanceId: instance, channel: by.channel, userId: by.userId, action: "board.approve" });
+			return;
+		}
+		const text = await approveFromChat(boardWork, people, action.data);
+		if (text === undefined) return;
+		await runtime.audit(tenant).append({ type: "board.card_approved_from_chat", instanceId: instance, by: `${by.channel}:${by.userId}`, result: text });
+		await adapter.send({ tenantId: tenant, instanceId: instance, channel: adapter.name, threadId: action.threadId, idempotencyKey: `decision:${action.actionId}`, text });
 	}
 
 	// --- WhatsApp: at most one business number per instance, by webhook only ---

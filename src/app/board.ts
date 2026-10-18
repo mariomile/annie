@@ -1,5 +1,5 @@
 import type { ChannelAdapter } from "../channels/types.ts";
-import type { BoardStore } from "../core/board.ts";
+import { BoardError, type BoardStore } from "../core/board.ts";
 import { type BoardReview, BoardWork } from "../core/board-work.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import type { PeopleStore } from "../web/auth.ts";
@@ -64,12 +64,14 @@ export function startBoard(w: BoardWiring): BoardWork {
 		// The agente's words on this move, not an older round's.
 		const moved = card.events.findLastIndex((e) => e.kind === "status" && e.status === "da_rivedere");
 		const summary = card.events.slice(moved).find((e) => e.kind === "comment" && e.by.kind === "agent" && e.by.id === card.assignee)?.text;
-		const text = `Scheda #${card.n} da rivedere: ${card.title}${agent === undefined ? "" : `\n${agent} l'ha finita`}${summary === undefined ? "." : `: ${summary.length > 300 ? `${summary.slice(0, 300)}[...]` : summary}`}\n\nApprovala o rimandala indietro dalla Board della console.`;
+		const text = `Scheda #${card.n} da rivedere: ${card.title}${agent === undefined ? "" : `\n${agent} l'ha finita`}${summary === undefined ? "." : `: ${summary.length > 300 ? `${summary.slice(0, 300)}[...]` : summary}`}\n\nApprovala da qui, o rimandala indietro con cosa cambiare dalla Board della console.`;
+		// Approved with a tap (ADR 0079); sending it back needs words, so that stays on the board.
+		const buttons = [{ label: "Approva", data: `${BOARD_TAP}${card.id}:fatto` }];
 		for (const adapter of w.ownerChats()) {
 			if (adapter === undefined) continue;
 			for (const chat of record.approvers?.[adapter.name] ?? []) {
 				await adapter
-					.send({ tenantId: tenant, instanceId: w.main, channel: adapter.name, threadId: chat, idempotencyKey: `board-review:${card.id}:${card.updatedAt}:${chat}`, text })
+					.send({ tenantId: tenant, instanceId: w.main, channel: adapter.name, threadId: chat, idempotencyKey: `board-review:${card.id}:${card.updatedAt}:${chat}`, text, ...(adapter.onAction === undefined ? {} : { buttons }) })
 					.catch((error: unknown) => log(`annie: notice for scheda #${card.n} to ${adapter.name} ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`));
 			}
 		}
@@ -78,4 +80,26 @@ export function startBoard(w: BoardWiring): BoardWork {
 		void noticeReview(review).catch((error: unknown) => log(`annie: notice for scheda #${review.card.n} not sent: ${error instanceof Error ? error.message : String(error)}`));
 	});
 	return work;
+}
+
+const BOARD_TAP = "board:";
+
+/**
+ * «Approva» tapped under a scheda to review in the owner's chat with the main agente (ADR 0079):
+ * the scheda goes to «Fatto», as if the owner pressed Approva on the board, only if it is still in
+ * «Da rivedere». Returns what to answer in the chat, or undefined when the tap is not a board one.
+ * The caller checks the tapper is an approver of the main agente.
+ */
+export async function approveFromChat(work: BoardWork, people: PeopleStore, data: string): Promise<string | undefined> {
+	const m = /^board:(c_[0-9a-f]{12}):fatto$/.exec(data);
+	if (m === null) return undefined;
+	const owner = (await people.list()).find((p) => p.role === "owner");
+	if (owner === undefined) return "Non c'è un owner nella console: approvala dalla Board.";
+	try {
+		const card = await work.change(m[1] as string, { status: "fatto", from: "da_rivedere" }, { kind: "person", id: owner.id }, owner.id);
+		return `Scheda #${card.n} approvata e chiusa.`;
+	} catch (error) {
+		if (error instanceof BoardError) return `${error.message}.`;
+		throw error;
+	}
 }
