@@ -20,7 +20,7 @@ export type EngineOpenOptions = {
 	readonly tools: readonly AnnieTool[];
 	/**
 	 * A function is read again on each message: what it returns now is what a conversation runs
-	 * with from that message on (the skills of the agente, ADR 0058).
+	 * with from that message on (the skills of the agente, ADR 0059).
 	 */
 	readonly instructions?: string | (() => string | undefined);
 	/**

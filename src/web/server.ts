@@ -1421,7 +1421,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 
-	// --- skill (ADR 0058): everyone who talks to an agente sees its skills; each saves and deletes their own, the owner all ---
+	// --- skill (ADR 0059): everyone who talks to an agente sees its skills; each saves and deletes their own, the owner all ---
 	route("GET", "/api/instances/:id/skills", "person", async ({ person, params }) => {
 		const p = person as Person;
 		await instanceAccess(p, params[0] as string);

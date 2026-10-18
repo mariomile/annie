@@ -8,7 +8,7 @@ type Thread = { readonly channel: string; readonly threadId: string };
 const MAX_FILE_BYTES = 64 * 1024;
 
 /**
- * Tools for the skill of an agente (ADR 0058): list them, read one to follow it, write one a
+ * Tools for the skill of an agente (ADR 0059): list them, read one to follow it, write one a
  * person asked for, delete one, write one out as a SKILL.md. What the agente writes is a draft
  * of the person it is talking to: it counts only after they send «/attiva-skill nome» themselves,
  * which the core checks, so a mail or a page the agente read cannot add steps for everyone.

@@ -161,7 +161,7 @@ export class AnnieRuntime {
 		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
-	/** The skills of an instance (ADR 0058): procedures its people saved, shared by all of them. */
+	/** The skills of an instance (ADR 0059): procedures its people saved, shared by all of them. */
 	skills(tenant: string, instance: string): SkillStore {
 		return new SkillStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
@@ -414,7 +414,7 @@ export class AnnieRuntime {
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
 		let toolSet: ToolSet = [];
-		// Its own instructions, then who it is (ADR 0041), then its skills as they are now (ADR 0058).
+		// Its own instructions, then who it is (ADR 0041), then its skills as they are now (ADR 0059).
 		const own = withPersona(record.instructions, record.name, record.persona);
 		const skills = this.skills(record.tenantId, record.id);
 		const instructions = () => `${own === undefined || own === "" ? "" : `${own}\n\n`}${skillCatalog(skills.list())}`;
@@ -544,7 +544,7 @@ export class AnnieInstance {
 	}
 
 	/**
-	 * The skills in a person's message (ADR 0058). «/nome» of one: its steps go with their words.
+	 * The skills in a person's message (ADR 0059). «/nome» of one: its steps go with their words.
 	 * «/attiva-skill nome»: the draft they had the agente write becomes a skill. Only here, from a
 	 * message the person wrote in a chat with them alone; never from a scheduled run, a notice or
 	 * another agente, so a page or a mail the agente read cannot turn a draft on.

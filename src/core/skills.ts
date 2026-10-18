@@ -4,7 +4,7 @@ import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 import { fold } from "./text-match.ts";
 
 /**
- * The skill of an agente (ADR 0058): a procedure the people who use it saved once, with a name
+ * The skill of an agente (ADR 0059): a procedure the people who use it saved once, with a name
  * and a line saying when it applies («chiusura-mese»: «Quando chiedono di chiudere il mese»).
  * The agente sees the names and the lines in its instructions and opens the one it needs with
  * skill_read; a person runs one with `/nome` from any channel. Same shape as an Agent Skills
