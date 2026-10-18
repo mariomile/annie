@@ -185,6 +185,10 @@ _Avoid_: registro delle partite IVA, anagrafe tributaria
 Una scadenza di fattura come «60 gg d.f.f.m.»: Annie conta i giorni dalla data fattura e poi va all'ultimo giorno del mese; alcuni gestionali contano invece a mesi, e `date_calc` dà anche quella data quando è diversa. Una scadenza festiva non viene spostata. Vedi ADR 0048.
 _Avoid_: fine mese commerciale, scadenza a 30 giorni come mese
 
+**Partita IVA da ricontrollare**:
+Una partita IVA scritta dal cliente in una mail che non supera il controllo formale: la segreteria non la salva e nella bozza chiede di ricontrollarla (dato mancante `vatNumberInvalid`). Non usa il VIES. Vedi ADR 0049.
+_Avoid_: partita IVA inesistente, partita IVA non attiva
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

@@ -305,14 +305,22 @@ describe("tax ids: a VAT number as a customer writes it", () => {
 		expect(checkVatNumber(ente)).toEqual({ number: ente });
 	});
 
-	it("outside the VIES: GB with its check digits, CHE, NO and SM in their shape; other text with those letters is no VAT number", () => {
+	it("outside the VIES: GB, CHE and NO with their check digits, SM in its shape; other text with those letters is no VAT number", () => {
 		// 980 7806 84: HMRC's own example; 8·9 + 7·8 + 6·0 + 5·7 + 4·8 + 3·0 + 2·6 + 84 = 291 = 3 · 97.
 		expect(checkVatNumber("GB 980 7806 84")).toEqual({ number: "GB980780684" });
 		expect(checkVatNumber("GB980780684001")).toEqual({ number: "GB980780684001" });
 		expect(checkVatNumber("GB980780685")).toEqual({ problem: expect.stringContaining("Regno Unito") });
-		expect(checkVatNumber("CHE-123.456.789 MWST")).toEqual({ number: "CHE123456789" });
-		expect(checkVatNumber("CHE123456789 TVA")).toEqual({ number: "CHE123456789" });
-		expect(checkVatNumber("NO 123 456 789 MVA")).toEqual({ number: "NO123456789" });
+		// CHE 123.456.78x: 1·5 + 2·4 + 3·3 + 4·2 + 5·7 + 6·6 + 7·5 + 8·4 = 168, 168 mod 11 = 3, 11 - 3 = 8.
+		expect(checkVatNumber("CHE-123.456.788 MWST")).toEqual({ number: "CHE123456788" });
+		expect(checkVatNumber("CHE123456788 TVA")).toEqual({ number: "CHE123456788" });
+		expect(checkVatNumber("CHE-123.456.789")).toEqual({ problem: expect.stringContaining("della Svizzera") });
+		// NO 12345678x: 1·3 + 2·2 + 3·7 + 4·6 + 5·5 + 6·4 + 7·3 + 8·2 = 138, 138 mod 11 = 6, 11 - 6 = 5.
+		expect(checkVatNumber("NO 123 456 785 MVA")).toEqual({ number: "NO123456785" });
+		expect(checkVatNumber("NO123456789")).toEqual({ problem: expect.stringContaining("della Norvegia") });
+		// CHE 100.000.01x: 1·5 + 1·4 = 9, 11 - 9 = 2.
+		expect(checkVatNumber("CHE100000012")).toEqual({ number: "CHE100000012" });
+		// NO 00000006x: 6·2 = 12, a remainder of 1, so the check digit would be 10: no such number, whatever the last digit.
+		for (const digit of "0123456789") expect(checkVatNumber(`NO00000006${digit}`), digit).toHaveProperty("problem");
 		expect(checkVatNumber("SM 12345")).toEqual({ number: "SM12345" });
 		for (const text of ["None", "Not given", "Smith", "SMITH", "GB12345", "CHE12345", "NO 12345", "SM123456"]) expect(checkVatNumber(text), text).toBeUndefined();
 	});

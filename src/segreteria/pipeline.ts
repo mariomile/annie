@@ -350,8 +350,8 @@ async function draftWithModel(
 	const requests = analysis?.requests ?? [];
 	try {
 		// The VAT number as written: from the model's reading, or the heuristics' when the model could not read the mail.
-		const vatAsWritten = analysis !== undefined ? analysis.vatAsWritten : vatInMail(mail.bodyText).asWritten;
-		const draft = await draftReply(deps.model.client, deps.roles.draft, { mail, lead, requests, checks: deps.model.checks, ...(vatAsWritten === undefined ? {} : { vatAsWritten }) }, (call) => recordModelCall(deps, call));
+		const vatAsWritten = analysis?.vatAsWritten ?? [vatInMail(mail.bodyText).asWritten].filter((text): text is string => text !== undefined);
+		const draft = await draftReply(deps.model.client, deps.roles.draft, { mail, lead, requests, checks: deps.model.checks, vatAsWritten }, (call) => recordModelCall(deps, call));
 		if (draft.source === "model") return draft;
 		await deps.audit.append({ type: "draft.fallback", instanceId: deps.instanceId, mailMessageId: mail.messageId, failures: [...new Set(draft.failures.map((f) => f.check))].join(",") });
 		return { ...draft, note: "Bozza standard: quella del modello non passava i controlli (prezzi, tono o dati)." };

@@ -33,4 +33,4 @@ Seconda revisione, corretta: recinto ristretto ai segni veri (anche per mail e c
 ## Da fare
 
 - Provare l'indirizzo del VIES con `pnpm annie check` su un server con rete: da qui il proxy blocca il sito della Commissione.
-- Segreteria: usare il controllo formale sulla partita IVA estratta dalle mail (senza VIES), chiedendola di nuovo quando è sbagliata.
+- ~~Segreteria: usare il controllo formale sulla partita IVA estratta dalle mail~~ fatto nella settimana 46.

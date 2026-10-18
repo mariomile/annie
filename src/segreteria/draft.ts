@@ -1,4 +1,5 @@
 import type { LeadFields, MissingField } from "../core/practice.ts";
+import { withoutVatNumbers } from "./vat.ts";
 
 export type DraftResult = {
 	readonly subject: string;
@@ -164,15 +165,15 @@ export function scrubPii(body: string, lead: LeadFields): string {
 	if (lead.email) {
 		out = out.split(lead.email).join("");
 	}
+	// VAT numbers, first, whole («IT 012 345 609 01»): only after a VAT label, or with a country prefix and written right; order numbers and codes stay.
+	out = withoutVatNumbers(out);
 	out = out.replace(/(?:\+39[\s.]?)?\b3\d{2}[\s.]?\d{3}[\s.]?\d{3,4}\b/g, "");
-	out = out.replace(/\b0\d{1,3}[\s.]?\d{5,8}\b/g, "");
+	// Not inside a reference («Fattura 2024/000123456», «PO-2024-000123»).
+	out = out.replace(/(?<![/\-])\b0\d{1,3}[\s.]?\d{5,8}\b/g, "");
 	out = out.replace(/\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g, "");
 	out = out.replace(/\b[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]\b/gi, "");
 	out = out.replace(/\b(?:via|viale|piazza|corso|vicolo|largo|strada)\s+[A-Za-zÀ-ú' ]{2,40}\s*,?\s*\d{1,4}\b/gi, "");
 	out = out.replace(/\b\d{11}\b/g, "");
-	// VAT numbers written in groups: 9 to 12 digits with spaces or dots (not amounts in thousands, 1.250.000.000), and with a country prefix.
-	out = out.replace(/\b(?!\d{1,3}(?:[ .]\d{3})+(?![ .]?\d))\d(?:[ .]?\d){8,11}\b/g, "");
-	out = out.replace(/\b[A-Z]{2}[ .\-]?\d(?:[ .\-]?\d){7,11}\b/g, "");
 	return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n");
 }
 

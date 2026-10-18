@@ -118,7 +118,7 @@ export function runDeterministicChecks(cfg: ChecksConfig, draft: DraftCheckInput
 	if (draft.mustNotAskVatNumber) {
 		const kws = cfg.mustAsk.keywords.vatNumber ?? [];
 		// Asking to re-check a number the customer volunteered (vatNumberInvalid) is not asking for one.
-		const recheck = cfg.mustAsk.keywords.vatNumberInvalid ?? [];
+		const recheck = draft.mustAsk?.includes("vatNumberInvalid") ? (cfg.mustAsk.keywords.vatNumberInvalid ?? []) : [];
 		const sentences = hay.split(/(?<=[?])|\n/).filter((s) => /\?/.test(s) && !recheck.some((k) => s.toLowerCase().includes(k.toLowerCase())));
 		if (sentences.some((s) => kws.some((k) => s.toLowerCase().includes(k.toLowerCase())))) {
 			fails.push({ check: "mustAsk", detail: "mustNotAskVatNumber violated" });

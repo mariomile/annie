@@ -244,13 +244,26 @@ function gbCheckDigits(digits: string): boolean {
 	return sum % 97 === 0 || (sum + 55) % 97 === 0;
 }
 
+/** A mod-11 check digit (the 9th) on the first 8 digits: 11 less the weighted sum modulo 11, 11 read as 0; 10 is never a valid number. */
+function mod11CheckDigit(digits: string, weights: readonly number[]): boolean {
+	const check = 11 - ([...digits.slice(0, 8)].reduce((s, c, i) => s + Number(c) * (weights[i] as number), 0) % 11);
+	return check !== 10 && (check === 11 ? 0 : check) === Number(digits[8]);
+}
+
+/** The check on the digits of a number outside the VIES, where there is a known one: GB, Switzerland's UID, Norway's organisation number. */
+const OTHER_CHECKS: Partial<Record<OtherCountry, { readonly of: string; readonly valid: (digits: string) => boolean }>> = {
+	GB: { of: "del Regno Unito", valid: gbCheckDigits },
+	CH: { of: "della Svizzera", valid: (digits) => mod11CheckDigit(digits, [5, 4, 3, 2, 7, 6, 5, 4]) },
+	NO: { of: "della Norvegia", valid: (digits) => mod11CheckDigit(digits, [3, 2, 7, 6, 5, 4, 3, 2]) },
+};
+
 /**
  * A VAT number as a customer writes it («P.IVA: IT 012 345 678 90», «DE123456789»), checked on
  * paper only: the number to keep, what is wrong with it, or undefined when it is no VAT number.
  * - Italian: kept as its 11 digits, without «IT»; another VIES country: its shape, kept with the prefix.
  * - A body's numeric codice fiscale (8 or 9 first, written right) is kept: not a partita IVA, but
  *   the tax id a body without one invoices with, and nothing the customer should correct.
- * - GB (with its check digits), CHE, NO and SM: kept in their shape, prefix and digits only; any
+ * - GB, CHE and NO (with their check digits) and SM: kept in their shape, prefix and digits only; any
  *   other text with those letters in front («Smith», «None») is no VAT number.
  * - A person's codice fiscale, right or wrong, is no VAT number either: never «partita IVA non
  *   corretta» for it.
@@ -267,7 +280,9 @@ export function checkVatNumber(text: string): { readonly number: string } | { re
 			return undefined;
 		case "outside_vies": {
 			if (!OTHER_PREFIXES[id.country].format.test(id.number)) return undefined;
-			if (id.country === "GB" && !gbCheckDigits(id.number)) return { problem: "le cifre di controllo di un numero IVA del Regno Unito (l'8ª e la 9ª) non tornano" };
+			const digits = id.number.replace(/\D/g, "");
+			const check = OTHER_CHECKS[id.country];
+			if (check !== undefined && !check.valid(digits)) return { problem: `le cifre di controllo di un numero IVA ${check.of} non tornano: probabilmente c'è un errore di battitura` };
 			return { number: `${id.country}${id.number.replace(/[A-Z]+$/, "")}` };
 		}
 		case "unknown":

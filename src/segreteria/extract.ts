@@ -1,7 +1,7 @@
 import type { InboundMail } from "../connectors/types.ts";
 import type { LeadFields, MissingField, TenantSegreteriaConfig } from "../core/practice.ts";
 import { extractEmailAddress } from "./classify.ts";
-import { vatInMail } from "./vat.ts";
+import { vatInMail, vatToAsk } from "./vat.ts";
 
 const TITLE_RE = /\b(Dott\.ssa|Dott\.|Avv\.|Ing\.|Arch\.|Prof\.ssa|Prof\.|Geom\.|Rag\.)\s+/i;
 
@@ -61,10 +61,8 @@ export function extractLead(
 	if (!deliverySite) missing.push("deliverySite");
 	if (!hasBudgetMention) missing.push("budget");
 	if (!urgency) missing.push("deadline");
-	const isPrivate = !company;
-	// A wrong VAT number is asked again whoever gave it; a missing one never from private customers.
-	if (vat.invalid) missing.push("vatNumberInvalid");
-	else if (tenantConfig.requireVatNumber && !isPrivate && !vat.vatNumber) missing.push("vatNumber");
+	const vatAsk = vatToAsk(vat, tenantConfig.requireVatNumber === true, company !== null);
+	if (vatAsk !== undefined) missing.push(vatAsk);
 
 	const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
 

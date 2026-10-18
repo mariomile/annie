@@ -5,7 +5,7 @@ import type { ModelSelection } from "../core/registry.ts";
 import { type ChecksConfig, type CheckFailure, runDeterministicChecks } from "./checks.ts";
 import { extractEmailAddress } from "./classify.ts";
 import { buildDraft, type DraftResult, scrubPii } from "./draft.ts";
-import { vatField, withoutVatNumber } from "./vat.ts";
+import { bestVat, vatField, vatInMail, vatToAsk, withoutVatNumber } from "./vat.ts";
 
 /** What the extraction model returns, after validation. */
 export type MailAnalysis = {
@@ -13,8 +13,8 @@ export type MailAnalysis = {
 	readonly lead: LeadFields;
 	/** One entry per product or service asked for. */
 	readonly requests: readonly string[];
-	/** The VAT number as the mail wrote it, to keep out of the draft: never stored, never logged. */
-	readonly vatAsWritten?: string;
+	/** The VAT number as the model and the mail wrote it, to keep out of the draft: never stored, never logged. */
+	readonly vatAsWritten: readonly string[];
 };
 
 export type ModelCall = { role: "classify" | "extract" | "draft"; model: ModelSelection; result: CompletionResult };
@@ -37,7 +37,7 @@ Schema:
   "deliverySite": string|null,      // delivery or installation place
   "budget": string|null,            // only if the sender states one
   "deadline": string|null,          // when they need it
-  "vatNumber": string|null,         // as written, with its country prefix if any
+  "vatNumber": string|null,         // a string, exactly as written in the email, with its country prefix if any
   "originalLanguage": "it"|"en"|"it+en"|"other",
   "notes": string|null,             // anything the sales person must know (attachments mentioned, constraints), Italian, max 200 chars
   "missing": ("productOrService"|"quantity"|"deliverySite")[]  // only what is needed to prepare a quote and is not in the email
@@ -100,8 +100,11 @@ export async function analyzeMail(
 		budget: str("budget"),
 		deadline: str("deadline"),
 	};
-	// Checked on paper: a wrong number is asked again, never kept as the lead's vatNumber.
-	const vat = vatField(str("vatNumber"));
+	// Checked on paper: a wrong number is asked again, never kept as the lead's vatNumber. The
+	// mail's own reading too: a number written right there wins over the model's typo or silence.
+	const fromModel = vatField(str("vatNumber"));
+	const fromMail = vatInMail(mail.bodyText);
+	const vat = bestVat([fromModel, fromMail]);
 	// Asked in the draft: what a quote needs (the model judges quantity and site for this
 	// kind of request), plus the fixed rules for email and VAT number. Never budget,
 	// deadline or company (gold, spec A3).
@@ -111,9 +114,8 @@ export async function analyzeMail(
 	if (fields.productOrService === null || judged.includes("productOrService")) missingFields.push("productOrService");
 	if (fields.quantity === null && judged.includes("quantity")) missingFields.push("quantity");
 	if (fields.deliverySite === null && judged.includes("deliverySite")) missingFields.push("deliverySite");
-	// A wrong VAT number is asked again whoever gave it; a missing one never from private customers (no company).
-	if (vat.invalid) missingFields.push("vatNumberInvalid");
-	else if (tenantConfig.requireVatNumber === true && fields.company !== null && vat.vatNumber === null) missingFields.push("vatNumber");
+	const vatAsk = vatToAsk(vat, tenantConfig.requireVatNumber === true, fields.company !== null);
+	if (vatAsk !== undefined) missingFields.push(vatAsk);
 
 	const lead: LeadFields = {
 		fullName: fields.fullName,
@@ -134,7 +136,8 @@ export async function analyzeMail(
 		mailMessageId: mail.messageId,
 		...(str("notes") === null ? {} : { notes: str("notes") as string }),
 	};
-	return { classification, lead, requests, ...(vat.asWritten === undefined ? {} : { vatAsWritten: vat.asWritten }) };
+	const vatAsWritten = [fromModel.asWritten, fromMail.asWritten].filter((text): text is string => text !== undefined);
+	return { classification, lead, requests, vatAsWritten };
 }
 
 export type ModelDraft = DraftResult & {
@@ -151,12 +154,12 @@ export type ModelDraft = DraftResult & {
 export async function draftReply(
 	client: ModelClient,
 	model: ModelSelection,
-	args: { mail: InboundMail; lead: LeadFields; requests: readonly string[]; checks: ChecksConfig; vatAsWritten?: string },
+	args: { mail: InboundMail; lead: LeadFields; requests: readonly string[]; checks: ChecksConfig; vatAsWritten?: readonly string[] },
 	onCall?: (call: ModelCall) => Promise<void>,
 ): Promise<ModelDraft> {
 	const { mail, lead, requests, checks, vatAsWritten } = args;
 	// The customer's VAT number, right or wrong, never goes back in the draft (A7), however the model spaced it.
-	const withoutVat = (text: string) => (vatAsWritten === undefined ? text : withoutVatNumber(text, vatAsWritten));
+	const withoutVat = (text: string) => withoutVatNumber(text, vatAsWritten ?? []);
 	const language: "it" | "en" = lead.originalLanguage === "en" ? "en" : "it";
 	const allowedAmounts = amountsIn(mail.bodyText);
 	const checkInput = (draft: { subject: string; body: string }) => ({

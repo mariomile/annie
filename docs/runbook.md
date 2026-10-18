@@ -88,6 +88,8 @@ HUBSPOT_ACCESS_TOKEN                                         # scope crm.objects
 
 Al primo avvio la segreteria ignora la posta già presente e parte da quella nuova. Le pratiche si gestiscono su Telegram o nella console (pagina Segreteria). Nessuna mail parte senza Approva. Un'app Google in modalità «Testing» ha refresh token che scadono dopo 7 giorni: per l'uso reale pubblica l'app OAuth.
 
+La segreteria controlla la partita IVA scritta nelle mail senza rete ([ADR 0049](adr/0049-partita-iva-nella-segreteria.md)): se è sbagliata non la salva, la scheda lo dice e la bozza chiede al cliente di ricontrollarla. Se un cliente dice che il suo numero è giusto, controllalo con `vat_check`: un numero di un paese fuori dal VIES (Regno Unito, Svizzera, Norvegia, San Marino) è controllato solo nella forma.
+
 ## 6b. Google per persona (Gmail e Calendar; scrittura con approvazione)
 
 Ogni persona collega il proprio account Google dal menu del suo account nella console; Annie lo usa solo nelle conversazioni di quella persona dalla console e nel suo brief del mattino. Per attivarlo:
