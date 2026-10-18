@@ -39,8 +39,9 @@ export function briefWhen(cron: string): { time: string; weekdaysOnly: boolean }
  * vat_check runs here on paper only (app.ts passes it the brief's threads as offlineIn): the
  * number would come from a mail's text, so it never goes to the VIES nor spends the account's
  * daily VIES quota; the formal check reads nothing and sends nothing.
+ * date_calc is pure arithmetic on dates: no I/O at all.
  */
-const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate", "news_headlines", "vat_check"]);
+const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "google_calendar_events", "memory_list", "list_show", "file_list", "file_read", "file_search", "image_view", "schedule_list", "watch_list", "weather", "exchange_rate", "news_headlines", "vat_check", "date_calc"]);
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or

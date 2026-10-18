@@ -1,5 +1,6 @@
 import type { AnnieTool } from "../engine.ts";
-import { addDays, checkDate, type DayRates, type ExchangeRates, ExchangeRateError, FIRST_RATES_DATE, type RatesOn, type RatesSeries } from "../exchange-rates.ts";
+import { checkDate, type DayRates, type ExchangeRates, ExchangeRateError, FIRST_RATES_DATE, type RatesOn, type RatesSeries } from "../exchange-rates.ts";
+import { addDays } from "../italian-calendar.ts";
 import { capitalized, formatResult, italianDate, italianMoney, italianWeekday, MAX_MONEY } from "../italian-format.ts";
 
 export type ExchangeToolsOptions = { readonly rates: ExchangeRates };

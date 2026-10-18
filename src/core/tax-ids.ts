@@ -5,6 +5,7 @@
  * without asking anyone, and only well-formed numbers go to the VIES. A formal check says a
  * number is written right, never that it exists.
  */
+import { daysInMonth } from "./italian-calendar.ts";
 
 /** The VIES countries: the 27 member states, Greece as EL (its VAT prefix, not GR), and Northern Ireland as XI: 28 prefixes. `of` is the name with «di» and its article. */
 export const EU_VAT_COUNTRIES = {
@@ -153,9 +154,9 @@ export function checkCodiceFiscale(text: string): CodiceFiscale | { readonly pro
 	const dayField = Number(digits.slice(9, 11));
 	const sex = dayField > 40 ? "F" : "M";
 	const day = sex === "F" ? dayField - 40 : dayField;
-	// February has 29 days in years ending in a multiple of 4: 1900, the only exception, is out of reach.
-	const daysInMonth = month === 2 ? (year % 4 === 0 ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
-	if (day < 1 || day > daysInMonth) return { problem: `il giorno di nascita (${digits.slice(9, 11)}) non esiste: va da 01 a ${daysInMonth} per gli uomini, da 41 a ${40 + daysInMonth} per le donne` };
+	// The code has no century: 2000 + yy allows 29 February whenever a birth year could have one (2000 was a leap year; 1900 is out of reach).
+	const last = daysInMonth(2000 + year, month);
+	if (day < 1 || day > last) return { problem: `il giorno di nascita (${digits.slice(9, 11)}) non esiste: va da 01 a ${last} per gli uomini, da 41 a ${40 + last} per le donne` };
 	if (checkCharacter(code.slice(0, 15)) !== code.charAt(15)) return { problem: "il carattere di controllo (l'ultimo) non torna: probabilmente c'è un errore di battitura" };
 	return { code, sex, birth: { day, month, year }, omocodia };
 }
