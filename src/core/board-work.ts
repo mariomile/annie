@@ -34,7 +34,11 @@ export type BoardReview = { readonly card: Card; readonly people: readonly strin
 export const DUE_NOTICE_HOUR = 9;
 
 export class BoardWork {
-	/** "review": a BoardReview, for the console and the owner's chat; "due": a BoardReview of a scheda due today or late (ADR 0074). */
+	/**
+	 * "review": a BoardReview, for the console and the owner's chat; "due": a BoardReview of a scheda
+	 * due today or late (ADR 0074); "started": a BoardReview of a scheda that started by itself once
+	 * what it came after was done (ADR 0076), for the person it started with.
+	 */
 	readonly events = new EventEmitter();
 
 	constructor(private readonly deps: BoardWorkDeps) {
@@ -159,8 +163,13 @@ export class BoardWork {
 			}
 			try {
 				await this.checkAgent(card.assignee as string, queued.personId);
-				await this.start(card, queued.personId, queued.by, queued.auto === true);
+				const begun = await this.start(card, queued.personId, queued.by, queued.auto === true);
 				started++;
+				try {
+					this.events.emit("started", { card: begun, people: [queued.personId] } satisfies BoardReview);
+				} catch {
+					// The scheda is In corso on the board anyway.
+				}
 			} catch (error) {
 				if (!(error instanceof BoardError)) throw error;
 				const back = this.deps.store.get(card.id);

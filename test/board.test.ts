@@ -519,6 +519,8 @@ describe("the board (ADR 0050)", () => {
 
 		it("started while it waits, it stays in «Da fare» and starts by itself, with what came before, when those are «Fatto»", async () => {
 			const { work, store, posts } = setup();
+			const begun: { card: { n: number }; people: string[] }[] = [];
+			work.events.on("started", (s) => begun.push(s));
 			const first = await work.create({ title: "Raccogli i dati", assignee: "ricerca" }, anna, "p_anna");
 			const second = await work.create({ title: "Scrivi il report", assignee: "ricerca", after: [first.id], auto: true }, anna, "p_anna");
 			expect(second).toMatchObject({ status: "da_fare", queued: { personId: "p_anna", by: anna, auto: true } });
@@ -531,6 +533,7 @@ describe("the board (ADR 0050)", () => {
 			const started = store.get(second.id);
 			expect(started).toMatchObject({ status: "in_corso", work: { agent: "ricerca", personId: "p_anna" }, auto: { rounds: 0 } });
 			expect(started?.queued).toBeUndefined();
+			expect(begun.map((s) => [s.card.n, s.people])).toEqual([[2, ["p_anna"]]]);
 			expect(posts.at(-1)?.text).toMatch(/Viene dopo queste schede, ecco com'è finita ciascuna \(board_show per i dettagli\):\n<<<schede prima [0-9a-f]+: [^\n]*>>>\n#1 «Raccogli i dati» \(Fatto\): Dati nel foglio vendite\.csv\n<<<fine schede prima/);
 			// Nothing more to release.
 			expect(await work.release()).toBe(0);
