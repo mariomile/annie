@@ -8,7 +8,8 @@
 import { foreignCurrency } from "../currency-words.ts";
 import { matchMethod, type Method, METHODS } from "../payment-methods.ts";
 import { hasControlChars } from "../plain-text.ts";
-import { isProblem, type Problem, readAmount } from "./quote-input.ts";
+import { readAmount } from "./quote-input.ts";
+import { isProblem, type Problem } from "../text-input.ts";
 
 export type EuroWords = {
 	/** Echoes what is not digits inside the caller's fence. */

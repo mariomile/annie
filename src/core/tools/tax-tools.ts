@@ -38,7 +38,8 @@ import {
 import { fold } from "../text-match.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { readItemAmount, readSignedEuros } from "./cashflow-input.ts";
-import { isProblem, type Problem, readPercent } from "./quote-input.ts";
+import { readPercent } from "./quote-input.ts";
+import { isProblem, type Problem } from "../text-input.ts";
 import { asWho, briefAnswer, calendarAnswer, ESTIMATE_NOTE, estimateAnswer, fenced, figureWords, percentText, plainAnswer, profileLines, rateNote, taxCsv, whatIfAnswer } from "./tax-render.ts";
 
 const TAX_OPS = ["set_profile", "set_aside", "estimate", "calendar", "what_if", "export"] as const;

@@ -14,7 +14,8 @@ import { parseDuration, parseRange } from "../durations.ts";
 import { idOrder, ROUNDINGS, type Rounding, TIMESHEET_LIMITS, validRate, type WorkEntry } from "../timesheet.ts";
 import { fold } from "../text-match.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
-import { cleanText, isProblem, type Problem, readAmount } from "./quote-input.ts";
+import { readAmount } from "./quote-input.ts";
+import { cleanText, isProblem, type Problem } from "../text-input.ts";
 import { fenced } from "./timesheet-render.ts";
 
 /** What an entry holds besides its id, who recorded it, and its billing. */

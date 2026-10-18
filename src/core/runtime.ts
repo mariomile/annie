@@ -17,6 +17,7 @@ import { RenewalStore } from "./renewal-store.ts";
 import { CashflowStore } from "./cashflow-store.ts";
 import { TaxStore } from "./tax-store.ts";
 import { ClientStore } from "./client-store.ts";
+import { SalesInvoiceStore } from "./sales-invoice-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
@@ -223,6 +224,11 @@ export class AnnieRuntime {
 	/** I clienti of an instance: the cards with what the person said about each client. */
 	clients(tenant: string, instance: string): ClientStore {
 		return new ClientStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Le fatture emesse of an instance: drafts, invoices issued, numbering. */
+	salesInvoices(tenant: string, instance: string): SalesInvoiceStore {
+		return new SalesInvoiceStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */

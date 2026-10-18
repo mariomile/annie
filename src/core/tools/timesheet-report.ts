@@ -12,7 +12,7 @@ import type { Company } from "../invoices.ts";
 import { italianDate } from "../italian-format.ts";
 import { type Period, spanText } from "../periods.ts";
 import { hoursHundredths, type Priced, rateCents } from "../timesheet-sums.ts";
-import { lead, letterhead, md } from "./quote-document.ts";
+import { lead, letterhead, md } from "../markdown-text.ts";
 import { euros } from "./quote-render.ts";
 import { rateText } from "./timesheet-render.ts";
 

@@ -18,7 +18,7 @@ import { withOptional, clash } from "./client-input.ts";
 import { fenced, nearDay } from "./client-render.ts";
 import { readFutureDay, workingDayFrom } from "./day-input.ts";
 import { line, textOf } from "./field-input.ts";
-import { isProblem, type Problem } from "./quote-input.ts";
+import { isProblem, type Problem } from "../text-input.ts";
 import { type Cancelled, type Reminder, type ReminderSeam, reminderKey } from "./schedule-tools.ts";
 
 /** What the audit records (client-tools.ts ClientEvent). */

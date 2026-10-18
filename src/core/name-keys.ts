@@ -51,6 +51,31 @@ export function keyWithin(a: string, b: string): boolean {
 	return a !== "" && b !== "" && (` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `));
 }
 
+/**
+ * Whether two keys differ only by a slip in one word: the same words but one, which is cut short
+ * by a letter or two («ner» for «neri») or has one letter wrong, missing or extra («rosi» for
+ * «rossi»). Short words never: «re» is not «rea».
+ */
+export function nearKey(a: string, b: string): boolean {
+	const wa = a.split(" ");
+	const wb = b.split(" ");
+	if (a === "" || b === "" || a === b || wa.length !== wb.length) return false;
+	const differ = wa.flatMap((w, i) => (w === wb[i] ? [] : [[w, wb[i] as string] as const]));
+	if (differ.length !== 1) return false;
+	const [x, y] = differ[0] as readonly [string, string];
+	const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+	if (short.length >= 3 && long.startsWith(short) && long.length - short.length <= 2) return true;
+	return short.length >= 4 && oneEdit(short, long);
+}
+
+/** One letter changed, added or dropped (`a` no longer than `b`). */
+function oneEdit(a: string, b: string): boolean {
+	if (b.length - a.length > 1) return false;
+	let i = 0;
+	while (i < a.length && a[i] === b[i]) i++;
+	return a.length === b.length ? a.slice(i + 1) === b.slice(i + 1) : a.slice(i) === b.slice(i + 1);
+}
+
 /** Whether folded words hold `key` (a word or a phrase, folded the same way) as whole words in a row. */
 export function saysPhrase(tokens: readonly string[], key: string): boolean {
 	const parts = words(key);

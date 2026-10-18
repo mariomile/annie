@@ -18,16 +18,15 @@
  */
 import { hoursText } from "../durations.ts";
 import type { ToolContext } from "../engine.ts";
-import { italianDate } from "../italian-format.ts";
 import { inPeriod, type Period } from "../periods.ts";
 import { QUOTE_LIMITS } from "../quotes.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { billingState, oldestFirst, type ReservedEntry, sameClient, type WorkEntry } from "../timesheet.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
-import { hoursLines, type LineWords, priced, QUOTE_GROUPS, type QuoteGroup } from "../timesheet-sums.ts";
+import { hoursLines, lineWords, priced, QUOTE_GROUPS, type QuoteGroup } from "../timesheet-sums.ts";
 import type { CreateQuote } from "./quote-tools.ts";
 import { billClient } from "./timesheet-clients.ts";
-import { entries, rateText, whichClientAnswer } from "./timesheet-render.ts";
+import { entries, whichClientAnswer } from "./timesheet-render.ts";
 
 export type ToQuoteDeps = {
 	readonly store: TimesheetStore;
@@ -43,28 +42,7 @@ const NO_QUOTES = "Errore: qui non posso fare preventivi. Prepara il riepilogo c
 /** The quote's fields the person may give, passed as they are: quotes reads and checks them. */
 const PASSED = ["vat", "vat_note", "terms", "notes", "valid_days", "format", "tax_id", "address", "email"] as const;
 
-/** Activities named in a line for a project, at most; each cut to this length. */
-const MAX_ACTIVITIES = 3;
-const ACTIVITY_LENGTH = 40;
-
 type Picked = { readonly kind: "reserved"; readonly client: string; entries: ReservedEntry[] } | { readonly kind: "done"; readonly number: string } | { readonly kind: "answer"; readonly text: string };
-
-/** The words of the quote's lines: a project's hours with a few of its activities, an entry's day and description, a lump sum's hours and rate. */
-function lineWords(period: Period): LineWords {
-	const short = (t: string) => (t.length > ACTIVITY_LENGTH ? `${t.slice(0, ACTIVITY_LENGTH - 1)}…` : t);
-	return {
-		group: (project, activities) => {
-			const named = activities.slice(0, MAX_ACTIVITIES).map(short).join("; ");
-			const what = activities.length === 0 ? "" : ` (attività: ${named}${activities.length > MAX_ACTIVITIES ? "…" : ""})`;
-			return `Ore di lavoro${project === undefined ? "" : ` – ${project}`}, ${period.label}${what}`;
-		},
-		entry: (e) => {
-			const project = e.project === undefined ? "" : ` – ${e.project}`;
-			return e.description === undefined ? `Ore di lavoro del ${italianDate(e.date)}${project}` : `${italianDate(e.date)}${project}: ${e.description.replace(/\n/g, " ")}`;
-		},
-		lump: (minutes, rate) => ` (${hoursText(minutes)} a ${rateText(rate)})`,
-	};
-}
 
 export async function toQuote(args: Record<string, unknown>, ctx: ToolContext, period: Period, deps: ToQuoteDeps): Promise<string> {
 	const { store, createQuote } = deps;
@@ -138,7 +116,7 @@ export async function toQuote(args: Record<string, unknown>, ctx: ToolContext, p
 		made.text,
 		`Le ore sono ora nel preventivo ${number}: ${entries(billed.changed)}, ${hoursText(minutes)} fatturabili.`,
 		...skipped,
-		"La fattura elettronica la emette chi ti scrive con il suo programma di fatturazione: Annie non emette fatture. Quando l'ha emessa, segna le ore come fatturate con op mark_billed e ref (il numero della fattura).",
+		"Quando il cliente accetta il preventivo, posso prepararne la fattura elettronica con sales_invoices: le ore si segnano come fatturate quando la fattura è emessa. Se invece la emette chi ti scrive con il suo programma, poi segna le ore come fatturate con op mark_billed e ref (il numero della fattura).",
 	].join("\n");
 }
 

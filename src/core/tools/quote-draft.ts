@@ -7,7 +7,8 @@
 import type { Company } from "../invoices.ts";
 import { DEFAULT_VALID_DAYS, customerKey, QUOTE_LIMITS, type Quote, type QuoteCustomer, type QuoteLine } from "../quotes.ts";
 import { BOLLO_THRESHOLD_CENTS, bolloDue, lineCents, quoteTotals, zeroRateCents } from "../quote-sums.ts";
-import { cleanText, type GivenLine, isProblem, readCassa, readCustomer, readItems, readPercent, readVat, type Wide, withDefaults } from "./quote-input.ts";
+import { cleanText, isProblem } from "../text-input.ts";
+import { type GivenLine, readCassa, readCustomer, readItems, readPercent, readVat, type Wide, withDefaults } from "./quote-input.ts";
 import { euros, fenced } from "./quote-render.ts";
 
 export type DraftQuote = Pick<Quote, "validDays" | "customer" | "lines" | "pricesIncludeVat" | "cassa" | "ritenuta" | "bollo" | "deposit" | "delivery" | "terms" | "notes">;

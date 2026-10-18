@@ -22,7 +22,7 @@ import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { readHorizon, readHypothetical, readItemFields, readSignedEuros } from "./cashflow-input.ts";
 import { briefAnswer, briefHint, type ChangeLine, daysText, fenced, forecastAnswer, itemLine, listAnswer, movementLabel, projectionCsv, staleLine, startOf, type View, whatIfAnswer } from "./cashflow-render.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
-import { isProblem } from "./quote-input.ts";
+import { isProblem } from "../text-input.ts";
 
 const CASHFLOW_OPS = ["set_balance", "set_alert", "add_item", "edit_item", "remove_item", "list_items", "forecast", "what_if", "export"] as const;
 type Op = (typeof CASHFLOW_OPS)[number];

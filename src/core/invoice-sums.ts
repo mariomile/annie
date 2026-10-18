@@ -4,7 +4,7 @@
  * day a payment due on a weekend or a holiday can be made.
  */
 import { paymentSlip } from "./dates.ts";
-import { fromUnits, money } from "./fattura-pa.ts";
+import { fromUnits, money, toUnits } from "./fattura-pa.ts";
 import { addTo, type Instalment, type Invoice, type Sums } from "./invoices.ts";
 import { daysBetween } from "./italian-calendar.ts";
 
@@ -74,6 +74,16 @@ export function payDay(due: string): string {
 /** Days late today, from the day the payment could be made; 0 or less when not late. */
 export function daysLate(due: string, today: string): number {
 	return daysBetween(payDay(due), today);
+}
+
+/** A unit price as given, with at least two decimals: 0,0125 € or 500,00 €. */
+export function priceText(price: string): string {
+	return unitsText(toUnits(price) ?? 0n, "EUR");
+}
+
+/** An hourly rate: «45,00 €/h». */
+export function hourlyText(rate: string): string {
+	return `${priceText(rate)}/h`;
 }
 
 /** An amount in hundred-millionths, written: «1.220,00 €». */

@@ -4,7 +4,7 @@ Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 57, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 58, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -96,6 +96,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Previsione di cassa: quanti soldi ci saranno sul conto da fatture, rinnovi, preventivi accettati, spese e voci proprie, con il punto più basso, «se compro…», «se Rossi paga in ritardo…» e l'avviso nel brief sotto una soglia (settimana 55, [week55.md](week55.md), [ADR 0065](adr/0065-previsione-di-cassa.md))
 - [x] Tasse del forfettario: imposta e contributi stimati dagli incassi, quanto mettere da parte, F24 di giugno e novembre con la proroga dell'anno, metodo previsionale, e gli F24 nella previsione di cassa (settimana 56, [week56.md](week56.md), [ADR 0070](adr/0070-tasse-del-forfettario.md))
 - [x] Clienti: una scheda per cliente con referenti, canale preferito e note, fatturato e incassato letti dai registri, classifica e concentrazione, clienti fermi, ricontatti con promemoria e unione dei doppioni (settimana 57, [week57.md](week57.md), [ADR 0071](adr/0071-clienti.md))
+- [x] Fatture in uscita: la fattura elettronica XML da preventivi, ore o righe dette, con numerazione, forfettario o IVA, bollo, cassa e ritenuta, note di credito, emessa solo dopo il sì e pronta da caricare (settimana 58, [week58.md](week58.md), [ADR 0072](adr/0072-fatture-in-uscita.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))

@@ -6,9 +6,12 @@
  * client's rounding (to 15 or 30 minutes, always up) applies per entry, when billing only: the
  * minutes recorded never change. A billed entry keeps the rate and rounding it was billed at.
  */
+import { hoursText } from "./durations.ts";
+import { hourlyText } from "./invoice-sums.ts";
 import { addDays } from "./italian-calendar.ts";
+import { italianDate } from "./italian-format.ts";
 import { spellingKey } from "./name-keys.ts";
-import { inPeriod, type Span } from "./periods.ts";
+import { inPeriod, type Period, type Span } from "./periods.ts";
 import { centsDecimal, halfUp, scaled } from "./quote-sums.ts";
 import { billingState, newestFirst, type RateRule, type Rounding, sameClient, type Timer, type WorkEntry } from "./timesheet.ts";
 
@@ -205,4 +208,25 @@ export function hoursLines(items: readonly Priced[], group: QuoteGroup, words: L
 		const tail = words.lump(g.billed, g.rate);
 		return { description: `${cut(description, maxLength - tail.length)}${tail}`, quantity: 1, price: Number(centsDecimal(g.amount)) };
 	});
+}
+
+/** Activities named in a line for a project, at most; each cut to this length. */
+const MAX_ACTIVITIES = 3;
+const ACTIVITY_LENGTH = 40;
+
+/** The words of the quote's lines: a project's hours with a few of its activities, an entry's day and description, a lump sum's hours and rate. */
+export function lineWords(period: Period): LineWords {
+	const short = (t: string) => (t.length > ACTIVITY_LENGTH ? `${t.slice(0, ACTIVITY_LENGTH - 1)}…` : t);
+	return {
+		group: (project, activities) => {
+			const named = activities.slice(0, MAX_ACTIVITIES).map(short).join("; ");
+			const what = activities.length === 0 ? "" : ` (attività: ${named}${activities.length > MAX_ACTIVITIES ? "…" : ""})`;
+			return `Ore di lavoro${project === undefined ? "" : ` – ${project}`}, ${period.label}${what}`;
+		},
+		entry: (e) => {
+			const project = e.project === undefined ? "" : ` – ${e.project}`;
+			return e.description === undefined ? `Ore di lavoro del ${italianDate(e.date)}${project}` : `${italianDate(e.date)}${project}: ${e.description.replace(/\n/g, " ")}`;
+		},
+		lump: (minutes, rate) => ` (${hoursText(minutes)} a ${hourlyText(rate)})`,
+	};
 }

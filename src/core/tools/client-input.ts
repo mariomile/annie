@@ -8,7 +8,7 @@ import { CLIENT_LIMITS, type ClientCard, type ClientContact, cardCf, cardKeys, c
 import type { Marker } from "../marker.ts";
 import { spellingKey } from "../name-keys.ts";
 import { line, strings } from "./field-input.ts";
-import { isProblem, type Problem } from "./quote-input.ts";
+import { isProblem, type Problem } from "../text-input.ts";
 
 /** The changes upsert reads, each undefined when not said; null clears. */
 export type Edits = {

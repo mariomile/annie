@@ -243,6 +243,13 @@ describe("clients", () => {
 		expect(businessKey("Bar Sport S.r.l.")).toBe("bar sport");
 	});
 
+	it("takes a slip of one letter as close, never as the same client", () => {
+		expect(resolveClient("Laura Ner", ["Laura Neri"])).toEqual({ kind: "close", candidates: ["Laura Neri"] });
+		expect(resolveClient("Laura Nero", ["Laura Neri"])).toEqual({ kind: "close", candidates: ["Laura Neri"] });
+		expect(resolveClient("Lara Neri", ["Laura Neri"])).toEqual({ kind: "close", candidates: ["Laura Neri"] });
+		expect(resolveClient("Paolo Bini", ["Laura Neri"])).toEqual({ kind: "none" });
+	});
+
 	it("uses the name of a client already in the timesheet or the quotes", async () => {
 		const s = setup();
 		await s.quoteTool.execute({ op: "create", customer: "Beta Ristorazione S.r.l.", items: [{ description: "Sito", price: 100 }], vat: 22 }, fresh());
@@ -656,7 +663,7 @@ describe("timesheet: to_quote", () => {
 		const answer = await s.run({ op: "to_quote", client: "Rossi Srl", period: "ottobre", vat: 22, terms: "Bonifico a 30 giorni" });
 		expect(answer).toContain("Fatto il preventivo 2026-001");
 		expect(answer).toContain("Le ore sono ora nel preventivo 2026-001: 3 voci, 6 ore e 30 minuti fatturabili.");
-		expect(answer).toContain("Annie non emette fatture");
+		expect(answer).toContain("fattura elettronica con sales_invoices");
 		const quote = s.quotes.read().quotes[0];
 		expect(quote).toMatchObject({ customer: { name: "Rossi Srl" }, terms: "Bonifico a 30 giorni", status: "open" });
 		expect(quote?.lines.map((l) => [l.description, l.quantity, l.unit, l.price, l.vat])).toEqual([
