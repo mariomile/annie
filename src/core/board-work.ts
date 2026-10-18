@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { BOARD_LIMITS, type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore } from "./board.ts";
+import { BOARD_LIMITS, type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore, dueLabel, dueText } from "./board.ts";
 
 /**
  * What happens on the board besides storing it (ADR 0050): a person handing a scheda to an
@@ -58,7 +58,7 @@ export class BoardWork {
 	 * start (the person may not talk to that agente), it waits, with why on the scheda.
 	 */
 	async create(
-		input: { title: string; description?: string; priority?: CardPriority; assignee?: string; auto?: boolean; parent?: string },
+		input: { title: string; description?: string; priority?: CardPriority; assignee?: string; auto?: boolean; parent?: string; due?: string },
 		by: CardActor,
 		personId: string | undefined,
 		from?: string,
@@ -244,6 +244,7 @@ export function cardBrief(card: Card, parent?: Card): string {
 		`[Scheda #${card.n} dalla board] ${card.title}`,
 		parent === undefined ? undefined : `Fa parte della scheda #${parent.n} «${parent.title}»: quando la sposti in «Da rivedere», il tuo riassunto arriva anche a chi lavora a quella.`,
 		description,
+		card.due === undefined ? undefined : `Scadenza: ${dueLabel(card.due)} (${dueText(card.due)}).`,
 		card.auto === undefined
 			? undefined
 			: "Lavori da solo: chi te l'ha affidata non risponde finché la scheda è In corso, quindi non fare domande e decidi tu con buon senso. Ti dirò io di andare avanti dopo ogni tua risposta.",

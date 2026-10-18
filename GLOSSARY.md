@@ -40,6 +40,10 @@ _Avoid_: sub-task, child card
 Una scheda affidata a un agente che torna ogni giorno, nei feriali, ogni settimana o ogni mese: ogni volta nasce una scheda nuova che parte con la persona che l'ha impostata. Non ne nasce un'altra finché l'ultima è aperta. Diversa dal task programmato, che è un messaggio in chat. Vedi ADR 0069.
 _Avoid_: routine, ricorrenza (nel testo per le persone)
 
+**Scadenza (di una scheda)**:
+Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o «in ritardo di 3 giorni»; l'agente la riceve con la scheda. Diversa dallo scadenzario, che riguarda le fatture. Vedi ADR 0073.
+_Avoid_: deadline, due date (nel testo per le persone)
+
 **Messaggio tra agenti**:
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
 _Avoid_: chat tra bot, handoff, delega
