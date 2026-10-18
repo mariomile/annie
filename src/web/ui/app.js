@@ -3555,7 +3555,10 @@ async function viewRoom(main, roomId) {
 		if (entry.from === "person") return transcript.append(h("div.msg.person", h("div.meta", fmt.time(entry.at)), h("div.body", entry.text)));
 		const agent = agentOf(entry.instanceId);
 		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
-		transcript.append(h("div.msg.annie", h("div.meta", face(agent ?? { id: entry.instanceId }, 20), h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`), h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
+		// Each agente's name in the colour of its face, so that who is speaking reads at a glance.
+		const who = h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`);
+		who.style.setProperty("--agent", faceColor(agent ?? { id: entry.instanceId }));
+		transcript.append(h("div.msg.annie", h("div.meta", face(agent ?? { id: entry.instanceId }, 20), who, h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
 	};
 	for (const e of entries) show(e);
 	state.onRoom = (event) => {
@@ -3621,7 +3624,13 @@ async function viewRoom(main, roomId) {
 				toast(error.message, true);
 			}
 		});
-	const header = h("div.room-head", h("a.icon-btn", { href: "#/stanze", "aria-label": "Tutte le stanze" }, icon("back")), h("b", room.title), h("button.btn.small.ghost", { onclick: remove }, "Cancella"));
+	const header = h(
+		"div.room-head",
+		h("a.icon-btn", { href: "#/stanze", "aria-label": "Tutte le stanze" }, icon("back")),
+		h("span.room-faces", room.agents.slice(0, 3).map((a) => face(a, 26))),
+		h("div.room-head-text", h("b", room.title), h("small", room.agents.map((a) => (a.present ? a.name : `${a.name} (non c'è più)`)).join(", "))),
+		h("button.icon-btn.room-remove", { onclick: remove, title: "Cancella la stanza", "aria-label": `Cancella la stanza «${room.title}»` }, icon("trash")),
+	);
 	if (entries.length === 0) transcript.append(h("div.room-note", `Nella stanza: ${room.agents.map((a) => a.name).join(", ")}. Scrivi @nome per chiamarne uno, @tutti per tutti.`));
 	// Each agente's skills, with its @name: picked from here, a skill reaches the agente that has it.
 	const commands = commandMenu(
