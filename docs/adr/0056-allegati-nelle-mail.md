@@ -12,7 +12,7 @@ Con preventivi (ADR 0055) e solleciti (ADR 0054) Annie prepara documenti da mand
 
 ## Sicurezza
 
-- La card di approvazione è la guardia contro un contenuto ostile che chieda di allegare file riservati: in testa al motivo c'è la riga vera «Allegati: cartella/file.pdf (84 KB)» con il percorso completo, e il testo di Annie non può imitarla né nasconderla (caratteri invisibili e di direzione tolti, 300 caratteri al massimo). La richiesta salva solo percorso, nome, dimensione e impronta sha256; all'approvazione il file si rilegge senza seguire link simbolici e, se è cambiato, la mail non parte.
+- La card di approvazione è la guardia contro un contenuto ostile che chieda di allegare file riservati: ha una riga sua, «Allegati», con un file per riga: percorso completo e dimensione («cartella/file.pdf (84 KB)»), e il numero di allegati nel titolo. Il motivo scritto da Annie sta fuori da quella riga e non può imitarla (caratteri invisibili e di direzione tolti, 300 caratteri al massimo). La richiesta salva solo percorso, nome, dimensione e impronta sha256; all'approvazione il file si rilegge senza seguire link simbolici e, se è cambiato, la mail non parte.
 - Intestazioni MIME senza a capo iniettabili, nomi non ASCII codificati (RFC 2231), un invio con allegati alla volta per tenere bassa la memoria; oltre 4 MB codificati si usa l'endpoint di upload di Gmail.
 - L'audit conta solo gli allegati: niente nomi, percorsi o indirizzi. Dal canale degli agenti e nel brief nessun invio.
 

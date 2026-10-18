@@ -496,7 +496,7 @@ describe("attachments in the app, through the approval card", () => {
 		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"mario@rossi.it"}`)).toContain(`C'è già una richiesta in attesa per il preventivo ${year}-001`);
 		const [first] = await cards();
 		const pdfPath = `preventivi/Preventivo-${year}-001-Rossi-Srl.pdf`;
-		expect(first?.reason).toMatch(new RegExp(`^Allegato: ${pdfPath.replace(/\./g, "\\.")} \\(\\d+ KB\\) · Invio del preventivo ${year}-001 a Rossi Srl$`));
+		expect(first?.reason).toBe(`Invio del preventivo ${year}-001 a Rossi Srl`);
 		expect(first?.mail?.attachments?.map((a) => [a.path, a.name])).toEqual([[pdfPath, `Preventivo-${year}-001-Rossi-Srl.pdf`]]);
 		expect((await decide(first?.id as string, "rejected")).status).toBe("rejected");
 		await outcome(first?.id as string);
@@ -526,8 +526,9 @@ describe("attachments in the app, through the approval card", () => {
 		expect(google.sends).toHaveLength(1);
 
 		await replyWith('/tool invoices {"op":"reminder","party":"gamma","send":true,"attach_invoice":true}', "Le fatture sono allegate");
-		const reminderCard = (await cards()).find((c) => c.status === "pending") as { id: string; reason: string };
-		expect(reminderCard.reason).toMatch(/^Allegato: fatture\/g1\.xml \(\d KB\) · Sollecito di pagamento \(livello 1\) a Gamma Hotel S\.p\.A\. · indirizzo preso dalla fattura$/);
+		const reminderCard = (await cards()).find((c) => c.status === "pending") as { id: string; reason: string; mail?: { attachments?: { path: string }[] } };
+		expect(reminderCard.reason).toBe("Sollecito di pagamento (livello 1) a Gamma Hotel S.p.A. · indirizzo preso dalla fattura");
+		expect(reminderCard.mail?.attachments?.map((a) => a.path)).toEqual(["fatture/g1.xml"]);
 		expect((await api(`/api/instances/${config.instanceId}/google-actions/${reminderCard.id}/decision`, { decision: "approved" })).action.status).toBe("done");
 		await outcome(reminderCard.id);
 		const [xml] = attachmentsOf(google.sends[1] as string);

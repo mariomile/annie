@@ -374,10 +374,10 @@ describe("Google: scrivere con approvazione", () => {
 		const asked = await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", body: "Ecco il contratto.", attachments: ["contratti/Contratto Rossi è firmato.pdf"], reason: "Contratto a Rossi" }));
 		expect(asked).toMatch(/Richiesta [0-9a-f]{12} pronta: rispondere a rossi@cliente.it, con 1 allegato/);
 		const [action] = (await owner("/api/instances/annie/google-actions")).actions;
-		expect(action.reason).toBe("Allegato: contratti/Contratto Rossi è firmato.pdf (5 KB) · Contratto a Rossi");
+		expect(action.reason).toBe("Contratto a Rossi");
 		expect(action.mail.attachments).toEqual([{ path: "contratti/Contratto Rossi è firmato.pdf", name: "Contratto Rossi è firmato.pdf", size: pdf.length, sha256: expect.stringMatching(/^[0-9a-f]{64}$/), contentType: "application/pdf" }]);
 		const decided = await owner(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "approved" });
-		expect(decided.action).toMatchObject({ status: "done", reason: expect.stringContaining("Allegato:") });
+		expect(decided.action).toMatchObject({ status: "done", mail: { attachments: [expect.objectContaining({ path: "contratti/Contratto Rossi è firmato.pdf" })] } });
 		const raw = rawOf(google.writes()[0]);
 		expect(JSON.parse(google.writes()[0]?.body ?? "{}").threadId).toBe("t1");
 		const boundary = /boundary="([^"]+)"/.exec(raw)?.[1] as string;

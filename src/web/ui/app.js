@@ -117,10 +117,13 @@ async function api(path, { method = "GET", body, raw } = {}) {
 	return data;
 }
 
+/** «1,2», «84»: Italian, at most one decimal. */
+const decimal = (n) => n.toLocaleString("it-IT", { maximumFractionDigits: n >= 10 ? 0 : 1 });
+
 const fmt = {
 	time: (iso) => (iso ? new Date(iso).toLocaleString("it-IT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"),
 	day: (iso) => (iso ? new Date(iso).toLocaleDateString("it-IT", { day: "numeric", month: "short" }) : "—"),
-	bytes: (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`),
+	bytes: (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${decimal(n / 1024)} KB` : `${decimal(n / 1048576)} MB`),
 	usd: (n) => `$${n.toFixed(n < 1 ? 3 : 2)}`,
 };
 
@@ -2292,6 +2295,8 @@ function googleTitle(a) {
  */
 function googleActionCard(inst, a, after, compact = false) {
 	const [kind, verb, doneWord] = GOOGLE_KIND[a.kind] ?? ["Richiesta", "Approva", "Fatto"];
+	const attached = a.mail?.attachments?.length ?? 0;
+	const kicker = [kind, attached === 1 ? "1 allegato" : attached ? `${attached} allegati` : null, fmt.time(a.proposedAt)].filter(Boolean).join(" · ");
 	const rows = [];
 	const row = (label, value) => value && rows.push(h("tr", h("td", label), h("td", value)));
 	if (a.mail) {
@@ -2302,6 +2307,9 @@ function googleActionCard(inst, a, after, compact = false) {
 		if (answered?.replyToDiffers) row("Attenzione", "chi ha scritto chiede di rispondere a un altro indirizzo: controlla il destinatario");
 		row("Cc", a.mail.cc.join(", "));
 		row("Oggetto", a.mail.subject);
+		const files = a.mail.attachments ?? [];
+		// Whole paths: what leaves the workspace, as the server checked it (ADR 0056).
+		row(files.length === 1 ? "Allegato" : "Allegati", files.length ? files.map((f) => h("div", `${f.path} (${fmt.bytes(f.size)})`)) : null);
 	} else {
 		const e = a.event ?? {};
 		const c = a.current;
@@ -2329,7 +2337,7 @@ function googleActionCard(inst, a, after, compact = false) {
 	const expires = new Date(Date.parse(a.proposedAt) + 24 * 3600_000).toISOString();
 	const el = h(
 		`article.card.pad.dossier.google-ask${compact ? ".compact" : ""}`,
-		h("header", h("div", h("div.kicker", `${kind} · ${fmt.time(a.proposedAt)}`), h("h3", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		h("header", h("div", h("div.kicker", kicker), h("h3", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
 		a.reason ? h("p.muted", a.reason) : null,
 		h("table.ledger.fields", h("tbody", rows)),
 		a.mail ? (compact && a.mail.body.length > 600 ? h("details", h("summary", "Testo della mail"), h("pre.letter", a.mail.body)) : h("pre.letter", a.mail.body)) : null,
