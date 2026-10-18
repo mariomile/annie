@@ -27,7 +27,10 @@ Le persone che usano un agente gli spiegano spesso lo stesso modo di lavorare (�
 - **I passi di tutte le skill nelle istruzioni**: 40 skill lunghe in ogni richiesta costano e confondono; bastano nome e riga, come fanno le Agent Skills.
 - **Una libreria di skill condivisa fra gli agenti** (la «organization library» di MausBot): per ora ogni agente ha le sue, come la memoria. Si può aggiungere dopo, con l'export e l'import che ci sono già.
 
+## Console
+
+La pagina «Skill» (nella barra, sotto Memoria) elenca le skill dell'agente e le bozze della persona: si crea, si modifica, si importa un `SKILL.md` incollato o caricato, si scarica come `SKILL.md`, si attiva una bozza o la si scarta. Il nome non si cambia dopo il salvataggio, perché è il comando.
+
 ## Da fare
 
-- Pagina «Skill» nella console (elenco, nuova, modifica, importa un SKILL.md) sulle API di questo ADR.
 - I comandi delle skill nel menu di Telegram accanto a `/modello`.
