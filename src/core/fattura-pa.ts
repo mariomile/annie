@@ -90,7 +90,12 @@ export type FatturaDocument = {
 	readonly taxable?: string;
 	/** The summary rows (DatiRiepilogo), when there are any and each one's imponibile and imposta read: what the liquidazione IVA counts (vat-docs.ts). */
 	readonly vatRows?: readonly FatturaVatRow[];
+	/** What the customer withholds (DatiRitenuta), each whose amount reads: the ritenute d'acconto (withholding-docs.ts) and the contributions withheld. */
+	readonly withholdings?: readonly FatturaWithholding[];
 };
+
+/** One DatiRitenuta as written: TipoRitenuta (RT01, RT02 ritenute d'acconto; RT03 to RT06 contributions), ImportoRitenuta (canonical decimals), AliquotaRitenuta, CausalePagamento. */
+export type FatturaWithholding = { readonly type?: string; readonly amount: string; readonly rate?: string; readonly causale?: string };
 
 /** One summary row as written: the rate, the nature of a row without VAT (N6.x: reverse charge), imponibile and imposta, and the EsigibilitaIVA (I immediate, D deferred, S split payment). */
 export type FatturaVatRow = { readonly rate: string; readonly natura?: string; readonly taxable: string; readonly tax: string; readonly esigibilita?: string };
@@ -213,6 +218,7 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const splitVat = splitPaymentVat(body);
 	const taxable = summaryTaxable(body);
 	const vatRows = summaryRows(body);
+	const withholdings = withholdingsOf(general);
 	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
@@ -220,8 +226,20 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments,
 		...(vatRows === undefined ? {} : { vatRows }),
+		...(withholdings.length === 0 ? {} : { withholdings }),
 	};
 	return { doc, body, instalmentOf };
+}
+
+/** The DatiRitenuta of a document whose ImportoRitenuta reads (a document has at most a few). */
+function withholdingsOf(general: XmlElement | undefined): FatturaWithholding[] {
+	const out: FatturaWithholding[] = [];
+	for (const el of children(general, "DatiRitenuta").slice(0, MAX_VAT_ROWS)) {
+		const units = toUnits(value(el, "ImportoRitenuta") ?? "");
+		if (units === undefined) continue;
+		out.push({ amount: fromUnits(units), ...optional({ type: value(el, "TipoRitenuta"), rate: value(el, "AliquotaRitenuta"), causale: value(el, "CausalePagamento") }) });
+	}
+	return out;
 }
 
 /** The imponibile of the summary rows (DatiRiepilogo/ImponibileImporto), when there are any and each reads. */

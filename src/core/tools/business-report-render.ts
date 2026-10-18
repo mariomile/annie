@@ -18,6 +18,7 @@ import { euros, n1 } from "../format-words.ts";
 import { partyName } from "../invoices.ts";
 import { daysInMonth, MONTH_NAMES } from "../italian-calendar.ts";
 import { capitalized, signOf, withDate, withPercent } from "../italian-format.ts";
+import { spanWords } from "../periods.ts";
 import { fenced } from "./business-report-input.ts";
 
 /** Said once in every answer that shows taxes. */
@@ -27,19 +28,8 @@ const REPEAT = "Ripeti cifre e date come sono scritte, non rifare i conti a ment
 const lastDay = (from: string) => `${from.slice(0, 8)}${String(daysInMonth(Number(from.slice(0, 4)), Number(from.slice(5, 7)))).padStart(2, "0")}`;
 const monthLabel = (day: string) => `${MONTH_NAMES[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
 
-/** «ottobre 2026», «ottobre 2026 fino al 18», «3º trimestre 2026», «2026», «dal 1º gennaio al 18 ottobre 2026». */
-export function spanWords(span: Span): string {
-	const { from, to } = span;
-	const year = from.slice(0, 4);
-	const firstOfMonth = from.slice(8) === "01";
-	if (firstOfMonth && from.slice(0, 7) === to.slice(0, 7)) return to === lastDay(from) ? monthLabel(from) : `${monthLabel(from)} fino al ${Number(to.slice(8)) === 1 ? "1º" : Number(to.slice(8))}`;
-	if (from === `${year}-01-01` && to === `${year}-12-31`) return year;
-	const month = Number(from.slice(5, 7));
-	if (firstOfMonth && (month - 1) % 3 === 0 && to === lastDay(`${year}-${String(month + 2).padStart(2, "0")}-01`)) return `${(month + 2) / 3}º trimestre ${year}`;
-	const start = withDate("dal", from);
-	const short = from.slice(0, 7) === to.slice(0, 7) ? start.replace(/ \S+ \d{4}$/, "") : from.slice(0, 4) === to.slice(0, 4) ? start.replace(/ \d{4}$/, "") : start;
-	return `${short} ${withDate("al", to)}`;
-}
+/** The span in words: periods.ts' (the ritenute say their periods with it too). */
+export { spanWords };
 
 /** A month of a trend: «novembre 2025», «ottobre 2026 (fino al 18)». */
 function monthWords(span: Span): string {
@@ -97,6 +87,7 @@ function figureLines(f: Figures, presence: Presence): string[] {
 			lines.push(`• Fatturato: ${euros(f.fatturato.cents)} di imponibile (${parts.join(", ")})`);
 		}
 		if (f.incassato !== undefined) lines.push(`• Incassato: ${euros(f.incassato)}`);
+		if (f.ritenute !== undefined && f.ritenute !== 0n) lines.push(`• Ritenute trattenute dai clienti: ${euros(f.ritenute)}, sono un credito per la dichiarazione`);
 	}
 	if (!presence.expenses) lines.push("• Spese: nessuna registrata.");
 	else if (f.spese !== undefined) {

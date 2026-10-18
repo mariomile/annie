@@ -277,5 +277,5 @@ function trimmed(fattura: Fattura): Entry {
 }
 
 function weightOf(entry: Entry): number {
-	return entry.kind === "fattura" ? 1 + entry.fattura.documents.reduce((n, d) => n + 1 + d.instalments.length + (d.vatRows?.length ?? 0), 0) : 1;
+	return entry.kind === "fattura" ? 1 + entry.fattura.documents.reduce((n, d) => n + 1 + d.instalments.length + (d.vatRows?.length ?? 0) + (d.withholdings?.length ?? 0), 0) : 1;
 }

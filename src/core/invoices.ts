@@ -78,6 +78,13 @@ export function paidDay(mark: PaidMark, dayOf: (at: string) => string): string {
 	return mark.on ?? dayOf(mark.at);
 }
 
+/** The day an invoice was paid in full: the last of its instalments' paid days; undefined while one is open. */
+export function paidOnOf(invoice: Pick<Invoice, "paid" | "instalments">, dayOf: (at: string) => string): string | undefined {
+	if (!invoice.paid) return undefined;
+	const days = invoice.instalments.map((n) => (n.paid === undefined ? undefined : paidDay(n.paid, dayOf)));
+	return days.every((d) => d !== undefined) ? (days as string[]).sort().at(-1) : undefined;
+}
+
 /**
  * What is paid of one invoice: all of it (`all`) but the instalments in `except`, or the
  * instalments marked one by one. For a credit note, paid means used.
@@ -315,14 +322,35 @@ function splitNet(doc: FatturaDocument): bigint | undefined {
 }
 
 /**
+ * Without instalments, what the customer pays when it withholds something (DatiRitenuta: the
+ * ritenuta d'acconto, the contributions): the total (or the split payment's net) less what is
+ * withheld, which the customer pays to the State, never to the supplier. Signs aside, with the
+ * total's sign; undefined when nothing is withheld or it is more than the total.
+ */
+function withheldNet(doc: FatturaDocument, split: bigint | undefined): bigint | undefined {
+	if (doc.withholdings === undefined || doc.withholdings.length === 0) return undefined;
+	const base = split ?? (doc.total === undefined ? undefined : toUnits(doc.total));
+	if (base === undefined) return undefined;
+	const abs = (n: bigint) => (n < 0n ? -n : n);
+	let withheld = 0n;
+	for (const w of doc.withholdings) withheld += abs(toUnits(w.amount) ?? 0n);
+	const net = abs(base) - withheld;
+	if (withheld === 0n || net < 0n) return undefined;
+	return base < 0n ? -net : net;
+}
+
+/**
  * The instalments that count. A credit note or a negative document counts what it is worth, the
  * sign aside. When the instalments add up to more than the total, the ones that repeat the same
  * date and amount are alternatives (two IBANs, two ways to pay): one each is kept. If they still
  * add up to more, they are counted in order up to the total, and the invoice is flagged.
  */
 function countedInstalments(doc: FatturaDocument, total: bigint | undefined): { list: Instalment[]; mismatch: boolean; splitNet: boolean } {
-	const split = doc.toPay === undefined && doc.instalments.length === 0 ? splitNet(doc) : undefined;
-	const whole = doc.toPay ?? (split === undefined ? doc.total : fromUnits(split));
+	const bare = doc.toPay === undefined && doc.instalments.length === 0;
+	const split = bare ? splitNet(doc) : undefined;
+	// Without instalments the payment is the total less what the customer withholds (a ritenuta d'acconto, a contribution), never the gross.
+	const net = bare ? withheldNet(doc, split) : undefined;
+	const whole = doc.toPay ?? (net !== undefined ? fromUnits(net) : split === undefined ? doc.total : fromUnits(split));
 	const raw: readonly FatturaInstalment[] = doc.instalments.length > 0 ? doc.instalments : [whole === undefined ? {} : { amount: whole }];
 	const flip = doc.credit || (total !== undefined && total < 0n);
 	const units = (r: FatturaInstalment) => {

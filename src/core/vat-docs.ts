@@ -19,7 +19,7 @@
  * without a date, or without summary rows that read (a simplified invoice, a row that does not read).
  */
 import { type FatturaDocument, type FatturaParty, toUnits } from "./fattura-pa.ts";
-import { type Invoice, invoiceKey, paidDay, vatOf } from "./invoices.ts";
+import { type Invoice, invoiceKey, paidOnOf, vatOf } from "./invoices.ts";
 import { halfUpSigned } from "./quote-sums.ts";
 import { salesTotals } from "./sales-invoice-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
@@ -58,8 +58,8 @@ const centsOf = (units: bigint): bigint => halfUpSigned(units, 1_000_000n);
 
 const esigibilitaOf = (code: string | undefined): Esigibilita => (code === "S" || code === "D" ? code : "I");
 
-/** The key the scadenzario gives an invoice issued by `vat` with this number, date and type. */
-function salesKey(vat: string, number: string, date: string, type: string): string {
+/** The key the scadenzario gives an invoice issued by `vat` with this number, date and type: a fattura in uscita and its XML are one invoice (withholding-docs.ts too). */
+export function salesKey(vat: string, number: string, date: string, type: string): string {
 	const doc: FatturaDocument = { number, date, type, credit: false, integration: false, currency: "EUR", instalments: [] };
 	return invoiceKey({ vat: { country: vat.slice(0, 2), code: vat.slice(2) } }, {}, doc, "");
 }
@@ -125,8 +125,7 @@ function fromRegister(register: readonly Invoice[], known: ReadonlySet<string>, 
 				esigibilita: esigibilitaOf(x.r.esigibilita),
 			}),
 		);
-		const paidDays = i.instalments.map((n) => (n.paid === undefined ? undefined : paidDay(n.paid, dayOf)));
-		const paidOn = i.paid && paidDays.every((d) => d !== undefined) ? (paidDays as string[]).sort().at(-1) : undefined;
+		const paidOn = paidOnOf(i, dayOf);
 		const side = i.side === "active" && !i.doc.integration ? "sale" : "purchase";
 		docs.push({
 			key: i.key,
