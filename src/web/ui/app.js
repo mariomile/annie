@@ -3199,7 +3199,7 @@ async function viewRooms(main) {
 			h(
 				"div.card",
 				rooms.length
-					? h("table.ledger", h("tbody", rooms.map((r) => h("tr", h("td", h("a", { href: `#/stanze/${encodeURIComponent(r.id)}` }, h("b", r.title)), h("div.muted", names(r))), h("td.mono.muted", fmt.time(r.updatedAt))))))
+					? h("table.ledger", h("tbody", rooms.map((r) => h("tr", h("td", h("a", { href: `#/stanze/${encodeURIComponent(r.id)}` }, h("b", r.title)), h("div.muted", names(r)), r.last ? h("div.room-last", h("b", `${r.last.who}: `), r.last.text) : null), h("td.mono.muted", fmt.time(r.updatedAt))))))
 					: h("div.empty", h("b", "Nessuna stanza"), "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
 			),
 		),
@@ -3230,12 +3230,15 @@ async function viewRoom(main, roomId) {
 		return true;
 	};
 	const present = room.agents.filter((a) => a.present);
-	const input = h("textarea", { rows: 1, placeholder: `Scrivi alla stanza, @${present[0]?.handle ?? "nome"} per chiamare un agente…`, "aria-label": "Messaggio" });
+	// What was being written stays, like in a chat, until it is sent.
+	const draftKey = `annie.draft.room.${roomId}`;
+	const input = h("textarea", { rows: 1, placeholder: `Scrivi alla stanza, @${present[0]?.handle ?? "nome"} per chiamare un agente…`, "aria-label": "Messaggio", value: store(draftKey) ?? "" });
 	const send = h("button.send", { "aria-label": "Invia", disabled: true }, icon("send"));
 	const fit = () => {
 		input.style.height = "auto";
 		input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
 		send.disabled = !input.value.trim();
+		store(draftKey, input.value.trim() ? input.value : null);
 	};
 	const submit = async () => {
 		const text = input.value.trim();
@@ -3292,6 +3295,7 @@ async function viewRoom(main, roomId) {
 		fit,
 	);
 	mount(main, h("section.conversation", header, transcript, h("div.dock", chips, h("div.box", commands, h("div.composer", input, send)))));
+	fit();
 	transcript.scrollTop = transcript.scrollHeight;
 	input.focus();
 }
