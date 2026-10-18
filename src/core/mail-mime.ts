@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { validAddress } from "./email-address.ts";
-import type { MailDraft } from "./google-actions.ts";
+import type { MailDraft } from "./mail-draft.ts";
 import type { AttachmentData } from "./mail-attachments.ts";
 
 /** A mail that cannot be written safely: in Italian, the person reads it on the card. */
@@ -32,12 +32,22 @@ function references(previous: string, messageId: string): string {
 	return [...new Set(ids)].slice(-10).join("\r\n ");
 }
 
-/** Base64 in lines of 76 characters (RFC 2045). */
-export function base64Lines(data: Buffer): string {
-	const text = data.toString("base64");
-	const lines: string[] = [];
-	for (let i = 0; i < text.length; i += 76) lines.push(text.slice(i, i + 76));
-	return lines.join("\r\n");
+/** Base64 in lines of 76 characters (RFC 2045), written into one buffer piece by piece: no string as large as the file. */
+export function base64Lines(data: Buffer): Buffer {
+	const lines = Math.ceil(data.length / 57);
+	if (lines === 0) return Buffer.alloc(0);
+	const out = Buffer.allocUnsafe(Math.ceil(data.length / 3) * 4 + (lines - 1) * 2);
+	let at = 0;
+	// 57 bytes make a line of 76: a piece of 1024 lines never ends in padding but the last.
+	const step = 57 * 1024;
+	for (let i = 0; i < data.length; i += step) {
+		const text = data.subarray(i, i + step).toString("base64");
+		for (let j = 0; j < text.length; j += 76) {
+			if (at > 0) at += out.write("\r\n", at, "latin1");
+			at += out.write(text.slice(j, j + 76), at, "latin1");
+		}
+	}
+	return out;
 }
 
 /** A file name safe in a quoted parameter: printable ASCII without quotes, backslashes or semicolons; the rest becomes "_". */
@@ -73,7 +83,7 @@ function nameParams(name: string): { type: string; disposition: string } {
 }
 
 /** A boundary found nowhere in the parts. */
-function boundaryFor(parts: readonly string[]): string {
+function boundaryFor(parts: readonly Buffer[]): string {
 	for (;;) {
 		const boundary = `=_annie_${randomBytes(18).toString("hex")}`;
 		if (!parts.some((p) => p.includes(boundary))) return boundary;
@@ -81,10 +91,11 @@ function boundaryFor(parts: readonly string[]): string {
 }
 
 /**
- * The mail as Gmail takes it (RFC 2822), UTF-8. The sender is the account itself. Without
- * attachments, plain text; with them, multipart/mixed: the text first, then each file in base64.
+ * The mail as Gmail takes it (RFC 2822), ASCII, as a buffer. The sender is the account itself.
+ * Without attachments, plain text; with them, multipart/mixed: the text first, then each file in
+ * base64. The files' own buffers are only read: the caller drops them once this returns.
  */
-export function mimeMessage(mail: MailDraft, attachments: readonly AttachmentData[] = []): string {
+export function mimeMessage(mail: MailDraft, attachments: readonly AttachmentData[] = []): Buffer {
 	if ([...mail.to, ...mail.cc].some((a) => !validAddress(a))) throw new MailMimeError("indirizzo non valido");
 	const replyId = mail.inReplyTo === undefined ? "" : (/^<[\x21-\x3b\x3d\x3f-\x7e]{1,250}>$/.exec(mail.inReplyTo.messageId.trim())?.[0] ?? "");
 	const head = [
@@ -96,16 +107,17 @@ export function mimeMessage(mail: MailDraft, attachments: readonly AttachmentDat
 	];
 	const text = ["Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64"];
 	const body = base64Lines(Buffer.from(mail.body, "utf8"));
-	if (attachments.length === 0) return `${[...head, ...text].join("\r\n")}\r\n\r\n${body}`;
-	const parts = [
-		`${text.join("\r\n")}\r\n\r\n${body}`,
+	if (attachments.length === 0) return Buffer.concat([Buffer.from(`${[...head, ...text].join("\r\n")}\r\n\r\n`, "latin1"), body]);
+	const parts: { head: Buffer; body: Buffer }[] = [
+		{ head: Buffer.from(text.join("\r\n"), "latin1"), body },
 		...attachments.map((a) => {
 			if (!/^[a-z]+\/[a-z0-9.+-]+$/.test(a.contentType)) throw new MailMimeError("tipo di allegato non valido");
 			const names = nameParams(a.name);
-			return `Content-Type: ${a.contentType};\r\n ${names.type}\r\nContent-Disposition: attachment;\r\n ${names.disposition}\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Lines(a.data)}`;
+			return { head: Buffer.from(`Content-Type: ${a.contentType};\r\n ${names.type}\r\nContent-Disposition: attachment;\r\n ${names.disposition}\r\nContent-Transfer-Encoding: base64`, "latin1"), body: base64Lines(a.data) };
 		}),
 	];
-	const boundary = boundaryFor(parts);
-	const multipart = `${parts.map((p) => `--${boundary}\r\n${p}\r\n`).join("")}--${boundary}--\r\n`;
-	return `${[...head, `Content-Type: multipart/mixed;\r\n boundary="${boundary}"`].join("\r\n")}\r\n\r\n${multipart}`;
+	const boundary = boundaryFor(parts.flatMap((p) => [p.head, p.body]));
+	const top = Buffer.from(`${[...head, `Content-Type: multipart/mixed;\r\n boundary="${boundary}"`].join("\r\n")}\r\n\r\n`, "latin1");
+	const chunks = parts.flatMap((p) => [Buffer.from(`--${boundary}\r\n`, "latin1"), p.head, Buffer.from("\r\n\r\n", "latin1"), p.body, Buffer.from("\r\n", "latin1")]);
+	return Buffer.concat([top, ...chunks, Buffer.from(`--${boundary}--\r\n`, "latin1")]);
 }

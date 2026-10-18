@@ -2,11 +2,15 @@ import { randomBytes } from "node:crypto";
 import { type EventTime, GoogleUncertain } from "../connectors/google.ts";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
 import { validAddress } from "./email-address.ts";
-import { attachmentsLine, type MailAttachment } from "./mail-attachments.ts";
+import { attachmentsLine } from "./mail-attachments.ts";
+import type { MailDraft } from "./mail-draft.ts";
+import type { QuoteMailRef } from "./mail-requests.ts";
+import { oneLine, withoutFormatChars } from "./plain-text.ts";
+import { quoteMailProblem, recordQuoteMail } from "./quote-mail.ts";
 import type { ReminderItem } from "./reminder-book.ts";
 import type { AnnieRuntime } from "./runtime.ts";
 
-export { mimeMessage } from "./mail-mime.ts";
+export type { MailDraft };
 export { validAddress };
 
 /**
@@ -15,27 +19,6 @@ export { validAddress };
  * nobody else, and is done at most once (the shared action queue, as web actions, ADR 0011).
  */
 export type GoogleActionKind = "mail.send" | "mail.draft" | "calendar.create" | "calendar.update" | "calendar.delete";
-
-export type MailDraft = {
-	readonly to: readonly string[];
-	readonly cc: readonly string[];
-	readonly subject: string;
-	readonly body: string;
-	/** Files of the workspace, as checked when asked: sent only if still the same (mail-attachments.ts). */
-	readonly attachments?: readonly MailAttachment[];
-	/** Answering a message: the reply stays in its Gmail thread; who and what it answers is on the card. */
-	readonly inReplyTo?: {
-		readonly id: string;
-		readonly threadId: string;
-		readonly messageId: string;
-		readonly references: string;
-		readonly from: string;
-		readonly subject: string;
-		readonly date: string;
-		/** The sender asked for replies elsewhere (Reply-To): said on the card. */
-		readonly replyToDiffers?: true;
-	};
-};
 
 /** For create, the event; for update, only what changes (attendees: the whole new list); for delete, the id. */
 export type EventDraft = {
@@ -77,6 +60,8 @@ export type GoogleAction = {
 	readonly notify?: boolean;
 	/** A payment reminder of the scadenzario: recorded for these invoices once the mail is sent, never before. */
 	readonly reminders?: readonly ReminderItem[];
+	/** A quote sent by mail: still current at approval, or not sent; its sending recorded once done. */
+	readonly quote?: QuoteMailRef;
 	readonly status: QueuedStatus;
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	readonly proposedAt: string;
@@ -93,7 +78,7 @@ export class GoogleActionError extends Error {
 	override readonly name = "GoogleActionError";
 }
 
-export const GOOGLE_ACTION_LIMITS = { maxPending: 20, ttlMs: 24 * 3600_000, keepMs: 30 * 24 * 3600_000, maxRecipients: 20, maxSubject: 300, maxBody: 20_000, maxLocation: 500, maxText: 2_000 } as const;
+export const GOOGLE_ACTION_LIMITS = { maxPending: 20, ttlMs: 24 * 3600_000, keepMs: 30 * 24 * 3600_000, maxRecipients: 20, maxReason: 300, maxSubject: 300, maxBody: 20_000, maxLocation: 500, maxText: 2_000 } as const;
 
 export class GoogleActionStore {
 	private readonly queue: ActionQueue<GoogleAction>;
@@ -103,13 +88,13 @@ export class GoogleActionStore {
 	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
-	async propose(input: Pick<GoogleAction, "kind" | "personId" | "account" | "reason" | "mail" | "event" | "current" | "notify" | "thread" | "reminders">, now = new Date(), key?: string): Promise<GoogleAction> {
+	async propose(input: Pick<GoogleAction, "kind" | "personId" | "account" | "reason" | "mail" | "event" | "current" | "notify" | "thread" | "reminders" | "quote">, now = new Date(), key?: string): Promise<GoogleAction> {
 		const id = this.queue.idFor(key, "google:");
 		if (key !== undefined) {
 			const existing = await this.get(id, now);
 			if (existing !== undefined) return existing;
 		}
-		return this.queue.add({ ...input, id, status: "pending", proposedAt: now.toISOString() }, now);
+		return this.queue.add({ ...input, reason: oneLine(input.reason, GOOGLE_ACTION_LIMITS.maxReason), id, status: "pending", proposedAt: now.toISOString() }, now);
 	}
 
 	get(id: string, now = new Date()): Promise<GoogleAction | undefined> {
@@ -181,12 +166,15 @@ export function instant(time: EventTime): number {
 }
 
 /**
- * The action as the console shows it. The card prints the reason line as it is: the attachments'
- * names and sizes go there, after Annie's reason (never their contents).
+ * The action as the console shows it: the attachments stay structured in `mail.attachments`; until
+ * the card has a row of its own for them, the reason line it prints starts with them (whole paths
+ * and sizes, never contents). The reason is Annie's text: capped, without invisible format
+ * characters, and unable to fake that line.
  */
 export function cardView(action: GoogleAction): GoogleAction {
+	const reason = oneLine(withoutFormatChars(action.reason).replace(/allegat/gi, "allegat."), GOOGLE_ACTION_LIMITS.maxReason);
 	const line = attachmentsLine(action.mail?.attachments ?? []);
-	return line === "" ? action : { ...action, reason: `${action.reason} · ${line}` };
+	return { ...action, reason: line === "" ? reason : `${line} · ${reason}` };
 }
 
 /** «, con 2 allegati». */
@@ -228,10 +216,14 @@ export async function decideGoogleAction(
 	const audit = runtime.audit(tenant);
 	const { action, changed } = await runtime.googleActions(tenant, instance).decide(id, decision, personId, async (running) => {
 		await audit.append({ type: "google_action.approved", instanceId: instance, actionId: id, kind: running.kind, recipients: (running.mail?.to.length ?? 0) + (running.mail?.cc.length ?? 0) + (running.event?.attendees?.length ?? 0), ...(running.mail?.attachments === undefined ? {} : { attachments: running.mail.attachments.length }), personId });
+		// A quote replaced since the card was shown is not the one the person approved.
+		const problem = running.quote === undefined ? undefined : quoteMailProblem(runtime.quotes(tenant, instance), running.quote);
+		if (problem !== undefined) throw new GoogleActionError(problem);
 		return run(running);
 	});
 	if (!changed) return action;
 	const reminded = action.status === "done" && action.reminders !== undefined && action.reminders.length > 0 ? await recordReminders(runtime, tenant, instance, action, personId, log) : undefined;
+	if (action.status === "done" && action.quote !== undefined && !recordQuoteMail(runtime.quotes(tenant, instance), action.quote, action.decidedAt ?? new Date().toISOString())) log(`google: sending of quote in ${action.id} not recorded`);
 	// What happened is settled: telling the conversation may fail, the decision stands.
 	try {
 		await audit.append({ type: `google_action.${action.status}`, instanceId: instance, actionId: id, kind: action.kind, personId });

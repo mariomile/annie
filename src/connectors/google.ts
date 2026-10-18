@@ -276,19 +276,19 @@ export class GoogleClient {
 	}
 
 	/**
-	 * Send a message (RFC 2822 text). Up to UPLOAD_ABOVE as JSON with the message in base64url;
-	 * larger ones (attachments) through Gmail's upload endpoint, which takes up to 35 MB.
+	 * Send a message (RFC 2822, ASCII). Up to JSON_RAW_LIMIT of base64 as JSON; larger ones
+	 * (attachments) through Gmail's upload endpoint, which takes up to 35 MB.
 	 */
-	async sendMail(message: string, threadId?: string): Promise<{ id: string }> {
+	async sendMail(message: Buffer, threadId?: string): Promise<{ id: string }> {
 		const meta = threadId === undefined ? {} : { threadId };
-		if (message.length > UPLOAD_ABOVE) return this.write("POST", `${GMAIL_UPLOAD}/messages/send?uploadType=multipart`, uploadBody(meta, message), "mail send");
-		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw: Buffer.from(message, "utf8").toString("base64url"), ...meta }, "mail send");
+		if (needsUpload(message.length)) return this.write("POST", `${GMAIL_UPLOAD}/messages/send?uploadType=multipart`, uploadBody(meta, message), "mail send");
+		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw: message.toString("base64url"), ...meta }, "mail send");
 	}
 
-	async createDraft(message: string, threadId?: string): Promise<{ id: string }> {
+	async createDraft(message: Buffer, threadId?: string): Promise<{ id: string }> {
 		const meta = threadId === undefined ? {} : { threadId };
-		if (message.length > UPLOAD_ABOVE) return this.write("POST", `${GMAIL_UPLOAD}/drafts?uploadType=multipart`, uploadBody({ message: meta }, message), "mail draft");
-		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", { message: { raw: Buffer.from(message, "utf8").toString("base64url"), ...meta } }, "mail draft");
+		if (needsUpload(message.length)) return this.write("POST", `${GMAIL_UPLOAD}/drafts?uploadType=multipart`, uploadBody({ message: meta }, message), "mail draft");
+		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", { message: { raw: message.toString("base64url"), ...meta } }, "mail draft");
 	}
 
 	/** `notify`: Google writes to the guests (sendUpdates=all), or tells nobody. */
@@ -383,25 +383,30 @@ export class GoogleNotConnected extends Error {
 const EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 
 const GMAIL_UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
-/** Messages longer than this go through the upload endpoint (the JSON one takes only a few MB). */
-export const UPLOAD_ABOVE = 4 * 1024 * 1024;
+/** The most base64 sent inside a JSON request: past it, the upload endpoint (the JSON one takes only a few MB). */
+export const JSON_RAW_LIMIT = 4 * 1024 * 1024;
+
+/** Whether a message of `bytes` goes through the upload endpoint: its base64 would pass JSON_RAW_LIMIT. */
+export function needsUpload(bytes: number): boolean {
+	return Math.ceil(bytes / 3) * 4 > JSON_RAW_LIMIT;
+}
 
 /** A body sent as it is, with its own content type: Gmail's multipart upload. */
 class Upload {
 	constructor(
 		readonly contentType: string,
-		readonly body: string,
+		readonly body: Buffer,
 	) {}
 }
 
 /** The metadata and the message, as multipart/related; the boundary found in neither. */
-function uploadBody(meta: Record<string, unknown>, message: string): Upload {
+function uploadBody(meta: Record<string, unknown>, message: Buffer): Upload {
 	const json = JSON.stringify(meta);
 	let boundary = "";
 	do boundary = `annie_upload_${randomBytes(18).toString("hex")}`;
 	while (message.includes(boundary) || json.includes(boundary));
-	const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${json}\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n${message}\r\n--${boundary}--\r\n`;
-	return new Upload(`multipart/related; boundary=${boundary}`, body);
+	const head = Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${json}\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n`, "utf8");
+	return new Upload(`multipart/related; boundary=${boundary}`, Buffer.concat([head, message, Buffer.from(`\r\n--${boundary}--\r\n`, "latin1")]));
 }
 
 /** One event's address; the id is checked here too, so nothing but an event is ever reached. */

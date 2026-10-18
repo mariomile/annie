@@ -91,6 +91,8 @@ export type Quote = Marker & {
 	readonly pendingFile?: string;
 	/** The tool call that made it: a call run again after a crash finds it instead of making another. */
 	readonly callId?: string;
+	/** When a mail with it went to the customer, approved by the person (quotes op send). */
+	readonly sentAt?: string;
 };
 
 /** «2026-012»: the year and its progressive number, three digits at least. */
@@ -222,6 +224,7 @@ export function validQuote(v: unknown): v is Quote {
 	for (const path of [q.file, q.pendingFile]) if (path !== undefined && (typeof path !== "string" || !FILE.test(path))) return false;
 	if (!STATUSES.includes(q.status)) return false;
 	if (q.statusMark !== undefined && !isMarker(q.statusMark)) return false;
+	if (q.sentAt !== undefined && (typeof q.sentAt !== "string" || Number.isNaN(Date.parse(q.sentAt)) || q.sentAt.length > 40)) return false;
 	if (q.status !== "superseded") return q.replacedBy === undefined && q.before === undefined;
 	if (typeof q.replacedBy !== "string" || !REVISION.test(q.replacedBy) || !q.replacedBy.startsWith(`${q.base}-R`)) return false;
 	const b = q.before;

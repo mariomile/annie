@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
+import { ATTACHMENT_TYPES, contentMatches, refusedType } from "./attachment-types.ts";
+import { withoutFormatChars } from "./plain-text.ts";
 import { type Workspace, WorkspaceError } from "./workspace.ts";
+
+export { ATTACHMENT_TYPES };
 
 /**
  * Files of the workspace attached to a mail Annie asks to send (google-actions.ts). A request keeps
@@ -29,49 +33,19 @@ export class AttachmentError extends Error {
  */
 export const ATTACHMENT_LIMITS = { maxFiles: 5, maxTotalBytes: 18 * 1024 * 1024, maxName: 120 } as const;
 
-/** Documents an office sends; nothing that runs (scripts, executables, macros, web pages) and no archives. */
-export const ATTACHMENT_TYPES: Readonly<Record<string, string>> = {
-	pdf: "application/pdf",
-	docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-	pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-	odt: "application/vnd.oasis.opendocument.text",
-	ods: "application/vnd.oasis.opendocument.spreadsheet",
-	csv: "text/csv",
-	txt: "text/plain",
-	png: "image/png",
-	jpg: "image/jpeg",
-	jpeg: "image/jpeg",
-	xml: "application/xml",
-	p7m: "application/pkcs7-mime",
-};
-
-/** How the files of a type begin: a file whose bytes say otherwise is not attached under that name. */
-const MAGIC: Readonly<Record<string, readonly Buffer[]>> = {
-	pdf: [Buffer.from("%PDF-")],
-	docx: [Buffer.from("PK\x03\x04", "latin1")],
-	xlsx: [Buffer.from("PK\x03\x04", "latin1")],
-	pptx: [Buffer.from("PK\x03\x04", "latin1")],
-	odt: [Buffer.from("PK\x03\x04", "latin1")],
-	ods: [Buffer.from("PK\x03\x04", "latin1")],
-	png: [Buffer.from([0x89, 0x50, 0x4e, 0x47])],
-	jpg: [Buffer.from([0xff, 0xd8, 0xff])],
-	jpeg: [Buffer.from([0xff, 0xd8, 0xff])],
-};
-
-const KINDS = "PDF, Word (docx), Excel (xlsx), PowerPoint (pptx), OpenDocument (odt, ods), CSV, testo, immagini PNG e JPG, fatture XML e p7m";
-
 /** The extension, lower case, of a name ("" when none). */
-function extensionOf(name: string): string {
+export function extensionOf(name: string): string {
 	const dot = name.lastIndexOf(".");
 	return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
-/** The name the recipient sees: the last part of the path, without control characters, quotes or backslashes, at most maxName characters (the extension kept). */
+/** The name the recipient sees: the last part of the path, without control or format characters, quotes or backslashes, at most maxName characters (the extension kept). */
 export function attachmentName(path: string): string {
 	const last = path.split(/[\\/]+/).filter(Boolean).at(-1) ?? "allegato";
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-	let name = last.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029"\\]/g, "").trim();
+	let name = withoutFormatChars(last)
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+		.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029"\\]/g, "")
+		.trim();
 	if (name === "" || name.startsWith(".")) name = `allegato${name}`;
 	const chars = [...name];
 	if (chars.length > ATTACHMENT_LIMITS.maxName) {
@@ -82,79 +56,115 @@ export function attachmentName(path: string): string {
 	return name;
 }
 
-/** «84 KB», «1,2 MB». */
+/** «1 KB» at least, «84 KB», «1,2 MB», «18 MB». */
 export function sizeText(bytes: number): string {
-	if (bytes < 1024) return `${bytes} byte`;
 	if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1).replace(".", ",")} MB`;
+	const mb = bytes / (1024 * 1024);
+	return mb >= 10 ? `${Math.round(mb)} MB` : `${mb.toFixed(1).replace(".", ",")} MB`;
 }
 
-/** The attachments in one line, for the card: «Allegati: Preventivo.pdf (84 KB), B-70.xml (3 KB)». */
+/** A workspace path as shown to the person: whole, without invisible format characters. */
+export function shownPath(path: string): string {
+	return withoutFormatChars(path);
+}
+
+/** The attachments in one line, for the card: «Allegati: preventivi/Preventivo.pdf (84 KB), fatture/B-70.xml (3 KB)». */
 export function attachmentsLine(list: readonly MailAttachment[]): string {
 	if (list.length === 0) return "";
-	return `${list.length === 1 ? "Allegato" : "Allegati"}: ${list.map((a) => `${a.name} (${sizeText(a.size)})`).join(", ")}`;
+	return `${list.length === 1 ? "Allegato" : "Allegati"}: ${list.map((a) => `${shownPath(a.path)} (${sizeText(a.size)})`).join(", ")}`;
+}
+
+/** Why a request was not sent: one of its files is not the one the card showed. */
+export function changedFile(name: string): string {
+	return `Non inviata: il file ${name} è cambiato dopo la richiesta. Chiedi ad Annie di prepararla di nuovo.`;
+}
+
+let slot: Promise<void> = Promise.resolve();
+
+/**
+ * Runs that hold attachments in memory, one at a time in the process: each can take some tens of
+ * MB (the files and their base64), and approvals can come together.
+ */
+export async function oneAttachmentRunAtATime<T>(work: () => Promise<T>): Promise<T> {
+	const previous = slot;
+	let release = () => {};
+	slot = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	await previous;
+	try {
+		return await work();
+	} finally {
+		release();
+	}
 }
 
 function sha256(data: Buffer): string {
 	return createHash("sha256").update(data).digest("hex");
 }
 
-/** Read through the workspace's own rules (no "..", no hidden names, no symlinks, nothing outside): its refusal said in Italian. */
-async function guarded<T>(path: string, work: () => Promise<T>): Promise<T> {
-	try {
-		return await work();
-	} catch (error) {
-		if (error instanceof WorkspaceError) throw new AttachmentError(`non posso allegare «${attachmentName(path)}»: il percorso non è un file del workspace che si può mandare (niente cartelle sopra, file nascosti o collegamenti)`);
-		throw error;
-	}
+/** The workspace refused the path (going up, a hidden name, a symlink, outside): said in Italian. */
+function refusedPath(path: string): AttachmentError {
+	return new AttachmentError(`non posso allegare «${attachmentName(path)}»: il percorso non è un file del workspace che si può mandare (niente cartelle sopra, file nascosti o collegamenti)`);
 }
 
 /**
- * The files to attach, checked now: in the workspace, of an allowed type, within the limits.
- * Each one's size and hash are kept, so the approval sends exactly these bytes.
+ * The files to attach, checked now: in the workspace, of an allowed type and content, within the
+ * limits. Each is read through one handle that never follows a symlink; its size and hash are
+ * kept, so the approval sends exactly these bytes.
  */
 export async function attachFiles(workspace: Workspace, paths: readonly string[]): Promise<MailAttachment[]> {
-	const unique = [...new Set(paths.map((p) => String(p).trim().split(/[\\/]+/).filter((x) => x !== "" && x !== ".").join("/")))].filter((p) => p !== "");
+	const unique = [
+		...new Set(
+			paths.map((p) =>
+				String(p)
+					.trim()
+					.split(/[\\/]+/)
+					.filter((x) => x !== "" && x !== ".")
+					.join("/"),
+			),
+		),
+	].filter((p) => p !== "");
 	if (unique.length > ATTACHMENT_LIMITS.maxFiles) throw new AttachmentError(`al massimo ${ATTACHMENT_LIMITS.maxFiles} allegati per mail`);
+	const tooLarge = () => new AttachmentError(`gli allegati superano ${sizeText(ATTACHMENT_LIMITS.maxTotalBytes)} in tutto, troppo per una mail: mandane meno, o mandali in chat`);
 	const out: MailAttachment[] = [];
 	let total = 0;
 	for (const path of unique) {
-		const ext = extensionOf(attachmentName(path));
+		const name = attachmentName(path);
+		const ext = extensionOf(name);
 		const contentType = ATTACHMENT_TYPES[ext];
-		if (contentType === undefined) throw new AttachmentError(`non allego «${attachmentName(path)}»: ${ext === "" ? "il file non ha estensione" : `i file .${ext} non si mandano`}. Posso allegare ${KINDS}`);
-		const stat = await guarded(path, () => workspace.stat(path));
-		if (stat === undefined) throw new AttachmentError(`non trovo «${attachmentName(path)}» nel workspace: controlla il percorso con file_list`);
-		total += stat.size;
-		if (total > ATTACHMENT_LIMITS.maxTotalBytes) throw new AttachmentError(`gli allegati superano ${sizeText(ATTACHMENT_LIMITS.maxTotalBytes)} in tutto, troppo per una mail: mandane meno, o mandali da qui con file_send`);
-		const data = await guarded(path, () => workspace.read(path));
-		if (data.length !== stat.size) throw new AttachmentError(`«${attachmentName(path)}» sta cambiando: riprova tra poco`);
-		const magic = MAGIC[ext];
-		if (magic !== undefined && !magic.some((m) => data.subarray(0, m.length).equals(m))) throw new AttachmentError(`«${attachmentName(path)}» non è davvero un file .${ext}: non lo allego`);
-		out.push({ path: stat.path, name: attachmentName(path), size: data.length, sha256: sha256(data), contentType });
+		if (contentType === undefined) throw new AttachmentError(refusedType(ext, name));
+		const stat = await workspace.stat(path).catch((error: unknown) => {
+			throw error instanceof WorkspaceError ? refusedPath(path) : error;
+		});
+		if (stat === undefined) throw new AttachmentError(`non trovo «${name}» nel workspace: cercalo con file_search o file_list`);
+		if (total + stat.size > ATTACHMENT_LIMITS.maxTotalBytes) throw tooLarge();
+		const read = await workspace.readExact(path, ATTACHMENT_LIMITS.maxTotalBytes - total).catch((error: unknown) => {
+			if (!(error instanceof WorkspaceError)) throw error;
+			throw error.message.startsWith("File too large") ? tooLarge() : refusedPath(path);
+		});
+		total += read.data.length;
+		if (!contentMatches(ext, read.data)) throw new AttachmentError(`«${name}» non è davvero un file .${ext} che si può mandare: non lo allego`);
+		out.push({ path: stat.path, name, size: read.data.length, sha256: sha256(read.data), contentType });
 	}
 	return out;
 }
 
-/** The message the person reads when a file is no longer the one on the card. */
-export const ATTACHMENT_CHANGED = "il file è cambiato dopo la richiesta: chiedi di nuovo";
-
-/** The files read again at approval: each must still be there with the same bytes, or nothing is sent. */
+/** The files read again at approval, through a handle that never follows a symlink: each must still be there with the same bytes, or nothing is sent. */
 export async function readAttachments(workspace: Workspace, list: readonly MailAttachment[]): Promise<AttachmentData[]> {
-	if (list.length > ATTACHMENT_LIMITS.maxFiles || list.reduce((n, a) => n + a.size, 0) > ATTACHMENT_LIMITS.maxTotalBytes) throw new AttachmentError("troppi allegati per una mail");
+	if (list.length > ATTACHMENT_LIMITS.maxFiles || list.reduce((n, a) => n + a.size, 0) > ATTACHMENT_LIMITS.maxTotalBytes) throw new AttachmentError("Non inviata: troppi allegati per una mail.");
 	const out: AttachmentData[] = [];
 	for (const a of list) {
 		let data: Buffer;
 		try {
-			const stat = await workspace.stat(a.path);
-			if (stat === undefined || stat.size !== a.size) throw new AttachmentError(ATTACHMENT_CHANGED);
-			data = await workspace.read(a.path);
+			data = (await workspace.readExact(a.path, a.size)).data;
 		} catch (error) {
-			if (error instanceof AttachmentError || error instanceof WorkspaceError) throw new AttachmentError(`${ATTACHMENT_CHANGED} (${a.name})`);
+			if (error instanceof WorkspaceError) throw new AttachmentError(changedFile(a.name));
 			throw error;
 		}
-		if (data.length !== a.size || sha256(data) !== a.sha256) throw new AttachmentError(`${ATTACHMENT_CHANGED} (${a.name})`);
+		if (data.length !== a.size || sha256(data) !== a.sha256) throw new AttachmentError(changedFile(a.name));
 		const type = ATTACHMENT_TYPES[extensionOf(a.name)];
-		if (type === undefined || type !== a.contentType) throw new AttachmentError(`tipo di allegato non consentito (${a.name})`);
+		if (type === undefined || type !== a.contentType) throw new AttachmentError(`Non inviata: tipo di allegato non consentito (${a.name}).`);
 		out.push({ name: a.name, contentType: a.contentType, data });
 	}
 	return out;

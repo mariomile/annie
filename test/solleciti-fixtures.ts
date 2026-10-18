@@ -6,7 +6,8 @@ import type { ToolContext } from "../src/core/engine.ts";
 import { GoogleActionError } from "../src/core/google-actions.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { createInvoiceTools, type InvoiceEvent } from "../src/core/tools/invoice-tools.ts";
-import type { ReminderMail, ReminderProposal } from "../src/core/tools/reminder-tools.ts";
+import type { MailProposal as ReminderProposal, MailRequests as ReminderMail } from "../src/core/mail-requests.ts";
+import type { ReadText } from "../src/core/tools/reminder-attachments.ts";
 import { Workspace } from "../src/core/workspace.ts";
 
 const NS = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2";
@@ -102,7 +103,7 @@ export function fakeMail(unavailable?: string, o: { pending?: ReadonlySet<string
 	const proposals: ReminderProposal[] = [];
 	const mail: ReminderMail = {
 		check: async () => unavailable,
-		pending: async () => o.pending ?? new Set(),
+		pending: async () => ({ invoices: o.pending ?? new Set(), quotes: new Set() }),
 		propose: async (p) => {
 			if (proposals.length >= (o.capacity ?? 20)) throw new GoogleActionError("troppe richieste in attesa (20): falle decidere prima");
 			proposals.push(p);
@@ -113,7 +114,7 @@ export function fakeMail(unavailable?: string, o: { pending?: ReadonlySet<string
 }
 
 /** `company`: saved with partita IVA and name (the default), with the partita IVA only ("vat"), or not saved (false). */
-export function setup(files: Record<string, string> = FILES, o: { now?: Date; mail?: ReminderMail; company?: boolean | "vat"; who?: string } = {}) {
+export function setup(files: Record<string, string> = FILES, o: { now?: Date; mail?: ReminderMail; company?: boolean | "vat"; who?: string; readText?: ReadText } = {}) {
 	const dir = temp();
 	const root = join(dir, "workspace");
 	for (const [path, content] of Object.entries(files)) {
@@ -134,6 +135,7 @@ export function setup(files: Record<string, string> = FILES, o: { now?: Date; ma
 		read: async (_name, data) => documentFattura(data),
 		now: () => o.now ?? NOW,
 		...(o.mail === undefined ? {} : { mail: o.mail }),
+		...(o.readText === undefined ? {} : { readText: o.readText }),
 	});
 	if (tool === undefined) throw new Error("no tool");
 	return { dir, store, events, tool, run: async (args: Record<string, unknown>, c: ToolContext = ctx) => String(await tool.execute(args, c)) };

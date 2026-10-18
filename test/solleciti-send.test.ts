@@ -12,7 +12,7 @@ import { invoiceCallReads } from "../src/core/invoices.ts";
 import { auditFile, instanceDir, workspaceDir } from "../src/core/paths.ts";
 import { REMINDER_LIMITS } from "../src/core/reminder-book.ts";
 import type { AnnieRuntime } from "../src/core/runtime.ts";
-import type { ReminderProposal } from "../src/core/tools/reminder-tools.ts";
+import type { MailProposal as ReminderProposal } from "../src/core/mail-requests.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { B70, BETA, COMUNE, cleanTemp, ctx, DELTA, FILES, fakeMail, fattura, G1, GAMMA, GNC, IBAN, IBAN_2, IBAN_SAVED, inside, NOW, outside, setup, TUESDAY, temp } from "./solleciti-fixtures.ts";
 
@@ -40,7 +40,7 @@ describe("solleciti: sending only through the approval card", () => {
 		const gamma = proposals[0] as ReminderProposal;
 		expect(gamma.subject).toBe("Beta Ristorazione Srl: promemoria di pagamento fatture n. B-70, B-71");
 		expect(gamma.body).toContain("Totale da saldare: 1.370,00 €");
-		expect(gamma.reminders.map((r) => r.level)).toEqual([1, 1]);
+		expect(gamma.reminders?.map((r) => r.level)).toEqual([1, 1]);
 		expect(gamma.key).toMatch(/^sol:/);
 		expect(gamma.thread).toEqual({ channel: "web", threadId: "t1" });
 		expect(store.read().reminders).toBeUndefined();
@@ -73,12 +73,12 @@ describe("solleciti: sending only through the approval card", () => {
 		after.store.remind([{ invoice: B70, level: 3 }], { by: "p", at: "2026-10-12T08:00:00Z", via: "self" });
 		// Only the invoice already at the formal level waits; the new one of the same customer goes.
 		expect(inside(await after.run({ op: "reminder", party: "gamma", send: true }))).toContain("• Gamma Hotel S.p.A. (livello 3): non preparato, il sollecito formale per queste fatture è già stato mandato: per rimandarlo serve che chi ti scrive lo chieda, con level 3.");
-		expect(formal.proposals.map((p) => p.reminders.map((r) => [r.invoice, r.level]))).toEqual([[[B71, 1]]]);
+		expect(formal.proposals.map((p) => p.reminders?.map((r) => [r.invoice, r.level]))).toEqual([[[B71, 1]]]);
 		const again = fakeMail();
 		const explicit = setup(FILES, { mail: again.mail });
 		explicit.store.remind([{ invoice: B70, level: 3 }], { by: "p", at: "2026-10-12T08:00:00Z", via: "self" });
 		await explicit.run({ op: "reminder", party: "gamma", send: true, level: 3 });
-		expect(again.proposals.map((p) => p.reminders.map((r) => r.level))).toEqual([[3, 3]]);
+		expect(again.proposals.map((p) => p.reminders?.map((r) => r.level))).toEqual([[3, 3]]);
 	});
 
 	it("M5: when the queue is full, the requests made are kept and counted, the others said", async () => {

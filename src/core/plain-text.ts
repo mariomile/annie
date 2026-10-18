@@ -11,3 +11,19 @@ const CONTROL_CHAR = new RegExp(CONTROL_CHARS.source);
 export function hasControlChars(text: string): boolean {
 	return CONTROL_CHAR.test(text);
 }
+
+/** Invisible format characters that can reorder or hide what a person reads: zero-width, bidi embeddings, overrides and isolates, the BOM. */
+export const FORMAT_CHARS = /[​-‏‪-‮⁦-⁩﻿]/g;
+
+/** `text` without FORMAT_CHARS. */
+export function withoutFormatChars(text: string): string {
+	return text.replace(FORMAT_CHARS, "");
+}
+
+/** Text on one line, as a person reads it: no line breaks, controls or format characters, single spaces; at most `max` characters (an ellipsis when cut). */
+export function oneLine(text: string, max = Number.POSITIVE_INFINITY): string {
+	const flat = withoutFormatChars(text)
+		.replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ")
+		.trim();
+	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}

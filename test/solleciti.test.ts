@@ -353,7 +353,7 @@ describe("solleciti: from the phone (H3)", () => {
 	it("one message per customer with a mailto that opens the same letter; the lead-in for the person", async () => {
 		const { run } = setup();
 		const answer = await run({ op: "reminder", party: "gamma", send: true });
-		expect(outside(answer)).toContain("Da qui non posso inviare mail. Ti mando ogni sollecito in un messaggio a parte: tienilo premuto per copiarlo, oppure tocca il link per aprirlo già pronto nella tua posta.");
+		expect(outside(answer)).toContain("Da qui non posso mandare mail. Ti mando ogni sollecito in un messaggio a parte: tienilo premuto per copiarlo, oppure tocca il link per aprirlo già pronto nella tua posta.");
 		expect(outside(answer)).toContain("le righe che iniziano con A:, Nota: e --- sono per te");
 		const data = inside(answer);
 		const link = /Link: (mailto:\S+)/.exec(data)?.[1] as string;

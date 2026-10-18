@@ -7,7 +7,7 @@ import { validAddress } from "../email-address.ts";
 import { validIban } from "../iban.ts";
 import { COMPANY_LIMITS } from "../invoice-store.ts";
 import { type Company, REGIMES, type Regime } from "../invoices.ts";
-import { CONTROL_CHARS } from "../plain-text.ts";
+import { oneLine } from "../plain-text.ts";
 import { checkCodiceFiscale, partitaIvaProblem } from "../tax-ids.ts";
 
 export type CompanyExtras = { ibans?: string[]; signature?: string; address?: string; phone?: string; email?: string; cf?: string; rea?: string; regime?: Regime };
@@ -17,7 +17,6 @@ const EXTRA_KEYS = ["ibans", "signature", "address", "phone", "email", "cf", "re
 const PHONE = /^\+?[\d\s./()-]{6,30}$/;
 const REA = /^([A-Z]{2})[\s-]*(\d{1,7})$/;
 
-const oneLine = (text: string) => text.replace(/\n/g, " ").replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
 
 /** The extras given to set_company, checked; or what is wrong. */
 export function companyExtras(args: Record<string, unknown>): CompanyExtras | { problem: string } {

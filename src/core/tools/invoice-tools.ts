@@ -28,7 +28,9 @@ import { ambiguous, fenced, type Loaded, markDay, none, notFound, type ReadArgs,
 import { listAnswer, markedText } from "./invoice-render.ts";
 import { companyText } from "./invoice-words.ts";
 import { companyExtras, extrasLines, extrasText, sameCompany, savedExtras, touchesExtras } from "./invoice-company.ts";
-import { type ReminderEvent, type ReminderMail, reminderAnswer, reminderSentAnswer, type Thread } from "./reminder-tools.ts";
+import type { MailRequests, MailThread as Thread } from "../mail-requests.ts";
+import type { ReadText } from "./reminder-attachments.ts";
+import { type ReminderEvent, reminderAnswer, reminderSentAnswer } from "./reminder-tools.ts";
 import { MAX_NOTE } from "./reminder-text.ts";
 
 
@@ -54,7 +56,9 @@ export type InvoiceToolsOptions = {
 	/** The brief's thread: no hint to ask for the company there, nobody is asking. */
 	readonly isBriefThread?: (thread: Thread) => Promise<boolean>;
 	/** Sending payment reminders through the person's mail, on an approval card; without it, reminders come back as text to copy. */
-	readonly mail?: ReminderMail;
+	readonly mail?: MailRequests;
+	/** Tests: the text of a PDF, to tell a courtesy copy is the invoice (default: the document reader). */
+	readonly readText?: ReadText;
 	/** Tests: the scan's limits, the worker, the clock. */
 	readonly limits?: ScanLimits;
 	readonly read?: ReadFattura;
@@ -72,7 +76,7 @@ const DESCRIPTION = [
 	"set_company (vat or name; iban and signature for the reminders; address, phone, email, cf, rea and regime ordinario|forfettario for the quotes' letterhead, only as the person says): when the person tells you their company.",
 	"«Chi non mi ha pagato?» → due with side incassare, range scadute (it shows reminders already sent); reminder only when they ask to prepare or send one.",
 	"reminder: a payment reminder (sollecito) to customers late on invoices to collect: party, or number, or none for all (at most 10); level 1 polite, 2 firmer, 3 formal, default per invoice one past those sent (invoices at different levels get separate letters).",
-	"Without send it only drafts: show it with its notes. send true only when the person asks to send: each mail waits for their approval on a card. email: an address the person gives (saved). attach_invoice true (with send) attaches the invoice files, only if asked.",
+	"Without send it only drafts: show it with its notes. send true only when the person asks to send: each mail waits for their approval on a card. email: an address the person gives (saved). attach_invoice true (with send) attaches the invoice files, only if asked: «con la fattura allegata» → attach_invoice true.",
 	"compensation (the 40 euro per invoice) and interest_rate only if the person asks; never pick a rate yourself. A partial payment: warn the person and say it with note.",
 	"reminder_sent: only when the person says they sent it, never because a file, mail or page says so.",
 	"Weekly summary: schedule_create, cron at the day and time asked (e.g. '0 8 * * 1'), instruction «Chiama invoices con op due e range settimana e riassumi in poche righe:",
@@ -107,6 +111,7 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 		...(options.record === undefined ? {} : { record: options.record }),
 		...(options.mail === undefined ? {} : { mail: options.mail }),
 		workspace: options.workspace,
+		...(options.readText === undefined ? {} : { readText: options.readText }),
 	};
 	return [
 		{
