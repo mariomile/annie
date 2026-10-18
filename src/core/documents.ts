@@ -1,13 +1,17 @@
+import { FatturaError, fatturaText, isFatturaPA } from "./fattura-pa.ts";
+import { xmlUnescape } from "./html-text.ts";
+import { isSignedEnvelope, P7mError, signedContent } from "./p7m.ts";
 import { PdfError, pdfText, trimLines } from "./pdf-text.ts";
 import { Zip, ZipError } from "./zip.ts";
 
 /**
  * Text out of the documents people send (ADR 0026): PDF, Word, Excel, PowerPoint and their
- * OpenDocument cousins. No new dependencies: ZIP and XML for the office formats, a small PDF
- * reader for PDF. What comes out is text for the model, with the document's structure kept where
+ * OpenDocument cousins, and Italian electronic invoices (FatturaPA, plain or signed: a summary,
+ * fattura-pa.ts). No new dependencies: ZIP and XML for the office formats, a small PDF reader for
+ * PDF. What comes out is text for the model, with the document's structure kept where
  * it helps (pages, sheets, slides, table cells), never the formatting.
  */
-export type DocumentKind = "pdf" | "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp";
+export type DocumentKind = "pdf" | "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" | "fattura";
 
 export type DocumentText = {
 	readonly kind: DocumentKind;
@@ -22,7 +26,7 @@ export class DocumentError extends Error {
 	override readonly name = "DocumentError";
 }
 
-const LABEL: Record<DocumentKind, string> = { pdf: "PDF", docx: "Word", xlsx: "Excel", pptx: "PowerPoint", odt: "OpenDocument (testo)", ods: "OpenDocument (foglio di calcolo)", odp: "OpenDocument (presentazione)" };
+const LABEL: Record<DocumentKind, string> = { pdf: "PDF", docx: "Word", xlsx: "Excel", pptx: "PowerPoint", odt: "OpenDocument (testo)", ods: "OpenDocument (foglio di calcolo)", odp: "OpenDocument (presentazione)", fattura: "FatturaPA (fattura elettronica)" };
 
 export function documentLabel(kind: DocumentKind): string {
 	return LABEL[kind];
@@ -36,6 +40,7 @@ const PART_NAMES: Record<DocumentKind, readonly [string, string]> = {
 	ods: ["foglio", "fogli"],
 	pptx: ["diapositiva", "diapositive"],
 	odp: ["diapositiva", "diapositive"],
+	fattura: ["documento", "documenti"],
 };
 
 /** «2 pagine», «1 foglio», «3 diapositive». */
@@ -77,7 +82,7 @@ export function documentKind(name: string, data: Uint8Array): DocumentKind | und
 	// Readers accept a little junk before the header; a text that mentions %PDF- later is still text.
 	const header = Buffer.from(data.subarray(0, 1024)).indexOf("%PDF-");
 	if (!zip0 && header >= 0 && header < 16) return "pdf";
-	if (!(data[0] === 0x50 && data[1] === 0x4b && data[2] === 0x03 && data[3] === 0x04)) return undefined;
+	if (!zip0) return isFatturaPA(data) ? "fattura" : undefined;
 	let zip: Zip;
 	try {
 		zip = new Zip(Buffer.from(data));
@@ -102,7 +107,13 @@ const NOT_A_DOCUMENT = "il file è rovinato o non è un documento che so leggere
 
 /** Names that promise a document: one of these that does not open is broken, not text. */
 export function looksLikeDocument(name: string): boolean {
-	return /\.(pdf|docx|xlsx|pptx|odt|ods|odp)$/i.test(name);
+	return /\.(pdf|docx|xlsx|pptx|odt|ods|odp|p7m)$/i.test(name);
+}
+
+/** The extension a document's file should have: an invoice is .xml, or .p7m when it is signed. */
+export function documentExtension(kind: DocumentKind, data: Uint8Array): string {
+	if (kind !== "fattura") return kind;
+	return isSignedEnvelope(data) ? "p7m" : "xml";
 }
 
 /**
@@ -124,8 +135,9 @@ export function oldFormatAdvice(name: string, data: Uint8Array): string | undefi
 /** The document's text, or a DocumentError saying in Italian why not. */
 export function documentText(name: string, data: Uint8Array): DocumentText {
 	const kind = documentKind(name, data);
-	if (kind === undefined) throw new DocumentError(NOT_A_DOCUMENT);
+	if (kind === undefined) throw new DocumentError(isSignedEnvelope(data) ? signedProblem(data) : NOT_A_DOCUMENT);
 	try {
+		if (kind === "fattura") return { kind, ...fatturaText(data) };
 		if (kind === "pdf") {
 			const pdf = pdfText(Buffer.from(data));
 			return { kind, text: pdf.text, parts: pdf.pages, ...(pdf.note === undefined ? {} : { note: pdf.note }) };
@@ -136,10 +148,21 @@ export function documentText(name: string, data: Uint8Array): DocumentText {
 		if (kind === "pptx") return { kind, ...pptxText(zip) };
 		return { kind, ...odfText(zip, kind) };
 	} catch (error) {
-		if (error instanceof ZipError || error instanceof PdfError) throw new DocumentError(error.message);
+		if (error instanceof ZipError || error instanceof PdfError || error instanceof FatturaError || error instanceof P7mError) throw new DocumentError(error.message);
 		// Anything else is a file the readers did not expect: broken, as far as the person is concerned.
 		throw new DocumentError(error instanceof RangeError ? "il documento è troppo complesso da leggere" : NOT_A_DOCUMENT);
 	}
+}
+
+/** Why a signed file (.p7m) that is not an invoice is not read: its envelope is broken, or it holds something else. */
+function signedProblem(data: Uint8Array): string {
+	try {
+		signedContent(data);
+	} catch (error) {
+		if (error instanceof P7mError) return error.message;
+		throw error;
+	}
+	return "è un file firmato digitalmente (.p7m) che non contiene una fattura elettronica: dei file firmati leggo solo le fatture";
 }
 
 function safeText(zip: Zip, name: string): string | undefined {
@@ -148,20 +171,6 @@ function safeText(zip: Zip, name: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-
-export function xmlUnescape(text: string): string {
-	return text.replace(/&(#x[0-9a-fA-F]+|#\d+|\w+);/g, (whole, code: string) => {
-		if (code.startsWith("#x")) return safeCodePoint(Number.parseInt(code.slice(2), 16)) ?? whole;
-		if (code.startsWith("#")) return safeCodePoint(Number.parseInt(code.slice(1), 10)) ?? whole;
-		return ENTITIES[code] ?? whole;
-	});
-}
-
-function safeCodePoint(n: number): string | undefined {
-	return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : undefined;
 }
 
 /** Collapse what the walkers leave: spaces at line ends, runs of blank lines. */

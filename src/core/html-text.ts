@@ -115,3 +115,18 @@ export function decodeEntities(text: string): string {
 		return code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) || code < 0x20 ? " " : String.fromCodePoint(code);
 	});
 }
+
+const XML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** XML's five entities and numeric references, nothing else: no DTD, so no other entity is defined, and an unknown one stays as written. */
+export function xmlUnescape(text: string): string {
+	return text.replace(/&(#x[0-9a-fA-F]+|#\d+|\w+);/g, (whole, code: string) => {
+		if (code.startsWith("#x")) return safeCodePoint(Number.parseInt(code.slice(2), 16)) ?? whole;
+		if (code.startsWith("#")) return safeCodePoint(Number.parseInt(code.slice(1), 10)) ?? whole;
+		return XML_ENTITIES[code] ?? whole;
+	});
+}
+
+function safeCodePoint(n: number): string | undefined {
+	return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : undefined;
+}

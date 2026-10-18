@@ -48,7 +48,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions): AnnieTool[
 		{
 			name: "file_read",
 			description:
-				"Read a file from your workspace, including files people uploaded: text files, and the text of PDF, Word, Excel, PowerPoint and OpenDocument documents. " +
+				"Read a file from your workspace, including files people uploaded: text files, and the text of PDF, Word, Excel, PowerPoint and OpenDocument documents, and a summary of Italian electronic invoices (FatturaPA, .xml or signed .xml.p7m). " +
 				`Long files come back in pieces of ${MAX_READ} characters: pass offset to read on from where the last piece stopped.`,
 			parameters: {
 				type: "object",
