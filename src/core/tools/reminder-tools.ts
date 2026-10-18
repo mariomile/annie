@@ -17,7 +17,7 @@ import type { Workspace } from "../workspace.ts";
 import { ambiguous, fenced, type Loaded, markDay, notFound } from "./invoice-fence.ts";
 import { companyText } from "./invoice-words.ts";
 import { LETTER_ONLY, type ReminderArgs, reminderArgs } from "./reminder-args.ts";
-import { invoiceFiles, type ReadText } from "./reminder-attachments.ts";
+import { filesToForward, type ReadText } from "./reminder-attachments.ts";
 import { customersNamed, type Debtor, debtors, invoicesOf, isLate, letters, marksOn, namedInvoice } from "./reminder-debtors.ts";
 import { customerName, draftsBlock, leftOver } from "./reminder-drafts.ts";
 import { queueReminders } from "./reminder-queue.ts";
@@ -38,6 +38,8 @@ type ReminderDeps = {
 	readonly workspace?: Workspace;
 	/** Tests: the text of a PDF, to tell it is the invoice (default: the document reader). */
 	readonly readText?: ReadText;
+	/** Tests: how long one call may spend reading courtesy PDFs (default 30 seconds). */
+	readonly pdfBudgetMs?: number;
 };
 
 /** Without the paid marks and the reminders sent, a reminder could go to who paid, or twice: none is written. */
@@ -151,8 +153,9 @@ export async function reminderAnswer(args: Record<string, unknown>, ctx: ToolCon
 	if (unavailable !== undefined || ctx.thread === undefined || deps.mail === undefined) {
 		const why = unavailable ?? "questa conversazione non ha un account di posta";
 		const how = `Di' a chi ti scrive: «${PHONE_LEAD}» Poi manda un messaggio per ogni sollecito con soltanto la riga «Oggetto: …», il testo della lettera e il link: le righe che iniziano con A:, Nota: e --- sono per te e non vanno incollate. Per gli altri clienti digli di chiederti "sollecito per <nome>". Quando l'ha mandato, annotalo con op reminder_sent.`;
-		const files = a.attach && deps.workspace !== undefined ? (await invoiceFiles(deps.workspace, drafts.flatMap((d) => invoicesOf(d.debtor)), deps.readText)).paths : [];
-		const attach = files.length === 0 ? "" : ` Poi digli: «Ti mando qui anche le fatture: allegale tu alla mail.» e mandagli con file_send i file elencati in fondo.`;
+		const files = a.attach && deps.workspace !== undefined ? await filesToForward(deps.workspace, drafts.flatMap((d) => invoicesOf(d.debtor))) : [];
+		const check = files.some((f) => f.endsWith(" (da controllare)")) ? " I PDF segnati «da controllare» li ho trovati solo dal nome, senza aprirli: digli di guardarli prima di inoltrarli." : "";
+		const attach = files.length === 0 ? "" : ` Poi digli: «Ti mando qui anche le fatture: allegale tu alla mail.» e mandagli con file_send i file elencati in fondo.${check}`;
 		return `${savedText}${noMailFor(why, true)} ${how}${attach}\n${draftsBlock(drafts, files.length === 0 ? extra : [...extra, `File delle fatture: ${files.join(", ")}`], true)}`;
 	}
 	return savedText + (await queueReminders(drafts, extra, a, ctx, deps, { today, dayOf, thread: ctx.thread, mail: deps.mail }));

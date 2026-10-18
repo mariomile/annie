@@ -228,6 +228,9 @@ export class GoogleUncertain extends Error {
 	override readonly name = "GoogleUncertain";
 }
 
+/** How long getting an access token may take. */
+const TOKEN_TIMEOUT_MS = 30_000;
+
 /** One person's Gmail and Calendar over an egress-guarded fetch. Writes are called only for an approved action. */
 export class GoogleClient {
 	private token: { value: string; expiresAt: number } | undefined;
@@ -353,6 +356,11 @@ export class GoogleClient {
 		}
 	}
 
+	/** Gets an access token now, if none is fresh: before a long wait, so the write that follows does not start with it. */
+	async ready(): Promise<void> {
+		await this.accessToken();
+	}
+
 	private async accessToken(): Promise<string> {
 		const now = (this.options.now ?? Date.now)();
 		if (this.token !== undefined && this.token.expiresAt > now) return this.token.value;
@@ -363,6 +371,8 @@ export class GoogleClient {
 			headers: { "content-type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({ client_id: this.options.clientId, client_secret: this.options.clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
 			redirect: "error",
+			// Before any write leaves: a sign-in that hangs fails as not done.
+			signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
 		});
 		const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string };
 		// invalid_grant: the person revoked access from their Google account.

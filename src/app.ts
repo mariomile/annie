@@ -54,7 +54,8 @@ import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, co
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { type GoogleAction, type GoogleActionResult, googleActionReport, googleActionTitle } from "./core/google-actions.ts";
 import { mimeMessage } from "./core/mail-mime.ts";
-import { oneAttachmentRunAtATime, readAttachments } from "./core/mail-attachments.ts";
+import { readAttachments } from "./core/mail-attachments.ts";
+import { attachmentSlots } from "./core/attachment-slots.ts";
 import type { MailRequests } from "./core/mail-requests.ts";
 import { checkedUrl, publicAddress, WebFetchRefused } from "./core/web-fetch.ts";
 import { readPage } from "./core/watches.ts";
@@ -352,8 +353,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		return {
 			check: why,
 			pending: async () => {
-				const waiting = (await runtime.googleActions(record.tenantId, record.id).list()).filter((x) => x.status === "pending");
-				return { invoices: new Set(waiting.flatMap((x) => (x.reminders ?? []).map((r) => r.invoice))), quotes: new Set(waiting.flatMap((x) => (x.quote === undefined ? [] : [x.quote.base]))) };
+				// Waiting for a decision, or approved and being sent right now.
+				const waiting = (await runtime.googleActions(record.tenantId, record.id).list()).filter((x) => x.status === "pending" || x.status === "running");
+				return { invoices: new Set(waiting.flatMap((x) => (x.reminders ?? []).map((r) => r.invoice))), quotes: new Set(waiting.flatMap((x) => (x.quote === undefined ? [] : [x.quote.number]))) };
 			},
 			propose: async (p) => {
 				const personId = await personOf(p.thread);
@@ -419,8 +421,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				if (mail.attachments === undefined || mail.attachments.length === 0) await send(mimeMessage(mail));
 				else {
 					const attachments = mail.attachments;
-					// The files shown on the card, read again: changed or gone since, nothing is sent. One such run at a time: they are large.
-					await oneAttachmentRunAtATime(async () => {
+					// The token first, outside the slot: a slow sign-in never holds a slot. Then the files shown on the card, read
+					// again (changed or gone since, nothing is sent), one such run at a time per tenant, two in the process: they are large.
+					await client.ready();
+					await attachmentSlots.run(record.tenantId, async () => {
 						const message = mimeMessage(mail, await readAttachments(runtime.workspace(record.tenantId, record.id), attachments));
 						await send(message);
 					});

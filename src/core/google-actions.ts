@@ -2,10 +2,10 @@ import { randomBytes } from "node:crypto";
 import { type EventTime, GoogleUncertain } from "../connectors/google.ts";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
 import { validAddress } from "./email-address.ts";
-import { attachmentsLine } from "./mail-attachments.ts";
+import { attachmentsLine, withoutAttachmentWords } from "./mail-attachments.ts";
 import type { MailDraft } from "./mail-draft.ts";
 import type { QuoteMailRef } from "./mail-requests.ts";
-import { oneLine, withoutFormatChars } from "./plain-text.ts";
+import { oneLine } from "./plain-text.ts";
 import { quoteMailProblem, recordQuoteMail } from "./quote-mail.ts";
 import type { ReminderItem } from "./reminder-book.ts";
 import type { AnnieRuntime } from "./runtime.ts";
@@ -172,9 +172,11 @@ export function instant(time: EventTime): number {
  * characters, and unable to fake that line.
  */
 export function cardView(action: GoogleAction): GoogleAction {
-	const reason = oneLine(withoutFormatChars(action.reason).replace(/allegat/gi, "allegat."), GOOGLE_ACTION_LIMITS.maxReason);
-	const line = attachmentsLine(action.mail?.attachments ?? []);
-	return { ...action, reason: line === "" ? reason : `${line} · ${reason}` };
+	const reason = oneLine(withoutAttachmentWords(action.reason), GOOGLE_ACTION_LIMITS.maxReason);
+	const attachments = (action.mail?.attachments ?? []).map((a) => ({ ...a, path: oneLine(a.path), name: oneLine(a.name) }));
+	const line = attachmentsLine(attachments);
+	if (line === "" || action.mail === undefined) return { ...action, reason };
+	return { ...action, mail: { ...action.mail, attachments }, reason: `${line} · ${reason}` };
 }
 
 /** «, con 2 allegati». */

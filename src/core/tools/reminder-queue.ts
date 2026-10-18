@@ -12,15 +12,16 @@ import { oneLine } from "../plain-text.ts";
 import type { Workspace } from "../workspace.ts";
 import { fenced } from "./invoice-fence.ts";
 import type { ReminderArgs } from "./reminder-args.ts";
-import { letterAttachments, type ReadText } from "./reminder-attachments.ts";
+import { letterAttachments, pdfBudget, type ReadText } from "./reminder-attachments.ts";
 import { invoicesOf, lastFormal, remindedOn } from "./reminder-debtors.ts";
 import { customerName, draftsBlock } from "./reminder-drafts.ts";
 import type { ReminderDraft, ReminderTerms } from "./reminder-text.ts";
 
-export type QueueDeps = {
+type QueueDeps = {
 	readonly record?: (event: { readonly type: "invoice.reminder"; readonly op: "queue"; readonly count: number }) => Promise<void>;
 	readonly workspace?: Workspace;
 	readonly readText?: ReadText;
+	readonly pdfBudgetMs?: number;
 };
 
 /** Why a draft is not sent now, if it is not. */
@@ -48,11 +49,13 @@ function cardReason(draft: ReminderDraft): string {
 
 /** Each draft that may go, on an approval card of its own; the others said with why. */
 export async function queueReminders(drafts: readonly ReminderDraft[], extra: readonly string[], a: ReminderArgs, ctx: ToolContext, deps: QueueDeps, env: { today: string; dayOf: (at: string) => string; thread: MailThread; mail: MailRequests }): Promise<string> {
-	const pending = (await env.mail.pending()).invoices;
+	// In a step: a replay after a crash finds the call's own cards asked, not ones more waiting.
+	const pending = new Set(await ctx.step("pending", async () => [...(await env.mail.pending()).invoices]));
 	const skipped: string[] = [];
 	const missing: ReminderDraft[] = [];
 	const asked: { draft: ReminderDraft; id: string; notes: readonly string[] }[] = [];
 	let full = 0;
+	const budget = pdfBudget(Date.now(), undefined, deps.pdfBudgetMs);
 	for (const draft of drafts) {
 		const reason = skipReason(draft, a.terms, pending, env);
 		if (reason !== undefined) {
@@ -70,7 +73,7 @@ export async function queueReminders(drafts: readonly ReminderDraft[], extra: re
 		let attachments: readonly MailAttachment[] = [];
 		let notes: readonly string[] = [];
 		if (a.attach) {
-			const files = deps.workspace === undefined ? { problem: "qui non posso allegare file" } : await letterAttachments(deps.workspace, invoicesOf(draft.debtor), deps.readText);
+			const files = deps.workspace === undefined ? { problem: "qui non posso allegare file" } : await letterAttachments(deps.workspace, invoicesOf(draft.debtor), budget, deps.readText);
 			if ("problem" in files) {
 				skipped.push(`• ${customerName(draft.debtor)} (livello ${draft.level}): non preparato, ${files.problem}.`);
 				continue;

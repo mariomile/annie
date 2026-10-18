@@ -4,12 +4,12 @@ import type { MailDraft } from "./mail-draft.ts";
 import type { AttachmentData } from "./mail-attachments.ts";
 
 /** A mail that cannot be written safely: in Italian, the person reads it on the card. */
-export class MailMimeError extends Error {
+class MailMimeError extends Error {
 	override readonly name = "MailMimeError";
 }
 
 /** One header value: no line breaks; outside ASCII, RFC 2047 encoded-words of at most 75 characters, folded. */
-export function headerValue(value: string): string {
+function headerValue(value: string): string {
 	if (/[\r\n]/.test(value)) throw new MailMimeError("un'intestazione della mail non può andare a capo");
 	if (/^[\x20-\x7e]*$/.test(value)) return value;
 	const words: string[] = [];
@@ -50,21 +50,34 @@ export function base64Lines(data: Buffer): Buffer {
 	return out;
 }
 
-/** A file name safe in a quoted parameter: printable ASCII without quotes, backslashes or semicolons; the rest becomes "_". */
+/** Longest ASCII name parameter kept on one line. */
+const ASCII_NAME = 60;
+
+/**
+ * A file name safe in a quoted parameter: printable ASCII without quotes, backslashes, semicolons
+ * or «=?» (which some programs would decode as an encoded-word); the rest becomes "_". At most
+ * ASCII_NAME characters, the extension kept.
+ */
 function asciiName(name: string): string {
 	const plain = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
-	return plain.replace(/[^\x20-\x7e]|["\\;]/g, "_").replace(/[\r\n]/g, "") || "allegato";
+	const safe = plain.replace(/[^\x20-\x7e]|["\\;]/g, "_").replace(/=\?/g, "=_") || "allegato";
+	if (safe.length <= ASCII_NAME) return safe;
+	const dot = safe.lastIndexOf(".");
+	const ext = dot > 0 && safe.length - dot <= 10 ? safe.slice(dot) : "";
+	return safe.slice(0, ASCII_NAME - ext.length) + ext;
 }
 
 /**
- * The name parameters of an attachment. ASCII names: quoted. Others: an ASCII fallback, then
+ * The name parameters of an attachment. Short ASCII names: quoted. Others: an ASCII fallback, then
  * RFC 2231 (filename*, percent-encoded UTF-8, split into continuations), which mail programs
- * prefer; Content-Type's name also as RFC 2047 encoded-words, for the older ones.
+ * prefer; Content-Type's name also as RFC 2047 encoded-words, for the older ones, unless the name
+ * itself holds «=?», which then gets the ASCII fallback there too.
  */
 function nameParams(name: string): { type: string; disposition: string } {
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point
 	if (/[\u0000-\u001f\u007f"\\]/.test(name)) throw new MailMimeError("nome di allegato non valido");
-	if (/^[\x20-\x7e]*$/.test(name) && !name.includes(";") && name.length <= 60) return { type: `name="${name}"`, disposition: `filename="${name}"` };
+	const encodedLookalike = name.includes("=?");
+	if (/^[\x20-\x7e]*$/.test(name) && !name.includes(";") && !encodedLookalike && name.length <= ASCII_NAME) return { type: `name="${name}"`, disposition: `filename="${name}"` };
 	// Percent-encoded UTF-8 in pieces of whole characters, so each continuation decodes on its own.
 	const pieces: string[] = [];
 	let piece = "";
@@ -79,7 +92,7 @@ function nameParams(name: string): { type: string; disposition: string } {
 	if (piece !== "") pieces.push(piece);
 	const star = pieces.length === 1 ? `filename*=UTF-8''${pieces[0]}` : pieces.map((p, i) => `filename*${i}*=${i === 0 ? "UTF-8''" : ""}${p}`).join(";\r\n ");
 	const ascii = asciiName(name);
-	return { type: `name="${headerValue(name)}"`, disposition: `filename="${ascii.slice(0, 60)}";\r\n ${star}` };
+	return { type: `name="${encodedLookalike ? ascii : headerValue(name)}"`, disposition: `filename="${ascii}";\r\n ${star}` };
 }
 
 /** A boundary found nowhere in the parts. */

@@ -11,7 +11,8 @@ import type { ReminderItem } from "./reminder-book.ts";
 export type MailThread = { readonly channel: string; readonly threadId: string };
 
 /** The quote a mail sends: re-checked at approval; once sent, its address saved (if given) and the day recorded. */
-export type QuoteMailRef = { readonly number: string; readonly base: string; readonly email?: string };
+/** A quote sent by mail: its number, its first number, the address to keep once sent, whether the person confirmed sending it although declined. */
+export type QuoteMailRef = { readonly number: string; readonly base: string; readonly email?: string; readonly confirmedDeclined?: true };
 
 /** A mail asked for: what the approval card shows, and what to record once it is sent. */
 export type MailProposal = {
@@ -27,8 +28,8 @@ export type MailProposal = {
 	readonly quote?: QuoteMailRef;
 };
 
-/** What waits for a decision: the invoices of reminder cards, the quotes (by first number) of quote cards. */
-export type PendingMail = { readonly invoices: ReadonlySet<string>; readonly quotes: ReadonlySet<string> };
+/** What waits for a decision or is being sent: the invoices of reminder cards, the quotes (by exact number) of quote cards. */
+type PendingMail = { readonly invoices: ReadonlySet<string>; readonly quotes: ReadonlySet<string> };
 
 /**
  * How tools send mail: `check` says why this conversation cannot (not a console thread, no account,
@@ -41,7 +42,7 @@ export type MailRequests = {
 };
 
 /** A request asked, or the queue was full (nothing asked). */
-export type Proposed = { readonly id: string } | { readonly full: true };
+type Proposed = { readonly id: string } | { readonly full: true };
 
 /** Ask, with a full queue as an answer rather than an error. */
 export async function proposeMail(mail: MailRequests, proposal: MailProposal): Promise<Proposed> {

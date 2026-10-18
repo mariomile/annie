@@ -59,6 +59,8 @@ export type InvoiceToolsOptions = {
 	readonly mail?: MailRequests;
 	/** Tests: the text of a PDF, to tell a courtesy copy is the invoice (default: the document reader). */
 	readonly readText?: ReadText;
+	/** Tests: how long one call may spend reading courtesy PDFs (default 30 seconds). */
+	readonly pdfBudgetMs?: number;
 	/** Tests: the scan's limits, the worker, the clock. */
 	readonly limits?: ScanLimits;
 	readonly read?: ReadFattura;
@@ -112,6 +114,7 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 		...(options.mail === undefined ? {} : { mail: options.mail }),
 		workspace: options.workspace,
 		...(options.readText === undefined ? {} : { readText: options.readText }),
+		...(options.pdfBudgetMs === undefined ? {} : { pdfBudgetMs: options.pdfBudgetMs }),
 	};
 	return [
 		{

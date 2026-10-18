@@ -2,7 +2,7 @@
 import { sumsText } from "../invoice-sums.ts";
 import { fenced } from "./invoice-fence.ts";
 import type { Debtor } from "./reminder-debtors.ts";
-import { mailtoLink } from "./reminder-sources.ts";
+import { mailtoLink } from "./letter-shared.ts";
 import { LEVEL_NAMES, MAX_REMINDERS, type ReminderDraft } from "./reminder-text.ts";
 
 /** Full drafts in one answer; the other customers get one line each. */
@@ -13,7 +13,7 @@ export function customerName(debtor: Debtor): string {
 }
 
 /** One draft for the model: recipient, subject, text, remarks; all of it from the files, so fenced by the caller. */
-export function draftText(draft: ReminderDraft, link: boolean): string {
+function draftText(draft: ReminderDraft, link: boolean): string {
 	const to = draft.to === undefined ? "A: manca l'indirizzo" : `A: ${draft.to}${draft.toFrom === "pec" ? " (PEC di recapito SdI)" : draft.toFrom === "file" ? " (scritto in fattura)" : draft.toFrom === "saved" ? " (salvato)" : ""}`;
 	const head = [`--- Sollecito per ${customerName(draft.debtor)}, livello ${draft.level} (${draft.late ? LEVEL_NAMES[draft.level] : "promemoria di scadenza"})`, to, ...draft.notes.map((n) => `Nota: ${n}.`)];
 	const message = [`Oggetto: ${draft.subject}`, "", draft.body];
@@ -23,7 +23,7 @@ export function draftText(draft: ReminderDraft, link: boolean): string {
 }
 
 /** One line for a customer past the full drafts. */
-export function draftLine(draft: ReminderDraft): string {
+function draftLine(draft: ReminderDraft): string {
 	return `• ${customerName(draft.debtor)}: ${sumsText(draft.net)}, livello ${draft.level}, ${draft.to === undefined ? "manca l'indirizzo" : `indirizzo: ${draft.to}`}`;
 }
 

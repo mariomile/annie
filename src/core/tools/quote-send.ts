@@ -8,6 +8,7 @@
 import { validAddress } from "../email-address.ts";
 import type { ToolContext } from "../engine.ts";
 import type { Company } from "../invoices.ts";
+import { dayOfIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
 import { AttachmentError, attachFiles, attachmentsLine, type MailAttachment } from "../mail-attachments.ts";
 import { type MailRequests, NO_MAIL_HERE, noMailFor, proposeMail } from "../mail-requests.ts";
@@ -16,13 +17,13 @@ import { matchesCustomer, type Quote, shownStatus, validUntil } from "../quotes.
 import { PREPARING } from "../quote-store.ts";
 import type { Workspace } from "../workspace.ts";
 import { euros, fenced, totalsOf } from "./quote-render.ts";
-import { mailtoLink } from "./reminder-sources.ts";
-import { isPrivateParty } from "./reminder-text.ts";
+import { isPrivateParty, mailtoLink } from "./letter-shared.ts";
 
-export type QuoteSendDeps = {
+type QuoteSendDeps = {
 	readonly workspace: Workspace;
 	readonly company: Partial<Company>;
 	readonly today: string;
+	readonly timeZone: string;
 	readonly mail?: MailRequests;
 	readonly record?: (event: { readonly type: "quote.changed"; readonly op: "send"; readonly count: number }) => Promise<void>;
 };
@@ -31,18 +32,18 @@ export type QuoteSendDeps = {
 const BUSINESS_NAME = /\b(s\.?\s?r\.?\s?l\.?s?|s\.?\s?p\.?\s?a\.?|s\.?\s?n\.?\s?c\.?|s\.?\s?a\.?\s?s\.?|soc(ietà|\.)?|coop(erativa)?|studio|ditta|associazione|consorzio|fondazione|comune|onlus)(\b|$)/i;
 
 /** A person (Lei), not a business (voi): no partita IVA, no numeric codice fiscale, no company word in the name. */
-export function privateCustomer(quote: Quote): boolean {
+function privateCustomer(quote: Quote): boolean {
 	return isPrivateParty(quote.customer) && !BUSINESS_NAME.test(quote.customer.name);
 }
 
 /** «Beta Ristorazione Srl: preventivo n. 2026-012», or «Preventivo n. 2026-012» without a company name. */
-export function quoteSubject(quote: Quote, company: Partial<Company>): string {
+function quoteSubject(quote: Quote, company: Partial<Company>): string {
 	const from = company.name === undefined ? "" : oneLine(company.name, 200);
 	return from === "" ? `Preventivo n. ${quote.number}` : `${from}: preventivo n. ${quote.number}`;
 }
 
 /** A short letter: the quote, its total and how long it holds; to a business or to a person; signed as the company. */
-export function quoteBody(quote: Quote, company: Partial<Company>): string {
+function quoteBody(quote: Quote, company: Partial<Company>): string {
 	const t = totalsOf(quote);
 	const vat = quote.lines.every((l) => l.vat === 0) ? "senza IVA" : "IVA inclusa";
 	const net = t.ritenuta > 0n ? ` (netto a pagare ${euros(t.net)})` : "";
@@ -99,7 +100,10 @@ export async function sendQuote(quote: Quote, args: Record<string, unknown>, ctx
 		return `${noMailFor(why)} ${tell}\n${fenced([`A: ${to ?? "manca l'indirizzo"}`, `Oggetto: ${subject}`, "", body, "", link === undefined ? "Link: il testo è troppo lungo per un link, va copiato." : `Link: ${link}`].join("\n"))}`;
 	}
 	if (to === undefined || !validAddress(to)) return `Errore: non ho l'indirizzo email di ${fenced(quote.customer.name)}. Chiedilo a chi ti scrive e richiama op send con email: lo salvo sul preventivo quando la mail parte.`;
-	if ((await deps.mail.pending()).quotes.has(quote.base)) return `C'è già una richiesta in attesa per il preventivo ${quote.base}: approvala o rifiutala nella card.`;
+	// In a step: a replay after a crash finds the call's own card asked, not one more waiting.
+	const mail = deps.mail;
+	const waiting = await ctx.step("pending", async () => (await mail.pending()).quotes.has(quote.number));
+	if (waiting) return `C'è già una richiesta in attesa per il preventivo ${quote.number}: approvala o rifiutala nella card.`;
 	let attachments: MailAttachment[];
 	try {
 		attachments = await attachFiles(deps.workspace, [quote.file]);
@@ -108,16 +112,16 @@ export async function sendQuote(quote: Quote, args: Record<string, unknown>, ctx
 		throw error;
 	}
 	const save = given !== undefined && given !== quote.customer.email?.toLowerCase() ? given : undefined;
-	const mail = deps.mail;
 	const thread = ctx.thread;
 	const reason = oneLine(`Invio del preventivo ${quote.number} a ${quote.customer.name}`, 300);
-	const made = await ctx.step("propose", async () => proposeMail(mail, { thread, to, subject, body, reason, attachments, key: ctx.callId, quote: { number: quote.number, base: quote.base, ...(save === undefined ? {} : { email: save }) } }));
+	const made = await ctx.step("propose", async () => proposeMail(mail, { thread, to, subject, body, reason, attachments, key: ctx.callId, quote: { number: quote.number, base: quote.base, ...(save === undefined ? {} : { email: save }), ...(quote.status === "declined" ? { confirmedDeclined: true as const } : {}) } }));
 	if (!("id" in made)) return "Errore: ci sono troppe richieste in attesa: falle decidere e riprova.";
 	await ctx.step("audit", async () => {
 		await deps.record?.({ type: "quote.changed", op: "send", count: attachments.length });
 		return true;
 	});
 	const saved = save === undefined ? "" : " L'indirizzo lo salvo sul preventivo quando la mail parte.";
+	const again = quote.sentAt === undefined ? "" : ` Nota: il preventivo è già inviato per mail il ${italianDate(dayOfIn(deps.timeZone)(quote.sentAt))}: dillo a chi ti scrive.`;
 	const what = quote.file.endsWith(".docx") ? "il Word" : "il PDF";
-	return `Richiesta ${made.id} pronta: inviare il preventivo ${quote.number} per mail, con ${what} allegato. La persona la vede in una card qui in chat e decide lei (scade fra 24 ore): parte solo se la approva. Non dire che è inviato finché non arriva l'esito.${saved}\n${fenced(`A: ${to}\nOggetto: ${subject}\n${attachmentsLine(attachments)}`)}`;
+	return `Richiesta ${made.id} pronta: inviare il preventivo ${quote.number} per mail, con ${what} allegato. La persona la vede in una card qui in chat e decide lei (scade fra 24 ore): parte solo se la approva. Non dire che è inviato finché non arriva l'esito.${saved}${again}\n${fenced(`A: ${to}\nOggetto: ${subject}\n${attachmentsLine(attachments)}`)}`;
 }

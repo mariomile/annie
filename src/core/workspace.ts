@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 
@@ -71,6 +71,9 @@ export class Workspace {
 		try {
 			const stat = await handle.stat();
 			if (!stat.isFile()) throw new WorkspaceError("Not a file");
+			// A hard link shares the file with a name outside the workspace's rules: refused.
+			if (stat.nlink > 1) throw new WorkspaceError("Hard links are not allowed");
+			await this.assertHandleInside(handle.fd);
 			if (stat.size > maxBytes) throw new WorkspaceError(`File too large: over ${maxBytes} bytes`);
 			const data = Buffer.alloc(stat.size);
 			let at = 0;
@@ -163,6 +166,18 @@ export class Workspace {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 			throw error;
 		}
+	}
+
+	/** Where an open handle really is, where the system says it (/proc on Linux): inside the root, or refused. Elsewhere, nothing more to check. */
+	private async assertHandleInside(fd: number): Promise<void> {
+		let real: string;
+		try {
+			real = await readlink(`/proc/self/fd/${fd}`);
+		} catch {
+			return;
+		}
+		const root = await realpath(this.root);
+		if (!real.startsWith(root + sep)) throw new WorkspaceError("Path leaves the workspace");
 	}
 
 	/** A folder on the way may be a symlink planted from outside: check where it really is. */

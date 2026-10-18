@@ -17,6 +17,7 @@ import { bookKey, type ReminderItem, type ReminderLevel } from "../reminder-book
 import { asideSums, type Debtor, invoicesOf, isLate, lastFormal, levelOf, type OverdueRow, owedDetail, remindedOn } from "./reminder-debtors.ts";
 import { oneLine } from "../plain-text.ts";
 import { ofRate, type Payment, type Rate, type Recipient, simpleInterest } from "./reminder-sources.ts";
+import { isPrivateParty } from "./letter-shared.ts";
 
 /** Customers reminded in one call; the rest are counted. */
 export const MAX_REMINDERS = 10;
@@ -117,11 +118,6 @@ function subjectOf(level: ReminderLevel, late: boolean, invoices: readonly Invoi
 	const head = !late ? "promemoria di scadenza" : level === 1 ? "promemoria di pagamento" : level === 2 ? "secondo sollecito di pagamento" : "sollecito formale di pagamento";
 	if (sender !== undefined && sender.trim() !== "") return `${oneLine(sender, 60)}: ${head} ${which}`;
 	return `${head.charAt(0).toUpperCase()}${head.slice(1)} ${which}`;
-}
-
-/** A person, not a business: no partita IVA, no numeric codice fiscale (the quotes' letter uses it too). */
-export function isPrivateParty(party: { readonly vat?: unknown; readonly fiscal?: string }): boolean {
-	return party.vat === undefined && !/^\d{11}$/.test(party.fiscal ?? "");
 }
 
 /** A person, not a business nor a public body. */

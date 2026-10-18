@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { ATTACHMENT_TYPES, contentMatches, refusedType } from "./attachment-types.ts";
-import { withoutFormatChars } from "./plain-text.ts";
+import { oneLine, withoutFormatChars } from "./plain-text.ts";
 import { type Workspace, WorkspaceError } from "./workspace.ts";
 
 export { ATTACHMENT_TYPES };
@@ -28,13 +28,13 @@ export class AttachmentError extends Error {
 }
 
 /**
- * Gmail takes 25 MB per message, counted after base64 (4/3 and line breaks): 18 MiB of files
- * leaves room for the text and the headers.
+ * Gmail takes 25 MB per message (25,000,000 bytes), counted after base64: 4/3 and a line break
+ * every 76 characters. 17 MiB of files make about 24.4 MB, leaving room for the text and headers.
  */
-export const ATTACHMENT_LIMITS = { maxFiles: 5, maxTotalBytes: 18 * 1024 * 1024, maxName: 120 } as const;
+export const ATTACHMENT_LIMITS = { maxFiles: 5, maxTotalBytes: 17 * 1024 * 1024, maxName: 120 } as const;
 
 /** The extension, lower case, of a name ("" when none). */
-export function extensionOf(name: string): string {
+function extensionOf(name: string): string {
 	const dot = name.lastIndexOf(".");
 	return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
 }
@@ -63,40 +63,40 @@ export function sizeText(bytes: number): string {
 	return mb >= 10 ? `${Math.round(mb)} MB` : `${mb.toFixed(1).replace(".", ",")} MB`;
 }
 
-/** A workspace path as shown to the person: whole, without invisible format characters. */
-export function shownPath(path: string): string {
-	return withoutFormatChars(path);
-}
-
-/** The attachments in one line, for the card: «Allegati: preventivi/Preventivo.pdf (84 KB), fatture/B-70.xml (3 KB)». */
+/** The attachments in one line, for the card: «Allegati: preventivi/Preventivo.pdf (84 KB), fatture/B-70.xml (3 KB)». Paths whole, on one line, without invisible characters. */
 export function attachmentsLine(list: readonly MailAttachment[]): string {
 	if (list.length === 0) return "";
-	return `${list.length === 1 ? "Allegato" : "Allegati"}: ${list.map((a) => `${shownPath(a.path)} (${sizeText(a.size)})`).join(", ")}`;
+	return `${list.length === 1 ? "Allegato" : "Allegati"}: ${list.map((a) => `${oneLine(a.path)} (${sizeText(a.size)})`).join(", ")}`;
+}
+
+/** Lookalikes of the letters of «alleg» (Cyrillic, Greek, digits, capital I), folded to them: one character for one, so positions hold. */
+const LOOKALIKES: Readonly<Record<string, string>> = {
+	"\u0430": "a", "\u0410": "a", "\u03b1": "a", "\u0391": "a", "\u0251": "a",
+	I: "l", "1": "l", "|": "l", "\u04cf": "l", "\u04c0": "l", "\u03b9": "l", "\u0399": "l", "\u0456": "l", "\u0406": "l", "\u01c0": "l", "\u2113": "l",
+	"\u0435": "e", "\u0415": "e", "\u03b5": "e", "\u0395": "e", "\u04bd": "e",
+	"\u0261": "g", "\u0581": "g",
+};
+
+/**
+ * Text written by Annie, with every word that reads as «alleg…» (Allegato, Allegati, also spelt
+ * with lookalike letters or spaces) broken by a dot: on the card only the line the server writes
+ * may name the attachments.
+ */
+export function withoutAttachmentWords(text: string): string {
+	const plain = withoutFormatChars(text);
+	const folded = [...plain].map((c) => (c.length === 1 ? (LOOKALIKES[c] ?? c) : "\0".repeat(c.length))).join("");
+	let out = "";
+	let last = 0;
+	for (const m of folded.matchAll(/a\s*l\s*l\s*e\s*g/gi)) {
+		out += `${plain.slice(last, m.index)}alleg.`;
+		last = (m.index ?? 0) + m[0].length;
+	}
+	return out + plain.slice(last);
 }
 
 /** Why a request was not sent: one of its files is not the one the card showed. */
 export function changedFile(name: string): string {
 	return `Non inviata: il file ${name} è cambiato dopo la richiesta. Chiedi ad Annie di prepararla di nuovo.`;
-}
-
-let slot: Promise<void> = Promise.resolve();
-
-/**
- * Runs that hold attachments in memory, one at a time in the process: each can take some tens of
- * MB (the files and their base64), and approvals can come together.
- */
-export async function oneAttachmentRunAtATime<T>(work: () => Promise<T>): Promise<T> {
-	const previous = slot;
-	let release = () => {};
-	slot = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	await previous;
-	try {
-		return await work();
-	} finally {
-		release();
-	}
 }
 
 function sha256(data: Buffer): string {

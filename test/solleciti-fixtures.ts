@@ -114,7 +114,7 @@ export function fakeMail(unavailable?: string, o: { pending?: ReadonlySet<string
 }
 
 /** `company`: saved with partita IVA and name (the default), with the partita IVA only ("vat"), or not saved (false). */
-export function setup(files: Record<string, string> = FILES, o: { now?: Date; mail?: ReminderMail; company?: boolean | "vat"; who?: string; readText?: ReadText } = {}) {
+export function setup(files: Record<string, string> = FILES, o: { now?: Date; mail?: ReminderMail; company?: boolean | "vat"; who?: string; readText?: ReadText; pdfBudgetMs?: number } = {}) {
 	const dir = temp();
 	const root = join(dir, "workspace");
 	for (const [path, content] of Object.entries(files)) {
@@ -136,6 +136,7 @@ export function setup(files: Record<string, string> = FILES, o: { now?: Date; ma
 		now: () => o.now ?? NOW,
 		...(o.mail === undefined ? {} : { mail: o.mail }),
 		...(o.readText === undefined ? {} : { readText: o.readText }),
+		...(o.pdfBudgetMs === undefined ? {} : { pdfBudgetMs: o.pdfBudgetMs }),
 	});
 	if (tool === undefined) throw new Error("no tool");
 	return { dir, store, events, tool, run: async (args: Record<string, unknown>, c: ToolContext = ctx) => String(await tool.execute(args, c)) };

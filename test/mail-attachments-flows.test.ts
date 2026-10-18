@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { GOOGLE_SCOPE, GOOGLE_WRITE_SCOPE } from "../src/connectors/google.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
@@ -16,11 +16,12 @@ import type { Company } from "../src/core/invoices.ts";
 import { todayIn } from "../src/core/italian-calendar.ts";
 import type { MakeInput } from "../src/core/make-document.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
+import { quoteMailProblem } from "../src/core/quote-mail.ts";
 import { QuoteStore } from "../src/core/quote-store.ts";
 import { createQuoteTools, type QuoteEvent } from "../src/core/tools/quote-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
-import { cleanTemp, FILES, fakeMail, G1, G2, inside, outside, setup, TUESDAY } from "./solleciti-fixtures.ts";
+import { B70, BETA, cleanTemp, FILES, fakeMail, fattura, G1, G2, GAMMA, inside, outside, type Party, setup, TUESDAY } from "./solleciti-fixtures.ts";
 
 const dirs: string[] = [];
 const closers: (() => Promise<void>)[] = [];
@@ -105,7 +106,7 @@ describe("quotes op send", () => {
 		expect(await run({ op: "show", number: "1" })).toContain("aperto, inviato per mail il 18/10/2026");
 		expect(await run({ op: "list" })).toContain("inviato per mail il 18/10/2026");
 		// The address kept is used next time, and the same one in other case is not a new one.
-		await run({ op: "send", number: "2026-001", email: "MARIO@rossi.it" });
+		expect(await run({ op: "send", number: "2026-001", email: "MARIO@rossi.it" })).toContain("Nota: il preventivo è già inviato per mail il 18/10/2026: dillo a chi ti scrive.");
 		expect(proposals[1]?.to).toBe("mario@rossi.it");
 		expect(proposals[1]?.quote).toEqual({ number: "2026-001", base: "2026-001" });
 		expect(events.filter((e) => e.op === "send")).toEqual([
@@ -141,6 +142,41 @@ describe("quotes op send", () => {
 		await run({ op: "set_status", number: "1", status: "declined" });
 		expect(await run({ op: "send", number: "1" })).toContain("è segnato rifiutato dal cliente");
 		expect(await run({ op: "send", number: "1", confirm_declined: true })).toContain("Richiesta req2 pronta");
+		// The confirmation goes with the request: at approval a declined quote is sent only with it.
+		expect(proposals[0]?.quote?.confirmedDeclined).toBeUndefined();
+		expect(proposals[1]?.quote?.confirmedDeclined).toBe(true);
+	});
+
+	it("at approval: a quote declined since is not sent, unless the request was confirmed so; replaced, not sent", async () => {
+		const { run, store } = quotes(quoteMail().mail);
+		await run({ ...CREATE, email: "a@b.it" });
+		const ref = { number: "2026-001", base: "2026-001" };
+		expect(quoteMailProblem(store, ref)).toBeUndefined();
+		await run({ op: "set_status", number: "1", status: "declined" });
+		expect(quoteMailProblem(store, ref)).toBe("Non inviata: il preventivo 2026-001 è stato segnato rifiutato dal cliente dopo la richiesta.");
+		expect(quoteMailProblem(store, { ...ref, confirmedDeclined: true })).toBeUndefined();
+		await run({ op: "revise", number: "1", discount: 5 });
+		expect(quoteMailProblem(store, { ...ref, confirmedDeclined: true })).toBe("Non inviata: il preventivo 2026-001 è stato sostituito da 2026-001-R1.");
+	});
+
+	it("a card waiting for an older version does not hold up the revision; a replay after a crash finds the call's own card", async () => {
+		const { mail, proposals } = quoteMail(undefined, { pending: new Set(["2026-001"]) });
+		const { run } = quotes(mail);
+		await run({ ...CREATE, email: "a@b.it" });
+		await run({ op: "revise", number: "1", discount: 5 });
+		expect(await run({ op: "send", number: "2026-001-R1" })).toContain("Richiesta req1 pronta");
+		// The same call run again: its steps are kept, so the pending check does not see its own card as another one.
+		const asked = new Set<string>();
+		const replayable = quoteMail(undefined, { pending: asked });
+		const q = quotes(replayable.mail);
+		await q.run({ ...CREATE, email: "a@b.it" });
+		const steps = new Map<string, unknown>();
+		const ctx: ToolContext = { ...fresh(), callId: "replay", step: async (key, work) => (steps.has(key) ? steps.get(key) : steps.set(key, await work()).get(key)) as never };
+		expect(await q.run({ op: "send", number: "1" }, ctx)).toContain("Richiesta req1 pronta");
+		asked.add("2026-001");
+		expect(await q.run({ op: "send", number: "1" }, ctx)).toContain("Richiesta req1 pronta");
+		expect(replayable.proposals).toHaveLength(1);
+		expect(proposals).toHaveLength(1);
 	});
 
 	it("refuses a replaced quote or a missing file; a full queue is said", async () => {
@@ -193,7 +229,7 @@ const fakeRead = async (_name: string, data: Uint8Array) => {
 describe("solleciti with the invoices attached", () => {
 	it("attach_invoice: each letter carries its invoices' XML and the PDF that reads as that invoice; the letter says so; the card says where the address came from", async () => {
 		const { mail, proposals } = fakeMail();
-		const files = { ...FILES, "f/g1.pdf": `${PDF_HEAD}Fattura n. B-70`, "f/g2.pdf": `${PDF_HEAD}Fattura n. B-700`, "f/altro/Cortesia B-71.pdf": `${PDF_HEAD}Fattura B-71 del 10/09/2026`, "f/altro/B-71 vecchia.pdf": `${PDF_HEAD}nient'altro` };
+		const files = { ...FILES, "f/g1.pdf": `${PDF_HEAD}Fattura n. B-70, cliente P.IVA IT01234567897`, "f/g2.pdf": `${PDF_HEAD}Fattura n. B-700`, "f/altro/Cortesia B-71.pdf": `${PDF_HEAD}Fattura B-71 del 10/09/2026`, "f/altro/B-71 vecchia.pdf": `${PDF_HEAD}nient'altro` };
 		const { run, events } = setup(files, { mail, now: TUESDAY, readText: fakeRead });
 		const answer = await run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
 		expect(outside(answer)).toContain("Ho preparato una richiesta di invio");
@@ -232,15 +268,134 @@ describe("solleciti with the invoices attached", () => {
 	it("a letter whose files cannot go is not asked, and says why; from a phone, the invoices to attach by hand", async () => {
 		const { mail, proposals } = fakeMail();
 		const many = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f/x${i}.xml`, G1.replace("B-70", `B-9${i}`)]));
-		const { run } = setup({ ...many }, { mail, now: TUESDAY, readText: fakeRead });
+		let reads = 0;
+		const counted = async (name: string, data: Uint8Array) => {
+			reads++;
+			return fakeRead(name, data);
+		};
+		const pdfs = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f/x${i}.pdf`, `${PDF_HEAD}B-9${i} 01/09/2026`]));
+		const { run } = setup({ ...many, ...pdfs }, { mail, now: TUESDAY, readText: counted });
 		const answer = await run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
 		expect(inside(answer)).toContain("non preparato, al massimo 5 allegati per mail; manda una fattura alla volta con number");
 		expect(proposals).toEqual([]);
-		const phone = setup({ "f/g1.xml": G1, "f/g2.xml": G2, "f/g1.pdf": `${PDF_HEAD}B-70` }, { mail: fakeMail("chi scrive non ha collegato Google").mail, now: TUESDAY, readText: fakeRead });
+		expect(reads).toBe(0);
+		// From a phone: the XML and the PDF beside it, not opened, marked to be checked.
+		const phone = setup({ "f/g1.xml": G1, "f/g2.xml": G2, "f/g1.pdf": `${PDF_HEAD}B-70` }, { mail: fakeMail("chi scrive non ha collegato Google").mail, now: TUESDAY, readText: counted });
 		const copy = await phone.run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
 		expect(quoted(outside(copy))).toContain("Ti mando qui anche le fatture: allegale tu alla mail.");
 		for (const said of quoted(outside(copy))) expect(said).not.toContain("file_send");
-		expect(inside(copy)).toContain("File delle fatture: f/g1.xml, f/g1.pdf, f/g2.xml");
+		expect(inside(copy)).toContain("File delle fatture: f/g1.xml, f/g1.pdf (da controllare), f/g2.xml");
+		expect(outside(copy)).toContain("I PDF segnati «da controllare» li ho trovati solo dal nome, senza aprirli");
+		expect(reads).toBe(0);
+	});
+});
+
+describe("solleciti: a replay after a crash", () => {
+	it("finds the call's own cards asked, not ones more waiting", async () => {
+		const asked = new Set<string>();
+		const { mail, proposals } = fakeMail(undefined, { pending: asked });
+		const { run } = setup({ "f/g1.xml": G1 }, { mail, now: TUESDAY });
+		const steps = new Map<string, unknown>();
+		const ctx: ToolContext = { ...fresh(), callId: "replay", step: async (key, work) => (steps.has(key) ? steps.get(key) : steps.set(key, await work()).get(key)) as never };
+		expect(await run({ op: "reminder", party: "gamma", send: true }, ctx)).toContain("Ho preparato una richiesta di invio");
+		asked.add(B70);
+		const again = await run({ op: "reminder", party: "gamma", send: true }, ctx);
+		expect(again).toContain("Ho preparato una richiesta di invio");
+		expect(again).not.toContain("c'è già una richiesta di invio in attesa");
+		expect(proposals).toHaveLength(1);
+		// Another call sees the card waiting.
+		expect(await run({ op: "reminder", party: "gamma", send: true }, fresh())).toContain("c'è già una richiesta di invio in attesa");
+	});
+});
+
+describe("solleciti: which PDF is the invoice", () => {
+	/** Invoice `number` of Gamma, its XML at `path`. */
+	const gamma = (number: string, extra: Partial<{ date: string; total: string }> = {}) => fattura(BETA, GAMMA, { number, date: extra.date ?? "2026-09-01", total: extra.total ?? "1220.00", rate: [{ amount: extra.total ?? "1220.00", due: "2026-09-30" }] });
+
+	it("the number is not enough: the PDF also holds the customer's partita IVA, the date or the total", async () => {
+		const cases: [string, string, boolean][] = [
+			["Fattura n. B-70 Gamma Hotel", "solo il numero", false],
+			["Fattura n. B-70 P.IVA IT01234567897", "partita IVA", true],
+			["Fattura n. B-70 del 01/09/2026", "data italiana", true],
+			["Fattura n. B-70, data 2026-09-01", "data ISO", true],
+			["Fattura n. B-70 totale 1.220,00 €", "totale", true],
+			["Fattura n. B-70 totale 1220,00 €", "totale senza punti", true],
+			["Fattura n. B-70 totale 11.220,00 € del 01/09/20261", "numeri più lunghi", false],
+			["Fattura n. B-70 P.IVA 012345678970", "partita IVA più lunga", false],
+		];
+		for (const [text, what, taken] of cases) {
+			const { mail, proposals } = fakeMail();
+			const answer = await setup({ "f/g1.xml": G1, "f/g1.pdf": `${PDF_HEAD}${text}` }, { mail, now: TUESDAY, readText: fakeRead }).run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
+			expect(proposals[0]?.attachments?.map((a) => a.path), what).toEqual(taken ? ["f/g1.xml", "f/g1.pdf"] : ["f/g1.xml"]);
+			if (!taken && what === "solo il numero") expect(inside(answer)).toContain("Nota: g1.pdf riporta il numero B-70 ma non la partita IVA del cliente, la data o l'importo della fattura: non l'ho allegato.");
+		}
+	});
+
+	it("a short number («1») only takes the PDF beside the XML: «Fattura 1 2025 Rossi.pdf» is never another customer's invoice 1", async () => {
+		const read: string[] = [];
+		const readText = async (name: string, data: Uint8Array) => {
+			read.push(name);
+			return fakeRead(name, data);
+		};
+		const rossi = `${PDF_HEAD}Fattura 1 del 2025, Mario Rossi, totale 1.220,00, 01/09/2026`;
+		const { mail, proposals } = fakeMail();
+		const answer = await setup({ "f/gamma-1.xml": gamma("1"), "f/Fattura 1 2025 Rossi.pdf": rossi }, { mail, now: TUESDAY, readText }).run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
+		expect(proposals[0]?.attachments?.map((a) => a.path)).toEqual(["f/gamma-1.xml"]);
+		expect(read).toEqual([]);
+		expect(inside(answer)).toContain("Nota: per 1 ho solo il file XML");
+		// Beside the XML, with the same name, it is looked at: still tied to the invoice by the partita IVA, date or total.
+		const beside = fakeMail();
+		await setup({ "f/gamma-1.xml": gamma("1"), "f/gamma-1.pdf": `${PDF_HEAD}Fattura n. 1, Mario Rossi, 15/03/2025, 80,00` }, { mail: beside.mail, now: TUESDAY, readText }).run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
+		expect(beside.proposals[0]?.attachments?.map((a) => a.path)).toEqual(["f/gamma-1.xml"]);
+		const good = fakeMail();
+		await setup({ "f/gamma-1.xml": gamma("1"), "f/gamma-1.pdf": `${PDF_HEAD}Fattura n. 1 del 01/09/2026` }, { mail: good.mail, now: TUESDAY, readText }).run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
+		expect(good.proposals[0]?.attachments?.map((a) => a.path)).toEqual(["f/gamma-1.xml", "f/gamma-1.pdf"]);
+	});
+
+	it("a budget per call: at most 12 PDFs read, and the first that matches ends the search", async () => {
+		const other: Party = { name: "Omega Srl", vat: "09876543210", email: "conti@omega.example" };
+		const files: Record<string, string> = {};
+		for (const [who, tag] of [
+			[GAMMA, "g"],
+			[other, "o"],
+		] as const) {
+			for (const n of [1, 2]) {
+				const number = `${tag.toUpperCase()}-10${n}`;
+				files[`f/${tag}${n}.xml`] = fattura(BETA, who, { number, date: "2026-09-01", total: "100.00", rate: [{ amount: "100.00", due: "2026-09-30" }] });
+				files[`f/${tag}${n}.pdf`] = `${PDF_HEAD}niente`;
+				for (const copy of ["a", "b", "c"]) files[`f/${number} ${copy}.pdf`] = `${PDF_HEAD}niente`;
+			}
+		}
+		let reads = 0;
+		const counted = async (name: string, data: Uint8Array) => {
+			reads++;
+			return fakeRead(name, data);
+		};
+		const { mail, proposals } = fakeMail();
+		const answer = await setup(files, { mail, now: TUESDAY, readText: counted }).run({ op: "reminder", send: true, attach_invoice: true });
+		expect(reads).toBe(12);
+		expect(proposals).toHaveLength(2);
+		expect(inside(answer)).toContain("Nota: non ho controllato altri PDF: troppi da leggere in una volta");
+		// The first PDF that is the invoice ends the search: the copies named after it are not read.
+		reads = 0;
+		const first = fakeMail();
+		await setup({ "f/g1.xml": G1, "f/g1.pdf": `${PDF_HEAD}B-70 01/09/2026`, "f/B-70 a.pdf": `${PDF_HEAD}B-70`, "f/B-70 b.pdf": `${PDF_HEAD}B-70` }, { mail: first.mail, now: TUESDAY, readText: counted }).run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
+		expect(reads).toBe(1);
+		expect(first.proposals[0]?.attachments?.map((a) => a.path)).toEqual(["f/g1.xml", "f/g1.pdf"]);
+	});
+
+	it("a PDF that takes too long to read is left out once the call's budget is gone, and nothing more is read", async () => {
+		let reads = 0;
+		const stuck = async () => {
+			reads++;
+			return new Promise<string>(() => {});
+		};
+		const { mail, proposals } = fakeMail();
+		const answer = await setup({ "f/g1.xml": G1, "f/g2.xml": G2, "f/g1.pdf": `${PDF_HEAD}B-70`, "f/g2.pdf": `${PDF_HEAD}B-71` }, { mail, now: TUESDAY, readText: stuck, pdfBudgetMs: 50 }).run({ op: "reminder", party: "gamma", send: true, attach_invoice: true });
+		expect(reads).toBe(1);
+		expect(proposals[0]?.attachments?.map((a) => a.path)).toEqual(["f/g1.xml", "f/g2.xml"]);
+		expect(inside(answer)).toContain("Nota: g1.pdf ci mette troppo a leggersi: non l'ho allegato.");
+		expect(inside(answer)).toContain("Nota: non ho controllato altri PDF");
 	});
 });
 

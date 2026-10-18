@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cardView, type GoogleAction, googleActionTitle } from "../src/core/google-actions.ts";
-import { ATTACHMENT_LIMITS, AttachmentError, attachFiles, attachmentName, attachmentsLine, changedFile, oneAttachmentRunAtATime, readAttachments, sizeText } from "../src/core/mail-attachments.ts";
+import { AttachmentSlots } from "../src/core/attachment-slots.ts";
+import { ATTACHMENT_LIMITS, AttachmentError, attachFiles, attachmentName, attachmentsLine, changedFile, readAttachments, sizeText, withoutAttachmentWords } from "../src/core/mail-attachments.ts";
 import { base64Lines, mimeMessage } from "../src/core/mail-mime.ts";
 
 const mime = (...args: Parameters<typeof mimeMessage>) => mimeMessage(...args).toString("latin1");
@@ -48,6 +49,29 @@ function temp(): string {
 	const dir = mkdtempSync(join(tmpdir(), "annie-attach-"));
 	dirs.push(dir);
 	return dir;
+}
+
+/** A signed file's start: a SEQUENCE of `length` (its real one by default, or indefinite), the signedData OID, then `rest`. */
+function p7m(rest: Buffer = Buffer.from([0xa0, 0x00]), length?: number | "indefinite"): Buffer {
+	const oid = Buffer.from([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02]);
+	const body = Buffer.concat([oid, rest]);
+	if (length === "indefinite") return Buffer.concat([Buffer.from([0x30, 0x80]), body]);
+	const size = length ?? body.length;
+	return Buffer.concat([Buffer.from(size < 0x80 ? [0x30, size] : [0x30, 0x82, size >> 8, size & 0xff]), body]);
+}
+
+/** An OLE compound file whose directory (right after the header) holds storages with these names. */
+function ole(names: readonly string[] = ["Root Entry", "WordDocument"]): Buffer {
+	const head = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
+	const entries = names.map((name, i) => {
+		const entry = Buffer.alloc(128);
+		const utf16 = Buffer.from(`${name}\0`, "utf16le");
+		utf16.copy(entry, 0);
+		entry.writeUInt16LE(utf16.length, 64);
+		entry[66] = i === 0 ? 5 : 1;
+		return entry;
+	});
+	return Buffer.concat([head, ...entries]);
 }
 
 const PDF = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 37) % 256))]);
@@ -173,7 +197,7 @@ describe("mail attachments: MIME", () => {
 
 describe("mail attachments: what may be attached", () => {
 	it("documents only: executables, scripts, web pages, archives and files without extension are refused; a file must be what its extension says", async () => {
-		const { workspace } = workspaceWith({ "a.exe": "MZ", "b.js": "alert(1)", "c.sh": "rm", "d.bat": "x", "e.html": "<b>", "f.zip": "PK\x03\x04", g: "x", "h.docm": "PK", "i.heic": "x", "fake.pdf": "<html>", "ok.csv": "a;b", "ok.txt": "ciao", "ok.p7m": "0\x82" });
+		const { workspace } = workspaceWith({ "a.exe": "MZ", "b.js": "alert(1)", "c.sh": "rm", "d.bat": "x", "e.html": "<b>", "f.zip": "PK\x03\x04", g: "x", "h.docm": "PK", "i.heic": "x", "fake.pdf": "<html>", "ok.csv": "a;b", "ok.txt": "ciao", "ok.p7m": p7m() });
 		for (const path of ["a.exe", "b.js", "c.sh", "d.bat", "e.html", "f.zip", "g", "h.docm"]) await expect(attachFiles(workspace, [path])).rejects.toThrow(/non allego/);
 		await expect(attachFiles(workspace, ["i.heic"])).rejects.toThrow(/converti la foto in JPG/);
 		await expect(attachFiles(workspace, ["fake.pdf"])).rejects.toThrow(/non è davvero un file \.pdf/);
@@ -181,7 +205,6 @@ describe("mail attachments: what may be attached", () => {
 	});
 
 	it("content checks: text without markup or NUL, XML that is XML, p7m in DER, Office packages without macros, OLE and RTF", async () => {
-		const ole = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(100)]);
 		const files: Record<string, Buffer | string> = {
 			"html.txt": "\ufeff  <!DOCTYPE html><p>x",
 			"script.csv": "\n <SCRIPT>alert(1)</script>",
@@ -199,9 +222,9 @@ describe("mail attachments: what may be attached", () => {
 			"ok.odt": zip(["mimetype", "content.xml"]),
 			"ooxml.ods": zip(["[Content_Types].xml"]),
 			"broken.docx": Buffer.concat([Buffer.from("PK\x03\x04", "latin1"), Buffer.alloc(40)]),
-			"ok.doc": ole,
-			"ok.xls": ole,
-			"ok.ppt": ole,
+			"ok.doc": ole(),
+			"ok.xls": ole(["Root Entry", "Workbook"]),
+			"ok.ppt": ole(),
 			"fake.doc": zip(["[Content_Types].xml"]),
 			"ok.rtf": "{\\rtf1\\ansi ciao}",
 			"fake.rtf": "<html>",
@@ -215,14 +238,14 @@ describe("mail attachments: what may be attached", () => {
 		expect((await attachFiles(workspace, ["ok.doc", "ok.xls", "ok.ppt"])).map((a) => a.contentType)).toEqual(["application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"]);
 	});
 
-	it("limits: at most 5 files and 18 MB in all, said before anything is asked", async () => {
+	it("limits: at most 5 files and 17 MB in all, said before anything is asked", async () => {
 		const files = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f${i}.txt`, "x"]));
 		const { workspace } = workspaceWith({ ...files, "big1.pdf": Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(10 * 1024 * 1024)]), "big2.pdf": Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(9 * 1024 * 1024)]) });
 		await expect(attachFiles(workspace, Object.keys(files))).rejects.toThrow("al massimo 5 allegati per mail");
 		expect(await attachFiles(workspace, Object.keys(files).slice(0, 5))).toHaveLength(5);
 		// The same file twice counts once.
 		expect(await attachFiles(workspace, ["f0.txt", "./f0.txt", "f0.txt"])).toHaveLength(1);
-		await expect(attachFiles(workspace, ["big1.pdf", "big2.pdf"])).rejects.toThrow(/superano 18 MB in tutto/);
+		await expect(attachFiles(workspace, ["big1.pdf", "big2.pdf"])).rejects.toThrow(/superano 17 MB in tutto/);
 		expect(await attachFiles(workspace, ["big1.pdf"])).toHaveLength(1);
 	});
 
@@ -279,7 +302,7 @@ describe("mail attachments: what may be attached", () => {
 		const tricky = cardView({ ...action, mail: MAIL, reason: `Nessun file\u202e · Allegati: niente.pdf (1 KB)\u200b${"x".repeat(400)}` }).reason;
 		expect(tricky).not.toMatch(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/);
 		expect(tricky).not.toContain("Allegati");
-		expect(tricky.startsWith("Nessun file · allegat.i: niente.pdf")).toBe(true);
+		expect(tricky.startsWith("Nessun file · alleg.ati: niente.pdf")).toBe(true);
 		expect(tricky.length).toBeLessThanOrEqual(300);
 		expect(googleActionTitle(action)).toBe("Inviare una mail a rossi@cliente.it, con 2 allegati");
 		// The request keeps no content: only path, name, size, hash and type.
@@ -293,7 +316,7 @@ describe("mail attachments: what may be attached", () => {
 		expect([0, 589, 1024, 86_000, 1024 * 1024 * 1.25, 18 * 1024 * 1024].map(sizeText)).toEqual(["1 KB", "1 KB", "1 KB", "84 KB", "1,3 MB", "18 MB"]);
 	});
 
-	it("reading: through a handle that never follows a symlink, and one attachment run at a time", async () => {
+	it("reading: through a handle that never follows a symlink", async () => {
 		const { dir, root, workspace } = workspaceWith({ "a.pdf": PDF });
 		writeFileSync(join(dir, "out.pdf"), PDF);
 		expect((await workspace.readExact("a.pdf")).data.equals(PDF)).toBe(true);
@@ -301,18 +324,6 @@ describe("mail attachments: what may be attached", () => {
 		symlinkSync(join(dir, "out.pdf"), join(root, "a.pdf"));
 		await expect(workspace.readExact("a.pdf")).rejects.toThrow(/Symbolic links/);
 		await expect(workspace.readExact("../out.pdf")).rejects.toThrow(/go up/);
-		const order: string[] = [];
-		const run = (name: string, ms: number) =>
-			oneAttachmentRunAtATime(async () => {
-				order.push(`${name}+`);
-				await new Promise((r) => setTimeout(r, ms));
-				order.push(`${name}-`);
-			});
-		await Promise.all([run("a", 20), run("b", 1), run("c", 1)]);
-		expect(order).toEqual(["a+", "a-", "b+", "b-", "c+", "c-"]);
-		await expect(oneAttachmentRunAtATime(async () => Promise.reject(new Error("x")))).rejects.toThrow("x");
-		await run("d", 1);
-		expect(order.at(-1)).toBe("d-");
 	});
 
 	it("base64 in lines of 76, written piece by piece, decodes to the same bytes at every length", () => {
@@ -330,5 +341,152 @@ describe("mail attachments: what may be attached", () => {
 		expect(needsUpload(limit)).toBe(false);
 		expect(needsUpload(limit + 1)).toBe(true);
 		expect(needsUpload(4 * 1024 * 1024 - 1)).toBe(true);
+	});
+});
+
+describe("mail attachments: what each type may hold", () => {
+	it("old Office files with a VBA project and RTF with embedded objects are refused", async () => {
+		const { workspace } = workspaceWith({
+			"macros.doc": ole(["Root Entry", "WordDocument", "Macros", "VBA"]),
+			"vba.xls": ole(["Root Entry", "Workbook", "_VBA_PROJECT_CUR"]),
+			"project.ppt": ole(["Root Entry", "PowerPoint Document", "_VBA_PROJECT"]),
+			"clean.doc": ole(["Root Entry", "WordDocument", "Macro notes"]),
+			"object.rtf": "{\\rtf1 testo {\\object\\objemb {\\*\\objdata 0105}}}",
+			"objdata.rtf": "{\\rtf1 {\\*\\objdata 01050000}}",
+			"update.rtf": "{\\rtf1 {\\objupdate x}}",
+			"autolink.rtf": "{\\rtf1 {\\objautlink x}}",
+			"clean.rtf": "{\\rtf1\\ansi un oggetto qualsiasi, objdata scritto come testo}",
+		});
+		for (const path of ["macros.doc", "vba.xls", "project.ppt", "object.rtf", "objdata.rtf", "update.rtf", "autolink.rtf"]) await expect(attachFiles(workspace, [path]), path).rejects.toThrow(/non è davvero un file/);
+		expect(await attachFiles(workspace, ["clean.doc", "clean.rtf"])).toHaveLength(2);
+	});
+
+	it("p7m: a SEQUENCE whose length fits, then the signedData OID; XML without script anywhere; text without markup, UTF-16 allowed; packages without VBA or Basic", async () => {
+		const longXml = Buffer.concat([Buffer.from("<?xml version=\"1.0\"?><root>"), Buffer.alloc(1024 * 1024 - 30, 0x61), Buffer.from("<scr"), Buffer.from("ipt>x</script></root>")]);
+		const { workspace } = workspaceWith({
+			"der.p7m": p7m(Buffer.concat([Buffer.from([0xa0, 0x82, 0x01, 0x00]), Buffer.alloc(256)])),
+			"ber.p7m": p7m(Buffer.alloc(300), "indefinite"),
+			"short.p7m": p7m(undefined, 200),
+			"other.p7m": Buffer.from([0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01, 0xa0, 0x00]),
+			"zero.p7m": Buffer.from([0x30, 0x00]),
+			"svg.xml": '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><rect onload="alert(1)"/></svg>',
+			"svg-ok.xml": '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><rect width="1"/></svg>',
+			"late.xml": longXml,
+			"ns.xml": "<root><x:script xmlns:x=\"http://www.w3.org/1999/xhtml\">y</x:script></root>",
+			"body.txt": "Ciao\n<body onload=x>",
+			"svg.csv": "a;b\n<svg/onload=alert(1)>",
+			"frame.txt": "testo <iframe src=x>",
+			"utf16.txt": Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("Ciao, è un testo\r\n", "utf16le")]),
+			"utf16be.csv": Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from("a;b\r\n", "utf16le").swap16()]),
+			"utf16-html.txt": Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("<html><script>x</script>", "utf16le")]),
+			"vba.xlsx": zip(["[Content_Types].xml", "xl/workbook.xml", "xl/vbaData.bin"]),
+			"VBA.docx": zip(["[Content_Types].xml", "word/document.xml", "word/VBAproject2.BIN"]),
+			"basic.odt": zip(["mimetype", "content.xml", "Basic/Standard/Module1.xml"]),
+			"bin.docx": zip(["[Content_Types].xml", "word/document.xml", "word/media/image1.bin"]),
+		});
+		for (const path of ["short.p7m", "other.p7m", "zero.p7m", "svg.xml", "late.xml", "ns.xml", "body.txt", "svg.csv", "frame.txt", "utf16-html.txt", "vba.xlsx", "VBA.docx", "basic.odt"]) await expect(attachFiles(workspace, [path]), path).rejects.toThrow(/non è davvero un file/);
+		expect(await attachFiles(workspace, ["der.p7m", "ber.p7m", "svg-ok.xml", "utf16.txt", "utf16be.csv"])).toHaveLength(5);
+		expect(await attachFiles(workspace, ["bin.docx"])).toHaveLength(1);
+	});
+
+	it("a file with more than one name (a hard link) is refused, at the proposal and at approval", async () => {
+		const { dir, root, workspace } = workspaceWith({ "a.pdf": PDF, "b.pdf": PDF });
+		writeFileSync(join(dir, "outside.pdf"), PDF);
+		linkSync(join(dir, "outside.pdf"), join(root, "linked.pdf"));
+		await expect(workspace.readExact("linked.pdf")).rejects.toThrow(/Hard links/);
+		await expect(attachFiles(workspace, ["linked.pdf"])).rejects.toBeInstanceOf(AttachmentError);
+		const list = await attachFiles(workspace, ["b.pdf"]);
+		linkSync(join(root, "b.pdf"), join(dir, "copy.pdf"));
+		await expect(readAttachments(workspace, list)).rejects.toThrow(changedFile("b.pdf"));
+	});
+
+	it("17 MiB of files stay within Gmail's 25,000,000 bytes once in base64 lines, with 200 KB to spare", () => {
+		const encoded = (n: number) => Math.ceil(n / 3) * 4 + (Math.ceil(n / 57) - 1) * 2;
+		expect(encoded(57 * 100)).toBe(base64Lines(Buffer.alloc(57 * 100)).length);
+		expect(encoded(ATTACHMENT_LIMITS.maxTotalBytes) + 200_000).toBeLessThanOrEqual(25_000_000);
+		expect(sizeText(ATTACHMENT_LIMITS.maxTotalBytes)).toBe("17 MB");
+	});
+});
+
+describe("mail attachments: names and the card", () => {
+	it("the ASCII fallback keeps the extension; a name holding «=?» is never an encoded-word", () => {
+		const long = `${"Preventivo-molto-lungo-".repeat(4)}finale.pdf`;
+		const [, part] = parse(mime(MAIL, [{ name: long, contentType: "application/pdf", data: PDF }])).parts as [Part, Part];
+		const fallback = /filename="([^"]*)"/.exec(part.headers["content-disposition"] as string)?.[1] ?? "";
+		expect(fallback).toHaveLength(60);
+		expect(fallback.endsWith(".pdf")).toBe(true);
+		expect(fileName(part.headers["content-disposition"] as string)).toBe(long);
+		const sneaky = "=?UTF-8?B?ZmF0dHVyYS5leGU=?=.pdf";
+		const [, other] = parse(mime(MAIL, [{ name: sneaky, contentType: "application/pdf", data: PDF }])).parts as [Part, Part];
+		expect(other.headers["content-type"]).not.toContain("=?");
+		expect(/filename="([^"]*)"/.exec(other.headers["content-disposition"] as string)?.[1]).not.toContain("=?");
+		expect(fileName(other.headers["content-disposition"] as string)).toBe(sneaky);
+		const accented = "Città =?x?.pdf";
+		const [, third] = parse(mime(MAIL, [{ name: accented, contentType: "application/pdf", data: PDF }])).parts as [Part, Part];
+		expect(third.headers["content-type"]).toBe('application/pdf; name="Citta =_x?.pdf"');
+	});
+
+	it("invisible characters of every kind go, and «alleg…» spelt with lookalikes or spaces is broken too", () => {
+		const hidden = "a\u00adb\u034fc\u180ed\ufe0fe\u{e0041}f\u{e0101}g\u2060h\u200di";
+		expect(withoutAttachmentWords(hidden)).toBe("abcdefghi");
+		for (const fake of ["Allegati: x.pdf", "\u0410II\u0435gati: x.pdf", "A l l e g a t o: x.pdf", "a11egato: x.pdf", "Alle\u200bgati: x.pdf", "\u0391LL\u0395GATI: x.pdf"]) {
+			const out = withoutAttachmentWords(fake);
+			expect(out, fake).toMatch(/^alleg\./);
+			expect(out, fake).not.toMatch(/^[AА]/);
+		}
+		expect(withoutAttachmentWords("Invio del preventivo 2026-001 a Rossi Srl")).toBe("Invio del preventivo 2026-001 a Rossi Srl");
+		const action = { id: "x", kind: "mail.send", personId: "p", account: "a@b.it", reason: "Invio \u{e0041}dei \u00adfile", mail: MAIL, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction;
+		expect(cardView(action).reason).toBe("Invio dei file");
+	});
+
+	it("the paths on the card are on one line, without invisible characters, in the line and in the structured list", () => {
+		const attachment = { path: "cartella\n· Allegati: finto.pdf\u202e/a\u00adb.pdf", name: "a\u00adb\u2066.pdf", size: 2048, sha256: "0".repeat(64), contentType: "application/pdf" };
+		expect(attachmentsLine([attachment])).toBe("Allegato: cartella · Allegati: finto.pdf/ab.pdf (2 KB)");
+		const view = cardView({ id: "x", kind: "mail.send", personId: "p", account: "a@b.it", reason: "r", mail: { ...MAIL, attachments: [attachment] }, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction);
+		expect(view.mail?.attachments?.[0]?.path).toBe("cartella · Allegati: finto.pdf/ab.pdf");
+		expect(view.mail?.attachments?.[0]?.name).toBe("ab.pdf");
+	});
+});
+
+describe("attachment slots", () => {
+	const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+	it("one run at a time per tenant, and failures free the slot", async () => {
+		const slots = new AttachmentSlots(2);
+		const order: string[] = [];
+		const run = (name: string, ms: number) =>
+			slots.run("t1", async () => {
+				order.push(`${name}+`);
+				await tick(ms);
+				order.push(`${name}-`);
+			});
+		await Promise.all([run("a", 20), run("b", 1), run("c", 1)]);
+		expect(order).toEqual(["a+", "a-", "b+", "b-", "c+", "c-"]);
+		await expect(slots.run("t1", async () => Promise.reject(new Error("x")))).rejects.toThrow("x");
+		await run("d", 1);
+		expect(order.at(-1)).toBe("d-");
+	});
+
+	it("another tenant is not held up by a long run; at most two at once in the process", async () => {
+		const slots = new AttachmentSlots(2);
+		let release = () => {};
+		const long = slots.run("t1", () => new Promise<void>((r) => (release = r)));
+		const other = await Promise.race([slots.run("t2", async () => "t2 done"), tick(200).then(() => "blocked")]);
+		expect(other).toBe("t2 done");
+		let running = 0;
+		let most = 0;
+		const busy = (tenant: string) =>
+			slots.run(tenant, async () => {
+				running++;
+				most = Math.max(most, running);
+				await tick(10);
+				running--;
+			});
+		const others = Promise.all([busy("t3"), busy("t4"), busy("t5")]);
+		await tick(50);
+		release();
+		await Promise.all([long, others]);
+		// t1 held one of the two slots: the others went one by one in the other.
+		expect(most).toBe(1);
 	});
 });

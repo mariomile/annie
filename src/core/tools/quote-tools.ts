@@ -177,6 +177,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 			workspace,
 			company,
 			today: view().today,
+			timeZone,
 			...(options.mail === undefined ? {} : { mail: options.mail }),
 			...(options.record === undefined ? {} : { record: options.record }),
 		});
