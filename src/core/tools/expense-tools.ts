@@ -3,7 +3,7 @@ import { cashBook } from "../cash-book.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { CATEGORIES, type Category, DOC_TYPES, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
 import { EXPENSES_BROKEN, type ExpenseStore } from "../expense-store.ts";
-import { currentMonth, inPeriod, type Period, PeriodError, readPeriod, underWay } from "../periods.ts";
+import { inPeriod, type Period, PeriodError, periodOf, underWay } from "../periods.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { register } from "../invoices.ts";
@@ -144,9 +144,8 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 		return book.expenses;
 	}
 
-	function periodOf(args: Record<string, unknown>): Period {
-		if (args.period !== undefined && typeof args.period !== "string") throw new ExpenseError("period è un testo, come «ottobre» o «T3 2026»");
-		return typeof args.period === "string" ? readPeriod(args.period.slice(0, 40), today()) : currentMonth(today());
+	function periodFrom(args: Record<string, unknown>): Period {
+		return periodOf(args.period, today());
 	}
 
 	/** The one expense an id names, or the answer saying why not. */
@@ -173,7 +172,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 		const expense = expenses.find((e) => e.id === id);
 		if (expense === undefined) return `Errore: la spesa ${id} non c'è più.`;
 		const twin = lookalike(expenses, expense);
-		const warning = twin === undefined ? [] : [`Attenzione: sembra uguale a ${twin.id} (${twin.why}). Se è un doppione, toglila con op remove.`];
+		const warning = twin === undefined ? [] : [`Attenzione: sembra uguale a ${twin.id} (${twin.why}). Chiedi a chi ti scrive: «Mi sembra la stessa spesa di ${twin.id}: è un doppione? Se sì, la tolgo.» Solo se dice sì, togli questa con op remove.`];
 		return added(expense, [...warning, ...notes]);
 	}
 
@@ -237,7 +236,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 	}
 
 	function list(args: Record<string, unknown>): string {
-		const period = args.period === undefined ? undefined : periodOf(args);
+		const period = args.period === undefined ? undefined : periodFrom(args);
 		let category: Category | undefined;
 		if (typeof args.category === "string" && args.category.trim() !== "") {
 			category = matchCategory(args.category);
@@ -251,7 +250,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 	}
 
 	function summary(args: Record<string, unknown>): string {
-		const period = periodOf(args);
+		const period = periodFrom(args);
 		const book = options.invoices.read();
 		return summaryAnswer(readable(), period, { today: today(), forfettario: !book.broken && book.company?.regime === "forfettario", compact: args.compact === true });
 	}
@@ -267,7 +266,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 	}
 
 	async function primaNota(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-		const period = periodOf(args);
+		const period = periodFrom(args);
 		const { cash, view } = await cashOf(period, ctx);
 		return cashBookAnswer(cash, period, view);
 	}
@@ -275,7 +274,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 	async function exportCsv(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
 		if (args.table !== undefined && !TABLES.includes(args.table as Table)) return "Errore: table è spese o prima_nota.";
 		const table: Table = args.table === "prima_nota" ? "prima_nota" : "spese";
-		const period = periodOf(args);
+		const period = periodFrom(args);
 		let csv: string;
 		let rows: number;
 		if (table === "spese") {

@@ -14,12 +14,21 @@ export function words(text: string): string[] {
 
 const LEGAL_FORMS = new Set(["srl", "srls", "spa", "snc", "sas", "sapa", "ss"]);
 
+/** The words of a name with dotted abbreviations closed up: «S.r.l.» is «srl». */
+function nameWords(name: string): string[] {
+	return words(fold(name).replace(/\b([a-z])\.(?=[a-z]\.?)/g, "$1").replace(/\.(?=\s|$)/g, ""));
+}
+
 /** A business's name compared: no case, accents, punctuation nor legal form («Bar Sport S.r.l.» is «bar sport»). */
 export function businessKey(name: string): string {
-	const joined = fold(name).replace(/\b([a-z])\.(?=[a-z]\.?)/g, "$1").replace(/\.(?=\s|$)/g, "");
-	return words(joined)
+	return nameWords(name)
 		.filter((w) => !LEGAL_FORMS.has(w))
 		.join(" ");
+}
+
+/** A name compared without case, accents and punctuation, its legal form kept: «Rossi S.r.l.» is «rossi srl», not «rossi» nor «rossi spa». */
+export function spellingKey(name: string): string {
+	return nameWords(name).join(" ");
 }
 
 /** Whether one key holds the other as whole words in a row («rossi» in «mario rossi»); never an empty one. */

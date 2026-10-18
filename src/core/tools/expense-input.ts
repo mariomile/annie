@@ -9,6 +9,7 @@
  * Reading (readFields) is apart from applying (applyFields): an edit applies only the fields
  * given, to the expense as saved under the store's lock.
  */
+import { foreignCurrency } from "../currency-words.ts";
 import { CATEGORIES, type Category, DOC_TYPES, type DocType, EXPENSE_LIMITS, type Expense, idOrder, matchCategory, matchMethod, type Method, METHODS, RECEIPT_FILE, SUPPLIER_VAT, validReceiptPath } from "../expenses.ts";
 import { cents, centsValue, vatInGross } from "../expense-sums.ts";
 import { normalPath } from "../invoices.ts";
@@ -25,15 +26,13 @@ export type ExpenseDraft = Omit<Expense, "id" | "by" | "at" | "callId" | "edited
 /** The fields an edit may change; any of them given makes it an edit. */
 const EDIT_FIELDS = ["date", "amount", "vat", "vat_rate", "supplier", "supplier_vat", "doc_type", "doc_number", "category", "method", "note", "receipt"] as const;
 
-const FOREIGN = /\$|£|¥|\b(?:usd|gbp|chf|jpy|cad|aud|dollar\w*|sterlin\w*|franch\w*|yen)\b/i;
-
 const NOT_EURO = "l'importo è in un'altra valuta: convertilo in euro con exchange_rate alla data dello scontrino, passa gli euro in amount e scrivi l'importo originale in note";
 const NEGATIVE = "l'importo è negativo: per un reso o un rimborso correggi la spesa con op edit o toglila con op remove";
 
 /** The total: more than zero, in euros, at most EXPENSE_LIMITS.maxAmount, to the cent; undefined when not given. */
 export function readTotal(value: unknown): string | undefined | Problem {
 	if (value === undefined) return undefined;
-	if (typeof value === "string" && FOREIGN.test(value)) return { problem: NOT_EURO };
+	if (foreignCurrency(value)) return { problem: NOT_EURO };
 	if ((typeof value === "number" && value < 0) || (typeof value === "string" && /^\s*(?:€|eur\w*)?\s*-/i.test(value))) return { problem: NEGATIVE };
 	const read = readAmount(value, 2, "amount", fenced);
 	if (isProblem(read) || read === undefined) return read;
@@ -142,7 +141,7 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 	}
 	if (removed("vat")) out.vat = null;
 	else {
-		if (typeof args.vat === "string" && FOREIGN.test(args.vat)) return { problem: NOT_EURO };
+		if (foreignCurrency(args.vat)) return { problem: NOT_EURO };
 		const vat = readAmount(args.vat, 2, "vat", fenced);
 		if (isProblem(vat)) return vat;
 		if (vat !== undefined) out.vat = vat;

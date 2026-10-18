@@ -6,7 +6,7 @@
  */
 import { CATEGORIES, type Category, type Expense, ExpenseError } from "./expenses.ts";
 import { inPeriod, type Span } from "./periods.ts";
-import { netOf, scaled, type VatRate } from "./quote-sums.ts";
+import { centsDecimal, netOf, scaled, type VatRate } from "./quote-sums.ts";
 
 /** A canonical decimal string («42.5») in cents. */
 export function cents(value: string): bigint {
@@ -16,10 +16,7 @@ export function cents(value: string): bigint {
 /** Cents back to a canonical decimal string: 4250n → «42.5». Never negative: a stored amount is not. */
 export function centsValue(value: bigint): string {
 	if (value < 0n) throw new ExpenseError("un importo negativo non si salva");
-	const digits = value.toString().padStart(3, "0");
-	const fraction = digits.slice(-2).replace(/0+$/, "");
-	const integer = digits.slice(0, -2);
-	return fraction === "" ? integer : `${integer}.${fraction}`;
+	return centsDecimal(value);
 }
 
 /** The VAT in a total that includes it at `rate`: the total less its imponibile. */

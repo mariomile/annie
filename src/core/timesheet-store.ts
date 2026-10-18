@@ -1,38 +1,73 @@
 /**
  * The ore di lavoro of an instance, in `timesheet.json` (outside the workspace): the next
- * progressive of each year, every entry, the running timers (one per person) and the default
- * rates. Changed under the shared file lock; `timesheet.json.bak` keeps a copy of the last state
- * written, as `expenses.json.bak` does. An id is never given twice: the counter only grows, so
- * an entry removed leaves its id used. Read never throws: a file that does not read (or is past
- * the size cap) is `broken`, and nothing is written over it.
+ * progressive of each year, every entry, the running timers (one per person), the default rates
+ * and the reservations of the to_quote calls under way. Changed under the shared file lock;
+ * `timesheet.json.bak` keeps a copy of the last state written, as `expenses.json.bak` does. An id
+ * is never given twice: the counter only grows, so an entry removed leaves its id used. Read
+ * never throws: a file that does not read (or is past the size cap) is `broken`, and nothing is
+ * written over it. What decides on billing (billed, reserved) is checked again here, under the
+ * lock, on the entries as saved: a change made meanwhile is never overwritten.
  */
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
-import { type Billed, entryId, idOrder, type RateRule, sameClient, TIMESHEET_LIMITS, type Timer, TimesheetError, validEntry, validRule, validTimer, type WorkEntry } from "./timesheet.ts";
+import {
+	activeReservation,
+	type Billed,
+	idOrder,
+	entryId,
+	type RateRule,
+	type Reservation,
+	type ReservedEntry,
+	sameClient,
+	TIMESHEET_LIMITS,
+	type Timer,
+	TimesheetError,
+	validEntry,
+	validReservation,
+	validRule,
+	validTimer,
+	type WorkEntry,
+} from "./timesheet.ts";
+import { termsOf } from "./timesheet-sums.ts";
 
 type Book = {
 	readonly next: Readonly<Record<string, number>>;
 	readonly entries: readonly WorkEntry[];
 	readonly timers: readonly Timer[];
 	readonly rates: readonly RateRule[];
+	readonly reservations?: readonly Reservation[];
 };
 
-export type TimesheetBook = { readonly entries: readonly WorkEntry[]; readonly timers: readonly Timer[]; readonly rates: readonly RateRule[]; readonly broken: boolean };
+export type TimesheetBook = {
+	readonly entries: readonly WorkEntry[];
+	readonly timers: readonly Timer[];
+	readonly rates: readonly RateRule[];
+	readonly reservations: readonly Reservation[];
+	readonly broken: boolean;
+};
 
 export const TIMESHEET_BROKEN = "il registro delle ore (timesheet.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
 
-const EMPTY: Book = { next: {}, entries: [], timers: [], rates: [] };
+/** An entry another to_quote call is putting in its preventivo: not changed meanwhile. */
+export const RESERVED = "è in un preventivo che si sta preparando: riprova tra poco";
+
+const EMPTY: Book = { next: {}, entries: [], timers: [], rates: [], reservations: [] };
 const YEAR = /^\d{4}$/;
 
-/** What a remove found: removed now, removed before (its id is used and it is not there), or never recorded. */
-export type Removed = "removed" | "gone" | "unknown";
+/** What a remove found: removed now, removed before (its id is used and it is not there), never recorded, or kept (billed, reserved). */
+export type Removed = "removed" | "gone" | "unknown" | "billed" | "reserved";
 
 /** What a start found: the timer started (now, or by this same call before), or another one running. */
 export type Started = { readonly started: Timer } | { readonly running: Timer };
 
+/** What a bill did: the entries marked now, those not marked because they changed since the pick, and whether the reservation was there. */
+export type Billing = { readonly changed: readonly string[]; readonly skipped: readonly string[]; readonly reserved: boolean };
+
 export class TimesheetStore {
 	private readonly book: BookFile<Book>;
-	constructor(instanceDir: string) {
+	private readonly now: () => Date;
+	constructor(instanceDir: string, options: { readonly now?: () => Date } = {}) {
+		this.now = options.now ?? (() => new Date());
 		this.book = {
 			file: join(instanceDir, "timesheet.json"),
 			empty: EMPTY,
@@ -46,7 +81,14 @@ export class TimesheetStore {
 	/** Never throws. */
 	read(): TimesheetBook {
 		const book = readBook(this.book);
-		return book === undefined ? { entries: [], timers: [], rates: [], broken: true } : { entries: book.entries, timers: book.timers, rates: book.rates, broken: false };
+		if (book === undefined) return { entries: [], timers: [], rates: [], reservations: [], broken: true };
+		return { entries: book.entries, timers: book.timers, rates: book.rates, reservations: book.reservations ?? [], broken: false };
+	}
+
+	/** The ids held by another call's reservation still active. */
+	private heldByOthers(book: Book, callId?: string): Set<string> {
+		const now = this.now();
+		return new Set((book.reservations ?? []).filter((r) => r.callId !== callId && activeReservation(r, now)).flatMap((r) => r.entries.map((e) => e.id)));
 	}
 
 	/**
@@ -65,12 +107,13 @@ export class TimesheetStore {
 		return made as WorkEntry;
 	}
 
-	/** Change the entry `id` as saved now, under the lock. TimesheetError when it is not there. */
+	/** Change the entry `id` as saved now, under the lock. TimesheetError when it is not there or is reserved. */
 	edit(id: string, change: (entry: WorkEntry) => WorkEntry): WorkEntry {
 		let edited: WorkEntry | undefined;
 		this.update((book) => {
 			const entry = book.entries.find((e) => e.id === id);
 			if (entry === undefined) throw new TimesheetError(`la voce ${id} non c'è più`);
+			if (this.heldByOthers(book).has(id)) throw new TimesheetError(`la voce ${id} ${RESERVED}`);
 			const next = checked(change(entry));
 			edited = next;
 			return { ...book, entries: book.entries.map((e) => (e === entry ? next : e)) };
@@ -78,7 +121,7 @@ export class TimesheetStore {
 		return edited as WorkEntry;
 	}
 
-	/** Remove the entry `id`; its id stays used. Asked again, it says the entry is gone. */
+	/** Remove the entry `id`, unless it is billed or reserved (checked here, under the lock); its id stays used. */
 	remove(id: string): Removed {
 		let result: Removed = "unknown";
 		this.update((book) => {
@@ -88,6 +131,14 @@ export class TimesheetStore {
 				result = seq >= 1 && seq < (book.next[String(year)] ?? 1) ? "gone" : "unknown";
 				return book;
 			}
+			if (entry.billed !== undefined) {
+				result = "billed";
+				return book;
+			}
+			if (this.heldByOthers(book).has(id)) {
+				result = "reserved";
+				return book;
+			}
 			result = "removed";
 			return { ...book, entries: book.entries.filter((e) => e !== entry) };
 		});
@@ -95,33 +146,104 @@ export class TimesheetStore {
 	}
 
 	/**
-	 * Mark the entries `ids` billed (`billed` given) or not billed (undefined), as saved now. Only
-	 * those that change are written: what is already so is left, so a call run again changes
-	 * nothing. `billedOf` gives each entry's mark (its rate and rounding of now). The ids changed.
+	 * Change the billing of the entries `ids`, as saved now: `billedOf` gives each (with the rates
+ * as saved) its new mark,
+	 * null to clear it, or undefined to leave it. Entries reserved by a to_quote call are left.
+	 * Only what changes is written, so a call run again changes nothing. The ids changed, and those
+	 * left because reserved.
 	 */
-	setBilled(ids: readonly string[], billedOf: ((entry: WorkEntry) => Billed) | undefined): string[] {
+	setBilled(ids: readonly string[], billedOf: (entry: WorkEntry, rates: readonly RateRule[]) => Billed | null | undefined): { changed: string[]; reserved: string[] } {
 		const changed: string[] = [];
+		const reserved: string[] = [];
 		this.update((book) => {
 			const wanted = new Set(ids);
-			let any = false;
+			const held = this.heldByOthers(book);
 			const entries = book.entries.map((e) => {
 				if (!wanted.has(e.id)) return e;
-				if (billedOf === undefined) {
-					if (e.billed === undefined) return e;
+				if (held.has(e.id)) {
+					reserved.push(e.id);
+					return e;
+				}
+				const mark = billedOf(e, book.rates);
+				if (mark === undefined || (mark === null && e.billed === undefined)) return e;
+				if (mark !== null && e.billed !== undefined && e.billed.ref === mark.ref && e.billed.quote === mark.quote) return e;
+				changed.push(e.id);
+				if (mark === null) {
 					const { billed: _, ...rest } = e;
-					any = true;
-					changed.push(e.id);
 					return checked(rest);
 				}
-				const mark = billedOf(e);
-				if (e.billed !== undefined && e.billed.ref === mark.ref && e.billed.quote === mark.quote) return e;
-				any = true;
-				changed.push(e.id);
 				return checked({ ...e, billed: mark });
 			});
-			return any ? { ...book, entries } : book;
+			return changed.length > 0 ? { ...book, entries } : book;
 		});
-		return changed;
+		return { changed, reserved };
+	}
+
+	/**
+	 * Reserve to `callId` the entries `pick` chooses among those no other active reservation holds:
+	 * each with its minutes, rate and rounding of now. The reservation `callId` already has, when
+	 * there is one (a call run again). An empty pick reserves nothing.
+	 */
+	reserve(callId: string, by: string, pick: (free: readonly WorkEntry[], rates: readonly RateRule[]) => readonly WorkEntry[]): Reservation | undefined {
+		let result: Reservation | undefined;
+		this.update((book) => {
+			const own = (book.reservations ?? []).find((r) => r.callId === callId);
+			if (own !== undefined) {
+				result = own;
+				return book;
+			}
+			const held = this.heldByOthers(book, callId);
+			const chosen = pick(
+				book.entries.filter((e) => !held.has(e.id)),
+				book.rates,
+			);
+			if (chosen.length === 0) return book;
+			const entries = chosen.map((e): ReservedEntry => {
+				const terms = termsOf(e, book.rates);
+				return { id: e.id, minutes: e.minutes, ...(terms.rate === undefined ? {} : { rate: terms.rate }), rounding: terms.rounding };
+			});
+			const now = this.now();
+			const reservation: Reservation = { callId, entries, by, at: now.toISOString() };
+			result = reservation;
+			// Reservations no longer active are dropped as a new one is made.
+			const kept = (book.reservations ?? []).filter((r) => activeReservation(r, now));
+			return { ...book, reservations: [...kept, reservation] };
+		});
+		return result;
+	}
+
+	/**
+	 * Mark billed the entries reserved to `callId` that are as they were picked (billable, not
+	 * billed, the same minutes and own rate), with `mark` and the rate and rounding picked; then
+	 * drop the reservation. Without a reservation (billed already, or released) nothing changes.
+	 */
+	bill(callId: string, mark: Omit<Billed, "rate" | "rounding">): Billing {
+		let result: Billing = { changed: [], skipped: [], reserved: false };
+		this.update((book) => {
+			const reservation = (book.reservations ?? []).find((r) => r.callId === callId);
+			if (reservation === undefined) return book;
+			const picked = new Map(reservation.entries.map((r) => [r.id, r]));
+			const changed: string[] = [];
+			const entries = book.entries.map((e) => {
+				const r = picked.get(e.id);
+				if (r === undefined) return e;
+				// Unchanged since the pick: the rate and rounding are those picked (the quote's), whatever the rates say now.
+				if (!e.billable || e.billed !== undefined || e.minutes !== r.minutes || (e.rate !== undefined && e.rate !== r.rate)) return e;
+				changed.push(e.id);
+				return checked({ ...e, billed: { ...mark, ...(r.rate === undefined ? {} : { rate: r.rate }), rounding: r.rounding } });
+			});
+			result = { changed, skipped: reservation.entries.map((r) => r.id).filter((id) => !changed.includes(id)), reserved: true };
+			return { ...book, entries, reservations: (book.reservations ?? []).filter((r) => r !== reservation) };
+		});
+		return result;
+	}
+
+	/** Drop the reservation of `callId` (its quote was not made): its entries are free again. */
+	release(callId: string): void {
+		this.update((book) => {
+			const reservations = book.reservations ?? [];
+			return reservations.some((r) => r.callId === callId) ? { ...book, reservations: reservations.filter((r) => r.callId !== callId) } : book;
+		});
 	}
 
 	/**
@@ -148,8 +270,8 @@ export class TimesheetStore {
 	/**
 	 * Stop the timer of `person` and record what it ran as an entry (`make` gets the timer and gives
 	 * the entry without its id, which is the next of its day's year; it may throw to keep the timer
-	 * running; undefined drops the timer without recording, as asked). The entry of `callId` when this
-	 * call stopped it already. Undefined when no timer runs and this call recorded nothing.
+	 * running; undefined drops the timer without recording, as asked). The entry of `callId` when
+	 * this call stopped it already. Undefined when no timer runs and this call recorded nothing.
 	 */
 	stop(person: string, callId: string, make: ((timer: Timer) => Omit<WorkEntry, "id">) | undefined): { entry?: WorkEntry; timer?: Timer } | undefined {
 		let result: { entry?: WorkEntry; timer?: Timer } | undefined;
@@ -224,12 +346,13 @@ function checked(entry: WorkEntry): WorkEntry {
 
 function validBook(raw: unknown): Book | undefined {
 	if (typeof raw !== "object" || raw === null) return undefined;
-	const { next, entries, timers, rates } = raw as Book;
+	const { next, entries, timers, rates, reservations } = raw as Book;
 	if (typeof next !== "object" || next === null || Array.isArray(next)) return undefined;
 	if (!Object.entries(next).every(([y, n]) => YEAR.test(y) && Number.isInteger(n) && n >= 1 && n <= 1_000_000)) return undefined;
 	if (!Array.isArray(entries) || !entries.every(validEntry)) return undefined;
 	if (!Array.isArray(timers) || !timers.every(validTimer) || new Set(timers.map((t) => t.person)).size !== timers.length) return undefined;
 	if (!Array.isArray(rates) || !rates.every(validRule) || rates.filter((r) => r.client === undefined).length > 1) return undefined;
+	if (reservations !== undefined && (!Array.isArray(reservations) || !reservations.every(validReservation) || new Set(reservations.map((r) => r.callId)).size !== reservations.length)) return undefined;
 	if (new Set(entries.map((e) => e.id)).size !== entries.length) return undefined;
 	// Every id below its year's counter: a counter behind an entry would give that id again.
 	for (const e of entries) {

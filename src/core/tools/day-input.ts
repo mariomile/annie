@@ -16,12 +16,17 @@ const FIRST_DAY = "2000-01-01";
 
 const WEEKDAYS = ["domenica", "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato"];
 const WEEKDAY = new RegExp(`^(?:(?:il|lo|la) )?(${WEEKDAYS.join("|")})(?: (scors[oa])| (\\d{1,2}))?$`);
+/** «stamattina», «stamani», «stasera», «oggi pomeriggio»: today. */
+const TODAY_WORDS = /^(?:stamattina|stamani|stamane|stasera|stanotte|stamattina presto|oggi (?:in )?(?:mattina|pomeriggio|sera))$/;
+/** A part of the day after the day itself, dropped: «ieri pomeriggio» is «ieri». */
+const PART_OF_DAY = /(?:,? (?:in |di |nel |alla |la )?(?:mattina|mattinata|pomeriggio|sera|serata|notte)(?: presto| tardi)?)$/;
 const BAD_DAY = "scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato";
 /** A date without a year placed further back than this: said, it may be last year by mistake. */
 const FAR_BACK_DAYS = 300;
 
 /**
- * The day of a record (a spesa, ore di lavoro): today when not said; «ieri», «l'altro ieri», a
+ * The day of a record (a spesa, ore di lavoro): today when not said (also «stamattina», «stasera»);
+ * a part of the day after it is dropped («ieri pomeriggio»); «ieri», «l'altro ieri», a
  * weekday («sabato», «la domenica»: the last one up to today; «sabato scorso»: the last one before today; «venerdì 16»:
  * the last 16th up to today, which must be a Friday), a date (without a year the latest one
  * gone, with a note when that is almost a year back). Never a day to come, nor before 2000.
@@ -29,7 +34,12 @@ const FAR_BACK_DAYS = 300;
 export function readPastDay(value: unknown, today: string, words: DayWords): { date: string; note?: string } | Problem {
 	if (value === undefined) return { date: today };
 	if (typeof value !== "string" || value.trim() === "" || value.length > 40) return { problem: `${words.field}: ${BAD_DAY}` };
-	const t = fold(value).replace(/\s+/g, " ").trim();
+	const said = fold(value).replace(/\s+/g, " ").trim();
+	if (TODAY_WORDS.test(said)) return { date: today };
+	// «ieri pomeriggio», «lunedì mattina», «sabato sera»: the day is what counts.
+	const t = said.replace(PART_OF_DAY, "").trim();
+	const text = t === said ? value : t;
+	if (t === "") return { problem: `non capisco la data: ${BAD_DAY}` };
 	let date: string;
 	let yearless = false;
 	const weekday = WEEKDAY.exec(t);
@@ -53,7 +63,7 @@ export function readPastDay(value: unknown, today: string, words: DayWords): { d
 		}
 	} else {
 		try {
-			const read = readDate(/^l'? ?altro ?ieri$/.test(t) ? "altro ieri" : value, today, { rule: "past" });
+			const read = readDate(/^l'? ?altro ?ieri$/.test(t) ? "altro ieri" : text, today, { rule: "past" });
 			date = read.date;
 			yearless = read.yearless;
 		} catch (error) {

@@ -64,11 +64,44 @@ const DESCRIPTION = [
 	"Otherwise send the file here with file_send (path in the File line). Repeat totals as given, never compute them yourself.",
 ].join(" ");
 
+/** A line of a quote made by another tool: the same fields the quotes tool reads in items. */
+export type QuoteItemInput = { readonly description: string; readonly quantity: number; readonly unit?: string; readonly price: number };
+
+/** What another tool gives to make a quote (the timesheet's to_quote); read and checked as quotes op create reads its arguments. */
+export type QuoteCreateInput = {
+	readonly customer: string;
+	readonly items: readonly QuoteItemInput[];
+	readonly vat?: unknown;
+	readonly vat_note?: unknown;
+	readonly terms?: unknown;
+	readonly notes?: unknown;
+	readonly valid_days?: unknown;
+	readonly format?: unknown;
+	readonly tax_id?: unknown;
+	readonly address?: unknown;
+	readonly email?: unknown;
+};
+
+/** The answer to give, and the quote's number once it is saved with its document. */
+export type QuoteCreated = { readonly text: string; readonly number?: string };
+
+/**
+ * Make a quote as quotes op create does (the company needed, the VAT asked, numbered, its
+ * document written), from another tool's call: its steps are kept apart from the caller's under
+ * «quote:», and the call id is the caller's, so a call run again finds the quote it made.
+ */
+export type CreateQuote = (input: QuoteCreateInput, ctx: ToolContext) => Promise<QuoteCreated>;
+
 /**
  * Preventivi (quotes.ts): made, redone, listed and marked accepted or declined. The numbers and
  * totals are this tool's; the customer, descriptions and notes come from the person and are fenced.
  */
 export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
+	return quotesOf(options).tools;
+}
+
+/** The quotes tool, and the same quotes' create for another tool. */
+export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieTool[]; readonly create: CreateQuote } {
 	const { store, workspace, timeZone } = options;
 	const now = options.now ?? (() => new Date());
 	const make = options.make ?? ((input: MakeInput) => makeDocumentFile(input));
@@ -82,7 +115,21 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 	};
 	const amount = { type: ["number", "string"] };
 	const item = { type: "object", properties: { description: { type: "string" }, quantity: amount, unit: { type: "string" }, price: amount, discount: amount, vat: amount, vat_note: { type: "string" } }, required: ["description", "price"] };
-	return [
+	const create: CreateQuote = async (input, ctx) => {
+		const scoped: ToolContext = { ...ctx, step: (key, work) => ctx.step(`quote:${key}`, work) };
+		let text: string;
+		try {
+			text = await write("create", { ...input, items: input.items.map((i) => ({ ...i })) }, scoped);
+		} catch (error) {
+			if (error instanceof QuoteError) text = `Errore: ${error.message}.`;
+			else if (error instanceof WorkspaceError) text = `Errore: ${error.message}`;
+			else throw error;
+		}
+		const book = store.read();
+		const quote = book.broken ? undefined : book.quotes.find((q) => q.callId === ctx.callId);
+		return { text, ...(quote?.file === undefined ? {} : { number: quote.number }) };
+	};
+	const tools: AnnieTool[] = [
 		{
 			name: "quotes",
 			description: DESCRIPTION,
@@ -140,6 +187,7 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 			},
 		},
 	];
+	return { tools, create };
 
 	function readable(): readonly Quote[] {
 		const book = store.read();

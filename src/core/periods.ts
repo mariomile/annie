@@ -1,12 +1,14 @@
 /**
- * The periods a person asks about: a month («ottobre», «2026-10»), a quarter («T3 2026»), a year
- * («2026») or the year so far («da inizio anno»), with the one before to compare against and how
+ * The periods a person asks about: a day («oggi», «ieri»), an Italian week, Monday to Sunday
+ * («questa settimana», «settimana scorsa»), a month («ottobre», «2026-10»), a quarter («T3
+ * 2026»), a year («2026») or the year so far («da inizio anno»), with the one before to compare against and how
  * Italian names them («di ottobre», «ad aprile», «nel 3º trimestre»). A month or a quarter without
  * a year is the latest one begun: spese and ore di lavoro are of the past. Shared by the expenses
  * and the timesheet.
  */
-import { DateError, parseMonth } from "./dates.ts";
-import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES, realDate } from "./italian-calendar.ts";
+import { DateError, isoWeek, parseMonth } from "./dates.ts";
+import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES, realDate, weekdayOf } from "./italian-calendar.ts";
+import { italianDate } from "./italian-format.ts";
 import { halfUp } from "./quote-sums.ts";
 import { fold } from "./text-match.ts";
 
@@ -15,25 +17,39 @@ export class PeriodError extends Error {
 	override readonly name = "PeriodError";
 }
 
-export type PeriodKind = "month" | "quarter" | "year" | "ytd";
+export type PeriodKind = "day" | "week" | "month" | "quarter" | "year" | "ytd";
 
 /** A span of whole days, both ends included, with how a person names it and how a file does. */
 export type Period = {
 	readonly kind: PeriodKind;
 	readonly from: string;
 	readonly to: string;
-	/** «ottobre 2026», «3º trimestre 2026», «2026», «2026 fino al 18/10». */
+	/** «18/10/2026», «settimana dal 12/10/2026 al 18/10/2026», «ottobre 2026», «3º trimestre 2026», «2026», «2026 fino al 18/10». */
 	readonly label: string;
 	/** «di ottobre 2026», «del 3º trimestre 2026», «del 2026». */
 	readonly of: string;
 	/** «a ottobre 2026», «ad aprile 2026», «nel 3º trimestre 2026», «nel 2026». */
 	readonly in: string;
-	/** «2026-10», «2026-T3», «2026», «2026-inizio-anno»: digits, letters and «-» only, safe in a file name. */
+	/** «2026-10-18», «2026-S42», «2026-10», «2026-T3», «2026», «2026-inizio-anno»: digits, letters and «-» only, safe in a file name. */
 	readonly slug: string;
 };
 
 /** «ad aprile», «ad agosto», «a ottobre»: «ad» only before an «a». */
 const a = (word: string) => (word.startsWith("a") ? `ad ${word}` : `a ${word}`);
+
+function dayPeriod(date: string): Period {
+	const label = italianDate(date);
+	return { kind: "day", from: date, to: date, label, of: `del ${label}`, in: `il ${label}`, slug: date };
+}
+
+/** The Italian week, Monday to Sunday, of `date`. */
+function weekPeriod(date: string): Period {
+	const from = addDays(date, -((weekdayOf(date) + 6) % 7));
+	const to = addDays(from, 6);
+	const label = `settimana dal ${italianDate(from)} al ${italianDate(to)}`;
+	const w = isoWeek(from);
+	return { kind: "week", from, to, label, of: `della ${label}`, in: `nella ${label}`, slug: `${w.year}-S${String(w.week).padStart(2, "0")}` };
+}
 
 function monthPeriod(year: number, month: number): Period {
 	const label = `${MONTH_NAMES[month - 1]} ${year}`;
@@ -79,7 +95,7 @@ const ORDINALS: Readonly<Record<string, number>> = { primo: 1, secondo: 2, terzo
 const MONTH_SHORT_YEAR = /^(\d{1,2})[/.-](\d{2})$/;
 
 /** The text, back in an error only when it is plain: letters, digits, spaces and a few signs. */
-const PERIOD_WORD = new RegExp(`\\b(?:mese|trimestre|anno|${MONTH_NAMES.join("|")})\\b`);
+const PERIOD_WORD = new RegExp(`\\b(?:settimana|mese|trimestre|anno|${MONTH_NAMES.join("|")})\\b`);
 
 /** The text, back in an error only when it is plain and looks like a period: a digit, or a month, «mese», «trimestre», «anno». */
 function said(text: string): string {
@@ -89,7 +105,7 @@ function said(text: string): string {
 }
 
 /**
- * A period as a person writes it: «ottobre», «ottobre 2025», «ottobre 25», «2026-10», «10/2026»,
+ * A period as a person writes it: «oggi», «ieri», «questa settimana», «settimana scorsa», «ottobre», «ottobre 2025», «ottobre 25», «2026-10», «10/2026»,
  * «10/25», «T3 2026», «Q3», «3° trimestre», «terzo trimestre 2026», «2026», «mese», «mese
  * scorso», «trimestre», «trimestre scorso», «ultimo trimestre», «anno», «anno scorso», «da inizio
  * anno». A month or a quarter without a year is the latest one begun (this one or before).
@@ -99,6 +115,10 @@ export function readPeriod(text: string, today: string): Period {
 	const t = fold(text).replace(/\s+/g, " ").trim();
 	const year = Number(today.slice(0, 4));
 	const thisQuarter = quarterPeriod(year, quarterOf(today));
+	if (t === "oggi") return dayPeriod(today);
+	if (t === "ieri") return dayPeriod(addDays(today, -1));
+	if (t === "settimana" || t === "questa settimana" || t === "settimana corrente") return weekPeriod(today);
+	if (t === "settimana scorsa" || t === "la settimana scorsa" || t === "scorsa settimana" || t === "ultima settimana") return weekPeriod(addDays(today, -7));
 	if (t === "" || t === "mese" || t === "questo mese" || t === "mese corrente") return currentMonth(today);
 	if (t === "mese scorso" || t === "ultimo mese") return previousPeriod(currentMonth(today));
 	if (t === "trimestre" || t === "questo trimestre" || t === "trimestre corrente") return thisQuarter;
@@ -131,7 +151,7 @@ export function readPeriod(text: string, today: string): Period {
 		const y = /\d/.test(t) ? parsed.year : parsed.month <= Number(today.slice(5, 7)) ? year : year - 1;
 		return monthPeriod(checkedYear(y, text), parsed.month);
 	} catch (error) {
-		if (error instanceof DateError) throw new PeriodError(`non riconosco il periodo${said(text)}: scrivilo come «ottobre», «ottobre 2026», «T3 2026», «2026» o «da inizio anno»`);
+		if (error instanceof DateError) throw new PeriodError(`non riconosco il periodo${said(text)}: scrivilo come «ottobre», «ottobre 2026», «T3 2026», «2026», «da inizio anno» o «settimana scorsa»`);
 		throw error;
 	}
 }
@@ -145,6 +165,8 @@ function checkedYear(year: number, text: string): number {
 export function previousPeriod(p: Period): Period {
 	const year = Number(p.from.slice(0, 4));
 	const month = Number(p.from.slice(5, 7));
+	if (p.kind === "day") return dayPeriod(addDays(p.from, -1));
+	if (p.kind === "week") return weekPeriod(addDays(p.from, -7));
 	if (p.kind === "ytd") {
 		const same = `${year - 1}${p.to.slice(4)}`;
 		return yearToDate(realDate(same) ? same : `${year - 1}-02-28`);
@@ -154,9 +176,16 @@ export function previousPeriod(p: Period): Period {
 	return month === 1 ? monthPeriod(year - 1, 12) : monthPeriod(year, month - 1);
 }
 
-/** «del mese prima», «del trimestre prima», «dell'anno prima». */
+/** «del giorno prima», «della settimana prima», «del mese prima», «del trimestre prima», «dell'anno prima». */
 export function unitBefore(p: Period): string {
-	return p.kind === "month" ? "del mese prima" : p.kind === "quarter" ? "del trimestre prima" : "dell'anno prima";
+	const words: Readonly<Record<PeriodKind, string>> = { day: "del giorno prima", week: "della settimana prima", month: "del mese prima", quarter: "del trimestre prima", year: "dell'anno prima", ytd: "dell'anno prima" };
+	return words[p.kind];
+}
+
+/** The period of a tool's `period` argument: this month when not given. PeriodError when it is no text or does not read. */
+export function periodOf(value: unknown, today: string): Period {
+	if (value !== undefined && typeof value !== "string") throw new PeriodError("period è un testo, come «ottobre» o «T3 2026»");
+	return typeof value === "string" ? readPeriod(value.slice(0, 40), today) : currentMonth(today);
 }
 
 export function inPeriod(date: string, p: Pick<Period, "from" | "to">): boolean {

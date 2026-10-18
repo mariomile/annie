@@ -60,7 +60,7 @@ import type { MailRequests } from "./core/mail-requests.ts";
 import { checkedUrl, publicAddress, WebFetchRefused } from "./core/web-fetch.ts";
 import { readPage } from "./core/watches.ts";
 import { webHostAllowed } from "./core/policy.ts";
-import type { DurableEngine, ToolContext } from "./core/engine.ts";
+import type { DurableEngine } from "./core/engine.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./core/errors.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "./core/ids.ts";
 import { readJsonFile, updateJsonFile } from "./core/locked-json.ts";
@@ -80,7 +80,7 @@ import { createDocumentTools } from "./core/tools/document-tools.ts";
 import { createListTools } from "./core/tools/list-tools.ts";
 import { createInvoiceTools } from "./core/tools/invoice-tools.ts";
 import { InvoiceScanner } from "./core/invoice-scan.ts";
-import { createQuoteTools } from "./core/tools/quote-tools.ts";
+import { quotesOf } from "./core/tools/quote-tools.ts";
 import { createExpenseTools } from "./core/tools/expense-tools.ts";
 import { createTimesheetTools } from "./core/tools/timesheet-tools.ts";
 import { createAgentTools } from "./core/tools/agent-tools.ts";
@@ -511,7 +511,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			const mail = mailRequests(record);
 			// One scanner of the workspace's invoices for the scadenzario and the prima nota: one cache.
 			const invoiceScanner = new InvoiceScanner(runtime.workspace(record.tenantId, record.id));
-			const quoteTools = createQuoteTools({
+			// The timesheet makes its preventivi through quotes' own create: the same rules, numbers and document.
+			const quotes = quotesOf({
 				workspace: runtime.workspace(record.tenantId, record.id),
 				store: runtime.quotes(record.tenantId, record.id),
 				company: runtime.invoices(record.tenantId, record.id),
@@ -522,8 +523,6 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 				},
 			});
-			// The timesheet makes its preventivi through the quotes tool itself: the same rules, numbers and document.
-			const quoteTool = quoteTools.find((t) => t.name === "quotes");
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createDocumentTools({ workspace: runtime.workspace(record.tenantId, record.id) }),
@@ -542,7 +541,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},
 				}),
-				...quoteTools,
+				...quotes.tools,
 				...createExpenseTools({
 					workspace: runtime.workspace(record.tenantId, record.id),
 					store: runtime.expenses(record.tenantId, record.id),
@@ -559,7 +558,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					store: runtime.timesheet(record.tenantId, record.id),
 					company: runtime.invoices(record.tenantId, record.id),
 					quotes: runtime.quotes(record.tenantId, record.id),
-					...(quoteTool === undefined ? {} : { createQuote: (args: Record<string, unknown>, ctx: ToolContext) => quoteTool.execute({ ...args, op: "create" }, ctx) }),
+					createQuote: quotes.create,
 					scanner: invoiceScanner,
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
