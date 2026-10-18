@@ -309,6 +309,13 @@ ul.task-list { list-style: none; margin: 0; padding: 6px; }
 	.person-row { flex-wrap: wrap; }
 	.person-actions { width: 100%; padding-left: 48px; }
 }
+/* Skill: a row each, the command in mono, what it does under it. */
+.skill-row .task-text .skill-what { color: var(--fg-2); font-size: 13.5px; line-height: 1.45; }
+.skill-row .task-text b .chip { margin-left: 6px; }
+@media (max-width: 560px) {
+	.skill-row { flex-wrap: wrap; }
+	.skill-row .person-actions { width: 100%; padding-left: 48px; }
+}
 /* Attività: the audit day by day, rows like the tasks, the details as name and value. */
 .audit { padding: 16px 14px 10px; }
 .audit-filter { padding: 0 6px; }
@@ -649,7 +656,8 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 	.pratiche .list { max-height: 320px; }
 }
 @media (max-width: 860px) {
-	.shell, .shell.collapsed { grid-template-columns: minmax(0, 1fr); }
+	/* The top bar keeps its own height; a short page does not stretch it to fill the screen. */
+	.shell, .shell.collapsed { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
 	.shell.collapsed .rail { visibility: visible; }
 	.shell.collapsed .peek, .rail .collapse { display: none; }
 	.rail { position: fixed; inset: 0 auto 0 0; width: min(300px, 86vw); z-index: 40; transform: translateX(-102%); transition: transform 0.2s ease; }
