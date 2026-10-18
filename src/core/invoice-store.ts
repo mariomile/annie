@@ -8,10 +8,10 @@
  */
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { validAddress } from "./google-actions.ts";
+import { validAddress } from "./email-address.ts";
 import { type Company, INVOICE_LIMITS, InvoiceError, instalmentRange, type Marker, type PaidEntry, paidSet } from "./invoices.ts";
 import { updateJsonFile } from "./locked-json.ts";
-import { type Contact, type ReminderEntry, type ReminderItem, ReminderLimit, type ReminderMade, validContacts, validReminders, withContact, withReminders } from "./reminder-book.ts";
+import { bookKey, type Contact, isText, type ReminderEntry, type ReminderItem, ReminderLimit, type ReminderMade, validContacts, validReminders, withContact, withoutPaidBefore, withReminders } from "./reminder-book.ts";
 
 /** As on disk: reminders and contacts are checked on their own, so a bad one never hides the paid marks. */
 type Book = { readonly company?: Company; readonly paid: readonly PaidEntry[]; readonly reminders?: unknown; readonly contacts?: unknown };
@@ -31,8 +31,11 @@ export const BROKEN_WRITE = "lo stato delle fatture pagate (invoices.json) non s
 export const REMINDERS_BROKEN = "i solleciti annotati in invoices.json non si leggono: non li cambio, perché andrebbero persi. Va sistemato il file nella cartella dell'agente";
 const CONTACTS_BROKEN = "gli indirizzi dei clienti salvati in invoices.json non si leggono: non li cambio, perché andrebbero persi";
 
-/** The company: a partita IVA or a name, its IBANs (at most 5) and a signature for the letters. */
-export const COMPANY_LIMITS = { ibans: 5, signature: 300 } as const;
+/** The company: a partita IVA or a name, its IBANs (at most 5) and a signature for the letters (at most 300 characters on 4 lines). */
+export const COMPANY_LIMITS = { ibans: 5, signature: 300, signatureLines: 4 } as const;
+
+/** Reminders of an invoice paid in full are kept this long after the payment, then dropped at the next write. */
+const KEEP_PAID_REMINDERS_MS = 365 * 24 * 60 * 60 * 1000;
 
 export class InvoiceStore {
 	private readonly file: string;
@@ -64,17 +67,31 @@ export class InvoiceStore {
 
 	/** Set the company (undefined clears it). */
 	setCompany(company: Company | undefined): void {
+		this.changeCompany(() => company);
+	}
+
+	/**
+	 * Change the company from what is saved, under one lock (so two changes never lose each
+	 * other): `change` gets the saved one and gives the new one, or undefined to clear it.
+	 * InvoiceError when the result would not read back.
+	 */
+	changeCompany(change: (old: Company | undefined) => Company | undefined): Company | undefined {
+		let result: Company | undefined;
 		this.update((book) => {
-			const { company: _old, ...rest } = book;
-			return company === undefined ? rest : { ...rest, company };
+			const { company: old, ...rest } = book;
+			result = change(old);
+			if (result === old) return book;
+			if (!validCompany(result)) throw new InvoiceError("i dati dell'azienda non sono validi");
+			return result === undefined ? rest : { ...rest, company: result };
 		});
+		return result;
 	}
 
 	/**
 	 * Mark `invoice`, which has `count` instalments (1 when it has none), paid or not: one
-	 * instalment, or all of it. How many instalments changed, and the entry there was before. An
-	 * invoice now paid in full has nothing left to remind: its reminders go. InvoiceError when the
-	 * store is full or does not read.
+	 * instalment, or all of it. How many instalments changed, and the entry there was before. The
+	 * reminders stay (history); those of invoices paid in full over a year ago go (prunedOf).
+	 * InvoiceError when the store is full or does not read.
 	 */
 	mark(input: { invoice: string; count: number; instalment?: number; paid: boolean } & Marker): { changed: number; before?: PaidEntry } {
 		const { invoice, count, instalment } = input;
@@ -92,10 +109,7 @@ export class InvoiceStore {
 				throw new InvoiceError(`ci sono già ${INVOICE_LIMITS.marks} fatture segnate pagate, il massimo: non ne segno altre. Togli il segno a quelle vecchie con op mark_unpaid`);
 			}
 			const others = book.paid.filter((e) => e.invoice !== invoice);
-			const paidNow = next !== undefined && paidSet(next, count).size === count;
-			const sent = validReminders(book.reminders) ? ((book.reminders as readonly ReminderEntry[] | undefined) ?? []) : [];
-			const reminders = paidNow && sent.some((e) => e.invoice === invoice) ? { reminders: sent.filter((e) => e.invoice !== invoice) } : {};
-			return { ...book, paid: next === undefined ? others : [...others, next], ...reminders };
+			return prunedOf({ ...book, paid: next === undefined ? others : [...others, next] }, input.at);
 		});
 		return result;
 	}
@@ -110,19 +124,22 @@ export class InvoiceStore {
 			if (!validReminders(book.reminders)) throw new InvoiceError(REMINDERS_BROKEN);
 			const next = limited(() => withReminders((book.reminders as readonly ReminderEntry[] | undefined) ?? [], items, made));
 			recorded = next.recorded;
-			return recorded === 0 ? book : { ...book, reminders: next.entries };
+			// Checked as a read checks it: what is written always reads back.
+			if (!validReminders(next.entries)) throw new InvoiceError("un sollecito da annotare non è valido: non l'ho annotato");
+			return recorded === 0 ? book : prunedOf({ ...book, reminders: next.entries }, made.at);
 		});
 		return recorded;
 	}
 
 	/** Save a customer's address the person gave, over the old one. InvoiceError when the book is full or does not read. */
 	saveContact(contact: Contact): void {
-		if (!validAddress(contact.email)) throw new InvoiceError("indirizzo non valido");
 		this.update((book) => {
 			if (!validContacts(book.contacts, validAddress)) throw new InvoiceError(CONTACTS_BROKEN);
 			const contacts = (book.contacts as readonly Contact[] | undefined) ?? [];
-			if (contacts.find((c) => c.key === contact.key)?.email === contact.email) return book;
-			return { ...book, contacts: limited(() => withContact(contacts, contact)) };
+			if (contacts.find((c) => c.key === bookKey(contact.key))?.email === contact.email) return book;
+			const next = limited(() => withContact(contacts, contact, validAddress));
+			if (!validContacts(next, validAddress)) throw new InvoiceError("l'indirizzo da salvare non è valido: non l'ho salvato");
+			return { ...book, contacts: next };
 		});
 	}
 
@@ -145,6 +162,18 @@ export class InvoiceStore {
 		}
 		if (changed && existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`);
 	}
+}
+
+/** The book without the reminders of invoices paid in full over a year before `now` (when the reminders read). */
+function prunedOf(book: Book, now: string): Book {
+	if (book.reminders === undefined || !validReminders(book.reminders)) return book;
+	const time = Date.parse(now);
+	if (!Number.isFinite(time)) return book;
+	const since = new Map<string, string>();
+	for (const e of book.paid) if (e.all !== undefined && e.except === undefined) since.set(bookKey(e.invoice), e.all.at);
+	const reminders = book.reminders as readonly ReminderEntry[];
+	const kept = withoutPaidBefore(reminders, since, new Date(time - KEEP_PAID_REMINDERS_MS).toISOString());
+	return kept === reminders ? book : { ...book, reminders: kept };
 }
 
 function limited<T>(work: () => T): T {
@@ -181,7 +210,6 @@ function bookOf(text: string): Book | undefined {
 	}
 }
 
-const isText = (v: unknown): v is string => typeof v === "string";
 const isMarker = (v: unknown): v is Marker => typeof v === "object" && v !== null && isText((v as Marker).by) && isText((v as Marker).at);
 const isN = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 1000;
 
@@ -191,7 +219,7 @@ function validCompany(company: unknown): boolean {
 	const c = company as Company;
 	if ((c.vat !== undefined && !isText(c.vat)) || (c.name !== undefined && !isText(c.name))) return false;
 	if (c.ibans !== undefined && !(Array.isArray(c.ibans) && c.ibans.length <= COMPANY_LIMITS.ibans && c.ibans.every((i) => isText(i) && i.length <= 34))) return false;
-	return c.signature === undefined || (isText(c.signature) && c.signature.length <= COMPANY_LIMITS.signature);
+	return c.signature === undefined || (isText(c.signature, COMPANY_LIMITS.signature) && c.signature.split("\n").length <= COMPANY_LIMITS.signatureLines);
 }
 
 /** The book when the JSON has its shape; undefined otherwise. Reminders and contacts are checked when used. */

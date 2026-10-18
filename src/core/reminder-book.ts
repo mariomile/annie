@@ -5,7 +5,8 @@
  * customers' addresses the person gave. Only what the person did or said is kept: an approved
  * mail, their word, an address they wrote. Never what a file, a mail or a page says.
  */
-import type { Marker } from "./invoices.ts";
+import { createHash } from "node:crypto";
+import type { Marker } from "./marker.ts";
 
 export const REMINDER_LIMITS = {
 	/** Invoices with a reminder recorded: past it, no new one (the others are never dropped). */
@@ -23,7 +24,7 @@ export const REMINDER_LIMITS = {
 /** 1 a polite notice, 2 a firmer one, 3 the formal one. */
 export type ReminderLevel = 1 | 2 | 3;
 
-export const REMINDER_LEVELS: readonly ReminderLevel[] = [1, 2, 3];
+const REMINDER_LEVELS: readonly ReminderLevel[] = [1, 2, 3];
 
 /** One reminder: `mail` through an approved request (`action` its id), `self` sent by the person. */
 export type ReminderMark = Marker & { readonly level: ReminderLevel; readonly via: "mail" | "self"; readonly action?: string };
@@ -40,10 +41,27 @@ export class ReminderLimit extends Error {
 	override readonly name = "ReminderLimit";
 }
 
-const isText = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
+/** A non-empty text of at most `max` characters. */
+export const isText = (v: unknown, max = Number.POSITIVE_INFINITY): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/**
+ * An invoice's or a customer's key as the book keeps it: as it is up to the limit, else its sha256
+ * (64 hex characters), so a long invoice number or customer name never makes the file unreadable.
+ * The same key always gives the same result, and a result given again is unchanged.
+ */
+export function bookKey(key: string): string {
+	return key.length <= REMINDER_LIMITS.key ? key : sha256(key);
+}
+
+/** Who, within the limit: a longer one keeps its start and a digest of the whole, so two stay apart. */
+function bookBy(by: string): string {
+	return by.length <= REMINDER_LIMITS.by ? by : `${by.slice(0, REMINDER_LIMITS.by - 17)}#${sha256(by).slice(0, 16)}`;
+}
 
 /** An instant as the store writes it (toISOString): anything else would break the days shown. */
-export function isInstant(v: unknown): v is string {
+function isInstant(v: unknown): v is string {
 	return typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(v) && Number.isFinite(Date.parse(v));
 }
 
@@ -84,36 +102,59 @@ export type ReminderMade = Marker & { readonly via: "mail" | "self"; readonly ac
 
 /**
  * The list with `items` recorded. Not recorded again: an item already recorded for the same mail
- * request (an approval told twice), or a self mark of the same level on the same day. ReminderLimit,
- * and nothing changes, when a limit would be passed.
+ * request (an approval told twice), or a self mark of a level already recorded that local day
+ * (by the person or by an approved mail). Keys and who are kept within the limits (bookKey,
+ * bookBy); ReminderLimit, and nothing changes, when a limit would be passed or the instant is not
+ * one. The result always passes validReminders.
  */
 export function withReminders(entries: readonly ReminderEntry[], items: readonly ReminderItem[], made: ReminderMade): { entries: readonly ReminderEntry[]; recorded: number } {
+	if (!isInstant(made.at)) throw new ReminderLimit("la data del sollecito non è valida");
+	if (made.action !== undefined && !isText(made.action, REMINDER_LIMITS.action)) throw new ReminderLimit("il codice della richiesta non è valido");
+	const by = bookBy(made.by);
+	if (by === "") throw new ReminderLimit("manca chi ha mandato il sollecito");
 	const byInvoice = new Map(entries.map((e) => [e.invoice, e]));
 	let recorded = 0;
 	for (const item of items) {
-		const before = byInvoice.get(item.invoice);
+		if (!REMINDER_LEVELS.includes(item.level) || item.invoice === "") throw new ReminderLimit("un sollecito da annotare non è valido");
+		const invoice = bookKey(item.invoice);
+		const before = byInvoice.get(invoice);
 		const sent = before?.sent ?? [];
 		if (made.action !== undefined && sent.some((m) => m.action === made.action)) continue;
 		const { dayOf } = made;
-		if (made.via === "self" && dayOf !== undefined && sent.some((m) => m.via === "self" && m.level === item.level && dayOf(m.at) === dayOf(made.at))) continue;
+		if (made.via === "self" && dayOf !== undefined && sent.some((m) => m.level === item.level && dayOf(m.at) === dayOf(made.at))) continue;
 		if (before === undefined && byInvoice.size >= REMINDER_LIMITS.invoices) {
 			throw new ReminderLimit(`ci sono già solleciti annotati per ${REMINDER_LIMITS.invoices} fatture, il massimo: non ne annoto altri`);
 		}
 		if (sent.length >= REMINDER_LIMITS.perInvoice) throw new ReminderLimit(`una fattura ha già ${REMINDER_LIMITS.perInvoice} solleciti annotati, il massimo`);
-		const mark: ReminderMark = { level: item.level, by: made.by, at: made.at, via: made.via, ...(made.action === undefined ? {} : { action: made.action }) };
-		byInvoice.set(item.invoice, { invoice: item.invoice, sent: [...sent, mark] });
+		const mark: ReminderMark = { level: item.level, by, at: made.at, via: made.via, ...(made.action === undefined ? {} : { action: made.action }) };
+		byInvoice.set(invoice, { invoice, sent: [...sent, mark] });
 		recorded++;
 	}
 	return { entries: recorded === 0 ? entries : [...byInvoice.values()], recorded };
 }
 
-/** The list with `contact` saved over the customer's old address. ReminderLimit when the book is full. */
-export function withContact(contacts: readonly Contact[], contact: Contact): readonly Contact[] {
-	const others = contacts.filter((c) => c.key !== contact.key);
+/**
+ * The list with `contact` saved over the customer's old address, its key and who kept within the
+ * limits. ReminderLimit when the book is full or the address or instant is not valid.
+ */
+export function withContact(contacts: readonly Contact[], contact: Contact, isAddress: (a: string) => boolean): readonly Contact[] {
+	if (!isText(contact.email, 254) || !isAddress(contact.email)) throw new ReminderLimit("l'indirizzo non è valido");
+	if (!isInstant(contact.at) || contact.key === "" || contact.by === "") throw new ReminderLimit("l'indirizzo da salvare non è valido");
+	const key = bookKey(contact.key);
+	const others = contacts.filter((c) => c.key !== key);
 	if (others.length === contacts.length && contacts.length >= REMINDER_LIMITS.contacts) {
 		throw new ReminderLimit(`ci sono già ${REMINDER_LIMITS.contacts} indirizzi di clienti salvati, il massimo`);
 	}
-	return [...others, contact];
+	return [...others, { key, email: contact.email, by: bookBy(contact.by), at: contact.at }];
+}
+
+/** The reminders of invoices paid in full (`paidSince`: the invoice's key in the book, when) before `cutoff`: they go. */
+export function withoutPaidBefore(entries: readonly ReminderEntry[], paidSince: ReadonlyMap<string, string>, cutoff: string): readonly ReminderEntry[] {
+	const kept = entries.filter((e) => {
+		const at = paidSince.get(e.invoice);
+		return at === undefined || at >= cutoff;
+	});
+	return kept.length === entries.length ? entries : kept;
 }
 
 /** The level a new reminder of an invoice gets: one past the highest recorded, at most the formal one. */

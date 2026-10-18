@@ -7,23 +7,23 @@ import { SCAN_LIMITS, type ScanOutcome } from "../invoice-scan.ts";
 import type { WindowArgs } from "../invoice-windows.ts";
 import type { BookState } from "../invoice-store.ts";
 import { findInvoices, type Invoice, type Side, vatOf } from "../invoices.ts";
-import { todayIn } from "../italian-calendar.ts";
+import { dayOfIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
 import { fence } from "../untrusted.ts";
 import { counterparties, docLabel, joinedWords, short, worthText } from "./invoice-words.ts";
 
-export const COMPANY_HINT = [
+const COMPANY_HINT = [
 	"Non so quale sia l'azienda di chi ti scrive: le fatture sono indicate come fornitore e cliente.",
 	"Se in questa conversazione non l'hai già chiesto, chiedi una volta sola se la sua azienda è quella con la partita IVA che compare in tutte le fatture e,",
 	"se conferma, salvala con op set_company.",
 ].join(" ");
 
-export const COMPANY_HINT_NO_VAT = [
+const COMPANY_HINT_NO_VAT = [
 	"Non so quale sia l'azienda di chi ti scrive: le fatture sono indicate come fornitore e cliente.",
 	"Se in questa conversazione non l'hai già chiesto, chiedi una volta sola la partita IVA della sua azienda e salvala con op set_company.",
 ].join(" ");
 
-export const BROKEN_READ = "Attenzione, lo stato delle fatture pagate non si legge: le mostro tutte aperte.";
+const BROKEN_READ = "Attenzione, lo stato delle fatture pagate non si legge: le mostro tutte aperte.";
 
 /** What a reading answer needs besides the invoices: today, the time zone, whether it is the brief's thread. */
 export type View = { readonly today: string; readonly timeZone: string; readonly brief: boolean };
@@ -40,7 +40,7 @@ export function fenced(text: string): string {
 
 /** The day a mark was made, where the instance is. */
 export function markDay(at: string, timeZone: string): string {
-	return italianDate(todayIn(timeZone, new Date(at)));
+	return italianDate(dayOfIn(timeZone)(at));
 }
 
 /** Said under every reading answer: inside the fence what comes from the files, outside how to go on. */
@@ -69,17 +69,17 @@ export function footer(loaded: Loaded, view: View): Footer {
 	return { inside, outside };
 }
 
-export function unreadText(scan: ScanOutcome): string {
+function unreadText(scan: ScanOutcome): string {
 	const files = scan.unread.slice(0, 5).map((u) => `${u.path} (${u.why})`);
 	const more = scan.unread.length > 5 ? ` e altri ${scan.unread.length - 5}` : "";
 	return `Non ho potuto leggere ${scan.unread.length === 1 ? "un file" : `${scan.unread.length} file`}: ${files.join("; ")}${more}.`;
 }
 
-export function busyText(busy: number): string {
+function busyText(busy: number): string {
 	return `${busy} ${busy === 1 ? "fattura non letta" : "fatture non lette"} adesso, riprova tra poco.`;
 }
 
-export function leftOutText(leftOut: number): string {
+function leftOutText(leftOut: number): string {
 	return `${leftOut === 1 ? "Un file non l'ho guardato" : `${leftOut} file non li ho guardati`} per i limiti di tempo, dimensione o memoria (i più vecchi): li guardo alla prossima richiesta.`;
 }
 
@@ -89,7 +89,7 @@ export function answer(head: string, lines: readonly string[], foot: Footer, not
 }
 
 /** A partita IVA in every invoice (as supplier or customer), when there are at least two: likely the owner's. */
-export function commonVat(invoices: readonly Invoice[]): { vat: string; name?: string } | undefined {
+function commonVat(invoices: readonly Invoice[]): { vat: string; name?: string } | undefined {
 	if (invoices.length < 2) return undefined;
 	const first = invoices[0] as Invoice;
 	for (const party of [first.supplier, first.customer]) {

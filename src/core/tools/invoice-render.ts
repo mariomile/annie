@@ -26,7 +26,7 @@ export function listAnswer(loaded: Loaded, args: ReadArgs, view: View): string {
 }
 
 /** «scadenza lun 30/11», «2 rate, la prossima aperta lun 30/11», «senza scadenza indicata». */
-export function dueSummary(invoice: Invoice, today: string): string | undefined {
+function dueSummary(invoice: Invoice, today: string): string | undefined {
 	if (invoice.doc.integration || invoice.credit) return undefined;
 	const dated = invoice.instalments.filter((i) => i.due !== undefined && i.extra !== true);
 	if (dated.length === 0) return "senza scadenza indicata";

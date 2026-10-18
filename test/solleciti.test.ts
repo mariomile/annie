@@ -1,10 +1,12 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { validIban } from "../src/core/iban.ts";
 import { invoiceCallReads } from "../src/core/invoices.ts";
 import { parseRate, simpleInterest } from "../src/core/tools/reminder-sources.ts";
-import { ALFA, BETA, COMUNE, DELTA, FILES, fattura, G1, G2, GAMMA, GNC, IBAN, IBAN_2, IBAN_BAD, IBAN_SAVED, inside, NOW, outside, type Party, setup, TUESDAY } from "./solleciti-fixtures.ts";
+import { ALFA, B70, BETA, cleanTemp, COMUNE, fakeMail, DELTA, FILES, fattura, G1, G2, GAMMA, GNC, IBAN, IBAN_2, IBAN_BAD, IBAN_SAVED, inside, NOW, outside, type Party, setup, TUESDAY } from "./solleciti-fixtures.ts";
+
+afterEach(cleanTemp);
 
 /** Gamma's two invoices alone: no credit note to take off. */
 const GAMMA_ONLY = { "f/g1.xml": G1, "f/g2.xml": G2 };
@@ -24,7 +26,9 @@ describe("solleciti: the letter", () => {
 		expect(draft).toContain("- fattura n. B-70 del 01/09/2026, scaduta il 30/09/2026 (18 giorni di ritardo): 1.220,00 €");
 		// Due on a Saturday: late from Monday 12/10, and the letter says why.
 		expect(draft).toContain("- fattura n. B-71 del 10/09/2026, rata 1/2, scaduta il 10/10/2026 (sabato: pagabile dal 12/10/2026; 6 giorni di ritardo): 250,00 €");
-		expect(draft).not.toContain("10/11/2026");
+		// M1: the instalment not yet due is a note for the person, not in the letter.
+		expect(draft).toContain("Nota: non ancora scadute, quindi non nel sollecito: fattura n. B-71 rata 2/2 (scade il 10/11/2026).");
+		expect(draft.slice(draft.indexOf("Oggetto:"))).not.toContain("10/11/2026");
 		expect(draft).toContain("Totale da saldare: 1.370,00 € (1.470,00 € meno la nota di credito n. NC-3 del 05/10/2026, 100,00 €).");
 		expect(draft).toContain(`Potete pagare con bonifico all'IBAN ${IBAN}.`);
 		expect(draft).toContain("Nota: IBAN preso dalle fatture: salvalo con set_company così non dipende dai file.");
@@ -57,17 +61,48 @@ describe("solleciti: the letter", () => {
 		expect(inside(await run({ op: "reminder", party: "gamma", level: 3 }))).toContain("formalmente a pagare quanto ancora dovuto, già sollecitato in precedenza:");
 	});
 
-	it("M3: invoices never reminded go in a sentence of their own", async () => {
-		const later = setup({ "f/g1.xml": G1, "f/g2.xml": G2 });
-		later.store.remind([{ invoice: "IT03311220036|b-70|2026-09-01|TD01", level: 1 }], { by: "p", at: "2026-10-01T08:00:00Z", via: "self" });
-		const draft = inside(await later.run({ op: "reminder", party: "gamma" }));
-		expect(draft).toContain("livello 2");
-		const reminded = draft.indexOf("nonostante il nostro precedente sollecito");
-		const fresh = draft.indexOf("Non ci risulta inoltre il pagamento di:");
+	it("M5: invoices at different levels go in separate letters, each recorded at its own level", async () => {
+		const { run, store } = setup({ "f/g1.xml": G1, "f/g2.xml": G2, "f/gnc.xml": GNC });
+		store.remind([{ invoice: B70, level: 1 }], { by: "p", at: "2026-10-01T08:00:00Z", via: "self" });
+		const answer = await run({ op: "reminder", party: "gamma" });
+		expect(outside(answer)).toContain("Bozza: 2 solleciti");
+		const data = inside(answer);
+		const second = data.indexOf("--- Sollecito per Gamma Hotel S.p.A., livello 2");
+		const first = data.indexOf("--- Sollecito per Gamma Hotel S.p.A., livello 1");
+		expect(second).toBeGreaterThan(-1);
+		expect(first).toBeGreaterThan(second);
+		const letter2 = data.slice(second, first);
+		const letter1 = data.slice(first);
+		expect(letter2).toContain("nonostante il nostro precedente sollecito, non ci risulta ancora il pagamento di:\n- fattura n. B-70");
+		expect(letter2).not.toContain("- fattura n. B-71");
+		expect(letter1).toContain("- fattura n. B-71");
+		expect(letter1).not.toContain("- fattura n. B-70");
+		expect(letter1).not.toContain("precedente sollecito");
+		// Two letters: neither covers it all, so the credit note is said apart, not taken off.
+		expect(letter2).toContain("Totale da saldare: 1.220,00 €.");
+		expect(letter2).toContain("Nota: il cliente ha note di credito per 100,00 € da regolare");
+		// A level asked: one letter, the never reminded ones in a sentence of their own (M3).
+		const asked = inside(await run({ op: "reminder", party: "gamma", level: 2 }));
+		const reminded = asked.indexOf("nonostante il nostro precedente sollecito");
+		const fresh = asked.indexOf("Non ci risulta inoltre il pagamento di:");
 		expect(reminded).toBeGreaterThan(-1);
 		expect(fresh).toBeGreaterThan(reminded);
-		expect(draft.indexOf("fattura n. B-70")).toBeLessThan(fresh);
-		expect(draft.indexOf("fattura n. B-71")).toBeGreaterThan(fresh);
+		expect(asked.indexOf("- fattura n. B-70")).toBeLessThan(fresh);
+		expect(asked.indexOf("- fattura n. B-71")).toBeGreaterThan(fresh);
+		// Recorded by the person: each invoice at its own level.
+		expect(await run({ op: "reminder_sent", party: "gamma" })).toContain("solleciti di livello 1 e 2 mandato da chi ti scrive, per 2 fatture");
+		expect(store.read().reminders?.map((e) => e.sent.map((m) => m.level))).toEqual([[1, 2], [1]]);
+	});
+
+	it("M5: level 1 never sends down an invoice already reminded higher", async () => {
+		const { run, store } = setup({ "f/g1.xml": G1, "f/g2.xml": G2 });
+		store.remind([{ invoice: B70, level: 2 }], { by: "p", at: "2026-10-01T08:00:00Z", via: "self" });
+		const answer = inside(await run({ op: "reminder", party: "gamma", level: 1 }));
+		expect(answer).toContain("Gamma Hotel S.p.A.: la fattura B-70 ha già avuto un sollecito di livello più alto: non la rimetto a livello 1.");
+		expect(answer.slice(answer.indexOf("Oggetto:"))).not.toContain("- fattura n. B-70");
+		const only = setup({ "f/g1.xml": G1 });
+		only.store.remind([{ invoice: B70, level: 2 }], { by: "p", at: "2026-10-01T08:00:00Z", via: "self" });
+		expect(await only.run({ op: "reminder", party: "gamma", level: 1 })).toMatch(/^Niente da preparare\./);
 	});
 
 	it("the level is one past the highest recorded, at most 3; after a formal one it says what usually comes next", async () => {
@@ -299,12 +334,18 @@ describe("solleciti: the address book (H2)", () => {
 		expect(inside(await run({ op: "reminder", party: "gamma" }))).toContain("l'indirizzo sembra una PEC");
 	});
 
-	it("contacts that do not read are left out, the rest still counts", async () => {
-		const { run, dir } = setup(GAMMA_ONLY);
-		const { writeFileSync } = await import("node:fs");
-		writeFileSync(join(dir, "invoices.json"), JSON.stringify({ company: { vat: "IT03311220036", by: "u", at: NOW.toISOString() }, paid: [], contacts: [{ key: "x", email: "not an address" }] }));
+	it("H2: saved addresses that do not read: no address at all, never the file's; no send and no save", async () => {
+		const { mail, proposals } = fakeMail();
+		const { run, dir } = setup(GAMMA_ONLY, { mail });
+		writeFileSync(join(dir, "invoices.json"), JSON.stringify({ company: { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() }, paid: [], contacts: [{ key: "x", email: "not an address" }] }));
 		const draft = inside(await run({ op: "reminder", party: "gamma" }));
-		expect(draft).toContain("A: amministrazione@gamma.example (scritto in fattura)");
+		expect(draft).toContain("A: manca l'indirizzo");
+		expect(draft).toContain("Nota: gli indirizzi dei clienti salvati in invoices.json non si leggono: non metto un indirizzo, nemmeno quello della fattura");
+		expect(draft).not.toContain("amministrazione@gamma.example");
+		expect(await run({ op: "reminder", party: "gamma", send: true })).toMatch(/^Errore: gli indirizzi dei clienti salvati in invoices\.json non si leggono/);
+		expect(await run({ op: "reminder", party: "gamma", email: "a@b.example" })).toMatch(/^Errore: gli indirizzi dei clienti salvati/);
+		expect(proposals).toEqual([]);
+		expect(JSON.parse(readFileSync(join(dir, "invoices.json"), "utf8")).contacts).toEqual([{ key: "x", email: "not an address" }]);
 	});
 });
 
@@ -321,7 +362,12 @@ describe("solleciti: from the phone (H3)", () => {
 		expect(decodeURIComponent(url.pathname)).toBe("amministrazione@gamma.example");
 		const body = url.searchParams.get("body") as string;
 		expect(body).toContain("Spett.le Gamma Hotel S.p.A.,");
-		expect(data).toContain(body);
+		expect(body).not.toMatch(/[^\r]\n/);
+		expect(data).toContain(body.replace(/\r\n/g, "\n"));
+		// RFC 6068: the @ as it is, CRLF line breaks, and the characters some apps take apart encoded.
+		expect(link).toMatch(/^mailto:amministrazione@gamma\.example\?subject=/);
+		expect(link).toContain("%0D%0A");
+		expect(link).not.toMatch(/[!'()*]/);
 		expect(url.searchParams.get("subject")).toBe("Beta Ristorazione Srl: promemoria di pagamento fatture n. B-70, B-71");
 	});
 

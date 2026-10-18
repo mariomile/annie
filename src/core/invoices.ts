@@ -8,7 +8,8 @@
 import { type FatturaDocument, type FatturaInstalment, type FatturaParty, fromUnits, toUnits } from "./fattura-pa.ts";
 import type { FoundFattura } from "./invoice-scan.ts";
 import { realDate } from "./italian-calendar.ts";
-import type { ReminderEntry, ReminderMark } from "./reminder-book.ts";
+import type { Marker } from "./marker.ts";
+import { bookKey, type ReminderEntry, type ReminderMark } from "./reminder-book.ts";
 import { checkVatNumber } from "./tax-ids.ts";
 import { fold } from "./text-match.ts";
 
@@ -40,8 +41,7 @@ export class InvoiceError extends Error {
 	override readonly name = "InvoiceError";
 }
 
-/** Who did something, and when (ISO). */
-export type Marker = { readonly by: string; readonly at: string };
+export type { Marker } from "./marker.ts";
 
 /** The owner's company, as the owner gave it: how the scadenzario tells what is to pay from what is to collect. */
 export type Company = Marker & { readonly vat?: string; readonly name?: string; readonly ibans?: readonly string[]; readonly signature?: string };
@@ -197,6 +197,8 @@ export type Invoice = {
 	readonly pec?: string;
 	/** To a public administration. */
 	readonly publicAdmin?: true;
+	/** Without instalments, under split payment: what is counted is the total less the VAT the administration pays to the State. */
+	readonly splitNet?: true;
 };
 
 /** The register: every document of the files found, the same invoice once (the newest file), newest invoice first. */
@@ -237,7 +239,8 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 				mismatch: counted.mismatch,
 				instalments,
 				paid: done.size === counted.list.length,
-				...(reminded.has(key) ? { reminders: reminded.get(key) } : {}),
+				...(reminded.has(bookKey(key)) ? { reminders: reminded.get(bookKey(key)) } : {}),
+				...(counted.splitNet ? { splitNet: true as const } : {}),
 				...(fattura.pec === undefined ? {} : { pec: fattura.pec }),
 				...(fattura.publicAdmin === true ? { publicAdmin: true as const } : {}),
 			});
@@ -247,15 +250,30 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 }
 
 /**
+ * Under split payment the supplier gets the total less the VAT, which the administration pays to
+ * the State. Signs aside (a credit note may write a negative total, and its VAT either way), with
+ * the total's sign; undefined when there is no split VAT or it is more than the total.
+ */
+function splitNet(doc: FatturaDocument): bigint | undefined {
+	if (doc.splitVat === undefined || doc.total === undefined) return undefined;
+	const total = toUnits(doc.total);
+	const vat = toUnits(doc.splitVat);
+	if (total === undefined || vat === undefined) return undefined;
+	const abs = (n: bigint) => (n < 0n ? -n : n);
+	const net = abs(total) - abs(vat);
+	if (net < 0n || vat === 0n) return undefined;
+	return total < 0n ? -net : net;
+}
+
+/**
  * The instalments that count. A credit note or a negative document counts what it is worth, the
  * sign aside. When the instalments add up to more than the total, the ones that repeat the same
  * date and amount are alternatives (two IBANs, two ways to pay): one each is kept. If they still
  * add up to more, they are counted in order up to the total, and the invoice is flagged.
  */
-function countedInstalments(doc: FatturaDocument, total: bigint | undefined): { list: Instalment[]; mismatch: boolean } {
-	// Under split payment the supplier gets the total less the VAT, which the administration pays to the State.
-	const split = doc.splitVat === undefined || doc.total === undefined ? undefined : (toUnits(doc.total) ?? 0n) - (toUnits(doc.splitVat) ?? 0n);
-	const whole = doc.toPay ?? (split === undefined || split < 0n ? doc.total : fromUnits(split));
+function countedInstalments(doc: FatturaDocument, total: bigint | undefined): { list: Instalment[]; mismatch: boolean; splitNet: boolean } {
+	const split = doc.toPay === undefined && doc.instalments.length === 0 ? splitNet(doc) : undefined;
+	const whole = doc.toPay ?? (split === undefined ? doc.total : fromUnits(split));
 	const raw: readonly FatturaInstalment[] = doc.instalments.length > 0 ? doc.instalments : [whole === undefined ? {} : { amount: whole }];
 	const flip = doc.credit || (total !== undefined && total < 0n);
 	const units = (r: FatturaInstalment) => {
@@ -294,7 +312,7 @@ function countedInstalments(doc: FatturaDocument, total: bigint | undefined): { 
 			...(extra ? { extra } : {}),
 		};
 	});
-	return { list, mismatch };
+	return { list, mismatch, splitNet: split !== undefined };
 }
 
 /**

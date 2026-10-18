@@ -11,7 +11,7 @@ import { answer, fenced, footer, type Loaded, type ReadArgs, type View } from ".
 import { byName, MAX_ROWS, otherParty, partyName, short } from "./invoice-words.ts";
 
 /** One party's invoices in by_party: what is open and paid, the credit notes still to take off. */
-export type PartyGroup = {
+type PartyGroup = {
 	readonly side?: Side;
 	readonly supplier: FatturaParty;
 	readonly customer: FatturaParty;
@@ -24,7 +24,7 @@ export type PartyGroup = {
 	readonly invoices: Invoice[];
 };
 
-export function groupParty(g: PartyGroup): FatturaParty {
+function groupParty(g: PartyGroup): FatturaParty {
 	return g.side === "active" ? g.customer : g.supplier;
 }
 
@@ -74,7 +74,7 @@ export function byPartyAnswer(loaded: Loaded, args: ReadArgs, view: View): strin
 }
 
 /** The groups of by_party: by side and party when the side is known, by supplier and customer otherwise. */
-export function partyGroups(invoices: readonly Invoice[], args: ReadArgs): Map<string, PartyGroup> {
+function partyGroups(invoices: readonly Invoice[], args: ReadArgs): Map<string, PartyGroup> {
 	const { party, side } = args;
 	const groups = new Map<string, PartyGroup>();
 	for (const invoice of invoices) {
@@ -108,7 +108,7 @@ export function partyGroups(invoices: readonly Invoice[], args: ReadArgs): Map<s
 }
 
 /** One party asked about: its open instalments without its name, its credit notes, its IBAN once. */
-export function onePartyLines(only: PartyGroup, view: View): string[] {
+function onePartyLines(only: PartyGroup, view: View): string[] {
 	const { today } = view;
 	if (only.rows.length + only.credits.length === 0) return [];
 	const lines = ["", "Rate aperte:"];
@@ -126,7 +126,7 @@ export function onePartyLines(only: PartyGroup, view: View): string[] {
  * «Alfa Forniture S.r.l. (IT02987650013): aperto 3.529,15 € (3.629,15 € meno la nota di credito
  * di 100,00 €) su 2 fatture; pagato 500,00 €»; without the company, «da Alfa a Beta: …».
  */
-export function partyLine(g: PartyGroup): string {
+function partyLine(g: PartyGroup): string {
 	const named = (p: FatturaParty) => {
 		const vat = vatOf(p);
 		return `${partyName(p)}${vat === undefined ? "" : ` (${vat})`}`;

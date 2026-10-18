@@ -5,7 +5,7 @@
  */
 import { validIban } from "../iban.ts";
 import type { Company, Invoice } from "../invoices.ts";
-import type { Contact } from "../reminder-book.ts";
+import { bookKey, type Contact } from "../reminder-book.ts";
 import { collectable, type Debtor, invoicesOf } from "./reminder-debtors.ts";
 
 /** Domains of PEC providers: an address there takes mail only from another PEC. */
@@ -44,16 +44,27 @@ export function ofRate(rate: Rate): string {
 	return /^(?:8|11(?!\d)|1(?!\d))/.test(rate.text) ? `dell'${rate.text}%` : `del ${rate.text}%`;
 }
 
-/** Where the money goes: the company's saved IBANs; else one IBAN all its issued invoices agree on, said; else none, said. */
+/** Where the money goes: the company's saved IBANs; in a draft, else one IBAN the recent issued invoices agree on, said; else none, said. */
 export type Payment = { readonly ibans: readonly string[]; readonly note?: string };
 
-export function paymentOf(company: Company | undefined, invoices: readonly Invoice[]): Payment {
+/** How far back an issued invoice's IBAN counts, in years. */
+const IBAN_YEARS = 2;
+
+/**
+ * The IBANs for a reminder. One that is sent (`send`) carries only an IBAN saved with
+ * set_company. A draft may carry the IBAN written on the unpaid invoices issued in the last two
+ * years, when they all write the same one and it passes mod-97; it says it comes from the files.
+ */
+export function paymentOf(company: Company | undefined, invoices: readonly Invoice[], o: { readonly send: boolean; readonly today: string }): Payment {
 	const saved = (company?.ibans ?? []).map((i) => validIban(i)).filter((i): i is string => i !== undefined);
 	if (saved.length > 0) return { ibans: saved.slice(0, 2) };
+	const save = "salva il tuo IBAN con set_company (iban)";
+	if (o.send) return { ibans: [], note: "per mettere l'IBAN nei solleciti inviati, salvalo con set_company" };
+	const since = `${Number(o.today.slice(0, 4)) - IBAN_YEARS}${o.today.slice(4)}`;
 	const written = new Set<string>();
 	let bad = false;
 	for (const invoice of invoices) {
-		if (!collectable(invoice)) continue;
+		if (!collectable(invoice) || invoice.paid || (invoice.doc.date ?? "") < since) continue;
 		for (const instalment of invoice.instalments) {
 			if (instalment.iban === undefined) continue;
 			const iban = validIban(instalment.iban);
@@ -61,7 +72,6 @@ export function paymentOf(company: Company | undefined, invoices: readonly Invoi
 			else written.add(iban);
 		}
 	}
-	const save = "salva il tuo IBAN con set_company (iban)";
 	if (bad) return { ibans: [], note: `un IBAN scritto nelle fatture emesse non è valido: non ho messo le coordinate per pagare, ${save}` };
 	if (written.size > 1) return { ibans: [], note: `le fatture emesse riportano IBAN diversi: non ho messo le coordinate per pagare, ${save}` };
 	const only = [...written][0];
@@ -70,24 +80,28 @@ export function paymentOf(company: Company | undefined, invoices: readonly Invoi
 }
 
 /** Whether an address looks like a PEC: a PEC provider's domain, or «pec» as a part of it. */
-export function looksLikePec(address: string): boolean {
+function looksLikePec(address: string): boolean {
 	const domain = address.split("@")[1]?.toLowerCase() ?? "";
 	return PEC_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`)) || domain.split(".").includes("pec");
 }
 
 /** Who the letter goes to, where that came from, and what to say about it. */
-export type Recipient = { readonly to?: string; readonly from?: "given" | "saved" | "pec" | "file"; readonly notes: readonly string[] };
+export type Recipient = { readonly to?: string; readonly from?: "saved" | "pec" | "file"; readonly notes: readonly string[] };
+
+/** Saved addresses that do not read: no address at all, rather than the file's in their place. */
+const CONTACTS_UNREADABLE_NOTE = "gli indirizzi dei clienti salvati in invoices.json non si leggono: non metto un indirizzo, nemmeno quello della fattura, finché il file non è sistemato";
 
 /**
- * The address: the one the person gave, else the one saved for this customer, else the PEC the
- * SdI delivered to (maybe an intermediary's), else an email written in the invoice where the
- * format has no place for one. The last two are said; a PEC-looking address is said in any case.
+ * The address: the one saved for this customer (an address the person gives is saved first), else
+ * the PEC the SdI delivered to (maybe an intermediary's), else an email written in the invoice
+ * where the format has no place for one. The last two are said; a PEC-looking address is said in
+ * any case. Saved addresses that do not read (`"broken"`): none.
  */
-export function recipientOf(debtor: Debtor, given: string | undefined, contacts: readonly Contact[], isAddress: (a: string) => boolean): Recipient {
+export function recipientOf(debtor: Debtor, contacts: readonly Contact[] | "broken", isAddress: (a: string) => boolean): Recipient {
+	if (contacts === "broken") return { notes: [CONTACTS_UNREADABLE_NOTE] };
 	const pecNote = "l'indirizzo sembra una PEC: da una casella normale la mail può essere rifiutata";
 	const flagged = (to: string, from: Recipient["from"], notes: string[] = []): Recipient => ({ to, from, notes: looksLikePec(to) && from !== "pec" ? [...notes, pecNote] : notes });
-	if (given !== undefined) return flagged(given.trim().toLowerCase(), "given");
-	const saved = contacts.find((c) => c.key === debtor.key);
+	const saved = contacts.find((c) => c.key === bookKey(debtor.key));
 	if (saved !== undefined) return flagged(saved.email, "saved");
 	const newest = invoicesOf(debtor).sort((a, b) => (b.doc.date ?? "").localeCompare(a.doc.date ?? ""));
 	let bad = false;
@@ -110,8 +124,19 @@ export function recipientOf(debtor: Debtor, given: string | undefined, contacts:
 	return { notes: [bad ? "l'indirizzo scritto in fattura non è valido: chiedi l'indirizzo a chi ti scrive" : "non ho un indirizzo per questo cliente: chiedilo a chi ti scrive"] };
 }
 
-/** A mailto: link that opens the letter ready in the phone's mail app; undefined past ~1800 characters, which some apps cut. */
+/** RFC 3986 percent-encoding: encodeURIComponent and also !'()*, which some mail apps take apart. */
+function encoded(text: string): string {
+	return encodeURIComponent(text).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/**
+ * A mailto: link that opens the letter ready in the phone's mail app (RFC 6068): the address with
+ * its @ as it is, line breaks as CRLF; undefined past ~1800 characters, which some apps cut.
+ */
 export function mailtoLink(to: string | undefined, subject: string, body: string): string | undefined {
-	const link = `mailto:${to === undefined ? "" : encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+	const at = to === undefined ? -1 : to.lastIndexOf("@");
+	const address = to === undefined ? "" : at < 0 ? encoded(to) : `${encoded(to.slice(0, at))}@${encoded(to.slice(at + 1))}`;
+	const crlf = (text: string) => encoded(text.replace(/\r?\n/g, "\r\n"));
+	const link = `mailto:${address}?subject=${crlf(subject)}&body=${crlf(body)}`;
 	return link.length > 1800 ? undefined : link;
 }

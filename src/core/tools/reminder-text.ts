@@ -13,8 +13,8 @@ import { addTo, type Invoice, type Sums } from "../invoices.ts";
 import { isZero, payDay, sumsText, unitsText } from "../invoice-sums.ts";
 import { holidayOn } from "../italian-calendar.ts";
 import { italianDate, italianWeekday } from "../italian-format.ts";
-import type { ReminderItem, ReminderLevel } from "../reminder-book.ts";
-import { type Debtor, invoicesOf, isLate, lastFormal, levelOf, type OverdueRow, owedDetail, remindedOn } from "./reminder-debtors.ts";
+import { bookKey, type ReminderItem, type ReminderLevel } from "../reminder-book.ts";
+import { asideSums, type Debtor, invoicesOf, isLate, lastFormal, levelOf, type OverdueRow, owedDetail, remindedOn } from "./reminder-debtors.ts";
 import { ofRate, type Payment, type Rate, type Recipient, simpleInterest } from "./reminder-sources.ts";
 
 /** Customers reminded in one call; the rest are counted. */
@@ -24,7 +24,7 @@ const MAX_SUBJECT_NUMBERS = 3;
 /** The flat compensation per invoice paid late, art. 6 D.Lgs. 231/2002, in hundred-millionths of a euro. */
 const COMPENSATION = 40n * 100_000_000n;
 /** Days to pay asked by the firmer and the formal reminder, unless the person says otherwise. */
-export const PAY_WITHIN: Readonly<Record<2 | 3, number>> = { 2: 7, 3: 15 };
+const PAY_WITHIN: Readonly<Record<2 | 3, number>> = { 2: 7, 3: 15 };
 export const MAX_NOTE = 500;
 
 export const LEVEL_NAMES: Readonly<Record<ReminderLevel, string>> = { 1: "primo sollecito, cortese", 2: "secondo sollecito, più fermo", 3: "sollecito formale" };
@@ -42,10 +42,13 @@ export type ReminderTerms = {
 };
 
 /** What a letter needs besides the debtor: today, who signs, where to pay, who it goes to, how to tell a local day. */
-export type ReminderContext = {
+type ReminderContext = {
 	readonly today: string;
+	/** The company's name as saved: never one read from a file. */
 	readonly sender?: string;
 	readonly signature?: string;
+	/** The company's partita IVA, to sign with when neither a name nor a signature is saved. */
+	readonly vat?: string;
 	readonly payment: Payment;
 	readonly recipient: Recipient;
 	readonly dayOf: (at: string) => string;
@@ -68,7 +71,7 @@ export type ReminderDraft = {
 };
 
 /** A name from the files on one line, at most 80 characters (FatturaPA's own limit). */
-function oneLine(text: string, max = 80): string {
+export function oneLine(text: string, max = 80): string {
 	const flat = text.replace(/\s+/g, " ").trim();
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
@@ -193,6 +196,12 @@ export function composeReminder(debtor: Debtor, terms: ReminderTerms, context: R
 	const voice = isPrivate(debtor) ? PERSON : BUSINESS;
 	const { gross, applied, net } = owedDetail(debtor);
 	const notes: string[] = [];
+	if (debtor.upcoming.length > 0) {
+		const which = debtor.upcoming.map((r) => `fattura n. ${numberOf(r.invoice)}${r.invoice.instalments.length > 1 ? ` rata ${r.instalment.n}/${r.invoice.instalments.length}` : ""}${r.instalment.due === undefined ? "" : ` (scade il ${italianDate(r.instalment.due)})`}`);
+		notes.push(`non ancora scadute, quindi non nel sollecito: ${which.join(", ")}`);
+	}
+	const aside = asideSums(debtor);
+	if (!isZero(aside)) notes.push(`il cliente ha note di credito per ${sumsText(aside)} da regolare: non le ho scalate, perché questo sollecito non copre tutto il suo scaduto`);
 	const credits = debtor.credits.filter((c) => c.units > 0n);
 	let total = `Totale da saldare: ${sumsText(net)}`;
 	if (credits.length > 0 && !isZero(applied)) {
@@ -262,14 +271,16 @@ export function composeReminder(debtor: Debtor, terms: ReminderTerms, context: R
 		notes.push("la fattura è verso una pubblica amministrazione: il sollecito va mandato via PEC all'ufficio che l'ha ricevuta (codice ufficio in fattura); con lo split payment l'importo chiesto è già senza l'IVA, che l'ente versa all'Erario");
 	}
 	notes.push(...context.recipient.notes);
-	const sign = (context.signature ?? context.sender ?? "").split("\n").map((l) => l.trim()).filter((l) => l !== "");
+	if (context.sender === undefined) notes.push("salva il nome dell'azienda con set_company (name): così compare nell'oggetto e nella firma");
+	const signed = context.signature ?? context.sender ?? (context.vat === undefined ? "" : `P.IVA ${context.vat}`);
+	const sign = signed.split("\n").map((l) => l.trim()).filter((l) => l !== "");
 	const body = [voice.greeting(nameOf(debtor.customer)), "", ...opening(level, late, debtor, voice), "", `${total}.`, ...extras, ...pay, ...note, ...closing, ...sign].join("\n");
 	const { to, from } = context.recipient;
 	return {
 		debtor,
 		level,
 		late,
-		items: invoices.map((i): ReminderItem => ({ invoice: i.key, level })),
+		items: invoices.map((i): ReminderItem => ({ invoice: bookKey(i.key), level })),
 		subject: subjectOf(level, late, invoices, context.sender),
 		body,
 		...(to === undefined ? {} : { to }),

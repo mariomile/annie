@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { documentFattura } from "../src/core/documents.ts";
@@ -83,7 +83,19 @@ export const ctx: ToolContext = { step: (_key, work) => work(), progress: () => 
 /** B-70's key in the register. */
 export const B70 = "IT03311220036|b-70|2026-09-01|TD01";
 
-export const temp = () => mkdtempSync(join(tmpdir(), "annie-solleciti-"));
+const made: string[] = [];
+
+/** A new directory under the system's temp; cleanTemp removes it. */
+export function temp(): string {
+	const dir = mkdtempSync(join(tmpdir(), "annie-solleciti-"));
+	made.push(dir);
+	return dir;
+}
+
+/** Remove the directories temp made: for afterEach. */
+export function cleanTemp(): void {
+	for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+}
 
 /** A fake mail path: what was asked, whether it is available, the cards pending, how many it takes. */
 export function fakeMail(unavailable?: string, o: { pending?: ReadonlySet<string>; capacity?: number } = {}) {
@@ -100,7 +112,8 @@ export function fakeMail(unavailable?: string, o: { pending?: ReadonlySet<string
 	return { mail, proposals };
 }
 
-export function setup(files: Record<string, string> = FILES, o: { now?: Date; mail?: ReminderMail; company?: boolean } = {}) {
+/** `company`: saved with partita IVA and name (the default), with the partita IVA only ("vat"), or not saved (false). */
+export function setup(files: Record<string, string> = FILES, o: { now?: Date; mail?: ReminderMail; company?: boolean | "vat"; who?: string } = {}) {
 	const dir = temp();
 	const root = join(dir, "workspace");
 	for (const [path, content] of Object.entries(files)) {
@@ -108,13 +121,13 @@ export function setup(files: Record<string, string> = FILES, o: { now?: Date; ma
 		writeFileSync(join(root, path), content);
 	}
 	const store = new InvoiceStore(dir);
-	if (o.company !== false) store.setCompany({ vat: "IT03311220036", by: "test:u", at: NOW.toISOString() });
+	if (o.company !== false) store.setCompany({ vat: "IT03311220036", ...(o.company === "vat" ? {} : { name: "Beta Ristorazione Srl" }), by: "test:u", at: NOW.toISOString() });
 	const events: InvoiceEvent[] = [];
 	const [tool] = createInvoiceTools({
 		workspace: new Workspace(root),
 		store,
 		timeZone: "Europe/Rome",
-		whoIs: () => "web:anna",
+		whoIs: () => o.who ?? "web:anna",
 		record: async (e) => {
 			events.push(e);
 		},

@@ -15,7 +15,7 @@ export type Credit = { readonly invoice: Invoice; readonly units: bigint };
 export type Share = { readonly gross: Sums; readonly credit: Sums; readonly notes: number };
 
 /** A total of shares: each party's credit notes come off its own amount, never below zero. */
-export type Netted = { readonly gross: Sums; readonly applied: Sums; readonly net: Sums; readonly left: Sums; readonly notes: number };
+type Netted = { readonly gross: Sums; readonly applied: Sums; readonly net: Sums; readonly left: Sums; readonly notes: number };
 
 export function netted(shares: Iterable<Share>): Netted {
 	const gross: Sums = new Map();

@@ -14,11 +14,12 @@ import { REMINDER_LIMITS } from "../src/core/reminder-book.ts";
 import type { AnnieRuntime } from "../src/core/runtime.ts";
 import type { ReminderProposal } from "../src/core/tools/reminder-tools.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
-import { B70, ctx, DELTA, FILES, fakeMail, fattura, G1, BETA, inside, NOW, outside, setup, temp, TUESDAY } from "./solleciti-fixtures.ts";
+import { B70, BETA, COMUNE, cleanTemp, ctx, DELTA, FILES, fakeMail, fattura, G1, GAMMA, GNC, IBAN, IBAN_2, IBAN_SAVED, inside, NOW, outside, setup, TUESDAY, temp } from "./solleciti-fixtures.ts";
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
+	cleanTemp();
 });
 
 const B71 = "IT03311220036|b-71|2026-09-10|TD01";
@@ -30,7 +31,7 @@ describe("solleciti: sending only through the approval card", () => {
 		const answer = await run({ op: "reminder", send: true });
 		expect(outside(answer)).toContain("Ho preparato 2 richieste di invio: la persona le vede nelle card qui in chat");
 		expect(outside(answer)).toContain("Parte solo ciò che approva");
-		expect(outside(answer)).toContain("Per un cliente manca l'indirizzo");
+		expect(outside(answer)).toContain("Per un sollecito manca l'indirizzo");
 		expect(proposals.map((p) => p.to)).toEqual(["amministrazione@gamma.example", "delta@pec.example"]);
 		const data = inside(answer);
 		expect(data).toContain("• Gamma Hotel S.p.A., livello 1, indirizzo: amministrazione@gamma.example (richiesta req000000001)");
@@ -60,7 +61,7 @@ describe("solleciti: sending only through the approval card", () => {
 		await today.run({ op: "reminder_sent", party: "gamma" });
 		const skipped = await today.run({ op: "reminder", party: "gamma", send: true });
 		expect(outside(skipped)).toContain("Nessuna richiesta preparata.");
-		expect(inside(skipped)).toContain("• Gamma Hotel S.p.A.: non preparato, già sollecitato oggi.");
+		expect(inside(skipped)).toContain("• Gamma Hotel S.p.A. (livello 2): non preparato, già sollecitato oggi.");
 
 		const { mail, proposals } = fakeMail(undefined, { pending: new Set([B70]) });
 		const waiting = setup(FILES, { mail });
@@ -70,10 +71,14 @@ describe("solleciti: sending only through the approval card", () => {
 		const formal = fakeMail();
 		const after = setup(FILES, { mail: formal.mail });
 		after.store.remind([{ invoice: B70, level: 3 }], { by: "p", at: "2026-10-12T08:00:00Z", via: "self" });
-		expect(inside(await after.run({ op: "reminder", party: "gamma", send: true }))).toContain("il sollecito formale è già stato mandato: per rimandarlo serve che chi ti scrive lo chieda, con level 3");
-		expect(formal.proposals).toEqual([]);
-		await after.run({ op: "reminder", party: "gamma", send: true, level: 3 });
-		expect(formal.proposals.map((p) => p.reminders.map((r) => r.level))).toEqual([[3, 3]]);
+		// Only the invoice already at the formal level waits; the new one of the same customer goes.
+		expect(inside(await after.run({ op: "reminder", party: "gamma", send: true }))).toContain("• Gamma Hotel S.p.A. (livello 3): non preparato, il sollecito formale per queste fatture è già stato mandato: per rimandarlo serve che chi ti scrive lo chieda, con level 3.");
+		expect(formal.proposals.map((p) => p.reminders.map((r) => [r.invoice, r.level]))).toEqual([[[B71, 1]]]);
+		const again = fakeMail();
+		const explicit = setup(FILES, { mail: again.mail });
+		explicit.store.remind([{ invoice: B70, level: 3 }], { by: "p", at: "2026-10-12T08:00:00Z", via: "self" });
+		await explicit.run({ op: "reminder", party: "gamma", send: true, level: 3 });
+		expect(again.proposals.map((p) => p.reminders.map((r) => r.level))).toEqual([[3, 3]]);
 	});
 
 	it("M5: when the queue is full, the requests made are kept and counted, the others said", async () => {
@@ -180,13 +185,95 @@ describe("solleciti: recorded only when the person says so", () => {
 		expect(audit.filter((e) => e.type === "invoice.reminder")).toEqual([{ type: "invoice.reminder", instanceId: "i", op: "mail", count: 1 }]);
 		expect(notices.at(-1)).toContain("Il sollecito è annotato nello scadenzario.");
 		const done = (await actions.get(sent.id)) ?? sent;
-		expect(googleActionReport(done, 0)).toContain("non è stato annotato nello scadenzario: se serve, annotalo con invoices op reminder_sent");
+		expect(googleActionReport(done, { recorded: 0, failed: true })).toContain("non è stato annotato nello scadenzario: se serve, annotalo con invoices op reminder_sent");
 		expect(googleActionReport(done)).not.toContain("annotato");
-		expect(googleActionReport({ ...sent, status: "rejected" }, 1)).not.toContain("è annotato");
+		expect(googleActionReport({ ...sent, status: "rejected" }, { recorded: 1, failed: false })).not.toContain("è annotato");
 		const due = inside(await run({ op: "due", side: "incassare", range: "scadute" }));
 		expect(due).toMatch(/B-70; sollecitata il \d\d\/10/);
 		await run({ op: "reminder_sent", number: "B-70", level: 2 });
 		expect(inside(await run({ op: "by_party", party: "gamma" }))).toMatch(/B-70; sollecitata 2 volte, l'ultima il 18\/10/);
+	});
+});
+
+describe("solleciti: second pass", () => {
+	it("M3: said sent the same day an approved mail was recorded: nothing added, and said so", async () => {
+		const { run, store } = setup();
+		store.remind([{ invoice: B70, level: 1 }, { invoice: B71, level: 1 }], { by: "p1", at: NOW.toISOString(), via: "mail", action: "req000000001" });
+		expect(await run({ op: "reminder_sent", party: "gamma" })).toMatch(/^Era già annotato oggi \(inviato dalla console\): non lo annoto due volte\./);
+		expect(await run({ op: "reminder_sent", party: "gamma", level: 1 })).toMatch(/^Era già annotato oggi \(inviato dalla console\)/);
+		expect(store.read().reminders?.map((e) => e.sent.length)).toEqual([1, 1]);
+	});
+
+	it("M2: one invoice named while others are late: its gross amount, the credit notes said apart; all of it: taken off", async () => {
+		const partial = inside(await setup().run({ op: "reminder", number: "B-70" }));
+		expect(partial).toContain("Totale da saldare: 1.220,00 €.");
+		expect(partial).toContain("Nota: il cliente ha note di credito per 100,00 € da regolare: non le ho scalate, perché questo sollecito non copre tutto il suo scaduto.");
+		const whole = inside(await setup({ "f/g1.xml": G1, "f/gnc.xml": GNC }).run({ op: "reminder", number: "B-70" }));
+		expect(whole).toContain("Totale da saldare: 1.120,00 € (1.220,00 € meno la nota di credito n. NC-3 del 05/10/2026, 100,00 €).");
+	});
+
+	it("M4: a sent reminder carries only a saved IBAN; a draft takes the files' only from unpaid invoices of the last two years", async () => {
+		const { mail, proposals } = fakeMail();
+		const { run } = setup(FILES, { mail });
+		const answer = await run({ op: "reminder", party: "gamma", send: true });
+		expect(proposals[0]?.body).not.toContain("bonifico");
+		expect(inside(answer)).toContain("Nota: per mettere l'IBAN nei solleciti inviati, salvalo con set_company.");
+		await run({ op: "set_company", iban: IBAN_SAVED });
+		await run({ op: "reminder", party: "gamma", send: true, level: 2 });
+		expect(proposals[1]?.body).toContain(`all'IBAN ${IBAN_SAVED}.`);
+		const old = fattura(BETA, DELTA, { number: "V-1", date: "2024-09-01", total: "10.00", rate: [{ amount: "10.00", due: "2024-09-30", iban: IBAN_2 }] });
+		const paid = fattura(BETA, DELTA, { number: "V-2", date: "2026-09-01", total: "10.00", rate: [{ amount: "10.00", due: "2026-09-30", iban: IBAN_2 }] });
+		const drafts = setup({ "f/g1.xml": G1, "f/old.xml": old, "f/paid.xml": paid });
+		await drafts.run({ op: "mark_paid", number: "V-2" });
+		expect(inside(await drafts.run({ op: "reminder", party: "gamma" }))).toContain(`all'IBAN ${IBAN}.`);
+	});
+
+	it("L2: a company saved by partita IVA only: no name from the files in subject or signature, a hint to save it", async () => {
+		const draft = inside(await setup(FILES, { company: "vat" }).run({ op: "reminder", party: "gamma" }));
+		expect(draft).toContain("Oggetto: Promemoria di pagamento fatture n. B-70, B-71");
+		expect(draft).toMatch(/Cordiali saluti\nP\.IVA IT03311220036/);
+		expect(draft).not.toContain("Beta Ristorazione");
+		expect(draft).toContain("Nota: salva il nome dell'azienda con set_company (name): così compare nell'oggetto e nella firma.");
+	});
+
+	it("L5: the company is changed under one lock and never saved in a shape that does not read back", async () => {
+		const { run, store } = setup(FILES, { company: false });
+		expect(await run({ op: "set_company", iban: IBAN })).toMatch(/^Errore: prima serve l'azienda/);
+		expect(store.read().company).toBeUndefined();
+		expect(() => store.setCompany({ vat: "IT03311220036", signature: "a\nb\nc\nd\ne", by: "u", at: NOW.toISOString() })).toThrow(/non sono validi/);
+		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", signature: "Anna" });
+		await run({ op: "set_company", iban: IBAN });
+		expect(store.read().company).toMatchObject({ vat: "IT03311220036", ibans: [IBAN], signature: "Anna" });
+	});
+
+	it("L6: split payment without instalments, credit notes with a negative total too: netted, and said", async () => {
+		const pa = { format: "FPA12" as const, code: "UFE123" };
+		for (const vat of ["-22.00", "22.00"]) {
+			const files = {
+				"f/p.xml": fattura(BETA, COMUNE, { number: "P-2", date: "2026-10-01", total: "244.00", split: { taxable: "200.00", vat: "44.00" } }, pa),
+				"f/nc.xml": fattura(BETA, COMUNE, { number: "PNC-1", date: "2026-10-05", total: "-122.00", type: "TD04", split: { taxable: "-100.00", vat } }, pa),
+			};
+			const { run } = setup(files);
+			const list = inside(await run({ op: "list", party: "comune" }));
+			expect(list).toContain("200,00 € (senza IVA, split payment)");
+			expect(list).toContain("100,00 € (senza IVA, split payment)");
+			expect(inside(await run({ op: "due", side: "incassare" }))).toContain("200,00 € (senza IVA, split payment)");
+			expect(inside(await run({ op: "reminder", number: "P-2" }))).toContain("Totale da saldare: 100,00 € (200,00 € meno la nota di credito n. PNC-1 del 05/10/2026, 100,00 €).");
+		}
+	});
+
+	it("L3, L8: the report fences the recipients; it says «già annotato» when nothing new was recorded, «non annotato» only on a failure", async () => {
+		const { dir } = setup();
+		const actions = new GoogleActionStore(join(dir, "google-actions"));
+		const sent = await actions.propose({ kind: "mail.send", personId: "p1", account: "anna@example.com", reason: "Sollecito", mail: { to: ["evil@x.example"], cc: [], subject: "s", body: "b" }, thread: { channel: "web", threadId: "t1" }, reminders: [{ invoice: B70, level: 1 }] }, new Date(), "k");
+		const done = { ...sent, status: "done" as const, result: { done: "inviata" } };
+		const report = googleActionReport(done, { recorded: 0, failed: false });
+		expect(report).toContain("Il sollecito era già annotato nello scadenzario.");
+		expect(report).not.toContain("non è stato annotato");
+		expect(report).toMatch(/^\[Esito della richiesta [0-9a-z]+: inviare una mail\]/);
+		expect(outside(report.replace(/<<<destinatari ([0-9a-f]{12}):[^\n]*>>>\n[\s\S]*?\n<<<fine destinatari \1>>>/g, ""))).not.toContain("evil");
+		expect(report).toContain("destinatari: evil@x.example");
 	});
 });
 
@@ -233,11 +320,9 @@ describe("solleciti: the store", () => {
 		expect(events.filter((e) => e.type === "invoice.reminder")).toEqual([]);
 	});
 
-	it("a broken file is never overwritten; reminders of an invoice paid in full go", async () => {
+	it("a broken file is never overwritten", async () => {
 		const { run, store, dir, events } = setup();
 		await run({ op: "reminder_sent", party: "gamma" });
-		await run({ op: "mark_paid", number: "B-70" });
-		expect(store.read().reminders?.map((e) => e.invoice)).toEqual([B71]);
 		const broken = '{"paid":"no"}';
 		writeFileSync(join(dir, "invoices.json"), broken);
 		expect(store.read().broken).toBe(true);
@@ -245,6 +330,55 @@ describe("solleciti: the store", () => {
 		expect(await run({ op: "reminder", party: "gamma" })).toContain("non preparo solleciti, perché non so cosa è pagato");
 		expect(readFileSync(join(dir, "invoices.json"), "utf8")).toBe(broken);
 		expect(events.filter((e) => e.type === "invoice.reminder")).toEqual([{ type: "invoice.reminder", op: "self", count: 2 }]);
+	});
+
+	it("L1: marking paid keeps the reminders; those of invoices paid in full over a year ago go at the next write", async () => {
+		const { run, store } = setup();
+		await run({ op: "reminder_sent", party: "gamma" });
+		await run({ op: "mark_paid", number: "B-70" });
+		expect(store.read().reminders?.map((e) => e.invoice)).toEqual([B70, B71]);
+		// B-70 paid in September 2025: more than a year before the next write, its reminders go; B-71's stay.
+		const old = setup();
+		old.store.remind([{ invoice: B70, level: 1 }], { by: "p", at: "2025-08-01T08:00:00Z", via: "self" });
+		old.store.mark({ invoice: B70, count: 1, paid: true, by: "p", at: "2025-09-01T08:00:00Z" });
+		expect(old.store.read().reminders?.map((e) => e.invoice)).toEqual([B70]);
+		old.store.remind([{ invoice: B71, level: 1 }], { by: "p", at: NOW.toISOString(), via: "self" });
+		expect(old.store.read().reminders?.map((e) => e.invoice)).toEqual([B71]);
+	});
+
+	it("H1: a long invoice number, a long customer name and a long who are written so they read back", async () => {
+		const long = "N".repeat(321);
+		const files = { "f/l.xml": fattura(BETA, GAMMA, { number: long, date: "2026-09-01", total: "10.00", rate: [{ amount: "10.00", due: "2026-09-30" }] }) };
+		const { mail, proposals } = fakeMail();
+		const { run, store, dir } = setup(files, { mail, who: `web:${"w".repeat(500)}` });
+		await run({ op: "reminder", party: "gamma", send: true });
+		const items = proposals[0]?.reminders ?? [];
+		expect(items[0]?.invoice).toMatch(/^[0-9a-f]{64}$/);
+		expect(await run({ op: "reminder_sent", party: "gamma" })).toContain("sollecito di livello 1");
+		const book = store.read();
+		expect(book).toMatchObject({ broken: false });
+		expect(book.remindersBroken).toBeUndefined();
+		expect(book.reminders?.[0]?.invoice).toBe(items[0]?.invoice);
+		expect(book.reminders?.[0]?.sent[0]?.by.length).toBeLessThanOrEqual(REMINDER_LIMITS.by);
+		expect(inside(await run({ op: "due", side: "incassare", range: "scadute" }))).toContain("sollecitata il 18/10");
+		// Through an approved mail: the request carries the same short key, recorded as it is.
+		const actions = new GoogleActionStore(join(dir, "google-actions"));
+		const runtime = { audit: () => ({ append: async () => {} }), googleActions: () => actions, invoices: () => store, submitNotice: async () => {} } as unknown as AnnieRuntime;
+		const person = "p".repeat(400);
+		const sent = await actions.propose({ kind: "mail.send", personId: person, account: "anna@example.com", reason: "Sollecito", mail: { to: ["a@gamma.example"], cc: [], subject: "s", body: "b" }, thread: { channel: "web", threadId: "t1" }, reminders: items }, new Date(), "k");
+		await decideGoogleAction(runtime, "t", "i", sent.id, "approved", person, async () => ({ done: "inviata" }), () => {});
+		expect(store.read().remindersBroken).toBeUndefined();
+		expect(store.read().reminders?.[0]?.sent.map((m) => [m.level, m.via])).toEqual([
+			[1, "self"],
+			[1, "mail"],
+		]);
+		// A customer known only by a long name: the address is saved under a short key, and used.
+		const nameless = { "f/n.xml": fattura(BETA, { name: `Cliente ${"x".repeat(400)}` }, { number: "Z-1", date: "2026-09-01", total: "10.00", rate: [{ amount: "10.00", due: "2026-09-30" }] }) };
+		const named = setup(nameless);
+		await named.run({ op: "reminder", party: "cliente", email: "c@x.example" });
+		expect(named.store.read()).toMatchObject({ broken: false, contacts: [{ email: "c@x.example" }] });
+		expect(named.store.read().contacts?.[0]?.key).toMatch(/^[0-9a-f]{64}$/);
+		expect(inside(await named.run({ op: "reminder", party: "cliente" }))).toContain("A: c@x.example (salvato)");
 	});
 
 	it("audit entries carry the op and counts only: no names, numbers, amounts, addresses or text", async () => {

@@ -70,6 +70,11 @@ export function todayIn(timeZone: string, now: Date = new Date()): string {
 	return localMinute(now, timeZone).slice(0, 10);
 }
 
+/** The local day (YYYY-MM-DD) of an ISO instant in `timeZone`, as a function: for comparing recorded instants with today. */
+export function dayOfIn(timeZone: string): (at: string) => string {
+	return (at) => todayIn(timeZone, new Date(at));
+}
+
 /** The months' Italian names, January first. */
 export const MONTH_NAMES = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"] as const;
 

@@ -205,6 +205,10 @@ _Avoid_: e-fattura, XML della fattura, fattura digitale
 L'elenco delle rate delle fatture elettroniche del workspace, da pagare o da incassare, con le scadute e quelle segnate pagate; lo tiene lo strumento `invoices`. Le note di credito si tolgono dal dovuto. Vedi ADR 0053.
 _Avoid_: agenda dei pagamenti, prima nota
 
+**Sollecito**:
+La mail che chiede a un cliente di pagare fatture scadute, in tre livelli: promemoria, secondo sollecito, sollecito formale (costituzione in mora). Annie la prepara con `invoices` op `reminder`, la manda solo dopo l'approvazione e la annota nello scadenzario. Vedi ADR 0054.
+_Avoid_: diffida, recupero crediti
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

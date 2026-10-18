@@ -12,9 +12,9 @@ import type { ReadArgs } from "./invoice-fence.ts";
 /** Rows in one answer; the rest are counted. */
 export const MAX_ROWS = 30;
 /** A party's name in a row: the files allow 80 characters, a phone line fewer. */
-export const MAX_NAME = 60;
+const MAX_NAME = 60;
 /** Names in a direction's label before «e altri N». */
-export const MAX_NAMES = 3;
+const MAX_NAMES = 3;
 
 export function filtered(invoices: readonly Invoice[], args: ReadArgs): readonly Invoice[] {
 	const { side, party } = args;
@@ -43,7 +43,12 @@ export function namesText(parties: readonly FatturaParty[]): string {
 /** «, 1.253,50 €»: what the invoice counts for, its instalments up to the total (alternatives once). */
 export function worthText(invoice: Invoice): string {
 	const units = countedAmount(invoice);
-	return units === undefined ? "" : `, ${money(fromUnits(units), invoice.doc.currency)}`;
+	return units === undefined ? "" : `, ${money(fromUnits(units), invoice.doc.currency)}${splitText(invoice)}`;
+}
+
+/** « (senza IVA, split payment)» after an amount counted as the total less the VAT the administration pays. */
+export function splitText(invoice: Invoice): string {
+	return invoice.splitNet === true ? " (senza IVA, split payment)" : "";
 }
 
 /** «da pagare ad Alfa», «da incassare da Beta», a credit note «di Alfa, a tuo favore», or «fornitore Alfa, cliente Beta» when the side is not known. */
@@ -70,7 +75,7 @@ export function docLabel(invoice: Invoice, date: boolean | string = true): strin
 	return joinedWords([docKind(invoice), invoice.doc.number ?? "senza numero", when], " ");
 }
 
-export function docKind(invoice: Invoice): string {
+function docKind(invoice: Invoice): string {
 	const { type } = invoice.doc;
 	if (invoice.doc.credit) return "nota di credito";
 	if (type === "TD06") return "parcella";
