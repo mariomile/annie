@@ -78,6 +78,8 @@ export type ExpenseRecordInput = {
 	readonly note?: string;
 	/** The VAT rate the total includes, when known: the VAT is taken out of it as add does. */
 	readonly vatRate?: VatRate;
+	/** «bank»: a movement of the bank statement, kept on the expense (the cashflow counts it by the bank's day). */
+	readonly source?: "bank";
 };
 
 /**
@@ -152,7 +154,7 @@ export function expensesOf(options: ExpenseToolsOptions): { readonly tools: Anni
 				}
 				const draft = seamDraft(input, ctx);
 				if (typeof draft === "string") return { problem: draft };
-				const id = await ctx.step("expense:save", async () => store.add(Number(draft.date.slice(0, 4)), callId, (n) => ({ id: n, ...draft, by: who(ctx), at: now().toISOString(), callId })).id);
+				const id = await ctx.step("expense:save", async () => store.add(Number(draft.date.slice(0, 4)), callId, (n) => ({ id: n, ...draft, ...(input.source === undefined ? {} : { source: input.source }), by: who(ctx), at: now().toISOString(), callId })).id);
 				await auditSeam(ctx);
 				const expense = readable().find((e) => e.id === id);
 				return expense === undefined ? { problem: `la spesa ${id} non c'è più` } : found(expense);

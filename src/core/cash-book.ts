@@ -1,15 +1,15 @@
 /**
  * The prima nota (cash book) of a period: INCASSI, the invoices to collect marked paid in it, and
  * USCITE, the expenses dated in it, in one chronological table with a running balance. Read
- * only. The scadenzario does not keep the day the money came in: it keeps when the owner marked
- * the invoice (or the instalment) paid, so that day, where the instance is, is the incasso's
- * date. Only euro amounts are counted; other currencies, amounts that do not read and credit
+ * only. The scadenzario keeps when the owner marked the invoice (or the instalment) paid, and
+ * that day, where the instance is, is the incasso's date; when a bank statement confirmed the
+ * payment (bank.ts), its day is (paidDay). Only euro amounts are counted; other currencies, amounts that do not read and credit
  * notes marked used are counted apart, to be said.
  */
 import type { Expense } from "./expenses.ts";
 import { cents } from "./expense-sums.ts";
 import { inPeriod, type Span } from "./periods.ts";
-import { type Invoice, partyKey } from "./invoices.ts";
+import { type Invoice, paidDay, partyKey } from "./invoices.ts";
 
 type CashKind = "in" | "out";
 
@@ -60,8 +60,8 @@ function incassiOf(invoices: readonly Invoice[], span: Span, dayOf: (at: string)
 	for (const invoice of invoices) {
 		if (invoice.doc.integration) continue;
 		for (const i of invoice.instalments) {
-			if (i.paid === undefined || i.extra === true || !inPeriod(dayOf(i.paid.at), span)) continue;
-			const date = dayOf(i.paid.at);
+			if (i.paid === undefined || i.extra === true || !inPeriod(paidDay(i.paid, dayOf), span)) continue;
+			const date = paidDay(i.paid, dayOf);
 			// A credit note counts only on the side to collect: one of ours, used for a customer.
 			if (invoice.credit) {
 				if (invoice.side === "active") credits.add(invoice.key);

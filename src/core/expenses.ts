@@ -124,6 +124,8 @@ export type Expense = Marker & {
 	readonly callId?: string;
 	/** Who changed it last, and when. */
 	readonly edited?: Marker;
+	/** «bank»: recorded from a movement of the bank statement (bank.ts), on the bank's day. */
+	readonly source?: "bank";
 };
 
 /** «S-2026-0001». */
@@ -229,5 +231,6 @@ export function validExpense(v: unknown): v is Expense {
 	if (!optText(e.docNumber, EXPENSE_LIMITS.docNumber)) return false;
 	if (!optText(e.supplier, EXPENSE_LIMITS.supplier) || !optText(e.note, EXPENSE_LIMITS.note) || !optText(e.callId, 200)) return false;
 	if (e.receipt !== undefined && !validReceiptPath(e.receipt)) return false;
+	if (e.source !== undefined && e.source !== "bank") return false;
 	return e.edited === undefined || isMarker(e.edited);
 }

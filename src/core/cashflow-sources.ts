@@ -61,7 +61,9 @@
  *   11th: plus the instalments to collect marked paid after it,
  *   less the expenses recorded after it (dated from its day), less the supplier invoices marked
  *   paid after it that no expense stands for, less the autoPay charges after its day not recorded;
- *   never the voci. Not when the balance is older than CASHFLOW_LIMITS.maxDays.
+ *   never the voci. Not when the balance is older than CASHFLOW_LIMITS.maxDays. What a bank
+ *   statement dated (an instalment confirmed from it, with its day; an expense recorded from
+ *   it) counts by that day instead: only when after the balance's day, which holds it already.
  */
 import { AVERAGE_DAYS, AVERAGE_MIN_DAYS, type Balance, CASHFLOW_LIMITS, type CashItem, itemAmountAt, itemRecurrence, type Kind, STALE_OVERDUE_DAYS } from "./cashflow.ts";
 import { NEAR_DAYS, providerMatches, renewalSeries, sameAmount, similarName } from "./cashflow-items.ts";
@@ -70,7 +72,7 @@ import { words } from "./name-keys.ts";
 import type { Expense } from "./expenses.ts";
 import { cents as expenseCents } from "./expense-sums.ts";
 import { payDay } from "./invoice-sums.ts";
-import { type Instalment, type Invoice, matchesParty, openAmount, partyKey, vatOf } from "./invoices.ts";
+import { type Instalment, type Invoice, matchesParty, openAmount, paidDay, partyKey, vatOf } from "./invoices.ts";
 import { addDays, daysBetween, MONTH_NAMES } from "./italian-calendar.ts";
 import { latest, type Quote, quoteTotalsOf } from "./quotes.ts";
 import { halfUp, scaled } from "./quote-sums.ts";
@@ -588,14 +590,20 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		if (Number.isNaN(t) || Number.isNaN(until) || t > until) return false;
 		return (!Number.isNaN(said) && t > said) || dayOf(at) > balance.date;
 	};
+	// What a bank statement dated (a paid mark's `on`, an expense from the statement) is in any balance of that day or later: it counts only when dated after the balance's day, and never when said after now.
+	const bankAfter = (day: string, at: string) => {
+		const t = Date.parse(at);
+		return day > balance.date && day <= today && !Number.isNaN(t) && !Number.isNaN(until) && t <= until;
+	};
 	const incassi: RolledInvoice[] = [];
 	const paidPassive: RolledInvoice[] = [];
-	const recorded = expenses.filter((e) => after(e.at) && e.date >= balance.date);
+	const recorded = expenses.filter((e) => (e.source === "bank" ? bankAfter(e.date, e.at) : after(e.at) && e.date >= balance.date));
 	for (const invoice of invoices) {
 		if (invoice.credit || invoice.doc.integration || invoice.side === undefined || invoice.doc.currency !== "EUR") continue;
 		for (const i of invoice.instalments) {
-			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n || !after(i.paid.at)) continue;
-			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: dayOf(i.paid.at) };
+			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
+			if (i.paid.on === undefined ? !after(i.paid.at) : !bankAfter(i.paid.on, i.paid.at)) continue;
+			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: paidDay(i.paid, dayOf) };
 			if (invoice.side === "active") incassi.push(row);
 			// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).
 			else if (!expenses.some((e) => invoiceOf(e, [invoice], 5, () => row.date) !== undefined || (sameCents(expenseCents(e.amount), row.cents) && Math.abs(daysBetween(e.date, row.date)) <= 5))) paidPassive.push(row);
