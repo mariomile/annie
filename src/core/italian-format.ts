@@ -101,3 +101,29 @@ export function withNearDate(preposition: DatePreposition, date: string, today: 
 	const full = withDate(preposition, date);
 	return days >= -60 && days <= 300 ? full.replace(/ \d{4}$/, "") : full;
 }
+
+/** Whether a number is said starting with a vowel: uno, otto, undici, ottanta, ottocento («l'8%», «all'11%»). */
+function vowelNumber(value: string): boolean {
+	const whole = value.split(".")[0] ?? value;
+	return whole === "1" || whole === "11" || whole.startsWith("8");
+}
+
+/** A percentage after its article or preposition, elided where Italian elides: «il 29%», «l'80%», «al 26,07%», «all'82%», «lo 0,40%». `value`: a number or a decimal with a point. */
+export function withPercent(preposition: "il" | "al", value: string | number): string {
+	const v = String(value);
+	const text = `${v.replace(".", ",")}%`;
+	if (vowelNumber(v)) return `${preposition === "il" ? "l'" : "all'"}${text}`;
+	if (v.startsWith("0")) return `${preposition === "il" ? "lo" : "allo"} ${text}`;
+	return `${preposition} ${text}`;
+}
+
+/** The month of a date in a sentence: «a novembre». */
+export function monthName(date: string): string {
+	return MONTHS_LONG[Number(date.slice(5, 7)) - 1] ?? "";
+}
+
+/** «a novembre», «ad agosto»: the month of a date after «a», with the «d» before a vowel. */
+export function toMonth(date: string): string {
+	const month = monthName(date);
+	return `${/^[aeiou]/.test(month) ? "ad" : "a"} ${month}`;
+}

@@ -11,7 +11,8 @@
  */
 import { type Balance, BRIEF_DAYS, BRIEF_STALE_DAYS, type CashItem, type Kind, ROLL_NOTE_DAYS, STALE_BALANCE_DAYS, signedCents, STALE_OVERDUE_DAYS } from "../cashflow.ts";
 import { buckets, firstBelow, type Point, type Projection, WEEKLY_MAX_DAYS } from "../cashflow-projection.ts";
-import { type AverageSpend, type Duplicate, type Hypothetical, type InvoiceFlows, type Movement, QUOTE_MIN_DAYS, QUOTE_PAY_DAYS, QUOTE_STALE_DAYS, type QuoteFlows, type RenewalFlows, type Rolled, type RolledInvoice, type Source } from "../cashflow-sources.ts";
+import { type AverageSpend, type Duplicate, type Hypothetical, type InvoiceFlows, type Movement, QUOTE_MIN_DAYS, QUOTE_PAY_DAYS, QUOTE_STALE_DAYS, type QuoteFlows, type RenewalFlows, type Rolled, type RolledInvoice, type Source, type TaxMaybe, type TaxTwin } from "../cashflow-sources.ts";
+import type { Expense } from "../expenses.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { euros, n1 } from "../format-words.ts";
 import { daysBetween, weekdayOf } from "../italian-calendar.ts";
@@ -58,6 +59,8 @@ export function movementLabel(m: Movement, today: string, fullDates = false): st
 			return `${m.hypothetical?.name ?? "spesa ipotetica"} (ipotesi, non salvata)`;
 		case "average":
 			return "spesa media stimata";
+		case "tax":
+			return `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
 	}
 }
 
@@ -70,10 +73,11 @@ const SOURCE_WORDS: Partial<Readonly<Record<`${Kind}:${Source}`, string>>> = {
 	"out:renewal": "rinnovi e abbonamenti",
 	"out:item": "voci aggiunte",
 	"out:average": "spesa media stimata",
+	"out:tax": "tasse stimate (F24)",
 	"out:whatif": "ipotesi",
 };
 
-const ORDER: readonly Source[] = ["invoice", "quote", "renewal", "item", "average", "whatif"];
+const ORDER: readonly Source[] = ["invoice", "quote", "renewal", "item", "tax", "average", "whatif"];
 
 /** Everything around the projection that the answers say: where it starts, what was gathered, what is left out. */
 export type View = {
@@ -99,6 +103,12 @@ export type View = {
 	readonly average?: AverageSpend;
 	readonly expensesBroken: boolean;
 	readonly potential?: { readonly minutes: number; readonly cents: bigint; readonly unpriced: number };
+	/** The F24 estimated from the tax profile are in the forecast. */
+	readonly taxes?: true;
+	/** A voce of the person's that is an estimated F24: the voce counts. */
+	readonly taxTwins?: readonly TaxTwin[];
+	/** An expense with a tax name well below the F24 near it: the estimate stays. */
+	readonly taxMaybe?: readonly TaxMaybe[];
 	readonly notes?: readonly string[];
 };
 
@@ -120,6 +130,27 @@ type Section = { readonly head: string; readonly rows: readonly string[] };
 function section(head: string, rows: readonly string[]): Section[] {
 	if (rows.length === 0) return [];
 	return [{ head, rows: rows.length > MAX_ROWS ? [...rows.slice(0, MAX_ROWS), `e altre ${rows.length - MAX_ROWS}`] : rows }];
+}
+
+/** «F24 saldo (voce C-0001), 800,00 €: sembra l'F24 del 30 novembre stimato a 820,00 €, conto la voce», or an expense that says it is paid; to be fenced. */
+function taxTwinRow(t: TaxTwin, today: string): string {
+	const what = [...t.voci.map((v) => `${movementLabel(v, today)}, ${euros(v.cents)}`), ...t.expenses.map((e) => expenseText(e, today))];
+	if (t.rest !== undefined) {
+		const sum = t.voci.reduce((n, v) => n + v.cents, 0n);
+		return `• ${what.join("; ")}: ${n1(t.voci.length, "voce", "voci")} ${euros(sum)} contro una stima di ${euros(t.tax.cents)} per l'F24 ${withNearDate("del", t.tax.date, today)}: ${n1(t.voci.length, "conto la voce", "conto le voci")} e i ${euros(t.rest)} che restano della stima`;
+	}
+	const tail = t.voci.length === 0 ? "lo considero già pagato e non lo conto" : t.voci.length === 1 ? "conto la voce" : "conto le voci";
+	return `• ${what.join("; ")}: ${what.length === 1 ? "sembra" : "sembrano"} l'F24 ${withNearDate("del", t.tax.date, today)} stimato a ${euros(t.tax.cents)}, ${tail}`;
+}
+
+/** «spesa del 3 ott Agenzia, 2,00 €»; to be fenced. */
+function expenseText(e: Expense, today: string): string {
+	return `spesa ${withShortDate("del", e.date, today)} ${[e.supplier, e.note].filter((x) => x !== undefined).join(", ") || e.id}, ${euros(scaled(e.amount, 2))}`;
+}
+
+/** «spesa del 24/11 F24 acconto, 100,00 €: forse è l'F24 del 30 novembre stimato a 3.000,00 €, ma è molto meno»; to be fenced. */
+function taxMaybeRow(m: TaxMaybe, today: string): string {
+	return `• ${expenseText(m.expense, today)}: forse è l'F24 ${withNearDate("del", m.tax.date, today)} stimato a ${euros(m.tax.cents)}, ma è molto meno`;
 }
 
 /** The one fence of an answer: every list that names someone. */
@@ -249,8 +280,9 @@ function forecastSections(p: Projection, v: View): Section[] {
 		...section("In ritardo da pagare:", (v.invoices?.latePay ?? []).map(row)),
 		...section(`Da incassare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleIn(v).map(row)),
 		...section(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleOut(v).map(row)),
-		...section("Probabili doppioni:", v.duplicates.map((d) => duplicateRow(d, today))),
+		...section("Probabili doppioni:", [...v.duplicates.map((d) => duplicateRow(d, today)), ...(v.taxTwins ?? []).map((t) => taxTwinRow(t, today))]),
 		...section("Forse doppioni, contati tutti e due:", (v.maybe ?? []).map((d) => duplicateRow(d, today, true))),
+		...section("Forse doppioni, conto la stima dell'F24:", (v.taxMaybe ?? []).map((m) => taxMaybeRow(m, today))),
 		...section(`Preventivi accettati da più di ${QUOTE_STALE_DAYS} giorni:`, (v.quotes?.old ?? []).map((o) => `• ${o.quote.customer.name}, preventivo accettato ${o.quote.number}, ${euros(o.cents)} non ancora fatturati. È ancora da fare o da fatturare?`)),
 	];
 }
@@ -268,7 +300,10 @@ function summaryLines(v: View): string[] {
 	const oldOut = staleOut(v);
 	if (oldOut.length > 0) out.push(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni e fuori dalla previsione: ${euros(sum(oldOut))} (${rate(oldOut.length)}). ${n1(oldOut.length, "È stata pagata", "Sono state pagate")}?`);
 	if (v.autoPaid.length > 0) out.push(`${n1(v.autoPaid.length, "Una fattura scaduta di un fornitore ha", "# fatture scadute di fornitori hanno")} l'addebito automatico di un rinnovo: ${n1(v.autoPaid.length, "la conto pagata", "le conto pagate")}.`);
-	if (v.duplicates.length > 0) out.push(`Probabili doppioni, contati una volta sola: ${v.duplicates.length}.`);
+	const twins = v.duplicates.length + (v.taxTwins?.length ?? 0);
+	if (twins > 0) out.push(`Probabili doppioni, contati una volta sola: ${twins}.`);
+	const taxMaybe = v.taxMaybe?.length ?? 0;
+	if (taxMaybe > 0) out.push(`${n1(taxMaybe, "Una spesa sembra un F24 ma è molto più bassa della stima", "# spese sembrano F24 ma sono molto più basse della stima")}: tengo la stima. Chiedi a chi ti scrive se l'F24 è già pagato.`);
 	const maybe = v.maybe?.length ?? 0;
 	if (maybe > 0) out.push(`${n1(maybe, "Una fattura di un fornitore forse è il pagamento di un rinnovo", "# fatture di fornitori forse sono il pagamento di un rinnovo")}: per ora conto sia la fattura sia il rinnovo. Chiedi a chi ti scrive se è lo stesso pagamento: se sì, va indicato il fornitore nel rinnovo.`);
 	const old = v.quotes?.old ?? [];
@@ -323,12 +358,14 @@ function assumptions(p: Projection, v: View): string[] {
 			a.renewalPayments > 0 ? `${n1(a.renewalPayments, "1 pagamento", "# pagamenti")} di rinnovi` : undefined,
 			a.lookalikes > 0 ? `${n1(a.lookalikes, "1 spesa che sembra", "# spese che sembrano")} un rinnovo o una voce` : undefined,
 			a.invoices > 0 ? `${n1(a.invoices, "1 fattura di fornitore", "# fatture di fornitori")} già nelle scadenze` : undefined,
+			(a.taxes ?? 0) > 0 ? `${n1(a.taxes ?? 0, "1 pagamento di tasse", "# pagamenti di tasse")} già nelle tasse stimate` : undefined,
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}
 	if (v.quotes !== undefined && v.quotes.count > 0) out.push(`preventivi accettati attesi ${QUOTE_PAY_DAYS} giorni dopo l'accettazione e non prima di ${QUOTE_MIN_DAYS} giorni da oggi, meno quanto già fatturato`);
 	if (p.days.length > 31) out.push("le entrate senza fattura, preventivo o voce non ci sono, quindi manca il lavoro ancora da fatturare");
-	out.push("tasse, stipendi e rate non registrati non ci sono");
+	if (v.taxes === true) out.push("tasse stimate (F24) dal profilo del forfettario con il metodo storico, una stima da verificare con il commercialista", "stipendi e rate non registrati non ci sono");
+	else out.push("tasse, stipendi e rate non registrati non ci sono");
 	return out;
 }
 

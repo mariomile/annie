@@ -2,7 +2,7 @@ import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { BRIEF_DAYS, CASHFLOW_LIMITS, type CashItem, CashflowError, cashflowAgentReads, itemId, itemRecurrence, parseItemId, ROLL_NOTE_DAYS, signedCents, STALE_BALANCE_DAYS } from "../cashflow.ts";
 import { applyPatch, editPatch, findItem, type Found, lookalikes } from "../cashflow-items.ts";
 import { project, type Projection } from "../cashflow-projection.ts";
-import { applyChanges, averageSpend, type Change, dedupe, type Hypothetical, hypotheticalFlows, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, unbilledPotential, voceDuplicates } from "../cashflow-sources.ts";
+import { applyChanges, averageSpend, type Change, dedupe, type Hypothetical, hypotheticalFlows, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, TAX_TWIN_DAYS, taxDuplicates, taxFlows, unbilledPotential, voceDuplicates } from "../cashflow-sources.ts";
 import { CASHFLOW_BROKEN, type CashflowStore, latestBalance } from "../cashflow-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
@@ -15,6 +15,8 @@ import { withDate } from "../italian-format.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { scaled } from "../quote-sums.ts";
 import type { RenewalStore } from "../renewal-store.ts";
+import type { TaxStore } from "../tax-store.ts";
+import { taxPayments, yearIncassi } from "../tax-sums.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { readHorizon, readHypothetical, readItemFields, readSignedEuros } from "./cashflow-input.ts";
@@ -39,6 +41,8 @@ export type CashflowToolsOptions = {
 	readonly renewals: Pick<RenewalStore, "read">;
 	readonly quotes?: Pick<QuoteStore, "read">;
 	readonly timesheet: Pick<TimesheetStore, "read">;
+	/** The tax profile (taxes.ts), read only: its estimated F24 are a source when it exists. */
+	readonly taxes?: Pick<TaxStore, "read">;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: CashflowEvent) => Promise<void>;
@@ -49,17 +53,17 @@ export type CashflowToolsOptions = {
 const DESCRIPTION = [
 	"Previsione di cassa of the owner: how much money there will be on the bank account, day by day, from the balance they say plus what comes in and goes out (open invoices to collect and to pay by due date, accepted quotes not invoiced yet, renewals, the average spending of the expenses, the voci added here).",
 	"What the person says → op: «ho 3.200 euro sul conto» → set_balance; «avvisami se scendo sotto 1000» → set_alert; «quanti soldi avrò a fine mese?», «come sono messo nei prossimi 90 giorni?», «quando vado in rosso?» → forecast (horizon); «posso permettermi un computer da 2000 euro a dicembre?» → what_if (amount, date, name); «e se Gamma paga con 30 giorni di ritardo?» → what_if with delay; «e se Beta non paga?» → what_if with drop; nothing of a what_if is saved.",
-	"Rule: fixed recurring costs (rent, software, insurance, utilities, subscriptions) belong to renewals, not here. Voci (add_item) are only for taxes and F24, the owner's withdrawals, loan instalments and money expected without an invoice. Before adding, the tool checks for a renewal or voce of about the same amount and name: when it asks, ask the person and repeat with confirm true only if it is a different one.",
+	`Rule: fixed recurring costs (rent, software, insurance, utilities, subscriptions) belong to renewals, not here. Voci (add_item) are only for «F24 non stimati da taxes» (IVA, other taxes; an F24 the taxes tool estimates is counted already, and a voce named F24, tasse, INPS, IRPEF, sostitutiva, Agenzia delle Entrate, or saldo/acconto with imposta or contributi, within ${TAX_TWIN_DAYS} days of it replaces the estimate, or its part when well below it), the owner's withdrawals, loan instalments and money expected without an invoice. Before adding, the tool checks for a renewal or voce of about the same amount and name: when it asks, ask the person and repeat with confirm true only if it is a different one.`,
 	"set_balance: amount (euros on the account, a minus when overdrawn; «8.400», «8,4k», «8 mila» are read), date (default today, never in the future). set_alert: amount, the balance under which the morning brief warns (\"\" removes; alert_below on set_balance works too).",
 	"add_item: kind entrata | uscita, amount (euros, always positive), name, date (12/11/2026, «il 27», «ogni 27 del mese», «ogni lunedì», «fine mese», «dicembre» = its last day), frequency (settimanale, quindicinale, «ogni 15 giorni», «ogni lunedì», mensile, trimestrale, annuale, «ogni 2 mesi»; none: once), until, note, confirm. edit_item: id or name, and the fields to change (name, amount, date, until, note, frequency, kind; new_amount with new_amount_from: a new amount from that day; \"\" clears until, note, new_amount). remove_item: id or name. list_items: the balance, the threshold and the voci.",
-	"forecast: horizon («fine mese», «fine mese prossimo», «fine trimestre», «prossima settimana», «30 giorni», «3 mesi», «fino a dicembre», «fine anno», a date; or days; default 30 days, today included); include_overdue (default true: overdue invoices to collect counted today); include_average_spend (default true); include_quotes (default true: accepted quotes not invoiced yet); compact true: the brief's line only.",
+	"forecast: horizon («fine mese», «fine mese prossimo», «fine trimestre», «prossima settimana», «30 giorni», «3 mesi», «fino a dicembre», «fine anno», a date; or days; default 30 days, today included); include_overdue (default true: overdue invoices to collect counted today); include_average_spend (default true); include_quotes (default true: accepted quotes not invoiced yet); include_taxes (default true: the F24 estimated by the taxes tool, when the person has a tax profile; a voce of theirs for the same F24 counts instead, an expense recorded for it marks it paid); compact true: the brief's line only.",
 	`what_if: as forecast plus hypothetical voci (amount, date, kind default uscita, frequency, name; or several in items, at most ${CASHFLOW_LIMITS.whatIf}), delay ({party or invoice, days}: paid that many days later) and drop ({party or invoice}: not paid).`,
 	"export: the daily projection as a CSV for Excel under cassa/ (horizon as forecast); then send it with file_send. Repeat amounts and dates as given, never compute them yourself.",
 ].join(" ");
 
 const BALANCE_DAY: DayWords = { field: "date è il giorno del saldo", future: "il saldo si dice per oggi o un giorno passato" };
 
-type Flags = { readonly includeOverdue: boolean; readonly includeAverage: boolean; readonly includeQuotes: boolean };
+type Flags = { readonly includeOverdue: boolean; readonly includeAverage: boolean; readonly includeQuotes: boolean; readonly includeTaxes: boolean };
 
 /**
  * La previsione di cassa (cashflow.ts): the balance and the voci kept here; the forecast and the
@@ -129,6 +133,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 					include_overdue: { type: "boolean", description: "forecast, what_if, export: count invoices to collect already overdue today (default true)" },
 					include_average_spend: { type: "boolean", description: "forecast, what_if, export: the average daily spending as an estimate (default true)" },
 					include_quotes: { type: "boolean", description: "forecast, what_if, export: accepted quotes not invoiced yet as expected income (default true)" },
+					include_taxes: { type: "boolean", description: "forecast, what_if, export: the F24 estimated from the tax profile, when there is one (default true)" },
 					compact: { type: "boolean", description: "forecast: the brief's line only" },
 				},
 				required: ["op"],
@@ -379,14 +384,21 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const quoteBook = o.includeQuotes ? options.quotes?.read() : undefined;
 		const quotes = quoteBook === undefined || quoteBook.broken ? undefined : quoteFlows(quoteBook.quotes, invoices, day, end, dayOf);
 		const expenseBook = options.expenses.read();
-		const average = o.includeAverage && !expenseBook.broken ? averageSpend(expenseBook.expenses, renewalBook.renewals, book.items, invoices, day) : undefined;
+		// The F24 estimated from the tax profile, for the forfettario only: a voce of the person's for the same F24 counts instead, an expense recorded for it says it is paid.
+		const taxBook = options.taxes?.read();
+		const profile = taxBook === undefined || taxBook.broken ? undefined : taxBook.profile;
+		const taxOn = o.includeTaxes && taxBook !== undefined && profile !== undefined && invoiceBook.company?.regime !== "ordinario";
+		const taxed = taxOn ? taxDuplicates(taxFlows(taxPayments({ profile, figures: taxBook.years, incassi: yearIncassi(invoices, day, dayOf), today: day }, end), day, end), voci.items, expenseBook.broken ? [] : expenseBook.expenses) : { taxes: [], twins: [], maybe: [] };
+		const average = o.includeAverage && !expenseBook.broken ? averageSpend(expenseBook.expenses, renewalBook.renewals, book.items, invoices, day, taxOn) : undefined;
 		const hours = options.timesheet.read();
 		const potential = hours.broken ? undefined : unbilledPotential(hours.entries, hours.rates);
 		// The balance brought to now with what was marked paid or recorded after it, when the registers read and it is not too old.
 		const canRoll = !invoiceBook.broken && !expenseBook.broken && !renewalBook.broken && daysBetween(balance.date, day) <= CASHFLOW_LIMITS.maxDays;
 		const rolled = canRoll ? rollForward(balance, now().toISOString(), day, invoices, expenseBook.expenses, renewalBook.renewals, dayOf) : undefined;
-		const movements = [...inv.movements, ...(ren?.movements ?? []), ...(quotes?.movements ?? []), ...voci.items];
+		const movements = [...inv.movements, ...(ren?.movements ?? []), ...(quotes?.movements ?? []), ...voci.items, ...taxed.taxes];
 		const notes: string[] = [];
+		if (taxBook?.broken === true) notes.push("Il profilo delle tasse non si legge: tasse stimate escluse.");
+		else if (!o.includeTaxes && profile !== undefined) notes.push("Tasse stimate (F24) escluse.");
 		if (o.includeAverage && average !== undefined && average.count === 0) notes.push("Nessuna spesa da contare negli ultimi 90 giorni: niente spesa media nella previsione.");
 		if (!o.includeAverage) notes.push("Spesa media esclusa: contate solo fatture, preventivi, rinnovi e voci.");
 		if (!o.includeQuotes) notes.push("Preventivi accettati esclusi.");
@@ -409,6 +421,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 			...(average === undefined || average.count === 0 ? {} : { average }),
 			expensesBroken: expenseBook.broken,
 			...(potential === undefined ? {} : { potential }),
+			...(taxOn ? { taxes: true as const, taxTwins: taxed.twins, taxMaybe: taxed.maybe } : {}),
 			notes,
 		};
 		const openInvoices = invoices.some((i) => !i.paid && i.side !== undefined && !i.doc.integration);
@@ -417,8 +430,8 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 	}
 
 	function flags(args: Record<string, unknown>): Flags | string {
-		for (const k of ["include_overdue", "include_average_spend", "include_quotes", "compact"]) if (args[k] !== undefined && typeof args[k] !== "boolean") return `Errore: ${k} è true o false.`;
-		return { includeOverdue: args.include_overdue !== false, includeAverage: args.include_average_spend !== false, includeQuotes: args.include_quotes !== false };
+		for (const k of ["include_overdue", "include_average_spend", "include_quotes", "include_taxes", "compact"]) if (args[k] !== undefined && typeof args[k] !== "boolean") return `Errore: ${k} è true o false.`;
+		return { includeOverdue: args.include_overdue !== false, includeAverage: args.include_average_spend !== false, includeQuotes: args.include_quotes !== false, includeTaxes: args.include_taxes !== false };
 	}
 
 	async function forecast(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -446,7 +459,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 			const something = invoices.length > 0 || (!renewals.broken && renewals.renewals.some((r) => r.status === "active"));
 			return something ? briefHint() : briefAnswer(undefined, { today: day, somethingToForecast: false });
 		}
-		const g = await gather(ctx, day, end, { includeOverdue: true, includeAverage: true, includeQuotes: true });
+		const g = await gather(ctx, day, end, { includeOverdue: true, includeAverage: true, includeQuotes: true, includeTaxes: true });
 		if (typeof g === "string") return g;
 		const p = project(startOf(g.view), g.movements, day, end, g.dailySpend);
 		return briefAnswer(p, { balance, today: day, ...(g.view.alertBelow === undefined ? {} : { alertBelow: g.view.alertBelow }), somethingToForecast: g.somethingToForecast });

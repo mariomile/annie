@@ -60,9 +60,9 @@ export function readVat(value: unknown, where: string): VatRate | undefined | Pr
 	return Number(read) as VatRate;
 }
 
-/** A percent from more than 0 to less than 100; 0 means none, given back as null. */
-export function readPercent(value: unknown, where: string): string | null | undefined | Problem {
-	const read = readAmount(value, 2, where);
+/** A percent from more than 0 to less than 100; 0 means none, given back as null. What does not read is echoed inside `fence` (the quotes' by default). */
+export function readPercent(value: unknown, where: string, fence: (text: string) => string = fenced): string | null | undefined | Problem {
+	const read = readAmount(value, 2, where, fence);
 	if (read === undefined || isProblem(read)) return read;
 	if (Number(read) === 0) return null;
 	if (Number(read) >= 100) return { problem: `${where}: la percentuale va da 0 a meno di 100` };
