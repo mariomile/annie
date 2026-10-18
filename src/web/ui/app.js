@@ -75,6 +75,8 @@ const ICONS = {
 	back: ["M19 12H5", "m11 6-6 6 6 6"],
 	close: ["M6 6l12 12M18 6 6 18"],
 	copy: ["M9 9h10v10H9Z", "M5 15V5h10"],
+	plane: ["M21 3 3 10.5l7 2.5 2.5 7Z", "m10 13 4.5-4.5"],
+	phone: ["M5 4h3.5l1.5 4-2 1.5a11 11 0 0 0 6.5 6.5l1.5-2 4 1.5V19a1.5 1.5 0 0 1-1.6 1.5A16 16 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4Z"],
 };
 
 /** Inline stroke icon from the fixed table above (no markup from outside). */
@@ -174,6 +176,39 @@ function face(agent, size = 28, mood = "idle") {
 function thinking(agents) {
 	const who = agents.length === 1 ? `${agents[0].name} sta pensando` : "Stanno pensando";
 	return h("div.thinking", { role: "status", "aria-label": who }, h("span.faces", agents.slice(0, 3).map((a) => face(a, 26, "thinking"))), h("span.thinking-text", `${who}…`));
+}
+
+/** An empty page or list: the agente's face waiting, what is missing, and how to fill it. */
+function emptyNote(tag, title, ...text) {
+	return h(tag, face(state.instance ?? { id: "annie" }, 40), h("b", title), ...text);
+}
+
+/** A tile with a service's first letter, in a colour of its own: the catalog has no logos. */
+function monogram(name) {
+	const tile = h("span.monogram", { "aria-hidden": "true" }, name.slice(0, 1).toUpperCase());
+	tile.style.setProperty("--tile", FACE_COLORS[faceSeed(name) % FACE_COLORS.length]);
+	return tile;
+}
+
+/** A chip that follows a checkbox: on or off, without reloading the page. */
+function onOff(box, on, off) {
+	const chip = h("span.chip");
+	const show = () => ((chip.className = box.checked ? "chip ok" : "chip"), (chip.textContent = box.checked ? on : off));
+	box.addEventListener("change", show);
+	show();
+	return chip;
+}
+
+/**
+ * A settings card that folds to one line until it is opened: what it is, whether it is on,
+ * and a sentence on what it does. The page stays short; the form is one click away.
+ */
+function fold({ title, glyph, chip, lead }, ...body) {
+	return h(
+		"details.card.fold",
+		h("summary", h("span.fold-glyph", icon(glyph)), h("span.fold-text", h("b", title), lead ? h("small", lead) : null), chip, h("span.fold-chevron", icon("down"))),
+		h("div.fold-body", ...body),
+	);
 }
 
 function toast(text, bad = false) {
@@ -369,7 +404,7 @@ function unreachable() {
 	const retry = () => {
 		clearTimeout(timer);
 		window.removeEventListener("online", retry);
-		mount($app, h("div.empty", h("b", "Riprovo…")));
+		mount($app, emptyNote("div.empty", "Riprovo…"));
 		void enter();
 	};
 	mount(
@@ -865,9 +900,9 @@ function webCard(inst, hosts) {
 			toast(error.message, true);
 		}
 	};
-	return h(
-		"div.card.pad",
-		h("h2", "Navigazione web"),
+	const chip = hosts.length === 0 ? h("span.chip", "Spenta") : hosts.includes("*") ? h("span.chip.warn", "Tutti i siti pubblici") : h("span.chip.ok", hosts.length === 1 ? "1 sito" : `${hosts.length} siti`);
+	return fold(
+		{ title: "Navigazione web", glyph: "browser", lead: `I siti che ${inst.name} può aprire con il suo browser.`, chip },
 		h("p.muted", "I siti che Annie può leggere, fotografare e usare con il suo browser: apre le pagine, clicca, scrive nelle ricerche e nei filtri, ma non invia moduli (per quello servono le azioni sul web, con approvazione). Quello che scrive in una ricerca arriva al sito. Un dominio per riga, i sottodomini sono compresi. Meglio elencarli uno per uno: * vuol dire tutti i siti pubblici, anche quelli dove una pagina potrebbe spingere Annie a cercare qualcosa che non deve. Vuoto: nessuno."),
 		h("label.field", h("span", "Siti consentiti"), list),
 		h("button.btn", { onclick: save }, "Salva i siti"),
@@ -886,9 +921,8 @@ function webActionsCard(inst, allowed) {
 			toast(error.message, true);
 		}
 	};
-	return h(
-		"div.card.pad",
-		h("h2", "Azioni sul web"),
+	return fold(
+		{ title: "Azioni sul web", glyph: "approvazioni", lead: "Moduli inviati solo dopo un'approvazione.", chip: onOff(toggle, "Attive", "Spente") },
 		h("p.muted", "Annie può chiedere di inviare un modulo di un sito consentito (un contatto, una prenotazione). Ogni invio aspetta l'approvazione di chi l'ha chiesto o di un approvatore, che vede destinazione e valori esatti; niente parte da solo."),
 		h("label.row-gap", toggle, h("span", "Consenti le azioni sul web con approvazione")),
 	);
@@ -912,9 +946,16 @@ function agentsCard(inst, settings) {
 		};
 		return { box, row: h("label.row-gap", box, h("span", agentLabel(o))) };
 	});
-	return h(
-		"div.card.pad",
-		h("h2", "Agenti che possono scrivergli"),
+	const chip = h("span.chip");
+	const count = () => {
+		const n = boxes.filter((b) => b.box.checked).length;
+		chip.className = n ? "chip ok" : "chip";
+		chip.textContent = n === 0 ? "Nessuno" : n === 1 ? "1 agente" : `${n} agenti`;
+	};
+	for (const b of boxes) b.box.addEventListener("change", count);
+	count();
+	return fold(
+		{ title: "Agenti che possono scrivergli", glyph: "agenti", lead: `Chi può chiedere aiuto a ${inst.name} mentre lavora.`, chip },
 		h("p.muted", `Un agente spuntato può chiedere aiuto a ${inst.name} mentre lavora: ${inst.name} risponde con i suoi strumenti e solo la memoria condivisa, e la risposta torna nella chat da cui era partita la domanda. Le conversazioni tra agenti non compaiono in chat; in Attività resta traccia di ogni messaggio. Per farli collaborare tutti insieme usa «Fate squadra» nella pagina Agenti.`),
 		others.length === 0 ? h("p.muted", "Non ci sono altri agenti: creane uno dalla pagina Agenti.") : boxes.map((b) => b.row),
 	);
@@ -1150,7 +1191,7 @@ function render() {
 	const views = { inizia: viewStart, chat: viewChat, stanze: viewRooms, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, automazioni: viewAutomations, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
-		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
+		mount(main, emptyNote("div.empty", "Qualcosa non va", error.message));
 	});
 }
 
@@ -1473,7 +1514,7 @@ window.addEventListener("keydown", (e) => {
 
 function needInstance(main) {
 	if (state.instance) return false;
-	mount(main, h("div.empty", h("b", "Nessun agente"), "Non hai ancora accesso a nessun agente. Chiedi all'owner di aggiungerti."));
+	mount(main, emptyNote("div.empty", "Nessun agente", "Non hai ancora accesso a nessun agente. Chiedi all'owner di aggiungerti."));
 	return true;
 }
 
@@ -2303,7 +2344,7 @@ async function viewSegreteria(main) {
 	const detail = h("div");
 	mount(main, 
 		head(agentLabel(inst), h("h1", "Segreteria commerciale"), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
-		pratiche.length ? h("div.pratiche", list, detail) : h("div.card.empty", h("b", "Ancora nessuna richiesta"), "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
+		pratiche.length ? h("div.pratiche", list, detail) : emptyNote("div.card.empty", "Ancora nessuna richiesta", "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
 	);
 	const p = pratiche.find((x) => x.praticaId === selected) ?? pratiche[0];
 	if (p) renderPratica(detail, inst, p);
@@ -2346,7 +2387,7 @@ function renderPratica(detail, inst, p) {
 				h("h2", lead.rawSubject),
 				h("dl.lead", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
 			),
-			p.draftBody ? h("div.letter", h("div.subject", `Oggetto: ${p.draftSubject}`), p.draftBody) : h("div.card.empty", h("b", "Nessuna bozza"), p.classification === "spam" ? "Probabilmente spam. Approva per trattarla come richiesta: verrà preparata una bozza da approvare." : "Questa mail non richiede una risposta."),
+			p.draftBody ? h("div.letter", h("div.subject", `Oggetto: ${p.draftSubject}`), p.draftBody) : emptyNote("div.card.empty", "Nessuna bozza", p.classification === "spam" ? "Probabilmente spam. Approva per trattarla come richiesta: verrà preparata una bozza da approvare." : "Questa mail non richiede una risposta."),
 			canAct
 				? h(
 						"div.actions",
@@ -2504,7 +2545,7 @@ async function viewApprovals(main) {
 			pendingConnector,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
+			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
 			decidedGoogle.length || decidedConnector.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedConnector, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
@@ -2986,7 +3027,7 @@ async function viewTasks(main) {
 		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
-			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
+			h("div.card", schedules.length ? table : emptyNote("div.empty", "Nessun task", `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
 			h(
 				"div.card.pad",
 				h("h2", "Nuovo task"),
@@ -3091,7 +3132,7 @@ function watchSection(inst, watches, threads) {
 		h("h2.subhead", "Sentinelle"),
 		h(
 			"div.grid-2",
-			h("div.card", watches.length ? table : h("div.empty", h("b", "Nessuna sentinella"), "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
+			h("div.card", watches.length ? table : emptyNote("div.empty", "Nessuna sentinella", "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
 			h(
 				"div.card.pad",
 				h("h2", "Nuova sentinella"),
@@ -3204,7 +3245,7 @@ async function viewFiles(main) {
 							),
 						),
 					)
-				: h("div.empty", h("b", "Nessun file"), "Caricane uno, o chiedi ad Annie di preparare un report."),
+				: emptyNote("div.empty", "Nessun file", "Caricane uno, o chiedi ad Annie di preparare un report."),
 		),
 	);
 }
@@ -3241,7 +3282,7 @@ async function viewMemory(main) {
 			return h("details.pad", h("summary", `In archivio · ${archived.length}`), h("p.muted", `${inst.name} non le riceve con ogni messaggio: le cerca quando servono.`), archived.length > 8 ? filter : null, h("table.ledger", body));
 		};
 		return [
-			essential.length ? h("table.ledger", h("tbody", rows(essential, editable))) : h("div.empty", h("b", "Niente"), empty),
+			essential.length ? h("table.ledger", h("tbody", rows(essential, editable))) : emptyNote("div.empty", "Niente", empty),
 			archived.length ? archive() : null,
 		];
 	};
@@ -3330,7 +3371,7 @@ async function viewRooms(main) {
 								),
 							),
 						)
-					: h("div.empty", h("b", "Nessuna stanza"), "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
+					: emptyNote("div.empty", "Nessuna stanza", "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
 			),
 		),
 	);
@@ -3467,7 +3508,7 @@ async function viewAutomations(main) {
 							),
 						),
 					)
-				: h("div.empty", h("b", "Nessuna automazione"), `Un'automazione è un indirizzo segreto: quando un modulo, un negozio online o Stripe lo chiama, ${inst.name} lavora con i dati ricevuti e ti scrive.`),
+				: emptyNote("div.empty", "Nessuna automazione", `Un'automazione è un indirizzo segreto: quando un modulo, un negozio online o Stripe lo chiama, ${inst.name} lavora con i dati ricevuti e ti scrive.`),
 		);
 	}
 	/** The address and the token, once: only a hash of the token is kept. */
@@ -3619,7 +3660,7 @@ async function viewSkills(main) {
 				"div.card",
 				skills.length
 					? h("table.ledger", h("tbody", skills.map((s) => row(s, false))))
-					: h("div.empty", h("b", "Nessuna skill"), `Spiega a ${inst.name} come fai una cosa e chiedile di salvarla come skill, oppure creala qui.`),
+					: emptyNote("div.empty", "Nessuna skill", `Spiega a ${inst.name} come fai una cosa e chiedile di salvarla come skill, oppure creala qui.`),
 			),
 		),
 	);
@@ -3690,7 +3731,7 @@ function catalogGallery(inst, catalog, oauth, redirectUrl, added) {
 	};
 	const card = (e) => {
 		const button = h("button.btn.small.accent", { onclick: () => void add(e, button) }, e.auth === "oauth" ? "Accedi e aggiungi" : "Aggiungi");
-		return h("div.card.pad", h("h2", e.name), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
+		return h("div.card.pad", h("div.catalog-name", monogram(e.name), h("h2", e.name)), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
 	};
 	return h(
 		"section.catalog",
@@ -3792,7 +3833,7 @@ async function viewConnectors(main) {
 	});
 	mount(main, 
 		head(agentLabel(inst), h("h1", "Connettori"), `Collegano ${inst.name} agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.`, h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
-		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
+		connectors.length ? h("div.grid-2", cards) : emptyNote("div.card.empty", "Nessun connettore", "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
 		catalogGallery(inst, catalog, oauth, redirectUrl, new Set(connectors.map((c) => c.id))),
 	);
 }
@@ -4512,7 +4553,7 @@ async function viewAgents(main) {
 	mount(
 		main,
 		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("div.row-gap", teamButton, h("button.btn.ghost", { title: "Più agenti già pronti a lavorare insieme", onclick: () => teamsForm() }, "Squadre pronte"), h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente")) : null),
-		agents.length === 0 ? h("div.empty", h("b", "Nessun agente"), owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
+		agents.length === 0 ? emptyNote("div.empty", "Nessun agente", owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
 	);
 }
 
@@ -4616,6 +4657,7 @@ function anchor(id, card) {
 	card.id = `card-${id}`;
 	if (route().rest[0] === id)
 		requestAnimationFrame(() => {
+			if (card.tagName === "DETAILS") card.open = true;
 			card.scrollIntoView({ behavior: "smooth", block: "start" });
 			card.classList.add("flash");
 		});
@@ -4644,9 +4686,8 @@ function telegramCard(inst, t) {
 			toast("Bot scollegato");
 			render();
 		});
-	return h(
-		"div.card.pad",
-		h("div.row-gap", h("div.kicker", "Telegram"), t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato")),
+	return fold(
+		{ title: "Telegram", glyph: "plane", lead: `${inst.name} risponde in un bot tutto suo.`, chip: t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato") },
 		t.connected ? null : h("p.muted", "Crea un bot con @BotFather su Telegram e incolla qui il suo token. Ogni persona ammessa apre il bot e preme Start."),
 		h("label.field", h("span", t.connected ? "Token" : "Token del bot"), token),
 		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta. Per sapere il tuo ID scrivi a @userinfobot su Telegram.")),
@@ -4693,9 +4734,8 @@ function whatsappCard(inst, w) {
 			toast("WhatsApp scollegato");
 			render();
 		});
-	return h(
-		"div.card.pad",
-		h("div.row-gap", h("div.kicker", "WhatsApp"), w.connected ? h("span.chip.ok", w.number ?? "Collegato") : h("span.chip", "Non collegato")),
+	return fold(
+		{ title: "WhatsApp", glyph: "chat", lead: `${inst.name} risponde su un numero WhatsApp Business.`, chip: w.connected ? h("span.chip.ok", w.number ?? "Collegato") : h("span.chip", "Non collegato") },
 		w.connected ? null : h("p.muted", "Serve un numero WhatsApp Business sulla piattaforma di Meta. Da developers.facebook.com prendi il token di accesso permanente, l'ID del numero e l'app secret (guida in docs/chiavi.md)."),
 		w.webhookUrl === null ? h("p.muted", "Questo server non ha un indirizzo https pubblico: WhatsApp non può mandargli i messaggi.") : null,
 		h("label.field", h("span", "Token di accesso"), accessToken),
@@ -4749,9 +4789,8 @@ function phoneCard(inst, p) {
 			toast("Telefono scollegato");
 			render();
 		});
-	return h(
-		"div.card.pad",
-		h("div.row-gap", h("div.kicker", "Telefono"), p.connected ? h("span.chip.ok", p.number ?? "Collegato") : h("span.chip", "Non collegato")),
+	return fold(
+		{ title: "Telefono", glyph: "phone", lead: `${inst.name} risponde a voce alle chiamate.`, chip: p.connected ? h("span.chip.ok", p.number ?? "Collegato") : h("span.chip", "Non collegato") },
 		p.connected ? null : h("p.muted", "Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta. Da console.twilio.com prendi Account SID, auth token e il numero (guida in docs/chiavi.md): l'indirizzo delle chiamate lo imposta Annie."),
 		p.https ? null : h("p.muted", "Questo server non ha un indirizzo https pubblico: Twilio non può chiamarlo."),
 		h("label.field", h("span", "Account SID"), accountSid),
@@ -4902,7 +4941,7 @@ async function viewActivity(main) {
 									h("thead", h("tr", h("th", "Quando"), h("th", "Evento"), h("th", "Dettagli"))),
 									h("tbody", audit.map((e) => h("tr", h("td.mono", fmt.time(e.ts ?? e.at)), h("td", h("span.chip", e.type)), h("td.mono.muted", label(e))))),
 								)
-							: h("div.empty", h("b", "Nessun evento")),
+							: emptyNote("div.empty", "Nessun evento"),
 					)
 				: h("div.card.empty", "L'audit completo è visibile all'owner."),
 		),
