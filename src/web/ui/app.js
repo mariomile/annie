@@ -2907,34 +2907,50 @@ async function viewMemory(main) {
 			await api(`/api/instances/${inst.id}/memory/${m.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
 			render();
 		});
-	const list = (memories, editable, empty) =>
-		memories.length
-			? h(
-					"table.ledger",
-					h(
-						"tbody",
-						memories.map((m) =>
-							h(
-								"tr",
-								h("td", m.text, h("div.mono.muted", `${m.source === "annie" ? "ricordata da Annie" : "aggiunta a mano"} · ${fmt.time(m.createdAt)}`)),
-								h("td", editable ? h("button.btn.small.danger", { onclick: () => forget(m) }, "Dimentica") : null),
-							),
-						),
-					),
-				)
-			: h("div.empty", h("b", "Niente"), empty);
+	const rows = (memories, editable) =>
+		memories.map((m) =>
+			h(
+				"tr",
+				h("td", m.text, h("div.mono.muted", `${m.source === "annie" ? `ricordata da ${inst.name}` : "aggiunta a mano"} · ${fmt.time(m.createdAt)}`)),
+				h("td", editable ? h("button.btn.small.danger", { onclick: () => forget(m) }, "Dimentica") : null),
+			),
+		);
+	/** The essential memories, sent with every message; the archivio (ADR 0062) folded, with a filter, since it holds up to 1000. */
+	const list = (memories, editable, empty) => {
+		const essential = memories.filter((m) => !m.archived);
+		const archived = memories.filter((m) => m.archived).reverse();
+		const archive = () => {
+			const body = h("tbody", rows(archived, editable));
+			const filter = h("input", { type: "search", placeholder: "Cerca nell'archivio" });
+			filter.addEventListener("input", () => {
+				const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+				mount(body, rows(archived.filter((m) => words.every((w) => m.text.toLowerCase().includes(w))), editable));
+			});
+			return h("details.pad", h("summary", `In archivio · ${archived.length}`), h("p.muted", `${inst.name} non le riceve con ogni messaggio: le cerca quando servono.`), archived.length > 8 ? filter : null, h("table.ledger", body));
+		};
+		return [
+			essential.length ? h("table.ledger", h("tbody", rows(essential, editable))) : h("div.empty", h("b", "Niente"), empty),
+			archived.length ? archive() : null,
+		];
+	};
 	const add = (isShared) => {
 		const text = h("textarea", { rows: 2, maxlength: 500, placeholder: isShared ? "Es. L'ufficio è chiuso dal 10 al 25 agosto" : "Es. Preferisco risposte brevi, in punti" });
+		const archived = h("input", { type: "checkbox" });
 		const save = async () => {
 			try {
-				await api(`/api/instances/${inst.id}/memory`, { method: "POST", body: { text: text.value, shared: isShared } });
-				toast("Annie se lo ricorderà");
+				await api(`/api/instances/${inst.id}/memory`, { method: "POST", body: { text: text.value, shared: isShared, archived: archived.checked } });
+				toast(archived.checked ? `In archivio: ${inst.name} lo cerca quando serve` : `${inst.name} se lo ricorderà`);
 				render();
 			} catch (error) {
 				toast(error.message, true);
 			}
 		};
-		return h("div.pad", h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text), h("button.btn", { onclick: save }, "Ricorda"));
+		return h(
+			"div.pad",
+			h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text),
+			h("label.row-gap", archived, h("span", "In archivio: un dettaglio che serve ogni tanto, non in ogni conversazione")),
+			h("div.actions", h("button.btn", { onclick: save }, "Ricorda")),
+		);
 	};
 	mount(main, 
 		head(agentLabel(inst), h("h1", "Memoria"), `Quello che ${inst.name} ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva a ${inst.name}.`),

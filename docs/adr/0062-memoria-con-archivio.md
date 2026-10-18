@@ -14,3 +14,7 @@ La memoria di una persona (fase 2 del [piano cloud](../piano-cloud.md)) arrivava
 
 - **Ricerca semantica con embedding** (Supermemory in Rakazo): serve un servizio o un modello in più per ogni tenant; le parole bastano per nomi, date e fornitori, che sono quasi tutto quello che si salva.
 - **Un «custode» che dopo ogni conversazione salva da sé cosa ricordare** (l'Engram di Codync): utile, ma costa una chiamata al modello per conversazione e salva cose che la persona non ha chiesto. Da valutare dopo, come proposta che la persona approva.
+
+## Console
+
+Nella pagina «Memoria» le essenziali restano in elenco e l'archivio sta sotto, chiuso, con quante sono e, oltre le 8, un campo per filtrarle. Aggiungendo una memoria a mano, la casella «In archivio» la salva lì.
