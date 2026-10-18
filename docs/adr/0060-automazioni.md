@@ -23,6 +23,6 @@ Un agente lavorava quando una persona gli scriveva, a un'ora fissa (task program
 - **Firma HMAC del corpo** (come Stripe e GitHub): ogni servizio firma a modo suo, mentre un token in un'intestazione lo mandano tutti, Zapier e Make compresi. Si può aggiungere per un servizio preciso.
 - **Il token nel risultato del tool**: più semplice, ma il token resterebbe nella conversazione mandata al modello.
 
-## Da fare
+## Console
 
-- Pagina «Automazioni» nella console sulle API di questo ADR, con il pulsante per copiare indirizzo e token.
+La pagina «Automazioni» (nella barra, sotto Task e sentinelle) elenca le automazioni con l'istruzione, la chat dove rispondono e le chiamate ricevute, e le cancella. «Nuova automazione» chiede nome, istruzione e chat (una delle proprie, o una nuova con il nome dell'automazione); indirizzo e token si vedono una volta sola, con i pulsanti per copiarli e un comando `curl` di prova.

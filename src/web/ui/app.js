@@ -50,6 +50,7 @@ const ICONS = {
 	task: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 7.5V12l3 2"],
 	file: ["M14 3H6v18h12V7Z", "M14 3v4h4"],
 	memoria: ["M12 4a4 4 0 0 0-4 4v1a3 3 0 0 0-2 5.2V16a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4v-1.8A3 3 0 0 0 16 9V8a4 4 0 0 0-4-4Z", "M12 4v16"],
+	automazioni: ["M13 3 5 14h6l-1 7 8-11h-6Z"],
 	skill: ["M5 4h10l4 4v12H5Z", "M9 12h6M9 16h4", "M14 4v4h4"],
 	connettori: ["M9 3v5M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4"],
 	impostazioni: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 5v4M9 15v4"],
@@ -165,6 +166,7 @@ const PALETTE = [
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
 	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
+	{ id: "automazioni", label: "Automazioni", group: "Lavoro" },
 	{ id: "file", label: "File", group: "Lavoro" },
 	{ id: "memoria", label: "Memoria", group: "Lavoro" },
 	{ id: "skill", label: "Skill", group: "Lavoro" },
@@ -1016,7 +1018,7 @@ function accountDialog() {
 
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
-const SIDEBAR = new Set(["inizia", "agenti", "board", "segreteria", "approvazioni", "task", "file", "memoria", "skill"]);
+const SIDEBAR = new Set(["inizia", "agenti", "board", "segreteria", "approvazioni", "task", "automazioni", "file", "memoria", "skill"]);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -1048,7 +1050,7 @@ function render() {
 	renderRail();
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
-	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, automazioni: viewAutomations, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -2941,6 +2943,95 @@ async function viewMemory(main) {
 			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
 			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
+	);
+}
+
+// ---------- automazioni (ADR 0060) ----------
+const CHANNEL_NAME = { web: "console", telegram: "Telegram", whatsapp: "WhatsApp" };
+
+async function viewAutomations(main) {
+	if (needInstance(main)) return;
+	const inst = state.instance;
+	const listBox = h("div.card");
+	const panel = h("div.card.pad.stack", { hidden: true });
+	const remove = (a) =>
+		confirmDialog(`Cancellare «${a.name}»?`, "L'indirizzo smette di funzionare: il servizio che lo chiama riceverà un errore.", "Cancella", async () => {
+			await api(`/api/instances/${inst.id}/automations/${a.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+			refresh();
+		});
+	const where = (a) => {
+		if (a.channel !== "web") return `risponde su ${CHANNEL_NAME[a.channel] ?? a.channel}`;
+		const t = state.threads.find((x) => x.id === a.threadId);
+		return t ? h("a", { href: `#/chat/${encodeURIComponent(t.id)}` }, `risponde in «${t.title}»`) : "risponde nella sua chat";
+	};
+	const runs = (a) => (a.runs ? `${a.runs === 1 ? "1 chiamata" : `${a.runs} chiamate`}, l'ultima ${fmt.time(a.lastRunAt)}` : "mai chiamata");
+	async function refresh() {
+		const { automations } = await api(`/api/instances/${inst.id}/automations`);
+		mount(
+			listBox,
+			automations.length
+				? h(
+						"table.ledger",
+						h(
+							"tbody",
+							automations.map((a) =>
+								h(
+									"tr",
+									h("td", h("b", a.name), h("div", a.instruction), h("div.mono.muted", [where(a), runs(a), a.mine ? null : a.person ? `di ${CHANNEL_NAME[a.person.channel] ?? a.person.channel} ${a.person.userId}` : null].filter(Boolean).flatMap((x, i) => (i ? [" · ", x] : [x])))),
+									h("td", a.canEdit ? h("button.btn.small.danger", { onclick: () => remove(a) }, "Cancella") : null),
+								),
+							),
+						),
+					)
+				: h("div.empty", h("b", "Nessuna automazione"), `Un'automazione è un indirizzo segreto: quando un modulo, un negozio online o Stripe lo chiama, ${inst.name} lavora con i dati ricevuti e ti scrive.`),
+		);
+	}
+	/** The address and the token, once: only a hash of the token is kept. */
+	const showOnce = (a, token) => {
+		const url = `${location.origin}${a.path}`;
+		mount(
+			panel,
+			h("h3", `«${a.name}» è pronta`),
+			h("p", h("b", "Copia ora il token: non si vedrà più."), " Chi lo ha fa lavorare ", inst.name, " per te, con i tuoi strumenti. Per cambiarlo cancella l'automazione e creane un'altra."),
+			h("label.field", h("span", "Indirizzo (POST)"), copyBox(url, "Indirizzo")),
+			h("label.field", h("span", "Token"), copyBox(token, "Token"), h("small", "Nell'intestazione Authorization: Bearer, o X-Annie-Token. Se il servizio non permette intestazioni, in fondo all'indirizzo: ?token=…")),
+			h("details", h("summary", "Prova dal terminale"), copyBox(`curl -X POST ${url} -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{"prova": true}'`, "Comando")),
+			h("div.actions", h("button.btn", { onclick: () => (panel.hidden = true) }, "Fatto, l'ho copiato")),
+		);
+	};
+	const create = () => {
+		if (!inst.canChat) return toast(`Per creare un'automazione devi poter scrivere a ${inst.name}`, true);
+		const name = h("input", { type: "text", maxlength: 80, placeholder: "Es. Ordini dal sito" });
+		const instruction = h("textarea", { rows: 3, maxlength: 2000, placeholder: "Es. Riassumi l'ordine e dimmi se c'è da spedire oggi" });
+		const chat = h("select", h("option", { value: "" }, "Una chat nuova, con il nome dell'automazione"), state.threads.map((t) => h("option", { value: t.id }, t.title)));
+		const save = async () => {
+			if (!name.value.trim() || !instruction.value.trim()) return toast("Servono un nome e cosa deve fare", true);
+			try {
+				const threadId = chat.value || (await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: { title: `Automazione: ${name.value.trim()}` } })).thread.id;
+				const { automation, token } = await api(`/api/instances/${inst.id}/automations`, { method: "POST", body: { name: name.value, instruction: instruction.value, threadId } });
+				showOnce(automation, token);
+				await refreshThreads();
+				refresh();
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		mount(
+			panel,
+			h("h3", "Nuova automazione"),
+			h("label.field", h("span", "Nome"), name),
+			h("label.field", h("span", "Cosa deve fare"), instruction, h("small", `${inst.name} riceve questa istruzione con i dati della chiamata (un modulo, un ordine, un pagamento), trattati come dati e non come ordini.`)),
+			h("label.field", h("span", "Dove ti risponde"), chat),
+			h("div.actions", h("button.btn.accent", { onclick: save }, "Crea"), h("button.btn.ghost", { onclick: () => (panel.hidden = true) }, "Annulla")),
+		);
+		panel.hidden = false;
+		name.focus();
+	};
+	await refresh();
+	mount(
+		main,
+		head(agentLabel(inst), h("h1", "Automazioni"), `Indirizzi segreti che fanno lavorare ${inst.name} quando un altro servizio li chiama: un modulo compilato, un ordine dal sito, un pagamento su Stripe, uno Zap. Al più 30 chiamate l'ora per automazione. Ognuno vede le sue, l'owner tutte.`, h("button.btn.accent", { onclick: create }, icon("plus"), "Nuova automazione")),
+		h("div.stack", panel, listBox),
 	);
 }
 
