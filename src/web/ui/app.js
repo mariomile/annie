@@ -3291,7 +3291,22 @@ async function viewRooms(main) {
 			h(
 				"div.card",
 				rooms.length
-					? h("table.ledger", h("tbody", rooms.map((r) => h("tr", h("td", h("a", { href: `#/stanze/${encodeURIComponent(r.id)}` }, h("b", r.title)), h("div.muted", names(r)), r.last ? h("div.room-last", h("b", `${r.last.who}: `), r.last.text) : null), h("td.mono.muted", fmt.time(r.updatedAt))))))
+					? h(
+							"ul.room-list",
+							rooms.map((r) =>
+								h(
+									"li",
+									h(
+										"a.room-row",
+										{ href: `#/stanze/${encodeURIComponent(r.id)}` },
+										// The faces of who is in it, overlapping like a group chat.
+										h("span.room-faces", r.agents.slice(0, 3).map((a) => face(a, 30))),
+										h("span.room-text", h("span.room-title", h("b", r.title), h("span.muted", names(r))), r.last ? h("span.room-last", h("b", `${r.last.who}: `), r.last.text) : null),
+										h("time.room-when", fmt.time(r.updatedAt)),
+									),
+								),
+							),
+						)
 					: h("div.empty", h("b", "Nessuna stanza"), "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
 			),
 		),
@@ -4016,9 +4031,10 @@ async function viewBoard(main) {
 	const data = await api("/api/board");
 	const agentOf = (id) => data.agents.find((a) => a.id === id);
 	const who = (actor) => (actor.kind === "agent" ? (agentOf(actor.id)?.name ?? "un agente") : actor.id === state.me.id ? "Tu" : (data.people[actor.id] ?? "una persona"));
-	const face = (id) => {
+	// The assignee's face; it looks around while the scheda is being worked on.
+	const faceOf = (id, mood) => {
 		const a = agentOf(id);
-		return a ? face(a, 20) : null;
+		return a ? face(a, 20, mood) : null;
 	};
 	const save = async (card, body, done) => {
 		try {
@@ -4078,7 +4094,7 @@ async function viewBoard(main) {
 			c.parent && parentOf(c) ? h("span.muted.small", `parte di #${parentOf(c).n}`) : null,
 			h(
 				"span.board-meta",
-				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
+				c.assignee ? [faceOf(c.assignee, c.status === "in_corso" ? "thinking" : "idle"), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
 				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
 				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
 			),
@@ -4106,7 +4122,7 @@ async function viewBoard(main) {
 						if (card) void moveTo(card, status);
 					},
 				},
-				h("h2", label, h("span.muted", String(cards.length))),
+				h("h2", h("span.board-col-name", h("i.board-dot", { "aria-hidden": "true" }), label), h("span.board-count", String(cards.length))),
 				cards.length ? cards.map(tile) : h("p.muted.small", status === "da_rivedere" ? "Qui arrivano le schede finite dagli agenti, da approvare." : "Nessuna scheda"),
 			);
 			return col;
@@ -4381,7 +4397,7 @@ async function viewBoard(main) {
 		const last = r.last ? data.cards.find((c) => c.id === r.last) : undefined;
 		return h(
 			`li.board-routine${r.paused ? ".paused" : ""}`,
-			face(r.assignee),
+			faceOf(r.assignee),
 			h(
 				"div",
 				h("b", r.title),
