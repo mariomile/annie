@@ -78,6 +78,7 @@ const ICONS = {
 	back: ["M19 12H5", "m11 6-6 6 6 6"],
 	close: ["M6 6l12 12M18 6 6 18"],
 	copy: ["M9 9h10v10H9Z", "M5 15V5h10"],
+	edit: ["M4 20h4L19 9l-4-4L4 16v4Z", "m13.5 6.5 4 4"],
 	trash: ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13", "M10 11v6M14 11v6"],
 	plane: ["M21 3 3 10.5l7 2.5 2.5 7Z", "m10 13 4.5-4.5"],
 	phone: ["M5 4h3.5l1.5 4-2 1.5a11 11 0 0 0 6.5 6.5l1.5-2 4 1.5V19a1.5 1.5 0 0 1-1.6 1.5A16 16 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4Z"],
@@ -265,6 +266,8 @@ const fmt = {
 	time: (iso) => (iso ? new Date(iso).toLocaleString("it-IT", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"),
 	day: (iso) => (iso ? new Date(iso).toLocaleDateString("it-IT", { day: "numeric", month: "short" }) : "—"),
 	bytes: (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${decimal(n / 1024)} KB` : `${decimal(n / 1048576)} MB`),
+	/** When, as a chat list says it: the time today, the day otherwise. */
+	short: (iso) => (new Date(iso).toDateString() === new Date().toDateString() ? new Date(iso).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : fmt.day(iso)),
 	usd: (n) => `$${n.toFixed(n < 1 ? 3 : 2)}`,
 	/** A time ahead, the way it is said: «oggi alle 18:00», «domani alle 9:00», «lun 26 ott alle 9:00». */
 	soon: (iso) => {
@@ -3564,7 +3567,7 @@ async function viewRooms(main) {
 										// The faces of who is in it, overlapping like a group chat.
 										h("span.room-faces", r.agents.slice(0, 3).map((a) => face(a, 30))),
 										h("span.room-text", h("span.room-title", h("b", r.title), h("span.muted", names(r))), r.last ? h("span.room-last", h("b", `${r.last.who}: `), r.last.text) : null),
-										h("time.room-when", fmt.time(r.updatedAt)),
+										h("time.room-when", { datetime: r.updatedAt, title: fmt.time(r.updatedAt) }, fmt.short(r.updatedAt)),
 									),
 								),
 							),
@@ -3850,7 +3853,7 @@ async function viewSkills(main) {
 			h(
 				"div.person-actions",
 				draft ? h("button.btn.small.accent", { onclick: () => save({ name: s.name, description: s.description, body: s.body }) }, "Attiva") : null,
-				s.canEdit && !draft ? h("button.btn.small.ghost", { onclick: () => edit(s) }, "Modifica") : null,
+				s.canEdit && !draft ? h("button.btn.small.ghost.skill-edit", { title: "Modifica", "aria-label": `Modifica /${s.name}`, onclick: () => edit(s) }, icon("edit"), h("span", "Modifica")) : null,
 				draft ? null : h("button.icon-btn", { title: "Scarica il SKILL.md", "aria-label": `Scarica il SKILL.md di /${s.name}`, onclick: () => exportMd(s) }, icon("install")),
 				s.canEdit ? h("button.icon-btn.task-remove", { title: draft ? "Scarta la bozza" : "Cancella", "aria-label": `${draft ? "Scarta la bozza" : "Cancella"} /${s.name}`, onclick: () => remove(s, draft) }, icon("trash")) : null,
 			),
