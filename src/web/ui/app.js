@@ -3914,6 +3914,14 @@ function whenNext(iso) {
 	return new Date(iso).toLocaleString("it-IT", { timeZone: "Europe/Rome", weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
+/** A scheda's scadenza (ADR 0070), counted in Rome's days: { days, text, level } with level late, soon or later. */
+function dueInfo(due) {
+	const today = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Rome" });
+	const days = Math.round((Date.parse(`${due}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+	const label = new Date(`${due}T12:00:00Z`).toLocaleDateString("it-IT", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" });
+	const text = days < 0 ? (days === -1 ? "in ritardo di un giorno" : `in ritardo di ${-days} giorni`) : days === 0 ? "scade oggi" : days === 1 ? "scade domani" : `scade ${label}`;
+	return { days, text, label, level: days < 0 ? "late" : days <= 1 ? "soon" : "later" };
+}
 const PRIORITIES = [
 	["bassa", "Bassa"],
 	["normale", "Normale"],
@@ -3988,13 +3996,14 @@ async function viewBoard(main) {
 				"span.board-meta",
 				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
 				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
+				c.due && c.status !== "fatto" ? h(`span.tag.board-due.${dueInfo(c.due).level}`, { title: `Scadenza: ${dueInfo(c.due).label}` }, dueInfo(c.due).text) : null,
 				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
 			),
 		);
 	const columns = h(
 		"div.board",
 		BOARD_COLUMNS.map(([status, label]) => {
-			const cards = data.cards.filter((c) => c.status === status).sort((a, b) => (status === "fatto" ? b.updatedAt.localeCompare(a.updatedAt) : (b.priority === "alta") - (a.priority === "alta") || a.n - b.n));
+			const cards = data.cards.filter((c) => c.status === status).sort((a, b) => (status === "fatto" ? b.updatedAt.localeCompare(a.updatedAt) : (b.priority === "alta") - (a.priority === "alta") || (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.n - b.n));
 			const col = h(
 				`section.board-col.${status}`,
 				{
@@ -4032,8 +4041,9 @@ async function viewBoard(main) {
 			{ "aria-label": "Colonna" },
 			BOARD_COLUMNS.filter(([v]) => v !== "in_corso" || c.status !== "da_fare").map(([v, l]) => h("option", { value: v, selected: v === c.status ? "selected" : undefined }, l)),
 		);
+		const due = h("input", { type: "date", value: c.due ?? "", "aria-label": "Scadenza" });
 		const comment = h("textarea", { rows: 2, placeholder: c.status === "da_rivedere" ? "Cosa va cambiato, se la rimandi indietro" : mine && c.status === "in_corso" ? "Arriva anche all'agente, nella conversazione" : "Un commento" });
-		const events = c.events.filter((e) => e.kind !== "edited").slice(-30);
+		const events = c.events.filter((e) => e.kind !== "edited" || e.text).slice(-30);
 		const line = (e) =>
 			h(
 				"li",
@@ -4048,7 +4058,11 @@ async function viewBoard(main) {
 								? e.assignee
 									? `l'ha assegnata a ${agentOf(e.assignee)?.name ?? "un agente"}`
 									: `ha tolto l'assegnazione${e.text ? ` (${e.text})` : ""}`
-								: e.text,
+								: e.kind === "edited"
+									? e.text === "scadenza tolta"
+										? "ha tolto la scadenza"
+										: `ha messo la ${e.text}`
+									: e.text,
 				),
 			);
 		const dialog = h("dialog.board-dialog");
@@ -4142,7 +4156,8 @@ async function viewBoard(main) {
 						),
 					)
 				: null,
-			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status)),
+			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status), h("label.field", h("span", "Scadenza"), due)),
+			c.due && c.status !== "fatto" ? h(`p.small.board-due-line.${dueInfo(c.due).level}`, `${dueInfo(c.due).text[0].toUpperCase()}${dueInfo(c.due).text.slice(1)}.`) : null,
 			moves.length ? h("div.actions", moves) : null,
 			startable || working ? aloneRow : null,
 			working && c.auto ? h("p.muted.small", `Risposte senza di te: ${c.auto.rounds} di ${data.auto.replies}.`) : null,
@@ -4157,6 +4172,7 @@ async function viewBoard(main) {
 							const body = withComment({});
 							if (assignee.value !== (c.assignee ?? "")) body.assignee = assignee.value;
 							if (status.value !== c.status) body.status = status.value;
+							if (due.value !== (c.due ?? "")) body.due = due.value || null;
 							if (Object.keys(body).length === 0) return dialog.close();
 							void act(body, "Scheda aggiornata")();
 						},
@@ -4200,6 +4216,7 @@ async function viewBoard(main) {
 		const description = h("textarea", { rows: 4, placeholder: "Cosa fare e quando è finito: l'agente vede solo questo" });
 		const assignee = h("select", h("option", { value: "" }, "Nessuno, per ora"), data.agents.filter((a) => a.canAssign).map((a) => h("option", { value: a.id }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
 		const priority = h("select", PRIORITIES.map(([v, l]) => h("option", { value: v, selected: v === "normale" ? "selected" : undefined }, l)));
+		const due = h("input", { type: "date", "aria-label": "Scadenza" });
 		const parents = data.cards.filter((x) => !x.parent && x.status !== "fatto").sort((a, b) => a.n - b.n);
 		const parent = h("select", h("option", { value: "" }, "Nessuna"), parents.map((x) => h("option", { value: x.id }, `#${x.n} ${x.title}`)));
 		const alone = h("input", { type: "checkbox" });
@@ -4217,6 +4234,7 @@ async function viewBoard(main) {
 			monthday.hidden = every.value !== "mese";
 			ok.textContent = every.value ? "Programma" : "Crea";
 			if (parentRow) parentRow.hidden = Boolean(every.value);
+			dueRow.hidden = Boolean(every.value);
 		};
 		every.addEventListener("change", drawRepeat);
 		assignee.addEventListener("change", () => {
@@ -4227,12 +4245,14 @@ async function viewBoard(main) {
 		});
 		const ok = h("button.btn.accent", "Crea");
 		const parentRow = parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null;
+		const dueRow = h("label.field", h("span", "Scadenza (facoltativa)"), due);
 		const dialog = h(
 			"dialog.board-dialog",
 			h("h3", "Nuova scheda"),
 			h("label.field", h("span", "Titolo"), title),
 			h("label.field", h("span", "Descrizione"), description),
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
+			dueRow,
 			repeatRow,
 			parentRow,
 			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito. Se si ripete, ogni volta nasce una scheda nuova che parte con te, come se premessi Avvia."),
@@ -4250,7 +4270,7 @@ async function viewBoard(main) {
 					render();
 					return;
 				}
-				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}) } });
+				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}), ...(due.value ? { due: due.value } : {}) } });
 				dialog.close();
 				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : `Scheda #${card.n} creata`);
 				render();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BOARD_LIMITS, BoardError, BoardStore } from "../src/core/board.ts";
+import { BOARD_LIMITS, BoardError, BoardStore, dueText } from "../src/core/board.ts";
 import { BoardWork, type BoardWorkDeps } from "../src/core/board-work.ts";
 import { createBoardTools } from "../src/core/tools/board-tools.ts";
 import { tempDataDir } from "./helpers.ts";
@@ -442,6 +442,46 @@ describe("the board (ADR 0050)", () => {
 			const before = posts.length;
 			await work.change(byPerson.id, { status: "da_rivedere", comment: "fatto" }, { kind: "agent", id: "scrittore" }, undefined);
 			expect(posts.slice(before).some((p) => p.text.includes("sotto-scheda"))).toBe(false);
+		});
+	});
+
+	describe("scadenze (ADR 0070)", () => {
+		it("a real day, changed or taken off with a line in the history; said in Rome's days", () => {
+			const { store } = setup();
+			const c = store.create({ title: "Preventivo Rossi", due: "2026-10-26" }, anna);
+			expect(c.due).toBe("2026-10-26");
+			expect(() => store.create({ title: "x", due: "2026-02-30" }, anna)).toThrow(/formato 2026-10-26/);
+			expect(() => store.create({ title: "x", due: "26/10/2026" }, anna)).toThrow(BoardError);
+			const moved = store.update(c.id, { due: "2026-10-30" }, anna);
+			expect(moved.due).toBe("2026-10-30");
+			expect(moved.events.at(-1)).toMatchObject({ kind: "edited", text: "scadenza a venerdì 30 ottobre" });
+			// The same day again: nothing recorded.
+			expect(store.update(c.id, { due: "2026-10-30" }, anna).events).toHaveLength(moved.events.length);
+			// Another field changed: the scadenza stays.
+			expect(store.update(c.id, { title: "Preventivo Rossi srl" }, anna).due).toBe("2026-10-30");
+			const off = store.update(c.id, { due: null }, anna);
+			expect(off.due).toBeUndefined();
+			expect(off.events.at(-1)?.text).toBe("scadenza tolta");
+			// 22:30 UTC on 25 October is 23:30 in Rome, still the 25th; 23:30 UTC is already the 26th there.
+			expect(dueText("2026-10-26", new Date("2026-10-25T22:30:00Z"))).toBe("scade domani");
+			expect(dueText("2026-10-26", new Date("2026-10-25T23:30:00Z"))).toBe("scade oggi");
+			expect(dueText("2026-10-26", new Date("2026-10-27T10:00:00Z"))).toBe("in ritardo di un giorno");
+			expect(dueText("2026-10-26", new Date("2026-10-30T10:00:00Z"))).toBe("in ritardo di 4 giorni");
+			expect(dueText("2026-10-30", new Date("2026-10-26T10:00:00Z"))).toBe("scade venerdì 30 ottobre");
+		});
+
+		it("the agente gets it in the brief, sees it in the list, the nearest first, and sets it when creating", async () => {
+			const { work, store, posts } = setup();
+			await work.create({ title: "Fornitori carta", assignee: "ricerca", due: "2026-10-30" }, anna, "p_anna");
+			expect(posts[0]?.text).toMatch(/\n\nScadenza: venerdì 30 ottobre \((scade|in ritardo).*\)\.\n\n/);
+			const agents = async () => [{ id: "ricerca", name: "Ricercatore" }];
+			const tool = (name: string) => createBoardTools({ self: "ricerca", store, work, agents, personOf: () => "p_anna" }).find((t) => t.name === name) as { execute: (a: Record<string, unknown>, c: never) => Promise<string> };
+			expect(await tool("board_create").execute({ title: "Fattura Bianchi", due: "2020-01-10" }, ctx("chat1"))).toMatch(/^Scheda #2 creata/);
+			expect(store.get("2")?.due).toBe("2020-01-10");
+			store.create({ title: "Senza data" }, anna);
+			const listed = await tool("board_list").execute({}, ctx("chat1"));
+			expect(listed).toMatch(/#2 \[Da fare\] \(in ritardo di \d+ giorni, 2020-01-10\) Fattura Bianchi.*\n#1 \[In corso\] \(.*2026-10-30\) Fornitori carta.*\n#3 \[Da fare\] Senza data/);
+			expect(await tool("board_create").execute({ title: "x", due: "domani" }, ctx("chat1"))).toMatch(/^Errore: La scadenza è un giorno/);
 		});
 	});
 });

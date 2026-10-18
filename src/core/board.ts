@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { todayIn } from "./italian-calendar.ts";
+import { italianDay } from "./italian-format.ts";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 
 /**
@@ -51,6 +53,8 @@ export type Card = {
 	};
 	/** The scheda this one is part of (ADR 0066): one level only, so a sotto-scheda has none of its own. */
 	readonly parent?: string;
+	/** By when it should be done (ADR 0070): a day in Rome, YYYY-MM-DD. */
+	readonly due?: string;
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
 	readonly updatedAt: string;
@@ -84,6 +88,8 @@ export type CardChange = {
 	readonly title?: string;
 	readonly description?: string;
 	readonly priority?: CardPriority;
+	/** A day, YYYY-MM-DD; null: no scadenza. */
+	readonly due?: string | null;
 	readonly status?: CardStatus;
 	/** null: nobody. */
 	readonly assignee?: string | null;
@@ -111,9 +117,10 @@ export class BoardStore {
 		return this.list().find((c) => c.id === ref || (n !== undefined && c.n === Number(n)));
 	}
 
-	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string }, by: CardActor, now = new Date()): Card {
+	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string; due?: string }, by: CardActor, now = new Date()): Card {
 		const title = clean(input.title, BOARD_LIMITS.title, "il titolo");
 		if (title === "") throw new BoardError("Serve un titolo");
+		const due = input.due === undefined ? undefined : dueDay(input.due);
 		const description = clean(input.description ?? "", BOARD_LIMITS.description, "la descrizione", true);
 		const at = now.toISOString();
 		let made: Card | undefined;
@@ -135,6 +142,7 @@ export class BoardStore {
 				priority: input.priority ?? "normale",
 				...(input.assignee === undefined ? {} : { assignee: input.assignee }),
 				...(input.parent === undefined ? {} : { parent: input.parent }),
+				...(due === undefined ? {} : { due }),
 				createdBy: by,
 				createdAt: at,
 				updatedAt: at,
@@ -157,12 +165,16 @@ export class BoardStore {
 			if (by.kind === "agent" && card.status === "fatto" && change.status !== undefined) throw new BoardError(`La scheda #${card.n} è chiusa: la riapre una persona`);
 			const events: CardEvent[] = [];
 			let next: Card = card;
-			if (change.title !== undefined || change.description !== undefined || (change.priority !== undefined && change.priority !== card.priority)) {
+			const due = change.due === undefined || change.due === null ? change.due : dueDay(change.due);
+			const dueMoved = due !== undefined && (due ?? undefined) !== card.due;
+			if (change.title !== undefined || change.description !== undefined || (change.priority !== undefined && change.priority !== card.priority) || dueMoved) {
 				const title = change.title === undefined ? card.title : clean(change.title, BOARD_LIMITS.title, "il titolo");
 				if (title === "") throw new BoardError("Serve un titolo");
 				const description = change.description === undefined ? card.description : clean(change.description, BOARD_LIMITS.description, "la descrizione", true);
-				next = { ...next, title, description, priority: change.priority ?? card.priority };
-				events.push({ at, by, kind: "edited" });
+				const { due: _due, ...rest } = next;
+				const kept = dueMoved ? (due === null ? undefined : due) : card.due;
+				next = { ...rest, title, description, priority: change.priority ?? card.priority, ...(kept === undefined ? {} : { due: kept }) };
+				events.push({ at, by, kind: "edited", ...(dueMoved ? { text: due === null ? "scadenza tolta" : `scadenza a ${dueLabel(due as string)}` } : {}) });
 			}
 			if (change.assignee !== undefined && (change.assignee ?? undefined) !== card.assignee) {
 				const { assignee: _old, work: _work, ...rest } = next;
@@ -231,6 +243,33 @@ export class BoardStore {
 			};
 		});
 	}
+}
+
+/** A real day, YYYY-MM-DD, or a BoardError. */
+export function dueDay(input: string): string {
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.trim());
+	const day = m === null ? undefined : new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+	if (m === null || day === undefined || day.toISOString().slice(0, 10) !== input.trim() || Number(m[1]) < 2000 || Number(m[1]) > 2100) throw new BoardError("La scadenza è un giorno nel formato 2026-10-26");
+	return input.trim();
+}
+
+/** «lunedì 26 ottobre». */
+export function dueLabel(due: string): string {
+	return italianDay(due);
+}
+
+/** Days from today (Rome) to the scadenza: negative when late. */
+export function dueIn(due: string, now = new Date()): number {
+	return Math.round((Date.parse(`${due}T00:00:00Z`) - Date.parse(`${todayIn("Europe/Rome", now)}T00:00:00Z`)) / 86_400_000);
+}
+
+/** «scade oggi», «in ritardo di 3 giorni», «scade lunedì 26 ottobre»: for an open scheda. */
+export function dueText(due: string, now = new Date()): string {
+	const days = dueIn(due, now);
+	if (days < 0) return days === -1 ? "in ritardo di un giorno" : `in ritardo di ${-days} giorni`;
+	if (days === 0) return "scade oggi";
+	if (days === 1) return "scade domani";
+	return `scade ${dueLabel(due)}`;
 }
 
 /** The most recent «Fatto» schede stay, the older ones go. */

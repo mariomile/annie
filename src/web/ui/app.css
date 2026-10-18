@@ -193,7 +193,7 @@ main.is-page { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 clamp(
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field > span { font-size: 13px; font-weight: 500; color: var(--fg); }
 .field small { color: var(--fg-3); font-size: 12px; }
-input[type="text"], input[type="search"], input[type="url"], input[type="number"], input[type="password"], input[type="datetime-local"], select, textarea {
+input[type="text"], input[type="search"], input[type="url"], input[type="number"], input[type="password"], input[type="datetime-local"], input[type="date"], input[type="time"], select, textarea {
 	width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); font-size: 13.5px;
 	box-shadow: var(--shadow-sm); transition: border-color 0.12s, box-shadow 0.12s;
 }
@@ -567,6 +567,11 @@ dialog.board-dialog { max-width: 600px; }
 .board-routine p { margin: 2px 0 0; }
 .board-routine.paused { opacity: 0.6; }
 .board-routine-problem { color: var(--warn); }
+.board-due.late { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
+.board-due.soon { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.board-due-line { margin: 4px 0 0; }
+.board-due-line.late { color: var(--bad); }
+.board-due-line.soon { color: var(--warn); }
 .board-alone input { flex: none; margin-top: 3px; }
 .board-children { margin: 8px 0; }
 .board-children ul { margin: 4px 0 0; padding-left: 18px; }
