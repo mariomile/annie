@@ -4206,10 +4206,29 @@ async function viewBoard(main) {
 				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
 			),
 		);
-	const columns = h(
+	// Cerca e filtri: what is shown, remembered on this browser (`annie.board.filter`).
+	const filter = (() => {
+		try {
+			const f = JSON.parse(store("annie.board.filter") ?? "{}");
+			return { q: typeof f.q === "string" ? f.q : "", agent: typeof f.agent === "string" ? f.agent : "", mine: f.mine === true, due: f.due === true };
+		} catch {
+			return { q: "", agent: "", mine: false, due: false };
+		}
+	})();
+	const plain = (text) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+	const passes = (c) => {
+		if (filter.agent === "-" ? c.assignee : filter.agent && c.assignee !== filter.agent) return false;
+		if (filter.mine && !((c.createdBy.kind === "person" && c.createdBy.id === state.me.id) || c.work?.personId === state.me.id)) return false;
+		if (filter.due && !(c.due && c.status !== "fatto" && dueInfo(c.due).days <= 1)) return false;
+		const words = plain(filter.q).split(/\s+/).filter(Boolean);
+		const text = plain(`#${c.n} ${c.title} ${c.description}`);
+		return words.every((w) => text.includes(w));
+	};
+	const filtering = () => Boolean(filter.q.trim() || filter.agent || filter.mine || filter.due);
+	const lanes = () => h(
 		"div.board",
 		BOARD_COLUMNS.map(([status, label]) => {
-			const cards = data.cards.filter((c) => c.status === status).sort((a, b) => (status === "fatto" ? b.updatedAt.localeCompare(a.updatedAt) : (b.priority === "alta") - (a.priority === "alta") || (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.n - b.n));
+			const cards = data.cards.filter((c) => c.status === status && passes(c)).sort((a, b) => (status === "fatto" ? b.updatedAt.localeCompare(a.updatedAt) : (b.priority === "alta") - (a.priority === "alta") || (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.n - b.n));
 			const col = h(
 				`section.board-col.${status}`,
 				{
@@ -4230,11 +4249,59 @@ async function viewBoard(main) {
 					},
 				},
 				h("h2", h("span.board-col-name", h("i.board-dot", { "aria-hidden": "true" }), label), h("span.board-count", String(cards.length))),
-				cards.length ? cards.map(tile) : h("p.muted.small", status === "da_rivedere" ? "Qui arrivano le schede finite dagli agenti, da approvare." : "Nessuna scheda"),
+				cards.length ? cards.map(tile) : h("p.muted.small", filtering() ? "Nessuna scheda con questi filtri" : status === "da_rivedere" ? "Qui arrivano le schede finite dagli agenti, da approvare." : "Nessuna scheda"),
 			);
 			return col;
 		}),
 	);
+	let columns = lanes();
+	const search = h("input", { type: "search", value: filter.q, placeholder: "Cerca nelle schede", "aria-label": "Cerca nelle schede" });
+	const agentFilter = h(
+		"select",
+		{ "aria-label": "Agente" },
+		h("option", { value: "" }, "Tutti gli agenti"),
+		h("option", { value: "-", selected: filter.agent === "-" ? "selected" : undefined }, "Non assegnate"),
+		data.agents.map((a) => h("option", { value: a.id, selected: filter.agent === a.id ? "selected" : undefined }, a.emoji ? `${a.emoji} ${a.name}` : a.name)),
+	);
+	const toggleChip = (key, label) => {
+		const b = h("button.chip.board-chip", { type: "button", "aria-pressed": String(filter[key]) }, label);
+		b.onclick = () => {
+			filter[key] = !filter[key];
+			b.setAttribute("aria-pressed", String(filter[key]));
+			redraw();
+		};
+		return b;
+	};
+	const mineChip = toggleChip("mine", "Mie");
+	const dueChip = toggleChip("due", "In ritardo o in scadenza");
+	const count = h("span.muted.small.board-filter-count");
+	const clear = h("button.btn.small.ghost", { type: "button" }, "Azzera");
+	const redraw = () => {
+		store("annie.board.filter", filtering() ? JSON.stringify(filter) : null);
+		const next = lanes();
+		columns.replaceWith(next);
+		columns = next;
+		const shownCount = data.cards.filter(passes).length;
+		count.textContent = filtering() ? `${shownCount} di ${data.cards.length}` : "";
+		clear.hidden = !filtering();
+	};
+	search.addEventListener("input", () => {
+		filter.q = search.value;
+		redraw();
+	});
+	agentFilter.addEventListener("change", () => {
+		filter.agent = agentFilter.value;
+		redraw();
+	});
+	clear.onclick = () => {
+		Object.assign(filter, { q: "", agent: "", mine: false, due: false });
+		search.value = "";
+		agentFilter.value = "";
+		mineChip.setAttribute("aria-pressed", "false");
+		dueChip.setAttribute("aria-pressed", "false");
+		redraw();
+	};
+	const filters = data.cards.length ? h("div.board-filters", { role: "search" }, search, agentFilter, mineChip, dueChip, count, clear) : null;
 
 	// One scheda: what it asks, who has it, what happened, and the moves a person makes.
 	const cardDialog = (c, sendBack = false) => {
@@ -4536,14 +4603,16 @@ async function viewBoard(main) {
 		main,
 		head("Annie", h("h1", "Board"), "Le cose da fare, affidate agli agenti. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la sposta in «Da rivedere»; poi una persona la chiude, o la rimanda indietro con un commento. Puoi anche chiedere in chat: «mettilo in board per Ricercatore», e avviarla da qui.", h("button.btn.accent", { onclick: newCard }, icon("plus"), "Nuova scheda")),
 		routines,
+		filters,
 		columns,
 	);
+	if (filters) redraw();
 	// The agenti move schede while the page is open: it follows them, unless a scheda is open.
 	const look = (d) => JSON.stringify([d.cards.map((c) => [c.id, c.updatedAt]), (d.routines ?? []).map((r) => [r.id, r.next, r.problem, r.paused, r.last])]);
 	const shown = look(data);
 	const timer = setInterval(async () => {
 		if (!main.isConnected) return clearInterval(timer);
-		if (document.querySelector("dialog[open]") || document.hidden) return;
+		if (document.querySelector("dialog[open]") || document.hidden || document.activeElement === search) return;
 		try {
 			const next = await api("/api/board");
 			if (main.isConnected && look(next) !== shown) render();
