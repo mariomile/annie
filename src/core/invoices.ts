@@ -112,6 +112,21 @@ export function vatOf(party: FatturaParty): string | undefined {
 	return party.vat === undefined ? undefined : `${(party.vat.country ?? "IT").toUpperCase()}${party.vat.code.toUpperCase()}`;
 }
 
+/** A party's name in a row: the files allow 80 characters, a phone line fewer. */
+const MAX_NAME = 60;
+
+/** A name cut to MAX_NAME characters, with «…». */
+export function short(text: string): string {
+	return text.length > MAX_NAME ? `${text.slice(0, MAX_NAME - 1)}…` : text;
+}
+
+/** How a party is named in an answer: its name, else its partita IVA or codice fiscale. */
+export function partyName(party: FatturaParty): string {
+	if (party.name !== undefined) return short(party.name);
+	const vat = vatOf(party);
+	return vat === undefined ? (party.fiscal === undefined ? "nome non indicato" : `codice fiscale ${party.fiscal}`) : `P.IVA ${vat}`;
+}
+
 /** A company's name without case, accents, punctuation and its legal form: «Alfa Forniture S.r.l.» is «alfa forniture». */
 export function nameKey(name: string): string {
 	return fold(name)
