@@ -1,6 +1,7 @@
 import type { AuditRecord } from "./audit.ts";
 import type { AnnieTool } from "./engine.ts";
 import { invoiceCallReads } from "./invoices.ts";
+import { quoteCallReads } from "./quotes.ts";
 
 /**
  * The brief del mattino: a task programmato of the person, in their own console thread, that
@@ -48,8 +49,12 @@ const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "goog
  * Tools that read with some calls and write with others: only the reading calls run in a brief's
  * thread. invoices reads the workspace's invoices (due, by_party, list, and set_company with no
  * arguments, which shows the company) like file_read; marking paid and setting the company write.
+ * quotes reads with list and show; making, redoing and marking a quote write.
  */
-const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = new Map([["invoices", invoiceCallReads]]);
+const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = new Map([
+	["invoices", invoiceCallReads],
+	["quotes", quoteCallReads],
+]);
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or
