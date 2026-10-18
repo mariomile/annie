@@ -4,7 +4,7 @@ Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 56, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 57, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -95,6 +95,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Rinnovi e abbonamenti: assicurazioni, domini, software e contratti con l'avviso prima della scadenza e della data entro cui disdire, i costi all'anno e al mese e il pagamento registrato fra le spese (settimana 54, [week54.md](week54.md), [ADR 0064](adr/0064-rinnovi-e-abbonamenti.md))
 - [x] Previsione di cassa: quanti soldi ci saranno sul conto da fatture, rinnovi, preventivi accettati, spese e voci proprie, con il punto più basso, «se compro…», «se Rossi paga in ritardo…» e l'avviso nel brief sotto una soglia (settimana 55, [week55.md](week55.md), [ADR 0065](adr/0065-previsione-di-cassa.md))
 - [x] Tasse del forfettario: imposta e contributi stimati dagli incassi, quanto mettere da parte, F24 di giugno e novembre con la proroga dell'anno, metodo previsionale, e gli F24 nella previsione di cassa (settimana 56, [week56.md](week56.md), [ADR 0070](adr/0070-tasse-del-forfettario.md))
+- [x] Clienti: una scheda per cliente con referenti, canale preferito e note, fatturato e incassato letti dai registri, classifica e concentrazione, clienti fermi, ricontatti con promemoria e unione dei doppioni (settimana 57, [week57.md](week57.md), [ADR 0071](adr/0071-clienti.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))
@@ -104,7 +105,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Board: una scheda può andare da sola fino alla fine, senza aspettare risposte, con un tetto di 10 risposte e 2 ore, poi in «Da rivedere» ([ADR 0061](adr/0061-agenti-da-soli.md))
 - [x] Board: sotto-schede, e un agente che passa una parte della sua scheda a un altro agente; il risultato gli torna nella conversazione ([ADR 0066](adr/0066-sotto-schede.md))
 - [x] Board: schede che si ripetono (ogni giorno, nei feriali, ogni settimana, ogni mese): ogni volta una scheda nuova che parte con chi l'ha impostata; nessuna nuova finché l'ultima è aperta ([ADR 0069](adr/0069-schede-ricorrenti.md))
-- [x] Board: scadenze delle schede, in rosso quando sono in ritardo, nel messaggio all'agente e in `board_list` ([ADR 0072](adr/0072-scadenze-delle-schede.md))
+- [x] Board: scadenze delle schede, in rosso quando sono in ritardo, nel messaggio all'agente e in `board_list` ([ADR 0073](adr/0073-scadenze-delle-schede.md))
 - [x] Skill: procedure salvate di un agente, con un nome che è anche il comando (`/chiusura-del-mese`), scritte dalla chat come bozze che la persona attiva con `/attiva-skill`, o salvate dalla console, aperte da sole quando servono, importate ed esportate come SKILL.md ([ADR 0059](adr/0059-skill.md)), con la pagina «Skill» nella console; da fare il menu di Telegram
 - [x] Memoria con archivio: le memorie essenziali con ogni messaggio, i dettagli in un archivio di 1000 per persona che Annie cerca quando servono; con le essenziali piene la più vecchia va in archivio invece di un rifiuto ([ADR 0062](adr/0062-memoria-con-archivio.md))
 - [x] Stanze: una conversazione della console fra una persona e da 2 a 5 agenti, che chiama chi le serve con @nome (o @tutti); ogni agente riceve quello che si è perso, e può chiamarne un altro, al più 3 volte di fila ([ADR 0063](adr/0063-stanze.md))

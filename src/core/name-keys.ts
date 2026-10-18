@@ -26,6 +26,21 @@ export function businessKey(name: string): string {
 		.join(" ");
 }
 
+/** The legal form a name ends with, closed up («srl», «spa»), or undefined when it has none. */
+export function legalForm(name: string): string | undefined {
+	const forms = nameWords(name).filter((w) => LEGAL_FORMS.has(w));
+	return forms.at(-1);
+}
+
+/** Whether two names may be one business: the same name without legal form, and the same legal form or one of them without («Rossi» and «Rossi Srl», never «Rossi Srl» and «Rossi SpA»). */
+export function sameBusiness(a: string, b: string): boolean {
+	const key = businessKey(a);
+	if (key === "" || key !== businessKey(b)) return false;
+	const fa = legalForm(a);
+	const fb = legalForm(b);
+	return fa === undefined || fb === undefined || fa === fb;
+}
+
 /** A name compared without case, accents and punctuation, its legal form kept: «Rossi S.r.l.» is «rossi srl», not «rossi» nor «rossi spa». */
 export function spellingKey(name: string): string {
 	return nameWords(name).join(" ");

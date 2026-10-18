@@ -4,14 +4,12 @@
  */
 import { TIPO_DOCUMENTO } from "../fattura-pa-codes.ts";
 import { type FatturaParty, fromUnits, money } from "../fattura-pa.ts";
-import { type Company, countedAmount, type Invoice, matchesParty, vatOf } from "../invoices.ts";
+import { type Company, countedAmount, type Invoice, matchesParty, partyName, short, vatOf } from "../invoices.ts";
 import { dayMonth, italianDate } from "../italian-format.ts";
 import type { ReadArgs } from "./invoice-fence.ts";
 
 /** Rows in one answer; the rest are counted. */
 export const MAX_ROWS = 30;
-/** A party's name in a row: the files allow 80 characters, a phone line fewer. */
-const MAX_NAME = 60;
 /** Names in a direction's label before «e altri N». */
 const MAX_NAMES = 3;
 
@@ -91,15 +89,7 @@ export function docShort(invoice: Invoice, today: string): string {
 	return `${kind} senza numero${date === undefined ? "" : ` del ${dayMonth(date, today)}`}`;
 }
 
-export function partyName(party: FatturaParty): string {
-	if (party.name !== undefined) return short(party.name);
-	const vat = vatOf(party);
-	return vat === undefined ? (party.fiscal === undefined ? "nome non indicato" : `codice fiscale ${party.fiscal}`) : `P.IVA ${vat}`;
-}
-
-export function short(text: string): string {
-	return text.length > MAX_NAME ? `${text.slice(0, MAX_NAME - 1)}…` : text;
-}
+export { partyName, short } from "../invoices.ts";
 
 export function companyText(company: Company): string {
 	return joinedWords([company.name, company.vat === undefined ? undefined : `P.IVA ${company.vat}`], ", ");

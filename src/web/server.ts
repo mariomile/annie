@@ -237,10 +237,10 @@ const STATIC: Record<string, string> = {
 	"/apple-touch-icon.png": "apple-touch-icon.png",
 	"/manifest.webmanifest": "manifest.webmanifest",
 	"/sw.js": "sw.js",
-	"/fonts/geist-latin.woff2": "fonts/geist-latin.woff2",
-	"/fonts/geist-latin-ext.woff2": "fonts/geist-latin-ext.woff2",
-	"/fonts/geist-mono-latin.woff2": "fonts/geist-mono-latin.woff2",
-	"/fonts/geist-mono-latin-ext.woff2": "fonts/geist-mono-latin-ext.woff2",
+	"/fonts/archivo-latin.woff2": "fonts/archivo-latin.woff2",
+	"/fonts/archivo-latin-ext.woff2": "fonts/archivo-latin-ext.woff2",
+	"/fonts/monaspace-neon-latin-400.woff2": "fonts/monaspace-neon-latin-400.woff2",
+	"/fonts/monaspace-neon-latin-500.woff2": "fonts/monaspace-neon-latin-500.woff2",
 };
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 

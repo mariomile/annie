@@ -74,6 +74,9 @@ const ICONS = {
 	browser: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M3 12h18", "M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z"],
 	back: ["M19 12H5", "m11 6-6 6 6 6"],
 	close: ["M6 6l12 12M18 6 6 18"],
+	copy: ["M9 9h10v10H9Z", "M5 15V5h10"],
+	plane: ["M21 3 3 10.5l7 2.5 2.5 7Z", "m10 13 4.5-4.5"],
+	phone: ["M5 4h3.5l1.5 4-2 1.5a11 11 0 0 0 6.5 6.5l1.5-2 4 1.5V19a1.5 1.5 0 0 1-1.6 1.5A16 16 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4Z"],
 };
 
 /** Inline stroke icon from the fixed table above (no markup from outside). */
@@ -87,6 +90,125 @@ function icon(name) {
 		svg.append(path);
 	}
 	return svg;
+}
+
+// ---------- agent faces ----------
+// Every agente has a face drawn from its id: one family (a soft body, two eyes), told apart by
+// colour, shape and one small detail. The face is also how an agente shows it is thinking.
+const FACE_COLORS = ["#ff8a65", "#f6c344", "#9be15d", "#3ed6b0", "#5cb8ff", "#8f82ff", "#ff7ab6", "#e2c9a0"];
+const FACE_SHAPES = {
+	round: { body: ["circle", { cx: 24, cy: 26, r: 17 }], top: 9, eyes: 25 },
+	square: { body: ["rect", { x: 7, y: 9, width: 34, height: 34, rx: 12 }], top: 9, eyes: 25 },
+	egg: { body: ["path", { d: "M24 8c10 0 17 7.5 17 18S33.5 43 24 43 7 36.5 7 26 14 8 24 8Z" }], top: 8, eyes: 25 },
+	wide: { body: ["rect", { x: 5, y: 13, width: 38, height: 29, rx: 14.5 }], top: 13, eyes: 27 },
+};
+
+function faceSeed(id) {
+	let n = 2166136261;
+	for (const c of String(id)) n = Math.imul(n ^ c.codePointAt(0), 16777619);
+	// Mixed once more, so ids that differ only at the end still land far apart.
+	n = Math.imul(n ^ (n >>> 16), 2246822507);
+	n = Math.imul(n ^ (n >>> 13), 3266489909);
+	return (n ^ (n >>> 16)) >>> 0;
+}
+
+/** The look of an agente: the same id always gives the same face. Annie, the first, stays in the console's own black and white (--face-mono). */
+function faceLook(agent) {
+	const id = agent?.id ?? agent?.instanceId ?? agent?.name ?? "annie";
+	// One hash per trait, so that the traits do not move together.
+	const pick = (trait, list) => list[faceSeed(`${id}:${trait}`) % list.length];
+	const annie = id === "annie";
+	return {
+		color: annie ? "var(--face-mono)" : pick("color", FACE_COLORS),
+		eye: annie ? "var(--face-mono-eye)" : "#111",
+		shape: annie ? "round" : pick("shape", Object.keys(FACE_SHAPES)),
+		eyes: annie ? "tall" : pick("eyes", ["dot", "tall", "wide"]),
+		extra: annie ? "none" : pick("extra", ["none", "antenna", "cheeks", "brow"]),
+		delay: faceSeed(id) % 5000,
+	};
+}
+
+/** The colour as a CSS value, for what surrounds a face (the glow behind the empty chat). */
+function faceColor(agent) {
+	return faceLook(agent).color;
+}
+
+/** face(agent, 28) or face(agent, 72, "thinking"): an inline SVG, decorative (the name is always written next to it). */
+function face(agent, size = 28, mood = "idle") {
+	const NS = "http://www.w3.org/2000/svg";
+	// paint: colours set through CSSOM (the page's CSP refuses style attributes), so Annie's CSS variable works too.
+	const el = (tag, attrs = {}, paint = {}) => {
+		const node = document.createElementNS(NS, tag);
+		for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+		for (const [k, v] of Object.entries(paint)) node.style.setProperty(k, v);
+		return node;
+	};
+	const look = faceLook(agent);
+	const shape = FACE_SHAPES[look.shape];
+	const svg = el("svg", { viewBox: "0 0 48 48", width: size, height: size, "aria-hidden": "true", class: `face ${mood}` });
+	svg.style.setProperty("--blink-delay", `${look.delay}ms`);
+	const shade = "face-shade";
+	const defs = el("defs");
+	const grad = el("linearGradient", { id: shade, x1: 0, y1: 0, x2: 0, y2: 1 });
+	grad.append(el("stop", { offset: "0", "stop-color": "#fff", "stop-opacity": "0.38" }), el("stop", { offset: "0.55", "stop-color": "#fff", "stop-opacity": "0" }));
+	defs.append(grad);
+	const body = el("g", { class: "face-body" });
+	if (look.extra === "antenna") body.append(el("path", { d: `M24 ${shape.top}V${shape.top - 5}`, "stroke-width": 2.4, "stroke-linecap": "round" }, { stroke: look.color }), el("circle", { cx: 24, cy: shape.top - 5.5, r: 2.6 }, { fill: look.color }));
+	const [tag, attrs] = shape.body;
+	body.append(el(tag, attrs, { fill: look.color }), el(tag, { ...attrs, fill: `url(#${shade})` }), el(tag, { ...attrs, fill: "none", stroke: "rgba(0,0,0,0.08)", "stroke-width": 1 }));
+	const y = shape.eyes;
+	if (look.extra === "cheeks") body.append(el("circle", { cx: 13.5, cy: y + 7, r: 2.8, fill: "#ff4f73", opacity: 0.5 }), el("circle", { cx: 34.5, cy: y + 7, r: 2.8, fill: "#ff4f73", opacity: 0.5 }));
+	if (look.extra === "brow") body.append(el("path", { d: `M14 ${y - 7}q3-2 6 0M28 ${y - 7}q3-2 6 0`, stroke: "#141414", "stroke-width": 1.8, fill: "none", "stroke-linecap": "round", opacity: 0.7 }));
+	const eyes = el("g", { class: "face-eyes" });
+	for (const x of [17.5, 30.5]) {
+		const eye = { fill: look.eye };
+		if (look.eyes === "dot") eyes.append(el("circle", { cx: x, cy: y, r: 3.3 }, eye));
+		else if (look.eyes === "tall") eyes.append(el("ellipse", { cx: x, cy: y, rx: 2.7, ry: 4.1 }, eye));
+		else eyes.append(el("ellipse", { cx: x, cy: y, rx: 3.8, ry: 3 }, eye));
+		eyes.append(el("circle", { cx: x + 1, cy: y - 1.4, r: 1, fill: "#fff", opacity: 0.9, class: "glint" }));
+	}
+	body.append(eyes);
+	svg.append(defs, body);
+	return svg;
+}
+
+/** What stands in for an answer on its way: the faces of who may answer, looking around. */
+function thinking(agents) {
+	const who = agents.length === 1 ? `${agents[0].name} sta pensando` : "Stanno pensando";
+	return h("div.thinking", { role: "status", "aria-label": who }, h("span.faces", agents.slice(0, 3).map((a) => face(a, 26, "thinking"))), h("span.thinking-text", `${who}…`));
+}
+
+/** An empty page or list: the agente's face waiting, what is missing, and how to fill it. */
+function emptyNote(tag, title, ...text) {
+	return h(tag, face(state.instance ?? { id: "annie" }, 40), h("b", title), ...text);
+}
+
+/** A tile with a service's first letter, in a colour of its own: the catalog has no logos. */
+function monogram(name) {
+	const tile = h("span.monogram", { "aria-hidden": "true" }, name.slice(0, 1).toUpperCase());
+	tile.style.setProperty("--tile", FACE_COLORS[faceSeed(name) % FACE_COLORS.length]);
+	return tile;
+}
+
+/** A chip that follows a checkbox: on or off, without reloading the page. */
+function onOff(box, on, off) {
+	const chip = h("span.chip");
+	const show = () => ((chip.className = box.checked ? "chip ok" : "chip"), (chip.textContent = box.checked ? on : off));
+	box.addEventListener("change", show);
+	show();
+	return chip;
+}
+
+/**
+ * A settings card that folds to one line until it is opened: what it is, whether it is on,
+ * and a sentence on what it does. The page stays short; the form is one click away.
+ */
+function fold({ title, glyph, chip, lead }, ...body) {
+	return h(
+		"details.card.fold",
+		h("summary", h("span.fold-glyph", icon(glyph)), h("span.fold-text", h("b", title), lead ? h("small", lead) : null), chip, h("span.fold-chevron", icon("down"))),
+		h("div.fold-body", ...body),
+	);
 }
 
 function toast(text, bad = false) {
@@ -282,7 +404,7 @@ function unreachable() {
 	const retry = () => {
 		clearTimeout(timer);
 		window.removeEventListener("online", retry);
-		mount($app, h("div.empty", h("b", "Riprovo…")));
+		mount($app, emptyNote("div.empty", "Riprovo…"));
 		void enter();
 	};
 	mount(
@@ -555,7 +677,7 @@ function googleCard(inst, allowed) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Google"),
+		h("h2", "Google"),
 		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questo agente di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console. Se il server lo permette, anche di preparare mail ed eventi: partono solo quando quella persona li approva."),
 		h("label.row-gap", toggle, h("span", "Consenti Google a questo agente")),
 	);
@@ -576,7 +698,7 @@ function speechCard(inst, host, allowed, understood) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Risposte a voce"),
+		h("h2", "Risposte a voce"),
 		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Annie risponde con un vocale e con il testo. Ognuno può chiederle «rispondimi sempre a voce» o «niente vocali». La voce la fa ${host}: riceve solo il testo delle risposte da leggere, mai i vocali di chi le scrive.`),
 		understood ? null : h("p.chip.warn", "Per rispondere ai vocali Annie deve prima capirli: accendi anche Messaggi vocali."),
 		h("label.row-gap", toggle, h("span", "Rispondi a voce ai vocali")),
@@ -598,7 +720,7 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Immagini"),
+		h("h2", "Immagini"),
 		h("p.muted", `Annie crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e ritocca le foto che le mandano. Le genera il servizio ${host}, che riceve la descrizione e, per un ritocco, la foto. L'immagine arriva in chat e resta tra i file. Al massimo ${maxPerDay} immagini al giorno per tutto l'account.`),
 		h("label.row-gap", toggle, h("span", "Consenti le immagini a questo agente")),
 	);
@@ -686,7 +808,7 @@ function modelCard(inst, current, providers) {
 	);
 	const card = h(
 		"div.card.pad",
-		h("div.row-gap", h("h3", "Modello AI"), status),
+		h("div.row-gap", h("h2", "Modello AI"), status),
 		h("p.muted", "Il modello con cui Annie pensa e risponde: Claude, GPT, Gemini, Grok, Mistral, DeepSeek, Kimi, o uno dei tanti di OpenRouter. Cambiarlo non tocca chat, file e memoria: anche le chat vecchie continuano con il nuovo modello."),
 		h("label.field", h("span", "Provider"), provider),
 		filterRow,
@@ -725,7 +847,7 @@ function voiceCard(inst, host, allowed) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Messaggi vocali"),
+		h("h2", "Messaggi vocali"),
 		h("p.muted", `I vocali di Telegram e WhatsApp vengono trascritti da ${host} e arrivano ad Annie come testo. Solo quelli delle persone che possono scrivere; l'audio va solo a quel servizio.`),
 		h("label.row-gap", toggle, h("span", "Trascrivi i vocali di questo agente")),
 	);
@@ -757,7 +879,7 @@ function searchCard(inst, host, allowed, hosts) {
 	};
 	return h(
 		"div.card.pad",
-		h("h3", "Ricerca sul web"),
+		h("h2", "Ricerca sul web"),
 		h("p.muted", `Annie cerca notizie, prezzi, orari e tutto quello che cambia, e se glielo chiedi prepara un report di ricerca con le fonti numerate. Le ricerche vanno a ${host}, solo le parole cercate. Le pagine trovate le apre solo dai siti consentiti qui sotto.`),
 		h("label.row-gap", toggle, h("span", "Consenti la ricerca a questo agente")),
 		allowed && !everything
@@ -778,9 +900,9 @@ function webCard(inst, hosts) {
 			toast(error.message, true);
 		}
 	};
-	return h(
-		"div.card.pad",
-		h("h3", "Navigazione web"),
+	const chip = hosts.length === 0 ? h("span.chip", "Spenta") : hosts.includes("*") ? h("span.chip.warn", "Tutti i siti pubblici") : h("span.chip.ok", hosts.length === 1 ? "1 sito" : `${hosts.length} siti`);
+	return fold(
+		{ title: "Navigazione web", glyph: "browser", lead: `I siti che ${inst.name} può aprire con il suo browser.`, chip },
 		h("p.muted", "I siti che Annie può leggere, fotografare e usare con il suo browser: apre le pagine, clicca, scrive nelle ricerche e nei filtri, ma non invia moduli (per quello servono le azioni sul web, con approvazione). Quello che scrive in una ricerca arriva al sito. Un dominio per riga, i sottodomini sono compresi. Meglio elencarli uno per uno: * vuol dire tutti i siti pubblici, anche quelli dove una pagina potrebbe spingere Annie a cercare qualcosa che non deve. Vuoto: nessuno."),
 		h("label.field", h("span", "Siti consentiti"), list),
 		h("button.btn", { onclick: save }, "Salva i siti"),
@@ -799,9 +921,8 @@ function webActionsCard(inst, allowed) {
 			toast(error.message, true);
 		}
 	};
-	return h(
-		"div.card.pad",
-		h("h3", "Azioni sul web"),
+	return fold(
+		{ title: "Azioni sul web", glyph: "approvazioni", lead: "Moduli inviati solo dopo un'approvazione.", chip: onOff(toggle, "Attive", "Spente") },
 		h("p.muted", "Annie può chiedere di inviare un modulo di un sito consentito (un contatto, una prenotazione). Ogni invio aspetta l'approvazione di chi l'ha chiesto o di un approvatore, che vede destinazione e valori esatti; niente parte da solo."),
 		h("label.row-gap", toggle, h("span", "Consenti le azioni sul web con approvazione")),
 	);
@@ -825,9 +946,16 @@ function agentsCard(inst, settings) {
 		};
 		return { box, row: h("label.row-gap", box, h("span", agentLabel(o))) };
 	});
-	return h(
-		"div.card.pad",
-		h("h3", "Agenti che possono scrivergli"),
+	const chip = h("span.chip");
+	const count = () => {
+		const n = boxes.filter((b) => b.box.checked).length;
+		chip.className = n ? "chip ok" : "chip";
+		chip.textContent = n === 0 ? "Nessuno" : n === 1 ? "1 agente" : `${n} agenti`;
+	};
+	for (const b of boxes) b.box.addEventListener("change", count);
+	count();
+	return fold(
+		{ title: "Agenti che possono scrivergli", glyph: "agenti", lead: `Chi può chiedere aiuto a ${inst.name} mentre lavora.`, chip },
 		h("p.muted", `Un agente spuntato può chiedere aiuto a ${inst.name} mentre lavora: ${inst.name} risponde con i suoi strumenti e solo la memoria condivisa, e la risposta torna nella chat da cui era partita la domanda. Le conversazioni tra agenti non compaiono in chat; in Attività resta traccia di ogni messaggio. Per farli collaborare tutti insieme usa «Fate squadra» nella pagina Agenti.`),
 		others.length === 0 ? h("p.muted", "Non ci sono altri agenti: creane uno dalla pagina Agenti.") : boxes.map((b) => b.row),
 	);
@@ -852,7 +980,7 @@ function computerCard(inst, allowed, problem) {
 		});
 	return h(
 		"div.card.pad",
-		h("h3", "Computer"),
+		h("h2", "Computer"),
 		h("p.muted", "Annie esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
 		problem ? h("p.warn", `Il computer non è disponibile: ${problem}.`) : null,
 		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo computer")),
@@ -862,7 +990,7 @@ function computerCard(inst, allowed, problem) {
 
 /** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
 function desktopCard(inst, allowed, desktop) {
-	if (!desktop.available) return h("div.card.pad", h("h3", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
+	if (!desktop.available) return h("div.card.pad", h("h2", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {
 		try {
@@ -887,7 +1015,7 @@ function desktopCard(inst, allowed, desktop) {
 	const many = desktop.shared ? "" : " Se più agenti usano lo schermo insieme, quello usato meno di recente si chiude per fare posto.";
 	return h(
 		"div.card.pad",
-		h("h3", "Schermo"),
+		h("h2", "Schermo"),
 		h("p.muted", `${inst.name} ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
 		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
 		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
@@ -904,7 +1032,7 @@ function deleteCard(inst) {
 		typed.addEventListener("input", () => (ok.disabled = typed.value !== inst.name));
 		const dialog = h(
 			"dialog",
-			h("h3", `Eliminare ${inst.name}?`),
+			h("h2", `Eliminare ${inst.name}?`),
 			h("p", `Se ne vanno le sue conversazioni, la sua memoria, i file del suo workspace, i task programmati e le sentinelle, le richieste in attesa e i connettori. Bot Telegram, numero WhatsApp e telefono si scollegano, e il computer e lo schermo, se li ha, si spengono e si svuotano. Gli altri agenti non ricevono più messaggi da lui, e le risposte che gli dovevano ancora vanno perse. Non si può annullare.`),
 			h("label.field", h("span", `Per confermare scrivi «${inst.name}»`), typed),
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -939,7 +1067,7 @@ function deleteCard(inst) {
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
-	const dialog = h("dialog", h("h3", "Il tuo account"), googleSection(), body);
+	const dialog = h("dialog", h("h2", "Il tuo account"), googleSection(), body);
 	const draw = async () => {
 		const me = (await api("/api/me")).person;
 		state.me = me;
@@ -1041,7 +1169,8 @@ function render() {
 		h(
 			"header.topbar",
 			h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, icon("menu")),
-			h("b", "Annie"),
+			// With more agenti, the open one: who a new chat goes to.
+			state.instances.length > 1 && state.instance ? h("b.topbar-who", face(state.instance, 22), state.instance.name) : h("b", "Annie"),
 			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
 		),
 		h("div.scrim", { onclick: () => shell.classList.remove("open") }),
@@ -1062,7 +1191,7 @@ function render() {
 	const views = { inizia: viewStart, chat: viewChat, stanze: viewRooms, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, automazioni: viewAutomations, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
-		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
+		mount(main, emptyNote("div.empty", "Qualcosa non va", error.message));
 	});
 }
 
@@ -1141,23 +1270,28 @@ function renderRail() {
 		),
 		state.instances.length > 1
 			? h(
-					"div.instance-pick",
-					h("label.sr", { for: "instance" }, "Agente"),
-					h(
-						"select",
-						{
-							id: "instance",
-							onchange: (e) => {
-								state.instance = state.instances.find((i) => i.id === e.target.value);
-								store("annie.instance", state.instance.id);
-								state.threads = [];
-								// A conversation of the other instance does not exist here.
-								if (route().rest[0] && route().view === "chat") go("chat");
-								void refreshSetup().then(render);
-								render();
+					"nav.roster",
+					{ "aria-label": "Agenti" },
+					state.instances.map((i) =>
+						h(
+							"button.roster-item",
+							{
+								"aria-current": i.id === state.instance?.id ? "true" : undefined,
+								title: i.tagline ? `${i.name}: ${i.tagline}` : i.name,
+								onclick: () => {
+									if (i.id === state.instance?.id) return go("chat");
+									state.instance = i;
+									store("annie.instance", i.id);
+									state.threads = [];
+									// A conversation of the other instance does not exist here.
+									if (route().rest[0] && route().view === "chat") go("chat");
+									void refreshSetup().then(render);
+									render();
+								},
 							},
-						},
-						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, agentLabel(i))),
+							face(i, 24),
+							h("span.roster-text", h("span.name", agentLabel(i)), i.tagline ? h("span.line", i.tagline) : null),
+						),
 					),
 				)
 			: null,
@@ -1380,7 +1514,7 @@ window.addEventListener("keydown", (e) => {
 
 function needInstance(main) {
 	if (state.instance) return false;
-	mount(main, h("div.empty", h("b", "Nessun agente"), "Non hai ancora accesso a nessun agente. Chiedi all'owner di aggiungerti."));
+	mount(main, emptyNote("div.empty", "Nessun agente", "Non hai ancora accesso a nessun agente. Chiedi all'owner di aggiungerti."));
 	return true;
 }
 
@@ -1441,9 +1575,11 @@ async function viewChat(main) {
 				)
 			: null;
 		const listen = entry.from === "annie" && entry.text ? listenButton(entry.text) : null;
+		// Under an answer, on hover (always on touch): copy it, listen to it.
+		const actions = entry.from === "annie" && entry.text ? h("div.msg-actions", copyButton(entry.text), listen) : null;
 		// Which model wrote the reply: the chat's own, or the instance's when that could not answer.
 		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
-		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at), by, listen), pictures, entry.text || entry.file || !pictures ? body : null);
+		const el = h(`div.msg.${entry.from}`, h("div.meta", entry.from === "annie" ? [face(inst, 20), h("b.who", inst.name)] : null, fmt.time(entry.at), by), pictures, entry.text || entry.file || !pictures ? body : null, actions);
 		transcript.append(el);
 		return el;
 	};
@@ -1466,7 +1602,7 @@ async function viewChat(main) {
 	};
 	const startTyping = () => {
 		stopTyping();
-		typing = h("div.typing", { "aria-label": `${inst.name} sta scrivendo` }, h("i"), h("i"), h("i"));
+		typing = thinking([inst]);
 		transcript.append(typing);
 		transcript.scrollTop = transcript.scrollHeight;
 	};
@@ -1725,10 +1861,11 @@ function landing(inst, conversation) {
 	const hour = new Date().getHours();
 	const hello = hour < 5 || hour >= 18 ? "Buonasera" : "Buongiorno";
 	const first = state.me.name.split(/\s+/)[0];
+	conversation.style.setProperty("--glow", faceColor(inst));
 	conversation.append(
 		h(
 			"div.welcome",
-			inst.emoji ? h("span.mark.face", { "aria-hidden": "true" }, inst.emoji) : h("img.mark", { src: "/icon.svg", alt: "", width: "40", height: "40" }),
+			h("div.mark", face(inst, 76)),
 			h("h2", first && first !== "Owner" ? `${hello}, ${first}.` : `${hello}.`),
 			h("p", state.instances.length > 1 ? `${inst.name}${inst.tagline ? `: ${inst.tagline.replace(/[.!?…]+$/, "")}` : ""}. Di cosa hai bisogno?` : "Di cosa hai bisogno?"),
 			box.el,
@@ -2207,7 +2344,7 @@ async function viewSegreteria(main) {
 	const detail = h("div");
 	mount(main, 
 		head(agentLabel(inst), h("h1", "Segreteria commerciale"), `${open} ${open === 1 ? "pratica aspetta" : "pratiche aspettano"} la tua decisione. Nessuna mail parte senza Approva.`),
-		pratiche.length ? h("div.pratiche", list, detail) : h("div.card.empty", h("b", "Ancora nessuna richiesta"), "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
+		pratiche.length ? h("div.pratiche", list, detail) : emptyNote("div.card.empty", "Ancora nessuna richiesta", "Le richieste di preventivo arrivate per email compariranno qui e su Telegram."),
 	);
 	const p = pratiche.find((x) => x.praticaId === selected) ?? pratiche[0];
 	if (p) renderPratica(detail, inst, p);
@@ -2250,7 +2387,7 @@ function renderPratica(detail, inst, p) {
 				h("h2", lead.rawSubject),
 				h("dl.lead", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
 			),
-			p.draftBody ? h("div.letter", h("div.subject", `Oggetto: ${p.draftSubject}`), p.draftBody) : h("div.card.empty", h("b", "Nessuna bozza"), p.classification === "spam" ? "Probabilmente spam. Approva per trattarla come richiesta: verrà preparata una bozza da approvare." : "Questa mail non richiede una risposta."),
+			p.draftBody ? h("div.letter", h("div.subject", `Oggetto: ${p.draftSubject}`), p.draftBody) : emptyNote("div.card.empty", "Nessuna bozza", p.classification === "spam" ? "Probabilmente spam. Approva per trattarla come richiesta: verrà preparata una bozza da approvare." : "Questa mail non richiede una risposta."),
 			canAct
 				? h(
 						"div.actions",
@@ -2278,7 +2415,7 @@ function renderPratica(detail, inst, p) {
 function confirmDialog(title, text, okLabel, onOk) {
 	const dialog = h(
 		"dialog",
-		h("h3", title),
+		h("h2", title),
 		h("p", text),
 		h(
 			"div.actions",
@@ -2310,7 +2447,7 @@ async function viewApprovals(main) {
 	const card = (p) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h3", "Tool ", h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h2", "Tool ", h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", p.description),
 			h("p", h("b", "Può raggiungere: "), p.hosts.length ? h("span.mono", p.hosts.join(", ")) : h("span", "nessun host (niente rete)")),
 			h("details", { open: p.status === "pending" ? true : undefined }, h("summary", "Codice"), h("pre.code", p.code)),
@@ -2339,7 +2476,7 @@ async function viewApprovals(main) {
 	const actionCard = (a) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h3", "Invio di un modulo a ", h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", "Invio di un modulo a ", h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
@@ -2380,7 +2517,7 @@ async function viewApprovals(main) {
 			drafts.push(
 				h(
 					"article.card.pad.dossier",
-					h("header", h("div", h("div.kicker", s.name), h("h3", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`)), h("span.chip.accent", "Segreteria")),
+					h("header", h("div", h("div.kicker", s.name), h("h2", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`)), h("span.chip.accent", "Segreteria")),
 					h("ul", waiting.slice(0, 5).map((p) => h("li", `${p.lead.fullName ?? p.lead.company ?? p.lead.email ?? "Sconosciuto"} · ${p.lead.rawSubject}`))),
 					h(
 						"div.actions",
@@ -2408,7 +2545,7 @@ async function viewApprovals(main) {
 			pendingConnector,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : h("div.card.empty", h("b", "Niente da approvare"), "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
+			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
 			decidedGoogle.length || decidedConnector.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedConnector, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
@@ -2421,7 +2558,7 @@ const CONNECTOR_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"]
 function connectorActionCard(inst, a, after, compact = false) {
 	const el = h(
 		"article.card.pad.dossier",
-		h("header", h("div", h("div.kicker", `${a.connectorName} · richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h3", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
+		h("header", h("div", h("div.kicker", `${a.connectorName} · richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
 		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
@@ -2538,7 +2675,7 @@ function googleActionCard(inst, a, after, compact = false) {
 	const expires = new Date(Date.parse(a.proposedAt) + 24 * 3600_000).toISOString();
 	const el = h(
 		`article.card.pad.dossier.google-ask${compact ? ".compact" : ""}`,
-		h("header", h("div", h("div.kicker", kicker), h("h3", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		h("header", h("div", h("div.kicker", kicker), h("h2", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
 		a.reason ? h("p.muted", a.reason) : null,
 		h("table.ledger.fields", h("tbody", rows)),
 		a.mail ? (compact && a.mail.body.length > 600 ? h("details", h("summary", "Testo della mail"), h("pre.letter", a.mail.body)) : h("pre.letter", a.mail.body)) : null,
@@ -2610,6 +2747,25 @@ function speakable(text) {
 		.replace(/\s*\n\s*/g, "\n")
 		.replace(/\n{2,}/g, "\n")
 		.trim();
+}
+
+/** Copies an answer as plain text; the icon turns into a tick for a moment. */
+function copyButton(text) {
+	const button = h("button.listen", { type: "button", "aria-label": "Copia", title: "Copia" }, icon("copy"));
+	button.addEventListener("click", async () => {
+		try {
+			await navigator.clipboard.writeText(text);
+			button.replaceChildren(icon("check"));
+			button.setAttribute("aria-label", "Copiato");
+			setTimeout(() => {
+				button.replaceChildren(icon("copy"));
+				button.setAttribute("aria-label", "Copia");
+			}, 1400);
+		} catch {
+			toast("Il browser non ha permesso di copiare", true);
+		}
+	});
+	return button;
 }
 
 function listenButton(text) {
@@ -2871,10 +3027,10 @@ async function viewTasks(main) {
 		inst.canChat && briefState ? briefCard(inst, briefState) : null,
 		h(
 			"div.grid-2",
-			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
+			h("div.card", schedules.length ? table : emptyNote("div.empty", "Nessun task", `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
 			h(
 				"div.card.pad",
-				h("h3", "Nuovo task"),
+				h("h2", "Nuovo task"),
 				threads.length
 					? [h("label.field", h("span", "Cosa deve fare"), instruction), h("div.field", h("span", "Quando"), seg), whenBox, h("label.field", h("span", "Risultato nella chat"), thread), h("button.btn.accent", { onclick: create }, "Programma")]
 					: h("p.muted", "Apri prima una conversazione in Chat: il risultato dei task arriva lì."),
@@ -2976,10 +3132,10 @@ function watchSection(inst, watches, threads) {
 		h("h2.subhead", "Sentinelle"),
 		h(
 			"div.grid-2",
-			h("div.card", watches.length ? table : h("div.empty", h("b", "Nessuna sentinella"), "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
+			h("div.card", watches.length ? table : emptyNote("div.empty", "Nessuna sentinella", "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
 			h(
 				"div.card.pad",
-				h("h3", "Nuova sentinella"),
+				h("h2", "Nuova sentinella"),
 				threads.length
 					? [
 							h("label.field", h("span", "Pagina da controllare"), url),
@@ -3022,7 +3178,7 @@ function briefCard(inst, { brief, google }) {
 				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Annie ricorda di te. Solo lettura.";
 	return h(
 		"div.card.pad.brief",
-		h("div.row-gap", h("h3", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),
+		h("div.row-gap", h("h2", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),
 		h("p.muted", hint),
 		h(
 			"div.row-gap",
@@ -3089,7 +3245,7 @@ async function viewFiles(main) {
 							),
 						),
 					)
-				: h("div.empty", h("b", "Nessun file"), "Caricane uno, o chiedi ad Annie di preparare un report."),
+				: emptyNote("div.empty", "Nessun file", "Caricane uno, o chiedi ad Annie di preparare un report."),
 		),
 	);
 }
@@ -3126,7 +3282,7 @@ async function viewMemory(main) {
 			return h("details.pad", h("summary", `In archivio · ${archived.length}`), h("p.muted", `${inst.name} non le riceve con ogni messaggio: le cerca quando servono.`), archived.length > 8 ? filter : null, h("table.ledger", body));
 		};
 		return [
-			essential.length ? h("table.ledger", h("tbody", rows(essential, editable))) : h("div.empty", h("b", "Niente"), empty),
+			essential.length ? h("table.ledger", h("tbody", rows(essential, editable))) : emptyNote("div.empty", "Niente", empty),
 			archived.length ? archive() : null,
 		];
 	};
@@ -3153,8 +3309,8 @@ async function viewMemory(main) {
 		head(agentLabel(inst), h("h1", "Memoria"), `Quello che ${inst.name} ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva a ${inst.name}.`),
 		h(
 			"div.grid-2",
-			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
-			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
+			h("div.card", h("div.pad", h("h2", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
+			h("div.card", h("div.pad", h("h2", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
 }
@@ -3181,7 +3337,7 @@ async function viewRooms(main) {
 		};
 		mount(
 			form,
-			h("h3", "Nuova stanza"),
+			h("h2", "Nuova stanza"),
 			h("label.field", h("span", "Nome"), title, h("small", "Se lo lasci vuoto, la stanza prende i nomi degli agenti.")),
 			h("div.field", h("span", "Agenti (da 2 a 5)"), boxes.map((b) => h("label.row-gap", b.box, h("span", b.label)))),
 			h("div.actions", h("button.btn.accent", { onclick: save }, "Crea"), h("button.btn.ghost", { onclick: () => (form.hidden = true) }, "Annulla")),
@@ -3199,8 +3355,23 @@ async function viewRooms(main) {
 			h(
 				"div.card",
 				rooms.length
-					? h("table.ledger", h("tbody", rooms.map((r) => h("tr", h("td", h("a", { href: `#/stanze/${encodeURIComponent(r.id)}` }, h("b", r.title)), h("div.muted", names(r)), r.last ? h("div.room-last", h("b", `${r.last.who}: `), r.last.text) : null), h("td.mono.muted", fmt.time(r.updatedAt))))))
-					: h("div.empty", h("b", "Nessuna stanza"), "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
+					? h(
+							"ul.room-list",
+							rooms.map((r) =>
+								h(
+									"li",
+									h(
+										"a.room-row",
+										{ href: `#/stanze/${encodeURIComponent(r.id)}` },
+										// The faces of who is in it, overlapping like a group chat.
+										h("span.room-faces", r.agents.slice(0, 3).map((a) => face(a, 30))),
+										h("span.room-text", h("span.room-title", h("b", r.title), h("span.muted", names(r))), r.last ? h("span.room-last", h("b", `${r.last.who}: `), r.last.text) : null),
+										h("time.room-when", fmt.time(r.updatedAt)),
+									),
+								),
+							),
+						)
+					: emptyNote("div.empty", "Nessuna stanza", "Per esempio il ricercatore trova un bando, l'agente delle vendite prepara l'offerta e il contabile fa i conti, tutti nella stessa conversazione."),
 			),
 		),
 	);
@@ -3211,13 +3382,13 @@ async function viewRoom(main, roomId) {
 	const agentOf = (id) => room.agents.find((a) => a.instanceId === id);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	const fileLink = (instanceId, file) => h("a.file", { href: `/api/instances/${encodeURIComponent(instanceId)}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
-	const typing = h("div.typing", { "aria-label": "Un agente sta scrivendo" }, h("i"), h("i"), h("i"));
+	const typing = thinking(room.agents.filter((a) => a.present));
 	const show = (entry) => {
 		if (entry.from === "note") return transcript.append(h("div.room-note", entry.text));
 		if (entry.from === "person") return transcript.append(h("div.msg.person", h("div.meta", fmt.time(entry.at)), h("div.body", entry.text)));
 		const agent = agentOf(entry.instanceId);
 		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
-		transcript.append(h("div.msg.annie", h("div.meta", h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`), h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
+		transcript.append(h("div.msg.annie", h("div.meta", face(agent ?? { id: entry.instanceId }, 20), h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`), h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
 	};
 	for (const e of entries) show(e);
 	state.onRoom = (event) => {
@@ -3273,7 +3444,7 @@ async function viewRoom(main, roomId) {
 		input.focus();
 		fit();
 	};
-	const chips = h("div.room-agents", room.agents.map((a) => h(`button.chip${a.present ? "" : ".gone"}`, { onclick: () => call(a), disabled: !a.present, title: a.present ? `Chiama ${a.name}` : `${a.name} non è più disponibile` }, `${a.emoji ? `${a.emoji} ` : ""}${a.name}`)), h("button.chip", { onclick: () => ((input.value = `@tutti ${input.value}`), input.focus(), fit()) }, "@tutti"));
+	const chips = h("div.room-agents", room.agents.map((a) => h(`button.chip${a.present ? "" : ".gone"}`, { onclick: () => call(a), disabled: !a.present, title: a.present ? `Chiama ${a.name}` : `${a.name} non è più disponibile` }, face(a, 18), `${a.emoji ? `${a.emoji} ` : ""}${a.name}`)), h("button.chip", { onclick: () => ((input.value = `@tutti ${input.value}`), input.focus(), fit()) }, "@tutti"));
 	const remove = () =>
 		confirmDialog(`Cancellare la stanza «${room.title}»?`, "La conversazione sparisce per te. Gli agenti non ne terranno traccia nelle loro chat.", "Cancella", async () => {
 			try {
@@ -3337,7 +3508,7 @@ async function viewAutomations(main) {
 							),
 						),
 					)
-				: h("div.empty", h("b", "Nessuna automazione"), `Un'automazione è un indirizzo segreto: quando un modulo, un negozio online o Stripe lo chiama, ${inst.name} lavora con i dati ricevuti e ti scrive.`),
+				: emptyNote("div.empty", "Nessuna automazione", `Un'automazione è un indirizzo segreto: quando un modulo, un negozio online o Stripe lo chiama, ${inst.name} lavora con i dati ricevuti e ti scrive.`),
 		);
 	}
 	/** The address and the token, once: only a hash of the token is kept. */
@@ -3345,7 +3516,7 @@ async function viewAutomations(main) {
 		const url = `${location.origin}${a.path}`;
 		mount(
 			panel,
-			h("h3", `«${a.name}» è pronta`),
+			h("h2", `«${a.name}» è pronta`),
 			h("p", h("b", "Copia ora il token: non si vedrà più."), " Chi lo ha fa lavorare ", inst.name, " per te, con i tuoi strumenti. Per cambiarlo cancella l'automazione e creane un'altra."),
 			h("label.field", h("span", "Indirizzo (POST)"), copyBox(url, "Indirizzo")),
 			h("label.field", h("span", "Token"), copyBox(token, "Token"), h("small", "Nell'intestazione Authorization: Bearer, o X-Annie-Token. Se il servizio non permette intestazioni, in fondo all'indirizzo: ?token=…")),
@@ -3372,7 +3543,7 @@ async function viewAutomations(main) {
 		};
 		mount(
 			panel,
-			h("h3", "Nuova automazione"),
+			h("h2", "Nuova automazione"),
 			h("label.field", h("span", "Nome"), name),
 			h("label.field", h("span", "Cosa deve fare"), instruction, h("small", `${inst.name} riceve questa istruzione con i dati della chiamata (un modulo, un ordine, un pagamento), trattati come dati e non come ordini.`)),
 			h("label.field", h("span", "Dove ti risponde"), chat),
@@ -3432,7 +3603,7 @@ async function viewSkills(main) {
 		const close = () => (editor.hidden = true);
 		mount(
 			editor,
-			h("h3", skill ? `Modifica /${skill.name}` : "Nuova skill"),
+			h("h2", skill ? `Modifica /${skill.name}` : "Nuova skill"),
 			h("label.field", h("span", "Nome"), name, command),
 			h("label.field", h("span", "Quando usarla"), description, h("small", `${inst.name} vede questa riga in ogni conversazione e apre i passi quando un compito corrisponde.`)),
 			h("label.field", h("span", "Passi"), body),
@@ -3483,13 +3654,13 @@ async function viewSkills(main) {
 			"div.stack",
 			editor,
 			drafts.length
-				? h("div.card", h("div.pad", h("h3", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("table.ledger", h("tbody", drafts.map((d) => row(d, true)))))
+				? h("div.card", h("div.pad", h("h2", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("table.ledger", h("tbody", drafts.map((d) => row(d, true)))))
 				: null,
 			h(
 				"div.card",
 				skills.length
 					? h("table.ledger", h("tbody", skills.map((s) => row(s, false))))
-					: h("div.empty", h("b", "Nessuna skill"), `Spiega a ${inst.name} come fai una cosa e chiedile di salvarla come skill, oppure creala qui.`),
+					: emptyNote("div.empty", "Nessuna skill", `Spiega a ${inst.name} come fai una cosa e chiedile di salvarla come skill, oppure creala qui.`),
 			),
 		),
 	);
@@ -3560,7 +3731,7 @@ function catalogGallery(inst, catalog, oauth, redirectUrl, added) {
 	};
 	const card = (e) => {
 		const button = h("button.btn.small.accent", { onclick: () => void add(e, button) }, e.auth === "oauth" ? "Accedi e aggiungi" : "Aggiungi");
-		return h("div.card.pad", h("h3", e.name), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
+		return h("div.card.pad", h("div.catalog-name", monogram(e.name), h("h2", e.name)), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
 	};
 	return h(
 		"section.catalog",
@@ -3590,7 +3761,7 @@ function tokenDialog(inst, e, replace) {
 	token.addEventListener("keydown", (ev) => ev.key === "Enter" && void save());
 	const dialog = h(
 		"dialog",
-		h("h3", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
+		h("h2", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
 		h("p.muted", e.tokenHelp ?? ""),
 		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Annie e non si vede più. Si usa solo per questo agente.")),
 		h("div.actions", h("button.btn.accent", { onclick: () => void save() }, "Salva e collega"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -3620,7 +3791,7 @@ async function viewConnectors(main) {
 						: h("span.chip.bad", "Non collegato");
 		return h(
 			"div.card.pad.stack",
-			h("div.row-gap", h("h3", c.name), chip),
+			h("div.row-gap", h("h2", c.name), chip),
 			h("div.mono.muted", c.transport.type === "http" ? c.transport.url : `${c.transport.command} ${(c.transport.args ?? []).join(" ")}`),
 			st?.error ? h("p.chip.bad", st.error) : null,
 			st?.tools?.length ? h("p.mono", st.tools.join("  ")) : null,
@@ -3662,7 +3833,7 @@ async function viewConnectors(main) {
 	});
 	mount(main, 
 		head(agentLabel(inst), h("h1", "Connettori"), `Collegano ${inst.name} agli strumenti che usate già. Ognuno raggiunge solo il suo servizio, e solo se consentito.`, h("button.btn.accent", { onclick: () => connectorForm(inst) }, "+ Connettore")),
-		connectors.length ? h("div.grid-2", cards) : h("div.card.empty", h("b", "Nessun connettore"), "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
+		connectors.length ? h("div.grid-2", cards) : emptyNote("div.card.empty", "Nessun connettore", "Scegline uno qui sotto, oppure aggiungi un altro server MCP (HTTP o locale) con il pulsante + Connettore."),
 		catalogGallery(inst, catalog, oauth, redirectUrl, new Set(connectors.map((c) => c.id))),
 	);
 }
@@ -3692,7 +3863,7 @@ function connectorForm(inst, existing) {
 	draw();
 	const dialog = h(
 		"dialog",
-		h("h3", existing ? `Modifica ${existing.name}` : "Nuovo connettore"),
+		h("h2", existing ? `Modifica ${existing.name}` : "Nuovo connettore"),
 		h("label.field", h("span", "ID"), id, h("small", "lettere minuscole, cifre, trattini")),
 		h("label.field", h("span", "Nome"), name),
 		h("label.field", h("span", "Tipo"), type),
@@ -3779,10 +3950,17 @@ function agentForm() {
 	const tagline = h("input", { type: "text", maxlength: "120", placeholder: "Cerca, confronta e cita le fonti" });
 	const tone = h("select", TONES.map(([value, label]) => h("option", { value }, label)));
 	const instructions = h("textarea", { rows: 4, maxlength: "2000", placeholder: "Per chi lavora e cosa deve fare. Si aggiunge a quello che sa già fare; lascia vuoto per partire dalle istruzioni predefinite." });
+	// The face comes from the ID: it changes while the name is written, and is the one the agente keeps.
+	const preview = h("span.name-face", { title: "Il volto dell'agente, dal suo ID" });
+	const draw = () => mount(preview, face({ id: id.value.trim() || "nuovo-agente" }, 40));
 	let touched = false;
-	id.addEventListener("input", () => (touched = true));
+	id.addEventListener("input", () => {
+		touched = true;
+		draw();
+	});
 	name.addEventListener("input", () => {
 		if (!touched) id.value = slug(name.value);
+		draw();
 	});
 	const chips = h(
 		"div.templates",
@@ -3802,6 +3980,7 @@ function agentForm() {
 						tone.value = t.tone;
 						instructions.value = t.about;
 						if (!touched) id.value = slug(t.name);
+						draw();
 						name.focus();
 					},
 				},
@@ -3809,6 +3988,7 @@ function agentForm() {
 			),
 		),
 	);
+	draw();
 	const create = async () => {
 		try {
 			const { instance } = await api("/api/instances", { method: "POST", body: { id: id.value.trim(), name: name.value.trim(), instructions: instructions.value, persona: { emoji: emoji.value, tagline: tagline.value, tone: tone.value } } });
@@ -3826,10 +4006,10 @@ function agentForm() {
 	};
 	const dialog = h(
 		"dialog.agent-form",
-		h("h3", "Nuovo agente"),
+		h("h2", "Nuovo agente"),
 		h("p.muted", "Un agente con personalità, memoria, file, task e connettori suoi. Parte con il modello dell'agente principale; all'inizio solo tu puoi scrivergli, poi decidi chi in Impostazioni."),
 		h("div.field", h("span", "Parti da"), chips),
-		h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
+		h("div.field", h("span", "Nome"), h("div.name-row", preview, emoji, name)),
 		h("label.field", h("span", "Cosa fa, in una riga"), tagline),
 		h("label.field", h("span", "Tono"), tone),
 		h("label.field", h("span", "Chi lo usa e per cosa"), instructions),
@@ -3873,7 +4053,7 @@ async function teamsForm() {
 	};
 	const dialog = h(
 		"dialog.teams-form",
-		h("h3", "Squadre pronte"),
+		h("h2", "Squadre pronte"),
 		h("p.muted", "Tre agenti con un compito ciascuno, che si chiedono aiuto tra loro, e una stanza dove li chiami tutti. Chi coordina divide il lavoro; sulla board può farne sotto-schede per gli altri. Dopo sono agenti come gli altri: li cambi o li elimini uno per uno."),
 		h(
 			"div.teams",
@@ -3914,7 +4094,7 @@ function whenNext(iso) {
 	return new Date(iso).toLocaleString("it-IT", { timeZone: "Europe/Rome", weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
-/** A scheda's scadenza (ADR 0072), counted in Rome's days: { days, text, level } with level late, soon or later. */
+/** A scheda's scadenza (ADR 0073), counted in Rome's days: { days, text, level } with level late, soon or later. */
 function dueInfo(due) {
 	const part = (type) => parts.find((p) => p.type === type).value;
 	const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
@@ -3935,9 +4115,10 @@ async function viewBoard(main) {
 	const data = await api("/api/board");
 	const agentOf = (id) => data.agents.find((a) => a.id === id);
 	const who = (actor) => (actor.kind === "agent" ? (agentOf(actor.id)?.name ?? "un agente") : actor.id === state.me.id ? "Tu" : (data.people[actor.id] ?? "una persona"));
-	const face = (id) => {
+	// The assignee's face; it looks around while the scheda is being worked on.
+	const faceOf = (id, mood) => {
 		const a = agentOf(id);
-		return a ? h("span.board-face", { "aria-hidden": "true" }, a.emoji ?? initials(a.name)) : null;
+		return a ? face(a, 20, mood) : null;
 	};
 	const save = async (card, body, done) => {
 		try {
@@ -3997,7 +4178,7 @@ async function viewBoard(main) {
 			c.parent && parentOf(c) ? h("span.muted.small", `parte di #${parentOf(c).n}`) : null,
 			h(
 				"span.board-meta",
-				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
+				c.assignee ? [faceOf(c.assignee, c.status === "in_corso" ? "thinking" : "idle"), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
 				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
 				c.due && c.status !== "fatto" ? h(`span.tag.board-due.${dueInfo(c.due).level}`, { title: `Scadenza: ${dueInfo(c.due).label}` }, dueInfo(c.due).text) : null,
 				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
@@ -4026,7 +4207,7 @@ async function viewBoard(main) {
 						if (card) void moveTo(card, status);
 					},
 				},
-				h("h2", label, h("span.muted", String(cards.length))),
+				h("h2", h("span.board-col-name", h("i.board-dot", { "aria-hidden": "true" }), label), h("span.board-count", String(cards.length))),
 				cards.length ? cards.map(tile) : h("p.muted.small", status === "da_rivedere" ? "Qui arrivano le schede finite dagli agenti, da approvare." : "Nessuna scheda"),
 			);
 			return col;
@@ -4140,7 +4321,7 @@ async function viewBoard(main) {
 		// Without what is not there: append would write «null».
 		const parts = [
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
-			h("h3", c.title),
+			h("h2", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
 			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
 			children.length
@@ -4253,7 +4434,7 @@ async function viewBoard(main) {
 		const dueRow = h("label.field", h("span", "Scadenza (facoltativa)"), due);
 		const dialog = h(
 			"dialog.board-dialog",
-			h("h3", "Nuova scheda"),
+			h("h2", "Nuova scheda"),
 			h("label.field", h("span", "Titolo"), title),
 			h("label.field", h("span", "Descrizione"), description),
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
@@ -4315,7 +4496,7 @@ async function viewBoard(main) {
 		const last = r.last ? data.cards.find((c) => c.id === r.last) : undefined;
 		return h(
 			`li.board-routine${r.paused ? ".paused" : ""}`,
-			face(r.assignee),
+			faceOf(r.assignee),
 			h(
 				"div",
 				h("b", r.title),
@@ -4379,7 +4560,7 @@ async function viewAgents(main) {
 	const card = (a) =>
 		h(
 			`article.card.agent${a.id === state.instance?.id ? ".current" : ""}`,
-			h("div.agent-face", { "aria-hidden": "true" }, a.emoji ?? initials(a.name)),
+			h("div.agent-face", face(a, 60)),
 			h(
 				"div.agent-body",
 				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
@@ -4398,7 +4579,7 @@ async function viewAgents(main) {
 	mount(
 		main,
 		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("div.row-gap", teamButton, h("button.btn.ghost", { title: "Più agenti già pronti a lavorare insieme", onclick: () => teamsForm() }, "Squadre pronte"), h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente")) : null),
-		agents.length === 0 ? h("div.empty", h("b", "Nessun agente"), owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
+		agents.length === 0 ? emptyNote("div.empty", "Nessun agente", owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
 	);
 }
 
@@ -4461,7 +4642,7 @@ async function viewSettings(main) {
 					h(
 						"div.card.pad",
 						h("div.kicker", "Personalità"),
-						h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
+						h("div.field", h("span", "Nome"), h("div.name-row", h("span.name-face", face(inst, 40)), emoji, name)),
 						h("label.field", h("span", "Cosa fa, in una riga"), tagline),
 						h("label.field", h("span", "Tono"), tone),
 						h("label.field", h("span", "Istruzioni"), instructions, h("small", "Cosa sa fare e le sue regole. Nome, ruolo e tono gli arrivano dopo queste.")),
@@ -4502,6 +4683,7 @@ function anchor(id, card) {
 	card.id = `card-${id}`;
 	if (route().rest[0] === id)
 		requestAnimationFrame(() => {
+			if (card.tagName === "DETAILS") card.open = true;
 			card.scrollIntoView({ behavior: "smooth", block: "start" });
 			card.classList.add("flash");
 		});
@@ -4530,9 +4712,8 @@ function telegramCard(inst, t) {
 			toast("Bot scollegato");
 			render();
 		});
-	return h(
-		"div.card.pad",
-		h("div.row-gap", h("div.kicker", "Telegram"), t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato")),
+	return fold(
+		{ title: "Telegram", glyph: "plane", lead: `${inst.name} risponde in un bot tutto suo.`, chip: t.connected ? h("span.chip.ok", t.username ? `@${t.username}` : "Collegato") : h("span.chip", "Non collegato") },
 		t.connected ? null : h("p.muted", "Crea un bot con @BotFather su Telegram e incolla qui il suo token. Ogni persona ammessa apre il bot e preme Start."),
 		h("label.field", h("span", t.connected ? "Token" : "Token del bot"), token),
 		h("label.field", h("span", "Chi può scrivere"), allowed, h("small", "ID numerici di Telegram, separati da virgole. Chi non è in elenco non riceve risposta. Per sapere il tuo ID scrivi a @userinfobot su Telegram.")),
@@ -4579,9 +4760,8 @@ function whatsappCard(inst, w) {
 			toast("WhatsApp scollegato");
 			render();
 		});
-	return h(
-		"div.card.pad",
-		h("div.row-gap", h("div.kicker", "WhatsApp"), w.connected ? h("span.chip.ok", w.number ?? "Collegato") : h("span.chip", "Non collegato")),
+	return fold(
+		{ title: "WhatsApp", glyph: "chat", lead: `${inst.name} risponde su un numero WhatsApp Business.`, chip: w.connected ? h("span.chip.ok", w.number ?? "Collegato") : h("span.chip", "Non collegato") },
 		w.connected ? null : h("p.muted", "Serve un numero WhatsApp Business sulla piattaforma di Meta. Da developers.facebook.com prendi il token di accesso permanente, l'ID del numero e l'app secret (guida in docs/chiavi.md)."),
 		w.webhookUrl === null ? h("p.muted", "Questo server non ha un indirizzo https pubblico: WhatsApp non può mandargli i messaggi.") : null,
 		h("label.field", h("span", "Token di accesso"), accessToken),
@@ -4635,9 +4815,8 @@ function phoneCard(inst, p) {
 			toast("Telefono scollegato");
 			render();
 		});
-	return h(
-		"div.card.pad",
-		h("div.row-gap", h("div.kicker", "Telefono"), p.connected ? h("span.chip.ok", p.number ?? "Collegato") : h("span.chip", "Non collegato")),
+	return fold(
+		{ title: "Telefono", glyph: "phone", lead: `${inst.name} risponde a voce alle chiamate.`, chip: p.connected ? h("span.chip.ok", p.number ?? "Collegato") : h("span.chip", "Non collegato") },
 		p.connected ? null : h("p.muted", "Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta. Da console.twilio.com prendi Account SID, auth token e il numero (guida in docs/chiavi.md): l'indirizzo delle chiamate lo imposta Annie."),
 		p.https ? null : h("p.muted", "Questo server non ha un indirizzo https pubblico: Twilio non può chiamarlo."),
 		h("label.field", h("span", "Account SID"), accountSid),
@@ -4657,7 +4836,7 @@ async function viewPeople(main) {
 		const input = h("input", { type: "text", value: full, readonly: true });
 		const dialog = h(
 			"dialog",
-			h("h3", title),
+			h("h2", title),
 			h("p", "Dallo alla persona in privato: è la sua chiave. Non verrà più mostrato."),
 			h("div.link-box", input, h("button.btn", { onclick: async () => (await navigator.clipboard.writeText(full).catch(() => input.select()), toast("Link copiato")) }, "Copia")),
 			h("div.actions", h("button.btn.ghost", { onclick: () => dialog.close() }, "Fatto")),
@@ -4733,7 +4912,7 @@ async function viewPeople(main) {
 			),
 			h(
 				"div.card.pad",
-				h("h3", "Aggiungi una persona"),
+				h("h2", "Aggiungi una persona"),
 				h("label.field", h("span", "Nome"), newName),
 				h("label.field", h("span", "Ruolo"), role, h("small", "L'owner gestisce connettori, impostazioni e persone.")),
 				h(
@@ -4788,7 +4967,7 @@ async function viewActivity(main) {
 									h("thead", h("tr", h("th", "Quando"), h("th", "Evento"), h("th", "Dettagli"))),
 									h("tbody", audit.map((e) => h("tr", h("td.mono", fmt.time(e.ts ?? e.at)), h("td", h("span.chip", e.type)), h("td.mono.muted", label(e))))),
 								)
-							: h("div.empty", h("b", "Nessun evento")),
+							: emptyNote("div.empty", "Nessun evento"),
 					)
 				: h("div.card.empty", "L'audit completo è visibile all'owner."),
 		),

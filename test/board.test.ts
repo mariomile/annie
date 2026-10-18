@@ -445,7 +445,7 @@ describe("the board (ADR 0050)", () => {
 		});
 	});
 
-	describe("scadenze (ADR 0072)", () => {
+	describe("scadenze (ADR 0073)", () => {
 		it("a real day, changed or taken off with a line in the history; said in Rome's days", () => {
 			const { store } = setup();
 			const c = store.create({ title: "Preventivo Rossi", due: "2026-10-26" }, anna);

@@ -41,7 +41,7 @@ Una scheda affidata a un agente che torna ogni giorno, nei feriali, ogni settima
 _Avoid_: routine, ricorrenza (nel testo per le persone)
 
 **Scadenza (di una scheda)**:
-Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o «in ritardo di 3 giorni»; l'agente la riceve con la scheda. Diversa dallo scadenzario, che riguarda le fatture. Vedi ADR 0072.
+Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o «in ritardo di 3 giorni»; l'agente la riceve con la scheda. Diversa dallo scadenzario, che riguarda le fatture. Vedi ADR 0073.
 _Avoid_: deadline, due date (nel testo per le persone)
 
 **Messaggio tra agenti**:
@@ -264,6 +264,14 @@ _Avoid_: cashflow item, movimento (per la voce)
 **Profilo fiscale**:
 Come è tassata una persona nel regime forfettario, salvato con `taxes`: coefficiente di redditività (dal gruppo o dal codice ATECO), imposta al 15% o al 5%, anno di inizio, cassa previdenziale (gestione separata, artigiani, commercianti, cassa professionale) e le cifre dette dell'anno prima. Le aliquote dell'anno non stanno nel profilo. Vedi ADR 0070.
 _Avoid_: tax profile, regime (per il profilo)
+
+**Scheda cliente**:
+Quello che la persona dice ad Annie di un cliente, salvato con `clients` (CL-NNNN): nome, partita IVA o codice fiscale, referenti con canale preferito, note, etichette e ricontatti. Fatturato, incassato, solleciti, preventivi e ore non stanno nella scheda: si leggono dai loro registri. Vedi ADR 0071.
+_Avoid_: CRM, anagrafica, contatto (per la scheda)
+
+**Ricontatto**:
+Un cliente da risentire in un giorno, registrato su una scheda cliente (FU-NNNN), con un promemoria alle 9 di quel giorno. Si sposta, si toglie o si segna fatto. Vedi ADR 0071.
+_Avoid_: follow-up, task (per il ricontatto)
 
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
