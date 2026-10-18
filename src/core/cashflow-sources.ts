@@ -582,6 +582,8 @@ export function statementAt(invoice: Invoice, cents: bigint, balanceDate: string
 	const date = invoice.doc.date;
 	if (date === undefined || date > balanceDate) return -1;
 	return statement.findIndex((m) => m.date >= date && m.date <= balanceDate && eurosToCents(m.amount) === cents && (m.target === `inv:${invoice.key}` || (m.target === undefined && (m.proposed !== true || !otherOpen(invoices, invoice.key, cents, m.date)))));
+}
+
 /** An expense this close to the day a supplier invoice was paid may be that payment. */
 export const PAID_TWIN_DAYS = 5;
 
