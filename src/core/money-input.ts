@@ -4,11 +4,13 @@
  * hundred euros, «1,5k» and «8 mila» are thousands, «1.500k» is refused as ambiguous; another
  * currency is refused; what does not read is echoed inside the caller's fence.
  */
-import { CASHFLOW_LIMITS } from "./cashflow.ts";
 import { foreignCurrency } from "./currency-words.ts";
 import { scaled } from "./quote-sums.ts";
 import { isProblem, type Problem, readAmount } from "./text-input.ts";
 import type { Fenced } from "./untrusted.ts";
+
+/** The largest amount a voce, a balance or a figure said in euros may have: no typo of a few zeros goes in unchecked. */
+export const MAX_EUROS = 10_000_000;
 
 export type EuroWords = {
 	/** Echoes what is not digits inside the caller's fence. */
@@ -70,7 +72,7 @@ export function readItemAmount(value: unknown, fence: Fenced): string | undefine
 	if (ambiguous !== undefined) return ambiguous;
 	return readEuros(plainEuros(value), {
 		fence,
-		max: CASHFLOW_LIMITS.maxAmount,
+		max: MAX_EUROS,
 		foreign: FOREIGN,
 		negative: "amount è sempre positivo: se sono soldi che escono, kind uscita",
 		zero: "amount deve essere più di zero",
@@ -96,7 +98,7 @@ export function readSignedEuros(value: unknown, fence: Fenced, what: string): st
 	}
 	said = plainEuros(said);
 	if (said === 0 || (typeof said === "string" && /^\s*(?:€\s*)?0+(?:[.,]0{1,2})?\s*(?:€|euro?)?\s*$/i.test(said))) return "0";
-	const read = readEuros(said, { fence, max: CASHFLOW_LIMITS.maxAmount, foreign: FOREIGN, negative: `${what}: un solo segno meno davanti`, zero: `${what}: dammi un numero` });
+	const read = readEuros(said, { fence, max: MAX_EUROS, foreign: FOREIGN, negative: `${what}: un solo segno meno davanti`, zero: `${what}: dammi un numero` });
 	if (read === undefined || isProblem(read)) return isProblem(read) ? { problem: `${what}: ${read.problem.replace(/^amount: /, "")}` } : read;
 	return negative ? `-${read}` : read;
 }

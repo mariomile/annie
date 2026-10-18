@@ -420,7 +420,7 @@ describe("taxes: the tool", () => {
 		// The IVA is vat_settlement's: no IVA rows here, only the imposte.
 		expect(answer).not.toContain("IVA trimestrale");
 		expect(answer).not.toContain("IVA annuale");
-		expect(answer).toContain("Per l'IVA (importi, codici, scadenze) uso vat_settlement.");
+		expect(answer).toContain("Per l'IVA (importi, codici, scadenze) chiama vat_settlement.");
 		expect(answer).toContain("• Il 30 novembre 2026: secondo acconto delle imposte.");
 		expect(answer).not.toContain("€");
 		expect(await ord.run(CONSULENTE)).toContain("Errore: risulti in regime ordinario");

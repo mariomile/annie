@@ -55,8 +55,8 @@ export function whenText(d: { readonly due: string; readonly date: string; reado
 	return `${withDate("il", d.date)} (${was} ${offDayWhy(d.due, d.slip.holiday)})`;
 }
 
-/** «il 16 ottobre»: a day of this year or the last, without the year. */
-const shortDay = (date: string) => withDate("il", date).replace(/ \d{4}$/, "");
+/** «il 16 ottobre»: a day of `today`'s year without the year; «il 29 dicembre 2025» another year's. */
+const shortDay = (date: string, today: string) => (date.slice(0, 4) === today.slice(0, 4) ? withDate("il", date).replace(/ \d{4}$/, "") : withDate("il", date));
 
 /** What a deadline pays for: «IVA di ottobre 2026», «acconto IVA 2026», «saldo IVA 2026». */
 export function deadlineWhat(d: Deadline): string {
@@ -77,10 +77,10 @@ export const FORFETTARIO = "Nel forfettario non addebiti l'IVA in fattura e non 
 export const NO_REGIME = "Non so se chi ti scrive è in regime ordinario o forfettario: chiediglielo e salvalo con invoices op set_company, regime. La liquidazione IVA vale solo per l'ordinario.";
 export const NO_PERIODICITY = "Non so ancora se liquidi l'IVA ogni mese o ogni trimestre: chiedilo a chi ti scrive e salvalo con vat_settlement op settings, periodicity. Se non lo sa: sugli F24 dell'IVA già pagati i codici 6001-6012 sono mensili, 6031-6033 trimestrali; o lo sa il commercialista.";
 
-/** Where a credit goes: «dal mese dopo», «dal trimestre dopo», «dall'anno dopo». */
+/** Where a credit goes: «dall'IVA del mese dopo», «del trimestre dopo», «dell'anno dopo». */
 function nextOf(p: VatPeriod): string {
-	if ((p.kind === "month" && p.n === 12) || (p.kind === "quarter" && p.n === 4)) return "dall'anno dopo";
-	return p.kind === "month" ? "dal mese dopo" : "dal trimestre dopo";
+	if ((p.kind === "month" && p.n === 12) || (p.kind === "quarter" && p.n === 4)) return "dall'IVA dell'anno dopo";
+	return p.kind === "month" ? "dall'IVA del mese dopo" : "dall'IVA del trimestre dopo";
 }
 
 /** The head line of a period: what to pay and when, or why nothing. */
@@ -99,8 +99,9 @@ function headLine(l: Liquidation, d: Deadline | undefined): string {
 function figuresLine(l: Liquidation): string {
 	const f = l.figures;
 	if (f.sales === 0 && f.purchases === 0) return "Nessuna fattura emessa né ricevuta nel periodo.";
-	const sold = f.sales === 0 ? "nessuna fattura emessa" : `IVA delle fatture emesse ${euros(f.debito)} (${f.sales})`;
-	const bought = f.purchases === 0 ? "nessuna fattura ricevuta" : `meno IVA delle fatture ricevute ${euros(f.credito)} (${f.purchases})`;
+	const count = (n: number) => n1(n, "1 fattura", "# fatture");
+	const sold = f.sales === 0 ? "nessuna fattura emessa" : `IVA delle fatture emesse ${euros(f.debito)} (${count(f.sales)})`;
+	const bought = f.purchases === 0 ? "nessuna fattura ricevuta" : `meno IVA delle fatture ricevute ${euros(f.credito)} (${count(f.purchases)})`;
 	return `${capitalized(sold)}, ${bought}.`;
 }
 
@@ -129,9 +130,29 @@ export function leftOutLine(left: LeftOut, unread: number): string | undefined {
 	return parts.length === 0 ? undefined : `Non contate: ${parts.join(", ")}.`;
 }
 
-/** The credit carried into a year, and where it comes from. */
-export function openingLine(year: number, cents: bigint, from: "detto" | "fatture"): string {
-	return from === "detto" ? `Credito IVA di inizio ${year}: ${euros(cents)}, come mi hai detto.` : `Credito IVA di inizio ${year}: ${euros(cents)}, calcolato dalle fatture del ${year - 1}; se la dichiarazione IVA dice un'altra cifra, dimmela e uso quella.`;
+/** The credit carried into a year, taken off: only the one the person said or confirmed. */
+export function openingLine(year: number, cents: bigint): string {
+	return `Credito IVA di inizio ${year}: ${euros(cents)}, come mi hai detto: lo scalo.`;
+}
+
+/** Last year's closing credit from the documents, proposed and never taken off until confirmed. */
+export function proposalLine(year: number, cents: bigint): string {
+	return `Dalle fatture che vedo il ${year - 1} chiude a credito di ${euros(cents)}: me lo confermi (è nella dichiarazione IVA)? Finché non me lo dici non lo scalo.`;
+}
+
+/** In January or the first quarter, with no credit said nor proposed. */
+export function askCreditLine(year: number): string {
+	return `Se a inizio ${year} avevi un credito IVA (è nella dichiarazione IVA), dimmelo e lo scalo.`;
+}
+
+/** What a period or the calendar says of the credit carried into a year: taken off as said, proposed, or asked. */
+export type CreditWord = { readonly year: number; readonly said?: bigint; readonly proposed?: bigint; readonly ask?: boolean };
+
+function creditWords(c: CreditWord | undefined): string[] {
+	if (c === undefined) return [];
+	if (c.said !== undefined && c.said > 0n) return [openingLine(c.year, c.said)];
+	if (c.proposed !== undefined) return [proposalLine(c.year, c.proposed)];
+	return c.ask === true ? [askCreditLine(c.year)] : [];
 }
 
 export type PeriodView = {
@@ -142,6 +163,8 @@ export type PeriodView = {
 	readonly left?: string;
 	/** The year's IVA credit at its end, past the visto's threshold. */
 	readonly bigCredit?: bigint;
+	/** Last year's closing credit to confirm, or the ask in January or the first quarter. */
+	readonly credit?: CreditWord;
 };
 
 /** A period: the head line, the figures, what is apart; no names. */
@@ -150,8 +173,11 @@ export function periodAnswer(v: PeriodView): string {
 	const lines = [headLine(l, v.deadline)];
 	if (l.paid !== undefined) lines.push(`Segnato come pagato ${withDate("il", l.paid.date)}: ${euros(scaled(l.paid.amount, 2))}.`);
 	lines.push(figuresLine(l));
-	if (l.openingFrom !== undefined) lines.push(openingLine(l.period.year, l.carriedCredit, l.openingFrom));
-	else if (l.carriedCredit > 0n) lines.push(`Credito dal periodo prima: ${euros(l.carriedCredit)}.`);
+	if (l.openingFrom !== undefined) lines.push(openingLine(l.period.year, l.carriedCredit));
+	else {
+		if (l.carriedCredit > 0n) lines.push(`Credito dal periodo prima: ${euros(l.carriedCredit)}.`);
+		lines.push(...creditWords(v.credit));
+	}
 	if (l.carriedDue > 0n) lines.push(`Dal periodo prima, sotto il minimo e non versati: ${euros(l.carriedDue)}.`);
 	if (l.acconto > 0n) lines.push(`Tolto l'acconto di dicembre versato: ${euros(l.acconto)}.`);
 	if (l.accontoUnpaid !== undefined) lines.push(`L'acconto di dicembre (circa ${euros(l.accontoUnpaid)}) non lo tolgo finché non è segnato pagato: se l'hai versato dimmelo.`);
@@ -171,34 +197,35 @@ export function creditLine(credit: bigint): string {
 
 /** One deadline in a row: when (and why it moved), what, how much, the code. */
 function deadlineRow(d: Deadline, today: string): string {
-	const amount = d.cents === undefined ? (d.kind === "acconto" ? "importo da calcolare" : "importo a fine periodo") : d.cents === 0n ? `niente da versare${d.partial ? " finora" : ""}` : `circa ${euros(d.cents)}${d.partial ? " finora" : ""}`;
+	const amount = d.cents === undefined ? (d.kind === "acconto" ? "importo da calcolare" : "importo a fine periodo") : d.cents === 0n ? `niente da versare${d.partial ? " finora" : ""}${confirmed(d)}` : `circa ${euros(d.cents)}${d.partial ? " finora" : ""}${confirmed(d)}`;
 	if (d.date < today) return `• Scaduto ${whenText(d)}, se non l'hai già pagato: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
 	return `• ${capitalized(whenText(d))}: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
 }
 
-/** The rows a calendar shows: those with an amount, then the next one without, `rows` at most, by date. */
-function shownRows(deadlines: readonly Deadline[], today: string, rows: number): Deadline[] {
-	const priced = deadlines.filter((d) => d.cents !== undefined && d.cents > 0n);
-	const next = deadlines.find((d) => d.date >= today && !priced.includes(d));
-	const picked = priced.slice(0, next === undefined ? rows : rows - 1);
-	return [...picked, ...(next === undefined ? [] : [next])].sort((a, b) => a.date.localeCompare(b.date));
+/** «, tolto il credito confermato»: a first period of a year with the credit the person said taken off. */
+const confirmed = (d: Deadline) => (d.opening !== undefined && d.opening > 0n ? ", tolto il credito confermato" : "");
+
+/** The rows a calendar shows, `rows` at most: the latest overdue one, then the next from today by date, the headline's left out. */
+function shownRows(deadlines: readonly Deadline[], today: string, rows: number, headline: Deadline | undefined): Deadline[] {
+	const late = deadlines.filter((d) => d.date < today).at(-1);
+	const next = deadlines.filter((d) => d.date >= today && d !== headline);
+	return [...(late === undefined ? [] : [late]), ...next].slice(0, rows);
 }
 
-export type Opening = { readonly year: number; readonly cents: bigint; readonly from: "detto" | "fatture" };
-
 /** The calendar: the next F24 with an amount first, then a few rows; no names. */
-export function calendarAnswer(deadlines: readonly Deadline[], today: string, rows: number, o: { readonly bigCredit?: bigint; readonly opening?: Opening } = {}): string {
+export function calendarAnswer(deadlines: readonly Deadline[], today: string, rows: number, o: { readonly bigCredit?: bigint; readonly credit?: CreditWord } = {}): string {
 	const next = deadlines.find((d) => d.date >= today && d.cents !== undefined && d.cents > 0n);
 	const lines: string[] = [];
 	if (next === undefined) lines.push(`Nessun${deadlines.some((d) => d.date < today) ? " altro" : ""} F24 dell'IVA con un importo da versare per ora, con le fatture che vedo.`);
-	else lines.push(`Il prossimo F24 dell'IVA è ${whenText(next)}: circa ${euros(next.cents as bigint)}${next.partial ? " finora" : ""} (${deadlineWhat(next)}, codice ${next.code}).`);
-	const shown = shownRows(deadlines, today, rows);
-	if (shown.length > 0) lines.push("Le prossime scadenze:", ...shown.map((d) => deadlineRow(d, today)));
-	if (deadlines.length > shown.length) lines.push(`E altre ${deadlines.length - shown.length} più avanti.`);
+	else lines.push(`Il prossimo F24 dell'IVA è ${whenText(next)}: circa ${euros(next.cents as bigint)}${next.partial ? " finora" : ""}${confirmed(next)} (${deadlineWhat(next)}, codice ${next.code}).`);
+	const shown = shownRows(deadlines, today, rows, next);
+	if (shown.length > 0) lines.push(next === undefined ? "Le prossime scadenze:" : "Poi:", ...shown.map((d) => deadlineRow(d, today)));
+	const more = deadlines.filter((d) => d.date >= today && d !== next && !shown.includes(d)).length;
+	if (more > 0) lines.push(`E altre ${more} più avanti.`);
 	if (shown.some((d) => d.date < today)) lines.push("Se un F24 scaduto l'hai pagato, dimmelo; se no, parlane con il commercialista (ravvedimento operoso).");
-	const deferred = shown.find((d) => d.alternative !== undefined);
+	const deferred = [next, ...shown].find((d) => d?.alternative !== undefined);
 	if (deferred?.alternative !== undefined) lines.push(`Il saldo annuale si può versare anche entro ${whenText({ due: deferred.alternative.date, date: deferred.alternative.date, ...(deferred.alternative.slip === undefined ? {} : { slip: deferred.alternative.slip }) })} con ${withPercent("il", deferred.alternative.percent)} in più: circa ${euros(deferred.alternative.cents)}.`);
-	if (o.opening !== undefined && o.opening.cents > 0n) lines.push(openingLine(o.opening.year, o.opening.cents, o.opening.from));
+	lines.push(...creditWords(o.credit));
 	if (o.bigCredit !== undefined) lines.push(creditLine(o.bigCredit));
 	lines.push(ESTIMATE_NOTE, REPEAT);
 	return lines.join("\n");
@@ -213,10 +240,10 @@ export function briefAnswer(soon: readonly Deadline[], today: string): string {
 		if (d.cents === undefined || d.cents <= 0n || d.date < today) continue;
 		const days = daysBetween(today, d.date);
 		const inDays = days === 0 ? "oggi" : days === 1 ? "domani" : `tra ${days} giorni`;
-		rows.push(`F24 ${withDate("il", d.date)} (${inDays}), circa ${euros(d.cents)} (${deadlineWhat(d)}, codice ${d.code}), stima da verificare con il commercialista.`);
+		rows.push(`F24 ${withDate("il", d.date)} (${inDays}), circa ${euros(d.cents)}${confirmed(d)} (${deadlineWhat(d)}, codice ${d.code}), stima da verificare con il commercialista.`);
 	}
 	const late = soon.filter((d) => d.date < today && d.cents !== undefined && d.cents > 0n && d.paid === undefined).at(-1);
-	if (late !== undefined) rows.push(`F24 ${deadlineWhat(late)} scaduto ${shortDay(late.date)} (circa ${euros(late.cents as bigint)}): se l'hai pagato dimmelo, se no parlane con il commercialista.`);
+	if (late !== undefined) rows.push(`F24 ${deadlineWhat(late)} scaduto ${shortDay(late.date, today)} (circa ${euros(late.cents as bigint)}${confirmed(late)}): se l'hai pagato dimmelo, se no parlane con il commercialista.`);
 	if (rows.length === 0) return NOTHING;
 	return `IVA: ${rows.join(" Inoltre ")} Nel brief riporta questo in una riga.`;
 }
@@ -224,16 +251,16 @@ export function briefAnswer(soon: readonly Deadline[], today: string): string {
 /** The acconto: the amount by the method that costs least, each method under it. */
 export function accontoAnswer(a: Acconto, d: Deadline, periodicity: Periodicity): string {
 	const last: VatPeriod = periodicity === "mensile" ? { year: a.year - 1, kind: "month", n: 12 } : { year: a.year - 1, kind: "quarter", n: 4 };
-	const head = `Acconto IVA ${a.year} entro ${whenText(d)}, codice ${d.code}:`;
+	const head = `Acconto IVA ${a.year} entro ${whenText(d)}, codice ${d.code}`;
 	const lines: string[] = [];
 	if (a.paid !== undefined) lines.push(`Acconto IVA ${a.year} segnato come pagato ${withDate("il", a.paid.date)}: ${euros(scaled(a.paid.amount, 2))}.`);
 	const partial = a.analitico?.partial === true ? a.analitico : undefined;
 	if (a.cents === undefined) {
-		const analytic = partial === undefined ? "l'analitico si calcola sulle fatture fino al 20 dicembre" : "l'analitico si chiude il 20 dicembre";
-		lines.push(`${head} non posso ancora dirti l'importo: ${analytic}; per lo storico dimmi l'IVA ${periodOf(last)}.`);
-	} else if (a.belowMin) lines.push(`${head} niente da versare, sotto i ${euros(ACCONTO_MIN_CENTS)} non è dovuto.`);
+		// No amount: the analitico is not final (or there are no documents of the year yet), and the storico's base is not known.
+		lines.push(`${head}. L'importo non posso ancora dirtelo: l'analitico si chiude il 20 dicembre, e per lo storico mi serve l'IVA ${periodOf(last)}.`);
+	} else if (a.belowMin) lines.push(`${head}: niente da versare, sotto i ${euros(ACCONTO_MIN_CENTS)} non è dovuto.`);
 	else {
-		lines.push(`${head} circa ${euros(a.cents)} con il metodo ${a.method ?? "storico"}.`);
+		lines.push(`${head}: circa ${euros(a.cents)} con il metodo ${a.method ?? "storico"}.`);
 		if (partial !== undefined) lines.push(`L'analitico ora darebbe ${euros(partial.cents)}, ma è definitivo solo dal 20 dicembre: te lo ricalcolo allora.`);
 	}
 	if (a.storico !== undefined) lines.push(`• Storico: 88% dell'IVA ${periodOf(last)} prima dell'acconto (${euros(a.storico.base)}, ${a.storico.from === "detto" ? "come mi hai detto" : "dalle fatture"}): ${euros(a.storico.cents)}.`);
@@ -245,7 +272,7 @@ export function accontoAnswer(a: Acconto, d: Deadline, periodicity: Periodicity)
 
 /** The settings in a line. */
 export function settingsLine(periodicity: Periodicity): string {
-	return periodicity === "mensile" ? "Liquidi l'IVA ogni mese: si versa entro il 16 del mese dopo." : "Liquidi l'IVA ogni trimestre: si versa entro il 16 maggio, il 20 agosto e il 16 novembre con l'1% di interessi, il 4º trimestre con il saldo annuale entro il 16 marzo.";
+	return periodicity === "mensile" ? "Liquidi l'IVA ogni mese: si versa entro il 16 del mese dopo." : "Liquidi l'IVA ogni trimestre, con l'1% di interessi: entro il 16 maggio, il 20 agosto, il 16 novembre e, per il 4º trimestre, con il saldo annuale entro il 16 marzo.";
 }
 
 /** A received invoice in words, for the fence: «fattura 12 del 3 ottobre 2026 di Fornitore Srl (P.IVA …), IVA 220,00 €». */
@@ -298,7 +325,7 @@ export function vatCsv(v: CsvView): { readonly csv: string; readonly rows: numbe
 		if (l.carriedDue > 0n) add("Liquidazione", label, "", "Sotto il minimo dal periodo prima", undefined, l.carriedDue, "");
 		if (l.acconto > 0n) add("Liquidazione", label, "", "Acconto di dicembre", undefined, l.acconto, "segnato pagato");
 		if (l.accontoUnpaid !== undefined) add("Liquidazione", label, "", "Acconto di dicembre non segnato pagato, non tolto", undefined, l.accontoUnpaid, "stimato");
-		if (l.openingFrom !== undefined) add("Liquidazione", label, "", "Credito di inizio anno", undefined, l.carriedCredit, l.openingFrom === "detto" ? "detto" : "dalle fatture dell'anno prima");
+		if (l.openingFrom !== undefined) add("Liquidazione", label, "", "Credito di inizio anno", undefined, l.carriedCredit, "detto");
 		if (l.interest > 0n) add("Liquidazione", label, "", "Interessi 1% trimestrale", undefined, l.interest, "");
 		add("Liquidazione", label, "", l.due > 0n ? "Da versare" : l.credit > 0n ? "A credito" : "Sotto il minimo, al periodo dopo", undefined, l.due > 0n ? l.due : l.credit > 0n ? l.credit : l.under, "stimato");
 	}

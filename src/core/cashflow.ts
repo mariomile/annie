@@ -11,6 +11,7 @@
  */
 import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
+import { MAX_EUROS } from "./money-input.ts";
 import { scaled } from "./quote-sums.ts";
 import type { Recurrence } from "./recurrence.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
@@ -28,8 +29,8 @@ export const CASHFLOW_LIMITS = {
 	fileBytes: 1024 * 1024,
 	name: 120,
 	note: 500,
-	/** The largest amount of a voce or a balance, in euros: no typo of a few zeros goes in unchecked. */
-	maxAmount: 10_000_000,
+	/** The largest amount of a voce or a balance, in euros (money-input.ts). */
+	maxAmount: MAX_EUROS,
 	/** The longest horizon of a forecast, in days today included: a year and a day. */
 	maxDays: 366,
 	/** Hypothetical voci, delays and drops of one what_if. */

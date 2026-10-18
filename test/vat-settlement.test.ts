@@ -16,7 +16,8 @@ import { dayOfIn, FERRAGOSTO } from "../src/core/italian-calendar.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Regime, register } from "../src/core/invoices.ts";
-import { readItemAmount, readSignedEuros } from "../src/core/money-input.ts";
+import { CASHFLOW_LIMITS } from "../src/core/cashflow.ts";
+import { MAX_EUROS, readItemAmount, readSignedEuros } from "../src/core/money-input.ts";
 import { eurosToCents, halfUpSigned, scaled } from "../src/core/quote-sums.ts";
 import { RenewalStore } from "../src/core/renewal-store.ts";
 import { cents as renewalCents } from "../src/core/renewal-sums.ts";
@@ -27,14 +28,14 @@ import type { TimesheetBook } from "../src/core/timesheet-store.ts";
 import { createCashflowTools } from "../src/core/tools/cashflow-tools.ts";
 import { createVatSettlementTools, type VatEvent } from "../src/core/tools/vat-settlement-tools.ts";
 import { fenced } from "../src/core/tools/vat-settlement-input.ts";
-import { accontoAnswer, briefAnswer, calendarAnswer, ESTIMATE_NOTE, FORFETTARIO, NO_PERIODICITY, NO_REGIME, periodAnswer, periodIn, periodOf, whenText } from "../src/core/tools/vat-settlement-render.ts";
+import { accontoAnswer, briefAnswer, calendarAnswer, settingsLine, ESTIMATE_NOTE, FORFETTARIO, NO_PERIODICITY, NO_REGIME, periodAnswer, periodIn, periodOf, whenText } from "../src/core/tools/vat-settlement-render.ts";
 import { whatIf } from "../src/core/tools/vat-settlement-what-if.ts";
 import { vatAgentReads, vatCallReads } from "../src/core/vat.ts";
 import { type VatDoc, type VatRow, vatDocs } from "../src/core/vat-docs.ts";
-import { vatWhat } from "../src/core/vat-forecast.ts";
+import { vatForecast, vatWhat } from "../src/core/vat-forecast.ts";
 import { BRIEF_DAYS, CALENDAR_ROWS, ferragosto, periodDue, Q4_INTEREST } from "../src/core/vat-rules.ts";
-import { VatStore } from "../src/core/vat-store.ts";
-import { APPROX_DAYS, accontoOf, calendar, chain, type Deadline, deadlinesOf, figuresOf, isOverdue, type Liquidation, openingCredit, share, type VatInputs, vatPayments, yearOf } from "../src/core/vat-sums.ts";
+import { type VatBook, VatStore } from "../src/core/vat-store.ts";
+import { APPROX_DAYS, accontoOf, calendar, chain, type Deadline, deadlinesOf, figuresOf, isOverdue, type Liquidation, openingCredit, proposedCredit, share, type VatInputs, vatPayments, yearOf } from "../src/core/vat-sums.ts";
 import { Workspace } from "../src/core/workspace.ts";
 
 // Synthetic identifiers only: checksum-valid fake partite IVA and a codice fiscale on consonants.
@@ -253,21 +254,44 @@ describe("vat: the rules and the arithmetic", () => {
 		expect([month(said, 2026, 1)?.carriedCredit, month(said, 2026, 1)?.due, month(said, 2026, 1)?.openingFrom]).toEqual([5_000n, 17_000n, "detto"]);
 	});
 
-	it("S6: without a credit set by hand, January starts from last year's closing credit, and says so", () => {
-		const docs = [doc("purchase", "2025-12-05", [row("1000")], { received: "2025-12-05" }), doc("sale", "2026-01-10", [row("1500")])];
-		const i = inputs(docs);
-		expect(openingCredit(i, 2026)).toEqual({ cents: 22_000n, from: "fatture" });
-		const jan = month(i, 2026, 1);
-		expect([jan?.carriedCredit, jan?.openingFrom, jan?.due]).toEqual([22_000n, "fatture", 11_000n]);
-		expect(periodAnswer({ liquidation: jan as Liquidation })).toContain("Credito IVA di inizio 2026: 220,00 €, calcolato dalle fatture del 2025; se la dichiarazione IVA dice un'altra cifra, dimmela e uso quella.");
-		// Said by hand, the person's figure wins.
-		const said = inputs(docs, { years: [{ year: 2026, credit: "100" }] });
-		expect(periodAnswer({ liquidation: month(said, 2026, 1) as Liquidation })).toContain("Credito IVA di inizio 2026: 100,00 €, come mi hai detto.");
-		// The calendar says it too.
-		const cal = calendarAnswer(calendar(i), TODAY, CALENDAR_ROWS, { opening: { year: 2026, cents: 22_000n, from: "fatture" } });
-		expect(cal).toContain("Credito IVA di inizio 2026: 220,00 €, calcolato dalle fatture del 2025");
+	it("M1: a credit from the documents is never taken off by itself: proposed when last year is complete, else asked in January", () => {
+		// Probe F6: a 2019 purchase only. Nothing carried in, nothing proposed: January pays 1.000 €.
+		const f6 = inputs([doc("purchase", "2019-05-10", [row("10000")], { received: "2019-05-10" }), doc("sale", "2026-01-10", [row("4545.45")])], { today: "2026-02-10" });
+		expect([openingCredit(f6, 2026), proposedCredit(f6, 2026)]).toEqual([{ cents: 0n }, undefined]);
+		const jan = month(f6, 2026, 1) as Liquidation;
+		expect([jan.carriedCredit, jan.openingFrom, jan.due]).toEqual([0n, undefined, 100_000n]);
+		expect(periodAnswer({ liquidation: jan, credit: { year: 2026, ask: true } })).toContain("Se a inizio 2026 avevi un credito IVA (è nella dichiarazione IVA), dimmelo e lo scalo.");
+		// A partial 2025 (purchases in two months only): nothing proposed.
+		const partial = inputs([doc("purchase", "2025-03-05", [row("500")], { received: "2025-03-05" }), doc("purchase", "2025-11-05", [row("500")], { received: "2025-11-05" }), doc("sale", "2026-01-10", [row("1000")])], { today: "2026-02-10" });
+		expect(proposedCredit(partial, 2026)).toBeUndefined();
+		expect(month(partial, 2026, 1)?.due).toBe(22_000n);
+		// A complete 2025, a purchase each month: its closing credit is proposed, not taken off.
+		const year = Array.from({ length: 12 }, (_, k) => doc("purchase", `2025-${String(k + 1).padStart(2, "0")}-05`, [row("500")], { received: `2025-${String(k + 1).padStart(2, "0")}-05` }));
+		const full = inputs([...year, doc("sale", "2026-01-10", [row("1000")])], { today: "2026-02-10" });
+		expect(proposedCredit(full, 2026)).toBe(132_000n);
+		const fullJan = month(full, 2026, 1) as Liquidation;
+		expect([fullJan.carriedCredit, fullJan.due]).toEqual([0n, 22_000n]);
+		const asked = periodAnswer({ liquidation: fullJan, credit: { year: 2026, proposed: 132_000n, ask: true } });
+		expect(asked).toContain("Dalle fatture che vedo il 2025 chiude a credito di 1.320,00 €: me lo confermi (è nella dichiarazione IVA)? Finché non me lo dici non lo scalo.");
+		expect(asked).not.toContain("Se a inizio 2026");
+		expect(calendarAnswer(calendar(full), "2026-02-10", CALENDAR_ROWS, { credit: { year: 2026, proposed: 132_000n } })).toContain("Dalle fatture che vedo il 2025 chiude a credito di 1.320,00 €");
+		// Confirmed (set_credit): taken off, said as the person's, and nothing proposed any more.
+		const said = { ...full, years: [{ year: 2026, credit: "1320" }] };
+		const saidJan = month(said, 2026, 1) as Liquidation;
+		expect([saidJan.carriedCredit, saidJan.openingFrom, saidJan.due, saidJan.credit]).toEqual([132_000n, "detto", 0n, 110_000n]);
+		expect(proposedCredit(said, 2026)).toBeUndefined();
+		expect(periodAnswer({ liquidation: saidJan })).toContain("Credito IVA di inizio 2026: 1.320,00 €, come mi hai detto: lo scalo.");
 		// No documents before the year: nothing carried in.
 		expect(openingCredit(inputs([doc("sale", "2026-01-10", [row("100")])]), 2026)).toEqual({ cents: 0n });
+	});
+
+	it("M1: where a confirmed credit is taken off, the calendar, the brief and the cashflow say so", () => {
+		const said = inputs([doc("sale", "2026-01-10", [row("1000")])], { today: "2026-02-10", years: [{ year: 2026, credit: "50" }] });
+		const jan = calendar(said, 40).find((d) => d.key === "2026-01") as Deadline;
+		expect([jan.cents, jan.opening]).toEqual([17_000n, 5_000n]);
+		expect(briefAnswer([jan], "2026-02-10")).toContain("circa 170,00 €, tolto il credito confermato (IVA di gennaio 2026, codice 6001)");
+		expect(vatWhat(jan)).toBe("F24 IVA di gennaio 2026 (stima, tolto il credito confermato)");
+		expect(calendarAnswer(calendar(said), "2026-02-10", CALENDAR_ROWS, { credit: { year: 2026, said: 5_000n } })).toContain("Credito IVA di inizio 2026: 50,00 €, come mi hai detto: lo scalo.");
 	});
 
 	it("deadlines: the 16th of the next month, 16 May, 20 August, 16 November, the fourth quarter with the saldo by 16 March; to the next working day", () => {
@@ -310,11 +334,11 @@ describe("vat: the rules and the arithmetic", () => {
 		const early = accontoOf(inputs(december, { today: "2026-12-10", years: [{ year: 2025, base: "1000" }] }), 2026);
 		expect([early.analitico?.partial, early.cents, early.method]).toEqual([true, 88_000n, "storico"]);
 		// Only a partial analitico: no amount yet.
-		const unknown = accontoOf(inputs(december, { today: "2026-12-10" }), 2026);
+		const unknown = accontoOf(inputs([...december, doc("sale", "2026-03-05", [row("10")])], { today: "2026-12-10" }), 2026);
 		expect([unknown.analitico?.partial, unknown.cents]).toEqual([true, undefined]);
 		const small = accontoOf(inputs(december, { today: "2026-12-21", years: [{ year: 2025, base: "100" }] }), 2026);
 		expect([small.storico?.cents, small.cents, small.belowMin]).toEqual([8_800n, 0n, true]);
-		const docs = accontoOf(inputs([doc("sale", "2025-12-05", [row("1000")])], { today: "2026-12-21" }), 2026);
+		const docs = accontoOf(inputs([doc("sale", "2025-12-05", [row("1000")]), doc("sale", "2026-03-05", [row("10")])], { today: "2026-12-21" }), 2026);
 		expect(docs.storico).toEqual({ base: 22_000n, from: "fatture", cents: 19_360n });
 		const prev = accontoOf(inputs(december, { today: "2026-12-21", years: [{ year: 2025, base: "1000" }] }), 2026, 30_000n);
 		expect([prev.previsionale?.cents, prev.cents, prev.method]).toEqual([26_400n, 26_400n, "previsionale"]);
@@ -327,11 +351,10 @@ describe("vat: the rules and the arithmetic", () => {
 		expect([last.acconto, last.accontoUnpaid, last.due]).toEqual([0n, 66_000n, 66_000n]);
 		expect(periodAnswer({ liquidation: last })).toContain("L'acconto di dicembre (circa 660,00 €) non lo tolgo finché non è segnato pagato: se l'hai versato dimmelo.");
 		expect(calendar(i).find((d) => d.kind === "acconto")).toMatchObject({ date: "2026-12-28", cents: 66_000n });
-		// Long overdue: the acconto stays, the December F24 past 30 days goes.
-		const later = { ...i, today: "2027-02-20" };
+		// Overdue: it stays like a periodic F24, up to 30 days (M2).
+		const later = { ...i, today: "2027-01-20" };
 		expect(calendar(later).map((d) => d.key)).toContain("2026-acconto");
-		expect(calendar(later).map((d) => d.key)).not.toContain("2026-12");
-		expect(vatPayments(later, "2027-02-28", () => "x")).toContainEqual({ date: "2027-02-20", cents: 66_000n, what: "x", iva: true, was: "2026-12-28", late: true });
+		expect(vatPayments(later, "2027-01-31", () => "x")).toContainEqual({ date: "2027-01-20", cents: 66_000n, what: "x", iva: true, was: "2026-12-28", late: true });
 		// Marked paid: taken off, out of the calendar.
 		const paid = { ...i, paid: [{ key: "2026-acconto", date: "2026-12-27", amount: "660", by: "u", at: "x" }] };
 		const after = yearOf(paid, 2026).at(-1) as Liquidation;
@@ -347,6 +370,27 @@ describe("vat: the rules and the arithmetic", () => {
 		const gone = { ...i, today: "2026-11-20" };
 		expect(vatPayments(gone, "2026-11-30", () => "x")).toEqual([]);
 		expect(isOverdue(calendar(i)[0] as never, TODAY)).toBe(true);
+	});
+
+	it("M2: an overdue acconto like a periodic F24, never past 16 March; none for a year before the settings or without a period of data; the year in the brief", () => {
+		const acconto = { kind: "acconto", due: "2026-12-27", date: "2026-12-28", code: "6013", key: "2026-acconto", year: 2026, cents: 50_000n, partial: false } as Deadline;
+		expect([isOverdue(acconto, "2027-01-27"), isOverdue(acconto, "2027-01-28")]).toEqual([true, false]);
+		expect(isOverdue({ ...acconto, date: "2027-03-10" }, "2027-03-17")).toBe(false);
+		// A year over before the periodicity was first saved: no acconto.
+		const before = inputs([doc("sale", "2025-06-05", [row("1000")]), doc("sale", "2025-12-05", [row("2000")])], { today: TODAY, since: TODAY });
+		expect(accontoOf(before, 2025)).toEqual({ year: 2025, belowMin: false });
+		expect(accontoOf({ ...before, since: undefined }, 2025).cents).toBe(44_000n);
+		// No period of the year over with documents in it: none from the documents (a base said still counts).
+		const lone = inputs([doc("sale", "2026-12-05", [row("2000")])], { today: "2026-12-21" });
+		expect(accontoOf(lone, 2026).cents).toBeUndefined();
+		expect(accontoOf({ ...lone, years: [{ year: 2025, base: "1000" }] }, 2026).cents).toBe(44_000n);
+		// Probe p6: October 2026, one December 2025 sale, settings saved today: no nag, no outflow.
+		const p6 = inputs([doc("sale", "2025-12-05", [row("1000")])], { today: TODAY, since: TODAY });
+		expect(briefAnswer(calendar(p6, BRIEF_DAYS + 1), TODAY)).toBe("Niente da segnalare sull'IVA: nel brief non scrivere niente sull'IVA.");
+		expect(vatPayments(p6, "2027-03-31", () => "x")).toEqual([]);
+		// Last year's acconto overdue: the brief row carries its year. 27 December 2025 is a Saturday.
+		const late = inputs([doc("sale", "2025-12-05", [row("2000")])], { today: "2026-01-10", years: [{ year: 2024, base: "1000" }] });
+		expect(briefAnswer(calendar(late, BRIEF_DAYS + 1), "2026-01-10")).toContain("F24 acconto IVA 2025 scaduto il 29 dicembre 2025 (circa 440,00 €): se l'hai pagato dimmelo");
 	});
 
 	it("received: in the period of receipt, else of the date; the approximation said only near the period's end (U10)", () => {
@@ -455,14 +499,14 @@ describe("vat: the words (U2, U7, U8, U9, U10, U11)", () => {
 	it("U8: a period in credit, the figures line, «nessuna fattura ricevuta»", () => {
 		const credit = month(inputs([doc("sale", "2026-09-10", [row("1000")]), doc("purchase", "2026-09-05", [row("3000")], { received: "2026-09-05" })]), 2026, 9) as Liquidation;
 		const text = periodAnswer({ liquidation: credit });
-		expect(text.split("\n")[0]).toBe("IVA di settembre 2026: niente da versare, anzi hai 440,00 € di credito che scalo dal mese dopo.");
-		expect(text.split("\n")[1]).toBe("IVA delle fatture emesse 220,00 € (1), meno IVA delle fatture ricevute 660,00 € (1).");
+		expect(text.split("\n")[0]).toBe("IVA di settembre 2026: niente da versare, anzi hai 440,00 € di credito che scalo dall'IVA del mese dopo.");
+		expect(text.split("\n")[1]).toBe("IVA delle fatture emesse 220,00 € (1 fattura), meno IVA delle fatture ricevute 660,00 € (1 fattura).");
 		const sold = month(inputs([doc("sale", "2026-09-10", [row("1000")])]), 2026, 9) as Liquidation;
-		expect(periodAnswer({ liquidation: sold }).split("\n")[1]).toBe("IVA delle fatture emesse 220,00 € (1), nessuna fattura ricevuta.");
+		expect(periodAnswer({ liquidation: sold }).split("\n")[1]).toBe("IVA delle fatture emesse 220,00 € (1 fattura), nessuna fattura ricevuta.");
 		const empty = month(inputs([]), 2026, 9) as Liquidation;
 		expect(periodAnswer({ liquidation: empty })).toContain("Nessuna fattura emessa né ricevuta nel periodo.");
 		const q = chain(inputs([doc("purchase", "2026-08-05", [row("1000")], { received: "2026-08-05" })], { periodicity: "trimestrale" }), 2026).find((l) => l.period.n === 3) as Liquidation;
-		expect(periodAnswer({ liquidation: q }).split("\n")[0]).toBe("IVA del 3º trimestre 2026: niente da versare, anzi hai 220,00 € di credito che scalo dal trimestre dopo.");
+		expect(periodAnswer({ liquidation: q }).split("\n")[0]).toBe("IVA del 3º trimestre 2026: niente da versare, anzi hai 220,00 € di credito che scalo dall'IVA del trimestre dopo.");
 	});
 
 	it("U9: the interest line, the moved day «(il 27 cade di domenica)», the preposition with the period", () => {
@@ -489,7 +533,7 @@ describe("vat: the words (U2, U7, U8, U9, U10, U11)", () => {
 		]);
 		const q = inputs([doc("sale", "2026-10-05", [row("1000")])], { today: "2026-12-10", periodicity: "trimestrale" });
 		const dq = deadlinesOf(q, 2026).find((x) => x.kind === "acconto") as Deadline;
-		expect(accontoAnswer(accontoOf(q, 2026), dq, "trimestrale").split("\n")[0]).toBe("Acconto IVA 2026 entro il 28 dicembre 2026 (il 27 cade di domenica), codice 6035: non posso ancora dirti l'importo: l'analitico si chiude il 20 dicembre; per lo storico dimmi l'IVA del 4º trimestre 2025.");
+		expect(accontoAnswer(accontoOf(q, 2026), dq, "trimestrale").split("\n")[0]).toBe("Acconto IVA 2026 entro il 28 dicembre 2026 (il 27 cade di domenica), codice 6035. L'importo non posso ancora dirtelo: l'analitico si chiude il 20 dicembre, e per lo storico mi serve l'IVA del 4º trimestre 2025.");
 		// After the 20th the analitico is final and may cost less.
 		const after = { ...i, today: "2026-12-21" };
 		expect(accontoAnswer(accontoOf(after, 2026), d, "mensile").split("\n")[0]).toBe("Acconto IVA 2026 entro il 28 dicembre 2026 (il 27 cade di domenica), codice 6013: circa 1.100,00 € con il metodo analitico.");
@@ -506,9 +550,36 @@ describe("vat: the words (U2, U7, U8, U9, U10, U11)", () => {
 		expect(CALENDAR_ROWS).toBe(3);
 	});
 
+	it("U2: the calendar: the headline, then the next deadlines by date without it; at 15/12 quarterly the acconto and the 16 March saldo both", () => {
+		const i = inputs([doc("sale", "2026-10-10", [row("2000")])], { periodicity: "trimestrale", today: "2026-12-15", years: [{ year: 2025, base: "1000" }] });
+		const cal = calendarAnswer(calendar(i), "2026-12-15", CALENDAR_ROWS);
+		const lines = cal.split("\n");
+		expect(lines[0]).toBe("Il prossimo F24 dell'IVA è il 28 dicembre 2026 (il 27 cade di domenica): circa 880,00 € (acconto IVA 2026, codice 6035).");
+		const rows = lines.filter((l) => l.startsWith("• "));
+		expect(rows).toHaveLength(3);
+		expect(rows[0]).toBe("• Il 16 marzo 2027: saldo IVA 2026 con il 4º trimestre, circa 444,40 € finora, codice 6099.");
+		expect(rows.some((r) => r.includes("acconto"))).toBe(false);
+		expect(rows.map((r) => r.slice(0, 22))).toEqual(["• Il 16 marzo 2027: sa", "• Il 17 maggio 2027 (i", "• Il 20 agosto 2027: I"]);
+		// At most one overdue row, the latest.
+		const two = inputs([doc("sale", "2026-08-10", [row("1000")]), doc("sale", "2026-09-10", [row("1000")])], { today: "2026-10-20" });
+		const late = calendarAnswer(calendar(two), "2026-10-20", CALENDAR_ROWS).split("\n").filter((l) => l.startsWith("• Scaduto"));
+		expect(late).toEqual(["• Scaduto il 16 ottobre 2026, se non l'hai già pagato: IVA di settembre 2026, circa 220,00 €, codice 6009."]);
+	});
+
+	it("U4: the settings line of the trimestrale", () => {
+		expect(settingsLine("trimestrale")).toBe("Liquidi l'IVA ogni trimestre, con l'1% di interessi: entro il 16 maggio, il 20 agosto, il 16 novembre e, per il 4º trimestre, con il saldo annuale entro il 16 marzo.");
+	});
+
+	it("U5: the cashflow label of an F24 gone by", () => {
+		const d = calendar(inputs([doc("sale", "2026-09-10", [row("1000")])])).find((x) => x.key === "2026-09") as Deadline;
+		expect(vatWhat(d, TODAY)).toBe("F24 IVA di settembre 2026, scaduto il 16/10 (stima)");
+		const book = { settings: { periodicity: "mensile" as const, by: "u", at: "2026-10-01T08:00:00Z" }, paid: [], marks: [], years: [], calls: [], broken: false } as unknown as VatBook;
+		expect(vatForecast({ book, sales: SALES, register: [], dayOf: dayOfIn("Europe/Rome"), today: TODAY, end: "2026-10-31" }).map((p) => p.what)).toEqual(["F24 IVA di settembre 2026, scaduto il 16/10 (stima)"]);
+	});
+
 	it("U9: the cashflow label of an IVA F24", () => {
 		const d = deadlinesOf(inputs([], { today: "2026-01-10" }), 2026);
-		expect(d.filter((x) => x.period?.n === 10 || x.kind !== "periodo").map(vatWhat)).toEqual(["F24 IVA di ottobre 2026 (stima)", "F24 acconto IVA 2026 (stima)", "F24 saldo IVA 2026 (stima)"]);
+		expect(d.filter((x) => x.period?.n === 10 || x.kind !== "periodo").map((x) => vatWhat(x))).toEqual(["F24 IVA di ottobre 2026 (stima)", "F24 acconto IVA 2026 (stima)", "F24 saldo IVA 2026 (stima)"]);
 	});
 });
 
@@ -519,18 +590,24 @@ describe("vat: what_if (U1, U9)", () => {
 		const i = inputs([PURCHASE_OCT]);
 		const text = whatIf({ amount: "1000", date: "10/11/2026" }, i, i.docs);
 		expect(text.split("\n").slice(0, 2)).toEqual([
-			"Un acquisto di 1.000,00 € + IVA al 22% (IVA 220,00 €) ricevuto entro il 10 novembre 2026 si detrae a novembre 2026, il periodo in cui ricevi la fattura, se l'IVA è detraibile tutta:",
+			"Un acquisto di 1.000,00 € + IVA al 22% (IVA 220,00 €) ricevuto il 10 novembre 2026 si detrae a novembre 2026, il periodo in cui ricevi la fattura, se l'IVA è detraibile tutta:",
 			"IVA di novembre 2026: il credito che passa al periodo dopo va da 330,00 € a 550,00 €.",
 		]);
 		expect(text).not.toContain("da versare da");
+		expect(text).toContain("Se la fattura arriva dopo il 30 novembre, la detrazione passa a dicembre: non è un risparmio, cambia solo quando.");
 		expect(text).toContain("Non ho salvato niente.");
+		// No date: by the end of the current period.
+		expect(whatIf({ amount: "1000" }, i, i.docs)).toContain("ricevuto entro fine periodo si detrae a ottobre 2026");
 	});
 
-	it("a purchase in the next quarter: as of its last day, with last year's closing credit", () => {
+	it("a purchase in the next quarter: as of its last day; last year's credit only once confirmed (M1)", () => {
 		const i = inputs([PURCHASE_OCT], { periodicity: "trimestrale" });
 		const text = whatIf({ amount: "1000", date: "15/01/2027" }, i, i.docs);
 		expect(text).toContain("si detrae nel 1º trimestre 2027");
-		expect(text).toContain("IVA del 1º trimestre 2027: il credito che passa al periodo dopo va da 330,00 € a 550,00 €.");
+		expect(text).toContain("IVA del 1º trimestre 2027: il credito che passa al periodo dopo va da 0,00 € a 220,00 €.");
+		expect(text).toContain("Se la fattura arriva dopo il 31 marzo, la detrazione passa al 2º trimestre:");
+		const said = { ...i, years: [{ year: 2027, credit: "330" }] };
+		expect(whatIf({ amount: "1000", date: "15/01/2027" }, said, i.docs)).toContain("va da 330,00 € a 550,00 €.");
 	});
 
 	it("a purchase that lowers what is due: the credit and the due lines", () => {
@@ -591,14 +668,14 @@ describe("vat: the tool", () => {
 		expect(before).toContain("È una stima: verificala con il commercialista prima di pagare.");
 		expect(before).not.toContain("da verificare");
 		expect(before).not.toContain("—");
-		expect(before).toContain("IVA delle fatture emesse 396,00 € (5), meno IVA delle fatture ricevute 209,00 € (5).");
+		expect(before).toContain("IVA delle fatture emesse 396,00 € (5 fatture), meno IVA delle fatture ricevute 209,00 € (5 fatture).");
 		expect(outside(before)).not.toContain("Fornitore");
 		expect(await s.run({ op: "deductibility", supplier: RENTAL.vat, percent: 40 })).toContain("IVA detraibile al 40%");
 		const received = await s.run({ op: "deductibility", supplier: "Fornitore Uno", invoice: "A-2", received: "02/10/2026" });
 		expect(received).toContain("ricevuta il");
 		expect(inside(received)).toContain("Fornitore Uno Srl");
 		const after = await s.run({ op: "period", period: "settembre" });
-		expect(after).toContain("meno IVA delle fatture ricevute 147,40 € (4).");
+		expect(after).toContain("meno IVA delle fatture ricevute 147,40 € (4 fatture).");
 		expect(after).toContain("da versare circa 248,60 €");
 		expect(s.store.read().marks.map((m) => [m.vat, m.percent, m.received])).toEqual([
 			["IT11111110018", "40", undefined],
@@ -620,8 +697,8 @@ describe("vat: the tool", () => {
 		expect(cal).toContain("Scaduto il 16 ottobre 2026, se non l'hai già pagato: IVA di settembre 2026, circa 187,00 €, codice 6009.");
 		expect(cal).toContain("Nessun altro F24 dell'IVA con un importo da versare per ora");
 		expect(cal).toContain("• Il 16 novembre 2026: IVA di ottobre 2026, niente da versare finora, codice 6010.");
-		// U11: three rows at most, the overdue one with its amount and the next one without; no generic line on moved days.
-		expect(cal.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(2);
+		// U2: three rows at most, one overdue and then the next from today; no generic line on moved days.
+		expect(cal.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(3);
 		expect(cal).not.toContain("slittano");
 		// Quarterly: the third quarter with its 1%.
 		await s.run({ op: "settings", periodicity: "trimestrale" });
@@ -729,6 +806,33 @@ describe("vat: the tool", () => {
 		expect(s.store.read().calls.length).toBe(2);
 	});
 
+	it("M1 in the tool: last year's credit proposed until confirmed with set_credit, then taken off", async () => {
+		const files: Record<string, string> = {};
+		for (let m = 1; m <= 12; m++) files[`f/p${m}.xml`] = xml(SUPPLIER, COMPANY, { number: `P-${m}`, date: `2025-${String(m).padStart(2, "0")}-05`, rows: [r22("500.00")] });
+		const s = await setup({ files, sales: [sale("FV-1", "2026-01-10", "1000")] });
+		s.at("2026-02-10");
+		await s.run({ op: "settings", periodicity: "mensile" });
+		const before = await s.run({ op: "period", period: "gennaio" });
+		expect(before).toContain("IVA di gennaio 2026: da versare circa 220,00 €");
+		expect(before).toContain("Dalle fatture che vedo il 2025 chiude a credito di 1.320,00 €: me lo confermi (è nella dichiarazione IVA)? Finché non me lo dici non lo scalo.");
+		expect(await s.run({ op: "calendar" })).toContain("Dalle fatture che vedo il 2025 chiude a credito di 1.320,00 €");
+		expect(s.tool.description).toContain("when an answer proposes it and the person confirms it, set_credit with that amount");
+		await s.run({ op: "set_credit", amount: "1320" });
+		const after = await s.run({ op: "period", period: "gennaio" });
+		expect(after).toContain("IVA di gennaio 2026: niente da versare, anzi hai 1.100,00 € di credito che scalo dall'IVA del mese dopo.");
+		expect(after).toContain("Credito IVA di inizio 2026: 1.320,00 €, come mi hai detto: lo scalo.");
+		expect(after).not.toContain("me lo confermi");
+	});
+
+	it("M2 in the tool: probe p6, one December 2025 sale in October 2026, no nag and no outflow", async () => {
+		const s = await setup({ files: { "f/fv.xml": xml(COMPANY, CLIENT, { number: "FV-0", date: "2025-12-05", rows: [r22("1000.00")] }) }, sales: [] });
+		await s.run({ op: "settings", periodicity: "mensile" });
+		expect(await s.run({ op: "calendar", compact: true })).toBe("Niente da segnalare sull'IVA: nel brief non scrivere niente sull'IVA.");
+		expect(await s.run({ op: "calendar" })).not.toContain("2025");
+		await s.cash({ op: "set_balance", amount: 1000 });
+		expect(await s.cash({ op: "forecast", horizon: "fine anno", include_average_spend: false })).not.toContain("IVA stimata (F24) ");
+	});
+
 	it("U13: from monthly to quarterly with monthly F24 marked paid this year, it warns", async () => {
 		const s = await setup();
 		await s.run({ op: "settings", periodicity: "mensile" });
@@ -806,7 +910,7 @@ describe("vat in the cashflow", () => {
 		expect(taxDuplicates(both, [voce("F24 IVA ottobre", "2026-11-19", 110_000n)]).taxes.map((t) => t.date)).toEqual(["2026-11-20"]);
 		expect(taxDuplicates(both, [voce("Acconto IRPEF", "2026-11-16", 300_000n)]).taxes.map((t) => t.date)).toEqual(["2026-11-16"]);
 		expect(taxDuplicates(both, [voce("F24", "2026-11-16", 110_000n)]).taxes.map((t) => t.date)).toEqual(["2026-11-20"]);
-		// S2: an overdue F24 counted today is near only its own day (16 October), not today: a voce on 27 October is 9 days from today, 11 from its day.
+		// M3: an overdue F24 counted today is paid late: any day from its own day (16 October) to today plus 10 days is near it.
 		const late = taxFlows(
 			[
 				{ date: TODAY, cents: 18_700n, what: "F24 IVA di settembre 2026 (stima)", iva: true, was: "2026-10-16", late: true },
@@ -816,8 +920,18 @@ describe("vat in the cashflow", () => {
 			"2026-12-31",
 		);
 		expect(late[0]?.tax?.late).toBe(true);
-		expect(taxDuplicates(late, [voce("F24 IVA", "2026-10-27", 18_700n)]).taxes.map((t) => t.date)).toEqual([TODAY, "2026-11-16"]);
-		expect(taxDuplicates(late, [voce("F24 IVA", "2026-10-24", 18_700n)]).taxes.map((t) => t.date)).toEqual(["2026-11-16"]);
+		expect(taxDuplicates(late, [voce("F24 IVA", "2026-10-27", 18_700n)]).taxes.map((t) => t.date)).toEqual(["2026-11-16"]);
+		expect(taxDuplicates(late, [voce("F24 IVA", "2026-10-29", 18_700n)]).taxes.map((t) => t.date)).toEqual([TODAY, "2026-11-16"]);
+	});
+
+	it("M3: a late F24 paid today, 14 days after its due date, by an expense or a voce", () => {
+		const late = taxFlows([{ date: TODAY, cents: 18_700n, what: "F24 IVA di settembre 2026 (stima)", iva: true, was: "2026-10-04", late: true }], TODAY, "2026-12-31");
+		const paid = taxDuplicates(late, [], [expense("E-1", TODAY, "187", { supplier: "Agenzia delle Entrate", note: "F24 IVA settembre" })]);
+		expect([paid.taxes, paid.twins.length]).toEqual([[], 1]);
+		const voced = taxDuplicates(late, [voce("F24 IVA settembre", TODAY, 18_700n)]);
+		expect([voced.taxes, voced.twins.length]).toEqual([[], 1]);
+		// Before its due date by more than 10 days: not this one.
+		expect(taxDuplicates(late, [voce("F24 IVA settembre", "2026-09-20", 18_700n)]).taxes).toHaveLength(1);
 	});
 
 	it("S3: a price with its IVA, a rate or a bare number is not an F24", () => {
@@ -826,6 +940,21 @@ describe("vat in the cashflow", () => {
 		for (const name of ["Saldo IVA 2025", "Acconto IVA"]) expect([name, isProfileTaxName(name)]).toEqual([name, false]);
 		const spent = [expense("S-1", "2026-10-01", "300", { note: "Saldo IVA 2025" }), expense("S-2", "2026-10-02", "200", { note: "Acconto IVA" }), expense("S-3", "2026-10-03", "900", { note: "F24 saldo IRPEF" })];
 		expect(averageSpend(spent, [], [], [], TODAY, true)).toMatchObject({ total: 50_000n, taxes: 1 });
+	});
+
+	it("M4: an F24 of the IVA with a period, interest or other taxes is not a price", () => {
+		for (const name of ["IVA 10/2026", "IVA 4/2026", "IVA trimestrale + interessi 1%", "Saldo IVA 2025 + interessi", "acconto IVA 88%", "F24 IVA + INPS ottobre"]) expect([name, isTaxName(name), taxKindOf(name)]).toEqual([name, true, "iva"]);
+		for (const name of ["Saldo fattura Rossi IVA inclusa", "Acconto lavori IVA compresa", "Saldo lavori Bianchi + IVA", "Acconto cucina (IVA 10%)", "IVA 4", "IVA 22%", "fattura con IVA esposta", "partita IVA"]) expect([name, isTaxName(name)]).toEqual([name, false]);
+		// «F24 IVA + INPS ottobre» pairs with the IVA's estimate, not the other F24.
+		const both = taxFlows([{ date: "2026-11-16", cents: 110_000n, what: "IVA", iva: true }, { date: "2026-11-16", cents: 300_000n, what: "INPS" }], TODAY, "2026-12-31");
+		expect(taxDuplicates(both, [voce("F24 IVA + INPS ottobre", "2026-11-16", 110_000n)]).taxes.map((t) => t.cents)).toEqual([300_000n]);
+	});
+
+	it("A6: money-input keeps its own cap, the cashflow's is the same", () => {
+		expect(MAX_EUROS).toBe(10_000_000);
+		expect(CASHFLOW_LIMITS.maxAmount).toBe(MAX_EUROS);
+		expect(readFileSync(join(import.meta.dirname, "..", "src", "core", "money-input.ts"), "utf8")).not.toContain("cashflow.ts");
+		expect(readItemAmount("10.000.001", fenced)).toMatchObject({ problem: expect.stringContaining("oltre") });
 	});
 
 	it("S4: the ordinario's average leaves out only the IVA's F24; IRPEF and INPS stay in", () => {

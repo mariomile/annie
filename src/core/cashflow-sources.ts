@@ -712,23 +712,37 @@ const VAT_CODE_WORDS = new Set(["f24", "iva", "codice", "tributo"]);
 /** With «iva», words that make it an F24 of the IVA: «liquidazione IVA», «acconto IVA», «IVA trimestrale». */
 const VAT_STEPS = new Set(["f24", "liquidazione", "acconto", "saldo", "versamento", "trimestrale", "mensile", "trimestre", "annuale", "periodica"]);
 /** Words that may stand with «iva» alone and keep it an F24 of the IVA: «IVA ottobre», «IVA T3 2026». */
-const VAT_FILLERS = new Set([...MONTH_NAMES, "di", "del", "della", "dell", "t1", "t2", "t3", "t4", "primo", "secondo", "terzo", "quarto"]);
+const VAT_PERIODS = new Set([...MONTH_NAMES, "t1", "t2", "t3", "t4"]);
+const VAT_FILLERS = new Set([...VAT_PERIODS, "di", "del", "della", "dell", "primo", "secondo", "terzo", "quarto"]);
 /** Words that make «iva» the price of something, not an F24: «IVA inclusa», «IVA compresa», «IVA esposta». */
 const VAT_PRICE = new Set(["inclusa", "incluso", "inclusi", "incluse", "compresa", "compreso", "compresi", "comprese", "esposta", "esposto", "esclusa", "escluso"]);
 
 const hasVatCode = (w: readonly string[]) => w.some((x) => VAT_CODE.test(x)) && w.some((x) => VAT_CODE_WORDS.has(x));
 
-/** «Saldo lavori + IVA», «Acconto cucina (IVA 10%)», «IVA 22», «IVA inclusa»: a price with its IVA. */
+/** «10/2026»: a month and its year, the period an F24 pays. */
+const MONTH_YEAR = /\b(?:0?[1-9]|1[0-2])\/\d{4}\b/;
+
+/** A step of an F24 of the IVA in a name: a step word, a month, a quarter, a «10/2026». */
+const isStepped = (text: string, w: readonly string[]) => MONTH_YEAR.test(text) || w.some((x) => VAT_STEPS.has(x) || VAT_PERIODS.has(x));
+
+/**
+ * «IVA inclusa», «Saldo lavori + IVA», «Acconto cucina (IVA 10%)», «IVA 22»: a price with its IVA.
+ * Only a price word, «+ IVA», a rate with % right after «iva», or a bare rate right after «iva» in
+ * a name with no step («IVA 4»): «IVA trimestrale + interessi 1%», «acconto IVA 88%», «IVA
+ * 10/2026» stay F24.
+ */
 function isVatPrice(text: string, w: readonly string[]): boolean {
-	return w.some((x) => VAT_PRICE.has(x)) || text.includes("+") || /\d\s*%/.test(text) || /\biva\s+(?:al\s+)?(?:4|5|10|22)\b(?!\s*(?:º|°|trimestre))/i.test(text);
+	if (w.some((x) => VAT_PRICE.has(x)) || /\+\s*iva\b/i.test(text)) return true;
+	if (/\biva\s+(?:al\s+)?(?:4|5|10|22)\s*%/i.test(text)) return true;
+	return /\biva\s+(?:al\s+)?(?:4|5|10|22)\b(?!\s*(?:º|°|\/))/i.test(text) && !isStepped(text, w);
 }
 
-/** Whether a name says an F24 of the IVA: a codice tributo of the IVA with its word; «iva» with a step word, or with only months, quarters and years around it; never a price «IVA inclusa». */
+/** Whether a name says an F24 of the IVA: a codice tributo of the IVA with its word; «iva» with a step, or with only months, quarters and years around it; never a price «IVA inclusa». */
 function isVatName(text: string): boolean {
 	const w = words(text);
 	if (hasVatCode(w)) return true;
 	if (!w.includes("iva") || isVatPrice(text, w)) return false;
-	return w.some((x) => VAT_STEPS.has(x)) || w.every((x) => x === "iva" || VAT_FILLERS.has(x) || /^\d{4}$/.test(x));
+	return MONTH_YEAR.test(text) || w.some((x) => VAT_STEPS.has(x)) || w.every((x) => x === "iva" || VAT_FILLERS.has(x) || /^\d{4}$/.test(x));
 }
 
 /** A tax name as week 56 reads it (the forfettario's F24): F24, IRPEF, sostitutiva, INPS, Agenzia delle Entrate, or saldo/acconto with imposta, contributi, tassa. */
@@ -785,6 +799,19 @@ export type TaxMaybe = { readonly tax: Movement; readonly expense: Expense };
 const measureOf = (t: Movement, inps: boolean) => (inps && t.tax?.contributi !== undefined ? t.tax.contributi : t.cents);
 
 /**
+ * How far `date` is from an estimate, in days: from its day, or from the first day of a June F24
+ * gone by. An overdue F24 counted today (`late`) is near its own day, and, being paid late, any
+ * day from its own day to today plus TAX_TWIN_DAYS is near it too.
+ */
+function distance(t: Movement, date: string): number {
+	const was = t.tax?.was;
+	const fromWas = was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, was));
+	const fromDay = Math.abs(daysBetween(date, t.date));
+	if (t.tax?.late === true && was !== undefined) return date >= was && date <= addDays(t.date, TAX_TWIN_DAYS) ? Math.min(fromDay, fromWas, TAX_TWIN_DAYS) : fromWas;
+	return Math.min(fromDay, fromWas);
+}
+
+/**
  * The estimate closest to `date` within TAX_TWIN_DAYS, from its day or the first day of a June F24
  * gone by. An INPS name looks only at the F24 with contributions, when any is near. On the same
  * distance (the late June F24 and the fixed INPS instalment both on 20 August), the closer amount.
@@ -793,8 +820,7 @@ const measureOf = (t: Movement, inps: boolean) => (inps && t.tax?.contributi !==
 function closestTax(taxes: readonly Movement[], date: string, cents: bigint, inps: boolean, kind: "iva" | "other" | "any" = "any"): Movement | undefined {
 	const near = taxes
 		.filter((t) => kind === "any" || (kind === "iva") === (t.tax?.iva === true))
-		// An overdue F24 counted today (`late`) is near only its own day; a June F24 gone by is near both.
-		.map((t) => ({ t, days: Math.min(t.tax?.late === true ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.date)), t.tax?.was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.tax.was))) }))
+		.map((t) => ({ t, days: distance(t, date) }))
 		.filter((x) => x.days <= TAX_TWIN_DAYS);
 	const withInps = inps ? near.filter((x) => x.t.tax?.contributi !== undefined) : [];
 	const pool = withInps.length > 0 ? withInps : near;

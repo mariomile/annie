@@ -5,11 +5,12 @@
  */
 import { euros } from "../format-words.ts";
 import { matchesParty } from "../invoices.ts";
-import { addDays } from "../italian-calendar.ts";
+import { addDays, MONTH_NAMES } from "../italian-calendar.ts";
 import { scaled } from "../quote-sums.ts";
 import { isProblem } from "../text-input.ts";
 import { periodOfDay, periodSpan } from "../vat.ts";
 import type { VatDoc } from "../vat-docs.ts";
+import type { VatPeriod } from "../vat-rules.ts";
 import { type Liquidation, periodAt, share, type VatInputs } from "../vat-sums.ts";
 import { readItemAmount } from "../money-input.ts";
 import { withDate } from "../italian-format.ts";
@@ -47,6 +48,16 @@ function asOf(i: VatInputs, day: string): VatInputs {
 	return from > i.today ? { ...i, today: to } : i;
 }
 
+/** «il 30 novembre»: a period's last day, without the year. */
+const shortDay = (day: string) => withDate("il", day).replace(/ \d{4}$/, "");
+
+/** «a dicembre», «al 1º trimestre 2027»: the period after `p`, the year said only when it changes. */
+function nextIn(p: VatPeriod): string {
+	const next: VatPeriod = p.kind === "month" ? (p.n === 12 ? { year: p.year + 1, kind: "month", n: 1 } : { ...p, n: p.n + 1 }) : p.n === 4 ? { year: p.year + 1, kind: "quarter", n: 1 } : { ...p, n: p.n + 1 };
+	const year = next.year === p.year ? "" : ` ${next.year}`;
+	return next.kind === "month" ? `a ${MONTH_NAMES[next.n - 1]}${year}` : `al ${next.n}º trimestre${year}`;
+}
+
 /** The received documents the person means: by supplier (name or partita IVA) and number. */
 function chosen(docs: readonly VatDoc[], supplier: string | undefined, number: string | undefined): VatDoc[] {
 	const same = (a: string, b: string) => a.replace(/\s+/g, "").toUpperCase() === b.replace(/\s+/g, "").toUpperCase();
@@ -68,7 +79,7 @@ export function whatIf(args: Record<string, unknown>, i: VatInputs, docs: readon
 	if (date > addDays(i.today, AHEAD_DAYS)) return "Errore: date: dimmi un giorno entro un anno da oggi.";
 	if (supplier !== undefined || number !== undefined) {
 		if (args.amount !== undefined) return "Errore: dimmi o una fattura ricevuta (supplier, invoice) o un acquisto nuovo (amount), non tutti e due.";
-		return payInvoice(i, docs, supplier, number, date);
+		return payInvoice(i, docs, supplier, number, date, args.date !== undefined);
 	}
 	if (args.amount === undefined) return "Errore: dimmi la fattura ricevuta (supplier e invoice) o l'imponibile di un acquisto nuovo (amount).";
 	const amount = readItemAmount(args.amount, fenced);
@@ -84,15 +95,15 @@ export function whatIf(args: Record<string, unknown>, i: VatInputs, docs: readon
 	const after = periodAt({ ...at, docs: [...docs, doc] }, date);
 	if (before === undefined || after === undefined) return `Errore: non riesco a calcolare il periodo di quel giorno. ${NOTHING_SAVED}`;
 	return [
-		`Un acquisto di ${euros(taxable)} + IVA al ${rate}% (IVA ${euros(tax)}) ricevuto entro ${withDate("il", date)} si detrae ${periodIn(after.period)}, il periodo in cui ricevi la fattura, se l'IVA è detraibile tutta:`,
+		`Un acquisto di ${euros(taxable)} + IVA al ${rate}% (IVA ${euros(tax)}) ricevuto ${args.date === undefined ? "entro fine periodo" : withDate("il", date)} si detrae ${periodIn(after.period)}, il periodo in cui ricevi la fattura, se l'IVA è detraibile tutta:`,
 		...compare(before, after),
-		"Se compri dopo, la detrazione passa al periodo dopo: non è un risparmio, cambia solo quando.",
+		`Se la fattura arriva dopo ${shortDay(after.to)}, la detrazione passa ${nextIn(after.period)}: non è un risparmio, cambia solo quando.`,
 		ESTIMATE_NOTE,
 		NOTHING_SAVED,
 	].join("\n");
 }
 
-function payInvoice(i: VatInputs, docs: readonly VatDoc[], supplier: string | undefined, number: string | undefined, date: string): string {
+function payInvoice(i: VatInputs, docs: readonly VatDoc[], supplier: string | undefined, number: string | undefined, date: string, dated: boolean): string {
 	const said = [number, supplier].filter((x) => x !== undefined).join(", ");
 	const found = chosen(docs, supplier, number);
 	if (found.length === 0) return `Non trovo una fattura ricevuta così: chiedi a chi ti scrive il fornitore e il numero.\n${fenced(said)}\n${NOTHING_SAVED}`;
@@ -110,7 +121,7 @@ function payInvoice(i: VatInputs, docs: readonly VatDoc[], supplier: string | un
 	if (before === undefined || after === undefined) return `Errore: non riesco a calcolare il periodo di quel giorno. ${NOTHING_SAVED}`;
 	const tax = deferred.reduce((n, d) => n + d.rows.filter((r) => r.esigibilita === "D").reduce((m, r) => m + (d.percent === undefined ? r.tax : share(r.tax, d.percent)), 0n), 0n);
 	return [
-		`Con l'IVA per cassa la detrai quando paghi: pagando entro ${withDate("il", date)} detrai circa ${euros(tax)} ${periodIn(after.period)}.`,
+		`Con l'IVA per cassa la detrai quando paghi: pagando ${dated ? `entro ${withDate("il", date)}` : "entro fine periodo"} detrai circa ${euros(tax)} ${periodIn(after.period)}.`,
 		...compare(before, after),
 		"Se paghi dopo, la detrazione passa al periodo del pagamento: cambia quando, non quanto.",
 		fenced(deferred.slice(0, 5).map(docText).join("\n")),

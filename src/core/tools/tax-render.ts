@@ -412,7 +412,7 @@ export function plainAnswer(all: readonly PlainDeadline[], ordinario: boolean): 
 		"Le date dei prossimi 12 mesi, senza importi:",
 		...dates.map((d) => `• ${capitalized(whenText(d))}: ${PLAIN_WHAT[d.what]}.`),
 	];
-	if (ordinario) lines.push("Per l'IVA (importi, codici, scadenze) uso vat_settlement.", "Per gli importi delle imposte chiedi al commercialista.");
+	if (ordinario) lines.push("Per l'IVA (importi, codici, scadenze) chiama vat_settlement.", "Per gli importi delle imposte chiedi al commercialista.");
 	else lines.push("Per le stime chiedi a chi ti scrive il coefficiente (o che attività fa), l'aliquota (15% o 5% per una nuova attività) e la cassa dei contributi, poi salvali nel profilo delle tasse.");
 	return lines.join("\n");
 }

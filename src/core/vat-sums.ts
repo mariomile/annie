@@ -5,8 +5,9 @@
  * - a period's figures: IVA a debito and a credito by the rules of vat-docs.ts, with the split
  *   payment, the reverse charge, the IVA left out by the marks and the deferred IVA said apart;
  * - the periods of a year in a chain: balance = debito − credito − the credit carried in (from the
- *   period before; into January or the first quarter, the credit the person said for the year,
- *   else last year's closing credit from the documents) + what was too little to pay before − the
+ *   period before; into January or the first quarter, only the credit the person said or confirmed
+ *   for the year: last year's closing credit from the documents is proposed, never taken off by
+ *   itself) + what was too little to pay before − the
  *   December acconto marked paid (in December or the fourth quarter). An acconto not marked paid is
  *   never taken off: the answer asks.
  *   A balance of 25,82 € or less is not paid and goes on; a negative one is a credit that goes on.
@@ -16,13 +17,15 @@
  * - the acconto of December: storico 88% of last year's December or fourth quarter before its
  *   acconto (as said, else from last year's documents), analitico 100% of the operations to 20
  *   December, previsionale 88% of what the person expects; none under 103,29 €; the smaller allowed.
- *   It is taken off December or the fourth quarter only once marked paid.
+ *   It is taken off December or the fourth quarter only once marked paid. None is computed for a
+ *   year over before the periodicity was first saved, or with no period over that has documents
+ *   (unless the person said its base or what they expect).
  * - every deadline moves to the next working day (dates.ts, Saturday included), and carries why.
  */
 import { addMonths, paymentSlip } from "./dates.ts";
 import { addDays } from "./italian-calendar.ts";
 import { eurosToCents, halfUp, halfUpSigned, scaled } from "./quote-sums.ts";
-import { type PaidMark, paidKeyOf, periodOfDay, periodSpan, periodsOf, VAT_LIMITS, type YearFigures } from "./vat.ts";
+import { type PaidMark, paidKeyOf, periodOfDay, periodSpan, periodsOf, type YearFigures } from "./vat.ts";
 import { isReverseRow, type VatDoc } from "./vat-docs.ts";
 import {
 	ACCONTO_ANALYTIC_DAY,
@@ -141,8 +144,8 @@ export type Liquidation = {
 	readonly acconto: bigint;
 	/** The last period: the acconto due and not marked paid, never taken off; the answer asks. */
 	readonly accontoUnpaid?: bigint;
-	/** The first period: where the credit carried in comes from, the person's word or last year's documents. */
-	readonly openingFrom?: "detto" | "fatture";
+	/** The first period: the credit carried in is the one the person said or confirmed. */
+	readonly openingFrom?: "detto";
 	readonly balance: bigint;
 	readonly interest: bigint;
 	/** To pay; what is under the minimum and goes on; the credit that goes on. */
@@ -158,36 +161,37 @@ export type VatInputs = {
 	readonly paid: readonly PaidMark[];
 	readonly years: readonly YearFigures[];
 	readonly today: string;
+	/** The day the periodicity was first saved: no acconto for a year over before it. */
+	readonly since?: string;
 };
 
 const yearFigures = (i: VatInputs, year: number) => i.years.find((y) => y.year === year);
 const paidOf = (i: VatInputs, key: string) => i.paid.find((p) => p.key === key);
 const lastOfYear = (p: VatPeriod) => (p.kind === "month" ? p.n === 12 : p.n === 4);
 
-/** Opening credits already computed, per documents: last year's closing credit is a whole chain of its own. */
-const OPENINGS = new WeakMap<readonly VatDoc[], Map<string, bigint>>();
+/** The credit carried into `year`: only as the person said or confirmed it (set_credit); 0 otherwise. */
+export function openingCredit(i: VatInputs, year: number): { readonly cents: bigint; readonly from?: "detto" } {
+	const said = cents(yearFigures(i, year)?.credit);
+	return said === undefined ? { cents: 0n } : { cents: said, from: "detto" };
+}
+
+/** Whether every period of `year` has a document in it (by its date, or a purchase's day of receipt). */
+function fullYear(i: VatInputs, year: number): boolean {
+	return periodsOf(year, i.periodicity).every((p) => {
+		const { from, to } = periodSpan(p);
+		return i.docs.some((d) => inSpan(d.date, from, to) || inSpan(d.received, from, to));
+	});
+}
 
 /**
- * The credit carried into `year`: as the person said it, else last year's closing credit from the
- * documents (0 without documents before the year).
+ * Last year's closing credit from the documents, to propose for `year` when the person has not
+ * said one: only when last year is over and every one of its periods has documents; one year back
+ * only (its own opening is what the person said, or 0). Never taken off until confirmed.
  */
-export function openingCredit(i: VatInputs, year: number): { readonly cents: bigint; readonly from?: "detto" | "fatture" } {
-	const said = cents(yearFigures(i, year)?.credit);
-	if (said !== undefined) return { cents: said, from: "detto" };
-	const first = `${year}-01-01`;
-	if (i.today < first || year <= VAT_LIMITS.firstYear || !i.docs.some((d) => d.date < first)) return { cents: 0n };
-	const key = `${i.periodicity}|${year}|${JSON.stringify(i.paid)}|${JSON.stringify(i.years)}`;
-	let memo = OPENINGS.get(i.docs);
-	if (memo === undefined) {
-		memo = new Map();
-		OPENINGS.set(i.docs, memo);
-	}
-	let c = memo.get(key);
-	if (c === undefined) {
-		c = yearCredit(i, year - 1) ?? 0n;
-		memo.set(key, c);
-	}
-	return c > 0n ? { cents: c, from: "fatture" } : { cents: 0n };
+export function proposedCredit(i: VatInputs, year: number): bigint | undefined {
+	if (yearFigures(i, year)?.credit !== undefined || i.today <= `${year - 1}-12-31` || !fullYear(i, year - 1)) return undefined;
+	const c = yearCredit(i, year - 1);
+	return c !== undefined && c > 0n ? c : undefined;
 }
 
 /**
@@ -257,6 +261,9 @@ export type Acconto = {
 /** The acconto of `year` by each method Annie can compute (see above); `expected`: the previsionale's base. */
 export function accontoOf(i: VatInputs, year: number, expected?: bigint): Acconto {
 	const said = cents(yearFigures(i, year - 1)?.base);
+	const paid = paidOf(i, `${year}-acconto`);
+	// Not for a year over before the periodicity was saved, nor from documents of a year with no period over that has any.
+	if ((i.since !== undefined && `${year}-12-31` < i.since) || (said === undefined && expected === undefined && !anyPeriodOver(i, year))) return { year, belowMin: false, ...(paid === undefined ? {} : { paid }) };
 	const lastYear = i.docs.some((d) => d.date.startsWith(`${year - 1}-`));
 	const gross = (() => {
 		if (said !== undefined) return { base: said, from: "detto" as const };
@@ -274,8 +281,15 @@ export function accontoOf(i: VatInputs, year: number, expected?: bigint): Accont
 	].filter((c) => c !== undefined);
 	const least = known.length === 0 ? undefined : known.reduce((a, b) => (b.cents < a.cents ? b : a));
 	const belowMin = least !== undefined && least.cents < ACCONTO_MIN_CENTS;
-	const paid = paidOf(i, `${year}-acconto`);
 	return { year, ...(storico === undefined ? {} : { storico }), ...(analitico === undefined ? {} : { analitico }), ...(previsionale === undefined ? {} : { previsionale }), ...(least === undefined ? {} : { cents: belowMin ? 0n : least.cents, method: least.method }), belowMin, ...(paid === undefined ? {} : { paid }) };
+}
+
+/** Whether a period of `year` is over by today with a document in it. */
+function anyPeriodOver(i: VatInputs, year: number): boolean {
+	return periodsOf(year, i.periodicity).some((p) => {
+		const { from, to } = periodSpan(p);
+		return to < i.today && i.docs.some((d) => inSpan(d.date, from, to) || inSpan(d.received, from, to));
+	});
 }
 
 /** The liquidazione to 20 December: December's days (monthly) or from October (quarterly), with what the period before carries in. */
@@ -314,6 +328,8 @@ export type Deadline = {
 	readonly partial: boolean;
 	readonly interest?: bigint;
 	readonly paid?: PaidMark;
+	/** The first period of a year: the credit the person said or confirmed, taken off it. */
+	readonly opening?: bigint;
 	/** The annual saldo paid later, with its percentage more. */
 	readonly alternative?: { readonly date: string; readonly slip?: Slip; readonly cents: bigint; readonly percent: string };
 };
@@ -353,6 +369,7 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 			partial: l?.partial ?? false,
 			...(l !== undefined && l.interest > 0n ? { interest: l.interest } : {}),
 			...(paid === undefined ? {} : { paid }),
+			...(l?.openingFrom === "detto" ? { opening: l.carriedCredit } : {}),
 			...(annual && amount !== undefined && amount > 0n ? { alternative: deferred(year, amount) } : {}),
 		});
 	}
@@ -371,10 +388,10 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 	return out;
 }
 
-/** An F24 gone by, not marked paid, with an amount: an acconto until it is marked; a periodic one up to OVERDUE_DAYS ago. */
+/** An F24 gone by, not marked paid, with an amount, up to OVERDUE_DAYS ago; an acconto never after 16 March of the next year. */
 export function isOverdue(d: Deadline, today: string): boolean {
 	if (d.paid !== undefined || d.date >= today || d.cents === undefined || d.cents <= 0n) return false;
-	return d.kind === "acconto" || d.date >= addDays(today, -OVERDUE_DAYS);
+	return d.date >= addDays(today, -OVERDUE_DAYS) && (d.kind !== "acconto" || today <= `${d.year + 1}-${ANNUAL_DUE}`);
 }
 
 /**
