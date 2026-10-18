@@ -1,0 +1,31 @@
+name: Desktop CI
+# The desktop app (docs/desktop.md): Rust tests and lints, and the connect page's syntax, only
+# when the app changes. The installers are built by desktop.yml, on a tag or by hand.
+on:
+  push:
+    branches: [main]
+    paths: ["desktop/**", ".github/workflows/desktop-ci.yml"]
+  pull_request:
+    paths: ["desktop/**", ".github/workflows/desktop-ci.yml"]
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v5
+      - name: Linux libraries Tauri builds against
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: Connect page syntax
+        run: node --check ../connect/connect.js
