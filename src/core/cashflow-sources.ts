@@ -37,14 +37,15 @@
  *   up to `until`, at the amount of that day.
  * - Taxes: the F24 the tax profile's calendar estimates (tax-sums.ts), on their working day, when a
  *   profile exists; a June F24 gone by stays to its alternative day, at its amount. A tax name says
- *   F24, IRPEF, sostitutiva, INPS, tasse or Agenzia (delle) Entrate, or saldo/acconto with imposta,
- *   contributi or tassa; never with bollo, associazione, automobilistica, rifiuti, TARI or
- *   fornitore. A voce out with a tax name within TAX_TWIN_DAYS of an estimate is the person's own
+ *   F24, IRPEF, sostitutiva, INPS or Agenzia (delle) Entrate, whatever else; or saldo/acconto with
+ *   imposta, contributi, tassa or tasse, but not with bollo, associazione, automobilistica,
+ *   rifiuti, TARI or fornitore. A voce out with a tax name within TAX_TWIN_DAYS of an estimate is the person's own
  *   record of it: the voci stay (several summed) and are listed; the estimate goes, or, when they
  *   sum under TAX_VOCI_PERCENT of it, its rest stays. An expense with a tax name within
  *   TAX_TWIN_DAYS of one says it is paid from TAX_PAID_PERCENT of it (of its INPS part for an INPS
  *   name): the estimate goes, listed too; below, the estimate stays and the expense is listed as a
- *   maybe. Each voce or expense goes to the closest estimate (from its first day too, for a June
+ *   maybe. One that covers TAX_VOCI_PERCENT of the sum of several estimates on the same day stands
+ *   for all of them. Each voce or expense goes to the closest estimate (from its first day too, for a June
  *   F24 gone by), an INPS name to one with contributions, the closer amount on the same distance.
  *   With the taxes on, expenses with a tax name are not in the average spending either.
  * - A balance is brought to now by instant, from min(when it was said, the end of its day in the
@@ -679,13 +680,13 @@ export function unbilledPotential(entries: readonly WorkEntry[], rates: readonly
 export const TAX_TWIN_DAYS = 10;
 
 /** Folded words that alone make a name a tax payment. */
-const TAX_CLEAR = new Set(["f24", "irpef", "sostitutiva", "inps", "tasse"]);
+const TAX_CLEAR = new Set(["f24", "irpef", "sostitutiva", "inps"]);
 /** Folded phrases that alone make a name a tax payment. */
 const TAX_PHRASES = [["agenzia", "delle", "entrate"], ["agenzia", "entrate"]] as const;
 /** Generic words: a tax payment only with «saldo» or «acconto» (or with a clear word, which is enough by itself). */
-const TAX_GENERIC = new Set(["imposta", "imposte", "contributi", "contributo", "tassa"]);
+const TAX_GENERIC = new Set(["imposta", "imposte", "contributi", "contributo", "tassa", "tasse"]);
 const TAX_STEPS = new Set(["saldo", "acconto", "acconti"]);
-/** Words that make a name not a tax payment, whatever else it says: «imposta di bollo», «tassa automobilistica», «contributo associazione», «acconto fornitore». */
+/** Words that make a generic name not a tax payment: «imposta di bollo», «tassa automobilistica», «contributo associazione», «acconto fornitore». A clear word wins over them («F24 acconti e bollo fatture»). */
 const NOT_TAX = new Set(["bollo", "associazione", "automobilistica", "rifiuti", "tari", "fornitore"]);
 /** Words of a name that say it is INPS contributions: it pairs with the F24 that has contributions in it. */
 const INPS_WORDS = new Set(["inps", "contributi", "contributo"]);
@@ -694,8 +695,8 @@ const hasPhrase = (w: readonly string[], phrase: readonly string[]) => w.some((_
 
 export function isTaxName(text: string): boolean {
 	const w = words(text);
-	if (w.some((x) => NOT_TAX.has(x))) return false;
 	if (w.some((x) => TAX_CLEAR.has(x)) || TAX_PHRASES.some((p) => hasPhrase(w, p))) return true;
+	if (w.some((x) => NOT_TAX.has(x))) return false;
 	return w.some((x) => TAX_STEPS.has(x)) && w.some((x) => TAX_GENERIC.has(x));
 }
 
@@ -756,10 +757,29 @@ export function taxDuplicates(taxes: readonly Movement[], items: readonly Moveme
 	const voci = new Map<Movement, Movement[]>();
 	const paid = new Map<Movement, Expense[]>();
 	const maybe: TaxMaybe[] = [];
+	// Several estimates on the same day (the late June F24 and a fixed instalment on 20 August): one payment that covers about their sum stands for all of them, as one.
+	const merged = new Map<string, Movement>();
+	const mergedOf = new Map<Movement, Movement>();
+	const targetOf = (t: Movement, cents: bigint): Movement => {
+		const group = taxes.filter((x) => x.date === t.date);
+		const sum = group.reduce((n, x) => n + x.cents, 0n);
+		if (group.length < 2 || cents * 100n < sum * TAX_VOCI_PERCENT) return t;
+		let m = merged.get(t.date);
+		if (m === undefined) {
+			const contributi = group.reduce((n, x) => n + (x.tax?.contributi ?? 0n), 0n);
+			const first = group[0] as Movement;
+			m = { ...first, cents: sum, tax: { what: group.map((x) => x.tax?.what ?? "").join(" e "), ...(contributi === 0n ? {} : { contributi }), ...(first.tax?.was === undefined ? {} : { was: first.tax.was }) } };
+			merged.set(t.date, m);
+			for (const x of group) mergedOf.set(x, m);
+		}
+		return m;
+	};
 	for (const m of items) {
 		if (m.kind !== "out" || m.item === undefined || !isTaxName(m.item.name)) continue;
 		const t = closestTax(taxes, m.date, m.cents, isInpsName(m.item.name));
-		if (t !== undefined) voci.set(t, [...(voci.get(t) ?? []), m]);
+		if (t === undefined) continue;
+		const target = targetOf(t, m.cents);
+		voci.set(target, [...(voci.get(target) ?? []), m]);
 	}
 	for (const e of expenses) {
 		const name = expenseName(e);
@@ -768,23 +788,31 @@ export function taxDuplicates(taxes: readonly Movement[], items: readonly Moveme
 		const amount = expenseCents(e.amount);
 		const t = closestTax(taxes, e.date, amount, inps);
 		if (t === undefined) continue;
-		if (amount * 100n >= measureOf(t, inps) * TAX_PAID_PERCENT) paid.set(t, [...(paid.get(t) ?? []), e]);
+		const target = targetOf(t, amount);
+		if (target !== t || amount * 100n >= measureOf(t, inps) * TAX_PAID_PERCENT) paid.set(target, [...(paid.get(target) ?? []), e]);
 		else maybe.push({ tax: t, expense: e });
 	}
 	const kept: Movement[] = [];
 	const twins: TaxTwin[] = [];
-	for (const t of taxes) {
-		const v = voci.get(t);
-		const e = paid.get(t);
-		if (v === undefined && e === undefined) {
-			kept.push(t);
+	const done = new Set<Movement>();
+	for (const one of taxes) {
+		const t = mergedOf.get(one) ?? one;
+		if (done.has(t)) continue;
+		done.add(t);
+		// A merged estimate takes what its members got one by one too.
+		const members = t === one ? [one] : taxes.filter((x) => mergedOf.get(x) === t);
+		const v = [t, ...members.filter((x) => x !== t)].flatMap((x) => voci.get(x) ?? []);
+		const e = [t, ...members.filter((x) => x !== t)].flatMap((x) => paid.get(x) ?? []);
+		if (v.length === 0 && e.length === 0) {
+			kept.push(...members);
 			continue;
 		}
-		const sum = (v ?? []).reduce((n, m) => n + m.cents, 0n);
+		const sum = v.reduce((n, m) => n + m.cents, 0n);
 		// Voci well below the estimate and no expense that says it is paid: the rest of the estimate stays.
-		const rest = e === undefined && sum * 100n < t.cents * TAX_VOCI_PERCENT ? t.cents - sum : undefined;
+		const rest = e.length === 0 && sum * 100n < t.cents * TAX_VOCI_PERCENT ? t.cents - sum : undefined;
 		if (rest !== undefined) kept.push({ ...t, cents: rest });
-		twins.push({ tax: t, voci: v ?? [], expenses: e ?? [], ...(rest === undefined ? {} : { rest }) });
+		twins.push({ tax: t, voci: v, expenses: e, ...(rest === undefined ? {} : { rest }) });
 	}
-	return { taxes: kept, twins, maybe: maybe.filter((x) => !paid.has(x.tax)) };
+	const gone = (t: Movement) => paid.has(t) || paid.has(mergedOf.get(t) ?? t);
+	return { taxes: kept, twins, maybe: maybe.filter((x) => !gone(x.tax)) };
 }

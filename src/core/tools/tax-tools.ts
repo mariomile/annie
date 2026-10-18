@@ -325,7 +325,7 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 	}
 
 	/** The pension from what is said onto the old one; a question when something needed is missing. */
-	function pensionOf(said: Said, old: Pension | undefined, year: number, startYear: number | undefined): Pension | string {
+	function pensionOf(said: Said, old: Pension | undefined, year: number): Pension | string {
 		const kind = said.pension ?? old?.kind;
 		if (kind === undefined) return "Serve la cassa dei contributi: chiedi a chi ti scrive se versa alla gestione separata INPS, all'INPS come artigiano o come commerciante, a una cassa professionale, o niente.";
 		const same = old?.kind === kind ? old : undefined;
@@ -347,10 +347,6 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 				const reduction = said.reduction ?? prev?.reduction;
 				const new2025 = said.new2025 ?? prev?.new2025;
 				if (reduction === undefined && new2025 === undefined) return `Per i contributi ${asWho(kind)} mi manca solo una cosa: chiedi a chi ti scrive se ha la riduzione del 35% per i forfettari (si chiede all'INPS) o, se si è iscritto all'INPS per la prima volta nel 2025, quella del ${NEW_2025_REDUCTION_PERCENT}%.`;
-				if (new2025 === true && startYear !== NEW_2025_YEAR) {
-					if (startYear === undefined) return `La riduzione del ${NEW_2025_REDUCTION_PERCENT}% vale per chi si è iscritto all'INPS per la prima volta nel ${NEW_2025_YEAR}: chiedi a chi ti scrive se ha aperto l'attività nel ${NEW_2025_YEAR}.`;
-					return `Non l'ho salvato: la riduzione del ${NEW_2025_REDUCTION_PERCENT}% vale solo per chi si è iscritto all'INPS per la prima volta nel ${NEW_2025_YEAR}, e l'attività risulta aperta nel ${startYear}. Chiedi a chi ti scrive quale dei due è giusto.`;
-				}
 				return { kind, ...(fixed === undefined ? {} : { fixed }), ...(rate === undefined ? {} : { rate }), ...(minimale === undefined ? {} : { minimale }), ...(top === undefined ? {} : { top }), reduction: reduction ?? false, ...(new2025 === true ? { new2025: true as const } : {}) };
 			}
 			case "cassa": {
@@ -376,7 +372,7 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		const rate = said.rate ?? old?.rate;
 		const startYear = said.startYear ?? old?.startYear;
 		if (rate === RATE_START && startYear === undefined) return "Per l'imposta al 5% mi serve l'anno in cui è iniziata l'attività: vale per i primi 5 anni. Chiedilo a chi ti scrive.";
-		const pension = pensionOf(said, old?.pension, year, startYear);
+		const pension = pensionOf(said, old?.pension, year);
 		if (typeof pension === "string") return pension;
 		const at = now().toISOString();
 		return {
@@ -446,6 +442,10 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		if (profileSaid && said.rate === undefined && book.profile === undefined && (start === undefined || year < start + START_RATE_YEARS)) lines.push(`Ho messo l'imposta al 15%. ${start === undefined ? `Se l'attività ha meno di ${START_RATE_YEARS} anni, chiedi` : "Chiedi"} a chi ti scrive: ha i requisiti per il 5%?`);
 		if (profileSaid && saved?.pension.kind === "gestione_separata" && said.pensionRate === undefined && book.profile?.pension.kind !== "gestione_separata") lines.push(`L'aliquota della gestione separata è quella del ${GS_RATE_YEAR}: se nel frattempo è cambiata, dimmi quella nuova.`);
 		if (profileSaid && saved?.pension.kind === "cassa" && saved.pension.integrativo === undefined && said.integrativo === undefined) lines.push("Non so il contributo integrativo della cassa: chiedi a chi ti scrive la percentuale che mette in fattura, così lo tolgo dagli incassi. Finché non lo so, reddito e tasse vengono un po' più alti.");
+		// The partita IVA can be older than the first registration with INPS as artigiano or commerciante: saved, the year to confirm.
+		const p = saved?.pension;
+		if (profileSaid && (p?.kind === "artigiani" || p?.kind === "commercianti") && p.new2025 === true && saved?.startYear !== NEW_2025_YEAR && (said.new2025 === true || said.startYear !== undefined))
+			lines.push(`La riduzione del ${NEW_2025_REDUCTION_PERCENT}% vale per chi si è iscritto all'INPS ${asWho(p.kind)} per la prima volta nel ${NEW_2025_YEAR}${saved?.startYear === undefined ? "" : `, e l'attività risulta aperta nel ${saved.startYear}`}: chiedi a chi ti scrive di confermare l'anno della prima iscrizione (la partita IVA può essere più vecchia).`);
 		const note = saved === undefined ? undefined : rateNote(saved, year);
 		if (note !== undefined) lines.push(note);
 		const coefficient = readCoefficient(args);

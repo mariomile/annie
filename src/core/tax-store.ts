@@ -7,7 +7,7 @@
  */
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
-import { FIGURE_KEYS, type FigureKey, TAX_LIMITS, TaxError, type TaxProfile, validCall, validFigures, validProfile, type YearFigures } from "./taxes.ts";
+import { FIGURE_KEYS, type FigureKey, IVS_YEARS, type Pension, TAX_LIMITS, TaxError, type TaxProfile, validCall, validFigures, validProfile, type YearFigures } from "./taxes.ts";
 
 type Book = { readonly profile?: TaxProfile; readonly years: readonly YearFigures[]; readonly calls: readonly string[] };
 
@@ -86,5 +86,24 @@ function validBook(raw: unknown): Book | undefined {
 	if (!Array.isArray(years) || years.length > TAX_LIMITS.years || !years.every(validFigures)) return undefined;
 	if (new Set(years.map((y) => y.year)).size !== years.length) return undefined;
 	if (!Array.isArray(calls) || calls.length > TAX_LIMITS.calls || !calls.every(validCall)) return undefined;
-	return raw as Book;
+	return profile === undefined ? (raw as Book) : { ...(raw as Book), profile: { ...profile, pension: unfrozen(profile.pension) } };
+}
+
+/**
+ * Compatibility with the profiles saved before week 56's second review, which stored the 2026 INPS
+ * figures as if the person had said them. A fixed amount, minimale or top exactly equal to the 2026
+ * default is taken as not said, so the year's values are read when computing. The percentage stays:
+ * a person can well say the 24%. Applied on reading; the next write keeps the cleaned profile.
+ */
+function unfrozen(p: Pension): Pension {
+	if (p.kind !== "artigiani" && p.kind !== "commercianti") return p;
+	const d = IVS_YEARS[2026];
+	if (d === undefined) return p;
+	const { fixed, minimale, top, ...rest } = p;
+	return {
+		...rest,
+		...(fixed === undefined || fixed === d.fixed[p.kind] ? {} : { fixed }),
+		...(minimale === undefined || minimale === d.minimale ? {} : { minimale }),
+		...(top === undefined || top === d.top ? {} : { top }),
+	};
 }

@@ -874,7 +874,12 @@ describe("taxes: the second review", () => {
 			expect(r.twins).toEqual([]);
 		}
 		for (const name of ["Acconto fornitore Rossi", "ACI tassa automobilistica", "Poste imposta di bollo", "imposta di bollo fatture elettroniche", "contributo associazione", "contributi cassa edile", "acconto", "imposta"]) expect(isTaxName(name)).toBe(false);
-		for (const name of ["F24", "IRPEF", "imposta sostitutiva", "INPS", "tasse", "Agenzia delle Entrate", "agenzia entrate", "contributi INPS", "saldo imposta", "acconto contributi"]) expect(isTaxName(name)).toBe(true);
+		// A clear word wins over the excluded ones; «tasse» alone is not enough.
+		for (const name of ["tasse", "tasse universitarie"]) expect(isTaxName(name)).toBe(false);
+		for (const name of ["F24 acconti e bollo fatture", "contributi INPS fornitore", "saldo tasse", "tasse F24"]) expect(isTaxName(name)).toBe(true);
+		const clear = taxDuplicates(taxFlows([{ date: "2026-11-30", cents: 305_000n, what: "secondo acconto" }], TODAY, "2026-12-31"), [], [expense("S-11", "2026-11-30", "3050", { note: "F24 acconti e bollo fatture" })]);
+		expect(clear.taxes).toEqual([]);
+		for (const name of ["F24", "IRPEF", "imposta sostitutiva", "INPS", "Agenzia delle Entrate", "agenzia entrate", "contributi INPS", "saldo imposta", "acconto contributi"]) expect(isTaxName(name)).toBe(true);
 		const paid = taxDuplicates(tax, [], [expense("S-7", "2026-11-30", "3000", { supplier: "Agenzia delle Entrate" })]);
 		expect(paid.taxes).toEqual([]);
 		expect(paid.twins[0]?.expenses.map((e) => e.id)).toEqual(["S-7"]);
@@ -897,6 +902,12 @@ describe("taxes: the second review", () => {
 		expect(fixed.taxes.map((t) => t.cents)).toEqual([695_520n]);
 		const june = taxDuplicates(august, [], [expense("S-10", "2026-08-20", "4400", { supplier: "INPS" })]);
 		expect(june.twins.map((t) => t.tax.cents)).toEqual([695_520n]);
+		// One payment that covers about the sum of the two (≥ 70% of 7.689,92 €) stands for both.
+		const all = taxDuplicates(august, [], [expense("S-12", "2026-08-20", "6700", { note: "F24 saldo acconto e fissi" })]);
+		expect(all.taxes).toEqual([]);
+		expect(all.twins.map((t) => [t.tax.cents, t.expenses.map((e) => e.id)])).toEqual([[768_992n, ["S-12"]]]);
+		const voceAll: Movement = { date: "2026-08-20", kind: "out", cents: 670_000n, source: "item", item: { id: "C-0009", kind: "out", amount: "6700", name: "F24 saldo acconto e fissi", date: "2026-08-20", by: "u", at: "x" } };
+		expect(taxDuplicates(august, [voceAll]).taxes).toEqual([]);
 		// The forecast: a voce of 50 € for a 3.000 € F24 keeps the rest, said in the fence.
 		const s = await setup();
 		await s.run(CONSULENTE);
@@ -925,18 +936,22 @@ describe("taxes: the second review", () => {
 		expect(taxPayments(inputs(profile(), "2026-07-25", { figures: zero }), "2026-08-31").map((p) => p.what)).toEqual(["saldo e primo acconto, se non l'hai già pagato, dimmelo"]);
 	});
 
-	it("3. the 50% for those first registered in 2025 through 2027, then 35% with the reduction or nothing; only with the activity started in 2025", async () => {
+	it("3. the 50% for those first registered in 2025 through 2027, then 35% with the reduction or nothing; with an older partita IVA saved, the year of the first INPS registration to confirm", async () => {
 		const fifty = { kind: "commercianti", reduction: false, new2025: true } as const;
 		expect([keptPercent(fifty, 2026), keptPercent(fifty, 2027), keptPercent(fifty, 2028), keptPercent({ ...fifty, reduction: true }, 2028)]).toEqual([50n, 50n, 100n, 65n]);
 		expect(taxRules.NEW_2025_LAST_YEAR).toBe(2027);
 		const later = fattura(BETA, GAMMA, { number: "T-8", date: "2028-01-10", total: "20000.00", rate: [{ amount: "20000.00", due: "2028-01-31" }] });
 		const s = await setup({ files: { ...FILES, "f/t8.xml": later }, paid: { ...PAID, "T-8": "2028-01-20T10:00:00.000Z" } });
-		const refused = await s.run({ ...CONSULENTE, activity: "commercio", pension: "commercianti", first_registered_2025: true });
-		expect(refused).toBe("Non l'ho salvato: la riduzione del 50% vale solo per chi si è iscritto all'INPS per la prima volta nel 2025, e l'attività risulta aperta nel 2020. Chiedi a chi ti scrive quale dei due è giusto.");
-		expect(existsSync(join(s.dir, "taxes.json"))).toBe(false);
-		const asked = await s.run({ op: "set_profile", activity: "commercio", pension: "commercianti", first_registered_2025: true });
-		expect(asked).toBe("La riduzione del 50% vale per chi si è iscritto all'INPS per la prima volta nel 2025: chiedi a chi ti scrive se ha aperto l'attività nel 2025.");
-		for (const text of [refused, asked]) expect(text).not.toMatch(NO_OPS);
+		const older = await s.run({ ...CONSULENTE, activity: "commercio", pension: "commercianti", first_registered_2025: true });
+		expect(older).toContain("Fatto, profilo delle tasse salvato:");
+		expect(older).toContain("La riduzione del 50% vale per chi si è iscritto all'INPS come commerciante per la prima volta nel 2025, e l'attività risulta aperta nel 2020: chiedi a chi ti scrive di confermare l'anno della prima iscrizione (la partita IVA può essere più vecchia).");
+		expect(s.store.read().profile).toMatchObject({ startYear: 2020, pension: { kind: "commercianti", new2025: true } });
+		// Other fields of such a profile can be edited, without the question again.
+		const edited = await s.run({ op: "set_profile", coefficient: 40, rate: 5 });
+		expect(edited).toContain("Fatto, profilo delle tasse salvato:");
+		expect(edited).not.toContain("confermare l'anno");
+		expect(s.store.read().profile).toMatchObject({ rate: "5", pension: { new2025: true } });
+		for (const text of [older, edited]) expect(text).not.toMatch(NO_OPS);
 		const saved = await s.run({ op: "set_profile", activity: "commercio", pension: "commercianti", first_registered_2025: true, start_year: 2025 });
 		expect(saved).toContain("ridotti del 50% fino al 2027 per l'iscrizione nel 2025; valori INPS del 2026.");
 		s.at("2027-03-01");
@@ -963,6 +978,18 @@ describe("taxes: the second review", () => {
 		await s.run({ op: "set_profile", pension_fixed: "4600", minimale: "19000", pension_rate: "24" });
 		expect(s.store.read().profile?.pension).toEqual({ kind: "artigiani", fixed: "4600", rate: "24", minimale: "19000", reduction: true });
 		expect(await s.run({ op: "estimate" })).not.toContain("uso i valori INPS");
+	});
+
+	it("4b. a profile saved with the 2026 INPS figures frozen in reads fixed, minimale and top as not said; the person's own stay", () => {
+		const store = new TaxStore(temp());
+		const frozen = (pension: Pension) => {
+			store.update(`f${++calls}`, () => ({ ...profile({ pension }), rate: "15" }), []);
+			return store.read().profile?.pension;
+		};
+		expect(frozen({ kind: "artigiani", fixed: "4521.36", rate: "24", minimale: "18808", top: "56224", reduction: true })).toEqual({ kind: "artigiani", rate: "24", reduction: true });
+		expect(frozen({ kind: "commercianti", fixed: "4611.64", rate: "24.48", minimale: "18808", top: "56224", reduction: false, new2025: true })).toEqual({ kind: "commercianti", rate: "24.48", reduction: false, new2025: true });
+		expect(frozen({ kind: "artigiani", fixed: "4600", rate: "24", minimale: "19000", top: "56224", reduction: true })).toEqual({ kind: "artigiani", fixed: "4600", rate: "24", minimale: "19000", reduction: true });
+		expect(frozen({ kind: "gestione_separata", rate: "26.07", rateYear: 2026 })).toEqual({ kind: "gestione_separata", rate: "26.07", rateYear: 2026 });
 	});
 
 	it("5. the 2026 June deadline keeps its values and says where they come from", () => {
