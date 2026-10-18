@@ -6,6 +6,7 @@ import { expenseCallReads } from "./expenses.ts";
 import { invoiceCallReads } from "./invoices.ts";
 import { QUOTE_SOON_DAYS, quoteCallReads } from "./quotes.ts";
 import { renewalCallReads } from "./renewals.ts";
+import { salesCallReads } from "./sales-invoices.ts";
 import { taxCallReads } from "./taxes.ts";
 import { timesheetCallReads } from "./timesheet.ts";
 
@@ -71,6 +72,7 @@ const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "goog
  * writes nothing, but is not a brief's question). taxes reads with calendar (compact); the profile, what is put
  * aside and exporting write (estimate and what_if write nothing, but are not a brief's question). clients reads
  * with show, list (compact: the brief's line), top and dormant; the cards, notes, ricontatti, merges and exports write.
+ * sales_invoices reads with list and show; drafts, issues, credit notes, removals and settings write.
  */
 const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = new Map([
 	["invoices", invoiceCallReads],
@@ -81,6 +83,7 @@ const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = n
 	["cashflow", cashflowCallReads],
 	["taxes", taxCallReads],
 	["clients", clientCallReads],
+	["sales_invoices", salesCallReads],
 ]);
 
 /**

@@ -82,7 +82,8 @@ export function depositText(deposit: string, t: QuoteTotals): string {
 export function statusText(quote: Quote, view: QuoteView, due = false): string {
 	if (quote.file === undefined && quote.status !== "superseded") return "in preparazione";
 	const status = bareStatus(quote, view, due);
-	return quote.sentAt === undefined ? status : `${status}, inviato per mail il ${italianDate(dayOfIn(view.timeZone)(quote.sentAt))}`;
+	const sent = quote.sentAt === undefined ? status : `${status}, inviato per mail il ${italianDate(dayOfIn(view.timeZone)(quote.sentAt))}`;
+	return quote.invoice === undefined ? sent : `${sent}, fatturato con la fattura n. ${quote.invoice}`;
 }
 
 function bareStatus(quote: Quote, view: QuoteView, due: boolean): string {

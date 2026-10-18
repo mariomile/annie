@@ -133,6 +133,11 @@ export class QuoteStore {
 		});
 	}
 
+	/** The fattura `invoice` billed the quote `number` (sales_invoices): set once, the same again is no change. */
+	markInvoiced(number: string, invoice: string): void {
+		this.changeQuote(number, (quote) => (quote.invoice === invoice ? quote : { ...quote, invoice }));
+	}
+
 	private changeQuote(number: string, change: (quote: Quote) => Quote): void {
 		this.update((book) => {
 			const quote = book.quotes.find((q) => q.number === number);

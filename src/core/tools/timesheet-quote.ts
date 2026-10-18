@@ -50,7 +50,7 @@ const ACTIVITY_LENGTH = 40;
 type Picked = { readonly kind: "reserved"; readonly client: string; entries: ReservedEntry[] } | { readonly kind: "done"; readonly number: string } | { readonly kind: "answer"; readonly text: string };
 
 /** The words of the quote's lines: a project's hours with a few of its activities, an entry's day and description, a lump sum's hours and rate. */
-function lineWords(period: Period): LineWords {
+export function lineWords(period: Period): LineWords {
 	const short = (t: string) => (t.length > ACTIVITY_LENGTH ? `${t.slice(0, ACTIVITY_LENGTH - 1)}…` : t);
 	return {
 		group: (project, activities) => {
@@ -138,7 +138,7 @@ export async function toQuote(args: Record<string, unknown>, ctx: ToolContext, p
 		made.text,
 		`Le ore sono ora nel preventivo ${number}: ${entries(billed.changed)}, ${hoursText(minutes)} fatturabili.`,
 		...skipped,
-		"La fattura elettronica la emette chi ti scrive con il suo programma di fatturazione: Annie non emette fatture. Quando l'ha emessa, segna le ore come fatturate con op mark_billed e ref (il numero della fattura).",
+		"Quando il cliente accetta il preventivo, posso prepararne la fattura elettronica con sales_invoices: le ore si segnano come fatturate quando la fattura è emessa. Se invece la emette chi ti scrive con il suo programma, poi segna le ore come fatturate con op mark_billed e ref (il numero della fattura).",
 	].join("\n");
 }
 

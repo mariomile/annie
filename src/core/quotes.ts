@@ -93,6 +93,8 @@ export type Quote = Marker & {
 	readonly callId?: string;
 	/** When a mail with it went to the customer, approved by the person (quotes op send). */
 	readonly sentAt?: string;
+	/** The number of the fattura that billed it (sales_invoices), once issued. */
+	readonly invoice?: string;
 };
 
 /** A quote's totals, with its own options (ritenuta, bollo, prices with VAT, cassa, acconto). */
@@ -233,6 +235,7 @@ export function validQuote(v: unknown): v is Quote {
 	if (!STATUSES.includes(q.status)) return false;
 	if (q.statusMark !== undefined && !isMarker(q.statusMark)) return false;
 	if (q.sentAt !== undefined && (typeof q.sentAt !== "string" || Number.isNaN(Date.parse(q.sentAt)) || q.sentAt.length > 40)) return false;
+	if (q.invoice !== undefined && (typeof q.invoice !== "string" || !/^\d{4}\/\d{1,5}$|^\d{1,5}$/.test(q.invoice))) return false;
 	if (q.status !== "superseded") return q.replacedBy === undefined && q.before === undefined;
 	if (typeof q.replacedBy !== "string" || !REVISION.test(q.replacedBy) || !q.replacedBy.startsWith(`${q.base}-R`)) return false;
 	const b = q.before;
