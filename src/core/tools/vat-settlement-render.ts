@@ -198,9 +198,12 @@ export function creditLine(credit: bigint): string {
 /** One deadline in a row: when (and why it moved), what, how much, the code. */
 function deadlineRow(d: Deadline, today: string): string {
 	const amount = d.cents === undefined ? (d.kind === "acconto" ? "importo da calcolare" : "importo a fine periodo") : d.cents === 0n ? `niente da versare${d.partial ? " finora" : ""}${confirmed(d)}` : `circa ${euros(d.cents)}${d.partial ? " finora" : ""}${confirmed(d)}`;
-	if (d.date < today) return `• Scaduto ${whenText(d)}, se non l'hai già pagato: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
+	if (d.date < today) return `• Scaduto ${whenText(d)}, ${notYet(d)}: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
 	return `• ${capitalized(whenText(d))}: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
 }
+
+/** «se non l'hai già pagato»; an acconto of a year before Annie kept the IVA «se non l'hai già versato». */
+const notYet = (d: Deadline) => (d.beforeSetup === true ? "se non l'hai già versato" : "se non l'hai già pagato");
 
 /** «, tolto il credito confermato»: a first period of a year with the credit the person said taken off. */
 const confirmed = (d: Deadline) => (d.opening !== undefined && d.opening > 0n ? ", tolto il credito confermato" : "");
@@ -243,7 +246,7 @@ export function briefAnswer(soon: readonly Deadline[], today: string): string {
 		rows.push(`F24 ${withDate("il", d.date)} (${inDays}), circa ${euros(d.cents)}${confirmed(d)} (${deadlineWhat(d)}, codice ${d.code}), stima da verificare con il commercialista.`);
 	}
 	const late = soon.filter((d) => d.date < today && d.cents !== undefined && d.cents > 0n && d.paid === undefined).at(-1);
-	if (late !== undefined) rows.push(`F24 ${deadlineWhat(late)} scaduto ${shortDay(late.date, today)} (circa ${euros(late.cents as bigint)}${confirmed(late)}): se l'hai pagato dimmelo, se no parlane con il commercialista.`);
+	if (late !== undefined) rows.push(`F24 ${deadlineWhat(late)} scaduto ${shortDay(late.date, today)} (circa ${euros(late.cents as bigint)}${confirmed(late)}): ${late.beforeSetup === true ? "se non l'hai già versato, parlane con il commercialista; se l'hai versato dimmelo" : "se l'hai pagato dimmelo, se no parlane con il commercialista"}.`);
 	if (rows.length === 0) return NOTHING;
 	return `IVA: ${rows.join(" Inoltre ")} Nel brief riporta questo in una riga.`;
 }

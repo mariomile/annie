@@ -17,8 +17,9 @@
  * - the acconto of December: storico 88% of last year's December or fourth quarter before its
  *   acconto (as said, else from last year's documents), analitico 100% of the operations to 20
  *   December, previsionale 88% of what the person expects; none under 103,29 €; the smaller allowed.
- *   It is taken off December or the fourth quarter only once marked paid. None is computed for a
- *   year over before the periodicity was first saved, or with no period over that has documents
+ *   It is taken off December or the fourth quarter only once marked paid. None is computed when
+ *   its deadline was over by more than OVERDUE_DAYS when the periodicity was first saved, nor for a
+ *   year with no period over that has documents
  *   (unless the person said its base or what they expect).
  * - every deadline moves to the next working day (dates.ts, Saturday included), and carries why.
  */
@@ -262,8 +263,8 @@ export type Acconto = {
 export function accontoOf(i: VatInputs, year: number, expected?: bigint): Acconto {
 	const said = cents(yearFigures(i, year - 1)?.base);
 	const paid = paidOf(i, `${year}-acconto`);
-	// Not for a year over before the periodicity was saved, nor from documents of a year with no period over that has any.
-	if ((i.since !== undefined && `${year}-12-31` < i.since) || (said === undefined && expected === undefined && !anyPeriodOver(i, year))) return { year, belowMin: false, ...(paid === undefined ? {} : { paid }) };
+	// Not for an acconto already past being said overdue when the periodicity was saved, nor from documents of a year with no period over that has any.
+	if ((i.since !== undefined && addDays(slipOf(`${year}-${ACCONTO_DUE}`).date, OVERDUE_DAYS) < i.since) || (said === undefined && expected === undefined && !anyPeriodOver(i, year))) return { year, belowMin: false, ...(paid === undefined ? {} : { paid }) };
 	const lastYear = i.docs.some((d) => d.date.startsWith(`${year - 1}-`));
 	const gross = (() => {
 		if (said !== undefined) return { base: said, from: "detto" as const };
@@ -328,6 +329,8 @@ export type Deadline = {
 	readonly partial: boolean;
 	readonly interest?: bigint;
 	readonly paid?: PaidMark;
+	/** An acconto of a year over before the periodicity was saved: Annie never saw it, «se non l'hai già versato». */
+	readonly beforeSetup?: true;
 	/** The first period of a year: the credit the person said or confirmed, taken off it. */
 	readonly opening?: bigint;
 	/** The annual saldo paid later, with its percentage more. */
@@ -375,7 +378,7 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 	}
 	const a = accontoOf(i, year);
 	const accontoDue = `${year}-${ACCONTO_DUE}`;
-	out.push({ kind: "acconto", due: accontoDue, ...slipOf(accontoDue), code: CODE_ACCONTO[i.periodicity], key: `${year}-acconto`, year, ...(a.cents === undefined ? {} : { cents: a.cents }), partial: a.analitico?.partial === true && a.storico === undefined, ...(a.paid === undefined ? {} : { paid: a.paid }) });
+	out.push({ kind: "acconto", due: accontoDue, ...slipOf(accontoDue), code: CODE_ACCONTO[i.periodicity], key: `${year}-acconto`, year, ...(a.cents === undefined ? {} : { cents: a.cents }), ...(i.since !== undefined && `${year}-12-31` < i.since ? { beforeSetup: true as const } : {}), partial: a.analitico?.partial === true && a.storico === undefined, ...(a.paid === undefined ? {} : { paid: a.paid }) });
 	if (i.periodicity === "mensile") {
 		// Monthly: what December leaves under the minimum is the annual saldo, if over 10,33 €.
 		const december = periods.find((l) => l.period.n === 12);
@@ -418,8 +421,8 @@ export function deadlineOf(i: VatInputs, p: VatPeriod): Deadline | undefined {
 	return deadlinesOf(i, p.year).find((d) => d.period !== undefined && d.period.n === p.n);
 }
 
-/** An F24 of the IVA for the cashflow: its day, amount and words, «iva» so it pairs only with voci about IVA; `was` the day of one overdue, counted today. */
-export type VatPayment = { readonly date: string; readonly cents: bigint; readonly what: string; readonly iva: true; readonly was?: string; readonly late?: true };
+/** An F24 of the IVA for the cashflow: its day, amount and words, «iva» so it pairs only with voci about IVA, `key` its period (vat.ts) for a voce that names one; `was` the day of one overdue, counted today. */
+export type VatPayment = { readonly date: string; readonly cents: bigint; readonly what: string; readonly iva: true; readonly key: string; readonly was?: string; readonly late?: true };
 
 /**
  * The F24 the cashflow counts: the calendar's deadlines with an amount, from today to `end`, and
@@ -429,7 +432,7 @@ export function vatPayments(i: VatInputs, end: string, words: (d: Deadline) => s
 	if (end < i.today) return [];
 	return calendar(i, CALENDAR_DAYS)
 		.filter((d) => d.date <= end && d.cents !== undefined && d.cents > 0n && (d.date >= i.today || isOverdue(d, i.today)))
-		.map((d) => ({ date: d.date < i.today ? i.today : d.date, cents: d.cents as bigint, what: words(d), iva: true as const, ...(d.date < i.today ? { was: d.date, late: true as const } : {}) }));
+		.map((d) => ({ date: d.date < i.today ? i.today : d.date, cents: d.cents as bigint, what: words(d), iva: true as const, key: d.key, ...(d.date < i.today ? { was: d.date, late: true as const } : {}) }));
 }
 
 /** The year's IVA credit at its end (the last period's credit), when the year is over. */

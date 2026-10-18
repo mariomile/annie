@@ -354,7 +354,7 @@ describe("vat: the rules and the arithmetic", () => {
 		// Overdue: it stays like a periodic F24, up to 30 days (M2).
 		const later = { ...i, today: "2027-01-20" };
 		expect(calendar(later).map((d) => d.key)).toContain("2026-acconto");
-		expect(vatPayments(later, "2027-01-31", () => "x")).toContainEqual({ date: "2027-01-20", cents: 66_000n, what: "x", iva: true, was: "2026-12-28", late: true });
+		expect(vatPayments(later, "2027-01-31", () => "x")).toContainEqual({ date: "2027-01-20", cents: 66_000n, what: "x", iva: true, key: "2026-acconto", was: "2026-12-28", late: true });
 		// Marked paid: taken off, out of the calendar.
 		const paid = { ...i, paid: [{ key: "2026-acconto", date: "2026-12-27", amount: "660", by: "u", at: "x" }] };
 		const after = yearOf(paid, 2026).at(-1) as Liquidation;
@@ -365,11 +365,21 @@ describe("vat: the rules and the arithmetic", () => {
 
 	it("S2: an overdue F24 within 30 days goes to the cashflow today and to the brief in one row", () => {
 		const i = inputs([doc("sale", "2026-09-10", [row("4000")])]);
-		expect(vatPayments(i, "2026-10-31", (d) => vatWhat(d))).toEqual([{ date: TODAY, cents: 88_000n, what: "F24 IVA di settembre 2026 (stima)", iva: true, was: "2026-10-16", late: true }]);
+		expect(vatPayments(i, "2026-10-31", (d) => vatWhat(d))).toEqual([{ date: TODAY, cents: 88_000n, what: "F24 IVA di settembre 2026 (stima)", iva: true, key: "2026-09", was: "2026-10-16", late: true }]);
 		expect(briefAnswer(calendar(i, BRIEF_DAYS + 1), TODAY)).toBe("IVA: F24 IVA di settembre 2026 scaduto il 16 ottobre (circa 880,00 €): se l'hai pagato dimmelo, se no parlane con il commercialista. Nel brief riporta questo in una riga.");
 		const gone = { ...i, today: "2026-11-20" };
 		expect(vatPayments(gone, "2026-11-30", () => "x")).toEqual([]);
 		expect(isOverdue(calendar(i)[0] as never, TODAY)).toBe(true);
+	});
+
+	it("T3: set up in January, last year's unpaid acconto is still said once, «se non l'hai già versato»", () => {
+		const jan = inputs([doc("sale", "2025-12-05", [row("2000")])], { today: "2026-01-10", since: "2026-01-05", years: [{ year: 2024, base: "1000" }] });
+		const due = calendar(jan).find((d) => d.key === "2025-acconto") as Deadline;
+		expect([due.cents, due.beforeSetup]).toEqual([44_000n, true]);
+		expect(calendarAnswer(calendar(jan), "2026-01-10", CALENDAR_ROWS)).toContain("• Scaduto il 29 dicembre 2025 (il 27 cade di sabato), se non l'hai già versato: acconto IVA 2025, circa 440,00 €, codice 6013.");
+		expect(briefAnswer(calendar(jan, BRIEF_DAYS + 1), "2026-01-10")).toContain("F24 acconto IVA 2025 scaduto il 29 dicembre 2025 (circa 440,00 €): se non l'hai già versato, parlane con il commercialista; se l'hai versato dimmelo.");
+		// Set up past the 30 days: not said.
+		expect(calendar({ ...jan, since: "2026-01-29", today: "2026-01-29" }).find((d) => d.key === "2025-acconto")?.cents).toBeUndefined();
 	});
 
 	it("M2: an overdue acconto like a periodic F24, never past 16 March; none for a year before the settings or without a period of data; the year in the brief", () => {
@@ -932,6 +942,43 @@ describe("vat in the cashflow", () => {
 		expect([voced.taxes, voced.twins.length]).toEqual([[], 1]);
 		// Before its due date by more than 10 days: not this one.
 		expect(taxDuplicates(late, [voce("F24 IVA settembre", "2026-09-20", 18_700n)]).taxes).toHaveLength(1);
+	});
+
+	it("T1: paying the next F24 early settles that one, never the overdue one; an unnamed one alone settles the late one", () => {
+		const today = "2026-11-12";
+		const flows = (sep: bigint, oct: bigint) =>
+			taxFlows(
+				[
+					{ date: today, cents: sep, what: "F24 IVA di settembre 2026, scaduto il 16/10 (stima)", iva: true, key: "2026-09", was: "2026-10-16", late: true },
+					{ date: "2026-11-16", cents: oct, what: "F24 IVA di ottobre 2026 (stima)", iva: true, key: "2026-10" },
+				],
+				today,
+				"2026-12-31",
+			);
+		for (const [sep, oct] of [
+			[200_000n, 600_000n],
+			[600_000n, 200_000n],
+			[400_000n, 400_000n],
+		] as const) {
+			const taxes = flows(sep, oct);
+			const named = taxDuplicates(taxes, [], [expense("E-1", today, String(Number(oct) / 100), { note: "F24 IVA ottobre" })]);
+			expect([sep, named.taxes.map((t) => t.tax?.key), named.twins.map((t) => t.tax.tax?.key)]).toEqual([sep, ["2026-09"], ["2026-10"]]);
+			// Unnamed, the October estimate is 4 days away: still October, not the overdue one.
+			const plain = taxDuplicates(taxes, [voce("F24 IVA", today, oct)]);
+			expect(plain.twins.map((t) => t.tax.tax?.key)).toEqual(["2026-10"]);
+			// «10/2026» names October too.
+			expect(taxDuplicates(taxes, [voce("IVA 10/2026", today, oct)]).twins.map((t) => t.tax.tax?.key)).toEqual(["2026-10"]);
+		}
+		// Naming September settles September even with October nearer.
+		expect(taxDuplicates(flows(200_000n, 600_000n), [voce("F24 IVA settembre", today, 200_000n)]).twins.map((t) => t.tax.tax?.key)).toEqual(["2026-09"]);
+		// An unnamed «F24 IVA» today with no other estimate near: the late one.
+		const alone = taxFlows([{ date: today, cents: 200_000n, what: "F24 IVA di settembre 2026", iva: true, key: "2026-09", was: "2026-10-16", late: true }], today, "2026-12-31");
+		expect(taxDuplicates(alone, [], [expense("E-2", today, "2000", { note: "F24 IVA" })]).taxes).toEqual([]);
+	});
+
+	it("T2: a rate next to «iva», any share in %, saldo or acconto without «iva» after them: a price, not an F24", () => {
+		for (const name of ["Saldo lavori IVA 22", "Acconto mobili IVA 10", "Acconto cucina 10% IVA", "Acconto 30% lavori IVA", "Saldo cucina 22% IVA", "Saldo lavori Bianchi IVA"]) expect([name, isTaxName(name), taxKindOf(name)]).toEqual([name, false, "any"]);
+		for (const name of ["Saldo IVA 2025", "acconto IVA", "acconto IVA 88%", "Saldo IVA 2025 + interessi", "IVA trimestrale + interessi 1%", "F24 IVA ottobre", "IVA 10/2026"]) expect([name, isTaxName(name), taxKindOf(name)]).toEqual([name, true, "iva"]);
 	});
 
 	it("S3: a price with its IVA, a rate or a bare number is not an F24", () => {
