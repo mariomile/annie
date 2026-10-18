@@ -7,7 +7,8 @@
  */
 import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
-import { businessKey, words } from "./name-keys.ts";
+import { businessKey, saysPhrase, words } from "./name-keys.ts";
+import { METHODS, type Method } from "./payment-methods.ts";
 import { VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
 
@@ -53,8 +54,7 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-export const METHODS = ["contanti", "carta", "bonifico", "altro"] as const;
-export type Method = (typeof METHODS)[number];
+export { matchMethod, METHODS, type Method } from "./payment-methods.ts";
 
 /** What the document of an expense is; a scontrino when not said. */
 export const DOC_TYPES = ["scontrino", "ricevuta", "fattura"] as const;
@@ -80,21 +80,6 @@ const CATEGORY_WORDS: Readonly<Record<Exclude<Category, "altro">, readonly strin
 	spedizioni: ["spedizione", "spedizioni", "corriere", "poste", "raccomandata", "pacco", "dhl", "ups", "gls", "brt", "bartolini", "sda", "fedex"],
 };
 
-const METHOD_WORDS: Readonly<Record<Exclude<Method, "altro">, readonly string[]>> = {
-	contanti: ["contanti", "contante", "cash"],
-	carta: ["carta", "bancomat", "pos", "credito", "debito", "visa", "mastercard", "amex", "american express", "maestro", "apple pay", "google pay", "satispay", "paypal", "prepagata"],
-	bonifico: ["bonifico", "bonifici", "sepa", "rid", "sdd", "addebito", "domiciliazione"],
-};
-
-/** Whether the words hold `key`, a whole word or a phrase of whole words in a row. */
-function says(tokens: readonly string[], key: string): boolean {
-	const parts = key.split(" ");
-	for (let i = 0; i + parts.length <= tokens.length; i++) {
-		if (parts.every((p, j) => tokens[i + j] === p)) return true;
-	}
-	return false;
-}
-
 /**
  * The category a person's words mean: a category's name («Software e abbonamenti», «software»),
  * or a whole word of its list («benzina», «pranzo», «commercialista»). Undefined when nothing
@@ -108,18 +93,7 @@ export function matchCategory(text: string): Category | undefined {
 	if (exact !== undefined) return exact;
 	if (joined === "altre" || joined === "varie") return "altro";
 	for (const [category, keys] of Object.entries(CATEGORY_WORDS) as [Category, readonly string[]][]) {
-		if (keys.some((k) => says(tokens, k))) return category;
-	}
-	return undefined;
-}
-
-/** The payment method a person's words mean; undefined when nothing fits. */
-export function matchMethod(text: string): Method | undefined {
-	const tokens = words(text);
-	if (tokens.length === 0) return undefined;
-	if (tokens.join(" ") === "altro") return "altro";
-	for (const [method, keys] of Object.entries(METHOD_WORDS) as [Method, readonly string[]][]) {
-		if (keys.some((k) => says(tokens, k))) return method;
+		if (keys.some((k) => saysPhrase(tokens, k))) return category;
 	}
 	return undefined;
 }

@@ -19,6 +19,7 @@ import { type Company, register } from "../src/core/invoices.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { readDay, readDayNoted, readTotal, resolveVat } from "../src/core/tools/expense-input.ts";
+import { sameDraft } from "../src/core/tools/field-input.ts";
 import { createExpenseTools, type ExpenseEvent } from "../src/core/tools/expense-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
@@ -60,7 +61,7 @@ const B70 = "IT03311220036|b-70|2026-09-01|TD01";
 const B71 = "IT03311220036|b-71|2026-09-10|TD01";
 const A1 = "IT02987650013|a-1|2026-09-01|TD01";
 
-type Setup = { company?: Partial<Company> | false; files?: Record<string, string>; now?: Date; store?: (dir: string) => ExpenseStore };
+type Setup = { company?: Partial<Company> | false; files?: Record<string, string>; now?: Date; store?: (dir: string) => ExpenseStore; failAudit?: { count: number } };
 
 function setup(o: Setup = {}) {
 	const dir = temp();
@@ -85,6 +86,10 @@ function setup(o: Setup = {}) {
 		timeZone: "Europe/Rome",
 		whoIs: () => "test:u",
 		record: async (e) => {
+			if (o.failAudit !== undefined && o.failAudit.count > 0) {
+				o.failAudit.count--;
+				throw new Error("audit down");
+			}
 			events.push(e);
 		},
 		scanner: new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) }),
@@ -860,3 +865,22 @@ async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 		throw new Error("no reply");
 	};
 }
+
+describe("expenses: audit on a rerun, the same draft", () => {
+	it("an add whose audit failed writes it when run again, and records the expense once", async () => {
+		const failAudit = { count: 1 };
+		const s = setup({ failAudit });
+		const c = durable();
+		await expect(s.run(BENZINA, c)).rejects.toThrow("audit down");
+		expect(s.events).toEqual([]);
+		expect(outside(await s.run(BENZINA, c))).toContain("S-2026-0001");
+		expect(s.events).toEqual([{ type: "expense.changed", op: "add", count: 1 }]);
+		expect(s.store.read().expenses).toHaveLength(1);
+	});
+
+	it("sameDraft ignores the keys skipped and the ones left undefined", () => {
+		expect(sameDraft({ amount: "10", note: undefined }, { amount: "10", id: "S-2026-0001" }, ["id"])).toBe(true);
+		expect(sameDraft({ amount: "10" }, { amount: "10", note: "x" }, [])).toBe(false);
+		expect(sameDraft({ amount: "10" }, { amount: "12" }, [])).toBe(false);
+	});
+});

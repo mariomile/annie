@@ -237,6 +237,10 @@ _Avoid_: expense, costo, uscita (per la singola spesa)
 Un tempo di lavoro registrato con `timesheet` (O-AAAA-NNNN): cliente, progetto, data, minuti, attività e se è fatturabile. Può essere da fatturare, nel preventivo N o fatturata con un riferimento. Vedi ADR 0058.
 _Avoid_: timesheet entry, ora (per la voce)
 
+**Rinnovo**:
+Un costo o un contratto che torna a ogni periodo (abbonamento, polizza, dominio, affitto), registrato con `renewals` (R-NNNN): importo, frequenza, prossima scadenza, se si rinnova da solo (`auto_renew`), se si paga da solo (`auto_pay`) e la data entro cui disdire. Vedi ADR 0064.
+_Avoid_: renewal, subscription
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
