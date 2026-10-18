@@ -43,6 +43,7 @@ const ICONS = {
 	listen: ["M4 9v6h4l5 4V5L8 9H4Z", "M16.5 8.5a5 5 0 0 1 0 7", "M19 6a8.5 8.5 0 0 1 0 12"],
 	stop: ["M7 7h10v10H7Z"],
 	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
+	board: ["M4 5h4v14H4Z", "M10 5h4v9h-4Z", "M16 5h4v6h-4Z"],
 	agenti: ["M8 4h8a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3Z", "M9.5 9.5h.01M14.5 9.5h.01", "M9 20h6", "M12 16v4"],
 	segreteria: ["M3 13h5l1.5 2.5h5L16 13h5", "M5.5 5h13L21 13v6H3v-6Z"],
 	approvazioni: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "m8.5 12.5 2.5 2.5 4.5-5"],
@@ -154,6 +155,7 @@ const PALETTE = [
 	{ id: "inizia", label: "Primi passi", group: "Lavoro", owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft },
 	{ id: "chat", label: "Chat", group: "Lavoro" },
 	{ id: "agenti", label: "Agenti", group: "Lavoro", count: () => (state.instances.length > 1 ? state.instances.length : 0) },
+	{ id: "board", label: "Board", group: "Lavoro" },
 	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
 	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
 	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
@@ -1022,7 +1024,7 @@ function render() {
 	renderRail();
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
-	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, agenti: viewAgents, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -3258,6 +3260,252 @@ function agentForm() {
 	document.body.append(dialog);
 	dialog.showModal();
 	name.focus();
+}
+
+// ---------- board (ADR 0049) ----------
+const BOARD_COLUMNS = [
+	["da_fare", "Da fare"],
+	["in_corso", "In corso"],
+	["da_rivedere", "Da rivedere"],
+	["fatto", "Fatto"],
+];
+const PRIORITIES = [
+	["bassa", "Bassa"],
+	["normale", "Normale"],
+	["alta", "Alta"],
+];
+
+async function viewBoard(main) {
+	const data = await api("/api/board");
+	const agentOf = (id) => data.agents.find((a) => a.id === id);
+	const who = (actor) => (actor.kind === "agent" ? (agentOf(actor.id)?.name ?? "un agente") : actor.id === state.me.id ? "Tu" : (data.people[actor.id] ?? "una persona"));
+	const face = (id) => {
+		const a = agentOf(id);
+		return a ? h("span.board-face", { "aria-hidden": "true" }, a.emoji ?? initials(a.name)) : null;
+	};
+	const save = async (card, body, done) => {
+		try {
+			await api(`/api/board/${card.id}`, { method: "PUT", body });
+			if (done) toast(done);
+			render();
+			return true;
+		} catch (error) {
+			toast(error.message, true);
+			return false;
+		}
+	};
+	const tile = (c) =>
+		h(
+			`button.board-card${c.priority === "alta" ? ".alta" : ""}`,
+			{ type: "button", onclick: () => cardDialog(c) },
+			h("span.board-title", h("span.muted.mono", `#${c.n} `), c.title),
+			h(
+				"span.board-meta",
+				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
+				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
+			),
+		);
+	const columns = h(
+		"div.board",
+		BOARD_COLUMNS.map(([status, label]) => {
+			const cards = data.cards.filter((c) => c.status === status).sort((a, b) => (status === "fatto" ? b.updatedAt.localeCompare(a.updatedAt) : (b.priority === "alta") - (a.priority === "alta") || a.n - b.n));
+			return h(
+				`section.board-col.${status}`,
+				{ "aria-label": label },
+				h("h2", label, h("span.muted", String(cards.length))),
+				cards.length ? cards.map(tile) : h("p.muted.small", status === "da_rivedere" ? "Qui arrivano le schede finite dagli agenti, da approvare." : "Nessuna scheda"),
+			);
+		}),
+	);
+
+	// One scheda: what it asks, who has it, what happened, and the moves a person makes.
+	const cardDialog = (c) => {
+		const mine = c.work?.personId === state.me.id;
+		const assignable = data.agents.filter((a) => a.canAssign || a.id === c.assignee);
+		const assignee = h("select", { "aria-label": "Assegnata a" }, h("option", { value: "" }, "Nessuno"), assignable.map((a) => h("option", { value: a.id, selected: a.id === c.assignee ? "selected" : undefined }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
+		// «In corso» comes from Avvia, which hands the scheda to the agente; not from a list.
+		const status = h(
+			"select",
+			{ "aria-label": "Colonna" },
+			BOARD_COLUMNS.filter(([v]) => v !== "in_corso" || c.status !== "da_fare").map(([v, l]) => h("option", { value: v, selected: v === c.status ? "selected" : undefined }, l)),
+		);
+		const comment = h("textarea", { rows: 2, placeholder: c.status === "da_rivedere" ? "Cosa va cambiato, se la rimandi indietro" : mine && c.status === "in_corso" ? "Arriva anche all'agente, nella conversazione" : "Un commento" });
+		const events = c.events.filter((e) => e.kind !== "edited").slice(-30);
+		const line = (e) =>
+			h(
+				"li",
+				h("span.muted.small", `${fmt.time(e.at)} · ${who(e.by)}`),
+				h(
+					"div",
+					e.kind === "created"
+						? "ha creato la scheda"
+						: e.kind === "status"
+							? `l'ha spostata in «${BOARD_COLUMNS.find(([v]) => v === e.status)?.[1] ?? e.status}»`
+							: e.kind === "assigned"
+								? e.assignee
+									? `l'ha assegnata a ${agentOf(e.assignee)?.name ?? "un agente"}`
+									: `ha tolto l'assegnazione${e.text ? ` (${e.text})` : ""}`
+								: e.text,
+				),
+			);
+		const dialog = h("dialog.board-dialog");
+		const act = (body, done) => async () => {
+			if (await save(c, body, done)) dialog.close();
+		};
+		const withComment = (body) => (comment.value.trim() ? { ...body, comment: comment.value } : body);
+		const openThread = async () => {
+			dialog.close();
+			// An agente created after this page was loaded is not in the list yet.
+			store("annie.instance", c.work.agent);
+			await refreshInstances();
+			if (state.instance?.id !== c.work.agent) {
+				if (state.instance) store("annie.instance", state.instance.id);
+				return toast("Non puoi più scrivere a questo agente", true);
+			}
+			state.threads = [];
+			void refreshSetup();
+			go("chat", c.work.threadId);
+		};
+		const moves = [];
+		if (c.status === "da_rivedere") {
+			moves.push(h("button.btn.accent", { onclick: act(withComment({ status: "fatto" }), `Scheda #${c.n} approvata`) }, icon("check"), "Approva"));
+			moves.push(
+				h(
+					"button.btn",
+					{
+						onclick: () => {
+							if (!comment.value.trim()) {
+								comment.focus();
+								return toast("Scrivi cosa va cambiato", true);
+							}
+							void act({ status: "in_corso", comment: comment.value }, mine ? `Scheda #${c.n} rimandata a ${agentOf(c.assignee)?.name ?? "l'agente"}` : `Scheda #${c.n} rimandata in «Da fare»: premi Avvia per lavorarci con l'agente`)();
+						},
+					},
+					"Rimanda indietro",
+				),
+			);
+		}
+		if (c.status === "da_fare" && c.assignee && agentOf(c.assignee)?.canAssign)
+			moves.push(
+				h(
+					"button.btn.accent",
+					{
+						onclick: async () => {
+							try {
+								await api(`/api/board/${c.id}/start`, { method: "POST" });
+								dialog.close();
+								toast(`${agentOf(c.assignee).name} ci sta lavorando`);
+								render();
+							} catch (error) {
+								toast(error.message, true);
+							}
+						},
+					},
+					"Avvia",
+				),
+			);
+		if (mine && c.work.agent === c.assignee && c.status !== "da_fare") moves.push(h("button.btn.ghost", { onclick: openThread }, "Apri la conversazione"));
+		const canDelete = state.me.role === "owner" || (c.createdBy.kind === "person" && c.createdBy.id === state.me.id);
+		dialog.append(
+			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
+			h("h3", c.title),
+			c.description ? h("p.board-desc", c.description) : null,
+			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status)),
+			moves.length ? h("div.actions", moves) : null,
+			events.length ? h("ul.board-events", events.map(line)) : null,
+			h("label.field", h("span", "Commento"), comment),
+			h(
+				"div.actions",
+				h(
+					"button.btn",
+					{
+						onclick: () => {
+							const body = withComment({});
+							if (assignee.value !== (c.assignee ?? "")) body.assignee = assignee.value;
+							if (status.value !== c.status) body.status = status.value;
+							if (Object.keys(body).length === 0) return dialog.close();
+							void act(body, "Scheda aggiornata")();
+						},
+					},
+					"Salva",
+				),
+				h("button.btn.ghost", { onclick: () => dialog.close() }, "Chiudi"),
+				canDelete
+					? h(
+							"button.btn.ghost.danger",
+							{
+								onclick: async () => {
+									if (!confirm(`Eliminare la scheda #${c.n}?`)) return;
+									try {
+										await api(`/api/board/${c.id}`, { method: "DELETE" });
+										dialog.close();
+										toast("Scheda eliminata");
+										render();
+									} catch (error) {
+										toast(error.message, true);
+									}
+								},
+							},
+							"Elimina",
+						)
+					: null,
+			),
+		);
+		dialog.addEventListener("close", () => dialog.remove());
+		document.body.append(dialog);
+		dialog.showModal();
+	};
+
+	const newCard = () => {
+		const title = h("input", { type: "text", maxlength: 120, placeholder: "Es. Prepara il preventivo per Rossi" });
+		const description = h("textarea", { rows: 4, placeholder: "Cosa fare e quando è finito: l'agente vede solo questo" });
+		const assignee = h("select", h("option", { value: "" }, "Nessuno, per ora"), data.agents.filter((a) => a.canAssign).map((a) => h("option", { value: a.id }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
+		const priority = h("select", PRIORITIES.map(([v, l]) => h("option", { value: v, selected: v === "normale" ? "selected" : undefined }, l)));
+		const ok = h("button.btn.accent", "Crea");
+		const dialog = h(
+			"dialog.board-dialog",
+			h("h3", "Nuova scheda"),
+			h("label.field", h("span", "Titolo"), title),
+			h("label.field", h("span", "Descrizione"), description),
+			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
+			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito."),
+			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
+		);
+		ok.onclick = async () => {
+			ok.disabled = true;
+			try {
+				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value } : {}) } });
+				dialog.close();
+				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : `Scheda #${card.n} creata`);
+				render();
+			} catch (error) {
+				ok.disabled = false;
+				toast(error.message, true);
+			}
+		};
+		dialog.addEventListener("close", () => dialog.remove());
+		document.body.append(dialog);
+		dialog.showModal();
+		title.focus();
+	};
+
+	mount(
+		main,
+		head("Annie", h("h1", "Board"), "Le cose da fare, affidate agli agenti. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la sposta in «Da rivedere»; poi una persona la chiude, o la rimanda indietro con un commento. Puoi anche chiedere in chat: «mettilo in board per Ricercatore», e avviarla da qui.", h("button.btn.accent", { onclick: newCard }, icon("plus"), "Nuova scheda")),
+		columns,
+	);
+	// The agenti move schede while the page is open: it follows them, unless a scheda is open.
+	const shown = JSON.stringify(data.cards.map((c) => [c.id, c.updatedAt]));
+	const timer = setInterval(async () => {
+		if (!main.isConnected) return clearInterval(timer);
+		if (document.querySelector("dialog[open]") || document.hidden) return;
+		try {
+			const next = await api("/api/board");
+			if (main.isConnected && JSON.stringify(next.cards.map((c) => [c.id, c.updatedAt])) !== shown) render();
+		} catch {
+			/* next round */
+		}
+	}, 10_000);
 }
 
 /** Every agente with its face, what it does and what runs by itself. */

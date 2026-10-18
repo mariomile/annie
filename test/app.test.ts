@@ -261,6 +261,77 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await api("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
 	});
 
+	it("the board (ADR 0049): a scheda handed to an agente is worked in its conversation, reviewed and closed by a person", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "ricerca", name: "Ricercatore", persona: { emoji: "🔎" } });
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		const send = (method: string, path: string, body?: unknown, cookie = api.cookie) =>
+			// biome-ignore lint: test
+			fetch(`${base}${path}`, { method, headers: { "x-annie": "1", "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(async (r) => ({ status: r.status, ...((await r.json()) as any) }));
+		const board = await api("/api/board");
+		expect(board.cards).toEqual([]);
+		expect(board.agents.map((a: { id: string; canAssign: boolean }) => [a.id, a.canAssign])).toEqual([
+			["annie", true],
+			["ricerca", true],
+			["vendite", true],
+		]);
+		expect((await api("/api/board", { title: "  " })).error).toMatch(/titolo/);
+
+		const { card } = await api("/api/board", { title: "Fornitori carta", description: "Tre preventivi", assignee: "ricerca", priority: "alta" });
+		expect(card).toMatchObject({ n: 1, status: "in_corso", priority: "alta", assignee: "ricerca" });
+		const threadId = card.work.threadId as string;
+		const entries = async () => (await api(`/api/instances/ricerca/threads/${threadId}`)).entries as { from: string; text?: string }[];
+		// The brief is in Ricercatore's conversation with the owner, and Ricercatore answered it.
+		await until(async () => (await entries()).some((e) => e.from === "annie"));
+		expect((await entries())[0]?.text).toMatch(/^\[Scheda #1 dalla board\] Fornitori carta\n\nTre preventivi/);
+		expect((await api("/api/instances/ricerca/threads")).threads.find((t: { id: string }) => t.id === threadId).title).toBe("#1 Fornitori carta");
+
+		// Ricercatore finishes and moves it; it cannot close it.
+		await api(`/api/instances/ricerca/threads/${threadId}/messages`, { text: '/tool board_update {"status":"da_rivedere","comment":"Tre preventivi nel file"}' });
+		await until(async () => (await api("/api/board")).cards[0].status === "da_rivedere");
+		await api(`/api/instances/ricerca/threads/${threadId}/messages`, { text: '/tool board_update {"status":"fatto"}' });
+		await until(async () => (await entries()).some((e) => e.text?.includes("must be equal to one of the allowed values")));
+		expect((await api("/api/board")).cards[0].status).toBe("da_rivedere");
+		// Sent back with a comment: it hears it there.
+		expect((await send("PUT", `/api/board/${card.id}`, { status: "in_corso", comment: "Manca il trasporto" })).card.status).toBe("in_corso");
+		await until(async () => (await entries()).some((e) => e.text?.startsWith("[Scheda #1] ") && e.text.includes("rimandata indietro: Manca il trasporto")));
+		expect((await send("PUT", `/api/board/${card.id}`, { status: "fatto" })).card.status).toBe("fatto");
+
+		expect((await send("PUT", `/api/board/${card.id}`, { status: "chiusa" })).status).toBe(400);
+
+		// From a chat with Annie: a scheda for Ricercatore, waiting for a person to start it.
+		const chat = (await api("/api/instances/annie/threads", {})).thread;
+		await api(`/api/instances/annie/threads/${chat.id}/messages`, { text: '/tool board_create {"title":"Bozza newsletter","assignee":"Ricercatore"}' });
+		await until(async () => (await api("/api/board")).cards.length === 2);
+		const waiting = (await api("/api/board")).cards[1];
+		expect(waiting).toMatchObject({ n: 2, status: "da_fare", createdBy: { kind: "agent", id: "annie" }, assignee: "ricerca" });
+		const second = (await api(`/api/board/${waiting.id}/start`, {})).card;
+		expect(second).toMatchObject({ status: "in_corso", work: { agent: "ricerca" } });
+		expect((await api(`/api/board/${waiting.id}/start`, {})).error).toMatch(/non è più in «Da fare»/);
+
+		// A member sees only what concerns them, and hands nothing to an agente they cannot talk to.
+		const { link, person } = await api("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		const theirs = await member("/api/board");
+		expect(theirs.cards).toEqual([]);
+		expect(theirs.agents.find((a: { id: string }) => a.id === "ricerca").canAssign).toBe(false);
+		expect((await member("/api/board", { title: "x", assignee: "ricerca" })).error).toMatch(/Non puoi affidare schede a Ricercatore/);
+		expect((await send("PUT", `/api/board/${card.id}`, { comment: "ciao" }, member.cookie)).status).toBe(404);
+		await send("PUT", "/api/instances/ricerca/settings", { webPeople: [person.id] });
+		expect((await member("/api/board")).cards.map((c: { n: number }) => c.n)).toEqual([1, 2]);
+		expect((await send("DELETE", `/api/board/${card.id}`, undefined, member.cookie)).status).toBe(403);
+
+		// Ricercatore deleted: its open scheda goes back to nobody.
+		await send("DELETE", "/api/instances/ricerca", { confirm: "Ricercatore" });
+		const after = (await api("/api/board")).cards;
+		expect(after[1]).toMatchObject({ status: "da_fare" });
+		expect(after[1].assignee).toBeUndefined();
+		expect((await send("DELETE", `/api/board/${card.id}`)).status).toBe(200);
+		const audit = await annie.runtime.audit("default").read();
+		expect(audit.filter((e) => String(e.type).startsWith("board.")).map((e) => e.type)).toEqual(expect.arrayContaining(["board.card_created", "board.card_changed", "board.card_started", "board.card_deleted"]));
+	});
+
 	it("a task programmato of an instance created from the console runs without a restart", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
