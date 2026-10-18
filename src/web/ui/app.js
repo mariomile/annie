@@ -89,6 +89,92 @@ function icon(name) {
 	return svg;
 }
 
+// ---------- agent faces ----------
+// Every agente has a face drawn from its id: one family (a soft body, two eyes), told apart by
+// colour, shape and one small detail. The face is also how an agente shows it is thinking.
+const FACE_COLORS = ["#ff8a65", "#f6c344", "#9be15d", "#3ed6b0", "#5cb8ff", "#8f82ff", "#ff7ab6", "#e2c9a0"];
+const FACE_SHAPES = {
+	round: { body: ["circle", { cx: 24, cy: 26, r: 17 }], top: 9, eyes: 25 },
+	square: { body: ["rect", { x: 7, y: 9, width: 34, height: 34, rx: 12 }], top: 9, eyes: 25 },
+	egg: { body: ["path", { d: "M24 8c10 0 17 7.5 17 18S33.5 43 24 43 7 36.5 7 26 14 8 24 8Z" }], top: 8, eyes: 25 },
+	wide: { body: ["rect", { x: 5, y: 13, width: 38, height: 29, rx: 14.5 }], top: 13, eyes: 27 },
+};
+
+function faceSeed(id) {
+	let n = 2166136261;
+	for (const c of String(id)) n = Math.imul(n ^ c.codePointAt(0), 16777619);
+	// Mixed once more, so ids that differ only at the end still land far apart.
+	n = Math.imul(n ^ (n >>> 16), 2246822507);
+	n = Math.imul(n ^ (n >>> 13), 3266489909);
+	return (n ^ (n >>> 16)) >>> 0;
+}
+
+/** The look of an agente: the same id always gives the same face. Annie, the first, stays in the console's own black and white (--face-mono). */
+function faceLook(agent) {
+	const id = agent?.id ?? agent?.instanceId ?? agent?.name ?? "annie";
+	// One hash per trait, so that the traits do not move together.
+	const pick = (trait, list) => list[faceSeed(`${id}:${trait}`) % list.length];
+	const annie = id === "annie";
+	return {
+		color: annie ? "var(--face-mono)" : pick("color", FACE_COLORS),
+		eye: annie ? "var(--face-mono-eye)" : "#111",
+		shape: annie ? "round" : pick("shape", Object.keys(FACE_SHAPES)),
+		eyes: annie ? "tall" : pick("eyes", ["dot", "tall", "wide"]),
+		extra: annie ? "none" : pick("extra", ["none", "antenna", "cheeks", "brow"]),
+		delay: faceSeed(id) % 5000,
+	};
+}
+
+/** The colour as a CSS value, for what surrounds a face (the glow behind the empty chat). */
+function faceColor(agent) {
+	return faceLook(agent).color;
+}
+
+/** face(agent, 28) or face(agent, 72, "thinking"): an inline SVG, decorative (the name is always written next to it). */
+function face(agent, size = 28, mood = "idle") {
+	const NS = "http://www.w3.org/2000/svg";
+	// paint: colours set through CSSOM (the page's CSP refuses style attributes), so Annie's CSS variable works too.
+	const el = (tag, attrs = {}, paint = {}) => {
+		const node = document.createElementNS(NS, tag);
+		for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+		for (const [k, v] of Object.entries(paint)) node.style.setProperty(k, v);
+		return node;
+	};
+	const look = faceLook(agent);
+	const shape = FACE_SHAPES[look.shape];
+	const svg = el("svg", { viewBox: "0 0 48 48", width: size, height: size, "aria-hidden": "true", class: `face ${mood}` });
+	svg.style.setProperty("--blink-delay", `${look.delay}ms`);
+	const shade = "face-shade";
+	const defs = el("defs");
+	const grad = el("linearGradient", { id: shade, x1: 0, y1: 0, x2: 0, y2: 1 });
+	grad.append(el("stop", { offset: "0", "stop-color": "#fff", "stop-opacity": "0.38" }), el("stop", { offset: "0.55", "stop-color": "#fff", "stop-opacity": "0" }));
+	defs.append(grad);
+	const body = el("g", { class: "face-body" });
+	if (look.extra === "antenna") body.append(el("path", { d: `M24 ${shape.top}V${shape.top - 5}`, "stroke-width": 2.4, "stroke-linecap": "round" }, { stroke: look.color }), el("circle", { cx: 24, cy: shape.top - 5.5, r: 2.6 }, { fill: look.color }));
+	const [tag, attrs] = shape.body;
+	body.append(el(tag, attrs, { fill: look.color }), el(tag, { ...attrs, fill: `url(#${shade})` }), el(tag, { ...attrs, fill: "none", stroke: "rgba(0,0,0,0.08)", "stroke-width": 1 }));
+	const y = shape.eyes;
+	if (look.extra === "cheeks") body.append(el("circle", { cx: 13.5, cy: y + 7, r: 2.8, fill: "#ff4f73", opacity: 0.5 }), el("circle", { cx: 34.5, cy: y + 7, r: 2.8, fill: "#ff4f73", opacity: 0.5 }));
+	if (look.extra === "brow") body.append(el("path", { d: `M14 ${y - 7}q3-2 6 0M28 ${y - 7}q3-2 6 0`, stroke: "#141414", "stroke-width": 1.8, fill: "none", "stroke-linecap": "round", opacity: 0.7 }));
+	const eyes = el("g", { class: "face-eyes" });
+	for (const x of [17.5, 30.5]) {
+		const eye = { fill: look.eye };
+		if (look.eyes === "dot") eyes.append(el("circle", { cx: x, cy: y, r: 3.3 }, eye));
+		else if (look.eyes === "tall") eyes.append(el("ellipse", { cx: x, cy: y, rx: 2.7, ry: 4.1 }, eye));
+		else eyes.append(el("ellipse", { cx: x, cy: y, rx: 3.8, ry: 3 }, eye));
+		eyes.append(el("circle", { cx: x + 1, cy: y - 1.4, r: 1, fill: "#fff", opacity: 0.9, class: "glint" }));
+	}
+	body.append(eyes);
+	svg.append(defs, body);
+	return svg;
+}
+
+/** What stands in for an answer on its way: the faces of who may answer, looking around. */
+function thinking(agents) {
+	const who = agents.length === 1 ? `${agents[0].name} sta pensando` : "Stanno pensando";
+	return h("div.thinking", { role: "status", "aria-label": who }, h("span.faces", agents.slice(0, 3).map((a) => face(a, 26, "thinking"))), h("span.thinking-text", `${who}…`));
+}
+
 function toast(text, bad = false) {
 	const t = h(`div.toast${bad ? ".bad" : ""}`, text);
 	$toasts.append(t);
@@ -1141,23 +1227,28 @@ function renderRail() {
 		),
 		state.instances.length > 1
 			? h(
-					"div.instance-pick",
-					h("label.sr", { for: "instance" }, "Agente"),
-					h(
-						"select",
-						{
-							id: "instance",
-							onchange: (e) => {
-								state.instance = state.instances.find((i) => i.id === e.target.value);
-								store("annie.instance", state.instance.id);
-								state.threads = [];
-								// A conversation of the other instance does not exist here.
-								if (route().rest[0] && route().view === "chat") go("chat");
-								void refreshSetup().then(render);
-								render();
+					"nav.roster",
+					{ "aria-label": "Agenti" },
+					state.instances.map((i) =>
+						h(
+							"button.roster-item",
+							{
+								"aria-current": i.id === state.instance?.id ? "true" : undefined,
+								title: i.tagline ? `${i.name}: ${i.tagline}` : i.name,
+								onclick: () => {
+									if (i.id === state.instance?.id) return go("chat");
+									state.instance = i;
+									store("annie.instance", i.id);
+									state.threads = [];
+									// A conversation of the other instance does not exist here.
+									if (route().rest[0] && route().view === "chat") go("chat");
+									void refreshSetup().then(render);
+									render();
+								},
 							},
-						},
-						state.instances.map((i) => h("option", { value: i.id, selected: i.id === state.instance?.id ? "selected" : undefined }, agentLabel(i))),
+							face(i, 24),
+							h("span.roster-text", h("span.name", agentLabel(i)), i.tagline ? h("span.line", i.tagline) : null),
+						),
 					),
 				)
 			: null,
@@ -1443,7 +1534,7 @@ async function viewChat(main) {
 		const listen = entry.from === "annie" && entry.text ? listenButton(entry.text) : null;
 		// Which model wrote the reply: the chat's own, or the instance's when that could not answer.
 		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
-		const el = h(`div.msg.${entry.from}`, h("div.meta", fmt.time(entry.at), by, listen), pictures, entry.text || entry.file || !pictures ? body : null);
+		const el = h(`div.msg.${entry.from}`, h("div.meta", entry.from === "annie" ? [face(inst, 20), h("b.who", inst.name)] : null, fmt.time(entry.at), by, listen), pictures, entry.text || entry.file || !pictures ? body : null);
 		transcript.append(el);
 		return el;
 	};
@@ -1466,7 +1557,7 @@ async function viewChat(main) {
 	};
 	const startTyping = () => {
 		stopTyping();
-		typing = h("div.typing", { "aria-label": `${inst.name} sta scrivendo` }, h("i"), h("i"), h("i"));
+		typing = thinking([inst]);
 		transcript.append(typing);
 		transcript.scrollTop = transcript.scrollHeight;
 	};
@@ -1725,10 +1816,11 @@ function landing(inst, conversation) {
 	const hour = new Date().getHours();
 	const hello = hour < 5 || hour >= 18 ? "Buonasera" : "Buongiorno";
 	const first = state.me.name.split(/\s+/)[0];
+	conversation.style.setProperty("--glow", faceColor(inst));
 	conversation.append(
 		h(
 			"div.welcome",
-			inst.emoji ? h("span.mark.face", { "aria-hidden": "true" }, inst.emoji) : h("img.mark", { src: "/icon.svg", alt: "", width: "40", height: "40" }),
+			h("div.mark", face(inst, 76)),
 			h("h2", first && first !== "Owner" ? `${hello}, ${first}.` : `${hello}.`),
 			h("p", state.instances.length > 1 ? `${inst.name}${inst.tagline ? `: ${inst.tagline.replace(/[.!?…]+$/, "")}` : ""}. Di cosa hai bisogno?` : "Di cosa hai bisogno?"),
 			box.el,
@@ -3211,13 +3303,13 @@ async function viewRoom(main, roomId) {
 	const agentOf = (id) => room.agents.find((a) => a.instanceId === id);
 	const transcript = h("div.transcript", { role: "log", "aria-live": "polite" });
 	const fileLink = (instanceId, file) => h("a.file", { href: `/api/instances/${encodeURIComponent(instanceId)}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
-	const typing = h("div.typing", { "aria-label": "Un agente sta scrivendo" }, h("i"), h("i"), h("i"));
+	const typing = thinking(room.agents.filter((a) => a.present));
 	const show = (entry) => {
 		if (entry.from === "note") return transcript.append(h("div.room-note", entry.text));
 		if (entry.from === "person") return transcript.append(h("div.msg.person", h("div.meta", fmt.time(entry.at)), h("div.body", entry.text)));
 		const agent = agentOf(entry.instanceId);
 		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
-		transcript.append(h("div.msg.annie", h("div.meta", h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`), h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
+		transcript.append(h("div.msg.annie", h("div.meta", face(agent ?? { id: entry.instanceId }, 20), h("b.who", `${agent?.emoji ? `${agent.emoji} ` : ""}${agent?.name ?? entry.instanceId}`), h("span", fmt.time(entry.at)), by), entry.file ? fileLink(entry.instanceId, entry.file) : h("div.body", entry.text ?? "")));
 	};
 	for (const e of entries) show(e);
 	state.onRoom = (event) => {
@@ -3273,7 +3365,7 @@ async function viewRoom(main, roomId) {
 		input.focus();
 		fit();
 	};
-	const chips = h("div.room-agents", room.agents.map((a) => h(`button.chip${a.present ? "" : ".gone"}`, { onclick: () => call(a), disabled: !a.present, title: a.present ? `Chiama ${a.name}` : `${a.name} non è più disponibile` }, `${a.emoji ? `${a.emoji} ` : ""}${a.name}`)), h("button.chip", { onclick: () => ((input.value = `@tutti ${input.value}`), input.focus(), fit()) }, "@tutti"));
+	const chips = h("div.room-agents", room.agents.map((a) => h(`button.chip${a.present ? "" : ".gone"}`, { onclick: () => call(a), disabled: !a.present, title: a.present ? `Chiama ${a.name}` : `${a.name} non è più disponibile` }, face(a, 18), `${a.emoji ? `${a.emoji} ` : ""}${a.name}`)), h("button.chip", { onclick: () => ((input.value = `@tutti ${input.value}`), input.focus(), fit()) }, "@tutti"));
 	const remove = () =>
 		confirmDialog(`Cancellare la stanza «${room.title}»?`, "La conversazione sparisce per te. Gli agenti non ne terranno traccia nelle loro chat.", "Cancella", async () => {
 			try {
@@ -3926,7 +4018,7 @@ async function viewBoard(main) {
 	const who = (actor) => (actor.kind === "agent" ? (agentOf(actor.id)?.name ?? "un agente") : actor.id === state.me.id ? "Tu" : (data.people[actor.id] ?? "una persona"));
 	const face = (id) => {
 		const a = agentOf(id);
-		return a ? h("span.board-face", { "aria-hidden": "true" }, a.emoji ?? initials(a.name)) : null;
+		return a ? face(a, 20) : null;
 	};
 	const save = async (card, body, done) => {
 		try {
@@ -4353,7 +4445,7 @@ async function viewAgents(main) {
 	const card = (a) =>
 		h(
 			`article.card.agent${a.id === state.instance?.id ? ".current" : ""}`,
-			h("div.agent-face", { "aria-hidden": "true" }, a.emoji ?? initials(a.name)),
+			h("div.agent-face", face(a, 52)),
 			h(
 				"div.agent-body",
 				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
