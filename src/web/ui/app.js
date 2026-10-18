@@ -3339,9 +3339,9 @@ async function viewMemory(main) {
 	const rows = (memories, editable) =>
 		memories.map((m) =>
 			h(
-				"tr",
-				h("td", m.text, h("div.mono.muted", `${m.source === "annie" ? `ricordata da ${inst.name}` : "aggiunta a mano"} · ${fmt.time(m.createdAt)}`)),
-				h("td", editable ? h("button.btn.small.danger", { onclick: () => forget(m) }, "Dimentica") : null),
+				"li.task-row",
+				h("div.task-text", h("b", m.text), h("small", `${m.source === "annie" ? `ricordata da ${inst.name}` : "aggiunta a mano"} · ${fmt.time(m.createdAt)}`)),
+				editable ? h("button.icon-btn.task-remove", { title: "Dimentica", "aria-label": `Dimentica: ${m.text}`, onclick: () => forget(m) }, icon("trash")) : null,
 			),
 		);
 	/** The essential memories, sent with every message; the archivio (ADR 0062) folded, with a filter, since it holds up to 1000. */
@@ -3349,16 +3349,21 @@ async function viewMemory(main) {
 		const essential = memories.filter((m) => !m.archived);
 		const archived = memories.filter((m) => m.archived).reverse();
 		const archive = () => {
-			const body = h("tbody", rows(archived, editable));
+			const body = h("ul.task-list.memory-list", rows(archived, editable));
 			const filter = h("input", { type: "search", placeholder: "Cerca nell'archivio" });
 			filter.addEventListener("input", () => {
 				const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
 				mount(body, rows(archived.filter((m) => words.every((w) => m.text.toLowerCase().includes(w))), editable));
 			});
-			return h("details.pad", h("summary", `In archivio · ${archived.length}`), h("p.muted", `${inst.name} non le riceve con ogni messaggio: le cerca quando servono.`), archived.length > 8 ? filter : null, h("table.ledger", body));
+			return h(
+				"details.memory-archive",
+				h("summary", h("span.fold-glyph", icon("file")), h("span.fold-text", h("b", "In archivio"), h("small", `${archived.length === 1 ? "1 memoria" : `${archived.length} memorie`} che ${inst.name} cerca quando servono`)), h("span.fold-chevron", icon("down"))),
+				archived.length > 8 ? h("div.memory-filter", filter) : null,
+				body,
+			);
 		};
 		return [
-			essential.length ? h("table.ledger", h("tbody", rows(essential, editable))) : emptyNote("div.empty", "Niente", empty),
+			essential.length ? h("ul.task-list.memory-list", rows(essential, editable)) : emptyNote("div.empty", "Niente", empty),
 			archived.length ? archive() : null,
 		];
 	};

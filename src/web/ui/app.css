@@ -230,6 +230,10 @@ input[type="time"], input[type="date"] { width: auto; font-family: var(--mono); 
 ::placeholder { color: var(--fg-3); }
 textarea { resize: vertical; min-height: 90px; line-height: 1.55; }
 .row-gap { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* A checkbox with its sentence: the box stays beside the first line, the sentence wraps under itself. */
+label.row-gap:has(> input[type="checkbox"]) { flex-wrap: nowrap; align-items: flex-start; }
+label.row-gap > input[type="checkbox"] { flex: none; margin-top: 3px; }
+label.row-gap:has(> input[type="checkbox"]) > span { min-width: 0; }
 .seg { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); gap: 2px; }
 .seg button { border: 0; background: transparent; padding: 4px 11px; border-radius: 6px; cursor: pointer; color: var(--fg-2); font-size: 13px; font-weight: 500; }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border); }
@@ -296,6 +300,17 @@ ul.task-list { list-style: none; margin: 0; padding: 6px; }
 .task-row .icon-btn.task-remove:hover { color: var(--bad); background: var(--bad-soft); }
 .task-row:hover .task-remove, .task-row:focus-within .task-remove { opacity: 1; }
 @media (hover: none) { .task-row .task-remove { opacity: 1; } }
+/* Memoria: the same rows as the tasks, the whole sentence shown; the archivio folds under them. */
+.memory-list .task-text b { display: block; font-weight: 450; -webkit-line-clamp: unset; overflow: visible; }
+.memory-archive { margin: 4px 6px 6px; border: 1px solid var(--border); border-radius: 12px; }
+.memory-archive > summary { margin: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; list-style: none; cursor: pointer; border-radius: 12px; }
+.memory-archive > summary::-webkit-details-marker { display: none; }
+.memory-archive > summary:hover { background: var(--hover); }
+.memory-archive > summary .fold-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.memory-archive > summary .fold-text small { color: var(--fg-3); font-size: 12.5px; }
+.memory-archive[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.memory-archive[open] .fold-chevron { transform: rotate(180deg); }
+.memory-filter { padding: 8px 12px 0; }
 /* A row of choices, one pressed (task schedules). */
 .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .choices button { border: 1px solid var(--border); background: transparent; color: var(--fg-2); border-radius: 99px; padding: 6px 12px; font-size: 13px; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
