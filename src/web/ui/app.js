@@ -4976,7 +4976,7 @@ async function viewAgents(main) {
 				"div.agent-body",
 				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
 				a.tagline ? h("p", a.tagline) : null,
-				h("p.muted.small", [a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web" && c !== "agente").join(", ")].filter(Boolean).join(" · ")),
+				h("p.muted.small", [a.model?.provider === "faux" ? "Modello di prova" : a.model?.name, TONES.find(([v]) => v === a.tone)?.[1], a.channels.filter((c) => c !== "web" && c !== "agente").join(", ")].filter(Boolean).join(" · ")),
 				h("p.muted.small", [plural(a.schedules, "task", "task"), plural(a.watches, "sentinella", "sentinelle"), plural(a.memories, "ricordo", "ricordi")].join(" · ")),
 				a.acceptsFrom?.length ? h("p.muted.small", `Gli scrivono: ${a.acceptsFrom.map((id) => agents.find((x) => x.id === id)?.name ?? id).join(", ")}`) : null,
 				owner && writesTo(a).length ? h("p.muted.small", `Può scrivere a: ${writesTo(a).join(", ")}`) : null,
@@ -4984,7 +4984,7 @@ async function viewAgents(main) {
 			h(
 				"div.agent-actions",
 				a.canChat ? h("button.btn.small.accent", { onclick: () => switchTo(a, "chat") }, "Chatta") : null,
-				owner ? h("button.btn.small.ghost", { onclick: () => switchTo(a, "impostazioni") }, "Personalità e impostazioni") : null,
+				owner ? h("button.btn.small.ghost", { title: "Personalità e impostazioni", onclick: () => switchTo(a, "impostazioni") }, "Impostazioni") : null,
 			),
 		);
 		// Each card glows in its agente's colour, so the faces read as a team and not as a list.
