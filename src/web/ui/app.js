@@ -5011,7 +5011,7 @@ async function viewSettings(main) {
 	const rows = people.map((p) => {
 		const c = h("input", { type: "checkbox", checked: chat.has(p.id), "aria-label": `${p.name} può scrivere` });
 		const a = h("input", { type: "checkbox", checked: approve.has(p.id), "aria-label": `${p.name} approva` });
-		return { p, c, a, row: h("tr", h("td", p.name, h("div.mono.muted", p.id)), h("td", c), h("td", a)) };
+		return { p, c, a, row: h("tr", h("td", p.name, h("small.muted.person-role", p.role === "owner" ? "Owner" : "Membro", p.id === state.me.id ? " · tu" : "")), h("td", c), h("td", a)) };
 	});
 	const save = async () => {
 		try {
@@ -5067,15 +5067,26 @@ async function viewSettings(main) {
 				h("div.card", h("table.ledger", h("thead", h("tr", h("th", "Persona"), h("th", "Scrive"), h("th", "Approva"))), h("tbody", rows.map((r) => r.row)))),
 				h(
 					"div.card.pad",
-					h("div.kicker", "Egress policy"),
-					h("dl.lead", h("dt", "Modello"), h("dd.mono", `${settings.model.provider}/${settings.model.modelId}`), h("dt", "Canali"), h("dd.mono", e.channels.join(", ") || "nessuno"), h("dt", "Connettori"), h("dd.mono", (e.connectors ?? []).join(", ") || "nessuno")),
-					h("p.muted", "Tutto ciò che non è in elenco è negato. I connettori si consentono dalla loro pagina."),
+					h("div.kicker", "Cosa può raggiungere"),
+					h(
+						"dl.lead",
+						h("dt", "Modello"),
+						settings.model.provider === "faux" ? h("dd", "Modello di prova") : h("dd.mono", settings.model.modelId),
+						h("dt", "Canali"),
+						h("dd", e.channels.map((c) => CHANNEL_NAMES[c] ?? c).join(", ") || "nessuno"),
+						h("dt", "Connettori"),
+						h("dd", (e.connectors ?? []).join(", ") || "nessuno"),
+					),
+					h("p.muted", "Tutto il resto le è chiuso. I connettori si consentono dalla loro pagina."),
 				),
 				settings.deletable ? anchor("elimina", deleteCard(inst)) : null,
 			),
 		),
 	);
 }
+
+/** Where people reach an agente, as they call it. */
+const CHANNEL_NAMES = { web: "Console web", telegram: "Telegram", whatsapp: "WhatsApp", phone: "Telefono", mail: "Mail" };
 
 /** A card that «Primi passi» can point at: #/impostazioni/<id> scrolls to it and makes it flash. */
 function anchor(id, card) {

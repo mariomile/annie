@@ -422,6 +422,7 @@ table.ledger th { text-align: left; font-size: 12px; font-weight: 500; color: va
 table.ledger th:first-child { border-top-left-radius: 10px; }
 table.ledger th:last-child { border-top-right-radius: 10px; }
 table.ledger td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.ledger td .person-role { display: block; font-size: 12px; margin-top: 1px; }
 table.ledger tbody tr { transition: background 0.1s; }
 table.ledger tbody tr:hover { background: var(--bg-2); }
 table.ledger tr:last-child td { border-bottom: 0; }
