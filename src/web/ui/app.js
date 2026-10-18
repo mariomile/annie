@@ -3716,7 +3716,7 @@ async function viewBoard(main) {
 				ondragend: (e) => e.currentTarget.classList.remove("dragging"),
 			},
 			h("span.board-title", h("span.muted.mono", `#${c.n} `), c.title),
-			parentOf(c) ? h("span.muted.small", `parte di #${parentOf(c).n}`) : null,
+			c.parent && parentOf(c) ? h("span.muted.small", `parte di #${parentOf(c).n}`) : null,
 			h(
 				"span.board-meta",
 				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
@@ -3851,19 +3851,21 @@ async function viewBoard(main) {
 				if (!(await save(c, { auto: alone.checked }, alone.checked ? `${agentOf(c.assignee)?.name ?? "L'agente"} va avanti da solo` : "Ora l'agente aspetta le tue risposte"))) alone.checked = !alone.checked;
 			});
 		const canDelete = state.me.role === "owner" || (c.createdBy.kind === "person" && c.createdBy.id === state.me.id);
+		const parent = parentOf(c);
+		const children = childrenOf(c);
 		// Without what is not there: append would write «null».
 		const parts = [
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			h("h3", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
-			parentOf(c) ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parentOf(c))) }, `#${parentOf(c).n} ${parentOf(c).title}`)) : null,
-			childrenOf(c).length
+			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
+			children.length
 				? h(
 						"div.board-children",
-						h("span.muted.small", `Sotto-schede: ${childrenOf(c).filter((x) => x.status === "fatto").length} di ${childrenOf(c).length} fatte`),
+						h("span.muted.small", `Sotto-schede: ${children.filter((x) => x.status === "fatto").length} di ${children.length} fatte`),
 						h(
 							"ul",
-							childrenOf(c).map((x) =>
+							children.map((x) =>
 								h(
 									"li",
 									h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(x)) }, `#${x.n} ${x.title}`),
