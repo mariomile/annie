@@ -234,7 +234,7 @@ Un'istruzione che un'istanza esegue da sola a un'ora stabilita, una volta o a ri
 _Avoid_: cron, job, promemoria, routine
 
 **Memoria**:
-Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; valgono solo quando parla con lei da sola, e la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce solo l'owner.
+Le cose che un'istanza ricorda di una persona tra una conversazione e l'altra, su sua richiesta o perché la persona le ha dette; valgono solo quando parla con lei da sola, e la persona le vede, le aggiunge e le cancella. Una memoria condivisa vale per tutti quelli che scrivono all'istanza e la gestisce solo l'owner. Le memorie essenziali arrivano con ogni messaggio; quelle in **archivio** si cercano con `memory_search` quando servono (ADR 0061).
 _Avoid_: profilo, contesto, knowledge base
 
 **Account collegato**:

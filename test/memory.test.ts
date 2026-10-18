@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MemoryStore } from "../src/core/memory.ts";
+import { MEMORY_LIMITS, MemoryStore } from "../src/core/memory.ts";
 import { createMemoryTools } from "../src/core/tools/memory-tools.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 
@@ -84,7 +84,7 @@ describe("memoria della persona", () => {
 });
 
 describe("MemoryStore", () => {
-	it("keeps memories across restarts and refuses empty, too long or too many", () => {
+	it("keeps memories across restarts and refuses empty or too long ones, and a full archivio", () => {
 		const dir = tempDataDir();
 		const store = new MemoryStore(dir);
 		const m = store.add({ about: "test:anna", text: "  Lavora da Roma  ", source: "annie" });
@@ -92,8 +92,44 @@ describe("MemoryStore", () => {
 		expect(new MemoryStore(dir).list()).toEqual([m]);
 		expect(() => store.add({ about: "test:anna", text: " ", source: "annie" })).toThrow();
 		expect(() => store.add({ about: "test:anna", text: "x".repeat(501), source: "annie" })).toThrow();
-		for (let i = 1; i < 50; i++) store.add({ about: "test:anna", text: `fatto ${i}`, source: "annie" });
-		expect(() => store.add({ about: "test:anna", text: "uno di troppo", source: "annie" })).toThrow(/50/);
+		for (let i = 0; i < MEMORY_LIMITS.archived; i++) store.add({ about: "test:anna", text: `dettaglio ${i}`, source: "annie", archived: true });
+		expect(() => store.add({ about: "test:anna", text: "uno di troppo", source: "annie", archived: true })).toThrow(/archivio è pieno/);
 		expect(store.forSubject("test:luca")).toEqual([]);
+	});
+});
+
+describe("memoria: l'archivio", () => {
+	it("essential memories come with each message; archived ones are searched, and the note says they exist", async () => {
+		const { runtime, replies, lastReply } = await withMemory();
+		await runtime.submit(from("anna", "t1", '/tool memory_remember {"text":"Il compleanno del cliente Rossi è il 12 marzo","essential":false}', "1"));
+		await waitFor(() => replies.length === 1);
+		expect(lastReply("t1")?.text).toContain("Ricordato in archivio");
+		await runtime.submit(from("anna", "t2", "ciao", "2"));
+		await waitFor(() => replies.length === 2);
+		const note = lastReply("t2")?.text ?? "";
+		expect(note).not.toContain("12 marzo");
+		expect(note).toContain("Altre 1 in archivio");
+		await runtime.submit(from("anna", "t2", '/tool memory_search {"query":"compleanni Rossi"}', "3"));
+		await waitFor(() => replies.length === 3);
+		expect(lastReply("t2")?.text).toContain("12 marzo (in archivio)");
+		// Not someone else's.
+		await runtime.submit(from("luca", "t3", '/tool memory_search {"query":"Rossi"}', "4"));
+		await waitFor(() => replies.length === 4);
+		expect(lastReply("t3")?.text).toContain("Non ricordo nulla");
+		await runtime.close();
+	});
+
+	it("when the essential ones are full the oldest goes to the archivio instead of a refusal; the archivio has a cap", () => {
+		const store = new MemoryStore(tempDataDir());
+		for (let i = 0; i < MEMORY_LIMITS.essential; i++) store.add({ about: "test:anna", text: `fatto ${i}`, source: "annie" });
+		store.add({ about: "test:anna", text: "il più nuovo", source: "annie" });
+		expect(store.forSubject("test:anna")).toHaveLength(MEMORY_LIMITS.essential);
+		expect(store.forSubject("test:anna").map((m) => m.text)).not.toContain("fatto 0");
+		expect(store.archivedFor("test:anna")).toBe(1);
+		expect(store.forSubject("test:anna", true).find((m) => m.text === "fatto 0")?.archived).toBe(true);
+		const many = store.search("test:anna", "fatto");
+		expect(many.found).toHaveLength(MEMORY_LIMITS.found);
+		expect(many.more).toBe(MEMORY_LIMITS.essential - MEMORY_LIMITS.found);
+		expect(store.search("test:anna", "il di").found).toEqual([expect.objectContaining({ text: "il più nuovo" })]);
 	});
 });
