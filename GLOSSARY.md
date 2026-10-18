@@ -25,7 +25,7 @@ Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in
 _Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
 
 **Board**:
-La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Con «Lavora da solo» l'agente va avanti senza aspettare risposte, fino a un tetto di risposte e di tempo. Vedi ADR 0050, 0058.
+La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Con «Lavora da solo» l'agente va avanti senza aspettare risposte, fino a un tetto di risposte e di tempo. Vedi ADR 0050, 0061.
 _Avoid_: kanban (nei testi per le persone), backlog, issue tracker
 
 **Scheda** (della board):
