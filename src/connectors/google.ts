@@ -228,6 +228,9 @@ export class GoogleUncertain extends Error {
 	override readonly name = "GoogleUncertain";
 }
 
+/** How long getting an access token may take. */
+const TOKEN_TIMEOUT_MS = 30_000;
+
 /** One person's Gmail and Calendar over an egress-guarded fetch. Writes are called only for an approved action. */
 export class GoogleClient {
 	private token: { value: string; expiresAt: number } | undefined;
@@ -275,12 +278,20 @@ export class GoogleClient {
 		return { id: m.id, threadId: m.threadId ?? "", from: h("From"), replyTo: h("Reply-To"), to: h("To"), cc: h("Cc"), subject: h("Subject"), date: h("Date"), messageId: h("Message-ID"), references: h("References") };
 	}
 
-	async sendMail(raw: string, threadId?: string): Promise<{ id: string }> {
-		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw, ...(threadId === undefined ? {} : { threadId }) }, "mail send");
+	/**
+	 * Send a message (RFC 2822, ASCII). Up to JSON_RAW_LIMIT of base64 as JSON; larger ones
+	 * (attachments) through Gmail's upload endpoint, which takes up to 35 MB.
+	 */
+	async sendMail(message: Buffer, threadId?: string): Promise<{ id: string }> {
+		const meta = threadId === undefined ? {} : { threadId };
+		if (needsUpload(message.length)) return this.write("POST", `${GMAIL_UPLOAD}/messages/send?uploadType=multipart`, uploadBody(meta, message), "mail send");
+		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw: message.toString("base64url"), ...meta }, "mail send");
 	}
 
-	async createDraft(raw: string, threadId?: string): Promise<{ id: string }> {
-		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", { message: { raw, ...(threadId === undefined ? {} : { threadId }) } }, "mail draft");
+	async createDraft(message: Buffer, threadId?: string): Promise<{ id: string }> {
+		const meta = threadId === undefined ? {} : { threadId };
+		if (needsUpload(message.length)) return this.write("POST", `${GMAIL_UPLOAD}/drafts?uploadType=multipart`, uploadBody({ message: meta }, message), "mail draft");
+		return this.write("POST", "https://gmail.googleapis.com/gmail/v1/users/me/drafts", { message: { raw: message.toString("base64url"), ...meta } }, "mail draft");
 	}
 
 	/** `notify`: Google writes to the guests (sendUpdates=all), or tells nobody. */
@@ -303,16 +314,17 @@ export class GoogleClient {
 	 * (4xx) is not done. A 401 is the one retry: Google did nothing with an expired token.
 	 */
 	private async write<T>(method: "POST" | "PATCH" | "DELETE", url: string, body: unknown, operation: string, etag?: string): Promise<T> {
+		const upload = body instanceof Upload ? body : undefined;
 		for (let attempt = 0; ; attempt++) {
 			const token = await this.accessToken();
 			let response: Response;
 			try {
 				response = await this.options.fetch(url, {
 					method,
-					headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }), ...(etag === undefined ? {} : { "if-match": etag }) },
-					...(body === undefined ? {} : { body: JSON.stringify(body) }),
-					// A request that hangs would hold the decision for good: past this, the outcome is unknown.
-					signal: AbortSignal.timeout(30_000),
+					headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": upload?.contentType ?? "application/json" }), ...(etag === undefined ? {} : { "if-match": etag }) },
+					...(body === undefined ? {} : { body: upload?.body ?? JSON.stringify(body) }),
+					// A request that hangs would hold the decision for good: past this, the outcome is unknown. A large upload gets longer.
+					signal: AbortSignal.timeout(upload === undefined ? 30_000 : 180_000),
 				});
 			} catch (error) {
 				if (error instanceof EgressDenied) throw error;
@@ -344,6 +356,11 @@ export class GoogleClient {
 		}
 	}
 
+	/** Gets an access token now, if none is fresh: before a long wait, so the write that follows does not start with it. */
+	async ready(): Promise<void> {
+		await this.accessToken();
+	}
+
 	private async accessToken(): Promise<string> {
 		const now = (this.options.now ?? Date.now)();
 		if (this.token !== undefined && this.token.expiresAt > now) return this.token.value;
@@ -354,6 +371,8 @@ export class GoogleClient {
 			headers: { "content-type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({ client_id: this.options.clientId, client_secret: this.options.clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }),
 			redirect: "error",
+			// Before any write leaves: a sign-in that hangs fails as not done.
+			signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
 		});
 		const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string };
 		// invalid_grant: the person revoked access from their Google account.
@@ -372,6 +391,33 @@ export class GoogleNotConnected extends Error {
 }
 
 const EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+const GMAIL_UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
+/** The most base64 sent inside a JSON request: past it, the upload endpoint (the JSON one takes only a few MB). */
+export const JSON_RAW_LIMIT = 4 * 1024 * 1024;
+
+/** Whether a message of `bytes` goes through the upload endpoint: its base64 would pass JSON_RAW_LIMIT. */
+export function needsUpload(bytes: number): boolean {
+	return Math.ceil(bytes / 3) * 4 > JSON_RAW_LIMIT;
+}
+
+/** A body sent as it is, with its own content type: Gmail's multipart upload. */
+class Upload {
+	constructor(
+		readonly contentType: string,
+		readonly body: Buffer,
+	) {}
+}
+
+/** The metadata and the message, as multipart/related; the boundary found in neither. */
+function uploadBody(meta: Record<string, unknown>, message: Buffer): Upload {
+	const json = JSON.stringify(meta);
+	let boundary = "";
+	do boundary = `annie_upload_${randomBytes(18).toString("hex")}`;
+	while (message.includes(boundary) || json.includes(boundary));
+	const head = Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${json}\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n`, "utf8");
+	return new Upload(`multipart/related; boundary=${boundary}`, Buffer.concat([head, message, Buffer.from(`\r\n--${boundary}--\r\n`, "latin1")]));
+}
 
 /** One event's address; the id is checked here too, so nothing but an event is ever reached. */
 function eventUrl(id: string): string {

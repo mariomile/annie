@@ -89,6 +89,11 @@ export function depositText(deposit: string, t: QuoteTotals): string {
 /** The status in words; a quote whose document is not written yet is «in preparazione». */
 export function statusText(quote: Quote, view: QuoteView, due = false): string {
 	if (quote.file === undefined && quote.status !== "superseded") return "in preparazione";
+	const status = bareStatus(quote, view, due);
+	return quote.sentAt === undefined ? status : `${status}, inviato per mail il ${italianDate(dayOfIn(view.timeZone)(quote.sentAt))}`;
+}
+
+function bareStatus(quote: Quote, view: QuoteView, due: boolean): string {
 	const shown: ShownStatus = shownStatus(quote, view.today);
 	if (shown === "superseded") return `sostituito da ${quote.replacedBy ?? "una revisione"}`;
 	if (shown === "expired") return `scaduto il ${italianDate(validUntil(quote))}, senza risposta`;

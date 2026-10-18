@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
+import { oneLine } from "./plain-text.ts";
 
 /**
  * A tool of a connector that changes something (ADR 0025): Annie asks, a person approves the
@@ -130,11 +131,6 @@ export function shownArgs(args: Readonly<Record<string, unknown>>): [string, str
 	return Object.entries(args).map(([key, value]) => [key, typeof value === "string" ? value : (JSON.stringify(value, null, 1) ?? String(value))]);
 }
 
-/** Text from the model or the service on one line, at most `max` characters. */
-export function oneLine(text: string, max: number): string {
-	const flat = text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(/ {2,}/g, " ").trim();
-	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 /** Whether a card in a chat can show it all: long values, or many, are decided in the console. */
 export function fitsInChat(action: Pick<ConnectorAction, "shown" | "reason">): boolean {

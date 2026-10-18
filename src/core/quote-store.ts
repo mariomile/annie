@@ -123,6 +123,17 @@ export class QuoteStore {
 		this.changeQuote(number, ({ pendingFile: _, ...quote }) => ({ ...quote, file }));
 	}
 
+	/**
+	 * A mail with the quote went (approved and sent): the day, and the address it went to when the
+	 * person gave it (kept for the next time; the same address in other case is not a change).
+	 */
+	markSent(number: string, at: string, email?: string): void {
+		this.changeQuote(number, (quote) => {
+			const keep = email === undefined || email.toLowerCase() === quote.customer.email?.toLowerCase();
+			return { ...quote, sentAt: at, ...(keep ? {} : { customer: { ...quote.customer, email: email.toLowerCase() } }) };
+		});
+	}
+
 	private changeQuote(number: string, change: (quote: Quote) => Quote): void {
 		this.update((book) => {
 			const quote = book.quotes.find((q) => q.number === number);

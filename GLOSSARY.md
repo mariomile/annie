@@ -213,6 +213,10 @@ _Avoid_: diffida, recupero crediti
 L'offerta numerata a un cliente, con righe, IVA, validità e riquadro per l'accettazione, fatta con lo strumento `quotes` e salvata in PDF o Word nel workspace. Una revisione tiene il numero (`2026-012-R1`). Vedi ADR 0055.
 _Avoid_: offerta, quotazione
 
+**Allegato**:
+Un file del workspace mandato con una mail di Annie (preventivo, fattura, documento). La card di approvazione mostra percorso e dimensione; all'approvazione il file deve essere identico a quello chiesto. Vedi ADR 0056.
+_Avoid_: attachment
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

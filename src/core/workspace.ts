@@ -1,4 +1,5 @@
-import { lstat, mkdir, open, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 
@@ -48,6 +49,44 @@ export class Workspace {
 		const stat = await this.statFile(file);
 		if (stat === undefined) throw new WorkspaceError(`File not found: ${this.normalize(path)}`);
 		return readFile(file);
+	}
+
+	/**
+	 * A whole file read through one handle opened without following a symlink (O_NOFOLLOW) nor
+	 * waiting on a pipe: what is read is the regular file the handle's own stat describes, never a
+	 * link swapped in after a check. `maxBytes`: larger files are refused before reading.
+	 */
+	async readExact(path: string, maxBytes = this.limits.maxFileBytes): Promise<{ readonly path: string; readonly data: Buffer }> {
+		const file = this.resolve(path);
+		await this.assertInside(dirname(file));
+		let handle: Awaited<ReturnType<typeof open>>;
+		try {
+			handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") throw new WorkspaceError(`File not found: ${this.normalize(path)}`);
+			if (code === "ELOOP" || code === "EMLINK") throw new WorkspaceError("Symbolic links are not allowed");
+			throw error;
+		}
+		try {
+			const stat = await handle.stat();
+			if (!stat.isFile()) throw new WorkspaceError("Not a file");
+			// A hard link shares the file with a name outside the workspace's rules: refused.
+			if (stat.nlink > 1) throw new WorkspaceError("Hard links are not allowed");
+			await this.assertHandleInside(handle.fd);
+			if (stat.size > maxBytes) throw new WorkspaceError(`File too large: over ${maxBytes} bytes`);
+			const data = Buffer.alloc(stat.size);
+			let at = 0;
+			while (at < data.length) {
+				const { bytesRead } = await handle.read(data, at, data.length - at, at);
+				if (bytesRead === 0) break;
+				at += bytesRead;
+			}
+			if (at !== stat.size) throw new WorkspaceError("File changed while reading");
+			return { path: this.normalize(path), data };
+		} finally {
+			await handle.close();
+		}
 	}
 
 	/** The first `bytes` bytes of a file (fewer when it is shorter): enough to tell what it is without reading all of it. */
@@ -127,6 +166,18 @@ export class Workspace {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 			throw error;
 		}
+	}
+
+	/** Where an open handle really is, where the system says it (/proc on Linux): inside the root, or refused. Elsewhere, nothing more to check. */
+	private async assertHandleInside(fd: number): Promise<void> {
+		let real: string;
+		try {
+			real = await readlink(`/proc/self/fd/${fd}`);
+		} catch {
+			return;
+		}
+		const root = await realpath(this.root);
+		if (!real.startsWith(root + sep)) throw new WorkspaceError("Path leaves the workspace");
 	}
 
 	/** A folder on the way may be a symlink planted from outside: check where it really is. */

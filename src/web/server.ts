@@ -7,7 +7,7 @@ import { SPEECH_CONNECTOR } from "../channels/speech.ts";
 import { IMAGE_CONNECTOR } from "../core/image-generation.ts";
 import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
-import { decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
+import { cardView, decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
 import { DESKTOP_CONNECTOR } from "../core/desktop.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
@@ -1483,7 +1483,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	route("GET", "/api/instances/:id/google-actions", "person", async ({ person, params }) => {
 		const p = person as Person;
 		await instanceAccess(p, params[0] as string);
-		return { actions: (await runtime.googleActions(tenantId, params[0] as string).list()).filter((a) => a.personId === p.id) };
+		return { actions: (await runtime.googleActions(tenantId, params[0] as string).list()).filter((a) => a.personId === p.id).map(cardView) };
 	});
 	route("POST", "/api/instances/:id/google-actions/:aid/decision", "person", async ({ person, params, req }) => {
 		const p = person as Person;
@@ -1493,7 +1493,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const run = options.google?.runAction;
 		if (run === undefined) throw new HttpError(501, "Google non può scrivere su questo server");
 		try {
-			return { action: await decideGoogleAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, p.id, run(params[0] as string), options.log) };
+			return { action: cardView(await decideGoogleAction(runtime, tenantId, params[0] as string, params[1] as string, body.decision, p.id, run(params[0] as string), options.log)) };
 		} catch (error) {
 			// Someone else's request is, for this person, one that does not exist.
 			if (error instanceof GoogleActionError) throw new HttpError(404, "Richiesta inesistente");

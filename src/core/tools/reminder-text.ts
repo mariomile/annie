@@ -15,7 +15,9 @@ import { holidayOn } from "../italian-calendar.ts";
 import { italianDate, italianWeekday } from "../italian-format.ts";
 import { bookKey, type ReminderItem, type ReminderLevel } from "../reminder-book.ts";
 import { asideSums, type Debtor, invoicesOf, isLate, lastFormal, levelOf, type OverdueRow, owedDetail, remindedOn } from "./reminder-debtors.ts";
+import { oneLine } from "../plain-text.ts";
 import { ofRate, type Payment, type Rate, type Recipient, simpleInterest } from "./reminder-sources.ts";
+import { isPrivateParty } from "./letter-shared.ts";
 
 /** Customers reminded in one call; the rest are counted. */
 export const MAX_REMINDERS = 10;
@@ -39,6 +41,8 @@ export type ReminderTerms = {
 	readonly payWithin?: number;
 	/** A paragraph of the person's own. */
 	readonly note?: string;
+	/** The invoices go attached to the mail: the letter says so. */
+	readonly attached?: boolean;
 };
 
 /** What a letter needs besides the debtor: today, who signs, where to pay, who it goes to, how to tell a local day. */
@@ -70,14 +74,9 @@ export type ReminderDraft = {
 	readonly notes: readonly string[];
 };
 
-/** A name from the files on one line, at most 80 characters (FatturaPA's own limit). */
-export function oneLine(text: string, max = 80): string {
-	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 function nameOf(party: FatturaParty): string {
-	return party.name === undefined || party.name.trim() === "" ? "Cliente" : oneLine(party.name);
+	return party.name === undefined || party.name.trim() === "" ? "Cliente" : oneLine(party.name, 80);
 }
 
 function numberOf(invoice: Invoice): string {
@@ -121,10 +120,9 @@ function subjectOf(level: ReminderLevel, late: boolean, invoices: readonly Invoi
 	return `${head.charAt(0).toUpperCase()}${head.slice(1)} ${which}`;
 }
 
-/** A person, not a business nor a public body: no partita IVA, no numeric codice fiscale. */
+/** A person, not a business nor a public body. */
 function isPrivate(debtor: Debtor): boolean {
-	const { customer } = debtor;
-	return customer.vat === undefined && !/^\d{11}$/.test(customer.fiscal ?? "") && !invoicesOf(debtor).some((i) => i.publicAdmin === true);
+	return isPrivateParty(debtor.customer) && !invoicesOf(debtor).some((i) => i.publicAdmin === true);
 }
 
 /** The phrases of a letter, to a business (voi) or to a person (Lei). */
@@ -139,6 +137,7 @@ type Voice = {
 	readonly paidPolite: string;
 	readonly paidFirm: string;
 	readonly paidFormal: string;
+	readonly attached: (several: boolean) => string;
 };
 
 const BUSINESS: Voice = {
@@ -152,6 +151,7 @@ const BUSINESS: Voice = {
 	paidPolite: "Se avete già provveduto al pagamento, non tenete conto di questo messaggio. Grazie.",
 	paidFirm: "Se avete già pagato, non tenete conto di questo messaggio e mandateci gli estremi del pagamento.",
 	paidFormal: "Se avete già pagato, non tenete conto di questa comunicazione e mandateci gli estremi del pagamento.",
+	attached: (several) => `In allegato trovate copia ${several ? "delle fatture" : "della fattura"}.`,
 };
 
 const PERSON: Voice = {
@@ -165,6 +165,7 @@ const PERSON: Voice = {
 	paidPolite: "Se ha già provveduto al pagamento, non tenga conto di questo messaggio. Grazie.",
 	paidFirm: "Se ha già pagato, non tenga conto di questo messaggio e ci mandi gli estremi del pagamento.",
 	paidFormal: "Se ha già pagato, non tenga conto di questa comunicazione e ci mandi gli estremi del pagamento.",
+	attached: (several) => `In allegato trova copia ${several ? "delle fatture" : "della fattura"}.`,
 };
 
 /** The opening and the rows: what was already reminded apart from what was not (M3); the not yet due as a neutral reminder. */
@@ -274,7 +275,7 @@ export function composeReminder(debtor: Debtor, terms: ReminderTerms, context: R
 	if (context.sender === undefined) notes.push("salva il nome dell'azienda con set_company (name): così compare nell'oggetto e nella firma");
 	const signed = context.signature ?? context.sender ?? (context.vat === undefined ? "" : `P.IVA ${context.vat}`);
 	const sign = signed.split("\n").map((l) => l.trim()).filter((l) => l !== "");
-	const body = [voice.greeting(nameOf(debtor.customer)), "", ...opening(level, late, debtor, voice), "", `${total}.`, ...extras, ...pay, ...note, ...closing, ...sign].join("\n");
+	const body = [voice.greeting(nameOf(debtor.customer)), "", ...opening(level, late, debtor, voice), "", `${total}.`, ...(terms.attached === true ? ["", voice.attached(invoices.length > 1)] : []), ...extras, ...pay, ...note, ...closing, ...sign].join("\n");
 	const { to, from } = context.recipient;
 	return {
 		debtor,

@@ -181,7 +181,7 @@ describe("quotes: create", () => {
 		const s = setup();
 		const answer = await s.run({ ...ROSSI, ritenuta: true });
 		expect(answer.split("\n")[0]).toBe(
-			"Fatto il preventivo 2026-001 (PDF, 1 pagina). Mandalo con file_send (il percorso è nella riga File) e di' a chi ti scrive: «Te lo mando qui con file_send: inoltralo tu al cliente.» Ripeti i totali come sono scritti.",
+			"Fatto il preventivo 2026-001 (PDF, 1 pagina). Mandalo con file_send (il percorso è nella riga File) e di' a chi ti scrive: «Te lo mando qui con file_send: inoltralo tu al cliente.» Se invece chiede di mandarlo per mail al cliente, usa op send. Ripeti i totali come sono scritti.",
 		);
 		expect(data(answer)).toBe(
 			[
