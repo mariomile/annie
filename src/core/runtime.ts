@@ -543,10 +543,10 @@ export class AnnieInstance {
 		if (privateThread === true) {
 			const subject = subjectOf(request.channel, request.userId);
 			this.memory.participants.set(key, subject);
-			note = memoryNote(this.memory.store.forSubject(subject), listsLine(this.memory.lists.visible(subject)));
+			note = memoryNote(this.memory.store.forSubject(subject), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject));
 		} else {
 			this.memory.participants.clear(key);
-			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)));
+			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)), this.memory.store.archivedFor(SHARED));
 		}
 		const text = await this.withSkills(request, privateThread === true);
 		return this.admit({ ...message, text: `${text}${skipped}${note}` }, images);
@@ -628,7 +628,7 @@ export class AnnieInstance {
 		const subject = alone ? subjectOf(person.channel, person.userId) : undefined;
 		// So the tools know whom the thread is with even before the person writes in it (a brief's).
 		if (subject !== undefined) this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
-		const note = memoryNote(this.memory.store.forSubject(subject ?? SHARED), listsLine(this.memory.lists.visible(subject)));
+		const note = memoryNote(this.memory.store.forSubject(subject ?? SHARED), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject ?? SHARED));
 		return this.admit({ ...request, text: `${request.text}${note}` });
 	}
 

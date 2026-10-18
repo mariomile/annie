@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
+import { findHits, fold, parseQuery, termPatterns } from "./text-match.ts";
 
 /**
  * The memoria of an instance: facts and preferences it keeps across conversations, about one
@@ -14,12 +15,23 @@ export type Memory = {
 	readonly text: string;
 	readonly source: "annie" | "person";
 	readonly createdAt: string;
+	/**
+	 * In the archivio (ADR 0062): kept, and found with memory_search when a conversation needs
+	 * it, but not sent with every message. Details: a client's birthday, a past decision.
+	 */
+	readonly archived?: true;
 };
 
 export const SHARED = "*";
 const MAX_TEXT = 500;
-/** All of them reach the instance with each message, so the cap is also what it can read. */
-const MAX_PER_SUBJECT = 50;
+export const MEMORY_LIMITS = {
+	/** The essential ones reach the instance with each message, so the cap is also what it reads each time. */
+	essential: 50,
+	/** The archivio, per person (and for the shared ones): searched, never sent whole. */
+	archived: 1000,
+	/** What one search gives back. */
+	found: 10,
+} as const;
 
 export function subjectOf(channel: string, userId: string): string {
 	return `${channel}:${userId}`;
@@ -35,22 +47,50 @@ export class MemoryStore {
 		return readJsonFile<Memory[]>(this.file, []);
 	}
 
-	/** What applies to this person: their own memories, then the shared ones. */
-	forSubject(subject: string): Memory[] {
-		const all = this.list();
+	/** What applies to this person: their own memories, then the shared ones; the archivio too with `archived`. */
+	forSubject(subject: string, archived = false): Memory[] {
+		const all = this.list().filter((m) => archived || m.archived !== true);
 		return [...all.filter((m) => m.about === subject), ...all.filter((m) => m.about === SHARED && subject !== SHARED)];
 	}
 
-	add(input: { about: string; text: string; source: Memory["source"] }): Memory {
+	/** How many of this person's memories, and of the shared ones, are in the archivio. */
+	archivedFor(subject: string): number {
+		return this.list().filter((m) => m.archived === true && (m.about === subject || m.about === SHARED)).length;
+	}
+
+	/**
+	 * Remember a fact: essential (sent with every message) unless `archived`. When the essential
+	 * ones of that person are at the cap, the oldest goes to the archivio instead of refusing.
+	 */
+	add(input: { about: string; text: string; source: Memory["source"]; archived?: boolean }): Memory {
 		const text = input.text.trim().replace(/\s+/g, " ");
 		if (text === "") throw new MemoryError("La memoria è vuota");
 		if (text.length > MAX_TEXT) throw new MemoryError(`Al massimo ${MAX_TEXT} caratteri per memoria`);
-		const memory: Memory = { id: randomBytes(5).toString("hex"), about: input.about, text, source: input.source, createdAt: new Date().toISOString() };
+		const memory: Memory = { id: randomBytes(5).toString("hex"), about: input.about, text, source: input.source, createdAt: new Date().toISOString(), ...(input.archived === true ? { archived: true as const } : {}) };
 		updateJsonFile<Memory[]>(this.file, [], (all) => {
-			if (all.filter((m) => m.about === input.about).length >= MAX_PER_SUBJECT) throw new MemoryError(`Al massimo ${MAX_PER_SUBJECT} memorie per persona: cancellane qualcuna`);
-			return [...all, memory];
+			const theirs = all.filter((m) => m.about === input.about);
+			const essential = theirs.filter((m) => m.archived !== true);
+			const archive = theirs.length - essential.length;
+			const moving = input.archived !== true && essential.length >= MEMORY_LIMITS.essential ? essential[0] : undefined;
+			if (archive + (input.archived === true || moving !== undefined ? 1 : 0) > MEMORY_LIMITS.archived) throw new MemoryError(`L'archivio è pieno (${MEMORY_LIMITS.archived} memorie): cancellane qualcuna`);
+			return [...all.map((m) => (m === moving ? { ...m, archived: true as const } : m)), memory];
 		});
 		return memory;
+	}
+
+	/**
+	 * This person's memories and the shared ones, archivio included, that hold the query's words:
+	 * the ones holding more of them first, then the newest. Same words as file_search («fatture» finds «fattura»).
+	 */
+	search(subject: string, query: string): { found: Memory[]; more: number } {
+		const terms = parseQuery(query);
+		if (terms.length === 0) return { found: [], more: 0 };
+		const patterns = termPatterns(terms);
+		const scored = this.forSubject(subject, true)
+			.map((m) => ({ m, n: new Set(findHits(fold(m.text), terms, patterns).map((h) => h.term)).size }))
+			.filter((x) => x.n > 0)
+			.sort((a, b) => b.n - a.n || b.m.createdAt.localeCompare(a.m.createdAt));
+		return { found: scored.slice(0, MEMORY_LIMITS.found).map((x) => x.m), more: Math.max(0, scored.length - MEMORY_LIMITS.found) };
 	}
 
 	/** Delete if `may` allows it; returns the deleted memory, or undefined. */
@@ -102,9 +142,10 @@ export const MEMORY_NOTE_MARKER = "\n\n[Memoria]";
  * The block added after a person's message: what the instance remembers that applies to them,
  * and `more` (the names of their liste), inside the same block so it stays out of their words.
  */
-export function memoryNote(memories: readonly Memory[], more = ""): string {
-	if (memories.length === 0 && more === "") return "";
+export function memoryNote(memories: readonly Memory[], more = "", archived = 0): string {
+	if (memories.length === 0 && more === "" && archived === 0) return "";
 	const lines = memories.map((m) => `- ${m.text} (${m.about === SHARED ? "condivisa, " : ""}id ${m.id})`);
-	const remembered = lines.length === 0 ? "" : ` Cose che ricordi di chi ti scrive; usale solo se servono, aggiornale con memory_remember e memory_forget:\n${lines.join("\n")}`;
+	const archive = archived === 0 ? "" : `\nAltre ${archived} in archivio: se la conversazione tocca qualcosa che potresti sapere (un cliente, una data, una decisione), cercale con memory_search.`;
+	const remembered = lines.length === 0 && archive === "" ? "" : ` Cose che ricordi di chi ti scrive; usale solo se servono, aggiornale con memory_remember e memory_forget:${lines.length === 0 ? "" : `\n${lines.join("\n")}`}${archive}`;
 	return `${MEMORY_NOTE_MARKER}${remembered}${more === "" ? "" : `${remembered === "" ? " " : "\n"}${more}`}`;
 }

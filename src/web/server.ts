@@ -1443,11 +1443,11 @@ export function createWebApp(options: WebAppOptions): Server {
 	route("POST", "/api/instances/:id/memory", "person", async ({ person, params, req }) => {
 		const p = person as Person;
 		await instanceAccess(p, params[0] as string);
-		const body = (await readJson(req)) as { text?: unknown; shared?: unknown };
+		const body = (await readJson(req)) as { text?: unknown; shared?: unknown; archived?: unknown };
 		const shared = body.shared === true;
 		if (shared && p.role !== "owner") throw new HttpError(403, "Solo l'owner aggiunge memorie condivise");
 		try {
-			const memory = runtime.memory(tenantId, params[0] as string).add({ about: shared ? SHARED : subjectOfPerson(p), text: String(body.text ?? ""), source: "person" });
+			const memory = runtime.memory(tenantId, params[0] as string).add({ about: shared ? SHARED : subjectOfPerson(p), text: String(body.text ?? ""), source: "person", archived: body.archived === true });
 			await runtime.audit(tenantId).append({ type: "memory.saved", instanceId: params[0], personId: p.id, memoryId: memory.id, shared });
 			return { memory };
 		} catch (error) {
