@@ -598,7 +598,7 @@ describe("renewals: what moves by itself and what waits", () => {
 		const later = inside(await s.run({ op: "upcoming", compact: true }));
 		expect(later).toContain("• da pagare entro il 12 marzo 2027: Assicurazione auto (UnipolSai), 480,00 €");
 		expect(later).toContain("• da pagare dal 31 gennaio 2027: Vigilanza");
-		expect(BRIEF_INSTRUCTION).toContain("10. I rinnovi e gli abbonamenti (renewals con op upcoming e compact true)");
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\brenewals \(upcoming\)[,.]/);
 	});
 
 	it("agendaOf leaves cancelled renewals out", () => {

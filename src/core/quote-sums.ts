@@ -148,6 +148,11 @@ export function eurosToCents(value: string): bigint {
 	return scaled(value, 2);
 }
 
+/** An invoice's hundred-millionths (fattura-pa.ts) in cents, half up: the one helper the registers share. */
+export function unitsToCents(units: bigint): bigint {
+	return (units * 2n + 1_000_000n) / 2_000_000n;
+}
+
 /** `cents` × `percent` (a decimal string, 2 decimals at most) / 100, half up. */
 function percentOf(cents: bigint, percent: string): bigint {
 	return halfUp(cents * scaled(percent, 2), 10_000n);

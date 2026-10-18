@@ -11,7 +11,7 @@
  * numbers in the descriptions are masked before anything is kept (only an IBAN's last 4
  * characters stay), and every text from it is fenced as data in the answers.
  */
-import { realDate } from "./italian-calendar.ts";
+import { MONTH_NAMES, realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
 import { MAX_EUROS } from "./money-input.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
@@ -42,8 +42,11 @@ export const BANK_LIMITS = {
 	calls: 300,
 	/** Movements one to_expense or confirm may write. */
 	batch: 50,
-	/** Rows a list shows. */
-	listed: 40,
+	/** Rows a list shows; proposals an import's answer shows. */
+	listed: 15,
+	pending: 8,
+	/** Characters of a description in a row of an answer. */
+	rowText: 60,
 	fileName: 120,
 	label: 200,
 	/** The largest amount of a movement, in euros. */
@@ -75,7 +78,7 @@ export function bankAgentReads(args: Record<string, unknown>): boolean {
 export type BankMovement = {
 	/** «B-000001». */
 	readonly id: string;
-	/** Of date, cents, the normalized masked description and the running balance (bank-parse.ts). */
+	/** Of date, cents and the normalized masked description (bank-parse.ts); not the running balance. */
 	readonly hash: string;
 	/** The n-th movement with the same hash in one file (two equal coffees of one day are two). */
 	readonly seq: number;
@@ -127,14 +130,17 @@ export type MatchState = (typeof MATCH_STATES)[number];
 /** What a movement may be: an invoice (its key and instalment), an expense, a renewal, or no target. */
 export type MatchTarget = { readonly kind: MatchKind; readonly target?: string; readonly instalment?: number; readonly label: string };
 
+export const MATCH_NOTES = ["oldest", "rate", "partial"] as const;
+export type MatchNote = (typeof MATCH_NOTES)[number];
+
 export type BankMatch = Marker &
 	Partial<MatchTarget> & {
 		readonly movement: string;
 		readonly state: MatchState;
 		/** The amount and a name, a partita IVA or the number agree: an invoice's strong match. */
 		readonly strong?: true;
-		/** oldest: two invoices alike, the oldest proposed; partial: maybe part of the invoice in label. */
-		readonly note?: "oldest" | "partial";
+		/** oldest: two invoices alike, the oldest proposed; rate: two equal instalments of one invoice, the first proposed; partial: maybe part of the invoice in label. */
+		readonly note?: MatchNote;
 		readonly candidates?: readonly MatchTarget[];
 		/** The expense recorded from it (to_expense). */
 		readonly expense?: string;
@@ -189,7 +195,7 @@ export function validMatch(v: unknown): v is BankMatch {
 	if (m.state === "ask" && !(Array.isArray(m.candidates) && m.candidates.length >= 2 && m.candidates.length <= BANK_LIMITS.candidates && m.candidates.every(validTarget))) return false;
 	if (m.state !== "ask" && m.candidates !== undefined) return false;
 	if (m.strong !== undefined && m.strong !== true) return false;
-	if (m.note !== undefined && m.note !== "oldest" && m.note !== "partial") return false;
+	if (m.note !== undefined && !MATCH_NOTES.includes(m.note)) return false;
 	return m.expense === undefined || (typeof m.expense === "string" && /^S-\d{4}-\d{4,6}$/.test(m.expense));
 }
 
@@ -199,21 +205,8 @@ export function validSettings(v: unknown): v is BankSettings {
 
 export const validCall = (v: unknown): boolean => typeof v === "string" && isText(v, 200);
 
-/** Cents of a canonical signed decimal. */
-export function movementCents(amount: string): bigint {
-	const negative = amount.startsWith("-");
-	const [integer, fraction = ""] = (negative ? amount.slice(1) : amount).split(".");
-	const cents = BigInt(`${integer}${fraction.padEnd(2, "0")}`);
-	return negative ? -cents : cents;
-}
-
-/** The canonical signed decimal of cents: -4250n → «-42.5». */
-export function centsAmount(cents: bigint): string {
-	const abs = cents < 0n ? -cents : cents;
-	const digits = abs.toString().padStart(3, "0");
-	const fraction = digits.slice(-2).replace(/0+$/, "");
-	return `${cents < 0n ? "-" : ""}${digits.slice(0, -2)}${fraction === "" ? "" : `.${fraction}`}`;
-}
+/** «3 ottobre»: a day in a sentence or a label, without the year. */
+export const dayWords = (iso: string): string => `${Number(iso.slice(8, 10))} ${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]}`;
 
 /** «B-000012». */
 export const movementId = (n: number): string => `B-${String(n).padStart(6, "0")}`;

@@ -10,6 +10,7 @@ import type { Expense } from "./expenses.ts";
 import { cents } from "./expense-sums.ts";
 import { inPeriod, type Span } from "./periods.ts";
 import { type Invoice, paidDay, partyKey } from "./invoices.ts";
+import { unitsToCents } from "./quote-sums.ts";
 
 type CashKind = "in" | "out";
 
@@ -41,10 +42,8 @@ export type CashBook = {
 	readonly credits: number;
 };
 
-/** Hundred-millionths (fattura-pa.ts) to cents, half up. */
-export function unitsToCents(units: bigint): bigint {
-	return (units * 2n + 1_000_000n) / 2_000_000n;
-}
+/** Kept here for the registers that import it from the cash book: the one helper is quote-sums.ts'. */
+export { unitsToCents } from "./quote-sums.ts";
 
 type Entry = Omit<CashRow, "balance">;
 

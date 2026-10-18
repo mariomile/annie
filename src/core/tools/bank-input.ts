@@ -3,7 +3,7 @@
  * columns of a file, the movements meant, a month, a direction, a list's filter. What does not
  * read goes back only inside the bank's fence, never in a parser's message.
  */
-import { ROLES, type ColumnsSaid, type Role } from "../bank-parse.ts";
+import { type ColumnsSaid, ROLES, type Role } from "../bank-columns.ts";
 import { PeriodError, readPeriod } from "../periods.ts";
 import { type Problem } from "../text-input.ts";
 import { fence } from "../untrusted.ts";
@@ -26,9 +26,9 @@ export function readColumns(value: unknown): ColumnsSaid | undefined | Problem {
 	return out;
 }
 
-const ID = /^B-?0*(\d{1,7})$/i;
+const ID = /^(?:B-?)?0*(\d{1,7})$/i;
 
-/** The movements named: «B-000012», «b12», «12»; at most `max`. */
+/** The movements named: «B-000012», «b12», a bare «12» or 12; at most `max`. */
 export function readIds(value: unknown, max: number): string[] | undefined | Problem {
 	if (value === undefined) return undefined;
 	const list = typeof value === "string" ? value.split(/[\s,;]+/).filter((v) => v !== "") : value;

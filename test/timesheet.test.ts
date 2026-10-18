@@ -767,7 +767,7 @@ describe("timesheet: another agente, the brief, the store", () => {
 		expect(String(await briefed?.execute({ op: "summary", compact: true }, fresh()))).toContain("Niente da segnalare sulle ore");
 		expect(String(await briefed?.execute({ op: "status" }, fresh()))).toBe("Nessun timer avviato.");
 		expect(String(await briefed?.execute({ op: "list" }, fresh()))).toContain("Ore: 1 voce");
-		expect(BRIEF_INSTRUCTION).toContain("9. Le ore di lavoro (timesheet con op summary e compact true)");
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\btimesheet \(summary\)[,.]/);
 		expect(s.store.read().entries).toHaveLength(1);
 		expect(s.store.read().timers).toHaveLength(0);
 		expect(existsSync(join(s.dir, "workspace", "ore"))).toBe(false);

@@ -3,6 +3,7 @@ import { BRIEF_DAYS, CASHFLOW_LIMITS, type CashItem, CashflowError, cashflowAgen
 import { applyPatch, editPatch, findItem, type Found, lookalikes } from "../cashflow-items.ts";
 import { project, type Projection } from "../cashflow-projection.ts";
 import { applyChanges, averageSpend, type Change, dedupe, type Hypothetical, hypotheticalFlows, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, TAX_TWIN_DAYS, taxDuplicates, taxFlows, unbilledPotential, voceDuplicates } from "../cashflow-sources.ts";
+import type { BankStore } from "../bank-store.ts";
 import { CASHFLOW_BROKEN, type CashflowStore, latestBalance } from "../cashflow-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
@@ -52,6 +53,8 @@ export type CashflowToolsOptions = {
 	/** La liquidazione IVA (vat.ts) and the fatture in uscita, read only: for the ordinario, the estimated F24 of the IVA are a source. */
 	readonly vat?: Pick<VatStore, "read">;
 	readonly sales?: Pick<SalesInvoiceStore, "read">;
+	/** L'estratto conto, read only: its movements for a balance that came from a statement. */
+	readonly bank?: Pick<BankStore, "read">;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: CashflowEvent) => Promise<void>;
@@ -410,7 +413,8 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const potential = hours.broken ? undefined : unbilledPotential(hours.entries, hours.rates);
 		// The balance brought to now with what was marked paid or recorded after it, when the registers read and it is not too old.
 		const canRoll = !invoiceBook.broken && !expenseBook.broken && !renewalBook.broken && daysBetween(balance.date, day) <= CASHFLOW_LIMITS.maxDays;
-		const rolled = canRoll ? rollForward(balance, now().toISOString(), day, invoices, expenseBook.expenses, renewalBook.renewals, dayOf) : undefined;
+		const bankBook = balance.source === "bank" ? options.bank?.read() : undefined;
+		const rolled = canRoll ? rollForward(balance, now().toISOString(), day, invoices, expenseBook.expenses, renewalBook.renewals, dayOf, bankBook === undefined || bankBook.broken ? [] : bankBook.movements) : undefined;
 		const movements = [...inv.movements, ...(ren?.movements ?? []), ...(quotes?.movements ?? []), ...voci.items, ...taxed.taxes];
 		const notes: string[] = [];
 		if (taxBook?.broken === true) notes.push("Il profilo delle tasse non si legge: tasse stimate escluse.");

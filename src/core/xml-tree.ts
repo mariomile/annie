@@ -12,7 +12,8 @@ export class XmlError extends Error {
 	override readonly name = "XmlError";
 }
 
-export type XmlElement = { readonly name: string; readonly children: XmlElement[]; text: string };
+/** An element: its local name, children, text and, when it has any, its attributes as written (read with attribute()). */
+export type XmlElement = { readonly name: string; readonly children: XmlElement[]; text: string; readonly attrs?: string };
 
 /** The root element as the start of a file shows it: local name, attribute text, whether a DOCTYPE came before. */
 export type XmlRoot = { readonly name: string; readonly attrs: string; readonly doctype: boolean };
@@ -77,7 +78,8 @@ export function parseXml(xml: string, limits: { readonly maxElements: number; re
 			const name = /^[^\s/>]+/.exec(tag)?.[0];
 			if (name === undefined) throw new XmlError(BROKEN);
 			if (++count > limits.maxElements) throw new XmlError("il file XML ha troppi elementi da leggere");
-			const element: XmlElement = { name: localName(name), children: [], text: "" };
+			const attrs = tag.slice(name.length).replace(/\/$/, "").trim();
+			const element: XmlElement = { name: localName(name), children: [], text: "", ...(attrs === "" ? {} : { attrs }) };
 			if (top !== undefined) top.children.push(element);
 			else if (root === undefined) root = element;
 			else throw new XmlError(BROKEN);
@@ -119,6 +121,13 @@ export function child(el: XmlElement | undefined, name: string): XmlElement | un
 
 export function children(el: XmlElement | undefined, name: string): XmlElement[] {
 	return el === undefined ? [] : el.children.filter((c) => c.name === name);
+}
+
+/** The value of an attribute by its local name («Ccy» of `<Amt Ccy="EUR">`), unescaped; undefined when not there. */
+export function attribute(el: XmlElement | undefined, name: string): string | undefined {
+	if (el?.attrs === undefined) return undefined;
+	for (const m of el.attrs.matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) if (localName(m[1] as string) === name) return xmlUnescape(m[2] ?? m[3] ?? "");
+	return undefined;
 }
 
 /** The element at a path of local names, «A/B/C», taking the first of each. */

@@ -1,30 +1,27 @@
 /**
  * A bank statement file read into movements, pure: a CSV («;» or «,», Italian or English
  * decimals, a signed amount, a sign column or Dare/Avere columns), an Excel sheet through the
- * tables reader (documents.ts), or a CAMT.053 XML through xml-tree.ts. The table's header is found
- * among the first rows (the bank's name, the IBAN and the period above it are skipped), its
- * columns by their names in Italian or English; rows whose date does not read (totals, notes) are
- * skipped, a «Saldo finale» row is the closing balance. When the columns are not clear the caller
- * gets the header back, to ask the person which column is which.
+ * tables reader (documents.ts), or a CAMT.053 XML through xml-tree.ts. The columns are found by
+ * bank-columns.ts; rows whose date does not read (totals, notes) are skipped and counted, a «Saldo
+ * finale» row is the closing balance. When the columns, the order of day and month or the decimal
+ * separator are not clear the caller gets the header and the first values back, to ask the person.
  *
  * Nothing in the file is trusted: at most BANK_LIMITS.rows rows and BANK_LIMITS.cell characters a
  * cell are read, control and format characters go, and IBAN and card numbers are masked before
- * anything leaves this module (an IBAN keeps its last 4 characters, a card nothing).
+ * anything leaves this module (an IBAN keeps its last 4 characters, a card nothing): the header
+ * and the values shown to ask about too.
  */
 import { createHash } from "node:crypto";
 import { BANK_LIMITS, BankError } from "./bank.ts";
+import { type Columns, type ColumnsSaid, detect, type Found, said } from "./bank-columns.ts";
 import { spreadsheetRows } from "./documents.ts";
 import { parseCsv } from "./make-xlsx.ts";
 import { oneLine } from "./plain-text.ts";
 import { dayOf, tableNumber } from "./tables.ts";
 import { fold } from "./text-match.ts";
-import { child, children, decodeXml, descendant, parseXml, xmlRoot, type XmlElement } from "./xml-tree.ts";
+import { attribute, child, children, decodeXml, descendant, parseXml, xmlRoot, type XmlElement } from "./xml-tree.ts";
 
-export const ROLES = ["date", "value_date", "description", "amount", "debit", "credit", "sign", "balance"] as const;
-export type Role = (typeof ROLES)[number];
-
-/** The columns as the person names them (a header's name, a letter or a number from 1). */
-export type ColumnsSaid = Partial<Record<Role, string>>;
+export { type ColumnsSaid, ROLES, type Role } from "./bank-columns.ts";
 
 export type ParsedRow = {
 	readonly date: string;
@@ -46,28 +43,20 @@ export type Parsed = {
 	readonly closing?: { readonly cents: bigint; readonly date: string };
 	/** Rows past BANK_LIMITS.rows, left out. */
 	readonly truncated: boolean;
-	/** Rows under the header that are no movement (totals, notes, an amount that does not read). */
+	/** Rows under the header that are no movement (totals, notes, an empty amount). */
 	readonly skipped: number;
+	/** Rows with an amount whose date does not read: left out, and said. */
+	readonly badDates: number;
+	/** Rows with both Dare and Avere filled: left out, and said. */
+	readonly bothSides: number;
+	/** CAMT entries (and balances) in another currency than the euro: left out, and said. */
+	readonly otherCurrency: number;
+	/** What was taken without asking, to say. */
+	readonly assumed?: string;
 };
 
-/** The columns are not clear: the header found (cut, to be fenced) and why. */
-export type Ask = { readonly kind: "ask"; readonly header: readonly string[]; readonly why: string };
-
-type Columns = { date: number; valueDate?: number; description: number[]; amount?: number; debit?: number; credit?: number; sign?: number; balance?: number };
-
-/** Header names by role, normalized (folded, single spaces); a lower rank wins between two date columns. */
-const NAMES: Readonly<Record<Role, readonly (readonly [string, number])[]>> = {
-	date: [["data contabile", 1], ["data contab", 1], ["data registrazione", 1], ["booking date", 1], ["posting date", 1], ["data operazione", 2], ["data op", 2], ["data movimento", 2], ["transaction date", 2], ["data", 3], ["date", 3]],
-	value_date: [["data valuta", 1], ["valuta", 1], ["value date", 1], ["val", 1]],
-	description: [["descrizione", 1], ["causale", 1], ["descrizione operazione", 1], ["causale descrizione", 1], ["descrizione estesa", 1], ["dettagli", 1], ["dettaglio", 1], ["operazione", 1], ["description", 1], ["details", 1], ["memo", 1], ["narrative", 1], ["reference", 1], ["beneficiario", 1], ["ordinante", 1]],
-	amount: [["importo", 1], ["importo eur", 1], ["importo euro", 1], ["importo in euro", 1], ["amount", 1], ["amount eur", 1]],
-	debit: [["dare", 1], ["uscite", 1], ["uscita", 1], ["addebiti", 1], ["addebito", 1], ["importo dare", 1], ["debit", 1], ["debits", 1], ["debit amount", 1], ["money out", 1], ["paid out", 1], ["withdrawals", 1]],
-	credit: [["avere", 1], ["entrate", 1], ["entrata", 1], ["accrediti", 1], ["accredito", 1], ["importo avere", 1], ["credit", 1], ["credits", 1], ["credit amount", 1], ["money in", 1], ["paid in", 1], ["deposits", 1]],
-	sign: [["segno", 1], ["dare avere", 1], ["d a", 1], ["cr dr", 1], ["dr cr", 1], ["debit credit", 1], ["sign", 1]],
-	balance: [["saldo", 1], ["saldo contabile", 1], ["saldo progressivo", 1], ["balance", 1], ["running balance", 1]],
-};
-
-const norm = (cell: string) => fold(cell).replace(/\(?\s*(?:€|eur)\s*\)?$/, " eur").replace(/[^a-z0-9]+/g, " ").trim();
+/** Not clear: the header found (or the first row, when there is no header) and the first values under it, masked and cut, to be fenced; and why. */
+export type Ask = { readonly kind: "ask"; readonly header: readonly string[]; readonly samples: readonly (readonly string[])[]; readonly noHeader: boolean; readonly why: string };
 
 /** A cell from the file: at most BANK_LIMITS.cell characters, on one line, without control or format characters. */
 export function cleanCell(cell: string): string {
@@ -76,38 +65,43 @@ export function cleanCell(cell: string): string {
 
 const CARD_LONG = /\b(?:\d[ -]?){12,18}\d\b/g;
 const CARD_MASKED = /(?:[X*•]{2,}[ -]?){1,4}\d{2,4}\b/gi;
+/** An Italian IBAN by its shape (27 characters, the CIN a letter), glued to other letters or written with spaces or dashes. */
+const IBAN_IT = /IT[ -]?\d{2}[ -]?[A-Z](?:[ -]?\d){10}(?:[ -]?[A-Z0-9]){12}/gi;
 const IBAN_COMPACT = /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/gi;
-const IBAN_GROUPED = /\b[A-Z]{2}\d{2}(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?\b/gi;
+const IBAN_GROUPED = /\b[A-Z]{2}\d{2}(?:[ -][A-Z0-9]{4}){2,7}(?:[ -][A-Z0-9]{1,4})?\b/gi;
 
 /**
- * A description with every IBAN-like string replaced by «IBAN …1234» (its last 4 characters) and
- * every card number, whole or already masked, by «[carta]». `ibanTail` and `own` (one of the
- * company's own IBANs) of the first IBAN; the full IBAN never leaves this function.
+ * A text with every IBAN-like string replaced by «IBAN …1234» (its last 4 characters) and every
+ * card number, whole or already masked, by «[carta]». `ibanTail` and `own` (one of the company's
+ * own IBANs) of the first IBAN; the full IBAN never leaves this function.
  */
 export function maskSensitive(text: string, ownIbans: readonly string[] = []): { readonly text: string; readonly ibanTail?: string; readonly own?: true } {
 	let tail: string | undefined;
 	let own = false;
-	const own2 = new Set(ownIbans.map((i) => i.replace(/\s+/g, "").toUpperCase()));
+	const owned = new Set(ownIbans.map((i) => i.replace(/[\s-]+/g, "").toUpperCase()));
 	const iban = (m: string) => {
-		const compact = m.replace(/\s+/g, "").toUpperCase();
+		const compact = m.replace(/[\s-]+/g, "").toUpperCase();
 		if (tail === undefined) {
 			tail = compact.slice(-4);
-			own = own2.has(compact);
+			own = owned.has(compact);
 		}
-		return `IBAN …${compact.slice(-4)}`;
+		return ` IBAN …${compact.slice(-4)} `;
 	};
-	const masked = text.replace(IBAN_GROUPED, iban).replace(IBAN_COMPACT, iban).replace(CARD_MASKED, "[carta]").replace(CARD_LONG, "[carta]");
+	const masked = text.replace(IBAN_IT, iban).replace(IBAN_GROUPED, iban).replace(IBAN_COMPACT, iban).replace(CARD_MASKED, "[carta]").replace(CARD_LONG, "[carta]").replace(/ {2,}/g, " ").trim();
 	return { text: masked, ...(tail === undefined ? {} : { ibanTail: tail }), ...(own ? { own: true as const } : {}) };
 }
 
-/** The key two loads of the same movement share: the day, the cents, the masked description folded, the running balance. */
-export function movementHash(date: string, cents: bigint, description: string, balance: bigint | undefined): string {
+/** The key two loads of the same movement share: the day, the cents, the masked description folded. Not the running balance: a file with it and one without are the same movements. */
+export function movementHash(date: string, cents: bigint, description: string): string {
 	const key = fold(description).replace(/[^a-z0-9]+/g, " ").trim();
-	return createHash("sha256").update(`${date}|${cents}|${key}|${balance ?? ""}`).digest("hex").slice(0, 32);
+	return createHash("sha256").update(`${date}|${cents}|${key}`).digest("hex").slice(0, 32);
 }
 
-/** The movements of a statement file, or the header to ask about. BankError when it is no statement. */
-export function parseStatement(name: string, data: Uint8Array, o: { readonly columns?: ColumnsSaid; readonly ownIbans?: readonly string[] } = {}): Parsed | Ask {
+/** The columns said, the company's IBANs, and how the person says the file writes dates and amounts when it was asked. */
+type Options = { readonly columns?: ColumnsSaid; readonly ownIbans?: readonly string[]; readonly dayFirst?: boolean; readonly decimalComma?: boolean };
+
+/** The movements of a statement file, or what to ask about. BankError when it is no statement. */
+export function parseStatement(name: string, data: Uint8Array, o: Options = {}): Parsed | Ask {
 	if (data.byteLength > BANK_LIMITS.importBytes) throw new BankError(`il file è troppo grande (più di ${BANK_LIMITS.importBytes / 1024 / 1024} MB): chiedi un estratto conto più corto, per esempio di un mese`);
 	if (data[0] !== 0x50 && data.includes(0)) throw new BankError("il file non è un CSV, un Excel o un CAMT.053 che so leggere");
 	const head = Buffer.from(data.subarray(0, 4096)).toString("utf8");
@@ -132,31 +126,56 @@ export function parseStatement(name: string, data: Uint8Array, o: { readonly col
 	return table(sheet, format, o);
 }
 
-function table(rows: string[][], format: "csv" | "xlsx", o: { readonly columns?: ColumnsSaid; readonly ownIbans?: readonly string[] }): Parsed | Ask {
-	const found = o.columns !== undefined && Object.keys(o.columns).length > 0 ? said(rows, o.columns) : detect(rows);
-	if ("why" in found) return { kind: "ask", header: found.header.slice(0, 30), why: found.why };
-	const { at, cols } = found;
+/** What to ask about: the row shown and the first two rows with something under it, masked and cut. */
+function ask(rows: readonly (readonly string[])[], f: { header: readonly string[]; at: number; why: string; noHeader?: true }): Ask {
+	const shown = (r: readonly string[]) => r.slice(0, 30).map((c) => maskSensitive(c).text.slice(0, 40));
+	const below = rows.slice(f.at + (f.noHeader === true ? 0 : 1)).filter((r) => r.some((c) => c.trim() !== ""));
+	return { kind: "ask", header: shown(f.header), samples: below.slice(f.noHeader === true ? 1 : 0, f.noHeader === true ? 3 : 2).map(shown), noHeader: f.noHeader === true, why: f.why };
+}
+
+function table(rows: string[][], format: "csv" | "xlsx", o: Options): Parsed | Ask {
+	const found: Found = o.columns !== undefined && Object.keys(o.columns).length > 0 ? said(rows, o.columns) : detect(rows);
+	if ("why" in found) return ask(rows, found);
+	const { at } = found;
+	let cols: Columns = found.cols;
 	const body = rows.slice(at + 1);
-	const amountCols = [cols.amount, cols.debit, cols.credit, cols.balance].filter((c) => c !== undefined) as number[];
-	const intl = new Map(amountCols.map((c) => [c, international(body.map((r) => r[c] ?? ""))]));
+	const whyAsk = (why: string) => ask(rows, { header: rows[at] ?? [], at, why });
+	const order = o.dayFirst === undefined ? dateOrder(body.map((r) => r[cols.date] ?? "")) : o.dayFirst ? "dmy" : "mdy";
+	if (order === "ask") return whyAsk("nella colonna della data alcune date sembrano giorno/mese e altre mese/giorno: chiedi come sono scritte e ripeti con day_first");
+	const styles = new Map<number, "it" | "en">();
+	for (const c of [cols.amount, cols.debit, cols.credit]) {
+		if (c === undefined) continue;
+		const s = o.decimalComma === undefined ? decimalStyle(body.map((r) => r[c] ?? "")) : o.decimalComma ? "it" : "en";
+		if (s === "ask") return whyAsk("non capisco se negli importi la virgola separa i decimali o le migliaia: chiedi e ripeti con decimal_comma");
+		styles.set(c, s);
+	}
+	if (cols.balance !== undefined) {
+		// A running balance that does not read clearly is only left out: it is not needed for the movements.
+		const s = o.decimalComma === undefined ? decimalStyle(body.map((r) => r[cols.balance as number] ?? "")) : o.decimalComma ? "it" : "en";
+		if (s === "ask") cols = { ...cols, balance: undefined };
+		else styles.set(cols.balance, s);
+	}
 	const num = (r: readonly string[], c: number | undefined): bigint | undefined | null => {
 		if (c === undefined) return undefined;
 		const t = (r[c] ?? "").trim();
-		if (t === "") return undefined;
-		const n = tableNumber(t, intl.get(c) === true);
+		if (t === "" || /^[-–—]$/.test(t)) return undefined;
+		const n = tableNumber(t, styles.get(c) === "en");
 		if (n === undefined || (n.unit !== undefined && n.unit !== "€") || !Number.isFinite(n.value) || Math.abs(n.value) > BANK_LIMITS.maxAmount) return null;
 		return BigInt(Math.round(n.value * 100));
 	};
 	const out: ParsedRow[] = [];
 	let skipped = 0;
+	let badDates = 0;
+	let bothSides = 0;
 	let truncated = false;
 	let closing: { cents: bigint; date: string } | undefined;
 	for (const r of body) {
 		if (r.every((c) => c.trim() === "")) continue;
-		const day = isoOf(r[cols.date] ?? "");
+		const day = isoOf(r[cols.date] ?? "", order);
 		if (day === undefined) {
-			const c = closingOf(r);
+			const c = closingOf(r, order);
 			if (c !== undefined) closing = c;
+			else if ((r[cols.date] ?? "").trim() !== "" && [cols.amount, cols.debit, cols.credit].some((k) => typeof num(r, k) === "bigint") && !/\btotal/i.test(r.join(" "))) badDates++;
 			else skipped++;
 			continue;
 		}
@@ -172,20 +191,31 @@ function table(rows: string[][], format: "csv" | "xlsx", o: { readonly columns?:
 		} else {
 			const d = num(r, cols.debit);
 			const c = num(r, cols.credit);
-			cents = d === null || c === null ? null : d === undefined && c === undefined ? undefined : (c === undefined ? 0n : c < 0n ? -c : c) - (d === undefined ? 0n : d < 0n ? -d : d);
+			if (typeof d === "bigint" && typeof c === "bigint" && d !== 0n && c !== 0n) {
+				bothSides++;
+				continue;
+			}
+			// A Dare is money out whatever its sign; an Avere as written: negative, it is money out too.
+			cents = d === null || c === null ? null : d === undefined && c === undefined ? undefined : (c ?? 0n) - (d === undefined ? 0n : d < 0n ? -d : d);
 		}
 		const balance = num(r, cols.balance);
 		if (cents === null || cents === undefined || cents === 0n || balance === null) {
 			skipped++;
 			continue;
 		}
-		const value = cols.valueDate === undefined ? undefined : isoOf(r[cols.valueDate] ?? "");
-		const text = cols.description.map((c) => r[c] ?? "").filter((t) => t.trim() !== "").join(" ");
-		out.push(row(day, value, cents, text, balance, o.ownIbans ?? []));
+		const value = cols.valueDate === undefined ? undefined : isoOf(r[cols.valueDate] ?? "", order);
+		out.push(row(day, value, cents, descriptionOf(cols.description.map((c) => r[c] ?? "")), balance, o.ownIbans ?? []));
 	}
-	if (out.length === 0) return { kind: "ask", header: (rows[at] ?? []).slice(0, 30), why: "sotto l'intestazione non trovo movimenti con una data e un importo che so leggere" };
+	if (out.length === 0) return whyAsk("sotto l'intestazione non trovo movimenti con una data e un importo che so leggere");
 	if (closing === undefined && cols.balance !== undefined) closing = lastBalance(out);
-	return finish(format, out, closing, truncated, skipped);
+	return finish(format, out, closing, { truncated, skipped, badDates, bothSides, otherCurrency: 0, ...(cols.assumed === undefined ? {} : { assumed: cols.assumed }) });
+}
+
+/** The description's columns joined, a part another one holds already left out («Descrizione» in «Descrizione completa»). */
+function descriptionOf(parts: readonly string[]): string {
+	const filled = parts.map((p) => p.trim()).filter((p) => p !== "");
+	const key = (p: string) => fold(p).replace(/[^a-z0-9]+/g, " ").trim();
+	return filled.filter((p, i) => !filled.some((q, j) => j !== i && key(q).includes(key(p)) && (key(q) !== key(p) || j < i))).join(" ");
 }
 
 function row(date: string, valueDate: string | undefined, cents: bigint, text: string, balance: bigint | undefined, ownIbans: readonly string[]): ParsedRow {
@@ -199,13 +229,15 @@ function row(date: string, valueDate: string | undefined, cents: bigint, text: s
 		...(balance === undefined ? {} : { balance }),
 		...(masked.ibanTail === undefined ? {} : { ibanTail: masked.ibanTail }),
 		...(masked.own === true ? { own: true as const } : {}),
-		hash: movementHash(date, cents, description, balance),
+		hash: movementHash(date, cents, description),
 	};
 }
 
-function finish(format: Parsed["format"], rows: ParsedRow[], closing: { cents: bigint; date: string } | undefined, truncated: boolean, skipped: number): Parsed {
+type Counts = Pick<Parsed, "truncated" | "skipped" | "badDates" | "bothSides" | "otherCurrency" | "assumed">;
+
+function finish(format: Parsed["format"], rows: ParsedRow[], closing: { cents: bigint; date: string } | undefined, counts: Counts): Parsed {
 	const days = rows.map((r) => r.date).sort();
-	return { kind: "rows", format, rows, from: days[0] as string, to: days.at(-1) as string, ...(closing === undefined ? {} : { closing }), truncated, skipped };
+	return { kind: "rows", format, rows, from: days[0] as string, to: days.at(-1) as string, ...(closing === undefined ? {} : { closing }), ...counts };
 }
 
 /** The running balance of the latest movement: the file lists newest first or last, and says which by its order. */
@@ -222,16 +254,17 @@ function lastBalance(rows: readonly ParsedRow[]): { cents: bigint; date: string 
 const CLOSING = /\bsaldo\s+(?:finale|contabile(?:\s+finale)?|al\b|disponibile|liquido|di\s+chiusura)|\bclosing\s+balance\b/;
 
 /** A footer row with the closing balance: its words, a date (in a cell or in the words), the last amount. */
-function closingOf(r: readonly string[]): { cents: bigint; date: string } | undefined {
+function closingOf(r: readonly string[], order: "dmy" | "mdy"): { cents: bigint; date: string } | undefined {
 	const words = fold(r.join(" "));
 	if (!CLOSING.test(words) || /\biniziale\b|\bopening\b/.test(words)) return undefined;
 	let cents: bigint | undefined;
 	let date: string | undefined;
 	for (const c of r) {
 		const t = c.trim();
-		const d = isoOf(t) ?? isoOf(/(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}-\d{2})/.exec(t)?.[1] ?? "");
+		const d = isoOf(t, order) ?? isoOf(/(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}-\d{2})/.exec(t)?.[1] ?? "", order);
 		if (d !== undefined) date = d;
-		const n = tableNumber(t, international([t]));
+		const style = decimalStyle([t]);
+		const n = tableNumber(t, style === "en");
 		if (n !== undefined && dayOf(t) === undefined && Math.abs(n.value) <= BANK_LIMITS.maxAmount) cents = BigInt(Math.round(n.value * 100));
 	}
 	return cents === undefined || date === undefined ? undefined : { cents, date };
@@ -244,124 +277,52 @@ function signOf(cell: string): bigint | undefined {
 	return undefined;
 }
 
-/** Whether a column writes amounts the English way (1,234.56) rather than the Italian (1.234,56). */
-function international(cells: readonly string[]): boolean {
+/**
+ * How a column writes its amounts: the Italian way (1.234,56), the English (1,234.56), or not
+ * clear. «-1,200» alone reads as English thousands when nothing in the column is Italian; with
+ * Italian amounts beside it, or both ways in one column, it is asked.
+ */
+export function decimalStyle(cells: readonly string[]): "it" | "en" | "ask" {
 	let it = 0;
 	let en = 0;
+	let commaThousands = 0;
+	let dotThousands = 0;
 	for (const c of cells) {
 		const t = c.replace(/[^\d.,]/g, "");
 		if (/\d\.\d{3},\d/.test(t) || /\d,\d{1,2}$/.test(t)) it++;
 		else if (/\d,\d{3}\.\d/.test(t) || /\d\.\d{1,2}$/.test(t)) en++;
+		else if (/^\d{1,3}(?:,\d{3})+$/.test(t)) commaThousands++;
+		else if (/^\d{1,3}(?:\.\d{3})+$/.test(t)) dotThousands++;
 	}
-	return en > it;
+	if (it > 0 && en > 0) return "ask";
+	if (en > 0) return dotThousands > 0 ? "ask" : "en";
+	if (it > 0) return commaThousands > 0 ? "ask" : "it";
+	if (commaThousands > 0) return dotThousands > 0 ? "ask" : "en";
+	return "it";
 }
 
-function isoOf(text: string): string | undefined {
-	const d = dayOf(text);
+const SLASHED = /^\s*(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})\b/;
+
+/** Day/month (Italian) unless a value has its second part over 12 (month/day, as English files write it); both: not clear. */
+export function dateOrder(cells: readonly string[]): "dmy" | "mdy" | "ask" {
+	let dmy = false;
+	let mdy = false;
+	for (const c of cells) {
+		const m = SLASHED.exec(c);
+		if (m === null) continue;
+		if (Number(m[1]) > 12) dmy = true;
+		if (Number(m[3]) > 12) mdy = true;
+	}
+	return dmy && mdy ? "ask" : mdy ? "mdy" : "dmy";
+}
+
+function isoOf(text: string, order: "dmy" | "mdy" = "dmy"): string | undefined {
+	const swapped = order === "mdy" ? text.replace(SLASHED, (_all, a: string, sep: string, b: string, y: string) => `${b}${sep}${a}${sep}${y}`) : text;
+	const d = dayOf(swapped);
 	return d === undefined ? undefined : new Date(d * 86_400_000).toISOString().slice(0, 10);
 }
 
-type Found = { at: number; cols: Columns } | { header: string[]; why: string };
-
-/** The roles of a header row: each cell's role and rank, when its name is known. */
-function rolesOf(header: readonly string[]): { role: Role; rank: number; col: number }[] {
-	const out: { role: Role; rank: number; col: number }[] = [];
-	header.forEach((cell, col) => {
-		const n = norm(cell);
-		for (const role of ROLES) {
-			const hit = NAMES[role].find(([name]) => name === n);
-			if (hit !== undefined) {
-				out.push({ role, rank: hit[1], col });
-				break;
-			}
-		}
-	});
-	return out;
-}
-
-/** The header among the first 30 rows: the first whose names give a date and an amount; otherwise the one with most known names, to ask about. */
-function detect(rows: readonly string[][]): Found {
-	let best: { at: number; hits: number } = { at: 0, hits: -1 };
-	for (let at = 0; at < Math.min(rows.length, 30); at++) {
-		const roles = rolesOf(rows[at] as string[]);
-		if (roles.length > best.hits) best = { at, hits: roles.length };
-		const cols = columnsOf(roles);
-		if (typeof cols === "string") {
-			if (roles.some((r) => r.role === "date") && roles.some((r) => r.role === "amount" || r.role === "debit" || r.role === "credit")) return { header: rows[at] as string[], why: cols };
-			continue;
-		}
-		return { at, cols };
-	}
-	const header = rows[best.at] ?? [];
-	return { header, why: best.hits <= 0 ? "non riconosco i nomi delle colonne" : "non capisco quale colonna è la data e quale l'importo" };
-}
-
-/** The columns of the roles found, or why they are not clear. */
-function columnsOf(roles: readonly { role: Role; rank: number; col: number }[]): Columns | string {
-	const of = (role: Role) => roles.filter((r) => r.role === role);
-	const dates = of("date");
-	if (dates.length === 0) return "manca la colonna della data";
-	const top = Math.min(...dates.map((d) => d.rank));
-	const first = dates.filter((d) => d.rank === top);
-	if (first.length > 1) return "ci sono più colonne di date con lo stesso nome";
-	const one = (role: Role): number | undefined | string => {
-		const list = of(role);
-		if (list.length > 1) return `ci sono più colonne che possono essere ${LABELS[role]}`;
-		return list[0]?.col;
-	};
-	const amount = one("amount");
-	const debit = one("debit");
-	const credit = one("credit");
-	const sign = one("sign");
-	const balance = one("balance");
-	const value = one("value_date");
-	for (const v of [amount, debit, credit, sign, balance, value]) if (typeof v === "string") return v;
-	if (amount === undefined && (debit === undefined || credit === undefined)) return debit === undefined && credit === undefined ? "manca la colonna dell'importo" : "c'è solo una delle colonne Dare/Avere (Entrate/Uscite)";
-	if (amount !== undefined && (debit !== undefined || credit !== undefined)) return "ci sono sia una colonna Importo sia le colonne Dare/Avere";
-	const description = of("description").map((d) => d.col);
-	if (description.length === 0) return "manca la colonna della descrizione (o causale)";
-	const date = (first[0] as { col: number }).col;
-	const valueDate = value as number | undefined;
-	return { date, description, ...(valueDate === undefined ? {} : { valueDate }), ...num("amount", amount), ...num("debit", debit), ...num("credit", credit), ...num("sign", sign), ...num("balance", balance) };
-}
-
-const num = (key: string, v: number | string | undefined) => (typeof v === "number" ? { [key]: v } : {});
-
-const LABELS: Readonly<Record<Role, string>> = { date: "la data", value_date: "la data valuta", description: "la descrizione", amount: "l'importo", debit: "le uscite (Dare)", credit: "le entrate (Avere)", sign: "il segno", balance: "il saldo" };
-
-/** The columns the person named: by header name, letter or number; the header is the first row with every name given. */
-function said(rows: readonly string[][], given: ColumnsSaid): Found {
-	const header0 = rows.find((r) => r.some((c) => c.trim() !== "")) ?? [];
-	const named = Object.values(given).filter((v): v is string => typeof v === "string" && !isRef(v));
-	let at = -1;
-	if (named.length > 0) at = rows.slice(0, 30).findIndex((r) => named.every((n) => r.some((c) => norm(c) === norm(n))));
-	if (named.length > 0 && at < 0) return { header: header0, why: "non trovo un'intestazione con i nomi di colonna indicati" };
-	const header = at < 0 ? [] : (rows[at] as string[]);
-	const index = (v: string | undefined): number | undefined | null => {
-		if (v === undefined) return undefined;
-		if (isRef(v)) {
-			const t = v.trim().toUpperCase();
-			return /^\d+$/.test(t) ? Number(t) - 1 : [...t].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
-		}
-		const i = header.findIndex((c) => norm(c) === norm(v));
-		return i < 0 ? null : i;
-	};
-	const roles: { role: Role; rank: number; col: number }[] = [];
-	for (const role of ROLES) {
-		const i = index(given[role]);
-		if (i === null) return { header, why: `non trovo la colonna indicata per ${LABELS[role]}` };
-		if (i !== undefined) roles.push({ role, rank: 1, col: i });
-	}
-	const cols = columnsOf(roles);
-	if (typeof cols === "string") return { header: header.length > 0 ? header : header0, why: cols };
-	// Without names, the header is the row before the first that reads as a movement.
-	if (at < 0) at = rows.findIndex((r) => isoOf(r[cols.date] ?? "") !== undefined) - 1;
-	return { at: Math.max(at, -1), cols };
-}
-
-const isRef = (v: string) => /^\s*(?:[A-Za-z]{1,2}|\d{1,2})\s*$/.test(v);
-
-/** A CAMT.053 statement: its entries (Ntry) and the closing booked balance (CLBD). */
+/** A CAMT.053 statement: its entries (Ntry) and the closing booked balance (CLBD), in euros only. */
 function camt(data: Uint8Array, ownIbans: readonly string[]): Parsed {
 	let doc: XmlElement;
 	try {
@@ -374,7 +335,12 @@ function camt(data: Uint8Array, ownIbans: readonly string[]): Parsed {
 	const out: ParsedRow[] = [];
 	let closing: { cents: bigint; date: string } | undefined;
 	let skipped = 0;
+	let otherCurrency = 0;
 	let truncated = false;
+	const euro = (el: XmlElement | undefined) => {
+		const ccy = attribute(el, "Ccy");
+		return ccy === undefined || ccy.trim().toUpperCase() === "EUR";
+	};
 	const amount = (el: XmlElement | undefined, indicator: string | undefined): bigint | undefined => {
 		const t = (el?.text ?? "").trim();
 		if (!/^\d{1,12}(?:\.\d{1,5})?$/.test(t) || Number(t) > BANK_LIMITS.maxAmount) return undefined;
@@ -385,6 +351,11 @@ function camt(data: Uint8Array, ownIbans: readonly string[]): Parsed {
 	for (const stmt of children(report, "Stmt")) {
 		for (const bal of children(stmt, "Bal")) {
 			if (descendant(bal, "Tp/CdOrPrtry/Cd")?.text.trim() !== "CLBD") continue;
+			// A balance in another currency is never the euro account's balance.
+			if (!euro(child(bal, "Amt"))) {
+				otherCurrency++;
+				continue;
+			}
 			const cents = amount(child(bal, "Amt"), child(bal, "CdtDbtInd")?.text.trim());
 			const date = day(child(bal, "Dt"));
 			if (cents !== undefined && date !== undefined && (closing === undefined || date >= closing.date)) closing = { cents, date };
@@ -393,6 +364,10 @@ function camt(data: Uint8Array, ownIbans: readonly string[]): Parsed {
 			if (out.length >= BANK_LIMITS.rows) {
 				truncated = true;
 				break;
+			}
+			if (!euro(child(entry, "Amt"))) {
+				otherCurrency++;
+				continue;
 			}
 			const indicator = child(entry, "CdtDbtInd")?.text.trim();
 			const cents = amount(child(entry, "Amt"), indicator);
@@ -408,6 +383,6 @@ function camt(data: Uint8Array, ownIbans: readonly string[]): Parsed {
 			out.push(row(date, day(child(entry, "ValDt")), cents, cleanCell(texts.join(" ")), undefined, ownIbans));
 		}
 	}
-	if (out.length === 0) throw new BankError("nel CAMT.053 non trovo movimenti");
-	return finish("camt", out, closing, truncated, skipped);
+	if (out.length === 0) throw new BankError(otherCurrency > 0 ? "nel CAMT.053 ci sono solo movimenti in una valuta diversa dall'euro: non li leggo" : "nel CAMT.053 non trovo movimenti");
+	return finish("camt", out, closing, { truncated, skipped, badDates: 0, bothSides: 0, otherCurrency });
 }

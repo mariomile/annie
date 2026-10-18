@@ -75,7 +75,7 @@ import { payDay } from "./invoice-sums.ts";
 import { type Instalment, type Invoice, matchesParty, openAmount, paidDay, partyKey, vatOf } from "./invoices.ts";
 import { addDays, daysBetween, MONTH_NAMES } from "./italian-calendar.ts";
 import { latest, type Quote, quoteTotalsOf } from "./quotes.ts";
-import { halfUp, scaled } from "./quote-sums.ts";
+import { eurosToCents, halfUp, scaled } from "./quote-sums.ts";
 import { nearOccurrence, type Recurrence, recurringDates } from "./recurrence.ts";
 import { amountAt, effectiveDue, occurrences } from "./renewal-dates.ts";
 import type { Renewal } from "./renewals.ts";
@@ -578,9 +578,10 @@ export type Rolled = {
 
 /**
  * The balance brought to `now` (see the choices above); undefined when nothing moved, or when it
- * is older than CASHFLOW_LIMITS.maxDays (it is said to be old instead).
+ * is older than CASHFLOW_LIMITS.maxDays (it is said to be old instead). `statement`: the bank's
+ * movements (signed amounts), read only for a balance from a statement.
  */
-export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string): Rolled | undefined {
+export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string, statement: readonly { readonly date: string; readonly amount: string }[] = []): Rolled | undefined {
 	if (daysBetween(balance.date, today) > CASHFLOW_LIMITS.maxDays) return undefined;
 	// From min(when it was said, the end of its day): an instant counts when it is after the saying, or on a later local day; never after now. Instants that do not parse are skipped.
 	const said = Date.parse(balance.at);
@@ -595,6 +596,14 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		const t = Date.parse(at);
 		return day > balance.date && day <= today && !Number.isNaN(t) && !Number.isNaN(until) && t <= until;
 	};
+	// A statement's balance holds every movement of the statement up to its day: an invoice marked paid by hand counts only when marked after the balance was set, and never when the statement has its amount on or before the balance's day (the payment is in it).
+	const inStatement = (cents: bigint) => statement.some((m) => m.date <= balance.date && eurosToCents(m.amount) === cents);
+	const handAfter = (at: string, cents: bigint) => {
+		if (balance.source !== "bank") return after(at);
+		if (inStatement(cents)) return false;
+		const t = Date.parse(at);
+		return !Number.isNaN(said) && !Number.isNaN(t) && !Number.isNaN(until) && t > said && t <= until;
+	};
 	const incassi: RolledInvoice[] = [];
 	const paidPassive: RolledInvoice[] = [];
 	const recorded = expenses.filter((e) => (e.source === "bank" ? bankAfter(e.date, e.at) : after(e.at) && e.date >= balance.date));
@@ -602,7 +611,7 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		if (invoice.credit || invoice.doc.integration || invoice.side === undefined || invoice.doc.currency !== "EUR") continue;
 		for (const i of invoice.instalments) {
 			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
-			if (i.paid.on === undefined ? !after(i.paid.at) : !bankAfter(i.paid.on, i.paid.at)) continue;
+			if (i.paid.on === undefined ? !handAfter(i.paid.at, unitsToCents(i.amount) * (invoice.side === "active" ? 1n : -1n)) : !bankAfter(i.paid.on, i.paid.at)) continue;
 			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: paidDay(i.paid, dayOf) };
 			if (invoice.side === "active") incassi.push(row);
 			// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).

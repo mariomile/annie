@@ -50,6 +50,7 @@ export const CATEGORIES = [
 	"attrezzatura",
 	"affitto e utenze",
 	"spedizioni",
+	"banca e commissioni",
 	"altro",
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -76,6 +77,8 @@ const CATEGORY_WORDS: Readonly<Record<Exclude<Category, "altro">, readonly strin
 	formazione: ["formazione", "corsi", "libro", "libri", "seminario", "seminari", "webinar", "master", "convegno", "convegni", "aggiornamento", "workshop"],
 	consulenze: ["consulenza", "consulenze", "consulente", "commercialista", "avvocato", "notaio", "professionista", "parcella"],
 	attrezzatura: ["attrezzatura", "attrezzature", "attrezzi", "computer", "pc", "portatile", "notebook", "laptop", "tablet", "monitor", "stampante", "macchinario", "strumenti", "hardware", "utensili", "mobili", "arredo"],
+	// Before the rent: «canone conto» is the bank's, not a lease.
+	"banca e commissioni": ["commissioni", "commissione", "competenze", "spese tenuta conto", "tenuta conto", "canone conto", "spese bancarie", "costi bancari", "spese bonifico"],
 	"affitto e utenze": ["affitto", "locazione", "canone", "utenze", "utenza", "luce", "gas", "energia", "elettricita", "bolletta", "bollette", "condominio", "riscaldamento", "enel"],
 	spedizioni: ["spedizione", "spedizioni", "corriere", "poste", "raccomandata", "pacco", "dhl", "ups", "gls", "brt", "bartolini", "sda", "fedex"],
 };

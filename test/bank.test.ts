@@ -4,29 +4,36 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { type BankMovement, bankAgentReads, bankCallReads, BANK_LIMITS } from "../src/core/bank.ts";
-import { matchMovements, type MatchInputs } from "../src/core/bank-match.ts";
+import { matchMovements, type MatchInputs, nameWords, saysName, saysNumber } from "../src/core/bank-match.ts";
 import { maskSensitive, parseStatement, type Parsed } from "../src/core/bank-parse.ts";
 import { BankStore } from "../src/core/bank-store.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
-import { cashBook } from "../src/core/cash-book.ts";
+import { cashBook, unitsToCents as cashUnitsToCents } from "../src/core/cash-book.ts";
 import { invoiceFlows, rollForward } from "../src/core/cashflow-sources.ts";
 import { CashflowStore, latestBalance } from "../src/core/cashflow-store.ts";
+import { validBalance } from "../src/core/cashflow.ts";
 import { collectedIn } from "../src/core/client-sums.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
-import { validExpense } from "../src/core/expenses.ts";
+import { matchCategory, validExpense } from "../src/core/expenses.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Invoice, paidDay, register } from "../src/core/invoices.ts";
 import { dayOfIn } from "../src/core/italian-calendar.ts";
 import { makeXlsx, sheetOfCsv } from "../src/core/make-xlsx.ts";
+import { readPeriod } from "../src/core/periods.ts";
+import { unitsToCents } from "../src/core/quote-sums.ts";
 import type { Renewal } from "../src/core/renewals.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { incassiOf } from "../src/core/tax-sums.ts";
 import { createBankTools, type BankEvent } from "../src/core/tools/bank-tools.ts";
+import { readIds } from "../src/core/tools/bank-input.ts";
+import { BRIEF_NOTHING, briefAnswer, stateWords } from "../src/core/tools/bank-render.ts";
 import { expensesOf } from "../src/core/tools/expense-tools.ts";
+import { status as invoiceStatus } from "../src/core/tools/invoice-render.ts";
 import { Workspace } from "../src/core/workspace.ts";
+import { attribute, parseXml } from "../src/core/xml-tree.ts";
 
 // Synthetic identifiers only: checksum-valid fake partite IVA, fake IBANs and card numbers, invented names.
 const COMPANY = { name: "Studio Prova Srl", vat: "00000010017" };
@@ -227,15 +234,18 @@ describe("reading statements", () => {
 	});
 
 	it("asks which column is which when the header is not clear", async () => {
-		const twoDates = parseStatement("x.csv", new TextEncoder().encode("Data;Data;Descrizione;Importo\n01/10/2026;02/10/2026;Bonifico;10,00"));
-		expect(twoDates.kind).toBe("ask");
+		// Two plain «Data» columns: the first the data contabile, the second the valuta, said (U6).
+		const twoDates = parsed("x.csv", "Data;Data;Descrizione;Importo\n01/10/2026;02/10/2026;Bonifico;10,00");
+		expect(twoDates.rows[0]).toMatchObject({ date: "2026-10-01", valueDate: "2026-10-02" });
+		expect(twoDates.assumed).toContain("due colonne «Data»");
 		const unknown = parseStatement("y.csv", new TextEncoder().encode("Giorno;Testo;Valore\n01/10/2026;Bonifico;10,00"));
 		expect(unknown).toMatchObject({ kind: "ask", header: ["Giorno", "Testo", "Valore"] });
 		const s = await setup();
 		s.put("banca/strano.csv", "Giorno;Testo;Valore\n05/10/2026;Bonifico da Cliente Uno Srl;1.220,00");
 		const asked = await s.run({ op: "import", path: "banca/strano.csv" });
-		expect(asked).toContain("Non sono sicura di quali colonne usare");
-		expect(asked).toMatch(/<<<dati dell'estratto conto [0-9a-f]+: [^>]*>>>\nA: Giorno\nB: Testo\nC: Valore/);
+		expect(asked).toContain("Ecco le colonne, con i primi valori:");
+		expect(asked).toMatch(/<<<dati dell'estratto conto [0-9a-f]+: [^>]*>>>\nA: Giorno — 05\/10\/2026\nB: Testo — Bonifico da Cliente Uno Srl\nC: Valore — 1\.220,00/);
+		expect(asked).toContain("«Quale colonna è il giorno dell'operazione, quale la descrizione, e l'importo è in una colonna sola o diviso tra entrate e uscite?»");
 		expect(s.store.read().movements).toHaveLength(0);
 		// Told which column is which, by name or letter.
 		const done = await s.run({ op: "import", path: "banca/strano.csv", columns: { date: "Giorno", description: "B", amount: "Valore" } });
@@ -329,8 +339,10 @@ describe("matching", () => {
 	it("an invoice to collect: the amount and the name, the number or the partita IVA make it strong", async () => {
 		const i = await inputs(BASE_FILES);
 		const byName = matchMovements({ ...i, movements: [movement(1, "2026-10-05", "1220", "BONIFICO DA CLIENTE UNO SRL")] }, false);
-		expect(byName[0]).toMatchObject({ state: "proposed", strong: true, target: { kind: "invoice_in", label: "fattura FV-12 del 01/10/2026 di Cliente Uno Srl" } });
-		expect(matchMovements({ ...i, movements: [movement(1, "2026-10-05", "1220", "BONIFICO SALDO FV-12")] }, false)[0]?.strong).toBe(true);
+		expect(byName[0]).toMatchObject({ state: "proposed", strong: true, target: { kind: "invoice_in", label: "fattura FV-12 di Cliente Uno Srl" } });
+		// The number alone, with the amount, stays weak (S1).
+		expect(matchMovements({ ...i, movements: [movement(1, "2026-10-05", "1220", "BONIFICO SALDO FV-12")] }, false)[0]).toMatchObject({ state: "proposed", target: { label: "fattura FV-12 di Cliente Uno Srl" } });
+		expect(matchMovements({ ...i, movements: [movement(1, "2026-10-05", "1220", "BONIFICO SALDO FV-12")] }, false)[0]?.strong).toBeUndefined();
 		expect(matchMovements({ ...i, movements: [movement(1, "2026-10-05", "1220", `BONIFICO ORD. ${CLIENT.vat}`)] }, false)[0]?.strong).toBe(true);
 		// The amount alone: proposed, not strong; never before the invoice's date; never another amount.
 		expect(matchMovements({ ...i, movements: [movement(1, "2026-10-05", "1220", "BONIFICO")] }, false)[0]).toMatchObject({ state: "proposed" });
@@ -349,9 +361,9 @@ describe("matching", () => {
 
 	it("an instalment only when the amount is a scheduled instalment; otherwise a hint of a partial payment", async () => {
 		const i = await inputs({ "f/r.xml": out({ number: "FV-50", date: "2026-09-01", total: "1000.00", rates: [{ due: "2026-09-30", amount: "400.00" }, { due: "2026-10-31", amount: "600.00" }] }) });
-		expect(matchMovements({ ...i, movements: [movement(3, "2026-10-01", "400", "BONIFICO CLIENTE UNO SRL")] }, false)[0]).toMatchObject({ state: "proposed", target: { instalment: 1, label: "fattura FV-50 del 01/09/2026 di Cliente Uno Srl, rata 1 di 2" } });
+		expect(matchMovements({ ...i, movements: [movement(3, "2026-10-01", "400", "BONIFICO CLIENTE UNO SRL")] }, false)[0]).toMatchObject({ state: "proposed", target: { instalment: 1, label: "fattura FV-50 di Cliente Uno Srl, rata 1 di 2" } });
 		const partial = matchMovements({ ...i, movements: [movement(3, "2026-10-01", "300", "BONIFICO CLIENTE UNO SRL ACCONTO")] }, false)[0];
-		expect(partial).toMatchObject({ state: "hint", note: "partial", target: { label: "fattura FV-50 del 01/09/2026 di Cliente Uno Srl" } });
+		expect(partial).toMatchObject({ state: "hint", note: "partial", target: { label: "fattura FV-50 di Cliente Uno Srl (1.000,00 €)" } });
 	});
 
 	it("asks between invoices of different clients; proposes the oldest of two alike of the same client, and says so", async () => {
@@ -364,12 +376,12 @@ describe("matching", () => {
 		const i = await inputs(files);
 		const ask = matchMovements({ ...i, movements: [movement(4, "2026-10-03", "244", "BONIFICO")] }, false)[0];
 		expect(ask?.state).toBe("ask");
-		expect(ask?.candidates?.map((c) => c.label).sort()).toEqual(["fattura FV-30 del 10/09/2026 di Cliente Uno Srl", "fattura FV-31 del 12/09/2026 di Cliente Tre Srl"]);
+		expect(ask?.candidates?.map((c) => c.label).sort()).toEqual(["fattura FV-30 di Cliente Uno Srl", "fattura FV-31 di Cliente Tre Srl"]);
 		const oldest = matchMovements({ ...i, movements: [movement(5, "2026-10-03", "500", "BONIFICO CLIENTE TRE SRL")] }, false)[0];
-		expect(oldest).toMatchObject({ state: "proposed", note: "oldest", strong: true, target: { label: "fattura FV-20 del 01/09/2026 di Cliente Tre Srl" } });
+		expect(oldest).toMatchObject({ state: "proposed", note: "oldest", strong: true, target: { label: "fattura FV-20 di Cliente Tre Srl" } });
 		// Two payments: the second takes the other invoice, never the same one twice.
 		const both = matchMovements({ ...i, movements: [movement(5, "2026-10-03", "500", "BONIFICO CLIENTE TRE SRL"), movement(6, "2026-10-04", "500", "BONIFICO CLIENTE TRE SRL")] }, false);
-		expect(both.map((o) => o.target?.label)).toEqual(["fattura FV-20 del 01/09/2026 di Cliente Tre Srl", "fattura FV-21 del 15/09/2026 di Cliente Tre Srl"]);
+		expect(both.map((o) => o.target?.label)).toEqual(["fattura FV-20 di Cliente Tre Srl", "fattura FV-21 di Cliente Tre Srl"]);
 	});
 
 	it("never an invoice already paid, a credit note, or one another movement holds", async () => {
@@ -409,7 +421,7 @@ describe("matching", () => {
 		// The same expense explains one movement only.
 		expect(by.get("B-000002")).toBeUndefined();
 		expect(by.get("B-000003")).toMatchObject({ state: "auto", target: { kind: "renewal", target: "R-0001" } });
-		expect(by.get("B-000004")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24: acconto imposta sostitutiva (come la stima delle tasse del 16/10/2026)" } });
+		expect(by.get("B-000004")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24: acconto imposta sostitutiva (come la stima delle tasse del 16 ottobre)" } });
 		expect(by.get("B-000005")).toMatchObject({ state: "auto", target: { kind: "f24", label: "F24 (tasse o contributi)" } });
 		expect(by.get("B-000006")?.target?.kind).toBe("transfer");
 		expect(by.get("B-000007")?.target?.kind).toBe("transfer");
@@ -431,10 +443,10 @@ describe("the tool", () => {
 		const s = await setup();
 		s.put("banca/ottobre.csv", SIGNED_CSV);
 		const answer = await s.run({ op: "import", path: "banca/ottobre.csv" });
-		expect(answer).toContain("4 movimenti: 1 abbinato, 2 da confermare, 1 senza spiegazione.");
+		expect(answer).toContain("Movimenti caricati: 4 (1 abbinato, 2 da confermare, 1 senza spiegazione).");
 		expect(answer).toContain("Il saldo finale dell'estratto conto è 5.754,00 € al 20 ottobre 2026");
 		expect(s.invoices.read().paid).toHaveLength(0);
-		expect(await s.run({ op: "summary" })).toContain("4 movimenti: 1 abbinato, 2 da confermare, 1 senza spiegazione.");
+		expect(await s.run({ op: "summary" })).toContain("Movimenti caricati: 4 (1 abbinato, 2 da confermare, 1 senza spiegazione).");
 		const ctx = durable();
 		const confirmed = await s.run({ op: "confirm", all: true }, ctx);
 		expect(confirmed).toContain("2 abbinamenti confermati");
@@ -449,7 +461,7 @@ describe("the tool", () => {
 		await s.run({ op: "confirm", all: true }, ctx);
 		expect(await s.run({ op: "confirm", ids: ["B-000001"] })).toContain("era già abbinato");
 		expect(readFileSync(join(s.dir, "invoices.json"), "utf8")).toBe(before);
-		expect(await s.run({ op: "summary" })).toContain("4 movimenti: 3 abbinati, 0 da confermare, 1 senza spiegazione.");
+		expect(await s.run({ op: "summary" })).toContain("Movimenti caricati: 4 (3 abbinati, 0 da confermare, 1 senza spiegazione).");
 		expect(s.events.filter((e) => e.op === "confirm")).toEqual([{ type: "bank.changed", op: "confirm", count: 2 }]);
 	});
 
@@ -459,7 +471,7 @@ describe("the tool", () => {
 		s.put("banca/x.csv", ["Data;Descrizione;Importo", "03/10/2026;BONIFICO;244,00", "04/10/2026;BONIFICO;77,00"].join("\n"));
 		await s.run({ op: "import", path: "banca/x.csv" });
 		const all = await s.run({ op: "confirm", all: true });
-		expect(all).toContain("Una proposta coincide solo per l'importo");
+		expect(all).toContain("Questa proposta coincide solo per l'importo");
 		expect(s.invoices.read().paid).toHaveLength(0);
 		expect(await s.run({ op: "confirm", ids: ["B-000001"] })).toContain("ha più possibilità");
 		const listed = await s.run({ op: "list", status: "proposed" });
@@ -467,8 +479,10 @@ describe("the tool", () => {
 		expect(await s.run({ op: "confirm", ids: ["B-000001"], choice: n })).toContain("un abbinamento confermato");
 		const fv31 = (await s.reg()).find((i) => i.doc.number === "FV-31") as Invoice;
 		expect(fv31.instalments[0]?.paid?.on).toBe("2026-10-03");
-		// The weak one, confirmed by its id.
-		expect(await s.run({ op: "confirm", ids: ["B-000002"] })).toContain("un abbinamento confermato");
+		// The weak one: by its id only with weak_ok, after the yes on that one (U4).
+		expect(await s.run({ op: "confirm", ids: ["B-000002"] })).toContain("coincide solo per l'importo");
+		expect(s.invoices.read().paid).toHaveLength(1);
+		expect(await s.run({ op: "confirm", ids: ["B-000002"], weak_ok: true })).toContain("un abbinamento confermato");
 	});
 
 	it("never marks again an invoice marked paid by hand meanwhile", async () => {
@@ -553,7 +567,7 @@ describe("the tool", () => {
 		await s.run({ op: "import", path: "banca/o.csv" });
 		await s.run({ op: "import", path: "banca/d.csv" });
 		const totals = await s.run({ op: "totals", month: "ottobre 2026" });
-		expect(totals).toContain("ottobre 2026: entrate 1.220,00 €, uscite 589,50 €");
+		expect(totals).toContain("A ottobre 2026, secondo la banca: entrate 1.220,00 €, uscite 589,50 €");
 		const odd = await s.run({ op: "anomalies" });
 		expect(odd).toContain("Forse addebitati due volte");
 		expect(odd).toContain("B-000005 del 13 ottobre 2026 e B-000006 del 16 ottobre 2026");
@@ -593,12 +607,12 @@ describe("the tool", () => {
 		await s.run({ op: "import", path: "banca/o.csv" });
 		s.clock.now = new Date("2026-12-10T08:00:00Z");
 		const line = String(await briefed.execute({ op: "summary", compact: true }, fresh()));
-		expect(line).toContain("l'ultimo estratto conto è di ottobre: caricami quello di novembre");
+		expect(line).toContain("l'ultimo estratto conto arriva al 28 ottobre: caricami il resto di ottobre e novembre");
 		expect(line).toContain("2 abbinamenti dell'estratto conto da confermare");
 		expect(String(await briefed.execute({ op: "confirm", all: true }, fresh()))).toContain("legge soltanto");
 		expect(s.invoices.read().paid).toHaveLength(0);
 		expect(bankCallReads({ op: "summary" }) && !bankCallReads({ op: "confirm" })).toBe(true);
-		expect(BRIEF_INSTRUCTION).toContain("16. La banca (bank_statement con op summary e compact true): come le ore.");
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\bbank_statement \(summary\)\./);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		expect(DEFAULT_INSTRUCTIONS).toContain("leggere l'estratto conto della banca (bank_statement:");
 	});
@@ -656,5 +670,289 @@ describe("the other registers after a confirm", () => {
 		await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true });
 		const again = rollForward(balance, NOW.toISOString(), "2026-11-05", reg, s.expenses.read().expenses, [], dayOf);
 		expect(again?.expenses ?? 0n).toBe(0n);
+	});
+});
+
+describe("week 60 review", () => {
+	async function inputs(files: Record<string, string>, more: Partial<MatchInputs> = {}): Promise<Omit<MatchInputs, "movements">> {
+		const s = await setup({ files });
+		return { invoices: await s.reg(), expenses: [], renewals: [], taxes: [], used: new Set(), refused: new Map(), ...more };
+	}
+	const CAMT_OCT = `<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"><BkToCstmrStmt><Stmt><Ntry><Amt Ccy="EUR">1220.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><BookgDt><Dt>2026-10-05</Dt></BookgDt><NtryDtls><TxDtls><RltdPties><Dbtr><Nm>Cliente Uno Srl</Nm></Dbtr></RltdPties><RmtInf><Ustrd>Saldo fattura FV-12</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry><Ntry><Amt Ccy="EUR">45.50</Amt><CdtDbtInd>DBIT</CdtDbtInd><BookgDt><Dt>2026-10-12</Dt></BookgDt><AddtlNtryInf>POS Cartoleria Rossi</AddtlNtryInf></Ntry></Stmt></BkToCstmrStmt></Document>`;
+
+	it("S1: an invoice's number only as a whole word, and with the amount alone it stays weak («TRN 0012», a refund to a customer)", async () => {
+		expect(saysNumber("BONIFICO TRN 0012", "12")).toBe(false);
+		expect(saysNumber("SALDO FT 12", "12")).toBe(true);
+		expect(saysNumber("SALDO FATTURA N. 12 DEL MESE", "12")).toBe(true);
+		expect(saysNumber("RIF FV-123", "FV-12")).toBe(false);
+		expect(saysNumber("RIF FV 12/2026", "FV-12")).toBe(true);
+		const i = await inputs({ "f/a.xml": out({ number: "12", date: "2026-09-01", total: "150.00" }), "f/p.xml": fattura(SUPPLIER, COMPANY, { number: "7", date: "2026-09-02", total: "80.00" }) });
+		const trn = matchMovements({ ...i, movements: [movement(1, "2026-10-05", "150", "BONIFICO TRN 0012")] }, true)[0];
+		expect(trn).toMatchObject({ state: "proposed" });
+		expect(trn?.strong).toBeUndefined();
+		// A refund to a customer of the amount of a supplier's invoice with its number: never strong, never marked by itself.
+		const refund = matchMovements({ ...i, movements: [movement(2, "2026-10-06", "-80", "RIMBORSO A CLIENTE UNO SRL NOTA N 7")] }, true)[0];
+		expect(refund).toMatchObject({ state: "proposed", target: { kind: "invoice_out" } });
+		expect(refund?.strong).toBeUndefined();
+	});
+
+	it("S2: invoices before F24; an F24 only by the bank's words, never auto when an open invoice has its amount («rivalsa INPS»)", async () => {
+		const i = await inputs(BASE_FILES);
+		const a7 = i.invoices.find((x) => x.doc.number === "A-7") as Invoice;
+		const r = matchMovements({ ...i, movements: [movement(1, "2026-10-08", "-366", "PAGAMENTO FORNITORE UNO SRL RIVALSA INPS"), movement(2, "2026-10-09", "-50", "VERSAMENTO RIVALSA INPS"), movement(3, "2026-10-16", "-77", "PAGAMENTO DELEGA AG. ENTRATE")] }, false);
+		const by = new Map(r.map((o) => [o.movement, o]));
+		expect(by.get("B-000001")).toMatchObject({ state: "proposed", strong: true, target: { kind: "invoice_out" } });
+		expect(by.get("B-000002")).toBeUndefined();
+		expect(by.get("B-000003")).toMatchObject({ state: "auto", target: { kind: "f24" } });
+		// F24 words with the amount of an open invoice (refused for it): only proposed, and weak.
+		const f24 = matchMovements({ ...i, refused: new Map([["B-000004", new Set([`inv:${a7.key}`])]]), movements: [movement(4, "2026-10-16", "-366", "F24 DELEGA")] }, false)[0];
+		expect(f24).toMatchObject({ state: "proposed", target: { kind: "f24" } });
+		expect(f24?.strong).toBeUndefined();
+	});
+
+	it("S3: the same month with and without the Saldo column, and as CAMT, is loaded once; another description of the same day and amount is kept and said", async () => {
+		const s = await setup();
+		const noBalance = SIGNED_CSV.split("\r\n")
+			.map((l) => l.split(";").slice(0, 4).join(";"))
+			.join("\n");
+		s.put("banca/a.csv", SIGNED_CSV);
+		s.put("banca/b.csv", noBalance);
+		s.put("banca/c.xml", CAMT_OCT);
+		await s.run({ op: "import", path: "banca/a.csv" });
+		expect(await s.run({ op: "import", path: "banca/b.csv" })).toContain("0 movimenti nuovi, 4 già caricati prima");
+		expect(await s.run({ op: "import", path: "banca/c.xml" })).toContain("0 movimenti nuovi, 2 già caricati prima");
+		expect(s.store.read().movements).toHaveLength(4);
+		s.put("banca/d.csv", ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00"].join("\n"));
+		const maybe = await s.run({ op: "import", path: "banca/d.csv" });
+		expect(maybe).toContain("Forse già caricati");
+		expect(maybe).toContain("B-000005 e B-000003");
+		expect(s.store.read().movements).toHaveLength(5);
+	});
+
+	it("S3: to_expense asks first when an expense of the same amount is recorded within 5 days", async () => {
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		s.expenses.add(2026, "x1", (id) => ({ id, date: "2026-10-10", amount: "45.5", category: "altro", by: "test:u", at: NOW.toISOString() }));
+		expect(await s.run({ op: "to_expense", ids: ["B-000002"] })).toContain("(forse c'è già la spesa S-2026-0001 del 10 ottobre: chiedi prima)");
+		const held = await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true });
+		expect(held).toContain("Non ho registrato spese.");
+		expect(s.expenses.read().expenses).toHaveLength(1);
+		expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true, anyway: true })).toContain("registrata la spesa S-2026-0002");
+	});
+
+	it("S4: a statement's balance: a hand mark counts only after it was set and when the statement has not its amount; set_balance warns (p3)", async () => {
+		const s = await setup({ files: { ...BASE_FILES, "fatture/fv13.xml": out({ number: "FV-13", date: "2026-10-02", total: "500.00" }) } });
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		const reg0 = await s.reg();
+		const key = (n: string) => (reg0.find((i) => i.doc.number === n) as Invoice).key;
+		s.invoices.mark({ invoice: key("FV-12"), count: 1, paid: true, by: "test:u", at: "2026-10-30T10:00:00Z" });
+		const preview = await s.run({ op: "set_balance" });
+		expect(preview).toContain("Attenzione");
+		expect(preview).toMatch(/fattura FV-12: segnata incassata a mano il 30 ottobre 2026, ma nell'estratto conto c'è B-000004 dello stesso importo del 5 ottobre 2026/);
+		await s.run({ op: "set_balance", confirm: true });
+		const balance = latestBalance(s.cashflow.read().balances);
+		if (balance === undefined) throw new Error("no balance");
+		expect(balance.source).toBe("bank");
+		const statement = s.store.read().movements;
+		// The p3 probe: marked by hand before the balance was set, its payment in the statement: not added again.
+		expect(rollForward(balance, NOW.toISOString(), "2026-11-05", await s.reg(), [], [], dayOf, statement)?.incassi ?? []).toEqual([]);
+		// The same balance said by the person (week 55, ADR 0065): rolled forward from the end of its day, as before.
+		expect(rollForward({ ...balance, source: undefined }, NOW.toISOString(), "2026-11-05", await s.reg(), [], [], dayOf)?.incassi.map((r) => r.invoice.doc.number)).toEqual(["FV-12"]);
+		// Marked after the balance was set: FV-13 is added; A-7, whose amount the statement has on 8 October, is not taken off.
+		s.invoices.mark({ invoice: key("FV-13"), count: 1, paid: true, by: "test:u", at: "2026-11-05T10:00:00Z" });
+		s.invoices.mark({ invoice: key("A-7"), count: 1, paid: true, by: "test:u", at: "2026-11-05T10:00:00Z" });
+		const later = rollForward(balance, "2026-11-05T11:00:00Z", "2026-11-05", await s.reg(), [], [], dayOf, statement);
+		expect(later?.incassi.map((r) => r.invoice.doc.number)).toEqual(["FV-13"]);
+		expect(later?.paidPassive ?? []).toEqual([]);
+		expect(validBalance({ ...balance, source: "carta" })).toBe(false);
+	});
+
+	it("S5: a negative Avere is money out, a row with both Dare and Avere is left out and said, «-» is empty", async () => {
+		const csv = ["Data;Descrizione;Dare;Avere", "01/10/2026;STORNO;;-50,00", "02/10/2026;DOPPIO;10,00;20,00", "03/10/2026;TRATTINO;-;30,00", "04/10/2026;USCITA;-12,00;-"].join("\n");
+		const p = parsed("da.csv", csv);
+		expect(p.rows.map((r) => [r.date, r.cents])).toEqual([
+			["2026-10-01", -5000n],
+			["2026-10-03", 3000n],
+			["2026-10-04", -1200n],
+		]);
+		expect(p.bothSides).toBe(1);
+		const s = await setup();
+		s.put("banca/da.csv", csv);
+		expect(await s.run({ op: "import", path: "banca/da.csv" })).toContain("Una riga con un importo sia in Dare sia in Avere");
+	});
+
+	it("S6: a CAMT entry or balance in another currency is left out and counted, never a balance", () => {
+		const camt = `<?xml version="1.0"?><Document><BkToCstmrStmt><Stmt><Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="USD">9999.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-10-31</Dt></Dt></Bal><Ntry><Amt Ccy="USD">500.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><BookgDt><Dt>2026-10-04</Dt></BookgDt></Ntry><Ntry><Amt Ccy="EUR">12.00</Amt><CdtDbtInd>DBIT</CdtDbtInd><BookgDt><Dt>2026-10-05</Dt></BookgDt><AddtlNtryInf>BAR</AddtlNtryInf></Ntry></Stmt></BkToCstmrStmt></Document>`;
+		const p = parsed("usd.xml", camt);
+		expect(p.rows.map((r) => r.cents)).toEqual([-1200n]);
+		expect(p.otherCurrency).toBe(2);
+		expect(p.closing).toBeUndefined();
+		const el = parseXml(`<a x="1" b:Ccy='EUR'/>`, { maxElements: 10, maxDepth: 5 });
+		expect(attribute(el, "Ccy")).toBe("EUR");
+		expect(attribute(el, "y")).toBeUndefined();
+	});
+
+	it("L1: month/day dates when a second part is over 12; mixed ones are asked; a row with an amount and a bad date is counted", () => {
+		const us = parsed("us.csv", ["Date;Description;Amount", "10/13/2026;A;-1.00", "10/05/2026;B;-2.00"].join("\n"));
+		expect(us.rows.map((r) => r.date)).toEqual(["2026-10-13", "2026-10-05"]);
+		const mixed = parseStatement("m.csv", new TextEncoder().encode(["Data;Descrizione;Importo", "10/13/2026;A;-1,00", "13/10/2026;B;-2,00"].join("\n")));
+		expect(mixed).toMatchObject({ kind: "ask", why: expect.stringContaining("giorno/mese") });
+		const told = parseStatement("m.csv", new TextEncoder().encode(["Data;Descrizione;Importo", "10/13/2026;A;-1,00", "13/10/2026;B;-2,00"].join("\n")), { dayFirst: false });
+		expect(told.kind).toBe("rows");
+		const bad = parsed("b.csv", ["Data;Descrizione;Importo", "05/10/2026;A;-1,00", "31/02/2026;B;-2,00", "Totale;;-3,00"].join("\n"));
+		expect(bad.badDates).toBe(1);
+		expect(bad.skipped).toBe(1);
+	});
+
+	it("L2: header cells and the values asked about are masked; an IBAN glued to letters or with dashes is masked", async () => {
+		expect(maskSensitive(`BONIFICODA${FAKE_IBAN}RIF`).text).toBe("BONIFICODA IBAN …0002 RIF");
+		expect(maskSensitive("DA IT60-X000-0000-0000-0000-0000-002 OK").text).toBe("DA IBAN …0002 OK");
+		const a = parseStatement("h.csv", new TextEncoder().encode(`Giorno;Conto ${FAKE_IBAN};Valore\n05/10/2026;${OWN_IBAN};1,00`));
+		if (a.kind !== "ask") throw new Error("not asked");
+		expect(a.header[1]).toBe("Conto IBAN …0002");
+		expect(a.samples[0]?.[1]).toBe("IBAN …0001");
+		const s = await setup();
+		s.put("banca/h.csv", `Giorno;Conto ${FAKE_IBAN};Valore\n05/10/2026;${OWN_IBAN};1,00`);
+		const asked = await s.run({ op: "import", path: "banca/h.csv" });
+		expect(asked).not.toContain("IT60X");
+		expect(asked).not.toContain("IT51X");
+	});
+
+	it("L3: «-1,200» with nothing Italian in the column is English thousands; mixed ways are asked", () => {
+		const p = parsed("t.csv", ["Data;Descrizione;Importo", "05/10/2026;A;-1,200", "06/10/2026;B;300"].join("\n"));
+		expect(p.rows.map((r) => r.cents)).toEqual([-120000n, 30000n]);
+		const mixed = ["Data;Descrizione;Importo", "05/10/2026;A;-1,200", "07/10/2026;C;45,50"].join("\n");
+		expect(parseStatement("t.csv", new TextEncoder().encode(mixed))).toMatchObject({ kind: "ask", why: expect.stringContaining("virgola") });
+		const told = parseStatement("t.csv", new TextEncoder().encode(mixed), { decimalComma: true });
+		expect(told.kind === "rows" && told.rows.map((r) => r.cents)).toEqual([-120n, 4550n]);
+	});
+
+	it("L5: the scadenzario shows the bank's day of a mark from the statement", async () => {
+		const s = await setup();
+		const fv12 = (await s.reg()).find((i) => i.doc.number === "FV-12") as Invoice;
+		s.invoices.mark({ invoice: fv12.key, count: 1, paid: true, on: "2026-10-05", source: "bank", by: "test:u", at: NOW.toISOString() });
+		const again = (await s.reg()).find((i) => i.doc.number === "FV-12") as Invoice;
+		expect(invoiceStatus(again, ROME)).toContain("segnata il 05/10/2026");
+	});
+
+	it("U1: every description column is joined, a part another holds left out (Fineco-style)", () => {
+		const fineco = ["Data_Operazione;Data_Valuta;Entrate;Uscite;Descrizione;Descrizione_Completa;Stato;Moneymap", "05/10/2026;06/10/2026;1.220,00;;Bonifico;Bonifico SEPA da Cliente Uno Srl FV-12;Contabilizzato;Entrate varie", "07/10/2026;07/10/2026;;45,5;Pagamento Visa;Pagamento Visa Cartoleria Rossi;Contabilizzato;Ufficio"].join("\n");
+		const p = parsed("fineco.csv", fineco);
+		expect(p.rows.map((r) => [r.date, r.cents, r.description])).toEqual([
+			["2026-10-05", 122000n, "Bonifico SEPA da Cliente Uno Srl FV-12"],
+			["2026-10-07", -4550n, "Pagamento Visa Cartoleria Rossi"],
+		]);
+		expect(parsed("n.csv", "Data;Importo;Causale;Note\n05/10/2026;-3,00;POS;Bar Prova").rows[0]?.description).toBe("POS Bar Prova");
+	});
+
+	it("U2: a name by its words in any order, «&» as «e», a cut word from 5 characters", () => {
+		expect(saysName(nameWords("BONIFICO DA MARIO GALLO"), "Gallo Mario")).toBe(true);
+		expect(saysName(nameWords("BONIFICO VERDI E C SNC"), "Verdi & C. Snc")).toBe(true);
+		expect(saysName(nameWords("BONIFICO ROSSI ARREDAM"), "Rossi Arredamenti Srl")).toBe(true);
+		expect(saysName(nameWords("BONIFICO ROSSI"), "Rossi Arredamenti Srl")).toBe(false);
+		expect(saysName(nameWords("BONIFICO ROSSI ARR"), "Rossi Arredamenti Srl")).toBe(false);
+	});
+
+	it("U3: the totals leave out the transfers between own accounts, and say so", async () => {
+		const s = await setup();
+		s.put("banca/e.csv", DARE_AVERE_CSV);
+		await s.run({ op: "import", path: "banca/e.csv" });
+		const t = await s.run({ op: "totals", month: "ottobre 2026" });
+		expect(t).toContain("A ottobre 2026, secondo la banca: entrate 0,00 €, uscite 1.244,55 €");
+		expect(t).toContain("(esclusi 500,00 € di giroconti tra i tuoi conti)");
+	});
+
+	it("U4, U5: weak proposals in their own block; the confirm says which invoices were marked, on which day", async () => {
+		const weak = await setup({ files: { "f/c.xml": out({ number: "FV-40", date: "2026-09-10", total: "77.00" }) } });
+		weak.put("banca/x.csv", ["Data;Descrizione;Importo", "04/10/2026;BONIFICO;77,00"].join("\n"));
+		expect(await weak.run({ op: "import", path: "banca/x.csv" })).toContain("Coincide solo l'importo, chiedi una per una:");
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		const done = await s.run({ op: "confirm", all: true });
+		expect(done).toMatch(/segnata incassata la fattura FV-12 di Cliente Uno Srl \(5 ottobre\); segnata pagata la A-7 di Fornitore Uno Srl \(8 ottobre\)\.\n<<<fine dati dell'estratto conto/);
+	});
+
+	it("U6: no header: the first row shown; columns by letter", async () => {
+		const s = await setup();
+		s.put("banca/n.csv", "05/10/2026;Bonifico;10,00\n06/10/2026;Altro;-5,00");
+		const asked = await s.run({ op: "import", path: "banca/n.csv" });
+		expect(asked).toContain("Il file non ha i nomi delle colonne; ecco la prima riga:");
+		expect(asked).toMatch(/A: 05\/10\/2026\nB: Bonifico\nC: 10,00/);
+		await s.run({ op: "import", path: "banca/n.csv", columns: { date: "A", description: "B", amount: "C" } });
+		expect(s.store.read().movements.map((m) => m.amount)).toEqual(["10", "-5"]);
+	});
+
+	it("U7: one line for the tools that speak only when they have something, the restored words", () => {
+		expect(BRIEF_INSTRUCTION).toContain("9. Con compact true, riporta la riga solo se il tool segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary).");
+		for (const words of ["il nome e quante voci restano", "sai in che città vive", "Se Google non è collegato o non è consentito"]) expect(BRIEF_INSTRUCTION).toContain(words);
+		expect(BRIEF_INSTRUCTION).not.toContain("come le ore");
+	});
+
+	it("U8: rows short for a phone, 15 listed, 8 proposals in an import's answer", async () => {
+		expect([BANK_LIMITS.listed, BANK_LIMITS.pending, BANK_LIMITS.rowText]).toEqual([15, 8, 60]);
+		const s = await setup();
+		const lines = ["Data;Descrizione;Importo"];
+		for (let n = 1; n <= 20; n++) lines.push(`${String(n).padStart(2, "0")}/10/2026;SPESA NUMERO ${n} ${"X".repeat(80)};-1,00`);
+		s.put("banca/l.csv", lines.join("\n"));
+		await s.run({ op: "import", path: "banca/l.csv" });
+		const listed = await s.run({ op: "list", status: "unexplained" });
+		expect(listed).toContain("(e altri 5:");
+		const row = listed.split("\n").find((l) => l.startsWith("B-000020")) as string;
+		expect(row).toMatch(/^B-000020 20\/10 \S+ € SPESA NUMERO 20 X+… → senza spiegazione$/);
+		expect(row.length).toBeLessThan(110);
+	});
+
+	it("U9: equal instalments, the acconto, the double charge, the bank's fees", async () => {
+		const i = await inputs({ "f/r.xml": out({ number: "FV-60", date: "2026-09-01", total: "1000.00", rates: [{ due: "2026-09-30", amount: "500.00" }, { due: "2026-10-31", amount: "500.00" }] }) });
+		const rate = matchMovements({ ...i, movements: [movement(1, "2026-10-01", "500", "BONIFICO CLIENTE UNO SRL")] }, false)[0];
+		expect(rate).toMatchObject({ state: "proposed", note: "rate", target: { instalment: 1 } });
+		expect(stateWords({ ...(rate?.target ?? {}), movement: "B-000001", state: "proposed", strong: true, note: "rate", by: "x", at: "y" }, undefined)).toContain("la fattura ha rate uguali: propongo la prima");
+		const s = await setup();
+		s.put("banca/a.csv", ["Data;Descrizione;Importo", "05/10/2026;BONIFICO DA CLIENTE UNO SRL ACCONTO;600,00", "13/10/2026;ADDEBITO SDD PALESTRA;-39,00", "16/10/2026;ADDEBITO SDD PALESTRA;-39,00"].join("\n"));
+		expect(await s.run({ op: "import", path: "banca/a.csv" })).toContain("Un movimento sembra un acconto su una fattura: il pagamento parziale non lo segno e la fattura resta aperta");
+		expect(await s.run({ op: "list", status: "unexplained", direction: "in" })).toContain("forse un acconto sulla fattura FV-12 di Cliente Uno Srl (1.220,00 €): il pagamento parziale non lo segno, la fattura resta aperta");
+		expect(await s.run({ op: "to_expense", ids: ["B-000002", "B-000003"] })).toContain("(forse addebito doppio: chiedi prima)");
+		expect(matchCategory("COMPETENZE DI CHIUSURA")).toBe("banca e commissioni");
+		expect(matchCategory("SPESE TENUTA CONTO")).toBe("banca e commissioni");
+		expect(matchCategory("CANONE CONTO CORRENTE")).toBe("banca e commissioni");
+		expect(matchCategory("canone affitto")).toBe("affitto e utenze");
+		expect(matchCategory("canone di locazione")).toBe("affitto e utenze");
+	});
+
+	it("U10: a statement's balance older than the one saved: said that it changes nothing", async () => {
+		const s = await setup();
+		s.cashflow.setBalance({ amount: "2800", date: "2026-11-03", by: "test:u", at: NOW.toISOString() }, undefined);
+		s.put("banca/e.csv", DARE_AVERE_CSV);
+		await s.run({ op: "import", path: "banca/e.csv" });
+		expect(await s.run({ op: "set_balance" })).toContain("Hai già un saldo più recente (2.800,00 € del 3 novembre): salvare quello di ottobre non cambia la previsione, non serve.");
+		expect(await s.run({ op: "set_balance", confirm: true })).toContain("Salvato anche il saldo del 31 ottobre (4.255,45 €); la previsione parte comunque da quello del 3 novembre (2.800,00 €).");
+	});
+
+	it("U11: the brief asks only for the months that have finished", () => {
+		const imp = (to: string) => ({ id: "I-0001", file: "x.csv", from: "2026-10-01", to, rows: 1, added: 1, duplicates: 0, format: "csv", by: "x", at: "y" }) as const;
+		expect(briefAnswer(imp("2026-10-22"), 0, "2026-11-27")).toContain("l'ultimo estratto conto arriva al 22 ottobre: caricami il resto di ottobre.");
+		expect(briefAnswer(imp("2026-10-31"), 0, "2026-12-06")).toContain("arriva al 31 ottobre: caricami quello di novembre.");
+		expect(briefAnswer(imp("2026-10-22"), 0, "2026-11-20")).toBe(BRIEF_NOTHING);
+	});
+
+	it("U12: bare numbers as ids, an article before a period, the words that lead to the totals", async () => {
+		expect(readIds(["12", 7, "b3"], 10)).toEqual(["B-000012", "B-000007", "B-000003"]);
+		expect(readPeriod("il mese scorso", "2026-11-05")).toMatchObject({ from: "2026-10-01", to: "2026-10-31" });
+		expect(readPeriod("l'anno scorso", "2026-11-05")).toMatchObject({ from: "2025-01-01" });
+		const s = await setup();
+		expect(s.tool.description).toContain("«quanto è entrato a ottobre sul conto?»");
+		expect(s.tool.description).toContain("a bare «quanto ho incassato a ottobre?» is the invoices' or the clients'");
+		expect(DEFAULT_INSTRUCTIONS).toContain("le conferme degli incassi e dei pagamenti passano da bank_statement");
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		expect(await s.run({ op: "confirm", ids: ["4"] })).toContain("un abbinamento confermato");
+	});
+
+	it("A3: one helper turns an invoice's units into cents", () => {
+		expect(cashUnitsToCents).toBe(unitsToCents);
+		expect(unitsToCents(122_000_000_000n)).toBe(122_000n);
 	});
 });

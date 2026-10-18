@@ -775,7 +775,7 @@ describe("vat: the tool", () => {
 		for (const args of [{ op: "mark_paid", period: "settembre", amount: 1 }, { op: "set_credit", amount: 1 }, { op: "export" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(String(await briefed?.execute({ op: "calendar", compact: true }, fresh()))).toContain("IVA: F24 IVA di settembre 2026");
 		expect(s.store.read().paid).toEqual([]);
-		expect(BRIEF_INSTRUCTION).toContain("15. L'IVA (vat_settlement con op calendar e compact true): come le ore.");
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Con compact true, riporta la riga solo se il tool segnala qualcosa: [^\n]*\bvat_settlement \(calendar\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		expect(DEFAULT_INSTRUCTIONS).toContain("fare la liquidazione IVA del regime ordinario (vat_settlement:");
 	});

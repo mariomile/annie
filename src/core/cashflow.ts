@@ -81,6 +81,8 @@ export type Balance = Marker & {
 	readonly date: string;
 	/** The call that set it: a call run again finds it instead of adding another. */
 	readonly callId?: string;
+	/** The closing balance of a bank statement (bank_statement set_balance): it holds every movement of the statement up to its day. */
+	readonly source?: "bank";
 };
 
 /**
@@ -163,7 +165,7 @@ export function signedCents(value: string): bigint {
 export function validBalance(v: unknown): v is Balance {
 	if (!isMarker(v)) return false;
 	const b = v as Balance;
-	return isSignedAmount(b.amount) && isDay(b.date) && optText(b.callId, 200);
+	return isSignedAmount(b.amount) && isDay(b.date) && optText(b.callId, 200) && (b.source === undefined || b.source === "bank");
 }
 
 /** A voce as stored, checked field by field: what does not have this shape makes the store unreadable. */
