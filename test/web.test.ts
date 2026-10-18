@@ -371,3 +371,33 @@ describe("web console: memoria", () => {
 	});
 });
 
+
+describe("web console: automazioni", () => {
+	it("a person makes one for a chat of theirs, gets the token once, and a call answers in that chat", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const luca = await h.as(h.luca.token);
+		const thread = await h.channel.createThread(h.anna.person.id);
+		expect((await luca("/api/instances/ops/automations", { method: "POST", body: JSON.stringify({ name: "x", instruction: "y", threadId: thread.id }) })).status).toBe(400);
+		const made = await anna("/api/instances/ops/automations", { method: "POST", body: JSON.stringify({ name: "Moduli dal sito", instruction: "Rispondi al contatto", threadId: thread.id }) });
+		expect(made.status).toBe(200);
+		const { token, automation } = made.body;
+		expect(automation.path).toBe(`/hooks/automazione/ops/${automation.id}`);
+		expect(JSON.stringify((await anna("/api/instances/ops/automations")).body)).not.toMatch(/tokenHash|token/);
+		expect((await luca("/api/instances/ops/automations")).body.automations).toEqual([]);
+		// The other service: no session, no X-Annie header, the token as a bearer.
+		const hook = (auth: string, body = "nome=Anna&messaggio=Vorrei+un+preventivo") => fetch(`${h.base}${automation.path}`, { method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" }, body });
+		expect((await hook("Bearer sbagliato")).status).toBe(404);
+		expect((await hook(`Bearer ${token}`)).status).toBe(202);
+		const query = await fetch(`${h.base}${automation.path}?token=${token}`, { method: "POST", body: "{}" });
+		expect(query.status).toBe(202);
+		const big = await fetch(`${h.base}${automation.path}?token=${token}`, { method: "POST", body: "x".repeat(70 * 1024) });
+		expect(big.status).toBe(413);
+		expect(await h.runtime.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "automation.fired", automationId: automation.id, threadId: thread.id }));
+		expect((await luca(`/api/instances/ops/automations/${automation.id}`, { method: "DELETE" })).status).toBe(404);
+		const owner = await h.as(h.owner.token);
+		expect((await owner("/api/instances/ops/automations")).body.automations).toHaveLength(1);
+		expect((await owner(`/api/instances/ops/automations/${automation.id}`, { method: "DELETE" })).status).toBe(200);
+		expect((await hook(`Bearer ${token}`)).status).toBe(404);
+	});
+});

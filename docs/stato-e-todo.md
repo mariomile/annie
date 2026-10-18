@@ -1,6 +1,6 @@
 # Stato del progetto e cose da fare
 
-Aggiornato al 17 ottobre 2026.
+Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
@@ -97,6 +97,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))
 - [x] Board: le cose da fare in quattro colonne, affidate agli agenti; l'agente ci lavora in una conversazione con chi gliel'ha affidata, la manda in «Da rivedere», e la chiude una persona; si crea anche dalla chat ([ADR 0050](adr/0050-board.md))
 - [x] Board: le schede si trascinano fra le colonne, e chi deve rivedere una scheda lo sa dalla console e, se è l'owner, anche su Telegram o WhatsApp ([ADR 0051](adr/0051-board-trascinare-e-avvisi.md))
+- [x] Automazioni: un indirizzo segreto per agente che il modulo del sito, Stripe o Zapier chiamano, e l'agente lavora con i dati ricevuti nella conversazione di chi l'ha creata, una volta per consegna e al più 30 volte l'ora ([ADR 0060](adr/0060-automazioni.md)); da fare la pagina nella console
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo

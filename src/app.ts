@@ -87,6 +87,7 @@ import { createAgentTools } from "./core/tools/agent-tools.ts";
 import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core/agent-messages.ts";
 import { AgentChannel } from "./channels/agents.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
+import { createAutomationTools } from "./core/tools/automation-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWatchTools } from "./core/tools/watch-tools.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
@@ -582,6 +583,16 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							},
 						})),
 				...createScheduleTools({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone }),
+				...createAutomationTools({
+					store: runtime.automations(record.tenantId, record.id),
+					instance: record.id,
+					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
+					...(config.web.publicUrl === undefined ? {} : { baseUrl: config.web.publicUrl }),
+					tell: (thread, text, key) => runtime.sendMessage(record.tenantId, record.id, { ...thread, text, key }),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
+					},
+				}),
 				...createWatchTools({
 					store: runtime.watches(record.tenantId, record.id),
 					read: watchReader(record.id),

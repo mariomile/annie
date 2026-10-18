@@ -18,6 +18,7 @@ import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
+import { AutomationStore } from "./automations.ts";
 import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
@@ -159,6 +160,11 @@ export class AnnieRuntime {
 		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
+	/** The automazioni of an instance (ADR 0060): addresses other services call to make it work. */
+	automations(tenant: string, instance: string): AutomationStore {
+		return new AutomationStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
 	/** The liste of an instance: each person's and the shared ones. */
 	lists(tenant: string, instance: string): ListStore {
 		return new ListStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
@@ -258,7 +264,7 @@ export class AnnieRuntime {
 	async submitScheduled(
 		tenant: string,
 		instance: string,
-		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" },
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" | "automation" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
@@ -546,8 +552,8 @@ export class AnnieInstance {
 		scheduleId: string;
 		/** The person it acts for: must still be allowed, or the run is refused. */
 		onBehalfOf: { channel: string; userId: string } | undefined;
-		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID. */
-		kind?: "brief" | "watch";
+		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID; automation: an automazione called (ADR 0060), likewise. */
+		kind?: "brief" | "watch" | "automation";
 	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
@@ -566,6 +572,7 @@ export class AnnieInstance {
 			throw error;
 		}
 		if (request.kind === "watch") await this.audit.append({ type: "watch.fired", instanceId: this.record.id, watchId: request.scheduleId, channel: request.channel, threadId: request.threadId });
+		else if (request.kind === "automation") await this.audit.append({ type: "automation.fired", instanceId: this.record.id, automationId: request.scheduleId, channel: request.channel, threadId: request.threadId });
 		else await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
 		// The person's own memories only in a thread with them alone: a console thread, or a
 		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
