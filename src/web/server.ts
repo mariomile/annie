@@ -50,7 +50,7 @@ import type { SegreteriaService } from "../segreteria/service.ts";
 import type { BrowserState } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
-import { type Room, type RoomEntry, RoomError, type RoomEvent, type Rooms } from "./rooms.ts";
+import { handles, type Room, type RoomEntry, RoomError, type RoomEvent, type Rooms } from "./rooms.ts";
 import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
 import { REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
@@ -1478,17 +1478,17 @@ export function createWebApp(options: WebAppOptions): Server {
 		return options.rooms;
 	};
 	const shownInRoom = (entry: RoomEntry): RoomEntry => (entry.model === undefined ? entry : { ...entry, model: named(entry.model) });
-	const roomView = async (room: Room, p: Person) => ({
-		id: room.id,
-		title: room.title,
-		updatedAt: room.updatedAt,
-		agents: await Promise.all(
+	const roomView = async (room: Room, p: Person) => {
+		const agents = await Promise.all(
 			room.seats.map(async (s) => {
 				const record = await runtime.registry.getInstance(tenantId, s.instanceId).catch(() => undefined);
 				return { instanceId: s.instanceId, name: record?.name ?? s.instanceId, ...(record?.persona?.emoji === undefined ? {} : { emoji: record.persona.emoji }), present: record !== undefined && canChatWith(record, p) };
 			}),
-		),
-	});
+		);
+		// The @nome the console offers is one the stanza reads as that agente.
+		const short = handles(agents.filter((a) => a.present));
+		return { id: room.id, title: room.title, updatedAt: room.updatedAt, agents: agents.map((a) => ({ ...a, handle: short.get(a.instanceId) ?? a.instanceId })) };
+	};
 	const roomError = (error: unknown): never => {
 		if (error instanceof RoomError) throw new HttpError(400, error.message);
 		if (error instanceof UserNotAllowed) throw new HttpError(403, "Non sei tra le persone che possono scrivere a uno di questi agenti");

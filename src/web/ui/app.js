@@ -3041,7 +3041,7 @@ async function viewRoom(main, roomId) {
 		return true;
 	};
 	const present = room.agents.filter((a) => a.present);
-	const input = h("textarea", { rows: 1, placeholder: `Scrivi alla stanza, @${present[0]?.name.split(/\s+/)[0].toLowerCase() ?? "nome"} per chiamare un agente…`, "aria-label": "Messaggio" });
+	const input = h("textarea", { rows: 1, placeholder: `Scrivi alla stanza, @${present[0]?.handle ?? "nome"} per chiamare un agente…`, "aria-label": "Messaggio" });
 	const send = h("button.send", { "aria-label": "Invia", disabled: true }, icon("send"));
 	const fit = () => {
 		input.style.height = "auto";
@@ -3076,7 +3076,7 @@ async function viewRoom(main, roomId) {
 	send.addEventListener("click", () => void submit());
 	// One tap to call an agente: its @name at the start of the message.
 	const call = (a) => {
-		const handle = `@${a.name.split(/\s+/)[0].toLowerCase()} `;
+		const handle = `@${a.handle} `;
 		if (!input.value.includes(handle.trim())) input.value = `${handle}${input.value}`;
 		input.focus();
 		fit();

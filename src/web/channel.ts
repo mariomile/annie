@@ -158,10 +158,13 @@ export class WebChannel implements ChannelAdapter {
 		if (!THREAD_ID.test(threadId)) throw new Error(`Not a web thread: ${threadId}`);
 		const id = `r_${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
 		const done = await this.serial(threadId, async () => {
-			if ((await this.transcript(threadId)).some((e) => e.id === id)) return undefined; // resent after a crash
+			const thread = await this.thread(threadId);
+			// Resent after a crash: shown once. A seat's reply may not have reached its stanza yet, so it
+			// goes there again (the stanza keeps each message once).
+			const sent = (await this.transcript(threadId)).find((e) => e.id === id);
+			if (sent !== undefined) return thread?.room === undefined ? undefined : { entry: sent, room: thread.room };
 			const entry: WebEntry = { id, at: new Date().toISOString(), from: "annie", ...body };
 			await this.append(threadId, entry);
-			const thread = await this.thread(threadId);
 			if (thread !== undefined) await this.saveThread({ ...thread, updatedAt: entry.at });
 			return { entry, room: thread?.room };
 		});
