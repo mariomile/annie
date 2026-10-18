@@ -446,7 +446,7 @@ dialog.palette input { border: 0; border-bottom: 1px solid var(--border); border
 dialog.palette input:focus { box-shadow: none; }
 dialog.palette ul { list-style: none; margin: 0; padding: 6px; max-height: 360px; overflow: auto; }
 dialog.palette li { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 7px; cursor: pointer; color: var(--fg-2); font-size: 13.5px; }
-dialog.palette li span:nth-child(2) { flex: 1; }
+dialog.palette li span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 dialog.palette li .muted { font-size: 12px; }
 dialog.palette li[aria-selected="true"] { background: var(--hover); color: var(--fg); }
 dialog.palette li.none { color: var(--fg-3); cursor: default; }
