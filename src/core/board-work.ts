@@ -52,7 +52,7 @@ export class BoardWork {
 	/**
 	 * A new scheda. Created by a person and handed to an agente, the work starts at once. Created
 	 * by an agente (from a chat, perhaps prompted by something it read) it waits in «Da fare» for
-	 * a person to look at it and start it, except a sotto-scheda (ADR 0065) of the one the agente is
+	 * a person to look at it and start it, except a sotto-scheda (ADR 0066) of the one the agente is
 	 * working on with a person, asked in that scheda's conversation (`from`, its thread): that
 	 * person started the work, so it starts at once with them, alone if the scheda is. If it cannot
 	 * start (the person may not talk to that agente), it waits, with why on the scheda.
@@ -146,7 +146,7 @@ export class BoardWork {
 		const self: CardActor = { kind: "agent", id: agent };
 		const stop = async (why: string) => this.reviewed(this.deps.store.update(card.id, { status: "da_rivedere", comment: `Lavorando da solo si è fermato ${why}: guarda la conversazione e decidi se rimandarla indietro.` }, self), true);
 		if (failed !== undefined) return stop(`perché non è riuscito a rispondere (${failed})`);
-		// A sotto-scheda alone spends from the scheda it is part of, if that one is alone too: one cap for both (ADR 0065).
+		// A sotto-scheda alone spends from the scheda it is part of, if that one is alone too: one cap for both (ADR 0066).
 		const parent = card.parent === undefined ? undefined : this.deps.store.get(card.parent);
 		const shared = parent?.auto !== undefined && parent.status === "in_corso" ? parent : undefined;
 		const spent = (c: Card) => (c.auto?.rounds ?? 0) >= BOARD_LIMITS.autoRounds || Date.now() - Date.parse(c.auto?.since ?? "") > BOARD_LIMITS.autoMs;
@@ -164,7 +164,7 @@ export class BoardWork {
 	/**
 	 * Moved to «Da rivedere» by its agente: who worked on it with this agente reviews it; with nobody,
 	 * the owners. A sotto-scheda is also told to the agente of the scheda it is part of, in its
-	 * conversation, while that one is In corso: the hand-off comes back (ADR 0065).
+	 * conversation, while that one is In corso: the hand-off comes back (ADR 0066).
 	 */
 	private async reviewed(card: Card, stopped = false): Promise<void> {
 		const work = card.work;

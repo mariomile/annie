@@ -33,7 +33,7 @@ Una cosa da fare sulla board, con numero (#12), titolo, descrizione, priorità, 
 _Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
 
 **Sotto-scheda**:
-Una scheda che fa parte di un'altra, un solo livello. Quella che crea l'agente della scheda mentre ci lavora con una persona parte subito con un altro agente, e il risultato torna all'agente della scheda. Vedi ADR 0065.
+Una scheda che fa parte di un'altra, un solo livello. Quella che crea l'agente della scheda mentre ci lavora con una persona parte subito con un altro agente, e il risultato torna all'agente della scheda. Vedi ADR 0066.
 _Avoid_: sub-task, child card
 
 **Messaggio tra agenti**:

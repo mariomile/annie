@@ -348,7 +348,7 @@ describe("the board (ADR 0050)", () => {
 		});
 	});
 
-	describe("sotto-schede e passaggi tra agenti (ADR 0065)", () => {
+	describe("sotto-schede e passaggi tra agenti (ADR 0066)", () => {
 		it("the agente working on a scheda hands part of it to another: it starts with the same person, and the result comes back", async () => {
 			const { work, store, posts, opened } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
 			const reviews: { card: { n: number }; people: string[] }[] = [];

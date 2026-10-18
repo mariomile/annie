@@ -356,7 +356,7 @@ describe("pnpm start (startAnnie)", () => {
 		expect(audit.some((e) => e.type === "board.card_created")).toBe(true);
 	});
 
-	it("sotto-schede (ADR 0065): an agente hands part of its scheda to another, and hears back when it is done", async () => {
+	it("sotto-schede (ADR 0066): an agente hands part of its scheda to another, and hears back when it is done", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
 		await api("/api/instances", { id: "ricerca", name: "Ricercatore" });

@@ -3672,7 +3672,7 @@ async function viewBoard(main) {
 			return false;
 		}
 	};
-	// Sotto-schede (ADR 0065): one level, shown under the scheda they are part of.
+	// Sotto-schede (ADR 0066): one level, shown under the scheda they are part of.
 	const parentOf = (c) => (c.parent ? data.cards.find((x) => x.id === c.parent) : undefined);
 	const childrenOf = (c) => data.cards.filter((x) => x.parent === c.id).sort((a, b) => a.n - b.n);
 	const aloneLabel = `Lavora da solo fino alla fine, senza aspettare le tue risposte (al massimo ${data.auto.replies} risposte o ${data.auto.hours} ore, poi va in «Da rivedere»)`;

@@ -49,7 +49,7 @@ export type Card = {
 		/** The last reply counted: one handed over again after a restart is not counted twice. */
 		readonly last?: string;
 	};
-	/** The scheda this one is part of (ADR 0065): one level only, so a sotto-scheda has none of its own. */
+	/** The scheda this one is part of (ADR 0066): one level only, so a sotto-scheda has none of its own. */
 	readonly parent?: string;
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
