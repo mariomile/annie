@@ -98,7 +98,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Board: le cose da fare in quattro colonne, affidate agli agenti; l'agente ci lavora in una conversazione con chi gliel'ha affidata, la manda in «Da rivedere», e la chiude una persona; si crea anche dalla chat ([ADR 0050](adr/0050-board.md))
 - [x] Board: le schede si trascinano fra le colonne, e chi deve rivedere una scheda lo sa dalla console e, se è l'owner, anche su Telegram o WhatsApp ([ADR 0051](adr/0051-board-trascinare-e-avvisi.md))
 - [x] Board: una scheda può andare da sola fino alla fine, senza aspettare risposte, con un tetto di 10 risposte e 2 ore, poi in «Da rivedere» ([ADR 0058](adr/0058-agenti-da-soli.md))
-- [x] Memoria con archivio: le memorie essenziali con ogni messaggio, i dettagli in un archivio di 1000 per persona che Annie cerca quando servono; con le essenziali piene la più vecchia va in archivio invece di un rifiuto ([ADR 0061](adr/0061-memoria-con-archivio.md))
+- [x] Memoria con archivio: le memorie essenziali con ogni messaggio, i dettagli in un archivio di 1000 per persona che Annie cerca quando servono; con le essenziali piene la più vecchia va in archivio invece di un rifiuto ([ADR 0062](adr/0062-memoria-con-archivio.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo

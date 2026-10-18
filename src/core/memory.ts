@@ -16,7 +16,7 @@ export type Memory = {
 	readonly source: "annie" | "person";
 	readonly createdAt: string;
 	/**
-	 * In the archivio (ADR 0061): kept, and found with memory_search when a conversation needs
+	 * In the archivio (ADR 0062): kept, and found with memory_search when a conversation needs
 	 * it, but not sent with every message. Details: a client's birthday, a past decision.
 	 */
 	readonly archived?: true;
