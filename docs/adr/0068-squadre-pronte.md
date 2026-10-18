@@ -6,11 +6,11 @@ Annie ha già tutti i pezzi per far lavorare più agenti insieme: agenti con un 
 
 - **Nella pagina Agenti, «Squadre pronte»** apre l'elenco: Contenuti (Caporedattore, Ricercatore, Scrittore), Vendite (Responsabile vendite, Ricerca clienti, Preventivi), Amministrazione (Responsabile amministrativo, Contabile, Assistente d'ufficio). Un clic su «Crea la squadra» e la console apre la stanza della squadra.
 - **Ogni membro è un agente come quelli del modulo «Nuovo agente»**: nome, emoji, riga, tono, modello dell'agente principale, aperto solo all'owner. Le sue istruzioni sono quelle predefinite più il suo compito e la squadra: chi sono gli altri (nome e ID), chi coordina e come passa il lavoro.
-- **Il primo coordina**: riceve le richieste, chiede agli altri con agent_message o con @nome nella stanza, e per una scheda della board affidata a lui la divide in sotto-schede per gli altri, che partono da sole se la scheda lavora da sola. Gli altri fanno la loro parte e mettono la scheda in «Da rivedere» con un riassunto.
+- **Il primo coordina**: riceve le richieste, chiede agli altri con agent_message o con @nome nella stanza, e per una scheda della board affidata a lui la divide in sotto-schede per gli altri, che partono subito, e lavorano da sole se lo fa la scheda. Gli altri fanno la loro parte e mettono la scheda in «Da rivedere» con un riassunto.
 - **Si scrivono solo fra loro**: ognuno accetta i messaggi degli altri della squadra, non dell'agente principale né di altri agenti. L'owner allarga in Impostazioni o con «Fate squadra».
 - **ID liberi**: se «ricercatore» c'è già, il nuovo è «ricercatore-2» (fino a -9), e le istruzioni degli altri citano quello. La stessa squadra si può creare più volte.
 - **Il catalogo sta nel codice** (`src/core/teams.ts`): istruzioni scritte e provate da noi, uguali per tutti; le cambia solo un aggiornamento di Annie. Le squadre già create non cambiano.
-- **Se qualcosa va storto a metà**, gli agenti già creati restano e il messaggio li elenca; se la stanza non si può aprire (già 50 stanze), la squadra c'è lo stesso e la console lo dice. Audit `team.created` con la squadra, gli agenti e se la stanza c'è.
+- **Se qualcosa va storto a metà**, gli agenti già creati restano e il messaggio li elenca per nome; due squadre chieste insieme si creano una dopo l'altra; se la stanza non si può aprire (già 50 stanze), la squadra c'è lo stesso e la console lo dice. Audit `team.created` con la squadra, gli agenti e se la stanza c'è, più `room.created` come per ogni stanza.
 
 ## Alternative scartate
 

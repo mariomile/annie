@@ -3736,10 +3736,20 @@ function agentForm() {
 
 /** Ready-made squadre (ADR 0068): a few agenti that ask each other, with a room for all of them. */
 async function teamsForm() {
-	const { teams, available } = await api("/api/teams");
+	let listed;
+	try {
+		listed = await api("/api/teams");
+	} catch (error) {
+		return toast(error.message, true);
+	}
+	const { teams, available } = listed;
 	if (!available) return toast("Questa installazione non crea agenti dalla console", true);
-	const make = async (team, button) => {
-		button.disabled = true;
+	// One squadra at a time: every button waits while one is made.
+	const busy = (on) => {
+		for (const b of dialog.querySelectorAll(".team button")) b.disabled = on;
+	};
+	const make = async (team) => {
+		busy(true);
 		try {
 			const { agents, room, note } = await api("/api/teams", { method: "POST", body: { team: team.key } });
 			dialog.close();
@@ -3749,7 +3759,7 @@ async function teamsForm() {
 			else go("agenti");
 			render();
 		} catch (error) {
-			button.disabled = false;
+			busy(false);
 			toast(error.message, true);
 		}
 	};
@@ -3760,7 +3770,7 @@ async function teamsForm() {
 		h(
 			"div.teams",
 			teams.map((team) => {
-				const button = h("button.btn.small.accent", { type: "button", onclick: () => void make(team, button) }, "Crea la squadra");
+				const button = h("button.btn.small.accent", { type: "button", onclick: () => void make(team) }, "Crea la squadra");
 				return h(
 					"section.team",
 					h("b", `${team.emoji} ${team.name}`),

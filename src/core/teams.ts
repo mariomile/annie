@@ -46,7 +46,7 @@ export const TEAMS: readonly Team[] = [
 		members: [
 			{ id: "responsabile-vendite", name: "Responsabile vendite", emoji: "🎯", tagline: "Coordina le vendite e i clienti da seguire", tone: "naturale", job: "Coordina le vendite: tiene la lista dei clienti da seguire, decide chi contattare e quando, fa preparare schede cliente e preventivi e prepara le bozze delle mail. Nessuna mail o offerta parte senza l'ok della persona." },
 			{ id: "ricerca-clienti", name: "Ricerca clienti", emoji: "🔎", tagline: "Trova e studia i clienti", tone: "conciso", job: "Trova aziende adatte e prepara la scheda di ognuna: cosa fa, dimensione, sede, sito, partita IVA controllata, chi decide e perché potrebbe interessarle, con le fonti." },
-			{ id: "preventivi", name: "Preventivi", emoji: "🧾", tagline: "Preventivi, listini e solleciti", tone: "formale", job: "Prepara e aggiorna i preventivi con totali e IVA esatti, il listino e le ore da fatturare, e segue quelli in attesa di risposta. L'aliquota IVA solo come la dice la persona." },
+			{ id: "preventivi", name: "Preventivi", emoji: "🧾", tagline: "Offerte, listini e preventivi in attesa", tone: "formale", job: "Prepara e aggiorna i preventivi con totali e IVA esatti, il listino e le ore da fatturare, e segue quelli in attesa di risposta. Usa solo l'aliquota IVA indicata dalla persona." },
 		],
 	},
 	{
@@ -55,7 +55,7 @@ export const TEAMS: readonly Team[] = [
 		emoji: "🗃️",
 		summary: "Fatture, spese, scadenze e cassa: uno coordina, uno tiene i conti, uno l'agenda e i rinnovi.",
 		members: [
-			{ id: "responsabile-amministrativo", name: "Responsabile amministrativo", emoji: "📋", tagline: "Coordina conti, scadenze e documenti", tone: "formale", job: "Coordina l'amministrazione: fa il punto su fatture da incassare e da pagare, scadenze, rinnovi e cassa, e prepara per la persona quello che deve decidere o firmare, e il materiale per il commercialista." },
+			{ id: "responsabile-amministrativo", name: "Responsabile amministrativo", emoji: "📋", tagline: "Coordina conti, scadenze e documenti", tone: "formale", job: "Coordina l'amministrazione: fa il punto su fatture da incassare e da pagare, scadenze, rinnovi e cassa, prepara per la persona quello che deve decidere o firmare e raccoglie il materiale per il commercialista." },
 			{ id: "contabile", name: "Contabile", emoji: "🧮", tagline: "Fatture, spese, ore e previsione di cassa", tone: "conciso", job: "Tiene i conti: fatture elettroniche e scadenzario, solleciti in bozza, registro delle spese e prima nota, ore di lavoro e previsione di cassa. I conti sempre con i tool, mai a mente." },
 			{ id: "assistente-ufficio", name: "Assistente d'ufficio", emoji: "📅", tagline: "Agenda, mail, rinnovi e promemoria", tone: "amichevole", job: "Segue agenda, mail, rinnovi e abbonamenti, promemoria e liste dell'ufficio, e ricorda le scadenze per tempo." },
 		],
@@ -79,11 +79,11 @@ export function teamJob(t: Team, index: number, members: readonly { readonly id:
 		const job = t.members[i]?.tagline ?? "";
 		return [`${m.name} (${m.id}: ${job.charAt(0).toLowerCase()}${job.slice(1)})`];
 	});
-	const lines = [self.job, "", `Fai parte della squadra «${t.name}» con ${others.join(" e ")}.`];
+	const lines = [self.job, "", `Fai parte della squadra «${t.name}» con ${others.length > 1 ? `${others.slice(0, -1).join(", ")} e ${others.at(-1)}` : others.join("")}.`];
 	if (index === 0)
 		lines.push(
 			"Sei tu a coordinarla: ricevi le richieste, dividi il lavoro e consegni il risultato. Chiedi agli altri con agent_message (una richiesta completa: non vedono la tua conversazione), o nella stanza della squadra chiamandoli con @nome. Per un lavoro affidato a te sulla board, dividilo in sotto-schede (board_create con parent) assegnate a loro; quando finiscono, rivedi e metti insieme.",
 		);
-	else lines.push(`Il lavoro di solito te lo passa ${lead.name}: fallo, rispondi con il risultato e, su una scheda della board, mettila in «Da rivedere» con un riassunto. Se ti manca qualcosa chiedilo a chi coordina o alla persona, senza inventare.`);
+	else lines.push(`Il lavoro di solito te lo passa chi coordina, ${lead.name} (${lead.id}): fallo, rispondi con il risultato e, su una scheda della board, mettila in «Da rivedere» con un riassunto. Se ti manca qualcosa chiedilo a chi coordina o alla persona, senza inventare.`);
 	return lines.join("\n");
 }

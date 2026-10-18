@@ -457,8 +457,14 @@ export function createWebApp(options: WebAppOptions): Server {
 		exists: agentExists,
 		make: (person, input) => makeAgent(person, { ...input, persona: personaOf(input.persona) }),
 		allow: (person, id, from) => allowAgents(person, id, from),
-		room: async (person, title, agents) => (options.rooms === undefined ? undefined : (await options.rooms.create(person.id, title, agents)).id),
+		room: async (person, title, agents) => {
+			if (options.rooms === undefined) return undefined;
+			const room = await options.rooms.create(person.id, title, agents).catch(roomError);
+			await runtime.audit(tenantId).append({ type: "room.created", personId: person.id, roomId: room.id, agents: room.seats.length });
+			return room.id;
+		},
 		audit: (event) => runtime.audit(tenantId).append(event),
+		log: (message) => options.log?.(message),
 	});
 
 	// --- chat ---
