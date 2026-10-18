@@ -41,6 +41,8 @@ const ICONS = {
 	inizia: ["M5 21V4", "M5 4h11l-2 4 2 4H5"],
 	install: ["M12 3v12", "m7 10 5 5 5-5", "M5 21h14"],
 	upload: ["M12 21V9", "m7 14 5-5 5 5", "M5 3h14"],
+	image: ["M4 5h16v14H4Z", "m4 16 5-5 4 4 3-3 4 4", "M15 9h.01"],
+	spark: ["M12 3c.6 4.2 2.8 6.4 7 7-4.2.6-6.4 2.8-7 7-.6-4.2-2.8-6.4-7-7 4.2-.6 6.4-2.8 7-7Z", "M19 15c.3 1.8 1.2 2.7 3 3-1.8.3-2.7 1.2-3 3-.3-1.8-1.2-2.7-3-3 1.8-.3 2.7-1.2 3-3Z"],
 	listen: ["M4 9v6h4l5 4V5L8 9H4Z", "M16.5 8.5a5 5 0 0 1 0 7", "M19 6a8.5 8.5 0 0 1 0 12"],
 	stop: ["M7 7h10v10H7Z"],
 	chat: ["M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"],
@@ -1543,7 +1545,14 @@ function needInstance(main) {
 /** A workspace picture shown in the page (not downloaded). */
 const pictureUrl = (inst, path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
 
-const HINTS = ["Riassumi in punti il file che ti carico", "Cosa c'è in questa foto?", "Ricordami ogni lunedì alle 9 di controllare gli ordini", "Prepara un CSV con i clienti citati", "Quali strumenti hai a disposizione?"];
+/** The empty chat's starters, as on Grok: what Annie can do, each one the start of a message to finish. */
+const HINTS = [
+	{ icon: "search", label: "Cerca sul web", text: "Cerca sul web le ultime notizie su " },
+	{ icon: "spark", label: "Ricerca approfondita", text: "Fai una ricerca approfondita su " },
+	{ icon: "image", label: "Crea un'immagine", text: "Crea un'immagine di " },
+	{ icon: "file", label: "Riassumi un file", text: "Riassumi in punti il file che ti carico", hint: "Aggiungi il file con la graffetta, trascinalo qui o incollalo" },
+	{ icon: "task", label: "Ricordamelo", text: "Ricordami ogni lunedì alle 9 di " },
+];
 
 async function viewChat(main) {
 	if (needInstance(main)) return;
@@ -1898,18 +1907,21 @@ function landing(inst, conversation) {
 			box.el,
 			h(
 				"div.hints.ideas",
-				HINTS.map((t) =>
+				HINTS.map((idea) =>
 					h(
 						"button",
 						{
+							type: "button",
 							onclick: () => {
-								box.input.value = t;
+								box.input.value = idea.text;
 								box.input.dispatchEvent(new Event("input"));
-								if (t.includes("foto")) box.input.placeholder = "Aggiungi la foto con la graffetta, trascinala qui o incollala";
+								if (idea.hint) box.input.placeholder = idea.hint;
 								box.input.focus();
+								box.input.setSelectionRange(idea.text.length, idea.text.length);
 							},
 						},
-						t,
+						icon(idea.icon),
+						idea.label,
 					),
 				),
 			),
