@@ -56,11 +56,11 @@ function fakeGoogle() {
 				snippet: "Ci mandate il preventivo?",
 				payload: {
 					headers: [
-						{ name: "From", value: "Rossi <rossi@cliente.it>" },
-						{ name: "To", value: "anna@example.com, Bianchi <bianchi@cliente.it>" },
-						{ name: "Cc", value: "verdi@cliente.it" },
+						{ name: "From", value: "Rossi <rossi@cliente.example>" },
+						{ name: "To", value: "anna@example.com, Bianchi <bianchi@cliente.example>" },
+						{ name: "Cc", value: "verdi@cliente.example" },
 						{ name: "Subject", value: "Preventivo" },
-						{ name: "Message-ID", value: "<abc@cliente.it>" },
+						{ name: "Message-ID", value: "<abc@cliente.example>" },
 						{ name: "Date", value: "Thu, 15 Oct 2026 09:00:00 +0200" },
 					],
 				},
@@ -196,11 +196,11 @@ describe("Google: scrivere con approvazione", () => {
 		const { owner, thread, google } = await ready();
 		await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", body: "Ve lo mandiamo venerdì.", reason: "Risposta a Rossi" }));
 		const [replyAction] = (await owner("/api/instances/annie/google-actions")).actions;
-		expect(replyAction.mail).toMatchObject({ to: ["rossi@cliente.it"], subject: "Re: Preventivo" });
+		expect(replyAction.mail).toMatchObject({ to: ["rossi@cliente.example"], subject: "Re: Preventivo" });
 		await owner(`/api/instances/annie/google-actions/${replyAction.id}/decision`, { decision: "approved" });
 		const sent = google.writes()[0];
 		expect(JSON.parse(sent?.body ?? "{}").threadId).toBe("t1");
-		expect(rawOf(sent)).toContain("In-Reply-To: <abc@cliente.it>\r\nReferences: <abc@cliente.it>\r\n");
+		expect(rawOf(sent)).toContain("In-Reply-To: <abc@cliente.example>\r\nReferences: <abc@cliente.example>\r\n");
 		// The outcome notice lands in the thread on its own: wait for it, or the next reply() could take it for Annie's answer.
 		await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${replyAction.id}`));
 		await reply(owner, thread.id, tool("google_mail_send", { to: ["luca@example.com"], subject: "Bozza", body: "Da rivedere", draft: true, reason: "Bozza per Luca" }));
@@ -254,8 +254,8 @@ describe("Google: scrivere con approvazione", () => {
 	it("refuses what cannot be sent safely: bad addresses, headers broken across lines, threads outside the console", async () => {
 		const { owner, thread, google } = await ready();
 		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["non-un-indirizzo"], subject: "x", body: "y", reason: "prova" }))).toContain("indirizzo non valido");
-		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x\r\nBcc: spia@evil.com", body: "y", reason: "prova" }))).toContain("Errore");
-		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it>, spia@evil.com"], subject: "x", body: "y", reason: "prova" }))).toContain("indirizzo non valido");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "x\r\nBcc: spia@evil.example", body: "y", reason: "prova" }))).toContain("Errore");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example>, spia@evil.example"], subject: "x", body: "y", reason: "prova" }))).toContain("indirizzo non valido");
 		expect(await reply(owner, thread.id, tool("google_calendar_create", { summary: "x", start: "2026-10-20T14:00", end: "2026-10-20T13:00", reason: "prova" }))).toContain("Errore");
 		expect((await owner("/api/instances/annie/google-actions")).actions).toEqual([]);
 		expect(google.writes()).toEqual([]);
@@ -263,9 +263,9 @@ describe("Google: scrivere con approvazione", () => {
 
 	it("Google refusing is a failure; Google not answering is an unknown outcome, never sent again", async () => {
 		const { owner, thread, google } = await ready();
-		await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "Uno", body: "1", reason: "prova" }));
-		await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "Due", body: "2", reason: "prova" }));
-		await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "Tre", body: "3", reason: "prova" }));
+		await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "Uno", body: "1", reason: "prova" }));
+		await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "Due", body: "2", reason: "prova" }));
+		await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "Tre", body: "3", reason: "prova" }));
 		const [one, two, three] = (await owner("/api/instances/annie/google-actions")).actions;
 		google.state.fail = 400;
 		expect((await owner(`/api/instances/annie/google-actions/${one.id}/decision`, { decision: "approved" })).action.status).toBe("failed");
@@ -287,9 +287,9 @@ describe("Google: scrivere con approvazione", () => {
 		const { owner, thread } = await ready();
 		await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", subject: "Altro oggetto", reply_all: true, body: "Ok per tutti.", reason: "Risposta a tutti" }));
 		const [action] = (await owner("/api/instances/annie/google-actions")).actions;
-		expect(action.mail).toMatchObject({ to: ["rossi@cliente.it"], cc: ["bianchi@cliente.it", "verdi@cliente.it"], subject: "Re: Preventivo", inReplyTo: { from: "Rossi <rossi@cliente.it>", subject: "Preventivo" } });
-		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], body: "senza oggetto", reason: "prova" }))).toContain("oggetto");
-		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x", body: "   ", reason: "prova" }))).toContain("vuoto");
+		expect(action.mail).toMatchObject({ to: ["rossi@cliente.example"], cc: ["bianchi@cliente.example", "verdi@cliente.example"], subject: "Re: Preventivo", inReplyTo: { from: "Rossi <rossi@cliente.example>", subject: "Preventivo" } });
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], body: "senza oggetto", reason: "prova" }))).toContain("oggetto");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "x", body: "   ", reason: "prova" }))).toContain("vuoto");
 	});
 
 	it("calendar: all-day days are inclusive, a move keeps the length, guests are added and removed, deleting tells them, and the event must be unchanged", async () => {
@@ -341,26 +341,26 @@ describe("Google: scrivere con approvazione", () => {
 	});
 
 	it("mail headers: long non-ASCII subjects are folded in short encoded words; references keep well-formed ids only", () => {
-		const raw = mimeMessage({ to: ["a@b.it"], cc: [], subject: "è".repeat(200), body: "x", inReplyTo: { id: "m", threadId: "t", messageId: "<id@x>", references: `<a@x> bad <b@x>${" <c@x>".repeat(20)} <ü@x>`, from: "", subject: "", date: "" } }).toString("latin1");
+		const raw = mimeMessage({ to: ["a@b.example"], cc: [], subject: "è".repeat(200), body: "x", inReplyTo: { id: "m", threadId: "t", messageId: "<id@x>", references: `<a@x> bad <b@x>${" <c@x>".repeat(20)} <ü@x>`, from: "", subject: "", date: "" } }).toString("latin1");
 		const head = raw.split("\r\n\r\n")[0] as string;
 		expect(head.split("\r\n").every((l) => l.length <= 78)).toBe(true);
 		expect(head).toContain("In-Reply-To: <id@x>");
 		expect(head).not.toContain("ü");
 		expect(head.match(/<[^>]+>/g)?.length).toBeLessThanOrEqual(11);
-		expect(() => mimeMessage({ to: ["a\u0000b@x.it"], cc: [], subject: "x", body: "y" })).toThrow(/indirizzo/);
+		expect(() => mimeMessage({ to: ["a\u0000b@x.example"], cc: [], subject: "x", body: "y" })).toThrow(/indirizzo/);
 	});
 
 	it("store: an action left running by a dead process becomes uncertain; old ones expire", async () => {
 		const store = new GoogleActionStore(join(tempDataDir(), "ga"));
-		const a = await store.propose({ kind: "calendar.delete", personId: "p1", account: "x@y.it", reason: "r", event: { id: "e1" } }, new Date("2026-10-17T10:00:00Z"));
+		const a = await store.propose({ kind: "calendar.delete", personId: "p1", account: "x@y.example", reason: "r", event: { id: "e1" } }, new Date("2026-10-17T10:00:00Z"));
 		expect((await store.get(a.id, new Date("2026-10-18T11:00:00Z")))?.status).toBe("expired");
-		const b = await store.propose({ kind: "calendar.delete", personId: "p1", account: "x@y.it", reason: "r", event: { id: "e1" } });
+		const b = await store.propose({ kind: "calendar.delete", personId: "p1", account: "x@y.example", reason: "r", event: { id: "e1" } });
 		await store.decide(b.id, "approved", "p1", async () => {
 			const settled = await new GoogleActionStore(join(store.dir)).settleInterrupted();
 			expect(settled.map((s) => s.id)).toEqual([b.id]);
 			return { done: "x" };
 		});
-		expect(mimeMessage({ to: ["a@b.it"], cc: [], subject: "Ciao", body: "x" }).toString("latin1")).toContain("Content-Type: text/plain; charset=UTF-8");
+		expect(mimeMessage({ to: ["a@b.example"], cc: [], subject: "Ciao", body: "x" }).toString("latin1")).toContain("Content-Type: text/plain; charset=UTF-8");
 	});
 
 	it("attachments: the card names them, the approval sends exactly those bytes; a file changed or gone since is not sent; the audit only counts them", async () => {
@@ -372,7 +372,7 @@ describe("Google: scrivere con approvazione", () => {
 		writeFileSync(join(root, "contratti", "b.pdf"), pdf);
 		writeFileSync(join(root, "contratti", "c.pdf"), pdf);
 		const asked = await reply(owner, thread.id, tool("google_mail_send", { reply_to: "m1", body: "Ecco il contratto.", attachments: ["contratti/Contratto Rossi è firmato.pdf"], reason: "Contratto a Rossi" }));
-		expect(asked).toMatch(/Richiesta [0-9a-f]{12} pronta: rispondere a rossi@cliente.it, con 1 allegato/);
+		expect(asked).toMatch(/Richiesta [0-9a-f]{12} pronta: rispondere a rossi@cliente.example, con 1 allegato/);
 		const [action] = (await owner("/api/instances/annie/google-actions")).actions;
 		expect(action.reason).toBe("Contratto a Rossi");
 		expect(action.mail.attachments).toEqual([{ path: "contratti/Contratto Rossi è firmato.pdf", name: "Contratto Rossi è firmato.pdf", size: pdf.length, sha256: expect.stringMatching(/^[0-9a-f]{64}$/), contentType: "application/pdf" }]);
@@ -399,12 +399,12 @@ describe("Google: scrivere con approvazione", () => {
 		expect(google.writes()).toHaveLength(1);
 		for (const a of [changed, gone]) await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${a.id}`));
 		// What cannot be attached is refused before anything is asked.
-		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x", body: "y", attachments: ["../secret.pdf"], reason: "prova" }))).toContain("Errore: non posso allegare");
-		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.it"], subject: "x", body: "y", attachments: ["run.sh"], reason: "prova" }))).toContain("Errore: non allego «run.sh»");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "x", body: "y", attachments: ["../secret.pdf"], reason: "prova" }))).toContain("Errore: non posso allegare");
+		expect(await reply(owner, thread.id, tool("google_mail_send", { to: ["a@b.example"], subject: "x", body: "y", attachments: ["run.sh"], reason: "prova" }))).toContain("Errore: non allego «run.sh»");
 		expect((await owner("/api/instances/annie/google-actions")).actions).toHaveLength(3);
 		const audit = readFileSync(join(dataDir, "tenants", "default", "audit.jsonl"), "utf8");
 		expect(audit).toMatch(/"type":"google_action.approved"[^\n]*"attachments":1/);
-		for (const secret of ["Contratto", "contratti", "rossi@cliente.it"]) expect(audit).not.toContain(secret);
+		for (const secret of ["Contratto", "contratti", "rossi@cliente.example"]) expect(audit).not.toContain(secret);
 	});
 
 	it("a large attachment goes through Gmail's upload endpoint, with the thread in the metadata", async () => {
@@ -421,7 +421,7 @@ describe("Google: scrivere con approvazione", () => {
 		const outer = /^--(annie_upload_[0-9a-f]+)\r\n/.exec(sent?.body ?? "")?.[1] as string;
 		const [, meta, message] = (sent?.body ?? "").split(`--${outer}`);
 		expect(JSON.parse((meta as string).split("\r\n\r\n")[1] as string)).toEqual({ threadId: "t1" });
-		expect(message).toContain("Content-Type: message/rfc822\r\n\r\nTo: rossi@cliente.it\r\n");
+		expect(message).toContain("Content-Type: message/rfc822\r\n\r\nTo: rossi@cliente.example\r\n");
 		const inner = /boundary="([^"]+)"/.exec(message as string)?.[1] as string;
 		const file = (message as string).split(`--${inner}`)[2] as string;
 		expect(Buffer.from(file.split("\r\n\r\n")[1] as string, "base64").equals(big)).toBe(true);

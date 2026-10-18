@@ -26,7 +26,7 @@ import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z");
-const IBAN = "IT60X0542811101000000123456";
+const IBAN = "IT74X0000000000000000123456";
 let calls = 0;
 /** A context of its own for each call, as the engine gives: a call run again shares its callId. */
 const fresh = (thread = { channel: "test", threadId: "t1" }, callId = `q${++calls}`): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
@@ -47,7 +47,7 @@ function temp(): string {
 /** The Markdown the document was made from, written as the file: the content without the worker. */
 const plainMake = async (input: MakeInput) => ({ data: new Uint8Array(Buffer.from(`${input.format}\n${input.text}`)), pages: 1, notes: [] });
 
-const COMPANY: Company = { name: "Bianchi Consulenze Srl", vat: "IT03311220036", address: "Via Roma 1, 20100 Milano", phone: "02 1234567", email: "info@bianchi.it", ibans: [IBAN], signature: "Mario Bianchi", by: "test:u", at: NOW.toISOString() };
+const COMPANY: Company = { name: "Bianchi Consulenze Srl", vat: "IT00000520031", address: "Via Roma 1, 20100 Milano", phone: "02 1234567", email: "info@bianchi.example", ibans: [IBAN], signature: "Mario Bianchi", by: "test:u", at: NOW.toISOString() };
 
 type Setup = { real?: boolean; company?: Partial<Company> | false; now?: () => Date; make?: (input: MakeInput) => Promise<{ data: Uint8Array; pages?: number; notes: string[] }> };
 
@@ -87,7 +87,7 @@ function setup(o: Setup = {}) {
 	};
 }
 
-const ROSSI = { op: "create", customer: "Rossi Srl", tax_id: "IT 02987650013", items: [{ description: "Consulenza", quantity: 3, unit: "giornate", price: 500 }, { description: "Trasferta", price: 120 }], vat: 22, terms: "Bonifico a 30 giorni" };
+const ROSSI = { op: "create", customer: "Rossi Srl", tax_id: "IT 00000510016", items: [{ description: "Consulenza", quantity: 3, unit: "giornate", price: 500 }, { description: "Trasferta", price: 120 }], vat: 22, terms: "Bonifico a 30 giorni" };
 
 /** The fenced data of an answer. */
 const data = (answer: string) => answer.split(/<<<[^\n]*>>>\n?/)[1] ?? "";
@@ -186,7 +186,7 @@ describe("quotes: create", () => {
 		expect(data(answer)).toBe(
 			[
 				"Preventivo 2026-001 del 18/10/2026, valido fino al 17/11/2026: aperto",
-				"Cliente: Rossi Srl (P.IVA 02987650013)",
+				"Cliente: Rossi Srl (P.IVA 00000510016)",
 				"1. Consulenza: 3 giornate × 500,00 € = 1.500,00 € (IVA 22%)",
 				"2. Trasferta: 1 × 120,00 € = 120,00 € (IVA 22%)",
 				"Imponibile 22%: 1.620,00 €, IVA: 356,40 €",
@@ -261,7 +261,7 @@ describe("quotes: create", () => {
 		const s = setup();
 		expect(await s.run({ ...ROSSI, tax_id: "01234567890" })).toContain("la partita IVA o il codice fiscale del cliente non va:");
 		expect(await s.run({ ...ROSSI, email: "non-una-mail" })).toContain("l'indirizzo email del cliente non sembra valido");
-		expect(data(await s.run({ ...ROSSI, customer: "Mario Neri", tax_id: "RSSMRA85T10A562S" }))).toContain("Cliente: Mario Neri (C.F. RSSMRA85T10A562S)");
+		expect(data(await s.run({ ...ROSSI, customer: "Mario Neri", tax_id: "ZQXWKJ85T10A562F" }))).toContain("Cliente: Mario Neri (C.F. ZQXWKJ85T10A562F)");
 		expect(await s.run({ ...ROSSI, customer: "Anna Blu", tax_id: undefined })).toContain("Non ho partita IVA né codice fiscale del cliente: se è un privato, chiedigli il codice fiscale (in fattura servirà).");
 		const message = "Errore: per il preventivo mi servono i dati della tua azienda: ragione sociale, partita IVA, indirizzo della sede, telefono o email e, se vuoi, l'IBAN.";
 		expect(await setup({ company: false }).run(ROSSI)).toContain(message);
@@ -272,10 +272,10 @@ describe("quotes: create", () => {
 
 	it("takes a returning customer's tax id, address and email from their last quote; what is given wins", async () => {
 		const s = setup();
-		await s.run({ ...ROSSI, address: "Via Po 2, Torino", email: "acquisti@rossi.it" });
-		const again = await s.run({ op: "create", customer: "ROSSI S.r.l.", items: [{ description: "Audit", price: 300 }], vat: 22, email: "nuovo@rossi.it" });
+		await s.run({ ...ROSSI, address: "Via Po 2, Torino", email: "acquisti@rossi.example" });
+		const again = await s.run({ op: "create", customer: "ROSSI S.r.l.", items: [{ description: "Audit", price: 300 }], vat: 22, email: "nuovo@rossi.example" });
 		expect(again).toContain("Ho ripreso P.IVA e indirizzo del cliente dal suo preventivo 2026-001.");
-		expect(data(again)).toContain("Cliente: ROSSI S.r.l. (P.IVA 02987650013), Via Po 2, Torino, nuovo@rossi.it");
+		expect(data(again)).toContain("Cliente: ROSSI S.r.l. (P.IVA 00000510016), Via Po 2, Torino, nuovo@rossi.example");
 		expect(again).not.toContain("Non ho partita IVA");
 	});
 
@@ -321,7 +321,7 @@ describe("quotes: forfettario and the letterhead", () => {
 		await s.run(ROSSI);
 		const revised = await s.run({ op: "revise", number: "1", discount: 10 });
 		const file = s.file(revised);
-		expect(file.startsWith("pdf\n**Bianchi Consulenze Srl**\nVia Roma 1, 20100 Milano\nP\\.IVA IT03311220036, REA MI\\-1234567\nTel\\. 02 1234567, info@bianchi\\.it\n\n# Preventivo n. 2026-001 (rev. 1)\n")).toBe(true);
+		expect(file.startsWith("pdf\n**Bianchi Consulenze Srl**\nVia Roma 1, 20100 Milano\nP\\.IVA IT00000520031, REA MI\\-1234567\nTel\\. 02 1234567, info@bianchi\\.example\n\n# Preventivo n. 2026-001 (rev. 1)\n")).toBe(true);
 		expect(file.match(/17\/11\/2026/g)?.length).toBe(1);
 		expect(file).toContain("## Dettaglio");
 		expect(file).toContain(`IBAN: ${IBAN}`);
@@ -333,25 +333,25 @@ describe("quotes: forfettario and the letterhead", () => {
 		const store = new InvoiceStore(dir);
 		const [tool] = createInvoiceTools({ workspace: new Workspace(join(dir, "workspace")), store, timeZone: "Europe/Rome", whoIs: () => "test:u", now: () => NOW });
 		const run = async (args: Record<string, unknown>) => String(await tool?.execute(args, fresh()));
-		await run({ op: "set_company", vat: "03311220036", name: "Bianchi Srl" });
+		await run({ op: "set_company", vat: "00000520031", name: "Bianchi Srl" });
 		expect(await run({ op: "set_company", phone: "abc" })).toContain("phone: il numero di telefono");
 		expect(await run({ op: "set_company", email: "x@" })).toContain("email: l'indirizzo non sembra valido");
 		expect(await run({ op: "set_company", rea: "123" })).toContain("rea: il numero REA");
 		expect(await run({ op: "set_company", regime: "minimi" })).toContain("regime è ordinario o forfettario");
-		expect(await run({ op: "set_company", cf: "RSSMRA85T10A562X" })).toContain("cf: il codice fiscale non va");
-		const saved = await run({ op: "set_company", address: "Via Roma 1, Milano", phone: "+39 02 1234567", email: "info@bianchi.it", cf: "RSSMRA85T10A562S", rea: "mi 1234567", regime: "forfettario" });
-		expect(saved).toContain("indirizzo: Via Roma 1, Milano; telefono: +39 02 1234567; email: info@bianchi.it; codice fiscale: RSSMRA85T10A562S; REA: MI-1234567; regime: forfettario");
+		expect(await run({ op: "set_company", cf: "ZQXWKJ85T10A562X" })).toContain("cf: il codice fiscale non va");
+		const saved = await run({ op: "set_company", address: "Via Roma 1, Milano", phone: "+39 02 1234567", email: "info@bianchi.example", cf: "ZQXWKJ85T10A562F", rea: "mi 1234567", regime: "forfettario" });
+		expect(saved).toContain("indirizzo: Via Roma 1, Milano; telefono: +39 02 1234567; email: info@bianchi.example; codice fiscale: ZQXWKJ85T10A562F; REA: MI-1234567; regime: forfettario");
 		// The partita IVA given again keeps the other details.
-		await run({ op: "set_company", vat: "03311220036", name: "Bianchi Srl" });
+		await run({ op: "set_company", vat: "00000520031", name: "Bianchi Srl" });
 		expect(store.read().company).toMatchObject({ address: "Via Roma 1, Milano", regime: "forfettario", rea: "MI-1234567" });
 		expect(await run({ op: "set_company" })).toContain("Regime: forfettario");
 		// Another partita IVA is another company: the details of the one before go, unless given again.
-		const other = await run({ op: "set_company", vat: "02987650013", name: "Rossi Srl", phone: "011 7654321" });
+		const other = await run({ op: "set_company", vat: "00000510016", name: "Rossi Srl", phone: "011 7654321" });
 		expect(other).toContain("Salvato anche");
 		expect(other).toContain("telefono: 011 7654321");
 		expect(other).toContain("È un'altra azienda: ho tolto i dati della precedente");
 		const now = store.read().company;
-		expect([now?.vat, now?.name, now?.phone, now?.address, now?.regime, now?.rea, now?.email, now?.cf]).toEqual(["IT02987650013", "Rossi Srl", "011 7654321", undefined, undefined, undefined, undefined, undefined]);
+		expect([now?.vat, now?.name, now?.phone, now?.address, now?.regime, now?.rea, now?.email, now?.cf]).toEqual(["IT00000510016", "Rossi Srl", "011 7654321", undefined, undefined, undefined, undefined, undefined]);
 		// With no partita IVA saved, the name says whether it is the same company.
 		const named = new InvoiceStore(temp());
 		const [nameTool] = createInvoiceTools({ workspace: new Workspace(join(temp(), "workspace")), store: named, timeZone: "Europe/Rome", whoIs: () => "test:u", now: () => NOW });
@@ -359,7 +359,7 @@ describe("quotes: forfettario and the letterhead", () => {
 		await byName({ op: "set_company", name: "Studio Uno", address: "Via Po 1, Torino" });
 		expect(await byName({ op: "set_company", name: "studio uno" })).not.toContain("altra azienda");
 		expect(named.read().company?.address).toBe("Via Po 1, Torino");
-		await byName({ op: "set_company", name: "Studio Uno", vat: "03311220036" });
+		await byName({ op: "set_company", name: "Studio Uno", vat: "00000520031" });
 		expect(named.read().company?.address).toBe("Via Po 1, Torino");
 		const fresh2 = new InvoiceStore(temp());
 		fresh2.setCompany({ name: "Studio Uno", address: "Via Po 1, Torino", by: "t", at: NOW.toISOString() });
@@ -607,7 +607,7 @@ describe("quotes: store, files and fence", () => {
 		expect(lead(md(": a"))).toBe("\u00a0: a");
 		expect(lead(md("&amp;"))).toBe("\u00a0&amp;");
 		expect(lead(md("Rossi = Bianchi"))).toBe("Rossi = Bianchi");
-		expect(md("Sito https://www.rossi.it/a_b?x=1 (vedi).")).toBe("Sito <https://www.rossi.it/a_b?x=1> \\(vedi\\)\\.");
+		expect(md("Sito https://www.rossi.example/a_b?x=1 (vedi).")).toBe("Sito <https://www.rossi.example/a_b?x=1> \\(vedi\\)\\.");
 		expect(md("a|b <c>")).toBe("a\\|b ‹c\\>");
 		// The punctuation after an address stays out of it; marks inside it stay letters.
 		expect(md("(http://evil)")).toBe("\\(<http://evil>\\)");
@@ -639,7 +639,7 @@ describe("quotes: store, files and fence", () => {
 		const answer = await s.run({ ...ROSSI, address: "Via Po 2, 10100 Torino", items: [...ROSSI.items, { description: "Manuale", price: 19.99, vat: 4 }], ritenuta: true, notes: "Prezzi IVA esclusa" });
 		const text = (await readDocumentText("p.pdf", await s.workspace.read(fileLine(answer)))).text.replace(/\u00a0/g, " ");
 		for (const line of [
-			"Bianchi Consulenze Srl\nVia Roma 1, 20100 Milano\nP.IVA IT03311220036\nTel. 02 1234567, info@bianchi.it",
+			"Bianchi Consulenze Srl\nVia Roma 1, 20100 Milano\nP.IVA IT00000520031\nTel. 02 1234567, info@bianchi.example",
 			"Preventivo n. 2026-001",
 			"Valido fino al: 17/11/2026 (30 giorni)",
 			"Via Po 2, 10100 Torino",
@@ -786,7 +786,7 @@ describe("quotes in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
-		expect(await reply('/tool invoices {"op":"set_company","vat":"03311220036","name":"Bianchi Consulenze Srl","address":"Via Roma 1, Milano"}')).toContain("Ora so che l'azienda è");
+		expect(await reply('/tool invoices {"op":"set_company","vat":"00000520031","name":"Bianchi Consulenze Srl","address":"Via Roma 1, Milano"}')).toContain("Ora so che l'azienda è");
 		const quote = { op: "create", customer: "Rossi Srl", items: [{ description: "Consulenza", quantity: 3, unit: "giornate", price: 500 }, { description: "Trasferta", price: 120 }], vat: 22 };
 		const answer = await reply(`/tool quotes ${JSON.stringify(quote)}`);
 		const year = todayIn(config.timeZone).slice(0, 4);

@@ -55,7 +55,7 @@ export function sinceDay(date: string, today: string): string {
 	return date.slice(0, 4) === today.slice(0, 4) ? full.replace(/ \d{4}$/, "") : full;
 }
 
-/** A referente in a line, to be fenced: «Marco, titolare · tel. 333 1234567 · marco@rossi.it · preferisce WhatsApp». */
+/** A referente in a line, to be fenced: «Marco, titolare · tel. 333 1234567 · marco@rossi.example · preferisce WhatsApp». */
 export function contactLine(c: ClientContact): string {
 	const who = [c.name, c.role].filter((x) => x !== undefined).join(", ");
 	return [who === "" ? undefined : who, c.phone === undefined ? undefined : `tel. ${c.phone}`, c.email, c.channel === undefined ? undefined : CHANNEL_WORDS[c.channel]].filter((x) => x !== undefined).join(" · ");

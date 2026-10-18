@@ -127,7 +127,7 @@ const AUTO = { op: "add", name: "Assicurazione auto", provider: "UnipolSai", amo
 const CANVA = { op: "add", name: "Canva Pro", amount: "12", frequency: "mensile", due: "01/11/2026", auto_renew: true, method: "carta" };
 /** A contract that renews by itself, paid by hand with a transfer. */
 const FIBRA = { op: "add", name: "Contratto fibra", provider: "Fastweb", amount: "29,90", frequency: "mensile", due: "30/11/2026", auto_renew: true, method: "bonifico", notice_days: 30 };
-const DOMINIO = { op: "add", name: "Dominio rossi.it", amount: "15", due: "05/11/2026" };
+const DOMINIO = { op: "add", name: "Dominio rossi.example", amount: "15", due: "05/11/2026" };
 
 describe("renewal frequencies and dates", () => {
 	it("reads frequencies in words, «ogni N mesi/anni», and numbers as months", () => {
@@ -314,7 +314,7 @@ describe("renewal categories and names", () => {
 		const cases: [string, string | undefined][] = [
 			["Assicurazione dell'auto", "assicurazione"],
 			["RC professionale", "assicurazione"],
-			["Dominio rossi.it", "dominio e hosting"],
+			["Dominio rossi.example", "dominio e hosting"],
 			["Canva", "software e abbonamenti"],
 			["licenza Office", "software e abbonamenti"],
 			["contratto della fibra", "telefono e internet"],
@@ -335,7 +335,7 @@ describe("renewal categories and names", () => {
 		const rs: Renewal[] = [
 			{ ...base, id: "R-0001", name: "Canva Pro" },
 			{ ...base, id: "R-0002", name: "Assicurazione auto", provider: "UnipolSai" },
-			{ ...base, id: "R-0003", name: "Dominio rossi.it" },
+			{ ...base, id: "R-0003", name: "Dominio rossi.example" },
 			{ ...base, id: "R-0004", name: "Polizza casa", category: "assicurazione" },
 			{ ...base, id: "R-0006", name: "Affitto casa", category: "affitto e leasing" },
 			{ ...base, id: "R-0005", name: "Fibra", provider: "Fastweb" },
@@ -482,7 +482,7 @@ describe("renewals: what moves by itself and what waits", () => {
 		const upcoming = await s.run({ op: "upcoming" });
 		expect(outside(upcoming)).toContain("Scaduto, da confermare:");
 		expect(outside(upcoming)).toContain("«La scadenza è passata: l'hai rinnovato o l'hai lasciato scadere?»");
-		expect(inside(await s.run({ op: "upcoming", compact: true }))).toContain("• scaduto il 5 novembre 2026: Dominio rossi.it (dimmi se l'hai rinnovato o lasciato scadere)");
+		expect(inside(await s.run({ op: "upcoming", compact: true }))).toContain("• scaduto il 5 novembre 2026: Dominio rossi.example (dimmi se l'hai rinnovato o lasciato scadere)");
 		expect(s.one().due).toBe("2026-11-05");
 	});
 
@@ -575,7 +575,7 @@ describe("renewals: what moves by itself and what waits", () => {
 		const answer = await s.run({ op: "upcoming" });
 		expect(outside(answer)).toContain("Rinnovi nei prossimi 30 giorni (fino al 17 novembre 2026):");
 		expect(outside(answer)).toContain("Si rinnova da solo (poi da pagare):");
-		expect(inside(answer)).toContain("Dominio rossi.it: entro il 5 novembre 2026, 15,00 €");
+		expect(inside(answer)).toContain("Dominio rossi.example: entro il 5 novembre 2026, 15,00 €");
 		expect(inside(answer)).not.toContain("Assicurazione");
 		expect(outside(answer)).toContain("Totale da pagare o addebitato, nel periodo, contando ogni scadenza: 56,90 €.");
 		const wide = await s.run({ op: "upcoming", days: 60 });
@@ -1059,10 +1059,10 @@ describe("renewals: prices over time, rolls of today, names, reactivating", () =
 		const [after] = await reads();
 		expect(outside(after as string)).toBe(outside(summary as string));
 		s.at(TODAY);
-		expect(inside(await s.run({ op: "upcoming", compact: true }))).toContain("• da pagare entro il 5 novembre 2026: Dominio rossi.it, 20,00 €");
+		expect(inside(await s.run({ op: "upcoming", compact: true }))).toContain("• da pagare entro il 5 novembre 2026: Dominio rossi.example, 20,00 €");
 		await s.run({ op: "export" });
 		const csv = readFileSync(join(s.root, "rinnovi", `rinnovi-${TODAY}.csv`), "utf8");
-		expect(csv).toContain("Dominio rossi.it;;dominio e hosting;20,00;annuale;20,00;05/11/2026");
+		expect(csv).toContain("Dominio rossi.example;;dominio e hosting;20,00;annuale;20,00;05/11/2026");
 	});
 
 	it("after the hint, renewed with record_expense records only the rolled payment, even when the due date is still gone", async () => {
@@ -1203,7 +1203,7 @@ describe("renewals: prices over time, rolls of today, names, reactivating", () =
 		await s.run({ op: "export" });
 		const csv = readFileSync(join(s.root, "rinnovi", `rinnovi-${TODAY}.csv`), "utf8");
 		expect(csv).toMatch(/Contratto fibra;Fastweb;[^\r\n]*;30\/09\/2026;[^\r\n]*;da pagare;/);
-		expect(csv).toMatch(/Dominio rossi\.it;[^\r\n]*;10\/10\/2026;[^\r\n]*;scaduto;/);
+		expect(csv).toMatch(/Dominio rossi\.example;[^\r\n]*;10\/10\/2026;[^\r\n]*;scaduto;/);
 		const upcoming = outside(await s.run({ op: "upcoming" }));
 		expect(upcoming).toContain("Totale da pagare o addebitato, scadute e nel periodo, contando ogni scadenza: 74,80 €.");
 	});

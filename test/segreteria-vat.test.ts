@@ -23,10 +23,10 @@ import { vatField, vatInMail, withoutVatNumber, withoutVatNumbers } from "../src
 const checks = await loadChecks(join(import.meta.dirname, "..", "evals", "segreteria"));
 
 /** Made-up numbers: GOOD passes the formal check (Luhn digit, VAT office 090), WRONG is GOOD with its last digit off by one. */
-const GOOD = "01234560900";
-const WRONG = "01234560901";
+const GOOD = "00000610907";
+const WRONG = "00000610908";
 /** A body's numeric codice fiscale (9 first) that passes the same check. */
-const ENTE = "90012340569";
+const ENTE = "90000630567";
 
 const mail = (body: string, over: Partial<InboundMail> = {}): InboundMail => ({
 	messageId: "m1",
@@ -39,14 +39,14 @@ const mail = (body: string, over: Partial<InboundMail> = {}): InboundMail => ({
 });
 
 /** A partita IVA that passes the check, for «ora …» cases (the one tax-ids' own tests use). */
-const OTHER_GOOD = "00743110157";
+const OTHER_GOOD = "00000500157";
 const NOTHING = { vatNumber: null, invalid: false };
 
 describe("segreteria: VAT number in a mail", () => {
 	it("reads the labels people write, with prefix and separators", () => {
 		for (const body of [
 			`P.IVA: IT ${GOOD}`,
-			"P.IVA: 012 345 609 00, grazie",
+			"P.IVA: 000 006 109 07, grazie",
 			`partita IVA n. ${GOOD}.`,
 			`C.F./P.IVA ${GOOD}`,
 			`P.IVA/C.F. ${GOOD}`,
@@ -127,7 +127,7 @@ describe("segreteria: VAT number in a mail", () => {
 
 describe("segreteria: VAT number in the heuristic lead", () => {
 	it("keeps a number written right, normalized; flags a wrong one instead of keeping it", () => {
-		expect(extractLead(mail(`P.IVA: IT 012.345.609.00`))).toMatchObject({ vatNumber: GOOD });
+		expect(extractLead(mail(`P.IVA: IT 000.006.109.07`))).toMatchObject({ vatNumber: GOOD });
 		expect(extractLead(mail("VAT number: DE 123 456 789"))).toMatchObject({ vatNumber: "DE123456789" });
 		expect(extractLead(mail(`P.IVA ${ENTE}`))).toMatchObject({ vatNumber: ENTE });
 		expect(extractLead(mail(`P.IVA ${GOOD}`)).missingFields).not.toContain("vatNumberInvalid");
@@ -203,7 +203,7 @@ describe("segreteria: VAT number from the model", () => {
 		expect(await read("DE 123 456 789")).toMatchObject({ vatNumber: "DE123456789", missingFields: [] });
 		expect(vatField(`${WRONG} (da verificare)`)).toMatchObject({ vatNumber: null, invalid: true, asWritten: WRONG });
 		// No VAT number's shape: a total, a phone number, a codice fiscale.
-		for (const value of ["€ 12.000", "333 1234567", "RSSMRA80A01H501X", "15.000"]) expect(vatField(value), value).toEqual(NOTHING);
+		for (const value of ["€ 12.000", "333 1234567", "QXZWKJ80A01H501A", "15.000"]) expect(vatField(value), value).toEqual(NOTHING);
 	});
 
 	it("a phone number the model put there is no VAT number: asked for as missing, never «non risulta corretta»", async () => {
@@ -227,7 +227,7 @@ describe("segreteria: VAT number from the model", () => {
 		expect(silent.vatAsWritten).toEqual([`IT ${GOOD}`]);
 		// The draft never repeats it, even unlabelled and spaced differently.
 		const body =
-			"Gentile Signor Rinaldi,\n\nLa ringraziamo per la richiesta relativa alle scaffalature, con i dati di fatturazione (0123 4560 900) già ricevuti.\n\nRestiamo a disposizione e Le invieremo il preventivo appena possibile.\nCordiali saluti\n[Nome commerciale] · [Azienda]";
+			"Gentile Signor Rinaldi,\n\nLa ringraziamo per la richiesta relativa alle scaffalature, con i dati di fatturazione (0000 0610 907) già ricevuti.\n\nRestiamo a disposizione e Le invieremo il preventivo appena possibile.\nCordiali saluti\n[Nome commerciale] · [Azienda]";
 		const draft = await draftReply(scripted([JSON.stringify({ subject: "Re: Richiesta preventivo scaffali", body })]), DEFAULT_MODEL_ROLES.draft, {
 			mail: mail(`P.IVA: IT ${GOOD}`),
 			lead: silent.lead,
@@ -295,15 +295,15 @@ describe("segreteria: a wrong VAT number in the draft and on the card", () => {
 		const out = scrubPii(`Gentile Cliente, ${kept.join("; ")}.`, lead());
 		for (const text of kept) expect(out, text).toContain(text);
 		expect(buildDraft(lead({ productOrService: "GA 2000-1500", missingFields: [] })).body).toContain("GA 2000-1500");
-		const vat = scrubPii(`la P.IVA 012 345 609 01 non torna; la P.IVA: IT ${GOOD} sì; e DE 123 456 789. Grazie`, lead());
+		const vat = scrubPii(`la P.IVA 000 006 109 08 non torna; la P.IVA: IT ${GOOD} sì; e DE 123 456 789. Grazie`, lead());
 		expect(vat).toBe("la P.IVA non torna; la P.IVA: sì; e. Grazie");
 	});
 
 	it("withoutVatNumber takes out the customer's numbers however they are written, tidies up, and keeps the rest", () => {
-		const out = withoutVatNumber("la partita IVA 0123-456-0901, cioè IT01234560901 (o it 012 345 609 01) o ancora DE123456789 ; ordine 12345678901", ["012 345 609 01", "DE 123 456 789"]);
+		const out = withoutVatNumber("la partita IVA 0000-061-0908, cioè IT00000610908 (o it 000 006 109 08) o ancora DE123456789 ; ordine 12345678901", ["000 006 109 08", "DE 123 456 789"]);
 		expect(out).toBe("la partita IVA, cioè (o) o ancora; ordine 12345678901");
-		expect(withoutVatNumber("Re: Preventivo (P.IVA 01234560901)", [WRONG])).toBe("Re: Preventivo (P.IVA)");
-		expect(withoutVatNumber("Re: Preventivo (01234560901)", [WRONG])).toBe("Re: Preventivo");
+		expect(withoutVatNumber("Re: Preventivo (P.IVA 00000610908)", [WRONG])).toBe("Re: Preventivo (P.IVA)");
+		expect(withoutVatNumber("Re: Preventivo (00000610908)", [WRONG])).toBe("Re: Preventivo");
 	});
 
 	it("the owner's card says it in one line, not as a field name", () => {
@@ -320,8 +320,8 @@ describe("segreteria: a wrong VAT number in the draft and on the card", () => {
 describe("segreteria: a model draft that repeats the wrong number", () => {
 	it("draftReply takes it out, even unlabelled where scrubPii's backstop does not look, in the subject too", async () => {
 		const body =
-			"Gentile Signor Rinaldi,\n\nLa ringraziamo per la richiesta relativa alle scaffalature.\n\nLe segnaliamo che il numero 0123-456-0901 che ci ha indicato come partita IVA non risulta corretta: può cortesemente ricontrollarla?\n\nRestiamo a disposizione e Le invieremo il preventivo appena ricevuti i dati.\nCordiali saluti\n[Nome commerciale] · [Azienda]";
-		const draft = await draftReply(scripted([JSON.stringify({ subject: "Re: Richiesta preventivo scaffali (0123-456-0901)", body })]), DEFAULT_MODEL_ROLES.draft, {
+			"Gentile Signor Rinaldi,\n\nLa ringraziamo per la richiesta relativa alle scaffalature.\n\nLe segnaliamo che il numero 0000-061-0908 che ci ha indicato come partita IVA non risulta corretta: può cortesemente ricontrollarla?\n\nRestiamo a disposizione e Le invieremo il preventivo appena ricevuti i dati.\nCordiali saluti\n[Nome commerciale] · [Azienda]";
+		const draft = await draftReply(scripted([JSON.stringify({ subject: "Re: Richiesta preventivo scaffali (0000-061-0908)", body })]), DEFAULT_MODEL_ROLES.draft, {
 			mail: mail(`P.IVA: IT ${WRONG}`),
 			lead: lead(),
 			requests: ["scaffalature"],

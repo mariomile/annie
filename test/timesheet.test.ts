@@ -62,7 +62,7 @@ function temp(): string {
 /** The Markdown the document was made from, written as the file: the content without the worker. */
 const plainMake = async (input: MakeInput) => ({ data: new Uint8Array(Buffer.from(`${input.format}\n${input.text}`)), pages: 1, notes: [] });
 
-const COMPANY: Company = { name: "Bianchi Consulenze Srl", vat: "IT03311220036", address: "Via Roma 1, 20100 Milano", email: "info@bianchi.it", signature: "Mario Bianchi", by: "test:u", at: NOW.toISOString() };
+const COMPANY: Company = { name: "Bianchi Consulenze Srl", vat: "IT00000520031", address: "Via Roma 1, 20100 Milano", email: "info@bianchi.example", signature: "Mario Bianchi", by: "test:u", at: NOW.toISOString() };
 
 type Setup = { company?: Partial<Company> | false; dir?: string; quotes?: false; who?: string; files?: Record<string, string>; createQuote?: (real: CreateQuote) => CreateQuote; record?: (e: TimesheetEvent) => Promise<void> };
 

@@ -58,7 +58,7 @@ function temp(): string {
 const withSummary = (xml: string, taxable: string, vat: string) =>
 	xml.replace("</DatiBeniServizi>", `<DatiRiepilogo><AliquotaIVA>22.00</AliquotaIVA><ImponibileImporto>${taxable}</ImponibileImporto><Imposta>${vat}</Imposta><EsigibilitaIVA>I</EsigibilitaIVA></DatiRiepilogo></DatiBeniServizi>`);
 
-const ZETA: Party = { name: "Zeta Studio Srl", vat: "04567890126" };
+const ZETA: Party = { name: "Zeta Studio Srl", vat: "00000530121" };
 /** Gamma last year, paid; Gamma this year, paid in March; the September ones with an imponibile, B-71 without (counted at its total). */
 const G0 = withSummary(fattura(BETA, GAMMA, { number: "B-10", date: "2025-06-01", total: "3660.00", rate: [{ amount: "3660.00", due: "2025-06-30" }] }), "3000.00", "660.00");
 const G3 = withSummary(fattura(BETA, GAMMA, { number: "B-20", date: "2026-02-01", total: "2440.00", rate: [{ amount: "2440.00", due: "2026-02-28" }] }), "2000.00", "440.00");
@@ -107,7 +107,7 @@ async function setup(o: Setup = {}) {
 	}
 	const workspace = new Workspace(root);
 	const invoices = new InvoiceStore(dir);
-	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "test:u", at: NOW.toISOString() };
+	const company = { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "test:u", at: NOW.toISOString() };
 	invoices.setCompany(company);
 	const scanner = new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) });
 	const scan = await scanner.scan(new AbortController().signal);
@@ -203,14 +203,14 @@ describe("clients: who is a client, matching and legal forms", () => {
 
 	it("#11 a name without a partita IVA joins the one client that is the same business; with two, the exact one is shown and the other asked about", async () => {
 		expect([legalForm("Rossi S.r.l."), legalForm("Rossi"), sameBusiness("Rossi", "Rossi S.r.l."), sameBusiness("Rossi Srl", "Rossi SpA")]).toEqual(["srl", undefined, true, false]);
-		const rossiSrl = fattura(BETA, { name: "Rossi S.r.l.", vat: "02987650013" }, { number: "R-1", date: "2026-05-01", total: "1000.00", rate: [{ amount: "1000.00", due: "2026-05-31" }] });
+		const rossiSrl = fattura(BETA, { name: "Rossi S.r.l.", vat: "00000510016" }, { number: "R-1", date: "2026-05-01", total: "1000.00", rate: [{ amount: "1000.00", due: "2026-05-31" }] });
 		const s = await setup({ files: { "r.xml": rossiSrl }, quotes: [quote("2026-003", "Rossi", "open", "500")], entries: [entry("O-2026-0003", "rossi", "2026-10-01", 60, "50")] });
 		const clients = clientsOf({ cards: [], invoices: await s.registerNow(), quotes: [quote("2026-003", "Rossi", "open", "500")], entries: [entry("O-2026-0003", "rossi", "2026-10-01", 60, "50")] });
 		expect(clients).toHaveLength(1);
-		expect(clients[0]).toMatchObject({ name: "Rossi", vat: "IT02987650013" });
+		expect(clients[0]).toMatchObject({ name: "Rossi", vat: "IT00000510016" });
 		expect([clients[0]?.invoices.length, clients[0]?.quotes.length, clients[0]?.entries.length]).toEqual([1, 1, 1]);
 		// Two businesses called Rossi (Srl and SpA): «Rossi» joins neither; each shows the other.
-		const rossiSpa = fattura(BETA, { name: "Rossi S.p.A.", vat: "04567890126" }, { number: "R-2", date: "2026-06-01", total: "300.00", rate: [{ amount: "300.00", due: "2026-06-30" }] });
+		const rossiSpa = fattura(BETA, { name: "Rossi S.p.A.", vat: "00000530121" }, { number: "R-2", date: "2026-06-01", total: "300.00", rate: [{ amount: "300.00", due: "2026-06-30" }] });
 		const t = await setup({ files: { "r.xml": rossiSrl, "s.xml": rossiSpa }, quotes: [quote("2026-003", "Rossi", "open", "500")], entries: [] });
 		const shown = await t.run({ op: "show", client: "Rossi S.r.l." });
 		// U4: Rossi S.p.A. has another partita IVA and another legal form: never offered as the same client.
@@ -235,7 +235,7 @@ describe("clients: who is a client, matching and legal forms", () => {
 		const d = await s.run({ op: "upsert", client: "Delta Carni S.R.L." });
 		expect(d).toContain("CL-0002");
 		expect(d).toContain("L'ho collegata alle fatture con la stessa partita IVA.");
-		expect(s.store.read().cards[1]).toMatchObject({ name: "Delta Carni S.R.L.", vat: "IT00743110157" });
+		expect(s.store.read().cards[1]).toMatchObject({ name: "Delta Carni S.R.L.", vat: "IT00000500157" });
 		// «Delta Carni SpA» is another legal form: a new card, the close one suggested.
 		const spa = await s.run({ op: "upsert", client: "Delta Carni SpA" });
 		expect(spa).toContain("CL-0003");
@@ -243,7 +243,7 @@ describe("clients: who is a client, matching and legal forms", () => {
 		expect(inside(spa)).toContain("Delta Carni S.R.L.");
 		expect(fences(spa)).toBe(1);
 		expect(await s.run({ op: "show", client: "delta carni srl" })).toContain("Scheda CL-0002.");
-		expect(await s.run({ op: "show", client: "P.IVA 00743110157" })).toContain("Scheda CL-0002.");
+		expect(await s.run({ op: "show", client: "P.IVA 00000500157" })).toContain("Scheda CL-0002.");
 	});
 
 	it("#12 U1 a name that is one client but for the legal form is that client, in every op; with several it asks «Intendi …?», never an error", async () => {
@@ -283,10 +283,10 @@ describe("clients: who is a client, matching and legal forms", () => {
 		expect(await s.run({ op: "upsert", client: "Rossi Srl", contact: { name: "Marco", phone: "chiamami" } })).toContain("Errore: il numero di telefono");
 		expect(await s.run({ op: "upsert", client: "Rossi Srl", contact: { name: "Marco", email: "marco@" } })).toContain("Errore: l'indirizzo email non è valido");
 		expect(await s.run({ op: "upsert", client: "Rossi Srl", vat: "01234567890" })).toContain("Errore: la partita IVA non va");
-		expect(await s.run({ op: "upsert", client: "Rossi Srl", cf: "RSSMRA85T10A562X" })).toContain("Errore: il codice fiscale non va");
+		expect(await s.run({ op: "upsert", client: "Rossi Srl", cf: "ZQXWKJ85T10A562X" })).toContain("Errore: il codice fiscale non va");
 		expect(await s.run({ op: "upsert", client: "Rossi Srl", contact: { name: "Marco", channel: "piccione" } })).toContain("Errore: il canale preferito");
 		expect(s.store.read().cards).toHaveLength(0);
-		const ok = await s.run({ op: "upsert", client: "Rossi Srl", vat: "IT 04567890126", contact: { name: "Marco", role: "titolare", phone: "333 1234567", email: "marco@rossi.example", channel: "preferisce WhatsApp" } });
+		const ok = await s.run({ op: "upsert", client: "Rossi Srl", vat: "IT 00000530121", contact: { name: "Marco", role: "titolare", phone: "333 1234567", email: "marco@rossi.example", channel: "preferisce WhatsApp" } });
 		expect(ok).toContain("Fatto, ho creato la scheda CL-0001.");
 		expect(inside(ok)).toContain("Referente: Marco, titolare · tel. 333 1234567 · marco@rossi.example · preferisce WhatsApp");
 		await s.run({ op: "upsert", client: "Rossi Srl", contact: { name: "marco", email: "" } });
@@ -635,15 +635,15 @@ describe("clients: merge and remove", () => {
 		expect(await s.run({ op: "show", client: "Bianchi Mario" })).toContain("Scheda CL-0001.");
 		// The preview of a client of the invoices: its partita IVA and what was invoiced.
 		const delta = await s.run({ op: "merge", client: "Studio Bianchi", into: "Delta Carni Srl" });
-		expect(inside(delta)).toContain("Dentro: Delta Carni Srl (senza scheda; partita IVA IT00743110157; 1 fattura, 300,00 € fatturati)");
+		expect(inside(delta)).toContain("Dentro: Delta Carni Srl (senza scheda; partita IVA IT00000500157; 1 fattura, 300,00 € fatturati)");
 		// Into a client without a card: the card is kept, with its id, named as the other, the old name another name.
 		await s.run({ op: "merge", client: "Studio Bianchi", into: "Delta Carni Srl", confirm: true });
-		expect(s.store.read().cards).toEqual([expect.objectContaining({ id: "CL-0001", name: "Delta Carni Srl", vat: "IT00743110157", aliases: ["Studio Bianchi", "Bianchi Mario"] })]);
-		await s.run({ op: "upsert", client: "Uno Srl", vat: "04567890126" });
-		await s.run({ op: "upsert", client: "Due Srl", vat: "02987650013" });
+		expect(s.store.read().cards).toEqual([expect.objectContaining({ id: "CL-0001", name: "Delta Carni Srl", vat: "IT00000500157", aliases: ["Studio Bianchi", "Bianchi Mario"] })]);
+		await s.run({ op: "upsert", client: "Uno Srl", vat: "00000530121" });
+		await s.run({ op: "upsert", client: "Due Srl", vat: "00000510016" });
 		expect(await s.run({ op: "merge", client: "Uno Srl", into: "Due Srl", confirm: true })).toContain("Non li unisco: hanno due partite IVA diverse");
-		await s.run({ op: "upsert", client: "Tre Snc", cf: "RSSMRA85T10A562S" });
-		expect(await s.run({ op: "upsert", client: "Quattro Snc", cf: "BNCLRA90A41F205I" })).toContain("Fatto");
+		await s.run({ op: "upsert", client: "Tre Snc", cf: "ZQXWKJ85T10A562F" });
+		expect(await s.run({ op: "upsert", client: "Quattro Snc", cf: "ZJQXKW90A41F205E" })).toContain("Fatto");
 		expect(await s.run({ op: "merge", client: "Tre Snc", into: "Quattro Snc", confirm: true })).toContain("Non li unisco: hanno due codici fiscali diversi");
 	});
 
@@ -755,7 +755,7 @@ describe("clients in the brief", () => {
 	it("says a client that crossed 40% of the last 12 months' invoiced in the last 30 days, once", async () => {
 		const old = fattura(BETA, DELTA, { number: "B-01", date: "2026-01-10", total: "1000.00", rate: [{ amount: "1000.00" }] });
 		const other = fattura(BETA, GAMMA, { number: "B-02", date: "2026-02-10", total: "1000.00", rate: [{ amount: "1000.00" }] });
-		const third = fattura(BETA, { name: "Terzo Srl", vat: "04567890126" }, { number: "B-03", date: "2026-03-10", total: "1000.00", rate: [{ amount: "1000.00" }] });
+		const third = fattura(BETA, { name: "Terzo Srl", vat: "00000530121" }, { number: "B-03", date: "2026-03-10", total: "1000.00", rate: [{ amount: "1000.00" }] });
 		const big = fattura(BETA, DELTA, { number: "B-04", date: "2026-10-05", total: "2000.00", rate: [{ amount: "2000.00" }] });
 		const s = await setup({ files: { "a.xml": old, "b.xml": other, "c.xml": third, "d.xml": big }, quotes: [], entries: [] });
 		const line = await s.run({ op: "list", compact: true });
@@ -1011,18 +1011,18 @@ describe("clients: second-pass review", () => {
 	});
 
 	it("S6 a card with a bare name is not linked when two companies of that name have two partite IVA", async () => {
-		const a = fattura(BETA, { name: "Rossi S.r.l.", vat: "02987650013" }, { number: "R-1", date: "2026-05-01", total: "1000.00", rate: [{ amount: "1000.00" }] });
-		const b = fattura(BETA, { name: "Rossi Srl", vat: "04567890126" }, { number: "R-2", date: "2026-06-01", total: "500.00", rate: [{ amount: "500.00" }] });
+		const a = fattura(BETA, { name: "Rossi S.r.l.", vat: "00000510016" }, { number: "R-1", date: "2026-05-01", total: "1000.00", rate: [{ amount: "1000.00" }] });
+		const b = fattura(BETA, { name: "Rossi Srl", vat: "00000530121" }, { number: "R-2", date: "2026-06-01", total: "500.00", rate: [{ amount: "500.00" }] });
 		const s = await setup({ files: { "a.xml": a, "b.xml": b }, quotes: [], entries: [] });
 		const both = clientsOf({ cards: [card("CL-0001", "Rossi")], invoices: await s.registerNow(), quotes: [], entries: [] });
 		const bare = both.find((c) => c.card?.id === "CL-0001");
 		expect([bare?.vat, bare?.invoices.length]).toEqual([undefined, 0]);
-		expect(both.filter((c) => c.vat !== undefined).map((c) => c.vat).sort()).toEqual(["IT02987650013", "IT04567890126"]);
+		expect(both.filter((c) => c.vat !== undefined).map((c) => c.vat).sort()).toEqual(["IT00000510016", "IT00000530121"]);
 		// With one only, the card takes it.
 		const t = await setup({ files: { "a.xml": a }, quotes: [], entries: [] });
 		const one = clientsOf({ cards: [card("CL-0001", "Rossi")], invoices: await t.registerNow(), quotes: [], entries: [] });
 		expect(one).toHaveLength(1);
-		expect(one[0]).toMatchObject({ vat: "IT02987650013" });
+		expect(one[0]).toMatchObject({ vat: "IT00000510016" });
 	});
 
 	it("S7 a reminder stopped because its person lost access is deleted, not kept toward the cap; a task of the person's stays visible", async () => {
@@ -1049,14 +1049,14 @@ describe("clients: second-pass review", () => {
 	});
 
 	it("U1 «Acme» and «Acme Srl» are one client in every op: show, note, ricontatto; a name only contained stays a question", async () => {
-		const acme = fattura(BETA, { name: "Acme Srl", vat: "02987650013" }, { number: "A-1", date: "2026-05-01", total: "1220.00", rate: [{ amount: "1220.00" }] });
+		const acme = fattura(BETA, { name: "Acme Srl", vat: "00000510016" }, { number: "A-1", date: "2026-05-01", total: "1220.00", rate: [{ amount: "1220.00" }] });
 		const s = await setup({ files: { "a.xml": acme }, quotes: [], entries: [] });
 		const shown = await s.run({ op: "show", client: "Acme" });
 		expect(outside(shown)).toContain("Nessuno si chiama esattamente così: ho preso il cliente con lo stesso nome a meno della forma societaria, nel riquadro.");
 		expect(inside(shown)).toContain("Acme Srl");
 		const noted = await s.run({ op: "note", client: "Acme", note: "prima nota" });
 		expect(noted).toContain("Fatto, nota salvata nella scheda CL-0001.");
-		expect(s.store.read().cards[0]).toMatchObject({ name: "Acme Srl", vat: "IT02987650013" });
+		expect(s.store.read().cards[0]).toMatchObject({ name: "Acme Srl", vat: "IT00000510016" });
 		expect(await s.run({ op: "follow_up", client: "acme", when: "il 3 novembre" })).toContain("è nella scheda CL-0001");
 		expect(s.store.read().cards).toHaveLength(1);
 	});
@@ -1142,7 +1142,7 @@ describe("clients: third-pass review", () => {
 	});
 
 	it("T2 a write that moves, drops, merges or removes never takes «Acme» for «Acme Srl»: it asks", async () => {
-		const acme = fattura(BETA, { name: "Acme Srl", vat: "02987650013" }, { number: "A-1", date: "2026-05-01", total: "1220.00", rate: [{ amount: "1220.00" }] });
+		const acme = fattura(BETA, { name: "Acme Srl", vat: "00000510016" }, { number: "A-1", date: "2026-05-01", total: "1220.00", rate: [{ amount: "1220.00" }] });
 		const s = await setup({ files: { "a.xml": acme }, quotes: [], entries: [] });
 		await s.run({ op: "follow_up", client: "Acme Srl", when: "il 3 novembre" });
 		await s.run({ op: "upsert", client: "Beta Uno" });
@@ -1166,19 +1166,19 @@ describe("clients: third-pass review", () => {
 	});
 
 	it("T3 two «Mario Rossi» with two codici fiscali are two clients: in the ranking and each on its own card", async () => {
-		const a = fattura(BETA, { name: "Mario Rossi", fiscal: "RSSMRA85T10A562S" }, { number: "M-1", date: "2026-05-01", total: "100.00", rate: [{ amount: "100.00" }] });
-		const b = fattura(BETA, { name: "Mario Rossi", fiscal: "BNCLRA90A41F205I" }, { number: "M-2", date: "2026-06-01", total: "300.00", rate: [{ amount: "300.00" }] });
+		const a = fattura(BETA, { name: "Mario Rossi", fiscal: "ZQXWKJ85T10A562F" }, { number: "M-1", date: "2026-05-01", total: "100.00", rate: [{ amount: "100.00" }] });
+		const b = fattura(BETA, { name: "Mario Rossi", fiscal: "ZJQXKW90A41F205E" }, { number: "M-2", date: "2026-06-01", total: "300.00", rate: [{ amount: "300.00" }] });
 		const s = await setup({ files: { "a.xml": a, "b.xml": b }, quotes: [], entries: [] });
 		const clients = clientsOf({ cards: [], invoices: await s.registerNow(), quotes: [], entries: [] });
 		expect(clients.map((c) => [c.name, c.cf, c.invoices.length]).sort()).toEqual([
-			["Mario Rossi", "BNCLRA90A41F205I", 1],
-			["Mario Rossi", "RSSMRA85T10A562S", 1],
+			["Mario Rossi", "ZJQXKW90A41F205E", 1],
+			["Mario Rossi", "ZQXWKJ85T10A562F", 1],
 		]);
 		const top = await s.run({ op: "top", period: "2026" });
 		expect(top.split("\n")[0]).toBe("Nel 2026 hai fatturato 400,00 € di imponibile a 2 clienti.");
 		expect(inside(top)).toBe("1. Mario Rossi: 300,00 € (75%)\n2. Mario Rossi: 100,00 € (25%)");
-		expect((await s.run({ op: "show", client: "RSSMRA85T10A562S" })).split("\n")[0]).toBe("Nel 2026 hai fatturato 100,00 € (totale documento: le fatture non riportano l'imponibile); 100,00 € da incassare.");
-		expect((await s.run({ op: "show", client: "BNCLRA90A41F205I" })).split("\n")[0]).toBe("Nel 2026 hai fatturato 300,00 € (totale documento: le fatture non riportano l'imponibile); 300,00 € da incassare.");
+		expect((await s.run({ op: "show", client: "ZQXWKJ85T10A562F" })).split("\n")[0]).toBe("Nel 2026 hai fatturato 100,00 € (totale documento: le fatture non riportano l'imponibile); 100,00 € da incassare.");
+		expect((await s.run({ op: "show", client: "ZJQXKW90A41F205E" })).split("\n")[0]).toBe("Nel 2026 hai fatturato 300,00 € (totale documento: le fatture non riportano l'imponibile); 300,00 € da incassare.");
 	});
 
 	it("T4 «dopo le feste» is the 7th of January to come, that day included", () => {

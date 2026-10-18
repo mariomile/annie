@@ -57,9 +57,9 @@ function temp(): string {
 	return dir;
 }
 
-const B70 = "IT03311220036|b-70|2026-09-01|TD01";
-const B71 = "IT03311220036|b-71|2026-09-10|TD01";
-const A1 = "IT02987650013|a-1|2026-09-01|TD01";
+const B70 = "IT00000520031|b-70|2026-09-01|TD01";
+const B71 = "IT00000520031|b-71|2026-09-10|TD01";
+const A1 = "IT00000510016|a-1|2026-09-01|TD01";
 
 type Setup = { company?: Partial<Company> | false; files?: Record<string, string>; now?: Date; store?: (dir: string) => ExpenseStore; failAudit?: { count: number } };
 
@@ -75,7 +75,7 @@ function setup(o: Setup = {}) {
 		writeFileSync(join(root, path), content);
 	}
 	const invoices = new InvoiceStore(dir);
-	if (o.company !== false) invoices.setCompany({ vat: "IT03311220036", name: "Beta Ristorazione Srl", ...o.company, by: "test:u", at: NOW.toISOString() });
+	if (o.company !== false) invoices.setCompany({ vat: "IT00000520031", name: "Beta Ristorazione Srl", ...o.company, by: "test:u", at: NOW.toISOString() });
 	const workspace = new Workspace(root);
 	const store = o.store?.(dir) ?? new ExpenseStore(dir);
 	const events: ExpenseEvent[] = [];
@@ -395,17 +395,17 @@ describe("expenses: add", () => {
 	it("keeps the supplier's tax id: a label only with its separator; 11 digits, a codice fiscale or an EU VAT number", async () => {
 		const s = setup();
 		for (const [said, kept] of [
-			["CFRMRA80A01H501U", "CFRMRA80A01H501U"],
-			["CF RSSMRA85T10A562S", "RSSMRA85T10A562S"],
-			["C.F.RSSMRA85T10A562S", "RSSMRA85T10A562S"],
-			["P.IVA: 029 8765 0013", "02987650013"],
-			["IT 02987650013", "IT02987650013"],
+			["CFQXZW80A01H501A", "CFQXZW80A01H501A"],
+			["CF ZQXWKJ85T10A562F", "ZQXWKJ85T10A562F"],
+			["C.F.ZQXWKJ85T10A562F", "ZQXWKJ85T10A562F"],
+			["P.IVA: 000 0051 0016", "00000510016"],
+			["IT 00000510016", "IT00000510016"],
 			["DE123456789", "DE123456789"],
 		] as const) {
 			await s.run({ op: "add", amount: 1, supplier_vat: said });
 			expect(s.store.read().expenses.at(-1)?.supplierVat, said).toBe(kept);
 		}
-		for (const bad of ["12345678", "ITABC", "IT0298765001", "PIVA02987650013X", "x".repeat(EXPENSE_LIMITS.supplierVat + 1)]) expect(await s.run({ op: "add", amount: 1, supplier_vat: bad }), bad).toContain("Errore: supplier_vat");
+		for (const bad of ["12345678", "ITABC", "IT0000051001", "PIVA00000510016X", "x".repeat(EXPENSE_LIMITS.supplierVat + 1)]) expect(await s.run({ op: "add", amount: 1, supplier_vat: bad }), bad).toContain("Errore: supplier_vat");
 	});
 
 	it("says when a date without a year went back almost a year", async () => {
@@ -649,7 +649,7 @@ describe("expenses: list and summary", () => {
 
 describe("expenses: prima nota", () => {
 	const FILES = { "f/g1.xml": G1, "f/g2.xml": G2, "f/a1.xml": RICEVUTA, "f/gnc.xml": GNC, "f/nd.xml": fattura(BETA, GAMMA, { number: "B-91", date: "2026-10-01", total: "80.00", rate: [{ amount: "n.d.", due: "2026-10-30" }] }), "f/usd.xml": fattura(BETA, GAMMA, { number: "B-90", date: "2026-10-01", total: "500.00", currency: "USD", rate: [{ amount: "500.00", due: "2026-10-30" }] }) };
-	const USD = "IT03311220036|b-90|2026-10-01|TD01";
+	const USD = "IT00000520031|b-90|2026-10-01|TD01";
 
 	function marked() {
 		const s = setup({ files: FILES });
@@ -657,8 +657,8 @@ describe("expenses: prima nota", () => {
 		s.invoices.mark({ invoice: B71, count: 2, instalment: 1, paid: true, by: "test:u", at: "2026-10-12T09:00:00Z" });
 		s.invoices.mark({ invoice: A1, count: 1, paid: true, by: "test:u", at: "2026-10-10T09:00:00Z" });
 		s.invoices.mark({ invoice: USD, count: 1, paid: true, by: "test:u", at: "2026-10-11T09:00:00Z" });
-		s.invoices.mark({ invoice: "IT03311220036|nc-3|2026-10-05|TD04", count: 1, paid: true, by: "test:u", at: "2026-10-11T09:00:00Z" });
-		s.invoices.mark({ invoice: "IT03311220036|b-91|2026-10-01|TD01", count: 1, paid: true, by: "test:u", at: "2026-10-11T09:00:00Z" });
+		s.invoices.mark({ invoice: "IT00000520031|nc-3|2026-10-05|TD04", count: 1, paid: true, by: "test:u", at: "2026-10-11T09:00:00Z" });
+		s.invoices.mark({ invoice: "IT00000520031|b-91|2026-10-01|TD01", count: 1, paid: true, by: "test:u", at: "2026-10-11T09:00:00Z" });
 		return s;
 	}
 
@@ -735,7 +735,7 @@ describe("expenses: CSV export", () => {
 
 	it("exports the spese of a period to spese/, never over a file there, once per call", async () => {
 		const s = setup();
-		await s.run({ ...BENZINA, supplier: '=HYPERLINK("http://x.example";"clic")', note: "pieno", doc_type: "fattura", doc_number: "+123", supplier_vat: "IT 02987650013" });
+		await s.run({ ...BENZINA, supplier: '=HYPERLINK("http://x.example";"clic")', note: "pieno", doc_type: "fattura", doc_number: "+123", supplier_vat: "IT 00000510016" });
 		await s.run({ op: "add", amount: 1234.5, supplier: "Studio; Verdi", date: "02/10/2026" });
 		await s.run({ op: "add", amount: 9, date: "02/09/2026" });
 		const c = durable();
@@ -747,7 +747,7 @@ describe("expenses: CSV export", () => {
 		expect(text.startsWith("﻿Data;Rif.;Tipo documento;Fornitore;P.IVA fornitore;N. documento;Descrizione;Imponibile;Aliquota;IVA;Totale;Pagamento;File\r\n")).toBe(true);
 		const lines = text.slice(1).split("\r\n");
 		expect(lines[1]).toBe('02/10/2026;S-2026-0002;scontrino;"Studio; Verdi";;;altro;;;;1234,50;;');
-		expect(lines[2]).toBe(`18/10/2026;S-2026-0001;fattura;"'=HYPERLINK(""http://x.example"";""clic"")";IT02987650013;'+123;carburante: pieno;34,84;22;7,66;42,50;carta;uploads/scontrino.jpg`);
+		expect(lines[2]).toBe(`18/10/2026;S-2026-0001;fattura;"'=HYPERLINK(""http://x.example"";""clic"")";IT00000510016;'+123;carburante: pieno;34,84;22;7,66;42,50;carta;uploads/scontrino.jpg`);
 		expect(lines[3]).toBe(";Totale;;;;;;34,84;;7,66;1277,00;;");
 		expect(lines).toHaveLength(5);
 		expect(await s.run({ op: "export", period: "settembre" })).not.toContain("non è ancora finito");

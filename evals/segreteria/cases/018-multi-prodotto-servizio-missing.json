@@ -15,7 +15,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Tapis roulant e manutenzione",
     "receivedAt": "2026-10-13T9:00:00+02:00",
-    "body": "Salve, gestisco la Palestra Atlante a Bari. Vorrei preventivo per dei tapis roulant nuovi e, separatamente, per un contratto di manutenzione annuale delle macchine esistenti (circa 25). P.IVA 09900110249. Tommaso Greco",
+    "body": "Salve, gestisco la Palestra Atlante a Bari. Vorrei preventivo per dei tapis roulant nuovi e, separatamente, per un contratto di manutenzione annuale delle macchine esistenti (circa 25). P.IVA 00000770248. Tommaso Greco",
     "from": "Tommaso Greco <tommaso.greco@palestra-atlante.example>"
   },
   "expected": {
@@ -34,7 +34,7 @@
       ],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "09900110249"
+      "vatNumber": "00000770248"
     },
     "requests": [
       {

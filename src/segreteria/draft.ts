@@ -165,7 +165,7 @@ export function scrubPii(body: string, lead: LeadFields): string {
 	if (lead.email) {
 		out = out.split(lead.email).join("");
 	}
-	// VAT numbers, first, whole («IT 012 345 609 01»): only after a VAT label, or with a country prefix and written right; order numbers and codes stay.
+	// VAT numbers, first, whole («IT 000 006 109 08»): only after a VAT label, or with a country prefix and written right; order numbers and codes stay.
 	out = withoutVatNumbers(out);
 	out = out.replace(/(?:\+39[\s.]?)?\b3\d{2}[\s.]?\d{3}[\s.]?\d{3,4}\b/g, "");
 	// Not inside a reference («Fattura 2024/000123456», «PO-2024-000123»).

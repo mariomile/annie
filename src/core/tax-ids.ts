@@ -66,7 +66,7 @@ function isOtherCountry(code: string): code is OtherCountry {
  */
 const LABEL = /^\s*(?:p\.?\s*iva|partita\s+iva|vat(?:\s+number)?|p\.\s*i\.|c\.\s*f\.|cf|cod\.?\s*fisc\.?|codice\s+fiscale)(?:\s+n\.?|\s*n\.)?(?:\s*:\s*|\s+|(?=\d))/i;
 
-/** A leading label out, then spaces, dots, dashes and slashes, letters in capitals: «P.IVA: it 007.431-10157» → «IT00743110157». */
+/** A leading label out, then spaces, dots, dashes and slashes, letters in capitals: «P.IVA: it 000.005-00157» → «IT00000500157». */
 export function normalizeTaxId(text: string): string {
 	return text.replace(LABEL, "").replace(/[\s.\-/]/g, "").toUpperCase();
 }

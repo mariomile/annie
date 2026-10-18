@@ -92,7 +92,7 @@ function setup(o: Setup = {}) {
 	}
 	const workspace = new Workspace(root);
 	const invoices = new InvoiceStore(dir);
-	if (o.company !== false) invoices.setCompany({ vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "test:u", at: NOW.toISOString() });
+	if (o.company !== false) invoices.setCompany({ vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "test:u", at: NOW.toISOString() });
 	const store = new CashflowStore(dir);
 	const expenseStore = new ExpenseStore(dir);
 	const renewalStore = new RenewalStore(dir);
@@ -161,7 +161,7 @@ async function scene(o: Setup = {}) {
 	// Canva: autoPay, 12 € from 1 November, 15 € from 1 December.
 	await s.renewal({ op: "add", name: "Canva Pro", amount: "12", frequency: "mensile", due: "01/11/2026", auto_renew: true, method: "carta", new_amount: "15", new_amount_from: "01/12/2026" });
 	// A domain by hand, gone without a word: waiting, not on a day.
-	await s.renewal({ op: "add", name: "Dominio rossi.it", amount: "15", due: "10/10/2026" });
+	await s.renewal({ op: "add", name: "Dominio rossi.example", amount: "15", due: "10/10/2026" });
 	// Cancelled: never pays again.
 	await s.renewal({ op: "add", name: "Palestra", amount: "50", frequency: "mensile", due: "25/10/2026" });
 	await s.renewal({ op: "cancel", id: "Palestra" });
@@ -252,7 +252,7 @@ describe("cashflow sources", () => {
 
 	it("the average spending (r2-2): a renewal's own payments, lookalikes of a renewal or voce, and supplier invoices of the scadenzario out; paper invoices and whole categories stay", () => {
 		const e = (id: string, date: string, amount: string, more: Partial<Expense> = {}): Expense => ({ id, date, amount, category: "altro", by: "u", at: NOW.toISOString(), ...more });
-		const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+		const company = { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
 		const invoices = register([found("a.xml", fattura(ALFA, BETA, { number: "A-5", date: "2026-10-02", total: "400.00", rate: [{ amount: "400.00", due: "2026-11-02" }] }))], [], company);
 		const expenses = [
 			e("S-2026-0001", "2026-09-01", "300"),
@@ -262,8 +262,8 @@ describe("cashflow sources", () => {
 			// The renewal's own payment.
 			e("S-2026-0006", "2026-10-15", "30"),
 			// A supplier invoice of the scadenzario, by partita IVA and number; and one by partita IVA and amount within 10 days.
-			e("S-2026-0007", "2026-10-02", "400", { docType: "fattura", supplier: "Alfa", supplierVat: "IT02987650013", docNumber: "fatt. A-5" }),
-			e("S-2026-0012", "2026-10-09", "401", { docType: "fattura", supplier: "Alfa", supplierVat: "02987650013" }),
+			e("S-2026-0007", "2026-10-02", "400", { docType: "fattura", supplier: "Alfa", supplierVat: "IT00000510016", docNumber: "fatt. A-5" }),
+			e("S-2026-0012", "2026-10-09", "401", { docType: "fattura", supplier: "Alfa", supplierVat: "00000510016" }),
 			// A paper invoice not in the scadenzario stays.
 			e("S-2026-0013", "2026-10-03", "100", { docType: "fattura", supplier: "Idraulico Rossi" }),
 			// Software stays: no renewal of that name. Rent: the voce «Affitto» on the 1st, 3 days off, amount within 5%.
@@ -286,7 +286,7 @@ describe("cashflow sources", () => {
 
 	it("a supplier invoice that is a renewal's payment counts once (3); an overdue one of an autoPay renewal is never an overdue payable", () => {
 		const renewal = (more: Partial<Renewal>): Renewal => ({ ...base, id: "R-0001", name: "Fornitura", provider: "Alfa Forniture", amount: "590", months: 1, due: "2026-11-05", day: 5, autoRenew: true, status: "active", ...more });
-		const inv: Movement = { date: "2026-11-05", kind: "out", cents: 60_000n, source: "invoice", due: "2026-11-05", invoice: { supplier: { name: "Alfa Forniture S.r.l.", vat: { country: "IT", code: "02987650013" } }, customer: { name: "Beta" }, doc: { number: "A-2" } } as never };
+		const inv: Movement = { date: "2026-11-05", kind: "out", cents: 60_000n, source: "invoice", due: "2026-11-05", invoice: { supplier: { name: "Alfa Forniture S.r.l.", vat: { country: "IT", code: "00000510016" } }, customer: { name: "Beta" }, doc: { number: "A-2" } } as never };
 		const flows = { movements: [inv], late: [], latePay: [], stale: [], undated: { count: 0, in: 0n, out: 0n }, otherCurrency: 0, unreadable: 0, noSide: 0, creditLeft: { in: 0n, out: 0n } };
 		const r = renewal({});
 		const ren = renewalFlows([r], TODAY, "2026-12-31");
@@ -322,7 +322,7 @@ describe("cashflow sources", () => {
 				found("c.xml", RICEVUTA),
 			],
 			[],
-			{ vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() },
+			{ vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() },
 		);
 		const f = invoiceFlows(invoices, TODAY, "2026-11-16", true);
 		expect(f.stale.map((m) => m.invoice?.doc.number).sort()).toEqual(["A-0", "B-10"]);
@@ -360,7 +360,7 @@ describe("cashflow sources", () => {
 	});
 
 	it("a balance brought to now (r2-1c, 1d): incassi marked paid after it are added and listed; supplier invoices marked paid after it come off unless an expense stands for them", () => {
-		const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+		const company = { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
 		const A3 = fattura(ALFA, BETA, { number: "A-3", date: "2026-09-20", total: "250.00", rate: [{ amount: "250.00", due: "2026-10-20" }] });
 		const A4 = fattura(ALFA, BETA, { number: "A-4", date: "2026-09-21", total: "80.00", rate: [{ amount: "80.00", due: "2026-10-21" }] });
 		const files = [found("g1.xml", G1), found("a3.xml", A3), found("a4.xml", A4), found("a2.xml", A2)];
@@ -380,7 +380,7 @@ describe("cashflow sources", () => {
 	it("accepted quotes are expected income, less what was invoiced to that customer since (8)", () => {
 		const quote = (n: string, more: Partial<Quote>): Quote =>
 			({ number: n, base: n, revision: 0, date: "2026-10-01", validDays: 30, customer: { name: "Gamma Hotel S.p.A.", vat: "01234567897" }, lines: [{ description: "Lavoro", quantity: "1", price: "1000", vat: 0, vatNote: "N2.2" }], status: "accepted", statusMark: { by: "u", at: "2026-10-05T10:00:00Z" }, by: "u", at: NOW.toISOString(), ...more }) as Quote;
-		const invoices = register([found("g.xml", fattura(BETA, GAMMA, { number: "B-99", date: "2026-10-10", total: "300.00", rate: [{ amount: "300.00", due: "2026-11-10" }] }))], [], { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() });
+		const invoices = register([found("g.xml", fattura(BETA, GAMMA, { number: "B-99", date: "2026-10-10", total: "300.00", rate: [{ amount: "300.00", due: "2026-11-10" }] }))], [], { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() });
 		const quotes = [quote("2026-001", {}), quote("2026-002", { status: "open" }), quote("2026-003", { customer: { name: "Delta Carni Srl" }, statusMark: { by: "u", at: "2026-06-01T10:00:00Z" } })];
 		const f = quoteFlows(quotes, invoices, TODAY, "2027-01-31", (at) => at.slice(0, 10));
 		// Gamma: 1000 less the 300 invoiced on the 10th, expected 60 days after 5 October; Delta: accepted long ago, not before 30 days from today.
@@ -1029,7 +1029,7 @@ describe("cashflow, week 61: supplier payments an expense may stand for", () => 
 describe("cashflow, week 55 second round", () => {
 	const base = { category: "software e abbonamenti" as const, by: "u", at: NOW.toISOString() };
 	const f = (t: string) => `<<${t}>>`;
-	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+	const company = { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
 
 	it("r2-1c, 1d, 1f: the forecast names the incassi and the supplier invoices marked paid after the balance; voci are never rolled; a balance too old is not rolled", async () => {
 		const A3 = fattura(ALFA, BETA, { number: "A-3", date: "2026-09-20", total: "250.00", rate: [{ amount: "250.00", due: "2026-10-20" }] });
@@ -1078,8 +1078,8 @@ describe("cashflow, week 55 second round", () => {
 		// The renewal's own name alone never pairs: «Sky TV» is not the supplier «TV Sat».
 		expect(dedupe(flows([inv({ name: "TV Sat" }, "2026-11-01")]), ren, [sky], TODAY).duplicates).toHaveLength(0);
 		// By partita IVA, whatever the names.
-		const byVat = renewal({ provider: "IT02987650013" });
-		expect(dedupe(flows([inv({ name: "Altro Nome", vat: { country: "IT", code: "02987650013" } }, "2026-11-03")]), renewalFlows([byVat], TODAY, "2026-12-31"), [byVat], TODAY).duplicates).toHaveLength(1);
+		const byVat = renewal({ provider: "IT00000510016" });
+		expect(dedupe(flows([inv({ name: "Altro Nome", vat: { country: "IT", code: "00000510016" } }, "2026-11-03")]), renewalFlows([byVat], TODAY, "2026-12-31"), [byVat], TODAY).duplicates).toHaveLength(1);
 		// The closest payment: due the 20th of November pairs with 1 December, not 1 November.
 		const closest = dedupe(flows([inv({ name: "Sky Italia" }, "2026-11-20")]), ren, [sky], TODAY);
 		expect(closest.duplicates.map((d) => d.renewal.date)).toEqual(["2026-12-01"]);
@@ -1189,7 +1189,7 @@ describe("cashflow, week 55 second round", () => {
 
 	it("r2-15: the CSV footer is in neutral words: nobody addressed, no question, at most one colon", async () => {
 		const s = setup({ files: { "f/nd.xml": UNDATED } });
-		await s.renewal({ op: "add", name: "Dominio rossi.it", amount: "15", due: "10/10/2026" });
+		await s.renewal({ op: "add", name: "Dominio rossi.example", amount: "15", due: "10/10/2026" });
 		await s.run({ op: "set_balance", amount: 100 });
 		await s.run({ op: "export", horizon: "fine mese" });
 		const rows = readFileSync(join(s.root, "cassa", "previsione-2026-10-18.csv"), "utf8").split("\r\n");
@@ -1251,7 +1251,7 @@ describe("cashflow, week 55 second round", () => {
 
 describe("cashflow, week 55 third pass", () => {
 	const base = { category: "software e abbonamenti" as const, by: "u", at: NOW.toISOString() };
-	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+	const company = { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
 	const day = (at: string) => at.slice(0, 10);
 
 	it("r3-1, 3: a backdated balance counts from the end of its day; instants compare as times, and one that does not parse is skipped", () => {

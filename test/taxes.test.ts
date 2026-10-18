@@ -84,7 +84,7 @@ async function setup(o: Setup = {}) {
 	}
 	const workspace = new Workspace(root);
 	const invoices = new InvoiceStore(dir);
-	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", ...(o.regime === undefined || o.regime === "none" ? {} : { regime: o.regime }), by: "test:u", at: NOW.toISOString() };
+	const company = { vat: "IT00000520031", name: "Beta Ristorazione Srl", ...(o.regime === undefined || o.regime === "none" ? {} : { regime: o.regime }), by: "test:u", at: NOW.toISOString() };
 	invoices.setCompany(company);
 	const scanner = new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) });
 	const scan = await scanner.scan(new AbortController().signal);

@@ -109,12 +109,12 @@ describe("solleciti: the letter", () => {
 		const { run, store } = setup(GAMMA_ONLY);
 		const made = (at: string) => ({ by: "p", at, via: "self" as const });
 		// Two polite reminders: the next is the second, not the formal one.
-		store.remind([{ invoice: "IT03311220036|b-70|2026-09-01|TD01", level: 1 }], made("2026-10-01T08:00:00Z"));
-		store.remind([{ invoice: "IT03311220036|b-70|2026-09-01|TD01", level: 1 }], made("2026-10-05T08:00:00Z"));
+		store.remind([{ invoice: "IT00000520031|b-70|2026-09-01|TD01", level: 1 }], made("2026-10-01T08:00:00Z"));
+		store.remind([{ invoice: "IT00000520031|b-70|2026-09-01|TD01", level: 1 }], made("2026-10-05T08:00:00Z"));
 		expect(inside(await run({ op: "reminder", party: "gamma" }))).toContain("livello 2 (secondo sollecito, più fermo)");
-		store.remind([{ invoice: "IT03311220036|b-70|2026-09-01|TD01", level: 2 }], made("2026-10-08T08:00:00Z"));
+		store.remind([{ invoice: "IT00000520031|b-70|2026-09-01|TD01", level: 2 }], made("2026-10-08T08:00:00Z"));
 		expect(inside(await run({ op: "reminder", party: "gamma" }))).toContain("livello 3 (sollecito formale)");
-		store.remind([{ invoice: "IT03311220036|b-70|2026-09-01|TD01", level: 3 }], made("2026-10-12T08:00:00Z"));
+		store.remind([{ invoice: "IT00000520031|b-70|2026-09-01|TD01", level: 3 }], made("2026-10-12T08:00:00Z"));
 		const again = inside(await run({ op: "reminder", party: "gamma" }));
 		expect(again).toContain("livello 3 (sollecito formale)");
 		expect(again).toContain("Nota: il sollecito formale è già stato mandato il 12/10/2026: di solito il passo successivo è un legale o il decreto ingiuntivo; chiedi prima di rimandarlo.");
@@ -245,7 +245,7 @@ describe("solleciti: the letter", () => {
 	});
 
 	it("a party that fits a late customer and another one: the other is named", async () => {
-		const files = { ...GAMMA_ONLY, "f/x.xml": fattura(BETA, { name: "Gamma Carni Srl", vat: "00743110157" }, { number: "X-1", date: "2026-10-10", total: "10.00", rate: [{ amount: "10.00", due: "2026-12-30" }] }) };
+		const files = { ...GAMMA_ONLY, "f/x.xml": fattura(BETA, { name: "Gamma Carni Srl", vat: "00000500157" }, { number: "X-1", date: "2026-10-10", total: "10.00", rate: [{ amount: "10.00", due: "2026-12-30" }] }) };
 		const answer = await setup(files).run({ op: "reminder", party: "gamma" });
 		expect(inside(answer)).toContain("«gamma» corrisponde anche a Gamma Carni Srl, senza fatture scadute.");
 	});
@@ -267,7 +267,7 @@ describe("solleciti: the letter", () => {
 describe("solleciti: where to pay (H1)", () => {
 	it("IBANs are checked with mod-97", () => {
 		expect(validIban(IBAN)).toBe(IBAN);
-		expect(validIban("it60 x054 2811 1010 0000 0123 456")).toBe(IBAN);
+		expect(validIban("it74 x000 0000 0000 0000 0123 456")).toBe(IBAN);
 		expect(validIban("GB82WEST12345698765432")).toBe("GB82WEST12345698765432");
 		expect(validIban(IBAN_2)).toBe(IBAN_2);
 		expect(validIban(IBAN_SAVED)).toBe(IBAN_SAVED);
@@ -280,14 +280,14 @@ describe("solleciti: where to pay (H1)", () => {
 		expect(await run({ op: "set_company", iban: IBAN_BAD })).toMatch(/^Errore: .*IBAN/);
 		expect(store.read().company?.ibans).toBeUndefined();
 		await run({ op: "set_company", iban: IBAN_SAVED, signature: "Anna Bianchi\nBeta Ristorazione Srl" });
-		expect(store.read().company).toMatchObject({ vat: "IT03311220036", ibans: [IBAN_SAVED], signature: "Anna Bianchi\nBeta Ristorazione Srl" });
+		expect(store.read().company).toMatchObject({ vat: "IT00000520031", ibans: [IBAN_SAVED], signature: "Anna Bianchi\nBeta Ristorazione Srl" });
 		const draft = inside(await run({ op: "reminder", party: "gamma" }));
 		expect(draft).toContain(`all'IBAN ${IBAN_SAVED}.`);
 		expect(draft).not.toContain(IBAN);
 		expect(draft).not.toContain("IBAN preso dalle fatture");
 		expect(draft).toMatch(/Cordiali saluti\nAnna Bianchi\nBeta Ristorazione Srl/);
 		// Saving the partita IVA again keeps the IBAN.
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		expect(store.read().company?.ibans).toEqual([IBAN_SAVED]);
 	});
 
@@ -337,7 +337,7 @@ describe("solleciti: the address book (H2)", () => {
 	it("H2: saved addresses that do not read: no address at all, never the file's; no send and no save", async () => {
 		const { mail, proposals } = fakeMail();
 		const { run, dir } = setup(GAMMA_ONLY, { mail });
-		writeFileSync(join(dir, "invoices.json"), JSON.stringify({ company: { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() }, paid: [], contacts: [{ key: "x", email: "not an address" }] }));
+		writeFileSync(join(dir, "invoices.json"), JSON.stringify({ company: { vat: "IT00000520031", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() }, paid: [], contacts: [{ key: "x", email: "not an address" }] }));
 		const draft = inside(await run({ op: "reminder", party: "gamma" }));
 		expect(draft).toContain("A: manca l'indirizzo");
 		expect(draft).toContain("Nota: gli indirizzi dei clienti salvati in invoices.json non si leggono: non metto un indirizzo, nemmeno quello della fattura");

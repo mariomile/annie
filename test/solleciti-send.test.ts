@@ -22,7 +22,7 @@ afterEach(async () => {
 	cleanTemp();
 });
 
-const B71 = "IT03311220036|b-71|2026-09-10|TD01";
+const B71 = "IT00000520031|b-71|2026-09-10|TD01";
 
 describe("solleciti: sending only through the approval card", () => {
 	it("send asks one card per customer, carries each draft's notes, records nothing; the audit has the op and a count", async () => {
@@ -231,7 +231,7 @@ describe("solleciti: second pass", () => {
 	it("L2: a company saved by partita IVA only: no name from the files in subject or signature, a hint to save it", async () => {
 		const draft = inside(await setup(FILES, { company: "vat" }).run({ op: "reminder", party: "gamma" }));
 		expect(draft).toContain("Oggetto: Promemoria di pagamento fatture n. B-70, B-71");
-		expect(draft).toMatch(/Cordiali saluti\nP\.IVA IT03311220036/);
+		expect(draft).toMatch(/Cordiali saluti\nP\.IVA IT00000520031/);
 		expect(draft).not.toContain("Beta Ristorazione");
 		expect(draft).toContain("Nota: salva il nome dell'azienda con set_company (name): così compare nell'oggetto e nella firma.");
 	});
@@ -240,11 +240,11 @@ describe("solleciti: second pass", () => {
 		const { run, store } = setup(FILES, { company: false });
 		expect(await run({ op: "set_company", iban: IBAN })).toMatch(/^Errore: prima serve l'azienda/);
 		expect(store.read().company).toBeUndefined();
-		expect(() => store.setCompany({ vat: "IT03311220036", signature: "a\nb\nc\nd\ne", by: "u", at: NOW.toISOString() })).toThrow(/non sono validi/);
-		await run({ op: "set_company", vat: "03311220036" });
+		expect(() => store.setCompany({ vat: "IT00000520031", signature: "a\nb\nc\nd\ne", by: "u", at: NOW.toISOString() })).toThrow(/non sono validi/);
+		await run({ op: "set_company", vat: "00000520031" });
 		await run({ op: "set_company", signature: "Anna" });
 		await run({ op: "set_company", iban: IBAN });
-		expect(store.read().company).toMatchObject({ vat: "IT03311220036", ibans: [IBAN], signature: "Anna" });
+		expect(store.read().company).toMatchObject({ vat: "IT00000520031", ibans: [IBAN], signature: "Anna" });
 	});
 
 	it("L6: split payment without instalments, credit notes with a negative total too: netted, and said", async () => {
@@ -449,7 +449,7 @@ describe("solleciti in the app", () => {
 			}
 			throw new Error("no reply");
 		};
-		await reply('/tool invoices {"op":"set_company","vat":"03311220036"}');
+		await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		const asked = await reply('/tool invoices {"op":"reminder","party":"gamma","send":true}');
 		expect(asked).toContain("Ho preparato una richiesta di invio");
 		expect(google.sends).toEqual([]);

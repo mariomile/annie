@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta preventivo scaffali",
     "receivedAt": "2026-10-13T9:00:00+02:00",
-    "body": "Buongiorno,\nsono Paolo Rinaldi di Magazzini Rinaldi Srl. Vorremmo un preventivo per 12 scaffalature porta pallet, installazione presso il nostro deposito di Forlì entro fine novembre.\nP. IVA: IT 012 345 609 01\nCordiali saluti\nPaolo Rinaldi",
+    "body": "Buongiorno,\nsono Paolo Rinaldi di Magazzini Rinaldi Srl. Vorremmo un preventivo per 12 scaffalature porta pallet, installazione presso il nostro deposito di Forlì entro fine novembre.\nP. IVA: IT 000 006 109 08\nCordiali saluti\nPaolo Rinaldi",
     "from": "Paolo Rinaldi <p.rinaldi@magazzini-rinaldi.example>"
   },
   "expected": {
@@ -56,8 +56,8 @@
       "mustAskPriority": false,
       "mustMention": [],
       "mustNotMention": [
-        "01234560901",
-        "012 345 609 01"
+        "00000610908",
+        "000 006 109 08"
       ],
       "autonomousSend": false,
       "expectedSalutationContains": "Gentile Signor Rinaldi",

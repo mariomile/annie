@@ -38,7 +38,7 @@ function temp(): string {
 }
 
 const NOW = new Date("2026-10-18T08:00:00Z");
-const COMPANY: Company = { name: "Beta Ristorazione Srl", vat: "IT03311220036", address: "Via Roma 1, Milano", email: "info@beta.it", signature: "Anna Bianchi\nBeta Ristorazione Srl", by: "test:u", at: NOW.toISOString() };
+const COMPANY: Company = { name: "Beta Ristorazione Srl", vat: "IT00000520031", address: "Via Roma 1, Milano", email: "info@beta.example", signature: "Anna Bianchi\nBeta Ristorazione Srl", by: "test:u", at: NOW.toISOString() };
 const PDF_HEAD = "%PDF-1.7\n";
 /** A document that reads as a PDF, its text after the header: no worker needed. */
 const pdfMake = async (input: MakeInput) => ({ data: new Uint8Array(Buffer.from(`${PDF_HEAD}${input.text}`)), pages: 1, notes: [] });
@@ -85,12 +85,12 @@ describe("quotes op send", () => {
 		expect(await run({ op: "send", number: "1" })).toContain("non ho l'indirizzo email");
 		expect(await run({ op: "send", number: "1", email: "non-valida" })).toContain("email non è un indirizzo valido");
 		expect(proposals).toEqual([]);
-		const answer = await run({ op: "send", number: "1", email: "Mario@Rossi.IT" });
+		const answer = await run({ op: "send", number: "1", email: "Mario@Rossi.example" });
 		expect(answer).toMatch(/^Richiesta req1 pronta: inviare il preventivo 2026-001 per mail, con il PDF allegato\./);
 		expect(answer).toContain("L'indirizzo lo salvo sul preventivo quando la mail parte.");
 		expect(answer).toContain("Allegato: preventivi/Preventivo-2026-001-Rossi-Srl.pdf");
 		const [p] = proposals as [MailProposal];
-		expect(p.to).toBe("mario@rossi.it");
+		expect(p.to).toBe("mario@rossi.example");
 		expect(p.subject).toBe("Beta Ristorazione Srl: preventivo n. 2026-001");
 		expect(p.body).toBe(
 			"Spett.le Rossi Srl,\n\nVi inviamo in allegato il preventivo n. 2026-001 del 18/10/2026, per un totale di 1.220,00 € IVA inclusa.\nIl preventivo è valido fino al 17/11/2026.\n\nRestiamo a disposizione per qualsiasi chiarimento.\n\nCordiali saluti\nAnna Bianchi\nBeta Ristorazione Srl",
@@ -99,15 +99,15 @@ describe("quotes op send", () => {
 		expect(p.attachments?.map((a) => [a.path, a.contentType])).toEqual([["preventivi/Preventivo-2026-001-Rossi-Srl.pdf", "application/pdf"]]);
 		expect(p.attachments?.[0]?.size).toBe((await workspace.read("preventivi/Preventivo-2026-001-Rossi-Srl.pdf")).length);
 		expect(p.reason).toBe("Invio del preventivo 2026-001 a Rossi Srl");
-		expect(p.quote).toEqual({ number: "2026-001", base: "2026-001", email: "mario@rossi.it" });
+		expect(p.quote).toEqual({ number: "2026-001", base: "2026-001", email: "mario@rossi.example" });
 		// Not saved yet: only an approved, sent mail keeps it.
 		expect(store.read().quotes[0]?.customer.email).toBeUndefined();
-		store.markSent("2026-001", "2026-10-18T09:00:00Z", "mario@rossi.it");
+		store.markSent("2026-001", "2026-10-18T09:00:00Z", "mario@rossi.example");
 		expect(await run({ op: "show", number: "1" })).toContain("aperto, inviato per mail il 18/10/2026");
 		expect(await run({ op: "list" })).toContain("inviato per mail il 18/10/2026");
 		// The address kept is used next time, and the same one in other case is not a new one.
-		expect(await run({ op: "send", number: "2026-001", email: "MARIO@rossi.it" })).toContain("Nota: il preventivo è già inviato per mail il 18/10/2026: dillo a chi ti scrive.");
-		expect(proposals[1]?.to).toBe("mario@rossi.it");
+		expect(await run({ op: "send", number: "2026-001", email: "MARIO@rossi.example" })).toContain("Nota: il preventivo è già inviato per mail il 18/10/2026: dillo a chi ti scrive.");
+		expect(proposals[1]?.to).toBe("mario@rossi.example");
 		expect(proposals[1]?.quote).toEqual({ number: "2026-001", base: "2026-001" });
 		expect(events.filter((e) => e.op === "send")).toEqual([
 			{ type: "quote.changed", op: "send", count: 1 },
@@ -118,10 +118,10 @@ describe("quotes op send", () => {
 	it("the letter: Lei to a person, senza IVA when nothing has VAT, the net when there is a ritenuta", async () => {
 		const { mail, proposals } = quoteMail();
 		const { run } = quotes(mail);
-		await run({ op: "create", customer: "Mario Rossi", email: "m@r.it", items: [{ description: "Lezione", price: 100 }], vat: 0, vat_note: "esente art. 10" });
+		await run({ op: "create", customer: "Mario Rossi", email: "m@r.example", items: [{ description: "Lezione", price: 100 }], vat: 0, vat_note: "esente art. 10" });
 		await run({ op: "send", number: "1" });
 		expect(proposals[0]?.body).toMatch(/^Gentile Mario Rossi,\n\nLe inviamo in allegato il preventivo n\. 2026-001 del 18\/10\/2026, per un totale di 100,00 € senza IVA\./);
-		await run({ op: "create", customer: "Studio Verdi", email: "v@s.it", items: [{ description: "Consulenza", price: 1000 }], vat: 22, ritenuta: true });
+		await run({ op: "create", customer: "Studio Verdi", email: "v@s.example", items: [{ description: "Consulenza", price: 1000 }], vat: 22, ritenuta: true });
 		await run({ op: "send", number: "2" });
 		expect(proposals[1]?.body).toMatch(/^Spett\.le Studio Verdi,\n\nVi inviamo .* IVA inclusa \(netto a pagare [\d.,]+ €\)\./);
 	});
@@ -130,8 +130,8 @@ describe("quotes op send", () => {
 		const clock = { now: NOW };
 		const { mail, proposals } = quoteMail(undefined, { pending: new Set(["2026-002"]) });
 		const { run } = quotes(mail, clock);
-		await run({ ...CREATE, email: "a@b.it" });
-		await run({ ...CREATE, customer: "Gialli Srl", email: "g@b.it" });
+		await run({ ...CREATE, email: "a@b.example" });
+		await run({ ...CREATE, customer: "Gialli Srl", email: "g@b.example" });
 		expect(await run({ op: "send", number: "1", customer: "Verdi" })).toContain("Il preventivo 2026-001 è di Rossi Srl, non di Verdi: controlla");
 		expect(await run({ op: "send", number: "2" })).toBe("C'è già una richiesta in attesa per il preventivo 2026-002: approvala o rifiutala nella card.");
 		expect(proposals).toEqual([]);
@@ -149,7 +149,7 @@ describe("quotes op send", () => {
 
 	it("at approval: a quote declined since is not sent, unless the request was confirmed so; replaced, not sent", async () => {
 		const { run, store } = quotes(quoteMail().mail);
-		await run({ ...CREATE, email: "a@b.it" });
+		await run({ ...CREATE, email: "a@b.example" });
 		const ref = { number: "2026-001", base: "2026-001" };
 		expect(quoteMailProblem(store, ref)).toBeUndefined();
 		await run({ op: "set_status", number: "1", status: "declined" });
@@ -162,14 +162,14 @@ describe("quotes op send", () => {
 	it("a card waiting for an older version does not hold up the revision; a replay after a crash finds the call's own card", async () => {
 		const { mail, proposals } = quoteMail(undefined, { pending: new Set(["2026-001"]) });
 		const { run } = quotes(mail);
-		await run({ ...CREATE, email: "a@b.it" });
+		await run({ ...CREATE, email: "a@b.example" });
 		await run({ op: "revise", number: "1", discount: 5 });
 		expect(await run({ op: "send", number: "2026-001-R1" })).toContain("Richiesta req1 pronta");
 		// The same call run again: its steps are kept, so the pending check does not see its own card as another one.
 		const asked = new Set<string>();
 		const replayable = quoteMail(undefined, { pending: asked });
 		const q = quotes(replayable.mail);
-		await q.run({ ...CREATE, email: "a@b.it" });
+		await q.run({ ...CREATE, email: "a@b.example" });
 		const steps = new Map<string, unknown>();
 		const ctx: ToolContext = { ...fresh(), callId: "replay", step: async (key, work) => (steps.has(key) ? steps.get(key) : steps.set(key, await work()).get(key)) as never };
 		expect(await q.run({ op: "send", number: "1" }, ctx)).toContain("Richiesta req1 pronta");
@@ -182,7 +182,7 @@ describe("quotes op send", () => {
 	it("refuses a replaced quote or a missing file; a full queue is said", async () => {
 		const { mail, proposals } = quoteMail(undefined, { capacity: 0 });
 		const { run, workspace } = quotes(mail);
-		await run({ ...CREATE, email: "a@b.it" });
+		await run({ ...CREATE, email: "a@b.example" });
 		await run({ op: "revise", number: "1", discount: 10 });
 		await run({ op: "revise", number: "1", discount: 5 });
 		expect(await run({ op: "send", number: "2026-001-R1" })).toContain("è stato sostituito da");
@@ -195,14 +195,14 @@ describe("quotes op send", () => {
 	it("from a phone or without a mail account: the text and a mailto link to copy, the file in the chat; file_send only for Annie", async () => {
 		const { mail, proposals } = quoteMail("la posta si usa solo dalle conversazioni della console, con l'account di chi scrive");
 		for (const q of [quotes(mail), quotes()]) {
-			await q.run({ ...CREATE, email: "a@b.it" });
+			await q.run({ ...CREATE, email: "a@b.example" });
 			const answer = await q.run({ op: "send", number: "1" }, fresh({ channel: "telegram", threadId: "42" }));
 			expect(answer).toMatch(/^Non posso inviare mail da qui \(/);
 			expect(quoted(answer)).toContain("Da qui non posso mandare mail. Ti mando qui il PDF del preventivo e il testo da copiare: inoltrali tu a Rossi Srl.");
 			for (const said of quoted(answer)) expect(said).not.toContain("file_send");
 			expect(answer).toContain("file_send (File: preventivi/Preventivo-2026-001-Rossi-Srl.pdf)");
 			expect(answer).toContain("Oggetto: Beta Ristorazione Srl: preventivo n. 2026-001");
-			expect(answer).toContain("Link: mailto:a@b.it?subject=");
+			expect(answer).toContain("Link: mailto:a@b.example?subject=");
 		}
 		expect(proposals).toEqual([]);
 	});
@@ -210,7 +210,7 @@ describe("quotes op send", () => {
 	it("another agente's request and the brief never send", async () => {
 		const { mail, proposals } = quoteMail();
 		const { tool, run } = quotes(mail);
-		await run({ ...CREATE, email: "a@b.it" });
+		await run({ ...CREATE, email: "a@b.example" });
 		expect(await run({ op: "send", number: "1" }, fresh({ channel: AGENT_CHANNEL, threadId: "x" }))).toContain("in una richiesta di un altro agente non faccio e non cambio preventivi");
 		const [guarded] = readOnlyInBriefs([tool], async () => true);
 		expect(String(await guarded?.execute({ op: "send", number: "1" }, fresh()))).toContain("legge soltanto");
@@ -474,7 +474,7 @@ describe("attachments in the app, through the approval card", () => {
 			}
 			throw new Error("no outcome");
 		};
-		await reply('/tool invoices {"op":"set_company","vat":"03311220036","name":"Beta Ristorazione Srl","address":"Via Roma 1, Milano"}');
+		await reply('/tool invoices {"op":"set_company","vat":"00000520031","name":"Beta Ristorazione Srl","address":"Via Roma 1, Milano"}');
 		const year = todayIn(config.timeZone).slice(0, 4);
 		const decide = async (id: string, decision: string) => (await api(`/api/instances/${config.instanceId}/google-actions/${id}/decision`, { decision })).action;
 		const cards = async () => (await api(`/api/instances/${config.instanceId}/google-actions`)).actions as { id: string; status: string; reason: string; mail?: { attachments?: { path: string; name: string; size: number }[] } }[];
@@ -492,29 +492,29 @@ describe("attachments in the app, through the approval card", () => {
 		const show = (n: string) => replyWith(`/tool quotes {"op":"show","number":"${n}"}`, "Cliente: Rossi Srl");
 		expect(await reply(`/tool quotes ${JSON.stringify(CREATE)}`)).toContain(`Fatto il preventivo ${year}-001`);
 		// Asked, then asked again: one card per quote. Rejected: nothing sent, the address not saved.
-		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"Mario@Rossi.it"}`)).toContain("pronta: inviare il preventivo");
-		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"mario@rossi.it"}`)).toContain(`C'è già una richiesta in attesa per il preventivo ${year}-001`);
+		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"Mario@Rossi.example"}`)).toContain("pronta: inviare il preventivo");
+		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"mario@rossi.example"}`)).toContain(`C'è già una richiesta in attesa per il preventivo ${year}-001`);
 		const [first] = await cards();
 		const pdfPath = `preventivi/Preventivo-${year}-001-Rossi-Srl.pdf`;
 		expect(first?.reason).toBe(`Invio del preventivo ${year}-001 a Rossi Srl`);
 		expect(first?.mail?.attachments?.map((a) => [a.path, a.name])).toEqual([[pdfPath, `Preventivo-${year}-001-Rossi-Srl.pdf`]]);
 		expect((await decide(first?.id as string, "rejected")).status).toBe("rejected");
 		await outcome(first?.id as string);
-		expect(await show("1")).not.toContain("rossi.it");
+		expect(await show("1")).not.toContain("rossi.example");
 		// Approved: sent byte for byte, then the address and the day are on the quote.
-		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"Mario@Rossi.it"}`)).toContain("pronta: inviare il preventivo");
+		expect(await reply(`/tool quotes {"op":"send","number":"1","email":"Mario@Rossi.example"}`)).toContain("pronta: inviare il preventivo");
 		const quoteCard = (await cards()).find((c) => c.status === "pending") as { id: string };
 		expect(google.sends).toEqual([]);
 		expect((await decide(quoteCard.id, "approved")).status).toBe("done");
 		await outcome(quoteCard.id);
 		const sentQuote = google.sends[0] as string;
-		expect(sentQuote).toContain("To: mario@rossi.it\r\n");
+		expect(sentQuote).toContain("To: mario@rossi.example\r\n");
 		expect(sentQuote).toContain(`Subject: Beta Ristorazione Srl: preventivo n. ${year}-001\r\n`);
 		const [quotePdf] = attachmentsOf(sentQuote);
 		expect(quotePdf?.name).toBe(`Preventivo-${year}-001-Rossi-Srl.pdf`);
 		expect(quotePdf?.data.equals(readFileSync(join(workspace, pdfPath)))).toBe(true);
 		const shown = await show("1");
-		expect(shown).toContain("mario@rossi.it");
+		expect(shown).toContain("mario@rossi.example");
 		expect(shown).toContain("inviato per mail il");
 		// Revised while the card waits: the card fails and nothing leaves.
 		expect(await reply(`/tool quotes {"op":"send","number":"1"}`)).toContain("pronta: inviare il preventivo");
@@ -541,6 +541,6 @@ describe("attachments in the app, through the approval card", () => {
 			.map((l) => JSON.parse(l).attachments);
 		expect(approved).toEqual([1, 1, 1]);
 		expect(audit).toMatch(/"type":"quote.changed"[^\n]*"op":"send","count":1/);
-		for (const secret of ["Rossi", "rossi.it", "Preventivo-", "g1.xml", "fatture/", "Gamma"]) expect(audit).not.toContain(secret);
+		for (const secret of ["Rossi", "rossi.example", "Preventivo-", "g1.xml", "fatture/", "Gamma"]) expect(audit).not.toContain(secret);
 	}, 60_000);
 });

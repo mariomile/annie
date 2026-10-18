@@ -18,7 +18,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta preventivo tornio CNC",
     "receivedAt": "2026-10-14T10:00:00+02:00",
-    "body": "Buongiorno,\nsono Giulia Ferraresi, responsabile acquisti di Tornerie Valdorme Srl.\nVi chiediamo un preventivo per 2 torni CNC a 3 assi, consegna presso il nostro stabilimento di Fossano (CN) entro fine gennaio.\nP.IVA 01234560900. Tel. 0172 000111.\nCordiali saluti\nGiulia Ferraresi",
+    "body": "Buongiorno,\nsono Giulia Ferraresi, responsabile acquisti di Tornerie Valdorme Srl.\nVi chiediamo un preventivo per 2 torni CNC a 3 assi, consegna presso il nostro stabilimento di Fossano (CN) entro fine gennaio.\nP.IVA 00000610907. Tel. 0172 000111.\nCordiali saluti\nGiulia Ferraresi",
     "from": "Giulia Ferraresi <giulia.ferraresi@tornerie-valdorme.example>"
   },
   "expected": {
@@ -35,7 +35,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "01234560900"
+      "vatNumber": "00000610907"
     },
     "requests": [
       {

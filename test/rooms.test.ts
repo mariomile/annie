@@ -40,7 +40,7 @@ describe("stanze", () => {
 		const agents = Object.entries(NAMES).map(([instanceId, name]) => ({ instanceId, name }));
 		expect(mentioned("@ricercatore cerca i bandi, poi @Assistente-vendite", agents)).toEqual(["ricerca", "vendite"]);
 		expect(mentioned("@assistente prepara l'offerta", agents)).toEqual(["vendite"]);
-		expect(mentioned("scrivi a mario@contabile.it", agents)).toEqual([]);
+		expect(mentioned("scrivi a mario@contabile.example", agents)).toEqual([]);
 		expect(mentioned("@tutti pronti?", agents)).toEqual(["ricerca", "vendite", "conti"]);
 		const two = [...agents, { instanceId: "acquisti", name: "Assistente acquisti" }];
 		expect([...handles(two).values()]).toEqual(["ricercatore", "assistente-vendite", "contabile", "assistente-acquisti"]);

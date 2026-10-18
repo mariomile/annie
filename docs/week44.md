@@ -5,7 +5,7 @@ Branch `week-44`. Chi fattura controlla partite IVA e codici fiscali di continuo
 ## Cosa cambia per chi usa Annie
 
 - **«La partita IVA 01234567890 è valida?»**: «la cifra di controllo non torna», senza chiamare nessuno.
-- **«Di chi è la P.IVA IT00743110157?»**: attiva nel VIES, con nome, indirizzo e ora del controllo.
+- **«Di chi è la P.IVA IT00000500157?»**: attiva nel VIES, con nome, indirizzo e ora del controllo.
 - **«Controlla questa partita IVA tedesca»**: la forma tedesca e il VIES; la Germania non dà nome e indirizzo, e Annie lo dice.
 - **Una partita IVA non attiva nel VIES**: Annie spiega che non vuol dire inesistente e rimanda a «Verifica partita IVA» dell'Agenzia delle Entrate.
 - **«Questo codice fiscale è giusto?»**: il controllo formale, con sesso e data di nascita, e il limite detto chiaro (all'Agenzia non può chiedere).
