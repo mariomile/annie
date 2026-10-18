@@ -36,6 +36,10 @@ _Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
 _Avoid_: chat tra bot, handoff, delega
 
+**Automazione**:
+Un indirizzo segreto di un agente che un altro servizio chiama (il modulo del sito, Stripe, Zapier): ogni chiamata fa partire l'agente con la sua istruzione e i dati ricevuti, per la persona che l'ha creata e nella sua conversazione. Vedi ADR 0060.
+_Avoid_: webhook (nei testi per le persone), trigger, integrazione
+
 **Skill**:
 Una procedura salvata di un agente: un nome che è anche il comando (`/chiusura-del-mese`), una riga che dice quando usarla e i passi. L'agente vede nomi e righe nelle istruzioni e apre i passi con `skill_read`; una persona la salva dalla chat o dalla console e la lancia con `/nome`. Vedi ADR 0059.
 _Avoid_: prompt salvato, macro, template

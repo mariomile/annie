@@ -18,6 +18,7 @@ import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
+import { AutomationStore } from "./automations.ts";
 import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
@@ -152,13 +153,18 @@ export class AnnieRuntime {
 	 * A message from the instance to a thread that is not a reply (a decision, a notice),
 	 * through the outbox like a reply. The same `key` is sent once.
 	 */
-	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string; secret?: boolean }): Promise<void> {
 		await (await this.openInstance(tenant, instance)).sendMessage(message);
 	}
 
 	/** The memoria of an instance: what it remembers about each person, and shared facts. */
 	memory(tenant: string, instance: string): MemoryStore {
 		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The automazioni of an instance (ADR 0060): addresses other services call to make it work. */
+	automations(tenant: string, instance: string): AutomationStore {
+		return new AutomationStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** The skills of an instance (ADR 0059): procedures its people saved, shared by all of them. */
@@ -265,7 +271,7 @@ export class AnnieRuntime {
 	async submitScheduled(
 		tenant: string,
 		instance: string,
-		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" },
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" | "automation" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
@@ -457,6 +463,9 @@ export class AnnieRuntime {
 	}
 }
 
+/** Outbox keys of messages whose text goes once delivered. */
+const SECRET_KEY = "secret:";
+
 export class AnnieInstance {
 	/** Outbox keys this process has handed to the channels. Each at most once per process. */
 	private readonly handedOff = new Set<string>();
@@ -591,8 +600,8 @@ export class AnnieInstance {
 		scheduleId: string;
 		/** The person it acts for: must still be allowed, or the run is refused. */
 		onBehalfOf: { channel: string; userId: string } | undefined;
-		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID. */
-		kind?: "brief" | "watch";
+		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID; automation: an automazione called (ADR 0060), likewise. */
+		kind?: "brief" | "watch" | "automation";
 	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
@@ -611,6 +620,7 @@ export class AnnieInstance {
 			throw error;
 		}
 		if (request.kind === "watch") await this.audit.append({ type: "watch.fired", instanceId: this.record.id, watchId: request.scheduleId, channel: request.channel, threadId: request.threadId });
+		else if (request.kind === "automation") await this.audit.append({ type: "automation.fired", instanceId: this.record.id, automationId: request.scheduleId, channel: request.channel, threadId: request.threadId });
 		else await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
 		// The person's own memories only in a thread with them alone: a console thread, or a
 		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
@@ -708,7 +718,9 @@ export class AnnieInstance {
 			const entry = await this.outbox.get(deliveryId);
 			if (entry === undefined) throw new NotFound(`No outbox entry "${deliveryId}" in ${this.record.tenantId}/${this.record.id}`);
 			if (entry.deliveredAt !== undefined) return;
-			await this.outbox.put({ ...entry, deliveredAt: new Date().toISOString() });
+			// A message with a secret (an automazione's token) keeps its key, not its text, once delivered.
+			const scrubbed = entry.key.includes(`/${SECRET_KEY}`) && entry.reply?.status === "answered" ? { reply: { status: "answered" as const, text: "[tolto dopo la consegna: conteneva un segreto]" } } : {};
+			await this.outbox.put({ ...entry, ...scrubbed, deliveredAt: new Date().toISOString() });
 			await this.audit.append({
 				type: "reply.delivered",
 				instanceId: this.record.id,
@@ -750,9 +762,10 @@ export class AnnieInstance {
 		});
 	}
 
-	async sendMessage(message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+	/** `secret`: the text is dropped from the outbox once the channel has it (ADR 0060). */
+	async sendMessage(message: { channel: string; threadId: string; text: string; key: string; secret?: boolean }): Promise<void> {
 		assertChannelAllowed(this.record.egress, message.channel);
-		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.key}`;
+		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.secret === true ? SECRET_KEY : ""}${message.key}`;
 		await this.serial(key, async () => {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;
