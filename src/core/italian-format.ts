@@ -67,9 +67,9 @@ export function italianLongDate(date: string): string {
 	return `${Number(date.slice(8, 10))} ${MONTHS_LONG[Number(date.slice(5, 7)) - 1]} ${date.slice(0, 4)}`;
 }
 
+export type DatePreposition = "il" | "del" | "dal" | "al" | "nel" | "sul";
 /** The prepositions a date follows in a sentence, and their elided forms before «8» and «11». */
 const ELIDED: Readonly<Record<DatePreposition, string>> = { il: "l'", del: "dell'", dal: "dall'", al: "all'", nel: "nell'", sul: "sull'" };
-export type DatePreposition = "il" | "del" | "dal" | "al" | "nel" | "sul";
 
 /**
  * A date after its preposition, as Italian writes it: «il 12 marzo 2027», «l'8 marzo 2027»,
@@ -81,4 +81,23 @@ export function withDate(preposition: DatePreposition, date: string): string {
 	if (day === 1) return `${preposition} 1º${rest}`;
 	if (day === 8 || day === 11) return `${ELIDED[preposition]}${day}${rest}`;
 	return `${preposition} ${day}${rest}`;
+}
+
+/** «12/10» this year, «12/10/2025» another: a date in a table or a short sentence. */
+export function dayMonth(date: string, today: string): string {
+	return date.slice(0, 4) === today.slice(0, 4) ? italianDate(date).slice(0, 5) : italianDate(date);
+}
+
+/** A short date after its preposition, the year only when not this one: «il 12/11», «l'08/11», «dall'11/11/2027». */
+export function withShortDate(preposition: DatePreposition, date: string, today: string): string {
+	const day = Number(date.slice(8, 10));
+	const text = dayMonth(date, today);
+	return day === 8 || day === 11 ? `${ELIDED[preposition]}${text}` : `${preposition} ${text}`;
+}
+
+/** A date near today after its preposition, without the year: «il 1º novembre», «dall'8 novembre», «al 7 gennaio»; with it when far (two months before, ten after). */
+export function withNearDate(preposition: DatePreposition, date: string, today: string): string {
+	const days = (Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000;
+	const full = withDate(preposition, date);
+	return days >= -60 && days <= 300 ? full.replace(/ \d{4}$/, "") : full;
 }

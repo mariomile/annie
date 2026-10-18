@@ -15,7 +15,6 @@ import { isProblem } from "./quote-input.ts";
 import { applyFields, editsSomething, readFields, readPeriodAmount } from "./renewal-input.ts";
 import { briefAnswer, fenced, listAnswer, renewalLine, renewalsCsv, summaryAnswer, upcomingAnswer} from "./renewal-render.ts";
 
-export { EXPENSE_CATEGORY };
 
 const RENEWAL_OPS = ["add", "list", "upcoming", "summary", "renewed", "paid", "cancel", "reactivate", "edit", "remove", "export"] as const;
 type Op = (typeof RENEWAL_OPS)[number];

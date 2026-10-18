@@ -8,53 +8,58 @@
  *
  * Choices, tested:
  * - Invoices: only those whose side is known (the company is set), in euros, with an amount and a
- *   due date; each instalment on its due date (the client pays on the day). An instalment overdue
- *   (its payable day, a weekend moved on, gone) is put on today: to collect, flagged «in ritardo»
- *   and left out with includeOverdue false; to pay, always, listed apart with its total. Overdue
- *   more than STALE_OVERDUE_DAYS, either side: out of the projection, listed with a question (paid
- *   already?). Open credit notes come off their own party's open instalments, soonest due first,
- *   never below zero; what is left of them is said. Instalments without a due date, in another
- *   currency or without an amount are counted apart and said.
+ *   due date; each instalment on its due date. An instalment overdue (its payable day, a weekend
+ *   moved on, gone) is put on today: to collect, flagged «in ritardo» and left out with
+ *   includeOverdue false; to pay, always, listed apart with its total. Overdue more than
+ *   STALE_OVERDUE_DAYS, either side: out of the projection, asked about. Open credit notes come off
+ *   their own party's open instalments, soonest due first; what is left of them is said.
  * - Renewals: active only; every payment from its effective due date to the horizon at the price
- *   of that payment, autoPay or by hand alike. One waiting for the person's word is said, not put
- *   on a day. A supplier invoice that is the same payment as a renewal (the provider's name or
- *   partita IVA, the amount within SAME_AMOUNT_PERCENT, the dates within one period) counts once,
- *   as the invoice, and is listed as a probable duplicate; an overdue supplier invoice of an
- *   autoPay renewal is paid by direct debit, never an overdue payable.
- * - Quotes: the latest revision of each accepted quote, what the customer pays less the invoices
- *   to that customer dated from the quote on (each invoice once, oldest quote first), expected
- *   QUOTE_PAY_DAYS after its acceptance and never before QUOTE_MIN_DAYS from today.
- * - Average spending: the expenses of the AVERAGE_DAYS days before today (today left out), less
- *   the supplier invoices (docType fattura: the scadenzario counts them), the payments the renewals
- *   recorded, and the categories an active renewal or a voce covers already; divided by the days
- *   since the first expense of the window, between AVERAGE_MIN_DAYS and AVERAGE_DAYS, half up to the cent.
+ *   of that payment. One waiting for the person's word is said, not put on a day.
+ * - Duplicates: a supplier invoice not overdue that is a renewal's payment (the provider's
+ *   partita IVA, or its whole name, in the supplier's; the amount within 5%; the closest payment
+ *   within min(15 days, half the period)) counts once, as the invoice. An overdue supplier invoice
+ *   of an autoPay renewal, due within 5 days of one of its charges, is paid by direct debit. A voce
+ *   that is a renewal's payment (5%, a word of the name, within 5 days) counts once, as the renewal.
+ *   All are listed.
+ * - Quotes: the latest revision of each accepted quote, what the customer pays less the invoices to
+ *   that customer dated from the first revision's date on (each invoice once), expected
+ *   QUOTE_PAY_DAYS after acceptance and never before QUOTE_MIN_DAYS from today; accepted more than
+ *   QUOTE_STALE_DAYS ago: not counted, asked about.
+ * - Average spending: the expenses of the AVERAGE_DAYS days before today, less those that are a
+ *   renewal's own payments, those that look like a renewal's or a voce's payment (a word of the name,
+ *   the amount within 5%, within 5 days of one of its dates), and the supplier invoices that are in
+ *   the scadenzario (partita IVA and number, or partita IVA and amount within 1% within 10 days);
+ *   divided by the days since the first expense of the window, between AVERAGE_MIN_DAYS and
+ *   AVERAGE_DAYS, half up to the cent.
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
- *   up to `until`, at the amount of that day; only what falls from today to the horizon's end.
- * - A balance said before today is brought to today: plus the invoices to collect marked paid
- *   after its day, less the expenses recorded after it, the autoPay renewals charged after it
- *   (not recorded as expenses) and the voci of those days.
+ *   up to `until`, at the amount of that day.
+ * - A balance is brought to now by instant: plus the instalments to collect marked paid after it,
+ *   less the expenses recorded after it (dated from its day), less the supplier invoices marked
+ *   paid after it that no expense stands for, less the autoPay charges after its day not recorded;
+ *   never the voci. Not when the balance is older than CASHFLOW_LIMITS.maxDays.
  */
-import { AVERAGE_DAYS, AVERAGE_MIN_DAYS, type CashItem, itemAmountAt, itemRecurrence, type Kind, SAME_AMOUNT_PERCENT, STALE_OVERDUE_DAYS } from "./cashflow.ts";
-import { cashBook, unitsToCents } from "./cash-book.ts";
-import { type Category as ExpenseCategory, type Expense, matchCategory } from "./expenses.ts";
+import { AVERAGE_DAYS, AVERAGE_MIN_DAYS, type Balance, CASHFLOW_LIMITS, type CashItem, itemAmountAt, itemRecurrence, type Kind, STALE_OVERDUE_DAYS } from "./cashflow.ts";
+import { NEAR_DAYS, providerMatches, renewalSeries, sameAmount, similarName } from "./cashflow-items.ts";
+import { unitsToCents } from "./cash-book.ts";
+import type { Expense } from "./expenses.ts";
 import { cents as expenseCents } from "./expense-sums.ts";
 import { payDay } from "./invoice-sums.ts";
-import { type Instalment, type Invoice, matchesParty, openAmount, partyKey } from "./invoices.ts";
+import { type Instalment, type Invoice, matchesParty, openAmount, partyKey, vatOf } from "./invoices.ts";
 import { addDays, daysBetween } from "./italian-calendar.ts";
 import { latest, type Quote, quoteTotalsOf } from "./quotes.ts";
 import { halfUp, scaled } from "./quote-sums.ts";
-import { type Recurrence, recurringDates } from "./recurrence.ts";
+import { nearOccurrence, type Recurrence, recurringDates } from "./recurrence.ts";
 import { amountAt, effectiveDue, occurrences } from "./renewal-dates.ts";
-import { EXPENSE_CATEGORY, type Renewal } from "./renewals.ts";
-import { fold } from "./text-match.ts";
+import type { Renewal } from "./renewals.ts";
 import { summarize } from "./timesheet-sums.ts";
 import type { RateRule, WorkEntry } from "./timesheet.ts";
 
 export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average";
 
-/** An accepted quote is expected this many days after its acceptance, and never before QUOTE_MIN_DAYS from today. */
+/** An accepted quote is expected this many days after its acceptance, and never before QUOTE_MIN_DAYS from today; past QUOTE_STALE_DAYS it is asked about. */
 export const QUOTE_PAY_DAYS = 60;
 export const QUOTE_MIN_DAYS = 30;
+export const QUOTE_STALE_DAYS = 150;
 
 /** A hypothetical voce of a what_if: never stored. */
 export type Hypothetical = { readonly kind: Kind; readonly cents: bigint; readonly date: string; readonly months?: number; readonly day?: number; readonly everyDays?: number; readonly name?: string };
@@ -220,57 +225,86 @@ export function renewalFlows(renewals: readonly Renewal[], today: string, end: s
 	return { movements, withoutAmount: unpriced.size, waiting };
 }
 
-/** Within SAME_AMOUNT_PERCENT of each other. */
-export function sameAmount(a: bigint, b: bigint): boolean {
-	const big = a > b ? a : b;
-	const diff = a > b ? a - b : b - a;
-	return diff * 100n <= big * SAME_AMOUNT_PERCENT;
-}
+/** Two movements that are one payment: `renewal` is the renewal's; `other` the invoice (counted instead) or the voce (left out). */
+export type Duplicate = { readonly other: Movement; readonly renewal: Movement };
 
-/** The supplier invoice is from the renewal's provider (its name or partita IVA), or names the renewal. */
-function fromProvider(invoice: Invoice, r: Renewal): boolean {
-	return (r.provider !== undefined && matchesParty(invoice.supplier, r.provider)) || matchesParty(invoice.supplier, r.name);
+/** How far an invoice's due date may be from the renewal's payment: half the period, at most 15 days. */
+function pairDays(r: Renewal): number {
+	return Math.min(15, Math.floor((r.months * 30) / 2));
 }
-
-/** A renewal's period in days, at least a week: how far an invoice's date may be from the payment. */
-function periodDays(r: Renewal): number {
-	return Math.max(7, Math.min(r.months * 31, 366));
-}
-
-export type Duplicate = { readonly invoice: Movement; readonly renewal: Movement };
 
 /**
- * The supplier invoices that are a renewal's payment: the renewal's movement goes, the invoice
- * stays, the pair is listed. And the overdue supplier invoices of an autoPay renewal: paid by
- * direct debit, out of the overdue (and of the movements).
+ * The supplier invoices not overdue that are a renewal's payment: the renewal's movement goes,
+ * the invoice stays. The overdue supplier invoices of an autoPay renewal near one of its charges:
+ * paid by direct debit, out of the overdue and of the movements. See the choices above.
  */
-export function dedupe(invoices: InvoiceFlows, renewals: RenewalFlows | undefined, all: readonly Renewal[]): { readonly invoices: InvoiceFlows; readonly renewals: RenewalFlows | undefined; readonly duplicates: readonly Duplicate[]; readonly autoPaid: readonly Movement[] } {
-	const autoPay = all.filter((r) => r.status === "active" && r.autoPay === true && r.amount !== undefined);
-	const debited = (m: Movement) => m.invoice !== undefined && autoPay.some((r) => fromProvider(m.invoice as Invoice, r) && sameAmount(m.cents, scaled(amountAt(r, m.due ?? m.date) ?? r.amount ?? "0", 2)));
+export function dedupe(invoices: InvoiceFlows, renewals: RenewalFlows | undefined, all: readonly Renewal[], today: string): { readonly invoices: InvoiceFlows; readonly renewals: RenewalFlows | undefined; readonly duplicates: readonly Duplicate[]; readonly autoPaid: readonly Movement[] } {
+	const autoPay = all.filter((r) => r.status === "active" && r.autoPay === true && r.provider !== undefined);
+	const debited = (m: Movement) => {
+		const invoice = m.invoice;
+		const due = m.due ?? m.date;
+		return (
+			invoice !== undefined &&
+			autoPay.some((r) => {
+				if (!providerMatches(invoice.supplier, r.provider as string)) return false;
+				const s = renewalSeries(r, today);
+				const charge = nearOccurrence(s.first, s.recurrence, due, NEAR_DAYS, true);
+				const amount = charge === undefined ? undefined : amountAt(r, charge);
+				return amount !== undefined && sameAmount(m.cents, scaled(amount, 2));
+			})
+		);
+	};
 	const autoPaid = [...invoices.latePay, ...invoices.stale.filter((m) => m.kind === "out")].filter(debited);
 	const gone = new Set<Movement>(autoPaid);
 	const kept = renewals === undefined ? [] : [...renewals.movements];
 	const duplicates: Duplicate[] = [];
 	for (const m of invoices.movements) {
-		if (m.kind !== "out" || m.invoice === undefined || gone.has(m)) continue;
-		const day = m.due ?? m.date;
-		const at = kept.findIndex((r) => r.renewal !== undefined && fromProvider(m.invoice as Invoice, r.renewal) && sameAmount(m.cents, r.cents) && Math.abs(daysBetween(day, r.date)) <= periodDays(r.renewal));
-		if (at < 0) continue;
-		duplicates.push({ invoice: m, renewal: kept[at] as Movement });
-		kept.splice(at, 1);
+		const invoice = m.invoice;
+		if (m.kind !== "out" || m.late === true || invoice === undefined) continue;
+		let best = -1;
+		let bestDays = Number.POSITIVE_INFINITY;
+		kept.forEach((r, i) => {
+			const renewal = r.renewal;
+			if (renewal?.provider === undefined || !providerMatches(invoice.supplier, renewal.provider) || !sameAmount(m.cents, r.cents)) return;
+			const days = Math.abs(daysBetween(m.date, r.date));
+			if (days <= pairDays(renewal) && days < bestDays) {
+				best = i;
+				bestDays = days;
+			}
+		});
+		if (best < 0) continue;
+		duplicates.push({ other: m, renewal: kept[best] as Movement });
+		kept.splice(best, 1);
 	}
 	const fixed: InvoiceFlows = gone.size === 0 ? invoices : { ...invoices, movements: invoices.movements.filter((m) => !gone.has(m)), latePay: invoices.latePay.filter((m) => !gone.has(m)), stale: invoices.stale.filter((m) => !gone.has(m)) };
 	return { invoices: fixed, renewals: renewals === undefined ? undefined : { ...renewals, movements: kept }, duplicates, autoPaid };
 }
 
+/** The voci that are a renewal's payment (see the choices above): their movements go, the renewal's stay; each pair once. */
+export function voceDuplicates(items: readonly Movement[], renewals: readonly Movement[]): { readonly items: Movement[]; readonly duplicates: Duplicate[] } {
+	const gone = new Set<string>();
+	const duplicates: Duplicate[] = [];
+	for (const m of items) {
+		const voce = m.item;
+		if (voce === undefined || voce.kind !== "out" || gone.has(voce.id)) continue;
+		const twin = renewals.find((r) => r.renewal !== undefined && sameAmount(m.cents, r.cents) && (similarName(voce.name, r.renewal.name) || (r.renewal.provider !== undefined && similarName(voce.name, r.renewal.provider))) && Math.abs(daysBetween(m.date, r.date)) <= NEAR_DAYS);
+		if (twin === undefined) continue;
+		gone.add(voce.id);
+		duplicates.push({ other: m, renewal: twin });
+	}
+	return { items: items.filter((m) => m.item === undefined || !gone.has(m.item.id)), duplicates };
+}
+
 export type QuoteFlows = {
 	readonly movements: readonly Movement[];
-	/** Accepted quotes with something left to invoice, inside the horizon or not. */
+	/** Accepted quotes with something left to invoice, inside the horizon or not (the old ones aside). */
 	readonly count: number;
 	/** Accepted quotes expected after the horizon's end: not counted. */
 	readonly beyond: number;
 	/** Accepted quotes all invoiced already. */
 	readonly invoiced: number;
+	/** Accepted more than QUOTE_STALE_DAYS ago with something left: not counted, asked about. */
+	readonly old: readonly { readonly quote: Quote; readonly cents: bigint }[];
 };
 
 /** What an invoice is worth, every instalment, in cents. */
@@ -280,21 +314,24 @@ function invoiceCents(i: Invoice): bigint {
 
 /** The accepted quotes not invoiced yet, as money expected (see the choices above). */
 export function quoteFlows(quotes: readonly Quote[], invoices: readonly Invoice[], today: string, end: string, dayOf: (at: string) => string): QuoteFlows {
+	const firstDate = (q: Quote) => quotes.find((x) => x.base === q.base && x.revision === 0)?.date ?? q.date;
 	const accepted = latest(quotes)
 		.filter((q) => q.status === "accepted")
-		.sort((a, b) => a.date.localeCompare(b.date));
+		.sort((a, b) => firstDate(a).localeCompare(firstDate(b)));
 	const used = new Set<Invoice>();
 	const active = invoices.filter((i) => i.side === "active" && !i.credit && !i.doc.integration && i.doc.currency === "EUR").sort((a, b) => (a.doc.date ?? "").localeCompare(b.doc.date ?? ""));
 	const movements: Movement[] = [];
+	const old: { quote: Quote; cents: bigint }[] = [];
 	let count = 0;
 	let beyond = 0;
 	let invoiced = 0;
 	for (const q of accepted) {
 		let left = quoteTotalsOf(q).net;
 		const customer = q.customer.vat ?? q.customer.name;
+		const since = firstDate(q);
 		for (const i of active) {
 			if (left <= 0n) break;
-			if (used.has(i) || (i.doc.date ?? "") < q.date || !matchesParty(i.customer, customer)) continue;
+			if (used.has(i) || (i.doc.date ?? "") < since || !matchesParty(i.customer, customer)) continue;
 			used.add(i);
 			left -= invoiceCents(i);
 		}
@@ -302,8 +339,12 @@ export function quoteFlows(quotes: readonly Quote[], invoices: readonly Invoice[
 			invoiced++;
 			continue;
 		}
-		count++;
 		const acceptedOn = q.statusMark === undefined ? q.date : dayOf(q.statusMark.at);
+		if (daysBetween(acceptedOn, today) > QUOTE_STALE_DAYS) {
+			old.push({ quote: q, cents: left });
+			continue;
+		}
+		count++;
 		const expected = addDays(acceptedOn, QUOTE_PAY_DAYS);
 		const soonest = addDays(today, QUOTE_MIN_DAYS);
 		const date = expected < soonest ? soonest : expected;
@@ -313,7 +354,7 @@ export function quoteFlows(quotes: readonly Quote[], invoices: readonly Invoice[
 		}
 		movements.push({ date, kind: "in", cents: left, source: "quote", quote: q });
 	}
-	return { movements, count, beyond, invoiced };
+	return { movements, count, beyond, invoiced, old };
 }
 
 /** The days of a voce (or a hypothetical one) from `from` to `to`: once, or by its recurrence up to `until`. */
@@ -344,30 +385,78 @@ export type AverageSpend = {
 	readonly count: number;
 	/** total / days, half up to the cent. */
 	readonly perDay: bigint;
-	/** Expenses left out: payments of renewals; supplier invoices (the scadenzario counts them); of a category a renewal or a voce covers. */
+	/** Expenses left out: a renewal's own payments; payments that look like a renewal's or a voce's; supplier invoices in the scadenzario. */
 	readonly renewalPayments: number;
+	readonly lookalikes: number;
 	readonly invoices: number;
-	readonly covered: number;
-	/** The categories left out, in the expenses' words. */
-	readonly categories: readonly ExpenseCategory[];
 };
 
-/** The expense categories an active renewal or a voce still running covers: their expenses are counted there. «altro» never. */
-function coveredCategories(renewals: readonly Renewal[], items: readonly CashItem[], today: string): Set<ExpenseCategory> {
-	const out = new Set<ExpenseCategory>();
-	for (const r of renewals) if (r.status === "active") out.add(EXPENSE_CATEGORY[r.category]);
-	for (const i of items) {
-		if (i.kind !== "out") continue;
-		const running = itemRecurrence(i) === undefined ? i.date >= today : i.until === undefined || i.until >= today;
-		const category = running ? matchCategory(i.name) : undefined;
-		if (category !== undefined) out.add(category);
+/** A partita IVA compared: digits and letters, no country prefix «IT». */
+function vatKey(vat: string | undefined): string | undefined {
+	if (vat === undefined) return undefined;
+	const v = vat.replace(/[\s.-]+/g, "").toUpperCase();
+	return v === "" ? undefined : v.replace(/^IT(?=\d{11}$)/, "");
+}
+
+/** A document number compared: no case, spaces, and no «fatt.», «n.», «nr.» in front of a digit. */
+export function numberKey(text: string): string {
+	return text
+		.trim()
+		.replace(/^(?:fatt(?:ura)?\.?|n\.?|nr\.?)\s*(?=\d)/i, "")
+		.replace(/\s+/g, "")
+		.toUpperCase();
+}
+
+/** The supplier invoice of the scadenzario an expense stands for: partita IVA and number, or partita IVA and amount within 1% within `days` of `near`. */
+function invoiceOf(e: Expense, invoices: readonly Invoice[], days: number, near: (i: Invoice) => string | undefined): Invoice | undefined {
+	const vat = vatKey(e.supplierVat);
+	if (vat === undefined) return undefined;
+	const cents = expenseCents(e.amount);
+	return invoices.find((i) => {
+		if (i.side !== "passive" || i.credit) return false;
+		if (vatKey(vatOf(i.supplier)) !== vat && vatKey(i.supplier.fiscal) !== vat) return false;
+		if (e.docNumber !== undefined && i.doc.number !== undefined && numberKey(e.docNumber) === numberKey(i.doc.number)) return true;
+		const total = invoiceCents(i);
+		const diff = total > cents ? total - cents : cents - total;
+		const day = near(i);
+		return diff * 100n <= total && day !== undefined && Math.abs(daysBetween(day, e.date)) <= days;
+	});
+}
+
+/** Within 1% of each other: the same payment, rounding aside. */
+function sameCents(a: bigint, b: bigint): boolean {
+	const diff = a > b ? a - b : b - a;
+	return diff * 100n <= (a > b ? a : b);
+}
+
+/** The words an expense is named by: its supplier and note. */
+const expenseName = (e: Expense) => `${e.supplier ?? ""} ${e.note ?? ""}`;
+
+/** The expense looks like a payment of an active renewal or of a voce (see the choices above). */
+function looksLikePlanned(e: Expense, renewals: readonly Renewal[], items: readonly CashItem[], today: string): boolean {
+	const cents = expenseCents(e.amount);
+	const name = expenseName(e);
+	const vat = vatKey(e.supplierVat);
+	for (const r of renewals) {
+		if (r.status !== "active") continue;
+		const named = similarName(name, r.name) || (r.provider !== undefined && (similarName(name, r.provider) || (vat !== undefined && vatKey(r.provider) === vat)));
+		if (!named) continue;
+		const s = renewalSeries(r, today);
+		const at = nearOccurrence(s.first, s.recurrence, e.date, NEAR_DAYS, true);
+		const amount = at === undefined ? undefined : amountAt(r, at);
+		if (amount !== undefined && sameAmount(cents, scaled(amount, 2))) return true;
 	}
-	out.delete("altro");
-	return out;
+	for (const i of items) {
+		if (i.kind !== "out" || !similarName(name, i.name)) continue;
+		const r = itemRecurrence(i);
+		const at = nearOccurrence(i.date, r, e.date, NEAR_DAYS, r !== undefined);
+		if (at !== undefined && sameAmount(cents, scaled(itemAmountAt(i, at), 2))) return true;
+	}
+	return false;
 }
 
 /** The average spending per day (see the choices above). */
-export function averageSpend(expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], today: string): AverageSpend {
+export function averageSpend(expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], invoices: readonly Invoice[], today: string): AverageSpend {
 	const window = addDays(today, -AVERAGE_DAYS);
 	const to = addDays(today, -1);
 	const ofRenewals = new Set<string>();
@@ -375,95 +464,145 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 		for (const roll of r.rolls ?? []) if (roll.expense !== undefined) ofRenewals.add(roll.expense);
 		for (const c of r.charges ?? []) ofRenewals.add(c.expense);
 	}
-	const covered = coveredCategories(renewals, items, today);
-	const left = new Set<ExpenseCategory>();
 	let first: string | undefined;
 	let total = 0n;
 	let count = 0;
 	let renewalPayments = 0;
-	let invoices = 0;
-	let coveredCount = 0;
+	let lookalikes = 0;
+	let inScadenzario = 0;
 	for (const e of expenses) {
 		if (e.date < window || e.date > to) continue;
 		if (first === undefined || e.date < first) first = e.date;
 		if (ofRenewals.has(e.id)) renewalPayments++;
-		else if (e.docType === "fattura") invoices++;
-		else if (covered.has(e.category)) {
-			coveredCount++;
-			left.add(e.category);
-		} else {
+		else if (e.docType === "fattura" && invoiceOf(e, invoices, 10, (i) => i.doc.date) !== undefined) inScadenzario++;
+		else if (looksLikePlanned(e, renewals, items, today)) lookalikes++;
+		else {
 			total += expenseCents(e.amount);
 			count++;
 		}
 	}
 	const from = first ?? window;
 	const days = Math.min(AVERAGE_DAYS, Math.max(AVERAGE_MIN_DAYS, daysBetween(from, today)));
-	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, invoices, covered: coveredCount, categories: [...left].sort() };
+	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario };
 }
+
+/** An instalment marked paid after the balance: what it was, how much, the day. */
+export type RolledInvoice = { readonly invoice: Invoice; readonly instalment: { readonly n: number; readonly count: number }; readonly cents: bigint; readonly date: string };
 
 export type Rolled = {
-	/** The balance's day and the days brought forward (the day after it to yesterday). */
+	/** The balance's day. */
 	readonly from: string;
-	readonly days: number;
-	readonly incassi: bigint;
+	/** Instalments to collect marked paid after the balance: added. */
+	readonly incassi: readonly RolledInvoice[];
+	/** Expenses recorded after the balance: taken off. */
 	readonly expenses: bigint;
+	readonly expenseCount: number;
+	/** Supplier invoices marked paid after the balance, with no expense standing for them: taken off. */
+	readonly paidPassive: readonly RolledInvoice[];
+	/** AutoPay charges after the balance's day, before today, not recorded: taken off. */
 	readonly renewals: bigint;
-	/** The voci of those days, in less out. */
-	readonly items: bigint;
 	/** In less out: what is added to the balance. */
 	readonly net: bigint;
-	/** Supplier invoices marked paid in those days: not in the expenses unless recorded there. */
-	readonly paidPassive: number;
 };
 
-/** A balance said before yesterday brought to today (see the choices above); undefined when there is nothing between. */
-export function rollForward(balanceDate: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], dayOf: (at: string) => string): Rolled | undefined {
-	const from = addDays(balanceDate, 1);
-	const to = addDays(today, -1);
-	if (from > to) return undefined;
-	const book = cashBook(invoices, expenses, { from, to }, dayOf);
-	let charged = 0n;
-	for (const r of renewals) {
-		if (r.status !== "active" || r.autoPay !== true) continue;
-		const recorded = new Set([...(r.charges ?? []).map((c) => c.date), ...(r.rolls ?? []).filter((x) => x.expense !== undefined).map((x) => x.from)]);
-		for (const date of occurrences(r, effectiveDue(r, from), from, to)) {
-			const amount = amountAt(r, date);
-			if (amount !== undefined && !recorded.has(date)) charged += scaled(amount, 2);
+/**
+ * The balance brought to `now` (see the choices above); undefined when nothing moved, or when it
+ * is older than CASHFLOW_LIMITS.maxDays (it is said to be old instead).
+ */
+export function rollForward(balance: Balance, now: string, today: string, invoices: readonly Invoice[], expenses: readonly Expense[], renewals: readonly Renewal[], dayOf: (at: string) => string): Rolled | undefined {
+	if (daysBetween(balance.date, today) > CASHFLOW_LIMITS.maxDays) return undefined;
+	const after = (at: string) => at > balance.at && at <= now;
+	const incassi: RolledInvoice[] = [];
+	const paidPassive: RolledInvoice[] = [];
+	const recorded = expenses.filter((e) => after(e.at) && e.date >= balance.date);
+	for (const invoice of invoices) {
+		if (invoice.credit || invoice.doc.integration || invoice.side === undefined || invoice.doc.currency !== "EUR") continue;
+		for (const i of invoice.instalments) {
+			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n || !after(i.paid.at)) continue;
+			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: dayOf(i.paid.at) };
+			if (invoice.side === "active") incassi.push(row);
+			// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).
+			else if (!expenses.some((e) => invoiceOf(e, [invoice], 5, () => row.date) !== undefined || (sameCents(expenseCents(e.amount), row.cents) && Math.abs(daysBetween(e.date, row.date)) <= 5))) paidPassive.push(row);
 		}
 	}
-	const voci = itemFlows(items, from, to).reduce((n, m) => n + (m.kind === "in" ? m.cents : -m.cents), 0n);
-	return { from: balanceDate, days: daysBetween(from, today), incassi: book.totalIn, expenses: book.totalOut, renewals: charged, items: voci, net: book.totalIn - book.totalOut - charged + voci, paidPassive: book.paidPassive };
+	let charged = 0n;
+	const from = addDays(balance.date, 1);
+	const to = addDays(today, -1);
+	if (from <= to) {
+		for (const r of renewals) {
+			if (r.status !== "active" || r.autoPay !== true) continue;
+			const known = new Set([...(r.charges ?? []).map((c) => c.date), ...(r.rolls ?? []).filter((x) => x.expense !== undefined).map((x) => x.from)]);
+			for (const date of occurrences(r, effectiveDue(r, from), from, to)) {
+				const amount = amountAt(r, date);
+				if (amount === undefined || known.has(date)) continue;
+				const cents = scaled(amount, 2);
+				// An expense of about that amount near the day is the charge: in the expenses, or in the balance.
+				if (expenses.some((e) => sameAmount(expenseCents(e.amount), cents) && Math.abs(daysBetween(e.date, date)) <= 3)) continue;
+				charged += cents;
+			}
+		}
+	}
+	const spent = recorded.reduce((n, e) => n + expenseCents(e.amount), 0n);
+	const inCents = incassi.reduce((n, r) => n + r.cents, 0n);
+	const outCents = paidPassive.reduce((n, r) => n + r.cents, 0n);
+	if (incassi.length === 0 && recorded.length === 0 && paidPassive.length === 0 && charged === 0n) return undefined;
+	return { from: balance.date, incassi, expenses: spent, expenseCount: recorded.length, paidPassive, renewals: charged, net: inCents - spent - outCents - charged };
 }
 
-/** A what_if change: an invoice (or a party's invoices, an accepted quote's customer) paid `days` later, or not at all. */
-export type Change = { readonly who: string; readonly days?: number };
+/** A what_if change: an invoice by number (with its party, when said) or a party's invoices and accepted quotes, paid `days` later, or not at all. */
+export type Change = { readonly invoice?: string; readonly party?: string; readonly days?: number };
 
-/** Whether the movement is the invoice or the party's: the number as written, or the party's name or partita IVA. */
-function concerns(m: Movement, who: string): boolean {
-	if (m.invoice !== undefined) {
-		const number = m.invoice.doc.number;
-		if (number !== undefined && fold(number).replace(/\s+/g, "") === fold(who).replace(/\s+/g, "").replace(/^(?:fatt(?:ura)?\.?|n\.?)/, "")) return true;
-		return matchesParty(m.invoice.side === "active" ? m.invoice.customer : m.invoice.supplier, who);
+function ofParty(m: Movement, party: string): boolean {
+	if (m.invoice !== undefined) return matchesParty(m.invoice.side === "active" ? m.invoice.customer : m.invoice.supplier, party);
+	if (m.quote !== undefined) {
+		const c = m.quote.customer;
+		return matchesParty({ name: c.name, ...(c.vat === undefined ? {} : { vat: { country: "IT", code: c.vat.replace(/^IT/i, "") } }) }, party);
 	}
-	if (m.quote !== undefined) return matchesParty({ name: m.quote.customer.name, ...(m.quote.customer.vat === undefined ? {} : { vat: { country: "IT", code: m.quote.customer.vat.replace(/^IT/, "") } }) }, who);
 	return false;
 }
 
-/** The movements with the delays and drops of a what_if; and how many each change touched (none: the caller says so). */
-export function applyChanges(movements: readonly Movement[], changes: readonly Change[], today: string): { readonly movements: Movement[]; readonly touched: readonly number[] } {
-	const touched = changes.map(() => 0);
+/** Whether the movement is what the change names (see Change). */
+function concerns(m: Movement, c: Change): boolean {
+	if (m.source !== "invoice" && m.source !== "quote") return false;
+	if (c.invoice !== undefined) {
+		const number = m.invoice?.doc.number;
+		if (number === undefined || numberKey(number) !== numberKey(c.invoice)) return false;
+	}
+	return c.party === undefined || ofParty(m, c.party);
+}
+
+export type Changed = {
+	readonly movements: Movement[];
+	/** For each change, the movements it touched: before, and after (none when dropped). */
+	readonly touched: readonly { readonly before: Movement; readonly after?: Movement }[][];
+	/** A change by number alone that more than one invoice has: its index and those movements. */
+	readonly ambiguous?: { readonly index: number; readonly movements: readonly Movement[] };
+};
+
+/** The movements with the delays and drops of a what_if (see Change). */
+export function applyChanges(movements: readonly Movement[], changes: readonly Change[], today: string): Changed {
+	for (const [index, c] of changes.entries()) {
+		if (c.invoice === undefined || c.party !== undefined) continue;
+		const hit = movements.filter((m) => concerns(m, c));
+		if (new Set(hit.map((m) => m.invoice?.key)).size > 1) return { movements: [...movements], touched: changes.map(() => []), ambiguous: { index, movements: hit } };
+	}
+	const touched: { before: Movement; after?: Movement }[][] = changes.map(() => []);
 	const out: Movement[] = [];
 	for (const m of movements) {
-		const at = m.source === "invoice" || m.source === "quote" ? changes.findIndex((c) => concerns(m, c.who)) : -1;
+		const at = changes.findIndex((c) => concerns(m, c));
 		if (at < 0) {
 			out.push(m);
 			continue;
 		}
-		touched[at] = (touched[at] ?? 0) + 1;
 		const days = changes[at]?.days;
-		if (days === undefined) continue;
+		if (days === undefined) {
+			touched[at]?.push({ before: m });
+			continue;
+		}
 		const from = m.date < today ? today : m.date;
-		out.push({ ...m, date: addDays(from, days), delayed: days });
+		const after: Movement = { ...m, date: addDays(from, days), delayed: days };
+		touched[at]?.push({ before: m, after });
+		out.push(after);
 	}
 	return { movements: out, touched };
 }

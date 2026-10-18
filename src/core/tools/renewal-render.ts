@@ -11,9 +11,9 @@ import { addDays } from "../italian-calendar.ts";
 import { italianDate, italianLongDate as long, withDate } from "../italian-format.ts";
 import { type Agenda, type AgendaItem, agendaEmpty, amountAt, currentAmount, effectiveDue, effectiveTermEnd, frequencyText, monthsText, noticeDeadline, noticeText, perPeriodText } from "../renewal-dates.ts";
 import { type Costs, cents, yearlyOf } from "../renewal-sums.ts";
-import type { Category, Renewal } from "../renewals.ts";
+import { type Category, type Renewal, renewalName as who } from "../renewals.ts";
 import { fence } from "../untrusted.ts";
-import { euros, renewalName as who } from "../format-words.ts";
+import { euros } from "../format-words.ts";
 
 /** Rows in one answer; the rest are counted. */
 export const MAX_ROWS = 40;

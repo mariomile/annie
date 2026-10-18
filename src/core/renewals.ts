@@ -208,6 +208,11 @@ export type Renewal = Marker & {
 	readonly edited?: Marker;
 };
 
+/** The renewal's name, with its provider when it has one: to be fenced. */
+export function renewalName(r: Pick<Renewal, "name" | "provider">): string {
+	return `${r.name}${r.provider === undefined ? "" : ` (${r.provider})`}`;
+}
+
 /** «R-0001». */
 export function renewalId(n: number): string {
 	return `R-${String(n).padStart(4, "0")}`;

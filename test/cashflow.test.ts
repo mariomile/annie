@@ -13,8 +13,7 @@ import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
 import type { Expense } from "../src/core/expenses.ts";
-import { withShortDate } from "../src/core/format-words.ts";
-import { withDate } from "../src/core/italian-format.ts";
+import { withDate, withShortDate } from "../src/core/italian-format.ts";
 import type { Quote } from "../src/core/quotes.ts";
 import * as renewalDates from "../src/core/renewal-dates.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
@@ -250,30 +249,38 @@ describe("cashflow sources", () => {
 		expect("rollDate" in renewalDates).toBe(false);
 	});
 
-	it("the average spending (1, 2): supplier invoices, renewal payments and covered categories out; divided by the days since the first expense, 30 to 90", () => {
+	it("the average spending (r2-2): a renewal's own payments, lookalikes of a renewal or voce, and supplier invoices of the scadenzario out; paper invoices and whole categories stay", () => {
 		const e = (id: string, date: string, amount: string, more: Partial<Expense> = {}): Expense => ({ id, date, amount, category: "altro", by: "u", at: NOW.toISOString(), ...more });
+		const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+		const invoices = register([found("a.xml", fattura(ALFA, BETA, { number: "A-5", date: "2026-10-02", total: "400.00", rate: [{ amount: "400.00", due: "2026-11-02" }] }))], [], company);
 		const expenses = [
 			e("S-2026-0001", "2026-09-01", "300"),
 			e("S-2026-0002", "2026-10-01", "600.45"),
 			e("S-2026-0003", TODAY, "50"),
 			e("S-2026-0005", "2026-07-19", "70"),
+			// The renewal's own payment.
 			e("S-2026-0006", "2026-10-15", "30"),
-			// A supplier invoice: the scadenzario counts it.
-			e("S-2026-0007", "2026-10-02", "400", { docType: "fattura", supplier: "Alfa" }),
-			// Software: Canva covers it. Utilities: the voce «Affitto» covers them.
+			// A supplier invoice of the scadenzario, by partita IVA and number; and one by partita IVA and amount within 10 days.
+			e("S-2026-0007", "2026-10-02", "400", { docType: "fattura", supplier: "Alfa", supplierVat: "IT02987650013", docNumber: "fatt. A-5" }),
+			e("S-2026-0012", "2026-10-09", "401", { docType: "fattura", supplier: "Alfa", supplierVat: "02987650013" }),
+			// A paper invoice not in the scadenzario stays.
+			e("S-2026-0013", "2026-10-03", "100", { docType: "fattura", supplier: "Idraulico Rossi" }),
+			// Software stays: no renewal of that name. Rent: the voce «Affitto» on the 1st, 3 days off, amount within 5%.
 			e("S-2026-0008", "2026-10-03", "12", { category: "software e abbonamenti" }),
-			e("S-2026-0009", "2026-10-04", "700", { category: "affitto e utenze" }),
+			e("S-2026-0009", "2026-10-04", "690", { category: "affitto e utenze", supplier: "Affitto ottobre" }),
+			// Same name and amount, but 9 days from the voce's date: stays.
+			e("S-2026-0014", "2026-10-10", "700", { supplier: "Affitto box" }),
 		];
 		const hosting: Renewal = { ...base, id: "R-0001", name: "Hosting", amount: "30", months: 12, due: "2027-10-20", day: 20, autoRenew: false, status: "active", rolls: [{ callId: "x", from: "2026-10-20", to: "2027-10-20", expense: "S-2026-0006", by: "u", at: NOW.toISOString() }] };
 		const rent: CashItem = { id: "C-0001", kind: "out", amount: "700", name: "Affitto", date: "2026-11-01", months: 1, day: 1, by: "u", at: NOW.toISOString() };
-		const a = averageSpend(expenses, [hosting], [rent], TODAY);
-		// From 1 September (47 days): 900,45 € / 47 = 19,158… → 19,16 €.
-		expect(a).toEqual({ from: "2026-09-01", to: "2026-10-17", days: 47, total: 90_045n, count: 2, perDay: 1916n, renewalPayments: 1, invoices: 1, covered: 2, categories: ["affitto e utenze", "software e abbonamenti"] });
+		const a = averageSpend(expenses, [hosting], [rent], invoices, TODAY);
+		// 300 + 600,45 + 100 + 12 + 700 = 1.712,45 € from 1 September (47 days): 36,435… → 36,44 €.
+		expect(a).toEqual({ from: "2026-09-01", to: "2026-10-17", days: 47, total: 171_245n, count: 5, perDay: 3644n, renewalPayments: 1, lookalikes: 1, invoices: 2 });
 		// Just begun: ten days of expenses are divided by 30, never by 10.
-		expect(averageSpend([e("S-2026-0010", "2026-10-08", "300")], [], [], TODAY)).toMatchObject({ from: "2026-10-08", days: 30, perDay: 1000n });
+		expect(averageSpend([e("S-2026-0010", "2026-10-08", "300")], [], [], [], TODAY)).toMatchObject({ from: "2026-10-08", days: 30, perDay: 1000n });
 		// A long register: 90 at most.
-		expect(averageSpend([e("S-2026-0011", "2026-07-20", "900")], [], [], TODAY)).toMatchObject({ days: 90, perDay: 1000n });
-		expect(averageSpend([], [], [], TODAY)).toMatchObject({ total: 0n, count: 0, perDay: 0n });
+		expect(averageSpend([e("S-2026-0011", "2026-07-20", "900")], [], [], [], TODAY)).toMatchObject({ days: 90, perDay: 1000n });
+		expect(averageSpend([], [], [], [], TODAY)).toMatchObject({ total: 0n, count: 0, perDay: 0n });
 	});
 
 	it("a supplier invoice that is a renewal's payment counts once (3); an overdue one of an autoPay renewal is never an overdue payable", () => {
@@ -283,25 +290,25 @@ describe("cashflow sources", () => {
 		const r = renewal({});
 		const ren = renewalFlows([r], TODAY, "2026-12-31");
 		expect(ren.movements.map((m) => m.date)).toEqual(["2026-11-05", "2026-12-05"]);
-		const d = dedupe(flows, ren, [r]);
+		const d = dedupe(flows, ren, [r], TODAY);
 		// 600 and 590 are within 5%: the November payment is the invoice, December stays.
 		expect(d.duplicates).toHaveLength(1);
 		expect(d.renewals?.movements.map((m) => m.date)).toEqual(["2026-12-05"]);
 		expect(d.invoices.movements).toEqual([inv]);
 		// 700 is not the same amount: nothing is a duplicate.
-		expect(dedupe(flows, renewalFlows([renewal({ amount: "700" })], TODAY, "2026-12-31"), [renewal({ amount: "700" })]).duplicates).toHaveLength(0);
+		expect(dedupe(flows, renewalFlows([renewal({ amount: "700" })], TODAY, "2026-12-31"), [renewal({ amount: "700" })], TODAY).duplicates).toHaveLength(0);
 		// Another supplier: nothing.
-		expect(dedupe(flows, renewalFlows([renewal({ provider: "Zeta", name: "Zeta" })], TODAY, "2026-12-31"), [renewal({ provider: "Zeta", name: "Zeta" })]).duplicates).toHaveLength(0);
+		expect(dedupe(flows, renewalFlows([renewal({ provider: "Zeta", name: "Zeta" })], TODAY, "2026-12-31"), [renewal({ provider: "Zeta", name: "Zeta" })], TODAY).duplicates).toHaveLength(0);
 		// Overdue, and the renewal is paid by direct debit: out of the overdue and of the movements.
 		const late: Movement = { ...inv, date: TODAY, late: true, due: "2026-10-05" };
 		const auto = renewal({ autoPay: true });
 		const lateFlows = { ...flows, movements: [late], latePay: [late] };
-		const paid = dedupe(lateFlows, renewalFlows([auto], TODAY, "2026-12-31"), [auto]);
+		const paid = dedupe(lateFlows, renewalFlows([auto], TODAY, "2026-12-31"), [auto], TODAY);
 		expect(paid.autoPaid).toEqual([late]);
 		expect(paid.invoices.latePay).toEqual([]);
 		expect(paid.invoices.movements).toEqual([]);
 		// Without autoPay it stays an overdue payable.
-		expect(dedupe(lateFlows, undefined, [r]).invoices.latePay).toEqual([late]);
+		expect(dedupe(lateFlows, undefined, [r], TODAY).invoices.latePay).toEqual([late]);
 	});
 
 	it("overdue more than 90 days, either side, is out of the projection; overdue payables are listed apart (4)", () => {
@@ -322,16 +329,49 @@ describe("cashflow sources", () => {
 		expect(f.movements.map((m) => m.invoice?.doc.number)).toEqual(["A-1"]);
 	});
 
-	it("a balance said before today is brought to today with the registers (5)", () => {
-		const e = (id: string, date: string, amount: string): Expense => ({ id, date, amount, category: "altro", by: "u", at: NOW.toISOString() });
+	it("a balance is brought to now by instant (r2-1a, 1b, 1e): what was marked or recorded after it, today included; never the voci; not when too old", () => {
+		const said = "2026-10-10T18:00:00.000Z";
+		const balance = { amount: "1000", date: "2026-10-10", by: "u", at: said };
+		const now = NOW.toISOString();
+		const e = (id: string, date: string, amount: string, at: string): Expense => ({ id, date, amount, category: "altro", by: "u", at });
 		const canva: Renewal = { ...base, id: "R-0001", name: "Canva", amount: "12", months: 1, due: "2026-10-12", day: 12, autoRenew: true, autoPay: true, status: "active" };
-		const tax: CashItem = { id: "C-0001", kind: "out", amount: "100", name: "F24", date: "2026-10-16", by: "u", at: NOW.toISOString() };
-		const r = rollForward("2026-10-10", TODAY, [], [e("S-1", "2026-10-11", "40"), e("S-2", "2026-10-18", "5"), e("S-3", "2026-10-10", "7")], [canva], [tax], (at) => at.slice(0, 10));
-		// The 11th's expense; Canva on the 12th; the F24 on the 16th. Today's and the balance day's are not.
-		expect(r).toEqual({ from: "2026-10-10", days: 7, incassi: 0n, expenses: 4000n, renewals: 1200n, items: -10_000n, net: -15_200n, paidPassive: 0 });
-		// A charge recorded as an expense is in the expenses already.
-		expect(rollForward("2026-10-10", TODAY, [], [], [{ ...canva, charges: [{ date: "2026-10-12", callId: "x", expense: "S-9" }] }], [], (at) => at.slice(0, 10))?.renewals).toBe(0n);
-		expect(rollForward("2026-10-17", TODAY, [], [], [], [], (at) => at)).toBeUndefined();
+		const expenses = [
+			// Recorded after the balance: the 11th's and today's count; the balance day's recorded after it too.
+			e("S-1", "2026-10-11", "40", "2026-10-11T09:00:00.000Z"),
+			e("S-2", TODAY, "5", "2026-10-18T07:00:00.000Z"),
+			e("S-3", "2026-10-10", "7", "2026-10-10T19:00:00.000Z"),
+			// Recorded before the balance was said: in it already.
+			e("S-4", "2026-10-10", "9", "2026-10-10T10:00:00.000Z"),
+			// Recorded after now (a clock ahead): not yet.
+			e("S-5", TODAY, "3", "2026-10-18T09:00:00.000Z"),
+		];
+		const r = rollForward(balance, now, TODAY, [], expenses, [canva], (at) => at.slice(0, 10));
+		// 40 + 5 + 7 of expenses; Canva on the 12th, not recorded.
+		expect(r).toEqual({ from: "2026-10-10", incassi: [], expenses: 5200n, expenseCount: 3, paidPassive: [], renewals: 1200n, net: -6400n });
+		// A charge recorded as an expense is in the expenses already; one of about that amount within 3 days too.
+		expect(rollForward(balance, now, TODAY, [], [], [{ ...canva, charges: [{ date: "2026-10-12", callId: "x", expense: "S-9" }] }], (at) => at.slice(0, 10))).toBeUndefined();
+		expect(rollForward(balance, now, TODAY, [], [e("S-6", "2026-10-13", "12.30", "2026-10-10T10:00:00.000Z")], [canva], (at) => at.slice(0, 10))).toBeUndefined();
+		// Nothing after it: nothing to roll. Older than the longest horizon: never rolled.
+		expect(rollForward({ ...balance, date: "2026-10-17", at: now }, now, TODAY, [], expenses, [], (at) => at.slice(0, 10))).toBeUndefined();
+		expect(rollForward({ ...balance, date: "2025-10-01" }, now, TODAY, [], expenses, [canva], (at) => at.slice(0, 10))).toBeUndefined();
+	});
+
+	it("a balance brought to now (r2-1c, 1d): incassi marked paid after it are added and listed; supplier invoices marked paid after it come off unless an expense stands for them", () => {
+		const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+		const A3 = fattura(ALFA, BETA, { number: "A-3", date: "2026-09-20", total: "250.00", rate: [{ amount: "250.00", due: "2026-10-20" }] });
+		const A4 = fattura(ALFA, BETA, { number: "A-4", date: "2026-09-21", total: "80.00", rate: [{ amount: "80.00", due: "2026-10-21" }] });
+		const files = [found("g1.xml", G1), found("a3.xml", A3), found("a4.xml", A4), found("a2.xml", A2)];
+		const keys = register(files, [], company).map((i) => [i.doc.number, i.key] as const);
+		const mark = (n: string, at: string) => ({ invoice: keys.find(([x]) => x === n)?.[1] as string, all: { by: "u", at } });
+		// A-2 marked before the balance: in it already.
+		const paid = [mark("B-70", "2026-10-15T10:00:00.000Z"), mark("A-3", "2026-10-16T10:00:00.000Z"), mark("A-4", "2026-10-16T10:00:00.000Z"), mark("A-2", "2026-10-09T10:00:00.000Z")];
+		const invoices = register(files, paid, company);
+		const expenses: Expense[] = [{ id: "S-1", date: "2026-10-16", amount: "80", supplier: "Alfa", category: "altro", by: "u", at: "2026-10-09T10:00:00.000Z" }];
+		const r = rollForward({ amount: "1000", date: "2026-10-10", by: "u", at: "2026-10-10T18:00:00.000Z" }, NOW.toISOString(), TODAY, invoices, expenses, [], (at) => at.slice(0, 10));
+		expect(r?.incassi.map((x) => [x.invoice.doc.number, x.cents, x.date])).toEqual([["B-70", 122_000n, "2026-10-15"]]);
+		// A-4 has an expense of the same amount within days: not taken off twice.
+		expect(r?.paidPassive.map((x) => [x.invoice.doc.number, x.cents])).toEqual([["A-3", 25_000n]]);
+		expect(r?.net).toBe(122_000n - 25_000n);
 	});
 
 	it("accepted quotes are expected income, less what was invoiced to that customer since (8)", () => {
@@ -349,14 +389,24 @@ describe("cashflow sources", () => {
 		expect(quoteFlows(quotes, invoices, TODAY, "2026-11-30", (at) => at.slice(0, 10))).toMatchObject({ count: 2, beyond: 1 });
 	});
 
-	it("what_if changes: an invoice or a party paid later, or not at all (7)", () => {
-		const m: Movement = { date: "2026-11-10", kind: "in", cents: 100n, source: "invoice", invoice: { side: "active", customer: { name: "Gamma Hotel S.p.A." }, supplier: { name: "Beta" }, doc: { number: "B-71" } } as never };
+	it("what_if changes (r2-7): an invoice by number with its party, a party's invoices; a number two invoices have is ambiguous; the prefix goes only before a digit", () => {
+		const inv = (number: string, customer: string, key: string): Movement => ({ date: "2026-11-10", kind: "in", cents: 100n, source: "invoice", invoice: { key, side: "active", customer: { name: customer }, supplier: { name: "Beta" }, doc: { number } } as never });
+		const m = inv("B-71", "Gamma Hotel S.p.A.", "k1");
+		const twin = inv("B-71", "Delta Carni Srl", "k2");
 		const late: Movement = { ...m, date: TODAY, late: true };
 		const other: Movement = { date: "2026-11-01", kind: "out", cents: 5n, source: "item" };
-		expect(applyChanges([m, other], [{ who: "Gamma", days: 30 }], TODAY).movements.map((x) => x.date)).toEqual(["2026-12-10", "2026-11-01"]);
-		expect(applyChanges([late], [{ who: "B-71", days: 10 }], TODAY).movements.map((x) => [x.date, x.delayed])).toEqual([["2026-10-28", 10]]);
-		expect(applyChanges([m, other], [{ who: "fattura B-71" }], TODAY)).toEqual({ movements: [other], touched: [1] });
-		expect(applyChanges([m], [{ who: "Zeta" }], TODAY).touched).toEqual([0]);
+		expect(applyChanges([m, other], [{ party: "Gamma", days: 30 }], TODAY).movements.map((x) => x.date)).toEqual(["2026-12-10", "2026-11-01"]);
+		expect(applyChanges([late], [{ invoice: "B-71", days: 10 }], TODAY).movements.map((x) => [x.date, x.delayed])).toEqual([["2026-10-28", 10]]);
+		expect(applyChanges([m, other], [{ invoice: "b-71" }], TODAY)).toEqual({ movements: [other], touched: [[{ before: m }]] });
+		expect(applyChanges([m], [{ party: "Zeta" }], TODAY).touched).toEqual([[]]);
+		// Two invoices B-71: by number alone, ambiguous; with the party, the one.
+		expect(applyChanges([m, twin], [{ invoice: "B-71" }], TODAY).ambiguous).toEqual({ index: 0, movements: [m, twin] });
+		expect(applyChanges([m, twin], [{ invoice: "B-71", party: "Delta" }], TODAY).touched).toEqual([[{ before: twin }]]);
+		// «n. 12» is 12; «Nord-12» is not «12».
+		const n12 = inv("12", "Gamma Hotel S.p.A.", "k3");
+		for (const said of ["n. 12", "fattura 12", "fatt.12", "nr 12"]) expect(applyChanges([n12], [{ invoice: said }], TODAY).touched[0]).toHaveLength(1);
+		expect(applyChanges([m], [{ invoice: "fattura B-71" }], TODAY).touched[0]).toHaveLength(0);
+		expect(applyChanges([inv("NORD-12", "Gamma", "k4")], [{ invoice: "12" }], TODAY).touched[0]).toHaveLength(0);
 	});
 });
 
@@ -382,7 +432,7 @@ describe("cashflow input", () => {
 		expect(end(undefined, 45)).toBe("2026-12-01 45 true");
 		expect(end(undefined, 1)).toBe("2026-10-18 1 true");
 		expect(end(undefined, 367)).toContain("days è un numero di giorni da 1 a 366");
-		expect(end("31/12/2027")).toContain("al massimo 366 giorni, oggi compreso");
+		expect(end("31/12/2027")).toContain("al massimo 366 giorni (fino al 18 ottobre 2027)");
 		expect(end("01/10/2026")).toContain("è già passata");
 		expect(end("boh")).toContain("horizon è fin quando guardare");
 	});
@@ -484,9 +534,9 @@ describe("cashflow: balance, alert and voci", () => {
 		expect(await s.run({ op: "set_balance", amount: "3.200,50" })).toContain("Fatto, saldo del 18 ottobre 2026: 3.200,50 €.");
 		expect(await s.run({ op: "set_balance", amount: "8.400", date: "ieri" })).toContain("C'è già un saldo più recente, del 18 ottobre 2026");
 		expect(latestBalance(s.store.read().balances)?.amount).toBe("3200.5");
-		expect(await s.run({ op: "set_alert", amount: 500 })).toBe("Fatto: te lo dico nel brief del mattino, se è attivo, quando nei prossimi 30 giorni, oggi compreso, il saldo previsto scende sotto 500,00 €.");
+		expect(await s.run({ op: "set_alert", amount: 500 })).toBe("Fatto: se il brief del mattino è attivo, ti avviso lì quando nei prossimi 30 giorni il saldo previsto scende sotto 500,00 €.");
 		expect(s.store.read().alertBelow).toBe("500");
-		expect(await s.run({ op: "list_items" })).toContain("Il brief del mattino avvisa se nei prossimi 30 giorni, oggi compreso, il saldo scende sotto 500,00 €.");
+		expect(await s.run({ op: "list_items" })).toContain("Il brief del mattino avvisa se nei prossimi 30 giorni il saldo scende sotto 500,00 €.");
 		expect(await s.run({ op: "set_alert", amount: "" })).toContain("Tolta la soglia");
 		expect(s.store.read().alertBelow).toBeUndefined();
 		expect(await s.run({ op: "set_balance", alert_below: "1k" })).toContain("scende sotto 1.000,00 €");
@@ -506,8 +556,11 @@ describe("cashflow: balance, alert and voci", () => {
 
 	it("an old balance: said once more than 14 days; brought to today with the registers; when a register does not read, said after 2 days (5)", async () => {
 		const s = setup();
-		await s.spend({ op: "add", amount: 40, date: "12/10/2026", supplier: "Carta" });
+		// The balance said yesterday for the 10th; an expense of the 12th recorded today, after it: brought to today.
+		s.at("2026-10-17");
 		await s.run({ op: "set_balance", amount: 1000, date: "10/10/2026" });
+		s.at(TODAY);
+		await s.spend({ op: "add", amount: 40, date: "12/10/2026", supplier: "Carta" });
 		const rolled = outside(await s.run({ op: "forecast", include_average_spend: false }));
 		expect(rolled).toContain("Parto da 960,00 €: il saldo del 10 ottobre 2026 (1.000,00 €) portato a oggi con spese −40,00 €.");
 		expect(rolled).not.toContain("giorni fa");
@@ -576,8 +629,8 @@ describe("cashflow: balance, alert and voci", () => {
 		// Three salaries at 1.600 €, January's at 1.800 €; the partner's 900 € four times; the F24.
 		expect(later).toContain("Uscite 11.000,00 €: voci aggiunte 11.000,00 €.");
 		expect(inside(later)).toContain("• 27/01/2027 uscita 1.800,00 €: Stipendio titolare (voce C-0001)");
-		expect(inside(await s.run({ op: "edit_item", id: "C-0002", frequency: "ogni 2 settimane", until: "30/11/2026", name: "Prelievo socio" }))).toBe("• C-0002 uscita 900,00 € ogni 2 settimane dal 27 ottobre 2026 fino al 30 novembre 2026: Prelievo socio");
-		expect(inside(await s.run({ op: "edit_item", id: "C-0002", until: "", note: "" }))).toBe("• C-0002 uscita 900,00 € ogni 2 settimane dal 27 ottobre 2026: Prelievo socio");
+		expect(inside(await s.run({ op: "edit_item", id: "C-0002", frequency: "ogni 2 settimane", until: "30/11/2026", name: "Prelievo socio" }))).toBe("• C-0002 uscita 900,00 € ogni 14 giorni dal 27 ottobre 2026 fino al 30 novembre 2026: Prelievo socio");
+		expect(inside(await s.run({ op: "edit_item", id: "C-0002", until: "", note: "" }))).toBe("• C-0002 uscita 900,00 € ogni 14 giorni dal 27 ottobre 2026: Prelievo socio");
 		expect(inside(await s.run({ op: "edit_item", id: "C-0003", date: "20/11/2026" }))).toBe("• C-0003 uscita 800,00 € il 20 novembre 2026: F24 saldo");
 		expect(await s.run({ op: "edit_item", id: "C-0003", until: "31/12/2026" })).toContain("Errore: until vale solo per una voce che si ripete.");
 		expect(await s.run({ op: "edit_item", id: "C-0003", new_amount: 5, new_amount_from: "01/12/2026" })).toContain("Errore: new_amount vale solo");
@@ -612,7 +665,7 @@ describe("cashflow: balance, alert and voci", () => {
 		await s.run({ op: "set_balance", amount: 100 });
 		expect(readFileSync(join(s.dir, "cashflow.json.bak"), "utf8")).toContain('"100"');
 		writeFileSync(join(s.dir, "cashflow.json"), "{ not json");
-		expect(s.store.read()).toEqual({ balances: [], items: [], hinted: false, broken: true });
+		expect(s.store.read()).toEqual({ balances: [], items: [], broken: true });
 		for (const args of [{ op: "set_balance", amount: 5 }, STIPENDIO, { op: "forecast" }, { op: "list_items" }]) expect(await s.run(args)).toContain("cashflow.json) non si legge");
 		expect(readFileSync(join(s.dir, "cashflow.json"), "utf8")).toBe("{ not json");
 		const item: CashItem = { id: "C-0001", kind: "out", amount: "10", name: "X", date: TODAY, by: "u", at: NOW.toISOString() };
@@ -626,7 +679,6 @@ describe("cashflow: balance, alert and voci", () => {
 		expect(bad({ next: 2, balances: [], items: [{ ...item, everyDays: 7, months: 1, day: 1 }] })).toBe(true);
 		expect(bad({ next: 2, balances: [], items: [{ ...item, everyDays: 7, amountFrom: { amount: "5", from: TODAY } }] })).toBe(true);
 		expect(bad({ next: 2, balances: [{ amount: "-0.0", date: TODAY, by: "u", at: "x" }], items: [] })).toBe(true);
-		expect(bad({ next: 2, balances: [], items: [], hinted: false })).toBe(true);
 		expect(bad({ next: 2, balances: [{ amount: "1.5", date: TODAY, by: "u", at: "x" }], items: [{ ...item, everyDays: 7, amountFrom: { amount: "5", from: "2026-11-01" } }], hinted: true })).toBe(false);
 	});
 });
@@ -645,9 +697,13 @@ describe("cashflow: forecast", () => {
 		expect(lines[1]).toBe("Il punto più basso: 2.520,92 € il 30 ottobre 2026.");
 		expect(lines[2]).toBe("Non vai mai sotto zero.");
 		expect(lines[3]).toBe("Parto dal saldo di oggi, 3.000,00 €.");
-		expect(lines[4]).toBe("I movimenti più grandi:");
+		// One fence per answer, right after where it starts.
+		expect(lines[4]).toBe("");
+		expect(lines[5]).toBe("Entrate 3.920,00 €: fatture da incassare 1.920,00 € (di cui in ritardo 1.370,00 €); voci aggiunte 2.000,00 €.");
+		expect(answer.match(/<<<dati della cassa /g)).toHaveLength(1);
 		const data = inside(answer);
-		expect(data.split("\n").slice(0, 3)).toEqual([
+		expect(data.split("\n").slice(0, 4)).toEqual([
+			"Le entrate e le uscite più grandi:",
 			"• 31/10 entrata 2.000,00 €: Incasso Rossi senza fattura (voce C-0003)",
 			"• 27/10 uscita 1.500,00 €: Stipendio titolare (voce C-0001)",
 			"• 18/10 entrata 1.120,00 €: fatt. B-70 da Gamma Hotel S.p.A., scaduta il 30/09",
@@ -660,9 +716,9 @@ describe("cashflow: forecast", () => {
 		expect(out).toContain("• 26/10–01/11: +2.000,00 € −1.646,12 € → 4.470,60 € (minimo 2.520,92 € il 30/10)");
 		expect(out).toContain("• 16/11: −819,16 € → 3.033,20 €");
 		expect(out).not.toContain("+0,00");
-		expect(out).toContain("In ritardo da incassare: 1.370,00 € (2 rate), contate a oggi come se il cliente pagasse subito:");
+		expect(out).toContain("In ritardo da incassare: 1.370,00 € (2 rate), contate a oggi come se il cliente pagasse subito.");
 		expect(data).toContain("• 18/10 entrata 250,00 €: fatt. B-71 da Gamma Hotel S.p.A. (rata 1 di 2), scaduta il 10/10");
-		expect(out).toContain("In ritardo da pagare: 400,00 € (1 rata), contata a oggi:");
+		expect(out).toContain("In ritardo da pagare: 400,00 € (1 rata), contata a oggi.");
 		expect(data).toContain("• 18/10 uscita 400,00 €: fatt. A-1 ad Alfa Forniture S.r.l., scaduta il 30/09");
 		expect(out).not.toContain("Gamma");
 		expect(out).not.toContain("Rossi");
@@ -670,8 +726,8 @@ describe("cashflow: forecast", () => {
 		expect(out).toContain("• Una fattura aperta è in un'altra valuta: non contata.");
 		expect(out).toContain("• Un rinnovo aspetta una conferma (scadenza passata, pagato o no?) per 15,00 €: non contato. Chiedi se è pagato.");
 		expect(out).toContain("• Ore lavorate non ancora fatturate per 100,00 €: non contate, entrano quando c'è la fattura.");
-		expect(out).toContain("Ipotesi:\n• i clienti pagano alla scadenza scritta in fattura e tu paghi i fornitori alla loro scadenza\n");
-		expect(out).toContain("• spesa media 19,16 € al giorno: le spese dal 01/09 al 17/10, 900,45 € diviso 47 giorni; lasciate fuori 1 pagamento di rinnovi\n");
+		expect(out).toContain("Ipotesi:\n• i clienti pagano e i fornitori sono pagati alla scadenza scritta in fattura\n");
+		expect(out).toContain("• spesa media 19,16 € al giorno (spese dal 01/09 al 17/10, 900,45 € diviso 47 giorni; lasciati fuori 1 pagamento di rinnovi)\n");
 		// A month: no line about income not invoiced.
 		expect(out).not.toContain("il lavoro ancora da fatturare manca");
 		expect(out).not.toMatch(NO_OPS);
@@ -685,11 +741,11 @@ describe("cashflow: forecast", () => {
 		const red = await s.run({ op: "forecast" });
 		expect(red).toContain("Attenzione: vai in rosso dal 27 ottobre 2026 (−221,60 €).");
 		expect(red).toContain("Il punto più basso: −279,08 € il 30 ottobre 2026.");
-		expect(red).toContain("Scadute da più di 90 giorni, fuori dalla previsione: 500,00 € (1 rata). È stata pagata? Chiedilo a chi ti scrive.");
+		expect(red).toContain("Da incassare, scadute da più di 90 giorni e fuori dalla previsione: 500,00 € (1 rata). È stata incassata? Se no, si può mandare un sollecito.");
 		expect(inside(red)).toContain("• 18/10 entrata 500,00 €: fatt. B-1 da Delta Carni Srl, scaduta il 31/12/2025");
 		await s.run({ op: "set_balance", amount: 3000 });
 		const noLate = await s.run({ op: "forecast", include_overdue: false });
-		expect(noLate).toContain("In ritardo da incassare: 1.370,00 € (2 rate), non contate:");
+		expect(noLate).toContain("In ritardo da incassare: 1.370,00 € (2 rate), non contate.");
 		expect(noLate).toContain("Entrate 2.550,00 €: fatture da incassare 550,00 €; voci aggiunte 2.000,00 €.");
 		const noAverage = await s.run({ op: "forecast", include_average_spend: false });
 		expect(noAverage).toContain("sul conto ci saranno 3.608,00 €");
@@ -704,7 +760,7 @@ describe("cashflow: forecast", () => {
 		expect(answer).toContain("In 90 giorni, oggi compreso (fino al 15 gennaio 2027)");
 		expect(answer).toContain("rinnovi e abbonamenti 42,00 €");
 		expect(answer).toContain("Per settimana");
-		expect(answer).toContain("• le entrate senza fattura, preventivo o voce non ci sono: il lavoro ancora da fatturare manca");
+		expect(answer).toContain("• le entrate senza fattura, preventivo o voce non ci sono, quindi manca il lavoro ancora da fatturare");
 		expect(await s.run({ op: "forecast", horizon: "fino a dicembre" })).toContain("In 75 giorni, oggi compreso (fino al 31 dicembre 2026)");
 		expect(await s.run({ op: "forecast", horizon: "fine anno", days: 300 })).toContain("Per mese");
 		expect(await s.run({ op: "forecast", horizon: "2 anni" })).toContain("Errore: posso guardare al massimo 366 giorni");
@@ -717,7 +773,7 @@ describe("cashflow: forecast", () => {
 		const answer = await s.run({ op: "forecast", horizon: "fine anno" });
 		expect(answer).toContain("Entrate 1.500,00 €: preventivi accettati 1.500,00 €.");
 		expect(inside(answer)).toContain("• 30/11 entrata 1.500,00 €: Cliente Preventivo Srl, preventivo accettato 2026-004");
-		expect(answer).toContain("• preventivi accettati: attesi 60 giorni dopo l'accettazione e non prima di 30 giorni da oggi, meno quanto già fatturato");
+		expect(answer).toContain("• preventivi accettati attesi 60 giorni dopo l'accettazione e non prima di 30 giorni da oggi, meno quanto già fatturato");
 		const without = await s.run({ op: "forecast", horizon: "fine anno", include_quotes: false });
 		expect(without).not.toContain("1.500,00");
 		expect(without).toContain("Preventivi accettati esclusi.");
@@ -731,8 +787,8 @@ describe("cashflow: forecast", () => {
 		await s.run({ op: "set_balance", amount: 1000 });
 		const answer = await s.run({ op: "forecast", include_average_spend: false });
 		expect(answer).toContain("Uscite 122,00 €: fatture da pagare 122,00 €.");
-		expect(answer).toContain("Probabili doppioni, contati una volta sola (la fattura): 1.");
-		expect(inside(answer)).toContain("• fatt. A-7 ad Alfa Forniture S.r.l., 122,00 € = Manutenzione (Alfa Forniture) (rinnovo R-0001) del 01/11");
+		expect(answer).toContain("Probabili doppioni, contati una volta sola: 1.");
+		expect(inside(answer)).toContain("Probabili doppioni:\n• fatt. A-7 ad Alfa Forniture S.r.l., 122,00 €: è il pagamento del 1º novembre di Manutenzione (rinnovo R-0001)");
 	});
 
 	it("reads today once per call, even across midnight (9)", async () => {
@@ -768,17 +824,18 @@ describe("cashflow: what_if", () => {
 		// The call's own arguments are never changed.
 		expect(args.items).toEqual([{ amount: 1000, date: "10/11/2026", name: "Computer nuovo" }]);
 		expect(inside(ok)).toBe("• Computer nuovo: uscita 1.000,00 € il 10 novembre 2026");
-		expect(ok).toContain("Te lo puoi permettere: il punto più basso passa da 3.150,92 € (il 30 ottobre 2026) a 2.663,20 € (il 16 novembre 2026).");
-		expect(ok).toContain("Non conto sui 1.370,00 € di fatture in ritardo da incassare; se arrivano, il punto più basso con l'ipotesi è 4.033,20 € il 16 novembre 2026.");
-		expect(ok).toContain("Saldo al 16 novembre 2026: da 5.033,20 € a 4.033,20 €.");
+		// Every verdict names its case; the end balance is of the same case as the lowest point (r2-5).
+		expect(ok).toContain("Senza contare fatture in ritardo e preventivi, te lo puoi permettere: il punto più basso passa da 3.150,92 € (il 30 ottobre 2026) a 2.663,20 € (il 16 novembre 2026).");
+		expect(ok).toContain("Se arrivano anche 1.370,00 € di fatture in ritardo da incassare, il punto più basso con l'ipotesi è 4.033,20 € il 16 novembre 2026.");
+		expect(ok).toContain("Saldo al 16 novembre 2026, senza contare fatture in ritardo e preventivi: da 3.663,20 € a 2.663,20 €.");
 		expect(ok).not.toContain("Per settimana");
 		expect(outside(ok)).not.toContain("Computer");
 		const no = await s.run({ op: "what_if", amount: 4500, date: "10/11/2026", name: "Auto", days: 30 });
-		expect(no).toContain("Così vai in rosso dal 15 novembre 2026 (−17,64 €)");
+		expect(no).toContain("Senza contare fatture in ritardo e preventivi, così vai in rosso dal ");
 		expect(no).toContain("con queste cifre non ci sta, salvo entrate che non conosco");
 		await s.run({ op: "set_balance", amount: 200 });
 		const already = await s.run({ op: "what_if", amount: 100, date: "10/11/2026", days: 30 });
-		expect(already).toContain("Sei già in rosso dal ");
+		expect(already).toContain("Senza contare fatture in ritardo e preventivi, sei già in rosso dal ");
 		expect(already).toContain(" anche senza; con l'ipotesi il punto più basso passa da ");
 		const december = await s.run({ op: "what_if", amount: 2000, date: "dicembre" });
 		expect(december).toContain("uscita 2.000,00 € il 31 dicembre 2026");
@@ -794,37 +851,51 @@ describe("cashflow: what_if", () => {
 		const s = await scene();
 		await s.run({ op: "set_balance", amount: 200 });
 		const later = await s.run({ op: "what_if", delay: { party: "Gamma", days: 30 }, days: 30 });
-		expect(inside(later)).toBe("• Gamma (3 movimenti): 30 giorni dopo");
-		expect(later).toContain("Il punto più basso passa da −279,08 € (il 30 ottobre 2026) a ");
+		// Each payment touched, by name, with its days (r2-7).
+		expect(inside(later).split("\n")).toEqual([
+			"• fatt. B-70 da Gamma Hotel S.p.A., scaduta il 30/09, 1.120,00 €: dal 18 ottobre al 17 novembre",
+			"• fatt. B-71 da Gamma Hotel S.p.A. (rata 1 di 2), scaduta il 10/10, 250,00 €: dal 18 ottobre al 17 novembre",
+			"• fatt. B-71 da Gamma Hotel S.p.A. (rata 2 di 2), 250,00 €: dal 10 novembre al 10 dicembre",
+		]);
+		// The same day said once (r2-5).
+		expect(later).toContain("Come nella previsione, il punto più basso passa da −279,08 € a −1.649,08 €, il 30 ottobre 2026.");
+		expect(outside(later)).not.toMatch(/moviment/);
 		expect(later).not.toContain("permettere");
 		const dropped = await s.run({ op: "what_if", drop: { invoice: "B-70" }, days: 30 });
-		expect(inside(dropped)).toBe("• B-70 (1 movimento): non pagato");
+		expect(inside(dropped)).toBe("• fatt. B-70 da Gamma Hotel S.p.A., scaduta il 30/09, 1.120,00 €: non pagata");
 		expect(dropped).toContain("Saldo al 16 novembre 2026: da ");
 		const both = await s.run({ op: "what_if", drop: [{ party: "Gamma" }], days: 30 });
-		expect(both).toContain("Il punto più basso passa");
+		expect(both).toContain("il punto più basso passa");
 		expect(await s.run({ op: "what_if", drop: { party: "Zeta Spa" } })).toContain("Errore: non trovo fatture aperte o preventivi accettati per questo");
 		expect(await s.run({ op: "what_if", delay: { party: "Gamma" } })).toContain("Errore: delay: days è un numero di giorni");
 	});
 });
 
 describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
-	it("the brief's line: a one-time hint without a balance (14); red, threshold, an old balance; never an op name", async () => {
+	it("the brief's line (r2-8): a short hint with no balance and no voce but invoices or renewals, never written down; red, threshold, an old balance; never an op name", async () => {
 		const empty = setup();
 		expect(await empty.run({ op: "forecast", compact: true })).toBe("Niente da segnalare sulla cassa: nel brief non scrivere niente sulla cassa.");
 		const hinted = setup({ files: FILES });
 		const hint = await hinted.run({ op: "forecast", compact: true });
-		expect(hint).toBe("Cassa: non so ancora quanto c'è sul conto. Se chi ti scrive ti dice il saldo di oggi, ogni mattina posso avvisarlo quando nei prossimi giorni rischia di andare in rosso. Nel brief riporta questo in una riga; è l'unica volta che lo dico.");
-		expect(hinted.store.read().hinted).toBe(true);
+		expect(hint).toBe("Cassa: se mi dici quanto hai sul conto, posso avvisarti ogni mattina se rischi di andare in rosso. Nel brief riporta questa riga così com'è.");
+		// Read only: nothing written, and the same line the next morning.
+		expect(existsSync(join(hinted.dir, "cashflow.json"))).toBe(false);
+		expect(await hinted.run({ op: "forecast", compact: true })).toBe(hint);
+		// A voce added: no hint (the person knows the cassa), still nothing to say without a balance.
+		await hinted.run(F24);
 		expect(await hinted.run({ op: "forecast", compact: true })).toBe("Niente da segnalare sulla cassa: nel brief non scrivere niente sulla cassa.");
+		const renewalsOnly = setup();
+		await renewalsOnly.renewal({ op: "add", name: "Canva Pro", amount: "12", frequency: "mensile", due: "01/11/2026" });
+		expect(await renewalsOnly.run({ op: "forecast", compact: true })).toBe(hint);
 		const s = await scene();
 		await s.run({ op: "set_balance", amount: 3000 });
 		expect(await s.run({ op: "forecast", compact: true })).toBe("Niente da segnalare sulla cassa: nel brief non scrivere niente sulla cassa.");
 		await s.run({ op: "set_balance", amount: 200 });
 		const red = await s.run({ op: "forecast", compact: true });
-		expect(red).toBe("Cassa: nei prossimi 30 giorni, oggi compreso, andresti in rosso il 27 ottobre 2026 (punto più basso −279,08 € il 30 ottobre 2026). Nel brief riporta questo in una riga.");
+		expect(red).toBe("Cassa: nei prossimi 30 giorni andresti in rosso il 27 ottobre 2026 (punto più basso −279,08 € il 30 ottobre 2026). Nel brief riporta questo in una riga.");
 		await s.run({ op: "set_alert", amount: 3000 });
 		await s.run({ op: "set_balance", amount: 3000 });
-		expect(await s.run({ op: "forecast", compact: true })).toContain("nei prossimi 30 giorni, oggi compreso, scendi sotto la soglia di 3.000,00 € il 27 ottobre 2026");
+		expect(await s.run({ op: "forecast", compact: true })).toContain("nei prossimi 30 giorni scendi sotto la soglia di 3.000,00 € il 27 ottobre 2026");
 		const old = await scene();
 		await old.run({ op: "set_balance", amount: 9000, date: "01/09/2026" });
 		const stale = await old.run({ op: "forecast", compact: true });
@@ -918,15 +989,239 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 			"25/10/2026;Spesa media stimata (7 giorni);;70,00;1120,00",
 			"31/10/2026;Spesa media stimata (6 giorni);;60,00;1060,00",
 			";Totali;300,00;240,00;1060,00",
-			";Ipotesi: i clienti pagano alla scadenza scritta in fattura e tu paghi i fornitori alla loro scadenza;;;",
-			";\"Ipotesi: i rinnovi alla scadenza, con l'importo di quella scadenza; le voci aggiunte nei loro giorni\";;;",
-			";Ipotesi: spesa media 10,00 € al giorno: le spese dal 18/09 al 17/10, 300,00 € diviso 30 giorni;;;",
-			";Ipotesi: tasse, stipendi e rate non registrati non ci sono;;;",
+			// Neutral words, nobody addressed, no double colon (r2-15).
+			"Ipotesi;I clienti pagano e i fornitori sono pagati alla scadenza scritta in fattura;;;",
+			"Ipotesi;\"I rinnovi alla scadenza, con l'importo di quella scadenza; le voci aggiunte nei loro giorni\";;;",
+			"Ipotesi;Spesa media 10,00 € al giorno (spese dal 18/09 al 17/10, 300,00 € diviso 30 giorni);;;",
+			"Ipotesi;Tasse, stipendi e rate non registrati non ci sono;;;",
 			"",
 		]);
 		expect(s.events.filter((e) => e.op === "export").map((e) => e.count)).toEqual([6]);
 		await s.run({ op: "export", horizon: "fine mese" });
 		expect(readdirSync(join(s.root, "cassa")).sort()).toEqual(["previsione-2026-10-18-2.csv", "previsione-2026-10-18.csv"]);
+	});
+});
+
+describe("cashflow, week 55 second round", () => {
+	const base = { category: "software e abbonamenti" as const, by: "u", at: NOW.toISOString() };
+	const f = (t: string) => `<<${t}>>`;
+	const company = { vat: "IT03311220036", name: "Beta Ristorazione Srl", by: "u", at: NOW.toISOString() };
+
+	it("r2-1c, 1d, 1f: the forecast names the incassi and the supplier invoices marked paid after the balance; voci are never rolled; a balance too old is not rolled", async () => {
+		const A3 = fattura(ALFA, BETA, { number: "A-3", date: "2026-09-20", total: "250.00", rate: [{ amount: "250.00", due: "2026-10-20" }] });
+		const s = setup({ files: { "f/g1.xml": G1, "f/a3.xml": A3 } });
+		// A monthly voce on the 12th: between the balance and today, never taken off it.
+		await s.run({ op: "add_item", kind: "uscita", amount: 100, name: "Prelievo", date: "12/10/2026", frequency: "mensile" });
+		s.at("2026-10-17");
+		await s.run({ op: "set_balance", amount: 1000, date: "10/10/2026" });
+		s.at(TODAY);
+		const book = new InvoiceStore(s.dir);
+		for (const [path, xml] of [["f/g1.xml", G1], ["f/a3.xml", A3]] as const) {
+			const [invoice] = register([found(path, xml)], [], company);
+			book.mark({ invoice: invoice?.key as string, count: 1, paid: true, by: "u", at: "2026-10-18T07:00:00.000Z" });
+		}
+		const answer = await s.run({ op: "forecast", include_average_spend: false });
+		const out = outside(answer);
+		expect(out).toContain("Parto da 1.970,00 €: il saldo del 10 ottobre 2026 (1.000,00 €) portato a oggi con incassi +1.220,00 €, fatture di fornitori pagate −250,00 €.");
+		expect(out).toContain("Un incasso segnato come pagato dopo il saldo è aggiunto: se era già nel saldo, il saldo di oggi è più basso. Chiedilo a chi ti scrive.");
+		expect(out).toContain("Una fattura di un fornitore segnata come pagata dopo il saldo non è tra le spese: l'ho tolta.");
+		const data = inside(answer);
+		expect(data).toContain("Incassi segnati come pagati dopo il saldo:\n• fatt. B-70 da Gamma Hotel S.p.A., 1.220,00 €: segnata come pagata il 18/10. Era già nel saldo?");
+		expect(data).toContain("Fatture di fornitori segnate come pagate dopo il saldo:\n• fatt. A-3 ad Alfa Forniture S.r.l., 250,00 €: segnata come pagata il 18/10 e non è tra le spese, l'ho tolta");
+		expect(out).not.toContain("Gamma");
+		expect(answer.match(/<<<dati della cassa /g)).toHaveLength(1);
+		// Said more than the longest horizon ago: not rolled, said old.
+		const far = setup({ files: { "f/g1.xml": G1 } });
+		far.at("2026-10-17");
+		await far.run({ op: "set_balance", amount: 1000, date: "01/10/2025" });
+		far.at(TODAY);
+		const [g1] = register([found("f/g1.xml", G1)], [], company);
+		new InvoiceStore(far.dir).mark({ invoice: g1?.key as string, count: 1, paid: true, by: "u", at: "2026-10-18T07:00:00.000Z" });
+		const old = outside(await far.run({ op: "forecast", include_average_spend: false }));
+		expect(old).toContain("Parto dal saldo del 1º ottobre 2025, 1.000,00 €.");
+		expect(old).toContain("Il saldo è di 382 giorni fa: incassi e spese di questi giorni non sono contati.");
+		expect(old).not.toContain("portato a oggi");
+	});
+
+	it("r2-3: a supplier invoice pairs with a renewal only when not overdue, by partita IVA or the whole name (Sky is not Skyline), with the closest payment; a direct debit within 5 days of a charge", () => {
+		const renewal = (more: Partial<Renewal>): Renewal => ({ ...base, id: "R-0001", name: "Sky TV", provider: "Sky", amount: "30", months: 1, due: "2026-11-01", day: 1, autoRenew: true, status: "active", ...more });
+		const inv = (supplier: { name: string; vat?: { country: string; code: string } }, due: string, more: Partial<Movement> = {}): Movement => ({ date: due, kind: "out", cents: 3000n, source: "invoice", due, invoice: { supplier, customer: { name: "Beta" }, doc: { number: "X" } } as never, ...more });
+		const flows = (movements: Movement[], latePay: Movement[] = []) => ({ movements, late: [], latePay, stale: [], undated: { count: 0, in: 0n, out: 0n }, otherCurrency: 0, unreadable: 0, noSide: 0, creditLeft: { in: 0n, out: 0n } });
+		const sky = renewal({});
+		const ren = renewalFlows([sky], TODAY, "2026-12-31");
+		expect(dedupe(flows([inv({ name: "Skyline Srl" }, "2026-11-01")]), ren, [sky], TODAY).duplicates).toHaveLength(0);
+		expect(dedupe(flows([inv({ name: "Sky Italia S.r.l." }, "2026-11-01")]), ren, [sky], TODAY).duplicates).toHaveLength(1);
+		// The renewal's own name alone never pairs: «Sky TV» is not the supplier «TV Sat».
+		expect(dedupe(flows([inv({ name: "TV Sat" }, "2026-11-01")]), ren, [sky], TODAY).duplicates).toHaveLength(0);
+		// By partita IVA, whatever the names.
+		const byVat = renewal({ provider: "IT02987650013" });
+		expect(dedupe(flows([inv({ name: "Altro Nome", vat: { country: "IT", code: "02987650013" } }, "2026-11-03")]), renewalFlows([byVat], TODAY, "2026-12-31"), [byVat], TODAY).duplicates).toHaveLength(1);
+		// The closest payment: due the 20th of November pairs with 1 December, not 1 November.
+		const closest = dedupe(flows([inv({ name: "Sky Italia" }, "2026-11-20")]), ren, [sky], TODAY);
+		expect(closest.duplicates.map((d) => d.renewal.date)).toEqual(["2026-12-01"]);
+		expect(closest.renewals?.movements.map((m) => m.date)).toEqual(["2026-11-01"]);
+		// Overdue: never paired.
+		const overdue = inv({ name: "Sky Italia" }, TODAY, { late: true, due: "2026-10-01" });
+		expect(dedupe(flows([overdue]), ren, [sky], TODAY).duplicates).toHaveLength(0);
+		// Direct debit: due within 5 days of a charge (5 October) is paid; 25 September is not.
+		const auto = renewal({ autoPay: true, due: "2026-11-05", day: 5 });
+		const near = inv({ name: "Sky Italia" }, TODAY, { late: true, due: "2026-10-05" });
+		const far = inv({ name: "Sky Italia" }, TODAY, { late: true, due: "2026-09-25" });
+		const paid = dedupe(flows([near, far], [near, far]), renewalFlows([auto], TODAY, "2026-12-31"), [auto], TODAY);
+		expect(paid.autoPaid).toEqual([near]);
+		expect(paid.invoices.latePay).toEqual([far]);
+	});
+
+	it("r2-4: a voce that is a renewal's payment is listed under «Probabili doppioni» and only the renewal counts; add_item tells two F24 a fortnight apart from a duplicate", async () => {
+		const s = setup();
+		await s.renewal({ op: "add", name: "Affitto ufficio", provider: "Immobiliare Sole", amount: "700", frequency: "mensile", due: "01/11/2026" });
+		await s.run({ op: "add_item", kind: "uscita", amount: 690, name: "Affitto", date: "ogni 1 del mese", confirm: true });
+		await s.run({ op: "set_balance", amount: 5000 });
+		const answer = await s.run({ op: "forecast", include_average_spend: false });
+		expect(answer).toContain("Uscite 700,00 €: rinnovi e abbonamenti 700,00 €.");
+		expect(answer).toContain("Probabili doppioni, contati una volta sola: 1.");
+		expect(inside(answer)).toContain("Probabili doppioni:\n• Affitto (voce C-0001), 690,00 €: è il pagamento del 1º novembre di Affitto ufficio (rinnovo R-0001)");
+		// F24 saldo on 16/11 and F24 acconto on 30/11: two payments. A third F24 on the 20th: asked.
+		expect(await s.run({ op: "add_item", kind: "uscita", amount: 800, name: "F24 saldo", date: "16/11/2026" })).toContain("Aggiunta la voce C-0002");
+		expect(await s.run({ op: "add_item", kind: "uscita", amount: 800, name: "F24 acconto", date: "30/11/2026" })).toContain("Aggiunta la voce C-0003");
+		expect(await s.run({ op: "add_item", kind: "uscita", amount: 790, name: "F24", date: "20/11/2026" })).toContain("Non l'ho aggiunta");
+		// Monthly on the 1st and monthly on the 15th: no payment within 5 days, not a duplicate.
+		expect(await s.run({ op: "add_item", kind: "uscita", amount: 690, name: "Affitto box", date: "ogni 15 del mese" })).toContain("Aggiunta la voce C-0004");
+	});
+
+	it("r2-5: accepted quotes: invoices counted from the first revision's date; accepted more than 150 days ago listed, not counted; the cautious what_if leaves quotes out", async () => {
+		const quote = (more: Partial<Quote>): Quote =>
+			({ number: "2026-005", base: "2026-005", revision: 0, date: "2026-09-01", validDays: 30, customer: { name: "Gamma Hotel S.p.A.", vat: "01234567897" }, lines: [{ description: "Lavoro", quantity: "1", price: "1000", vat: 0, vatNote: "N2.2" }], status: "accepted", statusMark: { by: "u", at: "2026-10-05T10:00:00Z" }, by: "u", at: NOW.toISOString(), ...more }) as Quote;
+		const invoices = register([found("g.xml", fattura(BETA, GAMMA, { number: "B-99", date: "2026-09-15", total: "300.00", rate: [{ amount: "300.00", due: "2026-11-10" }] }))], [], company);
+		// Revision 1 of 5 October; the invoice of 15 September is after the first revision (1 September): taken off.
+		const revised = [quote({ status: "superseded" as never, statusMark: undefined }), quote({ number: "2026-005-R1", revision: 1, date: "2026-10-05" })];
+		const flows = quoteFlows(revised, invoices, TODAY, "2027-01-31", (at) => at.slice(0, 10));
+		expect(flows.movements.map((m) => m.cents)).toEqual([70_000n]);
+		const old = quoteFlows([quote({ statusMark: { by: "u", at: "2026-05-01T10:00:00Z" } })], [], TODAY, "2027-01-31", (at) => at.slice(0, 10));
+		expect(old).toMatchObject({ movements: [], count: 0 });
+		expect(old.old.map((o) => [o.quote.number, o.cents])).toEqual([["2026-005", 100_000n]]);
+		const s = setup({ quotes: [quote({ number: "2026-006", base: "2026-006", statusMark: { by: "u", at: "2026-05-01T10:00:00Z" } }), quote({ number: "2026-007", base: "2026-007", customer: { name: "Cliente Nuovo Srl" }, lines: [{ description: "Sito", quantity: "1", price: "1500", vat: 0, vatNote: "N2.2" }] as never })] });
+		await s.run({ op: "set_balance", amount: 2000 });
+		const answer = await s.run({ op: "forecast", horizon: "fine anno", include_average_spend: false });
+		expect(answer).toContain("Un preventivo accettato da più di 150 giorni non è contato: 1.000,00 €. Chiedi a chi ti scrive se è ancora da fare o da fatturare.");
+		expect(inside(answer)).toContain("Preventivi accettati da più di 150 giorni:\n• Gamma Hotel S.p.A., preventivo accettato 2026-006, 1.000,00 € non ancora fatturati. È ancora da fare o da fatturare?");
+		expect(answer).toContain("Entrate 1.500,00 €: preventivi accettati 1.500,00 €.");
+		const w = await s.run({ op: "what_if", amount: 2500, date: "10/12/2026", name: "Auto", horizon: "fine anno" });
+		expect(w).toContain("Senza contare fatture in ritardo e preventivi, così vai in rosso dal 10 dicembre 2026 (−500,00 €)");
+		expect(w).toContain("Se arrivano anche 1.500,00 € di preventivi accettati, il punto più basso con l'ipotesi è 1.000,00 € il 10 dicembre 2026.");
+		expect(w).toContain("Saldo al 31 dicembre 2026, senza contare fatture in ritardo e preventivi: da 2.000,00 € a −500,00 €.");
+	});
+
+	it("r2-6: edit_item applies only the fields it touches onto the voce as saved: a change in between survives", async () => {
+		const s = setup();
+		await s.run(STIPENDIO);
+		// A reads the voce, B changes the amount, then A writes its note.
+		const race: ToolContext = {
+			...fresh(),
+			step: async (key, work) => {
+				if (key === "apply") s.store.edit("C-0001", (i) => ({ ...i, amount: "1700" }));
+				return work();
+			},
+		};
+		expect(await s.run({ op: "edit_item", id: "C-0001", note: "da A" }, race)).toContain("Fatto, cambiata la voce C-0001");
+		expect(s.store.read().items[0]).toMatchObject({ amount: "1700", note: "da A", name: "Stipendio titolare", months: 1, day: 27 });
+	});
+
+	it("r2-7: delay or drop by number: with the party when two invoices have it, else refused with both listed; each payment said by name, no «movimento»", async () => {
+		const files = {
+			"f/d.xml": fattura(BETA, DELTA, { number: "B-95", date: "2026-10-01", total: "3000.00", rate: [{ amount: "3000.00", due: "2026-11-08" }] }),
+			"f/g.xml": fattura(BETA, GAMMA, { number: "B-95", date: "2026-10-02", total: "100.00", rate: [{ amount: "100.00", due: "2026-11-20" }] }),
+		};
+		const s = setup({ files });
+		await s.run({ op: "set_balance", amount: 10_000 });
+		const twice = await s.run({ op: "what_if", delay: { invoice: "B-95", days: 60 } });
+		expect(twice).toContain("Errore: più fatture aperte hanno questo numero; quale? Ripeti con party, il cliente o il fornitore:");
+		expect(inside(twice).split("\n")).toEqual(["• fatt. B-95 da Delta Carni Srl, 3.000,00 €", "• fatt. B-95 da Gamma Hotel S.p.A., 100,00 €"]);
+		const one = await s.run({ op: "what_if", delay: { invoice: "B-95", party: "Delta", days: 60 }, include_average_spend: false });
+		expect(inside(one)).toBe("• fatt. B-95 da Delta Carni Srl, 3.000,00 €: dall'8 novembre al 7 gennaio");
+		expect(one).toContain("In nessuno dei due casi vai sotto zero.");
+		expect(outside(one)).not.toMatch(/moviment/);
+		const dropped = await s.run({ op: "what_if", drop: { invoice: "B-95", party: "Gamma" }, horizon: "fine anno" });
+		expect(inside(dropped)).toBe("• fatt. B-95 da Gamma Hotel S.p.A., 100,00 €: non pagata");
+	});
+
+	it("r2-9: «1.500k» and «1.500 mila» are refused as ambiguous; «1,5k» and «1500k» read", () => {
+		expect(readItemAmount("1.500k", f)).toEqual({ problem: expect.stringContaining("può voler dire migliaia o milioni") });
+		expect(readSignedEuros("-1.500 mila", f, "amount")).toEqual({ problem: expect.stringContaining("può voler dire migliaia o milioni") });
+		expect(readItemAmount("1,5k", f)).toBe("1500");
+		expect(readItemAmount("1500k", f)).toBe("1500000");
+	});
+
+	it("r2-10, 11, 12: a negative end reads «il conto sarà a −…»; «oggi compreso» only in the headline and the export; the set_alert reply", async () => {
+		const s = setup();
+		await s.run({ op: "set_balance", amount: "-12.606,06" });
+		expect((await s.run({ op: "forecast" })).split("\n")[0]).toBe("In 30 giorni, oggi compreso (fino al 16 novembre 2026), il conto sarà a −12.606,06 €.");
+		const alert = await s.run({ op: "set_alert", amount: 500 });
+		expect(alert).toBe("Fatto: se il brief del mattino è attivo, ti avviso lì quando nei prossimi 30 giorni il saldo previsto scende sotto 500,00 €.");
+		const brief = await s.run({ op: "forecast", compact: true });
+		expect(brief).toContain("Cassa: nei prossimi 30 giorni scendi sotto la soglia di 500,00 €");
+		for (const text of [alert, brief, await s.run({ op: "list_items" })]) expect(text).not.toContain("oggi compreso");
+	});
+
+	it("r2-15: the CSV footer is in neutral words: nobody addressed, no question, at most one colon", async () => {
+		const s = setup({ files: { "f/nd.xml": UNDATED } });
+		await s.renewal({ op: "add", name: "Dominio rossi.it", amount: "15", due: "10/10/2026" });
+		await s.run({ op: "set_balance", amount: 100 });
+		await s.run({ op: "export", horizon: "fine mese" });
+		const rows = readFileSync(join(s.root, "cassa", "previsione-2026-10-18.csv"), "utf8").split("\r\n");
+		const footer = rows.filter((r) => r.startsWith("Ipotesi;") || r.startsWith("Fuori previsione;"));
+		expect(footer).toContain("Fuori previsione;Un rinnovo aspetta una conferma (scadenza passata, pagato o no?) per 15,00 €: non contato.;;;");
+		expect(footer).toContain("Fuori previsione;Una rata aperta è senza scadenza in fattura, non contata: da incassare 150,00 €.;;;");
+		for (const r of footer) {
+			expect(r).not.toMatch(/\b(?:tu|ti|Chiedi|chiedi)\b/);
+			expect((r.split(";")[1] ?? "").split(":").length).toBeLessThanOrEqual(2);
+		}
+	});
+
+	it("r2-17: dates and frequencies: a weekday is the next one, «ogni 2 settimane» and «ogni giorno» as a date, «il mese prossimo», «fine semestre», «un mese», quindicinale every 14 days, «due volte al mese» refused", () => {
+		const day = (date: string) => readItemFields({ kind: "uscita", amount: 10, date }, TODAY, f);
+		// Sunday 18 October.
+		expect(day("lunedì")).toMatchObject({ date: "2026-10-19" });
+		expect(day("venerdì prossimo")).toMatchObject({ date: "2026-10-23" });
+		expect(day("lunedì prossimo")).toMatchObject({ date: "2026-10-19" });
+		expect(day("lunedì")).not.toHaveProperty("everyDays");
+		expect(day("ogni 2 settimane")).toMatchObject({ date: TODAY, everyDays: 14 });
+		expect(day("ogni giorno")).toMatchObject({ date: TODAY, everyDays: 1 });
+		expect(readFrequency("ogni giorno")).toEqual({ days: 1 });
+		expect(readFrequency("due volte al mese")).toEqual({ problem: expect.stringContaining("aggiungine due mensili") });
+		const fortnight = readItemFields({ kind: "uscita", amount: 10, date: "20/10/2026", frequency: "quindicinale" }, TODAY, f);
+		expect(fortnight).toMatchObject({ everyDays: 14, notes: [expect.stringContaining("ogni 14 giorni")] });
+		const end = (h: string, today = TODAY) => {
+			const r = readHorizon(h, undefined, today);
+			return "problem" in r ? r.problem : `${r.end} ${r.days}`;
+		};
+		expect(end("il mese prossimo")).toBe("2026-11-30 44");
+		expect(end("fine semestre")).toBe("2026-12-31 75");
+		expect(end("un mese")).toBe("2026-11-17 31");
+		expect(end("un mese", "2026-10-31")).toBe("2026-11-30 31");
+	});
+
+	it("r2-18, 19: shared words live in one place; voci are named by whole words", async () => {
+		const formatWords = await import("../src/core/format-words.ts");
+		const italian = await import("../src/core/italian-format.ts");
+		const windows = await import("../src/core/invoice-windows.ts");
+		const renewals = await import("../src/core/renewals.ts");
+		const renewalTools = await import("../src/core/tools/renewal-tools.ts");
+		const quoteRender = await import("../src/core/tools/quote-render.ts");
+		const items = await import("../src/core/cashflow-items.ts");
+		expect(Object.keys(formatWords).sort()).toEqual(["euros", "n1"]);
+		expect(formatWords.euros(-1_260_606n)).toBe("−12.606,06 €");
+		expect(formatWords.euros(5n)).toBe("0,05 €");
+		expect(quoteRender.euros).toBe(formatWords.euros);
+		expect(windows.dayMonth).toBe(italian.dayMonth);
+		expect(renewals.renewalName({ name: "Canva Pro", provider: "Canva" })).toBe("Canva Pro (Canva)");
+		expect("EXPENSE_CATEGORY" in renewalTools).toBe(false);
+		expect(items.similarName("Sky", "Skyline")).toBe(false);
+		expect(items.similarName("Affitto", "Affitto ufficio")).toBe(true);
+		const voce = (id: string, name: string): CashItem => ({ id, kind: "out", amount: "10", name, date: TODAY, by: "u", at: NOW.toISOString() });
+		const list = [voce("C-0001", "Rata mutuo"), voce("C-0002", "Stipendio")];
+		expect(items.findItem({ name: "mutuo" }, list, (i) => i.id, f)).toEqual({ item: list[0] });
+		expect(items.findItem({ name: "mut" }, list, (i) => i.id, f)).toEqual({ error: expect.stringContaining("nessuna voce") });
 	});
 });
 

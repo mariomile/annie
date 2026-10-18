@@ -1,11 +1,12 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
-import { BRIEF_DAYS, CASHFLOW_LIMITS, type CashItem, CashflowError, cashflowAgentReads, itemId, parseItemId, ROLL_NOTE_DAYS, signedCents, STALE_BALANCE_DAYS } from "../cashflow.ts";
+import { BRIEF_DAYS, CASHFLOW_LIMITS, type CashItem, CashflowError, cashflowAgentReads, itemId, itemRecurrence, parseItemId, ROLL_NOTE_DAYS, signedCents, STALE_BALANCE_DAYS } from "../cashflow.ts";
+import { applyPatch, editPatch, findItem, type Found, lookalikes } from "../cashflow-items.ts";
 import { project, type Projection } from "../cashflow-projection.ts";
-import { applyChanges, averageSpend, type Change, dedupe, type Hypothetical, hypotheticalFlows, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, sameAmount, unbilledPotential } from "../cashflow-sources.ts";
+import { applyChanges, averageSpend, type Change, dedupe, type Hypothetical, hypotheticalFlows, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, unbilledPotential, voceDuplicates } from "../cashflow-sources.ts";
 import { CASHFLOW_BROKEN, type CashflowStore, latestBalance } from "../cashflow-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
-import { euros, renewalName } from "../format-words.ts";
+import { euros } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { register } from "../invoices.ts";
@@ -13,13 +14,11 @@ import { addDays, dayOfIn, daysBetween, todayIn } from "../italian-calendar.ts";
 import { withDate } from "../italian-format.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { scaled } from "../quote-sums.ts";
-import { currentAmount } from "../renewal-dates.ts";
 import type { RenewalStore } from "../renewal-store.ts";
-import { fold } from "../text-match.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { readFrequency, readHorizon, readHypothetical, readItemAmount, readItemFields, readKind, readSignedEuros, readUntil } from "./cashflow-input.ts";
-import { briefAnswer, briefHint, type ChangeLine, daysText, fenced, forecastAnswer, itemLine, listAnswer, projectionCsv, staleLine, startOf, type View, whatIfAnswer } from "./cashflow-render.ts";
+import { readHorizon, readHypothetical, readItemFields, readSignedEuros } from "./cashflow-input.ts";
+import { briefAnswer, briefHint, type ChangeLine, daysText, fenced, forecastAnswer, itemLine, listAnswer, movementLabel, projectionCsv, staleLine, startOf, type View, whatIfAnswer } from "./cashflow-render.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
 import { isProblem } from "./quote-input.ts";
 
@@ -59,22 +58,6 @@ const DESCRIPTION = [
 ].join(" ");
 
 const BALANCE_DAY: DayWords = { field: "date è il giorno del saldo", future: "il saldo si dice per oggi o un giorno passato" };
-
-const STOP_WORDS = new Set(["del", "della", "dei", "delle", "per", "con", "dal", "alla", "allo", "agli", "the", "mensile", "annuale", "pagamento", "spesa", "costo", "voce", "srl", "spa"]);
-
-/** The words of a name that tell it apart: folded, three letters or more, not filler. */
-function nameWords(text: string): string[] {
-	return fold(text)
-		.split(/[^a-z0-9]+/)
-		.filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
-}
-
-/** Two names share a word (or one starts the other's). */
-function similarName(a: string, b: string): boolean {
-	const x = nameWords(a);
-	const y = nameWords(b);
-	return x.some((w) => y.some((v) => v.startsWith(w) || w.startsWith(v)));
-}
 
 type Flags = { readonly includeOverdue: boolean; readonly includeAverage: boolean; readonly includeQuotes: boolean };
 
@@ -203,7 +186,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 
 	function alertLine(alert: string | null): string {
 		if (alert === null) return "Tolta la soglia: il brief del mattino avvisa solo se il saldo previsto va sotto zero.";
-		return `Fatto: te lo dico nel brief del mattino, se è attivo, quando nei prossimi ${daysText(BRIEF_DAYS)}, il saldo previsto scende sotto ${listAmount(alert)}.`;
+		return `Fatto: se il brief del mattino è attivo, ti avviso lì quando nei prossimi ${BRIEF_DAYS} giorni il saldo previsto scende sotto ${listAmount(alert)}.`;
 	}
 
 	async function setBalance(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -260,23 +243,6 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		return t;
 	}
 
-	/** An active renewal or a voce of about the same amount and a name alike: to be asked about before adding. */
-	function lookalikes(name: string, kind: CashItem["kind"], cents: bigint, items: readonly CashItem[], day: string): string[] {
-		const out: string[] = [];
-		const renewals = options.renewals.read();
-		if (kind === "out" && !renewals.broken) {
-			for (const r of renewals.renewals) {
-				const price = r.status === "active" ? currentAmount(r, day) : undefined;
-				if (price === undefined || !sameAmount(scaled(price, 2), cents)) continue;
-				if (similarName(name, r.name) || (r.provider !== undefined && similarName(name, r.provider))) out.push(`• rinnovo ${r.id}: ${renewalName(r)}, ${euros(scaled(price, 2))}`);
-			}
-		}
-		for (const i of items) {
-			if (i.kind === kind && sameAmount(scaled(i.amount, 2), cents) && similarName(name, i.name)) out.push(itemLine(i, day));
-		}
-		return out;
-	}
-
 	async function addItem(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 		// This call recorded its voce already (run again after a stop): its audit, then the same answer.
 		const book = readable();
@@ -294,7 +260,10 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const fields = readItemFields(args, day, fenced);
 		if (isProblem(fields)) return `Errore: ${fields.problem}.`;
 		if (args.confirm !== true) {
-			const twins = lookalikes(name, fields.kind, scaled(fields.amount, 2), book.items, day);
+			const renewals = options.renewals.read();
+			const recurrence = itemRecurrence(fields);
+			const voce = { name, kind: fields.kind, cents: scaled(fields.amount, 2), date: fields.date, ...(recurrence === undefined ? {} : { recurrence }) };
+			const twins = lookalikes(voce, book.items, renewals.broken ? [] : renewals.renewals, day, (i) => itemLine(i, day), euros);
 			if (twins.length > 0) {
 				return [
 					"Non l'ho aggiunta: c'è già qualcosa di simile, con un importo quasi uguale:",
@@ -327,23 +296,11 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		return [`Aggiunta la voce ${i.id}, entra nella previsione.`, fenced(itemLine(i, day)), ...notes, "Ripeti date e importo come sono scritti."].join("\n");
 	}
 
-	/** The voce an id or a name names: by id; by name when exactly one matches; else the candidates, or why not. */
-	function findItem(args: Record<string, unknown>, items: readonly CashItem[], day: string): CashItem | string {
-		if (typeof args.id === "string" && args.id.trim() !== "") {
-			const n = parseItemId(args.id);
-			if (n === undefined) return "Errore: l'id di una voce è come C-0001.";
-			const found = items.find((i) => i.id === itemId(n));
-			return found ?? `missing:${itemId(n)}`;
-		}
-		if (typeof args.name === "string" && args.name.trim() !== "") {
-			const words = nameWords(args.name);
-			const all = fold(args.name).trim();
-			const matches = items.filter((i) => fold(i.name).trim() === all || (words.length > 0 && words.every((w) => nameWords(i.name).some((v) => v.startsWith(w)))));
-			if (matches.length === 1) return matches[0] as CashItem;
-			if (matches.length === 0) return "Errore: nessuna voce ha questo nome. Guarda l'elenco con op list_items e indica l'id.";
-			return `Errore: più voci hanno questo nome; quale? Indica l'id.\n${fenced(matches.slice(0, 15).map((i) => itemLine(i, day)).join("\n"))}`;
-		}
-		return "Errore: indica la voce con id (C-0001) o con name.";
+	/** The voce an id or a name names, or the error to say. */
+	function located(found: Found): CashItem | string {
+		if ("item" in found) return found.item;
+		if ("missing" in found) return `Errore: non trovo la voce ${found.missing}. Guarda l'elenco con op list_items.`;
+		return `Errore: ${found.error}.`;
 	}
 
 	async function editItem(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -354,98 +311,18 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 			await audit(ctx, "edit_item", 1);
 			return edited(again, [], day);
 		}
-		const found = findItem(args.id !== undefined ? { id: args.id } : { name: args.name }, book.items, day);
-		if (typeof found === "string") return found.startsWith("missing:") ? `Errore: non trovo la voce ${found.slice(8)}. Guarda l'elenco con op list_items.` : found;
-		const change = editedFields(found, args, day);
+		const found = located(findItem(args.id !== undefined ? { id: args.id } : { name: args.name }, book.items, (i) => itemLine(i, day), fenced));
+		if (typeof found === "string") return found;
+		const change = editPatch(found, args, day, fenced);
 		if (typeof change === "string") return change;
-		const { item, notes } = change;
-		const saved = await ctx.step("apply", async () => store.edit(found.id, (current) => ({ ...item, id: current.id, ...(current.callId === undefined ? {} : { callId: current.callId }), by: current.by, at: current.at, lastCall: ctx.callId, edited: { by: who(ctx), at: now().toISOString() } })));
+		// Only the fields this call touches, onto the voce as it is saved at the write: another change in between stays.
+		const saved = await ctx.step("apply", async () => store.edit(found.id, (current) => ({ ...applyPatch(current, change.patch), lastCall: ctx.callId, edited: { by: who(ctx), at: now().toISOString() } })));
 		await audit(ctx, "edit_item", 1);
-		return edited(saved, notes, day);
+		return edited(saved, change.notes, day);
 	}
 
 	function edited(i: CashItem, notes: readonly string[], day: string): string {
 		return [`Fatto, cambiata la voce ${i.id}:`, fenced(itemLine(i, day)), ...notes, "Ripeti date e importo come sono scritti."].join("\n");
-	}
-
-	/** The voce with what `args` changes; an error to say otherwise. With an id, `name` renames. */
-	function editedFields(item: CashItem, args: Record<string, unknown>, day: string): { item: CashItem; notes: string[] } | string {
-		const notes: string[] = [];
-		const renames = args.id !== undefined && args.name !== undefined;
-		const touched = ["amount", "date", "until", "note", "frequency", "kind", "new_amount", "new_amount_from"].some((k) => args[k] !== undefined) || renames;
-		if (!touched) return "Errore: dimmi cosa cambiare: name (con id), amount, date, until, note, frequency, kind, o new_amount con new_amount_from.";
-		let next: Record<string, unknown> = { ...item };
-		delete next.edited;
-		delete next.lastCall;
-		if (renames) {
-			const name = textField(args.name, CASHFLOW_LIMITS.name, "name");
-			if (name === undefined || (typeof name === "object" && isProblem(name))) return `Errore: ${typeof name === "object" ? name.problem : "name"}.`;
-			if (name === "") return "Errore: name non può essere vuoto.";
-			next.name = name;
-		}
-		if (args.kind !== undefined) {
-			const k = readKind(args.kind);
-			if (isProblem(k)) return `Errore: ${k.problem}.`;
-			next.kind = k;
-		}
-		if (args.amount !== undefined) {
-			const a = readItemAmount(args.amount, fenced);
-			if (a === undefined || isProblem(a)) return `Errore: ${a === undefined ? "amount" : a.problem}.`;
-			next.amount = a;
-		}
-		if (args.note !== undefined) {
-			const note = textField(args.note, CASHFLOW_LIMITS.note, "note");
-			if (note !== undefined && isProblem(note)) return `Errore: ${note.problem}.`;
-			if (note === "" || note === undefined) delete next.note;
-			else next.note = note;
-		}
-		if (args.date !== undefined) {
-			// A new date reads with the recurrence, as add_item reads it: the one said, or the voce's.
-			const frequency = args.frequency !== undefined ? args.frequency : item.everyDays !== undefined ? `ogni ${item.everyDays} giorni` : (item.months ?? "una volta");
-			const fields = readItemFields({ kind: next.kind === "in" ? "entrata" : "uscita", amount: next.amount, date: args.date, frequency }, day, fenced);
-			if (isProblem(fields)) return `Errore: ${fields.problem}.`;
-			for (const k of ["months", "day", "everyDays"]) delete next[k];
-			next = { ...next, date: fields.date, ...(fields.months === undefined ? {} : { months: fields.months, day: fields.day }), ...(fields.everyDays === undefined ? {} : { everyDays: fields.everyDays }) };
-			notes.push(...fields.notes);
-		} else if (args.frequency !== undefined) {
-			// Only the recurrence: the date and its day stay.
-			const r = readFrequency(args.frequency);
-			if (r === undefined) return "Errore: frequency: dimmi ogni quanto, o «una volta».";
-			if (isProblem(r)) return `Errore: ${r.problem}.`;
-			for (const k of ["months", "day", "everyDays"]) delete next[k];
-			if (r !== "once") next = { ...next, ...("days" in r ? { everyDays: r.days } : { months: r.months, day: item.day ?? Number(item.date.slice(8, 10)) }) };
-		}
-		const recurring = next.months !== undefined || next.everyDays !== undefined;
-		if (args.until !== undefined) {
-			if (args.until === "") delete next.until;
-			else {
-				if (!recurring) return "Errore: until vale solo per una voce che si ripete.";
-				const end = readUntil(args.until, day, next.date as string);
-				if (isProblem(end)) return `Errore: ${end.problem}.`;
-				next.until = end;
-			}
-		}
-		if (args.new_amount !== undefined) {
-			if (args.new_amount === "") delete next.amountFrom;
-			else {
-				if (!recurring) return "Errore: new_amount vale solo per una voce che si ripete: per una voce una volta sola cambia amount.";
-				const a = readItemAmount(args.new_amount, fenced);
-				if (a === undefined || isProblem(a)) return `Errore: new_amount: ${a === undefined ? "dammi l'importo" : a.problem}.`;
-				if (args.new_amount_from === undefined || args.new_amount_from === "") return "Errore: con new_amount serve new_amount_from, il giorno da cui vale.";
-				const from = readUntil(args.new_amount_from, day, addDays(next.date as string, 1));
-				if (isProblem(from)) return `Errore: ${from.problem.replace(/^until/, "new_amount_from")}.`;
-				next.amountFrom = { amount: a, from };
-			}
-		} else if (args.new_amount_from !== undefined) return "Errore: new_amount_from va con new_amount.";
-		if (!recurring) {
-			if (next.until !== undefined || next.amountFrom !== undefined) notes.push("Ora è una voce una volta sola: tolti la fine e il nuovo importo.");
-			delete next.until;
-			delete next.amountFrom;
-		} else if (typeof next.until === "string" && next.until < (next.date as string)) delete next.until;
-		const amountFrom = next.amountFrom as CashItem["amountFrom"];
-		if (amountFrom !== undefined && amountFrom.from <= (next.date as string)) delete next.amountFrom;
-		if (!recurring && (next.date as string) < day && (args.date !== undefined || args.frequency !== undefined)) return `Errore: la data (${withDate("il", next.date as string)}) è passata: una voce una tantum va da oggi in poi.`;
-		return { item: next as CashItem, notes };
 	}
 
 	async function removeItem(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -463,7 +340,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		} else {
 			// The voce named, kept by the step: a rerun removes the same one, and says it.
 			const resolved: string[] = await ctx.step("resolve", async () => {
-				const found = findItem({ name: args.name }, book.items, day);
+				const found = located(findItem({ name: args.name }, book.items, (i) => itemLine(i, day), fenced));
 				return typeof found === "string" ? [found] : [found.id, itemLine(found, day)];
 			});
 			if (resolved.length === 1) return resolved[0] as string;
@@ -495,17 +372,20 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const renewalBook = options.renewals.read();
 		const rawInvoices = invoiceFlows(invoices, day, end, o.includeOverdue);
 		const rawRenewals = renewalBook.broken ? undefined : renewalFlows(renewalBook.renewals, day, end);
-		const { invoices: inv, renewals: ren, duplicates, autoPaid } = dedupe(rawInvoices, rawRenewals, renewalBook.broken ? [] : renewalBook.renewals);
+		const { invoices: inv, renewals: ren, duplicates: invoiceTwins, autoPaid } = dedupe(rawInvoices, rawRenewals, renewalBook.broken ? [] : renewalBook.renewals, day);
+		// A voce that is a renewal's payment: the renewal counts.
+		const voci = voceDuplicates(itemFlows(book.items, day, end), ren?.movements ?? []);
+		const duplicates = [...invoiceTwins, ...voci.duplicates];
 		const quoteBook = o.includeQuotes ? options.quotes?.read() : undefined;
 		const quotes = quoteBook === undefined || quoteBook.broken ? undefined : quoteFlows(quoteBook.quotes, invoices, day, end, dayOf);
 		const expenseBook = options.expenses.read();
-		const average = o.includeAverage && !expenseBook.broken ? averageSpend(expenseBook.expenses, renewalBook.renewals, book.items, day) : undefined;
+		const average = o.includeAverage && !expenseBook.broken ? averageSpend(expenseBook.expenses, renewalBook.renewals, book.items, invoices, day) : undefined;
 		const hours = options.timesheet.read();
 		const potential = hours.broken ? undefined : unbilledPotential(hours.entries, hours.rates);
-		// A balance of before yesterday brought to today, when the registers read.
-		const canRoll = !invoiceBook.broken && !expenseBook.broken && !renewalBook.broken;
-		const rolled = canRoll ? rollForward(balance.date, day, invoices, expenseBook.expenses, renewalBook.renewals, book.items, dayOf) : undefined;
-		const movements = [...inv.movements, ...(ren?.movements ?? []), ...(quotes?.movements ?? []), ...itemFlows(book.items, day, end)];
+		// The balance brought to now with what was marked paid or recorded after it, when the registers read and it is not too old.
+		const canRoll = !invoiceBook.broken && !expenseBook.broken && !renewalBook.broken && daysBetween(balance.date, day) <= CASHFLOW_LIMITS.maxDays;
+		const rolled = canRoll ? rollForward(balance, now().toISOString(), day, invoices, expenseBook.expenses, renewalBook.renewals, dayOf) : undefined;
+		const movements = [...inv.movements, ...(ren?.movements ?? []), ...(quotes?.movements ?? []), ...voci.items];
 		const notes: string[] = [];
 		if (o.includeAverage && average !== undefined && average.count === 0) notes.push("Nessuna spesa da contare negli ultimi 90 giorni: niente spesa media nella previsione.");
 		if (!o.includeAverage) notes.push("Spesa media esclusa: contate solo fatture, preventivi, rinnovi e voci.");
@@ -551,24 +431,19 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		return forecastAnswer(project(startOf(g.view), g.movements, day, horizon.end, g.dailySpend), g.view);
 	}
 
-	/** The brief's line: the red, the threshold, an old balance; once, a hint when there is no balance but something to forecast. */
+	/** The brief's line: the red, the threshold, an old balance; with no balance and no voce but invoices or renewals, a short hint. Read only, always. */
 	async function compact(ctx: ToolContext, day: string): Promise<string> {
 		const book = readable();
 		const balance = latestBalance(book.balances);
 		const end = addDays(day, BRIEF_DAYS - 1);
 		if (balance === undefined) {
-			if (book.hinted) return briefAnswer(undefined, { today: day, somethingToForecast: false });
+			if (book.items.length > 0) return briefAnswer(undefined, { today: day, somethingToForecast: false });
 			const scan = await scanner.scan(ctx.signal, (t) => ctx.progress(t));
 			const invoiceBook = options.invoices.read();
 			const invoices = invoiceBook.broken ? [] : register(scan.invoices, invoiceBook.paid, invoiceBook.company, invoiceBook.reminders);
 			const renewals = options.renewals.read();
-			const something = invoices.length > 0 || renewals.renewals.some((r) => r.status === "active");
-			if (!something) return briefAnswer(undefined, { today: day, somethingToForecast: false });
-			await ctx.step("hint", async () => {
-				store.markHinted();
-				return true;
-			});
-			return briefHint();
+			const something = invoices.length > 0 || (!renewals.broken && renewals.renewals.some((r) => r.status === "active"));
+			return something ? briefHint() : briefAnswer(undefined, { today: day, somethingToForecast: false });
 		}
 		const g = await gather(ctx, day, end, { includeOverdue: true, includeAverage: true, includeQuotes: true });
 		if (typeof g === "string") return g;
@@ -576,7 +451,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		return briefAnswer(p, { balance, today: day, ...(g.view.alertBelow === undefined ? {} : { alertBelow: g.view.alertBelow }), somethingToForecast: g.somethingToForecast });
 	}
 
-	/** The delays or drops of a what_if, as said: one object or a list. */
+	/** The delays or drops of a what_if, as said: one object or a list; an invoice number with its party when both are said. */
 	function readChanges(value: unknown, withDays: boolean): Change[] | string {
 		if (value === undefined) return [];
 		const list = Array.isArray(value) ? value : [value];
@@ -586,12 +461,15 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		for (const raw of list) {
 			const o = typeof raw === "string" ? { party: raw } : (raw as Record<string, unknown>);
 			if (typeof o !== "object" || o === null) return `Errore: ${what} è {party o invoice${withDays ? ", days" : ""}}.`;
-			const whoSaid = typeof o.invoice === "string" && o.invoice.trim() !== "" ? o.invoice.trim() : typeof o.party === "string" && o.party.trim() !== "" ? o.party.trim() : undefined;
-			if (whoSaid === undefined || whoSaid.length > 120) return `Errore: ${what}: dimmi party (il cliente o fornitore) o invoice (il numero della fattura).`;
+			const said = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
+			const invoice = said(o.invoice);
+			const party = said(o.party);
+			if ((invoice === undefined && party === undefined) || (invoice?.length ?? 0) > 40 || (party?.length ?? 0) > 120) return `Errore: ${what}: dimmi party (il cliente o fornitore) o invoice (il numero della fattura), o tutti e due.`;
+			const change: Change = { ...(invoice === undefined ? {} : { invoice }), ...(party === undefined ? {} : { party }) };
 			if (withDays) {
 				if (typeof o.days !== "number" || !Number.isInteger(o.days) || o.days < 1 || o.days > CASHFLOW_LIMITS.maxDelay) return `Errore: delay: days è un numero di giorni da 1 a ${CASHFLOW_LIMITS.maxDelay}.`;
-				out.push({ who: whoSaid, days: o.days });
-			} else out.push({ who: whoSaid });
+				out.push({ ...change, days: o.days });
+			} else out.push(change);
 		}
 		return out;
 	}
@@ -632,16 +510,22 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		if (typeof g === "string") return g;
 		const start = startOf(g.view);
 		const late = new Set<Movement>(g.view.invoices?.late ?? []);
-		const lateCents = (g.view.invoices?.late ?? []).reduce((n, m) => n + m.cents, 0n);
 		const changed = applyChanges(g.movements, all, day);
-		const missing = all.filter((_, i) => changed.touched[i] === 0);
-		if (missing.length > 0) return `Errore: non trovo fatture aperte o preventivi accettati per questo, nella previsione:\n${fenced(missing.map((c) => `• ${c.who}`).join("\n"))}\nControlla il nome o il numero con chi ti scrive.`;
+		if (changed.ambiguous !== undefined) {
+			const rows = changed.ambiguous.movements.map((m) => `• ${movementLabel(m, day)}, ${euros(m.cents)}`);
+			return `Errore: più fatture aperte hanno questo numero; quale? Ripeti con party, il cliente o il fornitore:\n${fenced(rows.join("\n"))}`;
+		}
+		const missing = all.filter((_, i) => (changed.touched[i] ?? []).length === 0);
+		if (missing.length > 0) return `Errore: non trovo fatture aperte o preventivi accettati per questo, nella previsione:\n${fenced(missing.map((c) => `• ${[c.invoice, c.party].filter((x) => x !== undefined).join(", ")}`).join("\n"))}\nControlla il nome o il numero con chi ti scrive.`;
 		const added = hypotheticalFlows(hyps, day, end);
 		const withMoves = [...changed.movements, ...added];
 		const p = (list: readonly Movement[]): Projection => project(start, list, day, end, g.dailySpend);
-		const cautious = (list: readonly Movement[]) => list.filter((m) => !late.has(m));
-		const changes: ChangeLine[] = all.map((c, i) => ({ who: c.who, ...(c.days === undefined ? {} : { days: c.days }), touched: changed.touched[i] ?? 0 }));
-		return whatIfAnswer({ base: p(g.movements), withThem: p(withMoves), cautiousBase: p(cautious(g.movements)), cautiousWith: p(cautious(withMoves)), hyps, changes, lateCents }, g.view);
+		// The cautious case: no late money to collect, no accepted quote.
+		const cautious = (list: readonly Movement[]) => list.filter((m) => !late.has(m) && m.source !== "quote");
+		const lateCents = (g.view.invoices?.late ?? []).reduce((n, m) => n + m.cents, 0n);
+		const quoteCents = g.movements.filter((m) => m.source === "quote").reduce((n, m) => n + m.cents, 0n);
+		const changes: ChangeLine[] = changed.touched.map((touched) => ({ touched }));
+		return whatIfAnswer({ base: p(g.movements), withThem: p(withMoves), cautiousBase: p(cautious(g.movements)), cautiousWith: p(cautious(withMoves)), hyps, changes, lateCents, quoteCents }, g.view);
 	}
 
 	async function exportCsv(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {

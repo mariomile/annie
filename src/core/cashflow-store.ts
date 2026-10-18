@@ -1,8 +1,7 @@
 /**
  * The previsione di cassa's own state, in `cashflow.json` of an instance (outside the workspace):
  * the bank balances said (the latest CASHFLOW_LIMITS.balances by date, oldest first), the alert
- * threshold of the brief, whether the brief's one-time hint about the missing balance was given,
- * the next progressive and the voci added by hand. Changed under the shared file lock through
+ * threshold of the brief, the next progressive and the voci added by hand. Changed under the shared file lock through
  * json-book.ts; `cashflow.json.bak` keeps a copy of the last state written. An id is never given
  * twice: the counter only grows. Read never throws: a file that does not read (or is past the size
  * cap) is `broken`, and nothing is written over it.
@@ -11,14 +10,12 @@ import { join } from "node:path";
 import { type Balance, CASHFLOW_LIMITS, type CashItem, CashflowError, idNumber, isSignedAmount, itemId, validBalance, validItem } from "./cashflow.ts";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 
-type Book = { readonly next: number; readonly balances: readonly Balance[]; readonly alertBelow?: string; readonly hinted?: true; readonly items: readonly CashItem[] };
+type Book = { readonly next: number; readonly balances: readonly Balance[]; readonly alertBelow?: string; readonly items: readonly CashItem[] };
 
 export type CashflowBook = {
 	readonly balances: readonly Balance[];
 	/** The balance below which the brief warns; zero when not set. */
 	readonly alertBelow?: string;
-	/** The brief already said once that a balance is missing. */
-	readonly hinted: boolean;
 	readonly items: readonly CashItem[];
 	readonly broken: boolean;
 };
@@ -58,8 +55,8 @@ export class CashflowStore {
 	/** Never throws. */
 	read(): CashflowBook {
 		const book = readBook(this.book);
-		if (book === undefined) return { balances: [], items: [], hinted: false, broken: true };
-		return { balances: book.balances, items: book.items, hinted: book.hinted === true, ...(book.alertBelow === undefined ? {} : { alertBelow: book.alertBelow }), broken: false };
+		if (book === undefined) return { balances: [], items: [], broken: true };
+		return { balances: book.balances, items: book.items, ...(book.alertBelow === undefined ? {} : { alertBelow: book.alertBelow }), broken: false };
 	}
 
 	/**
@@ -81,11 +78,6 @@ export class CashflowStore {
 			}
 			return next;
 		});
-	}
-
-	/** The brief's hint about the missing balance was given: never again. */
-	markHinted(): void {
-		updateBook(this.book, (book): Book => (book.hinted === true ? book : { ...book, hinted: true as const }));
 	}
 
 	/** A new voce with the next id: `make` gets the id and gives the voce. The one `callId` recorded already, when there is one. */
@@ -145,11 +137,10 @@ function checkedItem(i: CashItem): CashItem {
 
 function validBook(raw: unknown): Book | undefined {
 	if (typeof raw !== "object" || raw === null) return undefined;
-	const { next, balances, alertBelow, hinted, items } = raw as Book;
+	const { next, balances, alertBelow, items } = raw as Book;
 	if (!Number.isInteger(next) || next < 1 || next > 1_000_000) return undefined;
 	if (!Array.isArray(balances) || balances.length > CASHFLOW_LIMITS.balances || !balances.every(validBalance)) return undefined;
 	if (alertBelow !== undefined && !isSignedAmount(alertBelow)) return undefined;
-	if (hinted !== undefined && hinted !== true) return undefined;
 	if (!Array.isArray(items) || items.length > CASHFLOW_LIMITS.items || !items.every(validItem)) return undefined;
 	if (new Set(items.map((i) => i.id)).size !== items.length) return undefined;
 	// Every id below the counter: a counter behind a voce would give that id again.

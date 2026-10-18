@@ -55,8 +55,6 @@ export const AVERAGE_DAYS = 90;
 export const AVERAGE_MIN_DAYS = 30;
 /** Overdue longer than this: left out of the projection and asked about. */
 export const STALE_OVERDUE_DAYS = 90;
-/** Amounts within this percentage are «the same» for duplicates. */
-export const SAME_AMOUNT_PERCENT = 5n;
 
 /** The ops the brief runs: forecast, compact (brief.ts). */
 const CASHFLOW_BRIEF_OPS = ["forecast"] as const;

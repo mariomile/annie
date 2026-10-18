@@ -4,9 +4,8 @@
  */
 import { TIPO_DOCUMENTO } from "../fattura-pa-codes.ts";
 import { type FatturaParty, fromUnits, money } from "../fattura-pa.ts";
-import { dayMonth } from "../invoice-windows.ts";
 import { type Company, countedAmount, type Invoice, matchesParty, vatOf } from "../invoices.ts";
-import { italianDate } from "../italian-format.ts";
+import { dayMonth, italianDate } from "../italian-format.ts";
 import type { ReadArgs } from "./invoice-fence.ts";
 
 /** Rows in one answer; the rest are counted. */

@@ -18,7 +18,8 @@ import { RenewalStore } from "../src/core/renewal-store.ts";
 import { findRenewals, matchCategory, parseRenewalId, RENEWAL_LIMITS, type Renewal, renewalCallReads, renewalMatches } from "../src/core/renewals.ts";
 import { type ExpenseEvent, type ExpenseSeam, expensesOf } from "../src/core/tools/expense-tools.ts";
 import { readNotice, readPeriodAmount } from "../src/core/tools/renewal-input.ts";
-import { createRenewalTools, EXPENSE_CATEGORY, type RenewalEvent } from "../src/core/tools/renewal-tools.ts";
+import { EXPENSE_CATEGORY } from "../src/core/renewals.ts";
+import { createRenewalTools, type RenewalEvent } from "../src/core/tools/renewal-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 
@@ -1124,7 +1125,7 @@ describe("renewals: prices over time, rolls of today, names, reactivating", () =
 		await s.run({ op: "add", name: "Hosting", amount: 50, due: "01/11/2026" });
 		expect(await s.run({ op: "edit", id: "Hosting", new_amount: "60 + IVA", new_amount_from: "01/11/2027" })).toContain("serve l'aliquota");
 		const lately = await s.run({ op: "edit", id: "Hosting", new_amount: 60, new_amount_from: "1 ottobre" });
-		expect(outside(lately)).toContain("Il 1 ottobre 2026 è già passato: il nuovo importo vale già da allora");
+		expect(outside(lately)).toContain("Il 1º ottobre 2026 è già passato: il nuovo importo vale già da allora. Se intendeva il 1º ottobre 2027, correggi");
 		expect((s.store.read().renewals[1] as Renewal).amountFrom).toEqual({ amount: "60", from: "2026-10-01" });
 		await s.run({ op: "edit", id: "Hosting", new_amount: 70, new_amount_from: "1 gennaio" });
 		expect((s.store.read().renewals[1] as Renewal).amountFrom).toEqual({ amount: "70", from: "2027-01-01" });
@@ -1152,11 +1153,22 @@ describe("renewals: prices over time, rolls of today, names, reactivating", () =
 		expect(s.one()).toMatchObject({ amount: "122", vatRate: 22 });
 	});
 
+	it("dates in the notes are elided, also at the start of a sentence (week 55, r2-16): «L'8 ottobre», «dall'8 agosto», «l'8 dicembre»", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Hosting", amount: 50, due: "01/11/2026" });
+		const lately = await s.run({ op: "edit", id: "Hosting", new_amount: 60, new_amount_from: "8 ottobre" });
+		expect(outside(lately)).toContain("L'8 ottobre 2026 è già passato: il nuovo importo vale già da allora. Se intendeva l'8 ottobre 2027, correggi");
+		await s.run({ op: "add", name: "Luce", amount: 70, frequency: "bimestrale", due: "08/08/2026" });
+		const auto = await s.run({ op: "edit", id: "Luce", auto_pay: true });
+		expect(outside(auto)).toContain("Le scadenze passate (dall'8 agosto 2026) non le conto come addebitate: il primo addebito che conto è l'8 dicembre 2026.");
+		for (const text of [lately, auto]) expect(text).not.toMatch(/\b[Ii]l 8\b|\b[Ii]l 1 /);
+	});
+
 	it("turning auto_pay on with the due date gone counts no charge for the periods gone, and says so", async () => {
 		const s = setup();
 		await s.run({ op: "add", name: "Luce", amount: 70, frequency: "bimestrale", due: "10/09/2026" });
 		const answer = await s.run({ op: "edit", id: "Luce", auto_pay: true });
-		expect(outside(answer)).toContain("Le scadenze passate (dal 10 settembre 2026) non le conto come addebitate");
+		expect(outside(answer)).toContain("Le scadenze passate (dal 10 settembre 2026) non le conto come addebitate: il primo addebito che conto è il 10 novembre 2026.");
 		expect(s.one()).toMatchObject({ due: "2026-11-10", start: "2026-11-10", autoPay: true });
 		expect(await s.run({ op: "renewed", id: "Luce", record_expense: true })).toContain("non è ancora partito nessun addebito");
 		expect(s.expenseStore.read().expenses).toHaveLength(0);

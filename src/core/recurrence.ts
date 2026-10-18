@@ -53,3 +53,23 @@ export function recurringDates(first: string, r: Recurrence, from: string, until
 	}
 	return out;
 }
+
+/**
+ * The date of the series (from `first`, by `r`; once when `r` is undefined) nearest to `date`
+ * within `days`, if any. `both`: the series runs before `first` too (a renewal's past payments).
+ */
+export function nearOccurrence(first: string, r: Recurrence | undefined, date: string, days: number, both = false): string | undefined {
+	const near = (d: string) => Math.abs(daysBetween(d, date)) <= days;
+	let candidates: string[];
+	if (r === undefined) candidates = [first];
+	else if ("days" in r) {
+		const k0 = Math.floor(daysBetween(first, date) / r.days);
+		candidates = [k0, k0 + 1].filter((k) => both || k >= 0).map((k) => addDays(first, k * r.days));
+	} else {
+		const diff = (Number(date.slice(0, 4)) - Number(first.slice(0, 4))) * 12 + Number(date.slice(5, 7)) - Number(first.slice(5, 7));
+		const k0 = Math.round(diff / r.months);
+		candidates = [k0 - 1, k0, k0 + 1].filter((k) => both || k >= 0).map((k) => (k === 0 ? first : rollDate(first, k * r.months, r.day)));
+	}
+	const found = candidates.filter(near).sort((a, b) => Math.abs(daysBetween(a, date)) - Math.abs(daysBetween(b, date)));
+	return found[0];
+}

@@ -33,24 +33,39 @@ import { isProblem, type Problem } from "./quote-input.ts";
 const FOREIGN = "l'importo è in un'altra valuta: convertilo in euro con exchange_rate e passa gli euro";
 
 const THOUSANDS = /^(\d{1,7}(?:[.,]\d{1,3})?)\s*(?:k|mila)$/i;
+/** «1.500k», «1,250 mila»: thousands of thousands, or a decimal? Nobody can tell. */
+const GROUPED_THOUSANDS = /^\d{1,3}(?:[.,]\d{3})+\s*(?:k|mila)$/i;
 const DOT_GROUPED = /^\d{1,3}(?:\.\d{3})+$/;
 
 /** The person's way of writing euros made plain: «8.400» → «8400», «1,5k» → «1500», «8 mila» → «8000»; anything else as it is. */
 export function plainEuros(value: unknown): unknown {
 	if (typeof value !== "string") return value;
-	const t = value
-		.trim()
-		.replace(/^(?:€|eur(?:o)?)\s*/i, "")
-		.replace(/\s*(?:€|eur(?:o)?)$/i, "")
-		.trim();
+	const t = bare(value);
 	const k = THOUSANDS.exec(t);
 	if (k !== null) return String(scaled((k[1] as string).replace(",", "."), 3));
 	if (DOT_GROUPED.test(t)) return t.replace(/\./g, "");
 	return value;
 }
 
+function bare(value: string): string {
+	return value
+		.trim()
+		.replace(/^(?:€|eur(?:o)?)\s*/i, "")
+		.replace(/\s*(?:€|eur(?:o)?)$/i, "")
+		.trim();
+}
+
+/** «1.500k» is refused: 1.500 or 1.500.000? */
+function ambiguousThousands(value: unknown, what: string): Problem | undefined {
+	if (typeof value !== "string" || !GROUPED_THOUSANDS.test(bare(value).replace(/^[-−–]\s*/, ""))) return undefined;
+	const said = /^[\d .,€kKmila-]{1,20}$/.test(value) ? `«${value}»` : "l'importo";
+	return { problem: `${what}: ${said} può voler dire migliaia o milioni. Chiedi a chi ti scrive, o passa il valore come numero JSON (1500 o 1500000)` };
+}
+
 /** An amount of a voce in euros: more than zero, at most the cap. */
 export function readItemAmount(value: unknown, fence: Fenced): string | undefined | Problem {
+	const ambiguous = ambiguousThousands(value, "amount");
+	if (ambiguous !== undefined) return ambiguous;
 	return readEuros(plainEuros(value), {
 		fence,
 		max: CASHFLOW_LIMITS.maxAmount,
@@ -63,6 +78,8 @@ export function readItemAmount(value: unknown, fence: Fenced): string | undefine
 /** A balance in euros, a minus in front when the account is overdrawn («-350,50», «− 1.200»); 0 is a balance too. */
 export function readSignedEuros(value: unknown, fence: Fenced, what: string): string | undefined | Problem {
 	if (value === undefined) return undefined;
+	const ambiguous = ambiguousThousands(value, what);
+	if (ambiguous !== undefined) return ambiguous;
 	let said: unknown = value;
 	let negative = false;
 	if (typeof value === "number") {
@@ -107,6 +124,17 @@ function weekdayOfWords(value: unknown): number | undefined {
 	return WEEKDAYS[word];
 }
 
+const PLAIN_WEEKDAY = /^(?:(?:il|di) )?(domenica|lunedi|martedi|mercoledi|giovedi|venerdi|sabato)(?: prossim[oa])?$/;
+
+/** «lunedì», «venerdì prossimo»: the next one after today; undefined when it is no such phrase. */
+function nextWeekdayOfWords(value: unknown, today: string): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const m = PLAIN_WEEKDAY.exec(fold(value).replace(/\s+/g, " ").trim());
+	if (m === null) return undefined;
+	const weekday = WEEKDAYS[m[1] as string] as number;
+	return addDays(today, (weekday - weekdayOf(today) + 6) % 7 + 1);
+}
+
 /** The next `weekday` from today on (today when it is one). */
 function nextWeekday(weekday: number, today: string): string {
 	return addDays(today, (weekday - weekdayOf(today) + 7) % 7);
@@ -122,6 +150,7 @@ export function readFrequency(value: unknown): { readonly days: number } | { rea
 	if (typeof value === "string") {
 		const t = fold(value).replace(/[’`]/g, "'").replace(/\s+/g, " ").trim();
 		if (ONCE.test(t)) return "once";
+		if (/^(?:due|2) volte al mese$|^bimensile$/.test(t)) return { problem: "due volte al mese non sta in una voce: aggiungine due mensili, una per ciascun giorno (per esempio il 1º e il 15)" };
 		if (weekdayOfWords(t) !== undefined || /^(?:settimanale|settimanalmente|ogni settimana|a settimana|alla settimana|una volta a settimana|una volta alla settimana)$/.test(t)) return { days: 7 };
 		if (/^(?:quindicinale|ogni quindici giorni|ogni due settimane|ogni 2 settimane)$/.test(t)) return { days: 14 };
 		const n = /^ogni (\d{1,3}|[a-z]+) (giorni|settimane)$/.exec(t);
@@ -131,7 +160,7 @@ export function readFrequency(value: unknown): { readonly days: number } | { rea
 			if (days === undefined || days < 1 || days > CASHFLOW_LIMITS.maxStepDays) return { problem: `ogni quanti giorni: da 1 a ${CASHFLOW_LIMITS.maxStepDays}; più di così, in mesi` };
 			return { days };
 		}
-		if (t === "ogni giorno" || t === "giornaliera" || t === "al giorno") return { days: 1 };
+		if (/^(?:ogni giorno|giornaliera|giornaliero|al giorno|tutti i giorni)$/.test(t)) return { days: 1 };
 	}
 	const months = parseFrequency(value);
 	if (isProblem(months)) return { problem: BAD_FREQUENCY };
@@ -157,8 +186,9 @@ function dueWords(value: unknown): unknown {
 /** The day of a voce, as said: a weekday phrase, or what readDue reads. */
 function readDay(value: unknown, today: string): ReturnType<typeof readDue> {
 	const weekday = weekdayOfWords(value);
-	if (weekday !== undefined) {
-		const date = nextWeekday(weekday, today);
+	const plain = nextWeekdayOfWords(value, today);
+	if (weekday !== undefined || plain !== undefined) {
+		const date = plain ?? nextWeekday(weekday as number, today);
 		return { date, day: Number(date.slice(8, 10)) };
 	}
 	const due = readDue(dueWords(value), today);
@@ -174,6 +204,8 @@ export function readUntil(value: unknown, today: string, start: string): string 
 	return end.date;
 }
 
+const everyDaysOf = (r: { days: number } | { months: number } | undefined): number | undefined => (r !== undefined && "days" in r ? r.days : undefined);
+
 /** The fields of a voce (to keep, or a hypothetical one): direction, amount, date, recurrence, end. */
 export function readItemFields(args: Record<string, unknown>, today: string, fence: Fenced, fallbackKind?: Kind): ItemFields | Problem {
 	const kind = readKind(args.kind, fallbackKind);
@@ -182,11 +214,17 @@ export function readItemFields(args: Record<string, unknown>, today: string, fen
 	if (isProblem(amount)) return amount;
 	if (amount === undefined) return { problem: "serve amount, l'importo in euro" };
 	const weekday = weekdayOfWords(args.frequency) ?? weekdayOfWords(args.date);
-	const frequency = readFrequency(args.frequency);
+	// «ogni 2 settimane», «ogni giorno» said as the date: the recurrence, from today.
+	const dateAsFrequency = args.frequency === undefined && weekday === undefined ? readFrequency(args.date) : undefined;
+	const fromToday = dateAsFrequency !== undefined && typeof dateAsFrequency === "object" && "days" in dateAsFrequency ? dateAsFrequency : undefined;
+	if (dateAsFrequency !== undefined && isProblem(dateAsFrequency) && /volte al mese|bimensile/.test(String(args.date))) return dateAsFrequency;
+	const frequency = fromToday ?? readFrequency(args.frequency);
 	if (isProblem(frequency)) return frequency;
 	const recurrence = frequency === "once" ? undefined : (frequency ?? (weekday !== undefined ? { days: 7 } : undefined));
+	const notes: string[] = [];
 	let due: ReturnType<typeof readDue>;
-	if (args.date !== undefined && args.date !== "") due = readDay(args.date, today);
+	if (fromToday !== undefined) due = { date: today, day: Number(today.slice(8, 10)) };
+	else if (args.date !== undefined && args.date !== "") due = readDay(args.date, today);
 	else if (weekday !== undefined) {
 		const date = nextWeekday(weekday, today);
 		due = { date, day: Number(date.slice(8, 10)) };
@@ -194,9 +232,9 @@ export function readItemFields(args: Record<string, unknown>, today: string, fen
 	else return { problem: "serve date, il giorno del movimento (12/11/2026, «il 27», «ogni 27 del mese», «ogni lunedì», «fine mese», «dicembre»)" };
 	if (isProblem(due)) return due;
 	const dateWords = args.date;
+	if (everyDaysOf(recurrence) === 14 && /quindicinal/.test(fold(`${String(args.frequency ?? "")} ${String(args.date ?? "")}`))) notes.push("Quindicinale: la metto ogni 14 giorni; se sono due giorni fissi del mese, sono due voci mensili.");
 	const months = recurrence !== undefined && "months" in recurrence ? recurrence.months : recurrence === undefined && frequency !== "once" && "monthly" in due && due.monthly === true ? 1 : undefined;
 	const everyDays = recurrence !== undefined && "days" in recurrence ? recurrence.days : undefined;
-	const notes: string[] = [];
 	if (months === undefined && everyDays === undefined && "past" in due && due.past === true) return { problem: `la data (${withDate("il", due.date)}) è passata: una voce una tantum va da oggi in poi` };
 	const placed = months === undefined ? due : placeDue(due, months, today);
 	if (due.day === 31 && everyDays === undefined && !/\d/.test(String(dateWords))) notes.push(`Ho messo ${withDate("il", placed.date)}, l'ultimo giorno del mese${months === undefined ? "" : ", e lo tengo a fine mese"}: se è un altro giorno, dimmelo.`);
@@ -235,7 +273,7 @@ export function readHypothetical(raw: unknown, today: string, fence: Fenced): Hy
 	};
 }
 
-const BAD_HORIZON = "horizon è fin quando guardare: «fine mese», «fine mese prossimo», «fine trimestre», «prossima settimana», «30 giorni», «90 giorni», «3 mesi», «6 settimane», «fino a dicembre», «fine anno» o una data (31/12/2026); oppure days, un numero di giorni";
+const BAD_HORIZON = "horizon è fin quando guardare: «fine mese», «il mese prossimo», «fine trimestre», «fine semestre», «prossima settimana», «30 giorni», «90 giorni», «3 mesi», «6 settimane», «fino a dicembre», «fine anno» o una data (31/12/2026); oppure days, un numero di giorni";
 
 /** The last day of the forecast and its days, today included; `said` false for the default. */
 export type Horizon = { readonly end: string; readonly days: number; readonly said: boolean };
@@ -258,6 +296,12 @@ function endOfQuarter(today: string): string {
 	return end === today ? (month === 12 ? monthEnd(year + 1, 3) : monthEnd(year, month + 3)) : end;
 }
 
+function endOfHalf(today: string): string {
+	const year = Number(today.slice(0, 4));
+	const end = Number(today.slice(5, 7)) <= 6 ? `${year}-06-30` : `${year}-12-31`;
+	return end !== today ? end : end.endsWith("06-30") ? `${year}-12-31` : `${year + 1}-06-30`;
+}
+
 function endOfYear(today: string): string {
 	const year = Number(today.slice(0, 4));
 	const end = `${year}-12-31`;
@@ -277,13 +321,18 @@ export function readHorizon(horizon: unknown, days: unknown, today: string): Hor
 	const of = (end: string, said = true): Horizon | Problem => {
 		if (end < today) return { problem: `la data (${withDate("il", end)}) è già passata: ${BAD_HORIZON}` };
 		const n = daysBetween(today, end) + 1;
-		if (n > max) return { problem: `posso guardare al massimo ${max} giorni, oggi compreso (fino ${withDate("al", addDays(today, max - 1))})` };
+		if (n > max) return { problem: `posso guardare al massimo ${max} giorni (fino ${withDate("al", addDays(today, max - 1))})` };
 		return { end, days: n, said };
 	};
 	const ahead = (n: number) => addDays(today, n - 1);
-	const months = (n: number) => addDays(rollDate(today, n, Number(today.slice(8, 10))), -1);
+	// The same day n months on, less one; on a day that month has not, its last day (31/10 → 30/11).
+	const months = (n: number) => {
+		const day = Number(today.slice(8, 10));
+		const rolled = rollDate(today, n, day);
+		return Number(rolled.slice(8, 10)) < day ? rolled : addDays(rolled, -1);
+	};
 	if (days !== undefined) {
-		if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > max) return { problem: `days è un numero di giorni da 1 a ${max}, oggi compreso` };
+		if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > max) return { problem: `days è un numero di giorni da 1 a ${max}` };
 		return of(ahead(days));
 	}
 	if (horizon === undefined || (typeof horizon === "string" && horizon.trim() === "")) return of(ahead(DEFAULT_DAYS), false);
@@ -291,7 +340,7 @@ export function readHorizon(horizon: unknown, days: unknown, today: string): Hor
 	const t = fold(horizon)
 		.replace(/[’`]/g, "'")
 		.replace(/^(?:come sono messo |come sto )?(?:fino (?:a |al |alla |all')|entro (?:il |la |l')?|per (?:i |le )?|nei |nelle |a |al |alla |da qui a )?/, "")
-		.replace(/^(?:la )?/, "")
+		.replace(/^(?:la |il )?/, "")
 		.replace(/^(?:prossim[ie] )/, "")
 		.replace(/\bdell'/g, "")
 		.replace(/\b(?:del|della) /g, "")
@@ -301,6 +350,7 @@ export function readHorizon(horizon: unknown, days: unknown, today: string): Hor
 	if (/^(?:fine )?(?:mese prossimo|prossimo mese)$/.test(t)) return of(endOfMonth(today, 1));
 	if (/^fine (?:trimestre|questo trimestre)$/.test(t)) return of(endOfQuarter(today));
 	if (/^fine anno$/.test(t)) return of(endOfYear(today));
+	if (/^fine (?:semestre|questo semestre)$/.test(t)) return of(endOfHalf(today));
 	if (/^(?:prossima settimana|settimana prossima)$/.test(t)) return of(endOfWeek(today, true));
 	if (/^(?:fine settimana|questa settimana)$/.test(t)) return of(endOfWeek(today, false));
 	const rel = /^(?:i |le )?(\d{1,3}|[a-z]+) (giorni|giorno|gg|settimane|settimana|mesi|mese|anni|anno)$/.exec(t);
