@@ -1,463 +1,179 @@
 /**
- * Italian electronic invoices (FatturaPA, the XML the Sistema di Interscambio delivers), plain or
- * signed (.xml.p7m): recognised by their content and read as a summary in Italian for the model:
- * the document, supplier and customer, lines, VAT, totals, payment, attachments by name. Only what
- * the file says; what is missing is left out. The XML is read with a small linear tokenizer: no
- * DTD (a DOCTYPE is refused, so no entity is ever expanded), only the five XML entities and
- * numeric references, any namespace prefix, CDATA. The document worker loads this file from
- * source: erasable TypeScript only.
+ * Italian electronic invoices (FatturaPA, the XML the Sistema di Interscambio delivers, ordinary
+ * FPA12 and FPR12 or simplified FSM10), recognised by their content and read as a summary in
+ * Italian for the owner: who invoices whom, how much and by when first, then the parties, lines,
+ * VAT, totals, payment and attachments by name. Only what the file says (a sum is said to be
+ * one); what is missing is left out. Amounts and quantities are written from their digits, never
+ * through floating point. The XML goes through xml-tree.ts (no DTD, linear); signed files are
+ * opened by documents.ts. Loaded by the document worker from source: erasable TypeScript only.
  */
-import { xmlUnescape } from "./html-text.ts";
-import { formatResult, italianDate, italianMoney } from "./italian-format.ts";
-import { isSignedEnvelope, MAX_P7M_BYTES, signedContent, signedContentStart } from "./p7m.ts";
-import { checkCodiceFiscale, EU_VAT_COUNTRIES, parseTaxId } from "./tax-ids.ts";
+import { endOfMonth } from "./dates.ts";
+import { CAUSALE_PAGAMENTO, CONDIZIONI_PAGAMENTO, CREDIT_NOTES, coded, ESIGIBILITA, INTEGRATIONS, MODALITA_PAGAMENTO, NATURA, naturaNote, REGIME_FISCALE, TIPO_CASSA, TIPO_DOCUMENTO, TIPO_RITENUTA } from "./fattura-pa-codes.ts";
+import { addDays, realDate } from "./italian-calendar.ts";
+import { capitalized, italianDate, italianWeekday } from "./italian-format.ts";
+import { checkCodiceFiscale, EU_VAT_COUNTRIES, euVatProblem, type EuVatCountry, partitaIvaProblem } from "./tax-ids.ts";
+import { child, children, decodeXml, descendant, parseXml, type XmlElement, XmlError, xmlRoot } from "./xml-tree.ts";
 
 export class FatturaError extends Error {
 	override readonly name = "FatturaError";
 }
 
-/** The largest invoice read, in bytes: as a file inside an archive (ADR 0026); SdI's own limit is 5 MB. */
-export const MAX_FATTURA_BYTES = MAX_P7M_BYTES;
+/** The largest invoice read, in bytes: SdI's own limit is 5 MB, a lotto sent by other channels may be larger. */
+export const MAX_FATTURA_BYTES = 20 * 1024 * 1024;
 
-/** Elements in one file, and their nesting: an invoice has a few thousand, about 7 deep. */
-const MAX_ELEMENTS = 1_000_000;
+/** Elements in one file, and their nesting: an invoice of a thousand lines has about ten thousand, 7 deep. */
+const MAX_ELEMENTS = 100_000;
 const MAX_DEPTH = 64;
 
-/** Lines shown per document, documents shown per file; the rest is counted. */
+/** Lines shown per document, documents shown per file, references (DDT, orders) per kind; the rest is counted. */
 const MAX_LINES = 50;
 const MAX_BODIES = 100;
+const MAX_REFERENCES = 10;
 
 /** The longest value shown: a line's description may be 1000 characters. */
 const MAX_VALUE = 1000;
 
 /** How much of the start is looked at to recognise an invoice: the root element comes first. */
-const SNIFF_BYTES = 16 * 1024;
+export const FATTURA_SNIFF_BYTES = 16 * 1024;
 
-/** The namespace of FatturaPA 1.2 (FPA12, FPR12), and of the older versions under the same path. */
+/** The namespace path of FatturaPA (ordinary v1.2, simplified v1.0). */
 const NAMESPACE = "ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/";
 
-const TIPO_DOCUMENTO: Record<string, string> = {
-	TD01: "fattura",
-	TD02: "acconto o anticipo su fattura",
-	TD03: "acconto o anticipo su parcella",
-	TD04: "nota di credito",
-	TD05: "nota di debito",
-	TD06: "parcella",
-	TD07: "fattura semplificata",
-	TD08: "nota di credito semplificata",
-	TD09: "nota di debito semplificata",
-	TD16: "integrazione fattura reverse charge interno",
-	TD17: "integrazione o autofattura per acquisto di servizi dall'estero",
-	TD18: "integrazione per acquisto di beni intracomunitari",
-	TD19: "integrazione o autofattura per acquisto di beni ex art. 17 c. 2 DPR 633/72",
-	TD20: "autofattura per regolarizzazione e integrazione delle fatture",
-	TD21: "autofattura per splafonamento",
-	TD22: "estrazione di beni da deposito IVA",
-	TD23: "estrazione di beni da deposito IVA con versamento dell'IVA",
-	TD24: "fattura differita (art. 21 c. 4 lett. a DPR 633/72)",
-	TD25: "fattura differita (art. 21 c. 4 terzo periodo lett. b DPR 633/72)",
-	TD26: "cessione di beni ammortizzabili e passaggi interni",
-	TD27: "fattura per autoconsumo o cessioni gratuite senza rivalsa",
-	TD28: "acquisti da San Marino con IVA (fattura cartacea)",
-	TD29: "comunicazione per omessa o irregolare fatturazione",
-};
+const ROOTS = new Set(["FatturaElettronica", "FatturaElettronicaSemplificata"]);
 
-const REGIME_FISCALE: Record<string, string> = {
-	RF01: "ordinario",
-	RF02: "contribuenti minimi",
-	RF04: "agricoltura, attività connesse e pesca",
-	RF05: "vendita sali e tabacchi",
-	RF06: "commercio dei fiammiferi",
-	RF07: "editoria",
-	RF08: "gestione servizi di telefonia pubblica",
-	RF09: "rivendita documenti di trasporto pubblico e di sosta",
-	RF10: "intrattenimenti, giochi e altre attività (DPR 640/72)",
-	RF11: "agenzie di viaggi e turismo",
-	RF12: "agriturismo",
-	RF13: "vendite a domicilio",
-	RF14: "rivendita di beni usati, oggetti d'arte, d'antiquariato o da collezione",
-	RF15: "agenzie di vendite all'asta di oggetti d'arte, antiquariato o da collezione",
-	RF16: "IVA per cassa della pubblica amministrazione",
-	RF17: "IVA per cassa",
-	RF18: "altro",
-	RF19: "forfettario",
-	RF20: "franchigia IVA transfrontaliera",
-};
-
-const NATURA: Record<string, string> = {
-	N1: "escluse ex art. 15 DPR 633/72",
-	N2: "non soggette",
-	"N2.1": "non soggette ad IVA, artt. da 7 a 7-septies DPR 633/72",
-	"N2.2": "non soggette, altri casi",
-	N3: "non imponibili",
-	"N3.1": "non imponibili, esportazioni",
-	"N3.2": "non imponibili, cessioni intracomunitarie",
-	"N3.3": "non imponibili, cessioni verso San Marino",
-	"N3.4": "non imponibili, operazioni assimilate alle esportazioni",
-	"N3.5": "non imponibili, a seguito di dichiarazioni d'intento",
-	"N3.6": "non imponibili, altre operazioni che non concorrono al plafond",
-	N4: "esenti",
-	N5: "regime del margine, IVA non esposta in fattura",
-	N6: "inversione contabile (reverse charge)",
-	"N6.1": "inversione contabile, rottami e materiali di recupero",
-	"N6.2": "inversione contabile, oro e argento",
-	"N6.3": "inversione contabile, subappalto nel settore edile",
-	"N6.4": "inversione contabile, cessione di fabbricati",
-	"N6.5": "inversione contabile, telefoni cellulari",
-	"N6.6": "inversione contabile, prodotti elettronici",
-	"N6.7": "inversione contabile, comparto edile e settori connessi",
-	"N6.8": "inversione contabile, settore energetico",
-	"N6.9": "inversione contabile, altri casi",
-	N7: "IVA assolta in altro Stato UE",
-};
-
-const ESIGIBILITA: Record<string, string> = { I: "immediata", D: "differita", S: "scissione dei pagamenti (split payment)" };
-
-const TIPO_RITENUTA: Record<string, string> = {
-	RT01: "persone fisiche",
-	RT02: "persone giuridiche",
-	RT03: "contributo INPS",
-	RT04: "contributo ENASARCO",
-	RT05: "contributo ENPAM",
-	RT06: "altro contributo previdenziale",
-};
-
-const TIPO_CASSA: Record<string, string> = {
-	TC01: "Cassa forense (avvocati)",
-	TC02: "Cassa dottori commercialisti",
-	TC03: "Cassa geometri",
-	TC04: "Inarcassa (ingegneri e architetti)",
-	TC05: "Cassa del notariato",
-	TC06: "Cassa ragionieri e periti commerciali",
-	TC07: "ENASARCO",
-	TC08: "ENPACL (consulenti del lavoro)",
-	TC09: "ENPAM (medici)",
-	TC10: "ENPAF (farmacisti)",
-	TC11: "ENPAV (veterinari)",
-	TC12: "ENPAIA (impiegati dell'agricoltura)",
-	TC13: "Fondo previdenza imprese di spedizione e agenzie marittime",
-	TC14: "INPGI (giornalisti)",
-	TC15: "ONAOSI",
-	TC16: "CASAGIT",
-	TC17: "EPPI (periti industriali)",
-	TC18: "EPAP (pluricategoriale)",
-	TC19: "ENPAB (biologi)",
-	TC20: "ENPAPI (infermieri)",
-	TC21: "ENPAP (psicologi)",
-	TC22: "INPS",
-};
-
-const CONDIZIONI_PAGAMENTO: Record<string, string> = { TP01: "pagamento a rate", TP02: "pagamento completo", TP03: "anticipo" };
-
-const MODALITA_PAGAMENTO: Record<string, string> = {
-	MP01: "contanti",
-	MP02: "assegno",
-	MP03: "assegno circolare",
-	MP04: "contanti presso la Tesoreria",
-	MP05: "bonifico",
-	MP06: "vaglia cambiario",
-	MP07: "bollettino bancario",
-	MP08: "carta di pagamento",
-	MP09: "RID",
-	MP10: "RID utenze",
-	MP11: "RID veloce",
-	MP12: "RIBA",
-	MP13: "MAV",
-	MP14: "quietanza erario",
-	MP15: "giroconto su conti di contabilità speciale",
-	MP16: "domiciliazione bancaria",
-	MP17: "domiciliazione postale",
-	MP18: "bollettino di c/c postale",
-	MP19: "SEPA Direct Debit",
-	MP20: "SEPA Direct Debit CORE",
-	MP21: "SEPA Direct Debit B2B",
-	MP22: "trattenuta su somme già riscosse",
-	MP23: "pagoPA",
-};
-
-/** An element of the invoice: its local name (no prefix), its children, its own text. */
-type Element = { readonly name: string; readonly children: Element[]; text: string };
+const DOCTYPE = "la fattura contiene una dichiarazione DOCTYPE, che le fatture dello SdI non hanno: per sicurezza non la leggo. Chiedi il file originale al fornitore o scaricalo dal cassetto fiscale.";
 
 /**
- * Whether these bytes are a FatturaPA, plain or signed, from their start only: the root element
- * is FatturaElettronica in FatturaPA's namespace (or with a versione FPA12 or FPR12 attribute).
+ * Whether these bytes start like a FatturaPA: the root element is FatturaElettronica (or
+ * FatturaElettronicaSemplificata) in FatturaPA's namespace, or with FatturaPA's versione.
  */
-export function isFatturaPA(data: Uint8Array): boolean {
-	if (isSignedEnvelope(data)) {
-		const start = signedContentStart(data, SNIFF_BYTES);
-		return start !== undefined && rootOf(decode(start.subarray(0, SNIFF_BYTES))) !== undefined;
-	}
-	return rootOf(decode(data.subarray(0, SNIFF_BYTES))) !== undefined;
+export function isFatturaXml(data: Uint8Array): boolean {
+	return fatturaRoot(decodeXml(data.subarray(0, FATTURA_SNIFF_BYTES))) !== undefined;
+}
+
+function fatturaRoot(text: string): ReturnType<typeof xmlRoot> {
+	const root = xmlRoot(text);
+	if (root === undefined || !ROOTS.has(root.name)) return undefined;
+	return root.attrs.includes(NAMESPACE) || /\bversione\s*=\s*["'](FPA12|FPR12|FSM10)["']/.test(root.attrs) ? root : undefined;
 }
 
 /**
- * The root element's attributes when the text starts like a FatturaPA: past the XML declaration,
- * processing instructions, comments and a DOCTYPE (refused later, when the file is read).
+ * The invoice's summary from its XML; `signed` when it came out of a .p7m. A FatturaError in
+ * Italian when it cannot be read.
  */
-function rootOf(text: string): { readonly doctype: boolean; readonly attrs: string } | undefined {
-	let at = text.charCodeAt(0) === 0xfeff ? 1 : 0;
-	let doctype = false;
-	for (;;) {
-		while (at < text.length && /\s/.test(text.charAt(at))) at++;
-		if (text.startsWith("<?", at)) at = after(text, "?>", at);
-		else if (text.startsWith("<!--", at)) at = after(text, "-->", at);
-		else if (text.startsWith("<!DOCTYPE", at)) {
-			doctype = true;
-			at = doctypeEnd(text, at);
-		} else break;
-		if (at < 0) return undefined;
-	}
-	if (text.charAt(at) !== "<") return undefined;
-	const end = tagEnd(text, at);
-	if (end < 0) return undefined;
-	const tag = text.slice(at + 1, end);
-	const name = /^[^\s/>]+/.exec(tag)?.[0] ?? "";
-	if (localName(name) !== "FatturaElettronica") return undefined;
-	const attrs = tag.slice(name.length);
-	return attrs.includes(NAMESPACE) || /\bversione\s*=\s*["'](FPA12|FPR12)["']/.test(attrs) ? { doctype, attrs } : undefined;
-}
-
-/** The index after `close`, searched from `at`; -1 when it is not there. */
-function after(text: string, close: string, at: number): number {
-	const end = text.indexOf(close, at);
-	return end < 0 ? -1 : end + close.length;
-}
-
-/** The end of a DOCTYPE, past an internal subset in brackets and quoted strings; -1 when it does not end. */
-function doctypeEnd(text: string, at: number): number {
-	let brackets = 0;
-	let quote = "";
-	for (let i = at; i < text.length; i++) {
-		const c = text.charAt(i);
-		if (quote !== "") {
-			if (c === quote) quote = "";
-		} else if (c === '"' || c === "'") quote = c;
-		else if (c === "[") brackets++;
-		else if (c === "]") brackets--;
-		else if (c === ">" && brackets <= 0) return i + 1;
-	}
-	return -1;
-}
-
-/** The index of the `>` that closes the tag opening at `at`, past `>` inside quoted attribute values; -1 if none. */
-function tagEnd(text: string, at: number): number {
-	let quote = "";
-	for (let i = at + 1; i < text.length; i++) {
-		const c = text.charAt(i);
-		if (quote !== "") {
-			if (c === quote) quote = "";
-		} else if (c === '"' || c === "'") quote = c;
-		else if (c === ">") return i;
-	}
-	return -1;
-}
-
-function localName(name: string): string {
-	return name.slice(name.lastIndexOf(":") + 1);
-}
-
-/**
- * Bytes as text in the encoding they declare: UTF-8 unless a byte order mark says UTF-16 or the
- * XML declaration names another (ISO-8859-1 and Windows-1252 turn up in invoices from old programs).
- */
-function decode(data: Uint8Array): string {
-	if (data[0] === 0xff && data[1] === 0xfe) return new TextDecoder("utf-16le").decode(data);
-	if (data[0] === 0xfe && data[1] === 0xff) return new TextDecoder("utf-16be").decode(data);
-	const head = Buffer.from(data.buffer, data.byteOffset, Math.min(data.byteLength, 200)).toString("latin1");
-	const declared = /^(?:﻿|\xEF\xBB\xBF)?\s*<\?xml[^>]{0,150}?encoding\s*=\s*["']([A-Za-z0-9._-]{1,40})["']/.exec(head)?.[1];
-	let label = "utf-8";
-	if (declared !== undefined) {
-		try {
-			label = new TextDecoder(declared).encoding;
-		} catch {
-			// An encoding nobody knows: UTF-8, as XML says when nothing else is known.
-		}
-	}
-	return new TextDecoder(label).decode(data);
-}
-
-/**
- * The invoice's summary, from the XML or from the signed file around it; a FatturaError (or a
- * P7mError for the envelope) in Italian when it cannot be read.
- */
-export function fatturaText(data: Uint8Array): { text: string; parts?: number } {
+export function fatturaText(data: Uint8Array, signed: boolean): { text: string; parts?: number } {
 	if (data.length > MAX_FATTURA_BYTES) throw new FatturaError("la fattura è troppo grande da leggere");
-	const signed = isSignedEnvelope(data);
-	const xml = decode(signed ? signedContent(data) : data);
-	const root = rootOf(xml);
-	if (root === undefined) throw new FatturaError(signed ? "il file firmato non contiene una fattura elettronica che so leggere" : "non è una fattura elettronica che so leggere");
-	if (root.doctype) throw new FatturaError("la fattura contiene una dichiarazione DOCTYPE: per sicurezza non la leggo (le fatture elettroniche vere non ne hanno)");
-	const invoice = parse(xml);
-	const bodies = all(invoice, "FatturaElettronicaBody");
+	const xml = decodeXml(data);
+	const root = fatturaRoot(xml);
+	if (root === undefined) throw new FatturaError("non è una fattura elettronica che so leggere");
+	if (root.doctype) throw new FatturaError(DOCTYPE);
+	let invoice: XmlElement;
+	try {
+		invoice = parseXml(xml, { maxElements: MAX_ELEMENTS, maxDepth: MAX_DEPTH });
+	} catch (error) {
+		if (error instanceof XmlError) throw new FatturaError(error.message.replace("il file XML", "il file XML della fattura"));
+		throw error;
+	}
+	const simplified = invoice.name === "FatturaElettronicaSemplificata";
+	const head = child(invoice, "FatturaElettronicaHeader");
+	const supplier = simplified ? simplifiedSupplier(child(head, "CedentePrestatore")) : ordinaryParty(child(head, "CedentePrestatore"));
+	const customer = simplified ? simplifiedCustomer(child(head, "CessionarioCommittente")) : ordinaryParty(child(head, "CessionarioCommittente"));
+	const bodies = children(invoice, "FatturaElettronicaBody");
 	const out: string[] = [];
-	const format = value(invoice, "FatturaElettronicaHeader/DatiTrasmissione/FormatoTrasmissione") ?? /\bversione\s*=\s*["']([^"']{1,10})["']/.exec(root.attrs)?.[1];
-	const audience = format === "FPA12" ? ", verso la pubblica amministrazione" : format === "FPR12" ? ", tra privati" : "";
-	out.push(`Fattura elettronica (FatturaPA${format === undefined ? "" : ` ${format}${audience}`})`);
+	const read = bodies.slice(0, MAX_BODIES).map((body) => (simplified ? simplifiedBody(body) : ordinaryBody(body)));
+	const first = read[0];
+	if (bodies.length === 1 && first !== undefined) out.push(headline(first, supplier, customer));
+	else out.push(`Lotto di ${bodies.length} documenti${supplier.name === undefined ? "" : ` da ${supplier.name}`}${customer.name === undefined ? "" : ` a ${customer.name}`}`);
 	if (signed) out.push("Firma digitale presente, non verificata.");
-	if (bodies.length > 1) out.push(`Lotto di ${bodies.length} documenti.`);
-	out.push(...header(invoice));
-	bodies.slice(0, MAX_BODIES).forEach((body, i) => {
+	out.push("", ...partyLines("Fornitore (cedente/prestatore)", supplier, true));
+	const representative = child(head, "RappresentanteFiscale");
+	if (representative !== undefined) out.push("", ...partyLines("Rappresentante fiscale del fornitore", ordinaryParty(representative), false));
+	out.push("", ...partyLines("Cliente (cessionario/committente)", customer, false));
+	out.push(...issuer(head));
+	read.forEach((body, i) => {
 		out.push("");
-		if (bodies.length > 1) out.push(`## Documento ${i + 1} di ${bodies.length}`);
-		out.push(...bodyLines(body));
+		if (bodies.length > 1) out.push(`## Documento ${i + 1} di ${bodies.length}`, headline(body, supplier, customer));
+		out.push(...body.lines);
 	});
 	if (bodies.length > MAX_BODIES) out.push("", `E altri ${bodies.length - MAX_BODIES} documenti non mostrati.`);
+	out.push("", transmission(head, root.attrs, simplified));
 	return { text: out.join("\n").replace(/\n{3,}/g, "\n\n").trim(), ...(bodies.length > 1 ? { parts: bodies.length } : {}) };
 }
 
-/**
- * The XML as a tree of elements, by local names. One forward pass with indexOf: comments,
- * processing instructions and CDATA are found by their ends, a tag's end past quoted values.
- * Any declaration (<!DOCTYPE, <!ENTITY) is refused; unknown entities stay as written.
- */
-function parse(xml: string): Element {
-	const stack: Element[] = [];
-	let root: Element | undefined;
-	let count = 0;
-	let at = 0;
-	const broken = () => new FatturaError("il file XML della fattura è rovinato o incompleto");
-	while (at < xml.length) {
-		const lt = xml.indexOf("<", at);
-		const textEnd = lt < 0 ? xml.length : lt;
-		const top = stack.at(-1);
-		if (textEnd > at && top !== undefined) top.text += xmlUnescape(xml.slice(at, textEnd));
-		if (lt < 0) break;
-		if (xml.startsWith("<!--", lt)) at = after(xml, "-->", lt + 4);
-		else if (xml.startsWith("<![CDATA[", lt)) {
-			const end = xml.indexOf("]]>", lt + 9);
-			if (end < 0) throw broken();
-			if (top !== undefined) top.text += xml.slice(lt + 9, end);
-			at = end + 3;
-		} else if (xml.startsWith("<?", lt)) at = after(xml, "?>", lt + 2);
-		else if (xml.startsWith("<!", lt)) throw new FatturaError("la fattura contiene dichiarazioni (DOCTYPE o ENTITY): per sicurezza non la leggo");
-		else if (xml.charAt(lt + 1) === "/") {
-			const end = xml.indexOf(">", lt);
-			if (end < 0) throw broken();
-			const open = stack.pop();
-			if (open === undefined || open.name !== localName(xml.slice(lt + 2, end).trim())) throw broken();
-			at = end + 1;
-		} else {
-			const end = tagEnd(xml, lt);
-			if (end < 0) throw broken();
-			const tag = xml.slice(lt + 1, end);
-			const name = /^[^\s/>]+/.exec(tag)?.[0];
-			if (name === undefined) throw broken();
-			if (++count > MAX_ELEMENTS) throw new FatturaError("la fattura ha troppi elementi da leggere");
-			const element: Element = { name: localName(name), children: [], text: "" };
-			if (top !== undefined) top.children.push(element);
-			else if (root === undefined) root = element;
-			else throw broken();
-			if (!tag.endsWith("/")) {
-				if (stack.length >= MAX_DEPTH) throw new FatturaError("la fattura è annidata troppo in profondità");
-				stack.push(element);
-			}
-			at = end + 1;
-		}
-		if (at < 0) throw broken();
-	}
-	if (root === undefined || stack.length > 0) throw broken();
-	if (root.name !== "FatturaElettronica") throw new FatturaError("non è una fattura elettronica che so leggere");
-	return root;
+/** What a document of the file says, read: what the headline needs and its lines. */
+type Body = { readonly type?: string; readonly number?: string; readonly date?: string; readonly total?: string; readonly due?: string; readonly lines: string[] };
+
+/** «Fattura n. 2026/0153 del 15/10/2026 da Alfa S.r.l. a Beta Srl, totale 1.342,00 €, scadenza 30/11/2026». */
+function headline(body: Body, supplier: Party, customer: Party): string {
+	const kind = body.type === undefined ? "Documento" : capitalized(Object.hasOwn(TIPO_DOCUMENTO, body.type) ? (TIPO_DOCUMENTO[body.type] as string) : `documento ${body.type}`);
+	const what = joined([kind, labelled("n.", body.number), labelled("del", body.date), labelled("da", supplier.name), labelled("a", customer.name)], " ");
+	return joined([what, labelled("totale", body.total), body.due]) ?? kind;
 }
 
-function child(el: Element | undefined, name: string): Element | undefined {
-	return el?.children.find((c) => c.name === name);
+/** A supplier or a customer, as either kind of invoice gives it. */
+type Party = {
+	readonly name?: string;
+	readonly vat?: { readonly country?: string; readonly code: string };
+	readonly fiscal?: string;
+	readonly sede?: XmlElement;
+	readonly regime?: string;
+	readonly rea?: XmlElement;
+	readonly contacts?: XmlElement;
+};
+
+function ordinaryParty(el: XmlElement | undefined): Party {
+	const data = child(el, "DatiAnagrafici");
+	const registry = child(data, "Anagrafica");
+	return party({
+		name: value(registry, "Denominazione") ?? joined([value(registry, "Titolo"), value(registry, "Nome"), value(registry, "Cognome")], " "),
+		vatOf: child(data, "IdFiscaleIVA"),
+		fiscal: value(data, "CodiceFiscale"),
+		sede: child(el, "Sede"),
+		regime: value(data, "RegimeFiscale"),
+		rea: child(el, "IscrizioneREA"),
+		contacts: child(el, "Contatti"),
+	});
 }
 
-function all(el: Element | undefined, name: string): Element[] {
-	return el === undefined ? [] : el.children.filter((c) => c.name === name);
+/** The simplified invoice keeps the supplier's data directly under CedentePrestatore. */
+function simplifiedSupplier(el: XmlElement | undefined): Party {
+	return party({
+		name: value(el, "Denominazione") ?? joined([value(el, "Nome"), value(el, "Cognome")], " "),
+		vatOf: child(el, "IdFiscaleIVA"),
+		fiscal: value(el, "CodiceFiscale"),
+		sede: child(el, "Sede"),
+		regime: value(el, "RegimeFiscale"),
+		rea: child(el, "IscrizioneREA"),
+	});
 }
 
-/** The element at a path of local names, «A/B/C», taking the first of each. */
-function at(el: Element | undefined, path: string): Element | undefined {
-	let current = el;
-	for (const name of path.split("/")) current = child(current, name);
-	return current;
+/** And the customer's under IdentificativiFiscali and AltriDatiIdentificativi. */
+function simplifiedCustomer(el: XmlElement | undefined): Party {
+	const ids = child(el, "IdentificativiFiscali");
+	const other = child(el, "AltriDatiIdentificativi");
+	return party({ name: value(other, "Denominazione") ?? joined([value(other, "Nome"), value(other, "Cognome")], " "), vatOf: child(ids, "IdFiscaleIVA"), fiscal: value(ids, "CodiceFiscale"), sede: child(other, "Sede") });
 }
 
-/** The text of the element at `path` on one line, at most MAX_VALUE characters; undefined when empty or missing. */
-function value(el: Element | undefined, path: string): string | undefined {
-	return ownText(at(el, path));
-}
-
-/** An element's own text on one line (a value never makes a line of its own), at most MAX_VALUE characters. */
-function ownText(el: Element | undefined): string | undefined {
-	if (el === undefined) return undefined;
-	const text = el.text.replace(/\s+/g, " ").trim();
-	if (text === "") return undefined;
-	return text.length > MAX_VALUE ? `${text.slice(0, MAX_VALUE)}…` : text;
-}
-
-/** «TD01 fattura»: a code with its meaning, or the code alone when it is not one of the known ones. */
-function coded(table: Record<string, string>, code: string | undefined): string | undefined {
-	if (code === undefined) return undefined;
-	const meaning = Object.hasOwn(table, code) ? table[code] : undefined;
-	return meaning === undefined ? code : `${code} ${meaning}`;
-}
-
-/** 1.234,56 €; another currency by its code; as written when it is no amount. */
-function money(raw: string | undefined, currency: string): string | undefined {
-	if (raw === undefined) return undefined;
-	if (!/^-?\d{1,15}(?:\.\d{1,8})?$/.test(raw)) return raw;
-	const decimals = Math.max(2, (raw.split(".")[1] ?? "").replace(/0+$/, "").length);
-	try {
-		const shown = italianMoney(Number(raw), decimals);
-		return currency === "EUR" ? `${shown} €` : `${shown} ${currency}`;
-	} catch {
-		return raw;
-	}
-}
-
-/** 22% or 10,5%; as written when it is no number. */
-function percent(raw: string | undefined): string | undefined {
-	if (raw === undefined) return undefined;
-	return /^\d{1,3}(?:\.\d{1,8})?$/.test(raw) ? `${formatResult(Number(raw))}%` : raw;
-}
-
-/** 17/10/2026; as written when it is no date. */
-function date(raw: string | undefined): string | undefined {
-	if (raw === undefined) return undefined;
-	return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? italianDate(raw) : raw;
-}
-
-function quantity(raw: string | undefined): string | undefined {
-	if (raw === undefined) return undefined;
-	return /^\d{1,12}(?:\.\d{1,8})?$/.test(raw) ? formatResult(Number(raw)) : raw;
-}
-
-/** The parts that are there, joined; undefined when none is. */
-function joined(parts: readonly (string | undefined)[], separator = ", "): string | undefined {
-	const there = parts.filter((p): p is string => p !== undefined && p !== "");
-	return there.length === 0 ? undefined : there.join(separator);
-}
-
-/** The transmission, the supplier and the customer: once per file, also for a lotto. */
-function header(invoice: Element): string[] {
-	const head = child(invoice, "FatturaElettronicaHeader");
-	const out: string[] = [];
-	const transmission = child(head, "DatiTrasmissione");
-	const recipient = joined([value(transmission, "CodiceDestinatario") === undefined ? undefined : `codice destinatario ${value(transmission, "CodiceDestinatario")}`, value(transmission, "PECDestinatario") === undefined ? undefined : `PEC ${value(transmission, "PECDestinatario")}`]);
-	if (recipient !== undefined) out.push(`Recapito: ${recipient}`);
-	out.push("", ...party("Fornitore (cedente/prestatore)", child(head, "CedentePrestatore"), true));
-	const representative = child(head, "RappresentanteFiscale");
-	if (representative !== undefined) out.push("", ...party("Rappresentante fiscale del fornitore", representative, false));
-	out.push("", ...party("Cliente (cessionario/committente)", child(head, "CessionarioCommittente"), false));
+function party(found: { name?: string; vatOf?: XmlElement; fiscal?: string; sede?: XmlElement; regime?: string; rea?: XmlElement; contacts?: XmlElement }): Party {
+	const code = value(found.vatOf, "IdCodice");
+	const country = value(found.vatOf, "IdPaese");
+	const out: { -readonly [K in keyof Party]: Party[K] } = {};
+	if (found.name !== undefined) out.name = found.name;
+	if (code !== undefined) out.vat = country === undefined ? { code } : { country, code };
+	if (found.fiscal !== undefined) out.fiscal = found.fiscal;
+	if (found.sede !== undefined) out.sede = found.sede;
+	if (found.regime !== undefined) out.regime = found.regime;
+	if (found.rea !== undefined) out.rea = found.rea;
+	if (found.contacts !== undefined) out.contacts = found.contacts;
 	return out;
 }
 
-/** A supplier or a customer: name, tax ids checked on paper, address, regime, contacts. */
-function party(title: string, el: Element | undefined, supplier: boolean): string[] {
-	if (el === undefined) return [`${title}: non indicato`];
-	const data = child(el, "DatiAnagrafici");
-	const registry = child(data, "Anagrafica");
-	const name = value(registry, "Denominazione") ?? joined([value(registry, "Titolo"), value(registry, "Nome"), value(registry, "Cognome")], " ");
-	const out = [`${title}: ${name ?? "nome non indicato"}`];
-	const country = value(data, "IdFiscaleIVA/IdPaese");
-	const code = value(data, "IdFiscaleIVA/IdCodice");
-	if (code !== undefined) out.push(`- Partita IVA: ${country ?? ""}${code}${vatProblem(country, code)}`);
-	const fiscal = value(data, "CodiceFiscale");
-	if (fiscal !== undefined) out.push(`- Codice fiscale: ${fiscal}${fiscalProblem(fiscal)}`);
-	const sede = child(el, "Sede");
+/** A party's lines: name, tax ids checked on paper, address, regime, REA, contacts. */
+function partyLines(title: string, p: Party, supplier: boolean): string[] {
+	const out = [`${title}: ${p.name ?? "nome non indicato"}`];
+	if (p.vat !== undefined) out.push(`- Partita IVA: ${p.vat.country ?? ""}${p.vat.code}${vatProblem(p.vat.country, p.vat.code)}`);
+	if (p.fiscal !== undefined) out.push(`- Codice fiscale: ${p.fiscal}${fiscalProblem(p.fiscal)}`);
+	const { sede } = p;
 	if (sede !== undefined) {
 		const street = joined([value(sede, "Indirizzo"), value(sede, "NumeroCivico")], " ");
 		const province = value(sede, "Provincia");
@@ -466,85 +182,168 @@ function party(title: string, el: Element | undefined, supplier: boolean): strin
 		if (address !== undefined) out.push(`- Sede: ${address}`);
 	}
 	if (supplier) {
-		const regime = coded(REGIME_FISCALE, value(data, "RegimeFiscale"));
-		if (regime !== undefined) out.push(`- Regime fiscale: ${regime}`);
-		const rea = child(el, "IscrizioneREA");
-		const reaNumber = joined([value(rea, "Ufficio"), value(rea, "NumeroREA")], " ");
-		if (reaNumber !== undefined) out.push(`- REA: ${reaNumber}${value(rea, "StatoLiquidazione") === "LS" ? " (in liquidazione)" : ""}`);
+		const regime = coded(REGIME_FISCALE, p.regime);
+		if (regime !== undefined) out.push(regime.startsWith("regime ") ? `- ${capitalized(regime)}` : `- Regime fiscale: ${regime}`);
+		const rea = joined([value(p.rea, "Ufficio"), value(p.rea, "NumeroREA")], " ");
+		if (rea !== undefined) out.push(`- REA: ${rea}${value(p.rea, "StatoLiquidazione") === "LS" ? " (in liquidazione)" : ""}`);
 	}
-	const contacts = joined([value(el, "Contatti/Telefono") === undefined ? undefined : `tel. ${value(el, "Contatti/Telefono")}`, value(el, "Contatti/Email") === undefined ? undefined : `email ${value(el, "Contatti/Email")}`]);
+	const contacts = joined([labelled("tel.", value(p.contacts, "Telefono")), labelled("email", value(p.contacts, "Email"))]);
 	if (contacts !== undefined) out.push(`- Contatti: ${contacts}`);
 	return out;
 }
 
-/** What the offline check finds wrong with a VAT number, in parentheses; nothing for countries it does not know. */
+/** «(attenzione: …; controllo senza rete)» when the offline check finds the VAT number wrong; nothing for countries it does not know. */
 function vatProblem(country: string | undefined, code: string): string {
 	const prefix = country === "GR" ? "EL" : country;
 	if (prefix === undefined || !Object.hasOwn(EU_VAT_COUNTRIES, prefix)) return "";
-	const id = parseTaxId(code, prefix);
-	const problem = "problem" in id ? id.problem : undefined;
-	return problem === undefined ? "" : ` (il controllo formale non torna: ${problem})`;
+	return warning(euVatProblem(prefix as EuVatCountry, code));
 }
 
-/** A codice fiscale checked on paper: a person's 16 characters, or a company's 11 digits. */
+/** A codice fiscale checked on paper: a company's 11 digits as a partita IVA, a person's 16 characters; others (foreign) not. */
 function fiscalProblem(code: string): string {
-	let problem: string | undefined;
-	if (/^\d{11}$/.test(code)) {
-		const id = parseTaxId(code, "IT");
-		problem = id.kind === "vat" ? id.problem : undefined;
-	} else {
-		const checked = checkCodiceFiscale(code);
-		problem = "problem" in checked ? checked.problem : undefined;
-	}
-	return problem === undefined ? "" : ` (il controllo formale non torna: ${problem})`;
+	if (/^\d{11}$/.test(code)) return warning(partitaIvaProblem(code));
+	if (code.length !== 16) return "";
+	const checked = checkCodiceFiscale(code);
+	return warning("problem" in checked ? checked.problem : undefined);
 }
 
-/** One document of the file: data, lines, VAT, totals, payment, attachments. */
-function bodyLines(body: Element): string[] {
-	const general = at(body, "DatiGenerali/DatiGeneraliDocumento");
+function warning(problem: string | undefined): string {
+	if (problem === undefined) return "";
+	const said = problem.includes("cifra di controllo") || problem.includes("carattere di controllo") ? "la cifra di controllo non torna, forse un errore di battitura" : problem.replace(/\s*\([^)]*\)/g, "");
+	return ` (attenzione: ${said}; controllo senza rete)`;
+}
+
+/** Who issued the invoice when not the supplier: a third party, or the customer on the supplier's behalf. */
+function issuer(head: XmlElement | undefined): string[] {
+	const third = ordinaryParty(child(head, "TerzoIntermediarioOSoggettoEmittente"));
+	const who = value(head, "SoggettoEmittente");
+	const name = joined([third.name, third.vat === undefined ? undefined : `P.IVA ${third.vat.country ?? ""}${third.vat.code}`]);
+	if (who === "CC") return ["", "Emessa dal cliente per conto del fornitore."];
+	if (who === "TZ" || name !== undefined) return ["", `Emessa da un terzo per conto del fornitore${name === undefined ? "" : `: ${name}`}.`];
+	return [];
+}
+
+/** The technical line, last: format, recipient code or PEC. */
+function transmission(head: XmlElement | undefined, attrs: string, simplified: boolean): string {
+	const data = child(head, "DatiTrasmissione");
+	const format = value(data, "FormatoTrasmissione") ?? /\bversione\s*=\s*["']([A-Z0-9]{1,10})["']/.exec(attrs)?.[1];
+	const audience = format === "FPA12" ? " (verso la pubblica amministrazione)" : format === "FPR12" ? " (tra privati)" : "";
+	const name = simplified ? "FatturaPA semplificata" : "FatturaPA";
+	return `Trasmissione: ${joined([`${name}${format === undefined ? "" : ` ${format}${audience}`}`, labelled("codice destinatario", value(data, "CodiceDestinatario")), labelled("PEC", value(data, "PECDestinatario"))])}`;
+}
+
+/** One document of an ordinary invoice: data, references, lines, VAT, totals, payment, attachments. */
+function ordinaryBody(body: XmlElement): Body {
+	const generalData = child(body, "DatiGenerali");
+	const general = child(generalData, "DatiGeneraliDocumento");
 	const currency = value(general, "Divisa") ?? "EUR";
-	const out: string[] = [];
 	const type = value(general, "TipoDocumento");
+	const credit = type !== undefined && CREDIT_NOTES.has(type);
+	const out: string[] = [];
 	if (type !== undefined) out.push(`Tipo documento: ${coded(TIPO_DOCUMENTO, type)}`);
+	if (credit) out.push("È una nota di credito: storna in tutto o in parte la fattura collegata; gli importi sono a favore del cliente, non da pagare al fornitore.");
+	if (type !== undefined && INTEGRATIONS.has(type)) out.push("È un documento di integrazione per il reverse charge, non è una fattura da pagare.");
 	const number = value(general, "Numero");
-	if (number !== undefined) out.push(`Numero: ${number}`);
 	const issued = date(value(general, "Data"));
-	if (issued !== undefined) out.push(`Data: ${issued}`);
-	if (value(general, "Divisa") !== undefined) out.push(`Divisa: ${currency}`);
-	const reasons = all(general, "Causale")
+	out.push(...defined([labelled("Numero:", number), labelled("Data:", issued), currency === "EUR" ? undefined : `Divisa: ${currency}`]));
+	const reasons = children(general, "Causale")
 		.map(ownText)
 		.filter((c) => c !== undefined);
 	if (reasons.length > 0) out.push(`Causale: ${reasons.join(" ").slice(0, 2 * MAX_VALUE)}`);
-	for (const linked of all(child(body, "DatiGenerali"), "DatiFattureCollegate")) {
-		const what = joined([value(linked, "IdDocumento") === undefined ? undefined : `n. ${value(linked, "IdDocumento")}`, date(value(linked, "Data")) === undefined ? undefined : `del ${date(value(linked, "Data"))}`], " ");
-		if (what !== undefined) out.push(`Fattura collegata: ${what}`);
-	}
-	out.push(...lines(child(body, "DatiBeniServizi"), currency));
-	out.push(...summaries(child(body, "DatiBeniServizi"), currency));
-	out.push(...totals(general, currency));
-	out.push(...payments(body, currency));
-	out.push(...attachments(body));
+	out.push(...references(generalData, "DatiFattureCollegate", "Fattura collegata"));
+	out.push(...references(generalData, "DatiOrdineAcquisto", "Ordine d'acquisto"));
+	out.push(...references(generalData, "DatiContratto", "Contratto"));
+	out.push(...references(generalData, "DatiConvenzione", "Convenzione"));
+	out.push(...references(generalData, "DatiRicezione", "Ricezione"));
+	out.push(...transportDocuments(generalData));
+	const goods = child(body, "DatiBeniServizi");
+	out.push(...lineLines(goods, currency));
+	out.push(...summaryLines(goods, currency));
+	const paymentData = children(body, "DatiPagamento");
+	const total = value(general, "ImportoTotaleDocumento");
+	out.push(...totalLines(general, currency, credit || (type !== undefined && INTEGRATIONS.has(type)) ? undefined : paymentData));
+	const payment = paymentLines(paymentData, currency, credit);
+	out.push(...payment.lines, ...attachmentLines(body));
+	const due = credit || (type !== undefined && INTEGRATIONS.has(type)) ? undefined : payment.due;
+	return { ...optional({ type, number, date: issued, total: money(total, currency), due }), lines: out };
+}
+
+/** One document of a simplified invoice: lines with the VAT inside the amount, the invoice it corrects. */
+function simplifiedBody(body: XmlElement): Body {
+	const generalData = child(body, "DatiGenerali");
+	const general = child(generalData, "DatiGeneraliDocumento");
+	const currency = value(general, "Divisa") ?? "EUR";
+	const type = value(general, "TipoDocumento");
+	const credit = type !== undefined && CREDIT_NOTES.has(type);
+	const out: string[] = [];
+	if (type !== undefined) out.push(`Tipo documento: ${coded(TIPO_DOCUMENTO, type)}`);
+	if (credit) out.push("È una nota di credito: storna in tutto o in parte la fattura collegata; gli importi sono a favore del cliente, non da pagare al fornitore.");
+	const number = value(general, "Numero");
+	const issued = date(value(general, "Data"));
+	out.push(...defined([labelled("Numero:", number), labelled("Data:", issued), currency === "EUR" ? undefined : `Divisa: ${currency}`]));
+	const corrected = child(generalData, "DatiFatturaRettificata");
+	const which = joined([labelled("n.", value(corrected, "NumeroFR")), labelled("del", date(value(corrected, "DataFR")))], " ");
+	if (which !== undefined) out.push(`Fattura rettificata: ${joined([which, labelled("elementi rettificati:", value(corrected, "ElementiRettificati"))])}`);
+	const rows = children(body, "DatiBeniServizi");
+	let sum: bigint | undefined = 0n;
+	if (rows.length > 0) out.push("", `Righe (${rows.length}):`);
+	rows.forEach((row, i) => {
+		const amount = value(row, "Importo");
+		const units = amount === undefined ? undefined : toUnits(amount);
+		sum = sum === undefined || units === undefined ? undefined : sum + units;
+		if (i >= MAX_LINES) return;
+		const vat = rate(row, "DatiIVA/Aliquota");
+		const parts = joined([labelled("importo", money(amount, currency)), vat === undefined ? undefined : `${vat}${labelled(", imposta", money(value(row, "DatiIVA/Imposta"), currency)) ?? ""}`, labelled("riferimento normativo:", value(row, "RiferimentoNormativo"))], "; ");
+		out.push(`${i + 1}. ${value(row, "Descrizione") ?? "(senza descrizione)"}${parts === undefined ? "" : `; ${parts}`}`);
+	});
+	if (rows.length > MAX_LINES) out.push(`e altre ${rows.length - MAX_LINES} righe`);
+	const total = sum === undefined || rows.length === 0 ? undefined : money(fromUnits(sum), currency);
+	out.push("");
+	if (value(general, "BolloVirtuale") === "SI") out.push("Bollo virtuale: sì");
+	if (total !== undefined) out.push(`Totale (somma delle righe, IVA inclusa): ${total}`);
+	out.push(...attachmentLines(body));
+	return { ...optional({ type, number, date: issued, total }), lines: out };
+}
+
+/** Orders, contracts, linked invoices…: «Ordine d'acquisto: n. 45 del 01/10/2026, CIG …, CUP …». */
+function references(generalData: XmlElement | undefined, name: string, label: string): string[] {
+	const list = children(generalData, name);
+	const out = list.slice(0, MAX_REFERENCES).flatMap((el) => {
+		const what = joined([joined([labelled("n.", value(el, "IdDocumento")), labelled("del", date(value(el, "Data")))], " "), labelled("CIG", value(el, "CodiceCIG")), labelled("CUP", value(el, "CodiceCUP")), labelled("commessa", value(el, "CodiceCommessaConvenzione"))]);
+		return what === undefined ? [] : [`${label}: ${what}`];
+	});
+	if (list.length > MAX_REFERENCES) out.push(`e altri ${list.length - MAX_REFERENCES} riferimenti (${label.toLowerCase()})`);
 	return out;
 }
 
-function lines(goods: Element | undefined, currency: string): string[] {
-	const rows = all(goods, "DettaglioLinee");
+function transportDocuments(generalData: XmlElement | undefined): string[] {
+	const list = children(generalData, "DatiDDT");
+	const out = list.slice(0, MAX_REFERENCES).flatMap((el) => {
+		const what = joined([labelled("n.", value(el, "NumeroDDT")), labelled("del", date(value(el, "DataDDT")))], " ");
+		return what === undefined ? [] : [`DDT: ${what}`];
+	});
+	if (list.length > MAX_REFERENCES) out.push(`e altri ${list.length - MAX_REFERENCES} DDT`);
+	return out;
+}
+
+function lineLines(goods: XmlElement | undefined, currency: string): string[] {
+	const rows = children(goods, "DettaglioLinee");
 	if (rows.length === 0) return [];
 	const out = ["", `Righe (${rows.length}):`];
 	rows.slice(0, MAX_LINES).forEach((row, i) => {
 		const unit = value(row, "UnitaMisura");
 		const amount = quantity(value(row, "Quantita"));
-		const discounts = all(row, "ScontoMaggiorazione")
-			.map((s) => discount(s, currency))
-			.filter((s) => s !== undefined);
+		const from = date(value(row, "DataInizioPeriodo"));
+		const to = date(value(row, "DataFinePeriodo"));
 		const details = joined(
 			[
 				amount === undefined ? undefined : `quantità ${amount}${unit === undefined ? "" : ` ${unit}`}`,
-				money(value(row, "PrezzoUnitario"), currency) === undefined ? undefined : `prezzo unitario ${money(value(row, "PrezzoUnitario"), currency)}`,
-				...discounts,
-				rate(row),
+				labelled("prezzo unitario", money(value(row, "PrezzoUnitario"), currency)),
+				...children(row, "ScontoMaggiorazione").map((s) => adjustment(s, currency)),
+				rate(row, "AliquotaIVA"),
 				value(row, "Ritenuta") === "SI" ? "soggetta a ritenuta" : undefined,
-				money(value(row, "PrezzoTotale"), currency) === undefined ? undefined : `totale ${money(value(row, "PrezzoTotale"), currency)}`,
+				from === undefined && to === undefined ? undefined : joined(["periodo", labelled("dal", from), labelled("al", to)], " "),
+				labelled("totale", money(value(row, "PrezzoTotale"), currency)),
 			],
 			"; ",
 		);
@@ -555,106 +354,162 @@ function lines(goods: Element | undefined, currency: string): string[] {
 }
 
 /** «sconto 10%», «maggiorazione 5,00 €». */
-function discount(el: Element, currency: string): string | undefined {
-	const kind = value(el, "Tipo") === "MG" ? "maggiorazione" : "sconto";
-	const how = percent(value(el, "Percentuale")) ?? money(value(el, "Importo"), currency);
-	return how === undefined ? undefined : `${kind} ${how}`;
+function adjustment(el: XmlElement, currency: string): string | undefined {
+	return labelled(value(el, "Tipo") === "MG" ? "maggiorazione" : "sconto", percent(value(el, "Percentuale")) ?? money(value(el, "Importo"), currency));
 }
 
-/** «IVA 22%», or the nature of a line without VAT: «N2.2 non soggette, altri casi». */
-function rate(el: Element): string | undefined {
+/** «IVA 22%», or the nature of an amount without VAT: «non soggette, altri casi (N2.2)». */
+function rate(el: XmlElement, path: string): string | undefined {
 	const nature = coded(NATURA, value(el, "Natura"));
-	const vat = value(el, "AliquotaIVA");
-	if (nature !== undefined && (vat === undefined || Number(vat) === 0)) return `IVA ${nature}`;
-	return vat === undefined ? undefined : `IVA ${percent(vat)}`;
+	const vat = value(el, path);
+	if (nature !== undefined && (vat === undefined || toUnits(vat) === 0n)) return nature;
+	return labelled("IVA", percent(vat));
 }
 
-function summaries(goods: Element | undefined, currency: string): string[] {
-	const rows = all(goods, "DatiRiepilogo");
+function summaryLines(goods: XmlElement | undefined, currency: string): string[] {
+	const rows = children(goods, "DatiRiepilogo");
 	if (rows.length === 0) return [];
 	const out = ["", "Riepilogo IVA:"];
 	for (const row of rows) {
+		const nature = value(row, "Natura");
 		const esigibilita = value(row, "EsigibilitaIVA");
 		const parts = joined(
 			[
-				money(value(row, "ImponibileImporto"), currency) === undefined ? undefined : `imponibile ${money(value(row, "ImponibileImporto"), currency)}`,
-				money(value(row, "Imposta"), currency) === undefined ? undefined : `imposta ${money(value(row, "Imposta"), currency)}`,
-				money(value(row, "SpeseAccessorie"), currency) === undefined ? undefined : `spese accessorie ${money(value(row, "SpeseAccessorie"), currency)}`,
-				esigibilita === undefined ? undefined : `esigibilità ${coded(ESIGIBILITA, esigibilita)}`,
-				value(row, "RiferimentoNormativo") === undefined ? undefined : `riferimento normativo: ${value(row, "RiferimentoNormativo")}`,
+				labelled("imponibile", money(value(row, "ImponibileImporto"), currency)),
+				labelled("imposta", money(value(row, "Imposta"), currency)),
+				labelled("spese accessorie", money(value(row, "SpeseAccessorie"), currency)),
+				labelled("arrotondamento", money(value(row, "Arrotondamento"), currency)),
+				esigibilita === undefined ? undefined : ESIGIBILITA[esigibilita],
+				nature === undefined ? undefined : naturaNote(nature),
+				labelled("riferimento normativo:", value(row, "RiferimentoNormativo")),
 			],
 			"; ",
 		);
-		out.push(`- ${rate(row) ?? "IVA"}${parts === undefined ? "" : `: ${parts}`}`);
+		out.push(`- ${rate(row, "AliquotaIVA") ?? "IVA"}${parts === undefined ? "" : `: ${parts}`}`);
 	}
 	return out;
 }
 
-/** Fund contributions, withholdings, stamp duty, the total. */
-function totals(general: Element | undefined, currency: string): string[] {
+/**
+ * Fund contributions, withholdings, stamp duty, discounts, the total and, when `payments` are
+ * given and add up to something else, what is to be paid.
+ */
+function totalLines(general: XmlElement | undefined, currency: string, payments: XmlElement[] | undefined): string[] {
 	const out = [""];
-	for (const fund of all(general, "DatiCassaPrevidenziale")) {
-		const parts = joined([
-			percent(value(fund, "AlCassa")) === undefined ? undefined : `aliquota ${percent(value(fund, "AlCassa"))}`,
-			money(value(fund, "ImportoContributoCassa"), currency) === undefined ? undefined : `contributo ${money(value(fund, "ImportoContributoCassa"), currency)}`,
-			money(value(fund, "ImponibileCassa"), currency) === undefined ? undefined : `su imponibile ${money(value(fund, "ImponibileCassa"), currency)}`,
-			rate(fund),
-			value(fund, "Ritenuta") === "SI" ? "soggetto a ritenuta" : undefined,
-		]);
-		out.push(`Cassa previdenziale: ${coded(TIPO_CASSA, value(fund, "TipoCassa")) ?? "non indicata"}${parts === undefined ? "" : `, ${parts}`}`);
+	for (const fund of children(general, "DatiCassaPrevidenziale")) {
+		const parts = joined([labelled("aliquota", percent(value(fund, "AlCassa"))), labelled("contributo", money(value(fund, "ImportoContributoCassa"), currency)), labelled("su imponibile", money(value(fund, "ImponibileCassa"), currency)), rate(fund, "AliquotaIVA"), value(fund, "Ritenuta") === "SI" ? "soggetto a ritenuta" : undefined]);
+		out.push(`Cassa previdenziale: ${joined([coded(TIPO_CASSA, value(fund, "TipoCassa")) ?? "non indicata", parts])}`);
 	}
-	for (const withholding of all(general, "DatiRitenuta")) {
-		const parts = joined([
-			money(value(withholding, "ImportoRitenuta"), currency),
-			percent(value(withholding, "AliquotaRitenuta")) === undefined ? undefined : `aliquota ${percent(value(withholding, "AliquotaRitenuta"))}`,
-			value(withholding, "CausalePagamento") === undefined ? undefined : `causale ${value(withholding, "CausalePagamento")}`,
-		]);
-		out.push(`Ritenuta d'acconto: ${coded(TIPO_RITENUTA, value(withholding, "TipoRitenuta")) ?? "tipo non indicato"}${parts === undefined ? "" : `, ${parts}`}`);
-	}
+	for (const withholding of children(general, "DatiRitenuta")) out.push(withholdingLine(withholding, currency));
 	const stamp = child(general, "DatiBollo");
 	if (stamp !== undefined) out.push(`Bollo virtuale: ${money(value(stamp, "ImportoBollo"), currency) ?? (value(stamp, "BolloVirtuale") === "SI" ? "sì" : "indicato")}`);
-	const adjustments = all(general, "ScontoMaggiorazione")
-		.map((s) => discount(s, currency))
-		.filter((s) => s !== undefined);
-	if (adjustments.length > 0) out.push(`Sul documento: ${adjustments.join(", ")}`);
-	const total = money(value(general, "ImportoTotaleDocumento"), currency);
-	if (total !== undefined) out.push(`Totale documento: ${total}`);
+	const adjustments = defined(children(general, "ScontoMaggiorazione").map((s) => adjustment(s, currency)));
+	if (adjustments.length > 0) out.push(`Sconto sul totale: ${adjustments.join(", ")}`);
+	const total = value(general, "ImportoTotaleDocumento");
+	if (total !== undefined) out.push(`Totale documento: ${money(total, currency)}`);
+	const toPay = payments === undefined ? undefined : paidSum(payments);
+	const totalUnits = total === undefined ? undefined : toUnits(total);
+	if (toPay !== undefined && totalUnits !== undefined && toPay !== totalUnits) out.push(`Da pagare: ${money(fromUnits(toPay), currency)} (diverso dal totale documento: di solito per ritenuta d'acconto, split payment o rate)`);
 	const rounding = money(value(general, "Arrotondamento"), currency);
 	if (rounding !== undefined) out.push(`Arrotondamento: ${rounding}`);
 	return out.length === 1 ? [] : out;
 }
 
-function payments(body: Element, currency: string): string[] {
+/** The sum of every instalment, when each has an amount that reads; undefined otherwise. */
+function paidSum(payments: XmlElement[]): bigint | undefined {
+	let sum = 0n;
+	let any = false;
+	for (const detail of payments.flatMap((p) => children(p, "DettaglioPagamento"))) {
+		const raw = value(detail, "ImportoPagamento");
+		const units = raw === undefined ? undefined : toUnits(raw);
+		if (units === undefined) return undefined;
+		sum += units;
+		any = true;
+	}
+	return any ? sum : undefined;
+}
+
+/**
+ * «Ritenuta d'acconto (persone fisiche): 208,00 €, 20%, per lavoro autonomo professionale
+ * (causale A): la trattiene il cliente e la versa all'Erario»; for RT03 to RT06 a social security
+ * contribution withheld.
+ */
+function withholdingLine(el: XmlElement, currency: string): string {
+	const type = value(el, "TipoRitenuta");
+	const known = type !== undefined && Object.hasOwn(TIPO_RITENUTA, type) ? TIPO_RITENUTA[type] : undefined;
+	const causale = value(el, "CausalePagamento");
+	const meaning = causale !== undefined && Object.hasOwn(CAUSALE_PAGAMENTO, causale) ? CAUSALE_PAGAMENTO[causale] : undefined;
+	const parts = joined([money(value(el, "ImportoRitenuta"), currency), percent(value(el, "AliquotaRitenuta")), meaning === undefined ? undefined : `per ${meaning} (causale ${causale})`]);
+	if (known?.kind === "contributo") return `Contributo previdenziale trattenuto (${known.who})${parts === undefined ? "" : `: ${parts}`}`;
+	const title = known === undefined ? `Ritenuta${type === undefined ? "" : ` (${type})`}` : `Ritenuta d'acconto (${known.who})`;
+	return `${title}${parts === undefined ? "" : `: ${parts}`}: la trattiene il cliente e la versa all'Erario`;
+}
+
+/** The payment terms and instalments; `due` is the first due date, for the headline. */
+function paymentLines(payments: XmlElement[], currency: string, credit: boolean): { lines: string[]; due?: string } {
 	const out: string[] = [];
-	for (const payment of all(body, "DatiPagamento")) {
-		out.push("", `Pagamento: ${coded(CONDIZIONI_PAGAMENTO, value(payment, "CondizioniPagamento")) ?? "condizioni non indicate"}`);
-		for (const detail of all(payment, "DettaglioPagamento")) {
-			const days = value(detail, "GiorniTerminiPagamento");
+	const dues: string[] = [];
+	for (const payment of payments) {
+		const terms = coded(CONDIZIONI_PAGAMENTO, value(payment, "CondizioniPagamento")) ?? "condizioni non indicate";
+		out.push("", credit ? `Pagamento indicato (rimborso o storno a favore del cliente): ${terms}` : `Pagamento: ${terms}`);
+		const details = children(payment, "DettaglioPagamento");
+		details.forEach((detail, i) => {
+			const raw = value(detail, "DataScadenzaPagamento");
+			if (raw !== undefined && realDate(raw)) dues.push(raw);
 			const parts = joined([
 				money(value(detail, "ImportoPagamento"), currency),
-				date(value(detail, "DataScadenzaPagamento")) === undefined ? undefined : `scadenza ${date(value(detail, "DataScadenzaPagamento"))}`,
-				days === undefined || days === "0" ? undefined : `a ${days} giorni${date(value(detail, "DataRiferimentoTerminiPagamento")) === undefined ? "" : ` dal ${date(value(detail, "DataRiferimentoTerminiPagamento"))}`}`,
-				value(detail, "IBAN") === undefined ? undefined : `IBAN ${value(detail, "IBAN")}`,
-				value(detail, "IstitutoFinanziario") === undefined ? undefined : `istituto ${value(detail, "IstitutoFinanziario")}`,
-				value(detail, "BIC") === undefined ? undefined : `BIC ${value(detail, "BIC")}`,
-				value(detail, "Beneficiario") === undefined ? undefined : `beneficiario ${value(detail, "Beneficiario")}`,
+				dueText(detail),
+				labelled("codice pagamento/avviso", value(detail, "CodicePagamento")),
+				labelled("IBAN", value(detail, "IBAN")),
+				labelled("istituto", value(detail, "IstitutoFinanziario")),
+				labelled("BIC", value(detail, "BIC")),
+				labelled("beneficiario", value(detail, "Beneficiario")),
+				joined([labelled("sconto per pagamento anticipato", money(value(detail, "ScontoPagamentoAnticipato"), currency)), labelled("entro il", date(value(detail, "DataLimitePagamentoAnticipato")))], " "),
+				joined([labelled("penale per ritardo", money(value(detail, "PenalitaPagamentiRitardati"), currency)), labelled("dal", date(value(detail, "DataDecorrenzaPenale")))], " "),
 			]);
-			out.push(`- ${coded(MODALITA_PAGAMENTO, value(detail, "ModalitaPagamento")) ?? "modalità non indicata"}${parts === undefined ? "" : `: ${parts}`}`);
-		}
+			const mode = coded(MODALITA_PAGAMENTO, value(detail, "ModalitaPagamento")) ?? "modalità non indicata";
+			out.push(`- ${details.length > 1 ? `rata ${i + 1} di ${details.length}, ` : ""}${mode}${parts === undefined ? "" : `: ${parts}`}`);
+		});
 	}
-	return out;
+	const first = dues.sort()[0];
+	const due = first === undefined ? undefined : `${dues.length > 1 ? "prima scadenza" : "scadenza"} ${italianDate(first)}`;
+	return { lines: out, ...(due === undefined ? {} : { due }) };
+}
+
+/**
+ * The due date as the invoice writes it, which is the one that counts, checked against the terms
+ * beside it: «scadenza lunedì 30/11/2026 (30 giorni fine mese dal 15/10/2026)», or what the terms
+ * would give when they disagree. Days with no due date are said as they are, never worked out.
+ */
+function dueText(detail: XmlElement): string | undefined {
+	const raw = value(detail, "DataScadenzaPagamento");
+	const fromRaw = value(detail, "DataRiferimentoTerminiPagamento");
+	const from = fromRaw !== undefined && realDate(fromRaw) ? fromRaw : undefined;
+	const daysRaw = value(detail, "GiorniTerminiPagamento");
+	const days = daysRaw !== undefined && /^\d{1,3}$/.test(daysRaw) && Number(daysRaw) > 0 ? Number(daysRaw) : undefined;
+	const start = fromRaw === undefined ? undefined : `dal ${date(fromRaw)}`;
+	if (raw === undefined) {
+		if (days !== undefined) return `a ${days} giorni ${start ?? "(data di partenza non indicata)"}`;
+		return labelled("termini", start);
+	}
+	if (!realDate(raw)) return `scadenza ${raw} (data non valida)`;
+	const due = `scadenza ${italianWeekday(raw)} ${italianDate(raw)}`;
+	if (days === undefined) return start === undefined ? due : `${due} (termini ${start})`;
+	if (from === undefined) return `${due} (a ${days} giorni, data di partenza non indicata)`;
+	const plain = addDays(from, days);
+	if (plain === raw) return `${due} (${days} giorni ${start})`;
+	if (endOfMonth(plain) === raw) return `${due} (${days} giorni fine mese ${start})`;
+	return `${due}, come scritta in fattura (${days} giorni ${start} sarebbero ${italianWeekday(plain)} ${italianDate(plain)})`;
 }
 
 /** Attachments by name, format and size: never decoded. */
-function attachments(body: Element): string[] {
-	const list = all(body, "Allegati");
+function attachmentLines(body: XmlElement): string[] {
+	const list = children(body, "Allegati");
 	if (list.length === 0) return [];
 	const out = ["", `Allegati (${list.length}, non aperti):`];
 	for (const attachment of list) {
-		const format = value(attachment, "FormatoAttachment");
-		const compression = value(attachment, "AlgoritmoCompressione");
 		const size = base64Size(child(attachment, "Attachment")?.text ?? "");
-		const about = joined([format, compression === undefined ? undefined : `compresso ${compression}`, size === 0 ? undefined : bytesLabel(size)]);
+		const about = joined([value(attachment, "FormatoAttachment"), labelled("compresso", value(attachment, "AlgoritmoCompressione")), size === 0 ? undefined : bytesLabel(size)]);
 		const description = value(attachment, "DescrizioneAttachment");
 		out.push(`- ${value(attachment, "NomeAttachment") ?? "senza nome"}${about === undefined ? "" : ` (${about})`}${description === undefined ? "" : `: ${description}`}`);
 	}
@@ -676,5 +531,89 @@ function base64Size(text: string): number {
 function bytesLabel(size: number): string {
 	if (size < 1024) return `${size} byte`;
 	if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-	return `${formatResult(Math.round((size / 1024 / 1024) * 10) / 10)} MB`;
+	return `${(Math.round((size / 1024 / 1024) * 10) / 10).toString().replace(".", ",")} MB`;
+}
+
+/** The text of the element at `path` on one line (a value never makes a line of its own), at most MAX_VALUE characters. */
+function value(el: XmlElement | undefined, path: string): string | undefined {
+	return ownText(descendant(el, path));
+}
+
+function ownText(el: XmlElement | undefined): string | undefined {
+	if (el === undefined) return undefined;
+	const text = el.text.replace(/\s+/g, " ").trim();
+	if (text === "") return undefined;
+	return text.length > MAX_VALUE ? `${text.slice(0, MAX_VALUE)}…` : text;
+}
+
+/** «totale 12,00 €» when there is a value, nothing otherwise. */
+function labelled(label: string, v: string | undefined): string | undefined {
+	return v === undefined ? undefined : `${label} ${v}`;
+}
+
+/** The parts that are there, joined; undefined when none is. */
+function joined(parts: readonly (string | undefined)[], separator = ", "): string | undefined {
+	const there = defined(parts).filter((p) => p !== "");
+	return there.length === 0 ? undefined : there.join(separator);
+}
+
+function defined(parts: readonly (string | undefined)[]): string[] {
+	return parts.filter((p): p is string => p !== undefined);
+}
+
+/** The fields that have a value: optional properties stay absent rather than undefined. */
+function optional<T extends Record<string, string | undefined>>(fields: T): { [K in keyof T]?: string } {
+	return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) as { [K in keyof T]?: string };
+}
+
+/** FatturaPA's numbers: a dot for decimals, at most 8 of them, an optional minus. */
+const DECIMAL = /^(-?)(\d{1,18})(?:\.(\d{1,8}))?$/;
+
+/** A number written the Italian way from its digits: 1.234,5 with at least `minDecimals`; undefined when it is no number. */
+function decimal(raw: string, minDecimals: number): string | undefined {
+	const m = DECIMAL.exec(raw);
+	if (m === null) return undefined;
+	const integer = (m[2] as string).replace(/^0+(?=\d)/, "");
+	const decimals = (m[3] ?? "").replace(/0+$/, "").padEnd(minDecimals, "0");
+	const zero = /^0+$/.test(integer) && /^0*$/.test(decimals);
+	const grouped = integer.replace(/\B(?=(\d{3})+$)/g, ".");
+	return `${m[1] === "-" && !zero ? "-" : ""}${grouped}${decimals === "" ? "" : `,${decimals}`}`;
+}
+
+/** An amount in hundred-millionths, for exact sums; undefined when it is no number. */
+function toUnits(raw: string): bigint | undefined {
+	const m = DECIMAL.exec(raw);
+	if (m === null) return undefined;
+	const units = BigInt(`${m[2]}${(m[3] ?? "").padEnd(8, "0")}`);
+	return m[1] === "-" ? -units : units;
+}
+
+function fromUnits(units: bigint): string {
+	const digits = (units < 0n ? -units : units).toString().padStart(9, "0");
+	return `${units < 0n ? "-" : ""}${digits.slice(0, -8)}.${digits.slice(-8)}`;
+}
+
+/** 1.234,56 €, another currency by its code; as written when it is no amount. */
+function money(raw: string | undefined, currency: string): string | undefined {
+	if (raw === undefined) return undefined;
+	const shown = decimal(raw, 2);
+	if (shown === undefined) return raw;
+	return currency === "EUR" ? `${shown} €` : `${shown} ${currency}`;
+}
+
+/** 22% or 10,5%; as written when it is no number. */
+function percent(raw: string | undefined): string | undefined {
+	if (raw === undefined) return undefined;
+	const shown = decimal(raw, 0);
+	return shown === undefined ? raw : `${shown}%`;
+}
+
+function quantity(raw: string | undefined): string | undefined {
+	return raw === undefined ? undefined : (decimal(raw, 0) ?? raw);
+}
+
+/** 17/10/2026 for a date that exists; anything else as written. */
+function date(raw: string | undefined): string | undefined {
+	if (raw === undefined) return undefined;
+	return realDate(raw) ? italianDate(raw) : raw;
 }

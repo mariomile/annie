@@ -111,22 +111,40 @@ export function decodeEntities(text: string): string {
 	if (!text.includes("&")) return text;
 	return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z][a-zA-Z0-9]{1,31}));/g, (whole, decimal?: string, hex?: string, name?: string) => {
 		if (name !== undefined) return ENTITIES.get(name) ?? whole;
-		const code = decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? "", 16);
-		return code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) || code < 0x20 ? " " : String.fromCodePoint(code);
+		return referencedCharacter(decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? "", 16), false);
 	});
+}
+
+/**
+ * The character a numeric reference names, or a space when it is not one to show as written:
+ * past Unicode, a surrogate, a C0 or C1 control (U+0085 included), a line or paragraph separator,
+ * a bidi control (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) that would reorder the text
+ * around it. Tab, line feed and carriage return stay when `breaks`.
+ */
+export function referencedCharacter(code: number, breaks: boolean): string {
+	if (breaks && (code === 0x09 || code === 0x0a || code === 0x0d)) return String.fromCharCode(code);
+	const hidden =
+		!Number.isInteger(code) ||
+		code < 0x20 ||
+		code > 0x10ffff ||
+		(code >= 0x7f && code <= 0x9f) ||
+		(code >= 0xd800 && code <= 0xdfff) ||
+		code === 0x200e ||
+		code === 0x200f ||
+		code === 0x2028 ||
+		code === 0x2029 ||
+		(code >= 0x202a && code <= 0x202e) ||
+		(code >= 0x2066 && code <= 0x2069);
+	return hidden ? " " : String.fromCodePoint(code);
 }
 
 const XML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 
-/** XML's five entities and numeric references, nothing else: no DTD, so no other entity is defined, and an unknown one stays as written. */
+/** XML's five entities and numeric references (through referencedCharacter), nothing else: no DTD, so no other entity is defined, and an unknown one stays as written. */
 export function xmlUnescape(text: string): string {
-	return text.replace(/&(#x[0-9a-fA-F]+|#\d+|\w+);/g, (whole, code: string) => {
-		if (code.startsWith("#x")) return safeCodePoint(Number.parseInt(code.slice(2), 16)) ?? whole;
-		if (code.startsWith("#")) return safeCodePoint(Number.parseInt(code.slice(1), 10)) ?? whole;
-		return XML_ENTITIES[code] ?? whole;
+	if (!text.includes("&")) return text;
+	return text.replace(/&(?:#x([0-9a-fA-F]{1,8})|#(\d{1,10})|(\w{1,32}));/g, (whole, hex?: string, decimal?: string, name?: string) => {
+		if (name !== undefined) return XML_ENTITIES[name] ?? whole;
+		return referencedCharacter(hex !== undefined ? Number.parseInt(hex, 16) : Number(decimal), true);
 	});
-}
-
-function safeCodePoint(n: number): string | undefined {
-	return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : undefined;
 }

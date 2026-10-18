@@ -1,13 +1,13 @@
-import { FatturaError, fatturaText, isFatturaPA } from "./fattura-pa.ts";
+import { FATTURA_SNIFF_BYTES, FatturaError, fatturaText, isFatturaXml } from "./fattura-pa.ts";
 import { xmlUnescape } from "./html-text.ts";
-import { isSignedEnvelope, P7mError, signedContent } from "./p7m.ts";
+import { isSignedEnvelope, P7mError, signedContent, signedContentStart } from "./p7m.ts";
 import { PdfError, pdfText, trimLines } from "./pdf-text.ts";
 import { Zip, ZipError } from "./zip.ts";
 
 /**
  * Text out of the documents people send (ADR 0026): PDF, Word, Excel, PowerPoint and their
- * OpenDocument cousins, and Italian electronic invoices (FatturaPA, plain or signed: a summary,
- * fattura-pa.ts). No new dependencies: ZIP and XML for the office formats, a small PDF reader for
+ * OpenDocument cousins, and Italian electronic invoices (FatturaPA: a summary, fattura-pa.ts).
+ * Any of them signed (.p7m, p7m.ts) is read as what it holds. No new dependencies: ZIP and XML for the office formats, a small PDF reader for
  * PDF. What comes out is text for the model, with the document's structure kept where
  * it helps (pages, sheets, slides, table cells), never the formatting.
  */
@@ -26,7 +26,7 @@ export class DocumentError extends Error {
 	override readonly name = "DocumentError";
 }
 
-const LABEL: Record<DocumentKind, string> = { pdf: "PDF", docx: "Word", xlsx: "Excel", pptx: "PowerPoint", odt: "OpenDocument (testo)", ods: "OpenDocument (foglio di calcolo)", odp: "OpenDocument (presentazione)", fattura: "FatturaPA (fattura elettronica)" };
+const LABEL: Record<DocumentKind, string> = { pdf: "PDF", docx: "Word", xlsx: "Excel", pptx: "PowerPoint", odt: "OpenDocument (testo)", ods: "OpenDocument (foglio di calcolo)", odp: "OpenDocument (presentazione)", fattura: "fattura elettronica (FatturaPA)" };
 
 export function documentLabel(kind: DocumentKind): string {
 	return LABEL[kind];
@@ -78,11 +78,12 @@ function sectionMarker(): RegExp {
 
 /** What kind of document this is, from its bytes (the name only breaks ties among ZIP files). */
 export function documentKind(name: string, data: Uint8Array): DocumentKind | undefined {
+	if (isSignedEnvelope(data)) return signedKind(name, data);
 	const zip0 = data[0] === 0x50 && data[1] === 0x4b && data[2] === 0x03 && data[3] === 0x04;
 	// Readers accept a little junk before the header; a text that mentions %PDF- later is still text.
 	const header = Buffer.from(data.subarray(0, 1024)).indexOf("%PDF-");
 	if (!zip0 && header >= 0 && header < 16) return "pdf";
-	if (!zip0) return isFatturaPA(data) ? "fattura" : undefined;
+	if (!zip0) return isFatturaXml(data) ? "fattura" : undefined;
 	let zip: Zip;
 	try {
 		zip = new Zip(Buffer.from(data));
@@ -103,17 +104,47 @@ export function documentKind(name: string, data: Uint8Array): DocumentKind | und
 	return undefined;
 }
 
-const NOT_A_DOCUMENT = "il file è rovinato o non è un documento che so leggere (PDF, Word, Excel, PowerPoint, OpenDocument)";
+const NOT_A_DOCUMENT = "il file è rovinato o non è un documento che so leggere (PDF, Word, Excel, PowerPoint, OpenDocument, fatture elettroniche XML o .p7m)";
+
+/**
+ * What a signed file holds, from the start of its content (an invoice, a PDF) or, for a ZIP
+ * format, from the whole of it: Word and Excel are told apart by the files inside. Undefined when
+ * the envelope does not open or holds nothing known.
+ */
+function signedKind(name: string, data: Uint8Array): DocumentKind | undefined {
+	const start = signedContentStart(data, FATTURA_SNIFF_BYTES);
+	if (start === undefined) return undefined;
+	if (isFatturaXml(start)) return "fattura";
+	const header = Buffer.from(start.subarray(0, 1024)).indexOf("%PDF-");
+	if (header >= 0 && header < 16) return "pdf";
+	if (!(start[0] === 0x50 && start[1] === 0x4b && start[2] === 0x03 && start[3] === 0x04)) return undefined;
+	try {
+		const inner = signedContent(data);
+		return isSignedEnvelope(inner) ? undefined : documentKind(unsignedName(name), inner);
+	} catch {
+		return undefined;
+	}
+}
+
+/** «contratto.pdf.p7m» → «contratto.pdf»: the name of what was signed. */
+function unsignedName(name: string): string {
+	return name.replace(/\.p7m$/i, "");
+}
+
+/** The document inside a signed file, or the bytes as they are; a P7mError when the envelope is broken. */
+export function unsignedData(data: Uint8Array): Uint8Array {
+	return isSignedEnvelope(data) ? signedContent(data) : data;
+}
 
 /** Names that promise a document: one of these that does not open is broken, not text. */
 export function looksLikeDocument(name: string): boolean {
 	return /\.(pdf|docx|xlsx|pptx|odt|ods|odp|p7m)$/i.test(name);
 }
 
-/** The extension a document's file should have: an invoice is .xml, or .p7m when it is signed. */
+/** The extension a document's file should have: an invoice is .xml; a signed file adds .p7m (xml.p7m, pdf.p7m). */
 export function documentExtension(kind: DocumentKind, data: Uint8Array): string {
-	if (kind !== "fattura") return kind;
-	return isSignedEnvelope(data) ? "p7m" : "xml";
+	const base = kind === "fattura" ? "xml" : kind;
+	return isSignedEnvelope(data) ? `${base}.p7m` : base;
 }
 
 /**
@@ -132,12 +163,35 @@ export function oldFormatAdvice(name: string, data: Uint8Array): string | undefi
 	return undefined;
 }
 
-/** The document's text, or a DocumentError saying in Italian why not. */
+/** The document's text, or a DocumentError saying in Italian why not. A signed file is read as what it holds, with the signature said, not verified. */
 export function documentText(name: string, data: Uint8Array): DocumentText {
+	if (isSignedEnvelope(data)) return signedText(name, data);
 	const kind = documentKind(name, data);
-	if (kind === undefined) throw new DocumentError(isSignedEnvelope(data) ? signedProblem(data) : NOT_A_DOCUMENT);
+	if (kind === undefined) throw new DocumentError(NOT_A_DOCUMENT);
+	return readKind(kind, data, false);
+}
+
+function signedText(name: string, data: Uint8Array): DocumentText {
+	let inner: Uint8Array;
 	try {
-		if (kind === "fattura") return { kind, ...fatturaText(data) };
+		inner = signedContent(data);
+	} catch (error) {
+		if (error instanceof P7mError) throw new DocumentError(error.message);
+		throw error;
+	}
+	const kind = documentKind(unsignedName(name), inner);
+	if (kind === undefined) throw new DocumentError("è un file firmato digitalmente (.p7m), ma quello che contiene non è un documento che so leggere (PDF, Word, Excel, PowerPoint, OpenDocument, fatture elettroniche)");
+	const doc = readKind(kind, inner, true);
+	if (kind === "fattura") return doc;
+	const note = doc.note === undefined ? SIGNED : `${SIGNED} ${doc.note}`;
+	return { ...doc, note };
+}
+
+const SIGNED = "Firma digitale presente, non verificata.";
+
+function readKind(kind: DocumentKind, data: Uint8Array, signed: boolean): DocumentText {
+	try {
+		if (kind === "fattura") return { kind, ...fatturaText(data, signed) };
 		if (kind === "pdf") {
 			const pdf = pdfText(Buffer.from(data));
 			return { kind, text: pdf.text, parts: pdf.pages, ...(pdf.note === undefined ? {} : { note: pdf.note }) };
@@ -152,17 +206,6 @@ export function documentText(name: string, data: Uint8Array): DocumentText {
 		// Anything else is a file the readers did not expect: broken, as far as the person is concerned.
 		throw new DocumentError(error instanceof RangeError ? "il documento è troppo complesso da leggere" : NOT_A_DOCUMENT);
 	}
-}
-
-/** Why a signed file (.p7m) that is not an invoice is not read: its envelope is broken, or it holds something else. */
-function signedProblem(data: Uint8Array): string {
-	try {
-		signedContent(data);
-	} catch (error) {
-		if (error instanceof P7mError) return error.message;
-		throw error;
-	}
-	return "è un file firmato digitalmente (.p7m) che non contiene una fattura elettronica: dei file firmati leggo solo le fatture";
 }
 
 function safeText(zip: Zip, name: string): string | undefined {
@@ -355,11 +398,11 @@ export function spreadsheetRows(name: string, data: Uint8Array, maxRows: number)
 	const kind = documentKind(name, data);
 	if (kind !== "xlsx" && kind !== "ods") return undefined;
 	try {
-		const zip = new Zip(Buffer.from(data));
+		const zip = new Zip(Buffer.from(unsignedData(data)));
 		if (kind === "xlsx") return xlsxSheets(zip, true).map((s) => ({ name: s.name, hidden: s.hidden, rows: s.rows.map((r) => r.cells) }));
 		return odsSheets(zip, maxRows);
 	} catch (error) {
-		if (error instanceof ZipError) throw new DocumentError(error.message);
+		if (error instanceof ZipError || error instanceof P7mError) throw new DocumentError(error.message);
 		throw new DocumentError(error instanceof RangeError ? "il documento è troppo complesso da leggere" : NOT_A_DOCUMENT);
 	}
 }
