@@ -269,6 +269,10 @@ _Avoid_: CRM, anagrafica, contatto (per la scheda)
 Un cliente da risentire in un giorno, registrato su una scheda cliente (FU-NNNN), con un promemoria alle 9 di quel giorno. Si sposta, si toglie o si segna fatto. Vedi ADR 0071.
 _Avoid_: follow-up, task (per il ricontatto)
 
+**Fattura in uscita**:
+Una fattura elettronica che Annie prepara per la persona con `sales_invoices`: prima una bozza (BZ-NNNN) senza numero, poi, dopo il sì, il numero dell'anno, l'XML in `fatture/emesse/` e la copia di cortesia in PDF. Non viene mandata allo SdI: la persona la carica sul portale. Vedi ADR 0072.
+_Avoid_: invoice, fattura emessa (per la bozza)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
