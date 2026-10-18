@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 
 /**
  * A `<<<` that opens something shaped like a fence marker: «dati dal web…», «fine dati da
- * Google…», «uscita del computer…», «fine uscita…», «risultati della ricerca…», with spaces or
+ * Google…», «uscita del computer…», «fine uscita…», «risultati della ricerca…», «dalla stanza…», «fine stanza…», with spaces or
  * not, in any case. Only those: `x >>> 0`, a Python doctest, a bash here-string or a conflict
  * marker stay as they are.
  */
-const FORGED_MARKER = /<{3,}(?=\s*(?:fine\s+)?(?:dati|uscita|risultati)\b)/giu;
+const FORGED_MARKER = /<{3,}(?=\s*(?:fine\s+)?(?:dati|uscita|risultati|dalla\s+stanza|stanza)\b)/giu;
 
 /** Text from outside with every imitation of a fence marker made inert: its `<<<` becomes `‹‹‹`. */
 export function inertMarkers(text: string): string {
