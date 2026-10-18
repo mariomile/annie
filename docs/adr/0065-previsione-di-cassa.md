@@ -1,0 +1,29 @@
+# Previsione di cassa
+
+Con scadenzario (ADR 0053), preventivi (ADR 0055), spese (ADR 0057) e rinnovi (ADR 0064) Annie sapeva quali soldi devono entrare e uscire, ma nessuno li metteva in fila sul conto. La domanda di chi ha una partita IVA è una sola: «quanti soldi avrò a fine mese?». Ora «ho 8.400 euro sul conto», «quanti soldi avrò a fine mese?», «F24 a giugno 2.300», «se compro un computer da 2.000 € ce la faccio?», «se Rossi paga con 60 giorni di ritardo?» e «avvisami se vado sotto i 2.000» hanno una risposta.
+
+## Decisione
+
+- **Strumento `cashflow`** con `set_balance`, `set_alert`, `add_item`, `edit_item`, `remove_item`, `list_items`, `forecast`, `what_if` ed `export`. Saldi detti, soglia di avviso e voci stanno in `cashflow.json` nella cartella dell'istanza, con la copia `.bak`, attraverso lo stesso `json-book.ts` degli altri registri: 500 voci, gli ultimi 50 saldi per data (mai perso il più recente), 1 MB. Voci C-NNNN mai riusate.
+- **Il saldo lo dice la persona.** Annie non legge il conto in banca. La previsione parte dall'ultimo saldo per data e lo porta a oggi per istanti, non per giorni: aggiunge le fatture da incassare segnate come pagate dopo il momento in cui il saldo è stato detto (e chiede se erano già nel saldo), toglie le spese registrate dopo e le fatture dei fornitori segnate come pagate senza una spesa corrispondente. Le voci non si riportano mai. Oltre 2 giorni lo dice, oltre 14 avvisa che il saldo è vecchio, oltre un anno non lo porta avanti.
+- **Da dove vengono i movimenti**, ognuno con la sua etichetta: rate delle fatture aperte dello scadenzario, da incassare e da pagare; addebiti dei rinnovi attivi; preventivi accettati non ancora fatturati, attesi 60 giorni dopo l'accettazione e mai prima di 30 giorni da oggi; voci della persona (tasse, F24, prelievi, rate di prestiti, entrate senza fattura), una volta o ricorrenti ogni N mesi o ogni N giorni; la spesa media degli ultimi 30-90 giorni, divisa per i giorni dalla prima spesa registrata.
+- **Mai due volte gli stessi soldi.** Dalla spesa media restano fuori i pagamenti dei rinnovi, le spese che corrispondono a un rinnovo o a una voce (nome, importo ±5%, data ±5 giorni) e le fatture già nello scadenzario (partita IVA e numero, o partita IVA e importo). Un rinnovo e la fattura del suo fornitore si contano una volta sola se il fornitore coincide per partita IVA o nome intero e la data è la più vicina entro metà periodo (al più 15 giorni); lo stesso fra una voce e un rinnovo. Le coppie sono elencate come «Probabili doppioni». Le categorie intere non vengono mai tolte, e le fatture di carta restano nella media.
+- **Ritardi** contati a parte: «In ritardo da incassare» e «In ritardo da pagare», con il totale. Oltre 90 giorni restano fuori dalla previsione e Annie chiede se sono stati incassati o pagati. La fattura di un rinnovo con addebito automatico entro 5 giorni dall'addebito vale come pagata.
+- **Orizzonte** fino a 366 giorni, oggi compreso: «fine mese», «fine mese prossimo», «fine trimestre», «fine semestre», «fine anno», «prossima settimana», «30 giorni», «3 mesi»; l'ultimo giorno del periodo passa al successivo. Tabella per settimane fino a 92 giorni, per mesi oltre; prima la frase con il saldo finale e il punto più basso, poi le tre entrate e uscite più grandi. Oltre un mese Annie dice che le entrate non ancora fatturate non ci sono.
+- **`what_if`** con fino a 10 ipotesi: spese o entrate nuove, `delay` (una fattura o un cliente che paga N giorni dopo) e `drop` (che non paga). Il verdetto sulle spese nuove usa il caso prudente, senza fatture in ritardo e preventivi, e lo dice; per ritardi e mancati pagamenti confronta il punto più basso. Se si è già in rosso senza l'ipotesi lo dice.
+- **Avviso**: la soglia (`set_alert`) entra nel brief del mattino, che dice solo quando nei prossimi 30 giorni il saldo previsto scende sotto la soglia o sotto zero, o che il saldo è vecchio. Senza saldo, se ci sono fatture o rinnovi, il brief suggerisce una volta di dirlo, senza scrivere nulla.
+- **Importi** come li scrive un italiano: «8.400» sono ottomilaquattrocento, «1,5k» e «8 mila» si leggono; «1.500k» è ambiguo e Annie chiede. Fino a 10 milioni, due decimali.
+- **Export** CSV in `cassa/` del workspace: un movimento per riga, la spesa media una riga a settimana, in fondo ipotesi e cose rimaste fuori.
+
+## Sicurezza e concorrenza
+
+- Ogni scrittura passa da `updateBook` sotto il lock. `add_item`, `set_balance` ed `edit_item` riconoscono la stessa chiamata ripetuta; `edit_item` applica solo i campi toccati sulla voce corrente, così due modifiche insieme non si cancellano. `what_if` non scrive niente e non cambia gli argomenti ricevuti. Un `cashflow.json` rovinato non viene mai sovrascritto.
+- Nomi di voci, clienti, fornitori, rinnovi e preventivi tornano al modello solo dentro un recinto dei dati non fidati per risposta; fuori ci sono numeri, date e conteggi. Celle del CSV protette dalle formule, nome del file solo dalla data, mai sovrascritto.
+- Dal canale degli agenti solo `forecast`, `list_items` e `what_if`; il brief usa solo `forecast` e non scrive mai. L'audit registra operazione e numero di movimenti o voci, mai nomi, importi o date.
+
+## Alternative scartate
+
+- **Leggere il conto in banca (PSD2)**: serve un aggregatore autorizzato e il consenso ogni 180 giorni; il saldo detto a voce basta per una previsione onesta, e Annie dice quando è vecchio.
+- **Togliere dalla media intere categorie coperte da un rinnovo**: con un solo rinnovo per la luce sparivano affitto e bollette, e la previsione era troppo ottimista.
+- **Contare i preventivi accettati per sempre**: un preventivo di un anno fa mai fatturato restava a 30 giorni da oggi ogni giorno; oltre 150 giorni Annie chiede.
+- **Un avviso con un messaggio a parte**: il brief del mattino c'è già e non aggiunge rumore.
