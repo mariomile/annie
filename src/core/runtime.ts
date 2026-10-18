@@ -10,6 +10,7 @@ import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
 import { ListStore, listsLine } from "./lists.ts";
 import { InvoiceStore } from "./invoice-store.ts";
+import { QuoteStore } from "./quote-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
@@ -164,6 +165,11 @@ export class AnnieRuntime {
 	/** The scadenzario of an instance: which invoices are paid, and the owner's company. */
 	invoices(tenant: string, instance: string): InvoiceStore {
 		return new InvoiceStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The preventivi of an instance. */
+	quotes(tenant: string, instance: string): QuoteStore {
+		return new QuoteStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */
