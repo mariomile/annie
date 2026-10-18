@@ -60,8 +60,8 @@ function fatturaRoot(text: string): ReturnType<typeof xmlRoot> {
 	return root.attrs.includes(NAMESPACE) || /\bversione\s*=\s*["'](FPA12|FPR12|FSM10)["']/.test(root.attrs) ? root : undefined;
 }
 
-/** A supplier or a customer as the invoice names them: what the scadenzario needs (invoices.ts). */
-export type FatturaParty = { readonly name?: string; readonly vat?: { readonly country?: string; readonly code: string }; readonly fiscal?: string };
+/** A supplier or a customer as the invoice names them: what the scadenzario needs (invoices.ts); `email` from its Contatti, when written. */
+export type FatturaParty = { readonly name?: string; readonly vat?: { readonly country?: string; readonly code: string }; readonly fiscal?: string; readonly email?: string };
 
 /** One instalment (DettaglioPagamento): amount and due date as written (YYYY-MM-DD, maybe not a real day), the ModalitaPagamento code, the IBAN. */
 export type FatturaInstalment = { readonly amount?: string; readonly due?: string; readonly method?: string; readonly iban?: string };
@@ -84,8 +84,11 @@ export type FatturaDocument = {
 	readonly instalments: readonly FatturaInstalment[];
 };
 
-/** What a file says, structured: the summary is written from it; `count` is every document, `documents` at most MAX_BODIES of them. */
-export type Fattura = { readonly simplified: boolean; readonly signed: boolean; readonly supplier: FatturaParty; readonly customer: FatturaParty; readonly documents: readonly FatturaDocument[]; readonly count: number };
+/**
+ * What a file says, structured: the summary is written from it; `count` is every document,
+ * `documents` at most MAX_BODIES of them; `pec` the customer's PEC the SdI delivered it to (PECDestinatario).
+ */
+export type Fattura = { readonly simplified: boolean; readonly signed: boolean; readonly supplier: FatturaParty; readonly customer: FatturaParty; readonly documents: readonly FatturaDocument[]; readonly count: number; readonly pec?: string };
 
 /**
  * The invoice's structured content from its XML; `signed` when it came out of a .p7m. A
@@ -166,8 +169,9 @@ function readInvoice(invoice: XmlElement, signed: boolean): { fattura: Fattura; 
 	const customer = simplified ? simplifiedCustomer(child(head, "CessionarioCommittente")) : ordinaryParty(child(head, "CessionarioCommittente"));
 	const all = children(invoice, "FatturaElettronicaBody");
 	const documents = all.slice(0, MAX_BODIES).map((body) => (simplified ? simplifiedDocument(body) : ordinaryDocument(body)));
+	const pec = value(child(head, "DatiTrasmissione"), "PECDestinatario");
 	return {
-		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length },
+		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length, ...(pec === undefined ? {} : { pec }) },
 		details: { supplier: supplier.details, customer: customer.details },
 		documents,
 	};
@@ -268,8 +272,9 @@ function party(found: { name?: string; vatOf?: XmlElement; fiscal?: string; sede
 	const code = value(found.vatOf, "IdCodice");
 	const country = value(found.vatOf, "IdPaese");
 	const vat = code === undefined ? undefined : country === undefined ? { code } : { country, code };
+	const email = value(found.contacts, "Email");
 	return {
-		party: { ...(found.name === undefined ? {} : { name: found.name }), ...(vat === undefined ? {} : { vat }), ...(found.fiscal === undefined ? {} : { fiscal: found.fiscal }) },
+		party: { ...(found.name === undefined ? {} : { name: found.name }), ...(vat === undefined ? {} : { vat }), ...(found.fiscal === undefined ? {} : { fiscal: found.fiscal }), ...(email === undefined ? {} : { email }) },
 		details: {
 			...(found.sede === undefined ? {} : { sede: found.sede }),
 			...(found.regime === undefined ? {} : { regime: found.regime }),

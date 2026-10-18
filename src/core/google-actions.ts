@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { type EventTime, GoogleUncertain } from "../connectors/google.ts";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
+import type { ReminderItem } from "./reminder-book.ts";
 import type { AnnieRuntime } from "./runtime.ts";
 
 /**
@@ -67,6 +68,8 @@ export type GoogleAction = {
 	readonly current?: CurrentEvent;
 	/** Whether Google writes to the event's guests. */
 	readonly notify?: boolean;
+	/** A payment reminder of the scadenzario: recorded for these invoices once the mail is sent, never before. */
+	readonly reminders?: readonly ReminderItem[];
 	readonly status: QueuedStatus;
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	readonly proposedAt: string;
@@ -93,7 +96,7 @@ export class GoogleActionStore {
 	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
-	async propose(input: Pick<GoogleAction, "kind" | "personId" | "account" | "reason" | "mail" | "event" | "current" | "notify" | "thread">, now = new Date(), key?: string): Promise<GoogleAction> {
+	async propose(input: Pick<GoogleAction, "kind" | "personId" | "account" | "reason" | "mail" | "event" | "current" | "notify" | "thread" | "reminders">, now = new Date(), key?: string): Promise<GoogleAction> {
 		const id = this.queue.idFor(key, "google:");
 		if (key !== undefined) {
 			const existing = await this.get(id, now);
@@ -252,6 +255,7 @@ export async function decideGoogleAction(
 		return run(running);
 	});
 	if (!changed) return action;
+	if (action.status === "done" && action.reminders !== undefined && action.reminders.length > 0) await recordReminders(runtime, tenant, instance, action, personId, log);
 	// What happened is settled: telling the conversation may fail, the decision stands.
 	try {
 		await audit.append({ type: `google_action.${action.status}`, instanceId: instance, actionId: id, kind: action.kind, personId });
@@ -260,6 +264,20 @@ export async function decideGoogleAction(
 		log(`google: outcome of ${action.id} not passed on: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	return action;
+}
+
+/**
+ * A payment reminder sent: recorded in the scadenzario for its invoices, by the person who
+ * approved it, with the request's id (so it is never counted twice). The mail is sent either way:
+ * a record that fails is logged, and the audit says how many, never which.
+ */
+async function recordReminders(runtime: AnnieRuntime, tenant: string, instance: string, action: GoogleAction, personId: string, log: (message: string) => void): Promise<void> {
+	try {
+		const count = runtime.invoices(tenant, instance).remind(action.reminders ?? [], { by: personId, at: action.decidedAt ?? new Date().toISOString(), via: "mail", action: action.id });
+		if (count > 0) await runtime.audit(tenant).append({ type: "invoice.reminder", instanceId: instance, op: "mail", count });
+	} catch (error) {
+		log(`google: reminder of ${action.id} not recorded: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 const DONE: Record<GoogleActionKind, string> = {
@@ -282,5 +300,6 @@ export function googleActionReport(action: GoogleAction): string {
 	if (action.status === "rejected") return `${head} La persona l'ha rifiutata: non è stato fatto. Prendine atto in una frase e non riproporla, a meno che non te lo chieda.`;
 	if (result !== undefined && "error" in result && result.uncertain) return `${head} Approvata, ma non si sa se Google l'ha fatto. Dillo alla persona e suggeriscile di controllare in Gmail o nel calendario prima di chiederlo di nuovo; non rifarlo da sola.\n${fenced(result.error)}`;
 	if (result === undefined || "error" in result) return `${head} Approvata, ma non è riuscita. Dillo alla persona con parole tue.\n${fenced(result?.error ?? "sconosciuto")}`;
-	return `${head} Approvata dalla persona e fatta: ${DONE[action.kind]}${result.link === undefined ? "" : ` (${result.link})`}. Diglielo in breve.`;
+	const reminded = action.reminders !== undefined && action.reminders.length > 0 ? " Il sollecito è annotato nello scadenzario." : "";
+	return `${head} Approvata dalla persona e fatta: ${DONE[action.kind]}${result.link === undefined ? "" : ` (${result.link})`}.${reminded} Diglielo in breve.`;
 }

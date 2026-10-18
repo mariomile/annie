@@ -787,7 +787,7 @@ describe("the scadenzario: reading the workspace", () => {
 
 	it("answers wrong arguments with an Italian error", async () => {
 		const { run } = setup();
-		expect(await run({ op: "pay" })).toContain("Errore: op è una di queste: due, by_party, list, mark_paid, mark_unpaid, set_company.");
+		expect(await run({ op: "pay" })).toContain("Errore: op è una di queste: due, by_party, list, reminder, mark_paid, mark_unpaid, set_company, reminder_sent.");
 		expect(await run({ op: "due", range: "anno" })).toContain("Errore: range è una di queste");
 		expect(await run({ op: "due", side: "dare" })).toBe("Errore: side è pagare o incassare.");
 		expect(await run({ op: "due", days: 0 })).toBe("Errore: days è un numero di giorni, da 1 a 366.");

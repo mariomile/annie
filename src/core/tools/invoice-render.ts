@@ -148,12 +148,12 @@ function byName(a: string, b: string): number {
 }
 
 /** One party's share of a total: what it is owed, and its credit notes still to take off. */
-type Share = { readonly gross: Sums; readonly credit: Sums; readonly notes: number };
+export type Share = { readonly gross: Sums; readonly credit: Sums; readonly notes: number };
 
 /** A total of shares: each party's credit notes come off its own amount, never below zero. */
-type Netted = { readonly gross: Sums; readonly applied: Sums; readonly net: Sums; readonly left: Sums; readonly notes: number };
+export type Netted = { readonly gross: Sums; readonly applied: Sums; readonly net: Sums; readonly left: Sums; readonly notes: number };
 
-function netted(shares: Iterable<Share>): Netted {
+export function netted(shares: Iterable<Share>): Netted {
 	const gross: Sums = new Map();
 	const applied: Sums = new Map();
 	const net: Sums = new Map();
@@ -259,7 +259,7 @@ export function dueAnswer(loaded: Loaded, args: ReadArgs, view: View): string {
 				hidden++;
 				continue;
 			}
-			lines.push(dueRow(row, bucket, { today, oneParty }));
+			lines.push(dueRow(row, bucket, { today, oneParty, timeZone: view.timeZone }));
 			shown++;
 		}
 		if (window.week && bucket.undated.length > 0) {
@@ -400,7 +400,7 @@ function creditSums(credits: readonly Credit[]): Sums {
  * from the day the payment can be made; a weekend or holiday with the day it moves to. No name
  * when the answer is about one party, or the section already says it.
  */
-function dueRow(row: Row, bucket: Bucket, context: { readonly today: string; readonly oneParty: boolean }): string {
+function dueRow(row: Row, bucket: Bucket, context: { readonly today: string; readonly oneParty: boolean; readonly timeZone: string }): string {
 	const { invoice, instalment } = row;
 	const { today } = context;
 	const due = instalment.due;
@@ -416,7 +416,16 @@ function dueRow(row: Row, bucket: Bucket, context: { readonly today: string; rea
 	const count = invoice.instalments.length;
 	const rata = count > 1 ? ` rata ${instalment.n}/${count}` : "";
 	const flags = invoice.mismatch ? " (rate che non tornano con il totale)" : "";
-	return `• ${when}: ${amountText(instalment, invoice.doc.currency)}${who}, ${docShort(invoice, today)}${rata}${flags}`;
+	const reminded = remindedText(invoice, (at) => dayMonth(todayIn(context.timeZone, new Date(at)), today));
+	return `• ${when}: ${amountText(instalment, invoice.doc.currency)}${who}, ${docShort(invoice, today)}${rata}${flags}${reminded === undefined ? "" : `; ${reminded}`}`;
+}
+
+/** «sollecitata 2 volte, l'ultima il 12/10» (reminder-book.ts). */
+function remindedText(invoice: Invoice, day: (at: string) => string): string | undefined {
+	const sent = invoice.reminders ?? [];
+	const last = sent.at(-1);
+	if (last === undefined) return undefined;
+	return sent.length === 1 ? `sollecitata il ${day(last.at)}` : `sollecitata ${sent.length} volte, l'ultima il ${day(last.at)}`;
 }
 
 /** « (da 5 giorni)», « (oggi)», « (slitta a lun 02/11)», « (festivo, Immacolata: slitta a mer 09/12)». */
@@ -501,7 +510,7 @@ export function byPartyAnswer(loaded: Loaded, args: ReadArgs, view: View): strin
 	}
 	if (groups.size > shown) lines.push(`E altre ${groups.size - shown} controparti non mostrate: filtra con party.`);
 	const only = party !== undefined && groups.size === 1 ? ([...groups.values()][0] as PartyGroup) : undefined;
-	if (only !== undefined) lines.push(...onePartyLines(only, view.today));
+	if (only !== undefined) lines.push(...onePartyLines(only, view));
 	// The totals by side, only when the company is known: what is to pay is never added to what is to collect.
 	const all = [...groups.values()];
 	const total = (side: Side) => sumsText(netted(all.filter((g) => g.side === side).map(share)).net);
@@ -548,12 +557,13 @@ function partyGroups(invoices: readonly Invoice[], args: ReadArgs): Map<string, 
 }
 
 /** One party asked about: its open instalments without its name, its credit notes, its IBAN once. */
-function onePartyLines(only: PartyGroup, today: string): string[] {
+function onePartyLines(only: PartyGroup, view: View): string[] {
+	const { today } = view;
 	if (only.rows.length + only.credits.length === 0) return [];
 	const lines = ["", "Rate aperte:"];
 	only.rows.sort((a, b) => (a.instalment.due ?? "9999").localeCompare(b.instalment.due ?? "9999"));
 	const bucket: Bucket = { key: "", customer: only.customer, suppliers: [only.supplier], rows: only.rows, overdue: [], undated: [], credits: [] };
-	for (const row of only.rows.slice(0, MAX_ROWS)) lines.push(dueRow(row, bucket, { today, oneParty: true }));
+	for (const row of only.rows.slice(0, MAX_ROWS)) lines.push(dueRow(row, bucket, { today, oneParty: true, timeZone: view.timeZone }));
 	if (only.rows.length > MAX_ROWS) lines.push(`E altre ${only.rows.length - MAX_ROWS} rate.`);
 	for (const credit of only.credits) lines.push(`• ${creditLine(credit, true, today)}`);
 	const iban = only.side === "active" ? undefined : ibanLine(only.supplier, only.invoices.filter((i) => !i.paid));
@@ -675,7 +685,7 @@ export function markedText(invoice: Invoice, n: number | undefined, today: strin
 	return `rata ${n}/${count} (${amountText(instalment, invoice.doc.currency)}${due}) della ${doc}`;
 }
 
-function sumsText(sums: Sums): string {
+export function sumsText(sums: Sums): string {
 	const shown = [...sums].filter(([, units]) => units !== 0n).map(([currency, units]) => money(fromUnits(units), currency) as string);
 	return shown.length === 0 ? "0,00 €" : shown.join(" + ");
 }

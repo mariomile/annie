@@ -11,6 +11,7 @@ import { type FatturaDocument, type FatturaInstalment, type FatturaParty, toUnit
 import type { FoundFattura } from "./invoice-scan.ts";
 import { realDate } from "./italian-calendar.ts";
 import { updateJsonFile } from "./locked-json.ts";
+import { type ReminderEntry, type ReminderItem, ReminderLimit, type ReminderMark, validReminders, withReminders } from "./reminder-book.ts";
 import { checkVatNumber } from "./tax-ids.ts";
 import { fold } from "./text-match.ts";
 
@@ -31,9 +32,10 @@ export function isInvoiceReadOp(op: unknown): op is InvoiceReadOp {
 	return INVOICE_READ_OPS.some((o) => o === op);
 }
 
-/** Whether a call only reads: a reading op, or set_company with nothing to set (it shows the company). */
+/** Whether a call only reads: a reading op, a reminder only drafted (not sent), or set_company with nothing to set (it shows the company). */
 export function invoiceCallReads(args: Record<string, unknown>): boolean {
 	if (isInvoiceReadOp(args.op)) return true;
+	if (args.op === "reminder") return args.send !== true;
 	return args.op === "set_company" && args.vat === undefined && args.name === undefined && args.clear === undefined;
 }
 
@@ -53,12 +55,12 @@ export type Company = Marker & { readonly vat?: string; readonly name?: string }
  */
 export type PaidEntry = { readonly invoice: string; readonly all?: Marker; readonly except?: readonly number[]; readonly instalments?: readonly (Marker & { readonly n: number })[] };
 
-type Book = { readonly company?: Company; readonly paid: readonly PaidEntry[] };
+type Book = { readonly company?: Company; readonly paid: readonly PaidEntry[]; readonly reminders?: readonly ReminderEntry[] };
 
-/** What the store says; `broken` when invoices.json does not read: then nothing is paid, and nothing is written. */
-export type BookState = { readonly company?: Company; readonly paid: readonly PaidEntry[]; readonly broken: boolean };
+/** What the store says; `broken` when invoices.json does not read: then nothing is paid nor reminded, and nothing is written. */
+export type BookState = { readonly company?: Company; readonly paid: readonly PaidEntry[]; readonly reminders?: readonly ReminderEntry[]; readonly broken: boolean };
 
-const BROKEN_WRITE = "lo stato delle fatture pagate (invoices.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
+export const BROKEN_WRITE = "lo stato delle fatture pagate (invoices.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
 
 /** What is paid and the company of one instance, in `invoices.json`, changed under the shared file lock; `invoices.json.bak` keeps the last state written. */
 export class InvoiceStore {
@@ -112,6 +114,26 @@ export class InvoiceStore {
 			return { ...book, paid: next === undefined ? others : [...others, next] };
 		});
 		return result;
+	}
+
+	/**
+	 * Record payment reminders (reminder-book.ts): how many were recorded (one already recorded for
+	 * the same mail request is not counted again). InvoiceError when the store is full or does not read.
+	 */
+	remind(items: readonly ReminderItem[], made: Marker & { readonly via: "mail" | "self"; readonly action?: string }): number {
+		let recorded = 0;
+		this.update((book) => {
+			let next: { entries: readonly ReminderEntry[]; recorded: number };
+			try {
+				next = withReminders(book.reminders ?? [], items, made);
+			} catch (error) {
+				if (error instanceof ReminderLimit) throw new InvoiceError(error.message);
+				throw error;
+			}
+			recorded = next.recorded;
+			return recorded === 0 ? book : { ...book, reminders: next.entries };
+		});
+		return recorded;
 	}
 
 	/** The change under the lock; then a copy of what was written, the last good state, in invoices.json.bak. */
@@ -188,7 +210,8 @@ const isN = (v: unknown): v is number => Number.isInteger(v) && (v as number) >=
 /** The book when the JSON has its shape; undefined otherwise. */
 function validBook(raw: unknown): Book | undefined {
 	if (typeof raw !== "object" || raw === null || !Array.isArray((raw as Book).paid)) return undefined;
-	const { company, paid } = raw as Book;
+	const { company, paid, reminders } = raw as Book;
+	if (!validReminders(reminders)) return undefined;
 	if (company !== undefined && !(isMarker(company) && (company.vat === undefined || isText(company.vat)) && (company.name === undefined || isText(company.name)))) return undefined;
 	const entries = paid.every(
 		(e) =>
@@ -319,11 +342,16 @@ export type Invoice = {
 	readonly instalments: readonly Instalment[];
 	/** Every instalment paid (or the credit note used). */
 	readonly paid: boolean;
+	/** The payment reminders recorded, oldest first. */
+	readonly reminders?: readonly ReminderMark[];
+	/** The customer's PEC the invoice was delivered to, when written. */
+	readonly pec?: string;
 };
 
 /** The register: every document of the files found, the same invoice once (the newest file), newest invoice first. */
-export function register(found: readonly FoundFattura[], paid: readonly PaidEntry[], company: Company | undefined): Invoice[] {
+export function register(found: readonly FoundFattura[], paid: readonly PaidEntry[], company: Company | undefined, reminders: readonly ReminderEntry[] = []): Invoice[] {
 	const entries = new Map(paid.map((e) => [e.invoice, e]));
+	const reminded = new Map(reminders.map((e) => [e.invoice, e.sent]));
 	const byKey = new Map<string, Invoice>();
 	const newest = [...found].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
 	for (const { path, modifiedAt, fattura } of newest) {
@@ -358,6 +386,8 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 				mismatch: counted.mismatch,
 				instalments,
 				paid: done.size === counted.list.length,
+				...(reminded.has(key) ? { reminders: reminded.get(key) } : {}),
+				...(fattura.pec === undefined ? {} : { pec: fattura.pec }),
 			});
 		}
 	}
