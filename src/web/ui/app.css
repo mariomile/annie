@@ -316,6 +316,47 @@ ul.task-list { list-style: none; margin: 0; padding: 6px; }
 	.skill-row { flex-wrap: wrap; }
 	.skill-row .person-actions { width: 100%; padding-left: 48px; }
 }
+/* Automazioni: the skill's rows; the bolt lights up once a service has called. */
+.auto-row .task-text b .chip { margin-left: 6px; }
+.auto-row .fold-glyph.live { color: var(--ok); background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--ok) 28%, transparent), transparent 70%), var(--bg-2); border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); }
+@media (max-width: 560px) {
+	.auto-row { flex-wrap: nowrap; }
+	.auto-row .person-actions { width: auto; padding-left: 0; }
+}
+/* File: one group per folder; each file a tile with its kind (or the picture), name, size and time. */
+.files { padding: 6px 0; }
+.file-folder + .file-folder { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+.file-folder h3 { display: flex; align-items: baseline; gap: 8px; margin: 8px 20px 0; font-size: 12.5px; font-weight: 600; color: var(--fg-3); }
+.file-folder h3 .mono { color: var(--fg-2); font-weight: 500; }
+.file-folder .task-list { padding: 4px 6px; }
+.file-row { align-items: center; }
+.file-row .task-text b { word-break: break-all; -webkit-line-clamp: 2; }
+.file-kind { --k: var(--fg-3); position: relative; flex: none; display: grid; place-items: center; width: 38px; height: 44px; border-radius: 7px 13px 7px 7px; overflow: hidden; background: color-mix(in srgb, var(--k) 14%, var(--bg-2)); border: 1px solid color-mix(in srgb, var(--k) 30%, var(--border)); font: 650 9.5px/1 var(--mono); letter-spacing: 0.02em; color: color-mix(in srgb, var(--k) 70%, var(--fg)); }
+.file-kind img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.2s; }
+.file-kind.thumb img { opacity: 1; }
+.file-kind.thumb { border-radius: 8px; }
+.k-pdf { --k: #ff6b5e; }
+.k-doc { --k: #5cb8ff; }
+.k-sheet { --k: #3ecf8e; }
+.k-slide { --k: #ff9f43; }
+.k-image { --k: #b18cff; }
+.k-audio { --k: #ff7ab6; }
+.k-code { --k: #f6c344; }
+.k-text { --k: var(--fg-2); }
+.file-row .person-actions .icon-btn:not(.task-remove) { opacity: 0; transition: opacity 0.12s; }
+.file-row:hover .person-actions .icon-btn, .file-row:focus-within .person-actions .icon-btn { opacity: 1; }
+@media (hover: none) { .file-row .person-actions .icon-btn { opacity: 1; } }
+@media (max-width: 560px) {
+	.file-row { gap: 12px; padding: 10px; }
+	.file-row .person-actions { width: auto; padding-left: 0; gap: 0; }
+	.file-folder h3 { margin: 8px 16px 0; }
+}
+.file-drop { display: none; position: fixed; inset: 12px; z-index: 60; pointer-events: none; place-content: center; justify-items: center; gap: 8px; text-align: center; border: 2px dashed color-mix(in srgb, var(--fg) 40%, transparent); border-radius: 20px; background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(10px); }
+.file-drop .fold-glyph { width: 52px; height: 52px; border-radius: 16px; margin-bottom: 4px; }
+.file-drop .fold-glyph .icon { width: 24px; height: 24px; }
+.file-drop b { font-size: 18px; font-weight: 600; }
+.file-drop small { color: var(--fg-3); }
+main.dropping .file-drop { display: grid; }
 /* Attività: the audit day by day, rows like the tasks, the details as name and value. */
 .audit { padding: 16px 14px 10px; }
 .audit-filter { padding: 0 6px; }
