@@ -394,7 +394,8 @@ describe("pnpm start (startAnnie)", () => {
 		const { card } = await api("/api/board", { title: "Newsletter", assignee: "ricerca" });
 		const entries = async (agent: string, thread: string) => (await api(`/api/instances/${agent}/threads/${thread}`)).entries as { from: string; text?: string }[];
 		await api(`/api/instances/ricerca/threads/${card.work.threadId}/messages`, { text: '/tool board_create {"title":"Testo","assignee":"scrittore","parent":"#1"}' });
-		await until(async () => (await api("/api/board")).cards.length === 2);
+		// The sotto-scheda is on the board as soon as it exists, and moves to «In corso» once its conversation opens.
+		await until(async () => (await api("/api/board")).cards[1]?.status === "in_corso");
 		const sub = (await api("/api/board")).cards[1];
 		expect(sub).toMatchObject({ n: 2, parent: card.id, status: "in_corso", work: { agent: "scrittore" } });
 		await until(async () => (await entries("scrittore", sub.work.threadId)).some((e) => e.text?.includes("Fa parte della scheda #1 «Newsletter»")));
