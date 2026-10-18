@@ -3079,7 +3079,8 @@ async function viewTasks(main) {
 	const instruction = h("textarea", { rows: 2, placeholder: "Es. Riassumi le email di ieri e dimmi cosa richiede una risposta" });
 	const at = h("input", { type: "datetime-local" });
 	const cron = h("input", { type: "text", value: "0 9 * * 1-5", class: "mono" });
-	const thread = h("select", threads.map((t) => h("option", { value: t.id }, t.title)));
+	// A chat of its own by default: the results do not end up in whatever chat was last open.
+	const thread = h("select", h("option", { value: "" }, "Una chat nuova, con il nome del task"), threads.map((t) => h("option", { value: t.id }, t.title)));
 	const whenBox = h("div");
 	// The usual schedules are one click; the cron is there for the rest.
 	const custom = h("label.field", { hidden: true }, h("span", "Ripetizione (cron, fuso Europe/Rome)"), cron, h("small", "minuto ora giorno mese giorno-settimana"));
@@ -3134,8 +3135,14 @@ async function viewTasks(main) {
 	drawWhen();
 	const create = async () => {
 		try {
-			const body = { instruction: instruction.value, threadId: thread.value, ...(mode === "cron" ? { cron: cron.value } : { at: at.value ? new Date(at.value).toISOString() : "" }) };
+			// Checked here, before a new chat is opened for it.
+			if (!instruction.value.trim()) throw new Error("Scrivi cosa deve fare");
+			if (mode === "cron" ? !cron.value.trim() : !at.value) throw new Error("Scegli quando");
+			const title = instruction.value.trim().replace(/\s+/g, " ");
+			const threadId = thread.value || (await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: { title: `Task: ${title.length > 48 ? `${title.slice(0, 47)}…` : title}` } })).thread.id;
+			const body = { instruction: instruction.value, threadId, ...(mode === "cron" ? { cron: cron.value } : { at: at.value ? new Date(at.value).toISOString() : "" }) };
 			await api(`/api/instances/${inst.id}/schedules`, { method: "POST", body });
+			if (!thread.value) await refreshThreads();
 			toast("Task programmato");
 			render();
 		} catch (error) {
@@ -3151,9 +3158,9 @@ async function viewTasks(main) {
 			h(
 				"div.card.pad",
 				h("h2", "Nuovo task"),
-				threads.length
+				inst.canChat
 					? [h("label.field", h("span", "Cosa deve fare"), instruction), h("div.field", h("span", "Quando"), seg), whenBox, h("label.field", h("span", "Risultato nella chat"), thread), h("button.btn.accent", { onclick: create }, "Programma")]
-					: h("p.muted", "Apri prima una conversazione in Chat: il risultato dei task arriva lì."),
+					: h("p.muted", `Per programmare un task devi poter scrivere a ${inst.name}: il risultato arriva in una chat.`),
 			),
 		),
 		...watchSection(inst, watches, threads),
@@ -3230,10 +3237,15 @@ function watchSection(inst, watches, threads) {
 			[1440, "Ogni giorno"],
 		].map(([value, label]) => h("option", { value, ...(value === 60 ? { selected: true } : {}) }, label)),
 	);
-	const thread = h("select", threads.map((t) => h("option", { value: t.id }, t.title)));
+	const thread = h("select", h("option", { value: "" }, "Una chat nuova, con il nome della pagina"), threads.map((t) => h("option", { value: t.id }, t.title)));
 	const create = async () => {
 		try {
-			const { watch } = await api(`/api/instances/${inst.id}/watches`, { method: "POST", body: { url: url.value, what: what.value, below: below.value, above: above.value, everyMinutes: Number(every.value), threadId: thread.value } });
+			// Checked here, before a new chat is opened for it.
+			if (!/^https?:\/\/\S+\.\S+/.test(url.value.trim())) throw new Error("Scrivi l'indirizzo della pagina, con https://");
+			const page = url.value.trim().replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
+			const threadId = thread.value || (await api(`/api/instances/${inst.id}/threads`, { method: "POST", body: { title: `Sentinella: ${page.length > 44 ? `${page.slice(0, 43)}…` : page}` } })).thread.id;
+			const { watch } = await api(`/api/instances/${inst.id}/watches`, { method: "POST", body: { url: url.value, what: what.value, below: below.value, above: above.value, everyMinutes: Number(every.value), threadId } });
+			if (!thread.value) await refreshThreads();
 			const now = watch.last?.price != null ? ` Prezzo adesso: ${num(watch.last.price)}.` : "";
 			toast(watch.below != null || watch.above != null ? `Sentinella attiva: ti scrivo quando il prezzo passa la soglia.${now}` : "Sentinella attiva: ti scrivo quando cambia.");
 			render();
@@ -3249,7 +3261,7 @@ function watchSection(inst, watches, threads) {
 			h(
 				"div.card.pad",
 				h("h2", "Nuova sentinella"),
-				threads.length
+				inst.canChat
 					? [
 							h("label.field", h("span", "Pagina da controllare"), url),
 							h("label.field", h("span", "Cosa guardare"), what, h("small", "La frase subito prima di quello che ti interessa. Senza frase Annie guarda tutta la pagina.")),
@@ -3258,7 +3270,7 @@ function watchSection(inst, watches, threads) {
 							h("label.field", h("span", "Avvisi nella chat"), thread),
 							h("button.btn.accent", { onclick: create }, "Attiva"),
 						]
-					: h("p.muted", "Apri prima una conversazione in Chat: gli avvisi arrivano lì."),
+					: h("p.muted", `Per attivare una sentinella devi poter scrivere a ${inst.name}: gli avvisi arrivano in una chat.`),
 			),
 		),
 	];
