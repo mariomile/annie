@@ -40,6 +40,42 @@ export function parseCron(source: string): Cron {
 	};
 }
 
+const DAY_NAMES = ["domenica", "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
+const and = (items: readonly string[]) => (items.length < 2 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} e ${items.at(-1)}`);
+
+/**
+ * The schedule in Italian words, for the people who read it in the console: "dal lunedì al
+ * venerdì alle 9:00". Only the shapes people actually use; anything else is undefined and the
+ * cron itself is shown.
+ */
+export function describeCron(source: string): string | undefined {
+	try {
+		parseCron(source);
+	} catch {
+		return undefined;
+	}
+	const [minute, hour, day, month, weekday] = source.trim().split(/\s+/) as [string, string, string, string, string];
+	if (month !== "*") return undefined;
+	const number = /^\d+$/;
+	const every = (part: string) => /^\*\/(\d+)$/.exec(part)?.[1];
+	if (day === "*" && weekday === "*") {
+		if (hour === "*" && minute === "0") return "ogni ora";
+		if (hour === "*" && every(minute) !== undefined) return `ogni ${every(minute)} minuti`;
+		if (minute === "0" && every(hour) !== undefined) return `ogni ${every(hour)} ore`;
+	}
+	const hours = hour.split(",");
+	if (!number.test(minute) || !hours.every((h) => number.test(h))) return undefined;
+	const at = and(hours.map((h) => `alle ${Number(h)}:${minute.padStart(2, "0")}`));
+	if (day === "*" && weekday === "*") return `ogni giorno ${at}`;
+	if (day === "*" && weekday === "1-5") return `dal lunedì al venerdì ${at}`;
+	if (day === "*" && weekday.split(",").every((d) => number.test(d))) {
+		const days = [...new Set(weekday.split(",").map((d) => (Number(d) === 0 ? 7 : Number(d))))].sort((a, b) => a - b);
+		return days.length === 1 ? `ogni ${DAY_NAMES[days[0] as number]} ${at}` : `${and(days.map((d) => DAY_NAMES[d] as string))} ${at}`;
+	}
+	if (number.test(day) && weekday === "*") return `ogni mese il ${Number(day)} ${at}`;
+	return undefined;
+}
+
 function parseField(part: string, field: (typeof FIELDS)[number], source: string): Set<number> {
 	const out = new Set<number>();
 	for (const item of part.split(",")) {

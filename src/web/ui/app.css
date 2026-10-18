@@ -280,6 +280,28 @@ details.fold[open] > summary { border-bottom: 1px solid var(--border); border-bo
 details.fold[open] .fold-chevron { transform: rotate(180deg); }
 .fold-body { padding: 18px 20px 20px; }
 .fold-body > p.muted:first-child { margin-top: 0; }
+/* Task and sentinelle rows: what it does, when, and what comes next. */
+ul.task-list { list-style: none; margin: 0; padding: 6px; }
+.task-row { display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; border-radius: 9px; transition: background 0.12s; }
+.task-row + .task-row { margin-top: 2px; }
+.task-row:hover { background: var(--hover); }
+.task-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.task-text b { font-weight: 560; font-size: 14px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.task-text b a { color: inherit; text-decoration: none; }
+.task-text b a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.task-text b .chip { vertical-align: 2px; margin-left: 4px; }
+.task-text small { color: var(--fg-3); font-size: 12.5px; }
+.task-text small.bad { color: var(--bad); }
+.task-row .task-remove { flex: none; opacity: 0; transition: opacity 0.12s, background 0.1s, color 0.1s; }
+.task-row .icon-btn.task-remove:hover { color: var(--bad); background: var(--bad-soft); }
+.task-row:hover .task-remove, .task-row:focus-within .task-remove { opacity: 1; }
+@media (hover: none) { .task-row .task-remove { opacity: 1; } }
+/* A row of choices, one pressed (task schedules). */
+.choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.choices button { border: 1px solid var(--border); background: transparent; color: var(--fg-2); border-radius: 99px; padding: 6px 12px; font-size: 13px; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
+.choices button:hover { background: var(--hover); color: var(--fg); }
+.choices button[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--primary-fg); }
+.choices button:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
 /* Catalog tiles: the service's initial in a colour of its own. */
 .catalog-name { display: flex; align-items: center; gap: 10px; }
 .monogram { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; font-weight: 700; font-size: 14px; font-stretch: var(--display-stretch); color: #111; background: linear-gradient(160deg, color-mix(in srgb, var(--tile) 100%, #fff 18%), var(--tile)); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.08); }

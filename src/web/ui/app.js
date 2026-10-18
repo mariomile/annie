@@ -75,6 +75,7 @@ const ICONS = {
 	back: ["M19 12H5", "m11 6-6 6 6 6"],
 	close: ["M6 6l12 12M18 6 6 18"],
 	copy: ["M9 9h10v10H9Z", "M5 15V5h10"],
+	trash: ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13", "M10 11v6M14 11v6"],
 	plane: ["M21 3 3 10.5l7 2.5 2.5 7Z", "m10 13 4.5-4.5"],
 	phone: ["M5 4h3.5l1.5 4-2 1.5a11 11 0 0 0 6.5 6.5l1.5-2 4 1.5V19a1.5 1.5 0 0 1-1.6 1.5A16 16 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4Z"],
 };
@@ -251,6 +252,14 @@ const fmt = {
 	day: (iso) => (iso ? new Date(iso).toLocaleDateString("it-IT", { day: "numeric", month: "short" }) : "—"),
 	bytes: (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${decimal(n / 1024)} KB` : `${decimal(n / 1048576)} MB`),
 	usd: (n) => `$${n.toFixed(n < 1 ? 3 : 2)}`,
+	/** A time ahead, the way it is said: «oggi alle 18:00», «domani alle 9:00», «lun 26 ott alle 9:00». */
+	soon: (iso) => {
+		const at = new Date(iso);
+		const days = Math.round((new Date(at).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
+		const time = at.toLocaleTimeString("it-IT", { hour: "numeric", minute: "2-digit" });
+		const day = days === 0 ? "oggi" : days === 1 ? "domani" : at.toLocaleDateString("it-IT", { weekday: "short", day: "numeric", month: "short" });
+		return `${day} alle ${time}`;
+	},
 };
 
 /** Reads with one argument, writes with two; null removes the key. */
@@ -2945,32 +2954,33 @@ async function viewTasks(main) {
 		inst.canChat ? api(`/api/instances/${inst.id}/threads`).then((r) => r.threads) : Promise.resolve([]),
 		api(`/api/instances/${inst.id}/brief`).catch(() => undefined),
 	]);
-	const table = h(
-		"table.ledger",
-		h("thead", h("tr", h("th", "Istruzione"), h("th", "Quando"), h("th", "Prossima"), h("th", ""))),
+	const remove = (s) =>
 		h(
-			"tbody",
-			schedules.map((s) =>
+			"button.icon-btn.task-remove",
+			{
+				title: "Elimina il task",
+				"aria-label": "Elimina il task",
+				onclick: async () => {
+					await api(`/api/instances/${inst.id}/schedules/${s.id}`, { method: "DELETE" });
+					toast("Task eliminato");
+					render();
+				},
+			},
+			icon("trash"),
+		);
+	const when = (s) => ("at" in s.when ? "Una volta" : s.whenText ? s.whenText[0].toUpperCase() + s.whenText.slice(1) : h("span.mono", `${s.when.cron} (${s.when.timeZone})`));
+	const table = h(
+		"ul.task-list",
+		schedules.map((s) =>
+			h(
+				"li.task-row",
+				h("span.fold-glyph", icon("task")),
 				h(
-					"tr",
-					h("td", s.kind === "brief" ? "Brief del mattino" : s.instruction, h("div.mono.muted", `${s.id} · ${s.channel}${s.createdBy.kind === "instance" ? " · creato da Annie" : ""}`)),
-					h("td.mono", "at" in s.when ? `una volta` : `${s.when.cron} (${s.when.timeZone})`),
-					h("td.mono", s.nextRunAt ? fmt.time(s.nextRunAt) : "finito"),
-					h(
-						"td",
-						h(
-							"button.btn.small.danger",
-							{
-								onclick: async () => {
-									await api(`/api/instances/${inst.id}/schedules/${s.id}`, { method: "DELETE" });
-									toast("Task eliminato");
-									render();
-								},
-							},
-							"Elimina",
-						),
-					),
+					"div.task-text",
+					h("b", s.kind === "brief" ? "Brief del mattino" : s.instruction),
+					h("small", when(s), " · ", s.nextRunAt ? `prossima ${fmt.soon(s.nextRunAt)}` : "finito", s.createdBy.kind === "instance" ? ` · creato da ${inst.name}` : ""),
 				),
+				remove(s),
 			),
 		),
 	);
@@ -2980,16 +2990,35 @@ async function viewTasks(main) {
 	const cron = h("input", { type: "text", value: "0 9 * * 1-5", class: "mono" });
 	const thread = h("select", threads.map((t) => h("option", { value: t.id }, t.title)));
 	const whenBox = h("div");
+	// The usual schedules are one click; the cron is there for the rest.
+	const custom = h("label.field", { hidden: true }, h("span", "Ripetizione (cron, fuso Europe/Rome)"), cron, h("small", "minuto ora giorno mese giorno-settimana"));
 	const presets = h(
-		"div.hints",
+		"div.choices",
+		{ role: "group", "aria-label": "Quando si ripete" },
 		[
 			["Giorni feriali 9:00", "0 9 * * 1-5"],
 			["Ogni lunedì 8:30", "30 8 * * 1"],
 			["Ogni giorno 18:00", "0 18 * * *"],
-			["Primo del mese", "0 9 1 * *"],
-		].map(([label, value]) => h("button", { type: "button", onclick: () => (cron.value = value) }, label)),
+			["Primo del mese 9:00", "0 9 1 * *"],
+			["Personalizzata", null],
+		].map(([label, value]) =>
+			h(
+				"button",
+				{
+					type: "button",
+					"aria-pressed": value === cron.value ? "true" : "false",
+					onclick: (e) => {
+						for (const b of presets.children) b.setAttribute("aria-pressed", b === e.currentTarget ? "true" : "false");
+						custom.hidden = value !== null;
+						if (value === null) cron.focus();
+						else cron.value = value;
+					},
+				},
+				label,
+			),
+		),
 	);
-	const drawWhen = () => mount(whenBox, mode === "cron" ? h("label.field", h("span", "Ripetizione (cron, fuso Europe/Rome)"), cron, presets, h("small", "minuto ora giorno mese giorno-settimana")) : h("label.field", h("span", "Data e ora"), at));
+	const drawWhen = () => mount(whenBox, mode === "cron" ? [presets, custom] : h("label.field", h("span", "Data e ora"), at));
 	const seg = h(
 		"div.seg",
 		[
@@ -3078,28 +3107,21 @@ function watchSection(inst, watches, threads) {
 			},
 			label,
 		);
+	const often = (m) => (m < 60 ? `ogni ${m} minuti` : m === 60 ? "ogni ora" : m < 1440 ? `ogni ${m / 60} ore` : "ogni giorno");
 	const table = h(
-		"table.ledger",
-		h("thead", h("tr", h("th", "Pagina"), h("th", "Avvisa per"), h("th", "Ultimo controllo"), h("th", ""))),
-		h(
-			"tbody",
-			watches.map((w) =>
+		"ul.task-list",
+		watches.map((w) =>
+			h(
+				"li.task-row",
+				h("span.fold-glyph", icon("browser")),
 				h(
-					"tr",
-					h("td", h("a", { href: w.url, target: "_blank", rel: "noopener noreferrer" }, host(w.url)), h("div.mono.muted", `${w.id} · ogni ${w.everyMinutes} min${w.createdBy.kind === "instance" ? " · creata da Annie" : ""}`)),
-					h(
-						"td",
-						condition(w),
-						w.last?.side === "missing" ? h("div.muted", "prezzo non visibile ora") : w.last?.price != null ? h("div.mono.muted", `ora ${num(w.last.price)}`) : null,
-					),
-					h(
-						"td",
-						h("div.mono", w.lastCheckAt ? fmt.time(w.lastCheckAt) : "in arrivo"),
-						status(w),
-						w.disabledReason ? h("div.muted", `Ferma: ${w.disabledReason}`) : w.lastError ? h("div.muted", `Ultimo errore: ${w.lastError}`) : null,
-					),
-					h("td", h("div.row-gap", w.disabledReason || w.failures > 0 ? act("Riattiva", `${w.id}/resume`, "POST", "Sentinella riattivata") : null, act("Elimina", w.id, "DELETE", "Sentinella eliminata", ".danger"))),
+					"div.task-text",
+					h("b", h("a", { href: w.url, target: "_blank", rel: "noopener noreferrer" }, host(w.url)), " ", status(w)),
+					h("small", condition(w), w.last?.side === "missing" ? " · prezzo non visibile ora" : w.last?.price != null ? ` · ora ${num(w.last.price)}` : ""),
+					h("small", `${often(w.everyMinutes)[0].toUpperCase()}${often(w.everyMinutes).slice(1)} · `, w.lastCheckAt ? `ultimo controllo ${fmt.time(w.lastCheckAt)}` : "primo controllo in arrivo", w.createdBy.kind === "instance" ? ` · creata da ${inst.name}` : ""),
+					w.disabledReason ? h("small.bad", `Ferma: ${w.disabledReason}`) : w.lastError ? h("small", `Ultimo errore: ${w.lastError}`) : null,
 				),
+				h("div.row-gap", w.disabledReason || w.failures > 0 ? act("Riattiva", `${w.id}/resume`, "POST", "Sentinella riattivata") : null, act("Elimina", w.id, "DELETE", "Sentinella eliminata", ".ghost.task-remove")),
 			),
 		),
 	);

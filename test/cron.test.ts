@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextRun, parseCron } from "../src/core/cron.ts";
+import { describeCron, nextRun, parseCron } from "../src/core/cron.ts";
 
 const at = (iso: string) => new Date(iso);
 
@@ -32,5 +32,27 @@ describe("cron in a time zone", () => {
 		expect(() => parseCron("0 9 * * 8")).toThrow("weekday");
 		expect(() => parseCron("0 0 31 2 *")).not.toThrow();
 		expect(() => nextRun(parseCron("0 0 31 2 *"), at("2026-01-01T00:00:00Z"), "UTC")).toThrow("never runs");
+	});
+});
+
+describe("a cron in words", () => {
+	it("says the usual schedules the way a person would", () => {
+		expect(describeCron("0 9 * * 1-5")).toBe("dal lunedì al venerdì alle 9:00");
+		expect(describeCron("30 8 * * 1")).toBe("ogni lunedì alle 8:30");
+		expect(describeCron("0 18 * * *")).toBe("ogni giorno alle 18:00");
+		expect(describeCron("0 9 1 * *")).toBe("ogni mese il 1 alle 9:00");
+		expect(describeCron("0 10 * * 6,0")).toBe("sabato e domenica alle 10:00");
+		expect(describeCron("15 7 * * 1,3,5")).toBe("lunedì, mercoledì e venerdì alle 7:15");
+		expect(describeCron("0 9,18 * * *")).toBe("ogni giorno alle 9:00 e alle 18:00");
+		expect(describeCron("0 * * * *")).toBe("ogni ora");
+		expect(describeCron("*/15 * * * *")).toBe("ogni 15 minuti");
+		expect(describeCron("0 */2 * * *")).toBe("ogni 2 ore");
+	});
+
+	it("leaves the rest to the cron itself", () => {
+		expect(describeCron("0 9 * 3 *")).toBeUndefined();
+		expect(describeCron("0 9 1 * 1")).toBeUndefined();
+		expect(describeCron("5,35 9-17 * * *")).toBeUndefined();
+		expect(describeCron("non è un cron")).toBeUndefined();
 	});
 });
