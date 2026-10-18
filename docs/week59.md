@@ -1,6 +1,6 @@
 # Settimana 59: liquidazione IVA
 
-Branch `week-59`. Per chi è in regime ordinario Annie calcola l'IVA da versare ogni mese o trimestre dalle fatture emesse e ricevute, dice quando scade l'F24 e con che codice, stima l'acconto di dicembre e mette gli F24 dell'IVA nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0076](adr/0076-liquidazione-iva.md).
+Branch `week-59`. Per chi è in regime ordinario Annie calcola l'IVA da versare ogni mese o trimestre dalle fatture emesse e ricevute, dice quando scade l'F24 e con che codice, stima l'acconto di dicembre e mette gli F24 dell'IVA nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0077](adr/0077-liquidazione-iva.md).
 
 ## Cosa cambia per chi usa Annie
 

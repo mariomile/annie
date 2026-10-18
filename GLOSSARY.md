@@ -278,7 +278,7 @@ Una fattura elettronica che Annie prepara per la persona con `sales_invoices`: p
 _Avoid_: invoice, fattura emessa (per la bozza)
 
 **Liquidazione IVA**:
-Il conto che chi è in regime ordinario fa ogni mese o trimestre: IVA delle fatture emesse meno quella detraibile delle fatture ricevute, più il credito o il saldo che passa dal periodo prima. Se è a debito si versa con l'F24. Annie la stima con `vat_settlement`. Vedi ADR 0076.
+Il conto che chi è in regime ordinario fa ogni mese o trimestre: IVA delle fatture emesse meno quella detraibile delle fatture ricevute, più il credito o il saldo che passa dal periodo prima. Se è a debito si versa con l'F24. Annie la stima con `vat_settlement`. Vedi ADR 0077.
 _Avoid_: VAT settlement, dichiarazione (per la liquidazione periodica)
 
 **Download**:
