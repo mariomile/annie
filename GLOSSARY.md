@@ -36,6 +36,10 @@ _Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
 _Avoid_: chat tra bot, handoff, delega
 
+**Skill**:
+Una procedura salvata di un agente: un nome che è anche il comando (`/chiusura-del-mese`), una riga che dice quando usarla e i passi. L'agente vede nomi e righe nelle istruzioni e apre i passi con `skill_read`; una persona la salva dalla chat o dalla console e la lancia con `/nome`. Vedi ADR 0058.
+_Avoid_: prompt salvato, macro, template
+
 **Personalità**:
 Emoji, compito e tono di un agente, scelti dall'owner; il modello li riceve dopo le istruzioni, in un blocco «Chi sei». Il tono è uno tra naturale, formale, amichevole, conciso e scherzoso (in console «Spiritoso»).
 _Avoid_: persona (nei testi per le persone), prompt, carattere
