@@ -334,7 +334,7 @@ describe("pnpm start (startAnnie)", () => {
 		expect(audit.filter((e) => String(e.type).startsWith("board.")).map((e) => e.type)).toEqual(expect.arrayContaining(["board.card_created", "board.card_changed", "board.card_started", "board.card_deleted"]));
 	});
 
-	it("«Esegui da solo» (ADR 0058): the agente goes on after each reply, and stops in «Da rivedere»", async () => {
+	it("«Esegui da solo» (ADR 0061): the agente goes on after each reply, and stops in «Da rivedere»", async () => {
 		const { annie, base, telegram } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
 		await api("/api/instances", { id: "ricerca", name: "Ricercatore" });

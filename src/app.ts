@@ -825,7 +825,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await channel.post(threadId, personId, text);
 		},
 	});
-	// «Esegui da solo» (ADR 0058): each reply in the conversation of a scheda may be followed by «go on».
+	// «Esegui da solo» (ADR 0061): each reply in the conversation of a scheda may be followed by «go on».
 	runtime.onReply((reply) => {
 		// Only answers to what was written in the conversation: not files or messages sent mid-turn.
 		if (reply.tenantId !== tenant || reply.channel !== "web" || reply.status === "file" || reply.submissionId === "message") return;

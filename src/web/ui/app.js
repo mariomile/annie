@@ -3448,7 +3448,7 @@ async function viewBoard(main) {
 			go("chat", c.work.threadId);
 		};
 		const moves = [];
-		// «Esegui da solo» (ADR 0058): the agente goes on without waiting for answers, then to review.
+		// «Esegui da solo» (ADR 0061): the agente goes on without waiting for answers, then to review.
 		const alone = h("input", { type: "checkbox", checked: c.auto !== undefined });
 		const aloneRow = h("label.board-alone", alone, h("span", aloneLabel));
 		if (c.status === "da_rivedere") {

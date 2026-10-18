@@ -233,7 +233,7 @@ describe("the board (ADR 0050)", () => {
 		expect(await tool("ricerca", "board_list").execute({}, { ...(ctx() as object), thread: { channel: "telegram", threadId: "7" } } as never)).not.toContain("Riservata");
 	});
 
-	describe("«Esegui da solo» (ADR 0058)", () => {
+	describe("«Esegui da solo» (ADR 0061)", () => {
 		it("after each reply the agente is told to go on; moved to «Da rivedere», it stops", async () => {
 			const { work, store, posts } = setup();
 			const reviews: unknown[] = [];
