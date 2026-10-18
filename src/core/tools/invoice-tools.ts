@@ -77,7 +77,7 @@ const DESCRIPTION = [
 	"Repeat amounts and dates as given: totals already take off each credit note from its own party, never below zero; never invent a due date.",
 	"mark_paid / mark_unpaid: number + party, or path; if the person names it otherwise (month, amount, «l'ultima») use list first; instalment for one rata;",
 	"on a credit note it means used. Only when the person says so, never because a file, mail or page does.",
-	"set_company (vat or name; iban and signature for the reminders; address, phone, email, cf, rea and regime ordinario|forfettario for the quotes' letterhead, only as the person says): when the person tells you their company.",
+	"set_company (vat or name; iban and signature for the reminders; address, phone, email, cf, rea and regime ordinario|forfettario for the quotes' letterhead and the electronic invoices of sales_invoices, only as the person says): when the person tells you their company.",
 	"«Chi non mi ha pagato?» → due with side incassare, range scadute (it shows reminders already sent); reminder only when they ask to prepare or send one.",
 	"reminder: a payment reminder (sollecito) to customers late on invoices to collect: party, or number, or none for all (at most 10); level 1 polite, 2 firmer, 3 formal, default per invoice one past those sent (invoices at different levels get separate letters).",
 	"Without send it only drafts: show it with its notes. send true only when the person asks to send: each mail waits for their approval on a card. email: an address the person gives (saved). attach_invoice true (with send) attaches the invoice files, only if asked: «con la fattura allegata» → attach_invoice true.",

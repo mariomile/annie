@@ -4,8 +4,7 @@
  * person dictates; only when the person says yes it is issued: then it takes the next number of
  * the year (a draft removed takes none), the seller's data of that day and a file name, and its
  * FatturaPA XML is written in the workspace (fattura-pa-writer.ts), where the scadenzario finds it.
- * Nothing is sent to the SdI: the file is uploaded by the person (InvoiceSender is the seam for an
- * intermediary, not implemented). Kept per instance in `sales-invoices.json`
+ * Nothing is sent to the SdI: the person uploads the file. Kept per instance in `sales-invoices.json`
  * (sales-invoice-store.ts); the arithmetic in sales-invoice-sums.ts, the rules in sales-invoice-rules.ts.
  */
 import { validAddress } from "./email-address.ts";
@@ -38,8 +37,10 @@ import {
 	RITENUTA_CAUSALI,
 	RITENUTA_COMPANY,
 	RITENUTA_PERSON,
+	NOT_FEE_NATURA,
 	SALES_VAT_RATES,
 	type SalesVatRate,
+	SELLER_PHONE,
 } from "./sales-invoice-rules.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
 import { checkCodiceFiscale, checkVatNumber } from "./tax-ids.ts";
@@ -77,15 +78,6 @@ export function salesAgentReads(args: Record<string, unknown>): boolean {
 	return args.op === "list";
 }
 
-/**
- * The seam for an intermediary that would transmit the file to the SdI on the person's behalf.
- * Not implemented: today the person uploads the file to «Fatture e Corrispettivi» or to their software.
- */
-export interface InvoiceSender {
-	/** Hands the XML to the intermediary; the id it gives back, to follow the receipts. */
-	send(file: { readonly name: string; readonly xml: string }, signal: AbortSignal): Promise<{ readonly id: string }>;
-}
-
 /** An address as FatturaPA writes it: street (number included), CAP, comune, provincia (Italy only), country. */
 export type Address = { readonly street: string; readonly cap: string; readonly town: string; readonly province?: string; readonly country: string };
 
@@ -108,7 +100,7 @@ export type BuyerKind = "business" | "private" | "foreign" | "pa";
 export type Buyer = {
 	readonly name: string;
 	readonly kind: BuyerKind;
-	/** «IT01234567897», or a foreign VAT number with its prefix. */
+	/** «IT» and the 11 digits, or a foreign VAT number with its prefix. */
 	readonly vat?: string;
 	readonly cf?: string;
 	readonly address: Address;
@@ -130,6 +122,8 @@ export type SalesLine = {
 	readonly natura?: Natura;
 	/** The law a 0% line rests on, as the person says it (RiferimentoNormativo). */
 	readonly reference?: string;
+	/** Not a fee: a spesa anticipata in nome e per conto del cliente (N1) or the bollo. Outside the ritenuta's and the cassa's base. */
+	readonly notFee?: true;
 };
 
 export type Ritenuta = { readonly type: typeof RITENUTA_PERSON | typeof RITENUTA_COMPANY; readonly causale: string };
@@ -181,6 +175,8 @@ export type SalesInvoice = Marker & {
 	readonly pdf?: string;
 	readonly issued?: Marker;
 	readonly issueCall?: string;
+	/** Every step of the issue done (file, PDF, hours, quote, audit): an issue run on an invoice without it finishes them. */
+	readonly finished?: true;
 };
 
 export type IssuedInvoice = SalesInvoice & { readonly number: string; readonly year: number; readonly seq: number; readonly date: string; readonly seller: Seller; readonly progressive: string; readonly issued: Marker };
@@ -278,6 +274,7 @@ export function sellerOf(company: Company | undefined, profile: TaxProfile | und
 	if (missing.length > 0 || name === undefined || vat === undefined || cf === undefined || regime === undefined || address === undefined) return { missing };
 	const rea = company?.rea === undefined ? null : REA.exec(company.rea);
 	const phone = company?.phone?.replace(/[^\d+]/g, "");
+	const email = company?.email;
 	return {
 		seller: {
 			name,
@@ -286,8 +283,8 @@ export function sellerOf(company: Company | undefined, profile: TaxProfile | und
 			regime,
 			address,
 			...(rea === null || rea === undefined ? {} : { rea: { office: rea[1] as string, number: rea[2] as string } }),
-			...(phone === undefined || phone.length < 5 || phone.length > 12 ? {} : { phone }),
-			...(company?.email === undefined || company.email.length > FIELD_LIMITS.email ? {} : { email: company.email }),
+			...(phone === undefined || !SELLER_PHONE.test(phone) ? {} : { phone }),
+			...(email === undefined || email.length > FIELD_LIMITS.email || !validAddress(email) ? {} : { email }),
 		},
 	};
 }
@@ -297,113 +294,167 @@ export function ritenutaType(cf: string | undefined): Ritenuta["type"] {
 	return cf !== undefined && /^[A-Z]{6}/.test(cf) ? RITENUTA_PERSON : RITENUTA_COMPANY;
 }
 
-// Validation of what is stored: what does not have this shape makes the store unreadable.
+// Validation of what is stored: what does not have this shape makes the store unreadable. Each
+// check names the field that fails, in words, so an issue refused says which one.
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const QUANTITY = /^\d{1,12}(?:\.\d{1,3})?$/;
 const PRICE = /^\d{1,12}(?:\.\d{1,8})?$/;
 const PERCENT = /^\d{1,3}(?:\.\d{1,2})?$/;
 const isDay = (v: unknown): v is string => typeof v === "string" && DAY.test(v) && realDate(v);
-const oneLine = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
+/** Text on one line (no line break) of at most `max` characters. */
+const isLine = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
 const percent = (v: unknown, max: number) => typeof v === "string" && PERCENT.test(v) && Number(v) > 0 && Number(v) <= max;
+const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
-function validAddressParts(v: unknown): v is Address {
-	if (typeof v !== "object" || v === null) return false;
+/** The first problem of a list of [failing, what], or undefined. */
+const first = (checks: readonly (readonly [boolean, string])[]): string | undefined => checks.find(([bad]) => bad)?.[1];
+
+function addressProblem(v: unknown, whose: string): string | undefined {
+	if (!record(v)) return `l'indirizzo ${whose}`;
 	const a = v as Address;
-	if (!oneLine(a.street, FIELD_LIMITS.indirizzo) || !oneLine(a.town, FIELD_LIMITS.comune) || typeof a.cap !== "string" || !/^\d{5}$/.test(a.cap)) return false;
-	if (typeof a.country !== "string" || !/^[A-Z]{2}$/.test(a.country)) return false;
-	return a.province === undefined ? a.country !== "IT" : typeof a.province === "string" && /^[A-Z]{2}$/.test(a.province) && a.country === "IT";
+	return first([
+		[!isLine(a.street, FIELD_LIMITS.indirizzo), `la via ${whose} (al massimo ${FIELD_LIMITS.indirizzo} caratteri)`],
+		[!isLine(a.town, FIELD_LIMITS.comune), `il comune ${whose} (al massimo ${FIELD_LIMITS.comune} caratteri)`],
+		[typeof a.cap !== "string" || !/^\d{5}$/.test(a.cap), `il CAP ${whose}`],
+		[typeof a.country !== "string" || !/^[A-Z]{2}$/.test(a.country), `il paese ${whose}`],
+		[a.province === undefined ? a.country === "IT" : typeof a.province !== "string" || !/^[A-Z]{2}$/.test(a.province) || a.country !== "IT", `la provincia ${whose}`],
+	]);
 }
 
-function validSeller(v: unknown): v is Seller {
-	if (typeof v !== "object" || v === null) return false;
+function sellerProblem(v: unknown): string | undefined {
+	if (!record(v)) return "i dati dell'azienda";
 	const s = v as Seller;
-	if (!oneLine(s.name, FIELD_LIMITS.denominazione) || typeof s.vat !== "string" || !/^IT\d{11}$/.test(s.vat) || typeof s.cf !== "string" || !/^[A-Z0-9]{11,16}$/.test(s.cf)) return false;
-	if (s.regime !== REGIME_ORDINARIO && s.regime !== REGIME_FORFETTARIO) return false;
-	if (s.rea !== undefined && (typeof s.rea.office !== "string" || !/^[A-Z]{2}$/.test(s.rea.office) || typeof s.rea.number !== "string" || !/^\d{1,7}$/.test(s.rea.number))) return false;
-	if (s.phone !== undefined && (typeof s.phone !== "string" || !/^\+?\d{4,11}$/.test(s.phone))) return false;
-	return validAddressParts(s.address) && (s.email === undefined || (typeof s.email === "string" && validAddress(s.email)));
+	return (
+		first([
+			[!isLine(s.name, FIELD_LIMITS.denominazione), `il nome dell'azienda (al massimo ${FIELD_LIMITS.denominazione} caratteri)`],
+			[typeof s.vat !== "string" || !/^IT\d{11}$/.test(s.vat), "la partita IVA dell'azienda"],
+			[typeof s.cf !== "string" || !/^[A-Z0-9]{11,16}$/.test(s.cf), "il codice fiscale dell'azienda"],
+			[s.regime !== REGIME_ORDINARIO && s.regime !== REGIME_FORFETTARIO, "il regime fiscale dell'azienda"],
+			[s.rea !== undefined && (typeof s.rea.office !== "string" || !/^[A-Z]{2}$/.test(s.rea.office) || typeof s.rea.number !== "string" || !/^\d{1,7}$/.test(s.rea.number)), "il numero REA dell'azienda"],
+			[s.phone !== undefined && (typeof s.phone !== "string" || !SELLER_PHONE.test(s.phone)), "il telefono dell'azienda (da 5 a 12 cifre, con il + davanti se serve)"],
+			[s.email !== undefined && (typeof s.email !== "string" || s.email.length > FIELD_LIMITS.email || !validAddress(s.email)), "l'email dell'azienda"],
+		]) ?? addressProblem(s.address, "dell'azienda")
+	);
+}
+
+function buyerProblem(v: unknown): string | undefined {
+	if (!record(v)) return "i dati del cliente";
+	const b = v as Buyer;
+	const fields = first([
+		[!isLine(b.name, FIELD_LIMITS.denominazione), `il nome del cliente (al massimo ${FIELD_LIMITS.denominazione} caratteri)`],
+		[typeof b.code !== "string", "il codice destinatario del cliente"],
+		[b.vat !== undefined && (typeof b.vat !== "string" || !/^[A-Z]{2}[0-9A-Z+*.]{2,28}$/.test(b.vat)), "la partita IVA del cliente"],
+		[b.cf !== undefined && (typeof b.cf !== "string" || !/^[A-Z0-9]{11,16}$/.test(b.cf)), "il codice fiscale del cliente"],
+		[b.pec !== undefined && (typeof b.pec !== "string" || b.pec.length > FIELD_LIMITS.pec || !validAddress(b.pec)), "la PEC del cliente"],
+		[b.card !== undefined && (typeof b.card !== "string" || !/^CL-\d{4,6}$/.test(b.card)), "la scheda del cliente"],
+	]);
+	if (fields !== undefined) return fields;
+	const address = addressProblem(b.address, "del cliente");
+	if (address !== undefined) return address;
+	const channel = PRIVATE_CODE.test(b.code) || b.code === NO_CHANNEL_CODE;
+	const fits =
+		b.kind === "business"
+			? b.vat?.startsWith("IT") === true && channel && b.address.country === "IT"
+			: b.kind === "private"
+				? b.vat === undefined && b.cf !== undefined && channel && b.address.country === "IT"
+				: b.kind === "foreign"
+					? b.code === FOREIGN_CODE && b.address.country !== "IT"
+					: b.kind === "pa" && PA_CODE.test(b.code) && (b.vat !== undefined || b.cf !== undefined);
+	return fits ? undefined : "il tipo di cliente, che non torna con la sua partita IVA, il codice fiscale, il codice destinatario o il paese";
 }
 
 /** A buyer as kept: its kind agrees with its tax ids and its code. */
 export function validBuyer(v: unknown): v is Buyer {
-	if (typeof v !== "object" || v === null) return false;
-	const b = v as Buyer;
-	if (!oneLine(b.name, FIELD_LIMITS.denominazione) || !validAddressParts(b.address) || typeof b.code !== "string") return false;
-	if (b.vat !== undefined && (typeof b.vat !== "string" || !/^[A-Z]{2}[0-9A-Z+*.]{2,28}$/.test(b.vat))) return false;
-	if (b.cf !== undefined && (typeof b.cf !== "string" || !/^[A-Z0-9]{11,16}$/.test(b.cf))) return false;
-	if (b.pec !== undefined && (typeof b.pec !== "string" || b.pec.length > FIELD_LIMITS.pec || !validAddress(b.pec))) return false;
-	if (b.card !== undefined && (typeof b.card !== "string" || !/^CL-\d{4,6}$/.test(b.card))) return false;
-	switch (b.kind) {
-		case "business":
-			return b.vat?.startsWith("IT") === true && (PRIVATE_CODE.test(b.code) || b.code === NO_CHANNEL_CODE) && b.address.country === "IT";
-		case "private":
-			return b.vat === undefined && b.cf !== undefined && (PRIVATE_CODE.test(b.code) || b.code === NO_CHANNEL_CODE) && b.address.country === "IT";
-		case "foreign":
-			return b.code === FOREIGN_CODE && b.address.country !== "IT";
-		case "pa":
-			return PA_CODE.test(b.code) && (b.vat !== undefined || b.cf !== undefined);
-		default:
-			return false;
-	}
+	return buyerProblem(v) === undefined;
 }
 
-function validLine(v: unknown): v is SalesLine {
-	if (typeof v !== "object" || v === null) return false;
+function lineProblem(v: unknown, n: number): string | undefined {
+	const where = `la riga ${n}`;
+	if (!record(v)) return where;
 	const l = v as SalesLine;
-	if (!isText(l.description, FIELD_LIMITS.descrizione) || !optText(l.unit, FIELD_LIMITS.unitaMisura) || !optText(l.reference, FIELD_LIMITS.riferimentoNormativo)) return false;
-	if (typeof l.quantity !== "string" || !QUANTITY.test(l.quantity) || Number(l.quantity) <= 0 || Number(l.quantity) > SALES_LIMITS.maxQuantity) return false;
-	if (typeof l.price !== "string" || !PRICE.test(l.price) || scaled(l.price, 8) <= 0n || Number(l.price) > SALES_LIMITS.maxPrice) return false;
-	if (l.discount !== undefined && (!percent(l.discount, 100) || Number(l.discount) >= 100)) return false;
-	if (!SALES_VAT_RATES.includes(l.vat)) return false;
-	return l.vat === 0 ? NATURE.includes(l.natura as Natura) : l.natura === undefined && l.reference === undefined;
+	return first([
+		[!isText(l.description, FIELD_LIMITS.descrizione), `la descrizione della riga ${n} (al massimo ${FIELD_LIMITS.descrizione} caratteri)`],
+		[!optText(l.unit, FIELD_LIMITS.unitaMisura), `l'unità di misura della riga ${n}`],
+		[!optText(l.reference, FIELD_LIMITS.riferimentoNormativo), `il riferimento normativo della riga ${n}`],
+		[typeof l.quantity !== "string" || !QUANTITY.test(l.quantity) || Number(l.quantity) <= 0 || Number(l.quantity) > SALES_LIMITS.maxQuantity, `la quantità della riga ${n}`],
+		[typeof l.price !== "string" || !PRICE.test(l.price) || scaled(l.price, 8) <= 0n || Number(l.price) > SALES_LIMITS.maxPrice, `il prezzo della riga ${n}`],
+		[l.discount !== undefined && (!percent(l.discount, 100) || Number(l.discount) >= 100), `lo sconto della riga ${n}`],
+		[!SALES_VAT_RATES.includes(l.vat), `l'IVA della riga ${n}`],
+		[l.vat === 0 ? !NATURE.includes(l.natura as Natura) : l.natura !== undefined || l.reference !== undefined, `la natura della riga ${n}`],
+		// A spesa anticipata (N1) is never a fee, and only it is not.
+		[l.notFee !== undefined && l.notFee !== true, `la riga ${n}`],
+		[(l.notFee === true) !== (l.natura === NOT_FEE_NATURA), `la riga ${n}: le spese anticipate sono senza IVA (N1), e solo loro`],
+	]);
 }
 
-function validPayment(v: unknown): v is Payment {
-	if (typeof v !== "object" || v === null) return false;
+function paymentProblem(v: unknown): string | undefined {
+	if (!record(v)) return "il pagamento";
 	const p = v as Payment;
-	if (!Number.isInteger(p.days) || p.days < 0 || p.days > MAX_PAYMENT_DAYS || typeof p.endOfMonth !== "boolean") return false;
-	if (!Object.values(PAYMENT_METHODS).includes(p.method)) return false;
-	return p.iban === undefined || (typeof p.iban === "string" && validIban(p.iban) === p.iban);
+	return first([
+		[!Number.isInteger(p.days) || p.days < 0 || p.days > MAX_PAYMENT_DAYS || typeof p.endOfMonth !== "boolean", "i giorni di pagamento"],
+		[!Object.values(PAYMENT_METHODS).includes(p.method), "il modo di pagamento"],
+		[p.iban !== undefined && (typeof p.iban !== "string" || validIban(p.iban) !== p.iban), "l'IBAN"],
+	]);
 }
 
-function validCassa(v: unknown): v is Cassa {
-	if (typeof v !== "object" || v === null) return false;
-	const c = v as Cassa;
-	return (c.type === INPS_CASSA || CASSA_TYPES.includes(c.type)) && percent(c.rate, MAX_CASSA_RATE) && typeof c.subject === "boolean";
-}
-
-function validRitenuta(v: unknown): v is Ritenuta {
-	if (typeof v !== "object" || v === null) return false;
-	const r = v as Ritenuta;
-	return (r.type === RITENUTA_PERSON || r.type === RITENUTA_COMPANY) && RITENUTA_CAUSALI.some((c) => c === r.causale);
-}
-
+const validCassa = (c: Cassa) => record(c) && (c.type === INPS_CASSA || CASSA_TYPES.includes(c.type)) && percent(c.rate, MAX_CASSA_RATE) && typeof c.subject === "boolean";
+const validRitenuta = (r: Ritenuta) => record(r) && (r.type === RITENUTA_PERSON || r.type === RITENUTA_COMPANY) && RITENUTA_CAUSALI.some((c) => c === r.causale);
 const code = (v: unknown, max: number) => typeof v === "string" && /^[A-Za-z0-9/._-]+$/.test(v) && v.length <= max;
+const validHours = (h: HoursRef) => record(h) && typeof h.id === "string" && /^O-\d{4}-\d{4,6}$/.test(h.id) && Number.isInteger(h.minutes) && h.minutes > 0 && typeof h.rate === "string" && PRICE.test(h.rate) && Number.isInteger(h.rounding);
+
+/** The field of a draft or an invoice that does not have its shape, in words; undefined when it all does. */
+export function invoiceProblem(v: unknown): string | undefined {
+	if (!isMarker(v)) return "chi l'ha fatta e quando";
+	const i = v as SalesInvoice;
+	const head = first([
+		[typeof i.id !== "string" || !DRAFT_ID.test(i.id), "il numero della bozza"],
+		[i.type !== INVOICE_TYPE && i.type !== CREDIT_NOTE_TYPE, "il tipo di documento"],
+		[i.regime !== REGIME_ORDINARIO && i.regime !== REGIME_FORFETTARIO, "il regime fiscale"],
+		[!isText(i.callId, 200), "la richiesta che l'ha fatta"],
+		[!Array.isArray(i.lines) || i.lines.length === 0 || i.lines.length > SALES_LIMITS.lines, `le righe (da 1 a ${SALES_LIMITS.lines})`],
+	]);
+	if (head !== undefined) return head;
+	const buyer = buyerProblem(i.buyer);
+	if (buyer !== undefined) return buyer;
+	for (const [n, l] of i.lines.entries()) {
+		const problem = lineProblem(l, n + 1);
+		if (problem !== undefined) return problem;
+	}
+	const body = first([
+		[i.ritenuta !== undefined && !validRitenuta(i.ritenuta), "la ritenuta d'acconto"],
+		[i.cassa !== undefined && !validCassa(i.cassa), "la cassa previdenziale"],
+		[i.bolloToClient !== undefined && typeof i.bolloToClient !== "boolean", "chi paga il bollo"],
+		[i.splitPayment !== undefined && i.splitPayment !== true, "la scissione dei pagamenti"],
+		[i.payment !== undefined && i.type !== INVOICE_TYPE, "il pagamento, che una nota di credito non ha"],
+		[i.order !== undefined && (!record(i.order) || !code(i.order.id, FIELD_LIMITS.idDocumento) || (i.order.cig !== undefined && !code(i.order.cig, FIELD_LIMITS.cig)) || (i.order.cup !== undefined && !code(i.order.cup, FIELD_LIMITS.cup))), "l'ordine (numero, CIG, CUP)"],
+		[(i.related === undefined) !== (i.type === INVOICE_TYPE), "la fattura che la nota di credito storna"],
+		[i.related !== undefined && (!record(i.related) || !isText(i.related.number, FIELD_LIMITS.numero) || !isDay(i.related.date) || typeof i.related.id !== "string" || !DRAFT_ID.test(i.related.id)), "la fattura che la nota di credito storna"],
+		[!optText(i.causale, SALES_LIMITS.causale), `le note (al massimo ${SALES_LIMITS.causale} caratteri)`],
+		[!optText(i.quote, 30), "il preventivo"],
+		[i.hours !== undefined && (!Array.isArray(i.hours) || i.hours.length > SALES_LIMITS.hours || !i.hours.every(validHours)), "le ore fatturate"],
+	]);
+	if (body !== undefined) return body;
+	if (i.payment !== undefined) {
+		const payment = paymentProblem(i.payment);
+		if (payment !== undefined) return payment;
+	}
+	if (i.number === undefined) return [i.year, i.seq, i.date, i.due, i.seller, i.progressive, i.file, i.pdf, i.issued, i.issueCall, i.finished].every((x) => x === undefined) ? undefined : "il numero della fattura";
+	const issued = first([
+		[!isText(i.number, FIELD_LIMITS.numero) || !Number.isInteger(i.year) || !Number.isInteger(i.seq) || (i.seq as number) < 1, "il numero della fattura"],
+		[!isDay(i.date) || Number(i.date?.slice(0, 4)) !== i.year, "la data della fattura"],
+		[i.due !== undefined && !isDay(i.due), "la scadenza"],
+		[typeof i.progressive !== "string" || !/^[0-9A-Z]{5}$/.test(i.progressive), "il progressivo del file"],
+		[!isMarker(i.issued) || !optText(i.issueCall, 200), "chi l'ha emessa e quando"],
+		[i.finished !== undefined && i.finished !== true, "la fine dell'emissione"],
+		[[i.file, i.pdf].some((path) => path !== undefined && (typeof path !== "string" || !/^fatture\/emesse\/IT\d{11}_[0-9A-Z]{5}\.(?:xml|pdf)$/.test(path))), "il nome del file"],
+	]);
+	return issued ?? sellerProblem(i.seller);
+}
 
 /** A draft or an invoice as stored, checked field by field. */
 export function validInvoice(v: unknown): v is SalesInvoice {
-	if (!isMarker(v)) return false;
-	const i = v as SalesInvoice;
-	if (typeof i.id !== "string" || !DRAFT_ID.test(i.id) || (i.type !== INVOICE_TYPE && i.type !== CREDIT_NOTE_TYPE)) return false;
-	if ((i.regime !== REGIME_ORDINARIO && i.regime !== REGIME_FORFETTARIO) || !validBuyer(i.buyer) || !isText(i.callId, 200)) return false;
-	if (!Array.isArray(i.lines) || i.lines.length === 0 || i.lines.length > SALES_LIMITS.lines || !i.lines.every(validLine)) return false;
-	if (i.ritenuta !== undefined && !validRitenuta(i.ritenuta)) return false;
-	if (i.cassa !== undefined && !validCassa(i.cassa)) return false;
-	if (i.bolloToClient !== undefined && typeof i.bolloToClient !== "boolean") return false;
-	if (i.splitPayment !== undefined && i.splitPayment !== true) return false;
-	if (i.payment !== undefined && (!validPayment(i.payment) || i.type !== INVOICE_TYPE)) return false;
-	if (i.order !== undefined && (!code(i.order.id, FIELD_LIMITS.idDocumento) || (i.order.cig !== undefined && !code(i.order.cig, FIELD_LIMITS.cig)) || (i.order.cup !== undefined && !code(i.order.cup, FIELD_LIMITS.cup)))) return false;
-	if ((i.related === undefined) !== (i.type === INVOICE_TYPE)) return false;
-	if (i.related !== undefined && (!isText(i.related.number, FIELD_LIMITS.numero) || !isDay(i.related.date) || typeof i.related.id !== "string" || !DRAFT_ID.test(i.related.id))) return false;
-	if (!optText(i.causale, SALES_LIMITS.causale) || !optText(i.quote, 30)) return false;
-	if (i.hours !== undefined && (!Array.isArray(i.hours) || i.hours.length > SALES_LIMITS.hours || !i.hours.every((h) => typeof h === "object" && h !== null && typeof h.id === "string" && /^O-\d{4}-\d{4,6}$/.test(h.id) && Number.isInteger(h.minutes) && h.minutes > 0 && typeof h.rate === "string" && PRICE.test(h.rate) && Number.isInteger(h.rounding)))) return false;
-	if (i.number === undefined) return [i.year, i.seq, i.date, i.due, i.seller, i.progressive, i.file, i.pdf, i.issued, i.issueCall].every((x) => x === undefined);
-	if (!isText(i.number, FIELD_LIMITS.numero) || !Number.isInteger(i.year) || !Number.isInteger(i.seq) || (i.seq as number) < 1 || !isDay(i.date) || Number(i.date?.slice(0, 4)) !== i.year) return false;
-	if (i.due !== undefined && !isDay(i.due)) return false;
-	if (!validSeller(i.seller) || typeof i.progressive !== "string" || !/^[0-9A-Z]{5}$/.test(i.progressive) || !isMarker(i.issued) || !optText(i.issueCall, 200)) return false;
-	for (const path of [i.file, i.pdf]) if (path !== undefined && (typeof path !== "string" || !/^fatture\/emesse\/IT\d{11}_[0-9A-Z]{5}\.(?:xml|pdf)$/.test(path))) return false;
-	return true;
+	return invoiceProblem(v) === undefined;
 }
 
 export const validCall = (v: unknown): boolean => isText(v, 200);

@@ -3,11 +3,12 @@
  * timesheet. The same name without case, accents and punctuation, legal form included, is the
  * same client («rossi srl» is «Rossi S.r.l.»), said with the spelling already used. Anything less
  * is only close: the same name with another legal form or none («Rossi» and «Rossi Srl»), or one
- * name inside the other («Rossi» and «Mario Rossi»). A close name is never taken for the client:
+ * name inside the other («Rossi» and «Mario Rossi»), or a slip of a letter («Laura Ner» and
+ * «Laura Neri»). A close name is never taken for the client:
  * recording, it is suggested; billing, it is refused with the candidates; reading, the one
  * candidate is used and said.
  */
-import { businessKey, keyWithin, spellingKey } from "./name-keys.ts";
+import { businessKey, keyWithin, nearKey, spellingKey } from "./name-keys.ts";
 
 export type ClientResolution =
 	/** The same client: `name` is the spelling already used; `respelled` when it differs from the one said. */
@@ -28,7 +29,7 @@ export function closeClients(said: string, known: readonly string[]): string[] {
 		const ks = spellingKey(k);
 		if (ks === spelling || out.has(ks)) continue;
 		const kb = businessKey(k);
-		if (base !== "" && (kb === base || keyWithin(base, kb))) out.set(ks, k);
+		if (base !== "" && (kb === base || keyWithin(base, kb) || nearKey(base, kb))) out.set(ks, k);
 	}
 	return [...out.values()].slice(0, MAX_CANDIDATES);
 }

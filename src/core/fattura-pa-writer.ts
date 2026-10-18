@@ -22,7 +22,7 @@ import {
 	REGIME_FORFETTARIO,
 	RITENUTA_RATE,
 } from "./sales-invoice-rules.ts";
-import { amount2, decimalAtLeast, type SalesTotals } from "./sales-invoice-sums.ts";
+import { amount2, decimalAtLeast, isFee, type SalesTotals } from "./sales-invoice-sums.ts";
 import { type Address, type Buyer, formatOf, type IssuedInvoice } from "./sales-invoices.ts";
 
 export class FatturaWriteError extends Error {
@@ -144,8 +144,8 @@ function goods(inv: IssuedInvoice, t: SalesTotals): Node {
 			l.discount !== undefined && el("ScontoMaggiorazione", leaf("Tipo", "SC", 2), leaf("Percentuale", decimalAtLeast(l.discount, 2), 6)),
 			leaf("PrezzoTotale", amount2(t.amounts[i] as bigint), 21),
 			leaf("AliquotaIVA", rate(l.vat), 6),
-			// The ritenuta is on the fees: every line the person wrote, never the bollo charged back.
-			inv.ritenuta !== undefined && i < inv.lines.length && leaf("Ritenuta", "SI", 2),
+			// The ritenuta is on the fees only: never a spesa anticipata (N1) or the bollo charged back.
+			inv.ritenuta !== undefined && isFee(l) && leaf("Ritenuta", "SI", 2),
 			leaf("Natura", l.natura, 4),
 		),
 	);

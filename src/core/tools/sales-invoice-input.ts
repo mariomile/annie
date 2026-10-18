@@ -9,6 +9,7 @@ import { validAddress } from "../email-address.ts";
 import { validIban } from "../iban.ts";
 import type { QuoteLine } from "../quotes.ts";
 import {
+	BOLLO_REFERENCE,
 	CASSA_TYPES,
 	DEFAULT_METHOD,
 	DEFAULT_PAYMENT_DAYS,
@@ -20,6 +21,7 @@ import {
 	MAX_CASSA_RATE,
 	MAX_PAYMENT_DAYS,
 	NATURE,
+	NOT_FEE_NATURA,
 	type Natura,
 	PA_CODE,
 	PAYMENT_METHODS,
@@ -31,15 +33,19 @@ import {
 	SALES_VAT_RATES,
 	type SalesVatRate,
 } from "../sales-invoice-rules.ts";
-import { buyerCf, buyerVat, type Cassa, type Order, type Payment, type Ritenuta, ritenutaType, SALES_LIMITS, type SalesLine } from "../sales-invoices.ts";
+import { buyerCf, type BuyerKind, buyerVat, type Cassa, type Order, type Payment, type Ritenuta, ritenutaType, SALES_LIMITS, type SalesLine } from "../sales-invoices.ts";
 import { latin1 } from "../plain-text.ts";
 import { fold } from "../text-match.ts";
-import { cleanText, isProblem, type Problem, readAmount, readPercent } from "./quote-input.ts";
+import { cleanText, isProblem, type Problem, readAmount as readNumber, readPercent as readShare } from "../text-input.ts";
+import { fenced } from "./sales-invoice-render.ts";
 
 export { isProblem, type Problem };
 
+const readAmount = (value: unknown, decimals: number, what: string) => readNumber(value, decimals, what, fenced);
+const readPercent = (value: unknown, where: string) => readShare(value, where, fenced);
+
 /** A line as given, before the invoice-wide rate and nature. */
-export type GivenLine = { description: string; quantity: string; unit?: string; price: string; discount?: string; vat?: SalesVatRate; natura?: Natura; reference?: string };
+export type GivenLine = { description: string; quantity: string; unit?: string; price: string; discount?: string; vat?: SalesVatRate; natura?: Natura; reference?: string; notFee?: true };
 
 /** Whether text fits a field of `max` characters as the XML writes it (latin1 may lengthen «…» or «€»). */
 export function fitsLatin(text: string, max: number): boolean {
@@ -86,6 +92,12 @@ function readLine(raw: unknown, n: number): GivenLine | Problem {
 	if (isProblem(natura)) return natura;
 	const reference = cleanText(o.reference, FIELD_LIMITS.riferimentoNormativo, `${where}, il riferimento normativo`);
 	if (isProblem(reference)) return reference;
+	if (o.advance !== undefined && typeof o.advance !== "boolean") return { problem: `${where}: spesa anticipata è sì o no` };
+	if (o.advance === true) {
+		// A spesa anticipata in nome e per conto del cliente: outside VAT (N1), not a fee.
+		if ((vat !== undefined && vat !== 0) || (natura !== undefined && natura !== NOT_FEE_NATURA)) return { problem: `${where}: una spesa anticipata per conto del cliente è senza IVA (natura N1)` };
+		return { description, quantity, price, ...(unit === undefined ? {} : { unit }), vat: 0, natura: NOT_FEE_NATURA, reference: reference ?? BOLLO_REFERENCE, notFee: true };
+	}
 	return {
 		description,
 		quantity,
@@ -126,7 +138,13 @@ export type Wide = { readonly vat?: SalesVatRate; readonly natura?: Natura; read
 export function withRates(given: readonly GivenLine[], wide: Wide, regime: RegimeCode): SalesLine[] | { readonly missing: "vat" | "natura" } | Problem {
 	const out: SalesLine[] = [];
 	for (const [i, line] of given.entries()) {
-		const { vat: ownVat, natura: ownNatura, reference: ownReference, ...rest } = line;
+		const { vat: ownVat, natura: ownNatura, reference: ownReference, notFee: _, ...rest } = line;
+		if (ownNatura === NOT_FEE_NATURA) {
+			// A spesa anticipata (N1) in either regime: never a fee.
+			if (ownVat !== undefined && ownVat !== 0) return { problem: `riga ${i + 1}: la natura N1 è per le righe senza IVA` };
+			out.push({ ...rest, vat: 0, natura: NOT_FEE_NATURA, ...(ownReference === undefined ? {} : { reference: ownReference }), notFee: true });
+			continue;
+		}
 		if (regime === REGIME_FORFETTARIO) {
 			if ((ownVat ?? wide.vat ?? 0) !== 0) return { problem: `riga ${i + 1}: in regime forfettario la fattura è senza IVA. Se chi ti scrive è passato all'ordinario, va aggiornato prima il regime nei dati dell'azienda` };
 			out.push({ ...rest, vat: 0, natura: FORFETTARIO_NATURA });
@@ -142,7 +160,7 @@ export function withRates(given: readonly GivenLine[], wide: Wide, regime: Regim
 		const natura = ownNatura ?? wide.natura;
 		if (natura === undefined) return { missing: "natura" };
 		const reference = ownReference ?? wide.reference;
-		out.push({ ...rest, vat: 0, natura, ...(reference === undefined ? {} : { reference }) });
+		out.push({ ...rest, vat: 0, natura, ...(reference === undefined ? {} : { reference }), ...(natura === NOT_FEE_NATURA ? { notFee: true as const } : {}) });
 	}
 	return out;
 }
@@ -168,7 +186,7 @@ export function readPayment(args: Record<string, unknown>, saved: readonly strin
 }
 
 /** «bonifico a 60 giorni fine mese» in a quote's terms: the days and fine mese, when written; undefined otherwise. */
-export function termsOf(text: string | undefined): { readonly days: number; readonly endOfMonth: boolean } | undefined {
+export function paymentTermsOf(text: string | undefined): { readonly days: number; readonly endOfMonth: boolean } | undefined {
 	if (text === undefined) return undefined;
 	const t = fold(text);
 	const endOfMonth = /\bfine\s+mese\b|\bf\.?\s?m\.?(?=\s|$|,)/.test(t);
@@ -180,12 +198,14 @@ export function termsOf(text: string | undefined): { readonly days: number; read
 }
 
 /**
- * The ritenuta d'acconto when asked (true, or the causale): never in the forfettario. RT01 or RT02
- * from the seller's codice fiscale.
+ * The ritenuta d'acconto when asked (true, or the causale): never in the forfettario, and only to a
+ * customer that withholds it (a company or a public office). RT01 or RT02 from the seller's codice fiscale.
  */
-export function readRitenuta(value: unknown, regime: RegimeCode, sellerCf: string | undefined): Ritenuta | undefined | Problem {
+export function readRitenuta(value: unknown, regime: RegimeCode, sellerCf: string | undefined, buyer: BuyerKind): Ritenuta | undefined | Problem {
 	if (value === undefined || value === false) return undefined;
 	if (regime === REGIME_FORFETTARIO) return { problem: "in regime forfettario i compensi non hanno la ritenuta d'acconto (L. 190/2014, art. 1, comma 67): non la metto" };
+	if (buyer === "private") return { problem: "un privato non è sostituto d'imposta, quindi non trattiene la ritenuta d'acconto: la fattura va senza" };
+	if (buyer === "foreign") return { problem: "un cliente estero non è sostituto d'imposta in Italia, quindi non trattiene la ritenuta d'acconto: la fattura va senza" };
 	const causale = value === true ? RITENUTA_CAUSALE : typeof value === "string" ? value.trim().toUpperCase() : "";
 	if (!RITENUTA_CAUSALI.some((c) => c === causale)) return { problem: `la causale della ritenuta è una di queste: ${RITENUTA_CAUSALI.join(", ")} (A per i professionisti)` };
 	return { type: ritenutaType(sellerCf), causale };

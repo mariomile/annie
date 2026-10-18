@@ -3,9 +3,8 @@
  * descriptions, notes), the quote in a few lines, its status, the list's lines. Amounts are
  * written by invoice-sums.ts' unitsText, as the scadenzario writes them.
  */
-import { toUnits } from "../fattura-pa.ts";
 import { euros } from "../format-words.ts";
-import { unitsText } from "../invoice-sums.ts";
+import { priceText } from "../invoice-sums.ts";
 import { dayOfIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
 import { type Quote, type QuoteLine, quoteTotalsOf, type ShownStatus, STATUS_WORDS, shownStatus, validUntil } from "../quotes.ts";
@@ -22,10 +21,7 @@ export function fenced(text: string): string {
 
 export { euros };
 
-/** A unit price as given, with at least two decimals: 0,0125 € or 500,00 €. */
-export function priceText(price: string): string {
-	return unitsText(toUnits(price) ?? 0n, "EUR");
-}
+export { priceText };
 
 export function totalsOf(quote: Pick<Quote, "lines" | "ritenuta" | "bollo" | "pricesIncludeVat" | "cassa" | "deposit">): QuoteTotals {
 	return quoteTotalsOf(quote);

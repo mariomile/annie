@@ -6,50 +6,21 @@
  */
 import { validAddress } from "../email-address.ts";
 import { FORFETTARIO_NOTE, QUOTE_LIMITS, type QuoteCustomer, type QuoteLine } from "../quotes.ts";
-import { AMBIGUOUS, CASSA_KINDS, type Cassa, type CassaKind, decimalText, readDecimal, VAT_RATES, type VatRate } from "../quote-sums.ts";
-import { CONTROL_CHARS } from "../plain-text.ts";
+import { CASSA_KINDS, type Cassa, type CassaKind, decimalText, VAT_RATES, type VatRate } from "../quote-sums.ts";
 import { parseTaxId } from "../tax-ids.ts";
+import { cleanText, isProblem, type Problem, readAmount as coreAmount, readPercent as corePercent } from "../text-input.ts";
 import { fenced } from "./quote-render.ts";
 
-export type Problem = { readonly problem: string };
-
-export const isProblem = (v: unknown): v is Problem => typeof v === "object" && v !== null && "problem" in v;
+export { cleanText, isProblem, type Problem } from "../text-input.ts";
 
 /** A line as given, before the quote-wide defaults; `own`: given in this call (not kept from the version before). */
 export type GivenLine = { description: string; unit?: string; quantity: string; price: string; discount?: string; vat?: VatRate; vatNote?: string; own: boolean };
 
 const TAX_LABEL = /^\s*(?:p\.?\s*iva|partita\s+iva|c\.?\s*f\.?|codice\s+fiscale)\s*[:.]?\s*/i;
 
-/** Text the person gave, with control characters and spare spaces out; newlines kept only where `lines` allows. */
-export function cleanText(value: unknown, max: number, name: string, lines = false): string | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (typeof value !== "string") return { problem: `${name} è un testo` };
-	const text = value
-		.replace(/\r\n?/g, "\n")
-		.replace(CONTROL_CHARS, " ")
-		.split("\n")
-		.map((l) => l.replace(/\s+/g, " ").trim())
-		.filter((l) => l !== "")
-		.join(lines ? "\n" : " ");
-	if (text === "") return undefined;
-	if (text.length > max) return { problem: `${name} è troppo lungo (al massimo ${max} caratteri)` };
-	return text;
-}
-
-/**
- * A decimal as given, or why not: «1.250» reads two ways and is asked, not guessed. What is not
- * digits and separators is echoed inside `fence` (the quotes' by default; the expenses pass theirs).
- */
+/** A decimal as given, or why not; what does not read is echoed inside `fence` (the quotes' by default). */
 export function readAmount(value: unknown, decimals: number, what: string, fence: (text: string) => string = fenced): string | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (typeof value !== "number" && typeof value !== "string") return { problem: `${what}: dammi un numero` };
-	const read = readDecimal(value, decimals);
-	// Echoed as written only when it is digits and separators; anything else inside the fence.
-	const text = String(value);
-	const said = /^[\d .,€%-]{1,20}$/.test(text) ? `«${text}»` : fence(text.slice(0, 20));
-	if (read === AMBIGUOUS) return { problem: `${what}: ${said} può voler dire migliaia o decimali. Chiedi a chi ti scrive, o passa il valore come numero JSON (1250 o 1.25)` };
-	if (read === undefined) return { problem: `${what}: ${said} non è un numero che so leggere (al più ${decimals} decimali, senza segno meno)` };
-	return read;
+	return coreAmount(value, decimals, what, fence);
 }
 
 /** A VAT rate as given: 22, «22», «22%»; undefined when not given. */
@@ -60,13 +31,9 @@ export function readVat(value: unknown, where: string): VatRate | undefined | Pr
 	return Number(read) as VatRate;
 }
 
-/** A percent from more than 0 to less than 100; 0 means none, given back as null. What does not read is echoed inside `fence` (the quotes' by default). */
+/** A percent from more than 0 to less than 100; 0 is null. What does not read is echoed inside `fence` (the quotes' by default). */
 export function readPercent(value: unknown, where: string, fence: (text: string) => string = fenced): string | null | undefined | Problem {
-	const read = readAmount(value, 2, where, fence);
-	if (read === undefined || isProblem(read)) return read;
-	if (Number(read) === 0) return null;
-	if (Number(read) >= 100) return { problem: `${where}: la percentuale va da 0 a meno di 100` };
-	return read;
+	return corePercent(value, where, fence);
 }
 
 function readLine(raw: unknown, n: number): GivenLine | Problem {

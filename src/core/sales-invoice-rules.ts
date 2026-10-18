@@ -149,3 +149,23 @@ export const ISSUED_FOLDER = "fatture/emesse";
 
 /** A draft older than this many days is said in the list's compact line. */
 export const STALE_DRAFT_DAYS = 7;
+
+/**
+ * A spesa anticipata in nome e per conto del cliente: outside the VAT base (art. 15 DPR 633/1972,
+ * natura N1), not a fee, so outside the ritenuta's base (art. 25 DPR 600/1973) and the cassa's.
+ * The bollo charged back is one too.
+ */
+export const NOT_FEE_NATURA: Natura = "N1";
+
+/** The seller's phone as FatturaPA's Contatti/Telefono takes it: 5 to 12 characters, digits and a leading +. */
+export const SELLER_PHONE = /^\+?\d{5,12}$/;
+
+/**
+ * Transmission to the SdI needs an accredited channel (an intermediary or the person's own
+ * software): Annie only writes the file, the person uploads it.
+ * The upload on the Agenzia's portal, as the person finds it (da verificare: the menu changes).
+ */
+export const UPLOAD_PATH = "portale Fatture e Corrispettivi → Fatturazione elettronica → Trasmissione → Carica il file";
+
+/** Days from the invoice's date to transmit it to the SdI (art. 21 c. 4 DPR 633/1972, «fattura immediata»). */
+export const TRANSMIT_DAYS = 12;

@@ -14,8 +14,8 @@ import {
 	FOLLOW_UP_ID,
 	goodVat,
 	tagOf,
-	vatKey,
 } from "../clients.ts";
+import { FORM_NOTE, findNamed } from "../client-find.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -23,10 +23,9 @@ import type { InvoiceStore } from "../invoice-store.ts";
 import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn, weekdayOf } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
-import { sameBusiness, spellingKey } from "../name-keys.ts";
+import { spellingKey } from "../name-keys.ts";
 import { type Period, PeriodError, readPeriod } from "../periods.ts";
 import type { QuoteStore } from "../quote-store.ts";
-import { resolveClient } from "../timesheet-clients.ts";
 import type { RateRule } from "../timesheet.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
@@ -77,48 +76,15 @@ const DESCRIPTION = [
  */
 type Found = { readonly kind: "exact"; readonly client: Client; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly Client[] } | { readonly kind: "none" };
 
-const FORM_NOTE = "Nessuno si chiama esattamente così: ho preso il cliente con lo stesso nome a meno della forma societaria, nel riquadro.";
-
+/** The week-57 rule, shared with the outgoing invoices (client-find.ts). */
 function find(clients: readonly Client[], said: string): Found {
-	const t = said.trim();
-	const id = t.toUpperCase();
-	if (CARD_ID.test(id)) {
-		const c = clients.find((x) => x.card?.id === id);
-		return c === undefined ? { kind: "none" } : { kind: "exact", client: c, respelled: false };
-	}
-	if (FOLLOW_UP_ID.test(id)) {
-		const c = clients.find((x) => x.card?.followUps.some((f) => f.id === id) === true);
-		return c === undefined ? { kind: "none" } : { kind: "exact", client: c, respelled: false };
-	}
-	const compact = t.replace(/[\s.\-/]/g, "").replace(/^(?:p\.?iva|partitaiva)[:]?/i, "").toUpperCase();
-	if (/^(?:[A-Z]{2})?\d{8,12}$/.test(compact) || /^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/.test(compact)) {
-		const v = vatKey(compact);
-		const c = clients.find((x) => (v !== undefined && x.vat === v) || x.cf === compact);
-		if (c !== undefined) return { kind: "exact", client: c, respelled: false };
-	}
-	const owners = new Map<string, Client>();
-	const names: string[] = [];
-	for (const c of clients) {
-		for (const n of [c.name, ...c.names]) {
-			const k = spellingKey(n);
-			if (k === "" || owners.has(k)) continue;
-			owners.set(k, c);
-			names.push(n);
-		}
-	}
-	const r = resolveClient(t.slice(0, CLIENT_LIMITS.name), names);
-	if (r.kind === "exact") {
-		const c = owners.get(spellingKey(r.name)) as Client;
-		return { kind: "exact", client: c, respelled: c.name !== t };
-	}
-	if (r.kind === "close") {
-		const candidates = [...new Set(r.candidates.map((n) => owners.get(spellingKey(n)) as Client))];
-		// The same business but for the legal form: the one client meant; a name only contained stays close.
-		const same = candidates.filter((c) => [c.name, ...c.names].some((n) => sameBusiness(t, n)));
-		if (same.length === 1) return { kind: "exact", client: same[0] as Client, respelled: true, form: true };
-		return { kind: "close", candidates };
-	}
-	return { kind: "none" };
+	const r = findNamed(
+		clients.map((c) => ({ item: c, names: [c.name, ...c.names], ...(c.vat === undefined ? {} : { vat: c.vat }), ...(c.cf === undefined ? {} : { cf: c.cf }), ids: c.card === undefined ? [] : [c.card.id, ...c.card.followUps.map((f) => f.id)] })),
+		said,
+		CLIENT_LIMITS.name,
+	);
+	if (r.kind === "exact") return { kind: "exact", client: r.item, respelled: r.respelled, ...(r.form === true ? { form: true as const } : {}) };
+	return r.kind === "close" ? { kind: "close", candidates: r.candidates } : r;
 }
 
 /** «Intendi …?»: the close ones in the fence, to be asked. */

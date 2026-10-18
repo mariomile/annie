@@ -637,7 +637,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},
 				}),
-				// The fatture in uscita read the company, the clients, the quotes and the hours through their stores; they mark only a quote invoiced and the hours billed.
+				// The fatture in uscita read the company, the clients, the quotes, the hours and (through the shared scanner) the numbers already used; they mark only a quote invoiced and the hours billed.
 				...createSalesInvoiceTools({
 					workspace: runtime.workspace(record.tenantId, record.id),
 					store: runtime.salesInvoices(record.tenantId, record.id),
@@ -646,6 +646,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					clients: runtime.clients(record.tenantId, record.id),
 					quotes: runtime.quotes(record.tenantId, record.id),
 					timesheet: runtime.timesheet(record.tenantId, record.id),
+					scanner: invoiceScanner,
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {

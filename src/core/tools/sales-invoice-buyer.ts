@@ -1,24 +1,24 @@
 /**
- * The customer of an invoice: who the person names (a client's card of week 57, a customer
- * already invoiced here, the quote's customer, the timesheet's client), and the data FatturaPA
- * needs of them, taken from what the person says now, then the card, the quote and the last
- * invoice to the same customer. A partita IVA or a codice fiscale, the address with CAP, comune
- * and provincia, and the codice destinatario or the PEC: what is missing is asked, never invented.
- * A private person without either gets «0000000»; a foreign customer «XXXXXXX».
+ * The customer of an invoice: who the person names (a client's card of week 57 or a customer
+ * already invoiced here, found with the clients' own rule in client-find.ts), and the data
+ * FatturaPA needs of them, taken from what the person says now, then the card, the quote and the
+ * last invoice to the same customer. A partita IVA or a codice fiscale, the address with CAP,
+ * comune and provincia, and the codice destinatario or the PEC: what is missing is asked, never
+ * invented. A private person without either gets «0000000»; a foreign customer «XXXXXXX».
  */
-import { CARD_ID, type ClientCard, cardKeys } from "../clients.ts";
+import { type Candidate, findNamed } from "../client-find.ts";
+import { type ClientCard, cardKeys } from "../clients.ts";
 import { spellingKey } from "../name-keys.ts";
 import { latin1 } from "../plain-text.ts";
 import type { QuoteCustomer } from "../quotes.ts";
 import { FIELD_LIMITS, FOREIGN_CODE, NO_CHANNEL_CODE, PA_CODE } from "../sales-invoice-rules.ts";
 import { type Address, type Buyer, buyerCf, buyerVat, foreignAddress, italianAddress, type SalesInvoice, vatCountry } from "../sales-invoices.ts";
-import { resolveClient } from "../timesheet-clients.ts";
 import type { BuyerFields, Problem } from "./sales-invoice-input.ts";
 
 /** A customer found: the name to write, the card, and the last invoice made for them here. */
 export type Known = { readonly name: string; readonly card?: ClientCard; readonly previous?: Buyer };
 
-export type Found = { readonly kind: "exact"; readonly known: Known } | { readonly kind: "close"; readonly candidates: readonly string[] } | { readonly kind: "none" };
+export type Found = { readonly kind: "exact"; readonly known: Known; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly string[] } | { readonly kind: "none" };
 
 /** The newest buyer first: drafts and invoices are kept in order. */
 function lastBuyer(invoices: readonly SalesInvoice[], match: (b: Buyer) => boolean): Buyer | undefined {
@@ -31,39 +31,31 @@ function previousOf(card: ClientCard, invoices: readonly SalesInvoice[]): Buyer 
 	return lastBuyer(invoices, (b) => (card.vat !== undefined && b.vat === card.vat) || (card.cf !== undefined && b.cf === card.cf) || b.card === card.id || keys.includes(spellingKey(b.name)));
 }
 
-/** Who `said` names among the cards and the customers already invoiced: by card id, tax id, or name (the timesheet's rule). */
+/** Who `said` names among the cards and the customers already invoiced here, with the clients' rule. */
 export function findBuyer(said: string, cards: readonly ClientCard[], invoices: readonly SalesInvoice[]): Found {
-	const t = said.trim();
-	if (CARD_ID.test(t.toUpperCase())) {
-		const card = cards.find((c) => c.id === t.toUpperCase());
-		return card === undefined ? { kind: "none" } : { kind: "exact", known: known(card, invoices) };
+	const candidates: Candidate<Known>[] = cards.map((card) => {
+		const previous = previousOf(card, invoices);
+		return { item: { name: card.name, card, ...(previous === undefined ? {} : { previous }) }, names: [card.name, ...card.aliases], ...(card.vat === undefined ? {} : { vat: card.vat }), ...(card.cf === undefined ? {} : { cf: card.cf }), ids: [card.id] };
+	});
+	// The customers invoiced here without a card: the newest invoice to each.
+	const seen = new Set(candidates.flatMap((c) => c.names.map(spellingKey)));
+	for (const inv of [...invoices].reverse()) {
+		const b = inv.buyer;
+		const key = spellingKey(b.name);
+		if (seen.has(key) || candidates.some((c) => (b.vat !== undefined && c.vat === b.vat) || (b.cf !== undefined && c.cf === b.cf))) continue;
+		seen.add(key);
+		candidates.push({ item: { name: b.name, previous: b }, names: [b.name], ...(b.vat === undefined ? {} : { vat: b.vat }), ...(b.cf === undefined ? {} : { cf: b.cf }) });
 	}
-	const compact = t.replace(/[\s.\-/]/g, "").replace(/^(?:p\.?iva|partitaiva|cf)[:]?/i, "").toUpperCase();
-	if (/^(?:[A-Z]{2})?\d{8,12}$/.test(compact) || /^[A-Z0-9]{16}$/.test(compact)) {
-		const vat = "vat" in buyerVat(compact) ? (buyerVat(compact) as { vat: string }).vat : undefined;
-		const card = cards.find((c) => (vat !== undefined && c.vat === vat) || c.cf === compact);
-		if (card !== undefined) return { kind: "exact", known: known(card, invoices) };
-		const previous = lastBuyer(invoices, (b) => (vat !== undefined && b.vat === vat) || b.cf === compact);
-		if (previous !== undefined) return { kind: "exact", known: { name: previous.name, previous } };
-	}
-	const names = [...cards.flatMap((c) => [c.name, ...c.aliases]), ...[...invoices].reverse().map((i) => i.buyer.name)];
-	const r = resolveClient(t, names);
-	if (r.kind === "close") return { kind: "close", candidates: r.candidates };
-	if (r.kind === "none") return { kind: "none" };
-	const key = spellingKey(r.name);
-	const card = cards.find((c) => cardKeys(c).includes(key));
-	if (card !== undefined) return { kind: "exact", known: known(card, invoices) };
-	const previous = lastBuyer(invoices, (b) => spellingKey(b.name) === key);
-	return { kind: "exact", known: { name: r.name, ...(previous === undefined ? {} : { previous }) } };
+	const r = findNamed(candidates, said, 200);
+	if (r.kind === "exact") return { kind: "exact", known: r.item, ...(r.form === true ? { form: true as const } : {}) };
+	if (r.kind === "close") return { kind: "close", candidates: r.candidates.map((k) => k.name) };
+	return r;
 }
 
-function known(card: ClientCard, invoices: readonly SalesInvoice[]): Known {
-	const previous = previousOf(card, invoices);
-	return { name: card.name, card, ...(previous === undefined ? {} : { previous }) };
-}
-
-/** The data FatturaPA needs that is missing, in words, to ask; or a problem with what was given. */
+/** The data FatturaPA needs that is missing, in words, to ask. */
 export type BuyerAsk = { readonly missing: readonly string[] };
+
+const NO_IDS = "la partita IVA del cliente con il suo codice destinatario (7 caratteri, glielo dà il suo commercialista o il suo programma di fatture) oppure la sua PEC; se è un privato basta il codice fiscale";
 
 /**
  * The buyer from what the person says now, the card, the quote's customer and the last invoice to
@@ -80,7 +72,8 @@ export function composeBuyer(name: string, sources: { readonly card?: ClientCard
 	const pa = code !== undefined && PA_CODE.test(code);
 	const country = given.country ?? (vat === undefined ? (previous?.address.country ?? "IT") : vatCountry(vat));
 	const missing: string[] = [];
-	if (vat === undefined && cf === undefined && !foreign) missing.push("la partita IVA del cliente o, per un privato, il suo codice fiscale");
+	const noIds = vat === undefined && cf === undefined && !foreign;
+	if (noIds) missing.push(NO_IDS);
 	const text = given.address ?? card?.address ?? quote?.address;
 	let address: Address | undefined = text === undefined ? undefined : foreign ? foreignAddress(text, country) : italianAddress(text);
 	if (text === undefined && previous !== undefined && (previous.address.country === "IT") === !foreign) address = previous.address;
@@ -93,7 +86,7 @@ export function composeBuyer(name: string, sources: { readonly card?: ClientCard
 	else if (code !== undefined) finalCode = code;
 	else if (pec !== undefined || kind === "private") finalCode = NO_CHANNEL_CODE;
 	else {
-		missing.push("il codice destinatario (7 caratteri) o la PEC del cliente; se il cliente non li ha, si può usare 0000000 e la fattura la trova nel suo cassetto fiscale");
+		if (!noIds) missing.push("il codice destinatario del cliente (7 caratteri, glielo dà il suo commercialista o il suo programma di fatture) o la sua PEC; se non li ha, si usa 0000000 e la fattura la trova nella sua area dell'Agenzia delle Entrate");
 		finalCode = NO_CHANNEL_CODE;
 	}
 	if (missing.length > 0 || address === undefined) return { missing };

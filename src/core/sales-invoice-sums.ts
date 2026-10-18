@@ -8,7 +8,8 @@
  * 4. the bollo, when the amounts without VAT pass the threshold: a line of its own (N1) when the
  *    customer pays it, otherwise only declared;
  * 5. the VAT of each row on its imponibile (rounded per row, never per line);
- * 6. the ritenuta on the lines (and the cassa when it is subject to it), never on VAT or bollo;
+ * 6. the ritenuta on the fees (and the cassa when it is subject to it), never on VAT, the bollo or a
+ *    spesa anticipata (N1);
  * 7. the total (imponibili + imposte) and what the customer pays: less the ritenuta, and less the
  *    VAT under split payment.
  */
@@ -45,7 +46,10 @@ export type SalesTotals = {
 };
 
 /** The bollo line, when the customer pays it. */
-export const BOLLO_LINE: SalesLine = { description: BOLLO_DESCRIPTION, quantity: "1", price: "2", vat: 0, natura: BOLLO_NATURA, reference: BOLLO_REFERENCE };
+export const BOLLO_LINE: SalesLine = { description: BOLLO_DESCRIPTION, quantity: "1", price: "2", vat: 0, natura: BOLLO_NATURA, reference: BOLLO_REFERENCE, notFee: true };
+
+/** A fee: every line but a spesa anticipata and the bollo. The cassa and the ritenuta are on the fees only. */
+export const isFee = (line: Pick<SalesLine, "notFee">): boolean => line.notFee !== true;
 
 const groupKey = (l: Pick<SalesLine, "vat" | "natura">) => `${l.vat}|${l.natura ?? ""}`;
 
@@ -61,8 +65,8 @@ function rowsOf(lines: readonly SalesLine[], amounts: readonly bigint[], cassaRa
 		const key = groupKey(line);
 		const seen = groups.get(key) ?? { vat: line.vat, ...(line.natura === undefined ? {} : { natura: line.natura }), lines: 0n, fees: 0n };
 		const cents = amounts[i] as bigint;
-		// The cassa is on the fees, never on the bollo the customer pays back.
-		const fees = line === BOLLO_LINE ? 0n : cents;
+		// The cassa is on the fees, never on a spesa anticipata or the bollo the customer pays back.
+		const fees = isFee(line) ? cents : 0n;
 		groups.set(key, { ...seen, lines: seen.lines + cents, fees: seen.fees + fees, ...(seen.reference === undefined && line.reference !== undefined ? { reference: line.reference } : {}) });
 	});
 	const rows: SummaryRow[] = [];
@@ -100,7 +104,8 @@ export function salesTotals(invoice: Pick<SalesInvoice, "type" | "regime" | "lin
 	const vat = rows.reduce((s, r) => s + r.tax, 0n);
 	const cassaTotal = cassa.reduce((s, c) => s + c.amount, 0n);
 	const total = taxable + vat;
-	const ritenutaBase = ownAmounts.reduce((s, a) => s + a, 0n) + (invoice.cassa?.subject === true ? cassaTotal : 0n);
+	const fees = own.reduce((s, line, i) => s + (isFee(line) ? (ownAmounts[i] as bigint) : 0n), 0n);
+	const ritenutaBase = fees + (invoice.cassa?.subject === true ? cassaTotal : 0n);
 	const ritenuta = invoice.ritenuta === undefined ? 0n : halfUp(ritenutaBase * BigInt(RITENUTA_RATE), 100n);
 	const toPay = total - ritenuta - (invoice.splitPayment === true ? vat : 0n);
 	return { lines, amounts, rows, cassa, cassaTotal, freeOfVat, bollo: { due, charged }, taxable, vat, total, ritenutaBase: invoice.ritenuta === undefined ? 0n : ritenutaBase, ritenuta, toPay };

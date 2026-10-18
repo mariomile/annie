@@ -9,31 +9,30 @@
  */
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { ClientStore } from "../client-store.ts";
-import { dueDates } from "../dates.ts";
 import { makeDocumentFile } from "../document-reader.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
+import type { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { todayIn } from "../italian-calendar.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
-import type { Marker } from "../marker.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { CREDIT_NOTE_TYPE, FIELD_LIMITS, RITENUTA_CAUSALI, STALE_DRAFT_DAYS } from "../sales-invoice-rules.ts";
-import { SALES_BROKEN, type SalesBook, type SalesInvoiceStore } from "../sales-invoice-store.ts";
+import { SALES_BROKEN, type SalesInvoiceStore } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { type IssuedInvoice, invoiceNumber, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, salesAgentReads } from "../sales-invoices.ts";
 import type { TaxStore } from "../tax-store.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import type { Workspace } from "../workspace.ts";
 import { WorkspaceError } from "../workspace.ts";
-import { creditNote, draft } from "./sales-invoice-draft.ts";
+import { creditNote, draft, readLastNumber } from "./sales-invoice-draft.ts";
+import { dueOf, findIssued, namedDraft, type SalesEnv, type SalesEvent } from "./sales-invoice-env.ts";
 import { issue } from "./sales-invoice-issue.ts";
 import { agentListAnswer, briefLine, fenced, invoiceLines, listAnswer } from "./sales-invoice-render.ts";
 
+export type { SalesEvent } from "./sales-invoice-env.ts";
+
 const SALES_OPS = ["draft", "credit_note", "show", "list", "issue", "remove", "settings"] as const;
 type Op = (typeof SALES_OPS)[number];
-
-/** What changed, for the audit: the op and how many, never customers, amounts, numbers or lines. */
-export type SalesEvent = { readonly type: "sales_invoices.changed"; readonly op: "draft" | "credit_note" | "issue" | "remove" | "settings"; readonly count: number };
 
 export type SalesToolsOptions = {
 	readonly workspace: Workspace;
@@ -45,6 +44,8 @@ export type SalesToolsOptions = {
 	readonly clients?: Pick<ClientStore, "read">;
 	readonly quotes?: Pick<QuoteStore, "read" | "markInvoiced">;
 	readonly timesheet?: Pick<TimesheetStore, "read" | "setBilled">;
+	/** The workspace's invoices (shared with the scadenzario): the numbers already used. */
+	readonly scanner: Pick<InvoiceScanner, "scan">;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: SalesEvent) => Promise<void>;
@@ -53,31 +54,12 @@ export type SalesToolsOptions = {
 	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
 };
 
-/** What the ops share. */
-export type SalesEnv = Omit<SalesToolsOptions, "now" | "make" | "whoIs" | "record"> & {
-	readonly now: () => Date;
-	readonly make: (input: MakeInput) => Promise<MadeDocument>;
-	readonly marker: (ctx: ToolContext) => Marker;
-	readonly audit: (ctx: ToolContext, op: SalesEvent["op"], count: number) => Promise<void>;
-	readonly book: () => SalesBook;
-};
-
-/** What FatturaPA still needs, to ask the person: never invented. */
-export function askFor(missing: readonly string[], what = "la fattura"): string {
-	return [`Per ${what} mi servono ancora questi dati. Chiedili a chi ti scrive, non inventarli, poi rifai la richiesta con le sue risposte:`, ...missing.map((m) => `• ${m}`)].join("\n");
-}
-
-/** The due date an invoice dated `day` has with its payment terms. */
-export function dueOf(inv: Pick<SalesInvoice, "payment" | "type">, day: string): string | undefined {
-	if (inv.payment === undefined || inv.type === CREDIT_NOTE_TYPE) return undefined;
-	return dueDates(day, [inv.payment.days], { endOfMonth: inv.payment.endOfMonth })[0]?.date;
-}
-
 const DESCRIPTION = [
 	"Le fatture elettroniche in uscita (FatturaPA): Annie prepares the XML file of an invoice or a credit note to a customer; she never transmits it to the SdI and never mails it by herself.",
-	"What the person says → op: «fai la fattura del preventivo 2026-004» → draft with quote; «fattura a Rossi le ore non fatturate» → draft with customer and hours true (period, if said); «fattura a Rossi: consulenza 500 euro» → draft with customer and lines; «fai una nota di credito per la fattura 12» → credit_note with invoice (lines only for a partial one); «emettila», «sì, va bene» after a draft → issue with draft and confirm true, only after the person said yes to the draft as shown; «le fatture di quest'anno» → list; «fammi vedere la fattura 12» → show; «togli la bozza» → remove; «numera le fatture come 2026/1» or the bollo always on the customer → settings.",
-	"draft: vat (22, 10, 5, 4, or 0 with natura) and natura for every line unless a line has its own; in the forfettario nothing (no VAT, N2.2 and the dicitura by themselves); ritenuta true only when the person asks (ordinario); cassa {kind rivalsa_inps or contributo_integrativo, type TC01…TC21 for a cassa, rate}; bollo_to_client when asked; payment_days, end_of_month, method, iban; the customer's vat, cf, address («Via Roma 1, 20121 Milano MI»), recipient_code, pec, country only as the person says them; order {id, cig, cup} for a public office; notes; replace: the draft it takes the place of.",
-	"When the tool asks for data, ask the person and never fill it in yourself. Repeat numbers and amounts as given, never compute them yourself.",
+	"What the person says → op: «fammi la fattura a Rossi per il preventivo 4» → draft with quote; «fattura a Rossi le ore non fatturate» → draft with customer and hours true (period, if said); «fattura a Rossi: consulenza 500 euro» → draft with customer and lines; «fai una nota di credito per la fattura 12» → credit_note with invoice (lines only for a partial one; wrong_customer true when it was made to the wrong customer); «emettila», «sì, va bene» after a draft → issue with draft and confirm true, only after the person said yes to the draft as shown; «le fatture emesse quest'anno» → list (only the invoices issued with Annie); «quanto ho fatturato quest'anno / a Rossi?» → clients (op top, or show for one customer), not this tool; «fammi vedere la fattura 12» → show; «togli la bozza» → remove; «numera le fatture come 2026/1», «l'ultima fattura che ho fatto era la 41», the bollo always on the customer → settings.",
+	"A change to a draft («cambia il prezzo della riga 2 a 900», «sì, il bollo lo paga il cliente») → draft again with the whole request and the change, and replace with the draft's id. With quote, lines or customer replace the quote's (the quote stays linked).",
+	"draft: vat (22, 10, 5, 4, or 0 with natura) and natura for every line unless a line has its own; in the forfettario nothing (no VAT, N2.2 and the dicitura by themselves); a spesa anticipata in nome e per conto del cliente → a line with advance true; ritenuta true or false only as the person answers (ordinario, a company or public office); cassa {kind rivalsa_inps or contributo_integrativo, type TC01…TC21 for a cassa, rate}; bollo_to_client as answered; payment_days, end_of_month, method, iban; the customer's vat_number, cf, address («Via Roma 1, 20121 Milano MI»), recipient_code, pec, country only as the person says them; order {id, cig, cup} for a public office; notes; last_number as answered.",
+	"When the tool asks for data, ask the person everything it lists in one message and never fill it in yourself. Repeat numbers and amounts as given, never compute them yourself.",
 ].join(" ");
 
 export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[] {
@@ -92,6 +74,7 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 		...(options.clients === undefined ? {} : { clients: options.clients }),
 		...(options.quotes === undefined ? {} : { quotes: options.quotes }),
 		...(options.timesheet === undefined ? {} : { timesheet: options.timesheet }),
+		scanner: options.scanner,
 		timeZone,
 		now,
 		make: options.make ?? ((input: MakeInput) => makeDocumentFile(input)),
@@ -121,6 +104,7 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 			vat: { type: ["number", "string"], description: "this line's rate, when it differs" },
 			natura: text(5, "this line's nature at 0%"),
 			reference: text(FIELD_LIMITS.riferimentoNormativo, "the law of a 0% line, as said"),
+			advance: { type: "boolean", description: "a spesa anticipata in nome e per conto del cliente (N1): not a fee" },
 		},
 		required: ["description", "price"],
 		additionalProperties: false,
@@ -141,7 +125,7 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 					vat: { type: ["number", "string"], description: "draft: VAT rate of the lines (22, 10, 5, 4, 0)" },
 					natura: text(5, "draft: nature of the 0% lines (N2.2, N4, N6.3…)"),
 					reference: text(FIELD_LIMITS.riferimentoNormativo, "draft: the law of the 0% lines, as said"),
-					ritenuta: { anyOf: [{ type: "boolean" }, { type: "string", enum: [...RITENUTA_CAUSALI] }], description: "draft: true (causale A) or the causale; only when asked" },
+					ritenuta: { anyOf: [{ type: "boolean" }, { type: "string", enum: [...RITENUTA_CAUSALI] }], description: "draft: true (causale A), the causale, or false; only as the person says" },
 					cassa: {
 						type: "object",
 						properties: { kind: { type: "string", enum: ["rivalsa_inps", "contributo_integrativo"] }, type: text(4, "TC01…TC21, for a cassa"), rate: { type: ["number", "string"] } },
@@ -162,13 +146,15 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 					country: text(2, "draft: a foreign customer's country (DE, FR…)"),
 					order: { type: "object", properties: { id: text(FIELD_LIMITS.idDocumento, ""), cig: text(FIELD_LIMITS.cig, ""), cup: text(FIELD_LIMITS.cup, "") }, required: ["id"], additionalProperties: false },
 					notes: text(SALES_LIMITS.causale, "draft, credit_note: the causale, as said"),
-					replace: text(10, "draft: the draft id (BZ-0001) this one takes the place of"),
+					replace: text(10, "draft, credit_note: the draft id (BZ-0001) this one takes the place of"),
 					invoice: text(20, "credit_note: the number of the invoice it corrects; show: a number"),
+					wrong_customer: { type: "boolean", description: "credit_note: the invoice went to the wrong customer" },
 					draft: text(10, "issue, show, remove: the draft id (BZ-0001)"),
 					confirm: { type: "boolean", description: "issue: true only after the person said yes to the draft as shown" },
-					year: { type: "integer", minimum: 2000, maximum: 2100, description: "list: default this year" },
+					year: { type: "integer", minimum: 2000, maximum: 2100, description: "list: default this year; settings: the year of last_number" },
 					compact: { type: "boolean", description: "list: the brief's line only" },
 					numbering: { type: "string", enum: ["plain", "year"], description: "settings: «12» or «2026/12»" },
+					last_number: { type: "integer", minimum: 0, maximum: SALES_LIMITS.perYear - 1, description: "draft, settings: the number of the last invoice the person issued this year before Annie (0: none)" },
 				},
 				required: ["op"],
 				additionalProperties: false,
@@ -210,10 +196,19 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 	];
 
 	function show(args: Record<string, unknown>, day: string): string {
-		const inv = findOne(env.book(), args);
-		if (typeof inv === "string") return inv;
-		const t = salesTotals(inv);
-		return fenced(invoiceLines(inv, t, isIssued(inv) ? inv.due : dueOf(inv, day)).join("\n"));
+		const book = env.book();
+		let inv: SalesInvoice;
+		if (typeof args.invoice === "string" && args.draft === undefined) {
+			const found = findIssued(book.invoices, args.invoice);
+			if (found.length === 0) return "Errore: non trovo una fattura emessa con quel numero.";
+			if (found.length > 1 && found[0]?.year !== found[1]?.year) return `Errore: c'è una fattura con quel numero in più anni (${found.map((f) => f.year).join(", ")}): dimmi l'anno.`;
+			inv = found[0] as IssuedInvoice;
+		} else {
+			const named = namedDraft(book.invoices, args.draft, "vedere");
+			if ("answer" in named) return named.answer;
+			inv = named.found;
+		}
+		return fenced(invoiceLines(inv, salesTotals(inv), isIssued(inv) ? inv.due : dueOf(inv, day), day).join("\n"));
 	}
 
 	function list(args: Record<string, unknown>, day: string, agent: boolean): string {
@@ -224,81 +219,68 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 		if (agent) return agentListAnswer(year, issued, drafts.length);
 		if (args.compact === true) {
 			const limit = new Date(now().getTime() - STALE_DRAFT_DAYS * 86_400_000).toISOString();
-			return briefLine(drafts.filter((d) => d.at < limit).length, STALE_DRAFT_DAYS);
+			const unfinished = book.invoices.filter((i) => isIssued(i) && i.finished !== true).length;
+			return briefLine(drafts.filter((d) => d.at < limit).length, STALE_DRAFT_DAYS, unfinished);
 		}
 		return listAnswer(year, issued, drafts.map((inv) => ({ inv, t: salesTotals(inv) })));
 	}
 
 	async function remove(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
 		const book = env.book();
-		const id = typeof args.draft === "string" ? args.draft.trim().toUpperCase() : undefined;
-		const drafts = book.invoices.filter((i) => !isIssued(i));
-		const target = id === undefined ? (drafts.length === 1 ? drafts[0] : undefined) : book.invoices.find((i) => i.id === id);
-		if (target === undefined) {
-			// A call run again after it removed: the draft is gone.
-			if (book.calls.includes(ctx.callId)) {
-				await env.audit(ctx, "remove", 1);
-				return "Fatto, la bozza è tolta. Nessun numero è stato usato.";
-			}
-			return id === undefined ? (drafts.length === 0 ? "Non c'è nessuna bozza da togliere." : "Errore: ci sono più bozze, dimmi quale togliere.") : `Errore: non c'è la bozza ${id}.`;
+		// A call run again after it removed: the draft is gone.
+		if (book.calls.includes(ctx.callId)) {
+			await env.audit(ctx, "remove", 1);
+			return "Fatto, la bozza è tolta: nessun numero è stato usato.";
 		}
+		const named = namedDraft(book.invoices, args.draft, "togliere");
+		if ("answer" in named) return named.answer;
+		const target = named.found;
 		if (isIssued(target)) return `Errore: la ${target.type === CREDIT_NOTE_TYPE ? "nota di credito" : "fattura"} n. ${target.number} è già emessa e non si può togliere: per annullarla si fa una nota di credito.`;
-		store.update(ctx.callId, (state) => ({ ...state, invoices: state.invoices.filter((i) => i.id !== target.id) }));
+		// Under the lock: a draft issued meanwhile by another call is never removed.
+		store.removeDraft(target.id, ctx.callId);
 		await env.audit(ctx, "remove", 1);
-		return [`Fatto, ho tolto la bozza ${target.id}. Nessun numero è stato usato.`, fenced(`Bozza di ${target.type === CREDIT_NOTE_TYPE ? "nota di credito" : "fattura"} a ${target.buyer.name}`)].join("\n");
+		return `Fatto, ho tolto la bozza ${target.id}: nessun numero è stato usato.`;
 	}
 
 	async function settings(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 		const book = env.book();
-		const year = Number(day.slice(0, 4));
+		const thisYear = Number(day.slice(0, 4));
 		if (args.numbering !== undefined && args.numbering !== "plain" && args.numbering !== "year") return "Errore: il numero si scrive come «12» o come «2026/12».";
 		if (args.bollo_to_client !== undefined && typeof args.bollo_to_client !== "boolean") return "Errore: il bollo è a carico del cliente o no.";
-		const shown = (numbering: string | undefined, bollo: boolean | undefined) =>
-			[`Numero delle fatture: ${invoiceNumber(year, 12, numbering === "year" ? "year" : "plain")} (per esempio).`, `Bollo virtuale: ${bollo === undefined ? "da chiedere la prima volta che serve" : bollo ? "a carico del cliente, come riga in fattura" : "a carico tuo, solo dichiarato"}.`].join("\n");
-		if (args.numbering === undefined && args.bollo_to_client === undefined) return shown(book.settings?.numbering, book.settings?.bolloToClient);
+		const year = typeof args.year === "number" && Number.isInteger(args.year) ? args.year : thisYear;
+		const last = readLastNumber(args.last_number);
+		if (typeof last === "string") return last;
+		const issuedIn = (y: number) => book.invoices.some((i) => isIssued(i) && i.year === y);
+		const shown = (s: typeof book.settings) => {
+			const year1 = invoiceNumber(thisYear, 1, "year");
+			const out = [s?.numbering === "year" ? `Le fatture sono numerate ${year1}, ${invoiceNumber(thisYear, 2, "year")}… (oppure 1, 2, 3 se preferisci).` : `Le fatture sono numerate 1, 2, 3… (oppure ${year1} se preferisci).`];
+			const before = s?.lastBefore?.[String(year)];
+			if (before !== undefined) out.push(before === 0 ? `Nel ${year} non avevi fatture prima di me: parto dalla 1.` : `Nel ${year} l'ultima fattura prima di me era la ${before}: parto dalla ${before + 1}.`);
+			out.push(`Bollo virtuale: ${s?.bolloToClient === undefined ? "lo chiedo la prima volta che serve" : s.bolloToClient ? "lo paga il cliente, come riga in fattura" : "lo paghi tu, solo dichiarato"}.`);
+			return out.join("\n");
+		};
+		if (args.numbering === undefined && args.bollo_to_client === undefined && last === undefined) return shown(book.settings);
 		const changesNumbering = args.numbering !== undefined && args.numbering !== (book.settings?.numbering ?? "plain");
-		if (changesNumbering && book.invoices.some((i) => isIssued(i) && i.year === year)) {
-			return `Errore: nel ${year} ci sono già fatture emesse con l'altro modo di scrivere il numero: lo cambio solo dall'anno prossimo, prima della prima fattura, così la numerazione resta uniforme.`;
+		if (changesNumbering && issuedIn(thisYear)) return `Nel ${thisYear} ho già emesso fatture con questa numerazione: si può scegliere da gennaio, prima della prima fattura del ${thisYear + 1}. Non ho cambiato niente.`;
+		if (last !== undefined) {
+			if (issuedIn(year)) return `Nel ${year} ho già emesso fatture, quindi la numerazione va avanti da quelle: il numero di partenza si dice una volta sola, prima della prima fattura dell'anno. Non ho cambiato niente.`;
+			const before = book.settings?.lastBefore?.[String(year)];
+			if (before !== undefined && before !== last) return `Per il ${year} mi avevi già detto che l'ultima fattura prima di me era la ${before}: si dice una volta sola. Non ho cambiato niente.`;
 		}
-		store.update(ctx.callId, (state) => ({
-			...state,
-			settings: {
-				...(state.settings ?? {}),
-				...env.marker(ctx),
-				...(args.numbering === undefined ? {} : { numbering: args.numbering as "plain" | "year" }),
-				...(args.bollo_to_client === undefined ? {} : { bolloToClient: args.bollo_to_client as boolean }),
-			},
-		}));
+		store.update(ctx.callId, (state) => {
+			if (last !== undefined && state.invoices.some((i) => isIssued(i) && i.year === year)) throw new SalesInvoiceError(`nel ${year} intanto è stata emessa una fattura: il numero di partenza non si cambia più`);
+			return {
+				...state,
+				settings: {
+					...(state.settings ?? {}),
+					...env.marker(ctx),
+					...(args.numbering === undefined ? {} : { numbering: args.numbering as "plain" | "year" }),
+					...(args.bollo_to_client === undefined ? {} : { bolloToClient: args.bollo_to_client as boolean }),
+					...(last === undefined ? {} : { lastBefore: { ...(state.settings?.lastBefore ?? {}), [String(year)]: last } }),
+				},
+			};
+		});
 		await env.audit(ctx, "settings", 1);
-		const saved = env.book().settings;
-		return `Fatto, ho salvato.\n${shown(saved?.numbering, saved?.bolloToClient)}`;
+		return `Fatto, ho salvato.\n${shown(env.book().settings)}`;
 	}
-}
-
-const SAID_NUMBER = /^(?:n\.?\s*)?(?:(\d{4})\s*[/-]\s*)?(\d{1,5})(?:\s*[/-]\s*(\d{4}))?$/i;
-
-/** The issued invoices a number names: «12», «2026/12», «12/2026», «n. 12»; this year's first when no year is said. */
-export function findIssued(invoices: readonly SalesInvoice[], said: string, type?: SalesInvoice["type"]): IssuedInvoice[] {
-	const m = SAID_NUMBER.exec(said.trim());
-	if (m === null) return [];
-	const year = m[1] ?? m[3];
-	const seq = Number(m[2]);
-	return invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.seq === seq && (year === undefined || i.year === Number(year)) && (type === undefined || i.type === type)).sort((a, b) => b.year - a.year);
-}
-
-/** The draft or invoice `args` names (draft id, or invoice number); the only draft when nothing is named. */
-function findOne(book: SalesBook, args: Record<string, unknown>): SalesInvoice | string {
-	if (typeof args.draft === "string") {
-		const id = args.draft.trim().toUpperCase();
-		return book.invoices.find((i) => i.id === id) ?? `Errore: non c'è la bozza ${id}.`;
-	}
-	if (typeof args.invoice === "string") {
-		const found = findIssued(book.invoices, args.invoice);
-		if (found.length === 0) return "Errore: non trovo una fattura emessa con quel numero.";
-		if (found.length > 1 && found[0]?.year !== found[1]?.year) return `Errore: c'è una fattura con quel numero in più anni (${found.map((f) => f.year).join(", ")}): dimmi l'anno.`;
-		return found[0] as IssuedInvoice;
-	}
-	const drafts = book.invoices.filter((i) => !isIssued(i));
-	if (drafts.length === 1) return drafts[0] as SalesInvoice;
-	return drafts.length === 0 ? "Errore: dimmi quale fattura, con il numero." : "Errore: ci sono più bozze, dimmi quale.";
 }

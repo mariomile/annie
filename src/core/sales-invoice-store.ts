@@ -11,11 +11,23 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { DRAFT_ID, type IssuedInvoice, invoiceNumber, isIssued, type Numbering, progressiveCode, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, validCall, validInvoice } from "./sales-invoices.ts";
+import { DRAFT_ID, type IssuedInvoice, invoiceNumber, invoiceProblem, isIssued, type Numbering, progressiveCode, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, validCall, validInvoice } from "./sales-invoices.ts";
 import { isMarker } from "./stored-fields.ts";
 
-/** The person's choices, said once: how the number is written, and whether the bollo is charged to the customer. */
-export type SalesSettings = Marker & { readonly numbering?: Numbering; readonly bolloToClient?: boolean };
+/**
+ * The person's choices, said once: how the number is written, whether the bollo is charged to the
+ * customer, whether a professional's invoice to a company has the ritenuta, and, per year, the last
+ * number issued before Annie (0: none), so Annie goes on from there.
+ */
+export type SalesSettings = Marker & {
+	readonly numbering?: Numbering;
+	readonly bolloToClient?: boolean;
+	readonly ritenutaToBusiness?: boolean;
+	readonly lastBefore?: Readonly<Record<string, number>>;
+};
+
+/** What the numbers already used say, from the files (the scadenzario's and the store's own): the highest of a year and the latest date. */
+export type NumberFloor = { readonly seq: number; readonly date: string };
 
 /** What a change works on. */
 export type SalesState = {
@@ -30,7 +42,7 @@ type Book = SalesState & { readonly calls: readonly string[] };
 
 export type SalesBook = Book & { readonly broken: boolean };
 
-export const SALES_BROKEN = "l'archivio delle fatture emesse (sales-invoices.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
+export const SALES_BROKEN = "l'archivio delle fatture emesse (sales-invoices.json) non si legge: non lo cambio, perché andrebbe perso. Non va cancellato: con l'istanza ferma, va rimessa al suo posto la copia sales-invoices.json.bak";
 
 const EMPTY: Book = { next: {}, nextDraft: 1, nextFile: 1, invoices: [], calls: [] };
 const YEAR = /^\d{4}$/;
@@ -73,12 +85,13 @@ export class SalesInvoiceStore {
 	}
 
 	/**
-	 * Issue the draft `id` dated `date`: under the lock it takes the next number of that year and
-	 * the next file progressive, and `make` gives the invoice issued. The invoice `callId` issued
+	 * Issue the draft `id` dated `date`: under the lock it takes the next number of that year (past
+	 * the counter, the last number said before Annie, and `floor`: the highest number in the files)
+	 * and the next file progressive, and `make` gives the invoice issued. The invoice `callId` issued
 	 * already, when there is one (a call run again). SalesInvoiceError when the draft is gone,
 	 * issued already, the year is full, or the date comes before the last invoice's of the year.
 	 */
-	issue(id: string, callId: string, date: string, make: (draft: SalesInvoice, number: string, seq: number, progressive: string) => SalesInvoice): IssuedInvoice {
+	issue(id: string, callId: string, date: string, floor: NumberFloor, make: (draft: SalesInvoice, number: string, seq: number, progressive: string) => SalesInvoice): IssuedInvoice {
 		let made: IssuedInvoice | undefined;
 		updateBook(this.book, (book) => {
 			made = book.invoices.find((i): i is IssuedInvoice => isIssued(i) && i.issueCall === callId);
@@ -87,12 +100,14 @@ export class SalesInvoiceStore {
 			if (draft === undefined) throw new SalesInvoiceError("la bozza non c'è più");
 			if (isIssued(draft)) throw new SalesInvoiceError(`è già emessa con il numero ${draft.number}`);
 			const year = Number(date.slice(0, 4));
-			const seq = Math.max(book.next[String(year)] ?? 1, 1);
+			const before = book.settings?.lastBefore?.[String(year)] ?? 0;
+			const seq = Math.max(book.next[String(year)] ?? 1, before + 1, floor.seq + 1, 1);
 			if (seq > SALES_LIMITS.perYear) throw new SalesInvoiceError(`le fatture del ${year} sono arrivate al massimo di ${SALES_LIMITS.perYear}`);
-			const last = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.year === year).reduce((d, i) => (i.date > d ? i.date : d), "");
+			const last = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.year === year).reduce((d, i) => (i.date > d ? i.date : d), floor.date);
 			if (last > date) throw new SalesInvoiceError("c'è già una fattura di quest'anno con una data successiva: la numerazione deve seguire le date");
 			const issued = make(draft, invoiceNumber(year, seq, book.settings?.numbering ?? "plain"), seq, progressiveCode(book.nextFile));
-			if (!isIssued(issued) || !validInvoice(issued)) throw new SalesInvoiceError("la fattura non è valida: non l'ho emessa");
+			const problem = invoiceProblem(issued);
+			if (!isIssued(issued) || problem !== undefined) throw new SalesInvoiceError(`la fattura non è valida, non l'ho emessa: va controllato ${problem ?? "il numero"}`);
 			made = issued;
 			return checkedBook({ ...book, next: { ...book.next, [String(year)]: seq + 1 }, nextFile: book.nextFile + 1, invoices: book.invoices.map((i) => (i === draft ? issued : i)) });
 		});
@@ -106,10 +121,31 @@ export class SalesInvoiceStore {
 			const inv = book.invoices.find((i) => i.id === id);
 			if (inv === undefined || !isIssued(inv)) throw new SalesInvoiceError("la fattura non c'è più");
 			const { file: _f, pdf: _p, ...rest } = inv;
+			if (inv.file !== undefined) throw new SalesInvoiceError("il file della fattura è già scritto");
 			made = { ...rest, progressive: progressiveCode(book.nextFile) };
 			return checkedBook({ ...book, nextFile: book.nextFile + 1, invoices: book.invoices.map((i) => (i === inv ? (made as SalesInvoice) : i)) });
 		});
 		return made as IssuedInvoice;
+	}
+
+	/** Remove the draft `id`, under the lock: refused when it is gone or issued meanwhile. False when `callId` removed it already. */
+	removeDraft(id: string, callId: string): boolean {
+		return this.update(callId, (state) => {
+			const draft = state.invoices.find((i) => i.id === id);
+			if (draft === undefined) throw new SalesInvoiceError(`la bozza ${id} non c'è più`);
+			if (isIssued(draft)) throw new SalesInvoiceError(`la bozza ${id} è stata emessa intanto, con il numero ${draft.number}: una fattura emessa non si toglie, si storna con una nota di credito`);
+			return { ...state, invoices: state.invoices.filter((i) => i !== draft) };
+		});
+	}
+
+	/** Every step of the issue of `id` is done. */
+	setFinished(id: string): void {
+		updateBook(this.book, (book) => {
+			const inv = book.invoices.find((i) => i.id === id);
+			if (inv === undefined || !isIssued(inv)) throw new SalesInvoiceError("la fattura non c'è più");
+			if (inv.finished === true) return book;
+			return checkedBook({ ...book, invoices: book.invoices.map((i) => (i === inv ? { ...inv, finished: true as const } : i)) });
+		});
 	}
 
 	/** Where the files of the invoice `id` are, now written. */
@@ -136,7 +172,8 @@ function validSettings(v: unknown): boolean {
 	if (v === undefined) return true;
 	if (!isMarker(v)) return false;
 	const s = v as SalesSettings;
-	return (s.numbering === undefined || s.numbering === "plain" || s.numbering === "year") && (s.bolloToClient === undefined || typeof s.bolloToClient === "boolean");
+	const lastBefore = s.lastBefore === undefined || (typeof s.lastBefore === "object" && s.lastBefore !== null && !Array.isArray(s.lastBefore) && Object.entries(s.lastBefore).every(([y, n]) => YEAR.test(y) && Number.isInteger(n) && n >= 0 && n < SALES_LIMITS.perYear));
+	return lastBefore && (s.numbering === undefined || s.numbering === "plain" || s.numbering === "year") && (s.bolloToClient === undefined || typeof s.bolloToClient === "boolean") && (s.ritenutaToBusiness === undefined || typeof s.ritenutaToBusiness === "boolean");
 }
 
 function validBook(raw: unknown): Book | undefined {
