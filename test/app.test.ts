@@ -384,6 +384,11 @@ describe("pnpm start (startAnnie)", () => {
 		const second = (await api(`/api/board/${waiting.id}/start`, {})).card;
 		expect(second).toMatchObject({ status: "in_corso", work: { agent: "ricerca" } });
 		expect((await api(`/api/board/${waiting.id}/start`, {})).error).toMatch(/non è più in «Da fare»/);
+		// Monday morning the owner gets the week on the board (ADR 0081), once.
+		await annie.scheduler.tick(new Date("2027-01-04T09:00:00Z"));
+		await annie.scheduler.tick(new Date("2027-01-04T09:05:00Z"));
+		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text.startsWith("La board, questa settimana.") && m.text.includes("Aperte: 0 da fare, 1 in corso, 0 da rivedere.")));
+		expect(telegram.sent.filter((m) => m.text.startsWith("La board, questa settimana.")).map((m) => m.chat_id)).toEqual(["9"]);
 
 		// A member sees only what concerns them, and hands nothing to an agente they cannot talk to.
 		const { link, person } = await api("/api/people", { name: "Anna", role: "member" });
