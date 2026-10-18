@@ -1,0 +1,619 @@
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
+import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
+import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
+import { businessAgentReads, businessCallReads, type Figures, REPORT_LIMITS } from "../src/core/business-report.ts";
+import { biggest, deltas, lastMonths, lastYearSpan, monthsOf, signedPercent, spanBefore, yearBack } from "../src/core/business-report-compare.ts";
+import { figuresIn, presenceOf, receivablesOf, sourcesOf } from "../src/core/business-report-sums.ts";
+import { expenseStandsFor } from "../src/core/cashflow-sources.ts";
+import { documentFattura } from "../src/core/documents.ts";
+import type { ToolContext } from "../src/core/engine.ts";
+import { ExpenseStore } from "../src/core/expense-store.ts";
+import type { Expense } from "../src/core/expenses.ts";
+import { InvoiceScanner } from "../src/core/invoice-scan.ts";
+import { InvoiceStore } from "../src/core/invoice-store.ts";
+import { type Invoice, type Regime, register } from "../src/core/invoices.ts";
+import { dayOfIn } from "../src/core/italian-calendar.ts";
+import { halfUp } from "../src/core/quote-sums.ts";
+import type { Quote } from "../src/core/quotes.ts";
+import type { SalesInvoice } from "../src/core/sales-invoices.ts";
+import type { SalesBook } from "../src/core/sales-invoice-store.ts";
+import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
+import type { TaxProfile } from "../src/core/taxes.ts";
+import { TaxStore } from "../src/core/tax-store.ts";
+import { yearEstimate, yearIncassi } from "../src/core/tax-sums.ts";
+import type { WorkEntry } from "../src/core/timesheet.ts";
+import { type BusinessReportEvent, createBusinessReportTools } from "../src/core/tools/business-report-tools.ts";
+import { readAsked } from "../src/core/tools/business-report-input.ts";
+import { BRIEF_NOTHING, EMPTY, spanWords, TAX_NOTE } from "../src/core/tools/business-report-render.ts";
+import { Workspace } from "../src/core/workspace.ts";
+
+// Synthetic identifiers only: checksum-valid fake partite IVA.
+const COMPANY = { name: "Studio Prova Srl", vat: "00000010017" };
+const CLIENT1 = { name: "Cliente Uno Srl", vat: "00000020016" };
+const CLIENT2 = { name: "Cliente Due Srl", vat: "00000030015" };
+const SUPPLIER = { name: "Fornitore Tre Srl", vat: "11111110018" };
+
+const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
+const TODAY = "2026-10-18";
+const dayOf = dayOfIn("Europe/Rome");
+let calls = 0;
+const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const agent = () => fresh(undefined, { channel: AGENT_CHANNEL, threadId: "a1" });
+
+const dirs: string[] = [];
+afterEach(() => {
+	// Only the directories this file made, each by its exact path.
+	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+function temp(): string {
+	const dir = mkdtempSync(join(tmpdir(), "annie-report-"));
+	dirs.push(dir);
+	return dir;
+}
+
+type Party = { name: string; vat?: string };
+type Riepilogo = { rate: string; taxable: string; tax: string };
+const xmlText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const r22 = (taxable: string): Riepilogo => ({ rate: "22.00", taxable, tax: (Number(taxable) * 0.22).toFixed(2) });
+
+/** A FatturaPA file with its DatiRiepilogo rows and its instalments (one, the whole total, by default). */
+function xml(from: Party, to: Party, o: { number: string; date: string; type?: string; rows: Riepilogo[]; due?: string; rate?: { amount: string; due: string }[] }): string {
+	const party = (p: Party) => `<DatiAnagrafici>${p.vat === undefined ? "" : `<IdFiscaleIVA><IdPaese>IT</IdPaese><IdCodice>${p.vat}</IdCodice></IdFiscaleIVA>`}<Anagrafica><Denominazione>${xmlText(p.name)}</Denominazione></Anagrafica></DatiAnagrafici>`;
+	const total = o.rows.reduce((n, r) => n + Number(r.taxable) + Number(r.tax), 0).toFixed(2);
+	const lines = o.rows.map((r, i) => `<DettaglioLinee><NumeroLinea>${i + 1}</NumeroLinea><Descrizione>Voce</Descrizione><PrezzoUnitario>${r.taxable}</PrezzoUnitario><PrezzoTotale>${r.taxable}</PrezzoTotale><AliquotaIVA>${r.rate}</AliquotaIVA></DettaglioLinee>`).join("");
+	const summary = o.rows.map((r) => `<DatiRiepilogo><AliquotaIVA>${r.rate}</AliquotaIVA><ImponibileImporto>${r.taxable}</ImponibileImporto><Imposta>${r.tax}</Imposta><EsigibilitaIVA>I</EsigibilitaIVA></DatiRiepilogo>`).join("");
+	const rates = o.rate ?? [{ amount: total, due: o.due ?? o.date }];
+	const pay = `<DatiPagamento><CondizioniPagamento>${rates.length > 1 ? "TP01" : "TP02"}</CondizioniPagamento>${rates.map((r) => `<DettaglioPagamento><ModalitaPagamento>MP05</ModalitaPagamento><DataScadenzaPagamento>${r.due}</DataScadenzaPagamento><ImportoPagamento>${r.amount}</ImportoPagamento></DettaglioPagamento>`).join("")}</DatiPagamento>`;
+	const generali = `<TipoDocumento>${o.type ?? "TD01"}</TipoDocumento><Divisa>EUR</Divisa><Data>${o.date}</Data><Numero>${xmlText(o.number)}</Numero><ImportoTotaleDocumento>${total}</ImportoTotaleDocumento>`;
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<p:FatturaElettronica versione="FPR12" xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"><FatturaElettronicaHeader><DatiTrasmissione><FormatoTrasmissione>FPR12</FormatoTrasmissione><CodiceDestinatario>0000000</CodiceDestinatario></DatiTrasmissione><CedentePrestatore>${party(from)}</CedentePrestatore><CessionarioCommittente>${party(to)}</CessionarioCommittente></FatturaElettronicaHeader><FatturaElettronicaBody><DatiGenerali><DatiGeneraliDocumento>${generali}</DatiGeneraliDocumento></DatiGenerali><DatiBeniServizi>${lines}${summary}</DatiBeniServizi>${pay}</FatturaElettronicaBody></p:FatturaElettronica>`;
+}
+
+/** An issued fattura in uscita as the sales store keeps it, to Cliente Uno. */
+function sale(number: string, date: string, price: string): SalesInvoice {
+	const marker = { by: "test:u", at: NOW.toISOString() };
+	return {
+		id: `BZ-${number}`,
+		type: "TD01",
+		regime: "RF01",
+		buyer: { name: CLIENT1.name, kind: "business", vat: `IT${CLIENT1.vat}`, address: { street: "Via Prova 1", zip: "00100", city: "Roma", province: "RM", country: "IT" }, code: "0000000" },
+		lines: [{ description: "Consulenza", quantity: "1", price, vat: 22 }],
+		callId: `call-${number}`,
+		number,
+		year: Number(date.slice(0, 4)),
+		seq: 1,
+		date,
+		seller: { name: COMPANY.name, vat: `IT${COMPANY.vat}`, cf: COMPANY.vat, regime: "RF01", address: { street: "Via Prova 2", zip: "00100", city: "Roma", province: "RM", country: "IT" } },
+		progressive: "00001",
+		issued: marker,
+		...marker,
+	} as unknown as SalesInvoice;
+}
+const salesBook = (invoices: SalesInvoice[], broken = false): SalesBook => ({ next: {}, nextDraft: 1, nextFile: 1, invoices, calls: [], broken }) as unknown as SalesBook;
+
+/**
+ * October 2026 to the 18th: issued FV-2 (500, in two instalments, the first paid on the 16th),
+ * FV-3 (2.000, overdue since Monday 12th) and the credit note NC-1 (100, open); FV-1 (Sept, 1.000)
+ * paid at 00:30 of 1 October in Rome (22:30 UTC of 30 September). Received A-1 (paid, with its
+ * expense) and A-2 (paid, no expense). September: FV-0 paid, the renewal's payment recorded and its
+ * supplier invoice B-9 paid the next day (counted once). October 2025: FV-L, paid.
+ */
+const FILES: Record<string, string> = {
+	"f/fv0.xml": xml(COMPANY, CLIENT2, { number: "FV-0", date: "2026-08-20", rows: [r22("800.00")], due: "2026-09-19" }),
+	"f/fv1.xml": xml(COMPANY, CLIENT1, { number: "FV-1", date: "2026-09-10", rows: [r22("1000.00")], due: "2026-10-10" }),
+	"f/fv2.xml": xml(COMPANY, CLIENT2, { number: "FV-2", date: "2026-10-05", rows: [r22("500.00")], rate: [{ amount: "305.00", due: "2026-10-15" }, { amount: "305.00", due: "2026-11-15" }] }),
+	"f/fv3.xml": xml(COMPANY, CLIENT1, { number: "FV-3", date: "2026-10-07", rows: [r22("2000.00")], due: "2026-10-12" }),
+	"f/nc1.xml": xml(COMPANY, CLIENT1, { number: "NC-1", date: "2026-10-09", type: "TD04", rows: [r22("100.00")] }),
+	"f/fvl.xml": xml(COMPANY, CLIENT1, { number: "FV-L", date: "2025-10-10", rows: [r22("1500.00")], due: "2025-11-10" }),
+	"f/a1.xml": xml(SUPPLIER, COMPANY, { number: "A-1", date: "2026-10-02", rows: [r22("100.00")], due: "2026-10-10" }),
+	"f/a2.xml": xml(SUPPLIER, COMPANY, { number: "A-2", date: "2026-10-03", rows: [r22("200.00")], due: "2026-10-12" }),
+	"f/b9.xml": xml(SUPPLIER, COMPANY, { number: "B-9", date: "2026-09-18", rows: [{ rate: "22.00", taxable: "245.90", tax: "54.10" }], due: "2026-09-21" }),
+};
+/** Number → when it was marked paid; «FV-2#1»: one instalment. */
+const PAID: Record<string, string> = {
+	"FV-0": "2026-09-15T10:00:00.000Z",
+	"FV-1": "2026-09-30T22:30:00.000Z",
+	"FV-2#1": "2026-10-16T09:00:00.000Z",
+	"FV-L": "2025-10-20T10:00:00.000Z",
+	"A-1": "2026-10-10T08:00:00.000Z",
+	"A-2": "2026-10-12T08:00:00.000Z",
+	"B-9": "2026-09-21T08:00:00.000Z",
+};
+
+const expense = (id: string, date: string, amount: string, more: Partial<Expense> = {}): Expense => ({ id, date, amount, category: "altro", by: "u", at: `${date}T12:00:00.000Z`, ...more });
+const EXPENSES: Expense[] = [
+	expense("S-2026-0001", "2026-10-09", "122", { supplier: SUPPLIER.name, supplierVat: SUPPLIER.vat, docType: "fattura", docNumber: "A-1", category: "consulenze" }),
+	expense("S-2026-0002", "2026-10-14", "50", { category: "carburante" }),
+	// The renewal's payment, recorded by renewals through the expenses: B-9 paid the next day is the same money.
+	expense("S-2026-0003", "2026-09-20", "300", { supplier: SUPPLIER.name, category: "software e abbonamenti" }),
+	expense("S-2025-0001", "2025-10-05", "100"),
+];
+
+const quote = (number: string, date: string, status: Quote["status"], base = number, revision = 0): Quote => ({ number, base, revision, date, validDays: 30, customer: { name: CLIENT1.name }, lines: [{ description: "Sito", quantity: "1", price: "1000", vat: 22 }], status, by: "test:u", at: NOW.toISOString() });
+const QUOTES: Quote[] = [quote("2026-001", "2026-10-02", "accepted"), quote("2026-002", "2026-10-05", "declined"), quote("2026-003", "2026-10-10", "open"), quote("2026-004", "2026-09-28", "superseded"), quote("2026-004-R1", "2026-10-03", "accepted", "2026-004", 1)];
+const entry = (id: string, date: string, minutes: number): WorkEntry => ({ id, date, client: CLIENT1.name, minutes, billable: true, by: "test:u", at: NOW.toISOString() });
+const ENTRIES: WorkEntry[] = [entry("O-2026-0001", "2026-10-06", 600), entry("O-2026-0002", "2026-10-13", 150), entry("O-2026-0003", "2026-09-10", 60)];
+
+const GS_PROFILE: TaxProfile = { coefficient: "78", rate: "15", startYear: 2020, pension: { kind: "gestione_separata" }, by: "u", at: NOW.toISOString() };
+
+type Setup = {
+	files?: Record<string, string>;
+	paid?: Record<string, string>;
+	expenses?: Expense[] | "real";
+	quotes?: Quote[];
+	entries?: WorkEntry[];
+	sales?: SalesInvoice[];
+	salesBroken?: boolean;
+	regime?: Regime;
+	profile?: TaxProfile;
+	company?: boolean;
+	now?: Date;
+	timeZone?: string;
+};
+
+async function setup(o: Setup = {}) {
+	const dir = temp();
+	const root = join(dir, "workspace");
+	mkdirSync(root, { recursive: true });
+	for (const [path, content] of Object.entries(o.files ?? FILES)) {
+		mkdirSync(join(root, path, ".."), { recursive: true });
+		writeFileSync(join(root, path), content);
+	}
+	const workspace = new Workspace(root);
+	const invoices = new InvoiceStore(dir);
+	const company = { vat: `IT${COMPANY.vat}`, name: COMPANY.name, ...(o.regime === undefined ? {} : { regime: o.regime }), by: "test:u", at: NOW.toISOString() };
+	if (o.company !== false) invoices.setCompany(company);
+	const scanner = new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) });
+	const scan = await scanner.scan(new AbortController().signal);
+	for (const i of register(scan.invoices, [], company)) {
+		const paid = o.paid ?? PAID;
+		const number = i.doc.number ?? "";
+		const all = paid[number];
+		if (all !== undefined) invoices.mark({ invoice: i.key, count: i.instalments.length, paid: true, by: "test:u", at: all });
+		for (const [key, at] of Object.entries(paid)) {
+			const [n, k] = key.split("#");
+			if (n === number && k !== undefined) invoices.mark({ invoice: i.key, count: i.instalments.length, instalment: Number(k), paid: true, by: "test:u", at });
+		}
+	}
+	const expenseStore = new ExpenseStore(dir);
+	const expenses = o.expenses === "real" ? expenseStore : { read: () => ({ expenses: (o.expenses as Expense[] | undefined) ?? EXPENSES, broken: false }) };
+	const taxes = new TaxStore(dir);
+	if (o.profile !== undefined) {
+		const profile = o.profile;
+		taxes.update("setup", () => profile, []);
+	}
+	const events: BusinessReportEvent[] = [];
+	const clock = { now: o.now ?? NOW };
+	const [tool] = createBusinessReportTools({
+		workspace,
+		invoices,
+		scanner,
+		sales: { read: () => salesBook(o.sales ?? [], o.salesBroken === true) },
+		expenses,
+		quotes: { read: () => ({ quotes: o.quotes ?? QUOTES, broken: false }) },
+		timesheet: { read: () => ({ entries: o.entries ?? ENTRIES, timers: [], rates: [], reservations: [], broken: false }) },
+		taxes,
+		timeZone: o.timeZone ?? "Europe/Rome",
+		record: async (e) => {
+			events.push(e);
+		},
+		now: () => clock.now,
+	});
+	if (tool === undefined) throw new Error("no tool");
+	const registerNow = async (): Promise<Invoice[]> => {
+		const b = invoices.read();
+		return register((await scanner.scan(new AbortController().signal)).invoices, b.paid, b.company, b.reminders);
+	};
+	return {
+		dir,
+		root,
+		tool,
+		events,
+		clock,
+		invoices,
+		registerNow,
+		at: (iso: string) => {
+			clock.now = new Date(iso);
+		},
+		run: async (args: Record<string, unknown>, ctx: ToolContext = fresh()) => String(await tool.execute(args, ctx)),
+	};
+}
+
+const FENCE = /<<<dati dell'andamento ([0-9a-f]{12}):[^\n]*>>>\n([\s\S]*?)\n<<<fine dati dell'andamento \1>>>/g;
+const fences = (text: string) => [...text.matchAll(FENCE)];
+const inside = (text: string) => fences(text).map((m) => m[2] as string).join("\n");
+const outside = (text: string) => text.replace(FENCE, "");
+const NO_EM_DASH = /\u2014/;
+
+describe("business report: the figures of a period", () => {
+	it("October so far: fatturato by invoice date with the credit note, incassato by the Rome day paid, spese once, margine", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("Ottobre 2026 fino al 18:");
+		// FV-2 500 + FV-3 2.000 less NC-1 100; FV-1 is September's.
+		expect(answer).toContain("• Fatturato: 2.400,00 € di imponibile (2 fatture, 1 nota di credito)");
+		// FV-1 paid at 00:30 of 1 October in Rome, and FV-2's first instalment.
+		expect(answer).toContain("• Incassato: 1.525,00 €");
+		// 122 (A-1's own expense) + 50 + A-2 244 paid with no expense; A-1 not twice.
+		expect(answer).toContain("• Spese: 416,00 € (2 spese registrate, 1 fattura di fornitore pagata; 1 fattura di fornitore pagata è già nelle spese)");
+		expect(answer).toContain("• Margine: 1.109,00 €");
+		expect(answer).toContain("• Ore lavorate: 12 ore e 30 minuti, 192,00 € l'ora sul fatturato");
+		// 2026-004 was first made in September: not October's.
+		expect(answer).toContain("• Preventivi: 3 fatti, 1 accettato (il 33%), 1 rifiutato");
+		// Open: FV-2's second 305 + FV-3 2.440 less NC-1 122.
+		expect(answer).toContain("Da incassare oggi: 2.623,00 €, di cui 2.318,00 € scaduti (1 rata).");
+		expect(answer).not.toMatch(NO_EM_DASH);
+		expect(fences(answer)).toHaveLength(0);
+		expect(answer).not.toContain(CLIENT1.name);
+	});
+
+	it("with no period: this month so far, then the year so far in one line", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "summary" });
+		expect(answer.split("\n")[0]).toBe("Ottobre 2026 fino al 18:");
+		// 976 (FV-0) + 1.220 + 305; spese 300 + 172 + 244.
+		expect(answer).toContain("Dal 1º gennaio al 18 ottobre 2026: incassati 2.501,00 €, spese 716,00 €, margine 1.785,00 €.");
+	});
+
+	it("in another time zone the same mark falls on 30 September", async () => {
+		const s = await setup({ timeZone: "UTC" });
+		expect(await s.run({ op: "summary", period: "ottobre" })).toContain("• Incassato: 305,00 €");
+		expect(await s.run({ op: "summary", period: "settembre" })).toContain("• Incassato: 2.196,00 €");
+		const rome = await setup();
+		expect(await rome.run({ op: "summary", period: "settembre" })).toContain("• Incassato: 976,00 €");
+	});
+
+	it("a renewal's payment and its supplier invoice paid the next day count once, as the expense", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "summary", period: "settembre" });
+		expect(answer).toContain("• Spese: 300,00 € (1 spesa registrata; 1 fattura di fornitore pagata è già nelle spese)");
+		expect(answer).toContain("• Margine: 676,00 €");
+		// The rule is the cashflow's own.
+		const invoices = await s.registerNow();
+		const b9 = invoices.find((i) => i.doc.number === "B-9") as Invoice;
+		expect(expenseStandsFor(EXPENSES, b9, 30000n, "2026-09-21")).toBe(true);
+		expect(expenseStandsFor(EXPENSES, b9, 30000n, "2026-09-30")).toBe(false);
+	});
+
+	it("an invoice in instalments counts once in the fatturato, each instalment in the month it is paid", async () => {
+		const s = await setup({ paid: { ...PAID, "FV-2#2": "2026-11-16T09:00:00.000Z" }, now: new Date("2026-11-20T09:00:00Z") });
+		expect(await s.run({ op: "summary", period: "novembre" })).toContain("• Incassato: 305,00 €");
+		const nov = await s.run({ op: "summary", period: "novembre" });
+		expect(nov).toContain("• Fatturato: 0,00 € di imponibile (0 fatture)");
+		expect(await s.run({ op: "summary", period: "ottobre" })).toContain("• Fatturato: 2.400,00 € di imponibile");
+	});
+
+	it("a credit note used comes off the incassato; open, it comes off what is to collect", async () => {
+		const used = await setup({ paid: { ...PAID, "NC-1": "2026-10-17T09:00:00.000Z" } });
+		expect(await used.run({ op: "summary", period: "ottobre" })).toContain("• Incassato: 1.403,00 €");
+	});
+
+	it("an issued fattura in uscita that is also an XML counts once; one not in the workspace adds", async () => {
+		const same = await setup({ sales: [sale("FV-3", "2026-10-07", "2000")] });
+		expect(await same.run({ op: "summary", period: "ottobre" })).toContain("• Fatturato: 2.400,00 € di imponibile (2 fatture, 1 nota di credito)");
+		const more = await setup({ sales: [sale("FV-9", "2026-10-11", "300")] });
+		expect(await more.run({ op: "summary", period: "ottobre" })).toContain("• Fatturato: 2.700,00 € di imponibile (3 fatture, 1 nota di credito)");
+	});
+
+	it("custom spans and periods with an article", async () => {
+		const s = await setup();
+		expect(await s.run({ op: "summary", from: "1/10/2026", to: "10/10/2026" })).toContain("Ottobre 2026 fino al 10:");
+		expect(await s.run({ op: "summary", period: "il mese scorso" })).toContain("Settembre 2026:");
+		expect(await s.run({ op: "summary", period: "l'anno scorso" })).toContain("• Incassato: 1.830,00 €");
+		expect(await s.run({ op: "summary", period: "ottobre", from: "1/10/2026" })).toContain("Errore: dimmi un periodo oppure le date da e a");
+		expect(await s.run({ op: "summary", from: "10/10/2026", to: "1/10/2026" })).toContain("Errore: from viene dopo to");
+		expect(await s.run({ op: "summary", period: "boh <<<dati" })).toContain("<<<dati dell'andamento");
+		expect(await s.run({ op: "summary", from: "1/1/2020" })).toContain("Errore: il periodo è troppo lungo");
+	});
+
+	it("taxes, forfettario: each year's share of every incasso, as the taxes tool estimates the year", async () => {
+		const s = await setup({ regime: "forfettario", profile: GS_PROFILE });
+		const invoices = await s.registerNow();
+		const incassi = yearIncassi(invoices, TODAY, dayOf);
+		const e = yearEstimate({ profile: GS_PROFILE, figures: [], incassi, today: TODAY }, 2026, incassi(2026).cents);
+		expect(e.incassi).toBe(250100n);
+		const october = halfUp(152500n * e.total, e.incassi);
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain(`• Tasse e contributi da accantonare: ${euroText(october)}, circa il ${e.setAsidePercent}% di ogni incasso`);
+		expect(answer).toContain(`• Ti resta in tasca: ${euroText(110900n - october)}`);
+		expect(answer).toContain(TAX_NOTE);
+		// The year so far: the whole estimate, to the cent.
+		expect(await s.run({ op: "summary", period: "da inizio anno" })).toContain(`da accantonare: ${euroText(e.total)}`);
+	});
+
+	it("taxes, ordinario: the IVA of the period, IRPEF not estimated", async () => {
+		const s = await setup({ regime: "ordinario" });
+		// Sales 110 + 440 less NC-1 22; purchases 22 + 44.
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• IVA da versare: 462,00 € (IRPEF e contributi non stimati)");
+		expect(answer).toContain("• Ti resta in tasca: 647,00 €");
+		expect(answer).toContain(TAX_NOTE);
+	});
+
+	it("taxes not estimated without a regime or a profile, and said how to set it", async () => {
+		const none = await setup();
+		const a = await none.run({ op: "summary", period: "ottobre" });
+		expect(a).toContain("• Tasse: non stimate. Non so se chi ti scrive è nel forfettario o nell'ordinario");
+		expect(a).not.toContain("Ti resta in tasca");
+		expect(a).not.toContain(TAX_NOTE);
+		const forf = await setup({ regime: "forfettario" });
+		expect(await forf.run({ op: "summary", period: "ottobre" })).toContain("Manca il profilo delle tasse del forfettario");
+	});
+});
+
+describe("business report: empty and broken registers", () => {
+	it("nothing in any register: one line, no zeros", async () => {
+		const s = await setup({ files: {}, expenses: [], quotes: [], entries: [] });
+		expect(await s.run({ op: "summary" })).toBe(EMPTY);
+		expect(await s.run({ op: "trend" })).toBe(EMPTY);
+		expect(await s.run({ op: "summary", compact: true })).toBe(BRIEF_NOTHING);
+	});
+
+	it("invoices but no expenses: the spese said missing, the margine marked", async () => {
+		const issued = Object.fromEntries(Object.entries(FILES).filter(([path]) => path.includes("/fv") || path.includes("/nc")));
+		const s = await setup({ files: issued, expenses: [], quotes: [], entries: [] });
+		const answer = await s.run({ op: "summary", period: "settembre" });
+		expect(answer).toContain("• Spese: nessuna registrata.");
+		expect(answer).toContain("• Margine: 976,00 € (senza spese registrate)");
+		expect(answer).not.toContain("Ore");
+		expect(answer).not.toContain("Preventivi");
+	});
+
+	it("expenses but no invoices: one line for the invoices", async () => {
+		const s = await setup({ files: {} });
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• Fatture: nessuna nei registri, quindi niente fatturato né incassi.");
+		expect(answer).not.toContain("Incassato");
+		expect(answer).not.toContain("Da incassare");
+	});
+
+	it("a broken expenses.json: said, no crash, nothing written over it", async () => {
+		const s = await setup({ expenses: "real" });
+		const file = join(s.dir, "expenses.json");
+		writeFileSync(file, "{ non è json");
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("Il registro delle spese non si legge: spese e margine qui non ci sono.");
+		expect(answer).toContain("• Incassato: 1.525,00 €");
+		expect(answer).not.toContain("Margine");
+		expect(readFileSync(file, "utf8")).toBe("{ non è json");
+		expect(existsSync(join(s.root, "report"))).toBe(false);
+	});
+
+	it("a broken invoices.json: said, no crash, nothing written over it", async () => {
+		const s = await setup();
+		const file = join(s.dir, "invoices.json");
+		writeFileSync(file, "[[[");
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("Lo stato delle fatture non si legge");
+		expect(answer).toContain("• Spese: 172,00 €");
+		expect(readFileSync(file, "utf8")).toBe("[[[");
+		expect(await s.run({ op: "top" })).toContain("Lo stato delle fatture non si legge");
+	});
+
+	it("a broken taxes.json and a broken fatture in uscita: said", async () => {
+		const s = await setup({ regime: "forfettario" });
+		writeFileSync(join(s.dir, "taxes.json"), "nope");
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• Tasse: non stimate. Il profilo delle tasse non si legge.");
+		expect(readFileSync(join(s.dir, "taxes.json"), "utf8")).toBe("nope");
+		const sales = await setup({ salesBroken: true });
+		const answer2 = await sales.run({ op: "summary", period: "ottobre" });
+		expect(answer2).toContain("Le fatture in uscita non si leggono: il fatturato conta solo le fatture XML.");
+		expect(answer2).toContain("• Fatturato: 2.400,00 € di imponibile");
+	});
+});
+
+describe("business report: compare", () => {
+	it("October so far against the same days of September: the biggest changes first, then each figure", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "compare", period: "ottobre" });
+		expect(answer.split("\n")[0]).toBe("Ottobre 2026 fino al 18 rispetto a settembre 2026 fino al 18:");
+		// Fatturato 2.400 vs 1.000; incassato 1.525 vs 976; spese 416 vs 0.
+		expect(answer).toContain("Cosa è cambiato di più: fatturato +1.400,00 € (+140%); incassato +549,00 € (+56,3%); spese +416,00 € (a settembre 2026 fino al 18 non c'era niente).");
+		expect(answer).toContain("• Margine: 1.109,00 €, prima 976,00 €, +133,00 € (+13,6%)");
+		expect(answer).toContain("• Ore lavorate: 12 ore e 30 minuti, prima 1 ora");
+		expect(answer).not.toMatch(NO_EM_DASH);
+	});
+
+	it("against the same period last year", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "compare", period: "ottobre", against: "last_year" });
+		expect(answer.split("\n")[0]).toBe("Ottobre 2026 fino al 18 rispetto a ottobre 2025 fino al 18:");
+		expect(answer).toContain("• Fatturato: 2.400,00 €, prima 1.500,00 €, +900,00 € (+60%)");
+		expect(await s.run({ op: "compare", against: "boh" })).toContain("Errore: against è previous");
+	});
+
+	it("nothing before: no division by zero, «non c'era niente»", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "compare", period: "settembre" });
+		expect(answer.split("\n")[0]).toBe("Settembre 2026 rispetto ad agosto 2026:");
+		expect(answer).toContain("Cosa è cambiato di più: incassato +976,00 € (ad agosto 2026 non c'era niente)");
+		expect(answer).toContain("• Incassato: 976,00 €, prima 0,00 €, +976,00 €\n");
+		const custom = await s.run({ op: "compare", from: "1/10/2026", to: "10/10/2026" });
+		expect(custom.split("\n")[0]).toBe("Ottobre 2026 fino al 10 rispetto ai giorni dal 21 al 30 settembre 2026:");
+		const year = await s.run({ op: "compare", period: "2025" });
+		expect(year.split("\n")[0]).toBe("2025 rispetto al 2024:");
+		expect(signedPercent(100n, 0n)).toBeUndefined();
+	});
+
+	it("percent on a negative before, and the biggest by euros either way", () => {
+		expect(signedPercent(5000n, -10000n)).toBe("+150%");
+		expect(signedPercent(-5000n, 10000n)).toBe("-150%");
+		const f = (incassato: bigint, spese: bigint): Figures => ({ span: { from: "2026-10-01", to: "2026-10-31" }, fatturato: { cents: incassato, count: 1, credits: 0 }, incassato, spese: { cents: spese, expenses: 1, suppliers: 0, supplierCents: 0n, twins: 0 }, margine: incassato - spese });
+		const list = deltas(f(1000n, 5000n), f(1000n, 1000n));
+		expect(biggest(list).map((d) => d.key)).toEqual(["spese", "margine"]);
+		expect(biggest(list, 1)).toHaveLength(1);
+	});
+});
+
+describe("business report: periods and months", () => {
+	it("month boundaries, leap years, the span before", () => {
+		expect(lastMonths("2026-03-31", 2)).toEqual([
+			{ from: "2026-02-01", to: "2026-02-28" },
+			{ from: "2026-03-01", to: "2026-03-31" },
+		]);
+		expect(lastMonths("2026-01-15", 2)[0]).toEqual({ from: "2025-12-01", to: "2025-12-31" });
+		expect(lastMonths("2028-03-01", 2)[0]).toEqual({ from: "2028-02-01", to: "2028-02-29" });
+		expect(monthsOf({ from: "2025-12-15", to: "2026-01-10" })).toEqual([
+			{ from: "2025-12-15", to: "2025-12-31" },
+			{ from: "2026-01-01", to: "2026-01-10" },
+		]);
+		expect(yearBack("2028-02-29")).toBe("2027-02-28");
+		expect(lastYearSpan({ from: "2028-02-01", to: "2028-02-29" })).toEqual({ from: "2027-02-01", to: "2027-02-28" });
+		expect(spanBefore({ from: "2026-10-01", to: "2026-10-10" })).toEqual({ from: "2026-09-21", to: "2026-09-30" });
+		const feb = readAsked({ period: "febbraio 2028" }, "2028-03-10");
+		expect(feb).toEqual(expect.objectContaining({ span: { from: "2028-02-01", to: "2028-02-29" }, partial: false }));
+		expect(readAsked({ period: "novembre 2026" }, TODAY)).toEqual({ problem: expect.stringContaining("non è ancora cominciato") });
+		expect(spanWords({ from: "2028-02-01", to: "2028-02-29" })).toBe("febbraio 2028");
+		expect(spanWords({ from: "2026-07-01", to: "2026-09-30" })).toBe("3º trimestre 2026");
+		expect(spanWords({ from: "2025-01-01", to: "2025-12-31" })).toBe("2025");
+		expect(spanWords({ from: "2025-12-15", to: "2026-01-10" })).toBe("dal 15 dicembre 2025 al 10 gennaio 2026");
+	});
+
+	it("a leap February against last year's", async () => {
+		const s = await setup({ files: {}, now: new Date("2028-03-10T09:00:00Z"), expenses: [expense("S-2028-0001", "2028-02-29", "10"), expense("S-2027-0001", "2027-02-28", "20")] });
+		const answer = await s.run({ op: "compare", period: "febbraio 2028", against: "last_year" });
+		expect(answer.split("\n")[0]).toBe("Febbraio 2028 rispetto a febbraio 2027:");
+		expect(answer).toContain("• Spese: 10,00 €, prima 20,00 €, −10,00 € (-50%)");
+	});
+
+	it("trend: twelve months by default, at most 24, the current month so far", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "trend" });
+		const rows = answer.split("\n").filter((l) => l.startsWith("• "));
+		expect(rows).toHaveLength(12);
+		expect(rows[0]).toBe("• novembre 2025: 0,00 €, 0,00 €, 0,00 €, 0,00 €");
+		expect(rows[10]).toBe("• settembre 2026: 1.000,00 €, 976,00 €, 300,00 €, 676,00 €");
+		expect(rows[11]).toBe("• ottobre 2026 (fino al 18): 2.400,00 €, 1.525,00 €, 416,00 €, 1.109,00 €");
+		expect(rows[9]).toBe("• agosto 2026: 800,00 €, 0,00 €, 0,00 €, 0,00 €");
+		expect(answer).toContain("Totale: 4.200,00 €, 2.501,00 €, 716,00 €, 1.785,00 €.");
+		const capped = await s.run({ op: "trend", months: 30 });
+		expect(capped).toContain("Al massimo 24 mesi");
+		expect(capped.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(REPORT_LIMITS.maxTrendMonths);
+		expect(capped).toContain("• ottobre 2025: 1.500,00 €, 1.830,00 €, 100,00 €, 1.730,00 €");
+		expect(await s.run({ op: "trend", months: 0 })).toContain("Errore: months è un numero intero");
+		expect(await s.run({ op: "trend", months: 2.5 })).toContain("Errore: months è un numero intero");
+		expect(answer).not.toMatch(NO_EM_DASH);
+	});
+});
+
+describe("business report: top", () => {
+	it("clients by incassato with the concentration, and the expense categories, in one fence", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "top" });
+		expect(answer.split("\n")[0]).toBe("Dal 1º gennaio al 18 ottobre 2026:");
+		expect(fences(answer)).toHaveLength(1);
+		const names = inside(answer);
+		// Cliente Due 976 + 305; Cliente Uno 1.220.
+		expect(names).toContain(`1. ${CLIENT2.name}: 1.281,00 €, 51%`);
+		expect(names).toContain(`2. ${CLIENT1.name}: 1.220,00 €, 49%`);
+		expect(names).toContain("Software e abbonamenti: 300,00 € (1 spesa)");
+		expect(names).toContain("Consulenze: 122,00 € (1 spesa)");
+		expect(outside(answer)).not.toContain(CLIENT1.name);
+		expect(outside(answer)).toContain("Il primo cliente vale il 51% degli incassi: dipendi molto da un solo cliente.");
+		expect(answer).not.toMatch(NO_EM_DASH);
+	});
+
+	it("pure: the first three's share with more clients, not concentrated when spread", async () => {
+		const s = await setup();
+		const src = sourcesOf({ invoices: await s.registerNow(), expenses: EXPENSES, marks: [], tax: { kind: "none", why: "no_regime" } }, TODAY, dayOf);
+		expect(presenceOf(src)).toEqual({ invoices: true, expenses: true, entries: false, quotes: false });
+		expect(receivablesOf(src)).toEqual({ open: 262300n, overdue: 231800n, overdueCount: 1 });
+		const f = figuresIn(src, { from: "2026-10-01", to: "2026-10-18" });
+		expect(f.ore).toBeUndefined();
+		expect(f.preventivi).toBeUndefined();
+		expect(f.spese).toEqual({ cents: 41600n, expenses: 2, suppliers: 1, supplierCents: 24400n, twins: 1 });
+	});
+});
+
+describe("business report: the brief, another agente, the export, the audit", () => {
+	it("the brief's line only on days 1 to 3, and it never writes", async () => {
+		const s = await setup({ now: new Date("2026-11-02T07:00:00Z") });
+		const before = readFileSync(join(s.dir, "invoices.json"), "utf8");
+		const line = await s.run({ op: "summary", compact: true });
+		expect(line).toBe("Ottobre chiuso: incassati 1.525,00 €, spese 416,00 €, margine 1.109,00 € (+64,1% su settembre). Nel brief riporta questo in una riga.");
+		s.at("2026-11-04T07:00:00Z");
+		expect(await s.run({ op: "summary", compact: true })).toBe(BRIEF_NOTHING);
+		s.at("2026-10-01T07:00:00Z");
+		// September against August, when August had nothing.
+		expect(await s.run({ op: "summary", compact: true })).toContain("(ad agosto non c'era niente)");
+		expect(readFileSync(join(s.dir, "invoices.json"), "utf8")).toBe(before);
+		expect(readdirSync(s.root)).toEqual(["f"]);
+		expect(s.events).toEqual([]);
+	});
+
+	it("in the brief's thread it reads, the export is refused; the instruction names it within the limit", async () => {
+		const s = await setup();
+		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
+		expect(String(await briefed?.execute({ op: "summary", compact: true }, fresh()))).toBe(BRIEF_NOTHING);
+		expect(String(await briefed?.execute({ op: "trend", months: 2 }, fresh()))).toContain("• ottobre 2026");
+		expect(String(await briefed?.execute({ op: "export" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(existsSync(join(s.root, "report"))).toBe(false);
+		expect(businessCallReads({ op: "summary" })).toBe(true);
+		expect(businessCallReads({ op: "export" })).toBe(false);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bbusiness_report \(summary\)[,.]/);
+		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
+		expect(DEFAULT_INSTRUCTIONS).toContain("vedere l'andamento dell'attività (business_report:");
+	});
+
+	it("another agente: summary and trend as numbers, never names, compare, top or files", async () => {
+		const s = await setup();
+		const summary = await s.run({ op: "summary", period: "ottobre" }, agent());
+		expect(summary).toContain("• Margine: 1.109,00 €");
+		expect(summary).not.toContain(CLIENT1.name);
+		expect(fences(summary)).toHaveLength(0);
+		expect(await s.run({ op: "trend", months: 3 }, agent())).toContain("• ottobre 2026 (fino al 18)");
+		for (const op of ["top", "compare", "export"]) expect(await s.run({ op }, agent())).toContain("Errore: a un altro agente do solo le cifre dell'andamento");
+		expect(businessAgentReads({ op: "top" })).toBe(false);
+		expect(existsSync(join(s.root, "report"))).toBe(false);
+	});
+
+	it("the export: a CSV under report/ named by its dates, never over another, hostile names inert, audit with op and count only", async () => {
+		const hostile = { name: "=HYPERLINK(\"http://x.example\";\"clic\") Srl" };
+		const files = { ...FILES, "f/fv0.xml": xml(COMPANY, hostile, { number: "FV-0", date: "2026-08-20", rows: [r22("800.00")], due: "2026-09-19" }) };
+		const s = await setup({ files });
+		const answer = await s.run({ op: "export", period: "settembre" });
+		expect(answer).toContain("Salvato report/andamento-2026-09-01_2026-09-30.csv (settembre 2026)");
+		expect(answer).not.toContain("HYPERLINK");
+		const csv = readFileSync(join(s.root, "report", "andamento-2026-09-01_2026-09-30.csv"), "utf8");
+		expect(csv.startsWith("﻿Periodo;Fatturato (imponibile);Incassato;Spese;Margine;Tasse stimate;Ti resta;Ore\r\n")).toBe(true);
+		expect(csv).toContain("settembre 2026;1000,00;976,00;300,00;676,00;;;1:00\r\n");
+		expect(csv).toContain(`"'=HYPERLINK(""http://x.example"";""clic"") Srl";976,00;100\r\n`);
+		expect(csv).not.toMatch(/(^|;|\n)=HYPERLINK/);
+		const again = await s.run({ op: "export", period: "settembre" });
+		expect(again).toContain("report/andamento-2026-09-01_2026-09-30-2.csv");
+		expect(readdirSync(join(s.root, "report")).sort()).toEqual(["andamento-2026-09-01_2026-09-30-2.csv", "andamento-2026-09-01_2026-09-30.csv"]);
+		expect(s.events).toHaveLength(2);
+		for (const e of s.events) expect(Object.keys(e).sort()).toEqual(["count", "op", "type"]);
+		expect(s.events[0]).toEqual({ type: "business_report.exported", op: "export", count: expect.any(Number) });
+		const json = JSON.stringify(s.events);
+		for (const leak of ["Cliente", "HYPERLINK", "976", "2026-09", SUPPLIER.vat]) expect(json).not.toContain(leak);
+		// Reading writes nothing and records nothing.
+		await s.run({ op: "summary" });
+		await s.run({ op: "compare" });
+		await s.run({ op: "top" });
+		expect(s.events).toHaveLength(2);
+	});
+
+	it("the answers carry no em dash and the source files carry none", () => {
+		for (const f of ["business-report.ts", "business-report-sums.ts", "business-report-taxes.ts", "business-report-compare.ts", "business-report-top.ts", "tools/business-report-tools.ts", "tools/business-report-render.ts", "tools/business-report-input.ts"]) {
+			expect(readFileSync(join("src", "core", f), "utf8")).not.toMatch(NO_EM_DASH);
+		}
+	});
+
+	it("an unknown op, and compact that is no boolean", async () => {
+		const s = await setup();
+		expect(await s.run({ op: "boh" })).toContain("Errore: op è una di queste: summary, compare, trend, top, export.");
+		expect(await s.run({ op: "summary", compact: "sì" })).toBe("Errore: compact è true o false.");
+	});
+});
+
+/** Cents as the answers write them. */
+function euroText(cents: bigint): string {
+	const digits = (cents < 0n ? -cents : cents).toString().padStart(3, "0");
+	return `${cents < 0n ? "−" : ""}${digits.slice(0, -2).replace(/\B(?=(\d{3})+$)/g, ".")},${digits.slice(-2)} €`;
+}

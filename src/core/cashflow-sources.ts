@@ -582,6 +582,17 @@ export function statementAt(invoice: Invoice, cents: bigint, balanceDate: string
 	const date = invoice.doc.date;
 	if (date === undefined || date > balanceDate) return -1;
 	return statement.findIndex((m) => m.date >= date && m.date <= balanceDate && eurosToCents(m.amount) === cents && (m.target === `inv:${invoice.key}` || (m.target === undefined && (m.proposed !== true || !otherOpen(invoices, invoice.key, cents, m.date)))));
+/** An expense this close to the day a supplier invoice was paid may be that payment. */
+export const PAID_TWIN_DAYS = 5;
+
+/**
+ * Whether an expense stands for `cents` of a supplier invoice paid on `day`: its partita IVA and
+ * number, or partita IVA and amount within 1%; or just the amount within 1%; within
+ * PAID_TWIN_DAYS. Then the money is counted once, as the expense («mai due volte gli stessi
+ * soldi»): the balance brought forward and the business report (business-report-sums.ts) share it.
+ */
+export function expenseStandsFor(expenses: readonly Expense[], invoice: Invoice, cents: bigint, day: string): boolean {
+	return expenses.some((e) => invoiceOf(e, [invoice], PAID_TWIN_DAYS, () => day) !== undefined || (sameCents(expenseCents(e.amount), cents) && Math.abs(daysBetween(e.date, day)) <= PAID_TWIN_DAYS));
 }
 
 /** An instalment marked paid after the balance: what it was, how much, the day. */
@@ -636,7 +647,7 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 			const row: RolledInvoice = { invoice, instalment: { n: i.n, count: invoice.instalments.length }, cents: unitsToCents(i.amount), date: paidDay(i.paid, dayOf) };
 			if (invoice.side === "active") incassi.push(row);
 			// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).
-			else if (!expenses.some((e) => invoiceOf(e, [invoice], 5, () => row.date) !== undefined || (sameCents(expenseCents(e.amount), row.cents) && Math.abs(daysBetween(e.date, row.date)) <= 5))) paidPassive.push(row);
+			else if (!expenseStandsFor(expenses, invoice, row.cents, row.date)) paidPassive.push(row);
 		}
 	}
 	let charged = 0n;
