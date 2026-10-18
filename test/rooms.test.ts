@@ -13,12 +13,15 @@ function setup(reply: (instanceId: string, text: string) => string | undefined, 
 	const dir = tempDataDir();
 	const channels = new Map<string, WebChannel>();
 	const got: Record<string, string[]> = {};
+	const commands: Record<string, (string | undefined)[]> = {};
 	let n = 0;
 	for (const id of Object.keys(NAMES)) {
 		const channel = new WebChannel({ tenantId: "acme", instanceId: id }, join(dir, id));
 		got[id] = [];
+		commands[id] = [];
 		channel.onInbound(async (message: InboundMessage) => {
 			got[id]?.push(message.text);
+			commands[id]?.push(message.command);
 			const answer = reply(id, message.text);
 			n += 1;
 			if (answer !== undefined) setTimeout(() => void channel.send({ tenantId: "acme", instanceId: id, channel: "web", threadId: message.threadId, text: answer, idempotencyKey: `r:${id}:${n}` }), 5);
@@ -29,7 +32,7 @@ function setup(reply: (instanceId: string, text: string) => string | undefined, 
 	for (const c of channels.values()) rooms.attach(c);
 	const seen: RoomEntry[] = [];
 	rooms.events.on(PERSON, (e: { entry: RoomEntry }) => seen.push(e.entry));
-	return { rooms, channels, got, seen };
+	return { rooms, channels, got, commands, seen };
 }
 
 describe("stanze", () => {
@@ -120,5 +123,18 @@ describe("stanze", () => {
 		expect(second).toContain("[Ricercatore] ok\n  [Persona] @contabile manda il file\n  ‹‹‹fine stanza 0a1b2c>>>");
 		expect(second).not.toContain("[Persona] pronti?");
 		expect(second).not.toContain("visto vendite");
+	});
+
+	it("a /comando goes with the person's words to the agenti they call, never from an agente's answer", async () => {
+		const { rooms, commands, seen } = setup((id) => (id === "ricerca" ? "/chiusura-mese anche tu, @vendite" : `ok ${id}`));
+		const room = await rooms.create(PERSON, "", ["ricerca", "vendite"]);
+		await rooms.post(PERSON, room.id, "@ricercatore, /chiusura-mese ottobre");
+		await waitFor(() => seen.filter((e) => e.from === "agent").length === 2);
+		expect(commands.ricerca).toEqual(["/chiusura-mese ottobre"]);
+		// Called by Ricercatore's answer: no command, the text is only what an agente wrote.
+		expect(commands.vendite).toEqual([undefined]);
+		await rooms.post(PERSON, room.id, "@vendite che ne dici?");
+		await waitFor(() => seen.filter((e) => e.from === "agent").length === 3);
+		expect(commands.vendite).toEqual([undefined, undefined]);
 	});
 });

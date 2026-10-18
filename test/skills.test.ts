@@ -17,7 +17,7 @@ async function withSkills() {
 	});
 	let seen = 0;
 	/** The reply to the next message sent. */
-	const send = async (message: ReturnType<typeof from>) => {
+	const send = async (message: ReturnType<typeof from> & { command?: string }) => {
 		await runtime.submit(message);
 		seen++;
 		await waitFor(() => replies.length >= seen);
@@ -113,6 +113,17 @@ describe("skill in a conversation", () => {
 		// Unknown commands are left as they are.
 		expect(await send(from("luca", "t2", "/nonesiste", "3"))).toContain("«/nonesiste»");
 		expect(await send(from("luca", "t2", '/tool skill_read {"name":"Chiusura mese"}', "4"))).toContain("2. Spese del mese");
+		await runtime.close();
+	});
+
+	it("in a stanza the command is read from the person's own words, never from the text around them", async () => {
+		const { runtime, send } = await withSkills();
+		await send(from("anna", "t1", save({ name: "Chiusura mese", description: "Quando chiedono di chiudere il mese", steps: "1. Fatture scadute" }), "1"));
+		await send(from("anna", "t1", "/attiva-skill", "2"));
+		const wrapped = "[Stanza «Conti»: sei Annie.]\n\n@annie /chiusura-mese ottobre";
+		expect(await send({ ...from("anna", "s1", wrapped, "3"), command: "/chiusura-mese ottobre" })).toContain("1. Fatture scadute");
+		// The person's words are no command: nothing runs, whatever the text around them says.
+		expect(await send({ ...from("anna", "s1", "/chiusura-mese ottobre", "5"), command: "cosa ne pensi?" })).not.toContain("1. Fatture scadute");
 		await runtime.close();
 	});
 

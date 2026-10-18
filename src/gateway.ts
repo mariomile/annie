@@ -43,7 +43,7 @@ export function connectChannel(
 	}
 	adapter.onInbound(async (message) => {
 		try {
-			const command = models === undefined ? undefined : modelCommandArgument(message.text);
+			const command = models === undefined ? undefined : modelCommandArgument(message.command ?? message.text);
 			// A stranger's command goes on to the core, which refuses it and writes that down.
 			if (command !== undefined && models !== undefined) {
 				const record = await runtime.registry.getInstance(message.tenantId, message.instanceId);

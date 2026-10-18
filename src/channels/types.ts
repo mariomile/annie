@@ -29,6 +29,8 @@ export type InboundMessage = {
 	readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[];
 	/** The person spoke (a voice note, transcribed): the reply can go back as a voice note too. */
 	readonly voice?: boolean;
+	/** The person's own words when `text` wraps them in more (a stanza): commands (/skill, /modello) are read from these alone. */
+	readonly command?: string;
 };
 
 /** A tap on a button of an earlier outbound message (Telegram: a callback query). */
