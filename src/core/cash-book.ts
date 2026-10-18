@@ -36,7 +36,7 @@ export type CashBook = {
 	readonly paidPassive: number;
 	/** Instalments of invoices to collect marked paid in the period whose amount does not read: not counted. */
 	readonly unreadable: number;
-	/** Credit notes marked used in the period: whether money went back is not known, not counted. */
+	/** Credit notes to customers marked used in the period: whether money went back is not known, not counted. */
 	readonly credits: number;
 };
 
@@ -61,16 +61,18 @@ function incassiOf(invoices: readonly Invoice[], span: Span, dayOf: (at: string)
 		for (const i of invoice.instalments) {
 			if (i.paid === undefined || i.extra === true || !inPeriod(dayOf(i.paid.at), span)) continue;
 			const date = dayOf(i.paid.at);
+			// A credit note counts only on the side to collect: one of ours, used for a customer.
 			if (invoice.credit) {
-				credits.add(invoice.key);
+				if (invoice.side === "active") credits.add(invoice.key);
 				continue;
 			}
 			if (invoice.side === "passive") passive.add(invoice.key);
 			if (invoice.side !== "active") continue;
-			if (i.amount === undefined || i.amount <= 0n) {
+			if (i.amount === undefined) {
 				unreadable++;
 				continue;
 			}
+			if (i.amount <= 0n) continue;
 			if (invoice.doc.currency !== "EUR") {
 				foreign.add(invoice.key);
 				continue;

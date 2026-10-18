@@ -13,8 +13,8 @@ import { DateError, readDate } from "../dates.ts";
 import { CATEGORIES, type Category, DOC_TYPES, type DocType, EXPENSE_LIMITS, type Expense, idOrder, matchCategory, matchMethod, type Method, METHODS, RECEIPT_FILE, SUPPLIER_VAT, validReceiptPath } from "../expenses.ts";
 import { cents, centsValue, vatInGross } from "../expense-sums.ts";
 import { normalPath } from "../invoices.ts";
-import { addDays, weekdayOf } from "../italian-calendar.ts";
-import { italianDate } from "../italian-format.ts";
+import { addDays, daysBetween, realDate, weekdayOf } from "../italian-calendar.ts";
+import { italianDate, italianWeekday } from "../italian-format.ts";
 import { VAT_RATES, type VatRate } from "../quote-sums.ts";
 import { fold } from "../text-match.ts";
 import type { Workspace } from "../workspace.ts";
@@ -47,25 +47,47 @@ export function readTotal(value: unknown): string | undefined | Problem {
 }
 
 const WEEKDAYS = ["domenica", "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato"];
-const WEEKDAY = new RegExp(`^(?:(?:il|lo) )?(${WEEKDAYS.join("|")})( scors[oa])?$`);
+const WEEKDAY = new RegExp(`^(?:(?:il|lo|la) )?(${WEEKDAYS.join("|")})(?: (scors[oa])| (\\d{1,2}))?$`);
 const BAD_DAY = "scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato";
+/** A date without a year placed further back than this: said, it may be last year by mistake. */
+const FAR_BACK_DAYS = 300;
 
 /**
- * The day of the expense: today when not said; «ieri», «l'altro ieri», a weekday («sabato»: the
- * last one up to today; «sabato scorso»: the last one before today), a date (without a year the
- * latest one gone). Never a day to come, nor before 2000.
+ * The day of the expense: today when not said; «ieri», «l'altro ieri», a weekday («sabato», «la
+ * domenica»: the last one up to today; «sabato scorso»: the last one before today; «venerdì 16»:
+ * the last 16th up to today, which must be a Friday), a date (without a year the latest one
+ * gone, with a note when that is almost a year back). Never a day to come, nor before 2000.
  */
-export function readDay(value: unknown, today: string): string | Problem {
-	if (value === undefined) return today;
+export function readDayNoted(value: unknown, today: string): { date: string; note?: string } | Problem {
+	if (value === undefined) return { date: today };
 	if (typeof value !== "string" || value.trim() === "" || value.length > 40) return { problem: `date è la data della spesa: ${BAD_DAY}` };
+	const t = fold(value).replace(/\s+/g, " ").trim();
 	let date: string;
-	const weekday = WEEKDAY.exec(fold(value).replace(/\s+/g, " ").trim());
+	let yearless = false;
+	const weekday = WEEKDAY.exec(t);
 	if (weekday !== null) {
-		const back = (weekdayOf(today) - WEEKDAYS.indexOf(weekday[1] as string) + 7) % 7;
-		date = addDays(today, -(back === 0 && weekday[2] !== undefined ? 7 : back));
+		const wanted = WEEKDAYS.indexOf(weekday[1] as string);
+		if (weekday[3] !== undefined) {
+			const day = Number(weekday[3]);
+			let candidate: string | undefined;
+			// The last such day of the month up to today, in the last twelve months.
+			for (let back = 0; back < 12 && candidate === undefined; back++) {
+				const month = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 1 - back, 1)).toISOString().slice(0, 7);
+				const c = `${month}-${String(day).padStart(2, "0")}`;
+				if (realDate(c) && c <= today) candidate = c;
+			}
+			if (candidate === undefined) return { problem: `non capisco la data: ${BAD_DAY}` };
+			if (weekdayOf(candidate) !== wanted) return { problem: `il ${italianDate(candidate)} è ${italianWeekday(candidate)}, non ${weekday[1]}: ${BAD_DAY}` };
+			date = candidate;
+		} else {
+			const back = (weekdayOf(today) - wanted + 7) % 7;
+			date = addDays(today, -(back === 0 && weekday[2] !== undefined ? 7 : back));
+		}
 	} else {
 		try {
-			date = readDate(value, today, { rule: "past" }).date;
+			const read = readDate(/^l'? ?altro ?ieri$/.test(t) ? "altro ieri" : value, today, { rule: "past" });
+			date = read.date;
+			yearless = read.yearless;
 		} catch (error) {
 			if (error instanceof DateError) return { problem: `non capisco la data: ${BAD_DAY}` };
 			throw error;
@@ -73,7 +95,14 @@ export function readDay(value: unknown, today: string): string | Problem {
 	}
 	if (date > today) return { problem: `la data ${italianDate(date)} non è ancora arrivata: una spesa si registra quando è fatta` };
 	if (date < FIRST_DAY) return { problem: "la data è prima del 2000: ricontrollala" };
-	return date;
+	if (yearless && daysBetween(date, today) > FAR_BACK_DAYS) return { date, note: `Ho messo il ${italianDate(date)}: se era un'altra data correggila con op edit.` };
+	return { date };
+}
+
+/** readDayNoted's day alone. */
+export function readDay(value: unknown, today: string): string | Problem {
+	const read = readDayNoted(value, today);
+	return isProblem(read) ? read : read.date;
 }
 
 /** The category of the words given; «altro», said back, when they fit none. */
@@ -102,8 +131,9 @@ function readDocType(value: unknown): DocType | undefined | Problem {
 /** A supplier's partita IVA or codice fiscale as on the document: letters and digits, upper case. */
 function readSupplierVat(value: unknown): string | undefined | Problem {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string") return { problem: "supplier_vat è la partita IVA del fornitore" };
-	const compact = value.replace(/^\s*(?:p\.?\s*iva|partita\s+iva|c\.?\s*f\.?)\s*[:.]?\s*/i, "").replace(/[\s.-]+/g, "").toUpperCase();
+	if (typeof value !== "string" || value.length > EXPENSE_LIMITS.supplierVat) return { problem: "supplier_vat è la partita IVA o il codice fiscale del fornitore" };
+	// A label only with its separator: «CF RMR…», «P.IVA: 0…»; «CFRMRA…» is a codice fiscale that starts with CF.
+	const compact = value.replace(/^\s*(?:p\.?\s*iva|partita\s+iva|c\.?\s*f\.?)(?:\s*[:.]\s*|\s+)/i, "").replace(/[\s.-]+/g, "").toUpperCase();
 	if (!SUPPLIER_VAT.test(compact)) return { problem: "supplier_vat non sembra una partita IVA o un codice fiscale: ricopiala dal documento, o toglila" };
 	return compact;
 }
@@ -132,6 +162,8 @@ function readRate(value: unknown): VatRate | undefined | Problem {
 export type Fields = {
 	readonly amount?: string;
 	readonly date?: string;
+	/** Said with the answer: a date without a year placed almost a year back. */
+	readonly dateNote?: string;
 	readonly vat?: string | null;
 	readonly rate?: VatRate;
 	readonly supplier?: string | null;
@@ -152,9 +184,10 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 	if (isProblem(amount)) return amount;
 	if (amount !== undefined) out.amount = amount;
 	if (args.date !== undefined || !o.editing) {
-		const date = readDay(args.date, o.today);
+		const date = readDayNoted(args.date, o.today);
 		if (isProblem(date)) return date;
-		out.date = date;
+		out.date = date.date;
+		if (date.note !== undefined) out.dateNote = date.note;
 	}
 	if (removed("vat")) out.vat = null;
 	else {
@@ -243,7 +276,7 @@ function guessed(supplier: string | undefined, note: string | undefined): Catego
  * year: its id is of its year.
  */
 export function applyFields(f: Fields, old?: Expense): { draft: ExpenseDraft; notes: string[] } | Problem {
-	const notes: string[] = [];
+	const notes: string[] = f.dateNote === undefined ? [] : [f.dateNote];
 	const amount = f.amount ?? old?.amount;
 	if (amount === undefined) return { problem: "manca l'importo (amount), il totale pagato IVA inclusa: se dalla foto non si legge, chiedilo a chi ti scrive" };
 	const date = f.date ?? old?.date;

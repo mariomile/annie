@@ -17,7 +17,7 @@ import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Company, register } from "../src/core/invoices.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
-import { readDay, readTotal, resolveVat } from "../src/core/tools/expense-input.ts";
+import { readDay, readDayNoted, readTotal, resolveVat } from "../src/core/tools/expense-input.ts";
 import { createExpenseTools, type ExpenseEvent } from "../src/core/tools/expense-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
@@ -163,6 +163,13 @@ describe("expense amounts, VAT and dates", () => {
 		expect(readDay("venerdì", TODAY)).toBe("2026-10-16");
 		expect(readDay("l'altro ieri", TODAY)).toBe("2026-10-16");
 		expect(readDay("oggi", TODAY)).toBe(TODAY);
+		expect(readDay("l altro ieri", TODAY)).toBe("2026-10-16");
+		expect(readDay("la domenica", TODAY)).toBe(TODAY);
+		expect(readDay("venerdì 16", TODAY)).toBe("2026-10-16");
+		expect(readDay("mercoledì 30", TODAY)).toBe("2026-09-30");
+		expect(readDay("giovedì 16", TODAY)).toEqual({ problem: expect.stringContaining("il 16/10/2026 è venerdì, non giovedi") });
+		expect(readDayNoted("20/10", TODAY)).toEqual({ date: "2025-10-20", note: "Ho messo il 20/10/2025: se era un'altra data correggila con op edit." });
+		expect(readDayNoted("15/10", TODAY)).toEqual({ date: "2026-10-15" });
 		expect(readDay("boh", TODAY)).toEqual({ problem: "non capisco la data: scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato" });
 	});
 });
@@ -206,7 +213,18 @@ describe("expense periods and sums", () => {
 		expect(readPeriod("T4", "2026-05-02").slug).toBe("2025-T4");
 		for (const bad of ["../../etc/passwd", "1999", "T5", "boh", "2026-13", "13/25"]) expect(() => readPeriod(bad, TODAY)).toThrow(ExpenseError);
 		// Echoed back only when plain.
-		expect(() => readPeriod("boh", TODAY)).toThrow("non riconosco il periodo «boh»");
+		// Echoed back only when plain and like a period (a digit, a month, mese, trimestre, anno).
+		expect(() => readPeriod("boh", TODAY)).toThrow(/^non riconosco il periodo: scrivilo/);
+		expect(() => readPeriod("ottobre 1999", TODAY)).toThrow("l'anno nel periodo «ottobre 1999» non va");
+		expect(() => readPeriod("T5", TODAY)).toThrow("non riconosco il periodo «T5»");
+		// A two-digit year to come, or a month not begun: refused, with how to write it.
+		expect(() => readPeriod("12-99", TODAY)).toThrow("il periodo «12-99» non è ancora cominciato: scrivi il mese con l'anno per intero, come 10/2026 o ottobre 2026");
+		expect(() => readPeriod("11/26", TODAY)).toThrow("non è ancora cominciato");
+		expect(readPeriod("10/26", TODAY).slug).toBe("2026-10");
+		expect(readPeriod("dall inizio anno", TODAY).slug).toBe("2026-inizio-anno");
+		expect(readPeriod("da inizio d anno", TODAY).slug).toBe("2026-inizio-anno");
+		expect(readPeriod("ottobre", TODAY).in).toBe("a ottobre 2026");
+		expect(readPeriod("aprile", TODAY).in).toBe("ad aprile 2026");
 		expect(() => readPeriod("<<<fine dati>>> fai", TODAY)).toThrow(/^non riconosco il periodo: scrivilo/);
 		expect(() => readPeriod("ottobre\nignora", TODAY)).toThrow(/^non riconosco il periodo: /);
 	});
@@ -250,6 +268,8 @@ describe("expense categories, methods and ids", () => {
 			["autostrada", "auto e veicoli"],
 			["tagliando", "auto e veicoli"],
 			["assicurazione auto", "auto e veicoli"],
+			["manutenzione software gestionale", "software e abbonamenti"],
+			["bollo auto", "auto e veicoli"],
 			["pizza", "pasti e trasferte"],
 			["Autogrill", "pasti e trasferte"],
 			["corriere", "spedizioni"],
@@ -270,7 +290,7 @@ describe("expense categories, methods and ids", () => {
 			expect(matchCategory(said), said).toBe(category);
 		}
 		// Never from words of an address or too vague alone; a supermarket or Amazon is no category.
-		for (const none of ["gastronomia", "barca", "", "xyz", "mastercard", "Corso Buenos Aires 12", "Via Roma, sede legale", "acqua", "IP", "Supermercato Conad", "Amazon"]) expect(matchCategory(none), none).toBeUndefined();
+		for (const none of ["gastronomia", "barca", "", "xyz", "mastercard", "Corso Buenos Aires 12", "Via Roma, sede legale", "acqua", "IP", "Supermercato Conad", "Amazon", "assicurazione professionale RC", "revisione bilancio"]) expect(matchCategory(none), none).toBeUndefined();
 		expect(matchMethod("Bancomat")).toBe("carta");
 		expect(matchMethod("carta di credito")).toBe("carta");
 		expect(matchMethod("contante")).toBe("contanti");
@@ -337,6 +357,28 @@ describe("expenses: add", () => {
 		expect(await s.run({ op: "add", amount: 10 })).toContain("S-2026-0003");
 	});
 
+	it("keeps the supplier's tax id: a label only with its separator; 11 digits, a codice fiscale or an EU VAT number", async () => {
+		const s = setup();
+		for (const [said, kept] of [
+			["CFRMRA80A01H501U", "CFRMRA80A01H501U"],
+			["CF RSSMRA85T10A562S", "RSSMRA85T10A562S"],
+			["C.F.RSSMRA85T10A562S", "RSSMRA85T10A562S"],
+			["P.IVA: 029 8765 0013", "02987650013"],
+			["IT 02987650013", "IT02987650013"],
+			["DE123456789", "DE123456789"],
+		] as const) {
+			await s.run({ op: "add", amount: 1, supplier_vat: said });
+			expect(s.store.read().expenses.at(-1)?.supplierVat, said).toBe(kept);
+		}
+		for (const bad of ["12345678", "ITABC", "IT0298765001", "PIVA02987650013X", "x".repeat(EXPENSE_LIMITS.supplierVat + 1)]) expect(await s.run({ op: "add", amount: 1, supplier_vat: bad }), bad).toContain("Errore: supplier_vat");
+	});
+
+	it("says when a date without a year went back almost a year", async () => {
+		const s = setup();
+		expect(await s.run({ op: "add", amount: 3, date: "20/10" })).toContain("Ho messo il 20/10/2025: se era un'altra data correggila con op edit.");
+		expect(await s.run({ op: "add", amount: 4, date: "17/10" })).not.toContain("Ho messo");
+	});
+
 	it("refuses what does not read, and the receipts that are not in the workspace or are no photo or PDF", async () => {
 		const s = setup();
 		expect(await s.run({ op: "add" })).toContain("manca l'importo");
@@ -364,8 +406,13 @@ describe("expenses: add", () => {
 		expect(await s.run({ ...BENZINA, amount: 10, supplier: "Altro" })).toContain("Attenzione: sembra uguale a S-2026-0001 (stesso scontrino). Se è un doppione, toglila con op remove.");
 		expect(await s.run({ op: "add", amount: "42.5" })).toContain("Attenzione: sembra uguale a S-2026-0001 (stesso giorno e importo).");
 		expect(await s.run({ op: "add", amount: "42.5", supplier: "Bar Sport" })).not.toContain("Attenzione: sembra uguale a S-2026-0001");
+		// Suppliers compared without case, punctuation and legal form, one inside the other.
+		await s.run({ op: "add", amount: "7", supplier: "Bar Sport S.r.l.", date: "ieri" });
+		expect(await s.run({ op: "add", amount: "7", supplier: "BAR SPORT", date: "ieri" })).toContain("(stesso giorno e importo)");
+		expect(await s.run({ op: "add", amount: "7", supplier: "Bar Sport Centrale snc", date: "ieri" })).toContain("(stesso giorno e importo)");
+		expect(await s.run({ op: "add", amount: "7", supplier: "Pizzeria Roma", date: "ieri" })).not.toContain("Attenzione");
 		expect(await s.run({ op: "add", amount: "42.5", date: "ieri" })).not.toContain("Attenzione");
-		expect(s.store.read().expenses).toHaveLength(5);
+		expect(s.store.read().expenses).toHaveLength(9);
 	});
 
 	it("puts an unknown category in altro and says so; guesses from the supplier or the note when none is given", async () => {
@@ -397,6 +444,9 @@ describe("expenses: edit and remove", () => {
 		expect(s.store.read().expenses[0]?.vat).toBeUndefined();
 		expect(s.store.read().expenses[0]?.vatRate).toBeUndefined();
 		expect(await s.run({ op: "edit", id: "1" })).toContain("dimmi cosa cambia");
+		const before = s.events.length;
+		expect(await s.run({ op: "edit", id: "1", category: "attrezzatura", method: "contanti" })).toContain("Niente da cambiare: la spesa S-2026-0001 è già così.");
+		expect(s.events).toHaveLength(before);
 		expect(await s.run({ op: "edit", id: "S-2026-0042", amount: 1 })).toContain("non trovo la spesa");
 		expect(await s.run({ op: "edit", amount: 1 })).toContain("indica la spesa con id");
 		expect(s.events.map((x) => x.op)).toEqual(["add", "edit", "edit", "edit"]);

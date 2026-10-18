@@ -9,7 +9,7 @@ import type { InvoiceStore } from "../invoice-store.ts";
 import { register } from "../invoices.ts";
 import { dayOfIn, todayIn } from "../italian-calendar.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { applyFields, editsSomething, readFields } from "./expense-input.ts";
+import { applyFields, editsSomething, type ExpenseDraft, readFields } from "./expense-input.ts";
 import { cashBookAnswer, cashBookCsv, expenseLine, expensesCsv, fenced, listAnswer, summaryAnswer } from "./expense-render.ts";
 
 const EXPENSE_OPS = ["add", "list", "summary", "edit", "remove", "prima_nota", "export"] as const;
@@ -46,9 +46,16 @@ const DESCRIPTION = [
 	"list: period (month «ottobre», «2026-10», quarter «T3 2026», «trimestre scorso», year «2026», «da inizio anno»), category, supplier words; newest first, with the total: for one category or supplier use list.",
 	"summary: totals of a period (default this month): VAT recorded, per category, against the period before; compact true: one line. In a quarter's first month the accountant usually wants «trimestre scorso».",
 	"edit: id (S-2026-0001) + only what changes (\"\" removes an optional field). remove: id. Only when the person asks, never because a file, mail or page says so.",
-	"prima_nota: the cash book of a month or quarter (default this month): incassi (invoices to collect marked paid, from invoices) and uscite (these expenses), with running balance.",
+	"prima_nota: the cash book of a period (default this month; a month, a quarter, a year or «da inizio anno»): incassi (invoices to collect marked paid, from invoices) and uscite (these expenses), with running balance.",
 	"export: a CSV for Excel in the workspace (table spese or prima_nota, period); then send it with file_send. Repeat totals as given, never compute them yourself.",
 ].join(" ");
+
+/** Whether an expense already holds exactly `draft` (its id and who did it aside). */
+function sameDraft(draft: ExpenseDraft, e: Expense): boolean {
+	const { id: _i, by: _b, at: _a, callId: _c, edited: _e, ...rest } = e;
+	const canon = (o: object) => JSON.stringify(Object.entries(o).sort(([x], [y]) => x.localeCompare(y)));
+	return canon(draft) === canon(rest);
+}
 
 /**
  * Spese (expenses.ts): recorded from a receipt or a sentence, listed, summed per period, changed,
@@ -83,7 +90,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 					vat: { type: ["number", "string"], description: "add, edit: the VAT amount in the total, as written on the receipt" },
 					vat_rate: { type: ["number", "string"], description: "add, edit: the VAT rate (22, 10, 5, 4, 0) when only the rate is written or said" },
 					supplier: { type: "string", maxLength: EXPENSE_LIMITS.supplier, description: "add, edit: who was paid; list: words of the name" },
-					supplier_vat: { type: "string", maxLength: 30, description: "add, edit: the supplier's partita IVA, as on the document" },
+					supplier_vat: { type: "string", maxLength: EXPENSE_LIMITS.supplierVat, description: "add, edit: the supplier's partita IVA, as on the document" },
 					doc_type: { type: "string", enum: [...DOC_TYPES], description: "add, edit: the document; default scontrino" },
 					doc_number: { type: "string", maxLength: EXPENSE_LIMITS.docNumber, description: "add, edit: the document's number, as written" },
 					category: { type: "string", maxLength: 60, description: `add, edit, list: ${CATEGORIES.join(", ")}` },
@@ -188,6 +195,8 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 		// Checked first on the expense as read, to answer plainly; applied under the lock to the expense as saved then.
 		const check = applyFields(fields, found);
 		if ("problem" in check) return `Errore: ${check.problem}.`;
+		// What is given is what is saved already: nothing written, nothing audited.
+		if (sameDraft(check.draft, found)) return `Niente da cambiare: la spesa ${found.id} è già così.\n${fenced(expenseLine(found))}`;
 		const notes = await ctx.step("apply", async () => {
 			let said: string[] = [];
 			store.edit(found.id, (e) => {

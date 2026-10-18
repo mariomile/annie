@@ -21,7 +21,8 @@ export const EXPENSE_LIMITS = {
 	/** The store file: past it, nothing more is written (a full year is about 3 MB). */
 	fileBytes: 16 * 1024 * 1024,
 	supplier: 120,
-	supplierVat: 20,
+	/** The supplier's tax id as written, label and spaces included. */
+	supplierVat: 30,
 	docNumber: 40,
 	note: 500,
 	receipt: 300,
@@ -66,7 +67,8 @@ export type DocType = (typeof DOC_TYPES)[number];
  */
 const CATEGORY_WORDS: Readonly<Record<Exclude<Category, "altro">, readonly string[]>> = {
 	carburante: ["carburante", "carburanti", "benzina", "benzinaio", "stazione di servizio", "gasolio", "diesel", "gpl", "metano", "rifornimento", "distributore", "pieno", "eni", "agip", "q8", "esso", "tamoil"],
-	"auto e veicoli": ["auto", "automobile", "veicolo", "veicoli", "furgone", "moto", "manutenzione", "meccanico", "officina", "gommista", "gomme", "pneumatici", "tagliando", "assicurazione", "rca", "bollo auto", "lavaggio", "autolavaggio", "pedaggio", "pedaggi", "autostrada", "autostrade", "telepass", "parcheggio", "parcheggi", "revisione", "carrozzeria"],
+	// Generic words only in phrases: «manutenzione software» or «revisione bilancio» is no car.
+	"auto e veicoli": ["auto", "automobile", "veicolo", "veicoli", "furgone", "moto", "meccanico", "officina", "gommista", "gomme", "pneumatici", "tagliando", "carrozzeria", "autolavaggio", "pedaggio", "pedaggi", "autostrada", "autostrade", "telepass", "parcheggio", "parcheggi", "rca auto", "bollo auto"],
 	"pasti e trasferte": ["pasti", "pasto", "pranzo", "pranzi", "cena", "cene", "ristorante", "ristoranti", "trattoria", "osteria", "pizzeria", "pizza", "bar", "autogrill", "colazione", "caffe", "trasferta", "trasferte", "viaggio", "viaggi", "treno", "trenitalia", "italo", "aereo", "volo", "voli", "hotel", "albergo", "alloggio", "b&b", "taxi", "vitto"],
 	"ufficio e cancelleria": ["ufficio", "cancelleria", "cartoleria", "risma", "toner", "cartuccia", "cartucce", "penne", "penna", "quaderni", "raccoglitori", "buste"],
 	"software e abbonamenti": ["software", "abbonamento", "abbonamenti", "licenza", "licenze", "saas", "cloud", "hosting", "dominio", "domini", "app", "microsoft", "adobe", "google workspace", "canva", "dropbox"],
@@ -205,19 +207,30 @@ export function matchesSupplier(expense: Expense, text: string): boolean {
 	return wanted.length > 0 && wanted.every((w) => name.includes(w));
 }
 
+const LEGAL_FORMS = new Set(["srl", "srls", "spa", "snc", "sas", "sapa", "ss"]);
+
+/** A supplier's name compared: no case, accents, punctuation nor legal form («Bar Sport S.r.l.» is «bar sport»). */
+function supplierKey(name: string): string {
+	const joined = fold(name).replace(/\b([a-z])\.(?=[a-z]\.?)/g, "$1").replace(/\.(?=\s|$)/g, "");
+	return words(joined)
+		.filter((w) => !LEGAL_FORMS.has(w))
+		.join(" ");
+}
+
 /**
  * An expense already recorded that `e` looks like: the same receipt, or the same day and total
- * (and the same supplier, when both have one). Said to the person, never refused: two coffees of
+ * (and the same supplier, when both have one: one name inside the other, without legal forms). Said to the person, never refused: two coffees of
  * the same price on the same day are two expenses.
  */
 export function lookalike(expenses: readonly Expense[], e: Expense): { readonly id: string; readonly why: string } | undefined {
-	const supplier = (x: Expense) => (x.supplier === undefined ? undefined : words(x.supplier).join(" "));
+	const supplier = (x: Expense) => (x.supplier === undefined ? undefined : supplierKey(x.supplier));
 	for (const other of expenses) {
 		if (other.id === e.id) continue;
 		if (e.receipt !== undefined && other.receipt === e.receipt) return { id: other.id, why: "stesso scontrino" };
 		const a = supplier(e);
 		const b = supplier(other);
-		if (other.date === e.date && other.amount === e.amount && (a === undefined || b === undefined || a === b)) return { id: other.id, why: "stesso giorno e importo" };
+		const same = a === undefined || b === undefined || a === "" || b === "" || ` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `);
+		if (other.date === e.date && other.amount === e.amount && same) return { id: other.id, why: "stesso giorno e importo" };
 	}
 	return undefined;
 }
@@ -225,8 +238,12 @@ export function lookalike(expenses: readonly Expense[], e: Expense): { readonly 
 /** A receipt's file: a photo or a PDF. */
 export const RECEIPT_FILE = /\.(?:jpe?g|png|webp|gif|heic|heif|tiff?|bmp|pdf)$/i;
 
-/** A partita IVA (with or without its country) or a codice fiscale: letters and digits, 8 to 16 after the country. */
-export const SUPPLIER_VAT = /^(?:[A-Z]{2})?[0-9A-Z]{8,16}$/;
+/**
+ * A supplier's tax id as stored: an Italian partita IVA (11 digits, «IT» in front or not), a
+ * person's codice fiscale (its 16 letters and digits in their places), or another EU VAT number
+ * (its country and 8 to 12 letters and digits, at least one a digit).
+ */
+export const SUPPLIER_VAT = /^(?:(?:IT)?\d{11}|[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]|(?!IT)[A-Z]{2}(?=[A-Z0-9]*\d)[A-Z0-9]{8,12})$/;
 
 const AMOUNT = /^\d{1,8}(?:\.\d{1,2})?$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;

@@ -48,7 +48,8 @@ export type Period = {
 	readonly slug: string;
 };
 
-const a = (word: string) => (/^[aeiou]/.test(word) ? `ad ${word}` : `a ${word}`);
+/** «ad aprile», «ad agosto», «a ottobre»: «ad» only before an «a». */
+const a = (word: string) => (word.startsWith("a") ? `ad ${word}` : `a ${word}`);
 
 function monthPeriod(year: number, month: number): Period {
 	const label = `${MONTH_NAMES[month - 1]} ${year}`;
@@ -94,9 +95,13 @@ const ORDINALS: Readonly<Record<string, number>> = { primo: 1, secondo: 2, terzo
 const MONTH_SHORT_YEAR = /^(\d{1,2})[/.-](\d{2})$/;
 
 /** The text, back in an error only when it is plain: letters, digits, spaces and a few signs. */
+const PERIOD_WORD = new RegExp(`\\b(?:mese|trimestre|anno|${MONTH_NAMES.join("|")})\\b`);
+
+/** The text, back in an error only when it is plain and looks like a period: a digit, or a month, «mese», «trimestre», «anno». */
 function said(text: string): string {
 	const t = text.trim();
-	return t.length > 0 && t.length <= 40 && /^[\p{L}\p{N} '/.°º-]+$/u.test(t) ? ` «${t}»` : "";
+	const plain = t.length > 0 && t.length <= 40 && /^[\p{L}\p{N} '/.°º-]+$/u.test(t);
+	return plain && (/\d/.test(t) || PERIOD_WORD.test(fold(t))) ? ` «${t}»` : "";
 }
 
 /**
@@ -116,7 +121,7 @@ export function readPeriod(text: string, today: string): Period {
 	if (t === "trimestre scorso" || t === "ultimo trimestre") return previousPeriod(thisQuarter);
 	if (t === "anno" || t === "quest'anno" || t === "anno corrente") return yearPeriod(year);
 	if (t === "anno scorso") return yearPeriod(year - 1);
-	if (/^(?:da|dall') ?inizio (?:d(?:ell)?')?anno$/.test(t)) return yearToDate(today);
+	if (/^(?:da|dall'?) ?inizio (?:d(?:ell)?'? ?)?anno$/.test(t)) return yearToDate(today);
 	const yearOnly = /^(?:anno )?(\d{4})$/.exec(t);
 	if (yearOnly !== null) return yearPeriod(checkedYear(Number(yearOnly[1]), text));
 	const q = QUARTER.exec(t);
@@ -131,7 +136,10 @@ export function readPeriod(text: string, today: string): Period {
 	if (short !== null) {
 		const month = Number(short[1]);
 		if (month < 1 || month > 12) throw new ExpenseError(`non riconosco il periodo${said(text)}: ${month} non è un mese`);
-		return monthPeriod(checkedYear(2000 + Number(short[2]), text), month);
+		const y = 2000 + Number(short[2]);
+		// «12-99» is no 2099; a month to come has no expenses: said, with how to write it.
+		if (y > year || (y === year && month > Number(today.slice(5, 7)))) throw new ExpenseError(`il periodo${said(text)} non è ancora cominciato: scrivi il mese con l'anno per intero, come 10/${year} o ottobre ${year}`);
+		return monthPeriod(y, month);
 	}
 	try {
 		const parsed = parseMonth(text, today);
