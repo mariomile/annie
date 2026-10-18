@@ -114,6 +114,9 @@ describe("pnpm start (startAnnie)", () => {
 		const at = new Date(Date.now() + 60_000).toISOString();
 		const created = await api("/api/instances/annie/schedules", { instruction: "Promemoria riunione", at, threadId: thread.id });
 		expect(created.schedule.nextRunAt).toBe(at);
+		await api("/api/instances/annie/schedules", { instruction: "Riassunto mail", cron: "0 9 * * 1-5", threadId: thread.id });
+		// The list says each schedule in words, for the Task page.
+		expect(((await api("/api/instances/annie/schedules")).schedules as { instruction: string; whenText?: string }[]).find((s) => s.instruction === "Riassunto mail")?.whenText).toBe("dal lunedì al venerdì alle 9:00");
 		expect(await first.annie.scheduler.tick(new Date(Date.now() + 120_000))).toBe(1);
 		await until(async () => ((await api(`/api/instances/annie/threads/${thread.id}`)).entries as { from: string; text?: string }[]).some((e) => e.from === "annie" && e.text?.includes("Promemoria riunione")));
 		await first.annie.stop();

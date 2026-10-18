@@ -9,6 +9,7 @@ import { VOICE_CONNECTOR } from "../channels/voice.ts";
 import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNECTOR } from "../core/web-actions.ts";
 import { cardView, decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
+import { describeCron } from "../core/cron.ts";
 import { DESKTOP_CONNECTOR } from "../core/desktop.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
@@ -693,7 +694,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		await instanceAccess(p, params[0] as string);
 		const all = await runtime.schedules(tenantId, params[0] as string).list();
 		// A member sees the tasks that act for them; the owner sees all.
-		return { schedules: p.role === "owner" ? all : all.filter((s) => mine(s, p)) };
+		const words = (s: (typeof all)[number]) => ("cron" in s.when ? describeCron(s.when.cron) : undefined);
+		return { schedules: (p.role === "owner" ? all : all.filter((s) => mine(s, p))).map((s) => ({ ...s, ...(words(s) === undefined ? {} : { whenText: words(s) }) })) };
 	});
 	route("POST", "/api/instances/:id/schedules", "person", async ({ person, params, req }) => {
 		const p = person as Person;
