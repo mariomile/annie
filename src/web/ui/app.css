@@ -209,7 +209,7 @@ main.is-page { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 clamp(
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field > span { font-size: 13px; font-weight: 500; color: var(--fg); }
 .field small { color: var(--fg-3); font-size: 12px; }
-input[type="text"], input[type="search"], input[type="url"], input[type="number"], input[type="password"], input[type="datetime-local"], select, textarea {
+input[type="text"], input[type="search"], input[type="url"], input[type="number"], input[type="password"], input[type="datetime-local"], input[type="time"], input[type="date"], input[type="email"], input[type="tel"], select, textarea {
 	width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); font-size: 13.5px;
 	box-shadow: var(--shadow-sm); transition: border-color 0.12s, box-shadow 0.12s;
 }
@@ -217,6 +217,16 @@ input:hover, select:hover, textarea:hover { border-color: var(--border-2); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
 input[disabled] { opacity: 0.6; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; }
+/* Checkboxes drawn like the rest: a soft square that fills with the primary colour. */
+input[type="checkbox"] {
+	appearance: none; flex: none; display: inline-grid; place-content: center; width: 16px; height: 16px; margin: 0; cursor: pointer;
+	border: 1px solid var(--border-2); border-radius: 5px; background: var(--surface); transition: background 0.12s, border-color 0.12s;
+}
+input[type="checkbox"]::after { content: ""; width: 9px; height: 5px; border: solid var(--primary-fg); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg) scale(0); transition: transform 0.15s cubic-bezier(.22, 1, .36, 1); }
+input[type="checkbox"]:checked { background: var(--primary); border-color: var(--primary); }
+input[type="checkbox"]:checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
+input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+input[type="time"], input[type="date"] { width: auto; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 ::placeholder { color: var(--fg-3); }
 textarea { resize: vertical; min-height: 90px; line-height: 1.55; }
 .row-gap { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -245,8 +255,36 @@ textarea { resize: vertical; min-height: 90px; line-height: 1.55; }
 .chip.accent { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
 .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 p.chip { display: flex; white-space: normal; line-height: 1.4; border-radius: 7px; padding: 8px 10px; }
-.empty { padding: 48px 22px; text-align: center; color: var(--fg-3); font-size: 13.5px; }
-.empty b { display: block; font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+.empty { padding: 44px 24px; text-align: center; color: var(--fg-3); font-size: 13.5px; line-height: 1.55; text-wrap: pretty; }
+.empty b { display: block; font-size: 15px; font-weight: 620; color: var(--fg); margin-bottom: 4px; }
+.empty > .face { display: block; margin: 0 auto 14px; opacity: 0.9; }
+.empty:not(.card) { max-width: 520px; margin-inline: auto; }
+.card.empty { padding-inline: max(24px, calc((100% - 620px) / 2)); background: radial-gradient(120% 90% at 50% 0%, var(--hover), var(--surface) 60%); }
+.card .empty { padding-block: 36px; }
+/* Settings that fold to one line (fold() in app.js). */
+details.fold > summary { list-style: none; margin: 0; color: var(--fg); font-size: inherit; display: flex; align-items: center; gap: 14px; padding: 16px 20px; cursor: pointer; border-radius: 10px; transition: background 0.12s; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary:hover { background: var(--hover); }
+details.fold > summary:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+details.fold > summary { border-radius: inherit; }
+details.fold[open] > summary { border-bottom: 1px solid var(--border); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* Folds next to each other read as one list. */
+.stack > details.fold + details.fold { margin-top: -13px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.stack > details.fold:has(+ details.fold) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.fold-glyph { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--border); color: var(--fg-2); }
+.fold-glyph .icon { width: 17px; height: 17px; }
+.fold-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.fold-text b { font-size: 14.5px; font-weight: 620; }
+.fold-text small { color: var(--fg-3); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fold-chevron { color: var(--fg-3); display: grid; transition: transform 0.2s cubic-bezier(.22, 1, .36, 1); }
+details.fold[open] .fold-chevron { transform: rotate(180deg); }
+.fold-body { padding: 18px 20px 20px; }
+.fold-body > p.muted:first-child { margin-top: 0; }
+/* Catalog tiles: the service's initial in a colour of its own. */
+.catalog-name { display: flex; align-items: center; gap: 10px; }
+.monogram { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; font-weight: 700; font-size: 14px; font-stretch: var(--display-stretch); color: #111; background: linear-gradient(160deg, color-mix(in srgb, var(--tile) 100%, #fff 18%), var(--tile)); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.08); }
+.gallery .card { transition: border-color 0.15s, transform 0.2s cubic-bezier(.22, 1, .36, 1); }
+.gallery .card:hover { border-color: var(--border-2); transform: translateY(-1px); }
 table.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 table.ledger th { text-align: left; font-size: 12px; font-weight: 500; color: var(--fg-3); padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--bg-2); white-space: nowrap; }
 table.ledger th:first-child { border-top-left-radius: 10px; }
