@@ -4422,6 +4422,22 @@ async function viewBoard(main) {
 			);
 		};
 		const checkCount = h("span.muted.small");
+		// Without a list, one quiet button: the box opens when asked.
+		const checksBox = h("div.board-checks-box", { hidden: !c.checklist?.length }, h("div.board-checks-head", h("span", "Lista di controllo"), checkCount), checkList, h("div.board-check-add", checkInput, h("button.btn.small", { type: "button", onclick: () => void addCheck() }, "Aggiungi")));
+		const checksOpen = h(
+			"button.btn.small.ghost.board-checks-open",
+			{
+				type: "button",
+				hidden: Boolean(c.checklist?.length),
+				onclick: () => {
+					checksBox.hidden = false;
+					checksOpen.hidden = true;
+					checkInput.focus();
+				},
+			},
+			icon("plus"),
+			"Lista di controllo",
+		);
 		const addCheck = async () => {
 			if (!checkInput.value.trim()) return;
 			if (await sendCheck({ add: checkInput.value })) checkInput.value = "";
@@ -4542,7 +4558,8 @@ async function viewBoard(main) {
 			h("h2", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
 			resultOf(c) ? h("div.board-result", h("span.small", `Il risultato di ${who(resultOf(c).by)}, ${fmt.time(resultOf(c).at)}`), h("p", resultOf(c).text)) : null,
-			h("div.board-checks-box", h("div.board-checks-head", h("span", "Lista di controllo"), checkCount), checkList, h("div.board-check-add", checkInput, h("button.btn.small", { type: "button", onclick: () => void addCheck() }, "Aggiungi"))),
+			checksBox,
+			checksOpen,
 			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
 			children.length
 				? h(
@@ -4625,6 +4642,9 @@ async function viewBoard(main) {
 		});
 		document.body.append(dialog);
 		dialog.showModal();
+		// Opened to read: no field takes the focus, and the keyboard opens no menu on the phone.
+		dialog.tabIndex = -1;
+		dialog.focus();
 		if (sendBack) {
 			comment.focus();
 			toast("Scrivi cosa va cambiato e premi Rimanda indietro");
