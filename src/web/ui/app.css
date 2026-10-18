@@ -319,7 +319,6 @@ main.is-chat { position: relative; }
 /* an answer on its way: the face looks around, the words breathe */
 .thinking { align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; animation: rise 0.3s ease-out both; }
 .thinking .faces { display: inline-flex; }
-.thinking .faces .face + .face { margin-left: -8px; }
 .thinking-text { font-size: 13.5px; color: var(--fg-2); animation: breathe 2s ease-in-out infinite; }
 @keyframes breathe { 50% { color: var(--fg); } }
 .tray .chip { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--surface); }
@@ -574,12 +573,22 @@ ol.steps .stack { display: grid; gap: 8px; }
 
 /* board (ADR 0050) */
 .board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 8px; }
-.board-col { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
-.board-col h2 { margin: 2px 4px 4px; font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; }
-.board-col.da_rivedere { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+/* columns are open lanes, the schede are the surfaces; each lane has its dot */
+.board-col { background: color-mix(in srgb, var(--bg-2) 60%, transparent); border: 1px solid transparent; border-radius: 14px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 160px; transition: background 0.15s, border-color 0.15s; }
+.board-col h2 { margin: 4px 6px 6px; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+.board-col-name { display: inline-flex; align-items: center; gap: 8px; }
+.board-dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--fg-3); }
+.board-col.in_corso .board-dot { border-color: var(--fg); border-right-color: transparent; animation: spin 1.4s linear infinite; }
+.board-col.da_rivedere .board-dot { border-color: var(--warn); background: var(--warn); }
+.board-col.fatto .board-dot { border-color: var(--ok); background: var(--ok); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.board-count { font: 500 11.5px/1 var(--mono); color: var(--fg-3); padding: 3px 7px; border-radius: 99px; background: var(--hover); }
+.board-col.da_rivedere { border-color: color-mix(in srgb, var(--warn) 22%, transparent); }
 .board-col .small { margin: 4px; font-size: 12px; }
-.board-card { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; box-shadow: var(--shadow-sm); color: var(--fg); }
-.board-card:hover { border-color: var(--border-2); }
+.board-card { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 12px; cursor: pointer; display: flex; flex-direction: column; gap: 10px; color: var(--fg); transition: border-color 0.15s, transform 0.2s cubic-bezier(.22, 1, .36, 1), box-shadow 0.2s; }
+.board-card:hover { border-color: var(--border-2); transform: translateY(-1px); box-shadow: var(--shadow); }
+.board-col.fatto .board-card { opacity: 0.72; }
+.board-col.fatto .board-card:hover { opacity: 1; }
 .board-card.dragging { opacity: 0.5; }
 .board-col.drop { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg-2)); }
 .board-card.alta { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
@@ -626,8 +635,19 @@ dialog.teams-form { max-width: 620px; }
 .team ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
 .team li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13.5px; }
 /* a stanza in the list: the last thing said, one line */
-.room-last { margin-top: 2px; font-size: 13px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 560px; }
+/* the stanze, one row each like a group chat: who is in it, the title, the last thing said, when */
+ul.room-list { list-style: none; margin: 0; padding: 6px; }
+a.room-row { display: flex; align-items: center; gap: 14px; padding: 12px 12px; border-radius: 10px; text-decoration: none; color: var(--fg); transition: background 0.12s; }
+a.room-row:hover { background: var(--hover); }
+.room-faces { flex: none; display: inline-flex; min-width: 30px; }
+.room-faces .face + .face, .thinking .faces .face + .face { margin-left: -12px; filter: drop-shadow(-2px 0 0 var(--surface)); }
+.room-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.room-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.room-title b { font-weight: 600; white-space: nowrap; }
+.room-title .muted { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-last { font-size: 13px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-last b { font-weight: 500; color: var(--fg); }
+.room-when { flex: none; font: 12px var(--mono); color: var(--fg-3); }
 
 /* faces (agenti): blink now and then; while thinking they look around and bob */
 .face { flex: none; display: block; overflow: visible; }
