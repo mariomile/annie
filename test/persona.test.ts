@@ -55,7 +55,7 @@ describe("an agente opens with its persona", () => {
 		const seen: (string | undefined)[] = [];
 		const engine: DurableEngine = {
 			open: async (options) => {
-				seen.push(options.instructions);
+				seen.push(typeof options.instructions === "function" ? options.instructions() : options.instructions);
 				return { submit: async () => ({ submissionId: "s" }), resume: async () => ({ pending: 0 }), reattach: async () => false, setThreadModel: async () => {}, threadModel: async () => undefined, onReply: () => () => {}, idle: async () => {}, close: async () => {} };
 			},
 		};
@@ -68,7 +68,8 @@ describe("an agente opens with its persona", () => {
 		await runtime.registry.updateInstance("acme", "ricerca", { persona: null, name: "Annie" });
 		expect((await runtime.registry.getInstance("acme", "ricerca")).persona).toBeUndefined();
 		await runtime.reopen("acme", "ricerca");
-		expect(seen[1]).toBe("Sei Annie.");
+		expect(seen[1]?.startsWith("Sei Annie.\n\nSkill:")).toBe(true);
+		expect(seen[1]).not.toContain("Chi sei");
 		await runtime.close();
 	});
 });

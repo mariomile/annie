@@ -18,11 +18,14 @@ import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
 import { ScheduleStore } from "./schedules.ts";
+import { AutomationStore } from "./automations.ts";
 import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { DEV_PROVIDER } from "./model-providers.ts";
+import { AGENT_CHANNEL } from "./agent-messages.ts";
 import { withPersona } from "./persona.ts";
+import { activateCommand, SkillError, SkillStore, skillCatalog, skillCommand, withSkill } from "./skills.ts";
 import { type InstanceRecord, type ModelSelection, TenantRegistry } from "./registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "./secrets.ts";
 
@@ -150,13 +153,23 @@ export class AnnieRuntime {
 	 * A message from the instance to a thread that is not a reply (a decision, a notice),
 	 * through the outbox like a reply. The same `key` is sent once.
 	 */
-	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string; secret?: boolean }): Promise<void> {
 		await (await this.openInstance(tenant, instance)).sendMessage(message);
 	}
 
 	/** The memoria of an instance: what it remembers about each person, and shared facts. */
 	memory(tenant: string, instance: string): MemoryStore {
 		return new MemoryStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The automazioni of an instance (ADR 0060): addresses other services call to make it work. */
+	automations(tenant: string, instance: string): AutomationStore {
+		return new AutomationStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The skills of an instance (ADR 0059): procedures its people saved, shared by all of them. */
+	skills(tenant: string, instance: string): SkillStore {
+		return new SkillStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** The liste of an instance: each person's and the shared ones. */
@@ -258,7 +271,7 @@ export class AnnieRuntime {
 	async submitScheduled(
 		tenant: string,
 		instance: string,
-		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" },
+		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" | "automation" },
 	): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
@@ -407,8 +420,10 @@ export class AnnieRuntime {
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
 		let toolSet: ToolSet = [];
-		// Its own instructions, then who it is (ADR 0041).
-		const instructions = withPersona(record.instructions, record.name, record.persona);
+		// Its own instructions, then who it is (ADR 0041), then its skills as they are now (ADR 0059).
+		const own = withPersona(record.instructions, record.name, record.persona);
+		const skills = this.skills(record.tenantId, record.id);
+		const instructions = () => `${own === undefined || own === "" ? "" : `${own}\n\n`}${skillCatalog(skills.list())}`;
 		try {
 			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
@@ -418,7 +433,7 @@ export class AnnieRuntime {
 				apiKey: async (provider) => ((await fresh()).egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined),
 				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
-				...(instructions === undefined ? {} : { instructions }),
+				instructions,
 			});
 		} catch (error) {
 			if ("close" in toolSet) await toolSet.close().catch(() => {});
@@ -436,7 +451,7 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id) }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id), skills }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -447,6 +462,9 @@ export class AnnieRuntime {
 		});
 	}
 }
+
+/** Outbox keys of messages whose text goes once delivered. */
+const SECRET_KEY = "secret:";
 
 export class AnnieInstance {
 	/** Outbox keys this process has handed to the channels. Each at most once per process. */
@@ -469,7 +487,7 @@ export class AnnieInstance {
 		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
 		private readonly reachable: (provider: string) => Promise<boolean>,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
-		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore },
+		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore },
 		private readonly emit: (reply: Reply) => void,
 	) {
 		session.onReply((engineReply) => {
@@ -530,7 +548,43 @@ export class AnnieInstance {
 			this.memory.participants.clear(key);
 			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)), this.memory.store.archivedFor(SHARED));
 		}
-		return this.admit({ ...message, text: `${request.text}${skipped}${note}` }, images);
+		const text = await this.withSkills(request, privateThread === true);
+		return this.admit({ ...message, text: `${text}${skipped}${note}` }, images);
+	}
+
+	/**
+	 * The skills in a person's message (ADR 0059). «/nome» of one: its steps go with their words.
+	 * «/attiva-skill nome»: the draft they had the agente write becomes a skill. Only here, from a
+	 * message the person wrote in a chat with them alone; never from a scheduled run, a notice or
+	 * another agente, so a page or a mail the agente read cannot turn a draft on.
+	 */
+	private async withSkills(request: Omit<SubmitRequest, "tenantId" | "instanceId">, alone: boolean): Promise<string> {
+		const skills = this.memory.skills;
+		const activating = activateCommand(request.text);
+		if (activating !== undefined) {
+			if (!alone || request.channel === AGENT_CHANNEL) return `${request.text}\n\n[Le skill si attivano solo in una conversazione con una persona sola: dillo in una riga.]`;
+			const by = subjectOf(request.channel, request.userId);
+			const mine = skills.drafts().filter((d) => d.createdBy === by);
+			const name = activating === "" && mine.length === 1 ? (mine[0] as { name: string }).name : activating;
+			if (name === "") return `${request.text}\n\n[Ha scritto il comando senza il nome. Le sue bozze: ${mine.map((d) => d.name).join(", ") || "nessuna"}. Diglielo in una riga.]`;
+			let result: { skill: { name: string }; replaced: boolean } | undefined;
+			try {
+				result = skills.activate(name, by);
+			} catch (error) {
+				if (!(error instanceof SkillError)) throw error;
+				return `${request.text}\n\n[La skill non si è attivata: ${error.message}. Diglielo in una riga.]`;
+			}
+			if (result === undefined) {
+				const active = skills.get(name);
+				return `${request.text}\n\n[${active !== undefined ? `La skill «${active.name}» è già attiva.` : `Non c'è una sua bozza «${name}» da attivare; le sue bozze: ${mine.map((d) => d.name).join(", ") || "nessuna"}.`} Diglielo in una riga.]`;
+			}
+			await this.audit.append({ type: "skill.activated", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, userId: request.userId, skill: result.skill.name, replaced: result.replaced });
+			return `${request.text}\n\n[La persona ha attivato la skill «${result.skill.name}»${result.replaced ? " (nuova versione)" : ""}: da ora la vedi fra le tue skill e si lancia con /${result.skill.name}. Confermalo in una riga.]`;
+		}
+		const command = skillCommand(request.text, skills.list());
+		if (command === undefined) return request.text;
+		await this.audit.append({ type: "skill.used", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, skill: command.skill.name });
+		return withSkill(request.text, command.skill, command.rest);
 	}
 
 	/**
@@ -546,8 +600,8 @@ export class AnnieInstance {
 		scheduleId: string;
 		/** The person it acts for: must still be allowed, or the run is refused. */
 		onBehalfOf: { channel: string; userId: string } | undefined;
-		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID. */
-		kind?: "brief" | "watch";
+		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID; automation: an automazione called (ADR 0060), likewise. */
+		kind?: "brief" | "watch" | "automation";
 	}): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
@@ -566,6 +620,7 @@ export class AnnieInstance {
 			throw error;
 		}
 		if (request.kind === "watch") await this.audit.append({ type: "watch.fired", instanceId: this.record.id, watchId: request.scheduleId, channel: request.channel, threadId: request.threadId });
+		else if (request.kind === "automation") await this.audit.append({ type: "automation.fired", instanceId: this.record.id, automationId: request.scheduleId, channel: request.channel, threadId: request.threadId });
 		else await this.audit.append({ type: "schedule.fired", instanceId: this.record.id, scheduleId: request.scheduleId, channel: request.channel, threadId: request.threadId, ...(request.kind === undefined ? {} : { kind: request.kind }) });
 		// The person's own memories only in a thread with them alone: a console thread, or a
 		// private chat (whose ID is the person's own on Telegram); a group gets the shared ones.
@@ -663,7 +718,9 @@ export class AnnieInstance {
 			const entry = await this.outbox.get(deliveryId);
 			if (entry === undefined) throw new NotFound(`No outbox entry "${deliveryId}" in ${this.record.tenantId}/${this.record.id}`);
 			if (entry.deliveredAt !== undefined) return;
-			await this.outbox.put({ ...entry, deliveredAt: new Date().toISOString() });
+			// A message with a secret (an automazione's token) keeps its key, not its text, once delivered.
+			const scrubbed = entry.key.includes(`/${SECRET_KEY}`) && entry.reply?.status === "answered" ? { reply: { status: "answered" as const, text: "[tolto dopo la consegna: conteneva un segreto]" } } : {};
+			await this.outbox.put({ ...entry, ...scrubbed, deliveredAt: new Date().toISOString() });
 			await this.audit.append({
 				type: "reply.delivered",
 				instanceId: this.record.id,
@@ -705,9 +762,10 @@ export class AnnieInstance {
 		});
 	}
 
-	async sendMessage(message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+	/** `secret`: the text is dropped from the outbox once the channel has it (ADR 0060). */
+	async sendMessage(message: { channel: string; threadId: string; text: string; key: string; secret?: boolean }): Promise<void> {
 		assertChannelAllowed(this.record.egress, message.channel);
-		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.key}`;
+		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.secret === true ? SECRET_KEY : ""}${message.key}`;
 		await this.serial(key, async () => {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;

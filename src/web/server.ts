@@ -23,6 +23,9 @@ import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
+import { callAutomation } from "../core/automation-call.ts";
+import { AUTOMATION_LIMITS, type Automation, AutomationError, AutomationRate } from "../core/automations.ts";
+import { parseSkillMd, type Skill, SkillError, toSkillMd } from "../core/skills.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import { BOARD_LIMITS, BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
@@ -256,6 +259,7 @@ const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".j
 export function createWebApp(options: WebAppOptions): Server {
 	const { runtime, tenantId } = options;
 	const routes: Route[] = [];
+	const automationRate = new AutomationRate();
 	const route = (method: string, path: string, auth: Route["auth"], handler: Handler) =>
 		routes.push({ method, pattern: new RegExp(`^${path.replace(/:[a-z]+/g, "([^/]+)")}$`), auth, handler });
 
@@ -770,6 +774,42 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (error instanceof ScheduleError) throw new HttpError(400, error.message);
 			throw error;
 		}
+	});
+	// --- automazioni (ADR 0060): each person makes their own, for a chat of theirs; the owner sees and deletes all ---
+	const automationView = (instance: string, a: Automation, p: Person) => {
+		const { tokenHash: _secret, person: who, ...rest } = a;
+		const mineToo = who.channel === "web" && who.userId === p.id;
+		return { ...rest, ...(p.role === "owner" ? { person: who } : {}), path: `/hooks/automazione/${instance}/${a.id}`, mine: mineToo, canEdit: mineToo || p.role === "owner" };
+	};
+	route("GET", "/api/instances/:id/automations", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const all = runtime.automations(tenantId, params[0] as string).list();
+		return { automations: all.filter((a) => p.role === "owner" || (a.person.channel === "web" && a.person.userId === p.id)).map((a) => automationView(params[0] as string, a, p)) };
+	});
+	route("POST", "/api/instances/:id/automations", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { name?: unknown; instruction?: unknown; threadId?: unknown };
+		const thread = await channelOf(params[0] as string).thread(String(body.threadId ?? ""));
+		if (thread === undefined || thread.personId !== p.id) throw new HttpError(400, "Scegli una tua chat dove ricevere i risultati");
+		try {
+			const { automation, token } = runtime.automations(tenantId, params[0] as string).create({ name: String(body.name ?? ""), instruction: String(body.instruction ?? ""), channel: "web", threadId: thread.id, person: { channel: "web", userId: p.id } });
+			await runtime.audit(tenantId).append({ type: "automation.created", instanceId: params[0], personId: p.id, automationId: automation.id });
+			// The token only now: it is kept as a hash.
+			return { automation: automationView(params[0] as string, automation, p), token };
+		} catch (error) {
+			if (error instanceof AutomationError) throw new HttpError(400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/automations/:aid", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const removed = runtime.automations(tenantId, params[0] as string).remove(params[1] as string, (a) => p.role === "owner" || (a.person.channel === "web" && a.person.userId === p.id));
+		if (removed === undefined) throw new HttpError(404, "Automazione non trovata");
+		await runtime.audit(tenantId).append({ type: "automation.deleted", instanceId: params[0], personId: p.id, automationId: removed.id });
+		return { ok: true };
 	});
 	// --- brief del mattino: one per person and instance ---
 	const briefOf = async (instanceId: string, p: Person) => (await runtime.schedules(tenantId, instanceId).list()).find((s) => s.kind === "brief" && mine(s, p));
@@ -1424,6 +1464,38 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 
+	// --- skill (ADR 0059): everyone who talks to an agente sees its skills; each saves and deletes their own, the owner all ---
+	route("GET", "/api/instances/:id/skills", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const store = runtime.skills(tenantId, params[0] as string);
+		// Who saved it only to the owner: from a chat it is a phone number or a Telegram ID.
+		const shown = ({ createdBy, ...s }: Skill) => ({ ...s, ...(p.role === "owner" ? { createdBy } : {}), mine: createdBy === subjectOfPerson(p), canEdit: p.role === "owner" || createdBy === subjectOfPerson(p), skillMd: toSkillMd(s) });
+		return { skills: store.list().map(shown), drafts: store.drafts().filter((d) => d.createdBy === subjectOfPerson(p)).map(shown) };
+	});
+	route("PUT", "/api/instances/:id/skills", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { name?: unknown; description?: unknown; body?: unknown; skillMd?: unknown };
+		try {
+			const input = typeof body.skillMd === "string" ? parseSkillMd(body.skillMd) : { name: String(body.name ?? ""), description: String(body.description ?? ""), body: String(body.body ?? "") };
+			const { skill, replaced } = runtime.skills(tenantId, params[0] as string).save({ ...input, by: subjectOfPerson(p) }, (existing) => p.role === "owner" || existing.createdBy === subjectOfPerson(p));
+			await runtime.audit(tenantId).append({ type: "skill.saved", instanceId: params[0], personId: p.id, skill: skill.name, replaced, source: "person" });
+			return { skill, replaced };
+		} catch (error) {
+			if (error instanceof SkillError) throw new HttpError(/un'altra persona/.test(error.message) ? 409 : 400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/skills/:name", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const removed = runtime.skills(tenantId, params[0] as string).remove(params[1] as string, (s) => p.role === "owner" || s.createdBy === subjectOfPerson(p));
+		if (removed === undefined) throw new HttpError(404, "Skill non trovata, o salvata da un'altra persona");
+		await runtime.audit(tenantId).append({ type: "skill.deleted", instanceId: params[0], personId: p.id, skill: removed.name, source: "person" });
+		return { ok: true };
+	});
+
 	// --- Google: each person connects their own account; the refresh token never comes back ---
 	const googleOf = () => {
 		if (options.google === undefined) throw new HttpError(501, "Google non è configurato su questo server");
@@ -1792,7 +1864,7 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	const server = createServer((req, res) => {
 		void handle(req, res).catch((error: unknown) => {
-			options.log?.(`web: ${req.method} ${req.url}: ${error instanceof Error ? error.message : String(error)}`);
+			options.log?.(`web: ${req.method} ${new URL(req.url ?? "/", "http://annie.local").pathname}: ${error instanceof Error ? error.message : String(error)}`);
 			if (!res.headersSent) send(res, 500, { error: "Errore interno" });
 			else res.end();
 		});
@@ -1812,6 +1884,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (req.method === "POST" && hook !== null) return telegramHook(req, res, hook[1] as string);
 		const phone = /^\/hooks\/phone\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (phone !== null && req.method === "POST") return phoneHook(req, res, url, phone[1] as string);
+		const automation = /^\/hooks\/automazione\/([a-z0-9_-]+)\/([a-f0-9]{12})$/.exec(url.pathname);
+		if (automation !== null && req.method === "POST") return automationHook(req, res, url, automation[1] as string, automation[2] as string);
 		const wa = /^\/hooks\/whatsapp\/([a-z0-9_-]+)$/.exec(url.pathname);
 		if (wa !== null && (req.method === "GET" || req.method === "POST")) return whatsappHook(req, res, url, wa[1] as string);
 		if (req.method === "GET" && url.pathname === "/oauth/google/callback") return googleCallback(res, url);
@@ -1905,6 +1979,32 @@ export function createWebApp(options: WebAppOptions): Server {
 			res.writeHead(200, { "content-type": "text/xml; charset=utf-8" });
 			res.end(adapter.apology());
 		}
+	}
+
+	/**
+	 * An automazione called by another service (ADR 0060). The token in `Authorization: Bearer`,
+	 * `X-Annie-Token` or `?token=`; anything wrong answers 404, so the address reveals nothing.
+	 */
+	async function automationHook(req: IncomingMessage, res: ServerResponse, url: URL, instance: string, id: string): Promise<void> {
+		let raw: Buffer;
+		try {
+			raw = await readBody(req, AUTOMATION_LIMITS.bodyBytes);
+		} catch (error) {
+			if (error instanceof HttpError) return send(res, error.status, { error: error.message });
+			throw error;
+		}
+		const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
+		const token = bearer ?? String(req.headers["x-annie-token"] ?? url.searchParams.get("token") ?? "");
+		const key = req.headers["idempotency-key"] ?? req.headers["x-idempotency-key"];
+		let result;
+		try {
+			result = await callAutomation(runtime, { tenant: tenantId, instance, id, token, body: raw, contentType: req.headers["content-type"], key: typeof key === "string" ? key : undefined }, automationRate);
+		} catch (error) {
+			// Logged by path only: the query may hold the token.
+			options.log?.(`automazione ${instance}/${id}: not run: ${error instanceof Error ? error.message : String(error)}`);
+			return send(res, 503, { error: "Riprova più tardi" });
+		}
+		send(res, result.status, result.status === 202 ? { ok: true } : { error: result.error });
 	}
 
 	/**

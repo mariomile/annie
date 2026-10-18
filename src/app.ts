@@ -87,6 +87,8 @@ import { createAgentTools } from "./core/tools/agent-tools.ts";
 import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core/agent-messages.ts";
 import { AgentChannel } from "./channels/agents.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
+import { createAutomationTools } from "./core/tools/automation-tools.ts";
+import { createSkillTools } from "./core/tools/skill-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWatchTools } from "./core/tools/watch-tools.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
@@ -582,6 +584,16 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							},
 						})),
 				...createScheduleTools({ store: runtime.schedules(record.tenantId, record.id), defaultTimeZone: config.timeZone }),
+				...createAutomationTools({
+					store: runtime.automations(record.tenantId, record.id),
+					instance: record.id,
+					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
+					...(config.web.publicUrl === undefined ? {} : { baseUrl: config.web.publicUrl }),
+					tell: (thread, text, key) => runtime.sendMessage(record.tenantId, record.id, { ...thread, text, key, secret: true }),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
+					},
+				}),
 				...createWatchTools({
 					store: runtime.watches(record.tenantId, record.id),
 					read: watchReader(record.id),
@@ -633,6 +645,14 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 				...createMemoryTools({
 					store: runtime.memory(record.tenantId, record.id),
+					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
+					},
+				}),
+				...createSkillTools({
+					store: runtime.skills(record.tenantId, record.id),
+					workspace: runtime.workspace(record.tenantId, record.id),
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
@@ -825,7 +845,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await channel.post(threadId, personId, text);
 		},
 	});
-	// «Esegui da solo» (ADR 0058): each reply in the conversation of a scheda may be followed by «go on».
+	// «Esegui da solo» (ADR 0061): each reply in the conversation of a scheda may be followed by «go on».
 	runtime.onReply((reply) => {
 		// Only answers to what was written in the conversation: not files or messages sent mid-turn.
 		if (reply.tenantId !== tenant || reply.channel !== "web" || reply.status === "file" || reply.submissionId === "message") return;

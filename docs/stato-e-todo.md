@@ -97,7 +97,9 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))
 - [x] Board: le cose da fare in quattro colonne, affidate agli agenti; l'agente ci lavora in una conversazione con chi gliel'ha affidata, la manda in «Da rivedere», e la chiude una persona; si crea anche dalla chat ([ADR 0050](adr/0050-board.md))
 - [x] Board: le schede si trascinano fra le colonne, e chi deve rivedere una scheda lo sa dalla console e, se è l'owner, anche su Telegram o WhatsApp ([ADR 0051](adr/0051-board-trascinare-e-avvisi.md))
-- [x] Board: una scheda può andare da sola fino alla fine, senza aspettare risposte, con un tetto di 10 risposte e 2 ore, poi in «Da rivedere» ([ADR 0058](adr/0058-agenti-da-soli.md))
+- [x] Automazioni: un indirizzo segreto per agente che il modulo del sito, Stripe o Zapier chiamano, e l'agente lavora con i dati ricevuti nella conversazione di chi l'ha creata, una volta per consegna e al più 30 volte l'ora ([ADR 0060](adr/0060-automazioni.md)); da fare la pagina nella console
+- [x] Board: una scheda può andare da sola fino alla fine, senza aspettare risposte, con un tetto di 10 risposte e 2 ore, poi in «Da rivedere» ([ADR 0061](adr/0061-agenti-da-soli.md))
+- [x] Skill: procedure salvate di un agente, con un nome che è anche il comando (`/chiusura-del-mese`), scritte dalla chat come bozze che la persona attiva con `/attiva-skill`, o salvate dalla console, aperte da sole quando servono, importate ed esportate come SKILL.md ([ADR 0059](adr/0059-skill.md)); da fare la pagina nella console e il menu di Telegram
 - [x] Memoria con archivio: le memorie essenziali con ogni messaggio, i dettagli in un archivio di 1000 per persona che Annie cerca quando servono; con le essenziali piene la più vecchia va in archivio invece di un rifiuto ([ADR 0062](adr/0062-memoria-con-archivio.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
