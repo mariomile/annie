@@ -2,18 +2,20 @@
  * The business report in the chat and in a CSV: short, phone length, amounts the Italian way,
  * dates in words. The summary, a comparison (the three biggest changes first), a trend by month,
  * the ranking, the brief's line. Every answer with taxes says they are an estimate to check with
- * the commercialista. Names of clients and categories go only inside one fence per answer; the
- * summary, the comparison and the trend carry none (another agente reads them). An empty register
+ * the commercialista. Names of clients, categories and suppliers go only inside one fence per
+ * answer; the comparison and the trend carry none, the summary only the payments that may be
+ * counted twice, and never for another agente (who reads it). An empty register
  * is said in one line, never shown as zeros. The CSV is made inert by csvFile.
  */
 import { type Figures, type MoneyKey, type Receivables, REPORT_LIMITS, type Span, type TaxPart } from "../business-report.ts";
-import type { Delta } from "../business-report-compare.ts";
+import { biggest, type Delta } from "../business-report-compare.ts";
 import type { Presence } from "../business-report-sums.ts";
 import type { TopClients } from "../business-report-top.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { hm, hoursText } from "../durations.ts";
 import type { CategoryTotal } from "../expense-sums.ts";
 import { euros, n1 } from "../format-words.ts";
+import { partyName } from "../invoices.ts";
 import { daysInMonth, MONTH_NAMES } from "../italian-calendar.ts";
 import { capitalized, signOf, withDate, withPercent } from "../italian-format.ts";
 import { fenced } from "./business-report-input.ts";
@@ -73,15 +75,15 @@ function noTaxWhy(why: Extract<TaxPart, { kind: "none" }>["why"]): string {
 function noTaxReason(why: Extract<TaxPart, { kind: "none" }>["why"]): string {
 	switch (why) {
 		case "no_regime":
-			return "Non so se chi ti scrive è nel forfettario o nell'ordinario: chiediglielo; per il forfettario serve il suo profilo delle tasse (taxes op set_profile), per l'ordinario il regime nei dati dell'azienda (invoices op set_company).";
+			return "non so se chi ti scrive è nel forfettario o nell'ordinario: chiediglielo; per il forfettario serve il suo profilo delle tasse (taxes op set_profile), per l'ordinario il regime nei dati dell'azienda (invoices op set_company).";
 		case "no_profile":
-			return "Manca il profilo delle tasse del forfettario: chiedi a chi ti scrive la sua attività e la cassa previdenziale e salvalo con taxes op set_profile.";
+			return "manca il profilo delle tasse del forfettario: chiedi a chi ti scrive la sua attività e la cassa previdenziale e salvalo con taxes op set_profile.";
 		case "unreadable_taxes":
-			return "Il profilo delle tasse non si legge.";
+			return "il profilo delle tasse non si legge.";
 		case "unreadable_vat":
-			return "La liquidazione IVA non si legge.";
+			return "la liquidazione IVA non si legge.";
 		case "unreadable_invoices":
-			return "Lo stato delle fatture non si legge.";
+			return "lo stato delle fatture non si legge.";
 	}
 }
 
@@ -132,10 +134,24 @@ export const EMPTY = "Per l'andamento dell'attività non ho ancora niente: nei r
 
 const hasTaxes = (f: Figures) => f.tasse !== undefined && f.tasse.kind !== "none";
 
-export type SummaryView = { readonly main: Figures; readonly ytd?: Figures; readonly receivables?: Receivables; readonly presence: Presence; readonly notes: readonly string[] };
+/** `named`: the person asked (names may go in the fence); another agente gets the numbers only. */
+export type SummaryView = { readonly main: Figures; readonly ytd?: Figures; readonly receivables?: Receivables; readonly presence: Presence; readonly notes: readonly string[]; readonly named: boolean };
+
+/** At most this many payments that may be counted twice are named, then «e altri N». */
+const MAYBE_SHOWN = 3;
+
+/** The supplier payments an expense with another name may be: both counted, said; the names only inside the fence, and never to another agente. */
+function maybeLines(f: Figures, named: boolean): string[] {
+	const list = f.spese?.maybe ?? [];
+	if (list.length === 0) return [];
+	if (!named) return [`${n1(list.length, "Un pagamento a un fornitore forse è contato due volte", "# pagamenti a fornitori forse sono contati due volte")}: una spesa e una fattura con nomi diversi, stesso importo.`];
+	const rows = list.slice(0, MAYBE_SHOWN).map((t) => `la spesa «${t.expense.supplier ?? t.expense.id}» ${withDate("del", t.expense.date)} e la fattura di ${partyName(t.paid.invoice.supplier)} (${euros(t.paid.cents)})`);
+	if (list.length > MAYBE_SHOWN) rows.push(`e altri ${list.length - MAYBE_SHOWN}`);
+	return [`Forse è lo stesso pagamento, contato due volte (nel riquadro): chiedi a chi ti scrive.`, fenced(rows.join("\n"))];
+}
 
 export function summaryAnswer(v: SummaryView): string {
-	const lines = [`${capitalized(spanWords(v.main.span))}:`, ...figureLines(v.main, v.presence)];
+	const lines = [`${capitalized(spanWords(v.main.span))}:`, ...figureLines(v.main, v.presence), ...maybeLines(v.main, v.named)];
 	if (v.ytd !== undefined) {
 		const line = shortLine(v.ytd);
 		if (line !== "") lines.push(`${capitalized(spanWords(v.ytd.span))}: ${line}.`);
@@ -184,13 +200,16 @@ export function compareAnswer(v: CompareView): string {
 	const out = at("spese");
 	// No incassi nor spese before: said once, with what there is now; the margine and what is left come from them.
 	const empty = inc !== undefined && out !== undefined && inc.before === 0n && out.before === 0n && (inc.now !== 0n || out.now !== 0n);
-	const rest = empty ? v.biggest.filter((d) => d.key === "fatturato" || d.key === "tasse") : v.biggest;
+	// What else changed: the fatturato and the taxes (incassi and spese are said, the rest comes from them).
+	const rest = empty ? biggest(v.deltas.filter((d) => d.key === "fatturato" || d.key === "tasse")) : v.biggest;
 	if (empty) {
 		const year = v.before.span.from.slice(0, 4);
 		const nowWhen = whenWords(v.now.span);
 		const when = v.now.span.from.slice(0, 4) === year ? nowWhen.replace(new RegExp(` ${year}$`), "") : nowWhen;
 		lines.push(`${capitalized(whenWords(v.before.span))} non c'erano incassi né spese; ${when}: incassati ${euros(inc.now)}, spese ${euros(out.now)}.`);
-		if (rest.length > 0) lines.push(`Poi: ${rest.map((d) => `${label(d.key, v.now)} ${deltaText(d)}`).join("; ")}.`);
+		const only = rest[0];
+		if (rest.length === 1 && only !== undefined) lines.push(`${only.key === "fatturato" ? "Il fatturato" : capitalized(label(only.key, v.now))}: ${deltaText(only)}.`);
+		else if (rest.length > 1) lines.push(`Inoltre: ${rest.map((d) => `${label(d.key, v.now)} ${deltaText(d)}`).join("; ")}.`);
 	} else if (v.biggest.length === 0) lines.push("Niente è cambiato nelle cifre.");
 	else lines.push(`Cosa è cambiato di più: ${v.biggest.map((d) => `${label(d.key, v.now)} ${deltaText(d)}`).join("; ")}.`);
 	for (const d of v.deltas) lines.push(`• ${capitalized(label(d.key, v.now))}: ${euros(d.now)}, prima ${euros(d.before)}, ${deltaText(d)}`);
@@ -200,7 +219,7 @@ export function compareAnswer(v: CompareView): string {
 	if (v.presence.entries && ore !== undefined && oreBefore !== undefined && (ore.minutes > 0 || oreBefore.minutes > 0)) lines.push(`• Ore lavorate: ${hours(ore.minutes)}, prima ${hours(oreBefore.minutes)}`);
 	const p = v.now.preventivi;
 	const pb = v.before.preventivi;
-	if (v.presence.quotes && p !== undefined && pb !== undefined && (p.made > 0 || pb.made > 0)) lines.push(`• Preventivi accettati: ${p.accepted} su ${p.made}, prima ${pb.accepted} su ${pb.made}`);
+	if (v.presence.quotes && p !== undefined && pb !== undefined && (p.made > 0 || pb.made > 0)) lines.push(`• Preventivi accettati: ${p.accepted} su ${p.made}, prima ${pb.made === 0 ? "nessun preventivo" : `${pb.accepted} su ${pb.made}`}`);
 	if (!v.presence.expenses) lines.push("Spese: nessuna registrata, quindi il margine è solo gli incassi.");
 	if (v.deltas.some((d) => d.key === "inTasca") && ordinario(v.now)) lines.push(`Dopo l'IVA vuol dire ${AFTER_IVA}.`);
 	lines.push(...v.notes);

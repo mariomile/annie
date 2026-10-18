@@ -597,37 +597,34 @@ function namesAgree(e: Expense, invoice: Invoice): boolean {
 	return a === "" || b === "" || ` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `);
 }
 
-/**
- * Which supplier instalments marked paid an expense stands for: then the money is counted once,
- * as the expense («mai due volte gli stessi soldi»). Each expense stands for one instalment at
- * most, paired in three passes, in each the nearest days first: partita IVA and number; partita IVA and
- * amount within 1% (of the instalment or the invoice) within PAID_TWIN_DAYS; the amount alone
- * within 1% within PAID_TWIN_DAYS, only when the expense has no partita IVA or the invoice's, and
- * names no other supplier. The balance brought forward (rollForward) and the business report
- * (business-report-sums.ts) share it. Returns one flag per instalment, in order.
- */
-export function pairPaidWithExpenses(paid: readonly PaidInstalment[], expenses: readonly Expense[]): boolean[] {
+/** Within 1% above `amount`: what an expense can cover, rounding aside. */
+const fitsIn = (covered: bigint, amount: bigint) => covered * 100n <= amount * 101n;
+
+/** The pairing: which instalments an expense stands for, and which expenses were taken. */
+function pairing(paid: readonly PaidInstalment[], expenses: readonly Expense[]): { readonly paired: boolean[]; readonly used: ReadonlySet<number> } {
 	const paired = paid.map(() => false);
 	const used = new Set<number>();
 	const invoiceVat = (i: Invoice) => [vatKey(vatOf(i.supplier)), vatKey(i.supplier.fiscal)].filter((v): v is string => v !== undefined);
+	const sameVat = (e: Expense, p: PaidInstalment) => {
+		const vat = vatKey(e.supplierVat);
+		return vat !== undefined && invoiceVat(p.invoice).includes(vat);
+	};
 	const near = (e: Expense, p: PaidInstalment) => Math.abs(daysBetween(e.date, p.day)) <= PAID_TWIN_DAYS;
-	const passes: ((e: Expense, p: PaidInstalment) => boolean)[] = [
-		(e, p) => {
-			const vat = vatKey(e.supplierVat);
-			return vat !== undefined && invoiceVat(p.invoice).includes(vat) && e.docNumber !== undefined && p.invoice.doc.number !== undefined && numberKey(e.docNumber) === numberKey(p.invoice.doc.number);
-		},
-		(e, p) => {
-			const vat = vatKey(e.supplierVat);
-			const cents = expenseCents(e.amount);
-			return vat !== undefined && invoiceVat(p.invoice).includes(vat) && near(e, p) && (sameCents(cents, p.cents) || sameCents(cents, invoiceCents(p.invoice)));
-		},
-		(e, p) => {
-			const vat = vatKey(e.supplierVat);
-			return (vat === undefined || invoiceVat(p.invoice).includes(vat)) && namesAgree(e, p.invoice) && near(e, p) && sameCents(expenseCents(e.amount), p.cents);
+	// `whole`: the expense is the invoice (its number, or its total), so it covers every instalment of it up to its amount; otherwise one instalment.
+	const passes: { readonly whole: boolean; readonly fits: (e: Expense, p: PaidInstalment) => boolean }[] = [
+		{ whole: true, fits: (e, p) => sameVat(e, p) && e.docNumber !== undefined && p.invoice.doc.number !== undefined && numberKey(e.docNumber) === numberKey(p.invoice.doc.number) },
+		{ whole: false, fits: (e, p) => sameVat(e, p) && near(e, p) && sameCents(expenseCents(e.amount), p.cents) },
+		{ whole: true, fits: (e, p) => sameVat(e, p) && near(e, p) && sameCents(expenseCents(e.amount), invoiceCents(p.invoice)) },
+		{
+			whole: false,
+			fits: (e, p) => {
+				const vat = vatKey(e.supplierVat);
+				return (vat === undefined || invoiceVat(p.invoice).includes(vat)) && namesAgree(e, p.invoice) && near(e, p) && sameCents(expenseCents(e.amount), p.cents);
+			},
 		},
 	];
-	for (const fits of passes) {
-		// Every pair that fits, the nearest days first; each instalment and each expense taken once.
+	for (const { whole, fits } of passes) {
+		// Every pair that fits, the nearest days first; each expense taken once.
 		const pairs: { n: number; k: number; days: number }[] = [];
 		paid.forEach((p, n) => {
 			if (paired[n]) return;
@@ -638,11 +635,76 @@ export function pairPaidWithExpenses(paid: readonly PaidInstalment[], expenses: 
 		pairs.sort((a, b) => a.days - b.days || a.n - b.n || a.k - b.k);
 		for (const { n, k } of pairs) {
 			if (paired[n] || used.has(k)) continue;
-			paired[n] = true;
 			used.add(k);
+			if (!whole) {
+				paired[n] = true;
+				continue;
+			}
+			// The instalment it was matched with, then the invoice's others by the day paid, while the expense's amount lasts.
+			paired[n] = true;
+			const amount = expenseCents((expenses[k] as Expense).amount);
+			const first = paid[n] as PaidInstalment;
+			const same = paid
+				.map((p, m) => ({ p, m }))
+				.filter(({ p, m }) => !paired[m] && p.invoice.key === first.invoice.key)
+				.sort((x, y) => (x.p.day < y.p.day ? -1 : x.p.day > y.p.day ? 1 : x.m - y.m));
+			let covered = first.cents;
+			for (const { p, m } of same) {
+				if (!fitsIn(covered + p.cents, amount)) continue;
+				covered += p.cents;
+				paired[m] = true;
+			}
 		}
 	}
-	return paired;
+	return { paired, used };
+}
+
+/**
+ * Which supplier instalments marked paid an expense stands for: then the money is counted once,
+ * as the expense («mai due volte gli stessi soldi»). In passes, in each the nearest days first:
+ * partita IVA and number; partita IVA and the instalment's amount within 1% within
+ * PAID_TWIN_DAYS; partita IVA and the invoice's total within 1% within PAID_TWIN_DAYS; the
+ * amount alone within 1% within PAID_TWIN_DAYS, only when the expense has no partita IVA or the
+ * invoice's, and names no other supplier. An expense matched by the invoice's number or total is
+ * the whole invoice: it covers each of its instalments while its amount lasts; matched by an
+ * instalment's amount, that instalment only. The balance brought forward (rollForward) and the
+ * business report (business-report-sums.ts) share it. Returns one flag per instalment, in order.
+ */
+export function pairPaidWithExpenses(paid: readonly PaidInstalment[], expenses: readonly Expense[]): boolean[] {
+	return pairing(paid, expenses).paired;
+}
+
+/** A supplier payment and an expense that may be the same money, both counted. */
+export type MaybeTwin = { readonly paid: PaidInstalment; readonly expense: Expense };
+
+/**
+ * The payments no expense stands for that an expense left unpaired may still be: the expense has
+ * no partita IVA, names another supplier (a brand, «TIM», for a company, «Telecom Italia
+ * S.p.A.»), has exactly the amount and is within PAID_TWIN_DAYS. Both stay counted; they are said,
+ * so the person can tell. Each payment and each expense once, the nearest days first.
+ */
+export function maybeTwins(paid: readonly PaidInstalment[], expenses: readonly Expense[]): MaybeTwin[] {
+	const { paired, used } = pairing(paid, expenses);
+	const pairs: { n: number; k: number; days: number }[] = [];
+	paid.forEach((p, n) => {
+		if (paired[n]) return;
+		expenses.forEach((e, k) => {
+			if (used.has(k) || vatKey(e.supplierVat) !== undefined || namesAgree(e, p.invoice) || expenseCents(e.amount) !== p.cents) return;
+			const days = Math.abs(daysBetween(e.date, p.day));
+			if (days <= PAID_TWIN_DAYS) pairs.push({ n, k, days });
+		});
+	});
+	pairs.sort((a, b) => a.days - b.days || a.n - b.n || a.k - b.k);
+	const out: MaybeTwin[] = [];
+	const seenN = new Set<number>();
+	const seenK = new Set<number>();
+	for (const { n, k } of pairs) {
+		if (seenN.has(n) || seenK.has(k)) continue;
+		seenN.add(n);
+		seenK.add(k);
+		out.push({ paid: paid[n] as PaidInstalment, expense: expenses[k] as Expense });
+	}
+	return out;
 }
 
 /** An instalment marked paid after the balance: what it was, how much, the day. */
@@ -658,6 +720,8 @@ export type Rolled = {
 	readonly expenseCount: number;
 	/** Supplier invoices marked paid after the balance, with no expense standing for them: taken off. */
 	readonly paidPassive: readonly RolledInvoice[];
+	/** Of those, the ones an expense with another supplier's name and the same amount may be (maybeTwins): both counted, said. */
+	readonly maybe?: readonly MaybeTwin[];
 	/** AutoPay charges after the balance's day, before today, not recorded: taken off. */
 	readonly renewals: bigint;
 	/** In less out: what is added to the balance. */
@@ -701,10 +765,9 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		}
 	}
 	// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).
-	const stands = pairPaidWithExpenses(
-		passive.map((r) => ({ invoice: r.invoice, cents: r.cents, day: r.date })),
-		expenses,
-	);
+	const instalments = passive.map((r) => ({ invoice: r.invoice, cents: r.cents, day: r.date }));
+	const stands = pairPaidWithExpenses(instalments, expenses);
+	const maybe = maybeTwins(instalments, expenses);
 	passive.forEach((r, n) => {
 		if (!stands[n]) paidPassive.push(r);
 	});
@@ -729,7 +792,7 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 	const inCents = incassi.reduce((n, r) => n + r.cents, 0n);
 	const outCents = paidPassive.reduce((n, r) => n + r.cents, 0n);
 	if (incassi.length === 0 && recorded.length === 0 && paidPassive.length === 0 && charged === 0n) return undefined;
-	return { from: balance.date, incassi, expenses: spent, expenseCount: recorded.length, paidPassive, renewals: charged, net: inCents - spent - outCents - charged };
+	return { from: balance.date, incassi, expenses: spent, expenseCount: recorded.length, paidPassive, ...(maybe.length === 0 ? {} : { maybe }), renewals: charged, net: inCents - spent - outCents - charged };
 }
 
 /** A what_if change: an invoice by number (with its party, when said) or a party's invoices and accepted quotes, paid `days` later, or not at all. */

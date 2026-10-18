@@ -12,8 +12,9 @@
  *   to customers used in the span.
  * - spese: the expenses dated in the span (expense-sums.ts totalsOf), and the instalments of
  *   supplier invoices paid in the span (by the day paid) that no expense stands for, by the rule
- *   the cashflow brings a balance forward with (cashflow-sources.ts pairPaidWithExpenses, one expense for one
- *   instalment at most): the same money is never counted twice. A renewal counts through the expense its payment recorded,
+ *   the cashflow brings a balance forward with (cashflow-sources.ts pairPaidWithExpenses): the same money is never counted twice.
+ *   A payment an expense with another supplier's name and the same amount may be is counted
+ *   and said (cashflow-sources.ts maybeTwins). A renewal counts through the expense its payment recorded,
  *   never on its own.
  * - margine: incassato less spese; in tasca: margine less the taxes estimated
  *   (business-report-taxes.ts).
@@ -27,7 +28,7 @@
 import { type Figures, type Receivables, REPORT_LIMITS, type Span } from "./business-report.ts";
 import { type TaxSetting, taxesIn } from "./business-report-taxes.ts";
 import { unitsToCents } from "./cash-book.ts";
-import { invoiceFlows, type PaidInstalment, pairPaidWithExpenses } from "./cashflow-sources.ts";
+import { invoiceFlows, maybeTwins, type PaidInstalment, pairPaidWithExpenses } from "./cashflow-sources.ts";
 import { collectedIn } from "./client-sums.ts";
 import type { Expense } from "./expenses.ts";
 import { totalsOf } from "./expense-sums.ts";
@@ -91,7 +92,7 @@ function fatturatoIn(docs: readonly VatDoc[], span: Span): NonNullable<Figures["
 }
 
 /** The supplier invoices paid in `span` that no expense stands for; `twins`: those an expense stands for (each expense one instalment at most). */
-function supplierPaid(invoices: readonly Invoice[], expenses: readonly Expense[], span: Span, dayOf: (at: string) => string): { cents: bigint; count: number; twins: number } {
+function supplierPaid(invoices: readonly Invoice[], expenses: readonly Expense[], span: Span, dayOf: (at: string) => string): { cents: bigint; count: number; twins: number; maybe: ReturnType<typeof maybeTwins> } {
 	const paid: PaidInstalment[] = [];
 	for (const invoice of invoices) {
 		if (invoice.side !== "passive" || invoice.credit || invoice.doc.integration || invoice.doc.currency !== "EUR") continue;
@@ -112,7 +113,7 @@ function supplierPaid(invoices: readonly Invoice[], expenses: readonly Expense[]
 			count++;
 		}
 	});
-	return { cents, count, twins };
+	return { cents, count, twins, maybe: maybeTwins(paid, expenses) };
 }
 
 function quotesIn(quotes: readonly Quote[], span: Span): NonNullable<Figures["preventivi"]> {
@@ -142,7 +143,7 @@ export function figuresIn(s: Sources, span: Span): Figures {
 	if (s.expenses !== undefined) {
 		const own = totalsOf(s.expenses, span);
 		const suppliers = supplierPaid(s.invoices ?? [], s.expenses, span, s.dayOf);
-		spese = { cents: own.total + suppliers.cents, expenses: own.count, suppliers: suppliers.count, supplierCents: suppliers.cents, twins: suppliers.twins };
+		spese = { cents: own.total + suppliers.cents, expenses: own.count, suppliers: suppliers.count, supplierCents: suppliers.cents, twins: suppliers.twins, ...(suppliers.maybe.length === 0 ? {} : { maybe: suppliers.maybe }) };
 	}
 	const margine = incassato === undefined || spese === undefined ? undefined : incassato - spese.cents;
 	const tasse = taxesIn(s, span);

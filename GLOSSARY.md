@@ -285,6 +285,10 @@ _Avoid_: VAT settlement, dichiarazione (per la liquidazione periodica)
 Il file con i movimenti del conto che la banca dà (CSV, Excel o CAMT.053). Annie lo legge con `bank_statement` e spiega ogni movimento; l'abbinamento a una fattura, una spesa, un rinnovo o un F24 è sicuro o debole (solo l'importo) e cambia gli altri registri solo dopo un sì. Vedi ADR 0078.
 _Avoid_: bank statement, movimenti bancari (per il file)
 
+**Margine**:
+Nell'andamento dell'attività, gli incassi meno le spese dello stesso periodo, per cassa. Per il forfettario, tolte le tasse stimate, è quanto «ti resta in tasca»; per l'ordinario Annie dice solo quanto resta dopo l'IVA, prima di IRPEF e contributi. Lo calcola `business_report`. Vedi ADR 0080.
+_Avoid_: profitto, utile (per il margine per cassa)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

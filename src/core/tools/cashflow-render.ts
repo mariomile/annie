@@ -11,7 +11,7 @@
  */
 import { type Balance, BRIEF_DAYS, BRIEF_STALE_DAYS, type CashItem, type Kind, ROLL_NOTE_DAYS, STALE_BALANCE_DAYS, signedCents, STALE_OVERDUE_DAYS } from "../cashflow.ts";
 import { buckets, firstBelow, type Point, type Projection, WEEKLY_MAX_DAYS } from "../cashflow-projection.ts";
-import { type AverageSpend, type Duplicate, type Hypothetical, type InvoiceFlows, type Movement, QUOTE_MIN_DAYS, QUOTE_PAY_DAYS, QUOTE_STALE_DAYS, type QuoteFlows, type RenewalFlows, type Rolled, type RolledInvoice, type Source, type TaxMaybe, type TaxTwin } from "../cashflow-sources.ts";
+import { type AverageSpend, type Duplicate, type Hypothetical, type InvoiceFlows, type MaybeTwin, type Movement, QUOTE_MIN_DAYS, QUOTE_PAY_DAYS, QUOTE_STALE_DAYS, type QuoteFlows, type RenewalFlows, type Rolled, type RolledInvoice, type Source, type TaxMaybe, type TaxTwin } from "../cashflow-sources.ts";
 import type { Expense } from "../expenses.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { euros, n1 } from "../format-words.ts";
@@ -268,6 +268,12 @@ function duplicateRow(d: Duplicate, today: string, maybe = false): string {
 	return `• ${movementLabel(d.other, today)}, ${euros(d.other.cents)}: ${maybe ? "forse è lo stesso pagamento" : "è il pagamento"} ${withNearDate("del", d.renewal.date, today)} di ${of}`;
 }
 
+/** «fatt. T-1 a Telecom Italia S.p.A., 50,00 €: forse è lo stesso pagamento della spesa «TIM» del 6/10», to be fenced. */
+function maybeTwinRow(t: MaybeTwin, today: string): string {
+	const m: Movement = { date: t.paid.day, kind: "out", cents: t.paid.cents, source: "invoice", invoice: t.paid.invoice };
+	return `• ${movementLabel(m, today)}, ${euros(t.paid.cents)}: forse è lo stesso pagamento della spesa «${t.expense.supplier ?? t.expense.id}» ${withShortDate("del", t.expense.date, today)}`;
+}
+
 const staleIn = (v: View) => (v.invoices?.stale ?? []).filter((m) => m.kind === "in");
 const staleOut = (v: View) => (v.invoices?.stale ?? []).filter((m) => m.kind === "out");
 
@@ -284,7 +290,7 @@ function forecastSections(p: Projection, v: View): Section[] {
 		...section(`Da incassare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleIn(v).map(row)),
 		...section(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleOut(v).map(row)),
 		...section("Probabili doppioni:", [...v.duplicates.map((d) => duplicateRow(d, today)), ...(v.taxTwins ?? []).map((t) => taxTwinRow(t, today))]),
-		...section("Forse doppioni, contati tutti e due:", (v.maybe ?? []).map((d) => duplicateRow(d, today, true))),
+		...section("Forse doppioni, contati tutti e due:", [...(v.maybe ?? []).map((d) => duplicateRow(d, today, true)), ...(v.rolled?.maybe ?? []).map((t) => maybeTwinRow(t, today))]),
 		...section("Forse doppioni, conto la stima dell'F24:", (v.taxMaybe ?? []).map((m) => taxMaybeRow(m, today))),
 		...section(`Preventivi accettati da più di ${QUOTE_STALE_DAYS} giorni:`, (v.quotes?.old ?? []).map((o) => `• ${o.quote.customer.name}, preventivo accettato ${o.quote.number}, ${euros(o.cents)} non ancora fatturati. È ancora da fare o da fatturare?`)),
 	];
@@ -309,6 +315,8 @@ function summaryLines(v: View): string[] {
 	if (taxMaybe > 0) out.push(`${n1(taxMaybe, "Una spesa sembra un F24 ma è molto più bassa della stima", "# spese sembrano F24 ma sono molto più basse della stima")}: tengo la stima. Chiedi a chi ti scrive se l'F24 è già pagato.`);
 	const maybe = v.maybe?.length ?? 0;
 	if (maybe > 0) out.push(`${n1(maybe, "Una fattura di un fornitore forse è il pagamento di un rinnovo", "# fatture di fornitori forse sono il pagamento di un rinnovo")}: per ora conto sia la fattura sia il rinnovo. Chiedi a chi ti scrive se è lo stesso pagamento: se sì, va indicato il fornitore nel rinnovo.`);
+	const paidTwins = v.rolled?.maybe?.length ?? 0;
+	if (paidTwins > 0) out.push(`${n1(paidTwins, "Una fattura di un fornitore pagata forse è già tra le spese con un altro nome", "# fatture di fornitori pagate forse sono già tra le spese con un altro nome")}: per ora conto tutte e due. Chiedi a chi ti scrive se è lo stesso pagamento.`);
 	const old = v.quotes?.old ?? [];
 	if (old.length > 0) out.push(`${n1(old.length, "Un preventivo accettato", "# preventivi accettati")} da più di ${QUOTE_STALE_DAYS} giorni non ${n1(old.length, "è contato", "sono contati")}: ${euros(sum(old))}. Chiedi a chi ti scrive se ${n1(old.length, "è", "sono")} ancora da fare o da fatturare.`);
 	return out;

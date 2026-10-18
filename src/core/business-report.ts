@@ -10,6 +10,7 @@
  * and the months in business-report-compare.ts, the ranking in business-report-top.ts; the tool in
  * tools/business-report-tools.ts.
  */
+import type { MaybeTwin } from "./cashflow-sources.ts";
 import { weekend } from "./italian-calendar.ts";
 import type { Span } from "./periods.ts";
 
@@ -77,7 +78,7 @@ export type Figures = {
 	/** The money in: instalments paid in the span, IVA included, less the credit notes used. */
 	readonly incassato?: bigint;
 	/** The expenses dated in the span, and the supplier invoices paid in it that no expense stands for. */
-	readonly spese?: { readonly cents: bigint; readonly expenses: number; readonly suppliers: number; readonly supplierCents: bigint; readonly twins: number };
+	readonly spese?: { readonly cents: bigint; readonly expenses: number; readonly suppliers: number; readonly supplierCents: bigint; readonly twins: number; readonly maybe?: readonly MaybeTwin[] };
 	/** Incassato less spese. */
 	readonly margine?: bigint;
 	readonly tasse?: TaxPart;

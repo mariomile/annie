@@ -192,6 +192,7 @@ export function createBusinessReportTools(options: BusinessReportToolsOptions): 
 			...(receivables === undefined ? {} : { receivables }),
 			presence: l.presence,
 			notes: l.notes,
+			named: ctx.thread?.channel !== AGENT_CHANNEL,
 		});
 	}
 

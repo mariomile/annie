@@ -9,7 +9,7 @@ import { briefSpeaks, businessAgentReads, businessCallReads, type Figures, REPOR
 import { biggest, comparedTo, deltas, lastMonths, lastYearSpan, monthsOf, readAgainst, signedPercent, spanBefore, yearBack } from "../src/core/business-report-compare.ts";
 import { figuresIn, presenceOf, receivablesOf, sourcesOf } from "../src/core/business-report-sums.ts";
 import { reportConcentrated } from "../src/core/business-report-top.ts";
-import { pairPaidWithExpenses, rollForward } from "../src/core/cashflow-sources.ts";
+import { maybeTwins, pairPaidWithExpenses, rollForward } from "../src/core/cashflow-sources.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
@@ -341,11 +341,11 @@ describe("business report: the figures of a period", () => {
 		const none = await setup();
 		const a = await none.run({ op: "summary", period: "ottobre" });
 		expect(a).toContain("• Tasse: non stimate (il perché è in fondo).");
-		expect(a).toContain("\nTasse non stimate: Non so se chi ti scrive è nel forfettario o nell'ordinario");
+		expect(a).toContain("\nTasse non stimate: non so se chi ti scrive è nel forfettario o nell'ordinario");
 		expect(a).not.toContain("Ti resta in tasca");
 		expect(a).not.toContain(TAX_NOTE);
 		const forf = await setup({ regime: "forfettario" });
-		expect(await forf.run({ op: "summary", period: "ottobre" })).toContain("Manca il profilo delle tasse del forfettario");
+		expect(await forf.run({ op: "summary", period: "ottobre" })).toContain("manca il profilo delle tasse del forfettario");
 	});
 });
 
@@ -402,7 +402,7 @@ describe("business report: empty and broken registers", () => {
 		const s = await setup({ regime: "forfettario" });
 		writeFileSync(join(s.dir, "taxes.json"), "nope");
 		const answer = await s.run({ op: "summary", period: "ottobre" });
-		expect(answer).toContain("Tasse non stimate: Il profilo delle tasse non si legge.");
+		expect(answer).toContain("Tasse non stimate: il profilo delle tasse non si legge.");
 		expect(readFileSync(join(s.dir, "taxes.json"), "utf8")).toBe("nope");
 		const sales = await setup({ salesBroken: true });
 		const answer2 = await sales.run({ op: "summary", period: "ottobre" });
@@ -436,7 +436,7 @@ describe("business report: compare", () => {
 		const answer = await s.run({ op: "compare", period: "settembre" });
 		expect(answer.split("\n")[0]).toBe("Settembre 2026 rispetto ad agosto 2026:");
 		// August had the fatturato of FV-0, no incassi nor spese: said once.
-		expect(answer).toContain("\nAd agosto 2026 non c'erano incassi né spese; a settembre: incassati 976,00 €, spese 300,00 €.\nPoi: fatturato +200,00 € (+25%).\n");
+		expect(answer).toContain("\nAd agosto 2026 non c'erano incassi né spese; a settembre: incassati 976,00 €, spese 300,00 €.\nIl fatturato: +200,00 € (+25%).\n");
 		expect(answer.match(/non c'era/g)).toHaveLength(1);
 		expect(answer).toContain("• Incassato: 976,00 €, prima 0,00 €, +976,00 €\n");
 		const custom = await s.run({ op: "compare", from: "1/10/2026", to: "10/10/2026" });
@@ -780,7 +780,7 @@ describe("business report: week 61 review fixes", () => {
 		const s = await setup();
 		const sept = await s.run({ op: "compare", period: "settembre" });
 		expect(sept).toContain("• Ore lavorate: 1 ora, prima nessuna");
-		expect(sept).toContain("• Preventivi accettati: 1 su 1, prima 0 su 0");
+		expect(sept).toContain("• Preventivi accettati: 1 su 1, prima nessun preventivo");
 		const aug = await s.run({ op: "compare", period: "agosto" });
 		expect(aug).not.toContain("Preventivi");
 		expect(aug).not.toContain("Ore lavorate");
@@ -809,6 +809,90 @@ describe("business report: week 61 review fixes", () => {
 			"Il registro delle spese non si legge: spese e margine qui non ci sono.",
 			"Una fattura emessa non entra nel fatturato (senza riepilogo IVA, senza data o in un'altra valuta).",
 		]);
+	});
+});
+
+describe("business report: week 61 second review fixes", () => {
+	const R5 = {
+		files: { "f/s.xml": xml(SUPPLIER, COMPANY, { number: "R-5", date: "2026-10-01", rows: [r22("819.67")], rate: [{ amount: "500.00", due: "2026-10-05" }, { amount: "500.00", due: "2026-10-15" }] }) },
+		expenses: [expense("S-2026-0001", "2026-10-05", "1000", { supplier: SUPPLIER.name, supplierVat: SUPPLIER.vat, docType: "fattura", docNumber: "R-5", category: "consulenze" })],
+		quotes: [],
+		entries: [],
+	};
+	const balance = { amount: "1000", date: "2026-10-01", by: "u", at: "2026-10-01T18:00:00.000Z" };
+
+	it("1: one expense for a whole invoice in instalments covers each instalment up to its amount, in the report and in the balance brought forward", async () => {
+		const s = await setup({ ...R5, paid: { "R-5#1": "2026-10-05T08:00:00.000Z", "R-5#2": "2026-10-15T08:00:00.000Z" } });
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• Spese: 1.000,00 € (1 spesa registrata)\n");
+		const invoices = await s.registerNow();
+		const r5 = invoices.find((i) => i.doc.number === "R-5") as Invoice;
+		const both = [
+			{ invoice: r5, cents: 50000n, day: "2026-10-05" },
+			{ invoice: r5, cents: 50000n, day: "2026-10-15" },
+		];
+		expect(pairPaidWithExpenses(both, R5.expenses)).toEqual([true, true]);
+		// By the invoice's total within the days, the same; by an instalment's amount, one only.
+		expect(pairPaidWithExpenses(both, [expense("S-2", "2026-10-06", "1000", { supplierVat: SUPPLIER.vat })])).toEqual([true, true]);
+		expect(pairPaidWithExpenses(both, [expense("S-3", "2026-10-06", "500", { supplierVat: SUPPLIER.vat })])).toEqual([true, false]);
+		expect(pairPaidWithExpenses(both, [expense("S-4", "2026-10-06", "500")])).toEqual([true, false]);
+		// Its amount runs out: 600 € by number covers the first 500 € only.
+		expect(pairPaidWithExpenses(both, [expense("S-5", "2026-10-05", "600", { supplierVat: SUPPLIER.vat, docNumber: "R-5" })])).toEqual([true, false]);
+		// The balance brought forward: neither instalment taken off, by hand or by the bank.
+		const rolled = rollForward(balance, "2026-10-18T08:00:00.000Z", TODAY, invoices, R5.expenses, [], dayOf);
+		expect(rolled?.paidPassive).toEqual([]);
+		expect(rolled?.net).toBe(-100000n);
+		const bank = await setup({ ...R5, paid: {} });
+		const store = bank.invoices;
+		const [inv] = (await bank.registerNow()).filter((i) => i.doc.number === "R-5");
+		for (const [n, on] of [[1, "2026-10-05"], [2, "2026-10-15"]] as const) store.mark({ invoice: inv?.key as string, count: 2, instalment: n, paid: true, on, source: "bank", by: "test:u", at: `${on}T09:00:00.000Z` });
+		const fromBank = rollForward(balance, "2026-10-18T08:00:00.000Z", TODAY, await bank.registerNow(), R5.expenses, [], dayOf);
+		expect(fromBank?.paidPassive).toEqual([]);
+	});
+
+	it("2: a receipt «TIM» without partita IVA and Telecom Italia's invoice of the same amount: both counted, said as maybe the same payment", async () => {
+		const telecom = { name: "Telecom Italia S.p.A.", vat: "33333330013" };
+		const tim = (id: string, date: string) => expense(id, date, "50", { supplier: "TIM", category: "telefono e internet" });
+		const files: Record<string, string> = {};
+		const paid: Record<string, string> = {};
+		for (let i = 1; i <= 5; i++) {
+			files[`f/t${i}.xml`] = xml(telecom, COMPANY, { number: `T-${i}`, date: "2026-10-01", rows: [r22("40.98")], due: `2026-10-0${i + 1}` });
+			paid[`T-${i}`] = `2026-10-0${i + 1}T08:00:00.000Z`;
+		}
+		const one = await setup({ files: { "f/t1.xml": files["f/t1.xml"] as string }, paid: { "T-1": "2026-10-05T08:00:00.000Z" }, expenses: [tim("S-1", "2026-10-05")], quotes: [], entries: [] });
+		const answer = await one.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• Spese: 100,00 € (1 spesa registrata, 1 fattura di fornitore pagata)");
+		expect(outside(answer)).toContain("Forse è lo stesso pagamento, contato due volte (nel riquadro): chiedi a chi ti scrive.");
+		expect(inside(answer)).toBe("la spesa «TIM» del 5 ottobre 2026 e la fattura di Telecom Italia S.p.A. (50,00 €)");
+		expect(outside(answer)).not.toMatch(/TIM|Telecom/);
+		const toAgent = await one.run({ op: "summary", period: "ottobre" }, agent());
+		expect(toAgent).toContain("Un pagamento a un fornitore forse è contato due volte: una spesa e una fattura con nomi diversi, stesso importo.");
+		expect(toAgent).not.toMatch(/TIM|Telecom/);
+		expect(fences(toAgent)).toHaveLength(0);
+		// At most three named, then «e altri N».
+		const many = await setup({ files, paid, expenses: [1, 2, 3, 4, 5].map((i) => tim(`S-${i}`, `2026-10-0${i + 1}`)), quotes: [], entries: [] });
+		const listed = inside(await many.run({ op: "summary", period: "ottobre" })).split("\n");
+		expect(listed).toHaveLength(4);
+		expect(listed[3]).toBe("e altri 2");
+		// Not said when the amount is not exact, or the receipt has a partita IVA, or the names agree (then it is one payment).
+		const invoices = await one.registerNow();
+		const t1 = { invoice: invoices.find((i) => i.doc.number === "T-1") as Invoice, cents: 5000n, day: "2026-10-05" };
+		expect(maybeTwins([t1], [expense("S-9", "2026-10-05", "50.10", { supplier: "TIM" })])).toEqual([]);
+		expect(maybeTwins([t1], [expense("S-9", "2026-10-05", "50", { supplier: "TIM", supplierVat: "11111110018" })])).toEqual([]);
+		expect(maybeTwins([t1], [expense("S-9", "2026-10-05", "50", { supplier: "Telecom Italia" })])).toEqual([]);
+		expect(maybeTwins([t1], [expense("S-9", "2026-10-15", "50", { supplier: "TIM" })])).toEqual([]);
+	});
+
+	it("3: «Il fatturato:» for one more change, «Inoltre:» for more; the reason for no taxes in lowercase; «prima nessun preventivo»", async () => {
+		const now = fig({ incassato: 50000n, spese: 10000n, fatturato: 90000n });
+		const before = { ...fig({ incassato: 0n, spese: 0n, fatturato: 60000n }), tasse: { kind: "forfettario" as const, cents: 1000n } };
+		const withTax = { ...now, tasse: { kind: "forfettario" as const, cents: 3000n } };
+		const list = deltas(withTax, before);
+		const answer = compareAnswer({ now: withTax, before, deltas: list, biggest: biggest(list), presence: PRESENT, notes: [] });
+		expect(answer).toContain("\nInoltre: fatturato +300,00 € (+50%); tasse stimate +20,00 € (+200%).\n");
+		const s = await setup({ regime: "forfettario" });
+		expect(await s.run({ op: "summary", period: "ottobre" })).toContain("\nTasse non stimate: manca il profilo delle tasse del forfettario");
+		expect(await s.run({ op: "compare", period: "settembre" })).toContain("• Preventivi accettati: 1 su 1, prima nessun preventivo");
 	});
 });
 
