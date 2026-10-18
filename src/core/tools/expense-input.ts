@@ -9,15 +9,14 @@
  * Reading (readFields) is apart from applying (applyFields): an edit applies only the fields
  * given, to the expense as saved under the store's lock.
  */
-import { DateError, readDate } from "../dates.ts";
+import { foreignCurrency } from "../currency-words.ts";
 import { CATEGORIES, type Category, DOC_TYPES, type DocType, EXPENSE_LIMITS, type Expense, idOrder, matchCategory, matchMethod, type Method, METHODS, RECEIPT_FILE, SUPPLIER_VAT, validReceiptPath } from "../expenses.ts";
 import { cents, centsValue, vatInGross } from "../expense-sums.ts";
 import { normalPath } from "../invoices.ts";
-import { addDays, daysBetween, realDate, weekdayOf } from "../italian-calendar.ts";
-import { italianDate, italianWeekday } from "../italian-format.ts";
 import { VAT_RATES, type VatRate } from "../quote-sums.ts";
 import { fold } from "../text-match.ts";
 import type { Workspace } from "../workspace.ts";
+import { type DayWords, readPastDay } from "./day-input.ts";
 import { fenced } from "./expense-render.ts";
 import { cleanText, isProblem, type Problem, readAmount } from "./quote-input.ts";
 
@@ -27,17 +26,13 @@ export type ExpenseDraft = Omit<Expense, "id" | "by" | "at" | "callId" | "edited
 /** The fields an edit may change; any of them given makes it an edit. */
 const EDIT_FIELDS = ["date", "amount", "vat", "vat_rate", "supplier", "supplier_vat", "doc_type", "doc_number", "category", "method", "note", "receipt"] as const;
 
-const FIRST_DAY = "2000-01-01";
-
-const FOREIGN = /\$|£|¥|\b(?:usd|gbp|chf|jpy|cad|aud|dollar\w*|sterlin\w*|franch\w*|yen)\b/i;
-
 const NOT_EURO = "l'importo è in un'altra valuta: convertilo in euro con exchange_rate alla data dello scontrino, passa gli euro in amount e scrivi l'importo originale in note";
 const NEGATIVE = "l'importo è negativo: per un reso o un rimborso correggi la spesa con op edit o toglila con op remove";
 
 /** The total: more than zero, in euros, at most EXPENSE_LIMITS.maxAmount, to the cent; undefined when not given. */
 export function readTotal(value: unknown): string | undefined | Problem {
 	if (value === undefined) return undefined;
-	if (typeof value === "string" && FOREIGN.test(value)) return { problem: NOT_EURO };
+	if (foreignCurrency(value)) return { problem: NOT_EURO };
 	if ((typeof value === "number" && value < 0) || (typeof value === "string" && /^\s*(?:€|eur\w*)?\s*-/i.test(value))) return { problem: NEGATIVE };
 	const read = readAmount(value, 2, "amount", fenced);
 	if (isProblem(read) || read === undefined) return read;
@@ -46,57 +41,12 @@ export function readTotal(value: unknown): string | undefined | Problem {
 	return read;
 }
 
-const WEEKDAYS = ["domenica", "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato"];
-const WEEKDAY = new RegExp(`^(?:(?:il|lo|la) )?(${WEEKDAYS.join("|")})(?: (scors[oa])| (\\d{1,2}))?$`);
-const BAD_DAY = "scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato";
-/** A date without a year placed further back than this: said, it may be last year by mistake. */
-const FAR_BACK_DAYS = 300;
+/** What a day said wrong is called in the expenses' answers. */
+const EXPENSE_DAY: DayWords = { field: "date è la data della spesa", future: "una spesa si registra quando è fatta" };
 
-/**
- * The day of the expense: today when not said; «ieri», «l'altro ieri», a weekday («sabato», «la
- * domenica»: the last one up to today; «sabato scorso»: the last one before today; «venerdì 16»:
- * the last 16th up to today, which must be a Friday), a date (without a year the latest one
- * gone, with a note when that is almost a year back). Never a day to come, nor before 2000.
- */
+/** The day of the expense (day-input.ts' readPastDay): today when not said, never a day to come. */
 export function readDayNoted(value: unknown, today: string): { date: string; note?: string } | Problem {
-	if (value === undefined) return { date: today };
-	if (typeof value !== "string" || value.trim() === "" || value.length > 40) return { problem: `date è la data della spesa: ${BAD_DAY}` };
-	const t = fold(value).replace(/\s+/g, " ").trim();
-	let date: string;
-	let yearless = false;
-	const weekday = WEEKDAY.exec(t);
-	if (weekday !== null) {
-		const wanted = WEEKDAYS.indexOf(weekday[1] as string);
-		if (weekday[3] !== undefined) {
-			const day = Number(weekday[3]);
-			let candidate: string | undefined;
-			// The last such day of the month up to today, in the last twelve months.
-			for (let back = 0; back < 12 && candidate === undefined; back++) {
-				const month = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 1 - back, 1)).toISOString().slice(0, 7);
-				const c = `${month}-${String(day).padStart(2, "0")}`;
-				if (realDate(c) && c <= today) candidate = c;
-			}
-			if (candidate === undefined) return { problem: `non capisco la data: ${BAD_DAY}` };
-			if (weekdayOf(candidate) !== wanted) return { problem: `il ${italianDate(candidate)} è ${italianWeekday(candidate)}, non ${weekday[1]}: ${BAD_DAY}` };
-			date = candidate;
-		} else {
-			const back = (weekdayOf(today) - wanted + 7) % 7;
-			date = addDays(today, -(back === 0 && weekday[2] !== undefined ? 7 : back));
-		}
-	} else {
-		try {
-			const read = readDate(/^l'? ?altro ?ieri$/.test(t) ? "altro ieri" : value, today, { rule: "past" });
-			date = read.date;
-			yearless = read.yearless;
-		} catch (error) {
-			if (error instanceof DateError) return { problem: `non capisco la data: ${BAD_DAY}` };
-			throw error;
-		}
-	}
-	if (date > today) return { problem: `la data ${italianDate(date)} non è ancora arrivata: una spesa si registra quando è fatta` };
-	if (date < FIRST_DAY) return { problem: "la data è prima del 2000: ricontrollala" };
-	if (yearless && daysBetween(date, today) > FAR_BACK_DAYS) return { date, note: `Ho messo il ${italianDate(date)}: se era un'altra data correggila con op edit.` };
-	return { date };
+	return readPastDay(value, today, EXPENSE_DAY);
 }
 
 /** readDayNoted's day alone. */
@@ -191,7 +141,7 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 	}
 	if (removed("vat")) out.vat = null;
 	else {
-		if (typeof args.vat === "string" && FOREIGN.test(args.vat)) return { problem: NOT_EURO };
+		if (foreignCurrency(args.vat)) return { problem: NOT_EURO };
 		const vat = readAmount(args.vat, 2, "vat", fenced);
 		if (isProblem(vat)) return vat;
 		if (vat !== undefined) out.vat = vat;

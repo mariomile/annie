@@ -10,8 +10,9 @@ import { csvCents, csvFile, csvLine, csvText } from "../src/core/csv.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
-import { cents, comparedSpans, percentChange, previousPeriod, readPeriod, totalsOf, vatInGross } from "../src/core/expense-sums.ts";
-import { EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, matchCategory, matchMethod } from "../src/core/expenses.ts";
+import { cents, totalsOf, vatInGross } from "../src/core/expense-sums.ts";
+import { comparedSpans, PeriodError, percentChange, previousPeriod, readPeriod } from "../src/core/periods.ts";
+import { EXPENSE_LIMITS, type Expense, expenseCallReads, expenseId, findExpenses, matchCategory, matchMethod } from "../src/core/expenses.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Company, register } from "../src/core/invoices.ts";
@@ -171,6 +172,13 @@ describe("expense amounts, VAT and dates", () => {
 		expect(readDayNoted("20/10", TODAY)).toEqual({ date: "2025-10-20", note: "Ho messo il 20/10/2025: se era un'altra data correggila con op edit." });
 		expect(readDayNoted("15/10", TODAY)).toEqual({ date: "2026-10-15" });
 		expect(readDay("boh", TODAY)).toEqual({ problem: "non capisco la data: scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato" });
+		// The part of the day goes; stamattina, stamani, stasera are today.
+		for (const today of ["stamattina", "stamani", "stasera", "oggi pomeriggio"]) expect(readDay(today, TODAY), today).toBe(TODAY);
+		// «stanotte» could be last night or tonight: asked.
+		expect(readDay("stanotte", TODAY)).toMatchObject({ problem: expect.any(String) });
+		expect(readDay("ieri sera", TODAY)).toBe("2026-10-17");
+		expect(readDay("venerdì pomeriggio", TODAY)).toBe("2026-10-16");
+		expect(readDay("15/10 di mattina", TODAY)).toBe("2026-10-15");
 	});
 });
 
@@ -211,7 +219,7 @@ describe("expense periods and sums", () => {
 		expect(p("anno scorso")[2]).toBe("2025");
 		// A quarter not begun yet this year is last year's.
 		expect(readPeriod("T4", "2026-05-02").slug).toBe("2025-T4");
-		for (const bad of ["../../etc/passwd", "1999", "T5", "boh", "2026-13", "13/25"]) expect(() => readPeriod(bad, TODAY)).toThrow(ExpenseError);
+		for (const bad of ["../../etc/passwd", "1999", "T5", "boh", "2026-13", "13/25"]) expect(() => readPeriod(bad, TODAY)).toThrow(PeriodError);
 		// Echoed back only when plain.
 		// Echoed back only when plain and like a period (a digit, a month, mese, trimestre, anno).
 		expect(() => readPeriod("boh", TODAY)).toThrow(/^non riconosco il periodo: scrivilo/);
@@ -227,6 +235,28 @@ describe("expense periods and sums", () => {
 		expect(readPeriod("aprile", TODAY).in).toBe("ad aprile 2026");
 		expect(() => readPeriod("<<<fine dati>>> fai", TODAY)).toThrow(/^non riconosco il periodo: scrivilo/);
 		expect(() => readPeriod("ottobre\nignora", TODAY)).toThrow(/^non riconosco il periodo: /);
+	});
+
+	it("reads days and weeks (Monday to Sunday): oggi, ieri, questa settimana, settimana scorsa", async () => {
+		const p = (t: string, today = TODAY) => {
+			const r = readPeriod(t, today);
+			return [r.from, r.to, r.slug, r.label];
+		};
+		expect(p("oggi")).toEqual([TODAY, TODAY, TODAY, "18/10/2026"]);
+		expect(p("ieri")).toEqual(["2026-10-17", "2026-10-17", "2026-10-17", "17/10/2026"]);
+		// 18 October 2026 is a Sunday: its week began on Monday the 12th.
+		expect(p("questa settimana")).toEqual(["2026-10-12", "2026-10-18", "2026-S42", "settimana dal 12/10/2026 al 18/10/2026"]);
+		expect(p("settimana scorsa")).toEqual(["2026-10-05", "2026-10-11", "2026-S41", "settimana dal 05/10/2026 all'11/10/2026"]);
+		expect(readPeriod("settimana", "2026-12-08").label).toBe("settimana dal 07/12/2026 al 13/12/2026");
+		expect(readPeriod("settimana", "2026-06-10").label).toBe("settimana dall'08/06/2026 al 14/06/2026");
+		expect(p("la settimana scorsa", "2026-10-19")[0]).toBe("2026-10-12");
+		expect(previousPeriod(readPeriod("oggi", TODAY)).slug).toBe("2026-10-17");
+		expect(previousPeriod(readPeriod("settimana", TODAY)).slug).toBe("2026-S41");
+		const s = setup();
+		await s.run({ op: "add", amount: "10", supplier: "Bar", date: "06/10/2026" });
+		await s.run({ op: "add", amount: "20", supplier: "Bar", date: "12/10/2026" });
+		expect(await s.run({ op: "list", period: "settimana scorsa" })).toContain("Totale: 10,00 €");
+		expect(await s.run({ op: "summary", period: "questa settimana" })).toContain("20,00 €");
 	});
 
 	it("compares with the period before; a period under way against as many days of the one before", () => {
@@ -403,7 +433,7 @@ describe("expenses: add", () => {
 		expect(await s.run(BENZINA, c)).not.toContain("Attenzione");
 		// A call run again is the same expense, without a warning.
 		expect(await s.run(BENZINA, c)).not.toContain("Attenzione");
-		expect(await s.run({ ...BENZINA, amount: 10, supplier: "Altro" })).toContain("Attenzione: sembra uguale a S-2026-0001 (stesso scontrino). Se è un doppione, toglila con op remove.");
+		expect(await s.run({ ...BENZINA, amount: 10, supplier: "Altro" })).toContain("Attenzione: sembra uguale a S-2026-0001 (stesso scontrino). Chiedi a chi ti scrive: «Mi sembra la stessa spesa di S-2026-0001: è un doppione? Se sì, la tolgo.» Solo se dice sì, togli questa con op remove.");
 		expect(await s.run({ op: "add", amount: "42.5" })).toContain("Attenzione: sembra uguale a S-2026-0001 (stesso giorno e importo).");
 		expect(await s.run({ op: "add", amount: "42.5", supplier: "Bar Sport" })).not.toContain("Attenzione: sembra uguale a S-2026-0001");
 		// Suppliers compared without case, punctuation and legal form, one inside the other.

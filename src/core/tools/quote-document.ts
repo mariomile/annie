@@ -51,8 +51,8 @@ export function lead(text: string): string {
 
 const sentence = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}${/[.!?]$/.test(text) ? "" : "."}`;
 
-/** The letterhead: the company's name, address, tax ids, REA and contacts, top left. */
-function letterhead(company: Partial<Company>): string[] {
+/** The letterhead: the company's name, address, tax ids, REA and contacts, top left (the timesheet's reports use it too). */
+export function letterhead(company: Partial<Company>): string[] {
 	const ids = [company.vat === undefined ? undefined : `P.IVA ${company.vat}`, company.cf === undefined || company.cf === company.vat?.replace(/^IT/, "") ? undefined : `C.F. ${company.cf}`, company.rea === undefined ? undefined : `REA ${company.rea}`];
 	const contacts = [company.phone === undefined ? undefined : `Tel. ${company.phone}`, company.email];
 	return [

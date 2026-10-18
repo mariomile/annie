@@ -221,6 +221,10 @@ _Avoid_: attachment
 Un costo registrato con `expenses` (S-AAAA-NNNN): data, totale IVA compresa, IVA, fornitore, categoria, pagamento e, se c'è, lo scontrino nel workspace. La **prima nota** mette in fila le spese e gli incassi delle fatture pagate con il saldo. Vedi ADR 0057.
 _Avoid_: expense, costo, uscita (per la singola spesa)
 
+**Voce di ore**:
+Un tempo di lavoro registrato con `timesheet` (O-AAAA-NNNN): cliente, progetto, data, minuti, attività e se è fatturabile. Può essere da fatturare, nel preventivo N o fatturata con un riferimento. Vedi ADR 0058.
+_Avoid_: timesheet entry, ora (per la voce)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

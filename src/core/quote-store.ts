@@ -43,6 +43,12 @@ export class QuoteStore {
 		return book === undefined ? { quotes: [], broken: true } : { quotes: book.quotes, broken: false };
 	}
 
+	/** The number of the quote `callId` made, once its document is written; undefined otherwise (or when the file does not read). */
+	finished(callId: string): string | undefined {
+		const quote = this.read().quotes.find((q) => q.callId === callId);
+		return quote?.file === undefined ? undefined : quote.number;
+	}
+
 	/**
 	 * A new quote with the next number of `year`: `make` gets the number and gives the quote. The
 	 * quote made by `callId` already, when there is one (a call run again). QuoteError when the year is full.

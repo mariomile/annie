@@ -12,6 +12,7 @@ import { ListStore, listsLine } from "./lists.ts";
 import { InvoiceStore } from "./invoice-store.ts";
 import { QuoteStore } from "./quote-store.ts";
 import { ExpenseStore } from "./expense-store.ts";
+import { TimesheetStore } from "./timesheet-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
@@ -176,6 +177,13 @@ export class AnnieRuntime {
 	/** The spese of an instance. */
 	expenses(tenant: string, instance: string): ExpenseStore {
 		return new ExpenseStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** The ore di lavoro of an instance: entries, timers and rates. */
+	timesheet(tenant: string, instance: string): TimesheetStore {
+		// A to_quote reservation whose quote was made is billed with it, never dropped.
+		const quotes = this.quotes(tenant, instance);
+		return new TimesheetStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)), { finishedQuote: (callId) => quotes.finished(callId) });
 	}
 
 	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */

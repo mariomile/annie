@@ -7,7 +7,8 @@
 import type { CashBook, CashRow } from "../cash-book.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { type Category, type Expense, idOrder } from "../expenses.ts";
-import { cents, comparedSpans, type Period, percentChange, type Span, type Totals, totalsOf, unitBefore } from "../expense-sums.ts";
+import { cents, type Totals, totalsOf } from "../expense-sums.ts";
+import { comparedSpans, type Period, percentChange, type Span, spanText as daysText, unitBefore } from "../periods.ts";
 import { unitsText } from "../invoice-sums.ts";
 import { italianDate } from "../italian-format.ts";
 import { fence } from "../untrusted.ts";
@@ -68,7 +69,7 @@ export function listAnswer(shown: readonly Expense[], filter: ListFilter): strin
 
 /** «dal 01/10/2026 al 18/10/2026». */
 function spanText(s: Span): string {
-	return `dal ${italianDate(s.from)} al ${italianDate(s.to)}`;
+	return daysText(s.from, s.to);
 }
 
 export type SummaryView = { readonly today: string; readonly forfettario: boolean; readonly compact: boolean };

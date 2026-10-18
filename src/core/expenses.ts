@@ -7,9 +7,9 @@
  */
 import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
+import { businessKey, words } from "./name-keys.ts";
 import { VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
-import { fold } from "./text-match.ts";
 
 export class ExpenseError extends Error {
 	override readonly name = "ExpenseError";
@@ -85,13 +85,6 @@ const METHOD_WORDS: Readonly<Record<Exclude<Method, "altro">, readonly string[]>
 	carta: ["carta", "bancomat", "pos", "credito", "debito", "visa", "mastercard", "amex", "american express", "maestro", "apple pay", "google pay", "satispay", "paypal", "prepagata"],
 	bonifico: ["bonifico", "bonifici", "sepa", "rid", "sdd", "addebito", "domiciliazione"],
 };
-
-/** Folded words of a text: lower case, no accents, letters and digits (and & for B&B). */
-function words(text: string): string[] {
-	return fold(text)
-		.split(/[^a-z0-9&]+/)
-		.filter((w) => w !== "");
-}
 
 /** Whether the words hold `key`, a whole word or a phrase of whole words in a row. */
 function says(tokens: readonly string[], key: string): boolean {
@@ -207,23 +200,13 @@ export function matchesSupplier(expense: Expense, text: string): boolean {
 	return wanted.length > 0 && wanted.every((w) => name.includes(w));
 }
 
-const LEGAL_FORMS = new Set(["srl", "srls", "spa", "snc", "sas", "sapa", "ss"]);
-
-/** A supplier's name compared: no case, accents, punctuation nor legal form («Bar Sport S.r.l.» is «bar sport»). */
-function supplierKey(name: string): string {
-	const joined = fold(name).replace(/\b([a-z])\.(?=[a-z]\.?)/g, "$1").replace(/\.(?=\s|$)/g, "");
-	return words(joined)
-		.filter((w) => !LEGAL_FORMS.has(w))
-		.join(" ");
-}
-
 /**
  * An expense already recorded that `e` looks like: the same receipt, or the same day and total
  * (and the same supplier, when both have one: one name inside the other, without legal forms). Said to the person, never refused: two coffees of
  * the same price on the same day are two expenses.
  */
 export function lookalike(expenses: readonly Expense[], e: Expense): { readonly id: string; readonly why: string } | undefined {
-	const supplier = (x: Expense) => (x.supplier === undefined ? undefined : supplierKey(x.supplier));
+	const supplier = (x: Expense) => (x.supplier === undefined ? undefined : businessKey(x.supplier));
 	for (const other of expenses) {
 		if (other.id === e.id) continue;
 		if (e.receipt !== undefined && other.receipt === e.receipt) return { id: other.id, why: "stesso scontrino" };
