@@ -512,9 +512,14 @@ describe("recordings in an instance", () => {
 		connectChannel(runtime, bot, { tenantId: "acme", instanceId: "ops" });
 		for (let i = 0; i < 3; i++) await bot.pollOnce();
 		await waitFor(() => texts.length === 3);
-		expect(texts[0]).toContain("[Registrazione video MP4, 00:12 nel workspace: uploads/7_1-video-1.mp4]");
-		expect(texts[1]).toContain("Registrazione oltre i 20 MB");
-		expect(texts[2]).toContain("su questo server la trascrizione non è attiva");
+		// Each message is its own turn: the replies can come back in any order.
+		expect(texts).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("[Registrazione video MP4, 00:12 nel workspace: uploads/7_1-video-1.mp4]"),
+				expect.stringContaining("Registrazione oltre i 20 MB"),
+				expect.stringContaining("su questo server la trascrizione non è attiva"),
+			]),
+		);
 	});
 
 	it("a recording sent from the console is named with its length and transcribed from the chat, once the owner allows the service", async () => {
