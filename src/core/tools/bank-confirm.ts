@@ -7,7 +7,7 @@
  * already marked paid is never marked again.
  */
 import { BANK_LIMITS, type BankMatch, type BankMovement, BankError, dayWords, delDay, EXPENSE_DAYS, isLive, type MatchTarget, statementOf } from "../bank.ts";
-import { inStatement } from "../cashflow-sources.ts";
+import { statementAt } from "../cashflow-sources.ts";
 import { latestBalance } from "../cashflow-store.ts";
 import type { ToolContext } from "../engine.ts";
 import { CATEGORIES, type Category, matchCategory } from "../expenses.ts";
@@ -244,21 +244,21 @@ export async function toExpenseOp(d: BankDeps, args: Record<string, unknown>, ct
 /**
  * Invoices marked paid by hand after the statement's closing day whose payment the statement shows
  * (cashflow-sources.ts inStatement: the same signed amount from the invoice's day to the closing
- * day, unexplained or explained by that invoice): it is in the balance already.
+ * day, unexplained or held by that invoice, a mere proposal only when no other open invoice has
+ * that amount): it is in the balance already.
  */
 async function handMarked(d: BankDeps, ctx: ToolContext, closingDate: string): Promise<string[]> {
 	const book = d.readable();
 	const statement = statementOf(book.movements, book.matches);
 	const dayOf = dayOfIn(d.options.timeZone);
 	const out: string[] = [];
-	for (const inv of await d.register(ctx)) {
+	const invoices = await d.register(ctx);
+	for (const inv of invoices) {
 		if (inv.credit || inv.doc.integration || inv.side === undefined) continue;
 		for (const r of inv.instalments) {
 			if (r.paid === undefined || r.paid.on !== undefined || r.amount === undefined || dayOf(r.paid.at) <= closingDate) continue;
 			const cents = unitsToCents(r.amount) * (inv.side === "active" ? 1n : -1n);
-			if (!inStatement(inv, cents, closingDate, statement)) continue;
-			const at = statement.findIndex((x) => x.date >= (inv.doc.date ?? "") && x.date <= closingDate && eurosToCents(x.amount) === cents && (x.target === undefined || x.target === `inv:${inv.key}`));
-			const m = book.movements[at];
+			const m = book.movements[statementAt(inv, cents, closingDate, statement, invoices)];
 			if (m !== undefined) out.push(`fattura ${inv.doc.number ?? "senza numero"}: segnata ${inv.side === "active" ? "incassata" : "pagata"} a mano ${withDate("il", dayOf(r.paid.at))}, ma nell'estratto conto c'è ${m.id} dello stesso importo ${withDate("del", m.date)}`);
 		}
 	}

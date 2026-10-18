@@ -37,6 +37,9 @@ export const BANK_LIMITS = {
 	imports: 300,
 	/** Match records kept (refused ones included). */
 	matches: 40_000,
+	/** Hashes of copies dropped by same a movement keeps; later imports a movement remembers. */
+	aliases: 8,
+	seenIn: 20,
 	/** Candidates an «ask» keeps. */
 	candidates: 5,
 	/** Call ids remembered, so a call run again writes nothing twice. */
@@ -96,8 +99,12 @@ export type BankMovement = {
 	readonly ibanTail?: string;
 	/** The IBAN in the description is one of the company's own (set in the scadenzario). */
 	readonly own?: true;
-	/** «I-0001»: the import that brought it first. */
+	/** «I-0001»: the import that brought it first (or, after remove_import of that one, a later one that has it). */
 	readonly importId: string;
+	/** The hashes it stood for in other files (a row of another export it took, a copy dropped by the op same): a row with one of them is this movement. */
+	readonly aliases?: readonly string[];
+	/** The later imports whose file had it too (absorbed into it), oldest first. */
+	readonly seenIn?: readonly string[];
 };
 
 /** One file loaded: its name, the period it covers and what it brought; the closing balance it states. */
@@ -170,7 +177,26 @@ export function validMovement(v: unknown): v is BankMovement {
 	if (!isText(m.description, BANK_LIMITS.description) || m.description.includes("\n")) return false;
 	if (m.ibanTail !== undefined && (typeof m.ibanTail !== "string" || !/^[A-Z0-9]{4}$/.test(m.ibanTail))) return false;
 	if (m.own !== undefined && m.own !== true) return false;
+	if (!optList(m.aliases, BANK_LIMITS.aliases, /^[0-9a-f]{32}$/) || !optList(m.seenIn, BANK_LIMITS.seenIn, /^I-\d{4,6}$/)) return false;
 	return typeof m.importId === "string" && /^I-\d{4,6}$/.test(m.importId);
+}
+
+/** Absent, or a list of at most `max` strings of `shape`. */
+function optList(v: unknown, max: number, shape: RegExp): boolean {
+	return v === undefined || (Array.isArray(v) && v.length <= max && v.every((x) => typeof x === "string" && shape.test(x)));
+}
+
+/** The movement with these imports remembered as having it too (never its own import). */
+export function withSeen(m: BankMovement, ids: readonly string[]): BankMovement {
+	const { seenIn: _, ...rest } = m;
+	const seenIn = cappedList(m.seenIn, ids, BANK_LIMITS.seenIn, m.importId);
+	return seenIn === undefined ? rest : { ...rest, seenIn };
+}
+
+/** `list` with `more` added at the end, without repeats or `not`, the newest `max` kept. */
+export function cappedList(list: readonly string[] | undefined, more: readonly string[], max: number, not?: string): string[] | undefined {
+	const out = [...new Set([...(list ?? []), ...more])].filter((x) => x !== not).slice(-max);
+	return out.length === 0 ? undefined : out;
 }
 
 export function validImport(v: unknown): v is BankImport {
@@ -213,12 +239,16 @@ export const validCall = (v: unknown): boolean => typeof v === "string" && isTex
  * signed amount and what holds it: «inv:KEY» for an invoice, «other» for anything else live
  * (an expense, an F24, a transfer…), nothing when unexplained.
  */
-export function statementOf(movements: readonly BankMovement[], matches: readonly BankMatch[]): { readonly date: string; readonly amount: string; readonly target?: string }[] {
+export function statementOf(movements: readonly BankMovement[], matches: readonly BankMatch[]): { readonly date: string; readonly amount: string; readonly target?: string; readonly proposed?: true }[] {
+	// Only a match that stands (confirmed, or made by itself) holds an invoice; a proposal holds nothing, and is said.
 	const held = new Map<string, string>();
-	for (const m of matches) if (isLive(m)) held.set(m.movement, (m.kind === "invoice_in" || m.kind === "invoice_out") && m.target !== undefined ? `inv:${m.target}` : "other");
+	for (const m of matches) {
+		if (m.state === "confirmed" || m.state === "auto") held.set(m.movement, (m.kind === "invoice_in" || m.kind === "invoice_out") && m.target !== undefined ? `inv:${m.target}` : "other");
+		else if (isLive(m)) held.set(m.movement, "proposed");
+	}
 	return movements.map((m) => {
 		const target = held.get(m.id);
-		return { date: m.date, amount: m.amount, ...(target === undefined ? {} : { target }) };
+		return { date: m.date, amount: m.amount, ...(target === undefined ? {} : target === "proposed" ? { proposed: true as const } : { target }) };
 	});
 }
 

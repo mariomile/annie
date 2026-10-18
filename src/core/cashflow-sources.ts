@@ -557,18 +557,31 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario, ...(skipTaxes !== false ? { taxes } : {}) };
 }
 
-/** A movement of the bank's statement: its day, its signed amount, what holds it («inv:KEY», «other», nothing). */
-export type StatementMovement = { readonly date: string; readonly amount: string; readonly target?: string };
+/** A movement of the bank's statement: its day, its signed amount, what holds it («inv:KEY», «other», nothing), a proposal on it. */
+export type StatementMovement = { readonly date: string; readonly amount: string; readonly target?: string; readonly proposed?: true };
+
+/** Whether an invoice other than `key` has an instalment still open of `cents` (signed), dated by `day`. */
+function otherOpen(invoices: readonly Invoice[], key: string, cents: bigint, day: string): boolean {
+	return invoices.some((inv) => inv.key !== key && !inv.credit && inv.side !== undefined && inv.doc.date !== undefined && inv.doc.date <= day && inv.instalments.some((i) => i.paid === undefined && i.amount !== undefined && unitsToCents(i.amount) * (inv.side === "active" ? 1n : -1n) === cents));
+}
 
 /**
  * Whether a statement whose balance is of `balanceDate` shows the payment of `invoice`: a movement
  * of the same signed amount dated from the invoice's day to the balance's, unexplained or explained
- * by that invoice. Never for an invoice dated after the balance, nor one without a date.
+ * by that invoice (confirmed, or matched by itself). A movement with only a proposal counts as
+ * unexplained unless another open invoice of `invoices` has its amount, dated on or before it: then
+ * it may be that one's, and is left aside. Never for an invoice dated after the balance, nor one
+ * without a date.
  */
-export function inStatement(invoice: Invoice, cents: bigint, balanceDate: string, statement: readonly StatementMovement[]): boolean {
+export function inStatement(invoice: Invoice, cents: bigint, balanceDate: string, statement: readonly StatementMovement[], invoices: readonly Invoice[] = []): boolean {
+	return statementAt(invoice, cents, balanceDate, statement, invoices) >= 0;
+}
+
+/** The index of the movement of inStatement, -1 when none. */
+export function statementAt(invoice: Invoice, cents: bigint, balanceDate: string, statement: readonly StatementMovement[], invoices: readonly Invoice[] = []): number {
 	const date = invoice.doc.date;
-	if (date === undefined || date > balanceDate) return false;
-	return statement.some((m) => m.date >= date && m.date <= balanceDate && eurosToCents(m.amount) === cents && (m.target === undefined || m.target === `inv:${invoice.key}`));
+	if (date === undefined || date > balanceDate) return -1;
+	return statement.findIndex((m) => m.date >= date && m.date <= balanceDate && eurosToCents(m.amount) === cents && (m.target === `inv:${invoice.key}` || (m.target === undefined && (m.proposed !== true || !otherOpen(invoices, invoice.key, cents, m.date)))));
 }
 
 /** An instalment marked paid after the balance: what it was, how much, the day. */
@@ -611,7 +624,7 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		return day > balance.date && day <= today && !Number.isNaN(t) && !Number.isNaN(until) && t <= until;
 	};
 	// An invoice marked paid by hand: from the end of the balance's day, as week 55 says; for a statement's balance, not when the statement shows its payment (inStatement).
-	const handAfter = (at: string, invoice: Invoice, cents: bigint) => after(at) && !(balance.source === "bank" && inStatement(invoice, cents, balance.date, statement));
+	const handAfter = (at: string, invoice: Invoice, cents: bigint) => after(at) && !(balance.source === "bank" && inStatement(invoice, cents, balance.date, statement, invoices));
 	const incassi: RolledInvoice[] = [];
 	const paidPassive: RolledInvoice[] = [];
 	const recorded = expenses.filter((e) => (e.source === "bank" ? bankAfter(e.date, e.at) : after(e.at) && e.date >= balance.date));

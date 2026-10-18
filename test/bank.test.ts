@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
-import { type BankImport, type BankMovement, bankAgentReads, bankCallReads, BANK_LIMITS, delDay } from "../src/core/bank.ts";
+import { type BankImport, type BankMovement, bankAgentReads, bankCallReads, BANK_LIMITS, delDay, statementOf, validMovement } from "../src/core/bank.ts";
 import { longWords, rowFates } from "../src/core/bank-dedup.ts";
 import { matchMovements, type MatchInputs, nameWords, saysName, saysNumber } from "../src/core/bank-match.ts";
 import { maskSensitive, parseStatement, type Parsed } from "../src/core/bank-parse.ts";
@@ -969,10 +969,10 @@ describe("week 60 second review", () => {
 		const imports = [imp("I-0001", "csv:aaaaaaaaaaaa")];
 		const twins = [kept(1, "h1", "2026-10-05", "-10", "ADDEBITO ALFA", 1), kept(2, "h1", "2026-10-05", "-10", "ADDEBITO ALFA", 2)];
 		const fates = rowFates(twins, imports, [row("h1", "2026-10-05", -1000n, "ADDEBITO ALFA"), row("h1", "2026-10-05", -1000n, "ADDEBITO ALFA"), row("h1", "2026-10-05", -1000n, "ADDEBITO ALFA")], "csv:aaaaaaaaaaaa");
-		expect(fates).toEqual([{ kind: "loaded" }, { kind: "loaded" }, { kind: "new", seq: 3 }]);
+		expect(fates).toEqual([{ kind: "loaded", into: "B-000001" }, { kind: "loaded", into: "B-000002" }, { kind: "new", seq: 3 }]);
 		// The kept movement taken by its hash twin is not taken again by another export's row of the same day and amount.
 		const one = [kept(1, "h1", "2026-10-05", "-10", "PAGAMENTO ALFA SRL")];
-		expect(rowFates(one, imports, [row("h1", "2026-10-05", -1000n, "PAGAMENTO ALFA SRL"), row("h2", "2026-10-05", -1000n, "ALFA SRL")], "camt")).toEqual([{ kind: "loaded" }, { kind: "new", seq: 1 }]);
+		expect(rowFates(one, imports, [row("h1", "2026-10-05", -1000n, "PAGAMENTO ALFA SRL"), row("h2", "2026-10-05", -1000n, "ALFA SRL")], "camt")).toEqual([{ kind: "loaded", into: "B-000001" }, { kind: "new", seq: 1 }]);
 	});
 
 	it("S1, U8: the bank's generic words never make two movements one; the fuzzy path only for another layout", () => {
@@ -982,12 +982,12 @@ describe("week 60 second review", () => {
 		const beta = row("h2", "2026-10-08", -36600n, "BONIFICO A FAVORE DI BETA");
 		expect(rowFates(old, imports, [beta], "csv:bbbbbbbbbbbb")).toEqual([{ kind: "new", seq: 1, maybe: "B-000001" }]);
 		// A meaningful word shared, another layout: the same movement.
-		expect(rowFates(old, imports, [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:bbbbbbbbbbbb")).toEqual([{ kind: "loaded" }]);
-		// The same layout: a different hash is a different movement, never fuzzy, never «maybe».
-		expect(rowFates(old, imports, [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:aaaaaaaaaaaa")).toEqual([{ kind: "new", seq: 1 }]);
+		expect(rowFates(old, imports, [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:bbbbbbbbbbbb")).toEqual([{ kind: "loaded", into: "B-000001" }]);
+		// The same layout: a different hash is a different movement, never fuzzy (said as «maybe», third review 3).
+		expect(rowFates(old, imports, [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:aaaaaaaaaaaa")).toEqual([{ kind: "new", seq: 1, maybe: "B-000001" }]);
 		// An import recorded before layouts: compared by format.
-		expect(rowFates(old, [imp("I-0001", undefined)], [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:cccccccccccc")).toEqual([{ kind: "new", seq: 1 }]);
-		expect(rowFates(old, [imp("I-0001", undefined)], [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "camt")).toEqual([{ kind: "loaded" }]);
+		expect(rowFates(old, [imp("I-0001", undefined)], [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "csv:cccccccccccc")).toEqual([{ kind: "new", seq: 1, maybe: "B-000001" }]);
+		expect(rowFates(old, [imp("I-0001", undefined)], [row("h3", "2026-10-08", -36600n, "ALFA RIF 7")], "camt")).toEqual([{ kind: "loaded", into: "B-000001" }]);
 	});
 
 	it("S1: the same file loaded again keeps every one of two identical rows once", async () => {
@@ -1240,5 +1240,104 @@ describe("week 60 second review", () => {
 		const tools = readFileSync(join(import.meta.dirname, "../src/core/tools/bank-tools.ts"), "utf8");
 		expect(tools).not.toContain("function askAnswer");
 		expect(tools).not.toContain("function longWords");
+	});
+});
+
+describe("week 60 third verify", () => {
+	const camt = (rows: [string, string, string, string][]) => `<?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"><BkToCstmrStmt><Stmt>${rows.map(([d, amt, ind, txt]) => `<Ntry><Amt Ccy="EUR">${amt}</Amt><CdtDbtInd>${ind}</CdtDbtInd><BookgDt><Dt>${d}</Dt></BookgDt><NtryDtls><TxDtls><RmtInf><Ustrd>${txt}</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry>`).join("")}</Stmt></BkToCstmrStmt></Document>`;
+	const OTT_CSV = ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00", "05/10/2026;BONIFICO DA CLIENTE PROVA;1.220,00"].join("\n");
+	const OTT_CAMT = camt([
+		["2026-10-05", "1220.00", "CRDT", "Fattura 12 Cliente Prova"],
+		["2026-10-08", "366.00", "DBIT", "Mandato 99 Utility Spa"],
+	]);
+	const imp = (id: string, layout: string): BankImport => ({ id, file: "x.csv", from: "2026-10-01", to: "2026-10-15", rows: 1, added: 1, duplicates: 0, format: "csv", layout, by: "x", at: "y" });
+	const ROSSI: BankMovement = { id: "B-000001", hash: "h1", seq: 1, date: "2026-10-15", amount: "-500", description: "BONIFICO A FAVORE DI ROSSI LUCA COMPENSO OTTOBRE", importId: "I-0001" };
+	/** The p12b probe: a CSV, the CAMT of the same month (one row absorbed, one «forse»), same on the pair. */
+	async function p12b() {
+		const s = await setup();
+		s.put("banca/ott.csv", OTT_CSV);
+		s.put("banca/ott.xml", OTT_CAMT);
+		await s.run({ op: "import", path: "banca/ott.csv" });
+		const second = await s.run({ op: "import", path: "banca/ott.xml" });
+		expect(second).toContain("Forse già caricati");
+		expect(second).toContain("B-000003 e B-000001");
+		expect(await s.run({ op: "same", ids: ["B-000001", "B-000003"], confirm: true })).toContain("Fatto: tolto B-000003, la copia di B-000001");
+		return s;
+	}
+
+	it("1: after same, loading the CAMT again brings no copy back and says no «forse»", async () => {
+		const s = await p12b();
+		const kept = s.store.read().movements.find((m) => m.id === "B-000001");
+		expect(kept?.aliases).toHaveLength(1);
+		expect(kept?.seenIn).toEqual(["I-0002"]);
+		const again = await s.run({ op: "import", path: "banca/ott.xml" });
+		expect(again).toContain("0 movimenti nuovi, 2 già caricati prima");
+		expect(again).not.toContain("Forse");
+		expect(s.store.read().movements).toHaveLength(2);
+		// A movement with a bad alias or too many is refused by the store's check.
+		expect(validMovement({ ...kept, aliases: ["zz"] })).toBe(false);
+		expect(validMovement({ ...kept, aliases: Array.from({ length: BANK_LIMITS.aliases + 1 }, (_, n) => n.toString(16).padStart(32, "0")) })).toBe(false);
+		expect(validMovement({ ...kept, seenIn: ["X-1"] })).toBe(false);
+	});
+
+	it("2: remove_import keeps a movement a later import has too, now of that import, and says so", async () => {
+		const s = await p12b();
+		s.put("banca/solo.csv", ["Data;Descrizione;Importo", "20/10/2026;POS PALESTRA SOLO QUI;-50,00"].join("\n"));
+		await s.run({ op: "import", path: "banca/solo.csv" });
+		// The third file's movement is of I-0003; I-0001 brought B-000001 and B-000002, both in the CAMT (I-0002) too.
+		const preview = await s.run({ op: "remove_import", import_id: "I-0001" });
+		expect(preview).toContain("2 movimenti portati da quel file; 2 restano perché ci sono anche in I-0002");
+		expect(await s.run({ op: "remove_import", import_id: "I-0001", confirm: true })).toContain("Fatto: tolto l'estratto conto I-0001");
+		const after = s.store.read();
+		expect(after.imports.map((i) => i.id)).toEqual(["I-0002", "I-0003"]);
+		expect(after.movements.map((m) => [m.id, m.importId, m.seenIn])).toEqual([
+			["B-000001", "I-0002", undefined],
+			["B-000002", "I-0002", undefined],
+			["B-000004", "I-0003", undefined],
+		]);
+		// Nothing lost: the CAMT again is all loaded; the CSV again, the same movements by their hashes.
+		expect(await s.run({ op: "import", path: "banca/ott.xml" })).toContain("0 movimenti nuovi, 2 già caricati prima");
+		expect(await s.run({ op: "import", path: "banca/ott.csv" })).toContain("0 movimenti nuovi, 2 già caricati prima");
+		// A file only it has: its movements go, the confirmed ones refused by name.
+		await s.run({ op: "to_expense", ids: ["B-000004"], confirm: true });
+		expect(await s.run({ op: "remove_import", import_id: "I-0003", confirm: true })).toContain("Non lo tolgo: questo movimento è confermato (fatture segnate o spese registrate): B-000004");
+	});
+
+	it("3: a re-export of the same layout with an edited description is new, and said as «forse» (p13)", () => {
+		expect(rowFates([ROSSI], [imp("I-0001", "csv:aaa")], [{ hash: "h9", date: "2026-10-15", cents: -50000n, description: "BONIFICO A FAVORE DI ROSSI LUCA COMPENSO OTT." }], "csv:aaa")).toEqual([{ kind: "new", seq: 1, maybe: "B-000001" }]);
+	});
+
+	it("4: across layouts the row sharing most words is the kept movement, whatever the order; the other is new and said (p13)", () => {
+		const rows = [
+			{ hash: "h2", date: "2026-10-15", cents: -50000n, description: "VERDI ANNA COMPENSO OTTOBRE" },
+			{ hash: "h3", date: "2026-10-15", cents: -50000n, description: "ROSSI LUCA COMPENSO OTTOBRE" },
+		];
+		const want = [{ kind: "new", seq: 1, maybe: "B-000001" }, { kind: "loaded", into: "B-000001" }];
+		expect(rowFates([ROSSI], [imp("I-0001", "csv:aaa")], rows, "camt")).toEqual(want);
+		expect(rowFates([ROSSI], [imp("I-0001", "csv:aaa")], [...rows].reverse(), "camt")).toEqual([...want].reverse());
+		// The same text first, before any sharing of words.
+		const exact = [{ hash: "h4", date: "2026-10-15", cents: -50000n, description: "ROSSI LUCA COMPENSO OTTOBRE BONUS" }, { hash: "h5", date: "2026-10-15", cents: -50000n, description: "bonifico a favore di  rossi luca compenso ottobre" }];
+		expect(rowFates([ROSSI], [imp("I-0001", "csv:aaa")], exact, "camt")).toEqual([{ kind: "new", seq: 1 }, { kind: "loaded", into: "B-000001" }]);
+	});
+
+	it("5: a proposal holds no invoice: two open invoices of 1.000 € and one movement proposed for A count for neither", () => {
+		const inv = (key: string, date: string, paid = false) => ({ key, side: "active", credit: false, doc: { date }, instalments: [{ n: 1, amount: 100_000_000_000n, ...(paid ? { paid: { at: "2026-11-01T10:00:00Z", by: "t" } } : {}) }] }) as unknown as Invoice;
+		const movements = [{ ...movement(1, "2026-10-05", "1000", "BONIFICO"), hash: "a".repeat(32) }, { ...movement(2, "2026-10-06", "-20", "BAR"), hash: "b".repeat(32) }, { ...movement(3, "2026-10-07", "300", "FT 9"), hash: "c".repeat(32) }];
+		const match = (movementId: string, state: "proposed" | "confirmed" | "auto", kind: "invoice_in" | "expense", target: string) => ({ movement: movementId, state, kind, target, label: "x", by: "t", at: "y" }) as never;
+		const statement = statementOf(movements, [match("B-000001", "proposed", "invoice_in", "A"), match("B-000002", "confirmed", "expense", "S-1"), match("B-000003", "auto", "invoice_in", "C")]);
+		expect(statement.map((m) => [m.target, m.proposed])).toEqual([
+			[undefined, true],
+			["other", undefined],
+			["inv:C", undefined],
+		]);
+		const a = inv("A", "2026-10-01", true);
+		const b = inv("B", "2026-10-02", true);
+		// B marked paid by hand: A still open with the same amount, dated before the movement: the movement may be A's, left aside.
+		expect(inStatement(b, 100000n, "2026-10-31", statement, [inv("A", "2026-10-01"), b])).toBe(false);
+		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, inv("B", "2026-10-02")])).toBe(false);
+		// No other open invoice of that amount: the proposed movement is as unexplained, the mark is in the balance.
+		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, b])).toBe(true);
+		// Another open invoice dated after the movement does not count.
+		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, inv("B", "2026-10-09")])).toBe(true);
 	});
 });

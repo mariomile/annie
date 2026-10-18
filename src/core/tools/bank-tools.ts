@@ -1,5 +1,5 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
-import { BANK_LIMITS, type BankMatch, type BankMovement, BankError, bankAgentReads, type BankSettings, importId, isLive, movementId } from "../bank.ts";
+import { BANK_LIMITS, type BankMatch, type BankMovement, BankError, bankAgentReads, type BankSettings, cappedList, importId, isLive, movementId, withSeen } from "../bank.ts";
 import { euros } from "../format-words.ts";
 import { holdsTarget, matchMovements, type TaxEstimate, targetKey } from "../bank-match.ts";
 import { rowFates } from "../bank-dedup.ts";
@@ -302,9 +302,21 @@ export function createBankTools(options: BankToolsOptions): AnnieTool[] {
 			if (fate.maybe !== undefined) maybe.push([movement.id, fate.maybe]);
 			added.push(movement);
 		});
+		// A movement this file has too remembers it (remove_import of the first file keeps it, in this one), and the hash this file gives it.
+		const seen = new Map<string, string[]>();
+		fates.forEach((f, k) => {
+			const hash = parsed.rows[k]?.hash;
+			if (f?.kind === "loaded" && hash !== undefined) seen.set(f.into, [...(seen.get(f.into) ?? []), hash]);
+		});
+		const movements = s.movements.map((m) => {
+			const hashes = seen.get(m.id);
+			if (hashes === undefined) return m;
+			const aliases = cappedList(m.aliases, hashes, BANK_LIMITS.aliases, m.hash);
+			return withSeen({ ...m, ...(aliases === undefined ? {} : { aliases }) }, [id]);
+		});
 		const duplicates = parsed.rows.length - added.length;
 		const record = { id, file: file.slice(-BANK_LIMITS.fileName), from: parsed.from, to: parsed.to, rows: parsed.rows.length, added: added.length, duplicates, ...(parsed.closing === undefined ? {} : { closing: { amount: centsDecimal(parsed.closing.cents), date: parsed.closing.date } }), format: parsed.format, layout: parsed.layout, callId: ctx.callId, by: deps.who(ctx), at: now().toISOString() };
-		return { state: { ...s, next: { movement: next, import: s.next.import + 1 }, movements: [...s.movements, ...added], imports: [...s.imports, record] }, id, added: added.length, duplicates, maybe };
+		return { state: { ...s, next: { movement: next, import: s.next.import + 1 }, movements: [...movements, ...added], imports: [...s.imports, record] }, id, added: added.length, duplicates, maybe };
 	}
 
 	function scoped(book: BankBook, args: Record<string, unknown>, day: string): { rows: BankMovement[]; label?: string } | string {

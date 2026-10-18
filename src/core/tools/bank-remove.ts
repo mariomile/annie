@@ -3,8 +3,10 @@
  * of a movement loaded twice (the «forse già caricati» of an import), `remove_import` a whole file
  * loaded by mistake. Their matches and proposals go with them. A movement whose confirmation wrote
  * another register (an invoice marked paid, an expense recorded) is never taken out: it is said.
+ * The kept movement of same remembers the copy's hash (aliases), so loading its file again brings
+ * nothing back; a movement of the removed file that a later file has too (seenIn) stays, of that file.
  */
-import { BANK_LIMITS, type BankMatch, type BankMovement, delDay, isLive } from "../bank.ts";
+import { BANK_LIMITS, type BankMatch, type BankMovement, cappedList, delDay, isLive, withSeen } from "../bank.ts";
 import type { BankState } from "../bank-store.ts";
 import type { ToolContext } from "../engine.ts";
 import { withDate } from "../italian-format.ts";
@@ -24,6 +26,12 @@ function without(s: BankState, ids: ReadonlySet<string>): BankState {
 	return { ...s, movements: s.movements.filter((m) => !ids.has(m.id)), matches: s.matches.filter((m) => !ids.has(m.movement)) };
 }
 
+/** `kept` standing for `copy` too: the copy's hashes as aliases, its imports as seen. */
+function absorb(kept: BankMovement, copy: BankMovement): BankMovement {
+	const aliases = cappedList(kept.aliases, [copy.hash, ...(copy.aliases ?? [])], BANK_LIMITS.aliases, kept.hash);
+	return withSeen({ ...kept, ...(aliases === undefined ? {} : { aliases }) }, [copy.importId, ...(copy.seenIn ?? [])]);
+}
+
 const row = (m: BankMovement) => `${m.id} ${delDay(m.date)}: ${signed(eurosToCents(m.amount))}, ${m.description}`;
 
 /** same: two movements that are one; the copy (the later, unless only the later is confirmed) goes. */
@@ -41,7 +49,11 @@ export async function sameOp(d: BankDeps, args: Record<string, unknown>, ctx: To
 	const [kept, copy] = wrote(live.get(newer.id)) ? [newer, older] : [older, newer];
 	if (args.confirm !== true) return [`Tolgo ${copy.id} come copia di ${kept.id}, con le sue proposte:`, fenced([row(copy), row(kept)].join("\n")), "Chiedi a chi ti scrive se sono proprio lo stesso movimento; solo dopo il sì ripeti con confirm true."].join("\n");
 	await ctx.step("apply", async () => {
-		d.store.update(ctx.callId, (s) => without(s, new Set([copy.id])));
+		// The kept one stands for the copy from now on: its hash and its imports, so loading that file again brings nothing back.
+		d.store.update(ctx.callId, (s) => {
+			const rest = without(s, new Set([copy.id]));
+			return { ...rest, movements: rest.movements.map((m) => (m.id === kept.id ? absorb(m, copy) : m)) };
+		});
 		return true;
 	});
 	await d.audit(ctx, "same", 1);
@@ -56,15 +68,34 @@ export async function removeImportOp(d: BankDeps, args: Record<string, unknown>,
 	const record = book.imports.find((i) => i.id === asked);
 	if (record === undefined) return `Errore: non c'è un estratto conto ${fenced(asked.slice(0, 12))} tra quelli caricati.`;
 	const live = new Map(book.matches.filter(isLive).map((m) => [m.movement, m]));
+	const others = new Set(book.imports.filter((i) => i.id !== record.id).map((i) => i.id));
 	const mine = book.movements.filter((m) => m.importId === record.id);
-	const locked = mine.filter((m) => wrote(live.get(m.id)));
+	// A movement a later file has too stays, now of the latest of those files.
+	const home = new Map(
+		mine.flatMap((m) => {
+			const later = (m.seenIn ?? []).filter((id) => others.has(id)).at(-1);
+			return later === undefined ? [] : [[m.id, later] as const];
+		}),
+	);
+	const gone = mine.filter((m) => !home.has(m.id));
+	const locked = gone.filter((m) => wrote(live.get(m.id)));
 	if (locked.length > 0) return `Non lo tolgo: ${locked.length === 1 ? "questo movimento è confermato" : "questi movimenti sono confermati"} (fatture segnate o spese registrate): ${locked.slice(0, BANK_LIMITS.listed).map((m) => m.id).join(", ")}${locked.length > BANK_LIMITS.listed ? "…" : ""}. Se va tolto davvero, prima va tolta a mano la conferma nel registro.`;
-	const what = `l'estratto conto ${record.id} (${withDate("dal", record.from)} ${withDate("al", record.to)}, ${mine.length === 1 ? "un movimento" : `${mine.length} movimenti`} portati da quel file)`;
+	const homes = [...new Set(home.values())].sort();
+	const staying = home.size === 0 ? "" : `; ${home.size === 1 ? "uno resta perché c'è" : `${home.size} restano perché ci sono`} anche in ${homes.join(", ")}`;
+	const what = `l'estratto conto ${record.id} (${withDate("dal", record.from)} ${withDate("al", record.to)}, ${mine.length === 1 ? "un movimento" : `${mine.length} movimenti`} portati da quel file${staying})`;
 	if (args.confirm !== true) return `Tolgo ${what}, con le loro proposte. Chiedi a chi ti scrive se va bene; solo dopo il sì ripeti con confirm true.`;
 	await ctx.step("apply", async () => {
-		d.store.update(ctx.callId, (s) => ({ ...without(s, new Set(mine.map((m) => m.id))), imports: s.imports.filter((i) => i.id !== record.id) }));
+		d.store.update(ctx.callId, (s) => {
+			const rest = without(s, new Set(gone.map((m) => m.id)));
+			const movements = rest.movements.map((m) => {
+				const to = home.get(m.id);
+				if (to !== undefined) return withSeen({ ...m, importId: to }, []);
+				return m.seenIn?.includes(record.id) === true ? withSeen({ ...m, seenIn: m.seenIn.filter((id) => id !== record.id) }, []) : m;
+			});
+			return { ...rest, movements, imports: s.imports.filter((i) => i.id !== record.id) };
+		});
 		return true;
 	});
-	await d.audit(ctx, "remove_import", mine.length);
+	await d.audit(ctx, "remove_import", gone.length);
 	return `Fatto: tolto ${what}.`;
 }
