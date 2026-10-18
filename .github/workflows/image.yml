@@ -1,11 +1,34 @@
 name: Image
-# Builds the Dockerfile on every PR and checks that the container answers; on main it also
-# publishes ghcr.io/<owner>/annie (the image Annie Cloud cells run, docs/runbook.md 6c and 6d)
-# and ghcr.io/<owner>/annie-computer:fly (the computers' micro-VMs, runbook 6j).
+# Builds the Dockerfile and checks that the container answers, on a PR or a push to main that
+# touches what goes into the images; on main it also publishes ghcr.io/<owner>/annie (the image
+# Annie Cloud cells run, docs/runbook.md 6c and 6d) and ghcr.io/<owner>/annie-computer:fly (the
+# computers' micro-VMs, runbook 6j). Run it by hand ("Run workflow" on main) to publish after
+# other changes: the builds are most of the Actions minutes, so they don't run on every change.
 on:
   push:
     branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - package.json
+      - pnpm-lock.yaml
+      - src/computer/**
+      - test/computer-*.live.test.ts
+      - test/fake-fly.ts
+      - .github/workflows/image.yml
   pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - package.json
+      - pnpm-lock.yaml
+      - src/computer/**
+      - test/computer-*.live.test.ts
+      - test/fake-fly.ts
+      - .github/workflows/image.yml
+  workflow_dispatch:
 concurrency:
   group: image-${{ github.ref }}
   # A publish on main is never cut between its two tags.
@@ -57,7 +80,7 @@ jobs:
   # Only this job can write packages, and only on main: a PR's Dockerfile never builds with it.
   publish:
     needs: [image, computer]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
