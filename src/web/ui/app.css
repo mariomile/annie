@@ -314,15 +314,20 @@ ul.task-list { list-style: none; margin: 0; padding: 6px; }
 .person-row .task-text b .chip { margin-left: 6px; }
 .person-actions { flex: none; display: flex; align-items: center; gap: 4px; }
 @media (max-width: 560px) {
-	.person-row { flex-wrap: wrap; }
-	.person-actions { width: 100%; padding-left: 48px; }
+	/* One action stays at the right of the row; two or more go on a line of their own. */
+	.person-row:has(.person-actions > :nth-child(2)) { flex-wrap: wrap; }
+	.person-row:has(.person-actions > :nth-child(2)) .person-actions { width: 100%; padding-left: 48px; }
 }
 /* Skill: a row each, the command in mono, what it does under it. */
 .skill-row .task-text .skill-what { color: var(--fg-2); font-size: 13.5px; line-height: 1.45; }
 .skill-row .task-text b .chip { margin-left: 6px; }
+.skill-edit .icon { display: none; }
 @media (max-width: 560px) {
-	.skill-row { flex-wrap: wrap; }
-	.skill-row .person-actions { width: 100%; padding-left: 48px; }
+	/* On a phone «Modifica» is a pencil, so the description keeps the width. */
+	.skill-row .person-actions { gap: 0; }
+	.skill-edit { width: 36px; height: 36px; padding: 0; justify-content: center; border: 0; }
+	.skill-edit .icon { display: block; width: 17px; height: 17px; }
+	.skill-edit span { display: none; }
 }
 /* Automazioni: the skill's rows; the bolt lights up once a service has called. */
 .auto-row .task-text b .chip { margin-left: 6px; }
@@ -999,7 +1004,7 @@ a.room-row:hover { background: var(--hover); }
 .room-title .muted { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .room-last { font-size: 13px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-last b { font-weight: 500; color: var(--fg); }
-.room-when { flex: none; font: 12px var(--mono); color: var(--fg-3); }
+.room-when { flex: none; align-self: start; padding-top: 2px; font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 
 /* faces (agenti): blink now and then; while thinking they look around and bob */
 .face { flex: none; display: block; overflow: visible; }
