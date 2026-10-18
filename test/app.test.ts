@@ -312,6 +312,14 @@ describe("pnpm start (startAnnie)", () => {
 		await send("PUT", `/api/board/${dated.id}`, { due: "2026-11-05" });
 		await annie.scheduler.tick(new Date("2026-11-05T09:00:00Z"));
 		expect((await api("/api/board")).cards.find((c: { id: string }) => c.id === dated.id).dueNoticed).toBe("2026-11-05");
+		// Comes after another (ADR 0076): started, it waits; the other closed, it starts by itself.
+		const next = (await api("/api/board", { title: "Dopo il trasloco", assignee: "ricerca", after: [String(listed.n)] })).card;
+		expect(next).toMatchObject({ status: "da_fare", after: [listed.id], queued: { personId: expect.any(String) } });
+		expect((await api("/api/board", { title: "x", after: ["#999"] })).error).toMatch(/#999 non c'è/);
+		expect((await send("PUT", `/api/board/${listed.id}`, { after: [String(next.n)] })).error).toMatch(/si aspetterebbero/);
+		expect((await send("PUT", `/api/board/${next.id}`, { after: "1" })).error).toMatch(/after:/);
+		await send("PUT", `/api/board/${listed.id}`, { status: "fatto" });
+		expect((await api("/api/board")).cards.find((c: { id: string }) => c.id === next.id)).toMatchObject({ status: "in_corso", work: { agent: "ricerca" } });
 	}, 30_000);
 
 	it("the board (ADR 0050): a scheda handed to an agente is worked in its conversation, reviewed and closed by a person", async () => {

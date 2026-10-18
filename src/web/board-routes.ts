@@ -51,8 +51,12 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 			else if (typeof c === "object" && c !== null && typeof c.item === "string" && typeof c.done === "boolean") check = { item: c.item, done: c.done };
 			else throw new HttpError(400, "check: { add } oppure { item, done } oppure { item, remove: true }");
 		}
-		return { priority, status, assignee, due, check };
+		if (body.after !== undefined && body.after !== null && !(Array.isArray(body.after) && body.after.every((x) => typeof x === "string"))) throw new HttpError(400, "after: i numeri delle schede, come «12»");
+		const after = body.after === undefined ? undefined : body.after === null ? [] : (body.after as string[]).filter((x) => x.trim() !== "");
+		return { priority, status, assignee, due, check, after };
 	};
+	/** What a scheda comes after (ADR 0076): only schede this person sees. */
+	const afterOf = async (refs: readonly string[] | undefined, p: Person) => (refs === undefined ? undefined : Promise.all(refs.map(async (ref) => (await visibleCard(ref, p).catch(() => boardError(new BoardError(`La scheda ${ref} non c'è`)))).id)));
 	/** A scheda that comes back (ADR 0069) is the business of who set it and of the owner. */
 	const routinesOf = () => {
 		const routines = boardOf().routines;
@@ -87,10 +91,12 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const { work } = boardOf();
 		const p = person as Person;
 		const body = (await readJson(req)) as Record<string, unknown>;
-		const { priority, assignee, due } = cardBody(body);
+		const { priority, assignee, due, after: afterRefs } = cardBody(body);
+		const after = await afterOf(afterRefs, p);
 		// «Si ripete»: no scheda now, one at each time, worked with this person.
 		if (body.repeat !== undefined && body.repeat !== null) {
 			if (!assignee) throw new HttpError(400, "Una scheda che si ripete va affidata a un agente");
+			if (after !== undefined && after.length > 0) throw new HttpError(400, "Una scheda che si ripete non aspetta altre schede");
 			if (due) throw new HttpError(400, "Una scheda che si ripete non ha una scadenza");
 			const routines = routinesOf();
 			let routine: Routine;
@@ -104,7 +110,7 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 			return { routine: routineView(routine) };
 		}
 		const card = await work
-			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(due ? { due } : {}), ...(Array.isArray(body.checklist) ? { checklist: body.checklist.filter((x): x is string => typeof x === "string") } : {}), ...(body.auto === true ? { auto: true } : {}), ...(typeof body.parent === "string" && body.parent !== "" ? { parent: (await visibleCard(body.parent, p)).id } : {}) }, { kind: "person", id: p.id }, p.id)
+			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(due ? { due } : {}), ...(after !== undefined && after.length > 0 ? { after } : {}), ...(Array.isArray(body.checklist) ? { checklist: body.checklist.filter((x): x is string => typeof x === "string") } : {}), ...(body.auto === true ? { auto: true } : {}), ...(typeof body.parent === "string" && body.parent !== "" ? { parent: (await visibleCard(body.parent, p)).id } : {}) }, { kind: "person", id: p.id }, p.id)
 			.catch(boardError);
 		await runtime.audit(tenantId).append({ type: "board.card_created", cardId: card.id, personId: p.id, ...(card.assignee === undefined ? {} : { assignee: card.assignee }), ...(card.parent === undefined ? {} : { parent: card.parent }) });
 		return { card };
@@ -114,13 +120,15 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const p = person as Person;
 		const card = await visibleCard(params[0] as string, p);
 		const body = (await readJson(req)) as Record<string, unknown>;
-		const { priority, status, assignee, due, check } = cardBody(body);
+		const { priority, status, assignee, due, check, after: afterRefs } = cardBody(body);
+		const after = await afterOf(afterRefs, p);
 		const change: CardChange = {
 			...(typeof body.title === "string" ? { title: body.title } : {}),
 			...(typeof body.description === "string" ? { description: body.description } : {}),
 			...(priority === undefined ? {} : { priority }),
 			...(due === undefined ? {} : { due }),
 			...(check === undefined ? {} : { check }),
+			...(after === undefined ? {} : { after }),
 			...(status === undefined ? {} : { status }),
 			...(assignee === undefined ? {} : { assignee }),
 			...(typeof body.comment === "string" ? { comment: body.comment } : {}),
@@ -177,7 +185,7 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		return { ok: true };
 	});
 	route("DELETE", "/api/board/:id", "person", async ({ person, params }) => {
-		const { store } = boardOf();
+		const { store, work } = boardOf();
 		const p = person as Person;
 		const card = await visibleCard(params[0] as string, p);
 		if (p.role !== "owner" && !(card.createdBy.kind === "person" && card.createdBy.id === p.id)) throw new HttpError(403, "Solo chi l'ha creata o l'owner la elimina");
@@ -187,6 +195,8 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 			boardError(error);
 		}
 		await runtime.audit(tenantId).append({ type: "board.card_deleted", cardId: card.id, personId: p.id });
+		// Who waited only for it starts now (ADR 0076).
+		await work.release().catch(() => 0);
 		return { ok: true };
 	});
 }
