@@ -624,8 +624,10 @@ main.is-chat { position: relative; }
 .hints { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; text-align: left; }
 .hints button { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 10px 12px; cursor: pointer; color: var(--fg-2); font-size: 13px; line-height: 1.4; box-shadow: var(--shadow-sm); transition: border-color 0.12s, color 0.12s, background 0.12s; }
 .hints button:hover { border-color: var(--border-2); color: var(--fg); background: var(--bg-2); }
-.hints.ideas { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 16px; }
-.hints.ideas button { background: transparent; border-radius: 99px; padding: 7px 14px; box-shadow: none; }
+.hints.ideas { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 16px; }
+.hints.ideas button { display: inline-flex; align-items: center; gap: 7px; background: transparent; border-radius: 99px; padding: 6px 13px 6px 11px; box-shadow: none; white-space: nowrap; }
+.hints.ideas button .icon { width: 15px; height: 15px; color: var(--fg-3); transition: color 0.12s; }
+.hints.ideas button:hover .icon { color: var(--fg); }
 .hints.ideas button:hover { background: var(--hover); }
 
 /* ---------- segreteria ---------- */
@@ -728,7 +730,7 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 	.welcome { padding-bottom: 6vh; }
 	.welcome h2 { font-size: 28px; }
 	.hints { grid-template-columns: 1fr; }
-	.hints.ideas button:nth-child(n + 4) { display: none; }
+	.hints.ideas { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 24px), transparent); }
 	.lead { grid-template-columns: 110px 1fr; }
 	.letter { padding: 16px; font-size: 14px; }
 	.letter .subject { margin: 0 -16px 12px; padding-left: 16px; padding-right: 16px; }
