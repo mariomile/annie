@@ -632,6 +632,11 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (people.includes(p.id) && card.due !== undefined) res.write(`event: board\ndata: ${JSON.stringify({ kind: "due", id: card.id, n: card.n, title: card.title, text: dueText(card.due) })}\n\n`);
 		};
 		options.board?.work.events.on("due", due);
+		// A scheda of this person that started by itself (ADR 0076).
+		const started = ({ card, people }: BoardReview) => {
+			if (people.includes(p.id)) res.write(`event: board\ndata: ${JSON.stringify({ kind: "started", id: card.id, n: card.n, title: card.title })}\n\n`);
+		};
+		options.board?.work.events.on("started", started);
 		const roomEntry = (event: RoomEvent) => res.write(`event: room\ndata: ${JSON.stringify({ roomId: event.roomId, entry: shownInRoom(event.entry) })}\n\n`);
 		options.rooms?.events.on(p.id, roomEntry);
 		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
@@ -641,6 +646,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		for (const [channel, listener] of listeners) channel.events.off(p.id, listener);
 		options.board?.work.events.off("review", review);
 		options.board?.work.events.off("due", due);
+		options.board?.work.events.off("started", started);
 		options.rooms?.events.off(p.id, roomEntry);
 		return STREAMED;
 	});
