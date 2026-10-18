@@ -181,7 +181,9 @@ export class AnnieRuntime {
 
 	/** The ore di lavoro of an instance: entries, timers and rates. */
 	timesheet(tenant: string, instance: string): TimesheetStore {
-		return new TimesheetStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+		// A to_quote reservation whose quote was made is billed with it, never dropped.
+		const quotes = this.quotes(tenant, instance);
+		return new TimesheetStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)), { finishedQuote: (callId) => quotes.finished(callId) });
 	}
 
 	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */

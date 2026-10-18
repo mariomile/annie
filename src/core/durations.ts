@@ -3,8 +3,9 @@
  * «2h30», «2 ore e mezza», «due ore e mezza», «1,5» (hours), «90 minuti», «2:15», «mezz'ora»,
  * and ranges «9-12:30», «dalle 9 alle 13 con un'ora di pausa». Decimal hours are taken to the
  * minute half up (1,33 h is 80 minutes). Two digits after a dot are minutes («8.30» is 8 hours
- * and 30); after a comma they are hundredths only for ,25 ,50 ,75 («1,75» is 1 hour and 45),
- * and anything else under 60 («1,30») reads two ways: asked, never guessed. A range that goes
+ * and 30), but «1.25» and «1.50» read two ways; after a comma they are hundredths only for ,25
+ * ,50 ,75 («1,75» is 1 hour and 45), and anything else under 60 («1,30») reads two ways: asked,
+ * never guessed. A JSON number is hours only when whole, a half or a quarter: 8.3 is asked. A range that goes
  * past midnight («22-2») is refused, not split: the person records the two days apart, so each
  * entry stays on the day it was worked. «Mezza giornata», «tutta la mattina» are no duration:
  * the person is asked how many hours.
@@ -24,6 +25,9 @@ const VAGUE = "non è una durata precisa: chiedi a chi ti scrive quante ore sono
 
 /** Amounts of time that are no number of hours: asked. */
 const VAGUE_WORDS = /\b(?:mezza giornata|mezza mattinata|giornata(?: intera| piena)?|tutta la (?:mattina|mattinata|giornata|sera|serata|notte)|tutto il (?:giorno|pomeriggio)|tutto il di|un paio d'? ?ore|qualche ora|un po'|mattinata|pomeriggio)\b/;
+
+/** A part of the day after a duration: «2 ore di pomeriggio», «mezz'ora la sera». */
+const AFTER_DURATION = /^(.*(?:\d|\bore\b|\bora\b|\bminut[oi]\b|\bh\b).*?),? (?:di |nel |al |in |la |alla )?(?:mattina|mattinata|pomeriggio|sera|serata|notte)$/;
 
 const HOUR_WORD = "(?:h|hr|hrs|ore|ora)";
 const MINUTE_WORD = "(?:m|min|mins|minuti|minuto|')";
@@ -81,19 +85,30 @@ function hundredthsToMinutes(whole: string, fraction: string): number {
 	return Math.floor((hundredths * 60 * 2 + 100) / 200);
 }
 
-/** «8» «8.30» «1,5» «1,75» in minutes; a problem when two digits after a comma read two ways. */
+/** Two ways to read «8.3» or «1,30»: asked, with how to write it so it reads one way. */
+function twoWays(said: string, whole: string, fraction: string): DurationProblem {
+	const asMinutes = Number(whole) * 60 + Number(fraction.padEnd(2, "0"));
+	return { problem: `«${said}» vuol dire ${hoursText(asMinutes)} o ${hoursText(hundredthsToMinutes(whole, fraction))}? Chiedi a chi ti scrive, o passa la durata come ${whole}:${fraction.padEnd(2, "0")} (ore e minuti)` };
+}
+
+/**
+ * «8» «8.30» «1,5» «1,75» in minutes. After a comma: one digit, or ,25 ,50 ,75, are hours and
+ * hundredths; other two digits under 60 read two ways. After a dot: ,5 and .75 are hours (.75
+ * cannot be minutes); .25 .50 and other single digits read two ways; other two digits under 60
+ * are minutes («8.30»).
+ */
 function numberMinutes(whole: string, sep: string | undefined, fraction: string | undefined): number | DurationProblem {
 	if (fraction === undefined) return Number(whole) * 60;
-	if (fraction.length === 1) return hundredthsToMinutes(whole, fraction);
-	const n = Number(fraction);
-	if (sep === ".") return n < 60 ? Number(whole) * 60 + n : { problem: BAD };
-	if (n === 25 || n === 50 || n === 75) return hundredthsToMinutes(whole, fraction);
-	if (n < 60) {
-		const said = `${whole},${fraction}`;
-		const asDecimal = hundredthsToMinutes(whole, fraction);
-		return { problem: `«${said}» vuol dire ${hoursText(Number(whole) * 60 + n)} o ${hoursText(asDecimal)}? Chiedi a chi ti scrive, o passa la durata come ${whole}:${fraction} (ore e minuti)` };
+	const said = `${whole}${sep}${fraction}`;
+	const n = Number(fraction.padEnd(2, "0"));
+	if (n === 0) return Number(whole) * 60;
+	if (sep === ".") {
+		if (fraction === "5" || fraction === "75") return hundredthsToMinutes(whole, fraction);
+		if (fraction.length === 1 || n === 25 || n === 50) return twoWays(said, whole, fraction);
+		return n < 60 ? Number(whole) * 60 + n : { problem: BAD };
 	}
-	return { problem: BAD };
+	if (fraction.length === 1 || n === 25 || n === 50 || n === 75) return hundredthsToMinutes(whole, fraction);
+	return n < 60 ? twoWays(said, whole, fraction) : { problem: BAD };
 }
 
 function bounded(minutes: number | DurationProblem): number | DurationProblem {
@@ -109,12 +124,19 @@ function bounded(minutes: number | DurationProblem): number | DurationProblem {
  */
 export function parseDuration(value: unknown): number | DurationProblem {
 	if (typeof value === "number") {
-		if (!Number.isFinite(value) || value <= 0) return { problem: TOO_SHORT };
+		if (!Number.isFinite(value) || Math.round(value * 60) < MIN_MINUTES) return { problem: TOO_SHORT };
 		if (value > 24) return { problem: TOO_LONG };
+		// Whole hours, halves and quarters only: 8.3 or 1.33 may be hours and minutes.
+		const quarters = value * 4;
+		if (Math.abs(quarters - Math.round(quarters)) > 1e-9) {
+			const [whole = "0", fraction = ""] = String(value).split(".");
+			return fraction.length <= 2 ? twoWays(String(value), whole, fraction) : { problem: `«${value}» non è una durata chiara: chiedi a chi ti scrive quante ore e minuti sono, e passala come testo («2:15», «2 ore e 15»)` };
+		}
 		return bounded(Math.round(value * 60));
 	}
 	if (typeof value !== "string" || value.length > 60) return { problem: BAD };
-	const folded = fold(value).replace(/\s+/g, " ").trim();
+	// «2 ore di pomeriggio»: the part of the day after a duration goes.
+	const folded = fold(value).replace(/\s+/g, " ").trim().replace(AFTER_DURATION, "$1");
 	if (VAGUE_WORDS.test(folded)) return { problem: `«${value.trim().slice(0, 40)}» ${VAGUE}` };
 	const t = digits(folded);
 	const bare = BARE.exec(t);

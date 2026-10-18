@@ -77,7 +77,7 @@ function setup(o: Setup = {}) {
 	const workspace = new Workspace(join(dir, "workspace"));
 	const quotes = new QuoteStore(dir);
 	let clock = NOW;
-	const store = new TimesheetStore(dir, { now: () => clock });
+	const store = new TimesheetStore(dir, { now: () => clock, finishedQuote: (callId) => quotes.finished(callId) });
 	const events: TimesheetEvent[] = [];
 	const made = quotesOf({ workspace, store: quotes, company: invoices, timeZone: "Europe/Rome", whoIs: () => "test:u", now: () => clock, make: plainMake });
 	const [quoteTool] = made.tools;
@@ -423,6 +423,9 @@ describe("timesheet: timer", () => {
 		for (const args of [{ op: "start", client: "Alfa" }, { op: "stop" }, { op: "status" }]) {
 			expect(await s.run(args, group())).toContain("il timer è personale, quindi qui non lo avvio, non lo fermo e non lo guardo");
 		}
+		// No conversation at all (a scheduled task): no shared timer either.
+		const none: ToolContext = { ...fresh(), thread: undefined };
+		expect(await s.run({ op: "start", client: "Alfa" }, none)).toContain("il timer è personale");
 		expect(s.store.read().timers).toHaveLength(0);
 		// Hours already done are recorded there too.
 		expect(await s.run({ op: "log", client: "Alfa", duration: 1 }, group())).toContain("Registrata la voce O-2026-0001");
@@ -864,8 +867,8 @@ describe("timesheet: to_quote reserves its entries", () => {
 		const ids = s.store.read().entries.map((e) => e.id);
 		const held = s.store.reserve("call-a", "u", (free) => free);
 		expect(held?.entries).toEqual([
-			{ id: ids[0], minutes: 180, rate: "60", rounding: 0 },
-			{ id: ids[1], minutes: 60, rate: "60", rounding: 0 },
+			{ id: ids[0], client: "Rossi Srl", date: "2026-10-01", minutes: 180, rate: "60", rounding: 0 },
+			{ id: ids[1], client: "Rossi Srl", date: "2026-10-02", minutes: 60, rate: "60", rounding: 0 },
 		]);
 		// Another call picks none of them; the same call gets its reservation back.
 		expect(s.store.reserve("call-b", "u", (free) => free)).toBeUndefined();
@@ -876,15 +879,87 @@ describe("timesheet: to_quote reserves its entries", () => {
 		expect(await s.run({ op: "mark_billed", ids, ref: "FT 1" })).toContain("In un preventivo che si sta preparando, lasciate come sono");
 		// A rate changed meanwhile: the entries are billed at the rate picked, the quote's.
 		await s.run({ op: "set_rate", client: "Rossi Srl", rate: 90 });
-		// Past its hour the reservation no longer holds: an entry changed then is not billed by the old call.
-		s.setNow(new Date(NOW.getTime() + 61 * 60_000));
-		await s.run({ op: "edit", id: ids[1] as string, duration: 2 });
+		// An entry whose day changed since the pick (here written to the file by hand) is not billed.
+		const file = join(s.dir, "timesheet.json");
+		writeFileSync(file, readFileSync(file, "utf8").replace('"date": "2026-10-02"', '"date": "2026-10-03"'));
 		const billed = s.store.bill("call-a", { by: "u", at: NOW.toISOString(), quote: "2026-009" });
 		expect(billed).toEqual({ changed: [ids[0]], skipped: [ids[1]], reserved: true });
 		expect(s.store.read().entries[0]?.billed).toMatchObject({ quote: "2026-009", rate: "60", rounding: 0 });
 		expect(s.store.read().entries[1]?.billed).toBeUndefined();
 		// Billed once: run again, nothing more.
 		expect(s.store.bill("call-a", { by: "u", at: NOW.toISOString(), quote: "2026-009" })).toEqual({ changed: [], skipped: [], reserved: false });
+		// Past its hour with no quote made, a reservation is dropped by the next change: its entries are free again.
+		s.store.reserve("call-c", "u", (free) => free.filter((e) => e.id === ids[1]));
+		s.setNow(new Date(NOW.getTime() + 61 * 60_000));
+		expect(await s.run({ op: "edit", id: ids[1] as string, duration: 2 })).toContain("Fatto");
+		expect(s.store.read().reservations).toEqual([]);
+		expect(s.store.bill("call-c", { by: "u", at: NOW.toISOString(), quote: "2026-010" }).reserved).toBe(false);
+	});
+
+	it("a reservation whose quote was made never lapses: any later change bills it with that quote (stopped before the bill, same or other client)", async () => {
+		for (const other of ["Rossi Srl", "Beta"]) {
+			let crash = true;
+			const s = setup({
+				createQuote: (real) => async (input, ctx) => {
+					const made = await real(input, ctx);
+					if (crash) {
+						crash = false;
+						throw new Error("stopped");
+					}
+					return made;
+				},
+			});
+			await s.run({ op: "log", client: "Rossi Srl", duration: 2, rate: 50 });
+			await s.run({ op: "log", client: "Beta", duration: 1, rate: 50 });
+			const a = durable();
+			await expect(s.run({ op: "to_quote", client: "Rossi Srl", vat: 22 }, a)).rejects.toThrow("stopped");
+			s.setNow(new Date(NOW.getTime() + 61 * 60_000));
+			// Another to_quote past the hour: Rossi's hours are billed with the first quote, never quoted twice.
+			const b = await s.run({ op: "to_quote", client: other, vat: 22 });
+			if (other === "Rossi Srl") expect(b).toContain("Nessuna ora da fatturare per quel cliente");
+			else expect(b).toContain("Le ore sono ora nel preventivo 2026-002");
+			expect(s.store.read().entries.map((e) => e.billed?.quote)).toEqual(["2026-001", other === "Beta" ? "2026-002" : undefined]);
+			expect(s.store.read().reservations).toEqual([]);
+			// The call run again says so, and audits what was billed with its quote.
+			expect(await s.run({ op: "to_quote", client: "Rossi Srl", vat: 22 }, a)).toContain("Le ore sono ora nel preventivo 2026-001: 1 voce, 2 ore fatturabili.");
+			expect(s.quotes.read().quotes.map((q) => q.customer.name)).toEqual(other === "Beta" ? ["Rossi Srl", "Beta"] : ["Rossi Srl"]);
+			expect(s.events.filter((e) => e.op === "to_quote").map((e) => e.count)).toEqual(other === "Beta" ? [1, 1] : [1]);
+		}
+	});
+
+	it("a quote that throws before it is made: no quote, the reservation lapses after its hour; a call past it makes none", async () => {
+		const s = setup({ createQuote: () => async () => {
+			throw new Error("down");
+		} });
+		await s.run({ op: "log", client: "Rossi", duration: 2, rate: 50 });
+		const a = durable();
+		await expect(s.run({ op: "to_quote", client: "Rossi", vat: 22 }, a)).rejects.toThrow("down");
+		expect(s.store.read().reservations).toHaveLength(1);
+		// Held within the hour.
+		expect(await s.run({ op: "remove", id: "1" })).toContain("si sta preparando");
+		s.setNow(new Date(NOW.getTime() + 61 * 60_000));
+		await s.run({ op: "log", client: "Beta", duration: 1 });
+		expect(s.store.read().reservations).toEqual([]);
+		// The stopped call run again finds its reservation gone: no quote is made with it.
+		expect(await s.run({ op: "to_quote", client: "Rossi", vat: 22 }, a)).toContain("non sono più tenute da parte");
+		expect(s.quotes.read().quotes).toHaveLength(0);
+		expect(s.store.read().entries[0]?.billed).toBeUndefined();
+	});
+
+	it("a quote made but no entry left to mark is said plainly", async () => {
+		const s = setup({
+			createQuote: (real) => async (input, ctx) => {
+				// Meanwhile the entry is changed on disk (by hand): not as picked.
+				const file = join(s.dir, "timesheet.json");
+				writeFileSync(file, readFileSync(file, "utf8").replace('"minutes": 120', '"minutes": 90'));
+				return real(input, ctx);
+			},
+		});
+		await s.run({ op: "log", client: "Rossi", duration: 2, rate: 50 });
+		const answer = await s.run({ op: "to_quote", client: "Rossi", vat: 22 });
+		expect(answer).toContain("Attenzione: il preventivo 2026-001 è fatto, ma nessuna voce di ore è segnata come nel preventivo");
+		expect(answer).not.toContain("0 voci");
+		expect(s.events.filter((e) => e.op === "to_quote")).toEqual([]);
 	});
 
 	it("a quote not made releases the reservation; the next call takes the entries", async () => {
@@ -1067,7 +1142,17 @@ describe("timesheet: hours, amounts and words", () => {
 	it("reads h.mm, asks a comma that reads two ways, and refuses what is no duration", () => {
 		expect(parseDuration("8.30")).toBe(510);
 		expect(parseDuration("2.15")).toBe(135);
-		expect(parseDuration("8.75")).toEqual({ problem: expect.stringContaining("non capisco la durata") });
+		expect(parseDuration("8.75")).toBe(525);
+		expect(parseDuration("8.3")).toEqual({ problem: expect.stringContaining("«8.3» vuol dire 8 ore e 30 minuti o 8 ore e 18 minuti?") });
+		expect(parseDuration("1.25")).toEqual({ problem: expect.stringContaining("vuol dire 1 ora e 25 minuti o 1 ora e 15 minuti?") });
+		expect(parseDuration("1.50")).toEqual({ problem: expect.stringContaining("vuol dire 1 ora e 50 minuti o 1 ora e 30 minuti?") });
+		expect(parseDuration(8.3)).toEqual({ problem: expect.stringContaining("«8.3» vuol dire") });
+		expect(parseDuration(1.33)).toEqual({ problem: expect.stringContaining("vuol dire 1 ora e 33 minuti o 1 ora e 20 minuti?") });
+		expect(parseDuration(1.5)).toBe(90);
+		expect(parseDuration(0.75)).toBe(45);
+		expect(parseDuration("2.0")).toBe(120);
+		expect(parseDuration("2 ore di pomeriggio")).toBe(120);
+		expect(parseDuration("mezz'ora la sera")).toBe(30);
 		expect(parseDuration("1,5")).toBe(90);
 		expect(parseDuration("1,25")).toBe(75);
 		expect(parseDuration("1,50")).toBe(90);
@@ -1223,6 +1308,7 @@ describe("timesheet in the app", () => {
 			["timesheet.changed", "report", 1],
 		]);
 		expect(audit).not.toContain("Zeta");
+		expect(audit).not.toContain("150,00");
 		// The timesheet's events without their timestamp: elsewhere a time or an id may hold any digits.
 		expect(JSON.stringify(events.map(({ ts: _, ...rest }) => rest))).not.toContain("150");
 	}, 60_000);

@@ -46,7 +46,7 @@ function dayPeriod(date: string): Period {
 function weekPeriod(date: string): Period {
 	const from = addDays(date, -((weekdayOf(date) + 6) % 7));
 	const to = addDays(from, 6);
-	const label = `settimana dal ${italianDate(from)} al ${italianDate(to)}`;
+	const label = `settimana ${spanText(from, to)}`;
 	const w = isoWeek(from);
 	return { kind: "week", from, to, label, of: `della ${label}`, in: `nella ${label}`, slug: `${w.year}-S${String(w.week).padStart(2, "0")}` };
 }
@@ -199,6 +199,14 @@ export function underWay(p: Period, today: string): boolean {
 
 /** A span of days: the period, or the part of it up to today. */
 export type Span = { readonly from: string; readonly to: string };
+
+/** «dal 01/10/2026 al 18/10/2026», elided before 8 and 11: «dall'08/10/2026 all'11/10/2026». */
+export function spanText(from: string, to: string): string {
+	const elided = (day: string) => /^(?:08|11)\//.test(day);
+	const f = italianDate(from);
+	const t = italianDate(to);
+	return `${elided(f) ? "dall'" : "dal "}${f} ${elided(t) ? "all'" : "al "}${t}`;
+}
 
 /**
  * What a period is compared with. A period that is over: the whole period before. One under way

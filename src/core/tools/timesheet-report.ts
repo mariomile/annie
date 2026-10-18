@@ -10,7 +10,7 @@ import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { hm } from "../durations.ts";
 import type { Company } from "../invoices.ts";
 import { italianDate } from "../italian-format.ts";
-import type { Period } from "../periods.ts";
+import { type Period, spanText } from "../periods.ts";
 import { hoursHundredths, type Priced, rateCents } from "../timesheet-sums.ts";
 import { lead, letterhead, md } from "./quote-document.ts";
 import { euros } from "./quote-render.ts";
@@ -48,7 +48,7 @@ export function reportMarkdown(client: string, period: Period, rows: readonly Pr
 	const head = letterhead(company);
 	if (head.length > 0) out.push(head.join("\n"), "");
 	out.push("# Riepilogo ore", "");
-	out.push([`**Cliente:** ${md(client)}`, `**Periodo:** ${period.label} (dal ${italianDate(period.from)} al ${italianDate(period.to)})`, `**Data:** ${italianDate(today)}`].join("  \n"), "");
+	out.push([`**Cliente:** ${md(client)}`, `**Periodo:** ${period.label} (${spanText(period.from, period.to)})`, `**Data:** ${italianDate(today)}`].join("  \n"), "");
 	out.push("## Dettaglio", "");
 	out.push(money ? "| Data | Progetto | Descrizione | Ore | Tariffa | Importo |" : "| Data | Progetto | Descrizione | Ore |", money ? "|---|---|---|---:|---:|---:|" : "|---|---|---|---:|");
 	for (const r of rows) {

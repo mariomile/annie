@@ -9,7 +9,7 @@
 import { hm, hoursText } from "../durations.ts";
 import { MONTH_NAMES } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
-import { comparedSpans, type Period, percentChange, type Span, unitBefore } from "../periods.ts";
+import { comparedSpans, type Period, percentChange, type Span, spanText as daysText, unitBefore } from "../periods.ts";
 import { billingState, type RateRule, type Timer, type WorkEntry } from "../timesheet.ts";
 import { BRIEF_TIMER_MINUTES, type HoursTotals, type Part, type Priced, type Stale, summarize, timerMinutes } from "../timesheet-sums.ts";
 import { fence } from "../untrusted.ts";
@@ -89,7 +89,7 @@ export function listAnswer(shown: readonly Priced[], filter: ListFilter, totals:
 
 /** «dal 01/10/2026 al 18/10/2026». */
 function spanText(s: Span): string {
-	return `dal ${italianDate(s.from)} al ${italianDate(s.to)}`;
+	return daysText(s.from, s.to);
 }
 
 /** The totals, in a sentence (words) or a list row (h:mm). */

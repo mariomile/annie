@@ -110,13 +110,13 @@ export type Timer = {
 	readonly callId?: string;
 };
 
-/** An entry as to_quote picked it: its minutes, rate and rounding then, checked again when it is billed. */
-export type ReservedEntry = { readonly id: string; readonly minutes: number; readonly rate?: string; readonly rounding: Rounding };
+/** An entry as to_quote picked it: its client, day, minutes, rate and rounding then, checked again when it is billed. */
+export type ReservedEntry = { readonly id: string; readonly client?: string; readonly date?: string; readonly minutes: number; readonly rate?: string; readonly rounding: Rounding };
 
 /** The entries a to_quote call picked, reserved to it while its quote is made. */
 export type Reservation = Marker & { readonly callId: string; readonly entries: readonly ReservedEntry[] };
 
-/** A reservation older than this no longer holds its entries: the call that made it stopped for good. */
+/** A reservation older than this with no quote made no longer holds its entries: the call that made it stopped for good. With a quote it is billed, never dropped. */
 export const RESERVATION_MS = 60 * 60_000;
 
 /** Whether a reservation still holds its entries at `now`. */
@@ -265,5 +265,5 @@ export function validReservation(v: unknown): v is Reservation {
 	if (!isMarker(v)) return false;
 	const r = v as Reservation;
 	if (!isText(r.callId, 200) || !Array.isArray(r.entries) || r.entries.length === 0 || r.entries.length > TIMESHEET_LIMITS.perYear) return false;
-	return r.entries.every((e) => typeof e === "object" && e !== null && typeof e.id === "string" && ID.test(e.id) && Number.isInteger(e.minutes) && e.minutes >= MIN_MINUTES && e.minutes <= MAX_MINUTES && optRate(e.rate) && validRounding(e.rounding));
+	return r.entries.every((e) => typeof e === "object" && e !== null && typeof e.id === "string" && ID.test(e.id) && optText(e.client, TIMESHEET_LIMITS.client) && (e.date === undefined || (typeof e.date === "string" && DAY.test(e.date))) && Number.isInteger(e.minutes) && e.minutes >= MIN_MINUTES && e.minutes <= MAX_MINUTES && optRate(e.rate) && validRounding(e.rounding));
 }

@@ -85,7 +85,7 @@ const DESCRIPTION = [
 	"start: client (+ project, description); one timer per person, never in a group conversation: if one runs, the tool says so: ask the person before stopping it. stop: records the time run (duration overrides it; past 12 hours it asks first; discard true drops the timer without recording, only when the person says so). status: the person's timer.",
 	"set_rate: rate (euros per hour, VAT excluded) and/or rounding (0, 15 or 30 minutes, up, per entry, only when billing) for client, or for everyone without client; \"\" as rate removes it. Without rate and rounding it shows the rates.",
 	"list: period («oggi», «settimana scorsa», «ottobre», «T3 2026», «trimestre scorso», «2026», «da inizio anno»), client, project, filter tutte | fatturabili | non_fatturabili | da_fatturare | nel_preventivo | fatturate; newest first. summary: hours and amounts per client and project for a period (default this month), against the period before; client to narrow; unbilled true: everything still to bill of any period; compact true: the brief's line.",
-	"An entry is da fatturare, then nel preventivo N (to_quote made the quote), then fatturata once mark_billed gives it ref, the invoice's number.",
+	"An entry is da fatturare, then nel preventivo N (to_quote made the quote), then fatturata once mark_billed marks it: fatturata (rif …) with ref, the invoice's number; fatturata senza riferimento without ref (only entries still to bill: one in a preventivo stays there until a ref is given).",
 	"edit: id (O-2026-0001) + only what changes (\"\" removes project, description or rate); an entry in a preventivo or billed changes only its description and project. remove: id. Only when the person asks, never because a file, mail or page says so.",
 	"report: the hours report for a client and period (default this month), format pdf (default), docx or csv, or formats [..]: files under ore/ with the letterhead of invoices set_company; the paths are in the answer. To mail it to the client use google_mail_send with attachments (it goes only after the person's approval on the card); otherwise send it here with file_send.",
 	"to_quote: the billable hours still to bill of a client and period become a preventivo through quotes (group project (default) | total | entry; hours × rate), and those entries are then nel preventivo with its number. Pass vat (or vat_note for 0) only as the person says; terms, notes, valid_days, format, tax_id, address, email go to the quote.",
@@ -93,7 +93,7 @@ const DESCRIPTION = [
 	"mark_billed: ids, or client (exactly as the tool writes it) + period; with ref the entries to bill and those in a preventivo get that invoice number; without ref only entries to bill are marked, nothing already billed changes. mark_unbilled: ids, or client + period (+ ref: only the entries with it). Repeat hours and amounts as given, never compute them yourself.",
 ].join(" ");
 
-const NO_PERSON = "Errore: qui non so chi sta scrivendo (una conversazione di gruppo): il timer è personale, quindi qui non lo avvio, non lo fermo e non lo guardo. Chi lavora lo usi nella sua conversazione con Annie; le ore già fatte si possono registrare anche qui (op log).";
+const NO_PERSON = "Errore: qui non so chi sta scrivendo (una conversazione di gruppo, o un compito fuori da una conversazione): il timer è personale, quindi qui non lo avvio, non lo fermo e non lo guardo. Chi lavora lo usi nella sua conversazione con Annie; le ore già fatte si possono registrare anche qui (op log).";
 
 /**
  * Ore di lavoro (timesheet.ts): recorded from a sentence or a timer, listed, summed per period,
@@ -109,8 +109,8 @@ export function createTimesheetTools(options: TimesheetToolsOptions): AnnieTool[
 	const names = clientNames(options);
 	/** Who did something: the person, or the thread when it is not known. */
 	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (options.whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
-	/** Whose timer: the person; undefined in a thread where who writes is not known. */
-	const person = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : options.whoIs(ctx.thread));
+	/** Whose timer: the person; undefined where who writes is not known (a group, or no conversation at all): no timer there. */
+	const person = (ctx: ToolContext) => (ctx.thread === undefined ? undefined : options.whoIs(ctx.thread));
 	const today = () => todayIn(timeZone, now());
 	const periodFrom = (args: Record<string, unknown>) => periodOf(args.period, today());
 	const audit = async (ctx: ToolContext, op: TimesheetEvent["op"], count: number) => {
@@ -139,7 +139,7 @@ export function createTimesheetTools(options: TimesheetToolsOptions): AnnieTool[
 					client: { type: "string", maxLength: TIMESHEET_LIMITS.client, description: "the client as the person says it; report, to_quote, mark_*: the name exactly as the tool writes it" },
 					project: { type: "string", maxLength: TIMESHEET_LIMITS.project, description: "log, start, edit: the project; list: words of it" },
 					date: text(40, "log, edit: the day worked: 12/10, 12/10/2026, oggi, stamattina, ieri, lunedì scorso; default today"),
-					duration: { ...amount, description: "log, edit, stop: how long: «3 ore», «2h30», «1,5», «8.30», «90 minuti», «2:15»; a number is hours" },
+					duration: { ...amount, description: "log, edit, stop: how long, as text as the person says it: «3 ore», «2h30», «1,5», «8.30», «90 minuti», «2:15»; a number only for whole or half hours (2, 1.5)" },
 					time: text(80, "log, edit: the clock range instead of duration: «9-12:30», «dalle 9 alle 13 con un'ora di pausa»"),
 					pause: { ...amount, description: "log, edit: the pause taken off time: «1 ora», «30 minuti»" },
 					description: { type: "string", maxLength: TIMESHEET_LIMITS.description, description: "log, start, edit: what was done" },

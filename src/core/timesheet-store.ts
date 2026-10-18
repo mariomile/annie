@@ -7,6 +7,12 @@
  * never throws: a file that does not read (or is past the size cap) is `broken`, and nothing is
  * written over it. What decides on billing (billed, reserved) is checked again here, under the
  * lock, on the entries as saved: a change made meanwhile is never overwritten.
+ *
+ * A reservation never lapses while its quote may exist. Before every change, under the lock,
+ * the reservations of the other calls are settled: one whose call made its quote (the quotes
+ * store says so) is billed with that quote at its frozen terms and dropped, as its own call
+ * would have done; one past RESERVATION_MS with no quote is dropped, its entries free again; the
+ * rest hold their entries.
  */
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
@@ -63,11 +69,19 @@ export type Started = { readonly started: Timer } | { readonly running: Timer };
 /** What a bill did: the entries marked now, those not marked because they changed since the pick, and whether the reservation was there. */
 export type Billing = { readonly changed: readonly string[]; readonly skipped: readonly string[]; readonly reserved: boolean };
 
+export type TimesheetStoreOptions = {
+	readonly now?: () => Date;
+	/** The number of the quote a call made, once its document is written (QuoteStore.finished); none: no reservation is ever settled as billed. */
+	readonly finishedQuote?: (callId: string) => string | undefined;
+};
+
 export class TimesheetStore {
 	private readonly book: BookFile<Book>;
 	private readonly now: () => Date;
-	constructor(instanceDir: string, options: { readonly now?: () => Date } = {}) {
+	private readonly finishedQuote: (callId: string) => string | undefined;
+	constructor(instanceDir: string, options: TimesheetStoreOptions = {}) {
 		this.now = options.now ?? (() => new Date());
+		this.finishedQuote = options.finishedQuote ?? (() => undefined);
 		this.book = {
 			file: join(instanceDir, "timesheet.json"),
 			empty: EMPTY,
@@ -85,10 +99,32 @@ export class TimesheetStore {
 		return { entries: book.entries, timers: book.timers, rates: book.rates, reservations: book.reservations ?? [], broken: false };
 	}
 
-	/** The ids held by another call's reservation still active. */
+	/** The ids held by another call's reservation (settled already: each of these holds its entries). */
 	private heldByOthers(book: Book, callId?: string): Set<string> {
+		return new Set((book.reservations ?? []).filter((r) => r.callId !== callId).flatMap((r) => r.entries.map((e) => e.id)));
+	}
+
+	/**
+	 * The reservations settled, but `keep`'s (the calling call's own): one whose quote is made is
+	 * billed with it and dropped; one past its time without a quote is dropped; the others stay.
+	 * The same book when nothing changes.
+	 */
+	private settle(book: Book, keep?: string): Book {
+		const reservations = book.reservations ?? [];
+		if (reservations.length === 0) return book;
 		const now = this.now();
-		return new Set((book.reservations ?? []).filter((r) => r.callId !== callId && activeReservation(r, now)).flatMap((r) => r.entries.map((e) => e.id)));
+		let entries = book.entries;
+		const kept: Reservation[] = [];
+		for (const r of reservations) {
+			if (r.callId === keep) {
+				kept.push(r);
+				continue;
+			}
+			const quote = this.finishedQuote(r.callId);
+			if (quote !== undefined) entries = billReserved(entries, r, { by: r.by, at: now.toISOString(), quote }).entries;
+			else if (activeReservation(r, now)) kept.push(r);
+		}
+		return kept.length === reservations.length ? book : { ...book, entries, reservations: kept };
 	}
 
 	/**
@@ -200,41 +236,47 @@ export class TimesheetStore {
 			if (chosen.length === 0) return book;
 			const entries = chosen.map((e): ReservedEntry => {
 				const terms = termsOf(e, book.rates);
-				return { id: e.id, minutes: e.minutes, ...(terms.rate === undefined ? {} : { rate: terms.rate }), rounding: terms.rounding };
+				return { id: e.id, client: e.client, date: e.date, minutes: e.minutes, ...(terms.rate === undefined ? {} : { rate: terms.rate }), rounding: terms.rounding };
 			});
-			const now = this.now();
-			const reservation: Reservation = { callId, entries, by, at: now.toISOString() };
+			const reservation: Reservation = { callId, entries, by, at: this.now().toISOString() };
 			result = reservation;
-			// Reservations no longer active are dropped as a new one is made.
-			const kept = (book.reservations ?? []).filter((r) => activeReservation(r, now));
-			return { ...book, reservations: [...kept, reservation] };
-		});
+			return { ...book, reservations: [...(book.reservations ?? []), reservation] };
+		}, callId);
 		return result;
 	}
 
 	/**
+	 * Whether the reservation of `callId` is still there, its time started again: called just
+	 * before its quote is made, so it holds its entries while the quote is made. False when it is
+	 * gone (released, or dropped past its time): no quote is to be made with it.
+	 */
+	renew(callId: string): boolean {
+		let found = false;
+		this.update((book) => {
+			const reservations = book.reservations ?? [];
+			const own = reservations.find((r) => r.callId === callId);
+			if (own === undefined) return book;
+			found = true;
+			return { ...book, reservations: reservations.map((r) => (r === own ? { ...r, at: this.now().toISOString() } : r)) };
+		}, callId);
+		return found;
+	}
+
+	/**
 	 * Mark billed the entries reserved to `callId` that are as they were picked (billable, not
-	 * billed, the same minutes and own rate), with `mark` and the rate and rounding picked; then
-	 * drop the reservation. Without a reservation (billed already, or released) nothing changes.
+	 * billed, the same client, day, minutes and own rate), with `mark` and the rate and rounding
+	 * picked; then drop the reservation. Without a reservation (billed already, settled by another
+	 * call's change, or released) nothing changes.
 	 */
 	bill(callId: string, mark: Omit<Billed, "rate" | "rounding">): Billing {
 		let result: Billing = { changed: [], skipped: [], reserved: false };
 		this.update((book) => {
 			const reservation = (book.reservations ?? []).find((r) => r.callId === callId);
 			if (reservation === undefined) return book;
-			const picked = new Map(reservation.entries.map((r) => [r.id, r]));
-			const changed: string[] = [];
-			const entries = book.entries.map((e) => {
-				const r = picked.get(e.id);
-				if (r === undefined) return e;
-				// Unchanged since the pick: the rate and rounding are those picked (the quote's), whatever the rates say now.
-				if (!e.billable || e.billed !== undefined || e.minutes !== r.minutes || (e.rate !== undefined && e.rate !== r.rate)) return e;
-				changed.push(e.id);
-				return checked({ ...e, billed: { ...mark, ...(r.rate === undefined ? {} : { rate: r.rate }), rounding: r.rounding } });
-			});
-			result = { changed, skipped: reservation.entries.map((r) => r.id).filter((id) => !changed.includes(id)), reserved: true };
-			return { ...book, entries, reservations: (book.reservations ?? []).filter((r) => r !== reservation) };
-		});
+			const billed = billReserved(book.entries, reservation, mark);
+			result = { changed: billed.changed, skipped: reservation.entries.map((r) => r.id).filter((id) => !billed.changed.includes(id)), reserved: true };
+			return { ...book, entries: billed.entries, reservations: (book.reservations ?? []).filter((r) => r !== reservation) };
+		}, callId);
 		return result;
 	}
 
@@ -243,7 +285,7 @@ export class TimesheetStore {
 		this.update((book) => {
 			const reservations = book.reservations ?? [];
 			return reservations.some((r) => r.callId === callId) ? { ...book, reservations: reservations.filter((r) => r.callId !== callId) } : book;
-		});
+		}, callId);
 	}
 
 	/**
@@ -321,10 +363,28 @@ export class TimesheetStore {
 		return rule;
 	}
 
-	/** The change under the lock; then a copy of what was written in timesheet.json.bak. */
-	private update(change: (book: Book) => Book): void {
-		updateBook(this.book, change);
+	/** The change under the lock, the other calls' reservations settled first (`keep`'s left to it); then a copy of what was written in timesheet.json.bak. */
+	private update(change: (book: Book) => Book, keep?: string): void {
+		updateBook(this.book, (book) => change(this.settle(book, keep)));
 	}
+}
+
+/**
+ * The entries reserved by `r` billed with `mark`, at the rate and rounding picked, when they are
+ * as picked: billable, not billed, the same client, day, minutes and own rate. The others stay.
+ */
+function billReserved(entries: readonly WorkEntry[], r: Reservation, mark: Omit<Billed, "rate" | "rounding">): { entries: readonly WorkEntry[]; changed: string[] } {
+	const picked = new Map(r.entries.map((x) => [x.id, x]));
+	const changed: string[] = [];
+	const next = entries.map((e) => {
+		const x = picked.get(e.id);
+		if (x === undefined) return e;
+		const same = e.billable && e.billed === undefined && e.minutes === x.minutes && (x.client === undefined || x.client === e.client) && (x.date === undefined || x.date === e.date) && (e.rate === undefined || e.rate === x.rate);
+		if (!same) return e;
+		changed.push(e.id);
+		return checked({ ...e, billed: { ...mark, ...(x.rate === undefined ? {} : { rate: x.rate }), rounding: x.rounding } });
+	});
+	return { entries: changed.length === 0 ? entries : next, changed };
 }
 
 /** The book with a new entry of `year`, numbered next. TimesheetError when the year is full. */

@@ -17,7 +17,7 @@ const FIRST_DAY = "2000-01-01";
 const WEEKDAYS = ["domenica", "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato"];
 const WEEKDAY = new RegExp(`^(?:(?:il|lo|la) )?(${WEEKDAYS.join("|")})(?: (scors[oa])| (\\d{1,2}))?$`);
 /** «stamattina», «stamani», «stasera», «oggi pomeriggio»: today. */
-const TODAY_WORDS = /^(?:stamattina|stamani|stamane|stasera|stanotte|stamattina presto|oggi (?:in )?(?:mattina|pomeriggio|sera))$/;
+const TODAY_WORDS = /^(?:stamattina|stamani|stamane|stasera|stamattina presto|oggi (?:in )?(?:mattina|pomeriggio|sera))$/;
 /** A part of the day after the day itself, dropped: «ieri pomeriggio» is «ieri». */
 const PART_OF_DAY = /(?:,? (?:in |di |nel |alla |la )?(?:mattina|mattinata|pomeriggio|sera|serata|notte)(?: presto| tardi)?)$/;
 const BAD_DAY = "scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato";

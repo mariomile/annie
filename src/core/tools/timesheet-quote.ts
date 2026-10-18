@@ -12,6 +12,9 @@
  *
  * Stopped after the quote was made, the call run again finds its reservation and bills; after
  * billing, the reserve step (kept by the engine) leads to the same quote and the audit is written.
+ * A reservation whose quote was made never lapses: any change to the timesheet meanwhile bills it
+ * with that quote (timesheet-store.ts), and the call run again says so. Without a quote it lapses
+ * after an hour, and the call then makes no quote with it.
  */
 import { hoursText } from "../durations.ts";
 import type { ToolContext } from "../engine.ts";
@@ -110,14 +113,25 @@ export async function toQuote(args: Record<string, unknown>, ctx: ToolContext, p
 	const lines = hoursLines(items, group, lineWords(period), QUOTE_LIMITS.description);
 	if (lines.length > QUOTE_LIMITS.lines) return release(`Errore: verrebbero ${lines.length} righe, più delle ${QUOTE_LIMITS.lines} di un preventivo: usa group project o total.`);
 	const passed = Object.fromEntries(PASSED.filter((k) => args[k] !== undefined && !(k === "format" && args[k] === "csv")).map((k) => [k, args[k]]));
+	// No quote of this call yet: it is made only while this call's reservation is there (renewed now, so it holds meanwhile).
+	const quotes = deps.quotes.read();
+	const finished = !quotes.broken && quotes.quotes.some((q) => q.callId === ctx.callId && q.file !== undefined);
+	if (!finished && !store.renew(ctx.callId)) return "Errore: le ore scelte per il preventivo non sono più tenute da parte (la richiesta si era fermata da più di un'ora): il preventivo non l'ho fatto e le ore non sono segnate. Rifai la richiesta.";
+	// A throw here leaves the reservation: settled later by any change to the timesheet (billed if the quote was made, dropped past its time if not).
 	const made = await createQuote({ ...passed, customer: picked.client, items: lines }, ctx);
 	if (made.number === undefined) return release(`${made.text}\nLe ore non sono segnate: il preventivo non è fatto.`);
 	const number = made.number;
 	const billed = await ctx.step("bill", async () => {
 		const done = store.bill(ctx.callId, { by: deps.by(ctx), at: deps.now().toISOString(), quote: number });
-		return { changed: done.changed.length, skipped: [...done.skipped] };
+		if (done.reserved) return { changed: done.changed.length, skipped: [...done.skipped] };
+		// The reservation was settled meanwhile by another change (billed with this quote): those entries are this call's.
+		const mine = new Set(store.read().entries.filter((e) => e.billed?.quote === number).map((e) => e.id));
+		return { changed: picked.entries.filter((r) => mine.has(r.id)).length, skipped: picked.entries.filter((r) => !mine.has(r.id)).map((r) => r.id) };
 	});
 	if (billed.changed > 0) await deps.audit(ctx, billed.changed);
+	if (billed.changed === 0) {
+		return [made.text, `Attenzione: il preventivo ${number} è fatto, ma nessuna voce di ore è segnata come nel preventivo: nel frattempo sono cambiate o sono state segnate in altro modo (${billed.skipped.slice(0, 10).join(", ")}). Ricontrollale con chi ti scrive prima di mandare il preventivo.`].join("\n");
+	}
 	const minutes = items.filter((p) => !billed.skipped.includes(p.entry.id)).reduce((s, p) => s + p.billed, 0);
 	const skipped = billed.skipped.length === 0 ? [] : [`Attenzione: ${entries(billed.skipped.length, "cambiat")} mentre facevo il preventivo non ${billed.skipped.length === 1 ? "è segnata" : "sono segnate"} (${billed.skipped.slice(0, 10).join(", ")}): il preventivo le comprende come erano. Ricontrollale con chi ti scrive.`];
 	return [

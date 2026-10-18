@@ -174,6 +174,8 @@ describe("expense amounts, VAT and dates", () => {
 		expect(readDay("boh", TODAY)).toEqual({ problem: "non capisco la data: scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato" });
 		// The part of the day goes; stamattina, stamani, stasera are today.
 		for (const today of ["stamattina", "stamani", "stasera", "oggi pomeriggio"]) expect(readDay(today, TODAY), today).toBe(TODAY);
+		// «stanotte» could be last night or tonight: asked.
+		expect(readDay("stanotte", TODAY)).toMatchObject({ problem: expect.any(String) });
 		expect(readDay("ieri sera", TODAY)).toBe("2026-10-17");
 		expect(readDay("venerdì pomeriggio", TODAY)).toBe("2026-10-16");
 		expect(readDay("15/10 di mattina", TODAY)).toBe("2026-10-15");
@@ -244,7 +246,9 @@ describe("expense periods and sums", () => {
 		expect(p("ieri")).toEqual(["2026-10-17", "2026-10-17", "2026-10-17", "17/10/2026"]);
 		// 18 October 2026 is a Sunday: its week began on Monday the 12th.
 		expect(p("questa settimana")).toEqual(["2026-10-12", "2026-10-18", "2026-S42", "settimana dal 12/10/2026 al 18/10/2026"]);
-		expect(p("settimana scorsa")).toEqual(["2026-10-05", "2026-10-11", "2026-S41", "settimana dal 05/10/2026 al 11/10/2026"]);
+		expect(p("settimana scorsa")).toEqual(["2026-10-05", "2026-10-11", "2026-S41", "settimana dal 05/10/2026 all'11/10/2026"]);
+		expect(readPeriod("settimana", "2026-12-08").label).toBe("settimana dal 07/12/2026 al 13/12/2026");
+		expect(readPeriod("settimana", "2026-06-10").label).toBe("settimana dall'08/06/2026 al 14/06/2026");
 		expect(p("la settimana scorsa", "2026-10-19")[0]).toBe("2026-10-12");
 		expect(previousPeriod(readPeriod("oggi", TODAY)).slug).toBe("2026-10-17");
 		expect(previousPeriod(readPeriod("settimana", TODAY)).slug).toBe("2026-S41");
