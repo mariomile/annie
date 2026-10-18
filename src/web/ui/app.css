@@ -501,6 +501,7 @@ dialog.palette li.none { color: var(--fg-3); cursor: default; }
 	.shell.open .scrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, 0.35); }
 	.topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: saturate(180%) blur(12px); }
 	.topbar b { font-size: 15px; font-weight: 600; letter-spacing: -0.015em; }
+	.topbar b.topbar-who { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 	main.is-chat { height: calc(100dvh - 46px); }
 	main.is-page { padding: 0 16px 32px; }
 	.shell.collapsed main.is-page { padding-top: 0; }
@@ -552,12 +553,13 @@ ol.steps .stack { display: grid; gap: 8px; }
 .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .card.agent { display: grid; grid-template-columns: 48px 1fr; gap: 4px 14px; padding: 16px; }
 .card.agent.current { border-color: var(--border-2); box-shadow: var(--shadow); }
-.card.agent { grid-template-columns: 52px 1fr; transition: border-color 0.15s, transform 0.2s; }
+.card.agent { grid-template-columns: 64px 1fr; gap: 4px 16px; padding: 20px; border-radius: 16px; transition: border-color 0.15s, transform 0.2s cubic-bezier(.22, 1, .36, 1); }
+.card.agent:hover { transform: translateY(-1px); }
 .card.agent:hover { border-color: var(--border-2); }
 .agent-face { grid-row: span 2; }
 .card.agent:hover .agent-face .face { transform: rotate(-5deg) scale(1.05); }
 .agent-face .face { transition: transform 0.25s cubic-bezier(.22, 1, .36, 1); }
-.agent-body h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.agent-body h2 { margin: 0; font-size: 17px; font-weight: 640; font-stretch: var(--display-stretch); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
 .agent-body p { margin: 4px 0 0; }
 .agent-body .small { font-size: 12px; }
 .agent-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -568,6 +570,7 @@ ol.steps .stack { display: grid; gap: 8px; }
 .pick[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .name-row { display: flex; gap: 8px; }
 .name-row > input { flex: 1 1 auto; min-width: 0; width: auto; }
+.name-face { flex: none; display: grid; place-items: center; width: 44px; }
 .name-row > input.emoji-input { flex: 0 0 56px; width: 56px; text-align: center; font-size: 18px; padding-left: 0; padding-right: 0; }
 .advanced summary { cursor: pointer; color: var(--fg-2); font-size: 13px; margin: 4px 0 8px; }
 
