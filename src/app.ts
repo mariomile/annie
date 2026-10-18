@@ -345,6 +345,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		};
 		return {
 			check: why,
+			pending: async () => {
+				const waiting = (await runtime.googleActions(record.tenantId, record.id).list()).filter((x) => x.status === "pending");
+				return new Set(waiting.flatMap((x) => (x.reminders ?? []).map((r) => r.invoice)));
+			},
 			propose: async (p) => {
 				const personId = await personOf(p.thread);
 				const account = personId === undefined ? undefined : googleAccounts.get(personId);

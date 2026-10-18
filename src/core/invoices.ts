@@ -3,15 +3,12 @@
  * their instalments and which are paid. Whether an invoice is to pay or to collect depends on
  * which side the owner's company is: its partita IVA (or name), when set, says so; otherwise
  * neither is said. What is paid is not in the files: the owner says it, and it is kept in
- * `invoices.json`, with who said it and when.
+ * `invoices.json` (invoice-store.ts), with who said it and when.
  */
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { type FatturaDocument, type FatturaInstalment, type FatturaParty, toUnits } from "./fattura-pa.ts";
+import { type FatturaDocument, type FatturaInstalment, type FatturaParty, fromUnits, toUnits } from "./fattura-pa.ts";
 import type { FoundFattura } from "./invoice-scan.ts";
 import { realDate } from "./italian-calendar.ts";
-import { updateJsonFile } from "./locked-json.ts";
-import { type ReminderEntry, type ReminderItem, ReminderLimit, type ReminderMark, validReminders, withReminders } from "./reminder-book.ts";
+import type { ReminderEntry, ReminderMark } from "./reminder-book.ts";
 import { checkVatNumber } from "./tax-ids.ts";
 import { fold } from "./text-match.ts";
 
@@ -32,11 +29,11 @@ export function isInvoiceReadOp(op: unknown): op is InvoiceReadOp {
 	return INVOICE_READ_OPS.some((o) => o === op);
 }
 
-/** Whether a call only reads: a reading op, a reminder only drafted (not sent), or set_company with nothing to set (it shows the company). */
+/** Whether a call only reads: a reading op, a reminder only drafted (not sent, no address to save), or set_company with nothing to set (it shows the company). */
 export function invoiceCallReads(args: Record<string, unknown>): boolean {
 	if (isInvoiceReadOp(args.op)) return true;
-	if (args.op === "reminder") return args.send !== true;
-	return args.op === "set_company" && args.vat === undefined && args.name === undefined && args.clear === undefined;
+	if (args.op === "reminder") return args.send !== true && args.email === undefined;
+	return args.op === "set_company" && ["vat", "name", "clear", "iban", "signature"].every((k) => args[k] === undefined);
 }
 
 export class InvoiceError extends Error {
@@ -47,7 +44,7 @@ export class InvoiceError extends Error {
 export type Marker = { readonly by: string; readonly at: string };
 
 /** The owner's company, as the owner gave it: how the scadenzario tells what is to pay from what is to collect. */
-export type Company = Marker & { readonly vat?: string; readonly name?: string };
+export type Company = Marker & { readonly vat?: string; readonly name?: string; readonly ibans?: readonly string[]; readonly signature?: string };
 
 /**
  * What is paid of one invoice: all of it (`all`) but the instalments in `except`, or the
@@ -55,126 +52,8 @@ export type Company = Marker & { readonly vat?: string; readonly name?: string }
  */
 export type PaidEntry = { readonly invoice: string; readonly all?: Marker; readonly except?: readonly number[]; readonly instalments?: readonly (Marker & { readonly n: number })[] };
 
-type Book = { readonly company?: Company; readonly paid: readonly PaidEntry[]; readonly reminders?: readonly ReminderEntry[] };
-
-/** What the store says; `broken` when invoices.json does not read: then nothing is paid nor reminded, and nothing is written. */
-export type BookState = { readonly company?: Company; readonly paid: readonly PaidEntry[]; readonly reminders?: readonly ReminderEntry[]; readonly broken: boolean };
-
-export const BROKEN_WRITE = "lo stato delle fatture pagate (invoices.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
-
-/** What is paid and the company of one instance, in `invoices.json`, changed under the shared file lock; `invoices.json.bak` keeps the last state written. */
-export class InvoiceStore {
-	private readonly file: string;
-	constructor(instanceDir: string) {
-		this.file = join(instanceDir, "invoices.json");
-	}
-
-	/** Never throws: a file that does not read is said `broken`. */
-	read(): BookState {
-		let text: string;
-		try {
-			text = readFileSync(this.file, "utf8");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { paid: [], broken: false };
-			return { paid: [], broken: true };
-		}
-		const book = bookOf(text);
-		return book === undefined ? { paid: [], broken: true } : { ...book, broken: false };
-	}
-
-	/** Set the company (undefined clears it). */
-	setCompany(company: Company | undefined): void {
-		this.update((book) => {
-			const { company: _old, ...rest } = book;
-			return company === undefined ? rest : { ...rest, company };
-		});
-	}
-
-	/**
-	 * Mark `invoice`, which has `count` instalments (1 when it has none), paid or not: one
-	 * instalment, or all of it. How many instalments changed, and the entry there was before.
-	 * InvoiceError when the store is full or does not read.
-	 */
-	mark(input: { invoice: string; count: number; instalment?: number; paid: boolean } & Marker): { changed: number; before?: PaidEntry } {
-		const { invoice, count, instalment } = input;
-		let result: { changed: number; before?: PaidEntry } = { changed: 0 };
-		this.update((book) => {
-			const before = book.paid.find((e) => e.invoice === invoice);
-			const was = paidSet(before, count);
-			const targets = instalment === undefined ? range(count) : [instalment];
-			const changed = targets.filter((n) => was.has(n) !== input.paid).length;
-			result = { changed, ...(before === undefined ? {} : { before }) };
-			if (changed === 0) return book;
-			const made: Marker = { by: input.by, at: input.at };
-			const next = nextEntry(before, { invoice, count, ...(instalment === undefined ? {} : { instalment }), paid: input.paid, made });
-			if (before === undefined && book.paid.length >= INVOICE_LIMITS.marks) {
-				throw new InvoiceError(`ci sono già ${INVOICE_LIMITS.marks} fatture segnate pagate, il massimo: non ne segno altre. Togli il segno a quelle vecchie con op mark_unpaid`);
-			}
-			const others = book.paid.filter((e) => e.invoice !== invoice);
-			return { ...book, paid: next === undefined ? others : [...others, next] };
-		});
-		return result;
-	}
-
-	/**
-	 * Record payment reminders (reminder-book.ts): how many were recorded (one already recorded for
-	 * the same mail request is not counted again). InvoiceError when the store is full or does not read.
-	 */
-	remind(items: readonly ReminderItem[], made: Marker & { readonly via: "mail" | "self"; readonly action?: string }): number {
-		let recorded = 0;
-		this.update((book) => {
-			let next: { entries: readonly ReminderEntry[]; recorded: number };
-			try {
-				next = withReminders(book.reminders ?? [], items, made);
-			} catch (error) {
-				if (error instanceof ReminderLimit) throw new InvoiceError(error.message);
-				throw error;
-			}
-			recorded = next.recorded;
-			return recorded === 0 ? book : { ...book, reminders: next.entries };
-		});
-		return recorded;
-	}
-
-	/** The change under the lock; then a copy of what was written, the last good state, in invoices.json.bak. */
-	private update(change: (book: Book) => Book): void {
-		if (this.read().broken) throw new InvoiceError(BROKEN_WRITE);
-		let changed = false;
-		try {
-			updateJsonFile<unknown>(this.file, { paid: [] }, (raw) => {
-				const book = validBook(raw);
-				if (book === undefined) throw new InvoiceError(BROKEN_WRITE);
-				const next = change(book);
-				changed = next !== book;
-				return changed ? next : raw;
-			});
-		} catch (error) {
-			// Changed into something unreadable meanwhile.
-			if (error instanceof SyntaxError) throw new InvoiceError(BROKEN_WRITE);
-			throw error;
-		}
-		if (changed && existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`);
-	}
-}
-
-/** The entry after a change; undefined when nothing stays paid. */
-function nextEntry(before: PaidEntry | undefined, change: { invoice: string; count: number; instalment?: number; paid: boolean; made: Marker }): PaidEntry | undefined {
-	const { invoice, count, instalment, paid, made } = change;
-	if (instalment === undefined) return paid ? { invoice, all: before?.all ?? made } : undefined;
-	if (before?.all !== undefined) {
-		const except = new Set(before.except ?? []);
-		if (paid) except.delete(instalment);
-		else except.add(instalment);
-		if (except.size >= count) return undefined;
-		return { invoice, all: before.all, ...(except.size === 0 ? {} : { except: [...except].sort((a, b) => a - b) }) };
-	}
-	const one = (before?.instalments ?? []).filter((m) => m.n !== instalment);
-	const instalments = paid ? [...one, { n: instalment, ...made }].sort((a, b) => a.n - b.n) : one;
-	if (instalments.length > INVOICE_LIMITS.instalments) throw new InvoiceError(`si possono segnare al più ${INVOICE_LIMITS.instalments} rate di una fattura`);
-	return instalments.length === 0 ? undefined : { invoice, instalments };
-}
-
-function range(count: number): number[] {
+/** The instalments of an invoice, from 1. */
+export function instalmentRange(count: number): number[] {
 	return Array.from({ length: count }, (_, i) => i + 1);
 }
 
@@ -183,7 +62,7 @@ export function paidSet(entry: PaidEntry | undefined, count: number): Set<number
 	if (entry === undefined) return new Set();
 	if (entry.all !== undefined) {
 		const except = new Set(entry.except ?? []);
-		return new Set(range(count).filter((n) => !except.has(n)));
+		return new Set(instalmentRange(count).filter((n) => !except.has(n)));
 	}
 	return new Set((entry.instalments ?? []).map((m) => m.n).filter((n) => n >= 1 && n <= count));
 }
@@ -193,36 +72,6 @@ function markerOf(entry: PaidEntry | undefined, n: number): Marker | undefined {
 	if (entry?.all !== undefined) return entry.all;
 	const one = entry?.instalments?.find((m) => m.n === n);
 	return one === undefined ? undefined : { by: one.by, at: one.at };
-}
-
-function bookOf(text: string): Book | undefined {
-	try {
-		return validBook(JSON.parse(text));
-	} catch {
-		return undefined;
-	}
-}
-
-const isText = (v: unknown): v is string => typeof v === "string";
-const isMarker = (v: unknown): v is Marker => typeof v === "object" && v !== null && isText((v as Marker).by) && isText((v as Marker).at);
-const isN = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 1000;
-
-/** The book when the JSON has its shape; undefined otherwise. */
-function validBook(raw: unknown): Book | undefined {
-	if (typeof raw !== "object" || raw === null || !Array.isArray((raw as Book).paid)) return undefined;
-	const { company, paid, reminders } = raw as Book;
-	if (!validReminders(reminders)) return undefined;
-	if (company !== undefined && !(isMarker(company) && (company.vat === undefined || isText(company.vat)) && (company.name === undefined || isText(company.name)))) return undefined;
-	const entries = paid.every(
-		(e) =>
-			typeof e === "object" &&
-			e !== null &&
-			isText(e.invoice) &&
-			(e.all === undefined || isMarker(e.all)) &&
-			(e.except === undefined || (Array.isArray(e.except) && e.except.every(isN))) &&
-			(e.instalments === undefined || (Array.isArray(e.instalments) && e.instalments.every((m: unknown) => isMarker(m) && isN((m as { n?: unknown }).n)))),
-	);
-	return entries ? (raw as Book) : undefined;
 }
 
 /**
@@ -344,8 +193,10 @@ export type Invoice = {
 	readonly paid: boolean;
 	/** The payment reminders recorded, oldest first. */
 	readonly reminders?: readonly ReminderMark[];
-	/** The customer's PEC the invoice was delivered to, when written. */
+	/** The PEC the invoice was delivered to (the customer's or an intermediary's), when written. */
 	readonly pec?: string;
+	/** To a public administration. */
+	readonly publicAdmin?: true;
 };
 
 /** The register: every document of the files found, the same invoice once (the newest file), newest invoice first. */
@@ -388,6 +239,7 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 				paid: done.size === counted.list.length,
 				...(reminded.has(key) ? { reminders: reminded.get(key) } : {}),
 				...(fattura.pec === undefined ? {} : { pec: fattura.pec }),
+				...(fattura.publicAdmin === true ? { publicAdmin: true as const } : {}),
 			});
 		}
 	}
@@ -401,7 +253,9 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
  * add up to more, they are counted in order up to the total, and the invoice is flagged.
  */
 function countedInstalments(doc: FatturaDocument, total: bigint | undefined): { list: Instalment[]; mismatch: boolean } {
-	const whole = doc.toPay ?? doc.total;
+	// Under split payment the supplier gets the total less the VAT, which the administration pays to the State.
+	const split = doc.splitVat === undefined || doc.total === undefined ? undefined : (toUnits(doc.total) ?? 0n) - (toUnits(doc.splitVat) ?? 0n);
+	const whole = doc.toPay ?? (split === undefined || split < 0n ? doc.total : fromUnits(split));
 	const raw: readonly FatturaInstalment[] = doc.instalments.length > 0 ? doc.instalments : [whole === undefined ? {} : { amount: whole }];
 	const flip = doc.credit || (total !== undefined && total < 0n);
 	const units = (r: FatturaInstalment) => {

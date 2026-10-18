@@ -82,13 +82,25 @@ export type FatturaDocument = {
 	readonly total?: string;
 	readonly toPay?: string;
 	readonly instalments: readonly FatturaInstalment[];
+	/** Split payment (EsigibilitaIVA S): the VAT the public administration pays to the State, not to the supplier. */
+	readonly splitVat?: string;
 };
 
 /**
  * What a file says, structured: the summary is written from it; `count` is every document,
- * `documents` at most MAX_BODIES of them; `pec` the customer's PEC the SdI delivered it to (PECDestinatario).
+ * `documents` at most MAX_BODIES of them; `pec` the PEC the SdI delivered it to (PECDestinatario: the customer's, or an intermediary's); `publicAdmin` an invoice to a public
+ * administration (format FPA12, or a six-character codice ufficio).
  */
-export type Fattura = { readonly simplified: boolean; readonly signed: boolean; readonly supplier: FatturaParty; readonly customer: FatturaParty; readonly documents: readonly FatturaDocument[]; readonly count: number; readonly pec?: string };
+export type Fattura = {
+	readonly simplified: boolean;
+	readonly signed: boolean;
+	readonly supplier: FatturaParty;
+	readonly customer: FatturaParty;
+	readonly documents: readonly FatturaDocument[];
+	readonly count: number;
+	readonly pec?: string;
+	readonly publicAdmin?: true;
+};
 
 /**
  * The invoice's structured content from its XML; `signed` when it came out of a .p7m. A
@@ -169,9 +181,11 @@ function readInvoice(invoice: XmlElement, signed: boolean): { fattura: Fattura; 
 	const customer = simplified ? simplifiedCustomer(child(head, "CessionarioCommittente")) : ordinaryParty(child(head, "CessionarioCommittente"));
 	const all = children(invoice, "FatturaElettronicaBody");
 	const documents = all.slice(0, MAX_BODIES).map((body) => (simplified ? simplifiedDocument(body) : ordinaryDocument(body)));
-	const pec = value(child(head, "DatiTrasmissione"), "PECDestinatario");
+	const transmission = child(head, "DatiTrasmissione");
+	const pec = value(transmission, "PECDestinatario");
+	const publicAdmin = value(transmission, "FormatoTrasmissione") === "FPA12" || value(transmission, "CodiceDestinatario")?.length === 6;
 	return {
-		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length, ...(pec === undefined ? {} : { pec }) },
+		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length, ...(pec === undefined ? {} : { pec }), ...(publicAdmin ? { publicAdmin: true as const } : {}) },
 		details: { supplier: supplier.details, customer: customer.details },
 		documents,
 	};
@@ -187,14 +201,28 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	}
 	const instalments = [...instalmentOf.values()];
 	const toPay = paidSum(instalments);
+	const splitVat = splitPaymentVat(body);
 	const doc: FatturaDocument = {
-		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay) }),
+		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
 		integration: type !== undefined && INTEGRATIONS.has(type),
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments,
 	};
 	return { doc, body, instalmentOf };
+}
+
+/** The VAT of the summary rows under split payment (EsigibilitaIVA S), when there are any and each reads. */
+function splitPaymentVat(body: XmlElement): bigint | undefined {
+	const rows = children(child(body, "DatiBeniServizi"), "DatiRiepilogo").filter((r) => value(r, "EsigibilitaIVA") === "S");
+	if (rows.length === 0) return undefined;
+	let sum = 0n;
+	for (const row of rows) {
+		const units = toUnits(value(row, "Imposta") ?? "");
+		if (units === undefined) return undefined;
+		sum += units;
+	}
+	return sum;
 }
 
 /** A simplified document's data: its total is the sum of its lines, VAT included, when each reads; no instalments. */
