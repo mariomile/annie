@@ -12,7 +12,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta preventivo da disegno",
     "receivedAt": "2026-10-14T10:00:00+02:00",
-    "body": "Buongiorno,\nin allegato trovate il disegno tecnico con quantità e misure per le staffe in acciaio inox che ci servono. Consegna a Brescia entro dicembre. P.IVA 01011121314.\nNicola Ferri - Carpenteria Ferri Srl",
+    "body": "Buongiorno,\nin allegato trovate il disegno tecnico con quantità e misure per le staffe in acciaio inox che ci servono. Consegna a Brescia entro dicembre. P.IVA 01011120324.\nNicola Ferri - Carpenteria Ferri Srl",
     "from": "Nicola Ferri <nicola.ferri@carpenteria-ferri.example>"
   },
   "expected": {
@@ -31,7 +31,7 @@
       ],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "01011121314"
+      "vatNumber": "01011120324"
     },
     "requests": [
       {

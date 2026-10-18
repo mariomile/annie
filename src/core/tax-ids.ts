@@ -222,3 +222,30 @@ function vat(country: EuVatCountry, number: string): TaxId {
 	if (country === "IT" && problem === undefined && /^[89]/.test(number)) return { kind: "ente", number };
 	return { kind: "vat", country, number, ...(problem === undefined ? {} : { problem }) };
 }
+
+/**
+ * A VAT number as a customer writes it («P.IVA: IT 012 345 678 90», «DE123456789»), checked on
+ * paper only: the number to keep, or what is wrong with it.
+ * - Italian: kept as its 11 digits, without «IT»; another VIES country: its shape, kept with the prefix.
+ * - A body's numeric codice fiscale (8 or 9 first, written right) is kept: not a partita IVA, but
+ *   the tax id a body without one invoices with, and nothing the customer should correct.
+ * - GB, CH, NO, SM: kept as written, with nothing to check them against offline.
+ * - A person's codice fiscale written right: undefined. A tax id, not a VAT number: nothing to
+ *   keep as one, and nothing wrong either.
+ */
+export function checkVatNumber(text: string): { readonly number: string } | { readonly problem: string } | undefined {
+	const id = parseTaxId(text);
+	switch (id.kind) {
+		case "vat":
+			if (id.problem !== undefined) return { problem: id.problem };
+			return { number: id.country === "IT" ? id.number : `${id.country}${id.number}` };
+		case "ente":
+			return { number: id.number };
+		case "codice_fiscale":
+			return "problem" in id.checked ? { problem: id.checked.problem } : undefined;
+		case "unknown": {
+			const value = normalizeTaxId(text);
+			return otherPrefix(value.slice(0, 2)) !== undefined && /^[A-Z]{2}[A-Z0-9]{2,13}$/.test(value) ? { number: value } : { problem: id.problem };
+		}
+	}
+}

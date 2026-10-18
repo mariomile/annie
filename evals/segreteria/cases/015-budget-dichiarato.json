@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Arredi aula",
     "receivedAt": "2026-10-13T15:00:00+02:00",
-    "body": "Buongiorno, sono Simona Galli, coordinatrice dell'Asilo Il Girasole (cooperativa sociale). Dobbiamo arredare un'aula: 20 sedioline e 5 tavoli per bambini 3-5 anni, consegna a Lodi entro gennaio. Il budget massimo è 3.000 euro IVA inclusa. C.F./P.IVA 07788990011.",
+    "body": "Buongiorno, sono Simona Galli, coordinatrice dell'Asilo Il Girasole (cooperativa sociale). Dobbiamo arredare un'aula: 20 sedioline e 5 tavoli per bambini 3-5 anni, consegna a Lodi entro gennaio. Il budget massimo è 3.000 euro IVA inclusa. C.F./P.IVA 07788990021.",
     "from": "Simona Galli <simona.galli@asilo-girasole.example>"
   },
   "expected": {
@@ -31,7 +31,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "07788990011"
+      "vatNumber": "07788990021"
     },
     "requests": [
       {

@@ -5,6 +5,7 @@ import type { ModelSelection } from "../core/registry.ts";
 import { type ChecksConfig, type CheckFailure, runDeterministicChecks } from "./checks.ts";
 import { extractEmailAddress } from "./classify.ts";
 import { buildDraft, type DraftResult, scrubPii } from "./draft.ts";
+import { vatField } from "./extract.ts";
 
 /** What the extraction model returns, after validation. */
 export type MailAnalysis = {
@@ -34,7 +35,7 @@ Schema:
   "deliverySite": string|null,      // delivery or installation place
   "budget": string|null,            // only if the sender states one
   "deadline": string|null,          // when they need it
-  "vatNumber": string|null,
+  "vatNumber": string|null,         // as written, with its country prefix if any
   "originalLanguage": "it"|"en"|"it+en"|"other",
   "notes": string|null,             // anything the sales person must know (attachments mentioned, constraints), Italian, max 200 chars
   "missing": ("productOrService"|"quantity"|"deliverySite")[]  // only what is needed to prepare a quote and is not in the email
@@ -96,8 +97,9 @@ export async function analyzeMail(
 		deliverySite: str("deliverySite"),
 		budget: str("budget"),
 		deadline: str("deadline"),
-		vatNumber: str("vatNumber"),
 	};
+	// Checked on paper: a wrong number is asked again, never kept as the lead's vatNumber.
+	const vat = vatField(str("vatNumber"));
 	// Asked in the draft: what a quote needs (the model judges quantity and site for this
 	// kind of request), plus the fixed rules for email and VAT number. Never budget,
 	// deadline or company (gold, spec A3).
@@ -107,8 +109,9 @@ export async function analyzeMail(
 	if (fields.productOrService === null || judged.includes("productOrService")) missingFields.push("productOrService");
 	if (fields.quantity === null && judged.includes("quantity")) missingFields.push("quantity");
 	if (fields.deliverySite === null && judged.includes("deliverySite")) missingFields.push("deliverySite");
-	// Private customers (no company) are never asked for a VAT number.
-	if (tenantConfig.requireVatNumber === true && fields.company !== null && fields.vatNumber === null) missingFields.push("vatNumber");
+	// A wrong VAT number is asked again whoever gave it; a missing one never from private customers (no company).
+	if (vat.invalid) missingFields.push("vatNumberInvalid");
+	else if (tenantConfig.requireVatNumber === true && fields.company !== null && vat.vatNumber === null) missingFields.push("vatNumber");
 
 	const lead: LeadFields = {
 		fullName: fields.fullName,
@@ -119,7 +122,7 @@ export async function analyzeMail(
 		productOrService: fields.productOrService,
 		quantity: fields.quantity,
 		urgency: fields.deadline,
-		vatNumber: fields.vatNumber,
+		vatNumber: vat.vatNumber,
 		originalLanguage: language,
 		missingFields,
 		source: "email",
@@ -219,6 +222,7 @@ function describeMissing(field: MissingField): string {
 		quantity: "quantity",
 		deliverySite: "delivery or installation site",
 		vatNumber: "VAT number",
+		vatNumberInvalid: "the VAT number they gave fails the formal check: ask them to double-check it, without repeating it",
 		budget: "budget range",
 		deadline: "when they need it",
 	}[field];

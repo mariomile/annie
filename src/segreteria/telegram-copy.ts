@@ -33,7 +33,10 @@ Lead aggiornato nel CRM: ${lead.fullName ?? "—"} · ${lead.company ?? "—"} (
 export function leadCardAndDraft(pratica: Pratica): string {
 	const id = shortPraticaId(pratica.praticaId);
 	const lead = pratica.lead;
-	const missing = pratica.missingFields.length > 0 ? pratica.missingFields.join(", ") : "—";
+	// A wrong P.IVA has its own line, not a field name in the list.
+	const asked = pratica.missingFields.filter((f) => f !== "vatNumberInvalid");
+	const missing = asked.length > 0 ? asked.join(", ") : "—";
+	const vatLine = pratica.missingFields.includes("vatNumberInvalid") ? "\nP.IVA: quella indicata non supera il controllo formale, nella bozza chiedo di ricontrollarla." : "";
 	return `Scheda lead · Pratica #${id}
 
 Nome: ${lead.fullName ?? "—"}
@@ -42,7 +45,7 @@ Email: ${lead.email ?? "—"}
 Telefono: ${lead.phone ?? "—"}
 Prodotto/servizio: ${lead.productOrService ?? "—"}
 Urgenza: ${lead.urgency ?? "—"}
-Dati mancanti: ${missing}
+Dati mancanti: ${missing}${vatLine}
 Note: ${lead.notes ?? "—"}
 
 - Bozza v${pratica.draftVersion} (lei) -

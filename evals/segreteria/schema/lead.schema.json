@@ -120,8 +120,8 @@
         "string",
         "null"
       ],
-      "pattern": "^[0-9]{11}$",
-      "description": "Opzionale (A3). Mai chiesta ai privati; chiesta alle aziende solo se tenantConfig.requireVatNumber=true (default false)."
+      "pattern": "^(?:[0-9]{11}|[A-Z]{2}[0-9A-Z+*]{2,13})$",
+      "description": "Opzionale (A3). Mai chiesta ai privati; chiesta alle aziende solo se tenantConfig.requireVatNumber=true (default false). Solo un numero che passa il controllo formale (italiana: 11 cifre senza IT; estera: con il prefisso del paese); una P.IVA errata resta null e va in missingFields come vatNumberInvalid."
     }
   },
   "$defs": {
@@ -134,6 +134,7 @@
         "quantity",
         "deliverySite",
         "vatNumber",
+        "vatNumberInvalid",
         "budget",
         "deadline"
       ]

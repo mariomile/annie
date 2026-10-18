@@ -1,8 +1,50 @@
 import type { InboundMail } from "../connectors/types.ts";
 import type { LeadFields, MissingField, TenantSegreteriaConfig } from "../core/practice.ts";
+import { checkVatNumber } from "../core/tax-ids.ts";
 import { extractEmailAddress } from "./classify.ts";
 
 const TITLE_RE = /\b(Dott\.ssa|Dott\.|Avv\.|Ing\.|Arch\.|Prof\.ssa|Prof\.|Geom\.|Rag\.)\s+/i;
+
+/** What stands before a VAT number: «P.IVA:», «P. IVA n.», «partita IVA», «VAT number», «P.I.». */
+const VAT_LABEL = /\b(?:p\.?\s?iva|partita\s+iva|vat(?:\s+number)?|p\.\s?i\.)(?:\s*n\.|\s+n(?=\s))?\s*[:\-]?\s*/gi;
+/**
+ * The number after the label: a country prefix in capitals, then digits with single spaces, dots
+ * or dashes between, and the letters some countries add («IT 012 345 678 90», «ATU12345678»,
+ * «NL123456789B01»). Bounded quantifiers, and digits only in one place: no runaway backtracking.
+ */
+const VAT_VALUE = /(?:[A-Z]{2}[ .\-]?)?[A-Z]{0,2}\d(?:[ .\-]?\d){4,15}(?:[A-Z][A-Z0-9]{0,2})?(?!\w)/y;
+
+/** The VAT number a mail gives after its label, as written; null if none. */
+export function findVatNumber(body: string): string | null {
+	for (const label of body.matchAll(VAT_LABEL)) {
+		VAT_VALUE.lastIndex = label.index + label[0].length;
+		const value = VAT_VALUE.exec(body)?.[0];
+		if (value !== undefined) return withoutTail(value);
+	}
+	return null;
+}
+
+/**
+ * «01234567890 333 1234567»: a phone number on the same line runs into the VAT number. The
+ * longest part up to a space that passes the formal check, else the whole run, to be flagged.
+ */
+function withoutTail(value: string): string {
+	for (let end = value.length; end > 0; end = value.lastIndexOf(" ", end - 1)) {
+		const checked = checkVatNumber(value.slice(0, end));
+		if (checked !== undefined && "number" in checked) return value.slice(0, end);
+	}
+	return value;
+}
+
+/**
+ * A VAT number from a mail, checked on paper (tax-ids.ts, never online): kept normalized when
+ * written right, `invalid` when the check fails. A person's codice fiscale is neither.
+ */
+export function vatField(text: string | null): { readonly vatNumber: string | null; readonly invalid: boolean } {
+	const checked = text === null ? undefined : checkVatNumber(text);
+	if (checked === undefined) return { vatNumber: null, invalid: false };
+	return "number" in checked ? { vatNumber: checked.number, invalid: false } : { vatNumber: null, invalid: true };
+}
 
 /** Heuristic lead extraction for tests / faux CI (no live model). */
 export function extractLead(
@@ -41,8 +83,7 @@ export function extractLead(
 	const urgency =
 		/(?:entro|scadenza|urgente|consegna)\s+([^\n.]{3,40})/i.exec(body)?.[1]?.trim() ?? null;
 
-	const vat =
-		/(?:p\.?\s*iva|partita\s*iva)\s*[:\-]?\s*(\d{11})/i.exec(body)?.[1] ?? null;
+	const vat = vatField(findVatNumber(body));
 
 	const deliverySite =
 		/(?:sede|consegna presso|installazione|indirizzo)\s*[:\-]?\s*([^\n.]{3,60})/i.exec(body)?.[1]?.trim();
@@ -62,7 +103,9 @@ export function extractLead(
 	if (!hasBudgetMention) missing.push("budget");
 	if (!urgency) missing.push("deadline");
 	const isPrivate = !company;
-	if (tenantConfig.requireVatNumber && !isPrivate && !vat) missing.push("vatNumber");
+	// A wrong VAT number is asked again whoever gave it; a missing one never from private customers.
+	if (vat.invalid) missing.push("vatNumberInvalid");
+	else if (tenantConfig.requireVatNumber && !isPrivate && !vat.vatNumber) missing.push("vatNumber");
 
 	const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
 
@@ -75,7 +118,7 @@ export function extractLead(
 		productOrService: product,
 		quantity,
 		urgency,
-		vatNumber: vat,
+		vatNumber: vat.vatNumber,
 		originalLanguage: lang,
 		missingFields: missing,
 		source: "email",

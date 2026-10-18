@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Preventivo frigo cantina",
     "receivedAt": "2026-10-15T17:00:00+02:00",
-    "body": "Buongiorno, sono Carlo Mancuso, titolare dell'Enoteca Mancuso. Vorrei un preventivo per 2 frigo cantina da 150 bottiglie, consegna a casa mia in via delle Viole 12, 90100 Palermo, entro novembre. Per eventuale acconto il mio IBAN è IT60X0542811101000000123456. Cellulare 338 0000777. P.IVA 06162636465.",
+    "body": "Buongiorno, sono Carlo Mancuso, titolare dell'Enoteca Mancuso. Vorrei un preventivo per 2 frigo cantina da 150 bottiglie, consegna a casa mia in via delle Viole 12, 90100 Palermo, entro novembre. Per eventuale acconto il mio IBAN è IT60X0542811101000000123456. Cellulare 338 0000777. P.IVA 06162630476.",
     "from": "Carlo Mancuso <carlo.mancuso@enoteca-mancuso.example>"
   },
   "expected": {
@@ -31,7 +31,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "06162636465"
+      "vatNumber": "06162630476"
     },
     "requests": [
       {

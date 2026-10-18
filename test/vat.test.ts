@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { readOnlyInBriefs } from "../src/core/brief.ts";
 import type { ToolContext } from "../src/core/engine.ts";
-import { checkCodiceFiscale, EU_VAT_COUNTRIES, euVatProblem, normalizeTaxId, parseTaxId, partitaIvaProblem } from "../src/core/tax-ids.ts";
+import { checkCodiceFiscale, checkVatNumber, EU_VAT_COUNTRIES, euVatProblem, normalizeTaxId, parseTaxId, partitaIvaProblem } from "../src/core/tax-ids.ts";
 import { createVatTools } from "../src/core/tools/vat-tools.ts";
 import { fence, inertMarkers, untrusted } from "../src/core/untrusted.ts";
 import { answerOf, DEFAULT_VIES_URL, viesCheckUrl, viesClient, ViesError, type ViesOptions } from "../src/core/vies.ts";
@@ -273,6 +273,42 @@ describe("tax ids: EU VAT numbers", () => {
 		expect(parseTaxId("123456789")).toEqual({ kind: "unknown", problem: "il numero ha 9 cifre: una partita IVA italiana ne ha 11; per un numero estero serve il prefisso del paese (DE, FR…)" });
 		expect(parseTaxId("")).toEqual({ kind: "unknown", problem: "manca il numero" });
 		expect(parseTaxId("IT<script>")).toMatchObject({ kind: "unknown", problem: expect.stringContaining("caratteri") });
+	});
+});
+
+describe("tax ids: a VAT number as a customer writes it", () => {
+	const good = withCheckDigit("0123456090");
+	const wrong = `${good.slice(0, 10)}${(Number(good[10]) + 1) % 10}`;
+
+	it("keeps an Italian one as 11 digits, whatever label, prefix and separators came with it", () => {
+		for (const text of [good, `IT ${good}`, `P.IVA: ${good.slice(0, 3)} ${good.slice(3, 6)} ${good.slice(6, 9)} ${good.slice(9)}`, `partita IVA n. it${good}`]) {
+			expect(checkVatNumber(text), text).toEqual({ number: good });
+		}
+	});
+
+	it("says what is wrong with a mistyped or short one", () => {
+		expect(checkVatNumber(`IT ${wrong}`)).toEqual({ problem: expect.stringContaining("cifra di controllo") });
+		expect(checkVatNumber("0123456789")).toEqual({ problem: expect.stringContaining("10 cifre") });
+		expect(checkVatNumber("P.IVA in arrivo")).toHaveProperty("problem");
+	});
+
+	it("keeps a foreign one with the right shape, prefix included; flags a wrong shape", () => {
+		expect(checkVatNumber("DE 123 456 789")).toEqual({ number: "DE123456789" });
+		expect(checkVatNumber("GR123456789")).toEqual({ number: "EL123456789" });
+		expect(checkVatNumber("ATU12345678")).toEqual({ number: "ATU12345678" });
+		expect(checkVatNumber("DE12345678")).toEqual({ problem: "un numero IVA della Germania è DE seguito da 9 cifre" });
+	});
+
+	it("keeps a body's codice fiscale (8 or 9 first) and numbers outside the VIES, which have no offline check", () => {
+		const ente = withCheckDigit("8001234056");
+		expect(checkVatNumber(ente)).toEqual({ number: ente });
+		expect(checkVatNumber("GB 123456789")).toEqual({ number: "GB123456789" });
+		expect(checkVatNumber("CHE-123.456.789")).toEqual({ number: "CHE123456789" });
+	});
+
+	it("a person's codice fiscale is no VAT number, and nothing wrong either; a broken one is", () => {
+		expect(checkVatNumber(CF_MAN)).toBeUndefined();
+		expect(checkVatNumber(`${CF_MAN.slice(0, 15)}${CF_MAN[15] === "A" ? "B" : "A"}`)).toEqual({ problem: expect.stringContaining("carattere di controllo") });
 	});
 });
 

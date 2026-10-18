@@ -16,7 +16,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Preventivo lettini visita",
     "receivedAt": "2026-10-14T10:00:00+02:00",
-    "body": "Buongiorno,\nsono il Dott. Fabrizio Neri, direttore sanitario del Poliambulatorio Aurora (Ancona). Ci servono 3 lettini da visita elettrici entro dicembre. Per la fattura: C.F. NREFBR70A01A271X, P.IVA 03132333435. Il mio cellulare personale è 347 0000555, la mia data di nascita 01/01/1970 se serve per l'anagrafica.",
+    "body": "Buongiorno,\nsono il Dott. Fabrizio Neri, direttore sanitario del Poliambulatorio Aurora (Ancona). Ci servono 3 lettini da visita elettrici entro dicembre. Per la fattura: C.F. NREFBR70A01A271X, P.IVA 03132330444. Il mio cellulare personale è 347 0000555, la mia data di nascita 01/01/1970 se serve per l'anagrafica.",
     "from": "Dott. Fabrizio Neri <f.neri@poliambulatorio-aurora.example>"
   },
   "expected": {
@@ -33,7 +33,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "03132333435"
+      "vatNumber": "03132330444"
     },
     "requests": [
       {

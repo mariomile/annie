@@ -22,7 +22,7 @@ def add(n,slug,tags,crit,frm,subj,body,cls,ld,dr,mid=None,thread=None,flow=None,
 # --- completi (baseline)
 add(1,"completo-macchinari",["complete","formal","no_price_in_email"],["§7.2-11","§7.2-12","§7.2-17","§7.2-18","§7.1-1","§7.1-2"],
  "Giulia Ferraresi <giulia.ferraresi@tornerie-valdorme.example>","Richiesta preventivo tornio CNC",
- "Buongiorno,\nsono Giulia Ferraresi, responsabile acquisti di Tornerie Valdorme Srl.\nVi chiediamo un preventivo per 2 torni CNC a 3 assi, consegna presso il nostro stabilimento di Fossano (CN) entro fine gennaio.\nP.IVA 01234567890. Tel. 0172 000111.\nCordiali saluti\nGiulia Ferraresi",
+ "Buongiorno,\nsono Giulia Ferraresi, responsabile acquisti di Tornerie Valdorme Srl.\nVi chiediamo un preventivo per 2 torni CNC a 3 assi, consegna presso il nostro stabilimento di Fossano (CN) entro fine gennaio.\nP.IVA 01234560900. Tel. 0172 000111.\nCordiali saluti\nGiulia Ferraresi",
  "richiesta_preventivo",lead("Giulia Ferraresi","Tornerie Valdorme Srl","giulia.ferraresi@tornerie-valdorme.example","0172 000111","tornio CNC 3 assi","2","entro fine gennaio"),
  draft(salutation="Gentile Signora Ferraresi"))
 add(2,"completo-servizio-pulizie",["complete","formal","service"],["§7.2-11","§7.2-12","§7.2-17","§7.2-18"],
@@ -32,12 +32,12 @@ add(2,"completo-servizio-pulizie",["complete","formal","service"],["§7.2-11","�
  draft(salutation="Gentile Signor Annunziata"))
 add(3,"completo-urgente",["complete","formal","urgent"],["§7.2-11","§7.2-12","§7.2-17"],
  "Ufficio Acquisti Cartotecnica Brenta <acquisti@cartotecnica-brenta.example>","URGENTE - preventivo bancali",
- "Buongiorno,\nci servono 400 bancali EPAL usati di prima scelta, consegna a Cittadella (PD) entro venerdì prossimo. Referente: Sara Molon, 049 0000333.\nP.IVA 09876543210.\nGrazie, Sara Molon - Cartotecnica Brenta Spa",
+ "Buongiorno,\nci servono 400 bancali EPAL usati di prima scelta, consegna a Cittadella (PD) entro venerdì prossimo. Referente: Sara Molon, 049 0000333.\nP.IVA 09876540221.\nGrazie, Sara Molon - Cartotecnica Brenta Spa",
  "richiesta_preventivo",lead("Sara Molon","Cartotecnica Brenta Spa","acquisti@cartotecnica-brenta.example","049 0000333","bancali EPAL usati prima scelta","400","entro venerdì prossimo"),
  draft(salutation="Gentile Signora Molon"))
 add(4,"completo-software",["complete","formal","service"],["§7.2-11","§7.2-12","§7.2-17"],
  "Marco De Santis <marco.desantis@ortofrutta-sole.example>","Richiesta offerta licenze gestionale",
- "Salve,\nsono Marco De Santis di Ortofrutta del Sole Soc. Coop. Vorremmo un'offerta per 12 licenze del vostro gestionale magazzino con installazione presso la sede di Vittoria (RG). Avvio previsto a marzo 2027.\nP.IVA 01122334455\nCordialmente",
+ "Salve,\nsono Marco De Santis di Ortofrutta del Sole Soc. Coop. Vorremmo un'offerta per 12 licenze del vostro gestionale magazzino con installazione presso la sede di Vittoria (RG). Avvio previsto a marzo 2027.\nP.IVA 01122330465\nCordialmente",
  "richiesta_preventivo",lead("Marco De Santis","Ortofrutta del Sole Soc. Coop.","marco.desantis@ortofrutta-sole.example",None,"licenze gestionale magazzino con installazione","12","marzo 2027"),
  draft(salutation="Gentile Signor De Santis"))
 add(5,"completo-solo-persona",["complete","formal","no_company"],["§7.2-11","§7.2-12","§4.1-fullName-o-company"],
@@ -48,12 +48,12 @@ add(5,"completo-solo-persona",["complete","formal","no_company"],["§7.2-11","§
 # --- dati mancanti
 add(6,"missing-qty",["missing_qty","formal"],["§6-dati-mancanti","§7.2-13","§7.2-18"],
  "Roberto Zanin <r.zanin@serramenti-zanin.example>","Richiesta preventivo vetri",
- "Buongiorno,\nRoberto Zanin, Serramenti Zanin Snc. Vorremmo un preventivo per vetrocamera basso emissivi 4/16/4, consegna a Pordenone, appena possibile. P.IVA 02233445566.\nSaluti",
+ "Buongiorno,\nRoberto Zanin, Serramenti Zanin Snc. Vorremmo un preventivo per vetrocamera basso emissivi 4/16/4, consegna a Pordenone, appena possibile. P.IVA 02233440573.\nSaluti",
  "richiesta_preventivo",lead("Roberto Zanin","Serramenti Zanin Snc","r.zanin@serramenti-zanin.example",None,"vetrocamera basso emissivo 4/16/4",None,"appena possibile",["quantity"]),
  draft(["quantity"],salutation="Gentile Signor Zanin"))
 add(7,"missing-sede",["missing_site","formal"],["§6-dati-mancanti","§7.2-13"],
  "Chiara Pellizzari <chiara.p@laboratori-arno.example>","Preventivo installazione cappa",
- "Gentili,\nsono Chiara Pellizzari di Laboratori Arno Srl. Ci servirebbe l'installazione di 2 cappe chimiche aspiranti entro febbraio. P.IVA 03344556677.\nGrazie mille",
+ "Gentili,\nsono Chiara Pellizzari di Laboratori Arno Srl. Ci servirebbe l'installazione di 2 cappe chimiche aspiranti entro febbraio. P.IVA 03344550680.\nGrazie mille",
  "richiesta_preventivo",lead("Chiara Pellizzari","Laboratori Arno Srl","chiara.p@laboratori-arno.example",None,"installazione cappe chimiche aspiranti","2","entro febbraio",["deliverySite"]),
  draft(["deliverySite"],salutation="Gentile Signora Pellizzari"))
 add(8,"missing-piva",["missing_vat","formal"],["§6-dati-mancanti","§7.2-13"],
@@ -74,7 +74,7 @@ add(10,"missing-multipli",["missing_qty","missing_site","missing_vat","informal_
 # --- registro
 add(11,"informale-tu",["informal","register_correction"],["§7.2-17","§1-registro"],
  "Matteo Rinaldi <matteo@birrificio-quercia.example>","ciao, preventivo fusti",
- "Ciao! Sono Matteo del Birrificio La Quercia. Mi mandi un preventivo per 30 fusti in acciaio da 20 litri? Consegna a Perugia entro 3 settimane. P.IVA 04455667788. Grazie mille, a presto!",
+ "Ciao! Sono Matteo del Birrificio La Quercia. Mi mandi un preventivo per 30 fusti in acciaio da 20 litri? Consegna a Perugia entro 3 settimane. P.IVA 04455660797. Grazie mille, a presto!",
  "richiesta_preventivo",lead("Matteo Rinaldi","Birrificio La Quercia","matteo@birrificio-quercia.example",None,"fusti in acciaio da 20 litri","30","entro 3 settimane"),
  draft(salutation="Gentile Signor Rinaldi",mustNotMention=["Ciao","ti ","tuo"],note="Il cliente dà del tu: la bozza resta in lei."))
 add(12,"informale-dialettale",["informal","register_correction","missing_qty"],["§7.2-17","§7.2-13"],
@@ -84,18 +84,18 @@ add(12,"informale-dialettale",["informal","register_correction","missing_qty"],[
  draft(["quantity","vatNumber"],salutation="Gentile Signor Fabbri",note="'quanto viene' è una richiesta di prezzo: la bozza NON dà importi, spiega che seguirà il preventivo."))
 add(13,"formale-molto-formale",["formal","complete","title"],["§7.2-17","§6-titoli"],
  "Ing. Valeria Morelli <v.morelli@impianti-morelli.example>","Richiesta di offerta - quadri elettrici",
- "Spett.le Ditta,\ncon la presente la sottoscritta Ing. Valeria Morelli, per conto di Impianti Morelli Srl, richiede cortese offerta per n. 4 quadri elettrici di distribuzione IP65, da consegnarsi presso il cantiere di Lecce entro il 30 novembre p.v.\nP.IVA 05566778899.\nDistinti saluti",
+ "Spett.le Ditta,\ncon la presente la sottoscritta Ing. Valeria Morelli, per conto di Impianti Morelli Srl, richiede cortese offerta per n. 4 quadri elettrici di distribuzione IP65, da consegnarsi presso il cantiere di Lecce entro il 30 novembre p.v.\nP.IVA 05566770904.\nDistinti saluti",
  "richiesta_preventivo",lead("Valeria Morelli","Impianti Morelli Srl","v.morelli@impianti-morelli.example",None,"quadri elettrici di distribuzione IP65","4","entro il 30 novembre",title="Ing."),
  draft(salutation="Gentile Ing. Morelli"))
 # --- prezzi
 add(14,"prezzo-citato-cliente",["price_in_email","formal"],["§6-prezzo-citato","§7.2-18"],
  "Davide Conti <davide.conti@tipografia-adige.example>","Preventivo carta patinata",
- "Buongiorno,\nTipografia Adige Srl, Davide Conti. L'anno scorso ci avete fornito 200 risme di carta patinata 150 g a 6,50 € a risma. Ci serve la stessa quantità, consegna a Verona entro novembre, P.IVA 06677889900. Potete confermare lo stesso prezzo?",
+ "Buongiorno,\nTipografia Adige Srl, Davide Conti. L'anno scorso ci avete fornito 200 risme di carta patinata 150 g a 6,50 € a risma. Ci serve la stessa quantità, consegna a Verona entro novembre, P.IVA 06677880913. Potete confermare lo stesso prezzo?",
  "richiesta_preventivo",lead("Davide Conti","Tipografia Adige Srl","davide.conti@tipografia-adige.example",None,"carta patinata 150 g (risme)","200","entro novembre"),
  draft(noPrices=True,allowedAmounts=["6,50 €"],mustNotMention=["confermiamo il prezzo","confermiamo lo stesso prezzo"],note="Può citare 6,50 € solo riprendendo la richiesta, mai altri importi, e non conferma né contraddice: rimanda al commerciale."))
 add(15,"budget-dichiarato",["price_in_email","budget","formal"],["§6-prezzo-citato","§7.2-18"],
  "Simona Galli <simona.galli@asilo-girasole.example>","Arredi aula",
- "Buongiorno, sono Simona Galli, coordinatrice dell'Asilo Il Girasole (cooperativa sociale). Dobbiamo arredare un'aula: 20 sedioline e 5 tavoli per bambini 3-5 anni, consegna a Lodi entro gennaio. Il budget massimo è 3.000 euro IVA inclusa. C.F./P.IVA 07788990011.",
+ "Buongiorno, sono Simona Galli, coordinatrice dell'Asilo Il Girasole (cooperativa sociale). Dobbiamo arredare un'aula: 20 sedioline e 5 tavoli per bambini 3-5 anni, consegna a Lodi entro gennaio. Il budget massimo è 3.000 euro IVA inclusa. C.F./P.IVA 07788990021.",
  "richiesta_preventivo",lead("Simona Galli","Asilo Il Girasole","simona.galli@asilo-girasole.example",None,"sedie e tavoli per bambini 3-5 anni","20 sedie, 5 tavoli","entro gennaio"),
  draft(allowedAmounts=["3.000 euro"],note="Budget del cliente: può essere ripreso, nessun altro importo, nessuna promessa di rientrarci."))
 add(16,"chiede-listino",["asks_price_list","formal","missing_qty"],["§7.2-18","§7.2-13"],
@@ -106,14 +106,14 @@ add(16,"chiede-listino",["asks_price_list","formal","missing_qty"],["§7.2-18","
 # --- multi
 add(17,"multi-prodotto",["multi_request","formal","complete"],["§6-multi","§7.2-14"],
  "Irene Basile <irene.basile@ristorante-due-ponti.example>","Preventivo attrezzature cucina",
- "Buongiorno,\nper il Ristorante Due Ponti (Pisa, via Lungarno Fittizio 3) chiediamo preventivo per:\n- 1 abbattitore di temperatura 5 teglie\n- 2 frigoriferi verticali 700 l\n- 1 lavastoviglie a capotta\nConsegna entro metà dicembre. P.IVA 08899001122.\nIrene Basile",
+ "Buongiorno,\nper il Ristorante Due Ponti (Pisa, via Lungarno Fittizio 3) chiediamo preventivo per:\n- 1 abbattitore di temperatura 5 teglie\n- 2 frigoriferi verticali 700 l\n- 1 lavastoviglie a capotta\nConsegna entro metà dicembre. P.IVA 08899000130.\nIrene Basile",
  "richiesta_preventivo",lead("Irene Basile","Ristorante Due Ponti","irene.basile@ristorante-due-ponti.example",None,"attrezzature cucina (3 voci)",None,"entro metà dicembre"),
  draft(bullets=True,mustMention=["abbattitore","frigorifer","lavastoviglie"]),
  multi=[dict(productOrService="abbattitore di temperatura 5 teglie",quantity="1"),dict(productOrService="frigorifero verticale 700 l",quantity="2"),dict(productOrService="lavastoviglie a capotta",quantity="1")],
  flow=dict(crmUpsertExpected=1,praticheExpected=1))
 add(18,"multi-prodotto-servizio-missing",["multi_request","missing_qty","formal"],["§6-multi","§7.2-14","§7.2-13"],
  "Tommaso Greco <tommaso.greco@palestra-atlante.example>","Tapis roulant e manutenzione",
- "Salve, gestisco la Palestra Atlante a Bari. Vorrei preventivo per dei tapis roulant nuovi e, separatamente, per un contratto di manutenzione annuale delle macchine esistenti (circa 25). P.IVA 09900112233. Tommaso Greco",
+ "Salve, gestisco la Palestra Atlante a Bari. Vorrei preventivo per dei tapis roulant nuovi e, separatamente, per un contratto di manutenzione annuale delle macchine esistenti (circa 25). P.IVA 09900110249. Tommaso Greco",
  "richiesta_preventivo",lead("Tommaso Greco","Palestra Atlante","tommaso.greco@palestra-atlante.example",None,"tapis roulant + manutenzione annuale",None,None,["quantity"]),
  draft(["quantity"],bullets=True,mustMention=["tapis roulant","manutenzione"]),
  multi=[dict(productOrService="tapis roulant",quantity=None),dict(productOrService="contratto manutenzione annuale macchine",quantity="25")],
@@ -121,7 +121,7 @@ add(18,"multi-prodotto-servizio-missing",["multi_request","missing_qty","formal"
 # --- allegati
 add(19,"allegato-citato-assente",["attachment_missing","formal"],["§6-allegati"],
  "Nicola Ferri <nicola.ferri@carpenteria-ferri.example>","Richiesta preventivo da disegno",
- "Buongiorno,\nin allegato trovate il disegno tecnico con quantità e misure per le staffe in acciaio inox che ci servono. Consegna a Brescia entro dicembre. P.IVA 01011121314.\nNicola Ferri - Carpenteria Ferri Srl",
+ "Buongiorno,\nin allegato trovate il disegno tecnico con quantità e misure per le staffe in acciaio inox che ci servono. Consegna a Brescia entro dicembre. P.IVA 01011120324.\nNicola Ferri - Carpenteria Ferri Srl",
  "richiesta_preventivo",lead("Nicola Ferri","Carpenteria Ferri Srl","nicola.ferri@carpenteria-ferri.example",None,"staffe in acciaio inox (da disegno)",None,"entro dicembre",["quantity"]),
  draft(["quantity"],mustNotMention=["come da disegno","nel disegno indicat"],note="Allegati non letti in v1: la bozza non finge di averlo letto; può chiedere quantità/misure o dire che il commerciale lo esaminerà."),
  sched=dict(mustNote="allegato"))
@@ -134,7 +134,7 @@ add(20,"inglese",["lang_en","formal","complete"],["§6-lingua"],
  sched=dict(mustNote="lingua originale: inglese"))
 add(21,"misto-it-en",["lang_mixed","formal","missing_site"],["§6-lingua","§7.2-13"],
  "Laura Bassi <laura.bassi@techstart-milano.example>","Preventivo standing desk",
- "Hi, buongiorno! Sono Laura Bassi, office manager di TechStart Milano Srl. We need 15 standing desks per il nuovo open space, ASAP please. P.IVA 02122232425. Thanks!",
+ "Hi, buongiorno! Sono Laura Bassi, office manager di TechStart Milano Srl. We need 15 standing desks per il nuovo open space, ASAP please. P.IVA 02122230432. Thanks!",
  "richiesta_preventivo",lead("Laura Bassi","TechStart Milano Srl","laura.bassi@techstart-milano.example",None,"scrivanie regolabili in altezza (standing desk)","15","al più presto",["deliverySite"],lang="it+en"),
  draft(["deliverySite"],salutation="Gentile Signora Bassi"),sched=dict(mustNote="lingua originale"))
 # --- spam / non preventivo
@@ -178,18 +178,18 @@ add(27,"reply-thread-nuova-richiesta",["thread_reply","multi_request"],["§6-thr
 # --- titoli / PII
 add(28,"titolo-dott-pii",["title","pii","formal","complete"],["§6-titoli","§7.2-17"],
  "Dott. Fabrizio Neri <f.neri@poliambulatorio-aurora.example>","Preventivo lettini visita",
- "Buongiorno,\nsono il Dott. Fabrizio Neri, direttore sanitario del Poliambulatorio Aurora (Ancona). Ci servono 3 lettini da visita elettrici entro dicembre. Per la fattura: C.F. NREFBR70A01A271X, P.IVA 03132333435. Il mio cellulare personale è 347 0000555, la mia data di nascita 01/01/1970 se serve per l'anagrafica.",
+ "Buongiorno,\nsono il Dott. Fabrizio Neri, direttore sanitario del Poliambulatorio Aurora (Ancona). Ci servono 3 lettini da visita elettrici entro dicembre. Per la fattura: C.F. NREFBR70A01A271X, P.IVA 03132330444. Il mio cellulare personale è 347 0000555, la mia data di nascita 01/01/1970 se serve per l'anagrafica.",
  "richiesta_preventivo",lead("Fabrizio Neri","Poliambulatorio Aurora","f.neri@poliambulatorio-aurora.example","347 0000555","lettini da visita elettrici","3","entro dicembre",title="Dott."),
  draft(salutation="Gentile Dott. Neri",mustNotMention=["NREFBR70A01A271X","01/01/1970","347 0000555"],note="Codice fiscale e data di nascita fittizi; non devono comparire nella bozza né nella scheda oltre i campi lead."))
 add(29,"titolo-avv",["title","formal","missing_qty"],["§6-titoli","§7.2-13"],
  "Avv. Beatrice Sala <b.sala@studiolegale-sala.example>","Richiesta preventivo arredo studio",
- "Spett.le azienda, lo Studio Legale Sala di Como necessita di librerie su misura per la sala riunioni. Gradirei un preventivo e un sopralluogo. P.IVA 04142434445. Avv. Beatrice Sala",
+ "Spett.le azienda, lo Studio Legale Sala di Como necessita di librerie su misura per la sala riunioni. Gradirei un preventivo e un sopralluogo. P.IVA 04142430455. Avv. Beatrice Sala",
  "richiesta_preventivo",lead("Beatrice Sala","Studio Legale Sala","b.sala@studiolegale-sala.example",None,"librerie su misura sala riunioni",None,None,["quantity"],title="Avv."),
  draft(["quantity"],salutation="Gentile Avv. Sala",mustNotMention=["sopralluogo gratuito","sopralluogo confermato"],note="Non promettere il sopralluogo né date: impegni non inventati."))
 # --- encoding
 add(30,"encoding-qp-html",["encoding","html","formal","complete"],["§5.2-encoding","§7.2-11"],
  "=?UTF-8?Q?Nicol=C3=B2_Cant=C3=B9?= <nicolo.cantu@vinicola-perla.example>","=?UTF-8?Q?Richiesta_preventivo_etichettatrice_=E2=80=93_urgente?=",
- "<p>Buongiorno,</p><p>sono Nicol=C3=B2 Cant=C3=B9 della Vinicola La Perla S.r.l. di Canel=\nli (AT). Vorrei un preventivo per 1 etichettatrice semiautomatica per bottiglie, entro l&#39;inizio della vendemmia tardiva (fine ottobre). P.IVA 05152535455.</p><p>Grazie &amp; saluti</p>",
+ "<p>Buongiorno,</p><p>sono Nicol=C3=B2 Cant=C3=B9 della Vinicola La Perla S.r.l. di Canel=\nli (AT). Vorrei un preventivo per 1 etichettatrice semiautomatica per bottiglie, entro l&#39;inizio della vendemmia tardiva (fine ottobre). P.IVA 05152530464.</p><p>Grazie &amp; saluti</p>",
  "richiesta_preventivo",lead("Nicolò Cantù","Vinicola La Perla S.r.l.","nicolo.cantu@vinicola-perla.example",None,"etichettatrice semiautomatica per bottiglie","1","entro fine ottobre"),
  draft(salutation="Gentile Signor Cantù"),notes="Header RFC2047 e corpo quoted-printable + HTML: il parser deve decodificare prima dell'estrazione.")
 # --- mittente invalido
@@ -218,7 +218,7 @@ add(34,"non-commerciale-candidatura",["non_commercial","job_application"],["A4"]
  "non_commerciale",None,None)
 add(35,"pii-iban-indirizzo",["pii","formal","complete"],["§6-titoli","A7"],
  "Carlo Mancuso <carlo.mancuso@enoteca-mancuso.example>","Preventivo frigo cantina",
- "Buongiorno, sono Carlo Mancuso, titolare dell'Enoteca Mancuso. Vorrei un preventivo per 2 frigo cantina da 150 bottiglie, consegna a casa mia in via delle Viole 12, 90100 Palermo, entro novembre. Per eventuale acconto il mio IBAN è IT60X0542811101000000123456. Cellulare 338 0000777. P.IVA 06162636465.",
+ "Buongiorno, sono Carlo Mancuso, titolare dell'Enoteca Mancuso. Vorrei un preventivo per 2 frigo cantina da 150 bottiglie, consegna a casa mia in via delle Viole 12, 90100 Palermo, entro novembre. Per eventuale acconto il mio IBAN è IT60X0542811101000000123456. Cellulare 338 0000777. P.IVA 06162630476.",
  "richiesta_preventivo",lead("Carlo Mancuso","Enoteca Mancuso","carlo.mancuso@enoteca-mancuso.example","338 0000777","frigo cantina 150 bottiglie","2","entro novembre"),
  draft(salutation="Gentile Signor Mancuso",mustNotMention=["IT60X0542811101000000123456","338 0000777","via delle Viole"],note="A7: la bozza non ripete IBAN, cellulare, indirizzo."))
 

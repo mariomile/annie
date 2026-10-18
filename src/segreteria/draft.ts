@@ -35,6 +35,11 @@ const ASK: Record<MissingField, { it: string; en: string }> = {
 		it: "Può indicarci la partita IVA per i dati di fatturazione?",
 		en: "Could you please share the VAT number for invoicing?",
 	},
+	// The wrong number is not quoted: the draft never repeats tax ids (A7, scrubPii).
+	vatNumberInvalid: {
+		it: "La partita IVA che ci ha indicato non risulta corretta: può ricontrollarla?",
+		en: "The VAT number you gave us does not appear to be correct: could you please double-check it?",
+	},
 	budget: {
 		it: "Può indicarci se ha un intervallo di budget di riferimento?",
 		en: "Could you please share a budget range, if any?",
