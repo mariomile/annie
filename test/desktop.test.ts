@@ -77,13 +77,22 @@ function ctxWithSteps() {
 function tools(fake: ReturnType<typeof fakeDesktop>, connectors: string[] = ["schermo"]) {
 	const events: Record<string, unknown>[] = [];
 	const logs: string[] = [];
-	const list = createDesktopTools({ desktop: fake.desktop, key: "chiave", policy: async () => ({ modelProviders: ["faux"], channels: ["web"], connectors }), record: async (e) => void events.push(e), log: (m) => void logs.push(m), settleMs: 0 });
+	const seen: { thread: { channel: string; threadId: string }; bytes: number; action: string | undefined }[] = [];
+	const list = createDesktopTools({
+		desktop: fake.desktop,
+		key: "chiave",
+		policy: async () => ({ modelProviders: ["faux"], channels: ["web"], connectors }),
+		record: async (e) => void events.push(e),
+		log: (m) => void logs.push(m),
+		settleMs: 0,
+		seen: (thread, png, action) => void seen.push({ thread, bytes: png.length, action }),
+	});
 	const tool = (name: string) => {
 		const found = list.find((t) => t.name === name);
 		if (found === undefined) throw new Error(`no ${name}`);
 		return found;
 	};
-	return { list, tool, events, logs };
+	return { list, tool, events, logs, seen };
 }
 
 const textOf = (result: unknown) => (typeof result === "string" ? result : (result as { text: string }).text);
@@ -171,6 +180,21 @@ describe("the desktop's tools", () => {
 		expect(fake.calls).toEqual([{ key: "chiave", tool: "get_desktop_state", args: { max_image_dimension: 1280 } }]);
 	});
 
+	it("each picture taken in a conversation goes to the live view, with what was just done; one with no conversation does not", async () => {
+		const fake = fakeDesktop();
+		const { tool, seen } = tools(fake);
+		await tool("desktop_look").execute({}, ctxWithSteps().ctx);
+		expect(seen).toEqual([]);
+		const thread = { channel: "web", threadId: "t1" };
+		await tool("desktop_look").execute({}, { ...ctxWithSteps().ctx, thread });
+		await tool("desktop_click").execute({ x: 640, y: 400 }, { ...ctxWithSteps().ctx, thread });
+		expect(seen.map((s) => [s.thread, s.action])).toEqual([
+			[thread, undefined],
+			[thread, "Clic in 640, 400."],
+		]);
+		expect(seen[0]?.bytes).toBeGreaterThan(0);
+	});
+
 	it("desktop_click clicks once, even when the call runs again after a crash, and shows the screen after", async () => {
 		const fake = fakeDesktop();
 		const { tool, events } = tools(fake);
@@ -209,6 +233,10 @@ describe("the desktop's tools", () => {
 			["hotkey", { keys: ["ctrl", "shift", "t"], scope: "desktop" }],
 		]);
 		expect(await tool("desktop_key").execute({ key: "a b" }, ctxWithSteps().ctx)).toMatch(/^Errore: /);
+		// A character is not named, so keys pressed one by one do not spell out a code in the console.
+		expect(textOf(await tool("desktop_key").execute({ key: "4" }, ctxWithSteps().ctx))).toMatch(/^Premuto un tasto\./);
+		expect(textOf(await tool("desktop_key").execute({ key: "shift+a" }, ctxWithSteps().ctx))).toMatch(/^Premuto un tasto\./);
+		expect(textOf(await tool("desktop_key").execute({ key: "ctrl+l" }, ctxWithSteps().ctx))).toMatch(/^Premuto ctrl\+l\./);
 	});
 
 	it("desktop_key: common names of keys and modifiers become the ones the desktop knows", async () => {
@@ -552,8 +580,43 @@ describe("the desktop in an agente", () => {
 			const res = await fetch(`${base}${path}`, { method: method ?? (body === undefined ? "GET" : "POST"), headers: { cookie: as, "x-annie": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 			return { status: res.status, ...((await res.json()) as any) };
 		};
-		return { api };
+		return { api, base, cookie };
 	}
+
+	it("the console shows the screen live, only to the person of the conversation, and forgets it when the screen is reset", async () => {
+		const fake = fakeDesktop();
+		const { api, base, cookie } = await annie(fake.desktop);
+		const thread = (await api("/api/instances/annie/threads", {})).thread;
+		const screen = `/api/instances/annie/threads/${thread.id}/screen`;
+		// Without the screen the console stops asking.
+		expect(await api(screen)).toEqual({ status: 200, on: false, screen: null });
+		await api("/api/instances/annie/desktop-allowed", { allowed: true }, "PUT");
+		expect(await api(screen)).toEqual({ status: 200, on: true, screen: null });
+		expect((await fetch(`${base}${screen}.png`, { headers: { cookie, "x-annie": "1" } })).status).toBe(404);
+		await api(`/api/instances/annie/threads/${thread.id}/messages`, { text: "/tool desktop_click {\"x\":10,\"y\":20}" });
+		for (const start = Date.now(); (await api(screen)).screen === null; ) {
+			if (Date.now() - start > 20_000) throw new Error("no screen");
+			await new Promise((r) => setTimeout(r, 30));
+		}
+		const live = (await api(screen)).screen;
+		expect(live).toMatchObject({ action: "Clic in 10, 20." });
+		expect(typeof live.version).toBe("number");
+		const png = await fetch(`${base}${screen}.png`, { headers: { cookie, "x-annie": "1" } });
+		expect(png.status).toBe(200);
+		expect(png.headers.get("content-type")).toBe("image/png");
+		expect(png.headers.get("cache-control")).toBe("no-store");
+		expect([...new Uint8Array(await png.arrayBuffer()).slice(1, 4)]).toEqual([0x50, 0x4e, 0x47]);
+		// Nobody else sees it: not without a login, not another person, not in a conversation that is not there.
+		expect((await api(screen, undefined, "GET", "")).status).toBe(401);
+		const { link } = await api("/api/people", { name: "Anna", role: "member" });
+		const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: (link as string).split("#")[1] }) });
+		const anna = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
+		expect([403, 404]).toContain((await api(screen, undefined, "GET", anna)).status);
+		expect([403, 404]).toContain((await fetch(`${base}${screen}.png`, { headers: { cookie: anna, "x-annie": "1" } })).status);
+		expect((await api("/api/instances/annie/threads/nessuna/screen")).status).toBe(404);
+		await api("/api/instances/annie/desktop", undefined, "DELETE");
+		expect((await api(screen)).screen).toBeNull();
+	}, 30_000);
 
 	it("the owner turns the screen on from the console; Annie looks at it from the chat and sees the picture", async () => {
 		const fake = fakeDesktop();

@@ -29,6 +29,7 @@ import { computerLabel, createComputerProvider } from "./computer/create.ts";
 import { DockerComputerProvider } from "./computer/docker-computer.ts";
 import { DESKTOP_CONNECTOR, type DesktopProvider } from "./core/desktop.ts";
 import { createDesktopTools } from "./core/tools/desktop-tools.ts";
+import { ScreenViews } from "./core/screen-views.ts";
 import { createDesktopProvider, desktopLabel } from "./desktop/create.ts";
 import { DockerDesktopProvider } from "./desktop/docker-desktop.ts";
 import { createGoogleTools } from "./core/tools/google-tools.ts";
@@ -469,6 +470,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	// for them, or the address of one desktop run elsewhere.
 	const madeDesktop = options.desktop === undefined && config.desktop !== undefined ? createDesktopProvider(config.desktop, { log }) : undefined;
 	const desktop: DesktopProvider | undefined = options.desktop ?? madeDesktop;
+	// What each agente last saw on its screen, per conversation, for the console (ADR 0067).
+	const screens = new ScreenViews();
 	if (madeDesktop !== undefined && config.desktop !== undefined) {
 		const label = desktopLabel(config.desktop);
 		if (config.desktop.kind === "docker") {
@@ -769,6 +772,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							desktop,
 							key: computerKey(record.tenantId, record.id),
 							policy: policyOf(record),
+							// Only the console's conversations: nobody watches the others there.
+							seen: (thread, png, action, askedAt) => {
+								if (thread.channel === "web") screens.set(record.id, thread, png, action, askedAt);
+							},
 							record: async (event) => {
 								await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
 							},
@@ -1368,6 +1375,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		const warn = (what: string) => (error: unknown) => log(`annie: deleting ${id}: ${what} not removed: ${error instanceof Error ? error.message : String(error)}`);
 		await browseSessions.closeScope(`${record.tenantId}/${record.id}`).catch(warn("browsers"));
 		await computer?.reset(computerKey(tenant, id)).catch(warn("computer"));
+		screens.forget(id);
 		if (desktop !== undefined && !desktop.shared) await desktop.reset(computerKey(tenant, id)).catch(warn("screen"));
 	}
 
@@ -1464,7 +1472,20 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		sendWebAction: sendForInstance,
 		runConnectorAction,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
-		...(desktop === undefined ? {} : { desktop: { reset: (id: string) => desktop.reset(computerKey(tenant, id)), check: () => desktop.check(), network: desktop.network, shared: desktop.shared } }),
+		screens,
+		...(desktop === undefined
+			? {}
+			: {
+					desktop: {
+						reset: async (id: string) => {
+							screens.forget(id);
+							await desktop.reset(computerKey(tenant, id));
+						},
+						check: () => desktop.check(),
+						network: desktop.network,
+						shared: desktop.shared,
+					},
+				}),
 		...(config.google === undefined || googleAccounts === undefined
 			? {}
 			: {

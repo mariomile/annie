@@ -250,6 +250,8 @@ main.is-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: col
 .chat-split { flex: 1; min-height: 0; display: flex; }
 .chat-split > .conversation { min-width: 0; }
 .browser-toggle { position: absolute; top: 12px; right: 16px; z-index: 5; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg-2); font: inherit; font-size: 13px; cursor: pointer; box-shadow: var(--shadow-sm); }
+.panel-toggles { position: absolute; top: 12px; right: 16px; z-index: 5; display: flex; gap: 8px; }
+.panel-toggles .browser-toggle { position: static; }
 .browser-toggle:hover { color: var(--fg); border-color: var(--border-2); }
 .browser-toggle[aria-pressed="true"] { color: var(--fg); background: var(--hover); }
 main.is-chat { position: relative; }
