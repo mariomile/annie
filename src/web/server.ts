@@ -601,7 +601,7 @@ export function createWebApp(options: WebAppOptions): Server {
 			images.push({ path, data });
 		}
 		try {
-			return { entry: await channel.post(params[1] as string, (person as Person).id, text, undefined, images) };
+			return { entry: await channel.post(params[1] as string, (person as Person).id, text, { images }) };
 		} catch (error) {
 			if (error instanceof UserNotAllowed) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
 			if (error instanceof EgressDenied) throw new HttpError(403, "Questo agente non accetta messaggi dal web");

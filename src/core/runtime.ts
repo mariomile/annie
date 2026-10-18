@@ -45,6 +45,8 @@ export type SubmitRequest = {
 	readonly messageId?: string;
 	/** Pictures that came with the message, already in the workspace at `path`: the model sees them. */
 	readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[];
+	/** The person's own words when `text` wraps them in more (a stanza, ADR 0063): skill commands are read from these. */
+	readonly command?: string;
 };
 
 export type Reply = {
@@ -550,7 +552,7 @@ export class AnnieInstance {
 		// In a private thread the instance learns whom it is with and gets what it remembers about
 		// them; in a group, only the shared memories, so one person's never reach the others.
 		const key = threadKey(request.channel, request.threadId);
-		const { privateThread, images: _given, ...message } = request;
+		const { privateThread, images: _given, command: _command, ...message } = request;
 		let note: string;
 		if (privateThread === true) {
 			const subject = subjectOf(request.channel, request.userId);
@@ -572,7 +574,9 @@ export class AnnieInstance {
 	 */
 	private async withSkills(request: Omit<SubmitRequest, "tenantId" | "instanceId">, alone: boolean): Promise<string> {
 		const skills = this.memory.skills;
-		const activating = activateCommand(request.text);
+		// In a stanza the text carries the stanza around the person's words: only theirs can be a command.
+		const said = request.command ?? request.text;
+		const activating = activateCommand(said);
 		if (activating !== undefined) {
 			if (!alone || request.channel === AGENT_CHANNEL) return `${request.text}\n\n[Le skill si attivano solo in una conversazione con una persona sola: dillo in una riga.]`;
 			const by = subjectOf(request.channel, request.userId);
@@ -593,7 +597,7 @@ export class AnnieInstance {
 			await this.audit.append({ type: "skill.activated", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, userId: request.userId, skill: result.skill.name, replaced: result.replaced });
 			return `${request.text}\n\n[La persona ha attivato la skill «${result.skill.name}»${result.replaced ? " (nuova versione)" : ""}: da ora la vedi fra le tue skill e si lancia con /${result.skill.name}. Confermalo in una riga.]`;
 		}
-		const command = skillCommand(request.text, skills.list());
+		const command = skillCommand(said, skills.list());
 		if (command === undefined) return request.text;
 		await this.audit.append({ type: "skill.used", instanceId: this.record.id, channel: request.channel, threadId: request.threadId, skill: command.skill.name });
 		return withSkill(request.text, command.skill, command.rest);
