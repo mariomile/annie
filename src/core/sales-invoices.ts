@@ -179,6 +179,8 @@ export type SalesInvoice = Marker & {
 	readonly issueCall?: string;
 	/** Every needed step of the issue done (file, hours, quote): an issue or finish run on an invoice without it finishes them. */
 	readonly finished?: true;
+	/** The issue recorded in the audit, after it was finished: a finished invoice without it is audited on the next run. */
+	readonly audited?: true;
 };
 
 export type IssuedInvoice = SalesInvoice & { readonly number: string; readonly year: number; readonly seq: number; readonly date: string; readonly seller: Seller; readonly progressive: string; readonly issued: Marker };
@@ -448,7 +450,7 @@ export function invoiceProblem(v: unknown): string | undefined {
 		const payment = paymentProblem(i.payment);
 		if (payment !== undefined) return payment;
 	}
-	if (i.number === undefined) return [i.year, i.seq, i.date, i.due, i.seller, i.progressive, i.file, i.pdf, i.issued, i.issueCall, i.finished].every((x) => x === undefined) ? undefined : "il numero della fattura";
+	if (i.number === undefined) return [i.year, i.seq, i.date, i.due, i.seller, i.progressive, i.file, i.pdf, i.issued, i.issueCall, i.finished, i.audited].every((x) => x === undefined) ? undefined : "il numero della fattura";
 	const issued = first([
 		[!isText(i.number, FIELD_LIMITS.numero) || !Number.isInteger(i.year) || !Number.isInteger(i.seq) || (i.seq as number) < 1, "il numero della fattura"],
 		[!isDay(i.date) || Number(i.date?.slice(0, 4)) !== i.year, "la data della fattura"],
@@ -456,6 +458,7 @@ export function invoiceProblem(v: unknown): string | undefined {
 		[typeof i.progressive !== "string" || !/^[0-9A-Z]{5}$/.test(i.progressive), "il progressivo del file"],
 		[!isMarker(i.issued) || !optText(i.issueCall, 200), "chi l'ha emessa e quando"],
 		[i.finished !== undefined && i.finished !== true, "la fine dell'emissione"],
+		[i.audited !== undefined && (i.audited !== true || i.finished !== true), "la registrazione dell'emissione"],
 		[[i.file, i.pdf].some((path) => path !== undefined && (typeof path !== "string" || !/^fatture\/emesse\/IT\d{11}_[0-9A-Z]{5}\.(?:xml|pdf)$/.test(path))), "il nome del file"],
 	]);
 	return issued ?? sellerProblem(i.seller);

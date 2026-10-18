@@ -24,7 +24,7 @@ import { activeReservation, oldestFirst, sameClient, type WorkEntry } from "../t
 import { TIMESHEET_BROKEN } from "../timesheet-store.ts";
 import { cleanText, isProblem } from "../text-input.ts";
 import { hoursLines, lineWords, priced } from "../timesheet-sums.ts";
-import { composeBuyer, findBuyer, type Known } from "./sales-invoice-buyer.ts";
+import { composeBuyer, findBuyer, type Known, quoteIds } from "./sales-invoice-buyer.ts";
 import { anyMissing, askFor, askGroups, dueOf, type FilesSay, filesSay, findIssued, type Missing, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { type BuyerFields, fitsLatin, type GivenLine, paymentTermsOf, quoteLine, readBuyerFields, readCassa, readLines, readNatura, readOrder, readPayment, readRitenuta, readVatRate, withRates } from "./sales-invoice-input.ts";
 import { draftAnswer, fenced } from "./sales-invoice-render.ts";
@@ -53,7 +53,9 @@ const VAT_ASK = "aliquota IVA delle voci (22, 10, 5 o 4%, oppure senza IVA con l
 const NATURA_ASK = "natura delle voci senza IVA (come N4 esente, N2.1 per un servizio a un cliente UE, N3.1 esportazione): la sa chi ti scrive o il suo commercialista";
 const CASSA_ASK = "cassa professionale del contributo integrativo (codice da TC01 a TC21, come TC01 avvocati o TC04 Inarcassa) e percentuale, se non è il 4%";
 const firstNumberAsk = (year: number) => `È la prima fattura che fai con me quest'anno: qual è il numero dell'ultima fattura che hai emesso nel ${year}? (se nessuna, parto da 1)`;
-const proposeNumber = (year: number, h: number) => `Nei tuoi file l'ultima fattura del ${year} è la ${h}: questa sarà la ${h + 1}, va bene?`;
+const proposeNumber = (year: number, h: number) => `Nei tuoi file l'ultima fattura del ${year} è la ${h}: questa sarà la ${h + 1}, va bene? (il file è nel riquadro sotto)`;
+/** The file the proposed number comes from, said as it is named (a name in the person's folder: fenced). */
+const proposedFrom = (file: string) => ["Il numero proposto viene da questo file:", fenced(file)].join("\n");
 const NEW_CUSTOMER = "Se è un cliente diverso da questi, dimmelo e lo fatturo come cliente nuovo.";
 
 /** The last number said before Annie, lower than the files' highest: said, never refused. */
@@ -98,7 +100,9 @@ function customerOf(env: SalesEnv, said: unknown, book: SalesBook, notes: string
 	if (name === undefined) return "Errore: dimmi a quale cliente va la fattura.";
 	if (isNew) return { name };
 	const found = findBuyer(name, cards(env), book.invoices, given);
-	if (found.kind === "close") return ["Intendi uno di questi? Nessun cliente si chiama esattamente così:", fenced(found.candidates.map((c) => `• ${c}`).join("\n")), `Chiedi a chi ti scrive quale, e ripeti con il nome scritto come qui. ${NEW_CUSTOMER}`].join("\n");
+	if (found.kind === "close") return ["Intendi uno di questi? Non so dire quale:", fenced(found.candidates.map((c) => `• ${c}`).join("\n")), `Chiedi a chi ti scrive quale, e ripeti con il nome scritto come qui o con la sua partita IVA. ${NEW_CUSTOMER}`].join("\n");
+	// The customer named, with another tax id than theirs: asked, never mixed.
+	if (found.kind === "conflict") return [fenced(`${found.known.name} che conosco ha ${found.id}: è un cliente diverso? Se sì, lo fatturo come cliente nuovo.`), "Chiedi a chi ti scrive: se è un cliente diverso, rifai la bozza come cliente nuovo; se è lo stesso, rifalla senza quella partita IVA o codice fiscale, oppure correggi la sua scheda."].join("\n");
 	if (found.kind === "exact") {
 		if (found.form === true) notes.push(`${FORM_NOTE} ${NEW_CUSTOMER}`);
 		return found.known;
@@ -178,7 +182,8 @@ function fromQuote(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 		const known = customerOf(env, args.customer, book, notes, fields, args.new_customer === true);
 		return typeof known === "string" ? known : sourceOf(known, extra);
 	}
-	const byName = findBuyer(q.customer.name, cards(env), book.invoices);
+	// The quote's own tax ids tell its customer: one of the same name with others is not taken.
+	const byName = findBuyer(q.customer.name, cards(env), book.invoices, quoteIds(q.customer));
 	const known: Known = byName.kind === "exact" ? { ...byName.known, name: q.customer.name } : { name: q.customer.name };
 	return sourceOf(known, { ...extra, quoteCustomer: q.customer });
 }
@@ -343,7 +348,8 @@ export async function draft(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	if (typeof last === "string") return last;
 	const first = await firstOfYear(env, book, ctx, day, company?.vat, last);
 	if (first.ask !== undefined) missing.invoice.push(first.ask);
-	if (first.note !== undefined) notes.push(first.note);
+	// With a question the notes are not said: the file a proposed number comes from goes with it.
+	if (first.note !== undefined) (first.ask === undefined ? notes : tails).push(first.note);
 	if (anyMissing(missing) || "missing" in seller || buyer === undefined || lines === undefined || regime === undefined || (cassa !== undefined && "missing" in cassa)) return askGroups(missing, tails);
 	// A ritenuta with nothing to bear it (only spese anticipate) is dropped.
 	if (ritenuta !== undefined && salesTotals({ type: INVOICE_TYPE, regime, lines, ...(cassa === undefined ? {} : { cassa }), ritenuta }).ritenutaBase === 0n) {
@@ -390,7 +396,7 @@ async function firstOfYear(env: SalesEnv, book: SalesBook, ctx: ToolContext, day
 		const low = lowNumberNote(last, files, year);
 		return { save: last, ...(low === undefined ? {} : { note: low }) };
 	}
-	if (files.highest !== undefined) return { ask: proposeNumber(year, files.highest.seq) };
+	if (files.highest !== undefined) return { ask: proposeNumber(year, files.highest.seq), note: proposedFrom(files.highest.file) };
 	const before = issued(year - 1);
 	const allLastYear = day.slice(5, 7) === "01" && before.length > 0 && (book.settings?.lastBefore?.[String(year - 1)] ?? 0) === 0 && Math.min(...before.map((i) => i.seq)) === 1;
 	if (allLastYear) return { save: 0 };

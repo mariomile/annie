@@ -19,53 +19,101 @@ import type { BuyerFields } from "./sales-invoice-input.ts";
 /** A customer found: the name to write, the card, and the last invoice made for them here. */
 export type Known = { readonly name: string; readonly card?: ClientCard; readonly previous?: Buyer };
 
-export type Found = { readonly kind: "exact"; readonly known: Known; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly string[] } | { readonly kind: "none" };
+/**
+ * exact: the customer meant; close: some customers to ask among (labels with their tax ids);
+ * conflict: the customer named has another tax id than the one given (`id`: theirs, in words);
+ * none: a new customer.
+ */
+export type Found =
+	| { readonly kind: "exact"; readonly known: Known; readonly form?: true }
+	| { readonly kind: "close"; readonly candidates: readonly string[] }
+	| { readonly kind: "conflict"; readonly known: Known; readonly id: string }
+	| { readonly kind: "none" };
+
+const idKey = (v: string | undefined) => v?.replace(/^IT/, "");
+
+/** Whether a buyer is the one with these tax ids: one of them the same, none different. */
+export function sameTaxIds(b: Pick<Buyer, "vat" | "cf">, vat: string | undefined, cf: string | undefined): boolean {
+	if (vat === undefined && cf === undefined) return b.vat === undefined && b.cf === undefined;
+	const conflict = (vat !== undefined && b.vat !== undefined && idKey(b.vat) !== idKey(vat)) || (cf !== undefined && b.cf !== undefined && b.cf !== cf);
+	const same = (vat !== undefined && b.vat !== undefined && idKey(b.vat) === idKey(vat)) || (cf !== undefined && b.cf !== undefined && b.cf === cf);
+	return same && !conflict;
+}
 
 /** The newest buyer first: drafts and invoices are kept in order. */
 function lastBuyer(invoices: readonly SalesInvoice[], match: (b: Buyer) => boolean): Buyer | undefined {
 	return [...invoices].reverse().find((i) => match(i.buyer))?.buyer;
 }
 
-/** The last buyer with the card's tax ids or one of its names. */
+/** The last buyer with the card's tax ids (never one with another); by name or card id only when the card has none. */
 function previousOf(card: ClientCard, invoices: readonly SalesInvoice[]): Buyer | undefined {
+	if (card.vat !== undefined || card.cf !== undefined) return lastBuyer(invoices, (b) => sameTaxIds(b, card.vat, card.cf));
 	const keys = cardKeys(card);
-	return lastBuyer(invoices, (b) => (card.vat !== undefined && b.vat === card.vat) || (card.cf !== undefined && b.cf === card.cf) || b.card === card.id || keys.includes(spellingKey(b.name)));
+	return lastBuyer(invoices, (b) => b.card === card.id || keys.includes(spellingKey(b.name)));
 }
 
 /** How much of what the person says is matched against the names. */
 const MAX_SAID = 200;
-
-const idKey = (v: string | undefined) => v?.replace(/^IT/, "");
 
 /** The tax ids a customer found is known by. */
 function idsOf(k: Known): string[] {
 	return [k.card?.vat, k.card?.cf, k.previous?.vat, k.previous?.cf].map(idKey).filter((v): v is string => v !== undefined);
 }
 
+/** A customer as listed to ask: the name and the tax id that tells it apart. */
+function label(k: Known): string {
+	const vat = k.card?.vat ?? k.previous?.vat;
+	const cf = k.card?.cf ?? k.previous?.cf;
+	return vat !== undefined ? `${k.name}, P.IVA ${vat}` : cf !== undefined ? `${k.name}, C.F. ${cf}` : k.name;
+}
+
 /**
- * Who `said` names among the cards and the customers already invoiced here, with the clients'
- * rule. A name close to some (or the same but for the legal form) with a partita IVA or codice
- * fiscale `given` that none of them has is a new customer.
+ * Who `said` names among the cards and the customers already invoiced here (one per tax id), with
+ * the clients' rule. Several with the very name said are asked, unless the tax ids `given` tell
+ * one, or exactly one of them is a card. A name close to some (or the same but for the legal
+ * form) with tax ids none of them has is a new customer; the very name of one with a tax id that
+ * conflicts with theirs is asked (`conflict`), never mixed.
  */
 export function findBuyer(said: string, cards: readonly ClientCard[], invoices: readonly SalesInvoice[], given: Pick<BuyerFields, "vat" | "cf"> = {}): Found {
 	const candidates: Candidate<Known>[] = cards.map((card) => {
 		const previous = previousOf(card, invoices);
 		return { item: { name: card.name, card, ...(previous === undefined ? {} : { previous }) }, names: [card.name, ...card.aliases], ...(card.vat === undefined ? {} : { vat: card.vat }), ...(card.cf === undefined ? {} : { cf: card.cf }), ids: [card.id] };
 	});
-	// The customers invoiced here without a card: the newest invoice to each.
-	const seen = new Set(candidates.flatMap((c) => c.names.map(spellingKey)));
+	// The customers invoiced here without a card: the newest invoice to each, told apart by tax id (by name only without one).
+	const cardNames = new Set(cards.flatMap((c) => [c.name, ...c.aliases].map(spellingKey)));
+	const seen = new Set<string>();
 	for (const inv of [...invoices].reverse()) {
 		const b = inv.buyer;
-		const key = spellingKey(b.name);
-		if (seen.has(key) || candidates.some((c) => (b.vat !== undefined && c.vat === b.vat) || (b.cf !== undefined && c.cf === b.cf))) continue;
+		const key = b.vat ?? b.cf ?? `name:${spellingKey(b.name)}`;
+		if (seen.has(key)) continue;
 		seen.add(key);
+		if (b.vat === undefined && b.cf === undefined ? cardNames.has(spellingKey(b.name)) : cards.some((c) => (b.vat !== undefined && c.vat === b.vat) || (b.cf !== undefined && c.cf === b.cf))) continue;
 		candidates.push({ item: { name: b.name, previous: b }, names: [b.name], ...(b.vat === undefined ? {} : { vat: b.vat }), ...(b.cf === undefined ? {} : { cf: b.cf }) });
 	}
 	const r = findNamed(candidates, said, MAX_SAID);
 	const ids = [given.vat, given.cf].map(idKey).filter((v): v is string => v !== undefined);
-	const other = (ks: readonly Known[]) => ids.length > 0 && ks.every((k) => !idsOf(k).some((id) => ids.includes(id)));
-	if (r.kind === "exact") return r.form === true && other([r.item]) ? { kind: "none" } : { kind: "exact", known: r.item, ...(r.form === true ? { form: true as const } : {}) };
-	if (r.kind === "close") return other(r.candidates) ? { kind: "none" } : { kind: "close", candidates: r.candidates.map((k) => k.name) };
+	const matches = (k: Known) => idsOf(k).some((id) => ids.includes(id));
+	const other = (ks: readonly Known[]) => ids.length > 0 && ks.every((k) => !matches(k));
+	if (r.kind === "exact") {
+		const k = r.item;
+		if (r.form === true) return other([k]) ? { kind: "none" } : { kind: "exact", known: k, form: true };
+		// The same customer by name or card id, but given another tax id than theirs: asked, never mixed.
+		const vat = k.card?.vat ?? k.previous?.vat;
+		const cf = k.card?.cf ?? k.previous?.cf;
+		if (given.vat !== undefined && vat !== undefined && idKey(given.vat) !== idKey(vat)) return { kind: "conflict", known: k, id: `un'altra partita IVA (${vat})` };
+		if (given.cf !== undefined && cf !== undefined && given.cf !== cf && !matches(k)) return { kind: "conflict", known: k, id: `un altro codice fiscale (${cf})` };
+		return { kind: "exact", known: k };
+	}
+	if (r.kind === "close") {
+		const meant = ids.length === 0 ? [] : r.candidates.filter(matches);
+		if (meant.length === 1) return { kind: "exact", known: meant[0] as Known };
+		if (r.same === true && ids.length === 0) {
+			const withCard = r.candidates.filter((k) => k.card !== undefined);
+			if (withCard.length === 1) return { kind: "exact", known: withCard[0] as Known };
+		}
+		if (r.same !== true && other(r.candidates)) return { kind: "none" };
+		return { kind: "close", candidates: r.candidates.map(label) };
+	}
 	return r;
 }
 
@@ -79,11 +127,13 @@ const NO_IDS = "partita IVA e codice destinatario (7 caratteri) o PEC; per un pr
  * them, in this order. `name`: as the card, quote or timesheet writes it, or as said.
  */
 export function composeBuyer(name: string, sources: { readonly card?: ClientCard; readonly previous?: Buyer; readonly quote?: QuoteCustomer }, given: BuyerFields): Buyer | BuyerAsk | Problem {
-	const { card, previous, quote } = sources;
+	const { card, quote } = sources;
 	if (latin1(name).length > FIELD_LIMITS.denominazione) return { problem: `il nome del cliente è troppo lungo per la fattura (al massimo ${FIELD_LIMITS.denominazione} caratteri): chiedi a chi ti scrive come scriverlo più corto e passalo come nome in fattura` };
 	const fromQuote = quoteIds(quote);
-	const vat = given.vat ?? card?.vat ?? fromQuote.vat ?? previous?.vat;
-	const cf = given.cf ?? card?.cf ?? fromQuote.cf ?? previous?.cf;
+	const vat = given.vat ?? card?.vat ?? fromQuote.vat ?? sources.previous?.vat;
+	const cf = given.cf ?? card?.cf ?? fromQuote.cf ?? sources.previous?.cf;
+	// The code, the PEC and the address of a past invoice only when it is the same customer (the same tax id).
+	const previous = sources.previous !== undefined && sameTaxIds(sources.previous, vat, cf) ? sources.previous : undefined;
 	const code = given.code ?? previous?.code;
 	const foreign = (given.country !== undefined && given.country !== "IT") || (vat !== undefined && !vat.startsWith("IT"));
 	const pa = code !== undefined && PA_CODE.test(code);
@@ -121,7 +171,7 @@ export function composeBuyer(name: string, sources: { readonly card?: ClientCard
 }
 
 /** A quote's customer ids as a buyer keeps them: the quote writes an Italian partita IVA without «IT». */
-function quoteIds(quote: QuoteCustomer | undefined): { vat?: string; cf?: string } {
+export function quoteIds(quote: QuoteCustomer | undefined): { vat?: string; cf?: string } {
 	if (quote === undefined) return {};
 	const vat = quote.vat === undefined ? undefined : buyerVat(quote.vat);
 	const cf = quote.fiscal === undefined ? undefined : buyerCf(quote.fiscal);

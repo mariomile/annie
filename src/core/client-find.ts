@@ -15,8 +15,11 @@ export const FORM_NOTE = "Nessuno si chiama esattamente così: ho preso il clien
 /** One client to find: its names (the first is the one shown), tax ids and ids. */
 export type Candidate<T> = { readonly item: T; readonly names: readonly string[]; readonly vat?: string; readonly cf?: string; readonly ids?: readonly string[] };
 
-/** `respelled`: the name said is not the one shown; `form`: taken for the same name but the legal form. */
-export type NamedFound<T> = { readonly kind: "exact"; readonly item: T; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly T[] } | { readonly kind: "none" };
+/**
+ * `respelled`: the name said is not the one shown; `form`: taken for the same name but the legal
+ * form; `same`: close because several clients have exactly the name said (told apart by their tax ids).
+ */
+export type NamedFound<T> = { readonly kind: "exact"; readonly item: T; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly T[]; readonly same?: true } | { readonly kind: "none" };
 
 const ID = /^(?:CL|FU)-\d{4,6}$/;
 const CF = /^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/;
@@ -35,23 +38,29 @@ export function findNamed<T>(candidates: readonly Candidate<T>[], said: string, 
 		const c = candidates.find((x) => (v !== undefined && x.vat === v) || x.cf === compact);
 		if (c !== undefined) return { kind: "exact", item: c.item, respelled: false };
 	}
-	const owners = new Map<string, Candidate<T>>();
+	// A name may belong to more than one client (the same name, other tax ids): all of them are kept.
+	const owners = new Map<string, Candidate<T>[]>();
 	const names: string[] = [];
 	for (const c of candidates) {
 		for (const n of c.names) {
 			const k = spellingKey(n);
-			if (k === "" || owners.has(k)) continue;
-			owners.set(k, c);
-			names.push(n);
+			if (k === "") continue;
+			const list = owners.get(k);
+			if (list === undefined) {
+				owners.set(k, [c]);
+				names.push(n);
+			} else if (!list.includes(c)) list.push(c);
 		}
 	}
 	const r = resolveClient(t.slice(0, maxName), names);
 	if (r.kind === "exact") {
-		const c = owners.get(spellingKey(r.name)) as Candidate<T>;
+		const all = owners.get(spellingKey(r.name)) as Candidate<T>[];
+		if (all.length > 1) return { kind: "close", candidates: all.map((c) => c.item), same: true };
+		const c = all[0] as Candidate<T>;
 		return { kind: "exact", item: c.item, respelled: c.names[0] !== t };
 	}
 	if (r.kind === "close") {
-		const close = [...new Set(r.candidates.map((n) => owners.get(spellingKey(n)) as Candidate<T>))];
+		const close = [...new Set(r.candidates.flatMap((n) => owners.get(spellingKey(n)) as Candidate<T>[]))];
 		// The same business but for the legal form: the one client meant; a name only contained stays close.
 		const same = close.filter((c) => c.names.some((n) => sameBusiness(t, n)));
 		if (same.length === 1) return { kind: "exact", item: (same[0] as Candidate<T>).item, respelled: true, form: true };

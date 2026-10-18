@@ -152,6 +152,16 @@ export class SalesInvoiceStore {
 		return fresh;
 	}
 
+	/** The issue of the invoice `id` recorded in the audit (after it is finished): an audit not yet marked is written on the next run. */
+	setAudited(id: string): void {
+		updateBook(this.book, (book) => {
+			const inv = book.invoices.find((i) => i.id === id);
+			if (inv === undefined || !isIssued(inv)) throw new SalesInvoiceError("la fattura non c'è più");
+			if (inv.audited === true) return book;
+			return checkedBook({ ...book, invoices: book.invoices.map((i) => (i === inv ? { ...inv, audited: true as const } : i)) });
+		});
+	}
+
 	/** Where the files of the invoice `id` are, now written. */
 	setFiles(id: string, files: { readonly file?: string; readonly pdf?: string }): void {
 		updateBook(this.book, (book) => {

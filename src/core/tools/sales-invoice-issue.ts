@@ -9,7 +9,8 @@
  *    gets a new progressive; the same content there already is this call's own write;
  * 3. the courtesy PDF beside it, same name (a failure is said, the invoice stands);
  * 4. the hours marked «fatturate» with the invoice's number, the quote marked invoiced;
- * 5. the audit (op and count); then the invoice is marked finished.
+ * 5. the invoice marked finished; then the audit (op and count), and the invoice marked audited,
+ *    so an audit a crash left out is written on the next run, and never twice.
  * The number comes after the store's counter, the last number said before Annie and the highest
  * number of the year among the company's own invoices in the workspace. An invoice issued and not
  * finished (a crash, a PDF or a mark that failed) is completed by issuing it again.
@@ -35,8 +36,8 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	const book = env.book();
 	const mine = book.invoices.find((i): i is IssuedInvoice => isIssued(i) && i.issueCall === ctx.callId);
 	if (mine !== undefined) return complete(env, mine, ctx, []);
-	// Nothing named and an issue left halfway: that one first, the drafts untouched.
-	const unfinished = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.finished !== true);
+	// Nothing named and an issue left halfway (or its audit): that one first, the drafts untouched.
+	const unfinished = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && (i.finished !== true || i.audited !== true));
 	if (args.draft === undefined && unfinished.length > 0) {
 		if (unfinished.length > 1) return `Errore: ci sono più fatture con l'emissione da completare (n. ${unfinished.map((i) => i.number).join(", ")}): dimmi quale, e la completo prima di emettere altro.`;
 		return complete(env, unfinished[0] as IssuedInvoice, ctx, []);
@@ -45,7 +46,7 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	if ("answer" in named) return named.answer;
 	const target = named.found;
 	if (isIssued(target)) {
-		if (target.finished === true) return `La ${docWord(target.type)} n. ${target.number} è già emessa: il file è ${target.file ?? "da scrivere"}.`;
+		if (target.finished === true && target.audited === true) return `La ${docWord(target.type)} n. ${target.number} è già emessa: il file è ${target.file ?? "da scrivere"}.`;
 		return complete(env, target, ctx, []);
 	}
 	if (args.confirm !== undefined && typeof args.confirm !== "boolean") return "Errore: la conferma è sì o no.";
@@ -85,7 +86,7 @@ export async function finish(env: SalesEnv, args: Record<string, unknown>, ctx: 
 	if (found.length === 0) return "Errore: non trovo una fattura emessa con quel numero.";
 	if (new Set(found.map((f) => f.year)).size > 1) return `Errore: c'è una fattura con quel numero in più anni (${found.map((f) => f.year).join(", ")}): dimmi l'anno.`;
 	const inv = found[0] as IssuedInvoice;
-	if (inv.finished === true && inv.issueCall !== ctx.callId) return `La ${docWord(inv.type)} n. ${inv.number} è già emessa e completa: il file è ${inv.file ?? "da scrivere"}.`;
+	if (inv.finished === true && inv.audited === true && inv.issueCall !== ctx.callId) return `La ${docWord(inv.type)} n. ${inv.number} è già emessa e completa: il file è ${inv.file ?? "da scrivere"}.`;
 	return complete(env, inv, ctx, []);
 }
 
@@ -122,7 +123,13 @@ async function complete(env: SalesEnv, start: IssuedInvoice, ctx: ToolContext, n
 	const quote = await markQuote(env, inv, ctx);
 	notes.push(...hours.notes, ...quote.notes);
 	if (inv.file !== undefined && hours.done && quote.done) {
-		if (env.store.setFinished(inv.id)) await env.audit(ctx, "issue", 1);
+		env.store.setFinished(inv.id);
+		// The audit once: on the run that finishes it, or the next one when a crash came in between.
+		const now = env.book().invoices.find((i) => i.id === inv.id);
+		if (now !== undefined && isIssued(now) && now.audited !== true) {
+			await env.audit(ctx, "issue", 1);
+			env.store.setAudited(inv.id);
+		}
 	} else notes.push(`L'emissione della fattura n. ${inv.number} non è completa: quando il problema è risolto, si completa con la fattura n. ${inv.number}, con lo stesso numero.`);
 	return issuedAnswer(inv, salesTotals(inv), notes, resumed);
 }
