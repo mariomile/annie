@@ -359,7 +359,19 @@ describe("pnpm start (startAnnie)", () => {
 		// Sent back with a comment: it hears it there.
 		expect((await send("PUT", `/api/board/${card.id}`, { status: "in_corso", comment: "Manca il trasporto" })).card.status).toBe("in_corso");
 		await until(async () => (await entries()).some((e) => e.text?.startsWith("[Scheda #1] ") && e.text.includes("rimandata indietro: Manca il trasporto")));
-		expect((await send("PUT", `/api/board/${card.id}`, { status: "fatto" })).card.status).toBe("fatto");
+		// Approved with a tap in the owner's chat (ADR 0079): only by an approver, only while in review.
+		await api(`/api/instances/ricerca/threads/${threadId}/messages`, { text: '/tool board_update {"status":"da_rivedere","comment":"Aggiunto il trasporto"}' });
+		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text.includes("Aggiunto il trasporto")));
+		const notice = telegram.sent.findLast((m) => m.chat_id === "9" && m.text.includes("Aggiunto il trasporto"));
+		const approve = notice?.reply_markup?.inline_keyboard[0]?.find((b) => b.text === "Approva")?.callback_data as string;
+		expect(approve).toBe(`board:${card.id}:fatto`);
+		telegram.updates.push([{ update_id: 31, callback_query: { id: "cqb1", from: { id: 7 }, message: { message_id: 6, chat: { id: 7 } }, data: approve } }]);
+		telegram.updates.push([{ update_id: 32, callback_query: { id: "cqb2", from: { id: 9 }, message: { message_id: 6, chat: { id: 9 } }, data: approve } }]);
+		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text === "Scheda #1 approvata e chiusa."));
+		expect((await api("/api/board")).cards[0].status).toBe("fatto");
+		expect(telegram.sent.some((m) => m.chat_id === "7")).toBe(false);
+		telegram.updates.push([{ update_id: 33, callback_query: { id: "cqb3", from: { id: 9 }, message: { message_id: 6, chat: { id: 9 } }, data: approve } }]);
+		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text.includes("non è più in «Da rivedere»")));
 
 		expect((await send("PUT", `/api/board/${card.id}`, { status: "chiusa" })).status).toBe(400);
 
