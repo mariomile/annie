@@ -4210,6 +4210,12 @@ async function viewBoard(main) {
 	// Sotto-schede (ADR 0066): one level, shown under the scheda they are part of.
 	const parentOf = (c) => (c.parent ? data.cards.find((x) => x.id === c.parent) : undefined);
 	const childrenOf = (c) => data.cards.filter((x) => x.parent === c.id).sort((a, b) => a.n - b.n);
+	// Schede that come after others (ADR 0076): those it still waits for, of the ones shown here.
+	const beforeOf = (c) => (c.after ?? []).map((id) => data.cards.find((x) => x.id === id)).filter(Boolean);
+	const waitsOn = (c) => (c.status === "fatto" ? [] : beforeOf(c).filter((x) => x.status !== "fatto"));
+	const nums = (cards) => cards.map((x) => `#${x.n}`).join(", ");
+	const whenDone = (cards) => (cards.length === 1 ? `quando #${cards[0].n} è fatta` : cards.length ? `quando ${nums(cards)} sono fatte` : "quando le schede prima sono fatte");
+	const started = (card) => (card.queued ? `Parte da sola ${whenDone(waitsOn(card))}` : `${agentOf(card.assignee)?.name ?? "L'agente"} ci sta lavorando`);
 	const aloneLabel = `Lavora da solo fino alla fine, senza aspettare le tue risposte (al massimo ${data.auto.replies} risposte o ${data.auto.hours} ore, poi va in «Da rivedere»)`;
 	// Dragged to another column (ADR 0051): the same moves as the buttons of the scheda.
 	const moveTo = async (c, status) => {
@@ -4217,8 +4223,8 @@ async function viewBoard(main) {
 		if (status === "in_corso" && c.status === "da_fare") {
 			if (!c.assignee || !agentOf(c.assignee)?.canAssign) return toast("Affidala prima a un agente a cui puoi scrivere", true);
 			try {
-				await api(`/api/board/${c.id}/start`, { method: "POST" });
-				toast(`${agentOf(c.assignee).name} ci sta lavorando`);
+				const { card } = await api(`/api/board/${c.id}/start`, { method: "POST" });
+				toast(started(card));
 				render();
 			} catch (error) {
 				toast(error.message, true);
@@ -4256,6 +4262,7 @@ async function viewBoard(main) {
 				"span.board-meta",
 				c.assignee ? [faceOf(c.assignee, c.status === "in_corso" ? "thinking" : "idle"), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
 				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
+				waitsOn(c).length ? h("span.tag.board-after", { title: c.queued ? `Parte da sola ${whenDone(waitsOn(c))}` : `Viene dopo ${nums(waitsOn(c))}` }, `${c.queued ? "parte " : ""}dopo ${nums(waitsOn(c))}`) : null,
 				c.checklist?.length ? h(`span.tag.board-checks${c.checklist.every((i) => i.done) ? ".all" : ""}`, { title: "Lista di controllo" }, `☑ ${c.checklist.filter((i) => i.done).length}/${c.checklist.length}`) : null,
 				c.due && c.status !== "fatto" ? h(`span.tag.board-due.${dueInfo(c.due).level}`, { title: `Scadenza: ${dueInfo(c.due).label}` }, dueInfo(c.due).text) : null,
 				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
@@ -4370,8 +4377,9 @@ async function viewBoard(main) {
 			BOARD_COLUMNS.filter(([v]) => v !== "in_corso" || c.status !== "da_fare").map(([v, l]) => h("option", { value: v, selected: v === c.status ? "selected" : undefined }, l)),
 		);
 		const due = h("input", { type: "date", value: c.due ?? "", "aria-label": "Scadenza" });
+		const after = h("input", { type: "text", value: nums(beforeOf(c)), placeholder: "Es. #3, #5", "aria-label": "Viene dopo le schede" });
 		const comment = h("textarea", { rows: 2, placeholder: c.status === "da_rivedere" ? "Cosa va cambiato, se la rimandi indietro" : mine && c.status === "in_corso" ? "Arriva anche all'agente, nella conversazione" : "Un commento" });
-		const events = c.events.filter((e) => e.kind !== "edited" || e.due !== undefined).slice(-30);
+		const events = c.events.filter((e) => e.kind !== "edited" || e.due !== undefined || e.after !== undefined).slice(-30);
 		// Lista di controllo (ADR 0075): each tick is saved at once.
 		const checkList = h("ul.board-checklist");
 		let checksChanged = false;
@@ -4435,6 +4443,10 @@ async function viewBoard(main) {
 											: e.done === false
 												? `ha tolto la spunta a «${e.text}»`
 												: `ha aggiunto alla lista «${e.text}»`
+									: e.kind === "edited" && e.after
+										? e.after.length
+											? `ha messo che viene dopo ${e.after.map((n) => `#${n}`).join(", ")}`
+											: "ha tolto le schede da aspettare"
 									: e.kind === "edited"
 									? e.due
 										? `ha messo la scadenza a ${dueInfo(e.due).label}`
@@ -4482,16 +4494,17 @@ async function viewBoard(main) {
 				),
 			);
 		}
-		if (c.status === "da_fare" && c.assignee && agentOf(c.assignee)?.canAssign)
+		// Already started while it waits (ADR 0076): nothing to press.
+		if (c.status === "da_fare" && c.assignee && agentOf(c.assignee)?.canAssign && !c.queued)
 			moves.push(
 				h(
 					"button.btn.accent",
 					{
 						onclick: async () => {
 							try {
-								await api(`/api/board/${c.id}/start`, { method: "POST", body: { auto: alone.checked } });
+								const { card } = await api(`/api/board/${c.id}/start`, { method: "POST", body: { auto: alone.checked } });
 								dialog.close();
-								toast(`${agentOf(c.assignee).name} ci sta lavorando`);
+								toast(started(card));
 								render();
 							} catch (error) {
 								toast(error.message, true);
@@ -4502,7 +4515,7 @@ async function viewBoard(main) {
 				),
 			);
 		if (mine && c.work.agent === c.assignee && c.status !== "da_fare") moves.push(h("button.btn.ghost", { onclick: openThread }, "Apri la conversazione"));
-		const startable = c.status === "da_fare" && c.assignee && agentOf(c.assignee)?.canAssign;
+		const startable = c.status === "da_fare" && c.assignee && agentOf(c.assignee)?.canAssign && !c.queued;
 		const working = mine && c.work.agent === c.assignee && c.status === "in_corso";
 		if (working)
 			alone.addEventListener("change", async () => {
@@ -4534,7 +4547,15 @@ async function viewBoard(main) {
 						),
 					)
 				: null,
-			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status), c.status === "fatto" ? null : h("label.field", h("span", "Scadenza"), due)),
+			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status), c.status === "fatto" ? null : h("label.field", h("span", "Scadenza"), due), c.status === "fatto" ? null : h("label.field", h("span", "Viene dopo"), after)),
+			waitsOn(c).length
+				? h(
+						"p.small.board-after-line",
+						"Aspetta ",
+						waitsOn(c).flatMap((x, i) => [i ? ", " : "", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(x)) }, `#${x.n} ${x.title}`)]),
+						c.queued ? `: poi parte da sola con ${c.queued.personId === state.me.id ? "te" : (data.people[c.queued.personId] ?? "chi l'ha avviata")}.` : c.status === "da_fare" && c.assignee ? ": se premi Avvia, parte da sola appena sono fatte." : ".",
+					)
+				: null,
 			c.due && c.status !== "fatto" ? h(`p.small.board-due-line.${dueInfo(c.due).level}`, `${dueInfo(c.due).text[0].toUpperCase()}${dueInfo(c.due).text.slice(1)}.`) : null,
 			moves.length ? h("div.actions", moves) : null,
 			startable || working ? aloneRow : null,
@@ -4553,6 +4574,8 @@ async function viewBoard(main) {
 							// A date half typed reads as empty: it would take the scadenza off.
 							if (due.validity.badInput) return toast("La scadenza non è una data completa", true);
 							if (c.status !== "fatto" && due.value !== (c.due ?? "")) body.due = due.value || null;
+							const wanted = after.value.match(/\d+/g) ?? [];
+							if (c.status !== "fatto" && wanted.join() !== beforeOf(c).map((x) => String(x.n)).join()) body.after = wanted.length ? wanted : null;
 							if (Object.keys(body).length === 0) return dialog.close();
 							void act(body, "Scheda aggiornata")();
 						},
@@ -4603,6 +4626,8 @@ async function viewBoard(main) {
 		const due = h("input", { type: "date", "aria-label": "Scadenza" });
 		const parents = data.cards.filter((x) => !x.parent && x.status !== "fatto").sort((a, b) => a.n - b.n);
 		const parent = h("select", h("option", { value: "" }, "Nessuna"), parents.map((x) => h("option", { value: x.id }, `#${x.n} ${x.title}`)));
+		const opens = data.cards.filter((x) => x.status !== "fatto").sort((a, b) => a.n - b.n);
+		const after = h("select", h("option", { value: "" }, "Nessuna, parte subito"), opens.map((x) => h("option", { value: x.id }, `#${x.n} ${x.title}`)));
 		const alone = h("input", { type: "checkbox" });
 		const aloneRow = h("label.board-alone", { hidden: true }, alone, h("span", aloneLabel));
 		// «Si ripete» (ADR 0069): only for a scheda handed to an agente.
@@ -4618,6 +4643,7 @@ async function viewBoard(main) {
 			monthday.hidden = every.value !== "mese";
 			ok.textContent = every.value ? "Programma" : "Crea";
 			if (parentRow) parentRow.hidden = Boolean(every.value);
+			if (afterRow) afterRow.hidden = Boolean(every.value);
 			dueRow.hidden = Boolean(every.value);
 		};
 		every.addEventListener("change", drawRepeat);
@@ -4630,6 +4656,7 @@ async function viewBoard(main) {
 		const ok = h("button.btn.accent", "Crea");
 		const parentRow = parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null;
 		const dueRow = h("label.field", h("span", "Scadenza (facoltativa)"), due);
+		const afterRow = opens.length ? h("label.field", h("span", "Viene dopo la scheda"), after) : null;
 		const dialog = h(
 			"dialog.board-dialog",
 			h("h2", "Nuova scheda"),
@@ -4639,6 +4666,7 @@ async function viewBoard(main) {
 			dueRow,
 			repeatRow,
 			parentRow,
+			afterRow,
 			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito. Se si ripete, ogni volta nasce una scheda nuova che parte con te, come se premessi Avvia."),
 			aloneRow,
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -4655,9 +4683,9 @@ async function viewBoard(main) {
 					return;
 				}
 				if (due.validity.badInput) throw new Error("La scadenza non è una data completa");
-				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}), ...(due.value ? { due: due.value } : {}) } });
+				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}), ...(due.value ? { due: due.value } : {}), ...(after.value ? { after: [after.value] } : {}) } });
 				dialog.close();
-				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : `Scheda #${card.n} creata`);
+				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : card.queued ? `Scheda #${card.n}: ${started(card).toLowerCase()}` : `Scheda #${card.n} creata`);
 				render();
 			} catch (error) {
 				ok.disabled = false;

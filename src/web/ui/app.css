@@ -764,6 +764,8 @@ dialog.board-dialog { max-width: 600px; }
 .board-due.late { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
 .board-due.soon { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
 .board-due-line { margin: 4px 0 0; }
+.board-after { color: var(--fg-3); border-style: dashed; }
+.board-after-line { margin: 4px 0 0; color: var(--fg-3); }
 .board-due-line.late { color: var(--bad); }
 .board-due-line.soon { color: var(--warn); }
 .board-alone input { flex: none; margin-top: 3px; }

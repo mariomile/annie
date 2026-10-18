@@ -496,6 +496,79 @@ describe("the board (ADR 0050)", () => {
 		});
 	});
 
+	describe("schede che vengono dopo altre (ADR 0076)", () => {
+		it("comes after open schede: no loops, at most five, recorded; deleting one frees who waited for it", () => {
+			const { store } = setup();
+			const a = store.create({ title: "Raccogli i dati" }, anna);
+			const b = store.create({ title: "Scrivi il report", after: ["#1"] }, anna);
+			expect(b.after).toEqual([a.id]);
+			expect(() => store.update(a.id, { after: [b.id] }, anna)).toThrow(/viene già dopo questa: si aspetterebbero a vicenda/);
+			expect(() => store.update(a.id, { after: ["1"] }, anna)).toThrow(/dopo sé stessa/);
+			expect(() => store.create({ title: "x", after: ["#99"] }, anna)).toThrow(/#99 non c'è/);
+			const c = store.create({ title: "Manda il report" }, anna);
+			// Through b: a loop too.
+			store.update(c.id, { after: [b.id] }, anna);
+			expect(() => store.update(a.id, { after: [c.id] }, anna)).toThrow(/si aspetterebbero/);
+			expect(store.get(c.id)?.events.at(-1)).toMatchObject({ kind: "edited", after: [2] });
+			const many = Array.from({ length: BOARD_LIMITS.after + 1 }, (_, i) => store.create({ title: `p${i}` }, anna).id);
+			expect(() => store.create({ title: "troppe", after: many }, anna)).toThrow(/al massimo 5/);
+			expect(store.update(c.id, { after: null }, anna).after).toBeUndefined();
+			store.remove(a.id);
+			expect(store.get(b.id)?.after).toBeUndefined();
+		});
+
+		it("started while it waits, it stays in «Da fare» and starts by itself, with what came before, when those are «Fatto»", async () => {
+			const { work, store, posts } = setup();
+			const first = await work.create({ title: "Raccogli i dati", assignee: "ricerca" }, anna, "p_anna");
+			const second = await work.create({ title: "Scrivi il report", assignee: "ricerca", after: [first.id], auto: true }, anna, "p_anna");
+			expect(second).toMatchObject({ status: "da_fare", queued: { personId: "p_anna", by: anna, auto: true } });
+			expect(posts).toHaveLength(1);
+			// Avvia again: still waits, once.
+			expect((await work.startWaiting(second.id, "p_anna", anna)).status).toBe("da_fare");
+			await work.change(first.id, { status: "da_rivedere", comment: "Dati nel foglio vendite.csv" }, ricerca, undefined);
+			expect(store.get(second.id)?.status).toBe("da_fare");
+			await work.change(first.id, { status: "fatto" }, anna, "p_anna");
+			const started = store.get(second.id);
+			expect(started).toMatchObject({ status: "in_corso", work: { agent: "ricerca", personId: "p_anna" }, auto: { rounds: 0 } });
+			expect(started?.queued).toBeUndefined();
+			expect(posts.at(-1)?.text).toMatch(/Viene dopo queste schede, ecco com'è finita ciascuna \(board_show per i dettagli\):\n<<<schede prima [0-9a-f]+: [^\n]*>>>\n#1 «Raccogli i dati» \(Fatto\): Dati nel foglio vendite\.csv\n<<<fine schede prima/);
+			// Nothing more to release.
+			expect(await work.release()).toBe(0);
+		});
+
+		it("unassigned while it waits, it no longer starts; one that cannot start says why; deleting what it waited for starts it", async () => {
+			let vendite = true;
+			const { work, store } = setup({ canChat: async (agent, person) => person === "p_anna" && (vendite || agent !== "vendite") });
+			const first = store.create({ title: "Prima" }, anna);
+			const waiting = await work.create({ title: "Dopo", assignee: "ricerca", after: [first.id] }, anna, "p_anna");
+			await work.change(waiting.id, { assignee: null }, anna, "p_anna");
+			expect(store.get(waiting.id)?.queued).toBeUndefined();
+			const other = await work.create({ title: "Altra", assignee: "ricerca", after: [first.id] }, anna, "p_anna");
+			const gone = await work.create({ title: "Persa", assignee: "vendite", after: [first.id] }, anna, "p_anna");
+			// Anna may no longer talk to Vendite when it is time.
+			vendite = false;
+			store.remove(first.id);
+			expect(await work.release()).toBe(1);
+			expect(store.get(other.id)?.status).toBe("in_corso");
+			expect(store.get(gone.id)).toMatchObject({ status: "da_fare" });
+			expect(store.get(gone.id)?.events.at(-1)?.text).toMatch(/^Non è partita da sola: Non puoi affidare schede a Vendite/);
+			expect(store.get(waiting.id)?.status).toBe("da_fare");
+		});
+
+		it("the tools: board_create with after waits for those, and board_list and board_show say so", async () => {
+			const { work, store } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
+			const parent = await work.create({ title: "Newsletter", assignee: "ricerca" }, anna, "p_anna");
+			const tools = createBoardTools({ self: "ricerca", store, work, agents: async () => [{ id: "ricerca", name: "Ricercatore" }, { id: "scrittore", name: "Scrittore" }], personOf: () => "p_anna" });
+			const tool = (n: string) => tools.find((t) => t.name === n) as (typeof tools)[number];
+			const thread = ctx(parent.work?.threadId);
+			expect(await tool("board_create").execute({ title: "Testo", assignee: "Scrittore", parent: "#1" }, thread)).toMatch(/Sotto-scheda #2 .*che ci sta lavorando/);
+			expect(await tool("board_create").execute({ title: "Impagina", assignee: "Scrittore", parent: "#1", after: ["#2"] }, thread)).toMatch(/Sotto-scheda #3 \(parte di #1\) affidata a Scrittore: parte da sola quando #2 è fatta/);
+			expect(await tool("board_list").execute({}, thread)).toContain("#3 [Da fare] (dopo #2, parte da sola) Impagina");
+			expect(await tool("board_show").execute({ card: "3" }, thread)).toContain("Viene dopo:\n- #2 [In corso] Testo");
+			expect(await tool("board_create").execute({ title: "x", after: ["#99"] }, thread)).toMatch(/da fare prima non c'è/);
+		});
+	});
+
 	describe("scadenze told when they come (ADR 0074)", () => {
 		it("from 9 in Rome, once per scadenza: the agente at work hears it, the console of who is on it is told; moved, it is told again", async () => {
 			const { work, store, posts } = setup();

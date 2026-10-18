@@ -33,6 +33,8 @@ export type CardEvent = {
 	readonly removed?: true;
 	/** An «edited» that moved the scadenza (ADR 0073): the new day; null: taken off. */
 	readonly due?: string | null;
+	/** An «edited» that changed what it comes after (ADR 0076): their numbers; empty: nothing. */
+	readonly after?: readonly number[];
 	readonly text?: string;
 };
 
@@ -64,6 +66,10 @@ export type Card = {
 	readonly checklist?: readonly CheckItem[];
 	/** The scadenza already told about (ADR 0074): a moved scadenza is told again. */
 	readonly dueNoticed?: string;
+	/** The schede that must be «Fatto» before this one starts (ADR 0076), by ID. */
+	readonly after?: readonly string[];
+	/** Started while those were open (ADR 0076): it starts by itself with this person when they are all «Fatto». */
+	readonly queued?: { readonly personId: string; readonly by: CardActor; readonly auto?: true };
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
 	readonly updatedAt: string;
@@ -95,6 +101,8 @@ export const BOARD_LIMITS = {
 	/** Items of a checklist, and the length of each. */
 	checklist: 30,
 	checkItem: 200,
+	/** Schede one comes after. */
+	after: 5,
 } as const;
 
 export class BoardError extends Error {
@@ -114,6 +122,10 @@ export type CardChange = {
 	readonly auto?: Card["auto"] | null;
 	/** Recorded without an event in the history. */
 	readonly dueNoticed?: string;
+	/** The schede it comes after, by ID or number; null or empty: none. */
+	readonly after?: readonly string[] | null;
+	/** Recorded without an event in the history. */
+	readonly queued?: Card["queued"] | null;
 	readonly check?: CheckChange;
 	readonly comment?: string;
 	/** Refused unless the scheda is still in this column: two starts at once start it once. */
@@ -137,7 +149,7 @@ export class BoardStore {
 		return this.list().find((c) => c.id === ref || (n !== undefined && c.n === Number(n)));
 	}
 
-	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string; due?: string; checklist?: readonly string[] }, by: CardActor, now = new Date()): Card {
+	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string; due?: string; checklist?: readonly string[]; after?: readonly string[] }, by: CardActor, now = new Date()): Card {
 		const title = clean(input.title, BOARD_LIMITS.title, "il titolo");
 		if (title === "") throw new BoardError("Serve un titolo");
 		const due = input.due === undefined ? undefined : dueDay(input.due);
@@ -155,6 +167,7 @@ export class BoardStore {
 				if (parent.status === "fatto") throw new BoardError(`La scheda #${parent.n} è chiusa`);
 				if (board.cards.filter((c) => c.parent === parent.id && c.status !== "fatto").length >= BOARD_LIMITS.children) throw new BoardError(`La scheda #${parent.n} ha già ${BOARD_LIMITS.children} sotto-schede aperte`);
 			}
+			const after = afterIds(board.cards, undefined, input.after ?? []);
 			made = {
 				id: `c_${randomBytes(6).toString("hex")}`,
 				n: board.next,
@@ -166,6 +179,7 @@ export class BoardStore {
 				...(input.parent === undefined ? {} : { parent: input.parent }),
 				...(due === undefined ? {} : { due }),
 				...(items.length === 0 ? {} : { checklist: items.map((text) => ({ id: `k_${randomBytes(4).toString("hex")}`, text, done: false })) }),
+				...(after.length === 0 ? {} : { after }),
 				createdBy: by,
 				createdAt: at,
 				updatedAt: at,
@@ -213,6 +227,14 @@ export class BoardStore {
 				next = change.auto === null ? rest : { ...rest, auto: change.auto };
 			}
 			if (change.dueNoticed !== undefined && change.dueNoticed !== card.dueNoticed) next = { ...next, dueNoticed: change.dueNoticed };
+			if (change.after !== undefined) {
+				const after = afterIds(board.cards, card.id, change.after ?? []);
+				if (after.join() !== (card.after ?? []).join()) {
+					const { after: _a, ...rest } = next;
+					next = after.length === 0 ? rest : { ...rest, after };
+					events.push({ at, by, kind: "edited", after: after.map((id) => board.cards.find((c) => c.id === id)?.n as number) });
+				}
+			}
 			if (change.check !== undefined) {
 				const done = checked(next, change.check);
 				if (done !== undefined) {
@@ -223,6 +245,11 @@ export class BoardStore {
 			if (change.status !== undefined && change.status !== card.status) {
 				next = { ...next, status: change.status };
 				events.push({ at, by, kind: "status", status: change.status });
+			}
+			// Waiting to start only while still in «Da fare» with the same agente.
+			if (change.queued !== undefined || (next.queued !== undefined && (next.status !== "da_fare" || next.assignee !== card.assignee))) {
+				const { queued: _q, ...rest } = next;
+				next = change.queued == null || next.status !== "da_fare" || next.assignee !== card.assignee ? rest : { ...rest, queued: change.queued };
 			}
 			if (change.comment !== undefined) {
 				const text = clean(change.comment, BOARD_LIMITS.comment, "il commento", true);
@@ -242,15 +269,23 @@ export class BoardStore {
 	remove(id: string): void {
 		updateJsonFile<BoardFile>(this.file, { next: 1, cards: [] }, (board) => {
 			if (!board.cards.some((c) => c.id === id)) throw new BoardError("Scheda inesistente");
-			// Its sotto-schede stay, on their own.
+			// Its sotto-schede stay, on their own; who came after it no longer waits for it.
 			return {
 				...board,
 				cards: board.cards
 					.filter((c) => c.id !== id)
 					.map((c) => {
-						if (c.parent !== id) return c;
-						const { parent: _p, ...rest } = c;
-						return rest;
+						let kept = c;
+						if (kept.parent === id) {
+							const { parent: _p, ...rest } = kept;
+							kept = rest;
+						}
+						if (kept.after?.includes(id) === true) {
+							const { after: _a, ...rest } = kept;
+							const after = (c.after ?? []).filter((x) => x !== id);
+							kept = after.length === 0 ? rest : { ...rest, after };
+						}
+						return kept;
 					}),
 			};
 		});
@@ -274,6 +309,37 @@ export class BoardStore {
 			};
 		});
 	}
+}
+
+/** The schede not yet «Fatto» this one comes after (ADR 0076): while there are any, it does not start. */
+export function waitingFor(card: Card, cards: readonly Card[]): Card[] {
+	return (card.after ?? []).map((id) => cards.find((c) => c.id === id)).filter((c): c is Card => c !== undefined && c.status !== "fatto");
+}
+
+/** The IDs of the schede `refs` names, for scheda `self` (undefined: a new one) to come after: no loops. */
+function afterIds(cards: readonly Card[], self: string | undefined, refs: readonly string[]): string[] {
+	const ids: string[] = [];
+	for (const ref of refs) {
+		const n = /^#?(\d{1,6})$/.exec(ref.trim())?.[1];
+		const card = cards.find((c) => c.id === ref || (n !== undefined && c.n === Number(n)));
+		if (card === undefined) throw new BoardError(`La scheda ${n === undefined ? ref : `#${n}`} non c'è`);
+		if (card.id === self) throw new BoardError("Una scheda non può venire dopo sé stessa");
+		if (!ids.includes(card.id)) ids.push(card.id);
+	}
+	if (ids.length > BOARD_LIMITS.after) throw new BoardError(`Una scheda viene dopo al massimo ${BOARD_LIMITS.after} schede`);
+	if (self === undefined) return ids;
+	// Following what each comes after must never lead back here.
+	const seen = new Set<string>();
+	const queue = [...ids];
+	while (queue.length > 0) {
+		const id = queue.shift() as string;
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const card = cards.find((c) => c.id === id);
+		if (card?.after?.includes(self) === true) throw new BoardError(`La scheda #${card.n} viene già dopo questa: si aspetterebbero a vicenda`);
+		queue.push(...(card?.after ?? []));
+	}
+	return ids;
 }
 
 /** A real day, YYYY-MM-DD, or a BoardError. */
