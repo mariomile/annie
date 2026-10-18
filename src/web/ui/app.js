@@ -3715,17 +3715,15 @@ async function viewSkills(main) {
 	const by = (s) => (s.mine ? "tua" : s.createdBy ? `di ${s.createdBy.replace(/^web:/, "console ")}` : null);
 	const row = (s, draft) =>
 		h(
-			"tr",
-			h("td", h("b.mono", `/${s.name}`), h("div", s.description), h("div.mono.muted", [by(s), `aggiornata ${fmt.time(s.updatedAt)}`].filter(Boolean).join(" · "))),
+			"li.task-row.skill-row",
+			h("span.fold-glyph", icon("skill")),
+			h("div.task-text", h("b", h("span.mono", `/${s.name}`), draft ? h("span.chip.warn", "bozza") : null), h("span.skill-what", s.description), h("small", [by(s), `aggiornata ${fmt.time(s.updatedAt)}`].filter(Boolean).join(" · "))),
 			h(
-				"td",
-				h(
-					"div.row-gap",
-					draft ? h("button.btn.small.accent", { onclick: () => save({ name: s.name, description: s.description, body: s.body }) }, "Attiva") : null,
-					s.canEdit && !draft ? h("button.btn.small.ghost", { onclick: () => edit(s) }, "Modifica") : null,
-					draft ? null : h("button.btn.small.ghost", { onclick: () => exportMd(s) }, "SKILL.md"),
-					s.canEdit ? h("button.btn.small.danger", { onclick: () => remove(s, draft) }, draft ? "Scarta" : "Cancella") : null,
-				),
+				"div.person-actions",
+				draft ? h("button.btn.small.accent", { onclick: () => save({ name: s.name, description: s.description, body: s.body }) }, "Attiva") : null,
+				s.canEdit && !draft ? h("button.btn.small.ghost", { onclick: () => edit(s) }, "Modifica") : null,
+				draft ? null : h("button.icon-btn", { title: "Scarica il SKILL.md", "aria-label": `Scarica il SKILL.md di /${s.name}`, onclick: () => exportMd(s) }, icon("install")),
+				s.canEdit ? h("button.icon-btn.task-remove", { title: draft ? "Scarta la bozza" : "Cancella", "aria-label": `${draft ? "Scarta la bozza" : "Cancella"} /${s.name}`, onclick: () => remove(s, draft) }, icon("trash")) : null,
 			),
 		);
 	mount(
@@ -3735,12 +3733,12 @@ async function viewSkills(main) {
 			"div.stack",
 			editor,
 			drafts.length
-				? h("div.card", h("div.pad", h("h2", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("table.ledger", h("tbody", drafts.map((d) => row(d, true)))))
+				? h("div.card", h("div.pad", h("h2", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("ul.task-list", drafts.map((d) => row(d, true))))
 				: null,
 			h(
 				"div.card",
 				skills.length
-					? h("table.ledger", h("tbody", skills.map((s) => row(s, false))))
+					? h("ul.task-list", skills.map((s) => row(s, false)))
 					: emptyNote("div.empty", "Nessuna skill", `Spiega a ${inst.name} come fai una cosa e chiedile di salvarla come skill, oppure creala qui.`),
 			),
 		),
