@@ -379,7 +379,7 @@ main.dropping .file-drop { display: grid; }
 .audit-times { margin-left: 8px; padding: 1px 7px; border-radius: 99px; background: var(--bg-2); border: 1px solid var(--border); font: 500 11px/1.4 var(--mono); color: var(--fg-2); vertical-align: 1px; }
 .audit-row.bad .task-text b, .audit-row.bad .fold-glyph { color: var(--bad); }
 .audit-row.bad .fold-glyph { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 25%, transparent); }
-.audit-pairs { display: flex; flex-wrap: wrap; gap: 2px 12px; font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+.audit-pairs { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .audit-pairs i { font-style: normal; color: var(--fg-3); margin-right: 5px; opacity: 0.8; }
 .audit-pairs span { color: var(--fg-2); }
 .audit-when { flex: none; font: 12px/1 var(--mono); color: var(--fg-3); padding-top: 4px; }
