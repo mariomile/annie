@@ -445,6 +445,57 @@ describe("the board (ADR 0050)", () => {
 		});
 	});
 
+	describe("lista di controllo (ADR 0075)", () => {
+		it("steps added, ticked, unticked and removed, each in the history; by number or id; limits", () => {
+			const { store } = setup();
+			const c = store.create({ title: "Preventivo Rossi", checklist: ["Chiedere le misure", "  ", "Calcolare i costi"] }, anna);
+			expect(c.checklist?.map((i) => [i.text, i.done])).toEqual([
+				["Chiedere le misure", false],
+				["Calcolare i costi", false],
+			]);
+			const added = store.update(c.id, { check: { add: "Mandare il preventivo" } }, anna);
+			expect(added.checklist).toHaveLength(3);
+			expect(added.events.at(-1)).toMatchObject({ kind: "check", text: "Mandare il preventivo" });
+			const ticked = store.update(c.id, { check: { item: "1", done: true } }, ricerca);
+			expect(ticked.checklist?.[0]?.done).toBe(true);
+			expect(ticked.events.at(-1)).toMatchObject({ kind: "check", text: "Chiedere le misure", done: true, by: ricerca });
+			// Ticked again: nothing recorded.
+			expect(store.update(c.id, { check: { item: "1", done: true } }, anna).events).toHaveLength(ticked.events.length);
+			const id = ticked.checklist?.[1]?.id as string;
+			expect(store.update(c.id, { check: { item: id, remove: true } }, anna).checklist?.map((i) => i.text)).toEqual(["Chiedere le misure", "Mandare il preventivo"]);
+			expect(store.get(c.id)?.events.at(-1)).toMatchObject({ kind: "check", text: "Calcolare i costi", removed: true });
+			expect(() => store.update(c.id, { check: { item: "9", done: true } }, anna)).toThrow(/non ha la voce 9/);
+			expect(() => store.update(c.id, { check: { add: " " } }, anna)).toThrow(/Scrivi cosa/);
+			for (let i = store.get(c.id)?.checklist?.length ?? 0; i < BOARD_LIMITS.checklist; i++) store.update(c.id, { check: { add: `Passo ${i}` } }, anna);
+			expect(() => store.update(c.id, { check: { add: "Uno di troppo" } }, anna)).toThrow(/già 30 voci/);
+			// The last one removed: no list left.
+			const one = store.create({ title: "Una voce", checklist: ["Sola"] }, anna);
+			expect(store.update(one.id, { check: { item: "1", remove: true } }, anna).checklist).toBeUndefined();
+		});
+
+		it("the agente gets the steps in the brief, sees them, and ticks them only on its own schede", async () => {
+			const { work, store, posts } = setup();
+			const card = await work.create({ title: "Fornitori carta", assignee: "ricerca", checklist: ["Trovare tre fornitori", "Chiedere i prezzi"] }, anna, "p_anna");
+			expect(posts[0]?.text).toMatch(/Lista di controllo \(spunta ogni voce con board_update check_done quando è fatta\):\n1\. \[ \] Trovare tre fornitori\n2\. \[ \] Chiedere i prezzi/);
+			const agents = async () => [
+				{ id: "annie", name: "Annie" },
+				{ id: "ricerca", name: "Ricercatore" },
+			];
+			const tool = (self: string, name: string) => createBoardTools({ self, store, work, agents, personOf: () => "p_anna" }).find((t) => t.name === name) as { execute: (a: Record<string, unknown>, c: never) => Promise<string> };
+			const threadId = card.work?.threadId as string;
+			expect(await tool("ricerca", "board_update").execute({ check_done: 1, check_add: "Confrontare le consegne" }, ctx(threadId))).toBe("Scheda #1: lista 1/3.");
+			expect(await tool("annie", "board_update").execute({ card: "1", check_done: 2 }, ctx("chat1"))).toMatch(/non è assegnata a te/);
+			expect(await tool("ricerca", "board_list").execute({ mine: true }, ctx(threadId))).toContain("#1 [In corso] (lista 1/3) Fornitori carta");
+			const shown = await tool("ricerca", "board_show").execute({}, ctx(threadId));
+			expect(shown).toContain("Lista di controllo:\n1. [x] Trovare tre fornitori\n2. [ ] Chiedere i prezzi\n3. [ ] Confrontare le consegne");
+			expect(await tool("ricerca", "board_update").execute({ check_done: 7 }, ctx(threadId))).toMatch(/^Errore: La scheda #1 non ha la voce 7/);
+			// Created by an agente with its steps: in the brief they are fenced.
+			expect(await tool("annie", "board_create").execute({ title: "Sotto", assignee: "ricerca", checklist: ["Uno"] }, ctx("chat1"))).toMatch(/^Scheda #2/);
+			await work.startWaiting(store.get("2")?.id as string, "p_anna", anna);
+			expect(posts.at(-1)?.text).toMatch(/<<<lista [0-9a-f]+: scritta da un agente.*>>>\n1\. \[ \] Uno\n<<<fine lista/);
+		});
+	});
+
 	describe("scadenze told when they come (ADR 0074)", () => {
 		it("from 9 in Rome, once per scadenza: the agente at work hears it, the console of who is on it is told; moved, it is told again", async () => {
 			const { work, store, posts } = setup();

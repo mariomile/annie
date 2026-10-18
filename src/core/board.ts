@@ -24,10 +24,13 @@ export type CardActor = { readonly kind: "person" | "agent"; readonly id: string
 export type CardEvent = {
 	readonly at: string;
 	readonly by: CardActor;
-	readonly kind: "created" | "status" | "assigned" | "comment" | "edited";
+	readonly kind: "created" | "status" | "assigned" | "comment" | "edited" | "check";
 	readonly status?: CardStatus;
 	/** The agente assigned; null: nobody. */
 	readonly assignee?: string | null;
+	/** A «check» (ADR 0075): the item ticked (true) or unticked (false); with neither, added, or removed when `removed`. */
+	readonly done?: boolean;
+	readonly removed?: true;
 	/** An «edited» that moved the scadenza (ADR 0073): the new day; null: taken off. */
 	readonly due?: string | null;
 	readonly text?: string;
@@ -57,6 +60,8 @@ export type Card = {
 	readonly parent?: string;
 	/** By when it should be done (ADR 0073): a day in Rome, YYYY-MM-DD. */
 	readonly due?: string;
+	/** What to do, in steps (ADR 0075): ticked by a person or by the agente working on it. */
+	readonly checklist?: readonly CheckItem[];
 	/** The scadenza already told about (ADR 0074): a moved scadenza is told again. */
 	readonly dueNoticed?: string;
 	readonly createdBy: CardActor;
@@ -65,6 +70,11 @@ export type Card = {
 	/** Newest last, the latest BOARD_LIMITS.events. */
 	readonly events: readonly CardEvent[];
 };
+
+export type CheckItem = { readonly id: string; readonly text: string; readonly done: boolean };
+
+/** One change to the checklist: an item added, ticked, unticked or removed (by its id, or its number from 1). */
+export type CheckChange = { readonly add: string } | { readonly item: string; readonly done: boolean } | { readonly item: string; readonly remove: true };
 
 type BoardFile = { readonly next: number; readonly cards: readonly Card[] };
 
@@ -82,6 +92,9 @@ export const BOARD_LIMITS = {
 	autoMs: 2 * 60 * 60 * 1000,
 	/** Sotto-schede not yet «Fatto» under one scheda. */
 	children: 10,
+	/** Items of a checklist, and the length of each. */
+	checklist: 30,
+	checkItem: 200,
 } as const;
 
 export class BoardError extends Error {
@@ -101,6 +114,7 @@ export type CardChange = {
 	readonly auto?: Card["auto"] | null;
 	/** Recorded without an event in the history. */
 	readonly dueNoticed?: string;
+	readonly check?: CheckChange;
 	readonly comment?: string;
 	/** Refused unless the scheda is still in this column: two starts at once start it once. */
 	readonly from?: CardStatus;
@@ -123,10 +137,12 @@ export class BoardStore {
 		return this.list().find((c) => c.id === ref || (n !== undefined && c.n === Number(n)));
 	}
 
-	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string; due?: string }, by: CardActor, now = new Date()): Card {
+	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string; due?: string; checklist?: readonly string[] }, by: CardActor, now = new Date()): Card {
 		const title = clean(input.title, BOARD_LIMITS.title, "il titolo");
 		if (title === "") throw new BoardError("Serve un titolo");
 		const due = input.due === undefined ? undefined : dueDay(input.due);
+		const items = (input.checklist ?? []).map((t) => clean(t, BOARD_LIMITS.checkItem, "una voce della lista")).filter((t) => t !== "");
+		if (items.length > BOARD_LIMITS.checklist) throw new BoardError(`Al massimo ${BOARD_LIMITS.checklist} voci nella lista`);
 		const description = clean(input.description ?? "", BOARD_LIMITS.description, "la descrizione", true);
 		const at = now.toISOString();
 		let made: Card | undefined;
@@ -149,6 +165,7 @@ export class BoardStore {
 				...(input.assignee === undefined ? {} : { assignee: input.assignee }),
 				...(input.parent === undefined ? {} : { parent: input.parent }),
 				...(due === undefined ? {} : { due }),
+				...(items.length === 0 ? {} : { checklist: items.map((text) => ({ id: `k_${randomBytes(4).toString("hex")}`, text, done: false })) }),
 				createdBy: by,
 				createdAt: at,
 				updatedAt: at,
@@ -196,6 +213,13 @@ export class BoardStore {
 				next = change.auto === null ? rest : { ...rest, auto: change.auto };
 			}
 			if (change.dueNoticed !== undefined && change.dueNoticed !== card.dueNoticed) next = { ...next, dueNoticed: change.dueNoticed };
+			if (change.check !== undefined) {
+				const done = checked(next, change.check);
+				if (done !== undefined) {
+					next = done.card;
+					events.push({ at, by, ...done.event });
+				}
+			}
 			if (change.status !== undefined && change.status !== card.status) {
 				next = { ...next, status: change.status };
 				events.push({ at, by, kind: "status", status: change.status });
@@ -278,6 +302,28 @@ export function dueText(due: string, now = new Date()): string {
 	if (days === 0) return "scade oggi";
 	if (days === 1) return "scade domani";
 	return `scade fra ${days} giorni`;
+}
+
+/** The checklist after `change`, with what to record; undefined when nothing changes. */
+function checked(card: Card, change: CheckChange): { card: Card; event: { kind: "check"; text: string; done?: boolean; removed?: true } } | undefined {
+	const list = card.checklist ?? [];
+	if ("add" in change) {
+		const text = clean(change.add, BOARD_LIMITS.checkItem, "una voce della lista");
+		if (text === "") throw new BoardError("Scrivi cosa c'è da fare");
+		if (list.length >= BOARD_LIMITS.checklist) throw new BoardError(`La lista ha già ${BOARD_LIMITS.checklist} voci`);
+		return { card: { ...card, checklist: [...list, { id: `k_${randomBytes(4).toString("hex")}`, text, done: false }] }, event: { kind: "check", text } };
+	}
+	const ref = change.item.trim();
+	const index = /^\d{1,2}$/.test(ref) ? Number(ref) - 1 : list.findIndex((i) => i.id === ref);
+	const item = list[index];
+	if (item === undefined) throw new BoardError(`La scheda #${card.n} non ha la voce ${ref} nella lista`);
+	if ("remove" in change) {
+		const rest = list.filter((i) => i.id !== item.id);
+		const { checklist: _c, ...without } = card;
+		return { card: rest.length === 0 ? without : { ...card, checklist: rest }, event: { kind: "check", text: item.text, removed: true } };
+	}
+	if (item.done === change.done) return undefined;
+	return { card: { ...card, checklist: list.map((i) => (i.id === item.id ? { ...i, done: change.done } : i)) }, event: { kind: "check", text: item.text, done: change.done } };
 }
 
 /** The most recent «Fatto» schede stay, the older ones go. */

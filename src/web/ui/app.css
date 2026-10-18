@@ -707,6 +707,16 @@ dialog.board-dialog { max-width: 600px; }
 .board-filters select { width: auto; }
 .board-chip { cursor: pointer; }
 .board-chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.board-checks.all { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.board-checks-box { margin: 10px 0; }
+.board-checks-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; font-weight: 500; }
+.board-checklist { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; }
+.board-checklist li { display: flex; align-items: center; gap: 6px; }
+.board-checklist label { flex: 1; display: flex; align-items: flex-start; gap: 8px; font-size: 13.5px; cursor: pointer; overflow-wrap: anywhere; }
+.board-checklist input { flex: none; margin-top: 3px; }
+.board-checklist li.done span { color: var(--fg-3); text-decoration: line-through; }
+.board-check-add { display: flex; gap: 8px; }
+.board-check-add input { flex: 1; }
 .board-due.late { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
 .board-due.soon { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
 .board-due-line { margin: 4px 0 0; }

@@ -1,4 +1,4 @@
-import { BOARD_LIMITS, BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
+import { BOARD_LIMITS, BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus, type CheckChange } from "../core/board.ts";
 import { describeWhen, nextTime, type Routine, routineWhen, type RoutineStore } from "../core/board-routines.ts";
 import type { BoardWork } from "../core/board-work.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
@@ -43,7 +43,15 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const assignee = body.assignee === null || body.assignee === "" ? null : typeof body.assignee === "string" ? body.assignee : undefined;
 		if (body.due !== undefined && body.due !== null && typeof body.due !== "string") throw new HttpError(400, "La scadenza è un giorno nel formato 2026-10-26");
 		const due = body.due === null || body.due === "" ? null : (body.due as string | undefined);
-		return { priority, status, assignee, due };
+		const c = body.check as Record<string, unknown> | undefined;
+		let check: CheckChange | undefined;
+		if (c !== undefined) {
+			if (typeof c === "object" && c !== null && typeof c.add === "string") check = { add: c.add };
+			else if (typeof c === "object" && c !== null && typeof c.item === "string" && c.remove === true) check = { item: c.item, remove: true };
+			else if (typeof c === "object" && c !== null && typeof c.item === "string" && typeof c.done === "boolean") check = { item: c.item, done: c.done };
+			else throw new HttpError(400, "check: { add } oppure { item, done } oppure { item, remove: true }");
+		}
+		return { priority, status, assignee, due, check };
 	};
 	/** A scheda that comes back (ADR 0069) is the business of who set it and of the owner. */
 	const routinesOf = () => {
@@ -96,7 +104,7 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 			return { routine: routineView(routine) };
 		}
 		const card = await work
-			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(due ? { due } : {}), ...(body.auto === true ? { auto: true } : {}), ...(typeof body.parent === "string" && body.parent !== "" ? { parent: (await visibleCard(body.parent, p)).id } : {}) }, { kind: "person", id: p.id }, p.id)
+			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(due ? { due } : {}), ...(Array.isArray(body.checklist) ? { checklist: body.checklist.filter((x): x is string => typeof x === "string") } : {}), ...(body.auto === true ? { auto: true } : {}), ...(typeof body.parent === "string" && body.parent !== "" ? { parent: (await visibleCard(body.parent, p)).id } : {}) }, { kind: "person", id: p.id }, p.id)
 			.catch(boardError);
 		await runtime.audit(tenantId).append({ type: "board.card_created", cardId: card.id, personId: p.id, ...(card.assignee === undefined ? {} : { assignee: card.assignee }), ...(card.parent === undefined ? {} : { parent: card.parent }) });
 		return { card };
@@ -106,12 +114,13 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const p = person as Person;
 		const card = await visibleCard(params[0] as string, p);
 		const body = (await readJson(req)) as Record<string, unknown>;
-		const { priority, status, assignee, due } = cardBody(body);
+		const { priority, status, assignee, due, check } = cardBody(body);
 		const change: CardChange = {
 			...(typeof body.title === "string" ? { title: body.title } : {}),
 			...(typeof body.description === "string" ? { description: body.description } : {}),
 			...(priority === undefined ? {} : { priority }),
 			...(due === undefined ? {} : { due }),
+			...(check === undefined ? {} : { check }),
 			...(status === undefined ? {} : { status }),
 			...(assignee === undefined ? {} : { assignee }),
 			...(typeof body.comment === "string" ? { comment: body.comment } : {}),
