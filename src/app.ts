@@ -575,7 +575,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				...createRenewalTools({
 					workspace: runtime.workspace(record.tenantId, record.id),
 					store: runtime.renewals(record.tenantId, record.id),
-					recordExpense: expenses.record,
+					expenses: expenses.seam,
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {

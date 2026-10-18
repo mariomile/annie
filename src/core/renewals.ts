@@ -1,18 +1,25 @@
 /**
  * Rinnovi e abbonamenti: the costs and deadlines that come back (software, domains, insurance,
  * rent and leasing, utilities, memberships, licences, service contracts), numbered R-0001 (no
- * year: a renewal lives across years). Each has its next due date, how many months a period is
- * (1 mensile … 12 annuale, 24 biennale, or any N), the day of the month it keeps (`day`: a due on
- * the 31st rolls to 28/29 February and back to 31 March), the amount per period VAT included
- * when known, and whether it renews by itself (rinnovo tacito) with a notice period (disdetta).
- * A due date that passed is never moved silently: it stays «scaduto» until the person says it was
- * paid or renewed (op renewed, one period per call) or cancelled. Kept per instance in
- * `renewals.json` (renewal-store.ts); dates in renewal-dates.ts, sums in renewal-sums.ts.
+ * year: a renewal lives across years).
+ *
+ * A renewal has its payment schedule (`due`: the next payment not confirmed yet, every `months`
+ * months, keeping day `day` of the month: a due on the 31st is 28/29 February, then 31 March) and,
+ * when the contract's term differs from how often one pays, its term (`termMonths`, ending on
+ * `termEnd`). Two independent flags:
+ * - `autoRenew`: the contract renews unless it is cancelled (rinnovo tacito), with a notice
+ *   period for the disdetta (`noticeDays` or `noticeMonths`).
+ * - `autoPay`: the money leaves by itself (a card or PayPal charged, a direct debit: addebito,
+ *   RID, SDD, domiciliazione).
+ * The dates that move by themselves (renewal-dates.ts effectiveDue) are worked out when read and
+ * written back only on the next change. Kept per instance in `renewals.json` (renewal-store.ts);
+ * sums in renewal-sums.ts.
  */
 import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
-import { METHODS, type Method } from "./expenses.ts";
-import { words } from "./name-keys.ts";
+import { saysPhrase, words } from "./name-keys.ts";
+import { METHODS, type Method } from "./payment-methods.ts";
+import { VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
 
 export class RenewalError extends Error {
@@ -31,6 +38,12 @@ export const RENEWAL_LIMITS = {
 	/** The longest period: ten years. */
 	maxMonths: 120,
 	maxNoticeDays: 365,
+	maxNoticeMonths: 24,
+	/** The amount in another currency as said («20 USD»), kept next to the euros. */
+	originalAmount: 40,
+	/** Rolls and charges remembered, for calls run again without their steps. */
+	rolls: 5,
+	charges: 12,
 	maxRemindDays: 365,
 	/** The largest amount of one period, in euros: no typo of a few zeros goes in unchecked. */
 	maxAmount: 10_000_000,
@@ -57,8 +70,6 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-export { METHODS, type Method };
-
 /**
  * Whole words (folded) and phrases that mean a category, tried in this order: the specific ones
  * first («contratto della fibra» is telefono e internet, «licenza Office» software), «abbonamento»
@@ -82,15 +93,6 @@ const CATEGORY_WORDS: readonly (readonly [Exclude<Category, "altro">, readonly s
 /** Last of all: an «abbonamento» with no other word is a subscription. */
 const GENERIC_SOFTWARE = ["abbonamento", "abbonamenti"];
 
-/** Whether the words hold `key`, a whole word or a phrase of whole words in a row. */
-function says(tokens: readonly string[], key: string): boolean {
-	const parts = words(key);
-	for (let i = 0; i + parts.length <= tokens.length; i++) {
-		if (parts.every((p, j) => tokens[i + j] === p)) return true;
-	}
-	return false;
-}
-
 /**
  * The category a person's words mean: a category's name («assicurazione», «Dominio e hosting»),
  * or a whole word of its list («polizza», «fibra», «Canva»). Undefined when nothing fits.
@@ -103,9 +105,9 @@ export function matchCategory(text: string): Category | undefined {
 	if (exact !== undefined) return exact;
 	if (joined === "altre" || joined === "varie") return "altro";
 	for (const [category, keys] of CATEGORY_WORDS) {
-		if (keys.some((k) => says(tokens, k))) return category;
+		if (keys.some((k) => saysPhrase(tokens, k))) return category;
 	}
-	if (GENERIC_SOFTWARE.some((k) => says(tokens, k))) return "software e abbonamenti";
+	if (GENERIC_SOFTWARE.some((k) => saysPhrase(tokens, k))) return "software e abbonamenti";
 	return undefined;
 }
 
@@ -116,12 +118,18 @@ export type Cancelled = Marker & {
 	readonly ends?: string;
 };
 
-/** The last time the due date was moved on by a payment or renewal: the call that did it, so a rerun does not move it twice. */
+/** A due date moved on by a payment or renewal said: the call that did it (a rerun does not move it twice) and the expense recorded with it. */
 export type Roll = Marker & {
 	readonly callId: string;
 	readonly from: string;
 	readonly to: string;
+	readonly expense?: string;
+	/** The call that recorded that expense (renewed with record_expense on a roll of the same day). */
+	readonly expenseCall?: string;
 };
+
+/** A charge of an autoPay renewal recorded as an expense: its date, the call and the expense. */
+export type Charge = { readonly date: string; readonly callId: string; readonly expense: string };
 
 export type Renewal = Marker & {
 	/** «R-0001». */
@@ -129,18 +137,35 @@ export type Renewal = Marker & {
 	readonly name: string;
 	readonly provider?: string;
 	readonly category: Category;
-	/** The amount of one period, VAT included: a canonical decimal string («480»), at most 2 decimals. */
+	/** The amount of one payment, VAT included: a canonical decimal string («480»), at most 2 decimals. */
 	readonly amount?: string;
-	/** Months in a period: 1 mensile, 3 trimestrale, 12 annuale, 24 biennale… */
+	/** The VAT rate the amount includes, when said: passed to the expense of a payment. */
+	readonly vatRate?: VatRate;
+	/** The amount as said in another currency («20 USD»): `amount` is then the euros the person said. */
+	readonly originalAmount?: string;
+	/** A new amount from a payment date on («dal 1° gennaio costa 15 €»). */
+	readonly amountFrom?: { readonly amount: string; readonly from: string };
+	/** How often one pays, in months: 1 mensile, 3 trimestrale, 12 annuale, 24 biennale… */
 	readonly months: number;
-	/** ISO day of the next due date (or the one passed, still to be confirmed). */
+	/** ISO day of the next payment not confirmed yet (for autoPay: the next charge, as of the last write). */
 	readonly due: string;
 	/** The day of the month the due date keeps when it rolls (31: always the month's last day). */
 	readonly day: number;
-	/** Rinnovo tacito: it renews by itself unless cancelled in time. */
+	/** The first due date known (the first charge of an autoPay renewal): no charge before it. */
+	readonly start?: string;
+	/** The contract's term in months when it is not how often one pays (a yearly contract paid monthly). */
+	readonly termMonths?: number;
+	/** The end of the current term (with termMonths). */
+	readonly termEnd?: string;
+	/** Rinnovo tacito: the contract renews unless cancelled. */
 	readonly autoRenew: boolean;
-	/** Days before the due date the disdetta must be sent by (with autoRenew). */
+	/** The money leaves by itself (card, PayPal, direct debit). Missing on renewals of the first version: false. */
+	readonly autoPay?: boolean;
+	/** A free trial that ends on the first due date. */
+	readonly trial?: boolean;
+	/** The disdetta notice: days, or months (the deadline then the same day N months before). */
 	readonly noticeDays?: number;
+	readonly noticeMonths?: number;
 	/** Days before a due date (or a disdetta deadline) it starts being said in the brief; a default by period when missing. */
 	readonly remindDays?: number;
 	readonly method?: Method;
@@ -149,9 +174,14 @@ export type Renewal = Marker & {
 	readonly document?: string;
 	readonly status: "active" | "cancelled";
 	readonly cancelled?: Cancelled;
-	readonly lastRoll?: Roll;
+	/** The last rolls, newest last. */
+	readonly rolls?: readonly Roll[];
+	/** The last charges recorded as expenses, newest last. */
+	readonly charges?: readonly Charge[];
 	/** The tool call that recorded it: a call run again finds it instead of recording another. */
 	readonly callId?: string;
+	/** The last call that changed it (edit, cancel, reactivate): a call run again answers as the first time. */
+	readonly lastCall?: string;
 	readonly edited?: Marker;
 };
 
@@ -177,15 +207,24 @@ export function parseRenewalId(text: string): number | undefined {
 	return Number(m[1]);
 }
 
+/** Articles, prepositions and possessives: no word of a name. */
+const STOP_WORDS = new Set(
+	"il lo la i gli le l un uno una un di a da in con su per tra fra del dello della dei degli delle dell al allo alla ai agli alle all dal dallo dalla dai dagli dalle dall nel nello nella nei negli nelle nell sul sullo sulla sui sugli sulle sull d mio mia miei mie tuo tua tuoi tue suo sua suoi sue nostro nostra nostri nostre vostro vostra vostri vostre loro".split(" "),
+);
+
+/** Words people put before a name that the name may or may not hold: dropped when it does not. */
+const GENERIC_WORDS = new Set(["abbonamento", "abbonamenti", "rinnovo", "rinnovi", "contratto", "contratti", "polizza", "polizze", "assicurazione", "assicurazioni"]);
+
 /**
- * The renewals whose name (or provider) holds all the words given, as whole words: «Netflix»
- * names «Netflix Premium», «auto» names «Assicurazione auto», «net» names nothing.
+ * Whether a renewal is named by the words given: all of them, as whole words of its name or
+ * provider, after dropping articles, prepositions and possessives, and the generic words
+ * (abbonamento, rinnovo, contratto, polizza, assicurazione) the name does not hold. «l'assicurazione
+ * dell'auto» names «Assicurazione auto», «abbonamento Canva» names «Canva Pro», «net» names nothing.
  */
 export function matchesName(r: Renewal, text: string): boolean {
-	const wanted = words(text);
-	if (wanted.length === 0) return false;
 	const have = new Set([...words(r.name), ...(r.provider === undefined ? [] : words(r.provider))]);
-	return wanted.every((w) => have.has(w));
+	const wanted = words(text).filter((w) => !STOP_WORDS.has(w) && (!GENERIC_WORDS.has(w) || have.has(w)));
+	return wanted.length > 0 && wanted.every((w) => have.has(w));
 }
 
 /** The renewals a person's words name: an id, or the words of a name. */
@@ -211,10 +250,6 @@ export function lookalike(all: readonly Renewal[], r: Renewal): string | undefin
 	return undefined;
 }
 
-/** Soonest due first, then by id. */
-export function soonestFirst(a: Renewal, b: Renewal): number {
-	return a.due.localeCompare(b.due) || idNumber(a.id) - idNumber(b.id);
-}
 
 /** A contract's or policy's file: a PDF, a photo, a Word or OpenDocument file, a signed .p7m. */
 export const DOCUMENT_FILE = /\.(?:pdf|jpe?g|png|webp|heic|heif|tiff?|docx?|odt|p7m|txt)$/i;
@@ -231,6 +266,18 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const isDay = (v: unknown): v is string => typeof v === "string" && DAY.test(v) && realDate(v);
 const isInt = (v: unknown, min: number, max: number): v is number => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+const isAmount = (v: unknown): v is string => typeof v === "string" && AMOUNT.test(v) && Number(v) > 0 && Number(v) <= RENEWAL_LIMITS.maxAmount;
+const EXPENSE_ID = /^S-\d{4}-\d{4,6}$/;
+
+function validRoll(v: unknown): boolean {
+	const r = v as Roll;
+	return isMarker(v) && isText(r.callId, 200) && isDay(r.from) && isDay(r.to) && (r.expense === undefined || (typeof r.expense === "string" && EXPENSE_ID.test(r.expense))) && optText(r.expenseCall, 200);
+}
+
+function validCharge(v: unknown): boolean {
+	const c = v as Charge;
+	return typeof v === "object" && v !== null && isDay(c.date) && isText(c.callId, 200) && typeof c.expense === "string" && EXPENSE_ID.test(c.expense);
+}
 
 /** A renewal as stored, checked field by field: what does not have this shape makes the store unreadable. */
 export function validRenewal(v: unknown): v is Renewal {
@@ -239,16 +286,25 @@ export function validRenewal(v: unknown): v is Renewal {
 	if (typeof r.id !== "string" || !ID.test(r.id)) return false;
 	if (!isText(r.name, RENEWAL_LIMITS.name) || !optText(r.provider, RENEWAL_LIMITS.provider) || !optText(r.note, RENEWAL_LIMITS.note) || !optText(r.callId, 200)) return false;
 	if (!CATEGORIES.includes(r.category)) return false;
-	if (r.amount !== undefined && (typeof r.amount !== "string" || !AMOUNT.test(r.amount) || Number(r.amount) <= 0 || Number(r.amount) > RENEWAL_LIMITS.maxAmount)) return false;
+	if (r.amount !== undefined && !isAmount(r.amount)) return false;
 	if (!isInt(r.months, 1, RENEWAL_LIMITS.maxMonths) || !isInt(r.day, 1, 31) || !isDay(r.due)) return false;
 	if (typeof r.autoRenew !== "boolean") return false;
 	if (r.noticeDays !== undefined && !isInt(r.noticeDays, 1, RENEWAL_LIMITS.maxNoticeDays)) return false;
+	if (r.noticeMonths !== undefined && (!isInt(r.noticeMonths, 1, RENEWAL_LIMITS.maxNoticeMonths) || r.noticeDays !== undefined)) return false;
+	if (r.vatRate !== undefined && !VAT_RATES.includes(r.vatRate)) return false;
+	if (!optText(r.originalAmount, RENEWAL_LIMITS.originalAmount) || !optText(r.lastCall, 200)) return false;
+	if (r.amountFrom !== undefined && (typeof r.amountFrom !== "object" || r.amountFrom === null || !isAmount(r.amountFrom.amount) || !isDay(r.amountFrom.from))) return false;
+	if (r.start !== undefined && !isDay(r.start)) return false;
+	if ((r.termMonths === undefined) !== (r.termEnd === undefined)) return false;
+	if (r.termMonths !== undefined && (!isInt(r.termMonths, 1, RENEWAL_LIMITS.maxMonths) || !isDay(r.termEnd))) return false;
+	if ((r.autoPay !== undefined && typeof r.autoPay !== "boolean") || (r.trial !== undefined && typeof r.trial !== "boolean")) return false;
 	if (r.remindDays !== undefined && !isInt(r.remindDays, 0, RENEWAL_LIMITS.maxRemindDays)) return false;
 	if (r.method !== undefined && !METHODS.includes(r.method)) return false;
 	if (r.document !== undefined && !validDocumentPath(r.document)) return false;
 	if (r.status !== "active" && r.status !== "cancelled") return false;
 	if ((r.status === "cancelled") !== (r.cancelled !== undefined)) return false;
 	if (r.cancelled !== undefined && (!isMarker(r.cancelled) || !isDay(r.cancelled.on) || (r.cancelled.ends !== undefined && !isDay(r.cancelled.ends)))) return false;
-	if (r.lastRoll !== undefined && (!isMarker(r.lastRoll) || !isText(r.lastRoll.callId, 200) || !isDay(r.lastRoll.from) || !isDay(r.lastRoll.to))) return false;
+	if (r.rolls !== undefined && (!Array.isArray(r.rolls) || r.rolls.length > RENEWAL_LIMITS.rolls || !r.rolls.every(validRoll))) return false;
+	if (r.charges !== undefined && (!Array.isArray(r.charges) || r.charges.length > RENEWAL_LIMITS.charges || !r.charges.every(validCharge))) return false;
 	return r.edited === undefined || isMarker(r.edited);
 }

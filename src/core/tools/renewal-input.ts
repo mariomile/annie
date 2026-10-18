@@ -1,50 +1,108 @@
 /**
  * The renewal tool's arguments, read and checked: the name and provider, the category matched
  * from the person's words (or guessed from the name's whole words, «altro» when none fits), the
- * amount of one period (the quotes' decimal rules; never negative, never another currency), the
- * frequency, the next due date (renewal-dates.ts: ahead, never gone), the tacit renewal and its
- * notice, the reminder days, the payment method, the note and the contract's file in the
- * workspace (its path only).
+ * amount of one payment, the frequency (how often one pays), the next due date (renewal-dates.ts),
+ * the contract's own term, the tacit renewal and its notice (days or months), whether the money
+ * leaves by itself, a free trial, a new price from a date, the reminder days, the payment method,
+ * the note and the contract's file in the workspace (its path only).
+ *
+ * The amount stored is what is paid, VAT included. Said VAT excluded («100 + IVA», «IVA esclusa»,
+ * or vat_excluded) with its vat_rate, it is the net plus the VAT on it rounded half up to the cent
+ * (bigint cents); the rate is kept for the expense of a payment. Said in another currency, the
+ * person's approximate euros go in amount and the amount as said in original_amount.
  *
  * Reading (readFields) is apart from applying (applyFields): an edit applies only the fields
  * given, to the renewal as saved under the store's lock.
  */
 import { foreignCurrency } from "../currency-words.ts";
-import { matchMethod, type Method, METHODS } from "../expenses.ts";
 import { normalPath } from "../invoices.ts";
-import { type Due, parseFrequency, readDue } from "../renewal-dates.ts";
+import { automaticPayment, type Method } from "../payment-methods.ts";
+import { centsDecimal, halfUp, scaled, VAT_RATES, type VatRate } from "../quote-sums.ts";
+import { type Due, parseFrequency, placeDue, readDue } from "../renewal-dates.ts";
 import { CATEGORIES, type Category, DOCUMENT_FILE, matchCategory, RENEWAL_LIMITS, type Renewal, validDocumentPath } from "../renewals.ts";
 import type { Workspace } from "../workspace.ts";
+import { readCategoryWith, readEuros, readMethod } from "./field-input.ts";
 import { cleanText, isProblem, type Problem, readAmount } from "./quote-input.ts";
 import { fenced } from "./renewal-render.ts";
 
 /** What a renewal holds besides its id, who recorded it and its state. */
-export type RenewalDraft = Omit<Renewal, "id" | "by" | "at" | "callId" | "edited" | "status" | "cancelled" | "lastRoll">;
+export type RenewalDraft = Omit<Renewal, "id" | "by" | "at" | "callId" | "edited" | "status" | "cancelled" | "rolls" | "charges" | "lastCall">;
 
 /** The fields an edit may change; any of them given makes it an edit. */
-const EDIT_FIELDS = ["name", "provider", "category", "amount", "frequency", "due", "auto_renew", "notice_days", "remind_days", "method", "note", "document"] as const;
+const EDIT_FIELDS = ["name", "provider", "category", "amount", "vat_rate", "vat_excluded", "original_amount", "frequency", "due", "term_months", "term_end", "auto_renew", "auto_pay", "trial", "notice_days", "notice_months", "remind_days", "method", "note", "document", "new_amount", "new_amount_from"] as const;
 
-const NOT_EURO = "l'importo è in un'altra valuta: convertilo in euro con exchange_rate e scrivi l'importo originale in note";
+const FOREIGN =
+	"l'importo è in un'altra valuta: chiedi a chi ti scrive quanto sono circa in euro (o convertilo con exchange_rate, se c'è), poi passa gli euro in amount e l'importo com'è detto in original_amount (per esempio «20 USD»)";
 
-/** The amount of one period: more than zero, in euros, to the cent; undefined when not given. */
-export function readPeriodAmount(value: unknown): string | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (foreignCurrency(value)) return { problem: NOT_EURO };
-	if ((typeof value === "number" && value < 0) || (typeof value === "string" && /^\s*(?:€|eur\w*)?\s*-/i.test(value))) return { problem: "l'importo è negativo: dammi quanto si paga a ogni scadenza" };
-	const read = readAmount(value, 2, "amount", fenced);
-	if (isProblem(read) || read === undefined) return read;
-	if (Number(read) <= 0) return { problem: "l'importo è zero: se non lo sai, lascialo fuori" };
-	if (Number(read) > RENEWAL_LIMITS.maxAmount) return { problem: `l'importo è oltre ${RENEWAL_LIMITS.maxAmount.toLocaleString("it-IT")} €: ricontrollalo con chi ti scrive` };
-	return read;
+const EURO_WORDS = { fence: fenced, max: RENEWAL_LIMITS.maxAmount, foreign: FOREIGN, negative: "l'importo è negativo: dammi quanto si paga a ogni scadenza", zero: "l'importo è zero: se non lo sai, lascialo fuori" } as const;
+
+/** «+ IVA», «IVA esclusa», «oltre IVA», «netto»: the amount said is before VAT. */
+const VAT_EXCLUDED = /\+\s*iva\b|\biva\s+escl\w*|\besclus[ao]\s+iva\b|\boltre\s+(?:l')?iva\b|\bnett[oi]\b|\bimponibile\b/i;
+/** «IVA inclusa», «IVA compresa», «ivato»: the amount said includes it, as by default. */
+const VAT_INCLUDED = /\biva\s+(?:inclusa|compresa)\b|\b(?:inclusa|compresa)\s+iva\b|\bivat[oi]\b/i;
+
+export type SaidAmount = { readonly amount: string; readonly vatRate?: VatRate; readonly excluded?: true };
+
+function readRate(value: unknown): VatRate | undefined | Problem {
+	const read = readAmount(value, 2, "vat_rate", fenced);
+	if (read === undefined || isProblem(read)) return read;
+	if (!VAT_RATES.includes(Number(read) as VatRate)) return { problem: `vat_rate è una di queste aliquote: ${VAT_RATES.join(", ")}` };
+	return Number(read) as VatRate;
 }
 
-/** Whole days, as a number or «30», «30 giorni»; months are not days and are asked for in days. */
+/**
+ * The amount of one payment, VAT included: as said, or the net said («100 + IVA») with the VAT
+ * at `vatRate` added, half up to the cent. Undefined when not given.
+ */
+export function readPeriodAmount(value: unknown, rate?: unknown, excludedArg?: unknown): SaidAmount | undefined | Problem {
+	const vatRate = readRate(rate);
+	if (isProblem(vatRate)) return vatRate;
+	if (excludedArg !== undefined && typeof excludedArg !== "boolean") return { problem: "vat_excluded è true (l'importo detto è senza IVA) o false" };
+	if (value === undefined) return excludedArg === true ? { problem: "con vat_excluded passa anche amount, l'importo senza IVA" } : undefined;
+	let said = value;
+	let excluded = excludedArg === true;
+	if (typeof value === "string") {
+		if (foreignCurrency(value)) return { problem: FOREIGN };
+		if (VAT_EXCLUDED.test(value)) excluded = true;
+		said = value.replace(VAT_EXCLUDED, " ").replace(VAT_INCLUDED, " ").replace(/\biva\b/gi, " ").replace(/\s+/g, " ").trim();
+	}
+	const euros = readEuros(said, EURO_WORDS);
+	if (euros === undefined || isProblem(euros)) return euros;
+	if (!excluded) return { amount: euros, ...(vatRate === undefined ? {} : { vatRate }) };
+	if (vatRate === undefined) return { problem: "l'importo è senza IVA: serve l'aliquota (vat_rate 22, 10, 5 o 4) per sapere quanto si paga; chiedila a chi ti scrive" };
+	const net = scaled(euros, 2);
+	const gross = net + halfUp(net * BigInt(vatRate), 100n);
+	if (gross > BigInt(RENEWAL_LIMITS.maxAmount) * 100n) return { problem: `l'importo è oltre ${RENEWAL_LIMITS.maxAmount.toLocaleString("it-IT")} €: ricontrollalo con chi ti scrive` };
+	return { amount: centsDecimal(gross), vatRate, excluded: true };
+}
+
+export type Notice = { readonly days: number } | { readonly months: number };
+
+/** The disdetta notice: whole days («30», «30 giorni») or months («3 mesi»). */
+export function readNotice(days: unknown, months: unknown): Notice | undefined | Problem {
+	if (months !== undefined) {
+		if (typeof months !== "number" || !Number.isInteger(months) || months < 1 || months > RENEWAL_LIMITS.maxNoticeMonths) return { problem: `notice_months è un numero intero di mesi, da 1 a ${RENEWAL_LIMITS.maxNoticeMonths}` };
+		if (days !== undefined) return { problem: "il preavviso è in giorni (notice_days) o in mesi (notice_months), non tutti e due" };
+		return { months };
+	}
+	if (days === undefined) return undefined;
+	const bad = { problem: `notice_days è un numero intero di giorni, da 1 a ${RENEWAL_LIMITS.maxNoticeDays} (o «3 mesi»)` };
+	if (typeof days === "number") return Number.isInteger(days) && days >= 1 && days <= RENEWAL_LIMITS.maxNoticeDays ? { days } : bad;
+	if (typeof days !== "string") return bad;
+	const m = /^\s*(\d{1,3}|un|uno|una|due|tre|quattro|sei)\s*(gg|giorni|giorno|mesi|mese)?\.?\s*(?:prima)?\s*$/i.exec(days);
+	if (m === null) return bad;
+	const n = /^\d+$/.test(m[1] as string) ? Number(m[1]) : ({ un: 1, uno: 1, una: 1, due: 2, tre: 3, quattro: 4, sei: 6 } as Record<string, number>)[(m[1] as string).toLowerCase()];
+	if (n === undefined) return bad;
+	if (/^mes/i.test(m[2] ?? "")) return n >= 1 && n <= RENEWAL_LIMITS.maxNoticeMonths ? { months: n } : bad;
+	return n >= 1 && n <= RENEWAL_LIMITS.maxNoticeDays ? { days: n } : bad;
+}
+
+/** Whole days, as a number or «30», «30 giorni». */
 function readDays(value: unknown, name: string, min: number, max: number): number | undefined | Problem {
 	if (value === undefined) return undefined;
 	let n: number | undefined;
 	if (typeof value === "number") n = value;
 	else if (typeof value === "string") {
-		if (/\bmes[ei]\b/i.test(value)) return { problem: `${name} sono giorni: per «3 mesi» passa i giorni scritti nel contratto (circa 90)` };
 		const m = /^\s*(\d{1,3})\s*(?:gg|giorni|giorno)?\.?\s*$/i.exec(value);
 		if (m !== null) n = Number(m[1]);
 	}
@@ -57,7 +115,7 @@ async function readDocument(value: unknown, workspace: Workspace): Promise<strin
 	if (value === undefined) return undefined;
 	if (typeof value !== "string" || value.length > RENEWAL_LIMITS.document) return { problem: "document è il percorso nel workspace del contratto o della polizza" };
 	const path = normalPath(value);
-	if (!DOCUMENT_FILE.test(path)) return { problem: "document è un PDF, una foto, un Word o un .p7m del workspace" };
+	if (!DOCUMENT_FILE.test(path)) return { problem: "document è un PDF, una foto, un Word, un OpenDocument, un .p7m o un .txt del workspace" };
 	if (!validDocumentPath(path)) return { problem: "document non è un percorso valido del workspace" };
 	// WorkspaceError (a link, a folder, a name outside) goes up to the tool, said as the workspace says it.
 	const found = await workspace.stat(path);
@@ -65,19 +123,9 @@ async function readDocument(value: unknown, workspace: Workspace): Promise<strin
 	return found.path;
 }
 
-function readCategory(value: unknown): { category: Category; unmatched?: true } | undefined | Problem {
+function readBool(value: unknown, name: string, what: string): boolean | undefined | Problem {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string") return { problem: "category è un testo" };
-	const said = value.trim().slice(0, 60);
-	if (said === "") return undefined;
-	const category = matchCategory(said);
-	return category === undefined ? { category: "altro", unmatched: true } : { category };
-}
-
-function readMethod(value: unknown): Method | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (typeof value !== "string" || value.length > 60) return { problem: `method è uno di questi: ${METHODS.join(", ")}` };
-	return matchMethod(value) ?? "altro";
+	return typeof value === "boolean" ? value : { problem: `${name} è true (${what}) o false` };
 }
 
 /** The fields given: a value, null for «""» in an edit (removes it), undefined when not given. */
@@ -85,15 +133,24 @@ export type Fields = {
 	readonly name?: string;
 	readonly provider?: string | null;
 	readonly category?: { readonly category: Category; readonly unmatched?: true };
-	readonly amount?: string | null;
+	readonly amount?: SaidAmount | null;
+	readonly vatRate?: VatRate;
+	readonly originalAmount?: string | null;
 	readonly months?: number;
 	readonly due?: Due;
+	readonly termMonths?: number | null;
+	readonly termEnd?: Due;
 	readonly autoRenew?: boolean;
-	readonly noticeDays?: number | null;
+	readonly autoPay?: boolean;
+	readonly trial?: boolean;
+	readonly notice?: Notice | null;
 	readonly remindDays?: number | null;
 	readonly method?: Method | null;
+	/** The method as said, for the autoPay guess («carta», «addebito in conto»). */
+	readonly methodText?: string;
 	readonly note?: string | null;
 	readonly document?: string | null;
+	readonly amountFrom?: { readonly amount: string; readonly from: string } | null;
 };
 
 /** The arguments read and checked, nothing applied yet. In an edit «""» removes an optional field. */
@@ -106,6 +163,7 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 	for (const [arg, key, max, lines] of [
 		["provider", "provider", RENEWAL_LIMITS.provider, false],
 		["note", "note", RENEWAL_LIMITS.note, true],
+		["original_amount", "originalAmount", RENEWAL_LIMITS.originalAmount, false],
 	] as const) {
 		if (removed(arg)) out[key] = null;
 		else {
@@ -114,15 +172,21 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 			if (text !== undefined) out[key] = text;
 		}
 	}
-	const category = readCategory(args.category);
+	const category = readCategoryWith(args.category, matchCategory, "altro");
 	if (isProblem(category)) return category;
 	if (category !== undefined) out.category = category;
 	if (removed("amount")) out.amount = null;
 	else {
-		const amount = readPeriodAmount(args.amount);
+		const amount = readPeriodAmount(args.amount, args.vat_rate, args.vat_excluded);
 		if (isProblem(amount)) return amount;
 		if (amount !== undefined) out.amount = amount;
+		else if (args.vat_rate !== undefined) {
+			const rate = readRate(args.vat_rate);
+			if (isProblem(rate)) return rate;
+			out.vatRate = rate;
+		}
 	}
+	if (out.originalAmount !== undefined && out.originalAmount !== null && out.amount === undefined && !o.editing) return { problem: "con original_amount passa in amount gli euro che dice chi ti scrive" };
 	if (args.frequency !== undefined) {
 		const months = parseFrequency(args.frequency);
 		if (isProblem(months)) return months;
@@ -133,32 +197,61 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 		if (isProblem(due)) return due;
 		out.due = due;
 	}
-	if (args.auto_renew !== undefined) {
-		if (typeof args.auto_renew !== "boolean") return { problem: "auto_renew è true (si rinnova da solo) o false" };
-		out.autoRenew = args.auto_renew;
+	if (removed("term_months")) out.termMonths = null;
+	else if (args.term_months !== undefined) {
+		const term = parseFrequency(args.term_months);
+		if (isProblem(term)) return { problem: "term_months è la durata del contratto in mesi (12, «annuale», «2 anni»)" };
+		out.termMonths = term;
 	}
-	for (const [arg, key, min, max] of [
-		["notice_days", "noticeDays", 1, RENEWAL_LIMITS.maxNoticeDays],
-		["remind_days", "remindDays", 0, RENEWAL_LIMITS.maxRemindDays],
+	if (args.term_end !== undefined) {
+		const end = readDue(args.term_end, o.today);
+		if (isProblem(end)) return { problem: `term_end: ${end.problem}` };
+		out.termEnd = end;
+	}
+	for (const [arg, key, what] of [
+		["auto_renew", "autoRenew", "il contratto si rinnova da solo se non lo disdici"],
+		["auto_pay", "autoPay", "i soldi partono da soli: carta, PayPal, addebito in conto"],
+		["trial", "trial", "è una prova gratuita che finisce alla scadenza"],
 	] as const) {
-		if (removed(arg)) out[key] = null;
-		else {
-			const days = readDays(args[arg], arg, min, max);
-			if (isProblem(days)) return days;
-			if (days !== undefined) out[key] = days;
-		}
+		const v = readBool(args[arg], arg, what);
+		if (isProblem(v)) return v;
+		if (v !== undefined) out[key] = v;
+	}
+	if (removed("notice_days") || removed("notice_months")) out.notice = null;
+	else {
+		const notice = readNotice(args.notice_days, args.notice_months);
+		if (isProblem(notice)) return notice;
+		if (notice !== undefined) out.notice = notice;
+	}
+	if (removed("remind_days")) out.remindDays = null;
+	else {
+		const days = readDays(args.remind_days, "remind_days", 0, RENEWAL_LIMITS.maxRemindDays);
+		if (isProblem(days)) return days;
+		if (days !== undefined) out.remindDays = days;
 	}
 	if (removed("method")) out.method = null;
 	else {
 		const method = readMethod(args.method);
 		if (isProblem(method)) return method;
-		if (method !== undefined) out.method = method;
+		if (method !== undefined) {
+			out.method = method;
+			out.methodText = String(args.method);
+		}
 	}
 	if (removed("document")) out.document = null;
 	else {
 		const document = await readDocument(args.document, o.workspace);
 		if (isProblem(document)) return document;
 		if (document !== undefined) out.document = document;
+	}
+	if (removed("new_amount")) out.amountFrom = null;
+	else if (args.new_amount !== undefined || args.new_amount_from !== undefined) {
+		const amount = readEuros(args.new_amount, EURO_WORDS);
+		if (isProblem(amount)) return amount;
+		if (amount === undefined || args.new_amount_from === undefined) return { problem: "per un cambio di prezzo passa new_amount (il nuovo importo) e new_amount_from (da quale scadenza)" };
+		const from = readDue(args.new_amount_from, o.today);
+		if (isProblem(from)) return { problem: `new_amount_from: ${from.problem}` };
+		out.amountFrom = { amount, from: from.date };
 	}
 	return out as Fields;
 }
@@ -173,44 +266,73 @@ export function guessCategory(name: string, provider?: string, note?: string): C
 }
 
 /**
- * The fields applied: on nothing for a new renewal (name and due date needed; annuale when the
- * frequency is not said, said back), or on `old`, the renewal as saved now, changing only what is
- * given. A notice period given without saying auto_renew means a tacit renewal.
+ * The fields applied: on nothing for a new renewal (name and due date needed; monthly when the
+ * due date is a day of every month, annuale otherwise, said back), or on `old`, the renewal as
+ * saved now, changing only what is given. A notice given without auto_renew means a tacit
+ * renewal. auto_pay not given is guessed true only for a tacit renewal paid with words that leave
+ * by themselves (carta, PayPal, addebito, RID, SDD, domiciliazione), and said back.
  */
-export function applyFields(f: Fields, old?: Renewal): { draft: RenewalDraft; notes: string[] } | Problem {
+export function applyFields(f: Fields, old: Renewal | undefined, today: string): { draft: RenewalDraft; notes: string[] } | Problem {
 	const notes: string[] = [];
 	const name = f.name ?? old?.name;
 	if (name === undefined) return { problem: "manca il nome (name): cos'è che si rinnova, per esempio «Assicurazione auto» o «Canva»" };
-	const due = f.due ?? (old === undefined ? undefined : { date: old.due, day: old.day });
-	if (due === undefined) return { problem: "manca la prossima scadenza (due): chiedi a chi ti scrive quando scade o si rinnova" };
-	if (f.due?.note !== undefined) notes.push(f.due.note);
 	let months = f.months ?? old?.months;
 	if (months === undefined) {
-		months = 12;
-		notes.push("Frequenza non detta: ho messo annuale. Se è un'altra (mensile, trimestrale…), correggila con op edit (frequency).");
+		months = f.due?.monthly === true ? 1 : 12;
+		notes.push(months === 1 ? "Frequenza non detta: dalla scadenza «ogni mese» ho messo mensile." : "Frequenza non detta: ho messo annuale. Se è un'altra (mensile, trimestrale…), correggila con op edit (frequency).");
 	}
+	let due: Due | undefined = f.due === undefined ? undefined : placeDue(f.due, months, today);
+	if (due === undefined && old !== undefined) due = { date: old.due, day: old.day };
+	if (due === undefined) return { problem: "manca la prossima scadenza (due): chiedi a chi ti scrive quando scade o si rinnova" };
+	if (due.note !== undefined) notes.push(due.note);
 	const pick = <T>(given: T | null | undefined, before: T | undefined): T | undefined => (given === null ? undefined : (given ?? before));
 	const provider = pick(f.provider, old?.provider);
 	const note = pick(f.note, old?.note);
-	const noticeDays = pick(f.noticeDays, old?.noticeDays);
+	const notice: Notice | undefined = f.notice === null ? undefined : (f.notice ?? (old?.noticeMonths !== undefined ? { months: old.noticeMonths } : old?.noticeDays !== undefined ? { days: old.noticeDays } : undefined));
 	let autoRenew = f.autoRenew ?? old?.autoRenew ?? false;
-	if (f.autoRenew === undefined && f.noticeDays !== undefined && f.noticeDays !== null && !autoRenew) {
+	if (f.autoRenew === undefined && f.notice !== undefined && f.notice !== null && !autoRenew) {
 		autoRenew = true;
-		notes.push("Con il preavviso di disdetta l'ho segnato come rinnovo tacito: se non si rinnova da solo, correggi con op edit (auto_renew false).");
+		notes.push("Con il preavviso di disdetta l'ho segnato come contratto che si rinnova da solo: se non è così, correggi con op edit (auto_renew false).");
 	}
-	if (!autoRenew && noticeDays !== undefined) notes.push("Il preavviso di disdetta conta solo per quello che si rinnova da solo: senza rinnovo tacito non lo uso.");
+	let autoPay = f.autoPay ?? old?.autoPay;
+	if (f.autoPay === undefined && old?.autoPay === undefined && autoRenew && f.methodText !== undefined && automaticPayment(f.methodText)) {
+		autoPay = true;
+		notes.push("Dal pagamento detto l'ho segnato come addebito automatico (i soldi partono da soli). Di' a chi ti scrive: «Ho segnato che si paga da solo: se non è così, dimmelo.» Se non è così, correggi con op edit (auto_pay false).");
+	}
+	const termMonths = pick(f.termMonths, old?.termMonths);
+	let termEnd = f.termEnd !== undefined ? f.termEnd.date : termMonths === undefined ? undefined : old?.termEnd;
+	if (termMonths !== undefined && termEnd === undefined) return { problem: "con term_months serve term_end: quando finisce il contratto in corso" };
+	if (termMonths === undefined) termEnd = undefined;
+	if (termMonths !== undefined && termMonths === months && f.termMonths !== undefined) notes.push("La durata del contratto è uguale alla frequenza dei pagamenti: term_months non serve, lo tengo comunque.");
+	const amount = f.amount === null ? undefined : f.amount;
+	const amountValue = amount?.amount ?? (f.amount === null ? undefined : old?.amount);
+	const vatRate = amount !== undefined ? amount.vatRate : f.amount === null ? undefined : (f.vatRate ?? old?.vatRate);
+	if (amount?.excluded === true) notes.push("L'importo era senza IVA: ho salvato quanto si paga, IVA inclusa. Ripetilo come è scritto.");
+	const originalAmount = pick(f.originalAmount, f.amount !== undefined && f.originalAmount === undefined ? undefined : old?.originalAmount);
+	const trial = f.trial ?? old?.trial;
 	const category = f.category?.category ?? old?.category ?? guessCategory(name, provider, note);
 	if (f.category?.unmatched === true) notes.push(`La categoria detta non è tra quelle che uso: l'ho messa in «altro». Le categorie: ${CATEGORIES.join(", ")}.`);
+	if (!autoRenew && notice !== undefined) notes.push("Il preavviso di disdetta conta solo per un contratto che si rinnova da solo: così non lo uso.");
+	if (due.past === true && f.due !== undefined) notes.push(autoPay === true || autoRenew ? "La scadenza detta è già passata: la porto avanti da sola alla prossima." : "La scadenza detta è già passata: lo segno come scaduto, da confermare. Se è già stato pagato, segnalo con op renewed.");
+	const start = f.due !== undefined ? due.date : (old?.start ?? old?.due ?? due.date);
 	const optional = {
 		provider,
-		amount: pick(f.amount, old?.amount),
-		noticeDays,
+		amount: amountValue,
+		vatRate: amountValue === undefined ? undefined : vatRate,
+		originalAmount: amountValue === undefined ? undefined : originalAmount,
+		amountFrom: pick(f.amountFrom, old?.amountFrom),
+		termMonths,
+		termEnd,
+		autoPay,
+		trial: trial === true ? true : undefined,
+		noticeDays: notice !== undefined && "days" in notice ? notice.days : undefined,
+		noticeMonths: notice !== undefined && "months" in notice ? notice.months : undefined,
 		remindDays: pick(f.remindDays, old?.remindDays),
 		method: pick(f.method, old?.method),
 		note,
 		document: pick(f.document, old?.document),
 	};
-	const draft = { name, category, months, due: due.date, day: due.day, autoRenew, ...Object.fromEntries(Object.entries(optional).filter(([, v]) => v !== undefined)) } as RenewalDraft;
+	const draft = { name, category, months, due: due.date, day: due.day, start, autoRenew, ...Object.fromEntries(Object.entries(optional).filter(([, v]) => v !== undefined)) } as RenewalDraft;
 	return { draft, notes };
 }
 

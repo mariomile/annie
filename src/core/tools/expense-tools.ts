@@ -1,7 +1,7 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { cashBook } from "../cash-book.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
-import { CATEGORIES, type Category, DOC_TYPES, type Method, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
+import { CATEGORIES, type Category, DOC_TYPES, type Method, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, idOrder, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
 import { EXPENSES_BROKEN, type ExpenseStore } from "../expense-store.ts";
 import { inPeriod, type Period, PeriodError, periodOf, underWay } from "../periods.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -9,6 +9,8 @@ import type { InvoiceStore } from "../invoice-store.ts";
 import { register } from "../invoices.ts";
 import { dayOfIn, todayIn } from "../italian-calendar.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
+import { sameDraft as sameFields } from "./field-input.ts";
+import type { VatRate } from "../quote-sums.ts";
 import { applyFields, editsSomething, type ExpenseDraft, readFields } from "./expense-input.ts";
 import { cashBookAnswer, cashBookCsv, expenseLine, expensesCsv, fenced, listAnswer, summaryAnswer } from "./expense-render.ts";
 
@@ -52,9 +54,7 @@ const DESCRIPTION = [
 
 /** Whether an expense already holds exactly `draft` (its id and who did it aside). */
 function sameDraft(draft: ExpenseDraft, e: Expense): boolean {
-	const { id: _i, by: _b, at: _a, callId: _c, edited: _e, ...rest } = e;
-	const canon = (o: object) => JSON.stringify(Object.entries(o).sort(([x], [y]) => x.localeCompare(y)));
-	return canon(draft) === canon(rest);
+	return sameFields(draft, e, ["id", "by", "at", "callId", "edited"]);
 }
 
 /**
@@ -76,20 +76,30 @@ export type ExpenseRecordInput = {
 	readonly supplier?: string;
 	readonly method?: Method;
 	readonly note?: string;
+	/** The VAT rate the total includes, when known: the VAT is taken out of it as add does. */
+	readonly vatRate?: VatRate;
 };
 
-/** The expense recorded (or found, on a call run again), as its id and line to be fenced; or why not. */
-export type ExpenseRecorded = { readonly id: string; readonly line: string } | { readonly problem: string };
+/**
+ * The expense recorded (or found, on a call run again), as its id and line to be fenced, and an
+ * expense already recorded that it looks like (the same receipt logged by hand); or why not.
+ */
+export type ExpenseRecorded = { readonly id: string; readonly line: string; readonly twin?: { readonly id: string; readonly why: string } } | { readonly problem: string };
 
 /**
- * The expenses' own add for another tool: the same checks, numbering and audit. The expense is
- * keyed by the calling tool's callId (with «:expense»), so a call run again finds it instead of
- * recording a second one.
+ * The expenses' own add for another tool: the same checks, numbering and audit, refused for
+ * another agente as add is. `check` tries the expense without writing (the register reads, its
+ * year is not full, the fields pass), so the caller can refuse before it changes anything of its
+ * own; `record` records it keyed by the calling tool's callId (with «:expense»), so a call run
+ * again finds it instead of recording a second one.
  */
-export type RecordExpense = (input: ExpenseRecordInput, ctx: ToolContext) => Promise<ExpenseRecorded>;
+export type ExpenseSeam = {
+	readonly check: (input: ExpenseRecordInput, ctx: ToolContext) => string | undefined;
+	readonly record: (input: ExpenseRecordInput, ctx: ToolContext) => Promise<ExpenseRecorded>;
+};
 
 /** The expenses tool, and the same expenses' add for another tool. */
-export function expensesOf(options: ExpenseToolsOptions): { readonly tools: AnnieTool[]; readonly record: RecordExpense } {
+export function expensesOf(options: ExpenseToolsOptions): { readonly tools: AnnieTool[]; readonly seam: ExpenseSeam } {
 	const { store, workspace, timeZone } = options;
 	const now = options.now ?? (() => new Date());
 	const scanner = options.scanner ?? new InvoiceScanner(workspace);
@@ -103,27 +113,59 @@ export function expensesOf(options: ExpenseToolsOptions): { readonly tools: Anni
 		});
 	};
 	const text = (max: number, description: string) => ({ type: "string", minLength: 1, maxLength: max, description });
-	const record: RecordExpense = async (input, ctx) => {
-		const callId = `${ctx.callId}:expense`;
-		try {
-			const saved = readable().find((e) => e.callId === callId);
-			if (saved !== undefined) return { id: saved.id, line: expenseLine(saved) };
-			if (input.date > today()) return { problem: "una spesa si registra quando è fatta: la data non può essere futura" };
-			const applied = applyFields({ amount: input.amount, date: input.date, category: { category: input.category }, ...(input.supplier === undefined ? {} : { supplier: input.supplier }), ...(input.method === undefined ? {} : { method: input.method }), ...(input.note === undefined ? {} : { note: input.note }) });
-			if ("problem" in applied) return applied;
-			const { draft } = applied;
-			const id = await ctx.step("expense:save", async () => store.add(Number(draft.date.slice(0, 4)), callId, (n) => ({ id: n, ...draft, by: who(ctx), at: now().toISOString(), callId })).id);
-			await ctx.step("expense:audit", async () => {
-				await options.record?.({ type: "expense.changed", op: "add", count: 1 });
-				return true;
-			});
-			const expense = readable().find((e) => e.id === id);
-			return expense === undefined ? { problem: `la spesa ${id} non c'è più` } : { id, line: expenseLine(expense) };
-		} catch (error) {
-			if (error instanceof ExpenseError) return { problem: error.message };
-			throw error;
-		}
+	const recordCallId = (ctx: ToolContext) => `${ctx.callId}:expense`;
+	const auditSeam = (ctx: ToolContext) =>
+		ctx.step("expense:audit", async () => {
+			await options.record?.({ type: "expense.changed", op: "add", count: 1 });
+			return true;
+		});
+	/** The draft of a seam's expense, or why it cannot be recorded; a problem from the register is said as it is. */
+	const seamDraft = (input: ExpenseRecordInput, ctx: ToolContext): ExpenseDraft | string => {
+		if (ctx.thread?.channel === AGENT_CHANNEL) return "in una richiesta di un altro agente non registro spese";
+		if (input.date > today()) return "una spesa si registra quando è fatta: la data non può essere futura";
+		const applied = applyFields({ amount: input.amount, date: input.date, category: { category: input.category }, ...(input.supplier === undefined ? {} : { supplier: input.supplier }), ...(input.method === undefined ? {} : { method: input.method }), ...(input.note === undefined ? {} : { note: input.note }), ...(input.vatRate === undefined ? {} : { rate: input.vatRate }) });
+		return "problem" in applied ? applied.problem : applied.draft;
 	};
+	const seam: ExpenseSeam = {
+		check: (input, ctx) => {
+			try {
+				const expenses = readable();
+				if (expenses.some((e) => e.callId === recordCallId(ctx))) return undefined;
+				const draft = seamDraft(input, ctx);
+				if (typeof draft === "string") return draft;
+				const year = Number(draft.date.slice(0, 4));
+				if (expenses.filter((e) => idOrder(e.id)[0] === year).length >= EXPENSE_LIMITS.perYear) return `ci sono già ${EXPENSE_LIMITS.perYear} spese del ${year}, il massimo per un anno`;
+				return undefined;
+			} catch (error) {
+				if (error instanceof ExpenseError) return error.message;
+				throw error;
+			}
+		},
+		record: async (input, ctx) => {
+			const callId = recordCallId(ctx);
+			try {
+				const saved = readable().find((e) => e.callId === callId);
+				if (saved !== undefined) {
+					// Recorded before a stop: the audit, remembered by its step, is written if it was not.
+					await auditSeam(ctx);
+					return found(saved);
+				}
+				const draft = seamDraft(input, ctx);
+				if (typeof draft === "string") return { problem: draft };
+				const id = await ctx.step("expense:save", async () => store.add(Number(draft.date.slice(0, 4)), callId, (n) => ({ id: n, ...draft, by: who(ctx), at: now().toISOString(), callId })).id);
+				await auditSeam(ctx);
+				const expense = readable().find((e) => e.id === id);
+				return expense === undefined ? { problem: `la spesa ${id} non c'è più` } : found(expense);
+			} catch (error) {
+				if (error instanceof ExpenseError) return { problem: error.message };
+				throw error;
+			}
+		},
+	};
+	function found(expense: Expense): ExpenseRecorded {
+		const twin = lookalike(readable(), expense);
+		return { id: expense.id, line: expenseLine(expense), ...(twin === undefined ? {} : { twin }) };
+	}
 	const tools: AnnieTool[] = [
 		{
 			name: "expenses",
@@ -185,7 +227,7 @@ export function expensesOf(options: ExpenseToolsOptions): { readonly tools: Anni
 			},
 		},
 	];
-	return { tools, record };
+	return { tools, seam };
 
 	function readable(): readonly Expense[] {
 		const book = store.read();
@@ -209,7 +251,11 @@ export function expensesOf(options: ExpenseToolsOptions): { readonly tools: Anni
 	async function add(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
 		// This call recorded its expense already (run again after a stop): say it again, never record it twice, no warning.
 		const saved = readable().find((e) => e.callId === ctx.callId);
-		if (saved !== undefined) return added(saved, []);
+		if (saved !== undefined) {
+			// Recorded before a stop: the audit, remembered by its step, is written if it was not.
+			await audit(ctx, { type: "expense.changed", op: "add", count: 1 });
+			return added(saved, []);
+		}
 		const fields = await readFields(args, { today: today(), workspace, editing: false });
 		if ("problem" in fields) return `Errore: ${fields.problem}.`;
 		const applied = applyFields(fields);

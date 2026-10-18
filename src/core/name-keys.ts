@@ -35,3 +35,13 @@ export function spellingKey(name: string): string {
 export function keyWithin(a: string, b: string): boolean {
 	return a !== "" && b !== "" && (` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `));
 }
+
+/** Whether folded words hold `key` (a word or a phrase, folded the same way) as whole words in a row. */
+export function saysPhrase(tokens: readonly string[], key: string): boolean {
+	const parts = words(key);
+	if (parts.length === 0) return false;
+	for (let i = 0; i + parts.length <= tokens.length; i++) {
+		if (parts.every((p, j) => tokens[i + j] === p)) return true;
+	}
+	return false;
+}

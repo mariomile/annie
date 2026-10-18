@@ -4,7 +4,7 @@
  * (12 / months): exact for mensile (×12), bimestrale (×6), trimestrale (×4), quadrimestrale (×3),
  * semestrale (×2), annuale (×1); for any other period (biennale, ogni 18 mesi…) amount × 12 /
  * months in cents, rounded half up per renewal. Totals add those yearly costs; the monthly
- * equivalent of a total is the yearly total / 12, rounded half up once.
+ * equivalent of a total (and of a category's) is its yearly total / 12, rounded half up once.
  */
 import { CATEGORIES, type Category, type Renewal } from "./renewals.ts";
 import { halfUp, scaled } from "./quote-sums.ts";
@@ -29,7 +29,7 @@ export function monthlyOf(yearly: bigint): bigint {
 	return halfUp(yearly, 12n);
 }
 
-export type CategoryCost = { readonly category: Category; readonly yearly: bigint; readonly count: number };
+export type CategoryCost = { readonly category: Category; readonly yearly: bigint; readonly monthly: bigint; readonly count: number };
 
 export type Costs = {
 	/** The renewals counted, with an amount. */
@@ -62,7 +62,7 @@ export function costsOf(renewals: readonly Renewal[], top = 5): Costs {
 		byCategory.set(r.category, { yearly: seen.yearly + y, count: seen.count + 1 });
 	}
 	const categories = [...byCategory]
-		.map(([category, s]) => ({ category, ...s }))
+		.map(([category, s]) => ({ category, ...s, monthly: monthlyOf(s.yearly) }))
 		.sort((a, b) => (a.yearly === b.yearly ? CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) : a.yearly > b.yearly ? -1 : 1));
 	const biggest = priced.sort((a, b) => (a.yearly === b.yearly ? a.renewal.id.localeCompare(b.renewal.id) : a.yearly > b.yearly ? -1 : 1)).slice(0, top);
 	return { count: priced.length, yearly, monthly: monthlyOf(yearly), categories, biggest, withoutAmount };

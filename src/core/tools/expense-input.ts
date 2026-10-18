@@ -10,7 +10,7 @@
  * given, to the expense as saved under the store's lock.
  */
 import { foreignCurrency } from "../currency-words.ts";
-import { CATEGORIES, type Category, DOC_TYPES, type DocType, EXPENSE_LIMITS, type Expense, idOrder, matchCategory, matchMethod, type Method, METHODS, RECEIPT_FILE, SUPPLIER_VAT, validReceiptPath } from "../expenses.ts";
+import { CATEGORIES, type Category, DOC_TYPES, type DocType, EXPENSE_LIMITS, type Expense, idOrder, matchCategory, type Method, RECEIPT_FILE, SUPPLIER_VAT, validReceiptPath } from "../expenses.ts";
 import { cents, centsValue, vatInGross } from "../expense-sums.ts";
 import { normalPath } from "../invoices.ts";
 import { VAT_RATES, type VatRate } from "../quote-sums.ts";
@@ -18,6 +18,7 @@ import { fold } from "../text-match.ts";
 import type { Workspace } from "../workspace.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
 import { fenced } from "./expense-render.ts";
+import { readCategoryWith, readEuros, readMethod } from "./field-input.ts";
 import { cleanText, isProblem, type Problem, readAmount } from "./quote-input.ts";
 
 /** What an expense holds besides its id and who recorded it. */
@@ -31,14 +32,7 @@ const NEGATIVE = "l'importo è negativo: per un reso o un rimborso correggi la s
 
 /** The total: more than zero, in euros, at most EXPENSE_LIMITS.maxAmount, to the cent; undefined when not given. */
 export function readTotal(value: unknown): string | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (foreignCurrency(value)) return { problem: NOT_EURO };
-	if ((typeof value === "number" && value < 0) || (typeof value === "string" && /^\s*(?:€|eur\w*)?\s*-/i.test(value))) return { problem: NEGATIVE };
-	const read = readAmount(value, 2, "amount", fenced);
-	if (isProblem(read) || read === undefined) return read;
-	if (Number(read) <= 0) return { problem: "l'importo è zero: dammi il totale pagato" };
-	if (Number(read) > EXPENSE_LIMITS.maxAmount) return { problem: `l'importo è oltre ${EXPENSE_LIMITS.maxAmount.toLocaleString("it-IT")} €: ricontrollalo con chi ti scrive` };
-	return read;
+	return readEuros(value, { fence: fenced, max: EXPENSE_LIMITS.maxAmount, foreign: NOT_EURO, negative: NEGATIVE, zero: "l'importo è zero: dammi il totale pagato" });
 }
 
 /** What a day said wrong is called in the expenses' answers. */
@@ -57,18 +51,7 @@ export function readDay(value: unknown, today: string): string | Problem {
 
 /** The category of the words given; «altro», said back, when they fit none. */
 function readCategory(value: unknown): { category: Category; unmatched?: true } | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (typeof value !== "string") return { problem: "category è un testo" };
-	const said = value.trim().slice(0, 60);
-	if (said === "") return undefined;
-	const category = matchCategory(said);
-	return category === undefined ? { category: "altro", unmatched: true } : { category };
-}
-
-function readMethod(value: unknown): Method | undefined | Problem {
-	if (value === undefined) return undefined;
-	if (typeof value !== "string" || value.length > 60) return { problem: `method è uno di questi: ${METHODS.join(", ")}` };
-	return matchMethod(value) ?? "altro";
+	return readCategoryWith(value, matchCategory, "altro");
 }
 
 function readDocType(value: unknown): DocType | undefined | Problem {

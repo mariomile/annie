@@ -59,3 +59,10 @@ export function twoDigits(n: number): string {
 export function capitalized(text: string): string {
 	return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }
+
+const MONTHS_LONG = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"];
+
+/** 2027-03-12 → 12 marzo 2027: a date in a sentence (tables keep 12/03/2027). */
+export function italianLongDate(date: string): string {
+	return `${Number(date.slice(8, 10))} ${MONTHS_LONG[Number(date.slice(5, 7)) - 1]} ${date.slice(0, 4)}`;
+}
