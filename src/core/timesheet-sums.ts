@@ -7,7 +7,7 @@
  * minutes recorded never change. A billed entry keeps the rate and rounding it was billed at.
  */
 import { hoursText } from "./durations.ts";
-import { priceText } from "./invoice-sums.ts";
+import { hourlyText } from "./invoice-sums.ts";
 import { addDays } from "./italian-calendar.ts";
 import { italianDate } from "./italian-format.ts";
 import { spellingKey } from "./name-keys.ts";
@@ -227,6 +227,6 @@ export function lineWords(period: Period): LineWords {
 			const project = e.project === undefined ? "" : ` – ${e.project}`;
 			return e.description === undefined ? `Ore di lavoro del ${italianDate(e.date)}${project}` : `${italianDate(e.date)}${project}: ${e.description.replace(/\n/g, " ")}`;
 		},
-		lump: (minutes, rate) => ` (${hoursText(minutes)} a ${`${priceText(rate)}/h`})`,
+		lump: (minutes, rate) => ` (${hoursText(minutes)} a ${hourlyText(rate)})`,
 	};
 }

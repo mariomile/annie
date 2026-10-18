@@ -18,7 +18,7 @@ import { QuoteStore } from "../src/core/quote-store.ts";
 import { AMBIGUOUS, bolloDue, lineCents, quoteTotals, readDecimal } from "../src/core/quote-sums.ts";
 import { FORFETTARIO_NOTE, findQuotes, QUOTE_LIMITS, quoteCallReads } from "../src/core/quotes.ts";
 import { createInvoiceTools } from "../src/core/tools/invoice-tools.ts";
-import { lead, md } from "../src/core/tools/quote-document.ts";
+import { lead, md } from "../src/core/markdown-text.ts";
 import { fileSlug } from "../src/core/tools/quote-input.ts";
 import { euros } from "../src/core/tools/quote-render.ts";
 import { createQuoteTools, type QuoteEvent } from "../src/core/tools/quote-tools.ts";

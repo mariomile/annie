@@ -163,6 +163,8 @@ export type SalesInvoice = Marker & {
 	readonly hours?: readonly HoursRef[];
 	/** The call that made the draft: a call run again finds it. */
 	readonly callId: string;
+	/** The number the draft said it would take, issued that day: at issue a different one is explained. */
+	readonly expected?: string;
 	// Set when issued.
 	readonly number?: string;
 	readonly year?: number;
@@ -175,7 +177,7 @@ export type SalesInvoice = Marker & {
 	readonly pdf?: string;
 	readonly issued?: Marker;
 	readonly issueCall?: string;
-	/** Every step of the issue done (file, PDF, hours, quote, audit): an issue run on an invoice without it finishes them. */
+	/** Every needed step of the issue done (file, hours, quote): an issue or finish run on an invoice without it finishes them. */
 	readonly finished?: true;
 };
 
@@ -260,17 +262,17 @@ const REA = /^([A-Z]{2})-(\d{1,7})$/;
 export function sellerOf(company: Company | undefined, profile: TaxProfile | undefined): { readonly seller: Seller } | { readonly missing: readonly string[] } {
 	const missing: string[] = [];
 	const name = company?.name;
-	if (name === undefined) missing.push("la ragione sociale (o nome e cognome)");
-	else if (name.length > FIELD_LIMITS.denominazione) missing.push(`un nome dell'azienda più corto: in fattura al massimo ${FIELD_LIMITS.denominazione} caratteri`);
+	if (name === undefined) missing.push("nome o ragione sociale");
+	else if (name.length > FIELD_LIMITS.denominazione) missing.push(`un nome più corto (al massimo ${FIELD_LIMITS.denominazione} caratteri)`);
 	const vat = company?.vat;
-	if (vat === undefined) missing.push("la partita IVA");
-	else if (!/^IT\d{11}$/.test(vat)) missing.push("una partita IVA italiana");
+	if (vat === undefined) missing.push("partita IVA");
+	else if (!/^IT\d{11}$/.test(vat)) missing.push("partita IVA italiana");
 	const cf = company?.cf;
-	if (cf === undefined) missing.push("il codice fiscale (per una società di solito è uguale alla partita IVA)");
+	if (cf === undefined) missing.push("codice fiscale");
 	const regime = regimeOf(company, profile);
-	if (regime === undefined) missing.push("il regime fiscale: ordinario o forfettario");
+	if (regime === undefined) missing.push("regime (ordinario o forfettario)");
 	const address = company?.address === undefined ? undefined : italianAddress(company.address);
-	if (address === undefined) missing.push(company?.address === undefined ? "l'indirizzo della sede, con CAP, comune e provincia" : "l'indirizzo della sede scritto con CAP, comune e provincia, come «Via Roma 1, 20121 Milano MI»");
+	if (address === undefined) missing.push(company?.address === undefined ? "indirizzo con CAP, comune e provincia" : "indirizzo scritto con CAP, comune e provincia, come «Via Roma 1, 20121 Milano MI»");
 	if (missing.length > 0 || name === undefined || vat === undefined || cf === undefined || regime === undefined || address === undefined) return { missing };
 	const rea = company?.rea === undefined ? null : REA.exec(company.rea);
 	const phone = company?.phone?.replace(/[^\d+]/g, "");
@@ -289,9 +291,15 @@ export function sellerOf(company: Company | undefined, profile: TaxProfile | und
 	};
 }
 
+/** A person's codice fiscale (letters first), not a company's 11 digits. */
+export const PERSON_CF = /^[A-Z]{6}[0-9LMNPQRSTUV]{2}/;
+
+/** Whether the seller is a person: a professional, whose fees to a company bear the ritenuta. */
+export const isPersonCf = (cf: string | undefined): boolean => cf !== undefined && PERSON_CF.test(cf);
+
 /** RT01 for a person (a personal codice fiscale), RT02 for a company. */
 export function ritenutaType(cf: string | undefined): Ritenuta["type"] {
-	return cf !== undefined && /^[A-Z]{6}/.test(cf) ? RITENUTA_PERSON : RITENUTA_COMPANY;
+	return isPersonCf(cf) ? RITENUTA_PERSON : RITENUTA_COMPANY;
 }
 
 // Validation of what is stored: what does not have this shape makes the store unreadable. Each
@@ -432,6 +440,7 @@ export function invoiceProblem(v: unknown): string | undefined {
 		[i.related !== undefined && (!record(i.related) || !isText(i.related.number, FIELD_LIMITS.numero) || !isDay(i.related.date) || typeof i.related.id !== "string" || !DRAFT_ID.test(i.related.id)), "la fattura che la nota di credito storna"],
 		[!optText(i.causale, SALES_LIMITS.causale), `le note (al massimo ${SALES_LIMITS.causale} caratteri)`],
 		[!optText(i.quote, 30), "il preventivo"],
+		[!optText(i.expected, FIELD_LIMITS.numero), "il numero che la bozza diceva"],
 		[i.hours !== undefined && (!Array.isArray(i.hours) || i.hours.length > SALES_LIMITS.hours || !i.hours.every(validHours)), "le ore fatturate"],
 	]);
 	if (body !== undefined) return body;

@@ -26,8 +26,8 @@ export type SalesSettings = Marker & {
 	readonly lastBefore?: Readonly<Record<string, number>>;
 };
 
-/** What the numbers already used say, from the files (the scadenzario's and the store's own): the highest of a year and the latest date. */
-export type NumberFloor = { readonly seq: number; readonly date: string };
+/** The latest date of the year among the company's own invoices in `fatture/emesse/`, and its file: the numbering follows the dates. */
+export type DateFloor = { readonly date: string; readonly file: string };
 
 /** What a change works on. */
 export type SalesState = {
@@ -85,13 +85,14 @@ export class SalesInvoiceStore {
 	}
 
 	/**
-	 * Issue the draft `id` dated `date`: under the lock it takes the next number of that year (past
-	 * the counter, the last number said before Annie, and `floor`: the highest number in the files)
-	 * and the next file progressive, and `make` gives the invoice issued. The invoice `callId` issued
+	 * Issue the draft `id` dated `date`: under the lock it takes the next number of that year, the
+	 * only rule: past the counter and the last number said before Annie (nothing else moves it),
+	 * and the next file progressive; `make` gives the invoice issued. The invoice `callId` issued
 	 * already, when there is one (a call run again). SalesInvoiceError when the draft is gone,
-	 * issued already, the year is full, or the date comes before the last invoice's of the year.
+	 * issued already, the year is full, or the date comes before the latest of the year (the
+	 * store's, or `floor`'s: a file in `fatture/emesse/`, named).
 	 */
-	issue(id: string, callId: string, date: string, floor: NumberFloor, make: (draft: SalesInvoice, number: string, seq: number, progressive: string) => SalesInvoice): IssuedInvoice {
+	issue(id: string, callId: string, date: string, floor: DateFloor | undefined, make: (draft: SalesInvoice, number: string, seq: number, progressive: string) => SalesInvoice): IssuedInvoice {
 		let made: IssuedInvoice | undefined;
 		updateBook(this.book, (book) => {
 			made = book.invoices.find((i): i is IssuedInvoice => isIssued(i) && i.issueCall === callId);
@@ -100,11 +101,11 @@ export class SalesInvoiceStore {
 			if (draft === undefined) throw new SalesInvoiceError("la bozza non c'è più");
 			if (isIssued(draft)) throw new SalesInvoiceError(`è già emessa con il numero ${draft.number}`);
 			const year = Number(date.slice(0, 4));
-			const before = book.settings?.lastBefore?.[String(year)] ?? 0;
-			const seq = Math.max(book.next[String(year)] ?? 1, before + 1, floor.seq + 1, 1);
+			const seq = nextSeq(book, year);
 			if (seq > SALES_LIMITS.perYear) throw new SalesInvoiceError(`le fatture del ${year} sono arrivate al massimo di ${SALES_LIMITS.perYear}`);
-			const last = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.year === year).reduce((d, i) => (i.date > d ? i.date : d), floor.date);
-			if (last > date) throw new SalesInvoiceError("c'è già una fattura di quest'anno con una data successiva: la numerazione deve seguire le date");
+			const later = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.year === year && i.date > date).sort((a, b) => b.seq - a.seq)[0];
+			if (later !== undefined) throw new SalesInvoiceError(`c'è già la fattura n. ${later.number} con una data successiva: la numerazione deve seguire le date`);
+			if (floor !== undefined && floor.date.slice(0, 4) === String(year) && floor.date > date) throw new SalesInvoiceError(`nel file ${floor.file} c'è una fattura di quest'anno con una data successiva: la numerazione deve seguire le date`);
 			const issued = make(draft, invoiceNumber(year, seq, book.settings?.numbering ?? "plain"), seq, progressiveCode(book.nextFile));
 			const problem = invoiceProblem(issued);
 			if (!isIssued(issued) || problem !== undefined) throw new SalesInvoiceError(`la fattura non è valida, non l'ho emessa: va controllato ${problem ?? "il numero"}`);
@@ -138,14 +139,17 @@ export class SalesInvoiceStore {
 		});
 	}
 
-	/** Every step of the issue of `id` is done. */
-	setFinished(id: string): void {
+	/** Every needed step of the issue of `id` is done. True when this call marked it (it was not finished). */
+	setFinished(id: string): boolean {
+		let fresh = false;
 		updateBook(this.book, (book) => {
 			const inv = book.invoices.find((i) => i.id === id);
 			if (inv === undefined || !isIssued(inv)) throw new SalesInvoiceError("la fattura non c'è più");
 			if (inv.finished === true) return book;
+			fresh = true;
 			return checkedBook({ ...book, invoices: book.invoices.map((i) => (i === inv ? { ...inv, finished: true as const } : i)) });
 		});
+		return fresh;
 	}
 
 	/** Where the files of the invoice `id` are, now written. */
@@ -158,6 +162,11 @@ export class SalesInvoiceStore {
 			return checkedBook({ ...book, invoices: book.invoices.map((i) => (i === inv ? next : i)) });
 		});
 	}
+}
+
+/** The number the next invoice of `year` takes: past the counter and the last number said before Annie. */
+export function nextSeq(book: Pick<SalesState, "next" | "settings">, year: number): number {
+	return Math.max(book.next[String(year)] ?? 1, (book.settings?.lastBefore?.[String(year)] ?? 0) + 1);
 }
 
 /** What is written always reads back. */

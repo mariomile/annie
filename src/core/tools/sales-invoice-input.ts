@@ -39,8 +39,6 @@ import { fold } from "../text-match.ts";
 import { cleanText, isProblem, type Problem, readAmount as readNumber, readPercent as readShare } from "../text-input.ts";
 import { fenced } from "./sales-invoice-render.ts";
 
-export { isProblem, type Problem };
-
 const readAmount = (value: unknown, decimals: number, what: string) => readNumber(value, decimals, what, fenced);
 const readPercent = (value: unknown, where: string) => readShare(value, where, fenced);
 

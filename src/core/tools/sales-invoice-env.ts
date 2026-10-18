@@ -1,7 +1,9 @@
 /**
  * What the ops of sales_invoices share: the stores and seams they read and write, the audit event,
- * the one way to ask for what is missing, the due date of an invoice, and how a draft or an
- * invoice is named (a draft id, or the only draft; an invoice by its number).
+ * the one way to ask for what is missing (in three groups: about the person, the customer, this
+ * invoice), the due date of an invoice, how a draft or an invoice is named (a draft id, or the
+ * only draft; an invoice by its number), and what the company's own files in `fatture/emesse/`
+ * say of a year's numbers: only a suggestion and a warning, never the counter.
  */
 import type { ClientStore } from "../client-store.ts";
 import { dueDates } from "../dates.ts";
@@ -11,9 +13,9 @@ import type { InvoiceStore } from "../invoice-store.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
 import type { Marker } from "../marker.ts";
 import type { QuoteStore } from "../quote-store.ts";
-import { CREDIT_NOTE_TYPE } from "../sales-invoice-rules.ts";
+import { CREDIT_NOTE_TYPE, ISSUED_FOLDER } from "../sales-invoice-rules.ts";
 import type { SalesBook, SalesInvoiceStore } from "../sales-invoice-store.ts";
-import { type IssuedInvoice, isIssued, type SalesInvoice } from "../sales-invoices.ts";
+import { type IssuedInvoice, isIssued, SALES_LIMITS, type SalesInvoice } from "../sales-invoices.ts";
 import type { TaxStore } from "../tax-store.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import type { Workspace } from "../workspace.ts";
@@ -21,7 +23,8 @@ import type { Workspace } from "../workspace.ts";
 /** What changed, for the audit: the op and how many, never customers, amounts, numbers or lines. */
 export type SalesEvent = { readonly type: "sales_invoices.changed"; readonly op: "draft" | "credit_note" | "issue" | "remove" | "settings"; readonly count: number };
 
-export type SalesEnv = {
+/** The stores and seams the tool is given (SalesToolsOptions adds the clock, the PDF maker, who is who and the audit). */
+export type SalesStores = {
 	readonly workspace: Workspace;
 	readonly store: SalesInvoiceStore;
 	/** The company's data (invoices set_company): the seller, read only. */
@@ -34,6 +37,9 @@ export type SalesEnv = {
 	/** The workspace's invoices (the scadenzario's scanner): the numbers already used this year. */
 	readonly scanner: Pick<InvoiceScanner, "scan">;
 	readonly timeZone: string;
+};
+
+export type SalesEnv = SalesStores & {
 	readonly now: () => Date;
 	readonly make: (input: MakeInput) => Promise<MadeDocument>;
 	readonly marker: (ctx: ToolContext) => Marker;
@@ -42,9 +48,25 @@ export type SalesEnv = {
 	readonly book: () => SalesBook;
 };
 
+const ASK_HEAD = (what: string) => `Per ${what} mi servono ancora questi dati. Chiedili a chi ti scrive tutti insieme, non inventarli, poi rifai la richiesta con le sue risposte:`;
+
 /** What FatturaPA still needs, to ask the person in one go: never invented. */
 export function askFor(missing: readonly string[], what = "la fattura", tail?: string): string {
-	return [`Per ${what} mi servono ancora questi dati. Chiedili a chi ti scrive tutti insieme, non inventarli, poi rifai la richiesta con le sue risposte:`, ...missing.map((m) => `• ${m}`), ...(tail === undefined ? [] : [tail])].join("\n");
+	return [ASK_HEAD(what), ...missing.map((m) => `• ${m}`), ...(tail === undefined ? [] : [tail])].join("\n");
+}
+
+/** What is missing, by whom it is about; a group with nothing missing is not shown. */
+export type Missing = { readonly me: string[]; readonly customer: string[]; readonly invoice: string[] };
+
+export const noneMissing = (): Missing => ({ me: [], customer: [], invoice: [] });
+
+export const anyMissing = (m: Missing): boolean => m.me.length + m.customer.length + m.invoice.length > 0;
+
+/** The one question, under short headings: about the person (said once), the customer, this invoice. */
+export function askGroups(m: Missing, tails: readonly string[] = []): string {
+	const group = (head: string, items: readonly string[], sep: string) => (items.length === 0 ? [] : [`${head}: ${items.join(sep)}`]);
+	// The person's data are short names, listed with commas; the others may hold a comma or a semicolon of their own.
+	return [ASK_HEAD("la fattura"), ...group("Su di te (una volta sola)", m.me, ", "), ...group("Sul cliente", m.customer, "; "), ...group("Su questa fattura", m.invoice, "; "), ...tails].join("\n");
 }
 
 /** The due date an invoice dated `day` has with its payment terms. */
@@ -77,4 +99,48 @@ export function namedDraft(invoices: readonly SalesInvoice[], said: unknown, ver
 	const drafts = invoices.filter((i) => !isIssued(i));
 	if (drafts.length === 1) return { found: drafts[0] as SalesInvoice };
 	return { answer: drafts.length === 0 ? `Non c'è nessuna bozza da ${verb}.` : `Errore: ci sono più bozze, dimmi quale ${verb}.` };
+}
+
+/** A number as an invoice writes it, within its year: «12», «2026/12», «12/2026», «FT 12»; YYYY the document's own year. */
+export function seqOf(number: string | undefined, year: number): number | undefined {
+	if (number === undefined) return undefined;
+	const t = number.trim();
+	const m = /^(?:FT\s*)?(\d{1,6})$/i.exec(t) ?? /^(\d{4})\/(\d{1,6})$/.exec(t) ?? /^(\d{1,6})\/(\d{4})$/.exec(t);
+	if (m === null) return undefined;
+	let n: string | undefined;
+	if (m.length === 2) n = m[1];
+	else if (/^\d{4}\//.test(t)) n = m[1] === String(year) ? m[2] : undefined;
+	else n = m[2] === String(year) ? m[1] : undefined;
+	const seq = n === undefined ? undefined : Number(n);
+	return seq !== undefined && seq >= 1 && seq < SALES_LIMITS.perYear ? seq : undefined;
+}
+
+/** What the company's own invoices of a year in `fatture/emesse/` say: the highest number and the latest date, each with its file. */
+export type FilesSay = { readonly highest?: { readonly seq: number; readonly file: string }; readonly latest?: { readonly date: string; readonly file: string } };
+
+/**
+ * The company's invoices of `year` in `fatture/emesse/` (supplier = its partita IVA), dated up to
+ * `today`, with a number written in one of the plain ways. A scan that fails says nothing.
+ */
+export async function filesSay(env: Pick<SalesEnv, "scanner">, signal: AbortSignal, vat: string, year: number, today: string): Promise<FilesSay> {
+	let highest: FilesSay["highest"];
+	let latest: FilesSay["latest"];
+	try {
+		const scan = await env.scanner.scan(signal);
+		for (const found of scan.invoices) {
+			if (!found.path.startsWith(`${ISSUED_FOLDER}/`)) continue;
+			const s = found.fattura.supplier.vat;
+			if (s === undefined || `${s.country ?? "IT"}${s.code}`.toUpperCase() !== vat) continue;
+			for (const doc of found.fattura.documents) {
+				if (doc.date === undefined || doc.date.slice(0, 4) !== String(year) || doc.date > today) continue;
+				const seq = seqOf(doc.number, year);
+				if (seq === undefined) continue;
+				if (highest === undefined || seq > highest.seq) highest = { seq, file: found.path };
+				if (latest === undefined || doc.date > latest.date) latest = { date: doc.date, file: found.path };
+			}
+		}
+	} catch (error) {
+		if (signal.aborted) throw error;
+	}
+	return { ...(highest === undefined ? {} : { highest }), ...(latest === undefined ? {} : { latest }) };
 }

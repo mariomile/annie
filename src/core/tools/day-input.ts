@@ -8,7 +8,7 @@ import { addMonths, DateError, endOfMonth, readDate } from "../dates.ts";
 import { addDays, daysBetween, holidayOn, MONTH_NAMES, realDate, weekdayOf, weekend, workingDay } from "../italian-calendar.ts";
 import { italianDate, italianWeekday } from "../italian-format.ts";
 import { fold } from "../text-match.ts";
-import type { Problem } from "./quote-input.ts";
+import type { Problem } from "../text-input.ts";
 
 /** How the caller names the field («date è la data della spesa») and why a day to come is refused. */
 export type DayWords = { readonly field: string; readonly future: string };

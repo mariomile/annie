@@ -11,8 +11,6 @@ import { parseTaxId } from "../tax-ids.ts";
 import { cleanText, isProblem, type Problem, readAmount as coreAmount, readPercent as corePercent } from "../text-input.ts";
 import { fenced } from "./quote-render.ts";
 
-export { cleanText, isProblem, type Problem } from "../text-input.ts";
-
 /** A line as given, before the quote-wide defaults; `own`: given in this call (not kept from the version before). */
 export type GivenLine = { description: string; unit?: string; quantity: string; price: string; discount?: string; vat?: VatRate; vatNote?: string; own: boolean };
 

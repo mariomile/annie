@@ -15,7 +15,7 @@ import { nearOccurrence, type Recurrence } from "./recurrence.ts";
 import { currentAmount, effectiveDue } from "./renewal-dates.ts";
 import { type Renewal, renewalName } from "./renewals.ts";
 import { readFrequency, readItemAmount, readItemFields, readKind, readUntil } from "./tools/cashflow-input.ts";
-import { isProblem } from "./tools/quote-input.ts";
+import { isProblem } from "./text-input.ts";
 import type { Fenced } from "./untrusted.ts";
 
 /** Amounts within this percentage are «the same» for duplicates. */

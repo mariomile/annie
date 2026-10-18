@@ -12,7 +12,6 @@ import { BOLLO_THRESHOLD_CENTS, decimalText, RITENUTA_RATE } from "../quote-sums
 import { lead, letterhead, md } from "../markdown-text.ts";
 import { depositText, euros, priceText, quantityText, totalsOf } from "./quote-render.ts";
 
-export { lead, letterhead, md } from "../markdown-text.ts";
 
 const sentence = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}${/[.!?]$/.test(text) ? "" : "."}`;
 

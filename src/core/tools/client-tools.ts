@@ -34,7 +34,7 @@ import { EDIT_FIELDS, edited, readEdits } from "./client-input.ts";
 import { merged, mergeRefusal } from "./client-merge.ts";
 import { agendaAnswer, briefAnswer, cardLines, clientsCsv, dormantAgentAnswer, dormantAnswer, fenced, listAnswer, mergeLines, nearDay, reminderAnswer, showAnswer, topAgentAnswer, topAnswer } from "./client-render.ts";
 import { line, textOf } from "./field-input.ts";
-import { isProblem } from "./quote-input.ts";
+import { isProblem } from "../text-input.ts";
 import type { ReminderSeam } from "./schedule-tools.ts";
 
 export { reminderInstruction } from "./client-follow-ups.ts";

@@ -13,19 +13,20 @@ import { n1 } from "../format-words.ts";
 import { italianDate } from "../italian-format.ts";
 import { inPeriod, type Period, PeriodError, readPeriod } from "../periods.ts";
 import { QUOTES_BROKEN } from "../quote-store.ts";
+import { FORM_NOTE } from "../client-find.ts";
 import { findQuotes, type Quote, type QuoteCustomer, STATUS_WORDS } from "../quotes.ts";
-import { CREDIT_NOTE_TYPE, DEFAULT_METHOD, FIELD_LIMITS, INPS_CASSA, INVOICE_TYPE, NO_CHANNEL_CODE, naturaWords, REGIME_FORFETTARIO, REGIME_ORDINARIO } from "../sales-invoice-rules.ts";
-import type { SalesBook, SalesSettings, SalesState } from "../sales-invoice-store.ts";
+import { CREDIT_NOTE_TYPE, DEFAULT_METHOD, FIELD_LIMITS, INPS_CASSA, INVOICE_TYPE, naturaWords, REGIME_FORFETTARIO, REGIME_ORDINARIO } from "../sales-invoice-rules.ts";
+import { nextSeq, type SalesBook, type SalesSettings, type SalesState } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
-import { type Buyer, type Cassa, draftId, type HoursRef, invoiceNumber, isIssued, regimeOf, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, type SalesLine, sellerOf, validInvoice } from "../sales-invoices.ts";
+import { type Buyer, type Cassa, draftId, type HoursRef, type IssuedInvoice, invoiceNumber, isIssued, isPersonCf, regimeOf, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, type SalesLine, sellerOf, validInvoice } from "../sales-invoices.ts";
 import { resolveClient } from "../timesheet-clients.ts";
 import { activeReservation, oldestFirst, sameClient, type WorkEntry } from "../timesheet.ts";
 import { TIMESHEET_BROKEN } from "../timesheet-store.ts";
-import { cleanText } from "../text-input.ts";
+import { cleanText, isProblem } from "../text-input.ts";
 import { hoursLines, lineWords, priced } from "../timesheet-sums.ts";
 import { composeBuyer, findBuyer, type Known } from "./sales-invoice-buyer.ts";
-import { askFor, dueOf, findIssued, type SalesEnv } from "./sales-invoice-env.ts";
-import { fitsLatin, type GivenLine, isProblem, paymentTermsOf, quoteLine, readBuyerFields, readCassa, readLines, readNatura, readOrder, readPayment, readRitenuta, readVatRate, withRates } from "./sales-invoice-input.ts";
+import { anyMissing, askFor, askGroups, dueOf, type FilesSay, filesSay, findIssued, type Missing, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
+import { type BuyerFields, fitsLatin, type GivenLine, paymentTermsOf, quoteLine, readBuyerFields, readCassa, readLines, readNatura, readOrder, readPayment, readRitenuta, readVatRate, withRates } from "./sales-invoice-input.ts";
 import { draftAnswer, fenced } from "./sales-invoice-render.ts";
 
 /** Where a draft's lines and customer come from, before the person's own fields. */
@@ -44,10 +45,23 @@ type Source = {
 };
 
 const SELLER_TAIL = "I tuoi dati si salvano una volta con invoices op set_company (name, vat, cf, address, regime, iban), poi rifai questa fattura.";
-const RITENUTA_ASK = "È una prestazione professionale a un'azienda: metto la ritenuta d'acconto del 20%? (lo ricordo per le prossime)";
-const BOLLO_ASK = "Questa fattura supera 77,47 € senza IVA, quindi ha il bollo da 2,00 €: lo paga il cliente (una riga da 2,00 € in fattura) o resta a carico tuo? Lo ricordo per le prossime";
-const IBAN_ASK = "l'IBAN su cui ricevere il bonifico (oppure un altro modo di pagamento: contanti, assegno, carta, pagoPA)";
+const IBAN_TAIL = "L'IBAN si salva una volta con invoices op set_company iban, così non te lo richiedo.";
+const RITENUTA_ASK = "la ritenuta d'acconto del 20% (prestazione professionale a un'azienda o a un ente): sì o no, lo ricordo per le prossime";
+const BOLLO_ASK = "chi paga il bollo da 2,00 € (supera 77,47 € senza IVA): il cliente, con una riga in fattura, o tu; lo ricordo per le prossime";
+const IBAN_ASK = "IBAN su cui ricevere il bonifico (oppure un altro modo di pagamento: contanti, assegno, carta, pagoPA)";
+const VAT_ASK = "aliquota IVA delle voci (22, 10, 5 o 4%, oppure senza IVA con la natura, come N4 esente o N2.1 per un servizio a un cliente UE)";
+const NATURA_ASK = "natura delle voci senza IVA (come N4 esente, N2.1 per un servizio a un cliente UE, N3.1 esportazione): la sa chi ti scrive o il suo commercialista";
+const CASSA_ASK = "cassa professionale del contributo integrativo (codice da TC01 a TC21, come TC01 avvocati o TC04 Inarcassa) e percentuale, se non è il 4%";
 const firstNumberAsk = (year: number) => `È la prima fattura che fai con me quest'anno: qual è il numero dell'ultima fattura che hai emesso nel ${year}? (se nessuna, parto da 1)`;
+const proposeNumber = (year: number, h: number) => `Nei tuoi file l'ultima fattura del ${year} è la ${h}: questa sarà la ${h + 1}, va bene?`;
+const NEW_CUSTOMER = "Se è un cliente diverso da questi, dimmelo e lo fatturo come cliente nuovo.";
+
+/** The last number said before Annie, lower than the files' highest: said, never refused. */
+export function lowNumberNote(last: number, files: FilesSay, year: number): string | undefined {
+	const h = files.highest;
+	if (h === undefined || last >= h.seq) return undefined;
+	return [`Attenzione: tra i tuoi file del ${year} c'è già la fattura n. ${h.seq}, più alta dell'ultima che mi hai detto (${last}): partendo dalla ${last + 1} i numeri si ripeterebbero. Controlla con chi ti scrive; il file è questo:`, fenced(h.file)].join("\n");
+}
 
 /** The last number issued before Annie, as said: a whole number from 0; a string to answer when it does not read. */
 export function readLastNumber(value: unknown): number | undefined | string {
@@ -57,10 +71,9 @@ export function readLastNumber(value: unknown): number | undefined | string {
 }
 
 /** The number the next invoice of `year` would take, as far as the store knows. */
-function nextNumber(book: SalesBook, day: string): string {
+function nextNumber(book: Pick<SalesBook, "next" | "settings">, day: string): string {
 	const year = Number(day.slice(0, 4));
-	const seq = Math.max(book.next[String(year)] ?? 1, (book.settings?.lastBefore?.[String(year)] ?? 0) + 1);
-	return invoiceNumber(year, seq, book.settings?.numbering ?? "plain");
+	return invoiceNumber(year, nextSeq(book, year), book.settings?.numbering ?? "plain");
 }
 
 /** The draft a call made already (a call run again): its answer again. */
@@ -75,18 +88,23 @@ function cards(env: SalesEnv) {
 	return book === undefined || book.broken ? [] : book.cards;
 }
 
-/** The customer a person names: a card, a customer invoiced here, or a new one with the name as said. */
-function customerOf(env: SalesEnv, said: unknown, book: SalesBook, notes: string[]): Known | string {
+/**
+ * The customer a person names: a card, a customer invoiced here, or a new one with the name as
+ * said (also when the person says it is new, or gives tax ids none of the close ones has).
+ */
+function customerOf(env: SalesEnv, said: unknown, book: SalesBook, notes: string[], given: BuyerFields, isNew: boolean): Known | string {
 	const name = cleanText(said, 200, "il cliente");
 	if (isProblem(name)) return `Errore: ${name.problem}.`;
 	if (name === undefined) return "Errore: dimmi a quale cliente va la fattura.";
-	const found = findBuyer(name, cards(env), book.invoices);
-	if (found.kind === "close") return ["Intendi uno di questi? Nessun cliente si chiama esattamente così:", fenced(found.candidates.map((c) => `• ${c}`).join("\n")), "Chiedi a chi ti scrive quale, e ripeti con il nome scritto come qui."].join("\n");
+	if (isNew) return { name };
+	const found = findBuyer(name, cards(env), book.invoices, given);
+	if (found.kind === "close") return ["Intendi uno di questi? Nessun cliente si chiama esattamente così:", fenced(found.candidates.map((c) => `• ${c}`).join("\n")), `Chiedi a chi ti scrive quale, e ripeti con il nome scritto come qui. ${NEW_CUSTOMER}`].join("\n");
 	if (found.kind === "exact") {
-		if (found.form === true) notes.push("Nessun cliente si chiama esattamente così: ho preso quello con lo stesso nome a meno della forma societaria, nel riquadro.");
+		if (found.form === true) notes.push(`${FORM_NOTE} ${NEW_CUSTOMER}`);
 		return found.known;
 	}
-	if (/^(?:[A-Z]{2})?\d{8,12}$|^[A-Z0-9]{16}$/i.test(name.replace(/[\s.\-/]/g, ""))) return askFor(["il nome o la ragione sociale del cliente: con questa partita IVA o codice fiscale non ho nessuno"]);
+	// A tax id alone (not a 16-letter name): a partita IVA, or a codice fiscale's own shape.
+	if (/^(?:[A-Z]{2})?\d{8,12}$|^[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]$/i.test(name.replace(/[\s.\-/]/g, ""))) return askFor(["il nome o la ragione sociale del cliente: con questa partita IVA o codice fiscale non ho nessuno"]);
 	return { name };
 }
 
@@ -114,14 +132,14 @@ function openQuotesNote(env: SalesEnv, k: Known, book: SalesBook): string[] {
 	return [fenced(`${k.name} ha anche ${which}: se è lo stesso lavoro, rifaccio la fattura dal preventivo.`)];
 }
 
-function fromLines(env: SalesEnv, args: Record<string, unknown>, book: SalesBook, notes: string[]): Source | string {
+function fromLines(env: SalesEnv, args: Record<string, unknown>, book: SalesBook, notes: string[], fields: BuyerFields): Source | string {
 	const given = readLines(args.lines);
 	if (isProblem(given)) return `Errore: ${given.problem}.`;
-	const known = customerOf(env, args.customer, book, notes);
+	const known = customerOf(env, args.customer, book, notes, fields, args.new_customer === true);
 	return typeof known === "string" ? known : sourceOf(known, { given, notes: openQuotesNote(env, known, book) });
 }
 
-function fromQuote(env: SalesEnv, args: Record<string, unknown>, book: SalesBook, notes: string[]): Source | string {
+function fromQuote(env: SalesEnv, args: Record<string, unknown>, book: SalesBook, notes: string[], fields: BuyerFields): Source | string {
 	if (env.quotes === undefined) return "Errore: qui non vedo i preventivi: detta le voci della fattura.";
 	const quotes = env.quotes.read();
 	if (quotes.broken) return `Errore: ${QUOTES_BROKEN}.`;
@@ -133,7 +151,7 @@ function fromQuote(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 	if (q.invoice !== undefined) return `Errore: il preventivo ${q.number} è già stato fatturato con la fattura n. ${q.invoice}.`;
 	const replace = typeof args.replace === "string" ? args.replace.trim().toUpperCase() : undefined;
 	const other = book.invoices.find((i) => i.quote === q.number && i.type === INVOICE_TYPE && i.id !== replace);
-	if (other !== undefined) return isIssued(other) ? `Errore: il preventivo ${q.number} è già fatturato con la fattura n. ${other.number}.` : `Errore: per il preventivo ${q.number} c'è già la bozza ${other.id}: emetti quella, oppure rifalla prendendo il suo posto.`;
+	if (other !== undefined) return isIssued(other) ? `Errore: il preventivo ${q.number} è già fatturato con la fattura n. ${other.number}.` : `Errore: per il preventivo ${q.number} c'è già la bozza ${other.id}: emetti quella, oppure la rifaccio prendendo il suo posto.`;
 	// The person's own lines take the place of the quote's: then their prices are theirs.
 	let given: readonly GivenLine[];
 	if (args.lines !== undefined) {
@@ -157,7 +175,7 @@ function fromQuote(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 	};
 	// Another customer named: the quote stays linked, its customer is not taken.
 	if (args.customer !== undefined) {
-		const known = customerOf(env, args.customer, book, notes);
+		const known = customerOf(env, args.customer, book, notes, fields, args.new_customer === true);
 		return typeof known === "string" ? known : sourceOf(known, extra);
 	}
 	const byName = findBuyer(q.customer.name, cards(env), book.invoices);
@@ -170,7 +188,8 @@ function alreadyBilled(entries: readonly WorkEntry[]): string | undefined {
 	const where = new Map<string, number>();
 	for (const e of entries) {
 		if (e.billed === undefined) continue;
-		const key = e.billed.ref !== undefined ? `in ${e.billed.ref}` : e.billed.quote !== undefined ? `nel preventivo ${e.billed.quote}` : "già fatturate";
+		const ref = e.billed.ref;
+		const key = ref !== undefined ? (/^fattura\s/i.test(ref) ? `nella ${ref}` : `in «${ref}»`) : e.billed.quote !== undefined ? `nel preventivo ${e.billed.quote}` : "già fatturate";
 		where.set(key, (where.get(key) ?? 0) + 1);
 	}
 	if (where.size === 0) return undefined;
@@ -203,7 +222,10 @@ function fromHours(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 	const picked = open.filter((e) => !inDrafts.has(e.id)).sort(oldestFirst);
 	const billed = alreadyBilled(mine);
 	if (picked.length === 0) {
-		if (open.length > 0) return "Errore: le ore da fatturare di questo cliente sono già in un'altra bozza: emetti quella, oppure toglila prima.";
+		if (open.length > 0) {
+			const other = book.invoices.find((i) => !isIssued(i) && i.id !== replace && (i.hours ?? []).some((h) => open.some((e) => e.id === h.id)));
+			return `Errore: le ore da fatturare di questo cliente sono già nella bozza ${other?.id ?? ""}: emetti quella, oppure la rifaccio prendendo il suo posto.`;
+		}
 		return billed === undefined ? `Nessuna ora da fatturare per questo cliente, ${period.label}: non ce ne sono.` : [`Nessuna ora da fatturare per questo cliente, ${period.label}: sono già in un preventivo o in una fattura.`, fenced(billed)].join("\n");
 	}
 	if (picked.length > SALES_LIMITS.hours) return `Errore: sono più di ${SALES_LIMITS.hours} voci di ore: fattura un periodo più corto.`;
@@ -226,9 +248,6 @@ function fromHours(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 	});
 }
 
-/** Whether a seller with this codice fiscale is a professional person: the ritenuta is theirs to ask. */
-const personCf = (cf: string | undefined) => cf !== undefined && /^[A-Z]{6}\d{2}/.test(cf);
-
 /** A draft of an invoice (TD01), from a quote, the hours or the lines. */
 export async function draft(env: SalesEnv, args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 	const book = env.book();
@@ -239,65 +258,72 @@ export async function draft(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	}
 	if (args.hours === true && (args.quote !== undefined || args.lines !== undefined)) return "Errore: la fattura delle ore parte solo dalle ore del cliente: per aggiungere altre voci, detta tutte le voci.";
 	if (args.quote === undefined && args.hours !== true && args.lines === undefined) return "Errore: la fattura parte da un preventivo accettato, dalle ore da fatturare di un cliente, oppure dalle voci dettate.";
+	if (args.new_customer !== undefined && typeof args.new_customer !== "boolean") return "Errore: il cliente nuovo è sì o no.";
+	const fields = readBuyerFields(args);
+	if (isProblem(fields)) return `Errore: ${fields.problem}.`;
 	const notes: string[] = [];
-	const src = args.quote !== undefined ? fromQuote(env, args, book, notes) : args.hours === true ? fromHours(env, args, book, day) : fromLines(env, args, book, notes);
+	const src = args.quote !== undefined ? fromQuote(env, args, book, notes, fields) : args.hours === true ? fromHours(env, args, book, day) : fromLines(env, args, book, notes, fields);
 	if (typeof src === "string") return src;
 	notes.push(...src.notes);
-	// Everything missing is gathered and asked once; what is wrong is said at once.
-	const missing: string[] = [];
-	let tail: string | undefined;
+	// Everything missing is gathered and asked once, by whom it is about; what is wrong is said at once.
+	const missing: Missing = noneMissing();
+	const tails: string[] = [];
 	const company = env.company.read().company;
 	const taxes = env.taxes.read();
 	const profile = taxes.broken ? undefined : taxes.profile;
 	const seller = sellerOf(company, profile);
-	if ("missing" in seller) {
-		missing.push(`i tuoi dati per la fattura: ${seller.missing.join("; ")}`);
-		tail = SELLER_TAIL;
-	}
+	if ("missing" in seller) missing.me.push(...seller.missing);
 	const regime = "seller" in seller ? seller.seller.regime : regimeOf(company, profile);
 	const sellerCf = "seller" in seller ? seller.seller.cf : company?.cf;
-	const fields = readBuyerFields(args);
-	if (isProblem(fields)) return `Errore: ${fields.problem}.`;
 	const composed = composeBuyer(src.name, { ...src.known, ...(src.quoteCustomer === undefined ? {} : { quote: src.quoteCustomer }) }, fields);
 	if (isProblem(composed)) return `Errore: ${composed.problem}.`;
 	const buyer: Buyer | undefined = "missing" in composed ? undefined : composed;
-	if ("missing" in composed) missing.push(...composed.missing);
+	if ("missing" in composed) missing.customer.push(...composed.missing);
 	const vat = readVatRate(args.vat, "l'IVA");
 	if (isProblem(vat)) return `Errore: ${vat.problem}.`;
 	const natura = readNatura(args.natura, "le voci senza IVA");
 	if (isProblem(natura)) return `Errore: ${natura.problem}.`;
 	const reference = cleanText(args.reference, FIELD_LIMITS.riferimentoNormativo, "il riferimento normativo");
 	if (isProblem(reference)) return `Errore: ${reference.problem}.`;
-	// Without the regime (asked with the seller's data) the rates wait for it.
+	// Without the regime (asked with the person's data) the rates wait for it.
 	const rated = regime === undefined ? undefined : withRates(src.given, { ...(vat === undefined ? {} : { vat }), ...(natura === undefined ? {} : { natura }), ...(reference === undefined ? {} : { reference }) }, regime);
 	if (rated !== undefined && isProblem(rated)) return `Errore: ${rated.problem}.`;
-	if (rated !== undefined && "missing" in rated) {
-		missing.push(rated.missing === "vat" ? "l'aliquota IVA delle voci: 22, 10, 5 o 4%, oppure senza IVA con la sua natura (per esempio N4 esente, N2.1 per un servizio a un cliente UE)" : "la natura delle voci senza IVA (per esempio N4 esente, N2.1 per un servizio a un cliente UE, N3.1 esportazione): la sa chi ti scrive o il suo commercialista");
-	}
+	if (rated !== undefined && "missing" in rated) missing.invoice.push(rated.missing === "vat" ? VAT_ASK : NATURA_ASK);
 	const lines: SalesLine[] | undefined = rated === undefined || "missing" in rated ? undefined : rated;
 	const long = (lines ?? []).findIndex((l) => !fitsLatin(l.description, FIELD_LIMITS.descrizione) || (l.unit !== undefined && !fitsLatin(l.unit, FIELD_LIMITS.unitaMisura)) || (l.reference !== undefined && !fitsLatin(l.reference, FIELD_LIMITS.riferimentoNormativo)));
 	if (long >= 0) return `Errore: la riga ${long + 1} è troppo lunga per la fattura (la descrizione al massimo ${FIELD_LIMITS.descrizione} caratteri).`;
-	// The ritenuta: as said, or the quote's; to a company in the ordinario, asked once when the seller is a professional person.
+	// The ritenuta: as said, or the quote's; to a company or a public office in the ordinario, asked once when the seller is a professional person.
 	const settings: SalesSettings | undefined = book.settings;
+	if (args.ritenuta !== undefined && typeof args.ritenuta !== "boolean" && typeof args.ritenuta !== "string") return "Errore: la ritenuta è sì, no, o la sua causale.";
 	let ritenutaSaid: unknown = args.ritenuta ?? src.ritenuta;
 	let saveRitenuta: boolean | undefined;
-	const asksRitenuta = regime === REGIME_ORDINARIO && personCf(sellerCf) && buyer?.kind === "business";
+	const asksRitenuta = regime === REGIME_ORDINARIO && isPersonCf(sellerCf) && (buyer?.kind === "business" || buyer?.kind === "pa");
 	if (asksRitenuta && ritenutaSaid === undefined) {
-		if (settings?.ritenutaToBusiness === undefined) missing.push(RITENUTA_ASK);
+		if (settings?.ritenutaToBusiness === undefined) missing.invoice.push(RITENUTA_ASK);
 		else ritenutaSaid = settings.ritenutaToBusiness;
 	} else if (asksRitenuta && args.ritenuta !== undefined && settings?.ritenutaToBusiness === undefined) saveRitenuta = args.ritenuta !== false;
-	if (args.ritenuta !== undefined && typeof args.ritenuta !== "boolean" && typeof args.ritenuta !== "string") return "Errore: la ritenuta è sì, no, o la sua causale.";
-	const ritenuta = regime === undefined || buyer === undefined ? undefined : readRitenuta(ritenutaSaid, regime, sellerCf, buyer.kind);
+	let ritenuta = regime === undefined || buyer === undefined ? undefined : readRitenuta(ritenutaSaid, regime, sellerCf, buyer.kind);
 	if (isProblem(ritenuta)) return `Errore: ${ritenuta.problem}.`;
 	const cassa = args.cassa === undefined ? src.cassa : readCassa(args.cassa);
 	if (isProblem(cassa)) return `Errore: ${cassa.problem}.`;
-	if (cassa !== undefined && "missing" in cassa) missing.push("di quale cassa professionale è il contributo integrativo (il codice da TC01 a TC21, per esempio TC01 avvocati, TC04 Inarcassa) e la percentuale, se non è il 4%");
+	if (cassa !== undefined && "missing" in cassa) missing.invoice.push(CASSA_ASK);
 	if (args.split_payment !== undefined && typeof args.split_payment !== "boolean") return "Errore: la scissione dei pagamenti è sì o no.";
 	const split = args.split_payment === true;
 	if (split && regime === REGIME_FORFETTARIO) return "Errore: in regime forfettario la fattura è senza IVA, quindi la scissione dei pagamenti non si applica.";
-	const payment = readPayment(args, company?.ibans ?? [], src.terms);
+	// The IBAN saved with the company, or the one of the last invoice issued.
+	const lastIban = [...book.invoices].reverse().find((i) => isIssued(i) && i.payment?.iban !== undefined)?.payment?.iban;
+	const ibans = company?.ibans !== undefined && company.ibans.length > 0 ? company.ibans : lastIban === undefined ? [] : [lastIban];
+	const payment = readPayment(args, ibans, src.terms);
 	if (isProblem(payment)) return `Errore: ${payment.problem}.`;
-	if (payment.method === DEFAULT_METHOD && payment.iban === undefined) missing.push(IBAN_ASK);
+	if (payment.method === DEFAULT_METHOD && payment.iban === undefined) {
+		// With the person's data to save anyway, the IBAN goes with them.
+		if (missing.me.length > 0) missing.me.push("IBAN");
+		else {
+			missing.invoice.push(IBAN_ASK);
+			tails.push(IBAN_TAIL);
+		}
+	}
+	if (missing.me.length > 0) tails.unshift(SELLER_TAIL);
 	const order = readOrder(args.order);
 	if (isProblem(order)) return `Errore: ${order.problem}.`;
 	const causale = cleanText(args.notes, SALES_LIMITS.causale, "le note");
@@ -308,16 +334,22 @@ export async function draft(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	let saveBollo: boolean | undefined;
 	if (lines !== undefined && regime !== undefined && salesTotals({ type: INVOICE_TYPE, regime, lines, ...(cassa === undefined || "missing" in cassa ? {} : { cassa }) }).bollo.due) {
 		bolloToClient = (args.bollo_to_client as boolean | undefined) ?? src.bolloToClient ?? settings?.bolloToClient;
-		if (bolloToClient === undefined) missing.push(BOLLO_ASK);
+		if (bolloToClient === undefined) missing.invoice.push(BOLLO_ASK);
 		else if (args.bollo_to_client !== undefined && settings?.bolloToClient === undefined) saveBollo = bolloToClient;
 	}
-	// The first invoice of the year with Annie: the number the person reached before, said once.
+	// The first invoice of the year with Annie: the number reached before, from the files or asked.
 	const year = Number(day.slice(0, 4));
 	const last = readLastNumber(args.last_number);
 	if (typeof last === "string") return last;
-	const firstOfYear = !book.invoices.some((i) => isIssued(i) && i.year === year) && settings?.lastBefore?.[String(year)] === undefined;
-	if (firstOfYear && last === undefined) missing.push(firstNumberAsk(year));
-	if (missing.length > 0 || "missing" in seller || buyer === undefined || lines === undefined || regime === undefined || (cassa !== undefined && "missing" in cassa)) return askFor(missing, "la fattura", tail);
+	const first = await firstOfYear(env, book, ctx, day, company?.vat, last);
+	if (first.ask !== undefined) missing.invoice.push(first.ask);
+	if (first.note !== undefined) notes.push(first.note);
+	if (anyMissing(missing) || "missing" in seller || buyer === undefined || lines === undefined || regime === undefined || (cassa !== undefined && "missing" in cassa)) return askGroups(missing, tails);
+	// A ritenuta with nothing to bear it (only spese anticipate) is dropped.
+	if (ritenuta !== undefined && salesTotals({ type: INVOICE_TYPE, regime, lines, ...(cassa === undefined ? {} : { cassa }), ritenuta }).ritenutaBase === 0n) {
+		ritenuta = undefined;
+		notes.push("Ho tolto la ritenuta d'acconto: nessun compenso soggetto a ritenuta.");
+	}
 	const fieldsOut = {
 		type: INVOICE_TYPE,
 		regime,
@@ -333,22 +365,44 @@ export async function draft(env: SalesEnv, args: Record<string, unknown>, ctx: T
 		...(src.hours === undefined ? {} : { hours: src.hours }),
 		...(bolloToClient === undefined ? {} : { bolloToClient }),
 	} satisfies Omit<SalesInvoice, "id" | "callId" | "by" | "at">;
-	if (buyer.kind === "private" && buyer.code === NO_CHANNEL_CODE && buyer.pec === undefined) notes.push(`Il cliente è un privato senza codice destinatario né PEC: in fattura va il codice ${NO_CHANNEL_CODE}, e una copia va data al cliente.`);
 	const patch: Partial<Pick<SalesSettings, "bolloToClient" | "ritenutaToBusiness">> & { lastBefore?: number } = {
 		...(saveBollo === undefined ? {} : { bolloToClient: saveBollo }),
 		...(saveRitenuta === undefined ? {} : { ritenutaToBusiness: saveRitenuta }),
-		...(firstOfYear && last !== undefined ? { lastBefore: last } : {}),
+		...(first.save === undefined ? {} : { lastBefore: first.save }),
 	};
 	return save(env, args, ctx, day, fieldsOut, notes, "draft", (state) => settingsAfter(state, patch, year, env.marker(ctx)));
 }
 
-/** The settings with what this draft's answers say, said once: a choice already made stays. */
+/**
+ * The last number before Annie, while she has issued nothing this year: as said (corrected, and
+ * warned when lower than the files' highest); proposed from the files in `fatture/emesse/`; not
+ * asked in January when she issued every invoice of last year and the files have none of this
+ * year; asked otherwise. The files never move the number by themselves.
+ */
+async function firstOfYear(env: SalesEnv, book: SalesBook, ctx: ToolContext, day: string, vat: string | undefined, last: number | undefined): Promise<{ ask?: string; note?: string; save?: number }> {
+	const year = Number(day.slice(0, 4));
+	const issued = (y: number) => book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.year === y);
+	if (issued(year).length > 0) return {};
+	const said = book.settings?.lastBefore?.[String(year)];
+	if (said !== undefined && last === undefined) return {};
+	const files: FilesSay = vat === undefined ? {} : await filesSay(env, ctx.signal, vat, year, day);
+	if (last !== undefined) {
+		const low = lowNumberNote(last, files, year);
+		return { save: last, ...(low === undefined ? {} : { note: low }) };
+	}
+	if (files.highest !== undefined) return { ask: proposeNumber(year, files.highest.seq) };
+	const before = issued(year - 1);
+	const allLastYear = day.slice(5, 7) === "01" && before.length > 0 && (book.settings?.lastBefore?.[String(year - 1)] ?? 0) === 0 && Math.min(...before.map((i) => i.seq)) === 1;
+	if (allLastYear) return { save: 0 };
+	return { ask: firstNumberAsk(year) };
+}
+
+/** The settings with what this draft's answers say: a choice made stays; the last number before Annie is corrected while she has issued nothing that year. */
 function settingsAfter(state: SalesState, patch: { bolloToClient?: boolean; ritenutaToBusiness?: boolean; lastBefore?: number }, year: number, marker: { by: string; at: string }): SalesState {
 	const s = state.settings;
 	const bollo = patch.bolloToClient !== undefined && s?.bolloToClient === undefined;
 	const ritenuta = patch.ritenutaToBusiness !== undefined && s?.ritenutaToBusiness === undefined;
-	// The last number before Annie only while she has issued nothing that year.
-	const last = patch.lastBefore !== undefined && s?.lastBefore?.[String(year)] === undefined && !state.invoices.some((i) => isIssued(i) && i.year === year);
+	const last = patch.lastBefore !== undefined && !state.invoices.some((i) => isIssued(i) && i.year === year);
 	if (!bollo && !ritenuta && !last) return state;
 	return {
 		...state,
@@ -407,7 +461,7 @@ export async function creditNote(env: SalesEnv, args: Record<string, unknown>, c
 		regime: original.regime,
 		buyer: original.buyer,
 		lines,
-		...(original.ritenuta === undefined ? {} : { ritenuta: original.ritenuta }),
+		...(original.ritenuta === undefined || lines.every((l) => l.notFee === true) ? {} : { ritenuta: original.ritenuta }),
 		...(original.cassa === undefined ? {} : { cassa: original.cassa }),
 		related: { number: original.number, date: original.date, id: original.id },
 		...(causale === undefined ? {} : { causale }),
@@ -440,7 +494,7 @@ async function save(env: SalesEnv, args: Record<string, unknown>, ctx: ToolConte
 		const old = replace === undefined ? undefined : state.invoices.find((i) => i.id === replace);
 		if (replace !== undefined && (old === undefined || isIssued(old))) throw new SalesInvoiceError(`la bozza ${replace} da sostituire non c'è, o è già emessa`);
 		if (state.invoices.length >= SALES_LIMITS.invoices) throw new SalesInvoiceError("l'archivio delle fatture è pieno");
-		const inv: SalesInvoice = { ...marker, ...fields, id: draftId(state.nextDraft), callId: ctx.callId };
+		const inv: SalesInvoice = { ...marker, ...fields, id: draftId(state.nextDraft), callId: ctx.callId, expected: nextNumber(state, day) };
 		return { ...state, nextDraft: state.nextDraft + 1, invoices: [...state.invoices.filter((i) => i !== old), inv] };
 	});
 	const book = env.book();

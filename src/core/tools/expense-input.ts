@@ -19,7 +19,8 @@ import type { Workspace } from "../workspace.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
 import { fenced } from "./expense-render.ts";
 import { readCategoryWith, readEuros, readMethod } from "./field-input.ts";
-import { cleanText, isProblem, type Problem, readAmount } from "./quote-input.ts";
+import { readAmount } from "./quote-input.ts";
+import { cleanText, isProblem, type Problem } from "../text-input.ts";
 
 /** What an expense holds besides its id and who recorded it. */
 export type ExpenseDraft = Omit<Expense, "id" | "by" | "at" | "callId" | "edited">;

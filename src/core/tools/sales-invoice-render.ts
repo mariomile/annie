@@ -15,7 +15,7 @@ import { italianDate, italianDay } from "../italian-format.ts";
 import { lead, letterhead, md } from "../markdown-text.ts";
 import { latin1 } from "../plain-text.ts";
 import { decimalText } from "../quote-sums.ts";
-import { BOLLO_CENTS, CREDIT_NOTE_TYPE, FORFETTARIO_DICITURA, FOREIGN_CODE, NO_CHANNEL_CODE, naturaWords, PAYMENT_METHODS, REGIME_FORFETTARIO, RITENUTA_RATE, TRANSMIT_DAYS, UPLOAD_PATH } from "../sales-invoice-rules.ts";
+import { BOLLO_CENTS, CREDIT_NOTE_TYPE, FORFETTARIO_DICITURA, FOREIGN_CODE, NO_CHANNEL_CODE, naturaWords, PAYMENT_METHODS, NOT_FEE_NATURA, REGIME_FORFETTARIO, RITENUTA_RATE, TRANSMIT_DAYS, UPLOAD_PATH } from "../sales-invoice-rules.ts";
 import { BOLLO_LINE, type SalesTotals, type SummaryRow } from "../sales-invoice-sums.ts";
 import { addressText, type Buyer, docWord, type IssuedInvoice, isIssued, type Payment, type SalesInvoice, type SalesLine, type Seller } from "../sales-invoices.ts";
 import { fence } from "../untrusted.ts";
@@ -36,7 +36,7 @@ export function channelText(b: Buyer): string {
 	if (b.kind === "pa") return `pubblica amministrazione, codice ufficio ${b.code}`;
 	if (b.code !== NO_CHANNEL_CODE) return `codice destinatario ${b.code}`;
 	if (b.pec !== undefined) return `PEC ${b.pec}`;
-	return "nessun codice: la trova nella sua area dell'Agenzia delle Entrate";
+	return "nessun codice (la trova nella sua area dell'Agenzia delle Entrate; gli diamo il PDF)";
 }
 
 /** «martedì 17 novembre», with the year when it is not `today`'s. */
@@ -77,11 +77,15 @@ function chatTotals(inv: SalesInvoice, t: SalesTotals, due: string | undefined, 
 	const forfettario = inv.regime === REGIME_FORFETTARIO;
 	const credit = inv.type === CREDIT_NOTE_TYPE;
 	if (t.cassaTotal > 0n && inv.cassa !== undefined) out.push(`${inv.cassa.subject ? "Rivalsa INPS" : "Contributo integrativo"} ${decimalText(inv.cassa.rate)}%: ${euros(t.cassaTotal)}`);
+	// The spese anticipate and the bollo (N1) are said apart, not as a rate.
+	const rows = t.rows.filter((r) => r.natura !== NOT_FEE_NATURA);
 	if (!forfettario) {
-		if (t.rows.length > 1) for (const r of t.rows) out.push(r.vat === 0 ? `Senza IVA, ${naturaText(r.natura ?? "")}: ${euros(r.taxable)}` : `Imponibile ${r.vat}%: ${euros(r.taxable)}, IVA ${euros(r.tax)}`);
-		else if (t.vat > 0n) out.push(`IVA ${t.rows[0]?.vat}%: ${euros(t.vat)}`);
-		else if (t.rows[0] !== undefined) out.push(`Senza IVA: ${naturaText(t.rows[0].natura ?? "")}`);
+		if (rows.length > 1) for (const r of rows) out.push(r.vat === 0 ? `Senza IVA, ${naturaText(r.natura ?? "")}: ${euros(r.taxable)}` : `Imponibile ${r.vat}%: ${euros(r.taxable)}, IVA ${euros(r.tax)}`);
+		else if (t.vat > 0n) out.push(`IVA ${rows[0]?.vat}%: ${euros(t.vat)}`);
+		else if (rows[0] !== undefined) out.push(`Senza IVA: ${naturaText(rows[0].natura ?? "")}`);
 	}
+	const advances = t.lines.reduce((sum, l, i) => (l.notFee === true && l !== BOLLO_LINE ? sum + (t.amounts[i] as bigint) : sum), 0n);
+	if (advances > 0n) out.push(`Spese anticipate, senza IVA: ${euros(advances)}`);
 	if (t.bollo.due && !t.bollo.charged) out.push(`Bollo da ${euros(BOLLO_CENTS)}: a carico tuo, non si somma al totale`);
 	const pay = inv.payment === undefined || credit ? "" : `, ${paymentText(inv.payment, due, today)}`;
 	if (credit) out.push(`Totale della nota di credito: ${euros(t.total)}`);
@@ -104,10 +108,11 @@ export function invoiceLines(inv: SalesInvoice, t: SalesTotals, due: string | un
 	const ids = [b.vat === undefined ? undefined : `P.IVA ${b.vat}`, b.cf === undefined ? undefined : `C.F. ${b.cf}`].filter((x) => x !== undefined).join(", ");
 	const out = [`${head}${ids === "" ? "" : `, ${ids}`}`, `Sede: ${addressText(b.address)}`, `Recapito: ${channelText(b)}`];
 	if (inv.related !== undefined) out.push(`Storna la fattura n. ${inv.related.number} del ${italianDate(inv.related.date)}`);
-	const several = inv.regime !== REGIME_FORFETTARIO && t.rows.length > 1;
+	const several = inv.regime !== REGIME_FORFETTARIO && t.rows.filter((r) => r.natura !== NOT_FEE_NATURA).length > 1;
 	t.lines.forEach((l, i) => {
 		const amount = t.amounts[i] as bigint;
 		if (l === BOLLO_LINE) out.push(`Bollo (lo paga il cliente): ${euros(amount)}`);
+		else if (l.notFee === true) out.push(lineText(l, amount, " (spesa anticipata, senza IVA)"));
 		else out.push(lineText(l, amount, several ? ` (${rowWords(l)})` : ""));
 	});
 	out.push(...chatTotals(inv, t, due, today));
@@ -122,22 +127,26 @@ export function invoiceLines(inv: SalesInvoice, t: SalesTotals, due: string | un
 /** After a draft is made. */
 export function draftAnswer(inv: SalesInvoice, t: SalesTotals, due: string | undefined, nextNumber: string, today: string, notes: readonly string[]): string {
 	const which = inv.type === CREDIT_NOTE_TYPE ? `la nota di credito n. ${nextNumber}` : `la n. ${nextNumber}`;
-	return [`Bozza pronta, non ancora emessa (emessa oggi sarebbe ${which}). Mostrala a chi ti scrive e chiedi se va bene: la emetto solo dopo il suo sì.`, fenced(invoiceLines(inv, t, due, today).join("\n")), ...notes, `(Bozza ${inv.id}: per emetterla o rifarla con una modifica.)`].join("\n");
+	return [`Bozza pronta, non ancora emessa (emessa oggi sarebbe ${which}). Mostrala a chi ti scrive e chiedi se va bene: la emetto solo dopo il suo sì.`, fenced(invoiceLines(inv, t, due, today).join("\n")), ...notes, `Per emetterla o cambiarla usa la bozza ${inv.id} (non serve dirlo a chi ti scrive).`].join("\n");
 }
 
-/** After an invoice is issued: where the file is, that nothing was sent, how to upload it and by when, what the customer gets. */
-export function issuedAnswer(inv: IssuedInvoice, t: SalesTotals, notes: readonly string[]): string {
+/**
+ * After an invoice is issued (or completed, `resumed`: issued before, by another call): where the
+ * file is, that nothing was sent, how to upload it and by when, what the customer gets.
+ */
+export function issuedAnswer(inv: IssuedInvoice, t: SalesTotals, notes: readonly string[], resumed = false): string {
 	const what = inv.type === CREDIT_NOTE_TYPE ? "la nota di credito" : "la fattura";
 	const lines = [
-		`Fatto, ho emesso ${what} n. ${inv.number} del ${italianDate(inv.date)}.`,
+		resumed ? `Ho completato ${what} n. ${inv.number} (era già emessa).` : `Fatto, ho emesso ${what} n. ${inv.number} del ${italianDate(inv.date)}.`,
 		fenced(invoiceLines(inv, t, inv.due, inv.date).join("\n")),
 		`Il file XML non l'ho trasmesso al Sistema di Interscambio: finché non è trasmesso, ${what} non è consegnata. Dillo chiaramente.`,
 		`Per caricarlo: ${UPLOAD_PATH}, oppure nel programma di fatturazione di chi ti scrive. Va trasmesso entro ${TRANSMIT_DAYS} giorni dalla data della fattura (entro ${dayText(addDays(inv.date, TRANSMIT_DAYS), inv.date)}): meglio oggi.`,
 	];
 	if (inv.pdf !== undefined) lines.push("La copia di cortesia in PDF non è valida ai fini fiscali: serve al cliente per leggerla.");
-	if (inv.buyer.kind === "private" && inv.buyer.code === NO_CHANNEL_CODE && inv.buyer.pec === undefined) lines.push("Il cliente è un privato senza codice né PEC: una copia va data al cliente (il PDF va bene), e l'originale lo trova nella sua area dell'Agenzia delle Entrate.");
 	if (inv.type !== CREDIT_NOTE_TYPE) lines.push("È già nello scadenzario tra le fatture da incassare.");
-	lines.push("Per mandare il PDF al cliente usa google_mail_send con il PDF in allegato (parte solo dopo l'approvazione nella card); altrimenti mandalo qui con file_send. Non lo mando mai da sola.", ...notes);
+	if (inv.pdf !== undefined) lines.push("Per mandare il PDF al cliente usa google_mail_send con il PDF in allegato (parte solo dopo l'approvazione nella card); altrimenti mandalo qui con file_send. Non lo mando mai da sola.");
+	else if (inv.file !== undefined) lines.push("Il PDF non c'è: al cliente si può mandare il file XML, con google_mail_send in allegato (parte solo dopo l'approvazione nella card) o qui con file_send. Non lo mando mai da sola.");
+	lines.push(...notes);
 	return lines.join("\n");
 }
 
@@ -175,7 +184,7 @@ export function listAnswer(year: number, issued: readonly { inv: IssuedInvoice; 
 		.map(({ inv, t }) => {
 			const credit = inv.type === CREDIT_NOTE_TYPE;
 			const tail = credit ? (inv.related === undefined ? "" : `, storna la n. ${inv.related.number}`) : `${t.toPay === t.total ? "" : `, netto ${euros(t.toPay)}`}${inv.due === undefined ? "" : `, scade il ${italianDate(inv.due)}`}`;
-			const file = inv.file === undefined || inv.finished !== true ? " (emissione da completare: va emessa di nuovo)" : "";
+			const file = inv.finished !== true ? ` (emissione da completare: si completa con la fattura n. ${inv.number})` : "";
 			return `• ${credit ? "nota di credito " : ""}n. ${inv.number} del ${italianDate(inv.date)}, ${inv.buyer.name}: ${credit ? "−" : ""}${euros(t.total)}${tail}${file}`;
 		});
 	if (issued.length > MAX_LISTED) lines.push(`e altre ${issued.length - MAX_LISTED}`);
@@ -191,9 +200,9 @@ export function agentListAnswer(year: number, issued: readonly { inv: IssuedInvo
 	return `${head}${drafts === 0 ? "" : ` ${n1(drafts, "Una bozza", "# bozze")} da emettere.`} Nomi dei clienti e importi per cliente non li do a un altro agente.`;
 }
 
-/** The brief's line: drafts waiting for more than `days` days, invoices whose issue is not complete; nothing otherwise. */
-export function briefLine(stale: number, days: number, unfinished: number): string {
-	const parts = [stale === 0 ? undefined : `${n1(stale, "una bozza di fattura è ferma", "# bozze di fattura sono ferme")} da più di ${days} giorni: vanno emesse o tolte`, unfinished === 0 ? undefined : `${n1(unfinished, "una fattura ha", "# fatture hanno")} l'emissione da completare`].filter((p) => p !== undefined);
+/** The brief's line: drafts waiting for more than `days` days, invoices (by number) whose issue is not complete; nothing otherwise. */
+export function briefLine(stale: number, days: number, unfinished: readonly string[]): string {
+	const parts = [stale === 0 ? undefined : `${n1(stale, "una bozza di fattura è ferma", "# bozze di fattura sono ferme")} da più di ${days} giorni: vanno emesse o tolte`, unfinished.length === 0 ? undefined : `${unfinished.length === 1 ? `la fattura n. ${unfinished[0]} ha` : `le fatture n. ${unfinished.join(", ")} hanno`} l'emissione da completare`].filter((p) => p !== undefined);
 	if (parts.length === 0) return "Niente da segnalare sulle fatture: nel brief non scrivere niente sulle fatture.";
 	const text = parts.join("; ");
 	return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;

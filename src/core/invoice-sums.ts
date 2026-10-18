@@ -76,12 +76,17 @@ export function daysLate(due: string, today: string): number {
 	return daysBetween(payDay(due), today);
 }
 
-/** An amount in hundred-millionths, written: «1.220,00 €». */
 /** A unit price as given, with at least two decimals: 0,0125 € or 500,00 €. */
 export function priceText(price: string): string {
 	return unitsText(toUnits(price) ?? 0n, "EUR");
 }
 
+/** An hourly rate: «45,00 €/h». */
+export function hourlyText(rate: string): string {
+	return `${priceText(rate)}/h`;
+}
+
+/** An amount in hundred-millionths, written: «1.220,00 €». */
 export function unitsText(units: bigint, currency: string): string {
 	return money(fromUnits(units), currency) as string;
 }

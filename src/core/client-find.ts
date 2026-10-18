@@ -28,7 +28,8 @@ export function findNamed<T>(candidates: readonly Candidate<T>[], said: string, 
 		const c = candidates.find((x) => x.ids?.includes(id) === true);
 		return c === undefined ? { kind: "none" } : { kind: "exact", item: c.item, respelled: false };
 	}
-	const compact = t.replace(/[\s.\-/]/g, "").replace(/^(?:p\.?iva|partitaiva)[:]?/i, "").toUpperCase();
+	// Labels out: «P.IVA», «partita IVA», «C.F.», «cf», «codice fiscale» (spaces and dots are gone already).
+	const compact = t.replace(/[\s.\-/]/g, "").replace(/^(?:piva|partitaiva|cf|codicefiscale):?/i, "").toUpperCase();
 	if (/^(?:[A-Z]{2})?\d{8,12}$/.test(compact) || CF.test(compact)) {
 		const v = vatKey(compact);
 		const c = candidates.find((x) => (v !== undefined && x.vat === v) || x.cf === compact);

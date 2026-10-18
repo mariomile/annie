@@ -35,7 +35,8 @@ import { RESERVED, TIMESHEET_BROKEN, type TimesheetBook, type TimesheetStore } f
 import { priced, QUOTE_GROUPS, rulesFor, staleUnbilled, termsOf, timerMinutes, totalsOfPriced } from "../timesheet-sums.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import type { CreateQuote } from "./quote-tools.ts";
-import { cleanText, fileSlug, isProblem } from "./quote-input.ts";
+import { fileSlug } from "./quote-input.ts";
+import { cleanText, isProblem } from "../text-input.ts";
 import { euros } from "./quote-render.ts";
 import { billClient, clientNames, readClient } from "./timesheet-clients.ts";
 import { applyFields, editsSomething, type EntryDraft, readFields, readRate, readRounding } from "./timesheet-input.ts";

@@ -243,6 +243,13 @@ describe("clients", () => {
 		expect(businessKey("Bar Sport S.r.l.")).toBe("bar sport");
 	});
 
+	it("takes a slip of one letter as close, never as the same client", () => {
+		expect(resolveClient("Laura Ner", ["Laura Neri"])).toEqual({ kind: "close", candidates: ["Laura Neri"] });
+		expect(resolveClient("Laura Nero", ["Laura Neri"])).toEqual({ kind: "close", candidates: ["Laura Neri"] });
+		expect(resolveClient("Lara Neri", ["Laura Neri"])).toEqual({ kind: "close", candidates: ["Laura Neri"] });
+		expect(resolveClient("Paolo Bini", ["Laura Neri"])).toEqual({ kind: "none" });
+	});
+
 	it("uses the name of a client already in the timesheet or the quotes", async () => {
 		const s = setup();
 		await s.quoteTool.execute({ op: "create", customer: "Beta Ristorazione S.r.l.", items: [{ description: "Sito", price: 100 }], vat: 22 }, fresh());

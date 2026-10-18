@@ -28,7 +28,7 @@ import { parseFrequency, placeDue, readDue } from "../renewal-dates.ts";
 import { fold } from "../text-match.ts";
 import type { Fenced } from "../untrusted.ts";
 import { readEuros } from "./field-input.ts";
-import { isProblem, type Problem } from "./quote-input.ts";
+import { isProblem, type Problem } from "../text-input.ts";
 
 const FOREIGN = "l'importo è in un'altra valuta: convertilo in euro con exchange_rate e passa gli euro";
 

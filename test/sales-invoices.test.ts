@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
@@ -19,7 +19,9 @@ import type { Quote } from "../src/core/quotes.ts";
 import { FIELD_LIMITS, FORFETTARIO_DICITURA, NATURE, SELLER_PHONE, UPLOAD_PATH } from "../src/core/sales-invoice-rules.ts";
 import { SALES_BROKEN, SalesInvoiceStore } from "../src/core/sales-invoice-store.ts";
 import { amount2, salesTotals } from "../src/core/sales-invoice-sums.ts";
-import { type IssuedInvoice, invoiceProblem, isIssued, italianAddress, progressiveCode, salesAgentReads, salesCallReads, type SalesInvoice, sellerOf } from "../src/core/sales-invoices.ts";
+import { hourlyText } from "../src/core/invoice-sums.ts";
+import { rateText } from "../src/core/tools/timesheet-render.ts";
+import { type IssuedInvoice, invoiceProblem, isIssued, italianAddress, progressiveCode, salesAgentReads, salesCallReads, type SalesInvoice, PERSON_CF, ritenutaType, sellerOf } from "../src/core/sales-invoices.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { resolveClient } from "../src/core/timesheet-clients.ts";
 import { lineWords } from "../src/core/timesheet-sums.ts";
@@ -227,7 +229,7 @@ describe("forfettario", () => {
 	it("declares the bollo past 77,47 and asks once who pays it", async () => {
 		const s = setup({ company: FORFETTARIO });
 		const asked = await s.run({ op: "draft", ...DELTA, lines: [line("Consulenza", "77.48")] });
-		expect(asked).toContain("ha il bollo da 2,00 €");
+		expect(asked).toContain("Su questa fattura: chi paga il bollo da 2,00 € (supera 77,47 € senza IVA)");
 		expect(s.store.read().invoices).toHaveLength(0);
 		const { inv } = await s.issued({ ...DELTA, lines: [line("Consulenza", "77.48")], bollo_to_client: false });
 		const xml = s.xmlOf(inv);
@@ -282,7 +284,7 @@ describe("ordinario", () => {
 	it("groups mixed rates, a nature line and rounds per summary row", async () => {
 		const s = setup();
 		const lines = [line("Progetto", 1000), line("Libro", "19.99", { vat: 4, quantity: 3 }), line("Ristorazione", "33.33", { vat: 10, quantity: 3 }), line("Corso esente", 100, { vat: 0, natura: "N4" })];
-		expect(await s.run({ op: "draft", ...DELTA, lines })).toContain("l'aliquota IVA delle voci");
+		expect(await s.run({ op: "draft", ...DELTA, lines })).toContain("aliquota IVA delle voci");
 		const { inv } = await s.issued({ ...DELTA, lines, vat: 22, bollo_to_client: false });
 		const t = salesTotals(inv);
 		expect(t.rows.map((r) => [r.vat, r.natura, r.taxable, r.tax])).toEqual([
@@ -320,7 +322,7 @@ describe("ordinario", () => {
 
 	it("puts a cassa's contributo on the imponibile, VAT on both, and the ritenuta on the fees only", async () => {
 		const s = setup();
-		expect(await s.run({ op: "draft", ...DELTA, lines: [line("Parere", 1000)], vat: 22, cassa: { kind: "contributo_integrativo" } })).toContain("di quale cassa professionale");
+		expect(await s.run({ op: "draft", ...DELTA, lines: [line("Parere", 1000)], vat: 22, cassa: { kind: "contributo_integrativo" } })).toContain("cassa professionale del contributo integrativo");
 		const { inv } = await s.issued({ ...DELTA, lines: [line("Parere", 1000)], vat: 22, ritenuta: true, cassa: { kind: "contributo_integrativo", type: "TC01" } });
 		const t = salesTotals(inv);
 		expect([t.cassaTotal, t.taxable, t.vat, t.total, t.ritenutaBase, t.ritenuta, t.toPay]).toEqual([4000n, 104000n, 22880n, 126880n, 100000n, 20000n, 106880n]);
@@ -336,7 +338,7 @@ describe("customers", () => {
 		const s = setup();
 		const { inv, answer } = await s.issued({ customer: "Xenia Quaz", cf: "XQZKWJ80A41H501T", address: "Via Dante 3, 40121 Bologna BO", lines: [line("Ripetizioni", 60)], vat: 22 });
 		expect(inv.buyer.kind).toBe("private");
-		expect(answer).toContain("una copia va data al cliente");
+		expect(answer).toContain("Recapito: nessun codice (la trova nella sua area dell'Agenzia delle Entrate; gli diamo il PDF)");
 		const xml = s.xmlOf(inv);
 		expect(xml).toContain("<CodiceDestinatario>0000000</CodiceDestinatario>");
 		const buyer = child(child(tree(xml), "FatturaElettronicaHeader"), "CessionarioCommittente");
@@ -388,8 +390,7 @@ describe("customers", () => {
 	it("asks what FatturaPA needs of the customer, and never guesses it", async () => {
 		const s = setup();
 		const answer = await s.run({ op: "draft", customer: "Nuovo Cliente Srl", lines: [line("Servizio", 100)], vat: 22 });
-		expect(answer).toContain("la partita IVA del cliente");
-		expect(answer).toContain("CAP, comune e provincia");
+		expect(answer).toContain("Sul cliente: partita IVA e codice destinatario (7 caratteri) o PEC; per un privato il codice fiscale; indirizzo");
 		expect(answer).toContain("non inventarli");
 		expect(s.store.read().invoices).toHaveLength(0);
 		const bad = await s.run({ op: "draft", ...DELTA, address: "Via Verdi 2, Roma", lines: [line("Servizio", 100)], vat: 22 });
@@ -400,7 +401,7 @@ describe("customers", () => {
 		const card: ClientCard = { id: "CL-0001", name: "Delta Servizi Srl", aliases: ["Delta"], vat: "IT00000020016", address: "Via Verdi 2, 00184 Roma RM", tags: [], contacts: [], notes: [], followUps: [], contactLog: [], by: "test:u", at: NOW.toISOString() } as unknown as ClientCard;
 		const s = setup({ cards: [card] });
 		const answer = await s.run({ op: "draft", customer: "Delta", recipient_code: "ZZZ0001", lines: [line("Servizio", 100)], vat: 22 });
-		expect(answer).toContain("Bozza BZ-0001");
+		expect(answer).toContain("Per emetterla o cambiarla usa la bozza BZ-0001 (non serve dirlo a chi ti scrive).");
 		expect(s.last().buyer).toMatchObject({ name: "Delta Servizi Srl", vat: "IT00000020016", card: "CL-0001" });
 	});
 });
@@ -409,13 +410,11 @@ describe("the seller", () => {
 	it("asks for what is missing from the company's data", async () => {
 		const s = setup({ company: { vat: SELLER_VAT, name: "Beta Studio Srl", by: "test:u", at: NOW.toISOString() } });
 		const answer = await s.run({ op: "draft", ...DELTA, lines: [line("Servizio", 100)], vat: 22 });
-		expect(answer).toContain("il codice fiscale");
-		expect(answer).toContain("il regime fiscale");
-		expect(answer).toContain("l'indirizzo della sede");
+		expect(answer).toContain("Su di te (una volta sola): codice fiscale, regime (ordinario o forfettario), indirizzo con CAP, comune e provincia");
 		expect(answer).toContain("non inventarli");
 		expect(s.store.read().invoices).toHaveLength(0);
 		const none = setup({ company: null });
-		expect(await none.run({ op: "draft", ...DELTA, lines: [line("Servizio", 100)], vat: 22 })).toContain("la partita IVA");
+		expect(await none.run({ op: "draft", ...DELTA, lines: [line("Servizio", 100)], vat: 22 })).toContain("Su di te (una volta sola): nome o ragione sociale, partita IVA, codice fiscale, regime (ordinario o forfettario), indirizzo con CAP, comune e provincia, IBAN");
 	});
 
 	it("reads the company's address in its parts", () => {
@@ -542,10 +541,10 @@ describe("calls run again", () => {
 		await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
 		const draft = s.last();
 		// Stopped right after the number was taken.
-		const { inv } = { inv: s.store.issue(draft.id, "lost-call", "2026-10-18", { seq: 0, date: "" }, (d, number, seq, progressive) => ({ ...d, number, year: 2026, seq, date: "2026-10-18", due: "2026-11-17", seller: { name: "Beta Studio Srl", vat: SELLER_VAT, cf: "00000010017", regime: "RF01", address: { street: "Via Roma 1", cap: "20121", town: "Milano", province: "MI", country: "IT" } }, progressive, issued: { by: "test:u", at: NOW.toISOString() }, issueCall: "lost-call" })) };
+		const { inv } = { inv: s.store.issue(draft.id, "lost-call", "2026-10-18", undefined, (d, number, seq, progressive) => ({ ...d, number, year: 2026, seq, date: "2026-10-18", due: "2026-11-17", seller: { name: "Beta Studio Srl", vat: SELLER_VAT, cf: "00000010017", regime: "RF01", address: { street: "Via Roma 1", cap: "20121", town: "Milano", province: "MI", country: "IT" } }, progressive, issued: { by: "test:u", at: NOW.toISOString() }, issueCall: "lost-call" })) };
 		expect(inv.file).toBeUndefined();
 		const answer = await s.run({ op: "issue", draft: draft.id, confirm: true });
-		expect(answer).toContain("ho emesso la fattura n. 1");
+		expect(answer).toContain("Ho completato la fattura n. 1 (era già emessa).");
 		const done = s.store.read().invoices[0] as IssuedInvoice;
 		expect(done.number).toBe("1");
 		expect(existsSync(join(s.root, done.file as string))).toBe(true);
@@ -775,24 +774,11 @@ describe("review fixes", () => {
 	it("S1: the setting is one-time, said before the first invoice of the year", async () => {
 		const s = setup({ askFirst: true });
 		expect(await s.run({ op: "settings", last_number: 12 })).toContain("Nel 2026 l'ultima fattura prima di me era la 12: parto dalla 13.");
-		expect(await s.run({ op: "settings", last_number: 15 })).toContain("si dice una volta sola");
-		expect((await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 })).inv.number).toBe("13");
+		expect(await s.run({ op: "settings", last_number: 14 })).toContain("Corretto: l'ultima prima di me era la 14, parto dalla 15.");
+		expect((await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 })).inv.number).toBe("15");
+		expect(await s.run({ op: "settings" })).toContain("L'ultima fattura del 2026 è la n. 15: la prossima sarà la 16.");
 	});
 
-	it("S1: goes past the company's own invoices found in the workspace, and keeps to their dates", async () => {
-		const s = setup();
-		const { inv } = await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
-		mkdirSync(join(s.root, "archivio"), { recursive: true });
-		const old = { ...inv, number: "7", seq: 7, date: "2026-10-10", progressive: "ZZZ01" };
-		writeFileSync(join(s.root, "archivio/vecchia.xml"), fatturaXml(old, salesTotals(old)));
-		expect((await s.issued({ ...DELTA, lines: [line("B", 100)], vat: 22 })).inv.number).toBe("8");
-		const later = { ...inv, number: "2026/9", seq: 9, date: "2026-10-25", progressive: "ZZZ02" };
-		writeFileSync(join(s.root, "archivio/dopo.xml"), fatturaXml(later, salesTotals(later)));
-		await s.run({ op: "draft", ...DELTA, lines: [line("C", 100)], vat: 22 });
-		const refused = await s.run({ op: "issue", draft: s.last().id, confirm: true });
-		expect(refused).toContain("una data successiva");
-		expect(isIssued(s.last())).toBe(false);
-	});
 
 	it("S1: a broken archive is restored from the copy, never deleted", () => {
 		expect(SALES_BROKEN).toContain("Non va cancellato: con l'istanza ferma, va rimessa al suo posto la copia sales-invoices.json.bak");
@@ -807,25 +793,6 @@ describe("review fixes", () => {
 		expect(s.store.read().invoices.filter((i) => i.type === "TD04")).toHaveLength(1);
 	});
 
-	it("S3: an issue is finished only when every step is done; issuing again completes it", async () => {
-		const s = setup();
-		s.pdf.fails = true;
-		await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
-		const id = s.last().id;
-		const first = await s.run({ op: "issue", draft: id, confirm: true });
-		expect(first).toContain("L'emissione non è completa");
-		const half = s.store.read().invoices[0] as IssuedInvoice;
-		expect([half.number, half.finished, half.pdf]).toEqual(["1", undefined, undefined]);
-		expect(await s.run({ op: "list" })).toContain("emissione da completare");
-		expect(await s.run({ op: "list", compact: true })).toContain("Una fattura ha l'emissione da completare.");
-		s.pdf.fails = false;
-		const second = await s.run({ op: "issue", draft: id, confirm: true });
-		expect(second).toContain("ho emesso la fattura n. 1");
-		const done = s.store.read().invoices[0] as IssuedInvoice;
-		expect([done.number, done.finished, done.pdf]).toEqual(["1", true, `fatture/emesse/${SELLER_VAT}_00001.pdf`]);
-		expect(s.store.read().next).toEqual({ 2026: 2 });
-		expect(await s.run({ op: "issue", draft: id, confirm: true })).toContain("è già emessa");
-	});
 
 	it("S4 and S5: a spesa anticipata (N1) and the bollo are outside the ritenuta and the cassa", async () => {
 		const s = setup();
@@ -844,18 +811,6 @@ describe("review fixes", () => {
 		roundTrip(inv, xml);
 	});
 
-	it("S6: refuses the ritenuta to a private or foreign customer, and asks it once for a professional's invoice to a company", async () => {
-		const s = setup({ company: PROF });
-		expect(await s.run({ op: "draft", customer: "Xenia Quaz", cf: "XQZKWJ80A41H501T", address: "Via Dante 3, 40121 Bologna BO", lines: [line("A", 100)], vat: 22, ritenuta: true })).toContain("un privato non è sostituto d'imposta");
-		expect(await s.run({ op: "draft", customer: "Muster GmbH", vat_number: "DE111111117", address: "Hauptstrasse 5, 10115 Berlin", lines: [line("A", 100)], vat: 0, natura: "N2.1", ritenuta: true })).toContain("un cliente estero non è sostituto d'imposta");
-		const asked = await s.run({ op: "draft", ...DELTA, lines: [line("Consulenza", 100)], vat: 22 });
-		expect(asked).toContain("È una prestazione professionale a un'azienda: metto la ritenuta d'acconto del 20%?");
-		await s.run({ op: "draft", ...DELTA, lines: [line("Consulenza", 100)], vat: 22, ritenuta: true });
-		expect(s.last().ritenuta).toEqual({ type: "RT01", causale: "A" });
-		expect(s.store.read().settings?.ritenutaToBusiness).toBe(true);
-		expect(await s.run({ op: "draft", ...DELTA, lines: [line("Altro", 100)], vat: 22 })).toContain("Bozza pronta");
-		expect(s.last().ritenuta).toBeDefined();
-	});
 
 	it("S7: a credit note's lines keep the invoice's rates, and each rate is credited at most its imponibile", async () => {
 		const s = setup();
@@ -875,7 +830,7 @@ describe("review fixes", () => {
 		const { inv } = await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
 		expect(invoiceProblem({ ...inv, seller: { ...inv.seller, phone: "12" } })).toContain("il telefono dell'azienda");
 		await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 });
-		expect(() => s.store.issue(s.last().id, "bad", "2026-10-18", { seq: 0, date: "" }, (d, number, seq, progressive) => ({ ...d, number, year: 2026, seq, date: "2026-10-18", seller: { ...inv.seller, phone: "12" }, progressive, issued: inv.issued, issueCall: "bad" }))).toThrow("il telefono dell'azienda");
+		expect(() => s.store.issue(s.last().id, "bad", "2026-10-18", undefined, (d, number, seq, progressive) => ({ ...d, number, year: 2026, seq, date: "2026-10-18", seller: { ...inv.seller, phone: "12" }, progressive, issued: inv.issued, issueCall: "bad" }))).toThrow("il telefono dell'azienda");
 	});
 
 	it("S9: the tests hold only made-up tax ids", () => {
@@ -883,31 +838,7 @@ describe("review fixes", () => {
 		for (const real of ["0074311015" + "7", "0331122003" + "6", "DE13669597" + "6", "M5UXCR" + "1", "8001234567" + "8", "IT60X054281110100000012345" + "6", "BNCLRA80A41H50" + "1D", "VRDGPP75C10F20" + "5G"]) expect(own).not.toContain(real);
 	});
 
-	it("U1: asks everything missing in one message, with the seller's data saved once", async () => {
-		const s = setup({ company: { vat: SELLER_VAT, name: "Kevin Wojtq", regime: "forfettario", by: "test:u", at: NOW.toISOString() }, askFirst: true });
-		const asked = await s.run({ op: "draft", customer: "Nuovo Cliente Srl", lines: [line("Consulenza", 500)] });
-		expect(asked.match(/mi servono ancora/g)).toHaveLength(1);
-		expect(asked).toContain("i tuoi dati per la fattura: il codice fiscale");
-		expect(asked).toContain("la partita IVA del cliente con il suo codice destinatario (7 caratteri, glielo dà il suo commercialista o il suo programma di fatture) oppure la sua PEC; se è un privato basta il codice fiscale");
-		expect(asked).toContain("ha il bollo da 2,00 €");
-		expect(asked).toContain("l'IBAN su cui ricevere il bonifico");
-		expect(asked).toContain("qual è il numero dell'ultima fattura");
-		expect(asked).toContain("si salvano una volta con invoices op set_company (name, vat, cf, address, regime, iban), poi rifai questa fattura.");
-		expect(asked).not.toMatch(/P\.IVA|C\.F\./);
-		const ordinario = setup({ company: { vat: SELLER_VAT, name: "Beta Studio Srl", regime: "ordinario", by: "test:u", at: NOW.toISOString() } });
-		const both = await ordinario.run({ op: "draft", customer: "Nuovo Cliente Srl", lines: [line("Servizio", 50)] });
-		expect(both).toContain("l'aliquota IVA delle voci");
-		expect(both).toContain("l'indirizzo della sede");
-		const description = readFileSync(join(import.meta.dirname, "../src/core/tools/invoice-tools.ts"), "utf8");
-		expect(description).toContain("the quotes' letterhead and the electronic invoices of sales_invoices");
-	});
 
-	it("U2: asks the IBAN for a bonifico when none is saved", async () => {
-		const s = setup({ company: { ...ORDINARIO, ibans: [] } });
-		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 })).toContain("l'IBAN su cui ricevere il bonifico");
-		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22, method: "contanti" })).toContain("Bozza pronta");
-		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22, iban: IBAN })).toContain("Bozza pronta");
-	});
 
 	it("U3: a quote's draft takes the lines and the customer said, and stays linked to the quote", async () => {
 		const s = setup({ quotes: [quote()] });
@@ -929,23 +860,6 @@ describe("review fixes", () => {
 		expect(hours).toContain("una voce è nel preventivo 2026-004");
 	});
 
-	it("U5: shows the draft as it reads on a phone", async () => {
-		const s = setup({ company: FORFETTARIO });
-		const draft = await s.run({ op: "draft", ...DELTA, lines: [line("Consulenza", 1500)], bollo_to_client: true });
-		expect(draft.split("\n")[0]).toBe("Bozza pronta, non ancora emessa (emessa oggi sarebbe la n. 1). Mostrala a chi ti scrive e chiedi se va bene: la emetto solo dopo il suo sì.");
-		for (const l of ["Consulenza: 1.500,00 €", "Bollo (lo paga il cliente): 2,00 €", `Totale da pagare: 1.502,00 €, entro martedì 17 novembre, bonifico su ${IBAN}`, "Senza IVA: regime forfettario"]) expect(draft).toContain(l);
-		expect(draft).not.toContain("1 ×");
-		expect(draft).not.toContain("Imponibile");
-		const o = setup();
-		const mixed = await o.run({ op: "draft", ...DELTA, lines: [line("Sito", 1000), line("Corso", 100, { vat: 0, natura: "N4" })], vat: 22, bollo_to_client: false });
-		expect(mixed).toContain("Corso: 100,00 € (senza IVA: esenti (N4))");
-		expect(mixed).toContain("Senza IVA, esenti (N4): 100,00 €");
-		const single = await o.run({ op: "draft", ...DELTA, lines: [line("Sito", 1000)], vat: 22 });
-		expect(single).toContain("IVA 22%: 220,00 €");
-		expect(single).not.toContain("Imponibile 22%");
-		const privato = await o.run({ op: "draft", customer: "Xenia Quaz", cf: "XQZKWJ80A41H501T", address: "Via Dante 3, 40121 Bologna BO", lines: [line("Lezione", 60)], vat: 22 });
-		expect(privato).toContain("Recapito: nessun codice: la trova nella sua area dell'Agenzia delle Entrate");
-	});
 
 	it("U6: after the issue, how to upload the file and by when, and how the PDF reaches the customer", async () => {
 		const s = setup();
@@ -963,7 +877,7 @@ describe("review fixes", () => {
 	});
 
 	it("U8: the brief reads the invoices' compact line, within the instruction's limit", async () => {
-		expect(BRIEF_INSTRUCTION).toContain("14. Le fatture in uscita (sales_invoices con op list e compact true): come la cassa.");
+		expect(BRIEF_INSTRUCTION).toContain("14. Le fatture in uscita (sales_invoices con op list e compact true): come le ore.");
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		expect(await setup().run({ op: "list", compact: true })).toBe("Niente da segnalare sulle fatture: nel brief non scrivere niente sulle fatture.");
 	});
@@ -1018,5 +932,261 @@ describe("review fixes", () => {
 		expect(read("sales-invoices.ts")).not.toContain("InvoiceSender");
 		expect(read("sales-invoice-rules.ts")).toContain("an accredited channel (an intermediary");
 		for (const f of ["tools/sales-invoice-draft.ts", "tools/sales-invoice-issue.ts", "tools/sales-invoice-tools.ts", "tools/sales-invoice-render.ts", "fattura-pa-writer.ts"]) expect(read(f)).not.toContain('import("');
+	});
+});
+
+// The second pass of the review, by its numbers: N the numbering, S security, U the person's words.
+describe("second pass", () => {
+	const PROF: Company = { ...ORDINARIO, name: "Kevin Wojtq", cf: "KWJXQZ75C10F205V" };
+	/** An invoice of the company written elsewhere, as a file in the workspace. */
+	async function companyFile(s: ReturnType<typeof setup>, file: string, over: Partial<IssuedInvoice>): Promise<void> {
+		const t = setup();
+		const { inv } = await t.issued({ ...DELTA, lines: [line("Vecchia", 100)], vat: 22 });
+		const doc = { ...inv, ...over } as IssuedInvoice;
+		mkdirSync(dirname(join(s.root, file)), { recursive: true });
+		writeFileSync(join(s.root, file), fatturaXml(doc, salesTotals(doc)));
+	}
+	const OWN = (n: number, date = "2026-10-10") => ({ number: String(n), seq: n, date, progressive: `ZZ${String(n).padStart(3, "0")}` });
+
+	it("N1: only the counter and the last number said move the number, never the files", async () => {
+		const s = setup();
+		await companyFile(s, "fatture/emesse/altra.xml", OWN(7));
+		expect((await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 })).inv.number).toBe("1");
+	});
+
+	it("N2: proposes the number after the highest in fatture/emesse, and saves it on the yes", async () => {
+		const s = setup({ askFirst: true });
+		await companyFile(s, "fatture/emesse/altra.xml", OWN(7));
+		const asked = await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
+		expect(asked).toContain("Nei tuoi file l'ultima fattura del 2026 è la 7: questa sarà la 8, va bene?");
+		expect(asked).not.toContain("qual è il numero dell'ultima fattura");
+		const { inv } = await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22, last_number: 7 });
+		expect(inv.number).toBe("8");
+	});
+
+	it("N3: reads only fatture/emesse, the company's own, up to today, with a plain number of its year", async () => {
+		const s = setup({ askFirst: true });
+		await companyFile(s, "archivio/fuori.xml", OWN(9));
+		await companyFile(s, "fatture/emesse/futura.xml", OWN(9, "2026-12-01"));
+		await companyFile(s, "fatture/emesse/anno.xml", { ...OWN(9), number: "2025/9" });
+		await companyFile(s, "fatture/emesse/strana.xml", { ...OWN(9), number: "A-9-B" });
+		await companyFile(s, "fatture/emesse/altrui.xml", { ...OWN(9), seller: { name: "Omega Srl", vat: "IT00000030015", cf: "00000030015", regime: "RF01", address: { street: "Corso Italia 9", cap: "10121", town: "Torino", province: "TO", country: "IT" } } });
+		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 })).toContain("qual è il numero dell'ultima fattura che hai emesso nel 2026?");
+		await companyFile(s, "fatture/emesse/ft.xml", { ...OWN(4), number: "FT 4" });
+		await companyFile(s, "fatture/emesse/slash.xml", { ...OWN(5), number: "5/2026" });
+		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 })).toContain("l'ultima fattura del 2026 è la 5");
+	});
+
+	it("N4: in January, after a year issued all with Annie and no other invoice this year, does not ask", async () => {
+		const run = async (iso: string) => {
+			const s = setup({ askFirst: true });
+			await s.run({ op: "settings", last_number: 0 });
+			await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
+			s.at(iso);
+			return { s, answer: await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 }) };
+		};
+		const january = await run("2027-01-05T09:00:00Z");
+		expect(january.answer).toContain("Bozza pronta");
+		expect(january.s.store.read().settings?.lastBefore?.[2027]).toBe(0);
+		expect((await run("2027-02-02T09:00:00Z")).answer).toContain("qual è il numero dell'ultima fattura che hai emesso nel 2027?");
+	});
+
+	it("N5: a last number lower than the files' is warned with the file, never refused", async () => {
+		const s = setup({ askFirst: true });
+		await companyFile(s, "fatture/emesse/altra.xml", OWN(7));
+		const answer = await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22, last_number: 3 });
+		expect(answer).toContain("c'è già la fattura n. 7, più alta dell'ultima che mi hai detto (3)");
+		expect(answer).toContain("fatture/emesse/altra.xml");
+		expect(answer).toContain("Bozza pronta");
+		expect(await s.run({ op: "settings", last_number: 2 })).toContain("fatture/emesse/altra.xml");
+	});
+
+	it("N6: the last number is corrected until the first invoice; then the settings say where the numbering is", async () => {
+		const s = setup({ askFirst: true });
+		await s.run({ op: "settings", last_number: 12 });
+		expect(await s.run({ op: "settings", last_number: 14 })).toContain("Corretto: l'ultima prima di me era la 14, parto dalla 15.");
+		await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
+		expect(await s.run({ op: "settings" })).toContain("L'ultima fattura del 2026 è la n. 15: la prossima sarà la 16.");
+		expect(await s.run({ op: "settings", last_number: 20 })).toContain("Non ho cambiato niente");
+	});
+
+	it("N7: a number different from the draft's is explained", async () => {
+		const s = setup();
+		await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
+		const first = s.last().id;
+		expect(s.last().expected).toBe("1");
+		await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 });
+		const second = s.last().id;
+		s.at("2026-10-18T09:00:00Z");
+		await s.run({ op: "issue", draft: second, confirm: true });
+		const answer = await s.run({ op: "issue", draft: first, confirm: true });
+		expect(answer).toContain("Nella bozza avevo detto la n. 1: è la n. 2 perché intanto è stata emessa un'altra fattura.");
+	});
+
+	it("N8: the dates follow the numbers; a later one is named, invoice or file", async () => {
+		const s = setup();
+		s.at("2026-10-20T09:00:00Z");
+		await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
+		s.at("2026-10-18T09:00:00Z");
+		await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 });
+		expect(await s.run({ op: "issue", draft: s.last().id, confirm: true })).toContain("c'è già la fattura n. 1 con una data successiva");
+		const t = setup();
+		await t.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 });
+		const draft = t.last();
+		expect(() => t.store.issue(draft.id, "x", "2026-10-18", { date: "2026-10-19", file: "fatture/emesse/altra.xml" }, (d) => d)).toThrow("nel file fatture/emesse/altra.xml c'è una fattura di quest'anno con una data successiva");
+	});
+
+	it("S2: an unfinished issue is completed first, by number, without touching other drafts", async () => {
+		const s = setup();
+		await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
+		const half = s.last();
+		s.store.issue(half.id, "lost-call", "2026-10-18", undefined, (d, number, seq, progressive) => ({ ...d, number, year: 2026, seq, date: "2026-10-18", due: "2026-11-17", seller: { name: "Beta Studio Srl", vat: SELLER_VAT, cf: "00000010017", regime: "RF01", address: { street: "Via Roma 1", cap: "20121", town: "Milano", province: "MI", country: "IT" } }, progressive, issued: { by: "test:u", at: NOW.toISOString() }, issueCall: "lost-call" }));
+		await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 });
+		expect(await s.run({ op: "list" })).toContain("(emissione da completare: si completa con la fattura n. 1)");
+		expect(await s.run({ op: "list", compact: true })).toBe("La fattura n. 1 ha l'emissione da completare.");
+		const answer = await s.run({ op: "issue" });
+		expect(answer.split("\n")[0]).toBe("Ho completato la fattura n. 1 (era già emessa).");
+		expect(isIssued(s.last())).toBe(false);
+		expect(await s.run({ op: "finish", invoice: "1" })).toContain("è già emessa e completa");
+		expect(await s.run({ op: "finish", invoice: "9" })).toContain("non trovo una fattura emessa");
+	});
+
+	it("S2: without the PDF the invoice is finished, and the XML is what goes to the customer", async () => {
+		const s = setup();
+		s.pdf.fails = true;
+		const { inv, answer } = await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
+		expect(inv.pdf).toBeUndefined();
+		expect((s.store.read().invoices[0] as IssuedInvoice).finished).toBe(true);
+		expect(answer).toContain("Il PDF non c'è: al cliente si può mandare il file XML");
+		expect(answer).not.toContain("con il PDF in allegato");
+	});
+
+	it("S3: a ritenuta with no fee to bear it is dropped", async () => {
+		const s = setup({ company: PROF });
+		const answer = await s.run({ op: "draft", ...DELTA, lines: [line("Diritti anticipati", 50, { advance: true })], ritenuta: true });
+		expect(answer).toContain("nessun compenso soggetto a ritenuta");
+		expect(s.last().ritenuta).toBeUndefined();
+	});
+
+	it("S4: the issue is audited once, when it is finished", async () => {
+		const s = setup();
+		await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
+		const half = s.last();
+		s.store.issue(half.id, "lost-call", "2026-10-18", undefined, (d, number, seq, progressive) => ({ ...d, number, year: 2026, seq, date: "2026-10-18", due: "2026-11-17", seller: { name: "Beta Studio Srl", vat: SELLER_VAT, cf: "00000010017", regime: "RF01", address: { street: "Via Roma 1", cap: "20121", town: "Milano", province: "MI", country: "IT" } }, progressive, issued: { by: "test:u", at: NOW.toISOString() }, issueCall: "lost-call" }));
+		await s.run({ op: "finish", invoice: "1" });
+		await s.run({ op: "finish", invoice: "1" });
+		await s.run({ op: "issue", draft: half.id, confirm: true });
+		expect(s.events.filter((e) => e.op === "issue")).toHaveLength(1);
+	});
+
+	it("S5: the IBAN asked with the person's data, or alone with how to save it; the last invoice's reused", async () => {
+		const missingAll = setup({ company: { vat: SELLER_VAT, name: "Beta Studio Srl", regime: "ordinario", by: "test:u", at: NOW.toISOString() } });
+		const asked = await missingAll.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
+		expect(asked).toContain("Su di te (una volta sola): codice fiscale, indirizzo con CAP, comune e provincia, IBAN");
+		expect(asked).not.toContain("così non te lo richiedo");
+		const s = setup({ company: { ...ORDINARIO, ibans: [] } });
+		const only = await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
+		expect(only).toContain("Su questa fattura: IBAN su cui ricevere il bonifico");
+		expect(only).toContain("L'IBAN si salva una volta con invoices op set_company iban, così non te lo richiedo.");
+		await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22, iban: IBAN });
+		expect(await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 })).toContain("Bozza pronta");
+		expect(s.last().payment?.iban).toBe(IBAN);
+	});
+
+	it("S6: a codice fiscale said with its label finds the customer", async () => {
+		const s = setup();
+		await s.issued({ customer: "Xenia Quaz", cf: "XQZKWJ80A41H501T", address: "Via Dante 3, 40121 Bologna BO", lines: [line("Lezione", 60)], vat: 22 });
+		await s.run({ op: "draft", customer: "c.f. XQZKWJ80A41H501T", lines: [line("Lezione", 60)], vat: 22 });
+		expect(s.last().buyer).toMatchObject({ name: "Xenia Quaz", cf: "XQZKWJ80A41H501T" });
+	});
+
+	it("U1: a name containing a client's is a new customer with other tax ids, or when the person says so", async () => {
+		const card = { id: "CL-0001", name: "Delta Servizi Srl", aliases: [], vat: "IT00000020016", address: "Via Verdi 2, 00184 Roma RM", tags: [], contacts: [], notes: [], followUps: [], contactLog: [], by: "test:u", at: NOW.toISOString() } as unknown as ClientCard;
+		const s = setup({ cards: [card] });
+		const nord = { customer: "Delta Servizi Nord", address: "Corso Italia 9, 10121 Torino TO", recipient_code: "ZZZ0002", lines: [line("A", 100)], vat: 22 };
+		const close = await s.run({ op: "draft", ...nord });
+		expect(close).toContain("Intendi uno di questi?");
+		expect(close).toContain("Se è un cliente diverso da questi, dimmelo e lo fatturo come cliente nuovo.");
+		const fresh2 = await s.run({ op: "draft", ...nord, vat_number: "00000030015" });
+		expect(fresh2).toContain("Bozza pronta");
+		expect(s.last().buyer).toMatchObject({ name: "Delta Servizi Nord", vat: "IT00000030015" });
+		expect(s.last().buyer.card).toBeUndefined();
+		await s.run({ op: "draft", ...nord, cf: "XQZKWJ80A41H501T", new_customer: true });
+		expect(s.last().buyer).toMatchObject({ name: "Delta Servizi Nord", kind: "private" });
+	});
+
+	it("U5: the brief reads the invoices like the hours", () => {
+		expect(BRIEF_INSTRUCTION).toContain("14. Le fatture in uscita (sales_invoices con op list e compact true): come le ore.");
+	});
+
+	it("U6: one question under three headings, only the missing ones", async () => {
+		const s = setup({ company: { vat: SELLER_VAT, name: "Kevin Wojtq", regime: "forfettario", by: "test:u", at: NOW.toISOString() }, askFirst: true });
+		const asked = await s.run({ op: "draft", customer: "Nuovo Cliente Srl", lines: [line("Consulenza", 500)] });
+		const lines = asked.split("\n");
+		expect(lines[1]).toBe("Su di te (una volta sola): codice fiscale, indirizzo con CAP, comune e provincia, IBAN");
+		expect(lines[2]).toBe("Sul cliente: partita IVA e codice destinatario (7 caratteri) o PEC; per un privato il codice fiscale; indirizzo");
+		expect(lines[3]).toMatch(/^Su questa fattura: chi paga il bollo da 2,00 € \(supera 77,47 € senza IVA\)/);
+		expect(lines[3]).toContain("qual è il numero dell'ultima fattura");
+		const only = setup();
+		const customer = await only.run({ op: "draft", customer: "Nuovo Cliente Srl", lines: [line("A", 50)], vat: 22 });
+		expect(customer).toContain("Sul cliente:");
+		expect(customer).not.toContain("Su di te");
+		expect(customer).not.toContain("Su questa fattura");
+	});
+
+	it("U7: a spesa anticipata says so, with its row", async () => {
+		const s = setup();
+		const answer = await s.run({ op: "draft", ...DELTA, lines: [line("Consulenza", 500), line("Diritti", 30, { advance: true })], vat: 22 });
+		expect(answer).toContain("Diritti: 30,00 € (spesa anticipata, senza IVA)");
+		expect(answer).toContain("Spese anticipate, senza IVA: 30,00 €");
+		expect(answer).toContain("IVA 22%: 110,00 €");
+	});
+
+	it("U8, U9: a private customer's channel says the PDF, once; the tail names the draft for the assistant only", async () => {
+		const s = setup();
+		const answer = await s.run({ op: "draft", customer: "Xenia Quaz", cf: "XQZKWJ80A41H501T", address: "Via Dante 3, 40121 Bologna BO", lines: [line("Lezione", 60)], vat: 22 });
+		expect(answer).toContain("Recapito: nessun codice (la trova nella sua area dell'Agenzia delle Entrate; gli diamo il PDF)");
+		expect(answer).not.toContain("una copia va data");
+		expect(answer.split("\n").at(-1)).toBe("Per emetterla o cambiarla usa la bozza BZ-0001 (non serve dirlo a chi ti scrive).");
+	});
+
+	it("U11: the ritenuta to companies in the settings, and asked for a public office too", async () => {
+		const s = setup({ company: PROF });
+		expect(await s.run({ op: "settings" })).toContain("Ritenuta d'acconto alle aziende: da chiedere.");
+		expect(await s.run({ op: "draft", customer: "Comune di Esempio", cf: "80000010019", address: "Piazza Municipio 1, 80100 Napoli NA", recipient_code: "UFABCD", lines: [line("Manutenzione", 50)], vat: 22 })).toContain("la ritenuta d'acconto del 20%");
+		expect(await s.run({ op: "settings", ritenuta: false })).toContain("Ritenuta d'acconto alle aziende: no.");
+		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 50)], vat: 22 })).toContain("Bozza pronta");
+		expect(s.last().ritenuta).toBeUndefined();
+	});
+
+	it("U12: the helpers are imported from core, with no re-export left", () => {
+		const read = (f: string) => readFileSync(join(import.meta.dirname, "../src/core", f), "utf8");
+		expect(read("tools/quote-input.ts")).not.toMatch(/export \{[^}]*\} from "\.\.\/text-input\.ts"/);
+		expect(read("tools/quote-document.ts")).not.toContain('from "../markdown-text.ts";\nexport');
+		expect(read("tools/quote-document.ts")).not.toMatch(/export \{[^}]*\} from/);
+		expect(read("cashflow-items.ts")).not.toContain("tools/quote-input.ts");
+		for (const f of readdirSync(join(import.meta.dirname, "../src/core/tools"))) expect(read(`tools/${f}`), f).not.toMatch(/import \{[^}]*\b(?:cleanText|isProblem|Problem)\b[^}]*\} from "\.\/quote-input\.ts"/);
+	});
+
+	it("U13: hours in an invoice are «nella fattura», and a draft already there can be redone in its place", async () => {
+		const billed = entry(1, 60, { billed: { by: "test:u", at: NOW.toISOString(), ref: "fattura 1", rate: "50", rounding: 0 } });
+		const s = setup({ entries: [billed, entry(2, 60)], quotes: [quote()] });
+		await s.run({ op: "draft", ...DELTA, hours: true, vat: 22 });
+		expect(await s.run({ op: "draft", ...DELTA, hours: true, vat: 22 })).toContain("oppure la rifaccio prendendo il suo posto.");
+		const t = setup({ entries: [billed] });
+		expect(await t.run({ op: "draft", ...DELTA, hours: true, vat: 22 })).toContain("una voce è nella fattura 1");
+		await s.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 });
+		expect(await s.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 })).toContain("emetti quella, oppure la rifaccio prendendo il suo posto.");
+	});
+
+	it("U14: one rate formatter, one rule for a person's codice fiscale, the shared names", () => {
+		expect([rateText("45"), hourlyText("45")]).toEqual(["45,00 €/h", "45,00 €/h"]);
+		expect([PERSON_CF.test("KWJXQZ75C10F205V"), PERSON_CF.test("00000010017"), ritenutaType("KWJXQZ75C10F205V"), ritenutaType("00000010017")]).toEqual([true, false, "RT01", "RT02"]);
+		const read = (f: string) => readFileSync(join(import.meta.dirname, "../src/core", f), "utf8");
+		expect(read("tools/sales-invoice-draft.ts")).toContain("FORM_NOTE");
+		expect(read("tools/sales-invoice-buyer.ts")).toContain("findNamed(candidates, said, MAX_SAID)");
+		expect(read("tools/sales-invoice-env.ts")).toContain("export type SalesStores");
+		expect(read("tools/sales-invoice-tools.ts")).toContain("export type SalesToolsOptions = SalesStores & {");
+		expect(read("invoice-sums.ts")).not.toContain("«1.220,00 €». */\n/**");
 	});
 });

@@ -13,7 +13,8 @@ import { latin1 } from "../plain-text.ts";
 import type { QuoteCustomer } from "../quotes.ts";
 import { FIELD_LIMITS, FOREIGN_CODE, NO_CHANNEL_CODE, PA_CODE } from "../sales-invoice-rules.ts";
 import { type Address, type Buyer, buyerCf, buyerVat, foreignAddress, italianAddress, type SalesInvoice, vatCountry } from "../sales-invoices.ts";
-import type { BuyerFields, Problem } from "./sales-invoice-input.ts";
+import type { Problem } from "../text-input.ts";
+import type { BuyerFields } from "./sales-invoice-input.ts";
 
 /** A customer found: the name to write, the card, and the last invoice made for them here. */
 export type Known = { readonly name: string; readonly card?: ClientCard; readonly previous?: Buyer };
@@ -31,8 +32,22 @@ function previousOf(card: ClientCard, invoices: readonly SalesInvoice[]): Buyer 
 	return lastBuyer(invoices, (b) => (card.vat !== undefined && b.vat === card.vat) || (card.cf !== undefined && b.cf === card.cf) || b.card === card.id || keys.includes(spellingKey(b.name)));
 }
 
-/** Who `said` names among the cards and the customers already invoiced here, with the clients' rule. */
-export function findBuyer(said: string, cards: readonly ClientCard[], invoices: readonly SalesInvoice[]): Found {
+/** How much of what the person says is matched against the names. */
+const MAX_SAID = 200;
+
+const idKey = (v: string | undefined) => v?.replace(/^IT/, "");
+
+/** The tax ids a customer found is known by. */
+function idsOf(k: Known): string[] {
+	return [k.card?.vat, k.card?.cf, k.previous?.vat, k.previous?.cf].map(idKey).filter((v): v is string => v !== undefined);
+}
+
+/**
+ * Who `said` names among the cards and the customers already invoiced here, with the clients'
+ * rule. A name close to some (or the same but for the legal form) with a partita IVA or codice
+ * fiscale `given` that none of them has is a new customer.
+ */
+export function findBuyer(said: string, cards: readonly ClientCard[], invoices: readonly SalesInvoice[], given: Pick<BuyerFields, "vat" | "cf"> = {}): Found {
 	const candidates: Candidate<Known>[] = cards.map((card) => {
 		const previous = previousOf(card, invoices);
 		return { item: { name: card.name, card, ...(previous === undefined ? {} : { previous }) }, names: [card.name, ...card.aliases], ...(card.vat === undefined ? {} : { vat: card.vat }), ...(card.cf === undefined ? {} : { cf: card.cf }), ids: [card.id] };
@@ -46,16 +61,18 @@ export function findBuyer(said: string, cards: readonly ClientCard[], invoices: 
 		seen.add(key);
 		candidates.push({ item: { name: b.name, previous: b }, names: [b.name], ...(b.vat === undefined ? {} : { vat: b.vat }), ...(b.cf === undefined ? {} : { cf: b.cf }) });
 	}
-	const r = findNamed(candidates, said, 200);
-	if (r.kind === "exact") return { kind: "exact", known: r.item, ...(r.form === true ? { form: true as const } : {}) };
-	if (r.kind === "close") return { kind: "close", candidates: r.candidates.map((k) => k.name) };
+	const r = findNamed(candidates, said, MAX_SAID);
+	const ids = [given.vat, given.cf].map(idKey).filter((v): v is string => v !== undefined);
+	const other = (ks: readonly Known[]) => ids.length > 0 && ks.every((k) => !idsOf(k).some((id) => ids.includes(id)));
+	if (r.kind === "exact") return r.form === true && other([r.item]) ? { kind: "none" } : { kind: "exact", known: r.item, ...(r.form === true ? { form: true as const } : {}) };
+	if (r.kind === "close") return other(r.candidates) ? { kind: "none" } : { kind: "close", candidates: r.candidates.map((k) => k.name) };
 	return r;
 }
 
 /** The data FatturaPA needs that is missing, in words, to ask. */
 export type BuyerAsk = { readonly missing: readonly string[] };
 
-const NO_IDS = "la partita IVA del cliente con il suo codice destinatario (7 caratteri, glielo dà il suo commercialista o il suo programma di fatture) oppure la sua PEC; se è un privato basta il codice fiscale";
+const NO_IDS = "partita IVA e codice destinatario (7 caratteri) o PEC; per un privato il codice fiscale";
 
 /**
  * The buyer from what the person says now, the card, the quote's customer and the last invoice to
@@ -77,7 +94,7 @@ export function composeBuyer(name: string, sources: { readonly card?: ClientCard
 	const text = given.address ?? card?.address ?? quote?.address;
 	let address: Address | undefined = text === undefined ? undefined : foreign ? foreignAddress(text, country) : italianAddress(text);
 	if (text === undefined && previous !== undefined && (previous.address.country === "IT") === !foreign) address = previous.address;
-	if (address === undefined) missing.push(foreign ? "l'indirizzo del cliente, con la città dopo l'ultima virgola" : text === undefined ? "l'indirizzo del cliente, con CAP, comune e provincia" : "l'indirizzo del cliente scritto con CAP, comune e provincia, come «Via Roma 1, 20121 Milano MI»");
+	if (address === undefined) missing.push(foreign ? "indirizzo, con la città dopo l'ultima virgola" : text === undefined ? "indirizzo" : "indirizzo scritto con CAP, comune e provincia, come «Via Roma 1, 20121 Milano MI»");
 	const pec = given.pec ?? previous?.pec ?? card?.contacts.find((c) => c.channel === "pec" && c.email !== undefined)?.email;
 	const kind: Buyer["kind"] = pa ? "pa" : foreign ? "foreign" : vat !== undefined ? "business" : "private";
 	let finalCode: string;
@@ -86,7 +103,7 @@ export function composeBuyer(name: string, sources: { readonly card?: ClientCard
 	else if (code !== undefined) finalCode = code;
 	else if (pec !== undefined || kind === "private") finalCode = NO_CHANNEL_CODE;
 	else {
-		if (!noIds) missing.push("il codice destinatario del cliente (7 caratteri, glielo dà il suo commercialista o il suo programma di fatture) o la sua PEC; se non li ha, si usa 0000000 e la fattura la trova nella sua area dell'Agenzia delle Entrate");
+		if (!noIds) missing.push("codice destinatario (7 caratteri) o PEC; se non li ha, si usa 0000000 e la fattura la trova nella sua area dell'Agenzia delle Entrate");
 		finalCode = NO_CHANNEL_CODE;
 	}
 	if (missing.length > 0 || address === undefined) return { missing };

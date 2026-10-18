@@ -11,7 +11,7 @@ import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
 import type { ExpenseRecorded, ExpenseRecordInput, ExpenseSeam } from "./expense-tools.ts";
 import { sameDraft } from "./field-input.ts";
-import { isProblem } from "./quote-input.ts";
+import { isProblem } from "../text-input.ts";
 import { applyFields, editsSomething, readFields, readPeriodAmount } from "./renewal-input.ts";
 import { briefAnswer, fenced, listAnswer, renewalLine, renewalsCsv, summaryAnswer, upcomingAnswer} from "./renewal-render.ts";
 

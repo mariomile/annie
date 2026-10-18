@@ -19,14 +19,13 @@ import { FatturaWriteError, fatturaFileName, fatturaXml } from "../fattura-pa-wr
 import { QUOTES_BROKEN } from "../quote-store.ts";
 import { QuoteError, STATUS_WORDS } from "../quotes.ts";
 import { ISSUED_FOLDER } from "../sales-invoice-rules.ts";
-import type { NumberFloor } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { docWord, type IssuedInvoice, invoiceProblem, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, type Seller, sellerOf } from "../sales-invoices.ts";
 import type { Rounding } from "../timesheet.ts";
 import { TIMESHEET_BROKEN } from "../timesheet-store.ts";
 import { termsOf } from "../timesheet-sums.ts";
 import { WorkspaceError } from "../workspace.ts";
-import { askFor, dueOf, namedDraft, type SalesEnv } from "./sales-invoice-env.ts";
+import { askGroups, dueOf, filesSay, findIssued, namedDraft, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { courtesyMarkdown, fenced, invoiceLines, issuedAnswer } from "./sales-invoice-render.ts";
 
 /** Tries at a free file name before giving up. */
@@ -34,89 +33,98 @@ const NAME_TRIES = 5;
 
 export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 	const book = env.book();
-	let inv: IssuedInvoice | undefined = book.invoices.find((i): i is IssuedInvoice => isIssued(i) && i.issueCall === ctx.callId);
-	if (inv === undefined) {
-		const named = namedDraft(book.invoices, args.draft, "emettere");
-		if ("answer" in named) return named.answer;
-		const target = named.found;
-		if (isIssued(target)) {
-			if (target.finished === true) return `La ${docWord(target.type)} n. ${target.number} è già emessa: il file è ${target.file ?? "da scrivere"}.`;
-			// Issued, but a step after the number did not finish (a crash): the rest now.
-			inv = target;
-		} else {
-			if (args.confirm !== undefined && typeof args.confirm !== "boolean") return "Errore: la conferma è sì o no.";
-			const checked = await ready(env, target, day);
-			if (typeof checked === "string") return checked;
-			if (args.confirm !== true) {
-				return [
-					`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
-					fenced(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
-					"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
-				].join("\n");
-			}
-			const due = dueOf(target, day);
-			const marker = env.marker(ctx);
-			const floor = await floorOf(env, ctx, checked.vat, Number(day.slice(0, 4)));
-			inv = env.store.issue(target.id, ctx.callId, day, floor, (draft, number, seq, progressive) => ({
-				...draft,
-				number,
-				year: Number(day.slice(0, 4)),
-				seq,
-				date: day,
-				...(due === undefined ? {} : { due }),
-				seller: checked,
-				progressive,
-				issued: marker,
-				issueCall: ctx.callId,
-			}));
-		}
+	const mine = book.invoices.find((i): i is IssuedInvoice => isIssued(i) && i.issueCall === ctx.callId);
+	if (mine !== undefined) return complete(env, mine, ctx, []);
+	// Nothing named and an issue left halfway: that one first, the drafts untouched.
+	const unfinished = book.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.finished !== true);
+	if (args.draft === undefined && unfinished.length > 0) {
+		if (unfinished.length > 1) return `Errore: ci sono più fatture con l'emissione da completare (n. ${unfinished.map((i) => i.number).join(", ")}): dimmi quale, e la completo prima di emettere altro.`;
+		return complete(env, unfinished[0] as IssuedInvoice, ctx, []);
 	}
-	// Every step below is safe to run again; the invoice is finished only when all are done.
-	const notes: string[] = [];
-	inv = await writeXml(env, inv);
+	const named = namedDraft(book.invoices, args.draft, "emettere");
+	if ("answer" in named) return named.answer;
+	const target = named.found;
+	if (isIssued(target)) {
+		if (target.finished === true) return `La ${docWord(target.type)} n. ${target.number} è già emessa: il file è ${target.file ?? "da scrivere"}.`;
+		return complete(env, target, ctx, []);
+	}
+	if (args.confirm !== undefined && typeof args.confirm !== "boolean") return "Errore: la conferma è sì o no.";
+	const checked = await ready(env, target, day);
+	if (typeof checked === "string") return checked;
+	if (args.confirm !== true) {
+		return [
+			`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
+			fenced(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
+			"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
+		].join("\n");
+	}
+	const due = dueOf(target, day);
+	const marker = env.marker(ctx);
+	const year = Number(day.slice(0, 4));
+	// The files only check the dates; the number is the store's alone.
+	const latest = (await filesSay(env, ctx.signal, checked.vat, year, day)).latest;
+	const inv = env.store.issue(target.id, ctx.callId, day, latest, (draft, number, seq, progressive) => ({
+		...draft,
+		number,
+		year,
+		seq,
+		date: day,
+		...(due === undefined ? {} : { due }),
+		seller: checked,
+		progressive,
+		issued: marker,
+		issueCall: ctx.callId,
+	}));
+	return complete(env, inv, ctx, []);
+}
+
+/** sales_invoices op finish: the invoice a number names, issued and not complete, completed with its own number. */
+export async function finish(env: SalesEnv, args: Record<string, unknown>, ctx: ToolContext, _day: string): Promise<string> {
+	if (typeof args.invoice !== "string" || args.invoice.trim() === "") return "Errore: dimmi il numero della fattura da completare.";
+	const found = findIssued(env.book().invoices, args.invoice);
+	if (found.length === 0) return "Errore: non trovo una fattura emessa con quel numero.";
+	if (new Set(found.map((f) => f.year)).size > 1) return `Errore: c'è una fattura con quel numero in più anni (${found.map((f) => f.year).join(", ")}): dimmi l'anno.`;
+	const inv = found[0] as IssuedInvoice;
+	if (inv.finished === true && inv.issueCall !== ctx.callId) return `La ${docWord(inv.type)} n. ${inv.number} è già emessa e completa: il file è ${inv.file ?? "da scrivere"}.`;
+	return complete(env, inv, ctx, []);
+}
+
+/** Why the number differs from the one the draft said: other invoices issued meanwhile, the last number before Annie said, the year, the way of writing it. */
+function numberNote(env: SalesEnv, inv: IssuedInvoice): string | undefined {
+	const expected = inv.expected;
+	if (expected === undefined || expected === inv.number) return undefined;
+	const others = env.book().invoices.filter((i) => isIssued(i) && i.id !== inv.id && i.year === inv.year && (i.issued as { at: string }).at > inv.at).length;
+	const said = /(\d+)(?:\/\d{4})?$/.exec(expected);
+	const saidYear = /^(\d{4})\//.exec(expected)?.[1];
+	const why =
+		inv.at.slice(0, 4) !== String(inv.year) || (saidYear !== undefined && saidYear !== String(inv.year))
+			? "intanto è cambiato l'anno, e la numerazione riparte"
+			: said !== null && Number(said[1]) === inv.seq
+				? "intanto è cambiato il modo di scrivere il numero"
+				: others > 0
+					? `intanto ${others === 1 ? "è stata emessa un'altra fattura" : `sono state emesse altre ${others} fatture`}`
+					: "intanto è stato detto o corretto il numero dell'ultima fattura prima di me";
+	return `Nella bozza avevo detto la n. ${expected}: è la n. ${inv.number} perché ${why}.`;
+}
+
+/**
+ * The steps after the number, each safe to run again: the XML, the PDF (not needed to finish), the
+ * hours, the quote. Finished when the XML, the hours and the quote are done; the audit once, when
+ * it becomes finished. `resumed`: issued before by another call.
+ */
+async function complete(env: SalesEnv, start: IssuedInvoice, ctx: ToolContext, notes: string[]): Promise<string> {
+	const resumed = start.issueCall !== ctx.callId;
+	const said = resumed ? undefined : numberNote(env, start);
+	if (said !== undefined) notes.push(said);
+	let inv = await writeXml(env, start);
 	inv = await writePdf(env, inv, notes);
 	const hours = await markHours(env, inv, ctx);
 	const quote = await markQuote(env, inv, ctx);
 	notes.push(...hours.notes, ...quote.notes);
-	await env.audit(ctx, "issue", 1);
-	if (inv.pdf !== undefined && hours.done && quote.done) env.store.setFinished(inv.id);
-	else notes.push("L'emissione non è completa: quando il problema è risolto, emettila di nuovo e finisco quello che manca, con lo stesso numero.");
-	return issuedAnswer(inv, salesTotals(inv), notes);
-}
-
-/** A number as written in a file: «12», «2026/12», «12/2026», «FT 12»: the number within the year. */
-function seqOf(number: string | undefined, year: number): number | undefined {
-	if (number === undefined) return undefined;
-	const t = number.trim().replace(new RegExp(`\\s*[/-]\\s*${year}$`), "");
-	const m = /(\d{1,6})$/.exec(t);
-	const seq = m === null ? undefined : Number(m[1]);
-	return seq !== undefined && seq >= 1 && seq < SALES_LIMITS.perYear ? seq : undefined;
-}
-
-/**
- * The highest number and the latest date of `year` among the workspace's invoices whose supplier
- * is the company (`fatture/emesse/` and those made elsewhere): the number goes on from there.
- * A scan that fails gives nothing, and the store's own counter stands.
- */
-async function floorOf(env: SalesEnv, ctx: ToolContext, vat: string, year: number): Promise<NumberFloor> {
-	let seq = 0;
-	let date = "";
-	try {
-		const scan = await env.scanner.scan(ctx.signal);
-		for (const found of scan.invoices) {
-			const s = found.fattura.supplier.vat;
-			if (s === undefined || `${s.country ?? "IT"}${s.code}`.toUpperCase() !== vat) continue;
-			for (const doc of found.fattura.documents) {
-				if (doc.date === undefined || doc.date.slice(0, 4) !== String(year)) continue;
-				const n = seqOf(doc.number, year);
-				if (n !== undefined && n > seq) seq = n;
-				if (doc.date > date) date = doc.date;
-			}
-		}
-	} catch (error) {
-		if (ctx.signal.aborted) throw error;
-	}
-	return { seq, date };
+	if (inv.file !== undefined && hours.done && quote.done) {
+		if (env.store.setFinished(inv.id)) await env.audit(ctx, "issue", 1);
+	} else notes.push(`L'emissione della fattura n. ${inv.number} non è completa: quando il problema è risolto, si completa con la fattura n. ${inv.number}, con lo stesso numero.`);
+	return issuedAnswer(inv, salesTotals(inv), notes, resumed);
 }
 
 /** The seller, when the draft can be issued today; what to ask or why not otherwise. */
@@ -124,7 +132,7 @@ async function ready(env: SalesEnv, draft: SalesInvoice, day: string): Promise<S
 	const company = env.company.read().company;
 	const taxes = env.taxes.read();
 	const seller = sellerOf(company, taxes.broken ? undefined : taxes.profile);
-	if ("missing" in seller) return askFor([`i tuoi dati per la fattura: ${seller.missing.join("; ")}`], "emettere la fattura", "I tuoi dati si salvano una volta con invoices op set_company (name, vat, cf, address, regime, iban), poi emetti di nuovo.");
+	if ("missing" in seller) return askGroups({ ...noneMissing(), me: [...seller.missing] }, ["I tuoi dati si salvano una volta con invoices op set_company (name, vat, cf, address, regime, iban), poi emetti di nuovo."]);
 	if (seller.seller.regime !== draft.regime) return "Errore: il regime fiscale nei dati dell'azienda è cambiato da quando ho preparato la bozza: va rifatta.";
 	const hours = hoursProblem(env, draft);
 	if (hours !== undefined) return hours;

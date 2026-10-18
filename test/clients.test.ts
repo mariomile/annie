@@ -18,7 +18,8 @@ import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Invoice, partyName, register } from "../src/core/invoices.ts";
 import { dayOfIn } from "../src/core/italian-calendar.ts";
-import { legalForm, sameBusiness } from "../src/core/name-keys.ts";
+import { legalForm, nearKey, sameBusiness } from "../src/core/name-keys.ts";
+import { findNamed } from "../src/core/client-find.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import type { Quote } from "../src/core/quotes.ts";
 import { Scheduler } from "../src/core/scheduler.ts";
@@ -1241,3 +1242,18 @@ async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 		throw new Error("no reply");
 	};
 }
+
+describe("clients: a slip of one letter", () => {
+	it("is close: asked, never taken as the same client", () => {
+		const candidates = [{ item: "neri", names: ["Laura Neri"] }, { item: "bini", names: ["Paolo Bini"] }];
+		expect(findNamed(candidates, "Laura Ner", 200)).toEqual({ kind: "close", candidates: ["neri"] });
+		expect(findNamed(candidates, "Laura Nero", 200)).toEqual({ kind: "close", candidates: ["neri"] });
+		expect(findNamed(candidates, "Laura Neri", 200)).toMatchObject({ kind: "exact", item: "neri" });
+		expect([nearKey("laura ner", "laura neri"), nearKey("laura nero", "laura neri"), nearKey("laura bini", "laura neri")]).toEqual([true, true, false]);
+	});
+
+	it("finds a codice fiscale said with its label", () => {
+		const candidates = [{ item: "xenia", names: ["Xenia Quaz"], cf: "XQZKWJ80A41H501T" }];
+		for (const said of ["c.f. XQZKWJ80A41H501T", "CF: XQZKWJ80A41H501T", "codice fiscale XQZKWJ80A41H501T"]) expect(findNamed(candidates, said, 200), said).toMatchObject({ kind: "exact", item: "xenia" });
+	});
+});
