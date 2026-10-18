@@ -1,6 +1,6 @@
 # Settimana 54: rinnovi e abbonamenti
 
-Branch `week-54`. Annie tiene il conto di assicurazioni, domini, software, affitti, utenze e contratti che si rinnovano, avvisa prima della scadenza e della data entro cui disdire, e dice quanto costano all'anno e al mese. Le scelte sono nell'[ADR 0063](adr/0063-rinnovi-e-abbonamenti.md).
+Branch `week-54`. Annie tiene il conto di assicurazioni, domini, software, affitti, utenze e contratti che si rinnovano, avvisa prima della scadenza e della data entro cui disdire, e dice quanto costano all'anno e al mese. Le scelte sono nell'[ADR 0064](adr/0064-rinnovi-e-abbonamenti.md).
 
 ## Cosa cambia per chi usa Annie
 
