@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { DocumentError, type DocumentText } from "./documents.ts";
 import type { Chart, ChartSpec } from "./charts.ts";
+import type { Fattura } from "./fattura-pa.ts";
 import type { MadeDocument, MakeInput } from "./make-document.ts";
 import type { PdfPageImage } from "./pdf-text.ts";
 import type { TableQuery, TableResult } from "./tables.ts";
@@ -94,6 +95,18 @@ export async function queryTableFile(name: string, data: Uint8Array, query: Tabl
 	}
 }
 
+/** An invoice's structured content (a signed one opened first), read in a worker like its text: for the scadenzario. */
+export async function readFattura(name: string, data: Uint8Array, options: { timeoutMs?: number; waitMs?: number } = {}): Promise<Fattura> {
+	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
+	running++;
+	try {
+		return await inWorker<Fattura>({ name, data, fattura: true }, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs, "fattura");
+	} finally {
+		running--;
+		waiting.shift()?.();
+	}
+}
+
 function turn(waitMs: number): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		const go = () => {
@@ -109,7 +122,7 @@ function turn(waitMs: number): Promise<void> {
 	});
 }
 
-function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; make?: MakeInput; chart?: ChartSpec; table?: TableQuery }, timeoutMs: number, key: "document" | "image" | "made" | "table"): Promise<T> {
+function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; make?: MakeInput; chart?: ChartSpec; table?: TableQuery; fattura?: boolean }, timeoutMs: number, key: "document" | "image" | "made" | "table" | "fattura"): Promise<T> {
 	// From source (tsx, the tests) the worker is TypeScript that Node runs by stripping the types, so
 	// its files use only erasable syntax; built, it is JavaScript.
 	const source = import.meta.url.endsWith(".ts");
@@ -133,7 +146,7 @@ function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; mak
 			outcome();
 		};
 		const timer = setTimeout(() => settle(() => reject(new DocumentError(input.table !== undefined ? "la tabella è troppo grande da analizzare in tempo" : input.chart !== undefined ? "il grafico è troppo complesso da disegnare" : key === "made" ? "il documento è troppo lungo da creare" : TOO_SLOW))), timeoutMs);
-		worker.on("message", (message: { document?: T; image?: T; made?: T; table?: T; error?: string }) =>
+		worker.on("message", (message: { document?: T; image?: T; made?: T; table?: T; fattura?: T; error?: string }) =>
 			settle(() => (message[key] !== undefined ? resolve(message[key]) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
 		);
 		// A worker that fails is our problem, not the file's: the person can try again.

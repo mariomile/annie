@@ -1,4 +1,4 @@
-import { FatturaError, fatturaText, isFatturaXml } from "./fattura-pa.ts";
+import { type Fattura, FatturaError, fatturaData, fatturaText, isFatturaXml } from "./fattura-pa.ts";
 import { withoutBidiControls, xmlUnescape } from "./html-text.ts";
 import { isSignedEnvelope, P7mError, signedContent, signedContentStart } from "./p7m.ts";
 import { PdfError, pdfText, trimLines } from "./pdf-text.ts";
@@ -229,6 +229,23 @@ export function documentText(name: string, data: Uint8Array): DocumentText {
 	const kind = documentKind(name, data);
 	if (kind === undefined) throw new DocumentError(NOT_A_DOCUMENT);
 	return readKind(kind, data, false);
+}
+
+/**
+ * An invoice's structured content (fattura-pa.ts), for the scadenzario (invoices.ts): a signed one
+ * opened first. A DocumentError in Italian when the file is not an invoice or cannot be read.
+ */
+export function documentFattura(data: Uint8Array): Fattura {
+	try {
+		const signed = isSignedEnvelope(data);
+		const inner = signed ? signedContent(data) : data;
+		if (!isFatturaXml(inner)) throw new DocumentError("non è una fattura elettronica che so leggere");
+		return fatturaData(inner, signed);
+	} catch (error) {
+		if (error instanceof FatturaError || error instanceof P7mError) throw new DocumentError(error.message);
+		if (error instanceof DocumentError) throw error;
+		throw new DocumentError(error instanceof RangeError ? "il documento è troppo complesso da leggere" : NOT_A_DOCUMENT);
+	}
 }
 
 function signedText(name: string, data: Uint8Array): DocumentText {
