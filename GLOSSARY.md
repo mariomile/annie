@@ -24,6 +24,14 @@ _Avoid_: bot, profilo; «istanza» nei testi per le persone
 Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in una riga e un tono, e con loro la sua memoria, i suoi task, file, connettori e bot. Ognuno si presenta con il suo nome. L'owner lo elimina da Impostazioni scrivendone il nome (tranne il principale e la segreteria). Vedi ADR 0041 e 0046.
 _Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
 
+**Board**:
+La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Vedi ADR 0049.
+_Avoid_: kanban (nei testi per le persone), backlog, issue tracker
+
+**Scheda** (della board):
+Una cosa da fare sulla board, con numero (#12), titolo, descrizione, priorità, l'agente a cui è affidata e la sua cronologia di spostamenti e commenti. Vedi ADR 0049.
+_Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
+
 **Messaggio tra agenti**:
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
 _Avoid_: chat tra bot, handoff, delega
@@ -280,7 +288,7 @@ _Avoid_: ticket, caso, lead (il lead è nel CRM)
 La risposta al cliente preparata dall'istanza. Ha una versione che cresce a ogni modifica e non parte senza approvazione.
 _Avoid_: draft (in italiano), proposta
 
-**Scheda**:
+**Scheda** (della segreteria):
 Il messaggio a un approvatore con la pratica, la bozza e i pulsanti Approva, Modifica, Scarta.
 _Avoid_: notifica (quando ha pulsanti), card
 

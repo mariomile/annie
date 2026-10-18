@@ -85,6 +85,9 @@ import { romeDayKey, UsageLedger } from "./core/usage.ts";
 import { connectChannel } from "./gateway.ts";
 import type { AnnieConfig } from "./main/config.ts";
 import { type RunningSegreteria, startSegreteria } from "./segreteria/boot.ts";
+import { BoardStore } from "./core/board.ts";
+import { BoardWork } from "./core/board-work.ts";
+import { createBoardTools } from "./core/tools/board-tools.ts";
 import { PeopleStore, SessionStore } from "./web/auth.ts";
 import { WebChannel } from "./web/channel.ts";
 import { type BrowserPanel, BrowserPanelError, createWebApp } from "./web/server.ts";
@@ -281,6 +284,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		return browser;
 	};
 	// Google: one account per person, a client per instance and person (the fetch is the instance's).
+	const board = new BoardStore(tenantDir(config.dataDir, toTenantId(tenant)));
 	const googleAccounts = config.google === undefined ? undefined : new GoogleAccounts(tenantDir(config.dataDir, toTenantId(tenant)), new TenantSecrets(config.dataDir, toTenantId(tenant)));
 	const googleClients = new Map<string, GoogleClient>();
 	/** A person's client for an instance: its calls go through that instance's egress policy. */
@@ -481,6 +485,13 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},
 				}),
+				...createBoardTools({
+					self: record.id,
+					store: board,
+					work: boardWork,
+					agents: async () => (await runtime.registry.listInstances(record.tenantId)).filter((r) => r.id !== segreteriaId).map((r) => ({ id: r.id, name: r.name })),
+					personOf: (thread) => (thread.channel === "web" ? WebChannel.ownerOf(thread.threadId) : undefined),
+				}),
 				...createAgentTools({
 					self: record.id,
 					...agentRatesOf(record.id),
@@ -672,6 +683,28 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		});
 	};
 	for (const record of conversational) attachWebChannel(record);
+	// --- the board (ADR 0049): schede handed to agenti, worked in a console conversation ---
+	const boardWork = new BoardWork({
+		store: board,
+		agentName: async (agent) => (agent === segreteriaId ? undefined : (await runtime.registry.getInstance(tenant, agent).catch(() => undefined))?.name),
+		canChat: async (agent, personId) => {
+			const record = await runtime.registry.getInstance(tenant, agent).catch(() => undefined);
+			return record !== undefined && webChannels.has(agent) && record.egress.channels.includes("web") && (record.allowedUsers.web ?? []).includes(personId);
+		},
+		isOwner: async (personId) => (await people.get(personId))?.role === "owner",
+		personName: async (personId) => (await people.get(personId))?.name,
+		openThread: async (agent, personId, title, reuse) => {
+			const channel = webChannels.get(agent);
+			if (channel === undefined) throw new Error(`agente ${agent} has no console`);
+			if (reuse !== undefined && (await channel.thread(reuse)) !== undefined) return reuse;
+			return (await channel.createThread(personId, title)).id;
+		},
+		post: async (agent, threadId, personId, text) => {
+			const channel = webChannels.get(agent);
+			if (channel === undefined) throw new Error(`agente ${agent} has no console`);
+			await channel.post(threadId, personId, text);
+		},
+	});
 	// --- Telegram: at most one bot per instance ---
 	const telegramHooks = new Map<string, { secret: string; handle: (update: unknown) => Promise<void> }>();
 	const telegramUnsubscribes = new Map<string, () => void>();
@@ -1162,6 +1195,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		oauth?.forgetInstance(id);
 		await forgetAgente(id);
 		await runtime.removeInstance(tenant, id);
+		board.unassignAgent(id);
 		const warn = (what: string) => (error: unknown) => log(`annie: deleting ${id}: ${what} not removed: ${error instanceof Error ? error.message : String(error)}`);
 		await browseSessions.closeScope(`${record.tenantId}/${record.id}`).catch(warn("browsers"));
 		await computer?.reset(computerKey(tenant, id)).catch(warn("computer"));
@@ -1385,6 +1419,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await runtime.resume(tenant, record.id);
 		},
 		deleteInstance: { main: config.instanceId, run: deleteAgente },
+		board: { store: board, work: boardWork },
 		log,
 	});
 	await new Promise<void>((resolve, reject) => {

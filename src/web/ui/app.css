@@ -531,3 +531,22 @@ ol.steps .stack { display: grid; gap: 8px; }
 .name-row > input.emoji-input { flex: 0 0 56px; width: 56px; text-align: center; font-size: 18px; padding-left: 0; padding-right: 0; }
 .welcome .mark.face { font-size: 40px; line-height: 1; display: block; }
 .advanced summary { cursor: pointer; color: var(--fg-2); font-size: 13px; margin: 4px 0 8px; }
+
+/* board (ADR 0049) */
+.board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 8px; }
+.board-col { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.board-col h2 { margin: 2px 4px 4px; font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; }
+.board-col.da_rivedere { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.board-col .small { margin: 4px; font-size: 12px; }
+.board-card { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; box-shadow: var(--shadow-sm); color: var(--fg); }
+.board-card:hover { border-color: var(--border-2); }
+.board-card.alta { border-left: 3px solid var(--accent); }
+.board-title { font-size: 13.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.board-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); flex-wrap: wrap; }
+.board-face { width: 20px; height: 20px; border-radius: 6px; display: inline-grid; place-items: center; font-size: 12px; background: var(--bg-2); border: 1px solid var(--border); }
+dialog.board-dialog { max-width: 600px; }
+.board-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); max-height: 30vh; overflow: auto; }
+.board-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.board-events { list-style: none; margin: 16px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 28vh; overflow: auto; border-top: 1px solid var(--border); padding-top: 12px; }
+.board-events div { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+@media (max-width: 760px) { .board { grid-template-columns: repeat(4, minmax(240px, 80vw)); scroll-snap-type: x mandatory; } .board-col { scroll-snap-align: start; } .board-fields { grid-template-columns: 1fr; } }
