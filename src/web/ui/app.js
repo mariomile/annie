@@ -1944,6 +1944,19 @@ const STATUS = {
 	lead_upserted: ["Ricevuta", ""],
 	logged: ["Registrata", ""],
 };
+/** What the draft asks the customer for (MissingField), as the owner reads it. */
+const MISSING = {
+	fullName: "nome",
+	company: "azienda",
+	email: "email",
+	productOrService: "richiesta",
+	quantity: "quantità",
+	deliverySite: "luogo di consegna",
+	vatNumber: "P.IVA",
+	vatNumberInvalid: "P.IVA da ricontrollare",
+	budget: "budget",
+	deadline: "scadenza",
+};
 
 async function viewSegreteria(main) {
 	if (needInstance(main)) return;
@@ -2000,7 +2013,7 @@ function renderPratica(detail, inst, p) {
 		["Richiesta", lead.productOrService ?? "—"],
 		["Quantità", lead.quantity ?? "—"],
 		["Tempi", lead.urgency ?? "—"],
-		["Dati mancanti", p.missingFields.length ? p.missingFields.join(", ") : "nessuno"],
+		["Dati mancanti", p.missingFields.length ? p.missingFields.map((f) => MISSING[f] ?? f).join(", ") : "nessuno"],
 	];
 	if (lead.notes) rows.push(["Note", lead.notes]);
 	mount(detail, 
