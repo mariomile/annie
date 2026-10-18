@@ -348,6 +348,16 @@ main.is-chat { position: relative; }
 .browser-note { margin: 0; font-size: 12px; color: var(--fg-3); }
 .busy-note { font-size: 12px; color: var(--fg-3); white-space: nowrap; }
 .browser-toggle.news::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--fg); }
+/* The toggles float over the conversation: frosted, so what scrolls under them stays readable around them. */
+.panel-toggles .browser-toggle { background: color-mix(in srgb, var(--surface) 78%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+/* On a phone, just the icon: a round button in the corner instead of a pill over the first message. */
+@media (max-width: 560px) {
+	.panel-toggles { top: 8px; right: 10px; gap: 6px; }
+	.panel-toggles .browser-toggle { width: 36px; height: 36px; padding: 0; justify-content: center; }
+	.panel-toggles .browser-toggle > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+	.panel-toggles .browser-toggle.news::after { position: absolute; top: 6px; right: 6px; }
+	.panel-toggles .browser-toggle { position: relative; }
+}
 @media (max-width: 860px) {
 	.browser-panel { position: absolute; inset: 0; z-index: 4; flex-basis: auto; border-left: 0; }
 	.browser-bar .address { font-size: 16px; }
