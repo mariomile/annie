@@ -277,6 +277,10 @@ _Avoid_: follow-up, task (per il ricontatto)
 Una fattura elettronica che Annie prepara per la persona con `sales_invoices`: prima una bozza (BZ-NNNN) senza numero, poi, dopo il sì, il numero dell'anno, l'XML in `fatture/emesse/` e la copia di cortesia in PDF. Non viene mandata allo SdI: la persona la carica sul portale. Vedi ADR 0072.
 _Avoid_: invoice, fattura emessa (per la bozza)
 
+**Liquidazione IVA**:
+Il conto che chi è in regime ordinario fa ogni mese o trimestre: IVA delle fatture emesse meno quella detraibile delle fatture ricevute, più il credito o il saldo che passa dal periodo prima. Se è a debito si versa con l'F24. Annie la stima con `vat_settlement`. Vedi ADR 0076.
+_Avoid_: VAT settlement, dichiarazione (per la liquidazione periodica)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
