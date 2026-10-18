@@ -1434,7 +1434,18 @@ export function createWebApp(options: WebAppOptions): Server {
 	};
 	route("GET", "/api/rooms", "person", async ({ person }) => {
 		const p = person as Person;
-		return { rooms: await Promise.all((await roomsOf().list(p.id)).map((r) => roomView(r, p))) };
+		return {
+			rooms: await Promise.all(
+				(await roomsOf().list(p.id)).map(async (r) => {
+					const view = await roomView(r, p);
+					// The last thing said, for the list: who and the start of it.
+					const last = (await roomsOf().open(p.id, r.id))?.entries.findLast((e) => e.from !== "note");
+					const who = last?.from === "person" ? "Tu" : view.agents.find((a) => a.instanceId === last?.instanceId)?.name;
+					const said = last?.text ?? (last?.file === undefined ? undefined : `file ${last.file.path}`);
+					return { ...view, ...(last === undefined || said === undefined ? {} : { last: { who: who ?? "?", text: said.replace(/\s+/g, " ").slice(0, 140) } }) };
+				}),
+			),
+		};
 	});
 	route("POST", "/api/rooms", "person", async ({ person, req }) => {
 		const p = person as Person;
