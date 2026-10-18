@@ -3467,35 +3467,48 @@ async function viewMemory(main) {
 			);
 		};
 		return [
-			essential.length ? h("ul.task-list.memory-list", rows(essential, editable)) : emptyNote("div.empty", "Niente", empty),
+			essential.length ? h("ul.task-list.memory-list", rows(essential, editable)) : h("p.memory-empty", empty),
 			archived.length ? archive() : null,
 		];
 	};
 	const add = (isShared) => {
-		const text = h("textarea", { rows: 2, maxlength: 500, placeholder: isShared ? "Es. L'ufficio è chiuso dal 10 al 25 agosto" : "Es. Preferisco risposte brevi, in punti" });
-		const archived = h("input", { type: "checkbox" });
+		const label = isShared ? "Una cosa che vale per tutti" : "Una cosa su di te";
+		const text = h("textarea", { rows: 1, maxlength: 500, "aria-label": label, placeholder: isShared ? "Es. L'ufficio è chiuso dal 10 al 25 agosto" : "Es. Preferisco risposte brevi, in punti" });
+		// In archivio: a detail Annie looks up when it helps, not one sent with every message.
+		const archived = h("button.memory-archive-toggle", { type: "button", "aria-pressed": "false", title: "Un dettaglio che serve ogni tanto, non in ogni conversazione" }, icon("file"), "In archivio");
+		archived.addEventListener("click", () => archived.setAttribute("aria-pressed", archived.getAttribute("aria-pressed") === "true" ? "false" : "true"));
+		const remember = h("button.send", { type: "button", "aria-label": "Ricorda", title: "Ricorda", disabled: true }, icon("send"));
 		const save = async () => {
+			if (!text.value.trim()) return;
+			const toArchive = archived.getAttribute("aria-pressed") === "true";
 			try {
-				await api(`/api/instances/${inst.id}/memory`, { method: "POST", body: { text: text.value, shared: isShared, archived: archived.checked } });
-				toast(archived.checked ? `In archivio: ${inst.name} lo cerca quando serve` : `${inst.name} se lo ricorderà`);
+				await api(`/api/instances/${inst.id}/memory`, { method: "POST", body: { text: text.value, shared: isShared, archived: toArchive } });
+				toast(toArchive ? `In archivio: ${inst.name} lo cerca quando serve` : `${inst.name} se lo ricorderà`);
 				render();
 			} catch (error) {
 				toast(error.message, true);
 			}
 		};
-		return h(
-			"div.pad",
-			h("label.field", h("span", isShared ? "Aggiungi una cosa che vale per tutti" : "Aggiungi una cosa su di te"), text),
-			h("label.row-gap", archived, h("span", "In archivio: un dettaglio che serve ogni tanto, non in ogni conversazione")),
-			h("div.actions", h("button.btn", { onclick: save }, "Ricorda")),
-		);
+		text.addEventListener("input", () => {
+			remember.disabled = !text.value.trim();
+			text.style.setProperty("height", "auto");
+			text.style.setProperty("height", `${text.scrollHeight}px`);
+		});
+		text.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+				e.preventDefault();
+				void save();
+			}
+		});
+		remember.addEventListener("click", () => void save());
+		return h("div.memory-add", text, h("div.memory-add-bar", archived, remember));
 	};
 	mount(main, 
 		head(agentLabel(inst), h("h1", "Memoria"), `Quello che ${inst.name} ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva a ${inst.name}.`),
 		h(
 			"div.grid-2",
-			h("div.card", h("div.pad", h("h2", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
-			h("div.card", h("div.pad", h("h2", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
+			h("div.card.memory-card", h("div.pad.memory-head", h("h2", "Su di te"), mine.length ? h("span.muted", String(mine.length)) : null), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
+			h("div.card.memory-card", h("div.pad.memory-head", h("h2", "Condivise"), shared.length ? h("span.muted", String(shared.length)) : null), list(shared, canEditShared, `Ancora nessuna. Quello che scrivi qui lo sa chiunque scriva a ${inst.name}.`), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
 }
