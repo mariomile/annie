@@ -7,8 +7,8 @@
  */
 import { realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
-import { hasControlChars } from "./plain-text.ts";
 import { VAT_RATES, type VatRate } from "./quote-sums.ts";
+import { isMarker, isText, optText } from "./stored-fields.ts";
 import { fold } from "./text-match.ts";
 
 export class ExpenseError extends Error {
@@ -21,6 +21,8 @@ export const EXPENSE_LIMITS = {
 	/** The store file: past it, nothing more is written (a full year is about 3 MB). */
 	fileBytes: 16 * 1024 * 1024,
 	supplier: 120,
+	supplierVat: 20,
+	docNumber: 40,
 	note: 500,
 	receipt: 300,
 	/** The largest total of one expense, in euros: no typo of a few zeros goes in unchecked. */
@@ -28,7 +30,7 @@ export const EXPENSE_LIMITS = {
 } as const;
 
 /** The expense tool's ops that only read: they run in a brief's thread and for another agente. */
-export const EXPENSE_READ_OPS = ["list", "summary", "prima_nota"] as const;
+const EXPENSE_READ_OPS = ["list", "summary", "prima_nota"] as const;
 
 export function expenseCallReads(args: Record<string, unknown>): boolean {
 	return EXPENSE_READ_OPS.some((o) => o === args.op);
@@ -36,6 +38,7 @@ export function expenseCallReads(args: Record<string, unknown>): boolean {
 
 export const CATEGORIES = [
 	"carburante",
+	"auto e veicoli",
 	"pasti e trasferte",
 	"ufficio e cancelleria",
 	"software e abbonamenti",
@@ -44,6 +47,7 @@ export const CATEGORIES = [
 	"consulenze",
 	"attrezzatura",
 	"affitto e utenze",
+	"spedizioni",
 	"altro",
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -51,23 +55,33 @@ export type Category = (typeof CATEGORIES)[number];
 export const METHODS = ["contanti", "carta", "bonifico", "altro"] as const;
 export type Method = (typeof METHODS)[number];
 
-/** Words that mean a category, folded (no case, no accents): a word of the text that starts with one of them matches. */
+/** What the document of an expense is; a scontrino when not said. */
+export const DOC_TYPES = ["scontrino", "ricevuta", "fattura"] as const;
+export type DocType = (typeof DOC_TYPES)[number];
+
+/**
+ * Whole words (folded: no case, no accents) and phrases that mean a category, tried in the list's
+ * order (benzina per il furgone is carburante). Never words of an address (corso, via, sede) nor
+ * words too vague alone (acqua, ip): a supplier's name or address must not pick a category.
+ */
 const CATEGORY_WORDS: Readonly<Record<Exclude<Category, "altro">, readonly string[]>> = {
-	carburante: ["carburant", "benzin", "gasolio", "diesel", "gpl", "metano", "rifornim", "distributor", "pieno", "fuel", "eni", "q8", "esso", "tamoil", "ip"],
-	"pasti e trasferte": ["pasti", "pasto", "pranz", "cena", "cene", "ristorant", "trattoria", "pizzeria", "bar", "colazion", "caffe", "trasfert", "viaggi", "treno", "trenitalia", "italo", "aereo", "volo", "voli", "hotel", "albergo", "alloggio", "b&b", "taxi", "autostrad", "pedaggi", "telepass", "parchegg", "vitto"],
-	"ufficio e cancelleria": ["ufficio", "cancelleria", "risma", "toner", "cartucc", "penne", "penna", "quaderni", "raccoglitor", "buste", "francobolli", "spedizion"],
-	"software e abbonamenti": ["software", "abbonament", "licenz", "saas", "cloud", "hosting", "dominio", "domini", "app", "applicazion", "microsoft", "adobe", "google workspace", "netflix", "spotify"],
-	"telefono e internet": ["telefon", "cellular", "smartphone", "internet", "fibra", "adsl", "sim", "tim", "vodafone", "windtre", "iliad", "fastweb"],
-	formazione: ["formazion", "corso", "corsi", "libro", "libri", "seminari", "webinar", "=master", "convegn", "aggiornament"],
-	consulenze: ["consulen", "commercialist", "avvocat", "notai", "notaio", "professionist", "parcella", "legale"],
-	attrezzatura: ["attrezz", "computer", "pc", "portatil", "notebook", "laptop", "tablet", "monitor", "stampant", "macchinar", "strument", "hardware", "utensil", "mobili", "arredo"],
-	"affitto e utenze": ["affitt", "locazion", "canone", "utenz", "luce", "gas", "acqua", "energia", "elettric", "bollett", "condomin", "riscaldament"],
+	carburante: ["carburante", "carburanti", "benzina", "benzinaio", "stazione di servizio", "gasolio", "diesel", "gpl", "metano", "rifornimento", "distributore", "pieno", "eni", "agip", "q8", "esso", "tamoil"],
+	"auto e veicoli": ["auto", "automobile", "veicolo", "veicoli", "furgone", "moto", "manutenzione", "meccanico", "officina", "gommista", "gomme", "pneumatici", "tagliando", "assicurazione", "rca", "bollo auto", "lavaggio", "autolavaggio", "pedaggio", "pedaggi", "autostrada", "autostrade", "telepass", "parcheggio", "parcheggi", "revisione", "carrozzeria"],
+	"pasti e trasferte": ["pasti", "pasto", "pranzo", "pranzi", "cena", "cene", "ristorante", "ristoranti", "trattoria", "osteria", "pizzeria", "pizza", "bar", "autogrill", "colazione", "caffe", "trasferta", "trasferte", "viaggio", "viaggi", "treno", "trenitalia", "italo", "aereo", "volo", "voli", "hotel", "albergo", "alloggio", "b&b", "taxi", "vitto"],
+	"ufficio e cancelleria": ["ufficio", "cancelleria", "cartoleria", "risma", "toner", "cartuccia", "cartucce", "penne", "penna", "quaderni", "raccoglitori", "buste"],
+	"software e abbonamenti": ["software", "abbonamento", "abbonamenti", "licenza", "licenze", "saas", "cloud", "hosting", "dominio", "domini", "app", "microsoft", "adobe", "google workspace", "canva", "dropbox"],
+	"telefono e internet": ["telefono", "telefonia", "cellulare", "smartphone", "internet", "fibra", "adsl", "sim", "tim", "vodafone", "windtre", "iliad", "fastweb", "ricarica telefonica"],
+	formazione: ["formazione", "corsi", "libro", "libri", "seminario", "seminari", "webinar", "master", "convegno", "convegni", "aggiornamento", "workshop"],
+	consulenze: ["consulenza", "consulenze", "consulente", "commercialista", "avvocato", "notaio", "professionista", "parcella"],
+	attrezzatura: ["attrezzatura", "attrezzature", "attrezzi", "computer", "pc", "portatile", "notebook", "laptop", "tablet", "monitor", "stampante", "macchinario", "strumenti", "hardware", "utensili", "mobili", "arredo"],
+	"affitto e utenze": ["affitto", "locazione", "canone", "utenze", "utenza", "luce", "gas", "energia", "elettricita", "bolletta", "bollette", "condominio", "riscaldamento", "enel"],
+	spedizioni: ["spedizione", "spedizioni", "corriere", "poste", "raccomandata", "pacco", "dhl", "ups", "gls", "brt", "bartolini", "sda", "fedex"],
 };
 
 const METHOD_WORDS: Readonly<Record<Exclude<Method, "altro">, readonly string[]>> = {
-	contanti: ["contant", "cash", "in contanti"],
+	contanti: ["contanti", "contante", "cash"],
 	carta: ["carta", "bancomat", "pos", "credito", "debito", "visa", "mastercard", "amex", "american express", "maestro", "apple pay", "google pay", "satispay", "paypal", "prepagata"],
-	bonifico: ["bonific", "sepa", "rid", "sdd", "addebito", "domiciliazion"],
+	bonifico: ["bonifico", "bonifici", "sepa", "rid", "sdd", "addebito", "domiciliazione"],
 };
 
 /** Folded words of a text: lower case, no accents, letters and digits (and & for B&B). */
@@ -77,27 +91,19 @@ function words(text: string): string[] {
 		.filter((w) => w !== "");
 }
 
-/** Whether `text` holds the words of `key` (one word or several in a row), each word starting as `key`'s. */
+/** Whether the words hold `key`, a whole word or a phrase of whole words in a row. */
 function says(tokens: readonly string[], key: string): boolean {
 	const parts = key.split(" ");
 	for (let i = 0; i + parts.length <= tokens.length; i++) {
-		if (parts.every((p, j) => (j === parts.length - 1 ? (tokens[i + j] as string).startsWith(p) : tokens[i + j] === p))) return true;
+		if (parts.every((p, j) => tokens[i + j] === p)) return true;
 	}
 	return false;
 }
 
 /**
- * Short keys (pc, gas, bar, volo…) and those written «=master» only as whole words, so
- * «gastronomia» is no gas, «barca» no bar and «mastercard» no master; the others start a word.
- */
-function saysWord(tokens: readonly string[], key: string): boolean {
-	if (key.startsWith("=")) return tokens.includes(key.slice(1));
-	return key.length <= 4 && !key.includes(" ") ? tokens.includes(key) : says(tokens, key);
-}
-
-/**
  * The category a person's words mean: a category's name («Software e abbonamenti», «software»),
- * or a word of it («benzina», «pranzo», «commercialista»). Undefined when nothing fits.
+ * or a whole word of its list («benzina», «pranzo», «commercialista»). Undefined when nothing
+ * fits (a supermercato, Amazon: the caller puts it in «altro» unless the note says more).
  */
 export function matchCategory(text: string): Category | undefined {
 	const tokens = words(text);
@@ -105,9 +111,9 @@ export function matchCategory(text: string): Category | undefined {
 	const joined = tokens.join(" ");
 	const exact = CATEGORIES.find((c) => words(c).join(" ") === joined);
 	if (exact !== undefined) return exact;
-	if (joined === "altro" || joined === "altre" || joined === "varie") return "altro";
+	if (joined === "altre" || joined === "varie") return "altro";
 	for (const [category, keys] of Object.entries(CATEGORY_WORDS) as [Category, readonly string[]][]) {
-		if (keys.some((k) => saysWord(tokens, k))) return category;
+		if (keys.some((k) => says(tokens, k))) return category;
 	}
 	return undefined;
 }
@@ -118,7 +124,7 @@ export function matchMethod(text: string): Method | undefined {
 	if (tokens.length === 0) return undefined;
 	if (tokens.join(" ") === "altro") return "altro";
 	for (const [method, keys] of Object.entries(METHOD_WORDS) as [Method, readonly string[]][]) {
-		if (keys.some((k) => saysWord(tokens, k))) return method;
+		if (keys.some((k) => says(tokens, k))) return method;
 	}
 	return undefined;
 }
@@ -134,6 +140,12 @@ export type Expense = Marker & {
 	readonly vat?: string;
 	readonly vatRate?: VatRate;
 	readonly supplier?: string;
+	/** The supplier's partita IVA or codice fiscale, as on the document. */
+	readonly supplierVat?: string;
+	/** Scontrino when missing. */
+	readonly docType?: DocType;
+	/** The document's number, as written. */
+	readonly docNumber?: string;
 	readonly category: Category;
 	readonly method?: Method;
 	readonly note?: string;
@@ -160,18 +172,21 @@ export function idOrder(id: string): [number, number] {
 
 const SAID_ID = /^(?:s(?:pesa)?\s*[-.]?\s*)?(?:n(?:r|um(?:ero)?)?\.?\s*)?(?:(\d{4})[-/ ])?0*(\d{1,6})(?:[-/ ](\d{4}))?$/i;
 
-/**
- * The expenses a person's words name: «S-2026-0001», «2026-1», «1/2026», «spesa 12», «12».
- * More than one when the progressive without a year is in several years.
- */
-export function findExpenses(expenses: readonly Expense[], text: string): Expense[] {
+/** The year (when said) and progressive of an id as a person writes it: «S-2026-0001», «2026-1», «1/2026», «spesa 12», «12». */
+export function parseExpenseId(text: string): { readonly year?: number; readonly n: number } | undefined {
 	const m = SAID_ID.exec(text.trim());
-	if (m === null) return [];
+	if (m === null || Number(m[2]) === 0) return undefined;
 	const year = m[1] ?? m[3];
-	const n = Number(m[2]);
+	return { ...(year === undefined ? {} : { year: Number(year) }), n: Number(m[2]) };
+}
+
+/** The expenses a person's words name; more than one when the progressive without a year is in several years. */
+export function findExpenses(expenses: readonly Expense[], text: string): Expense[] {
+	const said = parseExpenseId(text);
+	if (said === undefined) return [];
 	return expenses.filter((e) => {
 		const [y, seq] = idOrder(e.id);
-		return seq === n && (year === undefined || y === Number(year));
+		return seq === said.n && (said.year === undefined || y === said.year);
 	});
 }
 
@@ -190,15 +205,32 @@ export function matchesSupplier(expense: Expense, text: string): boolean {
 	return wanted.length > 0 && wanted.every((w) => name.includes(w));
 }
 
+/**
+ * An expense already recorded that `e` looks like: the same receipt, or the same day and total
+ * (and the same supplier, when both have one). Said to the person, never refused: two coffees of
+ * the same price on the same day are two expenses.
+ */
+export function lookalike(expenses: readonly Expense[], e: Expense): { readonly id: string; readonly why: string } | undefined {
+	const supplier = (x: Expense) => (x.supplier === undefined ? undefined : words(x.supplier).join(" "));
+	for (const other of expenses) {
+		if (other.id === e.id) continue;
+		if (e.receipt !== undefined && other.receipt === e.receipt) return { id: other.id, why: "stesso scontrino" };
+		const a = supplier(e);
+		const b = supplier(other);
+		if (other.date === e.date && other.amount === e.amount && (a === undefined || b === undefined || a === b)) return { id: other.id, why: "stesso giorno e importo" };
+	}
+	return undefined;
+}
+
 /** A receipt's file: a photo or a PDF. */
 export const RECEIPT_FILE = /\.(?:jpe?g|png|webp|gif|heic|heif|tiff?|bmp|pdf)$/i;
+
+/** A partita IVA (with or without its country) or a codice fiscale: letters and digits, 8 to 16 after the country. */
+export const SUPPLIER_VAT = /^(?:[A-Z]{2})?[0-9A-Z]{8,16}$/;
 
 const AMOUNT = /^\d{1,8}(?:\.\d{1,2})?$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-const isText = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !hasControlChars(v);
-const optText = (v: unknown, max: number) => v === undefined || isText(v, max);
-const isMarker = (v: unknown): v is Marker => typeof v === "object" && v !== null && isText((v as Marker).by, 200) && isText((v as Marker).at, 40);
 
 /** A receipt path as stored: relative, no «..», no hidden names, a photo or PDF. */
 export function validReceiptPath(path: unknown): path is string {
@@ -218,6 +250,9 @@ export function validExpense(v: unknown): v is Expense {
 	if (e.vatRate !== undefined && !VAT_RATES.includes(e.vatRate)) return false;
 	if (!CATEGORIES.includes(e.category)) return false;
 	if (e.method !== undefined && !METHODS.includes(e.method)) return false;
+	if (e.docType !== undefined && !DOC_TYPES.includes(e.docType)) return false;
+	if (e.supplierVat !== undefined && (typeof e.supplierVat !== "string" || !SUPPLIER_VAT.test(e.supplierVat))) return false;
+	if (!optText(e.docNumber, EXPENSE_LIMITS.docNumber)) return false;
 	if (!optText(e.supplier, EXPENSE_LIMITS.supplier) || !optText(e.note, EXPENSE_LIMITS.note) || !optText(e.callId, 200)) return false;
 	if (e.receipt !== undefined && !validReceiptPath(e.receipt)) return false;
 	return e.edited === undefined || isMarker(e.edited);

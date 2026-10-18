@@ -1,15 +1,15 @@
 /**
  * The arithmetic of the spese, exact: amounts are canonical decimal strings read into bigint
- * cents (quote-sums.ts' scaled), never floats; the VAT taken out of a total with a rate is rounded
- * half up to the cent, as a preventivo with prices VAT included does. And the periods asked
- * about: a month («ottobre», «2026-10»), a quarter («T3 2026») or a year («2026»), with the one
- * before to compare against. A month or quarter without a year is the closest one not to come.
+ * cents (quote-sums.ts' scaled), never floats; the VAT taken out of a total with a rate is the
+ * total less its imponibile rounded half up, as a preventivo with prices VAT included does. And
+ * the periods asked about: a month («ottobre», «2026-10»), a quarter («T3 2026»), a year
+ * («2026») or the year so far («da inizio anno»), with the one before to compare against. A month
+ * or a quarter without a year is the latest one begun: expenses are of the past.
  */
 import { DateError, parseMonth } from "./dates.ts";
 import { CATEGORIES, type Category, type Expense, ExpenseError } from "./expenses.ts";
-import { closestMonthYear } from "./invoice-windows.ts";
-import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES } from "./italian-calendar.ts";
-import { scaled, type VatRate } from "./quote-sums.ts";
+import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES, realDate } from "./italian-calendar.ts";
+import { halfUp, netOf, scaled, type VatRate } from "./quote-sums.ts";
 import { fold } from "./text-match.ts";
 
 /** A canonical decimal string («42.5») in cents. */
@@ -17,58 +17,67 @@ export function cents(value: string): bigint {
 	return scaled(value, 2);
 }
 
-/** Cents back to a canonical decimal string: 4250n → «42.5». */
+/** Cents back to a canonical decimal string: 4250n → «42.5». Never negative: a stored amount is not. */
 export function centsValue(value: bigint): string {
+	if (value < 0n) throw new ExpenseError("un importo negativo non si salva");
 	const digits = value.toString().padStart(3, "0");
 	const fraction = digits.slice(-2).replace(/0+$/, "");
 	const integer = digits.slice(0, -2);
 	return fraction === "" ? integer : `${integer}.${fraction}`;
 }
 
-/** numerator / denominator rounded half up, both positive. */
-function halfUp(numerator: bigint, denominator: bigint): bigint {
-	return (numerator * 2n + denominator) / (denominator * 2n);
-}
-
-/** The VAT in a total that includes it at `rate`: total − total × 100 / (100 + rate), the imponibile rounded half up. */
+/** The VAT in a total that includes it at `rate`: the total less its imponibile. */
 export function vatInGross(gross: bigint, rate: VatRate): bigint {
-	return gross - halfUp(gross * 100n, BigInt(100 + rate));
+	return gross - netOf(gross, rate);
 }
 
-export type PeriodKind = "month" | "quarter" | "year";
+export type PeriodKind = "month" | "quarter" | "year" | "ytd";
 
 /** A span of whole days, both ends included, with how a person names it and how a file does. */
 export type Period = {
 	readonly kind: PeriodKind;
 	readonly from: string;
 	readonly to: string;
-	/** «ottobre 2026», «3º trimestre 2026», «2026». */
+	/** «ottobre 2026», «3º trimestre 2026», «2026», «2026 fino al 18/10». */
 	readonly label: string;
-	/** «2026-10», «2026-T3», «2026»: digits, «-» and «T» only, safe in a file name. */
+	/** «di ottobre 2026», «del 3º trimestre 2026», «del 2026». */
+	readonly of: string;
+	/** «a ottobre 2026», «ad aprile 2026», «nel 3º trimestre 2026», «nel 2026». */
+	readonly in: string;
+	/** «2026-10», «2026-T3», «2026», «2026-inizio-anno»: digits, letters and «-» only, safe in a file name. */
 	readonly slug: string;
 };
 
-const QUARTER = /^(?:(\d{4})\s*[- ]?\s*)?(?:t|q|trim(?:estre)?\.?\s*)\s*([1-4])(?:\s*[- /]?\s*(\d{4}))?$/;
-const QUARTER_WORDS = /^(primo|secondo|terzo|quarto|[1-4]\s*(?:o|°|º)?)\s+trimestre(?:\s+(?:del\s+)?(\d{4}))?$/;
-const ORDINALS: Readonly<Record<string, number>> = { primo: 1, secondo: 2, terzo: 3, quarto: 4 };
+const a = (word: string) => (/^[aeiou]/.test(word) ? `ad ${word}` : `a ${word}`);
 
-export function monthPeriod(year: number, month: number): Period {
+function monthPeriod(year: number, month: number): Period {
+	const label = `${MONTH_NAMES[month - 1]} ${year}`;
 	return {
 		kind: "month",
 		from: isoDate(year, month, 1),
 		to: isoDate(year, month, daysInMonth(year, month)),
-		label: `${MONTH_NAMES[month - 1]} ${year}`,
+		label,
+		of: `di ${label}`,
+		in: a(label),
 		slug: `${year}-${String(month).padStart(2, "0")}`,
 	};
 }
 
-export function quarterPeriod(year: number, quarter: number): Period {
+function quarterPeriod(year: number, quarter: number): Period {
 	const first = (quarter - 1) * 3 + 1;
-	return { kind: "quarter", from: isoDate(year, first, 1), to: isoDate(year, first + 2, daysInMonth(year, first + 2)), label: `${quarter}º trimestre ${year}`, slug: `${year}-T${quarter}` };
+	const label = `${quarter}º trimestre ${year}`;
+	return { kind: "quarter", from: isoDate(year, first, 1), to: isoDate(year, first + 2, daysInMonth(year, first + 2)), label, of: `del ${label}`, in: `nel ${label}`, slug: `${year}-T${quarter}` };
 }
 
-export function yearPeriod(year: number): Period {
-	return { kind: "year", from: isoDate(year, 1, 1), to: isoDate(year, 12, 31), label: String(year), slug: String(year) };
+function yearPeriod(year: number): Period {
+	return { kind: "year", from: isoDate(year, 1, 1), to: isoDate(year, 12, 31), label: String(year), of: `del ${year}`, in: `nel ${year}`, slug: String(year) };
+}
+
+/** From the 1st of January to `to`. */
+function yearToDate(to: string): Period {
+	const year = to.slice(0, 4);
+	const day = `${to.slice(8, 10)}/${to.slice(5, 7)}`;
+	return { kind: "ytd", from: `${year}-01-01`, to, label: `${year} fino al ${day}`, of: `del ${year} fino al ${day}`, in: `nel ${year} fino al ${day}`, slug: `${year}-inizio-anno` };
 }
 
 /** The period of `today`'s month. */
@@ -78,59 +87,93 @@ export function currentMonth(today: string): Period {
 
 const quarterOf = (date: string) => Math.floor((Number(date.slice(5, 7)) - 1) / 3) + 1;
 
+const QUARTER = /^(?:(\d{4})\s*[- ]?\s*)?(?:t|q|trim(?:estre)?\.?\s*)\s*([1-4])(?:\s*[- /]?\s*(\d{4}))?$/;
+const QUARTER_WORDS = /^(primo|secondo|terzo|quarto|[1-4]\s*(?:o|°|º)?)\s+trimestre(?:\s+(?:del\s+)?(\d{4}))?$/;
+const ORDINALS: Readonly<Record<string, number>> = { primo: 1, secondo: 2, terzo: 3, quarto: 4 };
+/** «10/25», «10-25»: a month and a two-digit year. */
+const MONTH_SHORT_YEAR = /^(\d{1,2})[/.-](\d{2})$/;
+
+/** The text, back in an error only when it is plain: letters, digits, spaces and a few signs. */
+function said(text: string): string {
+	const t = text.trim();
+	return t.length > 0 && t.length <= 40 && /^[\p{L}\p{N} '/.°º-]+$/u.test(t) ? ` «${t}»` : "";
+}
+
 /**
- * A period as a person writes it: «ottobre», «ottobre 2025», «2026-10», «10/2026», «T3 2026»,
- * «Q3», «3° trimestre», «terzo trimestre 2026», «2026», «mese», «trimestre», «anno» (the current
- * ones). A month without a year is the closest to today (invoice-windows.ts); a quarter without a
- * year is this year's, or last year's when it has not started yet. ExpenseError otherwise.
+ * A period as a person writes it: «ottobre», «ottobre 2025», «ottobre 25», «2026-10», «10/2026»,
+ * «10/25», «T3 2026», «Q3», «3° trimestre», «terzo trimestre 2026», «2026», «mese», «mese
+ * scorso», «trimestre», «trimestre scorso», «ultimo trimestre», «anno», «anno scorso», «da inizio
+ * anno». A month or a quarter without a year is the latest one begun (this one or before).
+ * ExpenseError otherwise.
  */
 export function readPeriod(text: string, today: string): Period {
 	const t = fold(text).replace(/\s+/g, " ").trim();
 	const year = Number(today.slice(0, 4));
+	const thisQuarter = quarterPeriod(year, quarterOf(today));
 	if (t === "" || t === "mese" || t === "questo mese" || t === "mese corrente") return currentMonth(today);
-	if (t === "mese scorso") return previousPeriod(currentMonth(today));
-	if (t === "trimestre" || t === "questo trimestre") return quarterPeriod(year, quarterOf(today));
-	if (t === "trimestre scorso") return previousPeriod(quarterPeriod(year, quarterOf(today)));
+	if (t === "mese scorso" || t === "ultimo mese") return previousPeriod(currentMonth(today));
+	if (t === "trimestre" || t === "questo trimestre" || t === "trimestre corrente") return thisQuarter;
+	if (t === "trimestre scorso" || t === "ultimo trimestre") return previousPeriod(thisQuarter);
 	if (t === "anno" || t === "quest'anno" || t === "anno corrente") return yearPeriod(year);
 	if (t === "anno scorso") return yearPeriod(year - 1);
+	if (/^(?:da|dall') ?inizio (?:d(?:ell)?')?anno$/.test(t)) return yearToDate(today);
 	const yearOnly = /^(?:anno )?(\d{4})$/.exec(t);
-	if (yearOnly !== null) return checkedYear(Number(yearOnly[1]), text);
+	if (yearOnly !== null) return yearPeriod(checkedYear(Number(yearOnly[1]), text));
 	const q = QUARTER.exec(t);
 	const w = q === null ? QUARTER_WORDS.exec(t) : null;
 	if (q !== null || w !== null) {
 		const quarter = q !== null ? Number(q[2]) : (ORDINALS[(w as RegExpExecArray)[1] as string] ?? Number.parseInt((w as RegExpExecArray)[1] as string, 10));
-		const said = q !== null ? (q[1] ?? q[3]) : (w as RegExpExecArray)[2];
-		const y = said === undefined ? (quarter > quarterOf(today) ? year - 1 : year) : Number(said);
-		checkedYear(y, text);
-		return quarterPeriod(y, quarter);
+		const written = q !== null ? (q[1] ?? q[3]) : (w as RegExpExecArray)[2];
+		const y = written === undefined ? (quarter > quarterOf(today) ? year - 1 : year) : Number(written);
+		return quarterPeriod(checkedYear(y, text), quarter);
+	}
+	const short = MONTH_SHORT_YEAR.exec(t);
+	if (short !== null) {
+		const month = Number(short[1]);
+		if (month < 1 || month > 12) throw new ExpenseError(`non riconosco il periodo${said(text)}: ${month} non è un mese`);
+		return monthPeriod(checkedYear(2000 + Number(short[2]), text), month);
 	}
 	try {
 		const parsed = parseMonth(text, today);
-		const y = /\d{4}/.test(t) || /^\d{1,2}[/.-]\d{2,4}$/.test(t) ? parsed.year : closestMonthYear(parsed.month, today);
-		checkedYear(y, text);
-		return monthPeriod(y, parsed.month);
+		// With a year written (four digits or two), that one; without, the latest month begun.
+		const y = /\d/.test(t) ? parsed.year : parsed.month <= Number(today.slice(5, 7)) ? year : year - 1;
+		return monthPeriod(checkedYear(y, text), parsed.month);
 	} catch (error) {
-		if (error instanceof DateError) throw new ExpenseError(`non riconosco il periodo «${text.slice(0, 40)}»: scrivilo come «ottobre», «ottobre 2026», «T3 2026» o «2026»`);
+		if (error instanceof DateError) throw new ExpenseError(`non riconosco il periodo${said(text)}: scrivilo come «ottobre», «ottobre 2026», «T3 2026», «2026» o «da inizio anno»`);
 		throw error;
 	}
 }
 
-function checkedYear(year: number, text: string): Period {
-	if (year < 2000 || year > 2100) throw new ExpenseError(`l'anno nel periodo «${text.slice(0, 40)}» non va: dal 2000 al 2100`);
-	return yearPeriod(year);
+function checkedYear(year: number, text: string): number {
+	if (year < 2000 || year > 2100) throw new ExpenseError(`l'anno nel periodo${said(text)} non va: dal 2000 al 2100`);
+	return year;
 }
 
-/** The period before, of the same kind: September for October, T2 for T3, 2025 for 2026. */
+/** The period before, of the same kind: September for October, T2 for T3, 2025 for 2026, the same days of last year for the year so far. */
 export function previousPeriod(p: Period): Period {
 	const year = Number(p.from.slice(0, 4));
 	const month = Number(p.from.slice(5, 7));
+	if (p.kind === "ytd") {
+		const same = `${year - 1}${p.to.slice(4)}`;
+		return yearToDate(realDate(same) ? same : `${year - 1}-02-28`);
+	}
 	if (p.kind === "year") return yearPeriod(year - 1);
 	if (p.kind === "quarter") return quarterOf(p.from) === 1 ? quarterPeriod(year - 1, 4) : quarterPeriod(year, quarterOf(p.from) - 1);
 	return month === 1 ? monthPeriod(year - 1, 12) : monthPeriod(year, month - 1);
 }
 
+/** «del mese prima», «del trimestre prima», «dell'anno prima». */
+export function unitBefore(p: Period): string {
+	return p.kind === "month" ? "del mese prima" : p.kind === "quarter" ? "del trimestre prima" : "dell'anno prima";
+}
+
 export function inPeriod(date: string, p: Pick<Period, "from" | "to">): boolean {
 	return date >= p.from && date <= p.to;
+}
+
+/** Whether the period is still under way: today is in it and not its last day. */
+export function underWay(p: Period, today: string): boolean {
+	return inPeriod(today, p) && today !== p.to;
 }
 
 /** A span of days: the period, or the part of it up to today. */
@@ -143,7 +186,7 @@ export type Span = { readonly from: string; readonly to: string };
  */
 export function comparedSpans(p: Period, today: string): { readonly now: Span; readonly before: Span; readonly partial: boolean } {
 	const prev = previousPeriod(p);
-	if (!inPeriod(today, p) || today === p.to) return { now: { from: p.from, to: p.to }, before: { from: prev.from, to: prev.to }, partial: false };
+	if (!underWay(p, today)) return { now: { from: p.from, to: p.to }, before: { from: prev.from, to: prev.to }, partial: false };
 	const days = daysBetween(p.from, today);
 	const end = addDays(prev.from, days);
 	return { now: { from: p.from, to: today }, before: { from: prev.from, to: end > prev.to ? prev.to : end }, partial: true };
@@ -179,7 +222,7 @@ export function totalsOf(expenses: readonly Expense[], span: Span): Totals {
 	}
 	const categories = [...byCategory]
 		.map(([category, s]) => ({ category, ...s }))
-		.sort((a, b) => (a.total === b.total ? CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) : a.total > b.total ? -1 : 1));
+		.sort((x, y) => (x.total === y.total ? CATEGORIES.indexOf(x.category) - CATEGORIES.indexOf(y.category) : x.total > y.total ? -1 : 1));
 	return { count: within.length, total, vat, withoutVat, categories };
 }
 

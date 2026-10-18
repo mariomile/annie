@@ -3,13 +3,14 @@
  * USCITE, the expenses dated in it, in one chronological table with a running balance. Read
  * only. The scadenzario does not keep the day the money came in: it keeps when the owner marked
  * the invoice (or the instalment) paid, so that day, where the instance is, is the incasso's
- * date. Only euro amounts are counted; the rest is said apart.
+ * date. Only euro amounts are counted; other currencies, amounts that do not read and credit
+ * notes marked used are counted apart, to be said.
  */
 import type { Expense } from "./expenses.ts";
 import { cents, inPeriod, type Span } from "./expense-sums.ts";
 import { type Invoice, partyKey } from "./invoices.ts";
 
-export type CashKind = "in" | "out";
+type CashKind = "in" | "out";
 
 export type CashRow = {
 	readonly date: string;
@@ -33,6 +34,10 @@ export type CashBook = {
 	readonly otherCurrency: number;
 	/** Invoices to pay marked paid in the period: outflows not in the register of expenses. */
 	readonly paidPassive: number;
+	/** Instalments of invoices to collect marked paid in the period whose amount does not read: not counted. */
+	readonly unreadable: number;
+	/** Credit notes marked used in the period: whether money went back is not known, not counted. */
+	readonly credits: number;
 };
 
 /** Hundred-millionths (fattura-pa.ts) to cents, half up. */
@@ -42,19 +47,30 @@ export function unitsToCents(units: bigint): bigint {
 
 type Entry = Omit<CashRow, "balance">;
 
-/** The incassi of `span`: every instalment of an invoice to collect (not a credit note) marked paid on a day in it. */
-export function incassiOf(invoices: readonly Invoice[], span: Span, dayOf: (at: string) => string): { entries: Entry[]; otherCurrency: number; paidPassive: number } {
+type Incassi = { entries: Entry[]; otherCurrency: number; paidPassive: number; unreadable: number; credits: number };
+
+/** The incassi of `span`: every instalment of an invoice to collect (not a credit note) marked paid on a day in it; and what is left out. */
+function incassiOf(invoices: readonly Invoice[], span: Span, dayOf: (at: string) => string): Incassi {
 	const entries: Entry[] = [];
 	const foreign = new Set<string>();
 	const passive = new Set<string>();
+	const credits = new Set<string>();
+	let unreadable = 0;
 	for (const invoice of invoices) {
-		if (invoice.credit || invoice.doc.integration) continue;
+		if (invoice.doc.integration) continue;
 		for (const i of invoice.instalments) {
-			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
+			if (i.paid === undefined || i.extra === true || !inPeriod(dayOf(i.paid.at), span)) continue;
 			const date = dayOf(i.paid.at);
-			if (!inPeriod(date, span)) continue;
+			if (invoice.credit) {
+				credits.add(invoice.key);
+				continue;
+			}
 			if (invoice.side === "passive") passive.add(invoice.key);
 			if (invoice.side !== "active") continue;
+			if (i.amount === undefined || i.amount <= 0n) {
+				unreadable++;
+				continue;
+			}
 			if (invoice.doc.currency !== "EUR") {
 				foreign.add(invoice.key);
 				continue;
@@ -62,11 +78,11 @@ export function incassiOf(invoices: readonly Invoice[], span: Span, dayOf: (at: 
 			entries.push({ date, kind: "in", cents: unitsToCents(i.amount), invoice, instalment: { n: i.n, count: invoice.instalments.length } });
 		}
 	}
-	return { entries, otherCurrency: foreign.size, paidPassive: passive.size };
+	return { entries, otherCurrency: foreign.size, paidPassive: passive.size, unreadable, credits: credits.size };
 }
 
 /** The uscite of `span`: the expenses dated in it. */
-export function usciteOf(expenses: readonly Expense[], span: Span): Entry[] {
+function usciteOf(expenses: readonly Expense[], span: Span): Entry[] {
 	return expenses.filter((e) => inPeriod(e.date, span)).map((e) => ({ date: e.date, kind: "out" as const, cents: cents(e.amount), expense: e }));
 }
 
@@ -90,5 +106,5 @@ export function cashBook(invoices: readonly Invoice[], expenses: readonly Expens
 		balance += e.kind === "in" ? e.cents : -e.cents;
 		return { ...e, balance };
 	});
-	return { rows, totalIn, totalOut, net: totalIn - totalOut, otherCurrency: incassi.otherCurrency, paidPassive: incassi.paidPassive };
+	return { rows, totalIn, totalOut, net: totalIn - totalOut, otherCurrency: incassi.otherCurrency, paidPassive: incassi.paidPassive, unreadable: incassi.unreadable, credits: incassi.credits };
 }

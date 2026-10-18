@@ -1,76 +1,115 @@
 /**
  * The expense tool's arguments, read and checked: the total (the decimal rules of the quotes:
- * «1.234,56», «42,5», «42.50»; «1.250» reads two ways and is asked), the VAT as an amount or a
- * rate, the day (today where the instance is, when not said; never a day to come), the supplier
- * and the note as plain text, the category and the payment method matched from the person's
- * words, and the receipt: a photo or PDF that is in the workspace, kept as its path only.
+ * «1.234,56», «42,5», «42.50»; «1.250» reads two ways and is asked; never negative, never in
+ * another currency), the VAT as an amount or a rate, the day (today where the instance is when not
+ * said, «ieri», «sabato», a date; never a day to come), the supplier and its tax id, the document,
+ * the note, the category and the payment method matched from the person's words, and the
+ * receipt: a photo or PDF that is in the workspace, kept as its path only.
+ *
+ * Reading (readFields) is apart from applying (applyFields): an edit applies only the fields
+ * given, to the expense as saved under the store's lock.
  */
 import { DateError, readDate } from "../dates.ts";
-import { CATEGORIES, type Category, EXPENSE_LIMITS, type Expense, matchCategory, matchMethod, type Method, METHODS, RECEIPT_FILE, validReceiptPath } from "../expenses.ts";
+import { CATEGORIES, type Category, DOC_TYPES, type DocType, EXPENSE_LIMITS, type Expense, idOrder, matchCategory, matchMethod, type Method, METHODS, RECEIPT_FILE, SUPPLIER_VAT, validReceiptPath } from "../expenses.ts";
 import { cents, centsValue, vatInGross } from "../expense-sums.ts";
 import { normalPath } from "../invoices.ts";
+import { addDays, weekdayOf } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
-import type { VatRate } from "../quote-sums.ts";
+import { VAT_RATES, type VatRate } from "../quote-sums.ts";
+import { fold } from "../text-match.ts";
 import type { Workspace } from "../workspace.ts";
-import { cleanText, isProblem, readAmount, readVat } from "./quote-input.ts";
+import { fenced } from "./expense-render.ts";
+import { cleanText, isProblem, type Problem, readAmount } from "./quote-input.ts";
 
-/** What add and edit write, before the id and who did it. */
+/** What an expense holds besides its id and who recorded it. */
 export type ExpenseDraft = Omit<Expense, "id" | "by" | "at" | "callId" | "edited">;
 
 /** The fields an edit may change; any of them given makes it an edit. */
-export const EDIT_FIELDS = ["date", "amount", "vat", "vat_rate", "supplier", "category", "method", "note", "receipt"] as const;
+const EDIT_FIELDS = ["date", "amount", "vat", "vat_rate", "supplier", "supplier_vat", "doc_type", "doc_number", "category", "method", "note", "receipt"] as const;
 
 const FIRST_DAY = "2000-01-01";
 
-/** The total: more than zero, at most EXPENSE_LIMITS.maxAmount, to the cent. */
-export function readTotal(value: unknown): string | { problem: string } {
-	const read = readAmount(value, 2, "amount");
-	if (isProblem(read)) return read;
-	if (read === undefined) return { problem: "manca l'importo (amount), il totale pagato IVA inclusa: se dalla foto non si legge, chiedilo a chi ti scrive" };
+const FOREIGN = /\$|£|¥|\b(?:usd|gbp|chf|jpy|cad|aud|dollar\w*|sterlin\w*|franch\w*|yen)\b/i;
+
+const NOT_EURO = "l'importo è in un'altra valuta: convertilo in euro con exchange_rate alla data dello scontrino, passa gli euro in amount e scrivi l'importo originale in note";
+const NEGATIVE = "l'importo è negativo: per un reso o un rimborso correggi la spesa con op edit o toglila con op remove";
+
+/** The total: more than zero, in euros, at most EXPENSE_LIMITS.maxAmount, to the cent; undefined when not given. */
+export function readTotal(value: unknown): string | undefined | Problem {
+	if (value === undefined) return undefined;
+	if (typeof value === "string" && FOREIGN.test(value)) return { problem: NOT_EURO };
+	if ((typeof value === "number" && value < 0) || (typeof value === "string" && /^\s*(?:€|eur\w*)?\s*-/i.test(value))) return { problem: NEGATIVE };
+	const read = readAmount(value, 2, "amount", fenced);
+	if (isProblem(read) || read === undefined) return read;
 	if (Number(read) <= 0) return { problem: "l'importo è zero: dammi il totale pagato" };
 	if (Number(read) > EXPENSE_LIMITS.maxAmount) return { problem: `l'importo è oltre ${EXPENSE_LIMITS.maxAmount.toLocaleString("it-IT")} €: ricontrollalo con chi ti scrive` };
 	return read;
 }
 
-/** The day of the expense: today when not said; a day without a year is the latest one not to come. */
-export function readDay(value: unknown, today: string): string | { problem: string } {
+const WEEKDAYS = ["domenica", "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato"];
+const WEEKDAY = new RegExp(`^(?:(?:il|lo) )?(${WEEKDAYS.join("|")})( scors[oa])?$`);
+const BAD_DAY = "scrivi la data come 12/10 o 12/10/2026, oppure ieri, oggi o sabato";
+
+/**
+ * The day of the expense: today when not said; «ieri», «l'altro ieri», a weekday («sabato»: the
+ * last one up to today; «sabato scorso»: the last one before today), a date (without a year the
+ * latest one gone). Never a day to come, nor before 2000.
+ */
+export function readDay(value: unknown, today: string): string | Problem {
 	if (value === undefined) return today;
-	if (typeof value !== "string" || value.trim() === "" || value.length > 40) return { problem: "date è la data della spesa, come 18/10/2026 o 2026-10-18" };
+	if (typeof value !== "string" || value.trim() === "" || value.length > 40) return { problem: `date è la data della spesa: ${BAD_DAY}` };
 	let date: string;
-	try {
-		date = readDate(value, today, { rule: "past" }).date;
-	} catch (error) {
-		if (error instanceof DateError) return { problem: error.message };
-		throw error;
+	const weekday = WEEKDAY.exec(fold(value).replace(/\s+/g, " ").trim());
+	if (weekday !== null) {
+		const back = (weekdayOf(today) - WEEKDAYS.indexOf(weekday[1] as string) + 7) % 7;
+		date = addDays(today, -(back === 0 && weekday[2] !== undefined ? 7 : back));
+	} else {
+		try {
+			date = readDate(value, today, { rule: "past" }).date;
+		} catch (error) {
+			if (error instanceof DateError) return { problem: `non capisco la data: ${BAD_DAY}` };
+			throw error;
+		}
 	}
 	if (date > today) return { problem: `la data ${italianDate(date)} non è ancora arrivata: una spesa si registra quando è fatta` };
 	if (date < FIRST_DAY) return { problem: "la data è prima del 2000: ricontrollala" };
 	return date;
 }
 
-/** The category of the words given; with none given, of the supplier's and the note's words; «altro» when nothing fits. */
-export function readCategory(value: unknown, hints: readonly (string | undefined)[]): { category: Category; unmatched?: string } | { problem: string } {
-	if (value !== undefined && typeof value !== "string") return { problem: "category è un testo" };
-	const said = typeof value === "string" ? value.trim().slice(0, 60) : "";
-	if (said !== "") {
-		const category = matchCategory(said);
-		return category === undefined ? { category: "altro", unmatched: said } : { category };
-	}
-	for (const hint of hints) {
-		const category = hint === undefined ? undefined : matchCategory(hint);
-		if (category !== undefined) return { category };
-	}
-	return { category: "altro" };
+/** The category of the words given; «altro», said back, when they fit none. */
+function readCategory(value: unknown): { category: Category; unmatched?: true } | undefined | Problem {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") return { problem: "category è un testo" };
+	const said = value.trim().slice(0, 60);
+	if (said === "") return undefined;
+	const category = matchCategory(said);
+	return category === undefined ? { category: "altro", unmatched: true } : { category };
 }
 
-export function readMethod(value: unknown): Method | undefined | { problem: string } {
+function readMethod(value: unknown): Method | undefined | Problem {
 	if (value === undefined) return undefined;
 	if (typeof value !== "string" || value.length > 60) return { problem: `method è uno di questi: ${METHODS.join(", ")}` };
 	return matchMethod(value) ?? "altro";
 }
 
+function readDocType(value: unknown): DocType | undefined | Problem {
+	if (value === undefined) return undefined;
+	const t = typeof value === "string" ? fold(value).trim() : "";
+	const found = DOC_TYPES.find((d) => t === d || (d === "fattura" && t.startsWith("fattur")) || (d === "scontrino" && t.startsWith("scontrin")) || (d === "ricevuta" && t.startsWith("ricevut")));
+	return found ?? { problem: `doc_type è uno di questi: ${DOC_TYPES.join(", ")}` };
+}
+
+/** A supplier's partita IVA or codice fiscale as on the document: letters and digits, upper case. */
+function readSupplierVat(value: unknown): string | undefined | Problem {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") return { problem: "supplier_vat è la partita IVA del fornitore" };
+	const compact = value.replace(/^\s*(?:p\.?\s*iva|partita\s+iva|c\.?\s*f\.?)\s*[:.]?\s*/i, "").replace(/[\s.-]+/g, "").toUpperCase();
+	if (!SUPPLIER_VAT.test(compact)) return { problem: "supplier_vat non sembra una partita IVA o un codice fiscale: ricopiala dal documento, o toglila" };
+	return compact;
+}
+
 /** The receipt: a workspace path of a photo or PDF that is there. Only the path is kept. */
-export async function readReceipt(value: unknown, workspace: Workspace): Promise<string | undefined | { problem: string }> {
+async function readReceipt(value: unknown, workspace: Workspace): Promise<string | undefined | Problem> {
 	if (value === undefined) return undefined;
 	if (typeof value !== "string" || value.length > EXPENSE_LIMITS.receipt) return { problem: "receipt è il percorso nel workspace della foto o del PDF dello scontrino" };
 	const path = normalPath(value);
@@ -82,15 +121,96 @@ export async function readReceipt(value: unknown, workspace: Workspace): Promise
 	return found.path;
 }
 
+function readRate(value: unknown): VatRate | undefined | Problem {
+	const read = readAmount(value, 2, "vat_rate", fenced);
+	if (read === undefined || isProblem(read)) return read;
+	if (!VAT_RATES.includes(Number(read) as VatRate)) return { problem: `vat_rate è una di queste aliquote: ${VAT_RATES.join(", ")}` };
+	return Number(read) as VatRate;
+}
+
+/** The fields given: a value, null for «""» in an edit (removes it), undefined when not given. */
+export type Fields = {
+	readonly amount?: string;
+	readonly date?: string;
+	readonly vat?: string | null;
+	readonly rate?: VatRate;
+	readonly supplier?: string | null;
+	readonly supplierVat?: string | null;
+	readonly docType?: DocType | null;
+	readonly docNumber?: string | null;
+	readonly note?: string | null;
+	readonly category?: { readonly category: Category; readonly unmatched?: true };
+	readonly method?: Method | null;
+	readonly receipt?: string | null;
+};
+
+/** The arguments read and checked, nothing applied yet. In an edit «""» removes the field. */
+export async function readFields(args: Record<string, unknown>, o: { today: string; workspace: Workspace; editing: boolean }): Promise<Fields | Problem> {
+	const out: Record<string, unknown> = {};
+	const removed = (name: string) => o.editing && args[name] === "";
+	const amount = readTotal(args.amount);
+	if (isProblem(amount)) return amount;
+	if (amount !== undefined) out.amount = amount;
+	if (args.date !== undefined || !o.editing) {
+		const date = readDay(args.date, o.today);
+		if (isProblem(date)) return date;
+		out.date = date;
+	}
+	if (removed("vat")) out.vat = null;
+	else {
+		if (typeof args.vat === "string" && FOREIGN.test(args.vat)) return { problem: NOT_EURO };
+		const vat = readAmount(args.vat, 2, "vat", fenced);
+		if (isProblem(vat)) return vat;
+		if (vat !== undefined) out.vat = vat;
+	}
+	const rate = readRate(args.vat_rate);
+	if (isProblem(rate)) return rate;
+	if (rate !== undefined) out.rate = rate;
+	const texts = [
+		["supplier", "supplier", EXPENSE_LIMITS.supplier],
+		["doc_number", "docNumber", EXPENSE_LIMITS.docNumber],
+		["note", "note", EXPENSE_LIMITS.note],
+	] as const;
+	for (const [arg, key, max] of texts) {
+		if (removed(arg)) out[key] = null;
+		else {
+			const text = cleanText(args[arg], max, arg, arg === "note");
+			if (isProblem(text)) return text;
+			if (text !== undefined) out[key] = text;
+		}
+	}
+	const readers: [string, string, (v: unknown) => unknown][] = [
+		["supplier_vat", "supplierVat", readSupplierVat],
+		["doc_type", "docType", readDocType],
+		["method", "method", readMethod],
+		["category", "category", readCategory],
+	];
+	for (const [arg, key, read] of readers) {
+		if (removed(arg) && arg !== "category") out[key] = null;
+		else {
+			const value = read(args[arg]);
+			if (isProblem(value)) return value;
+			if (value !== undefined) out[key] = value;
+		}
+	}
+	if (removed("receipt")) out.receipt = null;
+	else {
+		const receipt = await readReceipt(args.receipt, o.workspace);
+		if (isProblem(receipt)) return receipt;
+		if (receipt !== undefined) out.receipt = receipt;
+	}
+	return out as Fields;
+}
+
 export type VatGiven = { readonly vat?: string | null; readonly rate?: VatRate };
 
 /**
- * The VAT of a total: as said, or taken out with the rate (half up to the cent). Both given: the
- * amount said is kept, with a note when it is more than a cent off the rate. In an edit, `old`
- * keeps the rate (the VAT taken out again from a new total) or the amount said for an unchanged
- * total; a VAT amount said for a total that changes is dropped, with a note.
+ * The VAT of a total: as said, or taken out with the rate. Both given: the amount said is kept,
+ * with a note when it is more than a cent off the rate. In an edit, `old` keeps the rate (the VAT
+ * taken out again from a new total) or the amount said for an unchanged total; a VAT amount said
+ * for a total that changes is dropped, with a note.
  */
-export function resolveVat(amount: string, given: VatGiven, old?: Pick<Expense, "amount" | "vat" | "vatRate">): { vat?: string; vatRate?: VatRate; notes: string[] } | { problem: string } {
+export function resolveVat(amount: string, given: VatGiven, old?: Pick<Expense, "amount" | "vat" | "vatRate">): { vat?: string; vatRate?: VatRate; notes: string[] } | Problem {
 	const notes: string[] = [];
 	if (given.vat === null) return { notes };
 	const rate = given.rate ?? (given.vat === undefined ? old?.vatRate : undefined);
@@ -108,82 +228,49 @@ export function resolveVat(amount: string, given: VatGiven, old?: Pick<Expense, 
 	return { ...(vat === undefined ? {} : { vat }), ...(rate === undefined ? {} : { vatRate: rate }), notes };
 }
 
-/** The VAT arguments: vat an amount («9,02»; «» removes it in an edit), vat_rate 22, 10, 5, 4 or 0. */
-function readVatGiven(args: Record<string, unknown>, editing: boolean): VatGiven | { problem: string } {
-	let vat: string | null | undefined;
-	if (editing && args.vat === "") vat = null;
-	else {
-		const read = readAmount(args.vat, 2, "vat");
-		if (isProblem(read)) return read;
-		vat = read;
+/** A category guessed from the supplier's and the note's whole words; «altro» when none fits. */
+function guessed(supplier: string | undefined, note: string | undefined): Category {
+	for (const hint of [supplier, note]) {
+		const category = hint === undefined ? undefined : matchCategory(hint);
+		if (category !== undefined) return category;
 	}
-	const rate = readVat(args.vat_rate, "vat_rate");
-	if (isProblem(rate)) return { problem: rate.problem.replace(" (per lo 0 serve il motivo in vat_note)", "") };
-	return { ...(vat === undefined ? {} : { vat }), ...(rate === undefined ? {} : { rate }) };
-}
-
-/** A text argument; in an edit «""» removes it (null). */
-function readText(args: Record<string, unknown>, name: "supplier" | "note", max: number, editing: boolean): string | null | undefined | { problem: string } {
-	if (editing && args[name] === "") return null;
-	return cleanText(args[name], max, name, name === "note");
+	return "altro";
 }
 
 /**
- * The expense the arguments describe: a new one (add), or `old` with what is given changed
- * (edit). A problem to say back otherwise; `notes` to add to the answer.
+ * The fields applied: on nothing for a new expense (the total is needed), or on `old`, the
+ * expense as saved now, changing only what is given. An edit never moves an expense to another
+ * year: its id is of its year.
  */
-export async function draftOf(args: Record<string, unknown>, o: { today: string; workspace: Workspace; old?: Expense }): Promise<{ draft: ExpenseDraft; notes: string[] } | { problem: string }> {
-	const { old } = o;
-	const editing = old !== undefined;
+export function applyFields(f: Fields, old?: Expense): { draft: ExpenseDraft; notes: string[] } | Problem {
 	const notes: string[] = [];
-	const amount = args.amount === undefined && old !== undefined ? old.amount : readTotal(args.amount);
-	if (isProblem(amount)) return amount;
-	const date = args.date === undefined && old !== undefined ? old.date : readDay(args.date, o.today);
-	if (isProblem(date)) return date;
-	const supplier = readText(args, "supplier", EXPENSE_LIMITS.supplier, editing);
-	if (isProblem(supplier)) return supplier;
-	const note = readText(args, "note", EXPENSE_LIMITS.note, editing);
-	if (isProblem(note)) return note;
-	const vatGiven = readVatGiven(args, editing);
-	if (isProblem(vatGiven)) return vatGiven;
-	const vat = resolveVat(amount, vatGiven, old);
+	const amount = f.amount ?? old?.amount;
+	if (amount === undefined) return { problem: "manca l'importo (amount), il totale pagato IVA inclusa: se dalla foto non si legge, chiedilo a chi ti scrive" };
+	const date = f.date ?? old?.date;
+	if (date === undefined) return { problem: "manca la data" };
+	if (old !== undefined && f.date !== undefined && Number(f.date.slice(0, 4)) !== idOrder(old.id)[0]) {
+		return { problem: `la spesa ${old.id} è del ${idOrder(old.id)[0]}: per cambiare anno toglila e registrala di nuovo` };
+	}
+	const vat = resolveVat(amount, { ...(f.vat === undefined ? {} : { vat: f.vat }), ...(f.rate === undefined ? {} : { rate: f.rate }) }, old);
 	if (isProblem(vat)) return vat;
 	notes.push(...vat.notes);
-	let category: Category = old?.category ?? "altro";
-	if (!editing || args.category !== undefined) {
-		const read = readCategory(args.category, [supplier ?? undefined, note ?? undefined]);
-		if (isProblem(read)) return read;
-		category = read.category;
-		if (read.unmatched !== undefined) notes.push(`La categoria detta non è tra quelle che uso: l'ho messa in «altro». Le categorie: ${CATEGORIES.join(", ")}.`);
-	}
-	let method: Method | undefined | null = old?.method;
-	if (editing && args.method === "") method = null;
-	else if (args.method !== undefined) {
-		const read = readMethod(args.method);
-		if (isProblem(read)) return read;
-		method = read;
-	}
-	let receipt: string | undefined | null = old?.receipt;
-	if (editing && args.receipt === "") receipt = null;
-	else if (args.receipt !== undefined) {
-		const read = await readReceipt(args.receipt, o.workspace);
-		if (isProblem(read)) return read;
-		receipt = read;
-	}
-	const keep = <T>(given: T | null | undefined, before: T | undefined): T | undefined => (given === null ? undefined : (given ?? before));
-	const finalSupplier = keep(supplier, old?.supplier);
-	const finalNote = keep(note, old?.note);
-	const draft: ExpenseDraft = {
-		date,
-		amount,
-		...(vat.vat === undefined ? {} : { vat: vat.vat }),
-		...(vat.vatRate === undefined ? {} : { vatRate: vat.vatRate }),
-		...(finalSupplier === undefined ? {} : { supplier: finalSupplier }),
-		category,
-		...(method === undefined || method === null ? {} : { method }),
-		...(finalNote === undefined ? {} : { note: finalNote }),
-		...(receipt === undefined || receipt === null ? {} : { receipt }),
+	const pick = <T>(given: T | null | undefined, before: T | undefined): T | undefined => (given === null ? undefined : (given ?? before));
+	const supplier = pick(f.supplier, old?.supplier);
+	const note = pick(f.note, old?.note);
+	const category = f.category?.category ?? old?.category ?? guessed(supplier, note);
+	if (f.category?.unmatched === true) notes.push(`La categoria detta non è tra quelle che uso: l'ho messa in «altro». Le categorie: ${CATEGORIES.join(", ")}.`);
+	const optional = {
+		vat: vat.vat,
+		vatRate: vat.vatRate,
+		supplier,
+		supplierVat: pick(f.supplierVat, old?.supplierVat),
+		docType: pick(f.docType, old?.docType),
+		docNumber: pick(f.docNumber, old?.docNumber),
+		method: pick(f.method, old?.method),
+		note,
+		receipt: pick(f.receipt, old?.receipt),
 	};
+	const draft = { date, amount, category, ...Object.fromEntries(Object.entries(optional).filter(([, v]) => v !== undefined)) } as ExpenseDraft;
 	return { draft, notes };
 }
 

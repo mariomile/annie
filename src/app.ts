@@ -79,6 +79,7 @@ import { createRecordingTools } from "./core/tools/recording-tools.ts";
 import { createDocumentTools } from "./core/tools/document-tools.ts";
 import { createListTools } from "./core/tools/list-tools.ts";
 import { createInvoiceTools } from "./core/tools/invoice-tools.ts";
+import { InvoiceScanner } from "./core/invoice-scan.ts";
 import { createQuoteTools } from "./core/tools/quote-tools.ts";
 import { createExpenseTools } from "./core/tools/expense-tools.ts";
 import { createAgentTools } from "./core/tools/agent-tools.ts";
@@ -507,6 +508,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			const briefs = runtime.schedules(record.tenantId, record.id);
 			const isBriefThread = async (thread: { channel: string; threadId: string }) => thread.channel === "web" && (await briefs.list()).some((s) => s.kind === "brief" && s.threadId === thread.threadId);
 			const mail = mailRequests(record);
+			// One scanner of the workspace's invoices for the scadenzario and the prima nota: one cache.
+			const invoiceScanner = new InvoiceScanner(runtime.workspace(record.tenantId, record.id));
 			const tools = [
 				...createWorkspaceTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createDocumentTools({ workspace: runtime.workspace(record.tenantId, record.id) }),
@@ -516,6 +519,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				...createInvoiceTools({
 					workspace: runtime.workspace(record.tenantId, record.id),
 					store: runtime.invoices(record.tenantId, record.id),
+					scanner: invoiceScanner,
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					isBriefThread,
@@ -539,6 +543,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					workspace: runtime.workspace(record.tenantId, record.id),
 					store: runtime.expenses(record.tenantId, record.id),
 					invoices: runtime.invoices(record.tenantId, record.id),
+					scanner: invoiceScanner,
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {

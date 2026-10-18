@@ -1,6 +1,7 @@
 import { CalcError, compileExpression } from "./calc.ts";
 import { documentKind, spreadsheetRows } from "./documents.ts";
 import { cellNumber, columnName, parseCsv } from "./make-xlsx.ts";
+import { inertCell, quotedCell } from "./csv.ts";
 
 /**
  * Questions to a table (ADR 0031): a CSV, an Excel or an OpenDocument sheet read as rows, then
@@ -860,15 +861,12 @@ function uniqueNames(names: string[]): string[] {
 	});
 }
 
-/** Text a spreadsheet would run as a formula (=, +, -, @ at the start) gets a ' in front: the CSV may be opened in Excel. */
+/** Text a spreadsheet would run as a formula gets a ' in front (csv.ts), but a number or a day the table holds («-5», «-1,5») stays a value. */
 function safeCsv(text: string): string {
-	if (!/^[=+\-@\t\r]/.test(text)) return text;
-	return tableNumber(text, false) !== undefined || dayOf(text) !== undefined ? text : `'${text}`;
+	return tableNumber(text, false) !== undefined || dayOf(text) !== undefined ? text : inertCell(text);
 }
 
-function csvField(text: string): string {
-	return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
+const csvField = quotedCell;
 
 function cut(text: string, max: number = TABLE_LIMITS.maxCell): string {
 	const chars = [...text];

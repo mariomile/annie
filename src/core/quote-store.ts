@@ -7,9 +7,8 @@
  * `broken`, and nothing is written over it. A year past its cap still reads; only new quotes of
  * that year are refused.
  */
-import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { updateJsonFile } from "./locked-json.ts";
+import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
 import { baseOrder, QUOTE_LIMITS, type Quote, QuoteError, type QuoteStatus, quoteNumber, revisionNumber, validQuote } from "./quotes.ts";
 
@@ -26,27 +25,21 @@ export const PREPARING = "il preventivo è ancora in preparazione: riprova tra p
 const YEAR = /^\d{4}$/;
 
 export class QuoteStore {
-	private readonly file: string;
+	private readonly book: BookFile<Book>;
 	constructor(instanceDir: string) {
-		this.file = join(instanceDir, "quotes.json");
+		this.book = {
+			file: join(instanceDir, "quotes.json"),
+			empty: EMPTY,
+			maxBytes: QUOTE_LIMITS.fileBytes,
+			valid: validBook,
+			broken: () => new QuoteError(QUOTES_BROKEN),
+			full: () => new QuoteError("l'archivio dei preventivi è pieno: non ne salvo altri"),
+		};
 	}
 
 	/** Never throws. */
 	read(): QuoteBook {
-		let text: string;
-		try {
-			if (statSync(this.file).size > QUOTE_LIMITS.fileBytes) return { quotes: [], broken: true };
-			text = readFileSync(this.file, "utf8");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { quotes: [], broken: false };
-			return { quotes: [], broken: true };
-		}
-		let book: Book | undefined;
-		try {
-			book = validBook(JSON.parse(text));
-		} catch {
-			book = undefined;
-		}
+		const book = readBook(this.book);
 		return book === undefined ? { quotes: [], broken: true } : { quotes: book.quotes, broken: false };
 	}
 
@@ -164,22 +157,7 @@ export class QuoteStore {
 
 	/** The change under the lock; then a copy of what was written in quotes.json.bak. */
 	private update(change: (book: Book) => Book): void {
-		if (this.read().broken) throw new QuoteError(QUOTES_BROKEN);
-		let changed = false;
-		try {
-			updateJsonFile<unknown>(this.file, EMPTY, (raw) => {
-				const book = validBook(raw);
-				if (book === undefined) throw new QuoteError(QUOTES_BROKEN);
-				const next = change(book);
-				changed = next !== book;
-				if (changed && Buffer.byteLength(JSON.stringify(next, null, 2)) >= QUOTE_LIMITS.fileBytes) throw new QuoteError("l'archivio dei preventivi è pieno: non ne salvo altri");
-				return changed ? next : raw;
-			});
-		} catch (error) {
-			if (error instanceof SyntaxError) throw new QuoteError(QUOTES_BROKEN);
-			throw error;
-		}
-		if (changed && existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`);
+		updateBook(this.book, change);
 	}
 }
 

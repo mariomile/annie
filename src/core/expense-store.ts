@@ -6,10 +6,9 @@
  * Read never throws: a file that does not read (or is past the size cap) is `broken`, and nothing
  * is written over it. A year past its cap still reads; only new expenses of that year are refused.
  */
-import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { EXPENSE_LIMITS, type Expense, ExpenseError, expenseId, idOrder, validExpense } from "./expenses.ts";
-import { updateJsonFile } from "./locked-json.ts";
+import { type BookFile, readBook, updateBook } from "./json-book.ts";
 
 type Book = { readonly next: Readonly<Record<string, number>>; readonly expenses: readonly Expense[] };
 
@@ -24,27 +23,21 @@ const YEAR = /^\d{4}$/;
 export type Removed = "removed" | "gone" | "unknown";
 
 export class ExpenseStore {
-	private readonly file: string;
+	private readonly book: BookFile<Book>;
 	constructor(instanceDir: string) {
-		this.file = join(instanceDir, "expenses.json");
+		this.book = {
+			file: join(instanceDir, "expenses.json"),
+			empty: EMPTY,
+			maxBytes: EXPENSE_LIMITS.fileBytes,
+			valid: validBook,
+			broken: () => new ExpenseError(EXPENSES_BROKEN),
+			full: () => new ExpenseError("il registro delle spese è pieno: non ne salvo altre"),
+		};
 	}
 
 	/** Never throws. */
 	read(): ExpenseBook {
-		let text: string;
-		try {
-			if (statSync(this.file).size > EXPENSE_LIMITS.fileBytes) return { expenses: [], broken: true };
-			text = readFileSync(this.file, "utf8");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { expenses: [], broken: false };
-			return { expenses: [], broken: true };
-		}
-		let book: Book | undefined;
-		try {
-			book = validBook(JSON.parse(text));
-		} catch {
-			book = undefined;
-		}
+		const book = readBook(this.book);
 		return book === undefined ? { expenses: [], broken: true } : { expenses: book.expenses, broken: false };
 	}
 
@@ -69,7 +62,10 @@ export class ExpenseStore {
 		return made as Expense;
 	}
 
-	/** Change the expense `id`: `change` gets it as saved and gives it back changed. ExpenseError when it is not there. */
+	/**
+	 * Change the expense `id`: `change` gets it as saved now, under the lock (a change made
+	 * meanwhile is kept), and gives it back changed. ExpenseError when it is not there.
+	 */
 	edit(id: string, change: (expense: Expense) => Expense): Expense {
 		let edited: Expense | undefined;
 		this.update((book) => {
@@ -100,22 +96,7 @@ export class ExpenseStore {
 
 	/** The change under the lock; then a copy of what was written in expenses.json.bak. */
 	private update(change: (book: Book) => Book): void {
-		if (this.read().broken) throw new ExpenseError(EXPENSES_BROKEN);
-		let changed = false;
-		try {
-			updateJsonFile<unknown>(this.file, EMPTY, (raw) => {
-				const book = validBook(raw);
-				if (book === undefined) throw new ExpenseError(EXPENSES_BROKEN);
-				const next = change(book);
-				changed = next !== book;
-				if (changed && Buffer.byteLength(JSON.stringify(next, null, 2)) >= EXPENSE_LIMITS.fileBytes) throw new ExpenseError("il registro delle spese è pieno: non ne salvo altre");
-				return changed ? next : raw;
-			});
-		} catch (error) {
-			if (error instanceof SyntaxError) throw new ExpenseError(EXPENSES_BROKEN);
-			throw error;
-		}
-		if (changed && existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`);
+		updateBook(this.book, change);
 	}
 }
 

@@ -13,10 +13,19 @@ export type CsvCell = string | CsvNumber;
 
 const FORMULA_START = /^[=+\-@\t\r]/;
 
-/** Text made inert for a spreadsheet, then quoted when it holds «;», a quote or a line break. */
+/** Text a spreadsheet would run as a formula, with a ' in front. */
+export function inertCell(text: string): string {
+	return FORMULA_START.test(text) ? `'${text}` : text;
+}
+
+/** A cell in quotes when it holds «;», a quote or a line break. */
+export function quotedCell(text: string): string {
+	return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** Text made inert for a spreadsheet, then quoted when it needs it. */
 export function csvText(text: string): string {
-	const safe = FORMULA_START.test(text) ? `'${text}` : text;
-	return /[;"\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+	return quotedCell(inertCell(text));
 }
 
 /** Cents as Excel reads them in Italy: «-1234,50», no thousands separator. */

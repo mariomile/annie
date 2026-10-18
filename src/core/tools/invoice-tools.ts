@@ -61,6 +61,8 @@ export type InvoiceToolsOptions = {
 	readonly readText?: ReadText;
 	/** Tests: how long one call may spend reading courtesy PDFs (default 30 seconds). */
 	readonly pdfBudgetMs?: number;
+	/** The workspace's scanner, shared with the expenses' prima nota (one cache); one of its own otherwise, with `limits` and `read`. */
+	readonly scanner?: InvoiceScanner;
 	/** Tests: the scan's limits, the worker, the clock. */
 	readonly limits?: ScanLimits;
 	readonly read?: ReadFattura;
@@ -93,10 +95,12 @@ const DESCRIPTION = [
 export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 	const { store, timeZone } = options;
 	const now = options.now ?? (() => new Date());
-	const scanner = new InvoiceScanner(options.workspace, {
-		...(options.limits === undefined ? {} : { limits: options.limits }),
-		...(options.read === undefined ? {} : { read: options.read }),
-	});
+	const scanner =
+		options.scanner ??
+		new InvoiceScanner(options.workspace, {
+			...(options.limits === undefined ? {} : { limits: options.limits }),
+			...(options.read === undefined ? {} : { read: options.read }),
+		});
 	// The person of a private thread; in a group, which group (the engine does not say who wrote).
 	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (options.whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
 	const load = async (ctx: ToolContext): Promise<Loaded> => {
