@@ -4216,6 +4216,7 @@ async function viewBoard(main) {
 				"span.board-meta",
 				c.assignee ? [faceOf(c.assignee, c.status === "in_corso" ? "thinking" : "idle"), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
 				c.priority === "normale" ? null : h("span.tag", `priorità ${c.priority}`),
+				c.checklist?.length ? h(`span.tag.board-checks${c.checklist.every((i) => i.done) ? ".all" : ""}`, { title: "Lista di controllo" }, `☑ ${c.checklist.filter((i) => i.done).length}/${c.checklist.length}`) : null,
 				c.due && c.status !== "fatto" ? h(`span.tag.board-due.${dueInfo(c.due).level}`, { title: `Scadenza: ${dueInfo(c.due).label}` }, dueInfo(c.due).text) : null,
 				c.auto && c.status === "in_corso" ? h("span.tag", { title: `Lavora da solo: risposta ${c.auto.rounds} di ${data.auto.replies}` }, "da solo") : null,
 			),
@@ -4331,6 +4332,47 @@ async function viewBoard(main) {
 		const due = h("input", { type: "date", value: c.due ?? "", "aria-label": "Scadenza" });
 		const comment = h("textarea", { rows: 2, placeholder: c.status === "da_rivedere" ? "Cosa va cambiato, se la rimandi indietro" : mine && c.status === "in_corso" ? "Arriva anche all'agente, nella conversazione" : "Un commento" });
 		const events = c.events.filter((e) => e.kind !== "edited" || e.due !== undefined).slice(-30);
+		// Lista di controllo (ADR 0075): each tick is saved at once.
+		const checkList = h("ul.board-checklist");
+		let checksChanged = false;
+		const checkInput = h("input", { type: "text", maxlength: 200, placeholder: "Aggiungi un passo", "aria-label": "Aggiungi un passo alla lista" });
+		const sendCheck = async (check) => {
+			try {
+				const { card } = await api(`/api/board/${c.id}`, { method: "PUT", body: { check } });
+				c = card;
+				checksChanged = true;
+				drawChecks();
+				return true;
+			} catch (error) {
+				toast(error.message, true);
+				return false;
+			}
+		};
+		const drawChecks = () => {
+			const items = c.checklist ?? [];
+			checkCount.textContent = items.length ? `${items.filter((i) => i.done).length} di ${items.length}` : "";
+			checkList.replaceChildren(
+				...items.map((item) =>
+					h(
+						`li${item.done ? ".done" : ""}`,
+						h("label", h("input", { type: "checkbox", checked: item.done, onchange: (e) => void sendCheck({ item: item.id, done: e.currentTarget.checked }) }), h("span", item.text)),
+						h("button.icon-btn.small", { type: "button", title: "Togli dalla lista", "aria-label": `Togli «${item.text}»`, onclick: () => void sendCheck({ item: item.id, remove: true }) }, "×"),
+					),
+				),
+			);
+		};
+		const checkCount = h("span.muted.small");
+		const addCheck = async () => {
+			if (!checkInput.value.trim()) return;
+			if (await sendCheck({ add: checkInput.value })) checkInput.value = "";
+			checkInput.focus();
+		};
+		checkInput.addEventListener("keydown", (e) => {
+			if (e.key !== "Enter") return;
+			e.preventDefault();
+			void addCheck();
+		});
+		drawChecks();
 		const line = (e) =>
 			h(
 				"li",
@@ -4345,7 +4387,15 @@ async function viewBoard(main) {
 								? e.assignee
 									? `l'ha assegnata a ${agentOf(e.assignee)?.name ?? "un agente"}`
 									: `ha tolto l'assegnazione${e.text ? ` (${e.text})` : ""}`
-								: e.kind === "edited"
+								: e.kind === "check"
+									? e.removed
+										? `ha tolto dalla lista «${e.text}»`
+										: e.done === true
+											? `ha spuntato «${e.text}»`
+											: e.done === false
+												? `ha tolto la spunta a «${e.text}»`
+												: `ha aggiunto alla lista «${e.text}»`
+									: e.kind === "edited"
 									? e.due
 										? `ha messo la scadenza a ${dueInfo(e.due).label}`
 										: "ha tolto la scadenza"
@@ -4426,6 +4476,7 @@ async function viewBoard(main) {
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			h("h2", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
+			h("div.board-checks-box", h("div.board-checks-head", h("span", "Lista di controllo"), checkCount), checkList, h("div.board-check-add", checkInput, h("button.btn.small", { type: "button", onclick: () => void addCheck() }, "Aggiungi"))),
 			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
 			children.length
 				? h(
@@ -4491,7 +4542,11 @@ async function viewBoard(main) {
 			),
 		];
 		dialog.append(...parts.filter((x) => x !== null));
-		dialog.addEventListener("close", () => dialog.remove());
+		dialog.addEventListener("close", () => {
+			dialog.remove();
+			// Ticks saved while open: the board shows the new count.
+			if (checksChanged) render();
+		});
 		document.body.append(dialog);
 		dialog.showModal();
 		if (sendBack) {

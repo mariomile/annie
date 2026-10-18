@@ -301,6 +301,13 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await send("PUT", `/api/board/${dated.id}`, { due: 5 })).error).toMatch(/formato 2026-10-26/);
 		expect((await send("PUT", `/api/board/${dated.id}`, { due: "2026-11-05" })).card.due).toBe("2026-11-05");
 		expect((await send("PUT", `/api/board/${dated.id}`, { due: null })).card.due).toBeUndefined();
+		// Lista di controllo (ADR 0075).
+		const listed = (await api("/api/board", { title: "Trasloco", checklist: ["Scatoloni", "Furgone"] })).card;
+		expect(listed.checklist).toHaveLength(2);
+		expect((await send("PUT", `/api/board/${listed.id}`, { check: { item: "2", done: true } })).card.checklist[1].done).toBe(true);
+		expect((await send("PUT", `/api/board/${listed.id}`, { check: { add: "Chiavi" } })).card.checklist).toHaveLength(3);
+		expect((await send("PUT", `/api/board/${listed.id}`, { check: { item: "1" } })).error).toMatch(/check:/);
+		expect((await send("PUT", `/api/board/${listed.id}`, { check: { item: "1", remove: true } })).card.checklist.map((i: { text: string }) => i.text)).toEqual(["Furgone", "Chiavi"]);
 		// Its day comes (ADR 0074): the sweep tells it once.
 		await send("PUT", `/api/board/${dated.id}`, { due: "2026-11-05" });
 		await annie.scheduler.tick(new Date("2026-11-05T09:00:00Z"));
