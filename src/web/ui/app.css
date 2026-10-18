@@ -832,9 +832,9 @@ ol.steps .stack > .choices { margin-bottom: 2px; }
 .board-col h2 { margin: 4px 6px 6px; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
 .board-col-name { display: inline-flex; align-items: center; gap: 8px; }
 .board-dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--fg-3); }
-.board-col.in_corso .board-dot { border-color: var(--fg); border-right-color: transparent; animation: spin 1.4s linear infinite; }
-.board-col.da_rivedere .board-dot { border-color: var(--warn); background: var(--warn); }
-.board-col.fatto .board-dot { border-color: var(--ok); background: var(--ok); }
+.board-col.in_corso .board-dot, .board-state.in_corso .board-dot { border-color: var(--fg); border-right-color: transparent; animation: spin 1.4s linear infinite; }
+.board-col.da_rivedere .board-dot, .board-state.da_rivedere .board-dot { border-color: var(--warn); background: var(--warn); }
+.board-col.fatto .board-dot, .board-state.fatto .board-dot { border-color: var(--ok); background: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .board-count { font: 500 11.5px/1 var(--mono); color: var(--fg-3); padding: 3px 7px; border-radius: 99px; background: var(--hover); }
 .board-col.da_rivedere { border-color: color-mix(in srgb, var(--warn) 22%, transparent); }
@@ -894,8 +894,31 @@ dialog.board-dialog:focus { outline: none; }
 .board-result > p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30vh; overflow: auto; }
 .board-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); max-height: 30vh; overflow: auto; }
 .board-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
-.board-events { list-style: none; margin: 16px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 28vh; overflow: auto; border-top: 1px solid var(--border); padding-top: 12px; }
-.board-events div { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+/* the scheda's head: its column as on the board, the priority, the number */
+.board-dialog-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.board-dialog-head .kicker { margin: 0; }
+.board-state { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 9px; border-radius: 99px; background: var(--hover); font-size: 12.5px; font-weight: 550; }
+.board-state.da_rivedere { background: var(--warn-soft); color: var(--warn); }
+.board-state.fatto { background: var(--ok-soft); color: var(--ok); }
+.board-dialog h2 { font-size: 21px; line-height: 1.3; letter-spacing: -0.01em; }
+/* the cronologia: a line with a dot per move, the time at the side */
+.board-history { margin: 16px 0; border-top: 1px solid var(--border); padding-top: 12px; }
+.board-history h3 { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--fg-3); }
+.board-events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 28vh; overflow: auto; }
+.board-events li { position: relative; display: flex; align-items: baseline; gap: 12px; padding: 5px 0 5px 20px; }
+.board-events li::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.board-events li:first-child::before { top: 12px; }
+.board-events li:last-child::before { bottom: calc(100% - 12px); }
+.ev-dot { position: absolute; left: 0; top: 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--bg-2); border: 1.5px solid var(--fg-3); }
+.ev-created .ev-dot { background: var(--fg-3); }
+.ev-comment .ev-dot { border-color: var(--fg); }
+.ev-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; color: var(--fg-2); line-height: 1.5; }
+.ev-comment .ev-text { color: var(--fg); }
+.ev-when { flex: none; font-size: 12px; line-height: 1.5; color: var(--fg-3); white-space: nowrap; }
+.ev-when b { font-weight: 550; color: var(--fg-2); }
+.ev-when time { font: 11.5px/1.5 var(--mono); }
+.board-delete { margin-left: auto; }
+.board-delete:hover { color: var(--bad); background: var(--bad-soft); }
 @media (max-width: 760px) { .board { grid-template-columns: repeat(4, minmax(240px, 80vw)); scroll-snap-type: x mandatory; } .board-col { scroll-snap-align: start; } .board-fields { grid-template-columns: 1fr; } }
 
 /* stanze (ADR 0063): who speaks, the agenti to call, the stanza's own notes */

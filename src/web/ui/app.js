@@ -4545,12 +4545,13 @@ async function viewBoard(main) {
 			void addCheck();
 		});
 		drawChecks();
+		// The cronologia as a timeline: what happened, who and when at the side.
 		const line = (e) =>
 			h(
-				"li",
-				h("span.muted.small", `${fmt.time(e.at)} · ${who(e.by)}`),
+				`li.ev-${e.kind}`,
+				h("span.ev-dot", { "aria-hidden": "true" }),
 				h(
-					"div",
+					"div.ev-text",
 					e.kind === "created"
 						? "ha creato la scheda"
 						: e.kind === "status"
@@ -4577,6 +4578,7 @@ async function viewBoard(main) {
 										: "ha tolto la scadenza"
 									: e.text,
 				),
+				h("span.ev-when", h("b", who(e.by)), " · ", h("time", { datetime: e.at }, fmt.time(e.at))),
 			);
 		const dialog = h("dialog.board-dialog");
 		const act = (body, done) => async () => {
@@ -4650,7 +4652,12 @@ async function viewBoard(main) {
 		const children = childrenOf(c);
 		// Without what is not there: append would write «null».
 		const parts = [
-			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
+			h(
+				"div.board-dialog-head",
+				h(`span.board-state.${c.status}`, h("span.board-dot"), BOARD_COLUMNS.find(([v]) => v === c.status)?.[1] ?? c.status),
+				c.priority === "normale" ? null : h(`span.tag${c.priority === "alta" ? ".alta" : ""}`, `priorità ${c.priority}`),
+				h("span.kicker", `#${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
+			),
 			h("h2", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
 			resultOf(c) ? h("div.board-result", h("span.small", `Il risultato di ${who(resultOf(c).by)}, ${fmt.time(resultOf(c).at)}`), h("p", resultOf(c).text)) : null,
@@ -4686,7 +4693,7 @@ async function viewBoard(main) {
 			moves.length ? h("div.actions", moves) : null,
 			startable || working ? aloneRow : null,
 			working && c.auto ? h("p.muted.small", `Risposte senza di te: ${c.auto.rounds} di ${data.auto.replies}.`) : null,
-			events.length ? h("ul.board-events", events.map(line)) : null,
+			events.length ? h("section.board-history", h("h3", "Cronologia"), h("ul.board-events", events.map(line))) : null,
 			h("label.field", h("span", "Commento"), comment),
 			h(
 				"div.actions",
@@ -4711,8 +4718,10 @@ async function viewBoard(main) {
 				h("button.btn.ghost", { onclick: () => dialog.close() }, "Chiudi"),
 				canDelete
 					? h(
-							"button.btn.ghost.danger",
+							"button.icon-btn.board-delete",
 							{
+								title: "Elimina la scheda",
+								"aria-label": `Elimina la scheda #${c.n}`,
 								onclick: async () => {
 									if (!confirm(`Eliminare la scheda #${c.n}?`)) return;
 									try {
@@ -4725,7 +4734,7 @@ async function viewBoard(main) {
 									}
 								},
 							},
-							"Elimina",
+							icon("trash"),
 						)
 					: null,
 			),
