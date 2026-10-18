@@ -74,6 +74,7 @@ const ICONS = {
 	browser: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M3 12h18", "M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z"],
 	back: ["M19 12H5", "m11 6-6 6 6 6"],
 	close: ["M6 6l12 12M18 6 6 18"],
+	copy: ["M9 9h10v10H9Z", "M5 15V5h10"],
 };
 
 /** Inline stroke icon from the fixed table above (no markup from outside). */
@@ -1127,7 +1128,8 @@ function render() {
 		h(
 			"header.topbar",
 			h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, icon("menu")),
-			h("b", "Annie"),
+			// With more agenti, the open one: who a new chat goes to.
+			state.instances.length > 1 && state.instance ? h("b.topbar-who", face(state.instance, 22), state.instance.name) : h("b", "Annie"),
 			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
 		),
 		h("div.scrim", { onclick: () => shell.classList.remove("open") }),
@@ -1532,9 +1534,11 @@ async function viewChat(main) {
 				)
 			: null;
 		const listen = entry.from === "annie" && entry.text ? listenButton(entry.text) : null;
+		// Under an answer, on hover (always on touch): copy it, listen to it.
+		const actions = entry.from === "annie" && entry.text ? h("div.msg-actions", copyButton(entry.text), listen) : null;
 		// Which model wrote the reply: the chat's own, or the instance's when that could not answer.
 		const by = entry.model ? h("span.by", { title: `${entry.model.provider} · ${entry.model.modelId}` }, entry.model.name ?? entry.model.modelId) : null;
-		const el = h(`div.msg.${entry.from}`, h("div.meta", entry.from === "annie" ? [face(inst, 20), h("b.who", inst.name)] : null, fmt.time(entry.at), by, listen), pictures, entry.text || entry.file || !pictures ? body : null);
+		const el = h(`div.msg.${entry.from}`, h("div.meta", entry.from === "annie" ? [face(inst, 20), h("b.who", inst.name)] : null, fmt.time(entry.at), by), pictures, entry.text || entry.file || !pictures ? body : null, actions);
 		transcript.append(el);
 		return el;
 	};
@@ -2702,6 +2706,25 @@ function speakable(text) {
 		.replace(/\s*\n\s*/g, "\n")
 		.replace(/\n{2,}/g, "\n")
 		.trim();
+}
+
+/** Copies an answer as plain text; the icon turns into a tick for a moment. */
+function copyButton(text) {
+	const button = h("button.listen", { type: "button", "aria-label": "Copia", title: "Copia" }, icon("copy"));
+	button.addEventListener("click", async () => {
+		try {
+			await navigator.clipboard.writeText(text);
+			button.replaceChildren(icon("check"));
+			button.setAttribute("aria-label", "Copiato");
+			setTimeout(() => {
+				button.replaceChildren(icon("copy"));
+				button.setAttribute("aria-label", "Copia");
+			}, 1400);
+		} catch {
+			toast("Il browser non ha permesso di copiare", true);
+		}
+	});
+	return button;
 }
 
 function listenButton(text) {
@@ -3886,10 +3909,17 @@ function agentForm() {
 	const tagline = h("input", { type: "text", maxlength: "120", placeholder: "Cerca, confronta e cita le fonti" });
 	const tone = h("select", TONES.map(([value, label]) => h("option", { value }, label)));
 	const instructions = h("textarea", { rows: 4, maxlength: "2000", placeholder: "Per chi lavora e cosa deve fare. Si aggiunge a quello che sa già fare; lascia vuoto per partire dalle istruzioni predefinite." });
+	// The face comes from the ID: it changes while the name is written, and is the one the agente keeps.
+	const preview = h("span.name-face", { title: "Il volto dell'agente, dal suo ID" });
+	const draw = () => mount(preview, face({ id: id.value.trim() || "nuovo-agente" }, 40));
 	let touched = false;
-	id.addEventListener("input", () => (touched = true));
+	id.addEventListener("input", () => {
+		touched = true;
+		draw();
+	});
 	name.addEventListener("input", () => {
 		if (!touched) id.value = slug(name.value);
+		draw();
 	});
 	const chips = h(
 		"div.templates",
@@ -3909,6 +3939,7 @@ function agentForm() {
 						tone.value = t.tone;
 						instructions.value = t.about;
 						if (!touched) id.value = slug(t.name);
+						draw();
 						name.focus();
 					},
 				},
@@ -3916,6 +3947,7 @@ function agentForm() {
 			),
 		),
 	);
+	draw();
 	const create = async () => {
 		try {
 			const { instance } = await api("/api/instances", { method: "POST", body: { id: id.value.trim(), name: name.value.trim(), instructions: instructions.value, persona: { emoji: emoji.value, tagline: tagline.value, tone: tone.value } } });
@@ -3936,7 +3968,7 @@ function agentForm() {
 		h("h2", "Nuovo agente"),
 		h("p.muted", "Un agente con personalità, memoria, file, task e connettori suoi. Parte con il modello dell'agente principale; all'inizio solo tu puoi scrivergli, poi decidi chi in Impostazioni."),
 		h("div.field", h("span", "Parti da"), chips),
-		h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
+		h("div.field", h("span", "Nome"), h("div.name-row", preview, emoji, name)),
 		h("label.field", h("span", "Cosa fa, in una riga"), tagline),
 		h("label.field", h("span", "Tono"), tone),
 		h("label.field", h("span", "Chi lo usa e per cosa"), instructions),
@@ -4461,7 +4493,7 @@ async function viewAgents(main) {
 	const card = (a) =>
 		h(
 			`article.card.agent${a.id === state.instance?.id ? ".current" : ""}`,
-			h("div.agent-face", face(a, 52)),
+			h("div.agent-face", face(a, 60)),
 			h(
 				"div.agent-body",
 				h("h2", a.name, a.id === state.instance?.id ? h("span.tag", "aperto") : null),
@@ -4543,7 +4575,7 @@ async function viewSettings(main) {
 					h(
 						"div.card.pad",
 						h("div.kicker", "Personalità"),
-						h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
+						h("div.field", h("span", "Nome"), h("div.name-row", h("span.name-face", face(inst, 40)), emoji, name)),
 						h("label.field", h("span", "Cosa fa, in una riga"), tagline),
 						h("label.field", h("span", "Tono"), tone),
 						h("label.field", h("span", "Istruzioni"), instructions, h("small", "Cosa sa fare e le sue regole. Nome, ruolo e tono gli arrivano dopo queste.")),
