@@ -9,7 +9,8 @@ import { DocumentError, documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
 import { InvoiceScanner, type ReadFattura, type ScanLimits } from "../src/core/invoice-scan.ts";
-import { INVOICE_LIMITS, invoiceCallReads, invoiceKey, InvoiceStore, matchesParty } from "../src/core/invoices.ts";
+import { InvoiceStore } from "../src/core/invoice-store.ts";
+import { INVOICE_LIMITS, invoiceCallReads, invoiceKey, matchesParty } from "../src/core/invoices.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { createInvoiceTools, type InvoiceEvent } from "../src/core/tools/invoice-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
@@ -787,7 +788,7 @@ describe("the scadenzario: reading the workspace", () => {
 
 	it("answers wrong arguments with an Italian error", async () => {
 		const { run } = setup();
-		expect(await run({ op: "pay" })).toContain("Errore: op è una di queste: due, by_party, list, mark_paid, mark_unpaid, set_company.");
+		expect(await run({ op: "pay" })).toContain("Errore: op è una di queste: due, by_party, list, reminder, mark_paid, mark_unpaid, set_company, reminder_sent.");
 		expect(await run({ op: "due", range: "anno" })).toContain("Errore: range è una di queste");
 		expect(await run({ op: "due", side: "dare" })).toBe("Errore: side è pagare o incassare.");
 		expect(await run({ op: "due", days: 0 })).toBe("Errore: days è un numero di giorni, da 1 a 366.");

@@ -60,8 +60,8 @@ function fatturaRoot(text: string): ReturnType<typeof xmlRoot> {
 	return root.attrs.includes(NAMESPACE) || /\bversione\s*=\s*["'](FPA12|FPR12|FSM10)["']/.test(root.attrs) ? root : undefined;
 }
 
-/** A supplier or a customer as the invoice names them: what the scadenzario needs (invoices.ts). */
-export type FatturaParty = { readonly name?: string; readonly vat?: { readonly country?: string; readonly code: string }; readonly fiscal?: string };
+/** A supplier or a customer as the invoice names them: what the scadenzario needs (invoices.ts); `email` from its Contatti, when written. */
+export type FatturaParty = { readonly name?: string; readonly vat?: { readonly country?: string; readonly code: string }; readonly fiscal?: string; readonly email?: string };
 
 /** One instalment (DettaglioPagamento): amount and due date as written (YYYY-MM-DD, maybe not a real day), the ModalitaPagamento code, the IBAN. */
 export type FatturaInstalment = { readonly amount?: string; readonly due?: string; readonly method?: string; readonly iban?: string };
@@ -82,10 +82,25 @@ export type FatturaDocument = {
 	readonly total?: string;
 	readonly toPay?: string;
 	readonly instalments: readonly FatturaInstalment[];
+	/** Split payment (EsigibilitaIVA S): the VAT the public administration pays to the State, not to the supplier. */
+	readonly splitVat?: string;
 };
 
-/** What a file says, structured: the summary is written from it; `count` is every document, `documents` at most MAX_BODIES of them. */
-export type Fattura = { readonly simplified: boolean; readonly signed: boolean; readonly supplier: FatturaParty; readonly customer: FatturaParty; readonly documents: readonly FatturaDocument[]; readonly count: number };
+/**
+ * What a file says, structured: the summary is written from it; `count` is every document,
+ * `documents` at most MAX_BODIES of them; `pec` the PEC the SdI delivered it to (PECDestinatario: the customer's, or an intermediary's); `publicAdmin` an invoice to a public
+ * administration (format FPA12, or a six-character codice ufficio).
+ */
+export type Fattura = {
+	readonly simplified: boolean;
+	readonly signed: boolean;
+	readonly supplier: FatturaParty;
+	readonly customer: FatturaParty;
+	readonly documents: readonly FatturaDocument[];
+	readonly count: number;
+	readonly pec?: string;
+	readonly publicAdmin?: true;
+};
 
 /**
  * The invoice's structured content from its XML; `signed` when it came out of a .p7m. A
@@ -166,8 +181,11 @@ function readInvoice(invoice: XmlElement, signed: boolean): { fattura: Fattura; 
 	const customer = simplified ? simplifiedCustomer(child(head, "CessionarioCommittente")) : ordinaryParty(child(head, "CessionarioCommittente"));
 	const all = children(invoice, "FatturaElettronicaBody");
 	const documents = all.slice(0, MAX_BODIES).map((body) => (simplified ? simplifiedDocument(body) : ordinaryDocument(body)));
+	const transmission = child(head, "DatiTrasmissione");
+	const pec = value(transmission, "PECDestinatario");
+	const publicAdmin = value(transmission, "FormatoTrasmissione") === "FPA12" || value(transmission, "CodiceDestinatario")?.length === 6;
 	return {
-		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length },
+		fattura: { simplified, signed, supplier: supplier.party, customer: customer.party, documents: documents.map((d) => d.doc), count: all.length, ...(pec === undefined ? {} : { pec }), ...(publicAdmin ? { publicAdmin: true as const } : {}) },
 		details: { supplier: supplier.details, customer: customer.details },
 		documents,
 	};
@@ -183,14 +201,28 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	}
 	const instalments = [...instalmentOf.values()];
 	const toPay = paidSum(instalments);
+	const splitVat = splitPaymentVat(body);
 	const doc: FatturaDocument = {
-		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay) }),
+		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
 		integration: type !== undefined && INTEGRATIONS.has(type),
 		currency: value(general, "Divisa") ?? "EUR",
 		instalments,
 	};
 	return { doc, body, instalmentOf };
+}
+
+/** The VAT of the summary rows under split payment (EsigibilitaIVA S), when there are any and each reads. */
+function splitPaymentVat(body: XmlElement): bigint | undefined {
+	const rows = children(child(body, "DatiBeniServizi"), "DatiRiepilogo").filter((r) => value(r, "EsigibilitaIVA") === "S");
+	if (rows.length === 0) return undefined;
+	let sum = 0n;
+	for (const row of rows) {
+		const units = toUnits(value(row, "Imposta") ?? "");
+		if (units === undefined) return undefined;
+		sum += units;
+	}
+	return sum;
 }
 
 /** A simplified document's data: its total is the sum of its lines, VAT included, when each reads; no instalments. */
@@ -268,8 +300,9 @@ function party(found: { name?: string; vatOf?: XmlElement; fiscal?: string; sede
 	const code = value(found.vatOf, "IdCodice");
 	const country = value(found.vatOf, "IdPaese");
 	const vat = code === undefined ? undefined : country === undefined ? { code } : { country, code };
+	const email = value(found.contacts, "Email");
 	return {
-		party: { ...(found.name === undefined ? {} : { name: found.name }), ...(vat === undefined ? {} : { vat }), ...(found.fiscal === undefined ? {} : { fiscal: found.fiscal }) },
+		party: { ...(found.name === undefined ? {} : { name: found.name }), ...(vat === undefined ? {} : { vat }), ...(found.fiscal === undefined ? {} : { fiscal: found.fiscal }), ...(email === undefined ? {} : { email }) },
 		details: {
 			...(found.sede === undefined ? {} : { sede: found.sede }),
 			...(found.regime === undefined ? {} : { regime: found.regime }),
