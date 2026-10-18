@@ -652,6 +652,11 @@ dialog.board-dialog { max-width: 600px; }
 .board-routine p { margin: 2px 0 0; }
 .board-routine.paused { opacity: 0.6; }
 .board-routine-problem { color: var(--warn); }
+.board-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
+.board-filters input[type="search"] { flex: 1 1 220px; width: auto; }
+.board-filters select { width: auto; }
+.board-chip { cursor: pointer; }
+.board-chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
 .board-due.late { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
 .board-due.soon { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
 .board-due-line { margin: 4px 0 0; }
