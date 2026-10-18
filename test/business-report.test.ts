@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
-import { businessAgentReads, businessCallReads, type Figures, REPORT_LIMITS } from "../src/core/business-report.ts";
-import { biggest, deltas, lastMonths, lastYearSpan, monthsOf, signedPercent, spanBefore, yearBack } from "../src/core/business-report-compare.ts";
+import { briefSpeaks, businessAgentReads, businessCallReads, type Figures, REPORT_LIMITS } from "../src/core/business-report.ts";
+import { biggest, comparedTo, deltas, lastMonths, lastYearSpan, monthsOf, readAgainst, signedPercent, spanBefore, yearBack } from "../src/core/business-report-compare.ts";
 import { figuresIn, presenceOf, receivablesOf, sourcesOf } from "../src/core/business-report-sums.ts";
-import { expenseStandsFor } from "../src/core/cashflow-sources.ts";
+import { reportConcentrated } from "../src/core/business-report-top.ts";
+import { pairPaidWithExpenses, rollForward } from "../src/core/cashflow-sources.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
@@ -24,11 +25,11 @@ import type { SalesBook } from "../src/core/sales-invoice-store.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import type { TaxProfile } from "../src/core/taxes.ts";
 import { TaxStore } from "../src/core/tax-store.ts";
-import { yearEstimate, yearIncassi } from "../src/core/tax-sums.ts";
+import { currentEstimate, yearEstimate, yearIncassi } from "../src/core/tax-sums.ts";
 import type { WorkEntry } from "../src/core/timesheet.ts";
 import { type BusinessReportEvent, createBusinessReportTools } from "../src/core/tools/business-report-tools.ts";
 import { readAsked } from "../src/core/tools/business-report-input.ts";
-import { BRIEF_NOTHING, EMPTY, spanWords, TAX_NOTE } from "../src/core/tools/business-report-render.ts";
+import { BRIEF_NOTHING, compareAnswer, EMPTY, loadNotes, spanWords, TAX_NOTE } from "../src/core/tools/business-report-render.ts";
 import { Workspace } from "../src/core/workspace.ts";
 
 // Synthetic identifiers only: checksum-valid fake partite IVA.
@@ -239,13 +240,13 @@ describe("business report: the figures of a period", () => {
 		// FV-1 paid at 00:30 of 1 October in Rome, and FV-2's first instalment.
 		expect(answer).toContain("• Incassato: 1.525,00 €");
 		// 122 (A-1's own expense) + 50 + A-2 244 paid with no expense; A-1 not twice.
-		expect(answer).toContain("• Spese: 416,00 € (2 spese registrate, 1 fattura di fornitore pagata; 1 fattura di fornitore pagata è già nelle spese)");
+		expect(answer).toContain("• Spese: 416,00 € (2 spese registrate, 1 fattura di fornitore pagata)\n");
 		expect(answer).toContain("• Margine: 1.109,00 €");
-		expect(answer).toContain("• Ore lavorate: 12 ore e 30 minuti, 192,00 € l'ora sul fatturato");
+		expect(answer).toContain("• Ore lavorate: 12 ore e 30 minuti; fatturato diviso le ore registrate: 192,00 € l'ora");
 		// 2026-004 was first made in September: not October's.
-		expect(answer).toContain("• Preventivi: 3 fatti, 1 accettato (il 33%), 1 rifiutato");
+		expect(answer).toContain("• Preventivi: 3 fatti, 1 accettato (il 33%), 1 rifiutato, 1 aperto");
 		// Open: FV-2's second 305 + FV-3 2.440 less NC-1 122.
-		expect(answer).toContain("Da incassare oggi: 2.623,00 €, di cui 2.318,00 € scaduti (1 rata).");
+		expect(answer).toContain("Ancora da incassare: 2.623,00 €, di cui 2.318,00 € scaduti (1 rata).");
 		expect(answer).not.toMatch(NO_EM_DASH);
 		expect(fences(answer)).toHaveLength(0);
 		expect(answer).not.toContain(CLIENT1.name);
@@ -270,13 +271,13 @@ describe("business report: the figures of a period", () => {
 	it("a renewal's payment and its supplier invoice paid the next day count once, as the expense", async () => {
 		const s = await setup();
 		const answer = await s.run({ op: "summary", period: "settembre" });
-		expect(answer).toContain("• Spese: 300,00 € (1 spesa registrata; 1 fattura di fornitore pagata è già nelle spese)");
+		expect(answer).toContain("• Spese: 300,00 € (1 spesa registrata)\n");
 		expect(answer).toContain("• Margine: 676,00 €");
 		// The rule is the cashflow's own.
 		const invoices = await s.registerNow();
 		const b9 = invoices.find((i) => i.doc.number === "B-9") as Invoice;
-		expect(expenseStandsFor(EXPENSES, b9, 30000n, "2026-09-21")).toBe(true);
-		expect(expenseStandsFor(EXPENSES, b9, 30000n, "2026-09-30")).toBe(false);
+		expect(pairPaidWithExpenses([{ invoice: b9, cents: 30000n, day: "2026-09-21" }], EXPENSES)).toEqual([true]);
+		expect(pairPaidWithExpenses([{ invoice: b9, cents: 30000n, day: "2026-09-30" }], EXPENSES)).toEqual([false]);
 	});
 
 	it("an invoice in instalments counts once in the fatturato, each instalment in the month it is paid", async () => {
@@ -314,15 +315,16 @@ describe("business report: the figures of a period", () => {
 		const s = await setup({ regime: "forfettario", profile: GS_PROFILE });
 		const invoices = await s.registerNow();
 		const incassi = yearIncassi(invoices, TODAY, dayOf);
-		const e = yearEstimate({ profile: GS_PROFILE, figures: [], incassi, today: TODAY }, 2026, incassi(2026).cents);
-		expect(e.incassi).toBe(250100n);
+		// This year projected to its end, as the taxes tool's own estimate takes it.
+		const e = yearEstimate({ profile: GS_PROFILE, figures: [], incassi, today: TODAY }, 2026);
+		expect(incassi(2026).cents).toBe(250100n);
 		const october = halfUp(152500n * e.total, e.incassi);
 		const answer = await s.run({ op: "summary", period: "ottobre" });
 		expect(answer).toContain(`• Tasse e contributi da accantonare: ${euroText(october)}, circa il ${e.setAsidePercent}% di ogni incasso`);
 		expect(answer).toContain(`• Ti resta in tasca: ${euroText(110900n - october)}`);
 		expect(answer).toContain(TAX_NOTE);
-		// The year so far: the whole estimate, to the cent.
-		expect(await s.run({ op: "summary", period: "da inizio anno" })).toContain(`da accantonare: ${euroText(e.total)}`);
+		// The year so far: the same share of its incassi.
+		expect(await s.run({ op: "summary", period: "da inizio anno" })).toContain(`da accantonare: ${euroText(halfUp(250100n * e.total, e.incassi))}`);
 	});
 
 	it("taxes, ordinario: the IVA of the period, IRPEF not estimated", async () => {
@@ -330,14 +332,16 @@ describe("business report: the figures of a period", () => {
 		// Sales 110 + 440 less NC-1 22; purchases 22 + 44.
 		const answer = await s.run({ op: "summary", period: "ottobre" });
 		expect(answer).toContain("• IVA da versare: 462,00 € (IRPEF e contributi non stimati)");
-		expect(answer).toContain("• Ti resta in tasca: 647,00 €");
+		expect(answer).toContain("• Dopo l'IVA: 647,00 € (prima di IRPEF e contributi, che non stimo)");
+		expect(answer).not.toContain("in tasca");
 		expect(answer).toContain(TAX_NOTE);
 	});
 
 	it("taxes not estimated without a regime or a profile, and said how to set it", async () => {
 		const none = await setup();
 		const a = await none.run({ op: "summary", period: "ottobre" });
-		expect(a).toContain("• Tasse: non stimate. Non so se chi ti scrive è nel forfettario o nell'ordinario");
+		expect(a).toContain("• Tasse: non stimate (il perché è in fondo).");
+		expect(a).toContain("\nTasse non stimate: Non so se chi ti scrive è nel forfettario o nell'ordinario");
 		expect(a).not.toContain("Ti resta in tasca");
 		expect(a).not.toContain(TAX_NOTE);
 		const forf = await setup({ regime: "forfettario" });
@@ -398,7 +402,7 @@ describe("business report: empty and broken registers", () => {
 		const s = await setup({ regime: "forfettario" });
 		writeFileSync(join(s.dir, "taxes.json"), "nope");
 		const answer = await s.run({ op: "summary", period: "ottobre" });
-		expect(answer).toContain("• Tasse: non stimate. Il profilo delle tasse non si legge.");
+		expect(answer).toContain("Tasse non stimate: Il profilo delle tasse non si legge.");
 		expect(readFileSync(join(s.dir, "taxes.json"), "utf8")).toBe("nope");
 		const sales = await setup({ salesBroken: true });
 		const answer2 = await sales.run({ op: "summary", period: "ottobre" });
@@ -413,7 +417,7 @@ describe("business report: compare", () => {
 		const answer = await s.run({ op: "compare", period: "ottobre" });
 		expect(answer.split("\n")[0]).toBe("Ottobre 2026 fino al 18 rispetto a settembre 2026 fino al 18:");
 		// Fatturato 2.400 vs 1.000; incassato 1.525 vs 976; spese 416 vs 0.
-		expect(answer).toContain("Cosa è cambiato di più: fatturato +1.400,00 € (+140%); incassato +549,00 € (+56,3%); spese +416,00 € (a settembre 2026 fino al 18 non c'era niente).");
+		expect(answer).toContain("Cosa è cambiato di più: fatturato +1.400,00 € (+140%); incassato +549,00 € (+56,3%); spese +416,00 €.");
 		expect(answer).toContain("• Margine: 1.109,00 €, prima 976,00 €, +133,00 € (+13,6%)");
 		expect(answer).toContain("• Ore lavorate: 12 ore e 30 minuti, prima 1 ora");
 		expect(answer).not.toMatch(NO_EM_DASH);
@@ -431,7 +435,9 @@ describe("business report: compare", () => {
 		const s = await setup();
 		const answer = await s.run({ op: "compare", period: "settembre" });
 		expect(answer.split("\n")[0]).toBe("Settembre 2026 rispetto ad agosto 2026:");
-		expect(answer).toContain("Cosa è cambiato di più: incassato +976,00 € (ad agosto 2026 non c'era niente)");
+		// August had the fatturato of FV-0, no incassi nor spese: said once.
+		expect(answer).toContain("\nAd agosto 2026 non c'erano incassi né spese; a settembre: incassati 976,00 €, spese 300,00 €.\nPoi: fatturato +200,00 € (+25%).\n");
+		expect(answer.match(/non c'era/g)).toHaveLength(1);
 		expect(answer).toContain("• Incassato: 976,00 €, prima 0,00 €, +976,00 €\n");
 		const custom = await s.run({ op: "compare", from: "1/10/2026", to: "10/10/2026" });
 		expect(custom.split("\n")[0]).toBe("Ottobre 2026 fino al 10 rispetto ai giorni dal 21 al 30 settembre 2026:");
@@ -441,11 +447,12 @@ describe("business report: compare", () => {
 	});
 
 	it("percent on a negative before, and the biggest by euros either way", () => {
-		expect(signedPercent(5000n, -10000n)).toBe("+150%");
-		expect(signedPercent(-5000n, 10000n)).toBe("-150%");
+		expect(signedPercent(5000n, -10000n)).toBeUndefined();
+		expect(signedPercent(-5000n, 10000n)).toBe("\u2212150%");
 		const f = (incassato: bigint, spese: bigint): Figures => ({ span: { from: "2026-10-01", to: "2026-10-31" }, fatturato: { cents: incassato, count: 1, credits: 0 }, incassato, spese: { cents: spese, expenses: 1, suppliers: 0, supplierCents: 0n, twins: 0 }, margine: incassato - spese });
 		const list = deltas(f(1000n, 5000n), f(1000n, 1000n));
-		expect(biggest(list).map((d) => d.key)).toEqual(["spese", "margine"]);
+		// The margine comes from the spese, already said.
+		expect(biggest(list).map((d) => d.key)).toEqual(["spese"]);
 		expect(biggest(list, 1)).toHaveLength(1);
 	});
 });
@@ -478,26 +485,34 @@ describe("business report: periods and months", () => {
 		const s = await setup({ files: {}, now: new Date("2028-03-10T09:00:00Z"), expenses: [expense("S-2028-0001", "2028-02-29", "10"), expense("S-2027-0001", "2027-02-28", "20")] });
 		const answer = await s.run({ op: "compare", period: "febbraio 2028", against: "last_year" });
 		expect(answer.split("\n")[0]).toBe("Febbraio 2028 rispetto a febbraio 2027:");
-		expect(answer).toContain("• Spese: 10,00 €, prima 20,00 €, −10,00 € (-50%)");
+		expect(answer).toContain("• Spese: 10,00 €, prima 20,00 €, −10,00 € (−50%)");
 	});
 
-	it("trend: twelve months by default, at most 24, the current month so far", async () => {
+	it("trend: six months by default, at most 24, the empty months before folded in one line, each row labelled", async () => {
 		const s = await setup();
 		const answer = await s.run({ op: "trend" });
 		const rows = answer.split("\n").filter((l) => l.startsWith("• "));
-		expect(rows).toHaveLength(12);
-		expect(rows[0]).toBe("• novembre 2025: 0,00 €, 0,00 €, 0,00 €, 0,00 €");
-		expect(rows[10]).toBe("• settembre 2026: 1.000,00 €, 976,00 €, 300,00 €, 676,00 €");
-		expect(rows[11]).toBe("• ottobre 2026 (fino al 18): 2.400,00 €, 1.525,00 €, 416,00 €, 1.109,00 €");
-		expect(rows[9]).toBe("• agosto 2026: 800,00 €, 0,00 €, 0,00 €, 0,00 €");
-		expect(answer).toContain("Totale: 4.200,00 €, 2.501,00 €, 716,00 €, 1.785,00 €.");
+		expect(answer).toContain("Gli ultimi 6 mesi, mese per mese:\nDa maggio 2026 a luglio 2026: niente.\n");
+		expect(rows).toEqual([
+			"• agosto 2026: fatturati 800,00 €, incassati 0,00 €, spese 0,00 €, margine 0,00 €",
+			"• settembre 2026: fatturati 1.000,00 €, incassati 976,00 €, spese 300,00 €, margine 676,00 €",
+			"• ottobre 2026 (fino al 18): fatturati 2.400,00 €, incassati 1.525,00 €, spese 416,00 €, margine 1.109,00 €",
+		]);
+		expect(answer).toContain("Totale: fatturati 4.200,00 €, incassati 2.501,00 €, spese 716,00 €, margine 1.785,00 €.");
+		expect(answer).not.toContain("chart");
+		expect(s.tool.description).toContain("(months, default 6, at most 24; chart_create only if the person asks for a chart)");
+		const year = await s.run({ op: "trend", months: 12 });
+		expect(year).toContain("\nDa novembre 2025 a luglio 2026: niente.\n");
+		expect(year.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(3);
 		const capped = await s.run({ op: "trend", months: 30 });
 		expect(capped).toContain("Al massimo 24 mesi");
-		expect(capped.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(REPORT_LIMITS.maxTrendMonths);
-		expect(capped).toContain("• ottobre 2025: 1.500,00 €, 1.830,00 €, 100,00 €, 1.730,00 €");
+		expect(capped).toContain("\nDa novembre 2024 a settembre 2025: niente.\n• ottobre 2025: fatturati 1.500,00 €, incassati 1.830,00 €, spese 100,00 €, margine 1.730,00 €\n• novembre 2025: fatturati 0,00 €");
+		// Only the leading empty months fold: 24 less the 11 before October 2025.
+		expect(capped.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(REPORT_LIMITS.maxTrendMonths - 11);
 		expect(await s.run({ op: "trend", months: 0 })).toContain("Errore: months è un numero intero");
 		expect(await s.run({ op: "trend", months: 2.5 })).toContain("Errore: months è un numero intero");
 		expect(answer).not.toMatch(NO_EM_DASH);
+		expect(REPORT_LIMITS.trendMonths).toBe(6);
 	});
 });
 
@@ -514,7 +529,9 @@ describe("business report: top", () => {
 		expect(names).toContain("Software e abbonamenti: 300,00 € (1 spesa)");
 		expect(names).toContain("Consulenze: 122,00 € (1 spesa)");
 		expect(outside(answer)).not.toContain(CLIENT1.name);
-		expect(outside(answer)).toContain("Il primo cliente vale il 51% degli incassi: dipendi molto da un solo cliente.");
+		// 51% and 49%: two clients close to even, no warning.
+		expect(outside(answer)).toContain("Gli incassi vengono da 2 clienti, quasi alla pari.");
+		expect(outside(answer)).not.toContain("dipendi");
 		expect(answer).not.toMatch(NO_EM_DASH);
 	});
 
@@ -531,7 +548,7 @@ describe("business report: top", () => {
 });
 
 describe("business report: the brief, another agente, the export, the audit", () => {
-	it("the brief's line only on days 1 to 3, and it never writes", async () => {
+	it("the brief's line only on the first weekday of the month, and it never writes", async () => {
 		const s = await setup({ now: new Date("2026-11-02T07:00:00Z") });
 		const before = readFileSync(join(s.dir, "invoices.json"), "utf8");
 		const line = await s.run({ op: "summary", compact: true });
@@ -577,10 +594,13 @@ describe("business report: the brief, another agente, the export, the audit", ()
 		const files = { ...FILES, "f/fv0.xml": xml(COMPANY, hostile, { number: "FV-0", date: "2026-08-20", rows: [r22("800.00")], due: "2026-09-19" }) };
 		const s = await setup({ files });
 		const answer = await s.run({ op: "export", period: "settembre" });
-		expect(answer).toContain("Salvato report/andamento-2026-09-01_2026-09-30.csv (settembre 2026)");
+		expect(answer).toContain("Salvato report/andamento-2026-09-01_2026-09-30.csv: l'andamento di settembre 2026, mese per mese");
+		expect(answer).not.toContain("non mi hai detto il periodo");
 		expect(answer).not.toContain("HYPERLINK");
 		const csv = readFileSync(join(s.root, "report", "andamento-2026-09-01_2026-09-30.csv"), "utf8");
-		expect(csv.startsWith("﻿Periodo;Fatturato (imponibile);Incassato;Spese;Margine;Tasse stimate;Ti resta;Ore\r\n")).toBe(true);
+		expect(csv.startsWith("﻿Periodo;Fatturato (imponibile);Incassato;Spese;Margine;Tasse stimate;Ti resta in tasca;Ore\r\n")).toBe(true);
+		// The supplier invoice the renewal's expense stands for: said in the CSV, not in the chat.
+		expect(csv).toContain("1 fattura di fornitore pagata è già nelle spese registrate: contate una volta.");
 		expect(csv).toContain("settembre 2026;1000,00;976,00;300,00;676,00;;;1:00\r\n");
 		expect(csv).toContain(`"'=HYPERLINK(""http://x.example"";""clic"") Srl";976,00;100\r\n`);
 		expect(csv).not.toMatch(/(^|;|\n)=HYPERLINK/);
@@ -609,6 +629,186 @@ describe("business report: the brief, another agente, the export, the audit", ()
 		const s = await setup();
 		expect(await s.run({ op: "boh" })).toContain("Errore: op è una di queste: summary, compare, trend, top, export.");
 		expect(await s.run({ op: "summary", compact: "sì" })).toBe("Errore: compact è true o false.");
+	});
+});
+
+const COMMERCIANTI: TaxProfile = { coefficient: "40", rate: "15", startYear: 2020, pension: { kind: "commercianti", reduction: false }, by: "u", at: NOW.toISOString() };
+const OTHER_SUPPLIER = { name: "Altro Fornitore Srl", vat: "22222220010" };
+/** Two supplier invoices of 500 € paid on 5 and 6 October, and an unrelated expense of 500 € on the 7th. */
+const TWO_PAID = {
+	files: {
+		"f/s1.xml": xml(SUPPLIER, COMPANY, { number: "X-1", date: "2026-10-01", rows: [r22("409.84")], due: "2026-10-05" }),
+		"f/s2.xml": xml(OTHER_SUPPLIER, COMPANY, { number: "Y-7", date: "2026-10-02", rows: [r22("409.84")], due: "2026-10-06" }),
+	},
+	paid: { "X-1": "2026-10-05T08:00:00.000Z", "Y-7": "2026-10-06T08:00:00.000Z" },
+	expenses: [expense("S-2026-0009", "2026-10-07", "500", { category: "attrezzatura", supplier: "Negozio Prova" })],
+	quotes: [],
+	entries: [],
+};
+const fig = (o: { incassato: bigint; spese: bigint; fatturato?: bigint }): Figures => ({ span: { from: "2026-09-01", to: "2026-09-30" }, fatturato: { cents: o.fatturato ?? o.incassato, count: 1, credits: 0 }, incassato: o.incassato, spese: { cents: o.spese, expenses: 1, suppliers: 0, supplierCents: 0n, twins: 0 }, margine: o.incassato - o.spese, tasse: { kind: "none", why: "no_regime" } });
+const PRESENT = { invoices: true, expenses: true, entries: false, quotes: false };
+
+describe("business report: week 61 review fixes", () => {
+	it("M1: forfettario commercianti, 3.000 € in January asked on 2 February: the taxes tool's share, never over 100%", async () => {
+		const files = { "f/a.xml": xml(COMPANY, CLIENT1, { number: "1", date: "2026-01-05", rows: [{ rate: "0.00", taxable: "3000.00", tax: "0.00" }], due: "2026-01-20" }) };
+		const now = new Date("2026-02-02T09:00:00Z");
+		const s = await setup({ files, paid: { "1": "2026-01-20T10:00:00.000Z" }, expenses: [], quotes: [], entries: [], regime: "forfettario", profile: COMMERCIANTI, now });
+		const incassi = yearIncassi(await s.registerNow(), "2026-02-02", dayOf);
+		const e = currentEstimate({ profile: COMMERCIANTI, figures: [], incassi, today: "2026-02-02" });
+		expect(e.setAsidePercent).toBeDefined();
+		expect(e.setAsidePercent as number).toBeLessThanOrEqual(100);
+		const answer = await s.run({ op: "summary", period: "gennaio" });
+		const share = halfUp(300000n * e.total, e.incassi);
+		expect(share).toBeLessThan(300000n);
+		expect(answer).toContain(`• Tasse e contributi da accantonare: ${euroText(share)}, circa il ${e.setAsidePercent}% di ogni incasso`);
+		expect(answer).toContain(`• Ti resta in tasca: ${euroText(300000n - share)}`);
+		expect(answer).not.toMatch(/in tasca: −/);
+		// The share the old code took: the whole year's fixed contributions on January alone.
+		const ytdOnly = yearEstimate({ profile: COMMERCIANTI, figures: [], incassi, today: "2026-02-02" }, 2026, 300000n);
+		expect(ytdOnly.setAsidePercent as number).toBeGreaterThan(100);
+	});
+
+	it("M2: one expense stands for one supplier payment at most; an unrelated one for none, in the report and in the balance brought forward", async () => {
+		const s = await setup(TWO_PAID);
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• Spese: 1.500,00 € (1 spesa registrata, 2 fatture di fornitori pagate)");
+		const invoices = await s.registerNow();
+		const x1 = invoices.find((i) => i.doc.number === "X-1") as Invoice;
+		const y7 = invoices.find((i) => i.doc.number === "Y-7") as Invoice;
+		const paid = [
+			{ invoice: x1, cents: 50000n, day: "2026-10-05" },
+			{ invoice: y7, cents: 50000n, day: "2026-10-06" },
+		];
+		// Another supplier named: no pair. No name nor partita IVA: one pair only, never both.
+		expect(pairPaidWithExpenses(paid, TWO_PAID.expenses)).toEqual([false, false]);
+		expect(pairPaidWithExpenses(paid, [expense("S-1", "2026-10-07", "500")])).toEqual([false, true]);
+		// Amount alone with another partita IVA: no pair; with the invoice's partita IVA and number: that one.
+		expect(pairPaidWithExpenses(paid, [expense("S-2", "2026-10-06", "500", { supplierVat: OTHER_SUPPLIER.vat })])).toEqual([false, true]);
+		expect(pairPaidWithExpenses(paid, [expense("S-3", "2026-10-06", "500", { supplierVat: "IT99999999990" })])).toEqual([false, false]);
+		expect(pairPaidWithExpenses(paid, [expense("S-4", "2026-11-30", "100", { supplierVat: SUPPLIER.vat, docNumber: "X-1" })])).toEqual([true, false]);
+		// The cashflow takes both payments off, and the expense.
+		const rolled = rollForward({ amount: "1000", date: "2026-10-01", by: "u", at: "2026-10-01T18:00:00.000Z" }, "2026-10-18T08:00:00.000Z", TODAY, invoices, TWO_PAID.expenses, [], dayOf);
+		expect(rolled?.paidPassive).toHaveLength(2);
+		expect(rolled?.net).toBe(-150000n);
+		const one = rollForward({ amount: "1000", date: "2026-10-01", by: "u", at: "2026-10-01T18:00:00.000Z" }, "2026-10-18T08:00:00.000Z", TODAY, invoices, [expense("S-1", "2026-10-07", "500")], [], dayOf);
+		expect(one?.paidPassive).toHaveLength(1);
+	});
+
+	it("M3: the ordinario is «dopo l'IVA», never «in tasca»: chat, the year's line, the agente, the CSV, the description", async () => {
+		const s = await setup({ regime: "ordinario" });
+		const answer = await s.run({ op: "summary" });
+		expect(answer).toContain("• Dopo l'IVA: ");
+		expect(answer).toMatch(/Dal 1º gennaio al 18 ottobre 2026: [^\n]*dopo l'IVA [^\n]*, prima di IRPEF e contributi, che non stimo\./);
+		expect(answer).not.toMatch(/in tasca|ti restano/);
+		const toAgent = await s.run({ op: "summary", period: "ottobre" }, agent());
+		expect(toAgent).toContain("• Dopo l'IVA: 647,00 € (prima di IRPEF e contributi, che non stimo)");
+		expect(toAgent).not.toContain("in tasca");
+		const compare = await s.run({ op: "compare", period: "ottobre" });
+		expect(compare).toContain("• Dopo l'IVA: 647,00 €");
+		expect(compare).toContain("Dopo l'IVA vuol dire prima di IRPEF e contributi, che non stimo.");
+		await s.run({ op: "export", period: "ottobre" });
+		const csv = readFileSync(join(s.root, "report", "andamento-2026-10-01_2026-10-18.csv"), "utf8");
+		expect(csv.split("\r\n")[0]).toBe("﻿Periodo;Fatturato (imponibile);Incassato;Spese;Margine;IVA da versare;Dopo l'IVA (prima di IRPEF e contributi, non stimati);Ore");
+		expect(s.tool.description).toContain("for the ordinario only what is left after the IVA");
+		const forf = await setup({ regime: "forfettario", profile: GS_PROFILE });
+		expect(await forf.run({ op: "summary", period: "ottobre" })).toContain("• Ti resta in tasca: ");
+	});
+
+	it("U1: «chi mi paga di più» goes to clients op top; the report's top is where the money goes, the concentration kept", async () => {
+		const s = await setup();
+		expect(s.tool.description).toContain("«chi mi paga di più?», «chi sono i miei clienti migliori?» → not this tool: the clients tool, op top");
+		expect(s.tool.description).not.toContain("«chi sono i clienti che mi pagano di più?», «dove spendo di più?» → top");
+		expect(s.tool.description).toContain("«dove spendo di più?» → top");
+		expect(DEFAULT_INSTRUCTIONS).toContain("dove spende di più, il report per il commercialista; chi lo paga di più è clients con op top;");
+		expect(DEFAULT_INSTRUCTIONS).not.toContain("i clienti che pagano di più e dove spende");
+		expect(await s.run({ op: "top" })).toContain("Gli incassi vengono da 2 clienti");
+	});
+
+	it("U3: no percent from zero or below or from under a tenth; the biggest prefer fatturato, incassato, spese", () => {
+		expect(signedPercent(110900n, -10000n)).toBeUndefined();
+		expect(signedPercent(100000n, 9000n)).toBeUndefined();
+		expect(signedPercent(100000n, 10000n)).toBe("+900%");
+		expect(signedPercent(-100000n, 9000n)).toBeUndefined();
+		const now = fig({ incassato: 120900n, spese: 10000n });
+		const before = fig({ incassato: 10000n, spese: 20000n, fatturato: 120900n });
+		const list = deltas(now, before);
+		const top = biggest(list);
+		// Incassato and spese first; the margine comes from them: not said again.
+		expect(top.map((d) => d.key)).toEqual(["incassato", "spese"]);
+		const answer = compareAnswer({ now, before, deltas: list, biggest: top, presence: PRESENT, notes: [] });
+		expect(answer).toContain("• Margine: 1.109,00 €, prima −100,00 €, +1.209,00 € (da −100,00 € a 1.109,00 €)");
+		expect(answer).toContain("Cosa è cambiato di più: incassato +1.109,00 € (da 100,00 € a 1.209,00 €); spese −100,00 € (−50%).");
+		expect(answer).not.toMatch(/margine \+/);
+	});
+
+	it("U5: two clients warn only at 60% and twice the second, «quasi alla pari» when close; three or more also need twice the second or over half", () => {
+		expect(reportConcentrated([70n, 30n], 100n)).toBe(true);
+		expect(reportConcentrated([65n, 35n], 100n)).toBe(false);
+		expect(reportConcentrated([55n, 45n], 100n)).toBe(false);
+		expect(reportConcentrated([45n, 40n, 15n], 100n)).toBe(false);
+		expect(reportConcentrated([45n, 20n, 20n, 15n], 100n)).toBe(true);
+		expect(reportConcentrated([51n, 30n, 19n], 100n)).toBe(true);
+		expect(reportConcentrated([100n], 100n)).toBe(false);
+	});
+
+	it("U6: the export defaults to the month just closed and says so; the brief speaks only on the first weekday of the month", async () => {
+		const s = await setup();
+		const answer = await s.run({ op: "export" });
+		expect(answer).toContain("Salvato report/andamento-2026-09-01_2026-09-30.csv: l'andamento di settembre 2026 (il mese scorso: non mi hai detto il periodo)");
+		// 1 November 2026 is a Sunday: Monday the 2nd speaks, the 3rd does not.
+		expect(briefSpeaks("2026-11-02")).toBe(true);
+		expect(briefSpeaks("2026-11-01")).toBe(false);
+		expect(briefSpeaks("2026-11-03")).toBe(false);
+		expect(briefSpeaks("2026-10-01")).toBe(true);
+		expect(briefSpeaks("2026-10-02")).toBe(false);
+		expect(briefSpeaks("2026-08-03")).toBe(true);
+		const brief = await setup({ now: new Date("2026-11-03T07:00:00Z") });
+		expect(await brief.run({ op: "summary", compact: true })).toBe(BRIEF_NOTHING);
+	});
+
+	it("U7: euros per hour only with 10 hours or more, said as a rough ratio", async () => {
+		const few = await setup({ entries: [entry("O-1", "2026-10-06", 540)] });
+		const a = await few.run({ op: "summary", period: "ottobre" });
+		expect(a).toContain("• Ore lavorate: 9 ore\n");
+		expect(a).not.toContain("l'ora");
+		const enough = await setup({ entries: [entry("O-1", "2026-10-06", 600)] });
+		expect(await enough.run({ op: "summary", period: "ottobre" })).toContain("• Ore lavorate: 10 ore; fatturato diviso le ore registrate: 240,00 € l'ora");
+		expect(few.tool.description).toContain("a rough ratio, not a rate");
+	});
+
+	it("U8: «prima nessuna», no quotes row at 0 su 0, the minus sign in percents, the reason for no taxes after the list", async () => {
+		const s = await setup();
+		const sept = await s.run({ op: "compare", period: "settembre" });
+		expect(sept).toContain("• Ore lavorate: 1 ora, prima nessuna");
+		expect(sept).toContain("• Preventivi accettati: 1 su 1, prima 0 su 0");
+		const aug = await s.run({ op: "compare", period: "agosto" });
+		expect(aug).not.toContain("Preventivi");
+		expect(aug).not.toContain("Ore lavorate");
+		expect(aug).not.toContain("0 minuti");
+		const october = await s.run({ op: "summary", period: "ottobre" });
+		const lines = october.split("\n");
+		const why = lines.findIndex((l) => l.startsWith("Tasse non stimate:"));
+		expect(why).toBeGreaterThan(lines.findIndex((l) => l.startsWith("Ancora da incassare")));
+		expect(october).not.toContain("già nelle spese");
+		expect(october).not.toContain("Da incassare oggi");
+		expect(signedPercent(5000n, 10000n)).toBe("−50%");
+	});
+
+	it("U9: paidDay from invoices.ts, the comparison in business-report-compare.ts, the notes in the render", () => {
+		const sums = readFileSync(join("src", "core", "business-report-sums.ts"), "utf8");
+		expect(sums).not.toContain("paidDayOf");
+		expect(sums).toContain('import { type Invoice, paidDay } from "./invoices.ts";');
+		const input = readFileSync(join("src", "core", "tools", "business-report-input.ts"), "utf8");
+		expect(input).not.toMatch(/comparedTo|readAgainst|comparedSpans/);
+		expect(readAgainst("anno scorso")).toBe("last_year");
+		expect(comparedTo({ span: { from: "2026-10-01", to: "2026-10-10" } }, "previous", TODAY)).toEqual({ now: { from: "2026-10-01", to: "2026-10-10" }, before: { from: "2026-09-21", to: "2026-09-30" } });
+		const tools = readFileSync(join("src", "core", "tools", "business-report-tools.ts"), "utf8");
+		expect(tools).not.toContain("non si legge");
+		expect(loadNotes({ invoicesBroken: false, noCompany: false, unread: 2, salesBroken: false, expensesBroken: true, quotesBroken: false, hoursBroken: false, uncounted: 1 })).toEqual([
+			"2 file di fatture nel workspace non si leggono e sono fuori dal conto.",
+			"Il registro delle spese non si legge: spese e margine qui non ci sono.",
+			"Una fattura emessa non entra nel fatturato (senza riepilogo IVA, senza data o in un'altra valuta).",
+		]);
 	});
 });
 

@@ -6,7 +6,7 @@
  * summary, the comparison and the trend carry none (another agente reads them). An empty register
  * is said in one line, never shown as zeros. The CSV is made inert by csvFile.
  */
-import type { Figures, MoneyKey, Receivables, Span, TaxPart } from "../business-report.ts";
+import { type Figures, type MoneyKey, type Receivables, REPORT_LIMITS, type Span, type TaxPart } from "../business-report.ts";
 import type { Delta } from "../business-report-compare.ts";
 import type { Presence } from "../business-report-sums.ts";
 import type { TopClients } from "../business-report-top.ts";
@@ -15,7 +15,7 @@ import { hm, hoursText } from "../durations.ts";
 import type { CategoryTotal } from "../expense-sums.ts";
 import { euros, n1 } from "../format-words.ts";
 import { daysInMonth, MONTH_NAMES } from "../italian-calendar.ts";
-import { capitalized, withDate, withPercent } from "../italian-format.ts";
+import { capitalized, signOf, withDate, withPercent } from "../italian-format.ts";
 import { fenced } from "./business-report-input.ts";
 
 /** Said once in every answer that shows taxes. */
@@ -44,7 +44,15 @@ function monthWords(span: Span): string {
 	return span.to === lastDay(span.from) ? monthLabel(span.from) : `${monthLabel(span.from)} (fino al ${Number(span.to.slice(8)) === 1 ? "1º" : Number(span.to.slice(8))})`;
 }
 
-const LABELS: Readonly<Record<MoneyKey, string>> = { fatturato: "fatturato", incassato: "incassato", spese: "spese", margine: "margine", tasse: "tasse stimate", inTasca: "ti resta in tasca" };
+/** The ordinario's taxes are the IVA only: what is left after them is not in the pocket yet. */
+const ordinario = (f: Figures) => f.tasse?.kind === "iva";
+/** What is left after the taxes, said honestly: in the pocket for the forfettario; for the ordinario after the IVA only. */
+export const AFTER_IVA = "prima di IRPEF e contributi, che non stimo";
+
+function label(key: MoneyKey, f: Figures): string {
+	if (key === "inTasca") return ordinario(f) ? "dopo l'IVA" : "ti resta in tasca";
+	return { fatturato: "fatturato", incassato: "incassato", spese: "spese", margine: "margine", tasse: "tasse stimate" }[key];
+}
 
 function taxLine(t: TaxPart): string {
 	switch (t.kind) {
@@ -53,11 +61,16 @@ function taxLine(t: TaxPart): string {
 		case "iva":
 			return t.credit ? "• IVA: nel periodo è a credito, niente da versare (IRPEF e contributi non stimati)" : `• IVA da versare: ${euros(t.cents)} (IRPEF e contributi non stimati)`;
 		case "none":
-			return `• Tasse: non stimate. ${noTaxWhy(t.why)}`;
+			return "• Tasse: non stimate (il perché è in fondo).";
 	}
 }
 
+/** Why the taxes are not estimated: said once, after the figures. */
 function noTaxWhy(why: Extract<TaxPart, { kind: "none" }>["why"]): string {
+	return `Tasse non stimate: ${noTaxReason(why)}`;
+}
+
+function noTaxReason(why: Extract<TaxPart, { kind: "none" }>["why"]): string {
 	switch (why) {
 		case "no_regime":
 			return "Non so se chi ti scrive è nel forfettario o nell'ordinario: chiediglielo; per il forfettario serve il suo profilo delle tasse (taxes op set_profile), per l'ordinario il regime nei dati dell'azienda (invoices op set_company).";
@@ -86,33 +99,33 @@ function figureLines(f: Figures, presence: Presence): string[] {
 	if (!presence.expenses) lines.push("• Spese: nessuna registrata.");
 	else if (f.spese !== undefined) {
 		const parts = [n1(f.spese.expenses, "1 spesa registrata", "# spese registrate"), ...(f.spese.suppliers === 0 ? [] : [n1(f.spese.suppliers, "1 fattura di fornitore pagata", "# fatture di fornitori pagate")])];
-		const twins = f.spese.twins === 0 ? "" : `; ${n1(f.spese.twins, "1 fattura di fornitore pagata è già nelle spese", "# fatture di fornitori pagate sono già nelle spese")}`;
-		lines.push(`• Spese: ${euros(f.spese.cents)} (${parts.join(", ")}${twins})`);
+		lines.push(`• Spese: ${euros(f.spese.cents)} (${parts.join(", ")})`);
 	}
 	if (f.margine !== undefined) lines.push(`• Margine: ${euros(f.margine)}${presence.expenses ? "" : " (senza spese registrate)"}`);
 	if (f.tasse !== undefined && presence.invoices) lines.push(taxLine(f.tasse));
-	if (f.inTasca !== undefined && presence.invoices) lines.push(`• Ti resta in tasca: ${euros(f.inTasca)}`);
-	if (presence.entries && f.ore !== undefined) lines.push(f.ore.minutes === 0 ? "• Ore: nessuna registrata nel periodo." : `• Ore lavorate: ${hoursText(f.ore.minutes)}${f.ore.perHour === undefined ? "" : `, ${euros(f.ore.perHour)} l'ora sul fatturato`}`);
+	if (f.inTasca !== undefined && presence.invoices) lines.push(ordinario(f) ? `• Dopo l'IVA: ${euros(f.inTasca)} (${AFTER_IVA})` : `• Ti resta in tasca: ${euros(f.inTasca)}`);
+	if (presence.entries && f.ore !== undefined) lines.push(f.ore.minutes === 0 ? "• Ore: nessuna registrata nel periodo." : `• Ore lavorate: ${hoursText(f.ore.minutes)}${f.ore.perHour === undefined ? "" : `; fatturato diviso le ore registrate: ${euros(f.ore.perHour)} l'ora`}`);
 	if (presence.quotes && f.preventivi !== undefined) {
 		const p = f.preventivi;
-		lines.push(p.made === 0 ? "• Preventivi: nessuno fatto nel periodo." : `• Preventivi: ${n1(p.made, "1 fatto", "# fatti")}, ${n1(p.accepted, "1 accettato", "# accettati")} (${withPercent("il", Math.round((p.accepted * 100) / p.made))})${p.declined === 0 ? "" : `, ${n1(p.declined, "1 rifiutato", "# rifiutati")}`}`);
+		const open = p.made - p.accepted - p.declined;
+		lines.push(p.made === 0 ? "• Preventivi: nessuno fatto nel periodo." : `• Preventivi: ${n1(p.made, "1 fatto", "# fatti")}, ${n1(p.accepted, "1 accettato", "# accettati")} (${withPercent("il", Math.round((p.accepted * 100) / p.made))})${p.declined === 0 ? "" : `, ${n1(p.declined, "1 rifiutato", "# rifiutati")}`}${open === 0 ? "" : `, ${n1(open, "1 aperto", "# aperti")}`}`);
 	}
 	return lines;
 }
 
-/** «incassati 1.220,00 €, spese 400,00 €, margine 820,00 €, ti restano 620,00 €»: a span in one line. */
+/** «incassati 1.220,00 €, spese 400,00 €, margine 820,00 €, ti restano 620,00 €» (the ordinario: «dopo l'IVA 620,00 €, prima di IRPEF e contributi, che non stimo»): a span in one line. */
 function shortLine(f: Figures): string {
 	const parts: string[] = [];
 	if (f.incassato !== undefined) parts.push(`incassati ${euros(f.incassato)}`);
 	if (f.spese !== undefined) parts.push(`spese ${euros(f.spese.cents)}`);
 	if (f.margine !== undefined) parts.push(`margine ${euros(f.margine)}`);
-	if (f.inTasca !== undefined) parts.push(`ti restano ${euros(f.inTasca)}`);
+	if (f.inTasca !== undefined) parts.push(ordinario(f) ? `dopo l'IVA ${euros(f.inTasca)}, ${AFTER_IVA}` : `ti restano ${euros(f.inTasca)}`);
 	return parts.join(", ");
 }
 
 function receivablesLine(r: Receivables): string {
-	if (r.open === 0n) return "Da incassare oggi: niente.";
-	return `Da incassare oggi: ${euros(r.open)}${r.overdue === 0n ? ", niente di scaduto" : `, di cui ${euros(r.overdue)} scaduti (${n1(r.overdueCount, "1 rata", "# rate")})`}.`;
+	if (r.open === 0n) return "Ancora da incassare: niente.";
+	return `Ancora da incassare: ${euros(r.open)}${r.overdue === 0n ? ", niente di scaduto" : `, di cui ${euros(r.overdue)} scaduti (${n1(r.overdueCount, "1 rata", "# rate")})`}.`;
 }
 
 export const EMPTY = "Per l'andamento dell'attività non ho ancora niente: nei registri non ci sono fatture, spese, ore o preventivi. Quando ci sono fatture nel workspace o spese registrate, te lo dico.";
@@ -129,16 +142,17 @@ export function summaryAnswer(v: SummaryView): string {
 	}
 	if (v.receivables !== undefined && v.presence.invoices) lines.push(receivablesLine(v.receivables));
 	lines.push(...v.notes);
+	if (v.main.tasse?.kind === "none" && v.presence.invoices) lines.push(noTaxWhy(v.main.tasse.why));
 	if (v.presence.invoices && (hasTaxes(v.main) || (v.ytd !== undefined && hasTaxes(v.ytd)))) lines.push(TAX_NOTE);
 	lines.push(REPEAT);
 	return lines.join("\n");
 }
 
-/** «+549,00 € (+56,3%)»; with nothing before, «(a settembre 2026 non c'era niente)» when `beforeWords` is given, else the change alone. */
-function deltaText(d: Delta, beforeWords?: string): string {
-	const change = `${d.diff > 0n ? "+" : ""}${euros(d.diff)}`;
+/** «+549,00 € (+56,3%)»; no percent when it would mislead: «+1.209,00 € (da −100,00 € a 1.109,00 €)»; from zero, the change alone. */
+function deltaText(d: Delta): string {
+	const change = `${d.diff > 0n ? signOf(false) : ""}${euros(d.diff)}`;
 	if (d.percent !== undefined) return `${change} (${d.percent})`;
-	return beforeWords === undefined ? change : `${change} (${beforeWords} non c'era niente)`;
+	return d.before === 0n ? change : `${change} (da ${euros(d.before)} a ${euros(d.now)})`;
 }
 
 /** «a» before a word, «ad» only before an «a» (as periods.ts writes it): «ad agosto», «a ottobre». */
@@ -163,19 +177,32 @@ function againstWords(span: Span): string {
 export type CompareView = { readonly now: Figures; readonly before: Figures; readonly deltas: readonly Delta[]; readonly biggest: readonly Delta[]; readonly presence: Presence; readonly notes: readonly string[] };
 
 export function compareAnswer(v: CompareView): string {
-	const before = whenWords(v.before.span);
 	const lines = [`${capitalized(spanWords(v.now.span))} ${againstWords(v.before.span)}:`];
 	if (!v.presence.invoices && !v.presence.expenses) return [lines[0], "Nei registri non ci sono né fatture né spese: non c'è niente da confrontare.", ...v.notes].join("\n");
-	if (v.biggest.length === 0) lines.push("Niente è cambiato nelle cifre.");
-	else lines.push(`Cosa è cambiato di più: ${v.biggest.map((d) => `${LABELS[d.key]} ${deltaText(d, before)}`).join("; ")}.`);
-	for (const d of v.deltas) lines.push(`• ${capitalized(LABELS[d.key])}: ${euros(d.now)}, prima ${euros(d.before)}, ${deltaText(d)}`);
+	const at = (key: MoneyKey) => v.deltas.find((d) => d.key === key);
+	const inc = at("incassato");
+	const out = at("spese");
+	// No incassi nor spese before: said once, with what there is now; the margine and what is left come from them.
+	const empty = inc !== undefined && out !== undefined && inc.before === 0n && out.before === 0n && (inc.now !== 0n || out.now !== 0n);
+	const rest = empty ? v.biggest.filter((d) => d.key === "fatturato" || d.key === "tasse") : v.biggest;
+	if (empty) {
+		const year = v.before.span.from.slice(0, 4);
+		const nowWhen = whenWords(v.now.span);
+		const when = v.now.span.from.slice(0, 4) === year ? nowWhen.replace(new RegExp(` ${year}$`), "") : nowWhen;
+		lines.push(`${capitalized(whenWords(v.before.span))} non c'erano incassi né spese; ${when}: incassati ${euros(inc.now)}, spese ${euros(out.now)}.`);
+		if (rest.length > 0) lines.push(`Poi: ${rest.map((d) => `${label(d.key, v.now)} ${deltaText(d)}`).join("; ")}.`);
+	} else if (v.biggest.length === 0) lines.push("Niente è cambiato nelle cifre.");
+	else lines.push(`Cosa è cambiato di più: ${v.biggest.map((d) => `${label(d.key, v.now)} ${deltaText(d)}`).join("; ")}.`);
+	for (const d of v.deltas) lines.push(`• ${capitalized(label(d.key, v.now))}: ${euros(d.now)}, prima ${euros(d.before)}, ${deltaText(d)}`);
 	const ore = v.now.ore;
 	const oreBefore = v.before.ore;
-	if (v.presence.entries && ore !== undefined && oreBefore !== undefined) lines.push(`• Ore lavorate: ${hoursText(ore.minutes)}, prima ${hoursText(oreBefore.minutes)}`);
+	const hours = (m: number) => (m === 0 ? "nessuna" : hoursText(m));
+	if (v.presence.entries && ore !== undefined && oreBefore !== undefined && (ore.minutes > 0 || oreBefore.minutes > 0)) lines.push(`• Ore lavorate: ${hours(ore.minutes)}, prima ${hours(oreBefore.minutes)}`);
 	const p = v.now.preventivi;
 	const pb = v.before.preventivi;
-	if (v.presence.quotes && p !== undefined && pb !== undefined) lines.push(`• Preventivi accettati: ${p.accepted} su ${p.made}, prima ${pb.accepted} su ${pb.made}`);
+	if (v.presence.quotes && p !== undefined && pb !== undefined && (p.made > 0 || pb.made > 0)) lines.push(`• Preventivi accettati: ${p.accepted} su ${p.made}, prima ${pb.accepted} su ${pb.made}`);
 	if (!v.presence.expenses) lines.push("Spese: nessuna registrata, quindi il margine è solo gli incassi.");
+	if (v.deltas.some((d) => d.key === "inTasca") && ordinario(v.now)) lines.push(`Dopo l'IVA vuol dire ${AFTER_IVA}.`);
 	lines.push(...v.notes);
 	if (hasTaxes(v.now) || hasTaxes(v.before)) lines.push(TAX_NOTE);
 	lines.push(REPEAT);
@@ -184,14 +211,27 @@ export function compareAnswer(v: CompareView): string {
 
 export type TrendView = { readonly months: readonly Figures[]; readonly cut: boolean; readonly presence: Presence; readonly notes: readonly string[] };
 
+/** A month with nothing in it: no fatturato, no incassi, no spese. */
+const emptyMonth = (f: Figures) => (f.fatturato?.cents ?? 0n) === 0n && (f.incassato ?? 0n) === 0n && (f.spese?.cents ?? 0n) === 0n;
+
 export function trendAnswer(v: TrendView): string {
-	const lines = [`Gli ultimi ${v.months.length === 1 ? "mese" : `${v.months.length} mesi`}, mese per mese (fatturato, incassato, spese, margine):`];
-	if (v.cut) lines.unshift("Al massimo 24 mesi: ti mostro gli ultimi 24.");
+	const lines = [`Gli ultimi ${v.months.length === 1 ? "mese" : `${v.months.length} mesi`}, mese per mese:`];
+	if (v.cut) lines.unshift(`Al massimo ${REPORT_LIMITS.maxTrendMonths} mesi: ti mostro gli ultimi ${REPORT_LIMITS.maxTrendMonths}.`);
 	if (!v.presence.invoices && !v.presence.expenses) return [...lines.slice(0, -1), "Nei registri non ci sono né fatture né spese: non c'è ancora un andamento da mostrare.", ...v.notes].join("\n");
 	const cell = (c: bigint | undefined) => (c === undefined ? "n.d." : euros(c));
-	for (const f of v.months) lines.push(`• ${monthWords(f.span)}: ${cell(f.fatturato?.cents)}, ${cell(f.incassato)}, ${cell(f.spese?.cents)}, ${cell(f.margine)}`);
+	const row = (o: { fatturato: bigint | undefined; incassato: bigint | undefined; spese: bigint | undefined; margine: bigint | undefined }) => `fatturati ${cell(o.fatturato)}, incassati ${cell(o.incassato)}, spese ${cell(o.spese)}, margine ${cell(o.margine)}`;
+	// The empty months before the first that holds anything, in one line.
+	let lead = 0;
+	while (lead < v.months.length && emptyMonth(v.months[lead] as Figures)) lead++;
+	if (lead > 0) {
+		const first = v.months[0] as Figures;
+		const last = v.months[lead - 1] as Figures;
+		lines.push(lead === 1 ? `${capitalized(monthWords(first.span))}: niente.` : `Da ${monthWords(first.span)} a ${monthWords(last.span)}: niente.`);
+	}
+	const shown = v.months.slice(lead);
+	for (const f of shown) lines.push(`• ${monthWords(f.span)}: ${row({ fatturato: f.fatturato?.cents, incassato: f.incassato, spese: f.spese?.cents, margine: f.margine })}`);
 	const sum = (pick: (f: Figures) => bigint | undefined) => v.months.reduce<bigint | undefined>((n, f) => (n === undefined || pick(f) === undefined ? undefined : n + (pick(f) as bigint)), 0n);
-	lines.push(`Totale: ${cell(sum((f) => f.fatturato?.cents))}, ${cell(sum((f) => f.incassato))}, ${cell(sum((f) => f.spese?.cents))}, ${cell(sum((f) => f.margine))}.`);
+	if (shown.length > 1) lines.push(`Totale: ${row({ fatturato: sum((f) => f.fatturato?.cents), incassato: sum((f) => f.incassato), spese: sum((f) => f.spese?.cents), margine: sum((f) => f.margine) })}.`);
 	if (!v.presence.invoices) lines.push("Fatture: nessuna nei registri, quindi niente fatturato né incassi.");
 	if (!v.presence.expenses) lines.push("Spese: nessuna registrata.");
 	lines.push(...v.notes, REPEAT);
@@ -210,7 +250,8 @@ export function topAnswer(v: TopView): string {
 		else {
 			lines.push(`Clienti per incassato (nel riquadro): ${euros(c.total)} da ${n1(c.clients, "1 cliente", "# clienti")}.`);
 			c.rows.forEach((r, i) => inside.push(`${i + 1}. ${r.client.name}: ${euros(r.cents)}, ${r.percent}%`));
-			if (c.clients > 1) lines.push(`Il primo cliente vale ${withPercent("il", Number(c.first))} degli incassi${c.clients > 3 ? `, i primi tre ${withPercent("il", Number(c.firstThree))}` : ""}${c.concentrated ? ": dipendi molto da un solo cliente" : ""}.`);
+			if (c.even) lines.push("Gli incassi vengono da 2 clienti, quasi alla pari.");
+			else if (c.clients > 1) lines.push(`Il primo cliente vale ${withPercent("il", Number(c.first))} degli incassi${c.clients > 3 ? `, i primi tre ${withPercent("il", Number(c.firstThree))}` : ""}${c.concentrated ? ": dipendi molto da un solo cliente" : ""}.`);
 			else lines.push("Tutti gli incassi vengono da un solo cliente.");
 		}
 	}
@@ -228,11 +269,12 @@ export function topAnswer(v: TopView): string {
 	return lines.join("\n");
 }
 
-/** The brief's line, the month just closed: «Ottobre chiuso: incassati X, spese Y, margine Z (+N% su settembre)». */
+/** The brief's line, the month just closed: «Ottobre chiuso: incassati X, spese Y, margine Z (+N% su settembre)»; without a fair percent, the margine before («a settembre −100,00 €»). */
 export function briefLine(closed: Figures, before: Figures, percent: string | undefined): string {
 	const month = capitalized(MONTH_NAMES[Number(closed.span.from.slice(5, 7)) - 1] ?? "");
 	const prev = MONTH_NAMES[Number(before.span.from.slice(5, 7)) - 1] ?? "";
-	const change = percent === undefined ? `${toWord(prev)} non c'era niente` : `${percent} su ${prev}`;
+	const was = before.margine ?? 0n;
+	const change = percent !== undefined ? `${percent} su ${prev}` : was === 0n ? `${toWord(prev)} non c'era niente` : `${toWord(prev)} ${euros(was)}`;
 	return `${month} chiuso: incassati ${euros(closed.incassato ?? 0n)}, spese ${euros(closed.spese?.cents ?? 0n)}, margine ${euros(closed.margine ?? 0n)} (${change}). Nel brief riporta questo in una riga.`;
 }
 
@@ -243,7 +285,8 @@ const taxCents = (f: Figures): bigint | undefined => (f.tasse === undefined || f
 
 /** The report for the commercialista: the period month by month and its total, then the clients and the categories. */
 export function reportCsv(o: { readonly months: readonly Figures[]; readonly total: Figures; readonly clients?: TopClients; readonly categories?: { readonly rows: readonly CategoryTotal[] } }): { readonly csv: string; readonly rows: number } {
-	const header = ["Periodo", "Fatturato (imponibile)", "Incassato", "Spese", "Margine", "Tasse stimate", "Ti resta", "Ore"];
+	const ord = ordinario(o.total);
+	const header = ["Periodo", "Fatturato (imponibile)", "Incassato", "Spese", "Margine", ord ? "IVA da versare" : "Tasse stimate", ord ? "Dopo l'IVA (prima di IRPEF e contributi, non stimati)" : "Ti resta in tasca", "Ore"];
 	const line = (label: string, f: Figures): CsvCell[] => [label, money(f.fatturato?.cents), money(f.incassato), money(f.spese?.cents), money(f.margine), money(taxCents(f)), money(f.inTasca), f.ore === undefined ? "" : hm(f.ore.minutes)];
 	const rows: CsvCell[][] = o.months.map((f) => line(monthWords(f.span), f));
 	rows.push(line(`Totale ${spanWords(o.total.span)}`, o.total));
@@ -255,7 +298,37 @@ export function reportCsv(o: { readonly months: readonly Figures[]; readonly tot
 		rows.push([], ["Categoria di spesa", "Importo", "Spese"]);
 		for (const r of o.categories.rows) rows.push([r.category, csvCents(r.total), String(r.count)]);
 	}
+	const twins = o.total.spese?.twins ?? 0;
+	if (twins > 0) rows.push([], [`${n1(twins, "1 fattura di fornitore pagata è già nelle spese registrate", "# fatture di fornitori pagate sono già nelle spese registrate")}: contate una volta.`]);
 	rows.push([], ["Le tasse sono una stima da verificare con il commercialista."]);
 	return { csv: csvFile(header, rows), rows: rows.length };
 }
 
+
+/** What did not read while the registers were loaded, each said once in every answer. */
+export type LoadState = {
+	readonly invoicesBroken: boolean;
+	/** The scadenzario holds invoices but the company is not known. */
+	readonly noCompany: boolean;
+	/** Invoice files in the workspace that do not read. */
+	readonly unread: number;
+	readonly salesBroken: boolean;
+	readonly expensesBroken: boolean;
+	readonly quotesBroken: boolean;
+	readonly hoursBroken: boolean;
+	/** Issued invoices left out of the fatturato. */
+	readonly uncounted: number;
+};
+
+export function loadNotes(l: LoadState): string[] {
+	const notes: string[] = [];
+	if (l.invoicesBroken) notes.push("Lo stato delle fatture non si legge: fatturato, incassi e crediti qui non ci sono.");
+	if (l.noCompany) notes.push("Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le fatture emesse da quelle ricevute.");
+	if (l.unread > 0) notes.push(`${n1(l.unread, "Un file di fattura nel workspace non si legge ed è", "# file di fatture nel workspace non si leggono e sono")} fuori dal conto.`);
+	if (l.salesBroken) notes.push("Le fatture in uscita non si leggono: il fatturato conta solo le fatture XML.");
+	if (l.expensesBroken) notes.push("Il registro delle spese non si legge: spese e margine qui non ci sono.");
+	if (l.quotesBroken) notes.push("L'archivio dei preventivi non si legge: i preventivi qui non ci sono.");
+	if (l.hoursBroken) notes.push("Il registro delle ore non si legge: le ore qui non ci sono.");
+	if (l.uncounted > 0) notes.push(`${n1(l.uncounted, "Una fattura emessa non entra", "# fatture emesse non entrano")} nel fatturato (senza riepilogo IVA, senza data o in un'altra valuta).`);
+	return notes;
+}

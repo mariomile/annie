@@ -12,26 +12,26 @@
  *   to customers used in the span.
  * - spese: the expenses dated in the span (expense-sums.ts totalsOf), and the instalments of
  *   supplier invoices paid in the span (by the day paid) that no expense stands for, by the rule
- *   the cashflow brings a balance forward with (cashflow-sources.ts expenseStandsFor): the same
- *   money is never counted twice. A renewal counts through the expense its payment recorded,
+ *   the cashflow brings a balance forward with (cashflow-sources.ts pairPaidWithExpenses, one expense for one
+ *   instalment at most): the same money is never counted twice. A renewal counts through the expense its payment recorded,
  *   never on its own.
  * - margine: incassato less spese; in tasca: margine less the taxes estimated
  *   (business-report-taxes.ts).
- * - ore: the minutes recorded on days in the span; per hour: the fatturato over them.
+ * - ore: the minutes recorded on days in the span; per hour: the fatturato over them, a rough
+ *   ratio, only with REPORT_LIMITS.perHourMinutes or more.
  * - preventivi: the quotes whose first version is dated in the span, by the status of their latest.
  * - da incassare: the open instalments of the invoices issued, each customer's open credit notes
  *   off them, as the cashflow gathers them (cashflow-sources.ts invoiceFlows); past due: an
  *   instalment whose payable day (a weekend or holiday moved on) is gone.
  */
-import type { Figures, Receivables, Span } from "./business-report.ts";
+import { type Figures, type Receivables, REPORT_LIMITS, type Span } from "./business-report.ts";
 import { type TaxSetting, taxesIn } from "./business-report-taxes.ts";
 import { unitsToCents } from "./cash-book.ts";
-import { expenseStandsFor, invoiceFlows } from "./cashflow-sources.ts";
+import { invoiceFlows, type PaidInstalment, pairPaidWithExpenses } from "./cashflow-sources.ts";
 import { collectedIn } from "./client-sums.ts";
 import type { Expense } from "./expenses.ts";
 import { totalsOf } from "./expense-sums.ts";
-import type { Invoice } from "./invoices.ts";
-import type { Marker } from "./marker.ts";
+import { type Invoice, paidDay } from "./invoices.ts";
 import { latest, type Quote } from "./quotes.ts";
 import { halfUp } from "./quote-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
@@ -65,14 +65,6 @@ export type Presence = { readonly invoices: boolean; readonly expenses: boolean;
 
 const within = (day: string, span: Span) => day >= span.from && day <= span.to;
 
-/**
- * The day an instalment counts as paid: the bank's day when a statement confirmed it (a mark that
- * carries `on`), else the day it was marked, where the instance is.
- */
-function paidDayOf(mark: Marker & { readonly on?: string }, dayOf: (at: string) => string): string {
-	return typeof mark.on === "string" ? mark.on : dayOf(mark.at);
-}
-
 export function sourcesOf(r: ReportRegisters, today: string, dayOf: (at: string) => string): Sources {
 	const docs = r.invoices === undefined && r.sales === undefined ? undefined : vatDocs(r.sales ?? [], r.invoices ?? [], r.marks, dayOf).docs;
 	const keys = new Set((docs ?? []).map((d) => d.key));
@@ -98,25 +90,28 @@ function fatturatoIn(docs: readonly VatDoc[], span: Span): NonNullable<Figures["
 	return { cents, count, credits };
 }
 
-/** The supplier invoices paid in `span` that no expense stands for; `twins`: those an expense stands for. */
+/** The supplier invoices paid in `span` that no expense stands for; `twins`: those an expense stands for (each expense one instalment at most). */
 function supplierPaid(invoices: readonly Invoice[], expenses: readonly Expense[], span: Span, dayOf: (at: string) => string): { cents: bigint; count: number; twins: number } {
-	let cents = 0n;
-	let count = 0;
-	let twins = 0;
+	const paid: PaidInstalment[] = [];
 	for (const invoice of invoices) {
 		if (invoice.side !== "passive" || invoice.credit || invoice.doc.integration || invoice.doc.currency !== "EUR") continue;
 		for (const i of invoice.instalments) {
 			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
-			const day = paidDayOf(i.paid, dayOf);
-			if (!within(day, span)) continue;
-			const paid = unitsToCents(i.amount);
-			if (expenseStandsFor(expenses, invoice, paid, day)) twins++;
-			else {
-				cents += paid;
-				count++;
-			}
+			const day = paidDay(i.paid, dayOf);
+			if (within(day, span)) paid.push({ invoice, cents: unitsToCents(i.amount), day });
 		}
 	}
+	const stands = pairPaidWithExpenses(paid, expenses);
+	let cents = 0n;
+	let count = 0;
+	let twins = 0;
+	paid.forEach((p, n) => {
+		if (stands[n]) twins++;
+		else {
+			cents += p.cents;
+			count++;
+		}
+	});
 	return { cents, count, twins };
 }
 
@@ -155,7 +150,7 @@ export function figuresIn(s: Sources, span: Span): Figures {
 	let ore: Figures["ore"];
 	if (s.entries !== undefined) {
 		const minutes = s.entries.filter((e) => within(e.date, span)).reduce((n, e) => n + e.minutes, 0);
-		const perHour = minutes > 0 && fatturato !== undefined && fatturato.cents > 0n ? halfUp(fatturato.cents * 60n, BigInt(minutes)) : undefined;
+		const perHour = minutes >= REPORT_LIMITS.perHourMinutes && fatturato !== undefined && fatturato.cents > 0n ? halfUp(fatturato.cents * 60n, BigInt(minutes)) : undefined;
 		ore = { minutes, ...(perHour === undefined ? {} : { perHour }) };
 	}
 	return {

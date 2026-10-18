@@ -1,15 +1,13 @@
 /**
  * What the person asks the business report, read and checked: the period (a month, a quarter, a
- * year, «da inizio anno», «il mese scorso», or a span from a day to a day), what to compare it
- * with, how many months of a trend. What does not read goes back only inside the report's fence.
+ * year, «da inizio anno», «il mese scorso», or a span from a day to a day) and how many months of
+ * a trend; what a period is compared with is business-report-compare.ts. What does not read goes back only inside the report's fence.
  * Every span ends today at the latest: what has not happened yet is not in the registers.
  */
 import { REPORT_LIMITS, type Span } from "../business-report.ts";
-import { lastYearSpan, spanBefore } from "../business-report-compare.ts";
 import { DateError, readDate } from "../dates.ts";
-import { comparedSpans, type Period, PeriodError, readPeriod } from "../periods.ts";
+import { type Period, PeriodError, readPeriod } from "../periods.ts";
 import { daysBetween } from "../italian-calendar.ts";
-import { fold } from "../text-match.ts";
 import type { Problem } from "../text-input.ts";
 import { fence } from "../untrusted.ts";
 
@@ -68,32 +66,6 @@ function capped(span: Span, today: string, period?: Period): Asked | Problem {
 	if (daysBetween(span.from, span.to) > REPORT_LIMITS.maxSpanDays) return { problem: `il periodo è troppo lungo: al massimo ${REPORT_LIMITS.maxSpanDays} giorni; per gli anni usa un anno alla volta o l'andamento per mese` };
 	const to = span.to > today ? today : span.to;
 	return { span: { from: span.from, to }, ...(period === undefined ? {} : { period }), partial: to !== span.to };
-}
-
-export type Against = "previous" | "last_year";
-
-/** What to compare with: the period before (default) or the same days of last year. */
-export function readAgainst(value: unknown): Against | Problem {
-	if (value === undefined) return "previous";
-	const t = typeof value === "string" ? fold(value).replace(/[_-]+/g, " ").trim() : "";
-	if (/^(?:previous|precedente|prima|periodo precedente|mese prima|mese precedente)$/.test(t)) return "previous";
-	if (/^(?:last year|anno scorso|anno prima|stesso periodo dell anno scorso|stesso periodo anno scorso)$/.test(t)) return "last_year";
-	return { problem: "against è previous (il periodo prima) o last_year (lo stesso periodo dell'anno scorso)" };
-}
-
-/**
- * The two spans of a comparison. Against the period before: a period that is over against the
- * whole one before; one under way, its days so far against as many days of the one before
- * (periods.ts comparedSpans); a span of days against as many days right before it. Against last
- * year: the same days a year back.
- */
-export function comparedTo(asked: Asked, against: Against, today: string): { readonly now: Span; readonly before: Span } {
-	if (against === "last_year") return { now: asked.span, before: lastYearSpan(asked.span) };
-	if (asked.period !== undefined) {
-		const c = comparedSpans(asked.period, today);
-		return { now: c.now, before: c.before };
-	}
-	return { now: asked.span, before: spanBefore(asked.span) };
 }
 
 /** The months of a trend: 1 to REPORT_LIMITS.maxTrendMonths, by default REPORT_LIMITS.trendMonths; more is cut, and said. */

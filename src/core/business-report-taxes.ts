@@ -2,10 +2,11 @@
  * The taxes of a span of the business report, an estimate to check with the commercialista, from
  * the modules that already estimate them and never on their own:
  *
- * - forfettario with a tax profile (taxes.ts): each year's estimate on that year's incassi so far
- *   (tax-sums.ts, as the taxes tool's estimate), as a share of each incasso: the span's incassi in
- *   that year × the year's imposta and contributi / the year's incassi, half up. A span over two
- *   years takes each year's own share.
+ * - forfettario with a tax profile (taxes.ts): each year's estimate (tax-sums.ts yearEstimate), as a
+ *   share of each incasso: the span's incassi in that year × the year's imposta and contributi /
+ *   the year's incassi, half up. This year is projected to its end, as the taxes tool does (the
+ *   fixed contributions of a whole year never fall on the first incassi alone); past years on
+ *   their incassi. A span over two years takes each year's own share.
  * - ordinario: the IVA a debito less the IVA a credito of the span's documents (vat-sums.ts on
  *   vat-docs.ts, the person's deductibility marks included); IRPEF and contributions are not
  *   estimated. A credit is no tax to put aside: zero, and said.
@@ -51,8 +52,10 @@ function forfettario(s: TaxSources & { readonly invoices: readonly Invoice[] }, 
 	const inputs: CalendarInputs = { profile: setting.profile, figures: setting.years, incassi: yearIncassi(s.invoices, s.today, s.dayOf), today: s.today };
 	let cents = 0n;
 	let percent: number | undefined;
+	const current = Number(s.today.slice(0, 4));
 	for (const part of yearParts(span)) {
-		const e = yearEstimate(inputs, part.year, inputs.incassi(part.year).cents);
+		// This year's share as the taxes tool takes it: on the year projected to its end, so a year's fixed contributions are not all put on the incassi so far; past years on their incassi.
+		const e = part.year === current ? yearEstimate(inputs, part.year) : yearEstimate(inputs, part.year, inputs.incassi(part.year).cents);
 		if (e.incassi <= 0n) continue;
 		// The same incassi the taxes count: the cash book's, by the day paid.
 		const inPart = cashBook(s.invoices, [], part, s.dayOf).totalIn;

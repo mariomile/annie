@@ -2,21 +2,23 @@
  * L'andamento dell'attività: how the business is going, from the registers that already exist and
  * never writing them: fatturato (the invoices issued, by their date), incassato (the money in, by
  * the day it was paid), spese (the expenses recorded and the supplier invoices paid, each payment
- * once), margine, the taxes to put aside (an estimate), what is left in the pocket, the hours, the
+ * once), margine, the taxes to put aside (an estimate), what is left in the pocket (for the
+ * ordinario only what is left after the IVA: IRPEF and contributions are not estimated), the hours, the
  * quotes, what is still to collect. No store of its own: the CSV goes to the workspace's `report/`.
  *
  * The figures in business-report-sums.ts, the taxes in business-report-taxes.ts, the comparisons
  * and the months in business-report-compare.ts, the ranking in business-report-top.ts; the tool in
  * tools/business-report-tools.ts.
  */
+import { weekend } from "./italian-calendar.ts";
 import type { Span } from "./periods.ts";
 
 export const REPORT_OPS = ["summary", "compare", "trend", "top", "export"] as const;
 export type ReportOp = (typeof REPORT_OPS)[number];
 
 export const REPORT_LIMITS = {
-	/** Months of a trend: by default, and at most. */
-	trendMonths: 12,
+	/** Months of a trend in the chat: by default, and at most. */
+	trendMonths: 6,
 	maxTrendMonths: 24,
 	/** Clients and expense categories in a ranking. */
 	topClients: 5,
@@ -25,10 +27,24 @@ export const REPORT_LIMITS = {
 	biggestChanges: 3,
 	/** A custom span: at most this many days (a little over two years). */
 	maxSpanDays: 800,
+	/** Euros per hour only with at least this many minutes recorded in the span (10 hours): fewer say nothing. */
+	perHourMinutes: 600,
 } as const;
 
-/** The brief's line only on the first days of a month: the month just closed. */
+/**
+ * The brief's line on the month just closed, said once: on the first weekday of the month (the
+ * 1st, or the Monday after when it is a Saturday or a Sunday, so the 3rd at the latest). The
+ * report never writes, so it cannot know whether a brief already said it; one day keeps it once.
+ */
 export const BRIEF_LAST_DAY = 3;
+
+/** Whether `day` is the day the brief says the month just closed (see BRIEF_LAST_DAY). */
+export function briefSpeaks(day: string): boolean {
+	const n = Number(day.slice(8, 10));
+	if (n > BRIEF_LAST_DAY || weekend(day)) return false;
+	for (let d = 1; d < n; d++) if (!weekend(`${day.slice(0, 8)}${String(d).padStart(2, "0")}`)) return false;
+	return true;
+}
 
 /** The ops that only read: everything but the export, which writes a file. They run in a brief's thread. */
 const READ_OPS: readonly ReportOp[] = ["summary", "compare", "trend", "top"];
@@ -65,7 +81,7 @@ export type Figures = {
 	/** Incassato less spese. */
 	readonly margine?: bigint;
 	readonly tasse?: TaxPart;
-	/** Margine less the taxes, when they are estimated. */
+	/** Margine less the taxes, when they are estimated: in the pocket for the forfettario; for the ordinario only after the IVA (IRPEF and contributions not estimated). */
 	readonly inTasca?: bigint;
 	/** The hours recorded in the span; per hour: the fatturato over them, in cents. */
 	readonly ore?: { readonly minutes: number; readonly perHour?: bigint };

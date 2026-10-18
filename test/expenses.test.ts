@@ -274,7 +274,7 @@ describe("expense periods and sums", () => {
 		// Never past the end of the shorter month before.
 		expect(comparedSpans(readPeriod("marzo 2026", "2026-03-30"), "2026-03-30").before).toEqual({ from: "2026-02-01", to: "2026-02-28" });
 		expect(percentChange(15000n, 10000n)).toBe("+50%");
-		expect(percentChange(9000n, 12000n)).toBe("-25%");
+		expect(percentChange(9000n, 12000n)).toBe("\u221225%");
 		expect(percentChange(10125n, 10000n)).toBe("+1,3%");
 		expect(percentChange(100n, 0n)).toBeUndefined();
 	});
