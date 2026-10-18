@@ -28,7 +28,7 @@ export type CardEvent = {
 	readonly status?: CardStatus;
 	/** The agente assigned; null: nobody. */
 	readonly assignee?: string | null;
-	/** An «edited» that moved the scadenza (ADR 0070): the new day; null: taken off. */
+	/** An «edited» that moved the scadenza (ADR 0072): the new day; null: taken off. */
 	readonly due?: string | null;
 	readonly text?: string;
 };
@@ -55,7 +55,7 @@ export type Card = {
 	};
 	/** The scheda this one is part of (ADR 0066): one level only, so a sotto-scheda has none of its own. */
 	readonly parent?: string;
-	/** By when it should be done (ADR 0070): a day in Rome, YYYY-MM-DD. */
+	/** By when it should be done (ADR 0072): a day in Rome, YYYY-MM-DD. */
 	readonly due?: string;
 	readonly createdBy: CardActor;
 	readonly createdAt: string;

@@ -290,7 +290,7 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await send("DELETE", `/api/board/routines/${routine.id}`)).ok).toBe(true);
 		expect((await api("/api/board")).routines).toEqual([]);
 
-		// Scadenze (ADR 0070): set when created, moved, taken off; a wrong day is said.
+		// Scadenze (ADR 0072): set when created, moved, taken off; a wrong day is said.
 		const { card: dated } = await api("/api/board", { title: "Fattura Rossi", due: "2026-11-02" });
 		expect(dated.due).toBe("2026-11-02");
 		expect((await api("/api/board", { title: "Report", assignee: "ricerca", due: "2026-11-02", repeat: { every: "giorno", time: "9:00" } })).error).toMatch(/non ha una scadenza/);

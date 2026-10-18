@@ -41,7 +41,7 @@ Una scheda affidata a un agente che torna ogni giorno, nei feriali, ogni settima
 _Avoid_: routine, ricorrenza (nel testo per le persone)
 
 **Scadenza (di una scheda)**:
-Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o «in ritardo di 3 giorni»; l'agente la riceve con la scheda. Diversa dallo scadenzario, che riguarda le fatture. Vedi ADR 0070.
+Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o «in ritardo di 3 giorni»; l'agente la riceve con la scheda. Diversa dallo scadenzario, che riguarda le fatture. Vedi ADR 0072.
 _Avoid_: deadline, due date (nel testo per le persone)
 
 **Messaggio tra agenti**:

@@ -3914,7 +3914,7 @@ function whenNext(iso) {
 	return new Date(iso).toLocaleString("it-IT", { timeZone: "Europe/Rome", weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
-/** A scheda's scadenza (ADR 0070), counted in Rome's days: { days, text, level } with level late, soon or later. */
+/** A scheda's scadenza (ADR 0072), counted in Rome's days: { days, text, level } with level late, soon or later. */
 function dueInfo(due) {
 	const part = (type) => parts.find((p) => p.type === type).value;
 	const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
