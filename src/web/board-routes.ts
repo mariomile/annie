@@ -1,4 +1,5 @@
 import { BOARD_LIMITS, BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
+import { describeWhen, nextTime, type Routine, routineWhen, type RoutineStore } from "../core/board-routines.ts";
 import type { BoardWork } from "../core/board-work.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import type { Person, PeopleStore } from "./auth.ts";
@@ -8,7 +9,7 @@ export type BoardRoutesDeps = {
 	readonly runtime: AnnieRuntime;
 	readonly tenantId: string;
 	readonly people: PeopleStore;
-	readonly board: { readonly store: BoardStore; readonly work: BoardWork } | undefined;
+	readonly board: { readonly store: BoardStore; readonly work: BoardWork; readonly routines?: RoutineStore } | undefined;
 	/** Segreterie take no schede. */
 	readonly segreterie: ReadonlyMap<string, unknown> | undefined;
 };
@@ -42,8 +43,20 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const assignee = body.assignee === null || body.assignee === "" ? null : typeof body.assignee === "string" ? body.assignee : undefined;
 		return { priority, status, assignee };
 	};
+	/** A scheda that comes back (ADR 0069) is the business of who set it and of the owner. */
+	const routinesOf = () => {
+		const routines = boardOf().routines;
+		if (routines === undefined) throw new HttpError(501, "Le schede che si ripetono non sono disponibili su questo server");
+		return routines;
+	};
+	const ownRoutine = (id: string, p: Person): Routine => {
+		const r = routinesOf().get(id);
+		if (r === undefined || (p.role !== "owner" && r.personId !== p.id)) throw new HttpError(404, "Questa scheda non si ripete più");
+		return r;
+	};
+	const routineView = (r: Routine) => ({ ...r, whenText: describeWhen(r.when) });
 	route("GET", "/api/board", "person", async ({ person }) => {
-		const { store, work } = boardOf();
+		const { store, work, routines } = boardOf();
 		const p = person as Person;
 		const agents = await boardAgents();
 		const all = store.list();
@@ -53,6 +66,7 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const involved = new Set(cards.flatMap((c) => [c.createdBy, ...c.events.map((e) => e.by)].filter((a) => a.kind === "person").map((a) => a.id)));
 		return {
 			cards,
+			routines: (routines?.list() ?? []).filter((r) => p.role === "owner" || r.personId === p.id).map(routineView),
 			agents: agents.map((r) => ({ id: r.id, name: r.name, ...(r.persona?.emoji === undefined ? {} : { emoji: r.persona.emoji }), canAssign: r.egress.channels.includes("web") && (r.allowedUsers.web ?? []).includes(p.id) })),
 			people: Object.fromEntries([...involved].map((id) => [id, names.get(id) ?? "una persona"])),
 			auto: { replies: BOARD_LIMITS.autoRounds, hours: BOARD_LIMITS.autoMs / 3_600_000 },
@@ -63,6 +77,17 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const p = person as Person;
 		const body = (await readJson(req)) as Record<string, unknown>;
 		const { priority, assignee } = cardBody(body);
+		// «Si ripete»: no scheda now, one at each time, worked with this person.
+		if (body.repeat !== undefined && body.repeat !== null) {
+			if (!assignee) throw new HttpError(400, "Una scheda che si ripete va affidata a un agente");
+			const routines = routinesOf();
+			const routine = await (async () => {
+				await work.checkAgent(assignee, p.id);
+				return routines.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), assignee, auto: body.auto === true, when: routineWhen(body.repeat), personId: p.id });
+			})().catch(boardError);
+			await runtime.audit(tenantId).append({ type: "board.routine_created", routineId: routine.id, personId: p.id, assignee, every: routine.when.every });
+			return { routine: routineView(routine) };
+		}
 		const card = await work
 			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(body.auto === true ? { auto: true } : {}), ...(typeof body.parent === "string" && body.parent !== "" ? { parent: (await visibleCard(body.parent, p)).id } : {}) }, { kind: "person", id: p.id }, p.id)
 			.catch(boardError);
@@ -98,6 +123,37 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const started = await work.startWaiting(card.id, p.id, { kind: "person", id: p.id }, body.auto === true).catch(boardError);
 		await runtime.audit(tenantId).append({ type: "board.card_started", cardId: card.id, personId: p.id, assignee: started.assignee ?? "", auto: started.auto !== undefined });
 		return { card: started };
+	});
+	route("PUT", "/api/board/routines/:id", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const r = ownRoutine(params[0] as string, p);
+		const body = (await readJson(req)) as { paused?: unknown };
+		if (typeof body.paused !== "boolean") throw new HttpError(400, "paused: true o false");
+		const pausing = body.paused;
+		const changed = (() => {
+			try {
+				// Started again, it counts from now: no scheda for the times it was paused.
+				return routinesOf().update(r.id, (x) => {
+					const { paused: _p, problem: _q, ...rest } = x;
+					return pausing ? { ...rest, paused: true as const } : { ...rest, next: nextTime(x.when, new Date()) };
+				});
+			} catch (error) {
+				return boardError(error);
+			}
+		})();
+		await runtime.audit(tenantId).append({ type: "board.routine_changed", routineId: r.id, personId: p.id, paused: pausing });
+		return { routine: routineView(changed) };
+	});
+	route("DELETE", "/api/board/routines/:id", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const r = ownRoutine(params[0] as string, p);
+		try {
+			routinesOf().remove(r.id);
+		} catch (error) {
+			boardError(error);
+		}
+		await runtime.audit(tenantId).append({ type: "board.routine_deleted", routineId: r.id, personId: p.id });
+		return { ok: true };
 	});
 	route("DELETE", "/api/board/:id", "person", async ({ person, params }) => {
 		const { store } = boardOf();

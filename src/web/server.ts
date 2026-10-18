@@ -30,6 +30,7 @@ import { checkPersona, cleanName, type Persona, PersonaError } from "../core/per
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import type { BoardStore } from "../core/board.ts";
 import type { ScreenViews } from "../core/screen-views.ts";
+import type { RoutineStore } from "../core/board-routines.ts";
 import type { BoardReview, BoardWork } from "../core/board-work.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -214,7 +215,7 @@ export type WebAppOptions = {
 	/** Delete an agente for good (ADR 0046); never the general one, nor a segreteria. */
 	readonly deleteInstance?: { readonly main: string; readonly run: (id: string) => Promise<void> };
 	/** The board (ADR 0050). */
-	readonly board?: { readonly store: BoardStore; readonly work: BoardWork };
+	readonly board?: { readonly store: BoardStore; readonly work: BoardWork; readonly routines?: RoutineStore };
 	readonly log?: (message: string) => void;
 };
 

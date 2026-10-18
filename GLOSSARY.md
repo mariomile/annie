@@ -36,6 +36,10 @@ _Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
 Una scheda che fa parte di un'altra, un solo livello. Quella che crea l'agente della scheda mentre ci lavora con una persona parte subito con un altro agente, e il risultato torna all'agente della scheda. Vedi ADR 0066.
 _Avoid_: sub-task, child card
 
+**Scheda che si ripete**:
+Una scheda affidata a un agente che torna ogni giorno, nei feriali, ogni settimana o ogni mese: a ogni volta nasce una scheda nuova che parte con la persona che l'ha impostata. Non ne nasce un'altra finché l'ultima è aperta. Diversa dal task programmato, che è un messaggio in chat. Vedi ADR 0069.
+_Avoid_: routine, ricorrenza (nel testo per le persone)
+
 **Messaggio tra agenti**:
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
 _Avoid_: chat tra bot, handoff, delega

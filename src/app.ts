@@ -100,6 +100,7 @@ import { connectChannel } from "./gateway.ts";
 import type { AnnieConfig } from "./main/config.ts";
 import { type RunningSegreteria, startSegreteria } from "./segreteria/boot.ts";
 import { BoardStore } from "./core/board.ts";
+import { RoutineStore, runRoutines } from "./core/board-routines.ts";
 import { createBoardTools } from "./core/tools/board-tools.ts";
 import { startBoard } from "./app/board.ts";
 import { PeopleStore, SessionStore } from "./web/auth.ts";
@@ -300,6 +301,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	};
 	// Google: one account per person, a client per instance and person (the fetch is the instance's).
 	const board = new BoardStore(tenantDir(config.dataDir, toTenantId(tenant)));
+	const routines = new RoutineStore(tenantDir(config.dataDir, toTenantId(tenant)));
 	const googleAccounts = config.google === undefined ? undefined : new GoogleAccounts(tenantDir(config.dataDir, toTenantId(tenant)), new TenantSecrets(config.dataDir, toTenantId(tenant)));
 	const googleClients = new Map<string, GoogleClient>();
 	/** A person's client for an instance: its calls go through that instance's egress policy. */
@@ -1292,7 +1294,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				watches: { store: runtime.watches(tenant, id), read: watchReader(id) },
 			})),
 		log,
-		(now) => tellExpired(now),
+		async (now) => {
+			await tellExpired(now);
+			// Schede that come back (ADR 0069).
+			await runRoutines(routines, boardWork, board, log, now).catch((error: unknown) => log(`board: routines not run: ${error instanceof Error ? error.message : String(error)}`));
+		},
 	);
 	scheduler.start(options.schedulerIntervalMs ?? 30_000);
 	const segreteria = config.segreteria === undefined ? undefined : await startSegreteria(runtime, config.segreteria, log);
@@ -1372,6 +1378,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		await forgetAgente(id);
 		await runtime.removeInstance(tenant, id);
 		board.unassignAgent(id);
+		routines.pauseAgent(id);
 		const warn = (what: string) => (error: unknown) => log(`annie: deleting ${id}: ${what} not removed: ${error instanceof Error ? error.message : String(error)}`);
 		await browseSessions.closeScope(`${record.tenantId}/${record.id}`).catch(warn("browsers"));
 		await computer?.reset(computerKey(tenant, id)).catch(warn("computer"));
@@ -1610,7 +1617,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await runtime.resume(tenant, record.id);
 		},
 		deleteInstance: { main: config.instanceId, run: deleteAgente },
-		board: { store: board, work: boardWork },
+		board: { store: board, work: boardWork, routines },
 		log,
 	});
 	await new Promise<void>((resolve, reject) => {
