@@ -16,7 +16,7 @@
  */
 import { foreignCurrency } from "../currency-words.ts";
 import { daysBetween } from "../italian-calendar.ts";
-import { italianLongDate } from "../italian-format.ts";
+import { capitalized, withDate } from "../italian-format.ts";
 import { normalPath } from "../invoices.ts";
 import { automaticPayment, type Method } from "../payment-methods.ts";
 import { centsDecimal, halfUp, scaled, VAT_RATES, type VatRate } from "../quote-sums.ts";
@@ -268,7 +268,7 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 		let since = from.date;
 		if (from.yearless === true && from.previous !== undefined && from.previous.slice(0, 4) === o.today.slice(0, 4) && daysBetween(from.previous, o.today) <= 92) {
 			since = from.previous;
-			said.push(`Il ${italianLongDate(since)} è già passato: il nuovo importo vale già da allora. Se intendeva il ${italianLongDate(from.date)}, correggi con op edit (new_amount_from ${from.date.split("-").reverse().join("/")}).`);
+			said.push(`${capitalized(withDate("il", since))} è già passato: il nuovo importo vale già da allora. Se intendeva ${withDate("il", from.date)}, correggi con op edit (new_amount_from ${from.date.split("-").reverse().join("/")}).`);
 		}
 		out.amountFrom = { amount: amount.amount, from: since };
 	}
@@ -341,7 +341,7 @@ export function applyFields(f: Fields, old: Renewal | undefined, today: string):
 		const next = effectiveDue({ ...old, autoPay: true, status: "active" }, today);
 		due = { date: next, day: old.day };
 		start = next;
-		notes.push(`Le scadenze passate (dal ${italianLongDate(old.due)}) non le conto come addebitate: il primo addebito che conto è il ${italianLongDate(next)}. Se quelle sono state pagate o sono da pagare, chiedilo a chi ti scrive e registrale con expenses op add.`);
+		notes.push(`Le scadenze passate (${withDate("dal", old.due)}) non le conto come addebitate: il primo addebito che conto è ${withDate("il", next)}. Se quelle sono state pagate o sono da pagare, chiedilo a chi ti scrive e registrale con expenses op add.`);
 	}
 	const optional = {
 		provider,

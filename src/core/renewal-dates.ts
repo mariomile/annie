@@ -23,8 +23,9 @@
  */
 import { addMonths, DateError, inRange, parseMonth, readDate } from "./dates.ts";
 import { addDays, daysBetween, daysInMonth, isoDate } from "./italian-calendar.ts";
-import { italianLongDate } from "./italian-format.ts";
+import { italianLongDate, withDate } from "./italian-format.ts";
 import { scaled } from "./quote-sums.ts";
+import { datesBetween, rollDate } from "./recurrence.ts";
 import { RENEWAL_LIMITS, type Renewal } from "./renewals.ts";
 import { fold } from "./text-match.ts";
 
@@ -190,7 +191,7 @@ function monthOnly(t: string, today: string): Due | Problem | undefined {
 		const before = rollDate(date, -12, day);
 		if (before < today) previous = before;
 	}
-	if (date < today) return { problem: `la data del ${italianLongDate(date)} è già passata: dammi la prossima scadenza` };
+	if (date < today) return { problem: `la data ${withDate("del", date)} è già passata: dammi la prossima scadenza` };
 	const note = day === 31 ? `Ho messo la scadenza all'ultimo giorno del mese (${italianLongDate(date)}) e la tengo a fine mese a ogni rinnovo: se è un altro giorno, correggila con op edit (due).` : undefined;
 	return { date, day, ...(yearSaid ? {} : { yearless: true as const }), ...(previous === undefined ? {} : { previous }), ...(note === undefined ? {} : { note }) };
 }
@@ -259,7 +260,7 @@ export function readDue(value: unknown, today: string): Due | Problem {
 			}
 		}
 		if (date < today) {
-			if (daysBetween(date, today) > 366) return { problem: `la data del ${italianLongDate(date)} è passata da più di un anno: dammi la prossima scadenza` };
+			if (daysBetween(date, today) > 366) return { problem: `la data ${withDate("del", date)} è passata da più di un anno: dammi la prossima scadenza` };
 			due = { date, day: Number(date.slice(8, 10)), past: true };
 		} else due = { date, day: Number(date.slice(8, 10)), ...(yearless ? { yearless: true as const } : {}), ...(previous === undefined ? {} : { previous }) };
 	}
@@ -282,18 +283,12 @@ export function placeDue(due: Due, months: number, today: string): Due {
 		return { ...rest, date: date < due.date ? date : due.date, ...(due.note === undefined || date < due.date ? {} : { note: due.note }) };
 	}
 	if (daysBetween(today, due.date) > 300) {
-		const said = `Ho messo il ${italianLongDate(due.date)}. Se invece è scaduto il ${italianLongDate(due.previous)} e va ancora pagato, dimmelo e lo correggo.`;
+		const said = `Ho messo ${withDate("il", due.date)}. Se invece è scaduto ${withDate("il", due.previous)} e va ancora pagato, dimmelo e lo correggo.`;
 		return { ...due, note: `${due.note === undefined ? "" : `${due.note} `}Di' a chi ti scrive: «${said}» Se è così, correggi con op edit e due ${due.previous.split("-").reverse().join("/")}.` };
 	}
 	return due;
 }
 
-/** `months` after `date` (before it when negative), on day `day` of that month or its last day when shorter: the anchor day is kept, never drifts. */
-export function rollDate(date: string, months: number, day: number): string {
-	const first = addMonths(`${date.slice(0, 7)}-01`, months).date;
-	const [year, month] = [Number(first.slice(0, 4)), Number(first.slice(5, 7))];
-	return isoDate(year, month, Math.min(day, daysInMonth(year, month)));
-}
 
 /** The due date after this one: one period on from the due date (not from today). */
 export function nextDue(r: Pick<Renewal, "due" | "months" | "day">): string {
@@ -428,14 +423,8 @@ export function remindDays(r: Pick<Renewal, "months" | "remindDays">): number {
 }
 
 /** The payment dates of a renewal from `from` to `until` (both included), stepping by its period from `first`. */
-export function occurrences(r: Renewal, first: string, from: string, until: string): string[] {
-	const out: string[] = [];
-	let d = first;
-	for (let i = 0; d <= until && i < 400; i++) {
-		if (d >= from) out.push(d);
-		d = rollDate(d, r.months, r.day);
-	}
-	return out;
+export function occurrences(r: Pick<Renewal, "months" | "day">, first: string, from: string, until: string): string[] {
+	return datesBetween(first, r.months, r.day, from, until);
 }
 
 /** A renewal in a bucket: the date that puts it there, and its payments in the window with their total. */

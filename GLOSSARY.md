@@ -241,6 +241,10 @@ _Avoid_: timesheet entry, ora (per la voce)
 Un costo o un contratto che torna a ogni periodo (abbonamento, polizza, dominio, affitto), registrato con `renewals` (R-NNNN): importo, frequenza, prossima scadenza, se si rinnova da solo (`auto_renew`), se si paga da solo (`auto_pay`) e la data entro cui disdire. Vedi ADR 0064.
 _Avoid_: renewal, subscription
 
+**Voce di cassa**:
+Un movimento che la persona dice ad Annie per la previsione di cassa, registrato con `cashflow` (C-NNNN): entrata o uscita, importo, data, una volta o ricorrente (ogni N mesi o ogni N giorni), fino a quando. Serve per quello che non sta in fatture, rinnovi o spese: tasse e F24, prelievi, rate di prestiti, entrate senza fattura. Vedi ADR 0065.
+_Avoid_: cashflow item, movimento (per la voce)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

@@ -7,7 +7,7 @@
 import { endOfMonth, parseMonth, readDate } from "./dates.ts";
 import { InvoiceError } from "./invoices.ts";
 import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES, realDate, weekdayOf } from "./italian-calendar.ts";
-import { italianDate, italianWeekday } from "./italian-format.ts";
+import { dayMonth, italianDate, italianWeekday } from "./italian-format.ts";
 
 export const RANGES = ["oggi", "settimana", "mese", "prossimi", "scadute"] as const;
 export type Range = (typeof RANGES)[number];
@@ -32,10 +32,7 @@ export type Window = {
 
 export type WindowArgs = { readonly range?: Range; readonly days?: number; readonly month?: string; readonly from?: string; readonly to?: string };
 
-/** «12/10», with the year when it is not this year's. */
-export function dayMonth(date: string, today: string): string {
-	return date.slice(0, 4) === today.slice(0, 4) ? italianDate(date).slice(0, 5) : italianDate(date);
-}
+export { dayMonth };
 
 /** «lun 12/10». */
 export function dayShort(date: string, today: string): string {
