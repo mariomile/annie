@@ -50,6 +50,7 @@ const ICONS = {
 	task: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M12 7.5V12l3 2"],
 	file: ["M14 3H6v18h12V7Z", "M14 3v4h4"],
 	memoria: ["M12 4a4 4 0 0 0-4 4v1a3 3 0 0 0-2 5.2V16a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4v-1.8A3 3 0 0 0 16 9V8a4 4 0 0 0-4-4Z", "M12 4v16"],
+	skill: ["M5 4h10l4 4v12H5Z", "M9 12h6M9 16h4", "M14 4v4h4"],
 	connettori: ["M9 3v5M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4"],
 	impostazioni: ["M4 7h9M17 7h3M4 17h3M11 17h9", "M15 5v4M9 15v4"],
 	persone: ["M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M2.5 21a6.5 6.5 0 0 1 13 0", "M16 3.6a4 4 0 0 1 0 6.8", "M18.5 14.5A6.5 6.5 0 0 1 21.5 21"],
@@ -166,6 +167,7 @@ const PALETTE = [
 	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
 	{ id: "file", label: "File", group: "Lavoro" },
 	{ id: "memoria", label: "Memoria", group: "Lavoro" },
+	{ id: "skill", label: "Skill", group: "Lavoro" },
 	{ id: "connettori", label: "Connettori", group: "Gestione", owner: true },
 	{ id: "impostazioni", label: "Impostazioni", group: "Gestione", owner: true },
 	{ id: "persone", label: "Persone", group: "Gestione", owner: true },
@@ -1014,7 +1016,7 @@ function accountDialog() {
 
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
-const SIDEBAR = new Set(["inizia", "agenti", "board", "segreteria", "approvazioni", "task", "file", "memoria"]);
+const SIDEBAR = new Set(["inizia", "agenti", "board", "segreteria", "approvazioni", "task", "file", "memoria", "skill"]);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -1046,7 +1048,7 @@ function render() {
 	renderRail();
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
-	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
+	const views = { inizia: viewStart, chat: viewChat, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
 	(views[item.id] ?? viewChat)(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, h("div.empty", h("b", "Qualcosa non va"), error.message));
@@ -2938,6 +2940,112 @@ async function viewMemory(main) {
 			"div.grid-2",
 			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
 			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
+		),
+	);
+}
+
+// ---------- skill (ADR 0059) ----------
+/** «Chiusura del mese» → «chiusura-del-mese», as the server names it; only a preview of the command. */
+const skillSlug = (name) =>
+	name
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+
+async function viewSkills(main) {
+	if (needInstance(main)) return;
+	const inst = state.instance;
+	const { skills, drafts } = await api(`/api/instances/${inst.id}/skills`);
+	const editor = h("div.card.pad.stack", { hidden: true });
+	const save = async (body, done) => {
+		try {
+			const { skill, replaced } = await api(`/api/instances/${inst.id}/skills`, { method: "PUT", body });
+			toast(replaced ? `Skill /${skill.name} aggiornata` : `Skill /${skill.name} salvata`);
+			done?.();
+			render();
+		} catch (error) {
+			toast(error.message, true);
+		}
+	};
+	/** The form for a new skill or one to change; a SKILL.md pasted or uploaded fills it. */
+	const edit = (skill) => {
+		const name = h("input", { type: "text", maxlength: 32, value: skill?.name ?? "", placeholder: "Es. Chiusura del mese", readonly: Boolean(skill) });
+		const command = h("small");
+		const showCommand = () => (command.textContent = name.value.trim() ? `Si lancia con /${skillSlug(name.value)}` : "Il nome diventa il comando, da console, Telegram e WhatsApp.");
+		name.addEventListener("input", showCommand);
+		showCommand();
+		const description = h("textarea", { rows: 2, maxlength: 1024, placeholder: "Quando usarla, in una riga. Es. Quando chiedo di chiudere il mese" }, skill?.description ?? "");
+		const body = h("textarea", { rows: 10, maxlength: 20000, placeholder: "I passi, in Markdown.\n1. Guarda le fatture scadute\n2. Poi le spese del mese\n3. Scrivimi il riepilogo" }, skill?.body ?? "");
+		const pasted = h("textarea", { rows: 6, placeholder: "---\nname: chiusura-del-mese\ndescription: Quando chiedo di chiudere il mese\n---\n\n1. …" });
+		const file = h("input", { type: "file", accept: ".md,text/markdown,text/plain", hidden: true });
+		file.addEventListener("change", async () => {
+			const f = file.files?.[0];
+			if (f) pasted.value = await f.text();
+		});
+		const close = () => (editor.hidden = true);
+		mount(
+			editor,
+			h("h3", skill ? `Modifica /${skill.name}` : "Nuova skill"),
+			h("label.field", h("span", "Nome"), name, command),
+			h("label.field", h("span", "Quando usarla"), description, h("small", `${inst.name} vede questa riga in ogni conversazione e apre i passi quando un compito corrisponde.`)),
+			h("label.field", h("span", "Passi"), body),
+			h("div.actions", h("button.btn.accent", { onclick: () => save({ name: skill?.name ?? name.value, description: description.value, body: body.value }, close) }, "Salva"), h("button.btn.ghost", { onclick: close }, "Annulla")),
+			skill
+				? null
+				: h(
+						"details",
+						h("summary", "Oppure importa un SKILL.md"),
+						h("label.field", h("span", "Incolla il file, o caricalo"), pasted),
+						h("div.actions", h("button.btn", { onclick: () => (pasted.value.trim() ? save({ skillMd: pasted.value }, close) : toast("Incolla prima un SKILL.md", true)) }, "Importa"), h("label.btn.ghost", "Carica un file", file)),
+					),
+		);
+		editor.hidden = false;
+		editor.scrollIntoView({ behavior: "smooth", block: "start" });
+		(skill ? description : name).focus();
+	};
+	const exportMd = (s) => {
+		const link = h("a", { href: URL.createObjectURL(new Blob([s.skillMd], { type: "text/markdown" })), download: "SKILL.md" });
+		link.click();
+		setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+	};
+	const remove = (s, draft) =>
+		confirmDialog(draft ? `Scartare la bozza «${s.name}»?` : `Cancellare /${s.name}?`, draft ? "La bozza sparisce: non era ancora attiva." : `${inst.name} non la userà più, e il comando smette di funzionare.`, draft ? "Scarta" : "Cancella", async () => {
+			await api(`/api/instances/${inst.id}/skills/${encodeURIComponent(s.name)}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
+			render();
+		});
+	const by = (s) => (s.mine ? "tua" : s.createdBy ? `di ${s.createdBy.replace(/^web:/, "console ")}` : null);
+	const row = (s, draft) =>
+		h(
+			"tr",
+			h("td", h("b.mono", `/${s.name}`), h("div", s.description), h("div.mono.muted", [by(s), `aggiornata ${fmt.time(s.updatedAt)}`].filter(Boolean).join(" · "))),
+			h(
+				"td",
+				h(
+					"div.row-gap",
+					draft ? h("button.btn.small.accent", { onclick: () => save({ name: s.name, description: s.description, body: s.body }) }, "Attiva") : null,
+					s.canEdit && !draft ? h("button.btn.small.ghost", { onclick: () => edit(s) }, "Modifica") : null,
+					draft ? null : h("button.btn.small.ghost", { onclick: () => exportMd(s) }, "SKILL.md"),
+					s.canEdit ? h("button.btn.small.danger", { onclick: () => remove(s, draft) }, draft ? "Scarta" : "Cancella") : null,
+				),
+			),
+		);
+	mount(
+		main,
+		head(agentLabel(inst), h("h1", "Skill"), `Procedure con un nome che ${inst.name} apre quando servono. Il nome è il comando: /chiusura-del-mese ottobre la lancia da qui, da Telegram e da WhatsApp. Le vede chi scrive a ${inst.name}; ognuno cambia le sue, l'owner tutte.`, h("button.btn.accent", { onclick: () => edit() }, icon("plus"), "Nuova skill")),
+		h(
+			"div.stack",
+			editor,
+			drafts.length
+				? h("div.card", h("div.pad", h("h3", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("table.ledger", h("tbody", drafts.map((d) => row(d, true)))))
+				: null,
+			h(
+				"div.card",
+				skills.length
+					? h("table.ledger", h("tbody", skills.map((s) => row(s, false))))
+					: h("div.empty", h("b", "Nessuna skill"), `Spiega a ${inst.name} come fai una cosa e chiedile di salvarla come skill, oppure creala qui.`),
+			),
 		),
 	);
 }
