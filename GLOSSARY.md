@@ -197,6 +197,10 @@ _Avoid_: fine mese commerciale, scadenza a 30 giorni come mese
 Una partita IVA scritta dal cliente in una mail che non supera il controllo formale: la segreteria non la salva e nella bozza chiede di ricontrollarla (dato mancante `vatNumberInvalid`). Non usa il VIES. Vedi ADR 0049.
 _Avoid_: partita IVA inesistente, partita IVA non attiva
 
+**Fattura elettronica**:
+Il file XML FatturaPA che passa dallo SdI, a volte firmato come `.xml.p7m`; Annie lo legge come un documento e ne fa un riepilogo in italiano, senza verificare la firma. La scadenza che conta è quella scritta in fattura. Vedi ADR 0052.
+_Avoid_: e-fattura, XML della fattura, fattura digitale
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
