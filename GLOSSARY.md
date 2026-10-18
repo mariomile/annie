@@ -257,6 +257,10 @@ _Avoid_: renewal, subscription
 Un movimento che la persona dice ad Annie per la previsione di cassa, registrato con `cashflow` (C-NNNN): entrata o uscita, importo, data, una volta o ricorrente (ogni N mesi o ogni N giorni), fino a quando. Serve per quello che non sta in fatture, rinnovi o spese: tasse e F24, prelievi, rate di prestiti, entrate senza fattura. Vedi ADR 0065.
 _Avoid_: cashflow item, movimento (per la voce)
 
+**Profilo fiscale**:
+Come è tassata una persona nel regime forfettario, salvato con `taxes`: coefficiente di redditività (dal gruppo o dal codice ATECO), imposta al 15% o al 5%, anno di inizio, cassa previdenziale (gestione separata, artigiani, commercianti, cassa professionale) e le cifre dette dell'anno prima. Le aliquote dell'anno non stanno nel profilo. Vedi ADR 0069.
+_Avoid_: tax profile, regime (per il profilo)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
