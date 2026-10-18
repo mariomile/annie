@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { DocumentError, type DocumentText } from "./documents.ts";
 import type { Chart, ChartSpec } from "./charts.ts";
+import type { Fattura } from "./fattura-pa.ts";
 import type { MadeDocument, MakeInput } from "./make-document.ts";
 import type { PdfPageImage } from "./pdf-text.ts";
 import type { TableQuery, TableResult } from "./tables.ts";
@@ -22,6 +23,11 @@ const TOO_SLOW = "il documento è troppo complesso da leggere";
  */
 export function isTransient(error: unknown): boolean {
 	return error instanceof DocumentError && (error.message === AGAIN || error.message === TOO_SLOW);
+}
+
+/** A read that ran out of time: the same file is likely to run out again soon. */
+export function isTimeout(error: unknown): boolean {
+	return error instanceof DocumentError && error.message === TOO_SLOW;
 }
 
 let running = 0;
@@ -94,6 +100,23 @@ export async function queryTableFile(name: string, data: Uint8Array, query: Tabl
 	}
 }
 
+/**
+ * An invoice's structured content (a signed one opened first), read in a worker like its text: for
+ * the scadenzario. `signal` stops the worker, and the wait for one.
+ */
+export async function readFattura(name: string, data: Uint8Array, options: { timeoutMs?: number; waitMs?: number; signal?: AbortSignal } = {}): Promise<Fattura> {
+	options.signal?.throwIfAborted();
+	if (running >= DOCUMENT_READER_LIMITS.maxWorkers) await turn(options.waitMs ?? DOCUMENT_READER_LIMITS.waitMs);
+	running++;
+	try {
+		options.signal?.throwIfAborted();
+		return await inWorker<Fattura>({ name, data, fattura: true }, options.timeoutMs ?? DOCUMENT_READER_LIMITS.timeoutMs, "fattura", options.signal);
+	} finally {
+		running--;
+		waiting.shift()?.();
+	}
+}
+
 function turn(waitMs: number): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		const go = () => {
@@ -109,7 +132,9 @@ function turn(waitMs: number): Promise<void> {
 	});
 }
 
-function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; make?: MakeInput; chart?: ChartSpec; table?: TableQuery }, timeoutMs: number, key: "document" | "image" | "made" | "table"): Promise<T> {
+type WorkerInput = { name: string; data: Uint8Array; page?: number; make?: MakeInput; chart?: ChartSpec; table?: TableQuery; fattura?: boolean };
+
+function inWorker<T>(input: WorkerInput, timeoutMs: number, key: "document" | "image" | "made" | "table" | "fattura", signal?: AbortSignal): Promise<T> {
 	// From source (tsx, the tests) the worker is TypeScript that Node runs by stripping the types, so
 	// its files use only erasable syntax; built, it is JavaScript.
 	const source = import.meta.url.endsWith(".ts");
@@ -133,7 +158,7 @@ function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; mak
 			outcome();
 		};
 		const timer = setTimeout(() => settle(() => reject(new DocumentError(input.table !== undefined ? "la tabella è troppo grande da analizzare in tempo" : input.chart !== undefined ? "il grafico è troppo complesso da disegnare" : key === "made" ? "il documento è troppo lungo da creare" : TOO_SLOW))), timeoutMs);
-		worker.on("message", (message: { document?: T; image?: T; made?: T; table?: T; error?: string }) =>
+		worker.on("message", (message: { document?: T; image?: T; made?: T; table?: T; fattura?: T; error?: string }) =>
 			settle(() => (message[key] !== undefined ? resolve(message[key]) : reject(new DocumentError(message.error ?? "il file è rovinato")))),
 		);
 		// A worker that fails is our problem, not the file's: the person can try again.
@@ -141,5 +166,9 @@ function inWorker<T>(input: { name: string; data: Uint8Array; page?: number; mak
 			settle(() => reject(new DocumentError(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? input.table !== undefined ? "la tabella è troppo grande da analizzare" : input.chart !== undefined ? "il grafico è troppo grande da disegnare" : `il documento è troppo grande da ${key === "made" ? "creare" : "leggere"}` : AGAIN))),
 		);
 		worker.on("exit", () => settle(() => reject(new DocumentError(AGAIN))));
+		// The turn is over (the person stopped it): the worker goes at once.
+		const abort = () => settle(() => reject(signal?.reason));
+		signal?.addEventListener("abort", abort, { once: true });
+		worker.on("exit", () => signal?.removeEventListener("abort", abort));
 	});
 }

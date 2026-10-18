@@ -4,7 +4,7 @@ Aggiornato al 17 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 47, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 48, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -86,6 +86,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Date e scadenze: giorni e giorni lavorativi, scadenze delle fatture anche fine mese, festivi con il 4 ottobre, età (settimana 45, [week45.md](week45.md), [ADR 0048](adr/0048-date-e-scadenze.md))
 - [x] Partita IVA nella segreteria: controllata senza rete, non salvata se sbagliata, la bozza chiede di ricontrollarla (settimana 46, [week46.md](week46.md), [ADR 0049](adr/0049-partita-iva-nella-segreteria.md))
 - [x] Fatture elettroniche: XML e .p7m dello SdI (anche semplificate) lette ovunque come riepilogo in italiano, con scadenza, IVA, ritenute e IBAN; i documenti firmati .p7m letti come quello che contengono (settimana 47, [week47.md](week47.md), [ADR 0052](adr/0052-fatture-elettroniche.md))
+- [x] Scadenzario: le fatture del workspace da pagare e da incassare, scadute, per controparte, segnate pagate, con le note di credito tolte (settimana 48, [week48.md](week48.md), [ADR 0053](adr/0053-scadenzario.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [ ] Schermo: vista dal vivo nella console e ultima schermata visibile all'owner, per vedere quello che Annie fa (il VNC c'è nel container ma non è pubblicato)
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))

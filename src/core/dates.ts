@@ -303,6 +303,38 @@ export function addTo(date: string, amount: number, unit: Unit, week: WorkingWee
 	return { date: day, clamped: false, skipped: skipped.sort((a, b) => (a.date < b.date ? -1 : 1)) };
 }
 
+/**
+ * When a payment due on `date` cannot be made that day (a weekend or a holiday): the first working
+ * day after, and the holiday's name. Undefined on a working day, and before HOLIDAYS_SINCE, when
+ * the holidays are not known. Saturday is never a working day here: banks do not move money then.
+ */
+export function paymentSlip(date: string, patrono?: string): { readonly to: string; readonly holiday?: string } | undefined {
+	if (!holidaysKnown(date)) return undefined;
+	const week = patrono === undefined ? {} : { patrono };
+	if (workingDay(date, week)) return undefined;
+	let to = addDays(date, 1);
+	while (!workingDay(to, week)) to = addDays(to, 1);
+	const holiday = holidayOn(date, patrono);
+	return { to, ...(holiday === undefined ? {} : { holiday }) };
+}
+
+/** «cade di sabato», «è festivo (Natale)»: why a day is not a working day. */
+export function offDayWhy(date: string, holiday: string | undefined): string {
+	return holiday === undefined ? `cade di ${italianWeekday(date)}` : `è festivo (${holiday})`;
+}
+
+/**
+ * What to say of a payment due on a day it cannot be made, in one place for date_calc and the
+ * scadenzario: «cade di sabato: il pagamento slitta di solito al primo giorno lavorativo, lunedì
+ * 02/11/2026», or compact for a phone, after the day itself, «slitta a lun 02/11», «festivo,
+ * Immacolata Concezione: slitta a mer 09/12». `day` writes the day it moves to; `holiday` names the holiday.
+ */
+export function slipPhrase(date: string, slip: { readonly to: string; readonly holiday?: string }, options: { readonly day: (date: string) => string; readonly holiday?: (name: string) => string; readonly compact?: boolean }): string {
+	const holiday = slip.holiday === undefined ? undefined : (options.holiday?.(slip.holiday) ?? slip.holiday);
+	if (options.compact === true) return `${holiday === undefined ? "" : `festivo, ${holiday}: `}slitta a ${options.day(slip.to)}`;
+	return `${offDayWhy(date, holiday)}: il pagamento slitta di solito al primo giorno lavorativo, ${options.day(slip.to)}`;
+}
+
 export type DueTerms = {
 	/** «fine mese» (f.m.): after counting the days, the end of that month. */
 	readonly endOfMonth: boolean;
@@ -333,7 +365,6 @@ export type DueDate = {
  */
 export function dueDates(invoice: string, days: readonly number[], terms: DueTerms): DueDate[] {
 	checkHolidays(invoice);
-	const week = terms.patrono === undefined ? {} : { patrono: terms.patrono };
 	const dayIn = (monthOf: string, day: number) => {
 		const [year, month] = [Number(monthOf.slice(0, 4)), Number(monthOf.slice(5, 7))];
 		return isoDate(year, month, Math.min(day, daysInMonth(year, month)));
@@ -349,13 +380,7 @@ export function dueDates(invoice: string, days: readonly number[], terms: DueTer
 		const date = inRange(settle(addDays(invoice, n)));
 		const counted = terms.endOfMonth && n > 0 && n % 30 === 0 ? settle(addMonths(invoice, n / 30).date) : undefined;
 		const byMonths = counted !== undefined && Number(counted.slice(0, 4)) <= LAST_YEAR ? counted : undefined;
-		let slip: DueDate["slip"];
-		if (!workingDay(date, week)) {
-			let to = addDays(date, 1);
-			while (!workingDay(to, week)) to = addDays(to, 1);
-			const holiday = holidayOn(date, terms.patrono);
-			slip = { to, ...(holiday === undefined ? {} : { holiday }) };
-		}
+		const slip = paymentSlip(date, terms.patrono);
 		return { days: n, date, ...(slip === undefined ? {} : { slip }), ...(byMonths === undefined ? {} : { byMonths }) };
 	});
 }

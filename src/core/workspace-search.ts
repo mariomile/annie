@@ -33,7 +33,7 @@ const NO_WORDS = /\.(?:mp3|m4a|mp4|m4v|mov|avi|mkv|wav|ogg|oga|opus|flac|webm|am
  * not the usual 45, and never past its own time.
  */
 const PARALLEL = 1;
-const WORKER_WAIT_MS = 3000;
+export const WORKER_WAIT_MS = 3000;
 
 export type FoundPassage = Passage & { /** The page, sheet or slide of a document; the minute of a transcript. */ readonly section?: string };
 
@@ -112,7 +112,8 @@ export async function searchWorkspace(input: {
 	};
 }
 
-function newestFirst(files: readonly WorkspaceFile[]): WorkspaceFile[] {
+/** Newest first, then by path: what the limits leave out is the oldest. */
+export function newestFirst(files: readonly WorkspaceFile[]): WorkspaceFile[] {
 	return [...files].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
 }
 

@@ -1,4 +1,29 @@
-import { addMonths, addTo, ageOn, type CountedHoliday, DateError, type DateReading, dayOfYear, dueDates, holidaysKnown, isoWeek, LAST_YEAR, MAX_AMOUNT, NO_HOLIDAYS, parseMonth, type Patrono, parsePatrono, type ReadDate, readDate, span, UNITS, type Unit, workingDaysIn } from "../dates.ts";
+import {
+	addMonths,
+	addTo,
+	ageOn,
+	type CountedHoliday,
+	DateError,
+	type DateReading,
+	dayOfYear,
+	dueDates,
+	holidaysKnown,
+	isoWeek,
+	LAST_YEAR,
+	MAX_AMOUNT,
+	NO_HOLIDAYS,
+	offDayWhy,
+	parseMonth,
+	type Patrono,
+	parsePatrono,
+	type ReadDate,
+	readDate,
+	slipPhrase,
+	span,
+	UNITS,
+	type Unit,
+	workingDaysIn,
+} from "../dates.ts";
 import type { AnnieTool } from "../engine.ts";
 import { daysBetween, daysInMonth, type Holiday, HOLIDAYS_SINCE, holidayOn, isoDate, italianHolidays, leapYear, MONTH_NAMES, realDate, todayIn, weekdayOf, type WorkingWeek, workingDay } from "../italian-calendar.ts";
 import { capitalized, italianDate, italianWeekday } from "../italian-format.ts";
@@ -276,11 +301,6 @@ function dayKind(date: string, week: WorkingWeek, names: Names): string {
 	return "giorno lavorativo";
 }
 
-/** «è festivo (Natale)» or «cade di domenica». */
-function offWhy(date: string, holiday: string | undefined): string {
-	return holiday === undefined ? `cade di ${italianWeekday(date)}` : `è festivo (${holiday})`;
-}
-
 function infoAnswer(date: string, today: string, week: WorkingWeek, names: Names): string {
 	const year = Number(date.slice(0, 4));
 	const w = isoWeek(date);
@@ -355,7 +375,7 @@ function addAnswer(date: string, amount: number, unit: Unit, today: string, week
 		lines.push(`Senza contare il giorno di partenza; saltati ${week.saturdayWorking === true ? "le domeniche" : "sabati e domeniche"}${skipped}.`);
 	} else if (holidaysKnown(added.date) && !workingDay(added.date, week)) {
 		const holiday = holidayOn(added.date, week.patrono);
-		lines.push(`Non è un giorno lavorativo: ${offWhy(added.date, holiday === undefined ? undefined : names(holiday))}.`);
+		lines.push(`Non è un giorno lavorativo: ${offDayWhy(added.date, holiday === undefined ? undefined : names(holiday))}.`);
 	}
 	return lines.join("\n");
 }
@@ -365,8 +385,7 @@ function dueAnswer(invoice: string, days: readonly number[], endOfMonth: boolean
 	const how = endOfMonth ? "f.m. (giorni dalla data fattura, poi fine mese" : "d.f. (giorni dalla data fattura";
 	const fixed = fixedDay === undefined ? ")" : endOfMonth ? `; poi il giorno ${fixedDay} del mese dopo)` : `; poi il primo giorno ${fixedDay} da lì)`;
 	const lines = dues.map((d) => {
-		const holiday = d.slip?.holiday === undefined ? undefined : names(d.slip.holiday);
-		const slip = d.slip === undefined ? "" : ` — ${offWhy(d.date, holiday)}: il pagamento slitta di solito al primo giorno lavorativo, ${dayText(d.slip.to)}`;
+		const slip = d.slip === undefined ? "" : ` — ${slipPhrase(d.date, d.slip, { day: dayText, holiday: names })}`;
 		return `${dayText(d.date)}${slip}`;
 	});
 	const head = `Fattura di ${dayText(invoice)}, ${days.join("-")} gg ${how}${fixed}`;
