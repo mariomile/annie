@@ -126,10 +126,12 @@ export type Roll = Marker & {
 	readonly expense?: string;
 	/** The call that recorded that expense (renewed with record_expense on a roll of the same day). */
 	readonly expenseCall?: string;
+	/** The amount of the payment the roll confirmed, as it was then (a later price change does not touch it). */
+	readonly amount?: string;
 };
 
 /** A charge of an autoPay renewal recorded as an expense: its date, the call and the expense. */
-export type Charge = { readonly date: string; readonly callId: string; readonly expense: string };
+export type Charge = { readonly date: string; readonly callId: string; readonly expense: string; readonly amount?: string };
 
 export type Renewal = Marker & {
 	/** «R-0001». */
@@ -157,6 +159,8 @@ export type Renewal = Marker & {
 	readonly termMonths?: number;
 	/** The end of the current term (with termMonths). */
 	readonly termEnd?: string;
+	/** The day of the month the term end keeps when it rolls, as first said (31: the month's last day). */
+	readonly termDay?: number;
 	/** Rinnovo tacito: the contract renews unless cancelled. */
 	readonly autoRenew: boolean;
 	/** The money leaves by itself (card, PayPal, direct debit). Missing on renewals of the first version: false. */
@@ -212,26 +216,56 @@ const STOP_WORDS = new Set(
 	"il lo la i gli le l un uno una un di a da in con su per tra fra del dello della dei degli delle dell al allo alla ai agli alle all dal dallo dalla dai dagli dalle dall nel nello nella nei negli nelle nell sul sullo sulla sui sugli sulle sull d mio mia miei mie tuo tua tuoi tue suo sua suoi sue nostro nostra nostri nostre vostro vostra vostri vostre loro".split(" "),
 );
 
-/** Words people put before a name that the name may or may not hold: dropped when it does not. */
-const GENERIC_WORDS = new Set(["abbonamento", "abbonamenti", "rinnovo", "rinnovi", "contratto", "contratti", "polizza", "polizze", "assicurazione", "assicurazioni"]);
+/**
+ * Words people put before a name that the name may or may not hold: dropped when it does not.
+ * Some mean a category, and then the renewal must be of it («l'assicurazione della casa» never
+ * names «Affitto casa»); «contratto», «abbonamento» and «rinnovo» mean none.
+ */
+const GENERIC_WORDS: ReadonlyMap<string, Category | undefined> = new Map<string, Category | undefined>([
+	...["abbonamento", "abbonamenti", "rinnovo", "rinnovi", "contratto", "contratti"].map((w) => [w, undefined] as const),
+	...["polizza", "polizze", "assicurazione", "assicurazioni"].map((w) => [w, "assicurazione"] as const),
+	...["affitto", "affitti"].map((w) => [w, "affitto e leasing"] as const),
+]);
 
 /**
- * Whether a renewal is named by the words given: all of them, as whole words of its name or
- * provider, after dropping articles, prepositions and possessives, and the generic words
- * (abbonamento, rinnovo, contratto, polizza, assicurazione) the name does not hold. «l'assicurazione
- * dell'auto» names «Assicurazione auto», «abbonamento Canva» names «Canva Pro», «net» names nothing.
+ * How the words given name a renewal: "exact" when all of them are whole words of its name or
+ * provider (articles, prepositions and possessives aside); "loose" when that holds only after
+ * dropping the generic words the name does not hold (abbonamento, rinnovo, contratto, polizza,
+ * assicurazione, affitto), each of its category when it means one; undefined otherwise.
+ * «l'assicurazione dell'auto» names «Assicurazione auto» exactly, «abbonamento Canva» names
+ * «Canva Pro» loosely, «net» names nothing.
  */
-export function matchesName(r: Renewal, text: string): boolean {
+export function nameFit(r: Renewal, text: string): "exact" | "loose" | undefined {
 	const have = new Set([...words(r.name), ...(r.provider === undefined ? [] : words(r.provider))]);
-	const wanted = words(text).filter((w) => !STOP_WORDS.has(w) && (!GENERIC_WORDS.has(w) || have.has(w)));
-	return wanted.length > 0 && wanted.every((w) => have.has(w));
+	const said = words(text).filter((w) => !STOP_WORDS.has(w));
+	const dropped = said.filter((w) => GENERIC_WORDS.has(w) && !have.has(w));
+	const wanted = said.filter((w) => !dropped.includes(w));
+	if (wanted.length === 0 || !wanted.every((w) => have.has(w))) return undefined;
+	if (dropped.some((w) => { const c = GENERIC_WORDS.get(w); return c !== undefined && c !== r.category; })) return undefined;
+	return dropped.length === 0 ? "exact" : "loose";
+}
+
+export function matchesName(r: Renewal, text: string): boolean {
+	return nameFit(r, text) !== undefined;
+}
+
+/**
+ * The renewals a person's words name: an id, or the words of a name (the exact matches when there
+ * are any, the loose ones otherwise). `loose`: found only after dropping generic words, to be
+ * confirmed before removing or cancelling.
+ */
+export function renewalMatches(all: readonly Renewal[], text: string): { readonly found: Renewal[]; readonly loose: boolean } {
+	const n = parseRenewalId(text);
+	if (n !== undefined) return { found: all.filter((r) => idNumber(r.id) === n), loose: false };
+	const exact = all.filter((r) => nameFit(r, text) === "exact");
+	if (exact.length > 0) return { found: exact, loose: false };
+	const loose = all.filter((r) => nameFit(r, text) === "loose");
+	return { found: loose, loose: loose.length > 0 };
 }
 
 /** The renewals a person's words name: an id, or the words of a name. */
 export function findRenewals(all: readonly Renewal[], text: string): Renewal[] {
-	const n = parseRenewalId(text);
-	if (n !== undefined) return all.filter((r) => idNumber(r.id) === n);
-	return all.filter((r) => matchesName(r, text));
+	return renewalMatches(all, text).found;
 }
 
 /**
@@ -271,12 +305,12 @@ const EXPENSE_ID = /^S-\d{4}-\d{4,6}$/;
 
 function validRoll(v: unknown): boolean {
 	const r = v as Roll;
-	return isMarker(v) && isText(r.callId, 200) && isDay(r.from) && isDay(r.to) && (r.expense === undefined || (typeof r.expense === "string" && EXPENSE_ID.test(r.expense))) && optText(r.expenseCall, 200);
+	return isMarker(v) && isText(r.callId, 200) && isDay(r.from) && isDay(r.to) && (r.expense === undefined || (typeof r.expense === "string" && EXPENSE_ID.test(r.expense))) && optText(r.expenseCall, 200) && (r.amount === undefined || isAmount(r.amount));
 }
 
 function validCharge(v: unknown): boolean {
 	const c = v as Charge;
-	return typeof v === "object" && v !== null && isDay(c.date) && isText(c.callId, 200) && typeof c.expense === "string" && EXPENSE_ID.test(c.expense);
+	return typeof v === "object" && v !== null && isDay(c.date) && isText(c.callId, 200) && typeof c.expense === "string" && EXPENSE_ID.test(c.expense) && (c.amount === undefined || isAmount(c.amount));
 }
 
 /** A renewal as stored, checked field by field: what does not have this shape makes the store unreadable. */
@@ -297,6 +331,7 @@ export function validRenewal(v: unknown): v is Renewal {
 	if (r.start !== undefined && !isDay(r.start)) return false;
 	if ((r.termMonths === undefined) !== (r.termEnd === undefined)) return false;
 	if (r.termMonths !== undefined && (!isInt(r.termMonths, 1, RENEWAL_LIMITS.maxMonths) || !isDay(r.termEnd))) return false;
+	if (r.termDay !== undefined && (!isInt(r.termDay, 1, 31) || r.termEnd === undefined)) return false;
 	if ((r.autoPay !== undefined && typeof r.autoPay !== "boolean") || (r.trial !== undefined && typeof r.trial !== "boolean")) return false;
 	if (r.remindDays !== undefined && !isInt(r.remindDays, 0, RENEWAL_LIMITS.maxRemindDays)) return false;
 	if (r.method !== undefined && !METHODS.includes(r.method)) return false;

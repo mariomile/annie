@@ -3,10 +3,10 @@ import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { Category as ExpenseCategory } from "../expenses.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import { italianLongDate as long } from "../italian-format.ts";
-import { agendaOf, amountAt, deadlineFor, effectiveDue, effectiveTermEnd, lastCharge, nextDue, normalised, noticeAlerts, noticeDeadline, placeDue, readDue, remindDays } from "../renewal-dates.ts";
+import { agendaOf, amountAt, deadlineFor, effectiveDue, effectiveTermEnd, lastCharge, movesBySelf, nextDue, normalised, noticeAlerts, noticeDeadline, placeDue, readDue, remindDays } from "../renewal-dates.ts";
 import { costsOf } from "../renewal-sums.ts";
 import { RENEWALS_BROKEN, type RenewalStore } from "../renewal-store.ts";
-import { CATEGORIES, type Category, findRenewals, lookalike, matchCategory, RENEWAL_LIMITS, type Renewal, RenewalError, type Roll, renewalCallReads } from "../renewals.ts";
+import { CATEGORIES, type Category, findRenewals, lookalike, matchCategory, RENEWAL_LIMITS, type Renewal, RenewalError, type Roll, renewalCallReads, renewalMatches } from "../renewals.ts";
 import { METHODS } from "../payment-methods.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { type DayWords, readPastDay } from "./day-input.ts";
@@ -62,12 +62,12 @@ const DESCRIPTION = [
 	"Rinnovi e abbonamenti of the owner: recurring costs and deadlines (software, domains and hosting, insurance, rent and leasing, utilities, phone and internet, memberships, licences, contracts with tacit renewal and a disdetta notice).",
 	"What the person says → op: «scade il…», «ricordami che…», «Canva 12 euro al mese» → add; «ho pagato», «l'ho rinnovato» → renewed (record_expense true if they want it in the expenses); «ho disdetto» → cancel; «quanto spendo di abbonamenti?» → summary; «cosa scade?», «cosa devo disdire?» → upcoming; «quali abbonamenti ho?» → list; a contract or policy read with file_read → add with the fields read and document = its path.",
 	"add: name (required: what renews), due (required: the next payment or expiry: 12/03/2027, «12 marzo», «primo gennaio», «il 15», «ogni 15 del mese», «fine mese», «giugno» = its last day, «fine anno», «tra un mese»), frequency (how often one pays: mensile, bimestrale, trimestrale, semestrale, annuale, biennale, «ogni 18 mesi»; a number is months; default annuale), amount (euros of one payment, VAT included; «100 + IVA» or vat_excluded true with vat_rate; another currency: the person's approximate euros in amount and the amount as said in original_amount), vat_rate, provider, category, method, note, document.",
-	"auto_renew true: the contract renews unless cancelled (tacit renewal). auto_pay true: the money leaves by itself (card, PayPal, addebito, RID, SDD, domiciliazione): it never shows as overdue or to pay; if not said, it is guessed only for auto_renew with such a method, and said back. notice_days (or notice_months, or «3 mesi»): the disdetta notice before the end of the term. term_months + term_end: the contract's term when it differs from how often one pays (a yearly contract paid monthly). trial true: a free trial ending on due. new_amount + new_amount_from: a price change from that due date. remind_days: days before to tell in the brief (default 7 monthly, 14 up to 5 months, 30 from 6 months).",
+	"auto_renew true: the contract renews unless cancelled (tacit renewal). auto_pay true: the money leaves by itself (card, PayPal, addebito, RID, SDD, domiciliazione): it never shows as overdue or to pay; if not said, it is guessed only for auto_renew with such a method, and said back. notice_days (or notice_months, or «3 mesi»): the disdetta notice before the end of the term. term_months + term_end: the contract's term when it differs from how often one pays (a yearly contract paid monthly). trial true: a free trial ending on due. new_amount + new_amount_from: a price change from that due date (new_amount VAT included unless «+ IVA», with the renewal's vat_rate). remind_days: days before to tell in the brief (default 7 monthly, 14 up to 5 months, 30 from 6 months).",
 	`category: ${CATEGORIES.join(", ")} (polizza, fibra, dominio, Canva… are understood; otherwise guessed from the name, or altro).`,
 	"list: status active (default) | cancelled | all, category. upcoming: what needs doing in the next days (default 30), every payment in the window counted; compact true: the brief's line only. summary: yearly cost and monthly average, per category (category to narrow), the biggest, those without an amount.",
 	"renewed (or paid): a payment by hand or a renewal confirmed: the due date moves one period on from the due date itself, once per call; refused when the due date is still far or it was already marked today, unless the person really paid ahead (advance true). record_expense true also records the payment in the expenses (amount: what was paid when different; paid_on: the day, default today); on a renewal already marked today it records only the expense. For auto_pay renewals nothing moves: record_expense true records the last charge as an expense.",
 	"A manual due date gone never moves by itself: it shows as overdue until the person says it was renewed (renewed) or let go (cancel). cancel: the disdetta was sent (date: when, default today; ends: the last day in force); it stays in the list as cancelled. reactivate: undo a cancel (due: the new next due date).",
-	"edit: id + only what changes (\"\" removes provider, amount, original_amount, notice_days, remind_days, method, note, document, term_months or new_amount). remove: deletes it for good, only when the person asks. id: the renewal's id (R-0001) or words of its name («l'assicurazione dell'auto»); when several match, the tool lists them.",
+	"edit: id + only what changes (\"\" removes provider, amount, original_amount, notice_days, remind_days, method, note, document, term_months or new_amount). remove: deletes it for good, only when the person asks. id: the renewal's id (R-0001) or words of its name («l'assicurazione dell'auto»); when several match, the tool lists them; before cancel or remove, a name that fits only once generic words are dropped is shown to confirm.",
 	"export: a CSV for Excel under rinnovi/ (status, default all); then send it with file_send. Repeat dates, amounts and totals as given, never compute them yourself. For a reminder at an exact time use schedule_create; the morning brief already tells what is due.",
 ].join(" ");
 
@@ -127,7 +127,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 					notice_days: { ...amount, description: "add, edit: the disdetta notice in days (or «3 mesi»)" },
 					notice_months: { type: "integer", minimum: 1, maximum: RENEWAL_LIMITS.maxNoticeMonths, description: "add, edit: the disdetta notice in months" },
 					remind_days: { ...amount, description: "add, edit: days before the due date (or the disdetta deadline) the brief starts telling" },
-					new_amount: { ...amount, description: "add, edit: a new amount from new_amount_from on" },
+					new_amount: { ...amount, description: "add, edit: a new amount from new_amount_from on, VAT included unless «+ IVA» (then the renewal's vat_rate)" },
 					new_amount_from: text(60, "add, edit: the due date the new amount starts from"),
 					method: { type: "string", maxLength: 60, description: `add, edit: ${METHODS.join(", ")}, as said («carta», «addebito in conto», «PayPal»)` },
 					note: { type: "string", maxLength: RENEWAL_LIMITS.note, description: "add, edit: a note of the person's" },
@@ -209,12 +209,16 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		});
 	}
 
-	/** The one renewal an id or a name names (among those `which` allows), or the answer saying why not. */
-	function pick(args: Record<string, unknown>, which: "active" | "cancelled" | "any"): Renewal | string {
+	/**
+	 * The one renewal an id or a name names (among those `which` allows), or the answer saying why
+	 * not. `sure`: for a disdetta, a name that fits only once generic words are dropped is asked.
+	 */
+	function pick(args: Record<string, unknown>, which: "active" | "cancelled" | "any", sure = false): Renewal | string {
 		if (typeof args.id !== "string" || args.id.trim() === "") return "Errore: indica il rinnovo con id, per esempio R-0001, o con il suo nome.";
 		const all = readable();
-		const found = findRenewals(all, args.id);
+		const { found, loose } = renewalMatches(all, args.id);
 		const allowed = found.filter((r) => which === "any" || r.status === which);
+		if (allowed.length === 1 && sure && loose) return confirmAnswer(allowed);
 		if (allowed.length === 1) return allowed[0] as Renewal;
 		if (allowed.length > 1) return `Errore: più rinnovi corrispondono:\n${fenced(allowed.slice(0, 10).map((r) => renewalLine(r, today())).join("\n"))}\nChiedi a chi ti scrive quale, poi rifai con id.`;
 		const other = found[0];
@@ -223,6 +227,11 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 			if (which === "cancelled") return `Errore: il rinnovo ${other.id} è già attivo.`;
 		}
 		return `Errore: non trovo il rinnovo ${fenced(args.id.slice(0, 40))} tra i ${all.length} registrati. Guarda l'elenco con op list (status all).`;
+	}
+
+	/** A name that fits only in part, before a disdetta or a removal: the renewal shown, to be confirmed by id. */
+	function confirmAnswer(rs: readonly Renewal[]): string {
+		return `Errore: il nome detto corrisponde solo in parte a:\n${fenced(rs.slice(0, 10).map((r) => renewalLine(r, today())).join("\n"))}\nChiedi a chi ti scrive se è questo; se sì, rifai con id.`;
 	}
 
 	/** The renewal this call changed already (a rerun after a stop), by its last call's marker. */
@@ -296,12 +305,12 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		const category = readCategoryArg(args);
 		if (typeof category === "string" && category.startsWith("Errore")) return category;
 		const active = readable().filter((r) => r.status === "active" && (category === undefined || r.category === category));
-		return summaryAnswer(costsOf(active), active.length, category as Category | undefined);
+		return summaryAnswer(costsOf(active, today()), active.length, today(), category as Category | undefined);
 	}
 
-	/** The expense of a payment of `r` on `due`, paid on `pay.day`. */
-	function expenseInput(r: Renewal, due: string, pay: Payment): ExpenseRecordInput | string {
-		const amount = pay.amount ?? amountAt(r, due);
+	/** The expense of a payment of `r` on `due`, paid on `pay.day`: at `then`, its amount as kept when it happened, else the price in force on `due`. */
+	function expenseInput(r: Renewal, due: string, pay: Payment, then?: string): ExpenseRecordInput | string {
+		const amount = pay.amount ?? then ?? amountAt(r, due);
 		if (amount === undefined) return "per registrare la spesa serve l'importo pagato (amount): il rinnovo non ce l'ha. Chiedi a chi ti scrive quanto ha pagato";
 		return {
 			amount,
@@ -344,32 +353,36 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 			const charge = done.charges?.find((c) => c.callId === ctx.callId);
 			if (charge !== undefined) {
 				await audit(ctx, "charge", 1);
-				return chargedAnswer(done, charge.date, await recordPayment(done, charge.date, pay, ctx));
+				return chargedAnswer(done, charge.date, await recordPayment(done, charge.date, pay, ctx, charge.amount));
 			}
 			const roll = done.rolls?.find((x) => x.callId === ctx.callId || x.expenseCall === ctx.callId) as Roll;
 			if (roll.callId === ctx.callId) await audit(ctx, "renewed", 1);
 			const rec = want ? await payForRoll(done, roll, pay, ctx) : undefined;
-			return roll.callId === ctx.callId ? rolledAnswer(done, roll, rec, want) : expenseOnlyAnswer(done, roll, rec as ExpenseRecorded);
+			return roll.callId === ctx.callId ? rolledAnswer(done, roll, rec, want) : expenseOnlyAnswer(done, rec as ExpenseRecorded);
 		}
 		const found = pick(args, "active");
 		if (typeof found === "string") return found;
 		if (found.autoPay === true) return await charge(found, want, pay, ctx);
 		const day = today();
 		const rolledToday = [...(found.rolls ?? [])].reverse().find((x) => localDay(x.at) === day);
-		// Marked today already: with record_expense, only the expense of that payment; nothing moves.
-		if (rolledToday !== undefined && want && found.due >= day) {
-			if (rolledToday.expense !== undefined) return `La spesa di questo pagamento è già registrata: ${rolledToday.expense}. La scadenza resta il ${long(found.due)}.`;
-			const input = expenseInput(found, rolledToday.from, pay);
-			const problem = typeof input === "string" ? input : options.expenses?.check(input, ctx);
-			if (problem !== undefined) return `Errore: ${problem}.`;
-			return expenseOnlyAnswer(found, rolledToday, await payForRoll(found, rolledToday, pay, ctx));
+		// Marked today already, its expense not recorded: with record_expense (the hint after a roll
+		// says so), only the expense of that payment, at its date and price; nothing moves, even when
+		// the due date is still gone. Another payment is advance true.
+		if (rolledToday !== undefined && want && !advance) {
+			if (rolledToday.expense === undefined) {
+				const input = expenseInput(found, rolledToday.from, pay, rolledToday.amount);
+				const problem = typeof input === "string" ? input : options.expenses?.check(input, ctx);
+				if (problem !== undefined) return `Errore: ${problem}.`;
+				return expenseOnlyAnswer(found, await payForRoll(found, rolledToday, pay, ctx));
+			}
+			if (found.due >= day) return `La spesa di questo pagamento è già registrata: ${rolledToday.expense}. La scadenza resta il ${long(found.due)}.`;
 		}
 		if (!advance && found.due >= day && (rolledToday !== undefined || addDays(found.due, -remindDays(found)) > day)) {
 			const why = rolledToday !== undefined ? "È già stato segnato come pagato oggi" : `La prossima scadenza è il ${long(found.due)}, ancora lontana`;
 			return `Errore: ${why}: risulta già pagato fino al ${long(found.due)}. Non segnarlo di nuovo. Se chi ti scrive vuole solo registrare una spesa, usa expenses op add; se ha davvero pagato in anticipo la scadenza del ${long(found.due)}, rifai con advance true.`;
 		}
 		if (want) {
-			const input = expenseInput(found, found.due, pay);
+			const input = expenseInput(found, found.due, pay, amountAt(found, found.due));
 			const problem = typeof input === "string" ? input : options.expenses?.check(input, ctx);
 			if (problem !== undefined) return `Errore: ${problem}. Non ho spostato la scadenza.`;
 		}
@@ -379,7 +392,9 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 				if (r.status !== "active") throw new RenewalError(`il rinnovo ${r.id} è disdetto: prima op reactivate`);
 				const to = nextDue(r);
 				const { trial: _t, ...rest } = r;
-				return { ...rest, due: to, rolls: [...(r.rolls ?? []), { callId: ctx.callId, from: r.due, to, by: who(ctx), at: now().toISOString() }].slice(-RENEWAL_LIMITS.rolls) };
+				// The payment's amount as it is now: a later price change never touches its expense.
+				const paid = amountAt(r, r.due);
+				return { ...rest, due: to, rolls: [...(r.rolls ?? []), { callId: ctx.callId, from: r.due, to, ...(paid === undefined ? {} : { amount: paid }), by: who(ctx), at: now().toISOString() }].slice(-RENEWAL_LIMITS.rolls) };
 			});
 			return true;
 		});
@@ -393,7 +408,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 
 	/** Records the expense of a roll's payment (or finds it, on a rerun) and keeps its id on the roll. */
 	async function payForRoll(r: Renewal, roll: Roll, pay: Payment, ctx: ToolContext): Promise<ExpenseRecorded> {
-		const rec = await recordPayment(r, roll.from, pay, ctx);
+		const rec = await recordPayment(r, roll.from, pay, ctx, roll.amount);
 		if (!("problem" in rec) && roll.expense === undefined) {
 			await ctx.step("attach", async () => {
 				write(r.id, (x) => ({ ...x, rolls: (x.rolls ?? []).map((o) => (o.callId === roll.callId && o.expense === undefined ? { ...o, expense: rec.id, ...(o.callId === ctx.callId ? {} : { expenseCall: ctx.callId }) } : o)) }));
@@ -404,8 +419,8 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 	}
 
 	/** The expense of the payment of `r` due on `due`, through the expenses' own add. */
-	async function recordPayment(r: Renewal, due: string, pay: Payment, ctx: ToolContext): Promise<ExpenseRecorded> {
-		const input = expenseInput(r, due, pay);
+	async function recordPayment(r: Renewal, due: string, pay: Payment, ctx: ToolContext, then?: string): Promise<ExpenseRecorded> {
+		const input = expenseInput(r, due, pay, then);
 		if (typeof input === "string") return { problem: input };
 		if (options.expenses === undefined) return { problem: "qui le spese non si registrano" };
 		return options.expenses.record(input, ctx);
@@ -420,26 +435,29 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		return lines.join("\n");
 	}
 
-	function expenseOnlyAnswer(r: Renewal, roll: Roll, rec: ExpenseRecorded): string {
-		return [`${r.id} era già segnato come pagato oggi: la scadenza resta il ${long(roll.to)}, non l'ho spostata.`, ...expenseLines(rec, false)].join("\n");
+	function expenseOnlyAnswer(r: Renewal, rec: ExpenseRecorded): string {
+		const gone = r.due < today() ? [`La scadenza del ${long(r.due)} è ancora passata: se chi ti scrive ha pagato anche quella, rifai renewed con advance true.`] : [];
+		return [`${r.id} era già segnato come pagato oggi: la scadenza resta il ${long(r.due)}, non l'ho spostata.`, ...expenseLines(rec, false), ...gone].join("\n");
 	}
 
 	/** An autoPay renewal: nothing moves; with record_expense, the last charge becomes an expense, once. */
 	async function charge(r: Renewal, want: boolean, pay: Payment, ctx: ToolContext): Promise<string> {
 		const day = today();
 		if (!want) return `${r.id} si paga da solo: la scadenza va avanti da sola (prossimo addebito il ${long(effectiveDue(r, day))}), non serve segnarlo. Se chi ti scrive vuole registrare la spesa dell'ultimo addebito, rifai con record_expense true.`;
-		const date = lastCharge(r, day);
+		// The charge resolved once: a rerun records the same one even on another day.
+		const date = (await ctx.step("resolve", async () => lastCharge(r, day) ?? null)) ?? undefined;
 		if (date === undefined) return `Errore: per ${r.id} non è ancora partito nessun addebito: il primo è il ${long(effectiveDue(r, day))}. Non c'è una spesa da registrare.`;
 		const recorded = r.charges?.find((c) => c.date === date);
 		if (recorded !== undefined) return `La spesa dell'addebito del ${long(date)} è già registrata: ${recorded.expense}. Il prossimo addebito è il ${long(effectiveDue(r, day))}.`;
 		const charged: Payment = { ...pay, day: pay.day === day ? date : pay.day };
-		const input = expenseInput(r, date, charged);
+		const paid = amountAt(r, date);
+		const input = expenseInput(r, date, charged, paid);
 		const problem = typeof input === "string" ? input : options.expenses?.check(input, ctx);
 		if (problem !== undefined) return `Errore: ${problem}.`;
-		const rec = await recordPayment(r, date, charged, ctx);
+		const rec = await recordPayment(r, date, charged, ctx, paid);
 		if ("problem" in rec) return `Errore: ${rec.problem}. Registra la spesa con expenses op add.`;
 		await ctx.step("charge", async () => {
-			write(r.id, (x) => (x.charges?.some((c) => c.callId === ctx.callId) ? x : { ...x, charges: [...(x.charges ?? []), { date, callId: ctx.callId, expense: rec.id }].slice(-RENEWAL_LIMITS.charges) }));
+			write(r.id, (x) => (x.charges?.some((c) => c.callId === ctx.callId) ? x : { ...x, charges: [...(x.charges ?? []), { date, callId: ctx.callId, expense: rec.id, ...(charged.amount ?? paid) === undefined ? {} : { amount: (charged.amount ?? paid) as string } }].slice(-RENEWAL_LIMITS.charges) }));
 			return true;
 		});
 		await audit(ctx, "charge", 1);
@@ -457,7 +475,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 			await audit(ctx, "cancel", 1);
 			return cancelledAnswer(again, []);
 		}
-		const found = pick(args, "active");
+		const found = pick(args, "active", true);
 		if (typeof found === "string") {
 			const done = typeof args.id === "string" ? findRenewals(readable(), args.id).filter((r) => r.status === "cancelled") : [];
 			return done.length === 1 && done[0]?.cancelled !== undefined ? `Il rinnovo ${done[0].id} era già segnato come disdetto il ${long(done[0].cancelled.on)}.` : found;
@@ -506,7 +524,11 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 			store.edit(found.id, (r) => {
 				if (r.status === "active") return r;
 				const { cancelled: _c, ...rest } = r;
-				return { ...rest, status: "active", ...(due === undefined ? {} : { due: due.date, day: due.day, start: due.date }), lastCall: ctx.callId, edited: { by: who(ctx), at: now().toISOString() } };
+				const back: Renewal = { ...rest, status: "active" };
+				// Without a new due date, what moves by itself starts again from its next due as of
+				// today: the periods while it was cancelled are neither charges nor to pay.
+				const next = due ?? (movesBySelf(back) ? { date: effectiveDue(back, today()), day: r.day } : undefined);
+				return { ...back, ...(next === undefined ? {} : { due: next.date, day: next.day, start: next.date }), lastCall: ctx.callId, edited: { by: who(ctx), at: now().toISOString() } };
 			});
 			return true;
 		});
@@ -517,7 +539,14 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 	}
 
 	function reactivatedAnswer(r: Renewal): string {
-		const late = r.autoPay !== true && !r.autoRenew && r.due < today() ? [`La scadenza del ${long(r.due)} è passata: chiedi a chi ti scrive la prossima scadenza e correggila con op edit (due).`] : [];
+		const day = today();
+		const late = movesBySelf(r)
+			? r.cancelled === undefined && r.start === r.due && r.due >= day
+				? [`Riparte dal ${long(r.due)}: i periodi in cui era disdetto non li conto né come addebitati né come da pagare. Se chi ti scrive ha pagato qualcosa in quel tempo, registralo con expenses op add.`]
+				: []
+			: r.due < day
+				? [`La scadenza del ${long(r.due)} è passata: chiedi a chi ti scrive la prossima scadenza e correggila con op edit (due).`]
+				: [];
 		return [`Fatto, ${r.id} è di nuovo attivo.`, fenced(renewalLine(r, today())), ...late].join("\n");
 	}
 
@@ -530,7 +559,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		const found = pick(args, "any");
 		if (typeof found === "string") return found;
 		if (!editsSomething(args)) return "Errore: dimmi cosa cambia nel rinnovo (nome, fornitore, categoria, importo, frequenza, scadenza, durata, rinnovo automatico, addebito automatico, preavviso, promemoria, pagamento, nota o documento).";
-		const fields = await readFields(args, { today: today(), workspace, editing: true });
+		const fields = await readFields(args, { today: today(), workspace, editing: true, ...(found.vatRate === undefined ? {} : { vatRate: found.vatRate }) });
 		if (isProblem(fields)) return `Errore: ${fields.problem}.`;
 		// Checked first on the renewal as read, to answer plainly; applied under the lock to the renewal as saved then.
 		const base = normalised(found, today());
@@ -563,7 +592,8 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 		const resolved = await ctx.step("resolve", async (): Promise<{ id: string; line: string | null } | { error: string }> => {
 			if (typeof args.id !== "string" || args.id.trim() === "") return { error: "Errore: indica il rinnovo da togliere con id, per esempio R-0001, o con il suo nome. Per una disdetta usa op cancel, che lo tiene nello storico." };
 			const all = readable();
-			const found = findRenewals(all, args.id);
+			const { found, loose } = renewalMatches(all, args.id);
+			if (found.length === 1 && loose) return { error: confirmAnswer(found) };
 			if (found.length === 1) return { id: (found[0] as Renewal).id, line: renewalLine(found[0] as Renewal, today()) };
 			if (found.length > 1) return { error: `Errore: più rinnovi corrispondono:\n${fenced(found.slice(0, 10).map((r) => renewalLine(r, today())).join("\n"))}\nChiedi a chi ti scrive quale, poi rifai con id.` };
 			const n = /^\s*r\s*-?\s*0*(\d{1,6})\s*$/i.exec(args.id);

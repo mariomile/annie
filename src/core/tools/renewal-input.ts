@@ -15,10 +15,12 @@
  * given, to the renewal as saved under the store's lock.
  */
 import { foreignCurrency } from "../currency-words.ts";
+import { daysBetween } from "../italian-calendar.ts";
+import { italianLongDate } from "../italian-format.ts";
 import { normalPath } from "../invoices.ts";
 import { automaticPayment, type Method } from "../payment-methods.ts";
 import { centsDecimal, halfUp, scaled, VAT_RATES, type VatRate } from "../quote-sums.ts";
-import { type Due, parseFrequency, placeDue, readDue } from "../renewal-dates.ts";
+import { type Due, effectiveDue, parseFrequency, placeDue, readDue } from "../renewal-dates.ts";
 import { CATEGORIES, type Category, DOCUMENT_FILE, matchCategory, RENEWAL_LIMITS, type Renewal, validDocumentPath } from "../renewals.ts";
 import type { Workspace } from "../workspace.ts";
 import { readCategoryWith, readEuros, readMethod } from "./field-input.ts";
@@ -151,11 +153,16 @@ export type Fields = {
 	readonly note?: string | null;
 	readonly document?: string | null;
 	readonly amountFrom?: { readonly amount: string; readonly from: string } | null;
+	/** What reading said back: the renewal's VAT rate kept for an amount without one, a new price already in force… */
+	readonly said?: readonly string[];
 };
 
 /** The arguments read and checked, nothing applied yet. In an edit «""» removes an optional field. */
-export async function readFields(args: Record<string, unknown>, o: { today: string; workspace: Workspace; editing: boolean }): Promise<Fields | Problem> {
+export async function readFields(args: Record<string, unknown>, o: { today: string; workspace: Workspace; editing: boolean; vatRate?: VatRate }): Promise<Fields | Problem> {
 	const out: Record<string, unknown> = {};
+	const said: string[] = [];
+	// An amount said without a rate keeps the renewal's (an edit): the VAT worked out on it, said back.
+	const rate = args.vat_rate ?? o.vatRate;
 	const removed = (name: string) => o.editing && args[name] === "";
 	const name = cleanText(args.name, RENEWAL_LIMITS.name, "name");
 	if (isProblem(name)) return name;
@@ -177,9 +184,12 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 	if (category !== undefined) out.category = category;
 	if (removed("amount")) out.amount = null;
 	else {
-		const amount = readPeriodAmount(args.amount, args.vat_rate, args.vat_excluded);
+		const amount = readPeriodAmount(args.amount, rate, args.vat_excluded);
 		if (isProblem(amount)) return amount;
-		if (amount !== undefined) out.amount = amount;
+		if (amount !== undefined) {
+			out.amount = amount;
+			if (args.vat_rate === undefined && o.vatRate !== undefined) said.push(`Ho tenuto l'aliquota IVA del rinnovo (${o.vatRate}%)${amount.excluded === true ? ", aggiunta all'importo detto senza IVA" : ", inclusa nell'importo detto"}: se è cambiata, correggi con op edit (vat_rate).`);
+		}
 		else if (args.vat_rate !== undefined) {
 			const rate = readRate(args.vat_rate);
 			if (isProblem(rate)) return rate;
@@ -246,13 +256,23 @@ export async function readFields(args: Record<string, unknown>, o: { today: stri
 	}
 	if (removed("new_amount")) out.amountFrom = null;
 	else if (args.new_amount !== undefined || args.new_amount_from !== undefined) {
-		const amount = readEuros(args.new_amount, EURO_WORDS);
-		if (isProblem(amount)) return amount;
+		const amount = readPeriodAmount(args.new_amount, rate);
+		if (isProblem(amount)) return { problem: `new_amount: ${amount.problem}` };
 		if (amount === undefined || args.new_amount_from === undefined) return { problem: "per un cambio di prezzo passa new_amount (il nuovo importo) e new_amount_from (da quale scadenza)" };
+		if (amount.excluded === true) said.push(`Il nuovo importo era senza IVA: ho salvato quanto si paga, IVA ${amount.vatRate}% inclusa.`);
 		const from = readDue(args.new_amount_from, o.today);
 		if (isProblem(from)) return { problem: `new_amount_from: ${from.problem}` };
-		out.amountFrom = { amount, from: from.date };
+		// A day without a year gone this year, in the last three months: the new price is in force
+		// already («dal 1° ottobre costa 15» said on the 18th). Further back it is the next one
+		// («dal 1° gennaio» said in October is next January).
+		let since = from.date;
+		if (from.yearless === true && from.previous !== undefined && from.previous.slice(0, 4) === o.today.slice(0, 4) && daysBetween(from.previous, o.today) <= 92) {
+			since = from.previous;
+			said.push(`Il ${italianLongDate(since)} è già passato: il nuovo importo vale già da allora. Se intendeva il ${italianLongDate(from.date)}, correggi con op edit (new_amount_from ${from.date.split("-").reverse().join("/")}).`);
+		}
+		out.amountFrom = { amount: amount.amount, from: since };
 	}
+	if (said.length > 0) out.said = said;
 	return out as Fields;
 }
 
@@ -273,7 +293,7 @@ export function guessCategory(name: string, provider?: string, note?: string): C
  * by themselves (carta, PayPal, addebito, RID, SDD, domiciliazione), and said back.
  */
 export function applyFields(f: Fields, old: Renewal | undefined, today: string): { draft: RenewalDraft; notes: string[] } | Problem {
-	const notes: string[] = [];
+	const notes: string[] = [...(f.said ?? [])];
 	const name = f.name ?? old?.name;
 	if (name === undefined) return { problem: "manca il nome (name): cos'è che si rinnova, per esempio «Assicurazione auto» o «Canva»" };
 	let months = f.months ?? old?.months;
@@ -303,6 +323,7 @@ export function applyFields(f: Fields, old: Renewal | undefined, today: string):
 	let termEnd = f.termEnd !== undefined ? f.termEnd.date : termMonths === undefined ? undefined : old?.termEnd;
 	if (termMonths !== undefined && termEnd === undefined) return { problem: "con term_months serve term_end: quando finisce il contratto in corso" };
 	if (termMonths === undefined) termEnd = undefined;
+	const termDay = termEnd === undefined ? undefined : f.termEnd !== undefined ? f.termEnd.day : old?.termDay;
 	if (termMonths !== undefined && termMonths === months && f.termMonths !== undefined) notes.push("La durata del contratto è uguale alla frequenza dei pagamenti: term_months non serve, lo tengo comunque.");
 	const amount = f.amount === null ? undefined : f.amount;
 	const amountValue = amount?.amount ?? (f.amount === null ? undefined : old?.amount);
@@ -314,7 +335,14 @@ export function applyFields(f: Fields, old: Renewal | undefined, today: string):
 	if (f.category?.unmatched === true) notes.push(`La categoria detta non è tra quelle che uso: l'ho messa in «altro». Le categorie: ${CATEGORIES.join(", ")}.`);
 	if (!autoRenew && notice !== undefined) notes.push("Il preavviso di disdetta conta solo per un contratto che si rinnova da solo: così non lo uso.");
 	if (due.past === true && f.due !== undefined) notes.push(autoPay === true || autoRenew ? "La scadenza detta è già passata: la porto avanti da sola alla prossima." : "La scadenza detta è già passata: lo segno come scaduto, da confermare. Se è già stato pagato, segnalo con op renewed.");
-	const start = f.due !== undefined ? due.date : (old?.start ?? old?.due ?? due.date);
+	let start = f.due !== undefined ? due.date : (old?.start ?? old?.due ?? due.date);
+	// Turned to paid by itself with the due date gone: the periods gone are not taken as charged.
+	if (old !== undefined && autoPay === true && old.autoPay !== true && f.due === undefined && old.due < today) {
+		const next = effectiveDue({ ...old, autoPay: true, status: "active" }, today);
+		due = { date: next, day: old.day };
+		start = next;
+		notes.push(`Le scadenze passate (dal ${italianLongDate(old.due)}) non le conto come addebitate: il primo addebito che conto è il ${italianLongDate(next)}. Se quelle sono state pagate o sono da pagare, chiedilo a chi ti scrive e registrale con expenses op add.`);
+	}
 	const optional = {
 		provider,
 		amount: amountValue,
@@ -323,6 +351,7 @@ export function applyFields(f: Fields, old: Renewal | undefined, today: string):
 		amountFrom: pick(f.amountFrom, old?.amountFrom),
 		termMonths,
 		termEnd,
+		termDay,
 		autoPay,
 		trial: trial === true ? true : undefined,
 		noticeDays: notice !== undefined && "days" in notice ? notice.days : undefined,

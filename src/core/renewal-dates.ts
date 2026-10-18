@@ -24,7 +24,7 @@
 import { addMonths, DateError, inRange, parseMonth, readDate } from "./dates.ts";
 import { addDays, daysBetween, daysInMonth, isoDate } from "./italian-calendar.ts";
 import { italianLongDate } from "./italian-format.ts";
-import { cents } from "./renewal-sums.ts";
+import { scaled } from "./quote-sums.ts";
 import { RENEWAL_LIMITS, type Renewal } from "./renewals.ts";
 import { fold } from "./text-match.ts";
 
@@ -322,10 +322,15 @@ export function termMonthsOf(r: Pick<Renewal, "termMonths" | "months">): number 
 	return r.termMonths ?? r.months;
 }
 
-/** The end of the current term as of today: rolled on when it renews by itself. */
+/** The day of the month a term end keeps when it rolls: as first said, else the stored end's. */
+function termDayOf(r: Renewal): number {
+	return r.termDay ?? (r.termEnd === undefined ? r.day : Number(r.termEnd.slice(8, 10)));
+}
+
+/** The end of the current term as of today: rolled on when it renews by itself, on the day first said. */
 export function effectiveTermEnd(r: Renewal, today: string): string {
 	if (r.termMonths === undefined || r.termEnd === undefined) return effectiveDue(r, today);
-	return r.status === "active" && r.autoRenew ? caughtUp(r.termEnd, r.termMonths, Number(r.termEnd.slice(8, 10)), today) : r.termEnd;
+	return r.status === "active" && r.autoRenew ? caughtUp(r.termEnd, r.termMonths, termDayOf(r), today) : r.termEnd;
 }
 
 /** Whether a disdetta deadline is worth an alert: a notice, a tacit renewal and a term of three months or more. */
@@ -348,7 +353,7 @@ export function noticeDeadline(r: Renewal, today: string): string | undefined {
 	const end = effectiveTermEnd(r, today);
 	const by = deadlineFor(r, end);
 	if (by >= today) return by;
-	return deadlineFor(r, rollDate(end, termMonthsOf(r), r.termEnd === undefined ? r.day : Number(r.termEnd.slice(8, 10))));
+	return deadlineFor(r, rollDate(end, termMonthsOf(r), termDayOf(r)));
 }
 
 /** «30 giorni», «3 mesi»; undefined without a notice. */
@@ -361,6 +366,16 @@ export function noticeText(r: Pick<Renewal, "noticeDays" | "noticeMonths">): str
 /** The amount of the payment due on `date`: the new one from its date on. */
 export function amountAt(r: Pick<Renewal, "amount" | "amountFrom">, date: string): string | undefined {
 	return r.amountFrom !== undefined && date >= r.amountFrom.from ? r.amountFrom.amount : r.amount;
+}
+
+/** The amount of the next payment as of today: what every read shows, the same before and after a write. */
+export function currentAmount(r: Renewal, today: string): string | undefined {
+	return amountAt(r, effectiveDue(r, today));
+}
+
+/** The payment before the due date (one period back): the last one a past charge or roll can be about. */
+export function previousDue(r: Pick<Renewal, "due" | "months" | "day">): string {
+	return rollDate(r.due, -r.months, r.day);
 }
 
 /**
@@ -376,7 +391,7 @@ export function lastCharge(r: Renewal, today: string): string | undefined {
 /**
  * The renewal with its moving dates written down as of today, for the next write: an autoPay
  * due caught up (the trial over once its first charge is gone), the term end caught up, a new
- * amount in force once the due date reached it.
+ * amount in force once the payment before the due date reached it.
  */
 export function normalised(r: Renewal, today: string): Renewal {
 	let next = r;
@@ -391,7 +406,9 @@ export function normalised(r: Renewal, today: string): Renewal {
 		const end = effectiveTermEnd(next, today);
 		if (end !== next.termEnd) next = { ...next, termEnd: end };
 	}
-	if (next.amountFrom !== undefined && next.due >= next.amountFrom.from) {
+	// The new price written in only once the payment before the due date has it too: an expense
+	// of that payment (the last charge, a roll of today) still costs what it cost then.
+	if (next.amountFrom !== undefined && previousDue(next) >= next.amountFrom.from) {
 		const { amountFrom, ...rest } = next;
 		next = { ...rest, amount: amountFrom.amount };
 	}
@@ -459,7 +476,7 @@ export function agendaOf(renewals: readonly Renewal[], today: string, until: str
 		for (const p of payments) {
 			const amount = amountAt(r, p);
 			if (amount === undefined) total = undefined;
-			else if (total !== undefined) total += cents(amount);
+			else if (total !== undefined) total += scaled(amount, 2);
 		}
 		return { renewal: r, date, payments, ...(total === undefined ? {} : { total }) };
 	};

@@ -11,10 +11,10 @@ import { instanceId, tenantId } from "../src/core/ids.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { automaticPayment } from "../src/core/payment-methods.ts";
-import { agendaOf, defaultRemindDays, effectiveDue, frequencyText, nextDue, noticeDeadline, parseFrequency, perPeriodText, placeDue, readDue, rollDate } from "../src/core/renewal-dates.ts";
+import { agendaOf, defaultRemindDays, effectiveDue, frequencyText, nextDue, normalised, noticeDeadline, parseFrequency, perPeriodText, placeDue, readDue, rollDate } from "../src/core/renewal-dates.ts";
 import { costsOf, monthlyOf, yearlyCents } from "../src/core/renewal-sums.ts";
 import { RenewalStore } from "../src/core/renewal-store.ts";
-import { findRenewals, matchCategory, parseRenewalId, RENEWAL_LIMITS, type Renewal, renewalCallReads } from "../src/core/renewals.ts";
+import { findRenewals, matchCategory, parseRenewalId, RENEWAL_LIMITS, type Renewal, renewalCallReads, renewalMatches } from "../src/core/renewals.ts";
 import { type ExpenseEvent, type ExpenseSeam, expensesOf } from "../src/core/tools/expense-tools.ts";
 import { readNotice, readPeriodAmount } from "../src/core/tools/renewal-input.ts";
 import { createRenewalTools, EXPENSE_CATEGORY, type RenewalEvent } from "../src/core/tools/renewal-tools.ts";
@@ -282,7 +282,7 @@ describe("renewal sums", () => {
 			{ ...base, id: "R-0003", name: "C", category: "software e abbonamenti", amount: "10", months: 24 },
 			{ ...base, id: "R-0004", name: "D", category: "utenze", months: 2 },
 		];
-		const c = costsOf(rs);
+		const c = costsOf(rs, TODAY);
 		expect(c.yearly).toBe(62900n);
 		expect(c.monthly).toBe(5242n);
 		expect(c.categories.map((k) => [k.category, k.yearly, k.monthly, k.count])).toEqual([
@@ -334,7 +334,8 @@ describe("renewal categories and names", () => {
 			{ ...base, id: "R-0001", name: "Canva Pro" },
 			{ ...base, id: "R-0002", name: "Assicurazione auto", provider: "UnipolSai" },
 			{ ...base, id: "R-0003", name: "Dominio rossi.it" },
-			{ ...base, id: "R-0004", name: "Polizza casa" },
+			{ ...base, id: "R-0004", name: "Polizza casa", category: "assicurazione" },
+			{ ...base, id: "R-0006", name: "Affitto casa", category: "affitto e leasing" },
 			{ ...base, id: "R-0005", name: "Fibra", provider: "Fastweb" },
 		];
 		const ids = (text: string) => findRenewals(rs, text).map((r) => r.id);
@@ -345,6 +346,16 @@ describe("renewal categories and names", () => {
 		expect(ids("il contratto della fibra")).toEqual(["R-0005"]);
 		expect(ids("la polizza della casa")).toEqual(["R-0004"]);
 		expect(ids("assicurazione casa")).toEqual(["R-0004"]);
+		// A generic word that means a category asks for it: «l'assicurazione della casa» is never the rent.
+		expect(ids("l'assicurazione della casa")).toEqual(["R-0004"]);
+		expect(ids("l'affitto della casa")).toEqual(["R-0006"]);
+		expect(ids("l'affitto della fibra")).toEqual([]);
+		expect(ids("la casa")).toEqual(["R-0004", "R-0006"]);
+		// Exact matches first; a match only after dropping words is loose.
+		expect(renewalMatches(rs, "polizza casa")).toMatchObject({ loose: false, found: [{ id: "R-0004" }] });
+		expect(renewalMatches(rs, "abbonamento Canva")).toMatchObject({ loose: true, found: [{ id: "R-0001" }] });
+		expect(renewalMatches(rs, "il contratto della casa")).toMatchObject({ loose: true });
+		expect(renewalMatches(rs, "R-0001").loose).toBe(false);
 		expect(ids("l'assicurazione")).toEqual(["R-0002"]);
 		expect(ids("can")).toEqual([]);
 		expect(ids("il")).toEqual([]);
@@ -564,7 +575,7 @@ describe("renewals: what moves by itself and what waits", () => {
 		expect(outside(answer)).toContain("Si rinnova da solo (poi da pagare):");
 		expect(inside(answer)).toContain("Dominio rossi.it: entro il 5 novembre 2026, 15,00 €");
 		expect(inside(answer)).not.toContain("Assicurazione");
-		expect(outside(answer)).toContain("Totale da pagare o addebitato nel periodo, contando ogni scadenza: 56,90 €.");
+		expect(outside(answer)).toContain("Totale da pagare o addebitato, nel periodo, contando ogni scadenza: 56,90 €.");
 		const wide = await s.run({ op: "upcoming", days: 60 });
 		expect(outside(wide)).toContain("Da disdire entro:");
 		expect(inside(wide)).toContain("Vigilanza: entro il 2 dicembre 2026, altrimenti si rinnova il 31 gennaio 2027");
@@ -836,9 +847,13 @@ describe("renewals: cancel, reactivate, edit, remove", () => {
 		await s.run(CANVA);
 		await s.run({ ...AUTO, name: "Assicurazione casa" });
 		expect(outside(await s.run({ op: "remove", id: "assicurazione" }))).toContain("più rinnovi corrispondono");
+		// A name that fits only once «abbonamento» is dropped: shown, to be confirmed.
+		const loose = await s.run({ op: "remove", id: "abbonamento Canva" });
+		expect(outside(loose)).toContain("corrisponde solo in parte");
+		expect(inside(loose)).toContain("R-0002");
 		const c = durable();
-		expect(await s.run({ op: "remove", id: "abbonamento Canva" }, c)).toContain("tolto il rinnovo R-0002; il suo numero non sarà riusato");
-		expect(await s.run({ op: "remove", id: "abbonamento Canva" }, c)).toContain("tolto il rinnovo R-0002");
+		expect(await s.run({ op: "remove", id: "Canva" }, c)).toContain("tolto il rinnovo R-0002; il suo numero non sarà riusato");
+		expect(await s.run({ op: "remove", id: "Canva" }, c)).toContain("tolto il rinnovo R-0002");
 		expect(await s.run({ op: "remove", id: "R-0002" })).toBe("Il rinnovo R-0002 era già stato tolto.");
 		expect(await s.run({ op: "remove", id: "R-0009" })).toContain("non trovo il rinnovo R-0009");
 		await s.run(FIBRA);
@@ -996,3 +1011,186 @@ async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 		throw new Error("no reply");
 	};
 }
+
+describe("renewals: prices over time, rolls of today, names, reactivating", () => {
+	it("a new price counts from its payment: the last charge and a roll of today keep the old one (autoPay and manual)", async () => {
+		// A: paid by itself; the charge of 5 October still costs 12 € after a write.
+		const a = setup();
+		a.at("2026-10-20");
+		await a.run({ op: "add", name: "Canva", amount: 12, frequency: "mensile", due: "05/10/2026", auto_pay: true, auto_renew: true, new_amount: 15, new_amount_from: "05/11/2026" });
+		await a.run({ op: "edit", id: "Canva", note: "x" });
+		expect(a.one()).toMatchObject({ due: "2026-11-05", amount: "12", amountFrom: { amount: "15", from: "2026-11-05" } });
+		await a.run({ op: "renewed", id: "Canva", record_expense: true });
+		expect(a.expenseStore.read().expenses[0]).toMatchObject({ date: "2026-10-05", amount: "12" });
+		expect(a.one().charges).toMatchObject([{ date: "2026-10-05", amount: "12" }]);
+		a.at("2026-12-10");
+		await a.run({ op: "edit", id: "Canva", note: "y" });
+		expect(a.one()).toMatchObject({ due: "2027-01-05", amount: "15" });
+		expect(a.one().amountFrom).toBeUndefined();
+		// B: by hand; the roll keeps the amount it confirmed, the expense recorded after a write uses it.
+		const b = setup();
+		await b.run({ op: "add", name: "Dominio", amount: 10, due: "20/10/2026", new_amount: 20, new_amount_from: "20/10/2027" });
+		await b.run({ op: "renewed", id: "Dominio" });
+		expect(b.one().rolls).toMatchObject([{ from: "2026-10-20", to: "2027-10-20", amount: "10" }]);
+		await b.run({ op: "edit", id: "Dominio", note: "z" });
+		expect(b.one().amount).toBe("10");
+		await b.run({ op: "renewed", id: "Dominio", record_expense: true });
+		expect(b.expenseStore.read().expenses[0]).toMatchObject({ amount: "10" });
+		// The rule itself: written in once the payment before the due date has the new price.
+		const r = { ...b.one(), months: 1, day: 5, amountFrom: { amount: "15", from: "2026-11-05" } };
+		expect(normalised({ ...r, due: "2026-11-05" }, TODAY).amount).toBe("10");
+		expect(normalised({ ...r, due: "2026-12-05" }, TODAY).amount).toBe("15");
+	});
+
+	it("every read uses the price of the next payment: the same before and after a write", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Canva", amount: 12, frequency: "mensile", due: "05/11/2026", auto_pay: true, auto_renew: true, new_amount: 15, new_amount_from: "05/11/2026" });
+		await s.run({ ...DOMINIO, new_amount: 20, new_amount_from: "05/11/2026" });
+		s.at("2026-12-20");
+		const reads = async () => [await s.run({ op: "summary", category: "software" }), inside(await s.run({ op: "list" }))];
+		const [summary, list] = await reads();
+		expect(outside(summary as string)).toContain("Costo: 180,00 € all'anno (15,00 € al mese).");
+		expect(list).toContain("Canva: 15,00 € al mese · prossimo addebito 5 gennaio 2027");
+		expect(list).not.toContain("dal 5 novembre 2026");
+		await s.run({ op: "edit", id: "Canva", note: "y" });
+		const [after] = await reads();
+		expect(outside(after as string)).toBe(outside(summary as string));
+		s.at(TODAY);
+		expect(inside(await s.run({ op: "upcoming", compact: true }))).toContain("• da pagare entro il 5 novembre 2026: Dominio rossi.it, 20,00 €");
+		await s.run({ op: "export" });
+		const csv = readFileSync(join(s.root, "rinnovi", `rinnovi-${TODAY}.csv`), "utf8");
+		expect(csv).toContain("Dominio rossi.it;;dominio e hosting;20,00;annuale;20,00;05/11/2026");
+	});
+
+	it("after the hint, renewed with record_expense records only the rolled payment, even when the due date is still gone", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Affitto ufficio", amount: 800, frequency: "mensile", due: "10/08/2026", new_amount: 900, new_amount_from: "10/09/2026" });
+		const first = await s.run({ op: "renewed", id: "Affitto" });
+		expect(outside(first)).toContain("rifai renewed con record_expense true");
+		expect(s.one().due).toBe("2026-09-10");
+		const only = await s.run({ op: "renewed", id: "Affitto", record_expense: true });
+		expect(outside(only)).toContain("la scadenza resta il 10 settembre 2026, non l'ho spostata");
+		expect(outside(only)).toContain("rifai renewed con advance true");
+		expect(s.one().due).toBe("2026-09-10");
+		expect(s.expenseStore.read().expenses.map((e) => e.amount)).toEqual(["800"]);
+		expect(s.one().rolls?.[0]?.expense).toBe("S-2026-0001");
+		// Another payment really made: advance, at its own price.
+		await s.run({ op: "renewed", id: "Affitto", record_expense: true, advance: true });
+		expect(s.one().due).toBe("2026-10-10");
+		expect(s.expenseStore.read().expenses.map((e) => e.amount)).toEqual(["800", "900"]);
+	});
+
+	it("a generic word that means a category asks for it; a name that fits only in part is confirmed before a disdetta or a removal", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Affitto casa", amount: 800, frequency: "mensile", due: "01/11/2026" });
+		await s.run({ op: "add", name: "Polizza abitazione", amount: 300, due: "01/11/2026" });
+		expect(await s.run({ op: "edit", id: "l'assicurazione della casa", note: "x" })).toContain("non trovo il rinnovo");
+		const cancel = await s.run({ op: "cancel", id: "il contratto della casa" });
+		expect(outside(cancel)).toContain("corrisponde solo in parte");
+		expect(inside(cancel)).toContain("R-0001");
+		expect(s.one().status).toBe("active");
+		expect(outside(await s.run({ op: "remove", id: "il contratto della casa" }))).toContain("corrisponde solo in parte");
+		// Not destructive: an edit goes ahead.
+		expect(await s.run({ op: "edit", id: "il contratto della casa", note: "x" })).toContain("il rinnovo R-0001 ora è");
+		expect(await s.run({ op: "cancel", id: "affitto casa" })).toContain("R-0001 segnato come disdetto");
+	});
+
+	it("reactivated without a due date, what moves by itself starts again from today: no charge or payment for the time cancelled", async () => {
+		const s = setup();
+		s.at("2026-03-01");
+		await s.run({ op: "add", name: "Netflix", amount: 10, frequency: "mensile", due: "10/03/2026", auto_pay: true, auto_renew: true });
+		await s.run({ ...FIBRA, due: "30/03/2026" });
+		s.at("2026-04-01");
+		await s.run({ op: "cancel", id: "Netflix" });
+		await s.run({ op: "cancel", id: "fibra" });
+		s.at(TODAY);
+		const back = await s.run({ op: "reactivate", id: "Netflix" });
+		expect(outside(back)).toContain("Riparte dal 10 novembre 2026: i periodi in cui era disdetto non li conto");
+		expect(s.one()).toMatchObject({ due: "2026-11-10", start: "2026-11-10" });
+		expect(await s.run({ op: "renewed", id: "Netflix", record_expense: true })).toContain("non è ancora partito nessun addebito");
+		await s.run({ op: "reactivate", id: "fibra" });
+		const fibra = s.store.read().renewals[1] as Renewal;
+		expect(fibra).toMatchObject({ due: "2026-10-30", start: "2026-10-30" });
+		expect(inside(await s.run({ op: "list" }))).not.toContain("da pagare");
+	});
+
+	it("new_amount is read like amount: «+ IVA» with the renewal's rate; a yearless date gone lately is already in force", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Gestionale", amount: "100 + IVA", vat_rate: 22, due: "01/11/2026", new_amount: "110 + IVA", new_amount_from: "01/11/2027" });
+		expect(s.one()).toMatchObject({ amount: "122", vatRate: 22, amountFrom: { amount: "134.2", from: "2027-11-01" } });
+		await s.run({ op: "edit", id: "Gestionale", new_amount: "120 + IVA", new_amount_from: "01/11/2027" });
+		expect(s.one().amountFrom).toEqual({ amount: "146.4", from: "2027-11-01" });
+		await s.run({ op: "add", name: "Hosting", amount: 50, due: "01/11/2026" });
+		expect(await s.run({ op: "edit", id: "Hosting", new_amount: "60 + IVA", new_amount_from: "01/11/2027" })).toContain("serve l'aliquota");
+		const lately = await s.run({ op: "edit", id: "Hosting", new_amount: 60, new_amount_from: "1 ottobre" });
+		expect(outside(lately)).toContain("Il 1 ottobre 2026 è già passato: il nuovo importo vale già da allora");
+		expect((s.store.read().renewals[1] as Renewal).amountFrom).toEqual({ amount: "60", from: "2026-10-01" });
+		await s.run({ op: "edit", id: "Hosting", new_amount: 70, new_amount_from: "1 gennaio" });
+		expect((s.store.read().renewals[1] as Renewal).amountFrom).toEqual({ amount: "70", from: "2027-01-01" });
+	});
+
+	it("a term end keeps the day first said across short months", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Fibra", amount: 30, frequency: "mensile", due: "30/10/2026", auto_renew: true, auto_pay: true, term_months: 4, term_end: "30/10/2026", notice_days: 30 });
+		expect(s.one()).toMatchObject({ termEnd: "2026-10-30", termDay: 30 });
+		s.at("2027-01-15");
+		await s.run({ op: "edit", id: "Fibra", note: "a" });
+		expect(s.one().termEnd).toBe("2027-02-28");
+		s.at("2027-03-15");
+		await s.run({ op: "edit", id: "Fibra", note: "b" });
+		expect(s.one().termEnd).toBe("2027-06-30");
+	});
+
+	it("an amount changed without a rate keeps the renewal's VAT rate, and says so", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Hosting", amount: "100 + IVA", vat_rate: 22, due: "01/11/2026" });
+		const answer = await s.run({ op: "edit", id: "Hosting", amount: 130 });
+		expect(outside(answer)).toContain("Ho tenuto l'aliquota IVA del rinnovo (22%), inclusa nell'importo detto");
+		expect(s.one()).toMatchObject({ amount: "130", vatRate: 22 });
+		await s.run({ op: "edit", id: "Hosting", amount: "100 + IVA" });
+		expect(s.one()).toMatchObject({ amount: "122", vatRate: 22 });
+	});
+
+	it("turning auto_pay on with the due date gone counts no charge for the periods gone, and says so", async () => {
+		const s = setup();
+		await s.run({ op: "add", name: "Luce", amount: 70, frequency: "bimestrale", due: "10/09/2026" });
+		const answer = await s.run({ op: "edit", id: "Luce", auto_pay: true });
+		expect(outside(answer)).toContain("Le scadenze passate (dal 10 settembre 2026) non le conto come addebitate");
+		expect(s.one()).toMatchObject({ due: "2026-11-10", start: "2026-11-10", autoPay: true });
+		expect(await s.run({ op: "renewed", id: "Luce", record_expense: true })).toContain("non è ancora partito nessun addebito");
+		expect(s.expenseStore.read().expenses).toHaveLength(0);
+	});
+
+	it("the charge to record is resolved once: a rerun on a later day records the same one", async () => {
+		const fail = { count: 1 };
+		let real: ExpenseSeam | undefined;
+		const seam: ExpenseSeam = {
+			check: (i, c) => real?.check(i, c),
+			record: async (i, c) => {
+				if (fail.count-- > 0) throw new Error("expenses down");
+				return (real as ExpenseSeam).record(i, c);
+			},
+		};
+		const s = setup({ seam });
+		real = s.seam;
+		await s.run({ op: "add", name: "Netflix", amount: 10, frequency: "mensile", due: "10/10/2026", auto_pay: true, auto_renew: true });
+		s.at("2026-10-20");
+		const c = durable();
+		await expect(s.run({ op: "renewed", id: "Netflix", record_expense: true }, c)).rejects.toThrow("expenses down");
+		s.at("2026-11-12");
+		expect(await s.run({ op: "renewed", id: "Netflix", record_expense: true }, c)).toContain("la spesa è dell'addebito del 10 ottobre 2026");
+		expect(s.expenseStore.read().expenses.map((e) => e.date)).toEqual(["2026-10-10"]);
+	});
+
+	it("the CSV shows a renewal waiting to be paid at the date it waits since; the upcoming total says it counts what is gone", async () => {
+		const s = setup();
+		await s.run({ ...FIBRA, due: "30/09/2026" });
+		await s.run({ ...DOMINIO, due: "10/10/2026" });
+		await s.run({ op: "export" });
+		const csv = readFileSync(join(s.root, "rinnovi", `rinnovi-${TODAY}.csv`), "utf8");
+		expect(csv).toMatch(/Contratto fibra;Fastweb;[^\r\n]*;30\/09\/2026;[^\r\n]*;da pagare;/);
+		expect(csv).toMatch(/Dominio rossi\.it;[^\r\n]*;10\/10\/2026;[^\r\n]*;scaduto;/);
+		const upcoming = outside(await s.run({ op: "upcoming" }));
+		expect(upcoming).toContain("Totale da pagare o addebitato, scadute e nel periodo, contando ogni scadenza: 74,80 €.");
+	});
+});
