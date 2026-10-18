@@ -1,15 +1,17 @@
 /**
  * The preventivi of an instance, in `quotes.json` (outside the workspace): the next progressive
  * number of each year and every quote, revisions included. Changed under the shared file lock;
- * `quotes.json.bak` keeps the last state written. A number is never given twice: the counter
- * only grows, even when a quote is dropped because its document could not be made. Read never
- * throws: a file that does not read is `broken`, and nothing is written over it.
+ * `quotes.json.bak` keeps a copy of the last state written, as `invoices.json.bak` does. A number
+ * is never given twice: the counter only grows, even when a quote is dropped because its document
+ * could not be made. Read never throws: a file that does not read (or is past the size cap) is
+ * `broken`, and nothing is written over it. A year past its cap still reads; only new quotes of
+ * that year are refused.
  */
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { updateJsonFile } from "./locked-json.ts";
 import type { Marker } from "./marker.ts";
-import { QUOTE_LIMITS, type Quote, QuoteError, type QuoteStatus, quoteNumber, revisionNumber, validQuote } from "./quotes.ts";
+import { baseOrder, QUOTE_LIMITS, type Quote, QuoteError, type QuoteStatus, quoteNumber, revisionNumber, validQuote } from "./quotes.ts";
 
 type Book = { readonly next: Readonly<Record<string, number>>; readonly quotes: readonly Quote[] };
 
@@ -18,6 +20,7 @@ export type QuoteBook = { readonly quotes: readonly Quote[]; readonly broken: bo
 export const QUOTES_BROKEN = "l'archivio dei preventivi (quotes.json) non si legge: non lo cambio, perché andrebbe perso. Va sistemato o tolto il file dalla cartella dell'agente";
 
 const EMPTY: Book = { next: {}, quotes: [] };
+const YEAR = /^\d{4}$/;
 
 export class QuoteStore {
 	private readonly file: string;
@@ -29,6 +32,7 @@ export class QuoteStore {
 	read(): QuoteBook {
 		let text: string;
 		try {
+			if (statSync(this.file).size > QUOTE_LIMITS.fileBytes) return { quotes: [], broken: true };
 			text = readFileSync(this.file, "utf8");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { quotes: [], broken: false };
@@ -43,15 +47,19 @@ export class QuoteStore {
 		return book === undefined ? { quotes: [], broken: true } : { quotes: book.quotes, broken: false };
 	}
 
-	/** A new quote with the next number of `year`: `make` gets the number and gives the quote. QuoteError when full. */
-	create(year: number, make: (number: string) => Quote): Quote {
+	/**
+	 * A new quote with the next number of `year`: `make` gets the number and gives the quote. The
+	 * quote made by `callId` already, when there is one (a call run again). QuoteError when the year is full.
+	 */
+	create(year: number, callId: string, make: (number: string) => Quote): Quote {
 		let made: Quote | undefined;
 		this.update((book) => {
-			if (book.quotes.length >= QUOTE_LIMITS.quotes) throw new QuoteError(`ci sono già ${QUOTE_LIMITS.quotes} preventivi salvati, il massimo: non ne faccio altri`);
+			made = book.quotes.find((q) => q.callId === callId);
+			if (made !== undefined) return book;
+			yearRoom(book, year);
 			const key = String(year);
 			const n = Math.max(book.next[key] ?? 1, 1);
-			const quote = make(quoteNumber(year, n));
-			checked(quote);
+			const quote = checked(make(quoteNumber(year, n)));
 			made = quote;
 			return { next: { ...book.next, [key]: n + 1 }, quotes: [...book.quotes, quote] };
 		});
@@ -59,21 +67,26 @@ export class QuoteStore {
 	}
 
 	/**
-	 * A new revision of the quote numbered `number`, which must still be the latest of its base:
-	 * `make` gets it and the new number. The old one becomes superseded.
+	 * A new revision of the quote numbered `number`, which must still be the latest of its base and
+	 * not accepted (checked here, under the lock): `make` gets it and the new number. The old one
+	 * becomes superseded, keeping the status it had. The revision made by `callId` already, if any.
 	 */
-	revise(number: string, make: (previous: Quote, number: string) => Quote): Quote {
+	revise(number: string, callId: string, make: (previous: Quote, number: string) => Quote): Quote {
 		let made: Quote | undefined;
 		this.update((book) => {
-			if (book.quotes.length >= QUOTE_LIMITS.quotes) throw new QuoteError(`ci sono già ${QUOTE_LIMITS.quotes} preventivi salvati, il massimo: non ne faccio altri`);
+			made = book.quotes.find((q) => q.callId === callId);
+			if (made !== undefined) return book;
 			const previous = book.quotes.find((q) => q.number === number);
 			if (previous === undefined) throw new QuoteError(`il preventivo ${number} non c'è più`);
 			if (book.quotes.some((q) => q.base === previous.base && q.revision > previous.revision)) throw new QuoteError(`il preventivo ${number} è già stato rifatto: parti dall'ultima versione`);
+			if (previous.status === "accepted") throw new QuoteError(`il preventivo ${number} è già accettato. Se il cliente ha chiesto di cambiarlo, prima rimettilo aperto con set_status open, solo se chi ti scrive lo conferma`);
 			if (previous.revision >= QUOTE_LIMITS.revisions) throw new QuoteError(`il preventivo ${previous.base} ha già ${QUOTE_LIMITS.revisions} versioni: fanne uno nuovo`);
-			const quote = make(previous, revisionNumber(previous.base, previous.revision + 1));
-			checked(quote);
+			yearRoom(book, baseOrder(previous)[0]);
+			const quote = checked(make(previous, revisionNumber(previous.base, previous.revision + 1)));
 			made = quote;
-			const old: Quote = { ...previous, status: "superseded", replacedBy: quote.number };
+			const { statusMark, ...rest } = previous;
+			const was = previous.status as Exclude<QuoteStatus, "superseded">;
+			const old: Quote = { ...rest, status: "superseded", replacedBy: quote.number, before: { status: was, ...(statusMark === undefined ? {} : { mark: statusMark }) } };
 			return { ...book, quotes: [...book.quotes.map((q) => (q === previous ? old : q)), quote] };
 		});
 		return made as Quote;
@@ -86,23 +99,30 @@ export class QuoteStore {
 			const quote = book.quotes.find((q) => q.number === number);
 			if (quote === undefined) throw new QuoteError(`il preventivo ${number} non c'è più`);
 			before = quote.status;
-			if (before === "superseded") throw new QuoteError(`il preventivo ${number} è stato sostituito da ${quote.replacedBy ?? "una revisione"}`);
+			if (before === "superseded") throw new QuoteError(`il preventivo ${number} è stato sostituito da una revisione`);
 			if (before === status) return book;
 			const { statusMark: _, ...rest } = quote;
-			const next: Quote = status === "open" ? rest : { ...rest, status, statusMark: mark };
-			return { ...book, quotes: book.quotes.map((q) => (q === quote ? { ...next, status } : q)) };
+			const next: Quote = status === "open" ? { ...rest, status } : { ...rest, status, statusMark: mark };
+			return { ...book, quotes: book.quotes.map((q) => (q === quote ? next : q)) };
 		});
 		return before;
 	}
 
-	/** Where the document of `number` is. */
-	setFile(number: string, file: string): void {
-		this.update((book) => ({ ...book, quotes: book.quotes.map((q) => (q.number === number ? { ...q, file } : q)) }));
+	/** Where the document of `number` is: the quote as saved. */
+	setFile(number: string, file: string): Quote {
+		let saved: Quote | undefined;
+		this.update((book) => {
+			const quote = book.quotes.find((q) => q.number === number);
+			if (quote === undefined) throw new QuoteError(`il preventivo ${number} non c'è più`);
+			saved = checked({ ...quote, file });
+			return { ...book, quotes: book.quotes.map((q) => (q === quote ? (saved as Quote) : q)) };
+		});
+		return saved as Quote;
 	}
 
 	/**
 	 * Drop the quote `number` (its document could not be made); the number stays used. A revision
-	 * dropped gives the status back to the one it replaced.
+	 * dropped gives the one it replaced back its status, and who set it.
 	 */
 	drop(number: string): void {
 		this.update((book) => {
@@ -110,10 +130,10 @@ export class QuoteStore {
 			if (quote === undefined) return book;
 			const quotes = book.quotes
 				.filter((q) => q !== quote)
-				.map((q) => {
+				.map((q): Quote => {
 					if (q.replacedBy !== number) return q;
-					const { replacedBy: _, ...rest } = q;
-					return { ...rest, status: "open" as const };
+					const { replacedBy: _r, before, ...rest } = q;
+					return { ...rest, status: before?.status ?? "open", ...(before?.mark === undefined ? {} : { statusMark: before.mark }) };
 				});
 			return { ...book, quotes };
 		});
@@ -129,6 +149,7 @@ export class QuoteStore {
 				if (book === undefined) throw new QuoteError(QUOTES_BROKEN);
 				const next = change(book);
 				changed = next !== book;
+				if (changed && Buffer.byteLength(JSON.stringify(next, null, 2)) >= QUOTE_LIMITS.fileBytes) throw new QuoteError("l'archivio dei preventivi è pieno: non ne salvo altri");
 				return changed ? next : raw;
 			});
 		} catch (error) {
@@ -139,23 +160,30 @@ export class QuoteStore {
 	}
 }
 
+/** QuoteError when `year` has its cap of quotes. */
+function yearRoom(book: Book, year: number): void {
+	const count = book.quotes.filter((q) => baseOrder(q)[0] === year).length;
+	if (count >= QUOTE_LIMITS.perYear) throw new QuoteError(`ci sono già ${QUOTE_LIMITS.perYear} preventivi del ${year}, il massimo per un anno: non ne faccio altri`);
+}
+
 /** What is written always reads back. */
-function checked(quote: Quote): void {
+function checked(quote: Quote): Quote {
 	if (!validQuote(quote)) throw new QuoteError("il preventivo non è valido: non l'ho salvato");
+	return quote;
 }
 
 function validBook(raw: unknown): Book | undefined {
 	if (typeof raw !== "object" || raw === null) return undefined;
 	const { next, quotes } = raw as Book;
 	if (typeof next !== "object" || next === null || Array.isArray(next)) return undefined;
-	if (!Object.entries(next).every(([y, n]) => /^\d{4}$/.test(y) && Number.isInteger(n) && n >= 1 && n <= 1_000_000)) return undefined;
-	if (!Array.isArray(quotes) || quotes.length > QUOTE_LIMITS.quotes || !quotes.every(validQuote)) return undefined;
+	if (!Object.entries(next).every(([y, n]) => YEAR.test(y) && Number.isInteger(n) && n >= 1 && n <= 1_000_000)) return undefined;
+	if (!Array.isArray(quotes) || !quotes.every(validQuote)) return undefined;
 	const numbers = new Set(quotes.map((q) => q.number));
 	if (numbers.size !== quotes.length) return undefined;
 	// Every number below its year's counter: a counter behind a quote would give that number again.
 	for (const q of quotes) {
-		const [year, seq] = q.base.split("-");
-		if (Number(seq) >= (next[year as string] ?? 1)) return undefined;
+		const [year, seq] = baseOrder(q);
+		if (seq >= (next[String(year)] ?? 1)) return undefined;
 	}
 	return raw as Book;
 }

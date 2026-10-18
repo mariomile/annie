@@ -30,11 +30,14 @@ export function isInvoiceReadOp(op: unknown): op is InvoiceReadOp {
 	return INVOICE_READ_OPS.some((o) => o === op);
 }
 
+/** What set_company may change: any of these given makes the call a write. */
+export const COMPANY_FIELDS = ["vat", "name", "clear", "iban", "signature", "address", "phone", "email", "cf", "rea", "regime"] as const;
+
 /** Whether a call only reads: a reading op, a reminder only drafted (not sent, no address to save), or set_company with nothing to set (it shows the company). */
 export function invoiceCallReads(args: Record<string, unknown>): boolean {
 	if (isInvoiceReadOp(args.op)) return true;
 	if (args.op === "reminder") return args.send !== true && args.email === undefined;
-	return args.op === "set_company" && ["vat", "name", "clear", "iban", "signature"].every((k) => args[k] === undefined);
+	return args.op === "set_company" && COMPANY_FIELDS.every((k) => args[k] === undefined);
 }
 
 export class InvoiceError extends Error {
@@ -43,8 +46,26 @@ export class InvoiceError extends Error {
 
 export type { Marker } from "./marker.ts";
 
-/** The owner's company, as the owner gave it: how the scadenzario tells what is to pay from what is to collect. */
-export type Company = Marker & { readonly vat?: string; readonly name?: string; readonly ibans?: readonly string[]; readonly signature?: string };
+export const REGIMES = ["ordinario", "forfettario"] as const;
+export type Regime = (typeof REGIMES)[number];
+
+/**
+ * The owner's company, as the owner gave it: how the scadenzario tells what is to pay from what is
+ * to collect, and the letterhead of reminders and quotes (address, phone, email, codice fiscale,
+ * REA, and the VAT regime only as the owner states it).
+ */
+export type Company = Marker & {
+	readonly vat?: string;
+	readonly name?: string;
+	readonly ibans?: readonly string[];
+	readonly signature?: string;
+	readonly address?: string;
+	readonly phone?: string;
+	readonly email?: string;
+	readonly cf?: string;
+	readonly rea?: string;
+	readonly regime?: Regime;
+};
 
 /**
  * What is paid of one invoice: all of it (`all`) but the instalments in `except`, or the

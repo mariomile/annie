@@ -4,33 +4,35 @@ import { DocumentError } from "../documents.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { Company } from "../invoices.ts";
 import { BROKEN_WRITE, type InvoiceStore } from "../invoice-store.ts";
-import { todayIn } from "../italian-calendar.ts";
+import { addDays, todayIn } from "../italian-calendar.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
-import { DEFAULT_VALID_DAYS, findQuotes, latest, matchesCustomer, QUOTE_LIMITS, type Quote, type QuoteCustomer, QuoteError, type QuoteLine, quoteCallReads, shownStatus } from "../quotes.ts";
-import type { QuoteStore } from "../quote-store.ts";
-import { BOLLO_THRESHOLD_CENTS, bolloDue, euros, quoteTotals, zeroRateCents } from "../quote-sums.ts";
+import { baseOrder, findQuotes, latest, matchesCustomer, QUOTE_LIMITS, type Quote, QuoteError, quoteCallReads, shownStatus, validUntil } from "../quotes.ts";
+import { QUOTES_BROKEN, type QuoteStore } from "../quote-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { cleanText, fileSlug, isProblem, readCustomer, readDiscount, readItems, readVat, withDefaults } from "./quote-input.ts";
-import { fenced, listLine, type QuoteView, quoteLines, quoteMarkdown, statusText } from "./quote-render.ts";
+import { draftOf } from "./quote-draft.ts";
+import { fileSlug } from "./quote-input.ts";
+import { quoteMarkdown } from "./quote-document.ts";
+import { euros, fenced, listLine, type QuoteView, quoteLines, totalsOf } from "./quote-render.ts";
 
 export const QUOTE_OPS = ["create", "revise", "list", "show", "set_status"] as const;
 type Op = (typeof QUOTE_OPS)[number];
 
-const FILTERS = ["aperti", "accettati", "rifiutati", "scaduti", "tutti"] as const;
+const FILTERS = ["aperti", "in_scadenza", "accettati", "rifiutati", "scaduti", "tutti"] as const;
 type Filter = (typeof FILTERS)[number];
 const STATUSES = ["accepted", "declined", "open"] as const;
 type SetStatus = (typeof STATUSES)[number];
 
-/** Lines shown by list. */
-const LIST_MAX = 50;
+const LIST_MAX = 15;
+/** «In scadenza»: open quotes whose validity ends within these days. */
+const SOON_DAYS = 3;
 
 /** What changed, for the audit: the op and how many lines, never names, numbers or amounts. */
-export type QuoteEvent = { readonly type: "quote.changed"; readonly op: "create" | "revise" | "set_status"; readonly count: number };
+export type QuoteEvent = { readonly type: "quote.changed"; readonly op: "create" | "revise" | "set_status" | "drop"; readonly count: number };
 
 export type QuoteToolsOptions = {
 	readonly workspace: Workspace;
 	readonly store: QuoteStore;
-	/** The scadenzario's store: the owner's company (name, partita IVA, IBAN, signature) from invoices set_company. */
+	/** The scadenzario's store: the owner's company (letterhead, IBAN, signature, regime) from invoices set_company. */
 	readonly company: Pick<InvoiceStore, "read">;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
@@ -40,15 +42,20 @@ export type QuoteToolsOptions = {
 	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
 };
 
+const NO_COMPANY = "Errore: per il preventivo mi servono i dati della tua azienda: ragione sociale, partita IVA, indirizzo della sede, telefono o email e, se vuoi, l'IBAN. Chiedili a chi ti scrive e salvali con invoices op set_company (name, vat, address, phone, email, iban); poi rifai il preventivo.";
+
 const DESCRIPTION = [
-	"Preventivi (quotes) for customers: numbered per year (2026-012), totals computed exactly here, a PDF in the workspace with the company saved by invoices set_company.",
-	"create: customer (+ tax_id, address, email), items [{description, quantity, unit, price, discount, vat, vat_note}], vat for every line, valid_days (default 30), terms, notes.",
-	"Never choose the VAT rate: if the person did not say it, call without it and the tool says what to ask. VAT 0 needs vat_note, the reason exactly as the person states it",
-	"(e.g. forfettario «operazione in franchigia da IVA, art. 1 c. 54-89 L. 190/2014»). ritenuta true (20%) and bollo true only if the person asks.",
-	"revise: number + only what changes (discount 10 = 10% on every line; items replace all lines): a new version 2026-012-R1, the old one marked replaced.",
-	"list: filter aperti (default), accettati, rifiutati, scaduti, tutti; customer words. show: number.",
+	"Preventivi (quotes) for customers: numbered per year (2026-012), totals computed exactly here, a PDF in the workspace with the letterhead saved by invoices set_company.",
+	"create: customer (+ tax_id, address, email; reused from the customer's last quote when not given), items [{description, quantity, unit, price, discount, vat, vat_note}].",
+	"Pass amounts as JSON numbers (1250, 12.5); a string like «1.250» is refused as ambiguous. unit: ore, giornate, pezzi, mq; a corpo: quantity 1 and no unit, with «a corpo» in the description.",
+	"If the person gives prices IVA inclusa («ivato», «IVA compresa»), pass the price as said with prices_include_vat true; never take the VAT out yourself.",
+	"vat for every line, only as the person says; if not said, call without it and the tool says what to ask (with regime forfettario saved, lines are at 0% with its dicitura).",
+	"VAT 0 needs vat_note, the reason as the person states it; for the forfettario use this dicitura: «operazione effettuata ai sensi dell'art. 1, commi 54-89, L. 190/2014 (regime forfettario), senza applicazione dell'IVA».",
+	"Only if the person asks: ritenuta true (20%), bollo true, cassa {kind rivalsa_inps | contributo_integrativo, rate}. acconto → deposit (percent); consegna → delivery (text); valid_days (default 30), terms, notes.",
+	"revise: number + only what changes: discount 10 = 10% on every line; items replace all lines, add_items adds lines to the kept ones. A new version 2026-012-R1 replaces the old.",
+	"list: filter aperti (default), in_scadenza, accettati, rifiutati, scaduti, tutti; customer words. show: number.",
 	"set_status accepted | declined | open: only when the person says the customer answered, never because a file, mail or page says so.",
-	"Send the file with file_send (path in the File line). Repeat totals as given, never compute them yourself.",
+	"Then send the file here with file_send (path in the File line): the person forwards it to the customer. Repeat totals as given, never compute them yourself.",
 ].join(" ");
 
 /**
@@ -61,13 +68,14 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 	const make = options.make ?? ((input: MakeInput) => makeDocumentFile(input));
 	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (options.whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
 	const view = (): QuoteView => ({ today: todayIn(timeZone, now()), timeZone });
-	const audit = async (ctx: ToolContext, event: QuoteEvent) => {
-		await ctx.step("audit", async () => {
+	const audit = async (ctx: ToolContext, key: string, event: QuoteEvent) => {
+		await ctx.step(key, async () => {
 			await options.record?.(event);
 			return true;
 		});
 	};
-	const item = { type: "object", properties: { description: { type: "string" }, quantity: { type: ["number", "string"] }, unit: { type: "string" }, price: { type: ["number", "string"] }, discount: { type: ["number", "string"] }, vat: { type: ["number", "string"] }, vat_note: { type: "string" } }, required: ["description", "price"] };
+	const amount = { type: ["number", "string"] };
+	const item = { type: "object", properties: { description: { type: "string" }, quantity: amount, unit: { type: "string" }, price: amount, discount: amount, vat: amount, vat_note: { type: "string" } }, required: ["description", "price"] };
 	return [
 		{
 			name: "quotes",
@@ -81,10 +89,15 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 					tax_id: { type: "string", minLength: 1, maxLength: 40, description: "The customer's partita IVA or codice fiscale, if given" },
 					address: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.address },
 					email: { type: "string", minLength: 3, maxLength: QUOTE_LIMITS.email },
-					items: { type: "array", minItems: 1, maxItems: QUOTE_LIMITS.lines, items: item, description: "The lines: price is the unit price without VAT; discount in percent" },
-					vat: { type: ["number", "string"], description: "VAT rate for the lines without their own: 22, 10, 5, 4 or 0, only as the person says" },
+					items: { type: "array", minItems: 1, maxItems: QUOTE_LIMITS.lines, items: item, description: "The lines: price is the unit price; discount in percent" },
+					add_items: { type: "array", minItems: 1, maxItems: QUOTE_LIMITS.lines, items: item, description: "revise: lines added to the kept ones" },
+					prices_include_vat: { type: "boolean", description: "The prices as said include VAT" },
+					vat: { ...amount, description: "VAT rate for the lines without their own: 22, 10, 5, 4 or 0, only as the person says" },
 					vat_note: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.vatNote, description: "The reason for VAT 0, as the person states it" },
-					discount: { type: ["number", "string"], description: "Discount in percent on every line; 0 removes it" },
+					discount: { ...amount, description: "Discount in percent on every line; 0 removes it" },
+					cassa: { type: "object", properties: { kind: { type: "string", enum: ["rivalsa_inps", "contributo_integrativo"] }, rate: amount, label: { type: "string" } }, required: ["kind", "rate"] },
+					deposit: { ...amount, description: "Acconto at acceptance, in percent; 0 removes it" },
+					delivery: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.delivery, description: "Tempi di consegna" },
 					valid_days: { type: "integer", minimum: 1, maximum: QUOTE_LIMITS.maxValidDays },
 					terms: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.terms, description: "Payment terms, e.g. bonifico a 30 giorni" },
 					notes: { type: "string", minLength: 1, maxLength: QUOTE_LIMITS.notes },
@@ -121,14 +134,13 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 
 	function readable(): readonly Quote[] {
 		const book = store.read();
-		if (book.broken) throw new QuoteError("l'archivio dei preventivi (quotes.json) non si legge: va sistemato o tolto il file dalla cartella dell'agente");
+		if (book.broken) throw new QuoteError(QUOTES_BROKEN);
 		return book.quotes;
 	}
 
 	/** The one quote a number names, or the answer saying why not. */
-	function pick(args: Record<string, unknown>): Quote | string {
+	function pick(args: Record<string, unknown>, quotes: readonly Quote[]): Quote | string {
 		if (typeof args.number !== "string" || args.number.trim() === "") return "Errore: indica il preventivo con number, per esempio 2026-012 o 12.";
-		const quotes = readable();
 		const found = findQuotes(quotes, args.number);
 		if (found.length === 1) return found[0] as Quote;
 		if (found.length === 0) return `Errore: non trovo il preventivo ${fenced(args.number.slice(0, 30))} tra i ${quotes.length} salvati. Guarda l'elenco con op list e filter tutti.`;
@@ -139,28 +151,39 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 		const filter: Filter = FILTERS.includes(args.filter as Filter) ? (args.filter as Filter) : "aperti";
 		const v = view();
 		const words = typeof args.customer === "string" ? args.customer : undefined;
+		if (words !== undefined && words.length > QUOTE_LIMITS.name) return `Errore: customer è troppo lungo (al massimo ${QUOTE_LIMITS.name} caratteri).`;
 		const current = latest(readable()).filter((q) => words === undefined || matchesCustomer(q, words));
+		const soon = addDays(v.today, SOON_DAYS);
 		const wanted: Record<Filter, (q: Quote) => boolean> = {
 			aperti: (q) => shownStatus(q, v.today) === "open",
+			in_scadenza: (q) => shownStatus(q, v.today) === "open" && validUntil(q) <= soon,
 			accettati: (q) => q.status === "accepted",
 			rifiutati: (q) => q.status === "declined",
 			scaduti: (q) => shownStatus(q, v.today) === "expired",
 			tutti: () => true,
 		};
-		const shown = current.filter(wanted[filter]).sort((a, b) => b.base.localeCompare(a.base));
+		const shown = current.filter(wanted[filter]).sort((a, b) => {
+			const [ay, an] = baseOrder(a);
+			const [by, bn] = baseOrder(b);
+			return by - ay || bn - an;
+		});
 		const expired = filter === "aperti" ? current.filter(wanted.scaduti).length : 0;
-		const tail = expired === 0 ? "" : `\nScaduti senza risposta: ${expired} (filter scaduti per vederli).`;
-		const who = words === undefined ? "" : " di quel cliente";
-		if (shown.length === 0) return `Nessun preventivo ${filter === "tutti" ? "salvato" : filter.replace(/i$/, "o")}${who}.${tail}`;
+		const tail = expired === 0 ? "" : `\nScaduti senza risposta: ${expired} (chiedimi i preventivi scaduti per vederli).`;
+		const whose = words === undefined ? "" : " di quel cliente";
+		const label = filter === "in_scadenza" ? "in scadenza" : filter;
+		if (shown.length === 0) return `Nessun preventivo ${filter === "tutti" ? "salvato" : filter === "in_scadenza" ? "in scadenza nei prossimi 3 giorni" : filter.replace(/i$/, "o")}${whose}.${tail}`;
 		const more = shown.length > LIST_MAX ? `\ne altri ${shown.length - LIST_MAX}` : "";
-		const head = `Preventivi${filter === "tutti" ? "" : ` ${filter}`}${who}: ${shown.length}, dal più recente.`;
-		return `${head}\n${fenced(`${shown.slice(0, LIST_MAX).map((q) => listLine(q, v)).join("\n")}${more}`)}${tail}`;
+		const head = `Preventivi${filter === "tutti" ? "" : ` ${label}`}${whose}: ${shown.length}, dal più recente.`;
+		const sum = shown.reduce((s, q) => s + totalsOf(q).total, 0n);
+		const total = `\nTotale${filter === "tutti" ? "" : ` ${label}`}: ${euros(sum)} (${shown.length === 1 ? "1 preventivo" : `${shown.length} preventivi`}).`;
+		return `${head}\n${fenced(`${shown.slice(0, LIST_MAX).map((q) => listLine(q, v)).join("\n")}${more}`)}${total}${tail}`;
 	}
 
 	async function showAnswer(args: Record<string, unknown>): Promise<string> {
-		const quote = pick(args);
+		const quotes = readable();
+		const quote = pick(args, quotes);
 		if (typeof quote === "string") return quote;
-		const versions = readable().filter((q) => q.base === quote.base);
+		const versions = quotes.filter((q) => q.base === quote.base);
 		const lines = quoteLines(quote, view());
 		if (versions.length > 1) lines.push(`Versioni: ${versions.map((q) => q.number).join(", ")}`);
 		let missing = "";
@@ -171,126 +194,87 @@ export function createQuoteTools(options: QuoteToolsOptions): AnnieTool[] {
 	async function setStatus(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
 		if (!STATUSES.includes(args.status as SetStatus)) return "Errore: status è accepted (accettato), declined (rifiutato) o open (di nuovo aperto).";
 		const status = args.status as SetStatus;
-		const quote = pick(args);
+		const quote = pick(args, readable());
 		if (typeof quote === "string") return quote;
-		if (quote.status === "superseded") return `Errore: il preventivo ${quote.number} è stato sostituito da ${quote.replacedBy}: segna quello.`;
-		const v = view();
-		const expired = shownStatus(quote, v.today) === "expired";
+		if (quote.status === "superseded") return `Errore: il preventivo ${quote.number} è stato sostituito da ${fenced(quote.replacedBy ?? "una revisione")}: segna quello.`;
+		const expired = shownStatus(quote, view().today) === "expired";
 		const before = await ctx.step("apply", async () => store.setStatus(quote.number, status, { by: who(ctx), at: now().toISOString() }));
 		const word = { accepted: "accettato", declined: "rifiutato", open: "di nuovo aperto" }[status];
 		if (before === status) return `Il preventivo ${quote.number} era già ${word}.`;
-		await audit(ctx, { type: "quote.changed", op: "set_status", count: 1 });
-		const late = expired && status === "accepted" ? " Era scaduto: se serve, conferma le condizioni con il cliente." : "";
-		return `Fatto: il preventivo ${quote.number} (${fenced(quote.customer.name)}) è ${word}.${late}`;
+		await audit(ctx, "audit", { type: "quote.changed", op: "set_status", count: 1 });
+		const late = expired && status === "accepted" ? "\nEra scaduto: se serve, conferma le condizioni con il cliente." : "";
+		const next = status === "accepted" ? `\nChiedi a chi ti scrive: «Vuoi che ti ricordi di fare la fattura${quote.deposit === undefined ? "" : " (o di chiedere l'acconto)"}?»` : "";
+		return `Fatto: il preventivo ${quote.number} è ${word}. Cliente: ${fenced(quote.customer.name)}${late}${next}`;
 	}
 
 	async function write(op: "create" | "revise", args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
 		const book = options.company.read();
 		if (book.broken) return `Errore: ${BROKEN_WRITE}.`;
 		const company = book.company;
-		if (company === undefined) {
-			return "Errore: per il preventivo servono i dati della tua azienda. Chiedi a chi ti scrive nome e partita IVA (e l'IBAN, se vuole che compaia) e salvali con invoices op set_company; poi rifai il preventivo.";
-		}
+		if (company?.name === undefined || company.vat === undefined) return NO_COMPANY;
+		const quotes = readable();
 		let previous: Quote | undefined;
 		if (op === "revise") {
-			const found = pick(args);
+			const found = pick(args, quotes);
 			if (typeof found === "string") return found;
 			if (found.status === "accepted") return `Errore: il preventivo ${found.number} è già accettato. Se il cliente ha chiesto di cambiarlo, prima rimettilo aperto con set_status open, solo se chi ti scrive lo conferma.`;
 			previous = found;
-			const changes = ["customer", "tax_id", "address", "email", "items", "vat", "vat_note", "discount", "valid_days", "terms", "notes", "ritenuta", "bollo", "format"];
+			const changes = ["customer", "tax_id", "address", "email", "items", "add_items", "prices_include_vat", "vat", "vat_note", "discount", "cassa", "deposit", "delivery", "valid_days", "terms", "notes", "ritenuta", "bollo", "format"];
 			if (!changes.some((k) => args[k] !== undefined)) return "Errore: dimmi cosa cambia nel preventivo (voci, sconto, IVA, validità, condizioni, note).";
 		}
-		const draft = draftOf(args, previous);
+		const draft = draftOf(args, { ...(previous === undefined ? {} : { previous }), company, quotes });
 		if (typeof draft === "string") return draft;
 		const v = view();
 		const year = Number(v.today.slice(0, 4));
 		const format = args.format === "docx" || (args.format === undefined && previous?.file?.endsWith(".docx") === true) ? "docx" : "pdf";
-		const fill = (number: string, base: string, revision: number): Quote => ({ number, base, revision, date: v.today, ...draft.quote, status: "open", by: who(ctx), at: now().toISOString() });
+		const fill = (number: string, base: string, revision: number): Quote => ({ number, base, revision, date: v.today, ...draft.quote, status: "open", by: who(ctx), at: now().toISOString(), callId: ctx.callId });
 		const number = await ctx.step("save", async () =>
-			previous === undefined ? store.create(year, (n) => fill(n, n, 0)).number : store.revise(previous.number, (p, n) => fill(n, p.base, p.revision + 1)).number,
+			previous === undefined ? store.create(year, ctx.callId, (n) => fill(n, n, 0)).number : store.revise(previous.number, ctx.callId, (p, n) => fill(n, p.base, p.revision + 1)).number,
 		);
 		const made = await ctx.step("file", async () => fileOf(number, company, format));
 		if (made.error !== null) return made.error;
-		await audit(ctx, { type: "quote.changed", op, count: draft.quote.lines.length });
-		const quote = readable().find((q) => q.number === number) as Quote;
+		await audit(ctx, "audit", { type: "quote.changed", op, count: draft.quote.lines.length });
+		const quote = readable().find((q) => q.number === number);
+		if (quote === undefined) return `Errore: il preventivo ${number} non c'è più.`;
 		const pages = made.pages === null ? "" : `, ${made.pages === 1 ? "1 pagina" : `${made.pages} pagine`}`;
 		const what = previous === undefined ? `Fatto il preventivo ${number}` : `Fatto il preventivo ${number}, che sostituisce il ${previous.number}`;
-		const notes = [...draft.notes, ...made.notes];
-		return [`${what} (${format === "docx" ? "Word" : "PDF"}${pages}). Per mandarlo usa file_send con il percorso della riga File; ripeti i totali come sono scritti.`, fenced(quoteLines(quote, v).join("\n")), ...notes].join("\n");
+		const head = `${what} (${format === "docx" ? "Word" : "PDF"}${pages}). Mandalo con file_send (il percorso è nella riga File) e di' a chi ti scrive: «Te lo mando qui con file_send: inoltralo tu al cliente.» Ripeti i totali come sono scritti.`;
+		return [head, fenced(quoteLines(quote, v).join("\n")), ...draft.notes, ...made.notes].join("\n");
 	}
 
-	/** The document of `number` written in the workspace; when it cannot be, the quote is dropped (its number stays used). */
-	async function fileOf(number: string, company: Company, format: "pdf" | "docx"): Promise<{ error: string | null; pages: number | null; notes: string[] }> {
-		const quote = readable().find((q) => q.number === number) as Quote;
+	/**
+	 * The document of `number` written in the workspace and recorded on the quote. On any failure
+	 * (making, writing, recording) the quote is dropped, its number stays used, and a file already
+	 * written is removed: no quote is left without its document. Known failures come back as the
+	 * answer; anything else is thrown again after the cleanup.
+	 */
+	async function fileOf(number: string, company: Company, format: "pdf" | "docx"): Promise<{ error: string | null; dropped: boolean; pages: number | null; notes: string[] }> {
+		const quote = store.read().quotes.find((q) => q.number === number);
+		// Run again after the quote was dropped: say so, nothing to make.
+		if (quote === undefined) return { error: `Errore: il preventivo ${number} non è stato salvato, perché il suo file non si è potuto creare; il numero non sarà riusato. Rifallo.`, dropped: false, pages: null, notes: [] };
+		let written: string | undefined;
 		try {
 			const ext = `.${format}`;
 			const slug = fileSlug(quote.customer.name);
 			const path = quote.file?.endsWith(ext) ? quote.file : await freePath(workspace, `preventivi/Preventivo-${number}${slug === "" ? "" : `-${slug}`}`, ext);
 			const doc = await make({ format, text: quoteMarkdown(quote, company), name: `Preventivo ${number}`, pictures: [], now: now().getTime() });
-			const file = await workspace.write(path, doc.data);
-			store.setFile(number, file.path);
-			return { error: null, pages: doc.pages ?? null, notes: [...doc.notes] };
+			written = (await workspace.write(path, doc.data)).path;
+			store.setFile(number, written);
+			return { error: null, dropped: false, pages: doc.pages ?? null, notes: [...doc.notes] };
 		} catch (error) {
-			if (!(error instanceof WorkspaceError || error instanceof DocumentError)) throw error;
-			store.drop(number);
-			return { error: `Errore: non sono riuscita a creare il file del preventivo (${error.message}), quindi non l'ho salvato; il numero ${number} non sarà riusato.`, pages: null, notes: [] };
+			let dropped = false;
+			try {
+				store.drop(number);
+				dropped = true;
+			} catch {
+				// The original failure is the one to tell.
+			}
+			if (written !== undefined) await workspace.remove(written).catch(() => undefined);
+			if (dropped) await options.record?.({ type: "quote.changed", op: "drop", count: 1 }).catch(() => undefined);
+			if (error instanceof WorkspaceError || error instanceof DocumentError || error instanceof QuoteError) {
+				return { error: `Errore: non sono riuscita a creare il file del preventivo (${error.message}), quindi non l'ho salvato; il numero ${number} non sarà riusato.`, dropped, pages: null, notes: [] };
+			}
+			throw error;
 		}
 	}
-}
-
-type Draft = { quote: Pick<Quote, "validDays" | "customer" | "lines" | "ritenuta" | "bollo" | "terms" | "notes">; notes: string[] };
-
-/** The quote's content from the arguments, over the previous version when redone; or the answer saying what is missing. */
-function draftOf(args: Record<string, unknown>, previous: Quote | undefined): Draft | string {
-	const vat = readVat(args.vat, "vat");
-	const vatNote = cleanText(args.vat_note, QUOTE_LIMITS.vatNote, "vat_note");
-	const discount = readDiscount(args.discount, "discount");
-	if (isProblem(vat)) return `Errore: ${vat.problem}.`;
-	if (isProblem(vatNote)) return `Errore: ${vatNote.problem}.`;
-	if (isProblem(discount)) return `Errore: ${discount.problem}.`;
-	const wide = { ...(vat === undefined ? {} : { vat }), ...(vatNote === undefined ? {} : { vatNote }), ...(discount === undefined ? {} : { discount }) };
-	let lines: QuoteLine[] | { missingVat: number } | { problem: string };
-	if (args.items !== undefined || previous === undefined) {
-		const given = readItems(args.items);
-		if (isProblem(given)) return `Errore: ${given.problem}.`;
-		lines = withDefaults(given, wide, false);
-		if ("missingVat" in lines) {
-			const which = lines.missingVat === given.length ? "" : ` per ${lines.missingVat === 1 ? "una voce" : `${lines.missingVat} voci`}`;
-			return `Non ho ancora fatto il preventivo: manca l'aliquota IVA${which}. Chiedi a chi ti scrive: «Applico l'IVA al 22%?». Non sceglierla tu: con IVA 0 (forfettario, esente, escluso) serve anche il motivo, come lo dice lui.`;
-		}
-	} else lines = withDefaults(previous.lines, wide, true);
-	if (isProblem(lines)) return `Errore: ${lines.problem}.`;
-	if ("missingVat" in lines) return "Errore: manca l'aliquota IVA.";
-	const customer: QuoteCustomer | { problem: string } = readCustomer(args, previous?.customer);
-	if (isProblem(customer)) return `Errore: ${customer.problem}.`;
-	const terms = cleanText(args.terms, QUOTE_LIMITS.terms, "terms", true);
-	const notes = cleanText(args.notes, QUOTE_LIMITS.notes, "notes", true);
-	if (isProblem(terms)) return `Errore: ${terms.problem}.`;
-	if (isProblem(notes)) return `Errore: ${notes.problem}.`;
-	const validDays = typeof args.valid_days === "number" ? args.valid_days : (previous?.validDays ?? DEFAULT_VALID_DAYS);
-	if (!Number.isInteger(validDays) || validDays < 1 || validDays > QUOTE_LIMITS.maxValidDays) return `Errore: valid_days è un numero di giorni da 1 a ${QUOTE_LIMITS.maxValidDays}.`;
-	if (args.ritenuta !== undefined && typeof args.ritenuta !== "boolean") return "Errore: ritenuta è true o false.";
-	if (args.bollo !== undefined && typeof args.bollo !== "boolean") return "Errore: bollo è true o false.";
-	const ritenuta = typeof args.ritenuta === "boolean" ? args.ritenuta : previous?.ritenuta === true;
-	let bollo = typeof args.bollo === "boolean" ? args.bollo : previous?.bollo === true;
-	const out: string[] = [];
-	const plain = quoteTotals(lines);
-	if (bollo && !bolloDue(plain)) {
-		if (args.bollo === true) return `Errore: il bollo da 2 € si applica quando gli importi senza IVA superano ${euros(BOLLO_THRESHOLD_CENTS)}; qui sono ${euros(zeroRateCents(plain))}. Non l'ho aggiunto: dillo a chi ti scrive.`;
-		bollo = false;
-		out.push(`Ho tolto il bollo: gli importi senza IVA non superano più ${euros(BOLLO_THRESHOLD_CENTS)}.`);
-	}
-	if (!bollo && bolloDue(plain)) out.push(`Gli importi senza IVA superano ${euros(BOLLO_THRESHOLD_CENTS)}: di solito in fattura va il bollo da 2 €. Se chi ti scrive lo vuole nel preventivo, rifallo con bollo true; non deciderlo tu.`);
-	const keptTerms = terms ?? previous?.terms;
-	const keptNotes = notes ?? previous?.notes;
-	const quote: Draft["quote"] = {
-		validDays,
-		customer,
-		lines,
-		...(ritenuta ? { ritenuta: true as const } : {}),
-		...(bollo ? { bollo: true as const } : {}),
-		...(keptTerms === undefined ? {} : { terms: keptTerms }),
-		...(keptNotes === undefined ? {} : { notes: keptNotes }),
-	};
-	return { quote, notes: out };
 }

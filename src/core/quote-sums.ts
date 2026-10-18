@@ -1,12 +1,16 @@
 /**
  * The arithmetic of a preventivo, exact: amounts are digit strings read into bigint cents, never
- * floats. Rounding is half up to the cent, once per line (quantity × price less the line's
- * discount) and once per VAT rate on the sum of its lines, as an invoice's riepilogo does; the
- * ritenuta is rounded once on the whole imponibile. Nothing here decides a tax rule: the rates,
- * the ritenuta and the bollo are applied only as the caller says.
+ * floats. Rounding is half up to the cent:
+ * - a line: quantity × unit price less its discount, once;
+ * - prices without VAT: per rate, the cassa on the sum of its lines, then the IVA on that
+ *   imponibile, as an invoice's riepilogo does;
+ * - prices with VAT included: per rate, the gross the person said is kept exactly: imponibile =
+ *   gross × 100 / (100 + rate), IVA = gross − imponibile (said in a note when it is a cent off the
+ *   rate times the imponibile); each line's net is its gross taken out the same way, the rounding
+ *   difference put on the largest line so the lines add up to the imponibile;
+ * - ritenuta, acconto: once, on their base.
+ * Nothing here decides a tax rule: rates, cassa, ritenuta and bollo apply only as the caller says.
  */
-import { fromUnits, money } from "./fattura-pa.ts";
-
 export class QuoteSumError extends Error {
 	override readonly name = "QuoteSumError";
 }
@@ -21,46 +25,85 @@ export const RITENUTA_RATE = 20;
 export const BOLLO_CENTS = 200n;
 export const BOLLO_THRESHOLD_CENTS = 7747n;
 
+/**
+ * A professional's social security charge on the fees, only when the person says so:
+ * - `rivalsa_inps` (gestione separata INPS, usually 4%): part of the fee, so it takes VAT and is in
+ *   the ritenuta's base;
+ * - `contributo_integrativo` (casse professionali, usually 4% or 2%): takes VAT, but is not in the
+ *   ritenuta's base (art. 25 DPR 600/1973 taxes the fee, not the contribution owed to the cassa).
+ * Either way it is computed on the lines' imponibile, per VAT rate, before VAT.
+ */
+export const CASSA_KINDS = ["rivalsa_inps", "contributo_integrativo"] as const;
+export type CassaKind = (typeof CASSA_KINDS)[number];
+export type Cassa = { readonly kind: CassaKind; readonly rate: string; readonly label: string };
+
 /** A line as stored: canonical decimal strings with a dot («500.00», «1.5», «12.5»). */
 export type SumLine = { readonly quantity: string; readonly price: string; readonly discount?: string; readonly vat: VatRate };
 
-export type RateTotal = { readonly rate: VatRate; readonly taxable: bigint; readonly vat: bigint };
+export type SumOptions = { readonly ritenuta?: boolean; readonly bollo?: boolean; readonly includeVat?: boolean; readonly cassa?: Cassa; readonly deposit?: string };
+
+export type RateTotal = { readonly rate: VatRate; readonly lines: bigint; readonly cassa: bigint; readonly taxable: bigint; readonly vat: bigint };
 
 export type QuoteTotals = {
-	/** Each line's amount, after its discount, in cents. */
+	/** Each line's amount as shown, after its discount: with VAT when the prices include it. */
 	readonly lines: readonly bigint[];
-	/** Per rate, from the highest: imponibile and IVA in cents. */
+	/** Each line's imponibile. */
+	readonly nets: readonly bigint[];
 	readonly rates: readonly RateTotal[];
+	readonly cassa: bigint;
 	readonly taxable: bigint;
 	readonly vat: bigint;
-	/** 2,00 € when the bollo is charged, else 0. */
 	readonly bollo: bigint;
 	/** Imponibile + IVA + bollo. */
 	readonly total: bigint;
 	readonly ritenuta: bigint;
-	/** Total less the ritenuta. */
+	/** Total less the ritenuta: what the customer pays. */
 	readonly net: bigint;
+	readonly deposit: bigint;
+	readonly balance: bigint;
+	/** Rates whose IVA, taken out of prices with VAT, is a cent off the rate times the imponibile. */
+	readonly byDifference: readonly VatRate[];
 };
 
-const DECIMAL = /^(\d{1,12})(?:\.(\d{1,4}))?$/;
+/** Returned by readDecimal for «1.250» or «1,500»: thousands or decimals, nobody can tell. */
+export const AMBIGUOUS = "ambiguous" as const;
+
+const DECIMAL = /^(\d{1,12})(?:\.(\d{1,8}))?$/;
+const ITALIAN_GROUPED = /^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/;
+const ENGLISH_GROUPED = /^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/;
+const THOUSANDS_DOTS = /^\d{1,3}(?:\.\d{3}){2,}$/;
+const THOUSANDS_COMMAS = /^\d{1,3}(?:,\d{3}){2,}$/;
+const ONE_SEPARATOR = /^(\d+)[.,](\d+)$/;
+const NOISE = /[€%\s ]|^eur(?:o)?|eur(?:o)?$/gi;
 
 /**
- * A number as a person writes it, to a canonical dot string: «1.234,56», «1234.56», «500», «€ 500»,
- * «12,5%». A dot alone is thousands only in groups of three («1.500» is 1500, «12.5» is 12.5).
- * At most `decimals` decimals; undefined when it is no number.
+ * A number as a person writes it, to a canonical dot string. Clear forms: «1.234,56», «1,234.56»,
+ * «1.234.567», «12,30», «1,5», «1.5», «€ 500», «22%». A single separator followed by exactly three
+ * digits («1.250», «1,500») is AMBIGUOUS, unless the integer part is 0. A JSON number is read as
+ * it is. At most `decimals` decimals; undefined when it is no number (also «1.5,3», «1,2.5»).
  */
-export function readDecimal(input: string | number, decimals: number): string | undefined {
-	let text = typeof input === "number" ? (Number.isFinite(input) ? String(input) : "") : input;
-	text = text.replace(/[€%\s ]/g, "").replace(/^eur/i, "").replace(/eur(o)?$/i, "");
-	if (text === "" || text.length > 30) return undefined;
-	if (text.includes(",") && text.includes(".")) {
-		// The last of the two separates decimals: 1.234,56 or 1,234.56.
-		text = text.lastIndexOf(",") > text.lastIndexOf(".") ? text.replace(/\./g, "").replace(",", ".") : text.replace(/,/g, "");
-	} else if (text.includes(",")) {
-		if ((text.match(/,/g) ?? []).length > 1) return undefined;
-		text = text.replace(",", ".");
-	} else if (/^[1-9]\d{0,2}(?:\.\d{3})+$/.test(text)) {
-		text = text.replace(/\./g, "");
+export function readDecimal(input: string | number, decimals: number): string | typeof AMBIGUOUS | undefined {
+	let text: string;
+	if (typeof input === "number") {
+		if (!Number.isFinite(input) || input < 0) return undefined;
+		text = String(input);
+		if (/e/i.test(text)) return undefined;
+	} else {
+		text = input.replace(NOISE, "");
+		if (text === "" || text.length > 30) return undefined;
+		if (text.includes(",") && text.includes(".")) {
+			if (ITALIAN_GROUPED.test(text)) text = text.replace(/\./g, "").replace(",", ".");
+			else if (ENGLISH_GROUPED.test(text)) text = text.replace(/,/g, "");
+			else return undefined;
+		} else if (THOUSANDS_DOTS.test(text)) text = text.replace(/\./g, "");
+		else if (THOUSANDS_COMMAS.test(text)) text = text.replace(/,/g, "");
+		else {
+			const one = ONE_SEPARATOR.exec(text);
+			if (one !== null) {
+				if ((one[2] as string).length === 3 && !/^0+$/.test(one[1] as string)) return AMBIGUOUS;
+				text = `${one[1]}.${one[2]}`;
+			}
+		}
 	}
 	const m = DECIMAL.exec(text);
 	if (m === null) return undefined;
@@ -82,29 +125,60 @@ function halfUp(numerator: bigint, denominator: bigint): bigint {
 	return (numerator * 2n + denominator) / (denominator * 2n);
 }
 
+/** `cents` × `percent` (a decimal string, 2 decimals at most) / 100, half up. */
+function percentOf(cents: bigint, percent: string): bigint {
+	return halfUp(cents * scaled(percent, 2), 10_000n);
+}
+
 /** Quantity to 3 decimals, price to 4, discount to 2: one line's amount in cents, rounded half up. */
 export function lineCents(line: SumLine): bigint {
 	const quantity = scaled(line.quantity, 3);
 	const price = scaled(line.price, 4);
 	const discount = line.discount === undefined ? 0n : scaled(line.discount, 2);
-	// price × 100 cents / 1e4 × quantity / 1e3 × (1e4 − discount) / 1e4
 	return halfUp(price * 100n * quantity * (10_000n - discount), 10_000n * 1_000n * 10_000n);
 }
 
-/** The quote's totals: lines, then per rate, then ritenuta and bollo when asked. */
-export function quoteTotals(lines: readonly SumLine[], options: { readonly ritenuta?: boolean; readonly bollo?: boolean } = {}): QuoteTotals {
+/** The imponibile in a gross amount at `rate`. */
+function netOf(gross: bigint, rate: VatRate): bigint {
+	return halfUp(gross * 100n, BigInt(100 + rate));
+}
+
+/** The quote's totals: lines, then per rate, then ritenuta, bollo and acconto when asked. */
+export function quoteTotals(lines: readonly SumLine[], options: SumOptions = {}): QuoteTotals {
+	if (options.includeVat === true && options.cassa !== undefined) throw new QuoteSumError("cassa with VAT-inclusive prices");
 	const amounts = lines.map(lineCents);
-	const byRate = new Map<VatRate, bigint>();
-	lines.forEach((line, i) => byRate.set(line.vat, (byRate.get(line.vat) ?? 0n) + (amounts[i] as bigint)));
-	const rates = [...byRate]
-		.sort((a, b) => b[0] - a[0])
-		.map(([rate, taxable]) => ({ rate, taxable, vat: halfUp(taxable * BigInt(rate), 100n) }));
+	const nets = [...amounts];
+	const groups = new Map<VatRate, number[]>();
+	lines.forEach((line, i) => groups.set(line.vat, [...(groups.get(line.vat) ?? []), i]));
+	const rates: RateTotal[] = [];
+	const byDifference: VatRate[] = [];
+	for (const [rate, members] of [...groups].sort((a, b) => b[0] - a[0])) {
+		const sum = members.reduce((s, i) => s + (amounts[i] as bigint), 0n);
+		if (options.includeVat === true) {
+			const taxable = netOf(sum, rate);
+			for (const i of members) nets[i] = netOf(amounts[i] as bigint, rate);
+			const largest = members.reduce((a, b) => ((amounts[b] as bigint) > (amounts[a] as bigint) ? b : a));
+			nets[largest] = (nets[largest] as bigint) + taxable - members.reduce((s, i) => s + (nets[i] as bigint), 0n);
+			const vat = sum - taxable;
+			if (vat !== halfUp(taxable * BigInt(rate), 100n)) byDifference.push(rate);
+			rates.push({ rate, lines: taxable, cassa: 0n, taxable, vat });
+		} else {
+			const cassa = options.cassa === undefined ? 0n : percentOf(sum, options.cassa.rate);
+			const taxable = sum + cassa;
+			rates.push({ rate, lines: sum, cassa, taxable, vat: halfUp(taxable * BigInt(rate), 100n) });
+		}
+	}
+	const cassa = rates.reduce((s, r) => s + r.cassa, 0n);
 	const taxable = rates.reduce((s, r) => s + r.taxable, 0n);
 	const vat = rates.reduce((s, r) => s + r.vat, 0n);
 	const bollo = options.bollo === true ? BOLLO_CENTS : 0n;
 	const total = taxable + vat + bollo;
-	const ritenuta = options.ritenuta === true ? halfUp(taxable * BigInt(RITENUTA_RATE), 100n) : 0n;
-	return { lines: amounts, rates, taxable, vat, bollo, total, ritenuta, net: total - ritenuta };
+	// The fees, and the rivalsa INPS that is part of them; never the contributo integrativo nor the bollo.
+	const ritenutaBase = rates.reduce((s, r) => s + r.lines, 0n) + (options.cassa?.kind === "rivalsa_inps" ? cassa : 0n);
+	const ritenuta = options.ritenuta === true ? halfUp(ritenutaBase * BigInt(RITENUTA_RATE), 100n) : 0n;
+	const net = total - ritenuta;
+	const deposit = options.deposit === undefined ? 0n : percentOf(net, options.deposit);
+	return { lines: amounts, nets, rates, cassa, taxable, vat, bollo, total, ritenuta, net, deposit, balance: net - deposit, byDifference };
 }
 
 /** The imponibile without VAT, in cents: what the bollo threshold is measured on. */
@@ -115,16 +189,6 @@ export function zeroRateCents(totals: QuoteTotals): bigint {
 /** Whether the bollo applies by the threshold: amounts without VAT over 77,47 €. */
 export function bolloDue(totals: QuoteTotals): boolean {
 	return zeroRateCents(totals) > BOLLO_THRESHOLD_CENTS;
-}
-
-/** Cents written the Italian way: 1.234,56 €, a minus in front when negative. */
-export function euros(cents: bigint): string {
-	return money(fromUnits(cents * 1_000_000n), "EUR") as string;
-}
-
-/** A unit price as given, with at least two decimals: 0,0125 € or 500,00 €. */
-export function priceText(price: string): string {
-	return money(price, "EUR") as string;
 }
 
 /** A canonical decimal the Italian way, without forcing decimals: 1,5 or 1.000. */

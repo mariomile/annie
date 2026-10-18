@@ -9,7 +9,7 @@
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validAddress } from "./email-address.ts";
-import { type Company, INVOICE_LIMITS, InvoiceError, instalmentRange, type Marker, type PaidEntry, paidSet } from "./invoices.ts";
+import { type Company, INVOICE_LIMITS, REGIMES, InvoiceError, instalmentRange, type Marker, type PaidEntry, paidSet } from "./invoices.ts";
 import { updateJsonFile } from "./locked-json.ts";
 import { bookKey, type Contact, isText, type ReminderEntry, type ReminderItem, ReminderLimit, type ReminderMade, validContacts, validReminders, withContact, withoutPaidBefore, withReminders } from "./reminder-book.ts";
 
@@ -32,7 +32,7 @@ export const REMINDERS_BROKEN = "i solleciti annotati in invoices.json non si le
 const CONTACTS_BROKEN = "gli indirizzi dei clienti salvati in invoices.json non si leggono: non li cambio, perché andrebbero persi";
 
 /** The company: a partita IVA or a name, its IBANs (at most 5) and a signature for the letters (at most 300 characters on 4 lines). */
-export const COMPANY_LIMITS = { ibans: 5, signature: 300, signatureLines: 4 } as const;
+export const COMPANY_LIMITS = { ibans: 5, signature: 300, signatureLines: 4, address: 200, phone: 30, email: 254, cf: 16, rea: 20 } as const;
 
 /** Reminders of an invoice paid in full are kept this long after the payment, then dropped at the next write. */
 const KEEP_PAID_REMINDERS_MS = 365 * 24 * 60 * 60 * 1000;
@@ -219,7 +219,9 @@ function validCompany(company: unknown): boolean {
 	const c = company as Company;
 	if ((c.vat !== undefined && !isText(c.vat)) || (c.name !== undefined && !isText(c.name))) return false;
 	if (c.ibans !== undefined && !(Array.isArray(c.ibans) && c.ibans.length <= COMPANY_LIMITS.ibans && c.ibans.every((i) => isText(i) && i.length <= 34))) return false;
-	return c.signature === undefined || (isText(c.signature, COMPANY_LIMITS.signature) && c.signature.split("\n").length <= COMPANY_LIMITS.signatureLines);
+	if (c.signature !== undefined && !(isText(c.signature, COMPANY_LIMITS.signature) && c.signature.split("\n").length <= COMPANY_LIMITS.signatureLines)) return false;
+	for (const key of ["address", "phone", "email", "cf", "rea"] as const) if (c[key] !== undefined && !isText(c[key], COMPANY_LIMITS[key])) return false;
+	return c.regime === undefined || REGIMES.includes(c.regime);
 }
 
 /** The book when the JSON has its shape; undefined otherwise. Reminders and contacts are checked when used. */
