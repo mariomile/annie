@@ -347,4 +347,69 @@ describe("the board (ADR 0050)", () => {
 			expect(store.get(card.id)?.auto).toBeUndefined();
 		});
 	});
+
+	describe("sotto-schede e passaggi tra agenti (ADR 0065)", () => {
+		it("the agente working on a scheda hands part of it to another: it starts with the same person, and the result comes back", async () => {
+			const { work, store, posts, opened } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
+			const reviews: { card: { n: number }; people: string[] }[] = [];
+			work.events.on("review", (r) => reviews.push(r));
+			const parent = await work.create({ title: "Newsletter di novembre", assignee: "ricerca", auto: true }, anna, "p_anna");
+			const sub = await work.create({ title: "Scrivi il testo", description: "Tono leggero", assignee: "scrittore", parent: parent.id }, ricerca, undefined);
+			expect(sub).toMatchObject({ parent: parent.id, status: "in_corso", work: { agent: "scrittore", personId: "p_anna" }, auto: { rounds: 0 } });
+			expect(opened.at(-1)).toMatchObject({ agent: "scrittore", personId: "p_anna", title: "#2 Scrivi il testo" });
+			const brief = posts.at(-1)?.text ?? "";
+			expect(brief).toMatch(/Fa parte della scheda #1 «Newsletter di novembre»/);
+			// Written by an agente: fenced.
+			expect(brief).toMatch(/<<<scheda [0-9a-f]+: scritta da un agente/);
+			await work.change(sub.id, { status: "da_rivedere", comment: "Testo pronto nel file" }, { kind: "agent", id: "scrittore" }, undefined);
+			expect(reviews.map((r) => [r.card.n, r.people])).toEqual([[2, ["p_anna"]]]);
+			const back = posts.at(-1);
+			expect(back).toMatchObject({ agent: "ricerca", threadId: parent.work?.threadId, personId: "p_anna" });
+			expect(back?.text).toMatch(/^\[Scheda #1\] Scrittore ha finito la sotto-scheda #2 «Scrivi il testo»/);
+			expect(back?.text).toMatch(/<<<sotto-scheda [0-9a-f]+: scritto da un agente[^\n]*\nTesto pronto nel file\n<<<fine sotto-scheda/);
+			expect(store.get(parent.id)?.status).toBe("in_corso");
+		});
+
+		it("waits for a person when it is not the creator's own scheda in progress, or the person may not talk to that agente", async () => {
+			const { work } = setup();
+			const parent = await work.create({ title: "x", assignee: "ricerca" }, anna, "p_anna");
+			// Another agente: waits.
+			expect((await work.create({ title: "a", assignee: "ricerca", parent: parent.id }, { kind: "agent", id: "annie" }, undefined)).status).toBe("da_fare");
+			// Anna may not talk to Vendite: the scheda is made, and waits.
+			const refused = await work.create({ title: "b", assignee: "vendite", parent: parent.id }, ricerca, undefined);
+			expect(refused).toMatchObject({ status: "da_fare", parent: parent.id });
+			expect(refused.work).toBeUndefined();
+			// The parent waiting in Da fare: no start either.
+			const waiting = await work.create({ title: "y" }, anna, "p_anna");
+			expect((await work.create({ title: "c", assignee: "ricerca", parent: waiting.id }, ricerca, undefined)).status).toBe("da_fare");
+		});
+
+		it("one level, at most ten open, never under a closed scheda; deleting the scheda leaves its sotto-schede on their own", async () => {
+			const { work, store } = setup();
+			const parent = store.create({ title: "x" }, anna);
+			const sub = store.create({ title: "s", parent: parent.id }, anna);
+			expect(() => store.create({ title: "ss", parent: sub.id }, anna)).toThrow(/già una sotto-scheda/);
+			for (let i = 1; i < BOARD_LIMITS.children; i++) store.create({ title: `s${i}`, parent: parent.id }, anna);
+			expect(() => store.create({ title: "troppe", parent: parent.id }, anna)).toThrow(/già 10 sotto-schede aperte/);
+			store.update(sub.id, { status: "fatto" }, anna);
+			expect(store.create({ title: "ora sì", parent: parent.id }, anna).parent).toBe(parent.id);
+			store.remove(parent.id);
+			expect(store.list().every((c) => c.parent === undefined)).toBe(true);
+			const closed = store.create({ title: "chiusa" }, anna);
+			store.update(closed.id, { status: "fatto" }, anna);
+			expect(() => store.create({ title: "z", parent: closed.id }, anna)).toThrow(/è chiusa/);
+			await expect(work.create({ title: "z", parent: "c_nessuna" }, anna, "p_anna")).rejects.toThrow(/non c'è/);
+		});
+
+		it("the tools: board_create with parent hands it over; board_show lists the sotto-schede", async () => {
+			const { work, store } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
+			const parent = await work.create({ title: "Newsletter", assignee: "ricerca" }, anna, "p_anna");
+			const tools = createBoardTools({ self: "ricerca", store, work, agents: async () => [{ id: "ricerca", name: "Ricercatore" }, { id: "scrittore", name: "Scrittore" }], personOf: (t) => (t.channel === "web" ? "p_anna" : undefined) });
+			const tool = (n: string) => tools.find((t) => t.name === n) as (typeof tools)[number];
+			const said = await tool("board_create").execute({ title: "Testo", assignee: "Scrittore", parent: "#1" }, ctx(parent.work?.threadId));
+			expect(said).toMatch(/Sotto-scheda di #1, #2 affidata a Scrittore, che ci sta lavorando/);
+			expect(await tool("board_show").execute({ card: "1" }, ctx(parent.work?.threadId))).toMatch(/Sotto-schede:\n- #2 \[In corso\] Testo: assegnata a Scrittore \(parte di #1\)/);
+			expect(await tool("board_create").execute({ title: "x", parent: "#99" }, ctx(parent.work?.threadId))).toMatch(/non c'è/);
+		});
+	});
 });

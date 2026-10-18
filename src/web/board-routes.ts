@@ -64,9 +64,9 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const body = (await readJson(req)) as Record<string, unknown>;
 		const { priority, assignee } = cardBody(body);
 		const card = await work
-			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(body.auto === true ? { auto: true } : {}) }, { kind: "person", id: p.id }, p.id)
+			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(body.auto === true ? { auto: true } : {}), ...(typeof body.parent === "string" && body.parent !== "" ? { parent: (await visibleCard(body.parent, p)).id } : {}) }, { kind: "person", id: p.id }, p.id)
 			.catch(boardError);
-		await runtime.audit(tenantId).append({ type: "board.card_created", cardId: card.id, personId: p.id, ...(card.assignee === undefined ? {} : { assignee: card.assignee }) });
+		await runtime.audit(tenantId).append({ type: "board.card_created", cardId: card.id, personId: p.id, ...(card.assignee === undefined ? {} : { assignee: card.assignee }), ...(card.parent === undefined ? {} : { parent: card.parent }) });
 		return { card };
 	});
 	route("PUT", "/api/board/:id", "person", async ({ person, params, req }) => {

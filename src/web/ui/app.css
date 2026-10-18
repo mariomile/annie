@@ -549,6 +549,8 @@ ol.steps .stack { display: grid; gap: 8px; }
 dialog.board-dialog { max-width: 600px; }
 .board-alone { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0 12px; }
 .board-alone input { flex: none; margin-top: 3px; }
+.board-children { margin: 8px 0; }
+.board-children ul { margin: 4px 0 0; padding-left: 18px; }
 .board-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); max-height: 30vh; overflow: auto; }
 .board-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .board-events { list-style: none; margin: 16px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 28vh; overflow: auto; border-top: 1px solid var(--border); padding-top: 12px; }

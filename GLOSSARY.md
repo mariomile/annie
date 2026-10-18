@@ -32,6 +32,10 @@ _Avoid_: kanban (nei testi per le persone), backlog, issue tracker
 Una cosa da fare sulla board, con numero (#12), titolo, descrizione, priorità, l'agente a cui è affidata e la sua cronologia di spostamenti e commenti. Vedi ADR 0050.
 _Avoid_: issue, ticket, card, task (che è un'istruzione programmata)
 
+**Sotto-scheda**:
+Una scheda che fa parte di un'altra, un solo livello. Quella che crea l'agente della scheda mentre ci lavora con una persona parte subito con un altro agente, e il risultato torna all'agente della scheda. Vedi ADR 0065.
+_Avoid_: sub-task, child card
+
 **Messaggio tra agenti**:
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
 _Avoid_: chat tra bot, handoff, delega

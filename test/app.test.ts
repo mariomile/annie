@@ -356,6 +356,26 @@ describe("pnpm start (startAnnie)", () => {
 		expect(audit.some((e) => e.type === "board.card_created")).toBe(true);
 	});
 
+	it("sotto-schede (ADR 0065): an agente hands part of its scheda to another, and hears back when it is done", async () => {
+		const { annie, base } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "ricerca", name: "Ricercatore" });
+		await api("/api/instances", { id: "scrittore", name: "Scrittore" });
+		const { card } = await api("/api/board", { title: "Newsletter", assignee: "ricerca" });
+		const entries = async (agent: string, thread: string) => (await api(`/api/instances/${agent}/threads/${thread}`)).entries as { from: string; text?: string }[];
+		await api(`/api/instances/ricerca/threads/${card.work.threadId}/messages`, { text: '/tool board_create {"title":"Testo","assignee":"scrittore","parent":"#1"}' });
+		await until(async () => (await api("/api/board")).cards.length === 2);
+		const sub = (await api("/api/board")).cards[1];
+		expect(sub).toMatchObject({ n: 2, parent: card.id, status: "in_corso", work: { agent: "scrittore" } });
+		await until(async () => (await entries("scrittore", sub.work.threadId)).some((e) => e.text?.includes("Fa parte della scheda #1 «Newsletter»")));
+		await api(`/api/instances/scrittore/threads/${sub.work.threadId}/messages`, { text: '/tool board_update {"status":"da_rivedere","comment":"Testo nel file"}' });
+		await until(async () => (await entries("ricerca", card.work.threadId)).some((e) => e.text?.startsWith("[Scheda #1] Scrittore ha finito la sotto-scheda #2")));
+		// From the console: a sotto-scheda of a scheda the person sees.
+		const { card: mine } = await api("/api/board", { title: "Immagini", parent: card.id });
+		expect(mine.parent).toBe(card.id);
+		expect((await api("/api/board", { title: "x", parent: "c_nessuna" })).error).toMatch(/Scheda inesistente/);
+	});
+
 	it("a task programmato of an instance created from the console runs without a restart", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);
