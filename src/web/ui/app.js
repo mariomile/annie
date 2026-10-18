@@ -641,7 +641,7 @@ function googleCard(inst, allowed) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Google"),
+		h("h2", "Google"),
 		h("p.muted", "Chi ha collegato il proprio Google (dal menu del suo account) può chiedere a questo agente di leggere la sua posta e il suo calendario, solo nelle sue conversazioni dalla console. Se il server lo permette, anche di preparare mail ed eventi: partono solo quando quella persona li approva."),
 		h("label.row-gap", toggle, h("span", "Consenti Google a questo agente")),
 	);
@@ -662,7 +662,7 @@ function speechCard(inst, host, allowed, understood) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Risposte a voce"),
+		h("h2", "Risposte a voce"),
 		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Annie risponde con un vocale e con il testo. Ognuno può chiederle «rispondimi sempre a voce» o «niente vocali». La voce la fa ${host}: riceve solo il testo delle risposte da leggere, mai i vocali di chi le scrive.`),
 		understood ? null : h("p.chip.warn", "Per rispondere ai vocali Annie deve prima capirli: accendi anche Messaggi vocali."),
 		h("label.row-gap", toggle, h("span", "Rispondi a voce ai vocali")),
@@ -684,7 +684,7 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Immagini"),
+		h("h2", "Immagini"),
 		h("p.muted", `Annie crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e ritocca le foto che le mandano. Le genera il servizio ${host}, che riceve la descrizione e, per un ritocco, la foto. L'immagine arriva in chat e resta tra i file. Al massimo ${maxPerDay} immagini al giorno per tutto l'account.`),
 		h("label.row-gap", toggle, h("span", "Consenti le immagini a questo agente")),
 	);
@@ -772,7 +772,7 @@ function modelCard(inst, current, providers) {
 	);
 	const card = h(
 		"div.card.pad",
-		h("div.row-gap", h("h3", "Modello AI"), status),
+		h("div.row-gap", h("h2", "Modello AI"), status),
 		h("p.muted", "Il modello con cui Annie pensa e risponde: Claude, GPT, Gemini, Grok, Mistral, DeepSeek, Kimi, o uno dei tanti di OpenRouter. Cambiarlo non tocca chat, file e memoria: anche le chat vecchie continuano con il nuovo modello."),
 		h("label.field", h("span", "Provider"), provider),
 		filterRow,
@@ -811,7 +811,7 @@ function voiceCard(inst, host, allowed) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Messaggi vocali"),
+		h("h2", "Messaggi vocali"),
 		h("p.muted", `I vocali di Telegram e WhatsApp vengono trascritti da ${host} e arrivano ad Annie come testo. Solo quelli delle persone che possono scrivere; l'audio va solo a quel servizio.`),
 		h("label.row-gap", toggle, h("span", "Trascrivi i vocali di questo agente")),
 	);
@@ -843,7 +843,7 @@ function searchCard(inst, host, allowed, hosts) {
 	};
 	return h(
 		"div.card.pad",
-		h("h3", "Ricerca sul web"),
+		h("h2", "Ricerca sul web"),
 		h("p.muted", `Annie cerca notizie, prezzi, orari e tutto quello che cambia, e se glielo chiedi prepara un report di ricerca con le fonti numerate. Le ricerche vanno a ${host}, solo le parole cercate. Le pagine trovate le apre solo dai siti consentiti qui sotto.`),
 		h("label.row-gap", toggle, h("span", "Consenti la ricerca a questo agente")),
 		allowed && !everything
@@ -866,7 +866,7 @@ function webCard(inst, hosts) {
 	};
 	return h(
 		"div.card.pad",
-		h("h3", "Navigazione web"),
+		h("h2", "Navigazione web"),
 		h("p.muted", "I siti che Annie può leggere, fotografare e usare con il suo browser: apre le pagine, clicca, scrive nelle ricerche e nei filtri, ma non invia moduli (per quello servono le azioni sul web, con approvazione). Quello che scrive in una ricerca arriva al sito. Un dominio per riga, i sottodomini sono compresi. Meglio elencarli uno per uno: * vuol dire tutti i siti pubblici, anche quelli dove una pagina potrebbe spingere Annie a cercare qualcosa che non deve. Vuoto: nessuno."),
 		h("label.field", h("span", "Siti consentiti"), list),
 		h("button.btn", { onclick: save }, "Salva i siti"),
@@ -887,7 +887,7 @@ function webActionsCard(inst, allowed) {
 	};
 	return h(
 		"div.card.pad",
-		h("h3", "Azioni sul web"),
+		h("h2", "Azioni sul web"),
 		h("p.muted", "Annie può chiedere di inviare un modulo di un sito consentito (un contatto, una prenotazione). Ogni invio aspetta l'approvazione di chi l'ha chiesto o di un approvatore, che vede destinazione e valori esatti; niente parte da solo."),
 		h("label.row-gap", toggle, h("span", "Consenti le azioni sul web con approvazione")),
 	);
@@ -913,7 +913,7 @@ function agentsCard(inst, settings) {
 	});
 	return h(
 		"div.card.pad",
-		h("h3", "Agenti che possono scrivergli"),
+		h("h2", "Agenti che possono scrivergli"),
 		h("p.muted", `Un agente spuntato può chiedere aiuto a ${inst.name} mentre lavora: ${inst.name} risponde con i suoi strumenti e solo la memoria condivisa, e la risposta torna nella chat da cui era partita la domanda. Le conversazioni tra agenti non compaiono in chat; in Attività resta traccia di ogni messaggio. Per farli collaborare tutti insieme usa «Fate squadra» nella pagina Agenti.`),
 		others.length === 0 ? h("p.muted", "Non ci sono altri agenti: creane uno dalla pagina Agenti.") : boxes.map((b) => b.row),
 	);
@@ -938,7 +938,7 @@ function computerCard(inst, allowed, problem) {
 		});
 	return h(
 		"div.card.pad",
-		h("h3", "Computer"),
+		h("h2", "Computer"),
 		h("p.muted", "Annie esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
 		problem ? h("p.warn", `Il computer non è disponibile: ${problem}.`) : null,
 		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo computer")),
@@ -948,7 +948,7 @@ function computerCard(inst, allowed, problem) {
 
 /** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
 function desktopCard(inst, allowed, desktop) {
-	if (!desktop.available) return h("div.card.pad", h("h3", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
+	if (!desktop.available) return h("div.card.pad", h("h2", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {
 		try {
@@ -973,7 +973,7 @@ function desktopCard(inst, allowed, desktop) {
 	const many = desktop.shared ? "" : " Se più agenti usano lo schermo insieme, quello usato meno di recente si chiude per fare posto.";
 	return h(
 		"div.card.pad",
-		h("h3", "Schermo"),
+		h("h2", "Schermo"),
 		h("p.muted", `${inst.name} ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
 		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
 		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
@@ -990,7 +990,7 @@ function deleteCard(inst) {
 		typed.addEventListener("input", () => (ok.disabled = typed.value !== inst.name));
 		const dialog = h(
 			"dialog",
-			h("h3", `Eliminare ${inst.name}?`),
+			h("h2", `Eliminare ${inst.name}?`),
 			h("p", `Se ne vanno le sue conversazioni, la sua memoria, i file del suo workspace, i task programmati e le sentinelle, le richieste in attesa e i connettori. Bot Telegram, numero WhatsApp e telefono si scollegano, e il computer e lo schermo, se li ha, si spengono e si svuotano. Gli altri agenti non ricevono più messaggi da lui, e le risposte che gli dovevano ancora vanno perse. Non si può annullare.`),
 			h("label.field", h("span", `Per confermare scrivi «${inst.name}»`), typed),
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -1025,7 +1025,7 @@ function deleteCard(inst) {
 // ---------- account (two-factor) ----------
 function accountDialog() {
 	const body = h("div");
-	const dialog = h("dialog", h("h3", "Il tuo account"), googleSection(), body);
+	const dialog = h("dialog", h("h2", "Il tuo account"), googleSection(), body);
 	const draw = async () => {
 		const me = (await api("/api/me")).person;
 		state.me = me;
@@ -2370,7 +2370,7 @@ function renderPratica(detail, inst, p) {
 function confirmDialog(title, text, okLabel, onOk) {
 	const dialog = h(
 		"dialog",
-		h("h3", title),
+		h("h2", title),
 		h("p", text),
 		h(
 			"div.actions",
@@ -2402,7 +2402,7 @@ async function viewApprovals(main) {
 	const card = (p) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h3", "Tool ", h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h2", "Tool ", h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", p.description),
 			h("p", h("b", "Può raggiungere: "), p.hosts.length ? h("span.mono", p.hosts.join(", ")) : h("span", "nessun host (niente rete)")),
 			h("details", { open: p.status === "pending" ? true : undefined }, h("summary", "Codice"), h("pre.code", p.code)),
@@ -2431,7 +2431,7 @@ async function viewApprovals(main) {
 	const actionCard = (a) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h3", "Invio di un modulo a ", h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", "Invio di un modulo a ", h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
@@ -2472,7 +2472,7 @@ async function viewApprovals(main) {
 			drafts.push(
 				h(
 					"article.card.pad.dossier",
-					h("header", h("div", h("div.kicker", s.name), h("h3", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`)), h("span.chip.accent", "Segreteria")),
+					h("header", h("div", h("div.kicker", s.name), h("h2", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`)), h("span.chip.accent", "Segreteria")),
 					h("ul", waiting.slice(0, 5).map((p) => h("li", `${p.lead.fullName ?? p.lead.company ?? p.lead.email ?? "Sconosciuto"} · ${p.lead.rawSubject}`))),
 					h(
 						"div.actions",
@@ -2513,7 +2513,7 @@ const CONNECTOR_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"]
 function connectorActionCard(inst, a, after, compact = false) {
 	const el = h(
 		"article.card.pad.dossier",
-		h("header", h("div", h("div.kicker", `${a.connectorName} · richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h3", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
+		h("header", h("div", h("div.kicker", `${a.connectorName} · richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
 		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
@@ -2630,7 +2630,7 @@ function googleActionCard(inst, a, after, compact = false) {
 	const expires = new Date(Date.parse(a.proposedAt) + 24 * 3600_000).toISOString();
 	const el = h(
 		`article.card.pad.dossier.google-ask${compact ? ".compact" : ""}`,
-		h("header", h("div", h("div.kicker", kicker), h("h3", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		h("header", h("div", h("div.kicker", kicker), h("h2", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
 		a.reason ? h("p.muted", a.reason) : null,
 		h("table.ledger.fields", h("tbody", rows)),
 		a.mail ? (compact && a.mail.body.length > 600 ? h("details", h("summary", "Testo della mail"), h("pre.letter", a.mail.body)) : h("pre.letter", a.mail.body)) : null,
@@ -2966,7 +2966,7 @@ async function viewTasks(main) {
 			h("div.card", schedules.length ? table : h("div.empty", h("b", "Nessun task"), `Creane uno qui accanto, oppure chiedilo a ${inst.name} in chat.`)),
 			h(
 				"div.card.pad",
-				h("h3", "Nuovo task"),
+				h("h2", "Nuovo task"),
 				threads.length
 					? [h("label.field", h("span", "Cosa deve fare"), instruction), h("div.field", h("span", "Quando"), seg), whenBox, h("label.field", h("span", "Risultato nella chat"), thread), h("button.btn.accent", { onclick: create }, "Programma")]
 					: h("p.muted", "Apri prima una conversazione in Chat: il risultato dei task arriva lì."),
@@ -3071,7 +3071,7 @@ function watchSection(inst, watches, threads) {
 			h("div.card", watches.length ? table : h("div.empty", h("b", "Nessuna sentinella"), "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
 			h(
 				"div.card.pad",
-				h("h3", "Nuova sentinella"),
+				h("h2", "Nuova sentinella"),
 				threads.length
 					? [
 							h("label.field", h("span", "Pagina da controllare"), url),
@@ -3114,7 +3114,7 @@ function briefCard(inst, { brief, google }) {
 				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Annie ricorda di te. Solo lettura.";
 	return h(
 		"div.card.pad.brief",
-		h("div.row-gap", h("h3", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),
+		h("div.row-gap", h("h2", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),
 		h("p.muted", hint),
 		h(
 			"div.row-gap",
@@ -3245,8 +3245,8 @@ async function viewMemory(main) {
 		head(agentLabel(inst), h("h1", "Memoria"), `Quello che ${inst.name} ricorda di te tra una conversazione e l'altra, e le cose che valgono per tutti. Lo vede solo chi ne è il soggetto; quelle condivise le vede chiunque scriva a ${inst.name}.`),
 		h(
 			"div.grid-2",
-			h("div.card", h("div.pad", h("h3", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
-			h("div.card", h("div.pad", h("h3", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
+			h("div.card", h("div.pad", h("h2", "Su di te")), list(mine, true, `${inst.name} non ricorda ancora niente di te. Puoi scrivere «ricordati che…» in chat, o aggiungerlo qui.`), add(false)),
+			h("div.card", h("div.pad", h("h2", "Condivise")), list(shared, canEditShared, "Nessuna memoria condivisa."), canEditShared ? add(true) : h("p.muted.pad", "Solo l'owner aggiunge o toglie memorie condivise.")),
 		),
 	);
 }
@@ -3273,7 +3273,7 @@ async function viewRooms(main) {
 		};
 		mount(
 			form,
-			h("h3", "Nuova stanza"),
+			h("h2", "Nuova stanza"),
 			h("label.field", h("span", "Nome"), title, h("small", "Se lo lasci vuoto, la stanza prende i nomi degli agenti.")),
 			h("div.field", h("span", "Agenti (da 2 a 5)"), boxes.map((b) => h("label.row-gap", b.box, h("span", b.label)))),
 			h("div.actions", h("button.btn.accent", { onclick: save }, "Crea"), h("button.btn.ghost", { onclick: () => (form.hidden = true) }, "Annulla")),
@@ -3437,7 +3437,7 @@ async function viewAutomations(main) {
 		const url = `${location.origin}${a.path}`;
 		mount(
 			panel,
-			h("h3", `«${a.name}» è pronta`),
+			h("h2", `«${a.name}» è pronta`),
 			h("p", h("b", "Copia ora il token: non si vedrà più."), " Chi lo ha fa lavorare ", inst.name, " per te, con i tuoi strumenti. Per cambiarlo cancella l'automazione e creane un'altra."),
 			h("label.field", h("span", "Indirizzo (POST)"), copyBox(url, "Indirizzo")),
 			h("label.field", h("span", "Token"), copyBox(token, "Token"), h("small", "Nell'intestazione Authorization: Bearer, o X-Annie-Token. Se il servizio non permette intestazioni, in fondo all'indirizzo: ?token=…")),
@@ -3464,7 +3464,7 @@ async function viewAutomations(main) {
 		};
 		mount(
 			panel,
-			h("h3", "Nuova automazione"),
+			h("h2", "Nuova automazione"),
 			h("label.field", h("span", "Nome"), name),
 			h("label.field", h("span", "Cosa deve fare"), instruction, h("small", `${inst.name} riceve questa istruzione con i dati della chiamata (un modulo, un ordine, un pagamento), trattati come dati e non come ordini.`)),
 			h("label.field", h("span", "Dove ti risponde"), chat),
@@ -3524,7 +3524,7 @@ async function viewSkills(main) {
 		const close = () => (editor.hidden = true);
 		mount(
 			editor,
-			h("h3", skill ? `Modifica /${skill.name}` : "Nuova skill"),
+			h("h2", skill ? `Modifica /${skill.name}` : "Nuova skill"),
 			h("label.field", h("span", "Nome"), name, command),
 			h("label.field", h("span", "Quando usarla"), description, h("small", `${inst.name} vede questa riga in ogni conversazione e apre i passi quando un compito corrisponde.`)),
 			h("label.field", h("span", "Passi"), body),
@@ -3575,7 +3575,7 @@ async function viewSkills(main) {
 			"div.stack",
 			editor,
 			drafts.length
-				? h("div.card", h("div.pad", h("h3", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("table.ledger", h("tbody", drafts.map((d) => row(d, true)))))
+				? h("div.card", h("div.pad", h("h2", "Le tue bozze"), h("p.muted", `Le ha scritte ${inst.name} in chat. Non sono attive finché non le attivi tu, qui o scrivendo /attiva-skill.`)), h("table.ledger", h("tbody", drafts.map((d) => row(d, true)))))
 				: null,
 			h(
 				"div.card",
@@ -3652,7 +3652,7 @@ function catalogGallery(inst, catalog, oauth, redirectUrl, added) {
 	};
 	const card = (e) => {
 		const button = h("button.btn.small.accent", { onclick: () => void add(e, button) }, e.auth === "oauth" ? "Accedi e aggiungi" : "Aggiungi");
-		return h("div.card.pad", h("h3", e.name), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
+		return h("div.card.pad", h("h2", e.name), h("span.chip", AUTH_LABEL[e.auth]), h("p.muted", e.description), h("div.go", button));
 	};
 	return h(
 		"section.catalog",
@@ -3682,7 +3682,7 @@ function tokenDialog(inst, e, replace) {
 	token.addEventListener("keydown", (ev) => ev.key === "Enter" && void save());
 	const dialog = h(
 		"dialog",
-		h("h3", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
+		h("h2", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
 		h("p.muted", e.tokenHelp ?? ""),
 		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Annie e non si vede più. Si usa solo per questo agente.")),
 		h("div.actions", h("button.btn.accent", { onclick: () => void save() }, "Salva e collega"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -3712,7 +3712,7 @@ async function viewConnectors(main) {
 						: h("span.chip.bad", "Non collegato");
 		return h(
 			"div.card.pad.stack",
-			h("div.row-gap", h("h3", c.name), chip),
+			h("div.row-gap", h("h2", c.name), chip),
 			h("div.mono.muted", c.transport.type === "http" ? c.transport.url : `${c.transport.command} ${(c.transport.args ?? []).join(" ")}`),
 			st?.error ? h("p.chip.bad", st.error) : null,
 			st?.tools?.length ? h("p.mono", st.tools.join("  ")) : null,
@@ -3784,7 +3784,7 @@ function connectorForm(inst, existing) {
 	draw();
 	const dialog = h(
 		"dialog",
-		h("h3", existing ? `Modifica ${existing.name}` : "Nuovo connettore"),
+		h("h2", existing ? `Modifica ${existing.name}` : "Nuovo connettore"),
 		h("label.field", h("span", "ID"), id, h("small", "lettere minuscole, cifre, trattini")),
 		h("label.field", h("span", "Nome"), name),
 		h("label.field", h("span", "Tipo"), type),
@@ -3918,7 +3918,7 @@ function agentForm() {
 	};
 	const dialog = h(
 		"dialog.agent-form",
-		h("h3", "Nuovo agente"),
+		h("h2", "Nuovo agente"),
 		h("p.muted", "Un agente con personalità, memoria, file, task e connettori suoi. Parte con il modello dell'agente principale; all'inizio solo tu puoi scrivergli, poi decidi chi in Impostazioni."),
 		h("div.field", h("span", "Parti da"), chips),
 		h("div.field", h("span", "Nome"), h("div.name-row", emoji, name)),
@@ -3965,7 +3965,7 @@ async function teamsForm() {
 	};
 	const dialog = h(
 		"dialog.teams-form",
-		h("h3", "Squadre pronte"),
+		h("h2", "Squadre pronte"),
 		h("p.muted", "Tre agenti con un compito ciascuno, che si chiedono aiuto tra loro, e una stanza dove li chiami tutti. Chi coordina divide il lavoro; sulla board può farne sotto-schede per gli altri. Dopo sono agenti come gli altri: li cambi o li elimini uno per uno."),
 		h(
 			"div.teams",
@@ -4215,7 +4215,7 @@ async function viewBoard(main) {
 		// Without what is not there: append would write «null».
 		const parts = [
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
-			h("h3", c.title),
+			h("h2", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
 			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
 			children.length
@@ -4321,7 +4321,7 @@ async function viewBoard(main) {
 		const parentRow = parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null;
 		const dialog = h(
 			"dialog.board-dialog",
-			h("h3", "Nuova scheda"),
+			h("h2", "Nuova scheda"),
 			h("label.field", h("span", "Titolo"), title),
 			h("label.field", h("span", "Descrizione"), description),
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
@@ -4723,7 +4723,7 @@ async function viewPeople(main) {
 		const input = h("input", { type: "text", value: full, readonly: true });
 		const dialog = h(
 			"dialog",
-			h("h3", title),
+			h("h2", title),
 			h("p", "Dallo alla persona in privato: è la sua chiave. Non verrà più mostrato."),
 			h("div.link-box", input, h("button.btn", { onclick: async () => (await navigator.clipboard.writeText(full).catch(() => input.select()), toast("Link copiato")) }, "Copia")),
 			h("div.actions", h("button.btn.ghost", { onclick: () => dialog.close() }, "Fatto")),
@@ -4799,7 +4799,7 @@ async function viewPeople(main) {
 			),
 			h(
 				"div.card.pad",
-				h("h3", "Aggiungi una persona"),
+				h("h2", "Aggiungi una persona"),
 				h("label.field", h("span", "Nome"), newName),
 				h("label.field", h("span", "Ruolo"), role, h("small", "L'owner gestisce connettori, impostazioni e persone.")),
 				h(

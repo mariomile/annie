@@ -2,10 +2,10 @@
 // shell. Only the shell is kept (page, script, style, fonts, icons): never /api, never anything a
 // person wrote or received. Network first, so a new version is used as soon as it is online.
 // Bump CACHE when the shell list changes; the page itself is refreshed on every visit online.
-const CACHE = "annie-shell-v2";
+const CACHE = "annie-shell-v3";
 /** Addresses that are never the shell, also when opened as a page (a file link, a login with Google). */
 const NOT_SHELL = /^\/(api|oauth|hooks|login)(\/|$)/;
-const SHELL = ["/", "/app.js", "/app.css", "/icon.svg", "/manifest.webmanifest", "/fonts/geist-latin.woff2", "/fonts/geist-mono-latin.woff2"];
+const SHELL = ["/", "/app.js", "/app.css", "/icon.svg", "/manifest.webmanifest", "/fonts/archivo-latin.woff2", "/fonts/monaspace-neon-latin-400.woff2"];
 
 self.addEventListener("install", (event) => {
 	event.waitUntil(
