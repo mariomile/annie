@@ -184,6 +184,17 @@ function emptyNote(tag, title, ...text) {
 	return h(tag, face(state.instance ?? { id: "annie" }, 40), h("b", title), ...text);
 }
 
+/**
+ * An approval card, finished the same way for every kind: the face of the agente asking,
+ * and, while it waits, an edge in that agente's colour.
+ */
+function decisionCard(el, inst, pending) {
+	el.querySelector("header")?.prepend(h("span.dossier-face", face(inst, 32)));
+	el.classList.toggle("pending", pending);
+	el.style.setProperty("--glow", faceColor(inst));
+	return el;
+}
+
 /** A tile with a service's first letter, in a colour of its own: the catalog has no logos. */
 function monogram(name) {
 	const tile = h("span.monogram", { "aria-hidden": "true" }, name.slice(0, 1).toUpperCase());
@@ -2456,10 +2467,10 @@ async function viewApprovals(main) {
 	const card = (p) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h2", "Tool ", h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h2", `${inst.name} propone uno strumento nuovo: `, h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", p.description),
-			h("p", h("b", "Può raggiungere: "), p.hosts.length ? h("span.mono", p.hosts.join(", ")) : h("span", "nessun host (niente rete)")),
-			h("details", { open: p.status === "pending" ? true : undefined }, h("summary", "Codice"), h("pre.code", p.code)),
+			h("div.reach", h("span", "Può raggiungere"), p.hosts.length ? p.hosts.map((x) => h("span.chip.mono", x)) : h("span.chip.ok", "Nessun sito: niente rete")),
+			h("details", { open: p.status === "pending" ? true : undefined }, h("summary", `Codice · ${p.code.split("\n").length} righe`), h("pre.code", p.code)),
 			h("details", h("summary", "Argomenti (JSON Schema)"), h("pre.code", JSON.stringify(p.parameters, null, 2))),
 			p.status !== "pending" ? h(`div.stamp.${p.status === "approved" ? "ok" : "bad"}`, p.status === "approved" ? "Approvato" : "Rifiutato") : null,
 			p.decidedAt ? h("p.mono.muted", `Deciso il ${fmt.time(p.decidedAt)}`) : null,
@@ -2478,14 +2489,14 @@ async function viewApprovals(main) {
 			};
 			el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), h("span.muted", "Approvato, gira isolato e raggiunge solo gli host dichiarati.")));
 		}
-		return el;
+		return decisionCard(el, inst, p.status === "pending");
 	};
 	const { actions } = await api(`/api/instances/${inst.id}/web-actions`);
 	const ACTION_STAMP = { done: ["ok", "Inviato"], failed: ["bad", "Non inviato"], rejected: ["bad", "Rifiutato"], expired: ["bad", "Scaduto"], uncertain: ["bad", "Esito incerto"], running: ["ok", "In invio"] };
 	const actionCard = (a) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", "Invio di un modulo a ", h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", `${inst.name} vuole inviare un modulo a `, h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
@@ -2506,7 +2517,7 @@ async function viewApprovals(main) {
 			};
 			el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Invia"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), h("span.muted", "Il modulo parte una volta sola, con questi valori. Se nel frattempo il sito lo cambia, non parte.")));
 		}
-		return el;
+		return decisionCard(el, inst, a.status === "pending");
 	};
 	const pendingActions = actions.filter((a) => a.status === "pending");
 	const decidedActions = actions.filter((a) => a.status !== "pending").reverse();
@@ -2585,7 +2596,7 @@ function connectorActionCard(inst, a, after, compact = false) {
 		};
 		el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), compact ? null : h("span.muted", `Se la approvi, Annie la fa una volta sola, con questi valori, su ${a.connectorName}.`)));
 	}
-	return el;
+	return compact ? el : decisionCard(el, inst, a.status === "pending");
 }
 
 // ---------- Google: scrivere con approvazione ----------
@@ -2709,7 +2720,7 @@ function googleActionCard(inst, a, after, compact = false) {
 		buttons.push(h(`button.btn${a.kind === "calendar.delete" ? ".danger" : ".accent"}`, { onclick: () => decide("approved") }, verb), h("button.btn.ghost", { onclick: () => decide("rejected") }, "Rifiuta"));
 		el.append(h("div.actions", ...buttons, h("span.muted", `Una volta sola, esattamente così. Scade ${fmt.time(expires)}.`)));
 	}
-	return el;
+	return compact ? el : decisionCard(el, inst, a.status === "pending");
 }
 
 // ---------- ascolta ----------

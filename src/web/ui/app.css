@@ -515,6 +515,19 @@ details > summary:hover { color: var(--fg); }
 .dossier header { display: flex; justify-content: space-between; align-items: start; gap: 14px; }
 .dossier h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 .dossier h2 .mono { font-weight: 500; }
+/* The face of who asks, then what; while it waits, the card has that agente's light on its edge. */
+.dossier header > div { flex: 1; min-width: 0; }
+.dossier header .dossier-face { flex: none; display: grid; margin-top: 1px; }
+.dossier header .kicker { margin-bottom: 2px; }
+.dossier.pending { border-color: color-mix(in srgb, var(--glow, var(--fg)) 28%, var(--border)); background: radial-gradient(90% 140px at 0% 0%, color-mix(in srgb, var(--glow, var(--fg)) 9%, transparent), transparent 70%), var(--surface); }
+.dossier > p { margin: 12px 0 0; }
+.dossier details { margin-top: 12px; }
+.dossier details > summary { margin: 0 0 8px; }
+.reach { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; font-size: 13px; color: var(--fg-3); }
+.reach > span:first-child { margin-right: 4px; }
+.reach .chip.mono { font-family: var(--mono); font-size: 11.5px; }
+.dossier .actions { align-items: center; margin: 16px -20px -18px; padding: 14px 20px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--bg-2) 60%, transparent); }
+.dossier .actions .muted { font-size: 12.5px; margin-left: 4px; }
 .stamp {
 	position: absolute; right: 20px; top: 18px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 99px;
 	font-size: 12px; font-weight: 500; line-height: 1; pointer-events: none; border: 1px solid; animation: pop 0.25s cubic-bezier(.22, 1, .36, 1) both;
