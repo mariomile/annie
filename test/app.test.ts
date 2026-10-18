@@ -334,6 +334,28 @@ describe("pnpm start (startAnnie)", () => {
 		expect(audit.filter((e) => String(e.type).startsWith("board.")).map((e) => e.type)).toEqual(expect.arrayContaining(["board.card_created", "board.card_changed", "board.card_started", "board.card_deleted"]));
 	});
 
+	it("«Esegui da solo» (ADR 0061): the agente goes on after each reply, and stops in «Da rivedere»", async () => {
+		const { annie, base, telegram } = await boot(tempDataDir());
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "ricerca", name: "Ricercatore" });
+		expect((await api("/api/board")).auto).toEqual({ replies: 10, hours: 2 });
+		const { card } = await api("/api/board", { title: "Fornitori carta", assignee: "ricerca", auto: true });
+		expect(card).toMatchObject({ status: "in_corso", auto: { rounds: 0 } });
+		const entries = async () => (await api(`/api/instances/ricerca/threads/${card.work.threadId}`)).entries as { from: string; text?: string }[];
+		// Nobody answers: after each reply it is told to go on, ten times, then it stops for review.
+		await until(async () => (await api("/api/board")).cards[0].status === "da_rivedere", 20_000);
+		const goOn = (await entries()).filter((e) => e.text?.startsWith("[Scheda #1] Vai avanti da solo"));
+		expect(goOn).toHaveLength(10);
+		const stopped = (await api("/api/board")).cards[0];
+		expect(stopped.events.at(-1)).toMatchObject({ kind: "comment", by: { kind: "agent", id: "ricerca" }, text: expect.stringMatching(/dopo 10 risposte/) });
+		await until(async () => telegram.sent.some((m) => m.chat_id === "9" && m.text.startsWith("Scheda #1 da rivedere: Fornitori carta")));
+		// Nothing more is posted once it is in review.
+		await new Promise((r) => setTimeout(r, 300));
+		expect((await entries()).filter((e) => e.text?.startsWith("[Scheda #1] Vai avanti")).length).toBe(10);
+		const audit = await annie.runtime.audit("default").read();
+		expect(audit.some((e) => e.type === "board.card_created")).toBe(true);
+	});
+
 	it("a task programmato of an instance created from the console runs without a restart", async () => {
 		const { annie, base } = await boot(tempDataDir());
 		const api = await client(base, annie.ownerLink as string);

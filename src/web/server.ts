@@ -25,9 +25,10 @@ import { EgressDenied, NotFound, UserNotAllowed } from "../core/errors.ts";
 import { MemoryError, SHARED, subjectOf } from "../core/memory.ts";
 import { callAutomation } from "../core/automation-call.ts";
 import { AUTOMATION_LIMITS, type Automation, AutomationError, AutomationRate } from "../core/automations.ts";
+import { parseSkillMd, type Skill, SkillError, toSkillMd } from "../core/skills.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
-import { BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
+import { BOARD_LIMITS, BoardError, type BoardStore, CARD_PRIORITIES, CARD_STATUSES, type CardChange, type CardPriority, type CardStatus } from "../core/board.ts";
 import type { BoardReview, BoardWork } from "../core/board-work.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -487,6 +488,7 @@ export function createWebApp(options: WebAppOptions): Server {
 			cards,
 			agents: agents.map((r) => ({ id: r.id, name: r.name, ...(r.persona?.emoji === undefined ? {} : { emoji: r.persona.emoji }), canAssign: r.egress.channels.includes("web") && (r.allowedUsers.web ?? []).includes(p.id) })),
 			people: Object.fromEntries([...involved].map((id) => [id, names.get(id) ?? "una persona"])),
+			auto: { replies: BOARD_LIMITS.autoRounds, hours: BOARD_LIMITS.autoMs / 3_600_000 },
 		};
 	});
 	route("POST", "/api/board", "person", async ({ person, req }) => {
@@ -495,7 +497,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const body = (await readJson(req)) as Record<string, unknown>;
 		const { priority, assignee } = cardBody(body);
 		const card = await work
-			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}) }, { kind: "person", id: p.id }, p.id)
+			.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), ...(assignee ? { assignee } : {}), ...(body.auto === true ? { auto: true } : {}) }, { kind: "person", id: p.id }, p.id)
 			.catch(boardError);
 		await runtime.audit(tenantId).append({ type: "board.card_created", cardId: card.id, personId: p.id, ...(card.assignee === undefined ? {} : { assignee: card.assignee }) });
 		return { card };
@@ -513,18 +515,21 @@ export function createWebApp(options: WebAppOptions): Server {
 			...(status === undefined ? {} : { status }),
 			...(assignee === undefined ? {} : { assignee }),
 			...(typeof body.comment === "string" ? { comment: body.comment } : {}),
+			// «Esegui da solo» on (counting from now) or off.
+			...(typeof body.auto === "boolean" ? { auto: body.auto ? { rounds: 0, since: new Date().toISOString() } : null } : {}),
 		};
 		const changed = await work.change(card.id, change, { kind: "person", id: p.id }, p.id).catch(boardError);
 		await runtime.audit(tenantId).append({ type: "board.card_changed", cardId: card.id, personId: p.id, fields: Object.keys(change).join(","), ...(status === undefined ? {} : { status }) });
 		return { card: changed };
 	});
 	// Avvia: the work on a scheda waiting in «Da fare» starts, with whoever presses it.
-	route("POST", "/api/board/:id/start", "person", async ({ person, params }) => {
+	route("POST", "/api/board/:id/start", "person", async ({ person, params, req }) => {
 		const { work } = boardOf();
 		const p = person as Person;
 		const card = await visibleCard(params[0] as string, p);
-		const started = await work.startWaiting(card.id, p.id, { kind: "person", id: p.id }).catch(boardError);
-		await runtime.audit(tenantId).append({ type: "board.card_started", cardId: card.id, personId: p.id, assignee: started.assignee ?? "" });
+		const body = (await readJson(req)) as { auto?: unknown };
+		const started = await work.startWaiting(card.id, p.id, { kind: "person", id: p.id }, body.auto === true).catch(boardError);
+		await runtime.audit(tenantId).append({ type: "board.card_started", cardId: card.id, personId: p.id, assignee: started.assignee ?? "", auto: started.auto !== undefined });
 		return { card: started };
 	});
 	route("DELETE", "/api/board/:id", "person", async ({ person, params }) => {
@@ -1456,6 +1461,38 @@ export function createWebApp(options: WebAppOptions): Server {
 		const removed = runtime.memory(tenantId, params[0] as string).remove(params[1] as string, (m) => m.about === subjectOfPerson(p) || (m.about === SHARED && p.role === "owner"));
 		if (removed === undefined) throw new HttpError(404, "Memoria non trovata");
 		await runtime.audit(tenantId).append({ type: "memory.forgotten", instanceId: params[0], personId: p.id, memoryId: removed.id });
+		return { ok: true };
+	});
+
+	// --- skill (ADR 0059): everyone who talks to an agente sees its skills; each saves and deletes their own, the owner all ---
+	route("GET", "/api/instances/:id/skills", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const store = runtime.skills(tenantId, params[0] as string);
+		// Who saved it only to the owner: from a chat it is a phone number or a Telegram ID.
+		const shown = ({ createdBy, ...s }: Skill) => ({ ...s, ...(p.role === "owner" ? { createdBy } : {}), mine: createdBy === subjectOfPerson(p), canEdit: p.role === "owner" || createdBy === subjectOfPerson(p), skillMd: toSkillMd(s) });
+		return { skills: store.list().map(shown), drafts: store.drafts().filter((d) => d.createdBy === subjectOfPerson(p)).map(shown) };
+	});
+	route("PUT", "/api/instances/:id/skills", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { name?: unknown; description?: unknown; body?: unknown; skillMd?: unknown };
+		try {
+			const input = typeof body.skillMd === "string" ? parseSkillMd(body.skillMd) : { name: String(body.name ?? ""), description: String(body.description ?? ""), body: String(body.body ?? "") };
+			const { skill, replaced } = runtime.skills(tenantId, params[0] as string).save({ ...input, by: subjectOfPerson(p) }, (existing) => p.role === "owner" || existing.createdBy === subjectOfPerson(p));
+			await runtime.audit(tenantId).append({ type: "skill.saved", instanceId: params[0], personId: p.id, skill: skill.name, replaced, source: "person" });
+			return { skill, replaced };
+		} catch (error) {
+			if (error instanceof SkillError) throw new HttpError(/un'altra persona/.test(error.message) ? 409 : 400, error.message);
+			throw error;
+		}
+	});
+	route("DELETE", "/api/instances/:id/skills/:name", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const removed = runtime.skills(tenantId, params[0] as string).remove(params[1] as string, (s) => p.role === "owner" || s.createdBy === subjectOfPerson(p));
+		if (removed === undefined) throw new HttpError(404, "Skill non trovata, o salvata da un'altra persona");
+		await runtime.audit(tenantId).append({ type: "skill.deleted", instanceId: params[0], personId: p.id, skill: removed.name, source: "person" });
 		return { ok: true };
 	});
 

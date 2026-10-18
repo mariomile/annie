@@ -213,12 +213,13 @@ class PiDurableSession implements EngineSession {
 	private async findOrCreate(threadKey: string): Promise<ConversationId> {
 		const existing = (await this.threads())[threadKey];
 		if (existing !== undefined) return existing as ConversationId;
+		const instructions = this.instructionsNow();
 		const conversation = await this.harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
 				agent: {
 					model: await this.modelOf(threadKey),
-					...(this.options.instructions === undefined ? {} : { instructions: this.options.instructions }),
+					...(instructions === undefined ? {} : { instructions }),
 				},
 				// Same commit as the conversation: the mapping can never point to nothing.
 				init: async (tx, id) => {
@@ -239,7 +240,7 @@ class PiDurableSession implements EngineSession {
 		const conversation = await this.harness.conversation(id, context);
 		if (conversation === undefined) return;
 		const model = await this.modelOf(threadKey);
-		const { instructions } = this.options;
+		const instructions = this.instructionsNow();
 		await conversation.commit(async (tx) => {
 			const agent = await tx.doc(AgentDoc, id);
 			const sameModel = agent.model?.provider === model.provider && agent.model?.modelId === model.modelId;
@@ -247,6 +248,11 @@ class PiDurableSession implements EngineSession {
 			if (sameModel && sameInstructions) return;
 			await configure(tx, id, { ...(sameModel ? {} : { model }), ...(sameInstructions ? {} : { instructions: instructions ?? null }) });
 		}, context);
+	}
+
+	private instructionsNow(): string | undefined {
+		const { instructions } = this.options;
+		return typeof instructions === "function" ? instructions() : instructions;
 	}
 
 	/**

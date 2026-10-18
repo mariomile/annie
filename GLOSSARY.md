@@ -25,7 +25,7 @@ Un'istanza vista da chi la usa: ha un nome, una faccia (un'emoji), un compito in
 _Avoid_: bot, assistente (quando si intende uno degli agenti), GPT
 
 **Board**:
-La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Vedi ADR 0050.
+La pagina della console con le cose da fare del tenant: schede in quattro colonne (Da fare, In corso, Da rivedere, Fatto), ognuna affidabile a un agente. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la manda in «Da rivedere»; la chiude una persona. Con «Lavora da solo» l'agente va avanti senza aspettare risposte, fino a un tetto di risposte e di tempo. Vedi ADR 0050, 0061.
 _Avoid_: kanban (nei testi per le persone), backlog, issue tracker
 
 **Scheda** (della board):
@@ -39,6 +39,10 @@ _Avoid_: chat tra bot, handoff, delega
 **Automazione**:
 Un indirizzo segreto di un agente che un altro servizio chiama (il modulo del sito, Stripe, Zapier): ogni chiamata fa partire l'agente con la sua istruzione e i dati ricevuti, per la persona che l'ha creata e nella sua conversazione. Vedi ADR 0060.
 _Avoid_: webhook (nei testi per le persone), trigger, integrazione
+
+**Skill**:
+Una procedura salvata di un agente: un nome che è anche il comando (`/chiusura-del-mese`), una riga che dice quando usarla e i passi. L'agente vede nomi e righe nelle istruzioni e apre i passi con `skill_read`; una persona la salva dalla chat o dalla console e la lancia con `/nome`. Vedi ADR 0059.
+_Avoid_: prompt salvato, macro, template
 
 **Personalità**:
 Emoji, compito e tono di un agente, scelti dall'owner; il modello li riceve dopo le istruzioni, in un blocco «Chi sei». Il tono è uno tra naturale, formale, amichevole, conciso e scherzoso (in console «Spiritoso»).

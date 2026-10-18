@@ -88,6 +88,7 @@ import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core
 import { AgentChannel } from "./channels/agents.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createAutomationTools } from "./core/tools/automation-tools.ts";
+import { createSkillTools } from "./core/tools/skill-tools.ts";
 import { createScheduleTools } from "./core/tools/schedule-tools.ts";
 import { createWatchTools } from "./core/tools/watch-tools.ts";
 import { createWorkspaceTools } from "./core/tools/workspace-tools.ts";
@@ -649,6 +650,14 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},
 				}),
+				...createSkillTools({
+					store: runtime.skills(record.tenantId, record.id),
+					workspace: runtime.workspace(record.tenantId, record.id),
+					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
+					record: async (event) => {
+						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
+					},
+				}),
 				...googleTools(record),
 				...createWebTools({
 					desktop: desktop !== undefined && (record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR),
@@ -835,6 +844,12 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			if (channel === undefined) throw new Error(`agente ${agent} has no console`);
 			await channel.post(threadId, personId, text);
 		},
+	});
+	// «Esegui da solo» (ADR 0061): each reply in the conversation of a scheda may be followed by «go on».
+	runtime.onReply((reply) => {
+		// Only answers to what was written in the conversation: not files or messages sent mid-turn.
+		if (reply.tenantId !== tenant || reply.channel !== "web" || reply.status === "file" || reply.submissionId === "message") return;
+		void boardWork.afterReply(reply.instanceId, reply.threadId, reply.deliveryId, reply.status === "unanswered" ? reply.reason : undefined).catch((error: unknown) => log(`annie: board after reply in ${reply.threadId}: ${error instanceof Error ? error.message : String(error)}`));
 	});
 	// A scheda to review (ADR 0051): when it is the owner's, a line in the owner's chat with the main agente too.
 	boardWork.events.on("review", (review: BoardReview) => {

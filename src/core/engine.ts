@@ -18,7 +18,11 @@ export type EngineOpenOptions = {
 	 */
 	readonly apiKey: (provider: string) => Promise<string | undefined>;
 	readonly tools: readonly AnnieTool[];
-	readonly instructions?: string;
+	/**
+	 * A function is read again on each message: what it returns now is what a conversation runs
+	 * with from that message on (the skills of the agente, ADR 0059).
+	 */
+	readonly instructions?: string | (() => string | undefined);
 	/**
 	 * Whether a chat's own model may answer now (ADR 0036): its provider allowed, with a key. When
 	 * not, the instance's model answers, also for work resumed after a restart. Missing: always.
