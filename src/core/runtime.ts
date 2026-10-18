@@ -16,6 +16,7 @@ import { TimesheetStore } from "./timesheet-store.ts";
 import { RenewalStore } from "./renewal-store.ts";
 import { CashflowStore } from "./cashflow-store.ts";
 import { TaxStore } from "./tax-store.ts";
+import { VatStore } from "./vat-store.ts";
 import { ClientStore } from "./client-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
@@ -219,6 +220,11 @@ export class AnnieRuntime {
 	/** Le tasse del forfettario of an instance: the profile and the figures said per year. */
 	taxes(tenant: string, instance: string): TaxStore {
 		return new TaxStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** La liquidazione IVA of an instance: the periodicity, the F24 marked paid, the deductibility marks and the credit said per year. */
+	vat(tenant: string, instance: string): VatStore {
+		return new VatStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** I clienti of an instance: the cards with what the person said about each client. */
