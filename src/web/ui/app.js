@@ -1569,6 +1569,12 @@ async function viewChat(main) {
 	// A file to download; also what a picture that does not show (deleted, not really a picture) becomes.
 	const fileLink = (file) => h("a.file", { href: `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(file.path)}` }, h("span.ext", (file.path.split(".").pop() ?? "file").slice(0, 4)), h("span", h("b", file.path.split("/").pop()), file.caption ? h("div.muted", file.caption) : null));
 	const show = (entry) => {
+		// What the board sends the agente reads as a scheda, not as a wall of instructions the person never typed.
+		const brief = entry.from === "person" ? boardNote(entry) : null;
+		if (brief) {
+			transcript.append(brief);
+			return brief;
+		}
 		const shown = entry.file && /\.(png|jpe?g|webp|gif)$/i.test(entry.file.path);
 		const body = shown
 			? h(
@@ -2773,6 +2779,30 @@ function speakable(text) {
 }
 
 /** Copies an answer as plain text; the icon turns into a tick for a moment. */
+/**
+ * A message the board posted for the agente: «[Scheda #N dalla board] titolo» becomes a card with the
+ * instructions folded away, «[Scheda #N] Vai avanti da solo…» a quiet line. Anything else: null.
+ */
+function boardNote(entry) {
+	const text = entry.text ?? "";
+	const handed = /^\[Scheda #(\d+) dalla board\] (.+)(?:\n\n([\s\S]*))?$/.exec(text);
+	if (handed) {
+		const [, n, title, rest] = handed;
+		return h(
+			"div.msg.person.brief",
+			h("div.meta", fmt.time(entry.at)),
+			h(
+				"div.brief-card",
+				h("a.brief-head", { href: "#/board" }, h("span.fold-glyph", icon("board")), h("span.brief-text", h("small", `Scheda #${n} dalla board`), h("b", title))),
+				rest ? h("details.brief-more", h("summary", h("span", "Cosa ha chiesto la board"), h("span.fold-chevron", icon("down"))), h("div.body", rest)) : null,
+			),
+		);
+	}
+	const goOn = /^\[Scheda #(\d+)\] Vai avanti da solo/.exec(text);
+	if (goOn) return h("div.msg.board-step", { title: text }, icon("board"), h("span", `Scheda #${goOn[1]}: la board ha detto di andare avanti`), h("span.when", fmt.time(entry.at)));
+	return null;
+}
+
 function copyButton(text) {
 	const button = h("button.listen", { type: "button", "aria-label": "Copia", title: "Copia" }, icon("copy"));
 	button.addEventListener("click", async () => {
