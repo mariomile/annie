@@ -36,10 +36,13 @@
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
  *   up to `until`, at the amount of that day.
  * - Taxes: the F24 the tax profile's calendar estimates (tax-sums.ts), on their working day, when a
- *   profile exists. A voce out whose name says F24, tasse, INPS, imposta or contributi, within
- *   TAX_TWIN_DAYS of one and within TAX_TWIN_PERCENT of its amount, is the person's own record of
- *   it: the voce stays, the estimate goes, and the pair is listed; each estimate pairs once, the
- *   closest first.
+ *   profile exists; a June F24 gone by stays to its alternative day, at its amount. A voce out
+ *   whose name says F24, tasse, INPS, imposta, contributi, acconto or IRPEF, within TAX_TWIN_DAYS
+ *   of one, is the person's own record of it whatever its amount: the voci stay (several summed),
+ *   the estimate goes, and they are listed. An expense recorded with such a name within
+ *   TAX_TWIN_DAYS of one says it is paid: the estimate goes, listed too. Each voce or expense goes
+ *   to the closest estimate (from its first day too, for a June F24 gone by). With the taxes on,
+ *   such expenses are not in the average spending either.
  * - A balance is brought to now by instant, from min(when it was said, the end of its day in the
  *   instance's time zone) — a balance said today for 10 October counts what was marked from the
  *   11th: plus the instalments to collect marked paid after it,
@@ -89,8 +92,8 @@ export type Movement = {
 	readonly quote?: Quote;
 	readonly item?: CashItem;
 	readonly hypothetical?: Hypothetical;
-	/** An F24 estimated from the tax profile (taxes.ts): what it pays for. */
-	readonly tax?: { readonly what: string };
+	/** An F24 estimated from the tax profile (taxes.ts): what it pays for; `was` the first day of a June F24 gone by. */
+	readonly tax?: { readonly what: string; readonly was?: string };
 	/** Moved by a what_if delay: the days. */
 	readonly delayed?: number;
 };
@@ -430,10 +433,11 @@ export type AverageSpend = {
 	readonly count: number;
 	/** total / days, half up to the cent. */
 	readonly perDay: bigint;
-	/** Expenses left out: a renewal's own payments; payments that look like a renewal's or a voce's; supplier invoices in the scadenzario. */
+	/** Expenses left out: a renewal's own payments; payments that look like a renewal's or a voce's; supplier invoices in the scadenzario; with the estimated F24 on, the tax payments. */
 	readonly renewalPayments: number;
 	readonly lookalikes: number;
 	readonly invoices: number;
+	readonly taxes?: number;
 };
 
 /** A partita IVA compared: digits and letters, no country prefix «IT». */
@@ -500,8 +504,8 @@ function looksLikePlanned(e: Expense, renewals: readonly Renewal[], items: reado
 	return false;
 }
 
-/** The average spending per day (see the choices above). */
-export function averageSpend(expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], invoices: readonly Invoice[], today: string): AverageSpend {
+/** The average spending per day (see the choices above); `skipTaxes`: the estimated F24 are in the forecast, so the tax payments are not in the average. */
+export function averageSpend(expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], invoices: readonly Invoice[], today: string, skipTaxes = false): AverageSpend {
 	const window = addDays(today, -AVERAGE_DAYS);
 	const to = addDays(today, -1);
 	const ofRenewals = new Set<string>();
@@ -515,10 +519,12 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 	let renewalPayments = 0;
 	let lookalikes = 0;
 	let inScadenzario = 0;
+	let taxes = 0;
 	for (const e of expenses) {
 		if (e.date < window || e.date > to) continue;
 		if (first === undefined || e.date < first) first = e.date;
 		if (ofRenewals.has(e.id)) renewalPayments++;
+		else if (skipTaxes && isTaxName(expenseName(e))) taxes++;
 		else if (e.docType === "fattura" && invoiceOf(e, invoices, 10, (i) => i.doc.date) !== undefined) inScadenzario++;
 		else if (looksLikePlanned(e, renewals, items, today)) lookalikes++;
 		else {
@@ -528,7 +534,7 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 	}
 	const from = first ?? window;
 	const days = Math.min(AVERAGE_DAYS, Math.max(AVERAGE_MIN_DAYS, daysBetween(from, today)));
-	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario };
+	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario, ...(skipTaxes ? { taxes } : {}) };
 }
 
 /** An instalment marked paid after the balance: what it was, how much, the day. */
@@ -665,43 +671,52 @@ export function unbilledPotential(entries: readonly WorkEntry[], rates: readonly
 	return { minutes: unbilled.minutes, cents: unbilled.amount, unpriced: unbilled.unpriced };
 }
 
-/** An estimated F24 and a voce of the person's this close (days) and this near in amount (percent of the estimate) are one payment. */
+/** An estimated F24 and a voce or an expense of the person's this close (days) are one payment, whatever their amounts. */
 export const TAX_TWIN_DAYS = 10;
-export const TAX_TWIN_PERCENT = 30n;
 
-/** Folded words that make a voce's name a tax payment. */
+/** Folded words that make a name a tax payment. */
 const TAX_WORDS = new Set(["f24", "tasse", "tassa", "inps", "imposta", "imposte", "contributi", "contributo", "acconto", "acconti", "irpef", "sostitutiva"]);
 
-/** The estimated F24 from `today` to `end`, as movements out. */
-export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string }[], today: string, end: string): Movement[] {
-	return payments.filter((p) => p.date >= today && p.date <= end && p.cents > 0n).map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what } }));
+export function isTaxName(text: string): boolean {
+	return words(text).some((w) => TAX_WORDS.has(w));
 }
 
-/** An estimated F24 and the voce that is the same payment: the voce counts. */
-export type TaxTwin = { readonly voce: Movement; readonly tax: Movement };
+/** The estimated F24 from `today` to `end`, as movements out. */
+export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string; readonly was?: string }[], today: string, end: string): Movement[] {
+	return payments.filter((p) => p.date >= today && p.date <= end && p.cents > 0n).map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what, ...(p.was === undefined ? {} : { was: p.was }) } }));
+}
 
-/** The estimated F24 a voce of the person's already stands for (see the choices above): those go, the voci stay. */
-export function taxDuplicates(taxes: readonly Movement[], items: readonly Movement[]): { readonly taxes: Movement[]; readonly twins: TaxTwin[] } {
-	const used = new Set<Movement>();
-	const gone = new Set<Movement>();
-	const twins: TaxTwin[] = [];
+/** An estimated F24 and what stands for it: the voci that count instead (summed), the expenses that say it is paid. */
+export type TaxTwin = { readonly tax: Movement; readonly voci: readonly Movement[]; readonly expenses: readonly Expense[] };
+
+/** The estimate closest to `date` within TAX_TWIN_DAYS, from its day or the first day of a June F24 gone by. */
+function closestTax(taxes: readonly Movement[], date: string): Movement | undefined {
+	let best: Movement | undefined;
+	let bestDays = Number.POSITIVE_INFINITY;
 	for (const t of taxes) {
-		let best: Movement | undefined;
-		let bestDays = Number.POSITIVE_INFINITY;
-		for (const m of items) {
-			if (used.has(m) || m.kind !== "out" || m.item === undefined || !words(m.item.name).some((w) => TAX_WORDS.has(w))) continue;
-			const diff = m.cents > t.cents ? m.cents - t.cents : t.cents - m.cents;
-			if (diff * 100n > t.cents * TAX_TWIN_PERCENT) continue;
-			const days = Math.abs(daysBetween(m.date, t.date));
-			if (days <= TAX_TWIN_DAYS && days < bestDays) {
-				best = m;
-				bestDays = days;
-			}
+		const days = Math.min(Math.abs(daysBetween(date, t.date)), t.tax?.was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.tax.was)));
+		if (days <= TAX_TWIN_DAYS && days < bestDays) {
+			best = t;
+			bestDays = days;
 		}
-		if (best === undefined) continue;
-		used.add(best);
-		gone.add(t);
-		twins.push({ voce: best, tax: t });
 	}
-	return { taxes: taxes.filter((t) => !gone.has(t)), twins };
+	return best;
+}
+
+/** The estimated F24 a voce of the person's or a recorded expense already stands for (see the choices above): those go, the voci stay. */
+export function taxDuplicates(taxes: readonly Movement[], items: readonly Movement[], expenses: readonly Expense[] = []): { readonly taxes: Movement[]; readonly twins: TaxTwin[] } {
+	const voci = new Map<Movement, Movement[]>();
+	const paid = new Map<Movement, Expense[]>();
+	for (const m of items) {
+		if (m.kind !== "out" || m.item === undefined || !isTaxName(m.item.name)) continue;
+		const t = closestTax(taxes, m.date);
+		if (t !== undefined) voci.set(t, [...(voci.get(t) ?? []), m]);
+	}
+	for (const e of expenses) {
+		if (!isTaxName(expenseName(e))) continue;
+		const t = closestTax(taxes, e.date);
+		if (t !== undefined) paid.set(t, [...(paid.get(t) ?? []), e]);
+	}
+	const twins = taxes.filter((t) => voci.has(t) || paid.has(t)).map((t) => ({ tax: t, voci: voci.get(t) ?? [], expenses: paid.get(t) ?? [] }));
+	return { taxes: taxes.filter((t) => !voci.has(t) && !paid.has(t)), twins };
 }

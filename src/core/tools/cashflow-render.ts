@@ -129,9 +129,11 @@ function section(head: string, rows: readonly string[]): Section[] {
 	return [{ head, rows: rows.length > MAX_ROWS ? [...rows.slice(0, MAX_ROWS), `e altre ${rows.length - MAX_ROWS}`] : rows }];
 }
 
-/** «F24 saldo (voce C-0001), 800,00 €: è l'F24 del 30 novembre stimato a 820,00 €, conto la tua voce», to be fenced. */
+/** «F24 saldo (voce C-0001), 800,00 €: sembra l'F24 del 30 novembre stimato a 820,00 €, conto la voce», or an expense that says it is paid; to be fenced. */
 function taxTwinRow(t: TaxTwin, today: string): string {
-	return `• ${movementLabel(t.voce, today)}, ${euros(t.voce.cents)}: sembra l'F24 ${withNearDate("del", t.tax.date, today)} stimato a ${euros(t.tax.cents)}, conto la voce`;
+	const what = [...t.voci.map((v) => `${movementLabel(v, today)}, ${euros(v.cents)}`), ...t.expenses.map((e) => `spesa ${withShortDate("del", e.date, today)} ${[e.supplier, e.note].filter((x) => x !== undefined).join(", ") || e.id}, ${euros(scaled(e.amount, 2))}`)];
+	const tail = t.voci.length === 0 ? "già pagato, non lo conto" : t.voci.length === 1 ? "conto la voce" : "conto le voci";
+	return `• ${what.join("; ")}: ${what.length === 1 ? "sembra" : "sembrano"} l'F24 ${withNearDate("del", t.tax.date, today)} stimato a ${euros(t.tax.cents)}, ${tail}`;
 }
 
 /** The one fence of an answer: every list that names someone. */
@@ -336,6 +338,7 @@ function assumptions(p: Projection, v: View): string[] {
 			a.renewalPayments > 0 ? `${n1(a.renewalPayments, "1 pagamento", "# pagamenti")} di rinnovi` : undefined,
 			a.lookalikes > 0 ? `${n1(a.lookalikes, "1 spesa che sembra", "# spese che sembrano")} un rinnovo o una voce` : undefined,
 			a.invoices > 0 ? `${n1(a.invoices, "1 fattura di fornitore", "# fatture di fornitori")} già nelle scadenze` : undefined,
+			(a.taxes ?? 0) > 0 ? `${n1(a.taxes ?? 0, "1 pagamento di tasse", "# pagamenti di tasse")} già nelle tasse stimate` : undefined,
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}

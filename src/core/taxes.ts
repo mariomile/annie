@@ -41,30 +41,75 @@ export const RATE_FULL = "15";
 export const RATE_START = "5";
 export const START_RATE_YEARS = 5;
 
-/** Gestione separata INPS, professionisti without other cover: 26,07% (25% IVS + 0,72% + 0,35%), INPS circolare annuale 2025. Editable by the person. */
+/** Gestione separata INPS, professionisti without other cover: 26,07% (25% IVS + 0,72% + 0,35%), unchanged for 2026 (INPS circolare 8/2026). Editable by the person. */
 export const GS_RATE_DEFAULT = "26.07";
-export const GS_RATE_YEAR = 2025;
+export const GS_RATE_YEAR = 2026;
+/** Massimale contributivo of the gestione separata, the reddito over which no contribution is due: 2025 120.607 €, 2026 122.295 € (INPS circolari annuali; 2026 circolare 8/2026). A year not here takes the closest year before it, or the first. */
+export const GS_MASSIMALE: Readonly<Record<number, string>> = { 2025: "120607", 2026: "122295" };
 
-/** Riduzione contributiva del 35% for artigiani and commercianti in the forfettario: L. 190/2014, art. 1, commi 76-84. */
+/** Riduzione contributiva del 35% for artigiani and commercianti in the forfettario, on the fixed and the variable contributions: L. 190/2014, art. 1, commi 76-84. */
 export const ARTIGIANI_REDUCTION_PERCENT = 35;
+/** Riduzione del 50% for 36 months for those first registered with INPS as artigiani or commercianti in 2025, instead of the 35% (L. 207/2024, Legge di Bilancio 2025, art. 1, comma 186). Da verificare with the commercialista. */
+export const NEW_2025_REDUCTION_PERCENT = 50;
+/**
+ * INPS artigiani e commercianti of a year (INPS circolare 14/2026, as reported by partitaiva.it):
+ * the reddito minimale; the fixed contributions on it, whole, before any reduction; the rate on the
+ * reddito over the minimale up to `top`, and IVS_TOP_EXTRA points more above it. A year not here
+ * (2025 included) is asked of the person.
+ */
+export const IVS_YEARS: Readonly<Record<number, { readonly minimale: string; readonly top: string; readonly fixed: { readonly artigiani: string; readonly commercianti: string }; readonly rate: { readonly artigiani: string; readonly commercianti: string } }>> = {
+	2026: { minimale: "18808", top: "56224", fixed: { artigiani: "4521.36", commercianti: "4611.64" }, rate: { artigiani: "24", commercianti: "24.48" } },
+};
+export const IVS_TOP_EXTRA = "1";
+/** Artigiani and commercianti: the acconti on the part over the minimale are 100% of last year's, in two equal instalments on the imposte's deadlines (INPS, circolare annuale artigiani e commercianti). */
+export const IVS_ACCONTO_FIRST_PERCENT = 50n;
 
 /** Ricavi limits, by cash: past 85.000 € the forfettario ends the next year; past 100.000 € it ends at once, in the same year (L. 190/2014, art. 1, commi 54 e 71, as amended by L. 197/2022). */
 export const LIMIT_CENTS = 8_500_000n;
 export const HARD_LIMIT_CENTS = 10_000_000n;
-/** Annie warns from this share of the 85.000 € limit, in percent. */
+/** Annie warns from this share of the 85.000 € limit, in percent; the brief again at each of the next bands. */
 export const LIMIT_WARN_PERCENT = 80n;
+export const LIMIT_BANDS = [80n, 90n, 100n] as const;
+/** The brief says a limit band when the incassi of these last days crossed it. */
+export const LIMIT_BAND_DAYS = 7;
 
 /** Acconto dell'imposta: none when last year's imposta is up to 51,65 € (istruzioni del modello Redditi PF, art. 1 L. 97/1977 in euro). */
 export const ACCONTO_NONE_MAX_CENTS = 5_165n;
-/** One payment in November when last year's imposta is up to 257,52 € (istruzioni del modello Redditi PF: a first instalment under 103 € is not due in June). */
-export const ACCONTO_SINGLE_MAX_CENTS = 25_752n;
 /** The acconto is 100% of last year's imposta (metodo storico), split 50% in June and 50% in November for subjects with ISA, the forfettari included (art. 58 DL 124/2019; Ris. AdE 93/E del 2019). Da verificare each year: the split has changed before. */
 export const ACCONTO_FIRST_PERCENT = 50n;
+/**
+ * A first acconto under 103 € is not due in June: everything goes in November (istruzioni del
+ * modello Redditi PF). So one payment when last year's imposta is under 103 × 100 / the first
+ * percent: 206 € at 50%, strictly under. Da verificare: the sources disagree (207 € for ISA
+ * subjects, 257,52 € or 258 € with the old 40% split).
+ */
+export const ACCONTO_FIRST_MIN_CENTS = 10_300n;
+export const ACCONTO_SINGLE_BELOW_CENTS = (ACCONTO_FIRST_MIN_CENTS * 100n) / ACCONTO_FIRST_PERCENT;
 /** Gestione separata: the acconti are 80% of last year's contributions, 40% in June and 40% in November (INPS, circolare annuale Gestione separata). */
 export const GS_ACCONTO_PERCENT = 80n;
 export const GS_ACCONTO_FIRST_PERCENT = 40n;
-/** Paying the June F24 by 31 July costs 0,40% more (art. 17, comma 2, DPR 435/2001); in basis points. */
-export const JULY_EXTRA_BP = 40n;
+
+/**
+ * The June F24 (saldi and first acconti, imposta and INPS contributions alike) of ISA subjects and
+ * forfettari, by year: the deadline as prorogated, and the alternative with its extra percentage.
+ */
+export const JUNE_DEADLINES: Readonly<Record<number, { readonly due: string; readonly alternative: string; readonly extra: string }>> = {
+	// Art. 37 D.Lgs. 13/2024: 31 July, or 30 August with 0,40% more.
+	2024: { due: "2024-07-31", alternative: "2024-08-30", extra: "0.40" },
+	// D.Lgs. 81/2025: 21 July, or 20 August with 0,40% more.
+	2025: { due: "2025-07-21", alternative: "2025-08-20", extra: "0.40" },
+	// DL 89/2026, converted by L. 113/2026: 20 July, or 20 August with 0,80% more.
+	2026: { due: "2026-07-20", alternative: "2026-08-20", extra: "0.80" },
+};
+/**
+ * A year without a known proroga: 30 June, or 30 days after the day it moves to with 0,40% more
+ * (art. 17, comma 2, DPR 435/2001); an alternative from 1 to 20 August moves to 20 August (art.
+ * 3-quater DL 16/2012, the proroga di ferragosto).
+ */
+export const JUNE_DUE = "06-30";
+export const JUNE_ALTERNATIVE_DAYS = 30;
+export const JUNE_EXTRA_DEFAULT = "0.40";
+export const FERRAGOSTO = { from: "08-01", to: "08-20" } as const;
 
 /** Days before an F24 the morning brief says it. */
 export const BRIEF_DAYS = 10;
@@ -82,7 +127,7 @@ export const TAX_LIMITS = {
 	firstYear: 1990,
 } as const;
 
-/** The ops the brief runs: calendar, compact (brief.ts). */
+/** The op the brief runs: calendar, with compact true (brief.ts). */
 const TAX_BRIEF_OPS = ["calendar"] as const;
 
 export function taxCallReads(args: Record<string, unknown>): boolean {
@@ -96,20 +141,21 @@ export function taxAgentReads(args: Record<string, unknown>): boolean {
 	return TAX_AGENT_OPS.some((o) => o === args.op);
 }
 
-export const PENSIONS = ["gestione_separata", "artigiani", "commercianti", "cassa", "nessuna"] as const;
+const PENSIONS = ["gestione_separata", "artigiani", "commercianti", "cassa", "nessuna"] as const;
 export type PensionKind = (typeof PENSIONS)[number];
 
 /**
  * The person's pension scheme. Gestione separata: a percentage of the reddito, with the year its
- * rate is of. Artigiani and commercianti: the fixed contributions of a year as the person pays
- * them (the four instalments, already reduced when they have the reduction), plus a percentage of
- * the reddito over the minimale, reduced by 35% when they asked for it. Cassa professionale: a
- * percentage and a minimum they say.
+ * rate is of. Artigiani and commercianti: the whole fixed contributions of a year (before any
+ * reduction), plus a percentage of the reddito over the minimale (one point more over `top`), the
+ * whole reduced by 35% when they asked for it, or by 50% when first registered in 2025 (`new2025`).
+ * Cassa professionale: a percentage, a minimum, and the contributo integrativo charged in the
+ * invoices, which is not a ricavo (undefined: not known).
  */
 export type Pension =
 	| { readonly kind: "gestione_separata"; readonly rate: string; readonly rateYear: number }
-	| { readonly kind: "artigiani" | "commercianti"; readonly fixed: string; readonly rate: string; readonly minimale: string; readonly reduction: boolean }
-	| { readonly kind: "cassa"; readonly rate: string; readonly minimum?: string }
+	| { readonly kind: "artigiani" | "commercianti"; readonly fixed: string; readonly rate: string; readonly minimale: string; readonly top?: string; readonly reduction: boolean; readonly new2025?: true }
+	| { readonly kind: "cassa"; readonly rate: string; readonly minimum?: string; readonly integrativo?: string }
 	| { readonly kind: "nessuna" };
 
 export type TaxProfile = Marker & {
@@ -131,7 +177,7 @@ export type YearFigures = {
 	readonly imposta?: string;
 	/** The contributions due for the year on the reddito (gestione separata; for artigiani and commercianti the part over the minimale; for a cassa its percentage). */
 	readonly contributi?: string;
-	/** The acconti paid during the year for the year. */
+	/** The acconti paid during the year for the year; this year, those paid so far. */
 	readonly accontiImposta?: string;
 	readonly accontiContributi?: string;
 	/** The contributions actually paid during the year: deducted from the reddito. */
@@ -146,11 +192,11 @@ export type FigureKey = (typeof FIGURE_KEYS)[number];
 const AMOUNT = /^\d{1,8}(?:\.\d{1,2})?$/;
 const PERCENT = /^\d{1,2}(?:\.\d{1,2})?$/;
 
-export const isFigure = (v: unknown): v is string => typeof v === "string" && AMOUNT.test(v) && Number(v) <= TAX_LIMITS.maxAmount;
-export const isPercent = (v: unknown): v is string => typeof v === "string" && PERCENT.test(v) && Number(v) > 0 && Number(v) < 100;
+const isFigure = (v: unknown): v is string => typeof v === "string" && AMOUNT.test(v) && Number(v) <= TAX_LIMITS.maxAmount;
+const isPercent = (v: unknown): v is string => typeof v === "string" && PERCENT.test(v) && Number(v) > 0 && Number(v) < 100;
 const isYear = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= TAX_LIMITS.firstYear && v <= 2200;
 
-export function validPension(v: unknown): v is Pension {
+function validPension(v: unknown): v is Pension {
 	if (typeof v !== "object" || v === null) return false;
 	const p = v as Pension;
 	switch (p.kind) {
@@ -158,9 +204,9 @@ export function validPension(v: unknown): v is Pension {
 			return isPercent(p.rate) && isYear(p.rateYear);
 		case "artigiani":
 		case "commercianti":
-			return isFigure(p.fixed) && isPercent(p.rate) && isFigure(p.minimale) && typeof p.reduction === "boolean";
+			return isFigure(p.fixed) && isPercent(p.rate) && isFigure(p.minimale) && (p.top === undefined || isFigure(p.top)) && typeof p.reduction === "boolean" && (p.new2025 === undefined || p.new2025 === true);
 		case "cassa":
-			return isPercent(p.rate) && (p.minimum === undefined || isFigure(p.minimum));
+			return isPercent(p.rate) && (p.minimum === undefined || isFigure(p.minimum)) && (p.integrativo === undefined || isPercent(p.integrativo));
 		case "nessuna":
 			return true;
 		default:
@@ -241,9 +287,6 @@ const GROUP_WORDS: readonly (readonly [Group, readonly string[]])[] = [
 			"traduttore",
 			"traduttrice",
 			"interprete",
-			"giornalista",
-			"fotografo",
-			"fotografa",
 			"designer",
 			"progettista",
 			"biologo",
@@ -257,8 +300,39 @@ const GROUP_WORDS: readonly (readonly [Group, readonly string[]])[] = [
 	["altre", ["altre attivita", "altra attivita", "servizi alla persona", "parrucchiere", "parrucchiera", "estetista", "trasporti", "autotrasportatore", "tassista", "noleggio", "pulizie", "manifattura", "artigianato artistico"]],
 ];
 
-/** Words that do not say a group for sure: the coefficient depends on the ATECO code. */
-const UNSURE = ["sviluppatore", "sviluppatrice", "programmatore", "programmatrice", "informatico", "informatica", "web designer", "grafico", "grafica", "artigiano", "artigiana", "freelance", "partita iva", "creator", "influencer", "social media manager", "copywriter", "videomaker"];
+/** Words that do not say a group for sure, whatever else is said: the coefficient depends on the ATECO code. */
+const UNSURE = [
+	"sviluppatore",
+	"sviluppatrice",
+	"programmatore",
+	"programmatrice",
+	"informatico",
+	"informatica",
+	"it",
+	"software",
+	"web",
+	"digital",
+	"marketing digitale",
+	"fotografo",
+	"fotografa",
+	"videomaker",
+	"grafico",
+	"grafica",
+	"artigiano",
+	"artigiana",
+	"freelance",
+	"partita iva",
+	"creator",
+	"influencer",
+	"social media manager",
+	"copywriter",
+];
+
+/** The two groups an unsure activity most often falls in, with an ATECO code of each as an example. */
+export const UNSURE_GROUPS: readonly { readonly group: Group; readonly ateco: string; readonly example: string }[] = [
+	{ group: "altre", ateco: "62.xx", example: "produzione di software, consulenza informatica" },
+	{ group: "professionali", ateco: "70.22", example: "consulenza imprenditoriale" },
+];
 
 function says(tokens: readonly string[], phrase: string): boolean {
 	const parts = words(phrase);
@@ -266,9 +340,10 @@ function says(tokens: readonly string[], phrase: string): boolean {
 	return false;
 }
 
-/** The group words say: one group; several or none («ambiguous», «unknown»); a word that never says one for sure («unsure»). */
+/** The group words say: a word that never says one for sure («unsure», whatever else matched); one group; several or none («ambiguous», «unknown»). */
 export function groupOfWords(text: string): Group | "ambiguous" | "unknown" | "unsure" {
 	const tokens = words(text);
+	if (UNSURE.some((p) => says(tokens, p))) return "unsure";
 	const hits = new Set<Group>();
 	for (const [group, phrases] of GROUP_WORDS) {
 		if (!phrases.some((p) => says(tokens, p))) continue;
@@ -279,8 +354,7 @@ export function groupOfWords(text: string): Group | "ambiguous" | "unknown" | "u
 	}
 	// «consulente immobiliare»: an agent, a professional or a builder? Asked.
 	if (hits.size === 1) return [...hits][0] as Group;
-	if (hits.size > 1) return "ambiguous";
-	return UNSURE.some((p) => says(tokens, p)) ? "unsure" : "unknown";
+	return hits.size > 1 ? "ambiguous" : "unknown";
 }
 
 /**

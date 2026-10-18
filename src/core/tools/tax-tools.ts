@@ -1,15 +1,16 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { cashBook } from "../cash-book.ts";
 import { DateError, readDate } from "../dates.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { euros } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { type Invoice, register } from "../invoices.ts";
-import { dayOfIn, todayIn } from "../italian-calendar.ts";
-import { withDate } from "../italian-format.ts";
+import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
+import { capitalized, withDate } from "../italian-format.ts";
 import { scaled } from "../quote-sums.ts";
 import { type FiguresPatch, TAXES_BROKEN, type TaxBook, type TaxStore } from "../tax-store.ts";
-import { accontiPaid, baseOf, type CalendarInputs, calendar, currentEstimate, estimate, type Incassi, limitOf, plainCalendar, projected, yearIncassi } from "../tax-sums.ts";
+import { accontiOfYear, accontiPaid, baseOf, type CalendarInputs, calendar, currentEstimate, type Incassi, incassiOf, limitBand, limitOf, plainCalendar, projected, ricaviOf, yearEstimate, yearIncassi } from "../tax-sums.ts";
 import {
 	BRIEF_DAYS,
 	type FigureKey,
@@ -20,6 +21,9 @@ import {
 	GS_RATE_YEAR,
 	groupOfAteco,
 	groupOfWords,
+	IVS_YEARS,
+	LIMIT_BAND_DAYS,
+	NEW_2025_REDUCTION_PERCENT,
 	type Pension,
 	type PensionKind,
 	RATE_FULL,
@@ -29,12 +33,13 @@ import {
 	TaxError,
 	type TaxProfile,
 	taxAgentReads,
+	UNSURE_GROUPS,
 } from "../taxes.ts";
 import { fold } from "../text-match.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { readItemAmount, readSignedEuros } from "./cashflow-input.ts";
 import { isProblem, type Problem, readPercent } from "./quote-input.ts";
-import { briefAnswer, calendarAnswer, ESTIMATE_NOTE, estimateAnswer, fenced, percentText, plainAnswer, profileLines, rateNote, taxCsv, whatIfAnswer } from "./tax-render.ts";
+import { asWho, briefAnswer, calendarAnswer, ESTIMATE_NOTE, estimateAnswer, fenced, figureWords, percentText, plainAnswer, profileLines, rateNote, taxCsv, whatIfAnswer } from "./tax-render.ts";
 
 const TAX_OPS = ["set_profile", "set_aside", "estimate", "calendar", "what_if", "export"] as const;
 type Op = (typeof TAX_OPS)[number];
@@ -58,8 +63,8 @@ export type TaxToolsOptions = {
 
 const DESCRIPTION = [
 	"Tasse del forfettario of the owner (regime forfettario only; for the ordinario it gives the deadlines without amounts): how much to put aside, the imposta sostitutiva and INPS contributions of the year, the next F24 and how much, what another incasso leaves. The incassi are the invoices marked paid in the scadenzario, by the day marked paid. Fixed F24 voci the person adds in the cashflow are kept there; this tool estimates.",
-	"What the person says → op: «quanto devo mettere da parte per le tasse?», «quante tasse pago quest'anno?» → estimate (project true for «se continuo così»); «quando scade il prossimo F24 e quanto?» → calendar; «se incasso altri 10.000 € quanto mi resta?» → what_if (amount, date optional); «ho accantonato 3.000» → set_aside (amount: the total put aside so far this year); «sono un consulente, forfettario al 15%, gestione separata» → set_profile; «fammi il file per il commercialista» → export.",
-	`set_profile, only with what the person says: activity (their words, «consulente», «commercio», or the ATECO code) or coefficient (the percentage); when the tool asks which group, ask the person. rate 15 or 5 (5: the first ${START_RATE_YEARS} years of a new activity with the requisites, start_year needed). start_year. pension: gestione separata (pension_rate, default ${percentText(GS_RATE_DEFAULT)}), artigiani or commercianti (pension_fixed: the fixed contributions of a year as they pay them; pension_rate and minimale: the percentage over the minimale; reduction true for the 35% reduction), cassa professionale (pension_rate, pension_minimum), nessuna. Last year's figures from the dichiarazione: last_year_imposta, last_year_contributi (for artigiani and commercianti only the part over the minimale), last_year_acconti_imposta, last_year_acconti_contributi (acconti paid last year); paid_contributions: contributions paid this year. "" clears a figure.`,
+	"What the person says → op: «quanto devo mettere da parte per le tasse?», «quante tasse pago quest'anno?» → estimate (project true for «se continuo così»); «quando scade il prossimo F24 e quanto?» → calendar; «se incasso altri 10.000 € quanto mi resta?» → what_if (amount, date optional); «ho accantonato 3.000» → set_aside (amount: the total put aside so far this year); «sono un consulente informatico, forfettario al 15%, gestione separata» → set_profile with activity «consulente informatico»: a generic activity gets a question for the ATECO code, ask the person and repeat with the code; «fammi il file per il commercialista» → export.",
+	`set_profile, only with what the person says: activity (their words, «consulente», «commercio», or the ATECO code) or coefficient (the percentage); when the tool asks which group, ask the person. rate 15 or 5 (5: the first ${START_RATE_YEARS} years of a new activity with the requisites, start_year needed). start_year. pension: gestione separata (pension_rate, default ${percentText(GS_RATE_DEFAULT)}), artigiani or commercianti (fixed contributions, minimale and percentage default to the year's INPS figures; ask only about reduction: true for the 35% reduction; first_registered_2025 true for the ${NEW_2025_REDUCTION_PERCENT}% one; pension_fixed, minimale, pension_rate only when the person says them, the fixed amount whole, before any reduction), cassa professionale (pension_rate, pension_minimum, pension_integrativo: the contributo integrativo charged in the invoices, taken out of the incassi), nessuna. Last year's figures from the dichiarazione: last_year_imposta, last_year_contributi (for artigiani and commercianti only the part over the minimale), last_year_acconti_imposta, last_year_acconti_contributi (acconti paid last year); this year: paid_acconti_imposta, paid_acconti_contributi (acconti paid so far), paid_contributions (contributions paid). "" clears a figure.`,
 	"calendar: the next F24 with amounts (metodo storico); method previsionale with expected_income when the person expects to earn less (warn about penalties); compact true: the brief's line. export: CSV under tasse/; then send it with file_send.",
 	"Every answer is an estimate to check with the commercialista: say so, and repeat amounts and dates as given, never compute them yourself.",
 ].join(" ");
@@ -73,12 +78,14 @@ const PENSION_WORDS: readonly (readonly [PensionKind, RegExp])[] = [
 ];
 
 /** The profile's fields set_profile reads: any of them makes it a write; none shows the profile. */
-const PROFILE_FIELDS = ["activity", "coefficient", "rate", "start_year", "pension", "pension_rate", "pension_fixed", "minimale", "reduction", "pension_minimum"] as const;
+const PROFILE_FIELDS = ["activity", "coefficient", "rate", "start_year", "pension", "pension_rate", "pension_fixed", "minimale", "reduction", "first_registered_2025", "pension_minimum", "pension_integrativo"] as const;
 const FIGURE_FIELDS: Readonly<Record<string, { readonly key: FigureKey; readonly lastYear: boolean }>> = {
 	last_year_imposta: { key: "imposta", lastYear: true },
 	last_year_contributi: { key: "contributi", lastYear: true },
 	last_year_acconti_imposta: { key: "accontiImposta", lastYear: true },
 	last_year_acconti_contributi: { key: "accontiContributi", lastYear: true },
+	paid_acconti_imposta: { key: "accontiImposta", lastYear: false },
+	paid_acconti_contributi: { key: "accontiContributi", lastYear: false },
 	paid_contributions: { key: "contributiVersati", lastYear: false },
 };
 
@@ -93,7 +100,9 @@ type Said = {
 	fixed?: string;
 	minimale?: string;
 	reduction?: boolean;
+	new2025?: boolean;
 	minimum?: string | null;
+	integrativo?: string | null;
 };
 
 /**
@@ -134,11 +143,15 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 					pension_fixed: { ...amount, description: "set_profile: artigiani/commercianti, the fixed contributions of a year as paid" },
 					minimale: { ...amount, description: "set_profile: artigiani/commercianti, the reddito minimale" },
 					reduction: { type: "boolean", description: "set_profile: artigiani/commercianti with the 35% reduction" },
+					first_registered_2025: { type: "boolean", description: `set_profile: artigiani/commercianti first registered with INPS in 2025, the ${NEW_2025_REDUCTION_PERCENT}% reduction` },
 					pension_minimum: { ...amount, description: "set_profile: cassa professionale, the minimum contribution (\"\" clears)" },
+					pension_integrativo: { ...percent, description: "set_profile: cassa professionale, the contributo integrativo percentage charged in the invoices (\"\" clears)" },
 					last_year_imposta: { ...amount, description: "set_profile: last year's imposta sostitutiva due (\"\" clears)" },
 					last_year_contributi: { ...amount, description: "set_profile: last year's contributions on the reddito (\"\" clears)" },
 					last_year_acconti_imposta: { ...amount, description: "set_profile: acconti of imposta paid last year (\"\" clears)" },
 					last_year_acconti_contributi: { ...amount, description: "set_profile: acconti of contributions paid last year (\"\" clears)" },
+					paid_acconti_imposta: { ...amount, description: "set_profile: acconti of imposta paid so far this year (\"\" clears)" },
+					paid_acconti_contributi: { ...amount, description: "set_profile: acconti of contributions paid so far this year (\"\" clears)" },
 					paid_contributions: { ...amount, description: "set_profile: contributions actually paid this year (\"\" clears)" },
 					amount: { ...amount, description: "set_aside: the total put aside so far; what_if: the further incasso" },
 					date: text(40, "what_if: the day of the incasso (default this year)"),
@@ -233,12 +246,16 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 			const table = GROUP_KEYS.map((g) => `• ${GROUPS[g].label}: ${GROUPS[g].coefficient}%`).join("\n");
 			if (found === undefined) return `Questo codice ATECO non basta per sapere il gruppo: chiedi a chi ti scrive il codice completo (per esempio 47.81.01) o il coefficiente.\nI gruppi:\n${table}`;
 			if (found === "ambiguous") return `Non l'ho salvato: da queste parole l'attività può stare in più gruppi, con coefficienti diversi:\n${fenced(args.activity)}\nChiedi a chi ti scrive quale di questi è il suo, o il codice ATECO:\n${table}`;
-			if (found === "unsure" || found === "unknown") return `Non l'ho salvato: da queste parole non so il gruppo dell'attività${found === "unsure" ? ", dipende dal codice ATECO" : ""}:\n${fenced(args.activity)}\nChiedi a chi ti scrive il codice ATECO o il coefficiente. I gruppi:\n${table}`;
+			if (found === "unsure") {
+				const likely = UNSURE_GROUPS.map((u) => `• ${GROUPS[u.group].label}: ${GROUPS[u.group].coefficient}% (per esempio ATECO ${u.ateco}, ${u.example})`).join("\n");
+				return `Non l'ho salvato: da queste parole il gruppo dell'attività dipende dal codice ATECO:\n${fenced(args.activity)}\nDi solito è uno di questi due:\n${likely}\nChiedi a chi ti scrive il suo codice ATECO (è nella visura o nel cassetto fiscale) o il coefficiente.`;
+			}
+			if (found === "unknown") return `Non l'ho salvato: da queste parole non so il gruppo dell'attività:\n${fenced(args.activity)}\nChiedi a chi ti scrive il codice ATECO o il coefficiente. I gruppi:\n${table}`;
 			group = found;
 			if (code) note = "Ho preso il gruppo dal codice ATECO: con i codici ATECO 2025 alcuni sono cambiati, fai verificare il coefficiente al commercialista.";
 		}
 		if (args.coefficient !== undefined) {
-			const c = readPercent(args.coefficient, "coefficient");
+			const c = readPercent(args.coefficient, "coefficient", fenced);
 			if (c === null) return "Errore: coefficient va da 1 a 99.";
 			if (isProblem(c)) return `Errore: ${c.problem}.`;
 			if (c !== undefined && group !== undefined && GROUPS[group].coefficient !== c) return `Non l'ho salvato: per il gruppo «${GROUPS[group].label}» il coefficiente è ${GROUPS[group].coefficient}%, non ${percentText(c)}. Chiedi a chi ti scrive quale vale.`;
@@ -253,7 +270,7 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		if (typeof coefficient === "string") return coefficient;
 		const said: Said = { ...coefficient };
 		if (args.rate !== undefined) {
-			const r = readPercent(args.rate, "rate");
+			const r = readPercent(args.rate, "rate", fenced);
 			if (r === null || isProblem(r) || (r !== RATE_FULL && r !== RATE_START)) return "Errore: rate è 15 o 5 (il 5% vale per i primi 5 anni di una nuova attività con i requisiti).";
 			said.rate = r;
 		}
@@ -268,7 +285,7 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 			said.pension = kind;
 		}
 		if (args.pension_rate !== undefined) {
-			const r = readPercent(args.pension_rate, "pension_rate");
+			const r = readPercent(args.pension_rate, "pension_rate", fenced);
 			if (r === null) return "Errore: pension_rate va da più di 0 a meno di 100.";
 			if (isProblem(r)) return `Errore: ${r.problem}.`;
 			if (r !== undefined) said.pensionRate = r;
@@ -285,9 +302,20 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		const minimum = readFigure(args.pension_minimum, "pension_minimum");
 		if (isProblem(minimum)) return `Errore: ${minimum.problem}.`;
 		if (minimum !== undefined) said.minimum = minimum;
-		if (args.reduction !== undefined) {
-			if (typeof args.reduction !== "boolean") return "Errore: reduction è true o false.";
-			said.reduction = args.reduction;
+		if (args.pension_integrativo === "") said.integrativo = null;
+		else if (args.pension_integrativo !== undefined) {
+			const r = readPercent(args.pension_integrativo, "pension_integrativo", fenced);
+			if (r === null) return "Errore: pension_integrativo va da più di 0 a meno di 100.";
+			if (isProblem(r)) return `Errore: ${r.problem}.`;
+			if (r !== undefined) said.integrativo = r;
+		}
+		for (const [field, key] of [
+			["reduction", "reduction"],
+			["first_registered_2025", "new2025"],
+		] as const) {
+			if (args[field] === undefined) continue;
+			if (typeof args[field] !== "boolean") return `Errore: ${field} è true o false.`;
+			said[key] = args[field];
 		}
 		return said;
 	}
@@ -295,7 +323,7 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 	/** The pension from what is said onto the old one; a question when something needed is missing. */
 	function pensionOf(said: Said, old: Pension | undefined, year: number): Pension | string {
 		const kind = said.pension ?? old?.kind;
-		if (kind === undefined) return "Serve la cassa dei contributi: chiedi a chi ti scrive se versa alla gestione separata INPS, come artigiano o commerciante, a una cassa professionale, o niente.";
+		if (kind === undefined) return "Serve la cassa dei contributi: chiedi a chi ti scrive se versa alla gestione separata INPS, all'INPS come artigiano o come commerciante, a una cassa professionale, o niente.";
 		const same = old?.kind === kind ? old : undefined;
 		switch (kind) {
 			case "gestione_separata": {
@@ -306,19 +334,26 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 			case "artigiani":
 			case "commercianti": {
 				const prev = same?.kind === "artigiani" || same?.kind === "commercianti" ? same : undefined;
-				const fixed = said.fixed ?? prev?.fixed;
-				const rate = said.pensionRate ?? prev?.rate;
-				const minimale = said.minimale ?? prev?.minimale;
-				const missing = [fixed === undefined ? "i contributi fissi che paga in un anno (le quattro rate)" : undefined, minimale === undefined ? "il reddito minimale" : undefined, rate === undefined ? "la percentuale sopra il minimale" : undefined].filter((x) => x !== undefined);
-				if (missing.length > 0 || fixed === undefined || rate === undefined || minimale === undefined) return `Per i contributi da ${kind} mi servono ${missing.join(", ")}: li trova nel cassetto previdenziale INPS. Chiedili a chi ti scrive.`;
-				return { kind, fixed, rate, minimale, reduction: said.reduction ?? prev?.reduction ?? false };
+				// The year's INPS figures unless the person said theirs (taxes.ts, IVS_YEARS).
+				const table = IVS_YEARS[year];
+				const fixed = said.fixed ?? prev?.fixed ?? table?.fixed[kind];
+				const rate = said.pensionRate ?? prev?.rate ?? table?.rate[kind];
+				const minimale = said.minimale ?? prev?.minimale ?? table?.minimale;
+				const top = prev?.top ?? table?.top;
+				const missing = [fixed === undefined ? "i contributi fissi dell'anno (interi, senza riduzione)" : undefined, minimale === undefined ? "il reddito minimale" : undefined, rate === undefined ? "la percentuale sopra il minimale" : undefined].filter((x) => x !== undefined);
+				if (missing.length > 0 || fixed === undefined || rate === undefined || minimale === undefined) return `Per i contributi ${asWho(kind)} del ${year} non ho le cifre dell'INPS: mi servono ${missing.join(", ")}. Le trova nel cassetto previdenziale INPS: chiedile a chi ti scrive.`;
+				const reduction = said.reduction ?? prev?.reduction;
+				const new2025 = said.new2025 ?? prev?.new2025;
+				if (reduction === undefined && new2025 === undefined) return `Per i contributi ${asWho(kind)} mi manca solo una cosa: chiedi a chi ti scrive se ha la riduzione del 35% per i forfettari (si chiede all'INPS) o, se si è iscritto all'INPS per la prima volta nel 2025, quella del ${NEW_2025_REDUCTION_PERCENT}%.`;
+				return { kind, fixed, rate, minimale, ...(top === undefined ? {} : { top }), reduction: reduction ?? false, ...(new2025 === true ? { new2025: true as const } : {}) };
 			}
 			case "cassa": {
 				const prev = same?.kind === "cassa" ? same : undefined;
 				const rate = said.pensionRate ?? prev?.rate;
 				if (rate === undefined) return "Per la cassa professionale mi serve la percentuale dei contributi (e il minimo, se c'è): chiedila a chi ti scrive.";
 				const minimum = said.minimum === null ? undefined : (said.minimum ?? prev?.minimum);
-				return { kind, rate, ...(minimum === undefined ? {} : { minimum }) };
+				const integrativo = said.integrativo === null ? undefined : (said.integrativo ?? prev?.integrativo);
+				return { kind, rate, ...(minimum === undefined ? {} : { minimum }), ...(integrativo === undefined ? {} : { integrativo }) };
 			}
 			case "nessuna":
 				return { kind };
@@ -396,8 +431,12 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		await audit(ctx, "set_profile", 1);
 		const saved = readable().profile ?? draft;
 		const lines = [profileSaid ? "Fatto, profilo delle tasse salvato:" : "Fatto, cifre salvate.", ...(profileSaid && saved !== undefined ? profileLines(saved, year) : []), ...saidLines];
-		if (profileSaid && said.rate === undefined && book.profile === undefined) lines.push("Ho messo l'imposta al 15%: il 5% vale per i primi 5 anni di una nuova attività con i requisiti. Se è il caso di chi ti scrive, dimmelo con l'anno di inizio.");
+		// The start year first: saldo and acconti depend on it.
+		if (profileSaid && saved !== undefined && saved.startYear === undefined) lines.push("Chiedi a chi ti scrive in che anno ha aperto la partita IVA: mi serve per sapere se ci sono saldo e acconti da versare.");
+		const start = saved?.startYear;
+		if (profileSaid && said.rate === undefined && book.profile === undefined && (start === undefined || year < start + START_RATE_YEARS)) lines.push(`Ho messo l'imposta al 15%. ${start === undefined ? `Se l'attività ha meno di ${START_RATE_YEARS} anni, chiedi` : "Chiedi"} a chi ti scrive: ha i requisiti per il 5%?`);
 		if (profileSaid && saved?.pension.kind === "gestione_separata" && said.pensionRate === undefined && book.profile?.pension.kind !== "gestione_separata") lines.push(`L'aliquota della gestione separata è quella del ${GS_RATE_YEAR}: se nel frattempo è cambiata, dimmi quella nuova.`);
+		if (profileSaid && saved?.pension.kind === "cassa" && saved.pension.integrativo === undefined && said.integrativo === undefined) lines.push("Non so il contributo integrativo della cassa: chiedi a chi ti scrive la percentuale che mette in fattura, così lo tolgo dagli incassi. Finché non lo so, reddito e tasse vengono un po' più alti.");
 		const note = saved === undefined ? undefined : rateNote(saved, year);
 		if (note !== undefined) lines.push(note);
 		const coefficient = readCoefficient(args);
@@ -406,15 +445,8 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 	}
 
 	function figureLine(key: FigureKey, year: number, value: string | null): string {
-		const words: Readonly<Record<FigureKey, string>> = {
-			imposta: `imposta sostitutiva del ${year}`,
-			contributi: `contributi del ${year}`,
-			accontiImposta: `acconti d'imposta versati nel ${year}`,
-			accontiContributi: `acconti di contributi versati nel ${year}`,
-			contributiVersati: `contributi versati nel ${year}`,
-			accantonato: `messo da parte per il ${year}`,
-		};
-		return value === null ? `Tolto: ${words[key]}.` : `${words[key].charAt(0).toUpperCase()}${words[key].slice(1)}: ${euros(scaled(value, 2))}.`;
+		const words = figureWords(key, year);
+		return value === null ? `Tolto: ${words}.` : `${capitalized(words)}: ${euros(scaled(value, 2))}.`;
 	}
 
 	async function setAside(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -434,7 +466,8 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		const book = readable();
 		if (book.profile !== undefined && !ordinario()) {
 			const invoices = await invoicesOf(ctx);
-			const e = estimate(book.profile, year, incassiReader(invoices, day)(year).cents, book.years.find((y) => y.year === year));
+			const inputs = inputsOf(book.profile, book, invoices, day);
+			const e = yearEstimate(inputs, year, inputs.incassi(year).cents);
 			const missing = e.total - scaled(value, 2);
 			lines.push(missing > 0n ? `Con la stima di ora (${euros(e.total)}) ne mancano ${euros(missing)}.` : `Bastano per la stima di ora (${euros(e.total)}).`, ESTIMATE_NOTE);
 		}
@@ -457,13 +490,13 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		if (typeof profile === "string") return profile;
 		const book = readable();
 		const invoices = await invoicesOf(ctx);
-		const incassi = incassiReader(invoices, day)(year);
-		const figures = book.years.find((y) => y.year === year);
-		const e = estimate(profile, year, incassi.cents, figures);
+		const inputs = inputsOf(profile, book, invoices, day);
+		const incassi = inputs.incassi(year);
+		const e = yearEstimate(inputs, year, incassi.cents);
 		const soFar = year === Number(day.slice(0, 4));
 		const p = args.project === true && soFar ? projected(incassi.cents, day) : undefined;
-		const pe = p === undefined ? undefined : estimate(profile, year, p.ricavi, figures);
-		const accantonato = figures?.accantonato;
+		const pe = p === undefined ? undefined : yearEstimate(inputs, year, p.ricavi);
+		const accantonato = book.years.find((y) => y.year === year)?.accantonato;
 		const limit = limitOf(e.ricavi);
 		const projectedLimit = pe === undefined ? undefined : limitOf(pe.ricavi);
 		return estimateAnswer({
@@ -501,26 +534,36 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		const previsionale = args.method === "previsionale" ? (expected === undefined ? {} : { ricavi: expected }) : undefined;
 		const inputs = inputsOf(profile, book, invoices, day, previsionale);
 		const lastYear = Number(day.slice(0, 4)) - 1;
+		const storico = inputsOf(profile, book, invoices, day);
+		const acconti = accontiOfYear(inputs, lastYear + 1);
+		const juneUnknown = (acconti.imposta !== undefined && acconti.imposta.first === undefined) || (acconti.contributi !== undefined && acconti.contributi.first === undefined);
 		return calendarAnswer({
 			today: day,
 			profile,
 			deadlines: calendar(inputs),
-			base: baseOf(inputs, lastYear),
+			base: baseOf(storico, lastYear),
 			lastYear,
-			accontiSource: accontiPaid(inputs, lastYear).source,
-			...(previsionale === undefined ? {} : { previsionale: { estimate: currentEstimate(inputs, expected), expected: expected !== undefined } }),
+			accontiSource: accontiPaid(storico, lastYear).source,
+			...(previsionale === undefined ? {} : { previsionale: { estimate: currentEstimate(inputs), expected: expected !== undefined, storico: calendar(storico), juneUnknown } }),
 		});
 	}
 
-	/** The brief's line: an F24 within BRIEF_DAYS with its amount, or a limit near or crossed. Read only, always. */
+	/**
+	 * The brief's line: an F24 within BRIEF_DAYS with its amount, or a limit band (80%, 90%, past
+	 * 85.000 €, past 100.000 €) the incassi of the last LIMIT_BAND_DAYS days crossed. Read only,
+	 * always: the brief keeps no state, so «since the last brief» is the last week of incassi.
+	 */
 	async function compact(ctx: ToolContext, day: string): Promise<string> {
 		const book = readable();
 		if (book.profile === undefined || ordinario()) return briefAnswer([], day, undefined, 0n);
 		const invoices = await invoicesOf(ctx);
 		const inputs = inputsOf(book.profile, book, invoices, day);
 		const soon = calendar(inputs, BRIEF_DAYS + 1);
-		const ricavi = inputs.incassi(Number(day.slice(0, 4))).cents;
-		return briefAnswer(soon, day, limitOf(ricavi), ricavi);
+		const year = Number(day.slice(0, 4));
+		const pension = book.profile.pension;
+		const ricavi = ricaviOf(pension, inputs.incassi(year).cents);
+		const weekAgo = ricaviOf(pension, incassiOf(invoices, year, dayOf, addDays(day, -LIMIT_BAND_DAYS)).cents);
+		return briefAnswer(soon, day, limitBand(ricavi) > limitBand(weekAgo) ? limitOf(ricavi) : undefined, ricavi);
 	}
 
 	async function whatIf(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -535,7 +578,8 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 			try {
 				date = readDate(args.date, day).date;
 			} catch (error) {
-				if (error instanceof DateError) return `Errore: ${error.message}.`;
+				// The person's words go back only inside the fence, never in the parser's message.
+				if (error instanceof DateError) return `Errore: non capisco il giorno dell'incasso, dimmelo come 15/12/2026:\n${fenced(args.date.slice(0, 120))}`;
 				throw error;
 			}
 			if (date < `${current}-01-01` || Number(date.slice(0, 4)) > current + 1) return `Errore: l'incasso ipotetico va nel ${current} o nel ${current + 1}.`;
@@ -545,12 +589,12 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		const book = readable();
 		const year = date === undefined ? current : Number(date.slice(0, 4));
 		const invoices = await invoicesOf(ctx);
-		const so = incassiReader(invoices, day)(year).cents;
+		const inputs = inputsOf(profile, book, invoices, day);
+		const so = inputs.incassi(year).cents;
 		const projectedRicavi = args.project === true && year === current ? projected(so, day).ricavi : so;
-		const figures = book.years.find((y) => y.year === year);
-		const before = estimate(profile, year, projectedRicavi, figures);
+		const before = yearEstimate(inputs, year, projectedRicavi);
 		const add = scaled(extra, 2);
-		const after = estimate(profile, year, projectedRicavi + add, figures);
+		const after = yearEstimate(inputs, year, projectedRicavi + add);
 		const lb = limitOf(before.ricavi);
 		const la = limitOf(after.ricavi);
 		return whatIfAnswer({ amount: add, ...(date === undefined ? {} : { date }), before, after, projected: projectedRicavi !== so, ...(lb === undefined ? {} : { limitBefore: lb }), ...(la === undefined ? {} : { limitAfter: la }) });
@@ -564,9 +608,11 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 		const book = readable();
 		const invoices = await invoicesOf(ctx);
 		const inputs = inputsOf(profile, book, invoices, day);
-		const e = estimate(profile, year, inputs.incassi(year).cents, book.years.find((y) => y.year === year));
-		const deadlines = year === Number(day.slice(0, 4)) ? calendar(inputs) : [];
-		const { csv, rows } = taxCsv(e, profile, deadlines);
+		const e = yearEstimate(inputs, year, inputs.incassi(year).cents);
+		const current = year === Number(day.slice(0, 4));
+		const deadlines = current ? calendar(inputs) : [];
+		const incassi = cashBook(invoices, [], { from: `${year}-01-01`, to: current ? day : `${year}-12-31` }, dayOf).rows.filter((r) => r.kind === "in");
+		const { csv, rows } = taxCsv({ estimate: e, profile, figures: book.years, incassi, deadlines });
 		// The name only from the year and today's date, under tasse/; a new file never replaces one there.
 		const path = await ctx.step("path", async () => freePath(workspace, `tasse/tasse-${year}-al-${day}`, ".csv"));
 		const written = await ctx.step("write", async () => (await workspace.write(path, csv)).path);
