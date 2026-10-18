@@ -5197,16 +5197,107 @@ async function viewPeople(main) {
 }
 
 // ---------- attività ----------
+/** Where an audit event comes from, by the first part of its type: a label, an icon, the prefixes it covers. */
+const AUDIT_GROUPS = [
+	["Messaggi", "chat", ["message", "reply", "draft", "outbox", "mail", "notice", "tap"]],
+	["Accessi e persone", "persone", ["web", "person", "user", "tenant", "cell", "team", "instance"]],
+	["Board", "board", ["board", "card"]],
+	["Connettori", "connettori", ["connector", "connector_action", "google", "google_action", "telegram", "whatsapp", "phone", "secret"]],
+	["Modello e spesa", "attivita", ["cost", "model"]],
+	["Strumenti", "skill", []],
+];
+const auditGroup = (type) => AUDIT_GROUPS.find(([, , prefixes]) => prefixes.includes(type.split(".")[0])) ?? AUDIT_GROUPS.at(-1);
+/** An event that went wrong or was stopped reads in red. */
+const AUDIT_BAD = /\.(failed|denied|refused|uncertain|rejected|retries_exhausted|invalid_sender|update_failed|login_denied)$/;
+
+/**
+ * The audit as a day-by-day log: filter by where events come from, read the details as name and value,
+ * and only the latest few rows until asked for more (the page holds up to 200).
+ */
+function auditLog(events, details) {
+	const PAGE = 40;
+	let group = null;
+	let shown = PAGE;
+	const list = h("div.audit-days");
+	const more = h("button.btn.ghost.small", { type: "button", onclick: () => ((shown += PAGE), draw()) });
+	const dayOf = (iso) => {
+		const at = new Date(iso);
+		const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86_400_000);
+		return days === 0 ? "Oggi" : days === 1 ? "Ieri" : at.toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
+	};
+	const clock = (iso) => (iso ? new Date(iso).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "");
+	const row = ([e, times, last]) => {
+		const [, glyph] = auditGroup(e.type);
+		const pairs = details(e);
+		const at = e.ts ?? e.at;
+		const span = times > 1 && clock(last) !== clock(at) ? `${clock(last)}–${clock(at)}` : clock(at);
+		return h(
+			`li.task-row.audit-row${AUDIT_BAD.test(e.type) ? ".bad" : ""}`,
+			{ title: pairs.map(([k, v]) => `${k}: ${v}`).join("\n") },
+			h("span.fold-glyph", icon(glyph)),
+			h(
+				"div.task-text",
+				h("b", h("span.mono", e.type), times > 1 ? h("span.audit-times", `×${times}`) : null),
+				pairs.length ? h("small.audit-pairs", pairs.map(([k, v]) => h("span", h("i", k), v.length > 60 ? `${v.slice(0, 60)}…` : v))) : null,
+			),
+			h("time.audit-when", { datetime: at }, span),
+		);
+	};
+	const draw = () => {
+		const picked = group === null ? events : events.filter((e) => auditGroup(e.type)[0] === group);
+		// The same event again and again (every login, every retry) is one row with a count.
+		const rows = [];
+		for (const e of picked) {
+			const key = JSON.stringify([e.type, details(e), dayOf(e.ts ?? e.at)]);
+			if (rows.at(-1)?.[3] === key) {
+				rows.at(-1)[1]++;
+				rows.at(-1)[2] = e.ts ?? e.at;
+			} else rows.push([e, 1, e.ts ?? e.at, key]);
+		}
+		const days = [];
+		for (const r of rows.slice(0, shown)) {
+			const day = dayOf(r[0].ts ?? r[0].at);
+			if (days.at(-1)?.[0] !== day) days.push([day, []]);
+			days.at(-1)[1].push(r);
+		}
+		mount(list, days.map(([day, items]) => h("section.audit-day", h("h3", day), h("ul.task-list", items.map(row)))));
+		more.hidden = rows.length <= shown;
+		more.textContent = `Mostra altri ${Math.min(PAGE, rows.length - shown)}`;
+	};
+	const counts = new Map();
+	for (const e of events) counts.set(auditGroup(e.type)[0], (counts.get(auditGroup(e.type)[0]) ?? 0) + 1);
+	const chips = h(
+		"div.choices.audit-filter",
+		{ role: "group", "aria-label": "Quali eventi" },
+		[[null, events.length], ...AUDIT_GROUPS.filter(([name]) => counts.has(name)).map(([name]) => [name, counts.get(name)])].map(([name, n]) =>
+			h(
+				"button",
+				{
+					type: "button",
+					"aria-pressed": name === group ? "true" : "false",
+					onclick: (e) => {
+						group = name;
+						shown = PAGE;
+						for (const b of chips.children) b.setAttribute("aria-pressed", b === e.currentTarget ? "true" : "false");
+						draw();
+					},
+				},
+				`${name ?? "Tutti"} · ${n}`,
+			),
+		),
+	);
+	draw();
+	return h("div.audit", chips, list, h("div.audit-more", more));
+}
+
 async function viewActivity(main) {
 	const { usage } = await api("/api/usage");
 	const owner = state.me.role === "owner";
 	const audit = owner ? (await api("/api/audit?limit=200")).events : [];
 	const share = Math.min(1, usage.todayUsd / usage.hardUsd);
-	const label = (e) => {
+	const details = (e) => {
 		const { at: _at, ts: _ts, type: _type, tenantId: _tenant, ...rest } = e;
-		return Object.entries(rest)
-			.map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
-			.join("  ");
+		return Object.entries(rest).map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v) : String(v)]);
 	};
 	mount(main, 
 		head("Annie", h("h1", "Attività e spesa"), "Quanto ha speso oggi il tenant in modelli, e cosa è successo."),
@@ -5223,11 +5314,7 @@ async function viewActivity(main) {
 				? h(
 						"div.card",
 						audit.length
-							? h(
-									"table.ledger",
-									h("thead", h("tr", h("th", "Quando"), h("th", "Evento"), h("th", "Dettagli"))),
-									h("tbody", audit.map((e) => h("tr", h("td.mono", fmt.time(e.ts ?? e.at)), h("td", h("span.chip", e.type)), h("td.mono.muted", label(e))))),
-								)
+							? auditLog(audit, details)
 							: emptyNote("div.empty", "Nessun evento"),
 					)
 				: h("div.card.empty", "L'audit completo è visibile all'owner."),
