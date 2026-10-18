@@ -27,12 +27,11 @@
  */
 import { type Figures, type Receivables, REPORT_LIMITS, type Span } from "./business-report.ts";
 import { type TaxSetting, taxesIn } from "./business-report-taxes.ts";
-import { unitsToCents } from "./cash-book.ts";
-import { invoiceFlows, maybeTwins, type PaidInstalment, pairPaidWithExpenses } from "./cashflow-sources.ts";
+import { invoiceFlows, type MaybeTwin, type PaidInstalment, paidSupplierInstalments, type SupplierPairing, supplierPairing } from "./cashflow-sources.ts";
 import { collectedIn } from "./client-sums.ts";
 import type { Expense } from "./expenses.ts";
 import { totalsOf } from "./expense-sums.ts";
-import { type Invoice, paidDay } from "./invoices.ts";
+import type { Invoice } from "./invoices.ts";
 import { latest, type Quote } from "./quotes.ts";
 import { halfUp } from "./quote-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
@@ -59,7 +58,11 @@ export type Sources = ReportRegisters & {
 	readonly uncounted: number;
 	readonly today: string;
 	readonly dayOf: (at: string) => string;
+	/** Every paid supplier instalment and how the expenses pair with it, once for the whole register. */
+	readonly pairing: Pairing;
 };
+
+type Pairing = SupplierPairing & { readonly paid: readonly PaidInstalment[] };
 
 /** Which registers hold anything at all: an empty one is said, never shown as zeros. */
 export type Presence = { readonly invoices: boolean; readonly expenses: boolean; readonly entries: boolean; readonly quotes: boolean };
@@ -70,7 +73,9 @@ export function sourcesOf(r: ReportRegisters, today: string, dayOf: (at: string)
 	const docs = r.invoices === undefined && r.sales === undefined ? undefined : vatDocs(r.sales ?? [], r.invoices ?? [], r.marks, dayOf).docs;
 	const keys = new Set((docs ?? []).map((d) => d.key));
 	const uncounted = (r.invoices ?? []).filter((i) => i.side === "active" && !i.doc.integration && !keys.has(i.key)).length;
-	return { ...r, ...(docs === undefined ? {} : { docs }), uncounted, today, dayOf };
+	const paid = paidSupplierInstalments(r.invoices ?? [], dayOf);
+	const pairing = { paid, ...supplierPairing(paid, r.expenses ?? []) };
+	return { ...r, ...(docs === undefined ? {} : { docs }), uncounted, today, dayOf, pairing };
 }
 
 export function presenceOf(s: Sources): Presence {
@@ -91,29 +96,20 @@ function fatturatoIn(docs: readonly VatDoc[], span: Span): NonNullable<Figures["
 	return { cents, count, credits };
 }
 
-/** The supplier invoices paid in `span` that no expense stands for; `twins`: those an expense stands for (each expense one instalment at most). */
-function supplierPaid(invoices: readonly Invoice[], expenses: readonly Expense[], span: Span, dayOf: (at: string) => string): { cents: bigint; count: number; twins: number; maybe: ReturnType<typeof maybeTwins> } {
-	const paid: PaidInstalment[] = [];
-	for (const invoice of invoices) {
-		if (invoice.side !== "passive" || invoice.credit || invoice.doc.integration || invoice.doc.currency !== "EUR") continue;
-		for (const i of invoice.instalments) {
-			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
-			const day = paidDay(i.paid, dayOf);
-			if (within(day, span)) paid.push({ invoice, cents: unitsToCents(i.amount), day });
-		}
-	}
-	const stands = pairPaidWithExpenses(paid, expenses);
+/** The supplier invoices paid in `span` that no expense stands for; `twins`: those an expense stands for; `maybe`: those an expense may still be. Read off the pairing of the whole register (sourcesOf), so an expense's amount is spent once whatever the span. */
+function supplierPaid(pairing: Pairing, span: Span): { cents: bigint; count: number; twins: number; maybe: MaybeTwin[] } {
 	let cents = 0n;
 	let count = 0;
 	let twins = 0;
-	paid.forEach((p, n) => {
-		if (stands[n]) twins++;
+	pairing.paid.forEach((p, n) => {
+		if (!within(p.day, span)) return;
+		if (pairing.stands[n]) twins++;
 		else {
 			cents += p.cents;
 			count++;
 		}
 	});
-	return { cents, count, twins, maybe: maybeTwins(paid, expenses) };
+	return { cents, count, twins, maybe: pairing.maybe.filter((t) => within(t.paid.day, span)) };
 }
 
 function quotesIn(quotes: readonly Quote[], span: Span): NonNullable<Figures["preventivi"]> {
@@ -142,7 +138,7 @@ export function figuresIn(s: Sources, span: Span): Figures {
 	let spese: Figures["spese"];
 	if (s.expenses !== undefined) {
 		const own = totalsOf(s.expenses, span);
-		const suppliers = supplierPaid(s.invoices ?? [], s.expenses, span, s.dayOf);
+		const suppliers = supplierPaid(s.pairing, span);
 		spese = { cents: own.total + suppliers.cents, expenses: own.count, suppliers: suppliers.count, supplierCents: suppliers.cents, twins: suppliers.twins, ...(suppliers.maybe.length === 0 ? {} : { maybe: suppliers.maybe }) };
 	}
 	const margine = incassato === undefined || spese === undefined ? undefined : incassato - spese.cents;

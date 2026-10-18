@@ -13,7 +13,7 @@ import type { Presence } from "../business-report-sums.ts";
 import type { TopClients } from "../business-report-top.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { hm, hoursText } from "../durations.ts";
-import type { CategoryTotal } from "../expense-sums.ts";
+import { type CategoryTotal, cents as expenseCents } from "../expense-sums.ts";
 import { euros, n1 } from "../format-words.ts";
 import { partyName } from "../invoices.ts";
 import { daysInMonth, MONTH_NAMES } from "../italian-calendar.ts";
@@ -144,8 +144,12 @@ const MAYBE_SHOWN = 3;
 function maybeLines(f: Figures, named: boolean): string[] {
 	const list = f.spese?.maybe ?? [];
 	if (list.length === 0) return [];
-	if (!named) return [`${n1(list.length, "Un pagamento a un fornitore forse è contato due volte", "# pagamenti a fornitori forse sono contati due volte")}: una spesa e una fattura con nomi diversi, stesso importo.`];
-	const rows = list.slice(0, MAYBE_SHOWN).map((t) => `la spesa «${t.expense.supplier ?? t.expense.id}» ${withDate("del", t.expense.date)} e la fattura di ${partyName(t.paid.invoice.supplier)} (${euros(t.paid.cents)})`);
+	if (!named) return [`${n1(list.length, "Un pagamento a un fornitore forse è contato due volte", "# pagamenti a fornitori forse sono contati due volte")}: una spesa registrata e una fattura di fornitore pagata.`];
+	const rows = list.slice(0, MAYBE_SHOWN).map((t) =>
+		t.why === "partial"
+			? `la spesa «${t.expense.supplier ?? t.expense.id}» ${withDate("del", t.expense.date)} (${euros(expenseCents(t.expense.amount))}), forse un acconto della rata di ${euros(t.paid.cents)} della fattura${t.paid.invoice.doc.number === undefined ? "" : ` ${t.paid.invoice.doc.number}`} di ${partyName(t.paid.invoice.supplier)}`
+			: `la spesa «${t.expense.supplier ?? t.expense.id}» ${withDate("del", t.expense.date)} e la fattura di ${partyName(t.paid.invoice.supplier)} (${euros(t.paid.cents)})`,
+	);
 	if (list.length > MAYBE_SHOWN) rows.push(`e altri ${list.length - MAYBE_SHOWN}`);
 	return [`Forse è lo stesso pagamento, contato due volte (nel riquadro): chiedi a chi ti scrive.`, fenced(rows.join("\n"))];
 }

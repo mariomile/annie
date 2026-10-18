@@ -624,12 +624,12 @@ function pairing(paid: readonly PaidInstalment[], expenses: readonly Expense[]):
 		},
 	];
 	for (const { whole, fits } of passes) {
-		// Every pair that fits, the nearest days first; each expense taken once.
+		// Every pair that fits, the nearest days first; each expense taken once. An expense that is the whole invoice starts only from an instalment its amount holds: a smaller one (an acconto?) stands for none, and is said (maybeTwins).
 		const pairs: { n: number; k: number; days: number }[] = [];
 		paid.forEach((p, n) => {
 			if (paired[n]) return;
 			expenses.forEach((e, k) => {
-				if (!used.has(k) && fits(e, p)) pairs.push({ n, k, days: Math.abs(daysBetween(e.date, p.day)) });
+				if (!used.has(k) && fits(e, p) && (!whole || fitsIn(p.cents, expenseCents(e.amount)))) pairs.push({ n, k, days: Math.abs(daysBetween(e.date, p.day)) });
 			});
 		});
 		pairs.sort((a, b) => a.days - b.days || a.n - b.n || a.k - b.k);
@@ -666,43 +666,71 @@ function pairing(paid: readonly PaidInstalment[], expenses: readonly Expense[]):
  * PAID_TWIN_DAYS; partita IVA and the invoice's total within 1% within PAID_TWIN_DAYS; the
  * amount alone within 1% within PAID_TWIN_DAYS, only when the expense has no partita IVA or the
  * invoice's, and names no other supplier. An expense matched by the invoice's number or total is
- * the whole invoice: it covers each of its instalments while its amount lasts; matched by an
- * instalment's amount, that instalment only. The balance brought forward (rollForward) and the
+ * the whole invoice: it covers each of its instalments while its amount lasts, and none when it
+ * is smaller than every one of them (an acconto? said by supplierPairing); matched by an
+ * instalment's amount, that instalment only. Run it over the whole register, then read a span. The balance brought forward (rollForward) and the
  * business report (business-report-sums.ts) share it. Returns one flag per instalment, in order.
  */
 export function pairPaidWithExpenses(paid: readonly PaidInstalment[], expenses: readonly Expense[]): boolean[] {
 	return pairing(paid, expenses).paired;
 }
 
-/** A supplier payment and an expense that may be the same money, both counted. */
-export type MaybeTwin = { readonly paid: PaidInstalment; readonly expense: Expense };
-
 /**
- * The payments no expense stands for that an expense left unpaired may still be: the expense has
- * no partita IVA, names another supplier (a brand, «TIM», for a company, «Telecom Italia
- * S.p.A.»), has exactly the amount and is within PAID_TWIN_DAYS. Both stay counted; they are said,
- * so the person can tell. Each payment and each expense once, the nearest days first.
+ * A supplier payment and an expense that may be the same money, both counted: `name`, an expense
+ * without partita IVA naming another supplier with exactly the amount; `partial`, an expense with
+ * the invoice's partita IVA and number smaller than the instalment (an acconto?).
  */
-export function maybeTwins(paid: readonly PaidInstalment[], expenses: readonly Expense[]): MaybeTwin[] {
+export type MaybeTwin = { readonly paid: PaidInstalment; readonly expense: Expense; readonly why: "name" | "partial" };
+
+/** The pairing of every paid supplier instalment with the expenses, and what may still be the same money. Run once over the whole register, then read for a span or after a balance: an expense's amount is spent once. */
+export type SupplierPairing = { readonly stands: readonly boolean[]; readonly maybe: readonly MaybeTwin[] };
+
+export function supplierPairing(paid: readonly PaidInstalment[], expenses: readonly Expense[]): SupplierPairing {
 	const { paired, used } = pairing(paid, expenses);
-	const pairs: { n: number; k: number; days: number }[] = [];
+	const invoiceVat = (i: Invoice) => [vatKey(vatOf(i.supplier)), vatKey(i.supplier.fiscal)].filter((v): v is string => v !== undefined);
+	const why = (e: Expense, p: PaidInstalment): MaybeTwin["why"] | undefined => {
+		const vat = vatKey(e.supplierVat);
+		const cents = expenseCents(e.amount);
+		if (vat !== undefined && invoiceVat(p.invoice).includes(vat) && e.docNumber !== undefined && p.invoice.doc.number !== undefined && numberKey(e.docNumber) === numberKey(p.invoice.doc.number) && cents > 0n && cents < p.cents) return "partial";
+		if (vat === undefined && !namesAgree(e, p.invoice) && cents === p.cents && Math.abs(daysBetween(e.date, p.day)) <= PAID_TWIN_DAYS) return "name";
+		return undefined;
+	};
+	const pairs: { n: number; k: number; days: number; why: MaybeTwin["why"] }[] = [];
 	paid.forEach((p, n) => {
 		if (paired[n]) return;
 		expenses.forEach((e, k) => {
-			if (used.has(k) || vatKey(e.supplierVat) !== undefined || namesAgree(e, p.invoice) || expenseCents(e.amount) !== p.cents) return;
-			const days = Math.abs(daysBetween(e.date, p.day));
-			if (days <= PAID_TWIN_DAYS) pairs.push({ n, k, days });
+			if (used.has(k)) return;
+			const w = why(e, p);
+			if (w !== undefined) pairs.push({ n, k, days: Math.abs(daysBetween(e.date, p.day)), why: w });
 		});
 	});
 	pairs.sort((a, b) => a.days - b.days || a.n - b.n || a.k - b.k);
-	const out: MaybeTwin[] = [];
+	const maybe: MaybeTwin[] = [];
 	const seenN = new Set<number>();
 	const seenK = new Set<number>();
-	for (const { n, k } of pairs) {
+	for (const { n, k, why: w } of pairs) {
 		if (seenN.has(n) || seenK.has(k)) continue;
 		seenN.add(n);
 		seenK.add(k);
-		out.push({ paid: paid[n] as PaidInstalment, expense: expenses[k] as Expense });
+		maybe.push({ paid: paid[n] as PaidInstalment, expense: expenses[k] as Expense, why: w });
+	}
+	return { stands: paired, maybe };
+}
+
+/** The payments no expense stands for that an expense left unpaired may still be (supplierPairing): both stay counted, and are said. */
+export function maybeTwins(paid: readonly PaidInstalment[], expenses: readonly Expense[]): MaybeTwin[] {
+	return [...supplierPairing(paid, expenses).maybe];
+}
+
+/** Every instalment of a supplier invoice in euros marked paid, by the day it counts as paid: what supplierPairing runs over. */
+export function paidSupplierInstalments(invoices: readonly Invoice[], dayOf: (at: string) => string): (PaidInstalment & { readonly n: number })[] {
+	const out: (PaidInstalment & { n: number })[] = [];
+	for (const invoice of invoices) {
+		if (invoice.side !== "passive" || invoice.credit || invoice.doc.integration || invoice.doc.currency !== "EUR") continue;
+		for (const i of invoice.instalments) {
+			if (i.paid === undefined || i.extra === true || i.amount === undefined || i.amount <= 0n) continue;
+			out.push({ invoice, cents: unitsToCents(i.amount), day: paidDay(i.paid, dayOf), n: i.n });
+		}
 	}
 	return out;
 }
@@ -765,12 +793,18 @@ export function rollForward(balance: Balance, now: string, today: string, invoic
 		}
 	}
 	// A supplier invoice paid: taken off unless an expense stands for it (counted there, or in the balance already).
-	const instalments = passive.map((r) => ({ invoice: r.invoice, cents: r.cents, day: r.date }));
-	const stands = pairPaidWithExpenses(instalments, expenses);
-	const maybe = maybeTwins(instalments, expenses);
-	passive.forEach((r, n) => {
-		if (!stands[n]) paidPassive.push(r);
-	});
+	// Paired once over every paid supplier instalment, those before the balance too: an expense that stands for one already in the balance stands for no other.
+	const all = paidSupplierInstalments(invoices, dayOf);
+	const pairs = supplierPairing(all, expenses);
+	const at = new Map(all.map((p, n) => [`${p.invoice.key}#${p.n}`, n]));
+	const rolledPaid = new Set<PaidInstalment>();
+	for (const r of passive) {
+		const n = at.get(`${r.invoice.key}#${r.instalment.n}`) ?? -1;
+		const p = all[n];
+		if (p !== undefined) rolledPaid.add(p);
+		if (pairs.stands[n] !== true) paidPassive.push(r);
+	}
+	const maybe = pairs.maybe.filter((t) => rolledPaid.has(t.paid));
 	let charged = 0n;
 	const from = addDays(balance.date, 1);
 	const to = addDays(today, -1);

@@ -685,7 +685,7 @@ describe("business report: week 61 review fixes", () => {
 		// Amount alone with another partita IVA: no pair; with the invoice's partita IVA and number: that one.
 		expect(pairPaidWithExpenses(paid, [expense("S-2", "2026-10-06", "500", { supplierVat: OTHER_SUPPLIER.vat })])).toEqual([false, true]);
 		expect(pairPaidWithExpenses(paid, [expense("S-3", "2026-10-06", "500", { supplierVat: "IT99999999990" })])).toEqual([false, false]);
-		expect(pairPaidWithExpenses(paid, [expense("S-4", "2026-11-30", "100", { supplierVat: SUPPLIER.vat, docNumber: "X-1" })])).toEqual([true, false]);
+		expect(pairPaidWithExpenses(paid, [expense("S-4", "2026-11-30", "500", { supplierVat: SUPPLIER.vat, docNumber: "X-1" })])).toEqual([true, false]);
 		// The cashflow takes both payments off, and the expense.
 		const rolled = rollForward({ amount: "1000", date: "2026-10-01", by: "u", at: "2026-10-01T18:00:00.000Z" }, "2026-10-18T08:00:00.000Z", TODAY, invoices, TWO_PAID.expenses, [], dayOf);
 		expect(rolled?.paidPassive).toHaveLength(2);
@@ -797,7 +797,9 @@ describe("business report: week 61 review fixes", () => {
 	it("U9: paidDay from invoices.ts, the comparison in business-report-compare.ts, the notes in the render", () => {
 		const sums = readFileSync(join("src", "core", "business-report-sums.ts"), "utf8");
 		expect(sums).not.toContain("paidDayOf");
-		expect(sums).toContain('import { type Invoice, paidDay } from "./invoices.ts";');
+		// The day paid comes from invoices.ts paidDay, through the instalments the cashflow gathers.
+		expect(sums).toContain("paidSupplierInstalments(");
+		expect(readFileSync(join("src", "core", "cashflow-sources.ts"), "utf8")).toMatch(/paidDay\(i\.paid, dayOf\)/);
 		const input = readFileSync(join("src", "core", "tools", "business-report-input.ts"), "utf8");
 		expect(input).not.toMatch(/comparedTo|readAgainst|comparedSpans/);
 		expect(readAgainst("anno scorso")).toBe("last_year");
@@ -866,7 +868,7 @@ describe("business report: week 61 second review fixes", () => {
 		expect(inside(answer)).toBe("la spesa «TIM» del 5 ottobre 2026 e la fattura di Telecom Italia S.p.A. (50,00 €)");
 		expect(outside(answer)).not.toMatch(/TIM|Telecom/);
 		const toAgent = await one.run({ op: "summary", period: "ottobre" }, agent());
-		expect(toAgent).toContain("Un pagamento a un fornitore forse è contato due volte: una spesa e una fattura con nomi diversi, stesso importo.");
+		expect(toAgent).toContain("Un pagamento a un fornitore forse è contato due volte: una spesa registrata e una fattura di fornitore pagata.");
 		expect(toAgent).not.toMatch(/TIM|Telecom/);
 		expect(fences(toAgent)).toHaveLength(0);
 		// At most three named, then «e altri N».
@@ -893,6 +895,50 @@ describe("business report: week 61 second review fixes", () => {
 		const s = await setup({ regime: "forfettario" });
 		expect(await s.run({ op: "summary", period: "ottobre" })).toContain("\nTasse non stimate: manca il profilo delle tasse del forfettario");
 		expect(await s.run({ op: "compare", period: "settembre" })).toContain("• Preventivi accettati: 1 su 1, prima nessun preventivo");
+	});
+});
+
+describe("business report: week 61 third verify fixes", () => {
+	const R5 = { "f/s.xml": xml(SUPPLIER, COMPANY, { number: "R-5", date: "2026-09-01", rows: [r22("819.67")], rate: [{ amount: "500.00", due: "2026-09-05" }, { amount: "500.00", due: "2026-10-15" }] }) };
+	const withNum = (id: string, date: string, amount: string) => expense(id, date, amount, { supplier: SUPPLIER.name, supplierVat: SUPPLIER.vat, docType: "fattura", docNumber: "R-5", category: "consulenze" });
+	const spese = (answer: string) => /• Spese: ([^ ]+ €)/.exec(answer)?.[1];
+
+	it("1: an expense's amount is spent once over the whole register: the months add up to the period, and a balance between the instalments takes the second off", async () => {
+		const s = await setup({ files: R5, paid: { "R-5#1": "2026-09-05T08:00:00.000Z", "R-5#2": "2026-10-15T08:00:00.000Z" }, expenses: [withNum("S-2026-0001", "2026-09-05", "500")], quotes: [], entries: [] });
+		expect(spese(await s.run({ op: "summary", period: "settembre" }))).toBe("500,00 €");
+		expect(spese(await s.run({ op: "summary", period: "ottobre" }))).toBe("500,00 €");
+		expect(spese(await s.run({ op: "summary", from: "1/9/2026", to: "18/10/2026" }))).toBe("1.000,00 €");
+		const trend = await s.run({ op: "trend", months: 2 });
+		expect(trend).toContain("• settembre 2026: fatturati 0,00 €, incassati 0,00 €, spese 500,00 €, margine −500,00 €");
+		expect(trend).toContain("• ottobre 2026 (fino al 18): fatturati 0,00 €, incassati 0,00 €, spese 500,00 €, margine −500,00 €");
+		expect(trend).toContain("Totale: fatturati 0,00 €, incassati 0,00 €, spese 1.000,00 €, margine −1.000,00 €.");
+		// The balance of 1 October holds the expense and the first instalment: the second is taken off.
+		const invoices = await s.registerNow();
+		const rolled = rollForward({ amount: "1000", date: "2026-10-01", by: "u", at: "2026-10-01T18:00:00.000Z" }, "2026-10-18T08:00:00.000Z", TODAY, invoices, [withNum("S-2026-0001", "2026-09-05", "500")], [], dayOf);
+		expect(rolled?.paidPassive.map((r) => [r.invoice.doc.number, r.instalment.n, r.cents])).toEqual([["R-5", 2, 50000n]]);
+		expect(rolled?.net).toBe(-50000n);
+	});
+
+	it("2: an expense with the invoice's number smaller than the instalment stands for none: all counted, said as maybe an acconto", async () => {
+		const s = await setup({ files: R5, paid: { "R-5#1": "2026-10-05T08:00:00.000Z", "R-5#2": "2026-10-15T08:00:00.000Z" }, expenses: [withNum("S-2026-0001", "2026-10-05", "300")], quotes: [], entries: [] });
+		const answer = await s.run({ op: "summary", period: "ottobre" });
+		expect(answer).toContain("• Spese: 1.300,00 € (1 spesa registrata, 2 fatture di fornitori pagate)");
+		expect(outside(answer)).toContain("Forse è lo stesso pagamento, contato due volte (nel riquadro): chiedi a chi ti scrive.");
+		expect(inside(answer)).toBe(`la spesa «${SUPPLIER.name}» del 5 ottobre 2026 (300,00 €), forse un acconto della rata di 500,00 € della fattura R-5 di ${SUPPLIER.name}`);
+		const invoices = await s.registerNow();
+		const r5 = invoices.find((i) => i.doc.number === "R-5") as Invoice;
+		const both = [
+			{ invoice: r5, cents: 50000n, day: "2026-10-05" },
+			{ invoice: r5, cents: 50000n, day: "2026-10-15" },
+		];
+		const partial = [withNum("S-1", "2026-10-05", "300")];
+		expect(pairPaidWithExpenses(both, partial)).toEqual([false, false]);
+		expect(maybeTwins(both, partial).map((t) => [t.why, t.paid.day])).toEqual([["partial", "2026-10-05"]]);
+		// One that holds an instalment still covers it, and the next while its amount lasts.
+		expect(pairPaidWithExpenses(both, [withNum("S-2", "2026-10-05", "500")])).toEqual([true, false]);
+		const rolled = rollForward({ amount: "1000", date: "2026-10-01", by: "u", at: "2026-10-01T18:00:00.000Z" }, "2026-10-18T08:00:00.000Z", TODAY, invoices, partial, [], dayOf);
+		expect(rolled?.paidPassive).toHaveLength(2);
+		expect(rolled?.maybe?.map((t) => t.why)).toEqual(["partial"]);
 	});
 });
 
