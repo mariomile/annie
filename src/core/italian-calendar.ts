@@ -76,6 +76,9 @@ export function dayOfIn(timeZone: string): (at: string) => string {
 }
 
 /** The months' Italian names, January first. */
+/** A payment due from 1 to 20 August may be made by 20 August (art. 3-quater DL 16/2012, the proroga di ferragosto): taxes and IVA alike. */
+export const FERRAGOSTO = { from: "08-01", to: "08-20" } as const;
+
 export const MONTH_NAMES = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"] as const;
 
 export type Holiday = { readonly date: string; readonly name: string };

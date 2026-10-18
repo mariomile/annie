@@ -4,7 +4,7 @@
  * the few functions that only read them (the deadline of a period, its codice tributo); the
  * arithmetic is in vat-sums.ts.
  */
-import { FERRAGOSTO } from "./taxes.ts";
+import { FERRAGOSTO } from "./italian-calendar.ts";
 
 /**
  * Quarterly liquidazione by option: allowed when last year's volume d'affari was within the limits
@@ -19,11 +19,12 @@ export type Activity = keyof typeof QUARTERLY_LIMIT_CENTS;
 /** Quarterly by option: the amount due for each of the first three quarters is increased by 1% interest (art. 7, comma 1, lett. b, DPR 542/1999). */
 export const QUARTERLY_INTEREST_PERCENT = "1";
 /**
- * The 1% does not apply to the fourth quarter, paid with the annual saldo: as the brief for this
- * week asked. Da verificare: the istruzioni of the modello IVA (rigo VL36) ask the trimestrali per
- * opzione for the 1% on the saldo of the dichiarazione too. One constant, so it changes in one place.
+ * The 1% applies to the fourth quarter too, paid with the annual saldo: the istruzioni of the
+ * modello IVA (rigo VL36) charge the trimestrali per opzione the 1% on the saldo of the
+ * dichiarazione as well. Da verificare each year on the istruzioni. One constant, so it changes in
+ * one place.
  */
-export const Q4_INTEREST = false;
+export const Q4_INTEREST = true;
 
 /** Monthly: the IVA of a month is paid by the 16th of the next one (art. 1, comma 1, DPR 100/1998). */
 export const MONTHLY_DAY = 16;
@@ -78,9 +79,9 @@ export const CREDIT_VISTO_CENTS = 500_000n;
 
 /** Days before an F24 of the IVA the morning brief says it. */
 export const BRIEF_DAYS = 10;
-/** The calendar's window, in days today included, and the most deadlines it lists. */
+/** The calendar's window, in days today included, and the most deadlines it lists (those with an amount, then the next one without). */
 export const CALENDAR_DAYS = 366;
-export const CALENDAR_ROWS = 6;
+export const CALENDAR_ROWS = 3;
 /** A deadline gone this many days ago and not marked paid is still said, «se non l'hai già pagato». */
 export const OVERDUE_DAYS = 30;
 

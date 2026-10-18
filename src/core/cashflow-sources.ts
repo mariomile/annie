@@ -49,10 +49,13 @@
  *   F24 gone by), an INPS name to one with contributions, the closer amount on the same distance.
  *   With the taxes on, expenses with a tax name are not in the average spending either.
  *   The F24 of the IVA (la liquidazione IVA of the ordinario, never with the forfettario's) are
- *   estimates the same way: a tax name says IVA with a codice tributo of the IVA, or «iva» with
- *   F24, liquidazione, acconto, saldo, versamento, mensile or trimestrale, or with only a month,
- *   a quarter or a year («IVA ottobre»); it pairs only with the IVA's estimates, and a name of
- *   other taxes (IRPEF, INPS, imposta…) never with them; a bare «F24» with either.
+ *   estimates the same way: a tax name says IVA with a codice tributo of the IVA next to F24, IVA,
+ *   codice or tributo, or «iva» with F24, liquidazione, acconto, saldo, versamento, mensile or
+ *   trimestrale, or with only a month, a quarter or a year («IVA ottobre»); never a price («IVA
+ *   inclusa», «compresa», «esposta», «+ IVA», «IVA 10%»). It pairs only with the IVA's estimates,
+ *   a name of other taxes (IRPEF, INPS, imposta…) never with them, a bare «F24» with either. For
+ *   the ordinario only the IVA's payments leave the average spending; for the forfettario only the
+ *   names of week 56.
  * - A balance is brought to now by instant, from min(when it was said, the end of its day in the
  *   instance's time zone) — a balance said today for 10 October counts what was marked from the
  *   11th: plus the instalments to collect marked paid after it,
@@ -103,7 +106,7 @@ export type Movement = {
 	readonly item?: CashItem;
 	readonly hypothetical?: Hypothetical;
 	/** An F24 estimated from the tax profile (taxes.ts) or, `iva`, from la liquidazione IVA (vat.ts): what it pays for; `was` the first day of a June F24 gone by. */
-	readonly tax?: { readonly what: string; readonly contributi?: bigint; readonly was?: string; readonly iva?: true };
+	readonly tax?: { readonly what: string; readonly contributi?: bigint; readonly was?: string; readonly iva?: true; readonly late?: true };
 	/** Moved by a what_if delay: the days. */
 	readonly delayed?: number;
 };
@@ -514,8 +517,13 @@ function looksLikePlanned(e: Expense, renewals: readonly Renewal[], items: reado
 	return false;
 }
 
-/** The average spending per day (see the choices above); `skipTaxes`: the estimated F24 are in the forecast, so the tax payments are not in the average. */
-export function averageSpend(expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], invoices: readonly Invoice[], today: string, skipTaxes = false): AverageSpend {
+/**
+ * The average spending per day (see the choices above); `skipTaxes`: the estimated F24 are in the
+ * forecast, so their payments are not in the average: true, the forfettario's (isProfileTaxName, as
+ * week 56); "iva", the ordinario's IVA only (IRPEF, INPS stay in the average).
+ */
+export function averageSpend(expenses: readonly Expense[], renewals: readonly Renewal[], items: readonly CashItem[], invoices: readonly Invoice[], today: string, skipTaxes: boolean | "iva" = false): AverageSpend {
+	const isSkipped = (name: string) => (skipTaxes === "iva" ? isTaxName(name) && taxKindOf(name) === "iva" : skipTaxes && isProfileTaxName(name));
 	const window = addDays(today, -AVERAGE_DAYS);
 	const to = addDays(today, -1);
 	const ofRenewals = new Set<string>();
@@ -534,7 +542,7 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 		if (e.date < window || e.date > to) continue;
 		if (first === undefined || e.date < first) first = e.date;
 		if (ofRenewals.has(e.id)) renewalPayments++;
-		else if (skipTaxes && isTaxName(expenseName(e))) taxes++;
+		else if (isSkipped(expenseName(e))) taxes++;
 		else if (e.docType === "fattura" && invoiceOf(e, invoices, 10, (i) => i.doc.date) !== undefined) inScadenzario++;
 		else if (looksLikePlanned(e, renewals, items, today)) lookalikes++;
 		else {
@@ -544,7 +552,7 @@ export function averageSpend(expenses: readonly Expense[], renewals: readonly Re
 	}
 	const from = first ?? window;
 	const days = Math.min(AVERAGE_DAYS, Math.max(AVERAGE_MIN_DAYS, daysBetween(from, today)));
-	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario, ...(skipTaxes ? { taxes } : {}) };
+	return { from, to, days, total, count, perDay: halfUp(total, BigInt(days)), renewalPayments, lookalikes, invoices: inScadenzario, ...(skipTaxes !== false ? { taxes } : {}) };
 }
 
 /** An instalment marked paid after the balance: what it was, how much, the day. */
@@ -698,35 +706,53 @@ const INPS_WORDS = new Set(["inps", "contributi", "contributo"]);
 
 const hasPhrase = (w: readonly string[], phrase: readonly string[]) => w.some((_, i) => phrase.every((p, k) => w[i + k] === p));
 
-/** The codici tributo of the IVA (vat-rules.ts): a name with one is an F24 of the IVA. */
+/** The codici tributo of the IVA (vat-rules.ts): with «f24», «iva», «codice» or «tributo» a name is an F24 of the IVA; a bare number never («Ordine 6010»). */
 const VAT_CODE = /^60(?:0\d|1[0-3]|3[1-5]|99)$/;
+const VAT_CODE_WORDS = new Set(["f24", "iva", "codice", "tributo"]);
 /** With «iva», words that make it an F24 of the IVA: «liquidazione IVA», «acconto IVA», «IVA trimestrale». */
 const VAT_STEPS = new Set(["f24", "liquidazione", "acconto", "saldo", "versamento", "trimestrale", "mensile", "trimestre", "annuale", "periodica"]);
-/** Words that may stand with «iva» alone and keep it an F24 of the IVA: «IVA ottobre», «IVA 3 trimestre 2026». */
-const VAT_FILLERS = new Set([...MONTH_NAMES, "di", "del", "della", "dell", "t1", "t2", "t3", "t4", "1", "2", "3", "4", "primo", "secondo", "terzo", "quarto"]);
+/** Words that may stand with «iva» alone and keep it an F24 of the IVA: «IVA ottobre», «IVA T3 2026». */
+const VAT_FILLERS = new Set([...MONTH_NAMES, "di", "del", "della", "dell", "t1", "t2", "t3", "t4", "primo", "secondo", "terzo", "quarto"]);
+/** Words that make «iva» the price of something, not an F24: «IVA inclusa», «IVA compresa», «IVA esposta». */
+const VAT_PRICE = new Set(["inclusa", "incluso", "inclusi", "incluse", "compresa", "compreso", "compresi", "comprese", "esposta", "esposto", "esclusa", "escluso"]);
 
-/** Whether the folded words say an F24 of the IVA: a codice tributo of the IVA; «iva» with a step word, or with only months, quarters and years around it. */
-function isVatWords(w: readonly string[]): boolean {
-	if (w.some((x) => VAT_CODE.test(x))) return true;
-	if (!w.includes("iva")) return false;
+const hasVatCode = (w: readonly string[]) => w.some((x) => VAT_CODE.test(x)) && w.some((x) => VAT_CODE_WORDS.has(x));
+
+/** «Saldo lavori + IVA», «Acconto cucina (IVA 10%)», «IVA 22», «IVA inclusa»: a price with its IVA. */
+function isVatPrice(text: string, w: readonly string[]): boolean {
+	return w.some((x) => VAT_PRICE.has(x)) || text.includes("+") || /\d\s*%/.test(text) || /\biva\s+(?:al\s+)?(?:4|5|10|22)\b(?!\s*(?:º|°|trimestre))/i.test(text);
+}
+
+/** Whether a name says an F24 of the IVA: a codice tributo of the IVA with its word; «iva» with a step word, or with only months, quarters and years around it; never a price «IVA inclusa». */
+function isVatName(text: string): boolean {
+	const w = words(text);
+	if (hasVatCode(w)) return true;
+	if (!w.includes("iva") || isVatPrice(text, w)) return false;
 	return w.some((x) => VAT_STEPS.has(x)) || w.every((x) => x === "iva" || VAT_FILLERS.has(x) || /^\d{4}$/.test(x));
 }
 
-export function isTaxName(text: string): boolean {
+/** A tax name as week 56 reads it (the forfettario's F24): F24, IRPEF, sostitutiva, INPS, Agenzia delle Entrate, or saldo/acconto with imposta, contributi, tassa. */
+export function isProfileTaxName(text: string): boolean {
 	const w = words(text);
-	if (w.some((x) => TAX_CLEAR.has(x) || VAT_CODE.test(x)) || TAX_PHRASES.some((p) => hasPhrase(w, p))) return true;
+	if (w.some((x) => TAX_CLEAR.has(x)) || TAX_PHRASES.some((p) => hasPhrase(w, p))) return true;
 	if (w.some((x) => NOT_TAX.has(x))) return false;
-	return isVatWords(w) || (w.some((x) => TAX_STEPS.has(x)) && w.some((x) => TAX_GENERIC.has(x)));
+	return w.some((x) => TAX_STEPS.has(x)) && w.some((x) => TAX_GENERIC.has(x));
+}
+
+/** A tax payment's name: the profile's (isProfileTaxName) or the IVA's (isVatName, not with bollo, fornitore…). */
+export function isTaxName(text: string): boolean {
+	if (isProfileTaxName(text) || hasVatCode(words(text))) return true;
+	if (words(text).some((x) => NOT_TAX.has(x))) return false;
+	return isVatName(text);
 }
 
 /** Words that tie a tax name to the F24 of the tax profile, never to the IVA's. */
 const NOT_VAT = new Set(["irpef", "sostitutiva", "inps", "contributi", "contributo", "imposta", "imposte", "tassa", "tasse"]);
 
 /** Which estimates a tax name may stand for: «iva» only those of the IVA, «other» only those of the tax profile, «any» (a bare F24, Agenzia delle Entrate) all. */
-function taxKindOf(text: string): "iva" | "other" | "any" {
-	const w = words(text);
-	if (isVatWords(w)) return "iva";
-	return w.some((x) => NOT_VAT.has(x)) ? "other" : "any";
+export function taxKindOf(text: string): "iva" | "other" | "any" {
+	if (isVatName(text)) return "iva";
+	return words(text).some((x) => NOT_VAT.has(x)) ? "other" : "any";
 }
 
 /** A tax name that says INPS contributions (and not F24, imposta or Agenzia delle Entrate). */
@@ -736,10 +762,10 @@ function isInpsName(text: string): boolean {
 }
 
 /** The estimated F24 from `today` to `end`, as movements out; `contributi` the INPS part of each. */
-export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string; readonly contributi?: bigint; readonly was?: string; readonly iva?: true }[], today: string, end: string): Movement[] {
+export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string; readonly contributi?: bigint; readonly was?: string; readonly iva?: true; readonly late?: true }[], today: string, end: string): Movement[] {
 	return payments
 		.filter((p) => p.date >= today && p.date <= end && p.cents > 0n)
-		.map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what, ...(p.contributi === undefined || p.contributi === 0n ? {} : { contributi: p.contributi }), ...(p.was === undefined ? {} : { was: p.was }), ...(p.iva === true ? { iva: true as const } : {}) } }));
+		.map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what, ...(p.contributi === undefined || p.contributi === 0n ? {} : { contributi: p.contributi }), ...(p.was === undefined ? {} : { was: p.was }), ...(p.iva === true ? { iva: true as const } : {}), ...(p.late === true ? { late: true as const } : {}) } }));
 }
 
 /** An expense says an estimated F24 is paid from this share of it (or of its INPS part, for an INPS expense), in percent. */
@@ -767,7 +793,8 @@ const measureOf = (t: Movement, inps: boolean) => (inps && t.tax?.contributi !==
 function closestTax(taxes: readonly Movement[], date: string, cents: bigint, inps: boolean, kind: "iva" | "other" | "any" = "any"): Movement | undefined {
 	const near = taxes
 		.filter((t) => kind === "any" || (kind === "iva") === (t.tax?.iva === true))
-		.map((t) => ({ t, days: Math.min(Math.abs(daysBetween(date, t.date)), t.tax?.was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.tax.was))) }))
+		// An overdue F24 counted today (`late`) is near only its own day; a June F24 gone by is near both.
+		.map((t) => ({ t, days: Math.min(t.tax?.late === true ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.date)), t.tax?.was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.tax.was))) }))
 		.filter((x) => x.days <= TAX_TWIN_DAYS);
 	const withInps = inps ? near.filter((x) => x.t.tax?.contributi !== undefined) : [];
 	const pool = withInps.length > 0 ? withInps : near;

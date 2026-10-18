@@ -20,6 +20,7 @@
  */
 import { type FatturaDocument, type FatturaParty, toUnits } from "./fattura-pa.ts";
 import { type Invoice, invoiceKey, vatOf } from "./invoices.ts";
+import { halfUpSigned } from "./quote-sums.ts";
 import { salesTotals } from "./sales-invoice-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
 import type { DeductMark } from "./vat.ts";
@@ -53,11 +54,7 @@ export type VatDoc = {
 export type LeftOut = { readonly noSide: number; readonly foreign: number; readonly noDate: number; readonly noRows: number };
 
 /** Hundred-millionths to cents, half up away from zero. */
-function centsOf(units: bigint): bigint {
-	const abs = units < 0n ? -units : units;
-	const c = (abs * 2n + 1_000_000n) / 2_000_000n;
-	return units < 0n ? -c : c;
-}
+const centsOf = (units: bigint): bigint => halfUpSigned(units, 1_000_000n);
 
 const esigibilitaOf = (code: string | undefined): Esigibilita => (code === "S" || code === "D" ? code : "I");
 

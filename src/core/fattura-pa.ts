@@ -30,6 +30,8 @@ const MAX_DEPTH = 64;
 const MAX_LINES = 50;
 const MAX_BODIES = 100;
 const MAX_REFERENCES = 10;
+/** Summary rows (DatiRiepilogo) kept per document, one per rate and nature: a real invoice has a handful. Past this the document does not read for the IVA. */
+export const MAX_VAT_ROWS = 100;
 
 /** The longest value shown: a line's description may be 1000 characters. */
 const MAX_VALUE = 1000;
@@ -235,10 +237,10 @@ function summaryTaxable(body: XmlElement): bigint | undefined {
 	return sum;
 }
 
-/** The summary rows, each with its rate, imponibile and imposta read (canonical decimals), its nature and esigibilità as written; undefined without rows or when one does not read. */
+/** The summary rows, each with its rate, imponibile and imposta read (canonical decimals), its nature and esigibilità as written; undefined without rows, past MAX_VAT_ROWS, or when one does not read. */
 function summaryRows(body: XmlElement): FatturaVatRow[] | undefined {
 	const rows = children(child(body, "DatiBeniServizi"), "DatiRiepilogo");
-	if (rows.length === 0) return undefined;
+	if (rows.length === 0 || rows.length > MAX_VAT_ROWS) return undefined;
 	const out: FatturaVatRow[] = [];
 	for (const row of rows) {
 		const rate = toUnits(value(row, "AliquotaIVA") ?? "");

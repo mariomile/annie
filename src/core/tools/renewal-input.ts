@@ -23,7 +23,8 @@ import { centsDecimal, halfUp, scaled, VAT_RATES, type VatRate } from "../quote-
 import { type Due, effectiveDue, parseFrequency, placeDue, readDue } from "../renewal-dates.ts";
 import { CATEGORIES, type Category, DOCUMENT_FILE, matchCategory, RENEWAL_LIMITS, type Renewal, validDocumentPath } from "../renewals.ts";
 import type { Workspace } from "../workspace.ts";
-import { readCategoryWith, readEuros, readMethod } from "./field-input.ts";
+import { readEuros } from "../money-input.ts";
+import { readCategoryWith, readMethod } from "./field-input.ts";
 import { readAmount } from "./quote-input.ts";
 import { cleanText, isProblem, type Problem } from "../text-input.ts";
 import { fenced } from "./renewal-render.ts";

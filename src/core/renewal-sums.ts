@@ -7,14 +7,12 @@
  * (a price change counts from its date). Totals add those yearly costs; the monthly
  * equivalent of a total (and of a category's) is its yearly total / 12, rounded half up once.
  */
-import { halfUp, scaled } from "./quote-sums.ts";
+import { eurosToCents, halfUp } from "./quote-sums.ts";
 import { currentAmount } from "./renewal-dates.ts";
 import { CATEGORIES, type Category, type Renewal } from "./renewals.ts";
 
-/** A canonical decimal string («480», «12.5») in cents. */
-export function cents(value: string): bigint {
-	return scaled(value, 2);
-}
+/** A canonical decimal string («480», «12.5») in cents (quote-sums.ts). */
+export const cents = eurosToCents;
 
 /** The yearly cost of `amount` cents every `months` months, half up to the cent. */
 export function yearlyCents(amount: bigint, months: number): bigint {

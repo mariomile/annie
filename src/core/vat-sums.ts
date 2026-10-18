@@ -5,22 +5,24 @@
  * - a period's figures: IVA a debito and a credito by the rules of vat-docs.ts, with the split
  *   payment, the reverse charge, the IVA left out by the marks and the deferred IVA said apart;
  * - the periods of a year in a chain: balance = debito − credito − the credit carried in (from the
- *   period before; into January or the first quarter, the credit the person said for the year) +
- *   what was too little to pay before − the December acconto (in December or the fourth quarter).
+ *   period before; into January or the first quarter, the credit the person said for the year,
+ *   else last year's closing credit from the documents) + what was too little to pay before − the
+ *   December acconto marked paid (in December or the fourth quarter). An acconto not marked paid is
+ *   never taken off: the answer asks.
  *   A balance of 25,82 € or less is not paid and goes on; a negative one is a credit that goes on.
  *   Quarterly, the first three quarters add 1% interest to what is paid; the fourth is paid with
- *   the annual saldo, by 16 March, not under 10,33 €, without the 1% (vat-rules.ts). Monthly, what
+ *   the annual saldo, by 16 March, not under 10,33 €, with the 1% (vat-rules.ts). Monthly, what
  *   December leaves under the minimum goes in the annual saldo.
  * - the acconto of December: storico 88% of last year's December or fourth quarter before its
  *   acconto (as said, else from last year's documents), analitico 100% of the operations to 20
  *   December, previsionale 88% of what the person expects; none under 103,29 €; the smaller allowed.
- *   When it is gone by and not marked paid, the smaller is taken as paid, and the answer says so.
+ *   It is taken off December or the fourth quarter only once marked paid.
  * - every deadline moves to the next working day (dates.ts, Saturday included), and carries why.
  */
 import { addMonths, paymentSlip } from "./dates.ts";
 import { addDays } from "./italian-calendar.ts";
-import { halfUp, scaled } from "./quote-sums.ts";
-import { type PaidMark, paidKeyOf, periodOfDay, periodSpan, periodsOf, type YearFigures } from "./vat.ts";
+import { eurosToCents, halfUp, halfUpSigned, scaled } from "./quote-sums.ts";
+import { type PaidMark, paidKeyOf, periodOfDay, periodSpan, periodsOf, VAT_LIMITS, type YearFigures } from "./vat.ts";
 import { isReverseRow, type VatDoc } from "./vat-docs.ts";
 import {
 	ACCONTO_ANALYTIC_DAY,
@@ -46,12 +48,10 @@ import {
 
 /** `cents` × `percent` / 100, half up away from zero, the sign kept. */
 export function share(cents: bigint, percent: string): bigint {
-	const abs = cents < 0n ? -cents : cents;
-	const part = halfUp(abs * scaled(percent, 2), 10_000n);
-	return cents < 0n ? -part : part;
+	return halfUpSigned(cents * scaled(percent, 2), 10_000n);
 }
 
-const cents = (euros: string | undefined): bigint | undefined => (euros === undefined ? undefined : scaled(euros, 2));
+const cents = (euros: string | undefined): bigint | undefined => (euros === undefined ? undefined : eurosToCents(euros));
 const inSpan = (day: string | undefined, from: string, to: string) => day !== undefined && day >= from && day <= to;
 
 export type Figures = {
@@ -69,9 +69,12 @@ export type Figures = {
 	readonly undeducted: bigint;
 	/** Deferred IVA of documents dated up to the period's end, not paid yet: not counted. */
 	readonly deferred: { readonly sale: bigint; readonly purchase: bigint };
-	/** Purchases put in the period by their date, the day of receipt not known. */
+	/** Purchases put in the period by their date, the day of receipt not known, dated within APPROX_DAYS of its end: they may have arrived in the next one. */
 	readonly approx: number;
 };
+
+/** A purchase dated this close to a period's end may have arrived through the SdI in the next one: only those are said as an approximation. */
+export const APPROX_DAYS = 12;
 
 /** The figures of the days `from` to `to` (see vat-docs.ts for what counts where). */
 export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Figures {
@@ -103,7 +106,7 @@ export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Fi
 				continue;
 			}
 			purchases.add(d.key);
-			if (!deferredRow && d.received === undefined) approx.add(d.key);
+			if (!deferredRow && d.received === undefined && d.date >= addDays(to, -APPROX_DAYS)) approx.add(d.key);
 			const deductible = d.percent === undefined ? r.tax : share(r.tax, d.percent);
 			credito += deductible;
 			undeducted += r.tax - deductible;
@@ -134,9 +137,12 @@ export type Liquidation = {
 	readonly partial: boolean;
 	readonly carriedCredit: bigint;
 	readonly carriedDue: bigint;
-	/** The acconto taken off (December, the fourth quarter), and whether it is taken as paid without a mark. */
+	/** The acconto taken off (December, the fourth quarter): only as marked paid. */
 	readonly acconto: bigint;
-	readonly accontoAssumed: boolean;
+	/** The last period: the acconto due and not marked paid, never taken off; the answer asks. */
+	readonly accontoUnpaid?: bigint;
+	/** The first period: where the credit carried in comes from, the person's word or last year's documents. */
+	readonly openingFrom?: "detto" | "fatture";
 	readonly balance: bigint;
 	readonly interest: bigint;
 	/** To pay; what is under the minimum and goes on; the credit that goes on. */
@@ -158,13 +164,41 @@ const yearFigures = (i: VatInputs, year: number) => i.years.find((y) => y.year =
 const paidOf = (i: VatInputs, key: string) => i.paid.find((p) => p.key === key);
 const lastOfYear = (p: VatPeriod) => (p.kind === "month" ? p.n === 12 : p.n === 4);
 
+/** Opening credits already computed, per documents: last year's closing credit is a whole chain of its own. */
+const OPENINGS = new WeakMap<readonly VatDoc[], Map<string, bigint>>();
+
 /**
- * The periods of `year` in their chain (see above), the acconto `acconto` taken off the last one.
- * Under way, the figures so far; not begun, none, and the chain stops there.
+ * The credit carried into `year`: as the person said it, else last year's closing credit from the
+ * documents (0 without documents before the year).
  */
-export function chain(i: VatInputs, year: number, acconto = 0n, assumed = false): Liquidation[] {
+export function openingCredit(i: VatInputs, year: number): { readonly cents: bigint; readonly from?: "detto" | "fatture" } {
+	const said = cents(yearFigures(i, year)?.credit);
+	if (said !== undefined) return { cents: said, from: "detto" };
+	const first = `${year}-01-01`;
+	if (i.today < first || year <= VAT_LIMITS.firstYear || !i.docs.some((d) => d.date < first)) return { cents: 0n };
+	const key = `${i.periodicity}|${year}|${JSON.stringify(i.paid)}|${JSON.stringify(i.years)}`;
+	let memo = OPENINGS.get(i.docs);
+	if (memo === undefined) {
+		memo = new Map();
+		OPENINGS.set(i.docs, memo);
+	}
+	let c = memo.get(key);
+	if (c === undefined) {
+		c = yearCredit(i, year - 1) ?? 0n;
+		memo.set(key, c);
+	}
+	return c > 0n ? { cents: c, from: "fatture" } : { cents: 0n };
+}
+
+/**
+ * The periods of `year` in their chain (see above), the acconto `acconto` (marked paid) taken off
+ * the last one, `unpaid` the acconto due and not marked. Under way, the figures so far; not begun,
+ * none, and the chain stops there.
+ */
+export function chain(i: VatInputs, year: number, acconto = 0n, unpaid = 0n): Liquidation[] {
 	const out: Liquidation[] = [];
-	let credit = cents(yearFigures(i, year)?.credit) ?? 0n;
+	const opening = openingCredit(i, year);
+	let credit = opening.cents;
 	let carried = 0n;
 	for (const period of periodsOf(year, i.periodicity)) {
 		const { from, to } = periodSpan(period);
@@ -189,7 +223,8 @@ export function chain(i: VatInputs, year: number, acconto = 0n, assumed = false)
 			carriedCredit: credit,
 			carriedDue: carried,
 			acconto: off,
-			accontoAssumed: last && assumed,
+			...(last && unpaid > 0n ? { accontoUnpaid: unpaid } : {}),
+			...(out.length === 0 && opening.from !== undefined && opening.cents > 0n ? { openingFrom: opening.from } : {}),
 			balance,
 			interest,
 			due: over ? balance + interest : 0n,
@@ -212,8 +247,9 @@ export type Acconto = {
 	/** 100% of the operations to 20 December; `partial` before that day. */
 	readonly analitico?: { readonly cents: bigint; readonly partial: boolean };
 	readonly previsionale?: { readonly expected: bigint; readonly cents: bigint };
-	/** The smallest known, 0 under 103,29 €; undefined when none is known. */
+	/** The smallest known (a partial analitico is not known yet), 0 under 103,29 €; undefined when none is known; `method` the one it comes from. */
 	readonly cents?: bigint;
+	readonly method?: "storico" | "analitico" | "previsionale";
 	readonly belowMin: boolean;
 	readonly paid?: PaidMark;
 };
@@ -231,12 +267,15 @@ export function accontoOf(i: VatInputs, year: number, expected?: bigint): Accont
 	const storico = gross === undefined ? undefined : { ...gross, cents: gross.base > 0n ? halfUp(gross.base * ACCONTO_PERCENT, 100n) : 0n };
 	const analitico = analyticOf(i, year);
 	const previsionale = expected === undefined ? undefined : { expected, cents: expected > 0n ? halfUp(expected * ACCONTO_PERCENT, 100n) : 0n };
-	const known = [storico?.cents, analitico !== undefined && !analitico.partial ? analitico.cents : undefined, previsionale?.cents].filter((c): c is bigint => c !== undefined);
-	const pool = known.length > 0 ? known : analitico === undefined ? [] : [analitico.cents];
-	const least = pool.length === 0 ? undefined : pool.reduce((a, b) => (b < a ? b : a));
-	const belowMin = least !== undefined && least < ACCONTO_MIN_CENTS;
+	const known = [
+		storico === undefined ? undefined : { method: "storico" as const, cents: storico.cents },
+		analitico === undefined || analitico.partial ? undefined : { method: "analitico" as const, cents: analitico.cents },
+		previsionale === undefined ? undefined : { method: "previsionale" as const, cents: previsionale.cents },
+	].filter((c) => c !== undefined);
+	const least = known.length === 0 ? undefined : known.reduce((a, b) => (b.cents < a.cents ? b : a));
+	const belowMin = least !== undefined && least.cents < ACCONTO_MIN_CENTS;
 	const paid = paidOf(i, `${year}-acconto`);
-	return { year, ...(storico === undefined ? {} : { storico }), ...(analitico === undefined ? {} : { analitico }), ...(previsionale === undefined ? {} : { previsionale }), ...(least === undefined ? {} : { cents: belowMin ? 0n : least }), belowMin, ...(paid === undefined ? {} : { paid }) };
+	return { year, ...(storico === undefined ? {} : { storico }), ...(analitico === undefined ? {} : { analitico }), ...(previsionale === undefined ? {} : { previsionale }), ...(least === undefined ? {} : { cents: belowMin ? 0n : least.cents, method: least.method }), belowMin, ...(paid === undefined ? {} : { paid }) };
 }
 
 /** The liquidazione to 20 December: December's days (monthly) or from October (quarterly), with what the period before carries in. */
@@ -246,17 +285,15 @@ function analyticOf(i: VatInputs, year: number): Acconto["analitico"] {
 	if (i.today < from) return undefined;
 	const before = chain({ ...i, today: addDays(from, -1) }, year).filter((l) => l.to < from).at(-1);
 	const f = figuresOf(i.docs, from, to);
-	const balance = f.debito - f.credito - (before?.credit ?? cents(yearFigures(i, year)?.credit) ?? 0n) + (before?.under ?? 0n);
+	const balance = f.debito - f.credito - (before?.credit ?? openingCredit(i, year).cents) + (before?.under ?? 0n);
 	return { cents: balance > 0n ? balance : 0n, partial: i.today < to };
 }
 
-/** The year's periods with the acconto taken off: as marked paid, else, once its day is gone, the smaller method as if paid. */
+/** The year's periods with the acconto taken off only as marked paid; one due and not marked is said, never taken off. */
 export function yearOf(i: VatInputs, year: number): Liquidation[] {
 	const a = accontoOf(i, year);
 	const marked = cents(a.paid?.amount);
-	const gone = slipOf(`${year}-${ACCONTO_DUE}`).date < i.today;
-	const acconto = marked ?? (gone ? (a.cents ?? 0n) : 0n);
-	return chain(i, year, acconto, marked === undefined && acconto > 0n);
+	return chain(i, year, marked ?? 0n, marked === undefined ? (a.cents ?? 0n) : 0n);
 }
 
 export type DeadlineKind = "periodo" | "acconto" | "annuale";
@@ -334,17 +371,22 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 	return out;
 }
 
+/** An F24 gone by, not marked paid, with an amount: an acconto until it is marked; a periodic one up to OVERDUE_DAYS ago. */
+export function isOverdue(d: Deadline, today: string): boolean {
+	if (d.paid !== undefined || d.date >= today || d.cents === undefined || d.cents <= 0n) return false;
+	return d.kind === "acconto" || d.date >= addDays(today, -OVERDUE_DAYS);
+}
+
 /**
  * The F24 from `from` (default today) for `days` days, by date, not marked paid: those not known
- * yet without amount; one gone by up to OVERDUE_DAYS ago and not paid stays, with its amount.
+ * yet without amount; the overdue ones (isOverdue) first, with their amount.
  */
 export function calendar(i: VatInputs, days = CALENDAR_DAYS, from = i.today): Deadline[] {
 	const end = addDays(from, days - 1);
 	const year = Number(from.slice(0, 4));
-	const oldest = addDays(from, -OVERDUE_DAYS);
 	const all = [year - 1, year, year + 1].flatMap((y) => deadlinesOf(i, y));
 	return all
-		.filter((d) => d.paid === undefined && d.date <= end && (d.date >= from || (d.date >= oldest && d.cents !== undefined && d.cents > 0n && d.date < i.today)))
+		.filter((d) => d.paid === undefined && d.date <= end && (d.date >= from || isOverdue(d, i.today)))
 		.sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code));
 }
 
@@ -359,15 +401,18 @@ export function deadlineOf(i: VatInputs, p: VatPeriod): Deadline | undefined {
 	return deadlinesOf(i, p.year).find((d) => d.period !== undefined && d.period.n === p.n);
 }
 
-/** An F24 of the IVA for the cashflow: its day, amount and words, «iva» so it pairs only with voci about IVA. */
-export type VatPayment = { readonly date: string; readonly cents: bigint; readonly what: string; readonly iva: true };
+/** An F24 of the IVA for the cashflow: its day, amount and words, «iva» so it pairs only with voci about IVA; `was` the day of one overdue, counted today. */
+export type VatPayment = { readonly date: string; readonly cents: bigint; readonly what: string; readonly iva: true; readonly was?: string; readonly late?: true };
 
-/** The F24 the cashflow counts: the calendar's deadlines with an amount, from today to `end`; `words` says what each pays. */
+/**
+ * The F24 the cashflow counts: the calendar's deadlines with an amount, from today to `end`, and
+ * the overdue ones (isOverdue) today, like an overdue invoice; `words` says what each pays.
+ */
 export function vatPayments(i: VatInputs, end: string, words: (d: Deadline) => string): VatPayment[] {
 	if (end < i.today) return [];
 	return calendar(i, CALENDAR_DAYS)
-		.filter((d) => d.date >= i.today && d.date <= end && d.cents !== undefined && d.cents > 0n)
-		.map((d) => ({ date: d.date, cents: d.cents as bigint, what: words(d), iva: true as const }));
+		.filter((d) => d.date <= end && d.cents !== undefined && d.cents > 0n && (d.date >= i.today || isOverdue(d, i.today)))
+		.map((d) => ({ date: d.date < i.today ? i.today : d.date, cents: d.cents as bigint, what: words(d), iva: true as const, ...(d.date < i.today ? { was: d.date, late: true as const } : {}) }));
 }
 
 /** The year's IVA credit at its end (the last period's credit), when the year is over. */

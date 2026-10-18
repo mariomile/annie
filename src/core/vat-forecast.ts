@@ -11,13 +11,11 @@ import { vatDocs } from "./vat-docs.ts";
 import type { VatBook } from "./vat-store.ts";
 import { type Deadline, type VatPayment, vatPayments } from "./vat-sums.ts";
 
-/** «IVA di ottobre 2026», «IVA del 3º trimestre 2026», «acconto IVA 2026», «saldo IVA 2025». */
+/** «F24 IVA di ottobre 2026 (stima)», «F24 IVA del 3º trimestre 2026 (stima)», «F24 acconto IVA 2026 (stima)», «F24 saldo IVA 2025 (stima)». */
 export function vatWhat(d: Deadline): string {
-	if (d.kind === "acconto") return `acconto IVA ${d.year}`;
-	if (d.kind === "annuale") return `saldo IVA ${d.year}`;
 	const p = d.period;
-	if (p === undefined) return "IVA";
-	return p.kind === "month" ? `IVA di ${MONTH_NAMES[p.n - 1]} ${p.year}` : `IVA del ${p.n}º trimestre ${p.year}`;
+	const what = d.kind === "acconto" ? `acconto IVA ${d.year}` : d.kind === "annuale" ? `saldo IVA ${d.year}` : p === undefined ? "IVA" : p.kind === "month" ? `IVA di ${MONTH_NAMES[p.n - 1]} ${p.year}` : `IVA del ${p.n}º trimestre ${p.year}`;
+	return `F24 ${what} (stima)`;
 }
 
 /** The estimated F24 of the IVA from `today` to `end`; none without the periodicity or with a broken store. */

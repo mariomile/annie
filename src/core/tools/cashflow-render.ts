@@ -60,7 +60,7 @@ export function movementLabel(m: Movement, today: string, fullDates = false): st
 		case "average":
 			return "spesa media stimata";
 		case "tax":
-			return m.tax?.iva === true ? `IVA stimata (F24): ${m.tax.what}` : `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
+			return m.tax?.iva === true ? m.tax.what : `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
 	}
 }
 
@@ -361,7 +361,7 @@ function assumptions(p: Projection, v: View): string[] {
 			a.renewalPayments > 0 ? `${n1(a.renewalPayments, "1 pagamento", "# pagamenti")} di rinnovi` : undefined,
 			a.lookalikes > 0 ? `${n1(a.lookalikes, "1 spesa che sembra", "# spese che sembrano")} un rinnovo o una voce` : undefined,
 			a.invoices > 0 ? `${n1(a.invoices, "1 fattura di fornitore", "# fatture di fornitori")} già nelle scadenze` : undefined,
-			(a.taxes ?? 0) > 0 ? `${n1(a.taxes ?? 0, "1 pagamento di tasse", "# pagamenti di tasse")} già nelle tasse stimate` : undefined,
+			(a.taxes ?? 0) > 0 ? (v.vat === true ? `${n1(a.taxes ?? 0, "1 F24 dell'IVA", "# F24 dell'IVA")} già nell'IVA stimata` : `${n1(a.taxes ?? 0, "1 pagamento di tasse", "# pagamenti di tasse")} già nelle tasse stimate`) : undefined,
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}
