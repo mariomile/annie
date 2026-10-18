@@ -75,7 +75,8 @@ export function followUpOps(env: ClientEnv) {
 	 * Under the lock, once per call: the card of `chosen` (by its id, or by the name it was made
 	 * with; a new one when it has none) changed by `change`. With `plan`, a new ricontatto too, its
 	 * reminder linked in the same write: the reminder is made first, keyed by the number the
-	 * ricontatto will take; a write that fails (or finds that number taken) takes it back. `fresh`:
+	 * ricontatto will take, that number and the reminder recorded before the write; a write that fails
+	 * (or finds that number taken, also on a call run again after a crash) takes it back. `fresh`:
 	 * false on a call run again, which writes nothing.
 	 */
 	async function writeCard(
@@ -88,9 +89,16 @@ export function followUpOps(env: ClientEnv) {
 			const book = store.read();
 			if (book.broken) throw new ClientError(CLIENTS_BROKEN);
 			if (book.calls.includes(ctx.callId)) return { fresh: false, created: false };
-			const number = book.nextFollowUp;
+			// The number this attempt plans for, recorded before its reminder is made: a call run again
+			// after a crash comes back to it, finds that reminder and, the number taken since, takes it away.
+			const number = plan === undefined ? book.nextFollowUp : await ctx.step(`follow-up-number-${attempt}`, async () => book.nextFollowUp);
 			let reminded: Reminded | undefined;
-			if (plan !== undefined) reminded = env.reminders === undefined ? { problem: NO_SEAM } : await env.reminders.remind({ day: plan.date, hour: FOLLOW_UP_HOUR, instruction: reminderInstruction(followUpId(number)) }, reminderKey(followUpId(number)), ctx);
+			let recorded: { readonly number: number; readonly id?: string; readonly call?: string } | undefined;
+			if (plan !== undefined) {
+				const made: Reminded = env.reminders === undefined ? { problem: NO_SEAM } : await env.reminders.remind({ day: plan.date, hour: FOLLOW_UP_HOUR, instruction: reminderInstruction(followUpId(number)) }, reminderKey(followUpId(number)), ctx);
+				reminded = made;
+				recorded = await ctx.step(`follow-up-reminder-${attempt}`, async () => ({ number, ...("id" in made ? { id: made.id, call: made.call } : {}) }));
+			}
 			let created = false;
 			try {
 				const fresh = store.update(ctx.callId, (state) => {
@@ -124,9 +132,12 @@ export function followUpOps(env: ClientEnv) {
 				});
 				return { fresh, created: fresh && created, ...(reminded === undefined ? {} : { reminded }) };
 			} catch (error) {
-				// No ricontatto saved: no reminder left behind.
-				if (reminded !== undefined && "id" in reminded && env.reminders !== undefined) await env.reminders.cancel(reminded.id, reminded.call);
-				if (error instanceof Moved && attempt < 2) continue;
+				// No ricontatto saved: no reminder left behind, the one recorded for this number included.
+				if (env.reminders !== undefined) {
+					if (reminded !== undefined && "id" in reminded) await env.reminders.cancel(reminded.id, reminded.call);
+					if (recorded?.id !== undefined && (reminded === undefined || !("id" in reminded) || reminded.id !== recorded.id)) await env.reminders.cancel(recorded.id, recorded.call ?? "");
+				}
+				if (error instanceof Moved && attempt < 3) continue;
 				if (error instanceof Moved) throw new ClientError("le schede sono cambiate mentre salvavo: ripeti la richiesta");
 				throw error;
 			}

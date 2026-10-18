@@ -399,6 +399,8 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 			const c = found.client;
 			// The person's own spelling wins over an invoice's; a name they already wrote keeps its spelling.
 			if (c.nameFrom === "file" && !/^(?:CL|FU)-\d+$/i.test(name) && spellingKey(name) === spellingKey(c.name)) return { client: c, name, notes: [], inside: [] };
+			// The same name but for the legal form: taken for a write that adds, asked for one that moves, drops or merges.
+			if (found.form === true && mode === "exact") return meant([c]);
 			if (found.form === true) return { client: c, name: c.name, notes: [FORM_NOTE], inside: [] };
 			const respelled = found.respelled && c.nameFrom === "person" && spellingKey(name) === spellingKey(c.name);
 			return { client: c, name: c.name, notes: respelled ? ["Ho usato il nome del cliente come lo hai già scritto, nel riquadro."] : [], inside: [] };

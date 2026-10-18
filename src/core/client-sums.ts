@@ -93,7 +93,8 @@ export function clientsOf(src: ClientRegisters): Client[] {
 		if (c !== undefined) return c;
 		const k = name === undefined ? "" : spellingKey(name);
 		const n = k === "" ? undefined : byName.get(k);
-		if (n !== undefined && (vat === undefined || n.vat === undefined || n.vat === vat)) return n;
+		// Two homonyms with two partite IVA or two codici fiscali are two clients.
+		if (n !== undefined && (vat === undefined || n.vat === undefined || n.vat === vat) && (cf === undefined || n.cf === undefined || n.cf === cf)) return n;
 		if (name === undefined || k === "") return undefined;
 		// A name without a partita IVA joins the one client that is the same business; a record with one joins only a client without any.
 		if (vat === undefined && cf === undefined) return oneBusiness(name, () => true);

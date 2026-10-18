@@ -1108,6 +1108,88 @@ describe("clients: second-pass review", () => {
 	});
 });
 
+describe("clients: third-pass review", () => {
+	it("T1 a reminder made before a crash, its number taken since by another call, is taken away when the call runs again", async () => {
+		const crash = { on: false };
+		const s = await setup({
+			wrap: (seam) => ({
+				...seam,
+				remind: async (input, key, ctx) => {
+					const made = await seam.remind(input, key, ctx);
+					if (crash.on) {
+						crash.on = false;
+						throw new Error("crash");
+					}
+					return made;
+				},
+			}),
+		});
+		const journal = new Map<string, unknown>();
+		crash.on = true;
+		await expect(s.run({ op: "follow_up", client: "Beta Uno", when: "il 3 novembre" }, journaled("x1", journal))).rejects.toThrow("crash");
+		expect((await s.schedules.list()).map((t) => t.callId)).toEqual(["x1:follow_up:FU-0001"]);
+		// Delta's ricontatto takes FU-0001 meanwhile.
+		await s.run({ op: "follow_up", client: "Delta Carni Srl", when: "il 4 novembre" }, fresh("d1"));
+		const retried = await s.run({ op: "follow_up", client: "Beta Uno", when: "il 3 novembre" }, journaled("x1", journal));
+		expect(retried).toContain("Ricontatto fissato per martedì 3 novembre (FU-0002)");
+		expect((await s.schedules.list()).map((t) => t.callId).sort()).toEqual(["d1:follow_up:FU-0001", "x1:follow_up:FU-0002"]);
+		await s.run({ op: "cancel_follow_up", follow_up: "FU-0001" });
+		const left = await s.schedules.list();
+		expect(left.map((t) => t.callId)).toEqual(["x1:follow_up:FU-0002"]);
+		expect(left[0]?.instruction).toContain("FU-0002");
+		expect(left.some((t) => t.instruction.includes("FU-0001"))).toBe(false);
+	});
+
+	it("T2 a write that moves, drops, merges or removes never takes «Acme» for «Acme Srl»: it asks", async () => {
+		const acme = fattura(BETA, { name: "Acme Srl", vat: "02987650013" }, { number: "A-1", date: "2026-05-01", total: "1220.00", rate: [{ amount: "1220.00" }] });
+		const s = await setup({ files: { "a.xml": acme }, quotes: [], entries: [] });
+		await s.run({ op: "follow_up", client: "Acme Srl", when: "il 3 novembre" });
+		await s.run({ op: "upsert", client: "Beta Uno" });
+		for (const args of [
+			{ op: "remove", client: "Acme" },
+			{ op: "merge", client: "Acme", into: "Beta Uno", confirm: true },
+			{ op: "merge", client: "Beta Uno", into: "Acme", confirm: true },
+			{ op: "postpone", client: "Acme", when: "il 10 novembre" },
+			{ op: "cancel_follow_up", client: "Acme" },
+		]) {
+			const out = await s.run(args);
+			expect(out).toMatch(/^Intendi questo cliente\? Nessuno si chiama esattamente così, ma questo ha un nome simile:/);
+			expect(inside(out)).toBe("• Acme Srl");
+		}
+		const cards = s.store.read().cards;
+		expect(cards.map((c) => c.name)).toEqual(["Acme Srl", "Beta Uno"]);
+		expect(cards[0]?.followUps).toEqual([expect.objectContaining({ id: "FU-0001", date: "2026-11-03" })]);
+		expect(await s.schedules.list()).toHaveLength(1);
+		// Written as the card's, it goes ahead.
+		expect(await s.run({ op: "postpone", client: "Acme Srl", when: "il 10 novembre" })).toContain("Ricontatto FU-0001 spostato a martedì 10 novembre.");
+	});
+
+	it("T3 two «Mario Rossi» with two codici fiscali are two clients: in the ranking and each on its own card", async () => {
+		const a = fattura(BETA, { name: "Mario Rossi", fiscal: "RSSMRA85T10A562S" }, { number: "M-1", date: "2026-05-01", total: "100.00", rate: [{ amount: "100.00" }] });
+		const b = fattura(BETA, { name: "Mario Rossi", fiscal: "BNCLRA90A41F205I" }, { number: "M-2", date: "2026-06-01", total: "300.00", rate: [{ amount: "300.00" }] });
+		const s = await setup({ files: { "a.xml": a, "b.xml": b }, quotes: [], entries: [] });
+		const clients = clientsOf({ cards: [], invoices: await s.registerNow(), quotes: [], entries: [] });
+		expect(clients.map((c) => [c.name, c.cf, c.invoices.length]).sort()).toEqual([
+			["Mario Rossi", "BNCLRA90A41F205I", 1],
+			["Mario Rossi", "RSSMRA85T10A562S", 1],
+		]);
+		const top = await s.run({ op: "top", period: "2026" });
+		expect(top.split("\n")[0]).toBe("Nel 2026 hai fatturato 400,00 € di imponibile a 2 clienti.");
+		expect(inside(top)).toBe("1. Mario Rossi: 300,00 € (75%)\n2. Mario Rossi: 100,00 € (25%)");
+		expect((await s.run({ op: "show", client: "RSSMRA85T10A562S" })).split("\n")[0]).toBe("Nel 2026 hai fatturato 100,00 € (totale documento: le fatture non riportano l'imponibile); 100,00 € da incassare.");
+		expect((await s.run({ op: "show", client: "BNCLRA90A41F205I" })).split("\n")[0]).toBe("Nel 2026 hai fatturato 300,00 € (totale documento: le fatture non riportano l'imponibile); 300,00 € da incassare.");
+	});
+
+	it("T4 «dopo le feste» is the 7th of January to come, that day included", () => {
+		expect(readFutureDay("dopo le feste", "2027-01-06")).toEqual({ date: "2027-01-07", kind: "relative" });
+		expect(readFutureDay("dopo le feste", "2027-01-07")).toEqual({ date: "2027-01-07", kind: "relative" });
+		expect(readFutureDay("dopo le feste", "2027-01-08")).toEqual({ date: "2028-01-07", kind: "relative" });
+		expect(readFutureDay("dopo le feste", "2026-12-20")).toEqual({ date: "2027-01-07", kind: "relative" });
+		// A 7th of January on a weekend moves to the Monday, as any day counted from today.
+		expect(workingDayFrom("2029-01-07")).toEqual({ date: "2029-01-08", why: "cade di domenica" });
+	});
+});
+
 describe("clients in the app", () => {
 	it("is offered to every instance, the reminder goes to the person, the audit holds no values", async () => {
 		expect(DEFAULT_INSTRUCTIONS).toContain("tenere le schede dei clienti (clients:");

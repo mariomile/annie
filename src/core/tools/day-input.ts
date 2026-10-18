@@ -139,7 +139,7 @@ export function readFutureDay(text: string, today: string): FutureDay | undefine
 	if (t === "settimana prossima" || t === "prossima settimana") return relative(addDays(today, 7 - ((weekdayOf(today) + 6) % 7)));
 	if (/^dopo (?:le feste|natale|capodanno|l'epifania|la befana)$/.test(t)) {
 		const year = Number(today.slice(0, 4));
-		return relative(today < `${year}-01-07` ? `${year}-01-07` : `${year + 1}-01-07`);
+		return relative(today <= `${year}-01-07` ? `${year}-01-07` : `${year + 1}-01-07`);
 	}
 	if (/^(?:tra|fra) un mese e mezzo$/.test(t)) return relative(addDays(addMonths(today, 1).date, 15));
 	const month = /^(?:a|ad|in|a inizio|ai primi di) ([a-z]+)$/.exec(t);
