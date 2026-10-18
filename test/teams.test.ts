@@ -1,0 +1,92 @@
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it } from "vitest";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { TEAMS, team, teamJob } from "../src/core/teams.ts";
+import { loadAnnieConfig } from "../src/main/config.ts";
+import { tempDataDir } from "./helpers.ts";
+
+const running: RunningAnnie[] = [];
+afterEach(async () => {
+	for (const a of running.splice(0)) await a.stop();
+});
+
+async function boot() {
+	const config = loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
+	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
+	running.push(annie);
+	const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
+	const login = async (link: string) => {
+		const res = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: link.split("#")[1] }) });
+		const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0] as string;
+		return async (path: string, body?: unknown, method?: string) => {
+			const r = await fetch(`${base}${path}`, { method: method ?? (body === undefined ? "GET" : "POST"), headers: { cookie, "x-annie": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+			// biome-ignore lint: test
+			return { status: r.status, ...((await r.json()) as any) };
+		};
+	};
+	return { api: await login(annie.ownerLink as string), login };
+}
+
+describe("ready-made squadre", () => {
+	it("each member knows its job, the others by name and ID, and who leads", () => {
+		const contenuti = team("contenuti");
+		if (contenuti === undefined) throw new Error("no team");
+		const ids = [
+			{ id: "caporedattore", name: "Caporedattore" },
+			{ id: "ricercatore-2", name: "Ricercatore" },
+			{ id: "scrittore", name: "Scrittore" },
+		];
+		const lead = teamJob(contenuti, 0, ids);
+		expect(lead).toContain("Fai parte della squadra «Contenuti» con Ricercatore (ricercatore-2: cerca, confronta e cita le fonti) e Scrittore (scrittore:");
+		expect(lead).toContain("Sei tu a coordinarla");
+		expect(lead).toContain("board_create con parent");
+		const writer = teamJob(contenuti, 2, ids);
+		expect(writer).toContain("con Caporedattore (caporedattore:");
+		expect(writer).toContain("te lo passa Caporedattore");
+		expect(writer).not.toContain("Sei tu a coordinarla");
+		// Every squadra fits in a room, and every job in the form's limit.
+		for (const t of TEAMS) {
+			expect(t.members.length).toBeGreaterThanOrEqual(2);
+			expect(t.members.length).toBeLessThanOrEqual(5);
+			for (const [i] of t.members.entries()) expect(teamJob(t, i, t.members).length).toBeLessThan(2000);
+		}
+	});
+
+	it("one click makes the agenti, lets them ask each other and opens a room with all of them; again, with new IDs", async () => {
+		const { api, login } = await boot();
+		const list = await api("/api/teams");
+		expect(list.available).toBe(true);
+		expect(list.teams.map((t: { key: string }) => t.key)).toEqual(["contenuti", "vendite", "amministrazione"]);
+		const made = await api("/api/teams", { team: "contenuti" });
+		expect(made.status).toBe(200);
+		expect(made.agents).toEqual([
+			{ id: "caporedattore", name: "Caporedattore" },
+			{ id: "ricercatore", name: "Ricercatore" },
+			{ id: "scrittore", name: "Scrittore" },
+		]);
+		const agents = (await api("/api/agents")).agents as { id: string; acceptsFrom: string[]; emoji?: string }[];
+		const of = (id: string) => agents.find((a) => a.id === id);
+		expect(of("caporedattore")?.acceptsFrom.sort()).toEqual(["ricercatore", "scrittore"]);
+		expect(of("scrittore")?.acceptsFrom.sort()).toEqual(["caporedattore", "ricercatore"]);
+		// Nobody outside the squadra: the main agente does not ask them, nor they it.
+		expect(of("annie")?.acceptsFrom).toEqual([]);
+		const settings = (await api("/api/instances/caporedattore/settings")).settings;
+		expect(settings.persona).toMatchObject({ emoji: "🗂️", named: true });
+		expect(settings.instructions).toContain("Fai parte della squadra «Contenuti»");
+		// After the default instructions, like the form's: what Annie can do stays said.
+		expect(settings.instructions.indexOf("Fai parte")).toBeGreaterThan(100);
+		const room = await api(`/api/rooms/${made.room}`);
+		expect(room.room.title).toBe("Squadra Contenuti");
+		expect(room.room.agents.map((a: { instanceId: string }) => a.instanceId)).toEqual(["caporedattore", "ricercatore", "scrittore"]);
+		const again = await api("/api/teams", { team: "contenuti" });
+		expect(again.agents.map((a: { id: string }) => a.id)).toEqual(["caporedattore-2", "ricercatore-2", "scrittore-2"]);
+		expect((await api("/api/instances/scrittore-2/settings")).settings.instructions).toContain("Caporedattore (caporedattore-2:");
+		expect((await api("/api/agents")).agents.find((a: { id: string }) => a.id === "scrittore-2").acceptsFrom.sort()).toEqual(["caporedattore-2", "ricercatore-2"]);
+		expect((await api("/api/teams", { team: "nessuna" })).status).toBe(400);
+		// Only the owner makes agenti.
+		const { link } = await api("/api/people", { name: "Anna", role: "member" });
+		const anna = await login(link);
+		expect((await anna("/api/teams", { team: "vendite" })).status).toBe(403);
+		expect((await anna("/api/teams")).status).toBe(403);
+	}, 30_000);
+});

@@ -112,6 +112,10 @@ _Avoid_: gateway, integrazione
 Una conversazione su un canale: una chat Telegram, una chat nell'interfaccia web.
 _Avoid_: sessione, chat (nel codice)
 
+**Squadra pronta**:
+Tre agenti creati insieme dalla pagina Agenti, ciascuno con un compito (per esempio Caporedattore, Ricercatore, Scrittore): si scrivono solo fra loro, il primo coordina e divide il lavoro, e hanno una stanza. Dopo sono agenti come gli altri. Vedi ADR 0068.
+_Avoid_: team, modello di agenti
+
 **Stanza**:
 Una conversazione della console fra una persona e da 2 a 5 agenti: la persona chiama chi le serve con @nome, ogni agente risponde dal suo posto (una sua conversazione con la persona, nascosta fra le chat) e può chiamarne un altro. Vedi ADR 0063.
 _Avoid_: gruppo (è di Telegram e WhatsApp), room

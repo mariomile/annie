@@ -1,0 +1,71 @@
+import type { AuditEvent } from "../core/audit.ts";
+import { TEAMS, team, teamJob } from "../core/teams.ts";
+import type { Person } from "./auth.ts";
+import { type AddRoute, HttpError, readJson } from "./http.ts";
+
+export type TeamRoutesDeps = {
+	/** This installation makes agenti from the console. */
+	readonly canCreate: boolean;
+	readonly exists: (id: string) => Promise<boolean>;
+	/** One agente, as the form «Nuovo agente» makes it; `persona` is checked like the form's. */
+	readonly make: (person: Person, input: { id: string; name: string; instructions: string; persona: unknown }) => Promise<void>;
+	/** The agenti that may write to `id` (ADR 0042). */
+	readonly allow: (person: Person, id: string, from: readonly string[]) => Promise<unknown>;
+	/** A room of the person with these agenti (ADR 0063), its ID; undefined without rooms on this server. */
+	readonly room: (person: Person, title: string, agents: readonly string[]) => Promise<string | undefined>;
+	readonly audit: (event: AuditEvent) => Promise<void>;
+};
+
+/** Suffixes tried for an ID already taken: «ricercatore-2»… */
+const TRIES = 9;
+
+/**
+ * Ready-made squadre (ADR 0068): the owner picks one and gets its agenti, each allowed to ask the
+ * others, and a room with all of them. Nothing more than what the console does by hand, in one go.
+ */
+export function teamRoutes(route: AddRoute, deps: TeamRoutesDeps): void {
+	route("GET", "/api/teams", "owner", async () => ({
+		available: deps.canCreate,
+		teams: TEAMS.map((t) => ({ key: t.key, name: t.name, emoji: t.emoji, summary: t.summary, members: t.members.map((m) => ({ name: m.name, emoji: m.emoji, tagline: m.tagline })) })),
+	}));
+	route("POST", "/api/teams", "owner", async ({ person, req }) => {
+		if (!deps.canCreate) throw new HttpError(501, "Questa installazione non crea agenti dalla console");
+		const p = person as Person;
+		const body = (await readJson(req)) as { team?: unknown };
+		const chosen = typeof body.team === "string" ? team(body.team) : undefined;
+		if (chosen === undefined) throw new HttpError(400, "Squadra sconosciuta");
+		const members: { id: string; name: string }[] = [];
+		for (const m of chosen.members) {
+			let id: string | undefined;
+			for (let n = 1; n <= TRIES && id === undefined; n += 1) {
+				const candidate = n === 1 ? m.id : `${m.id}-${n}`;
+				if (!(await deps.exists(candidate))) id = candidate;
+			}
+			if (id === undefined) throw new HttpError(409, `Ci sono già troppi agenti che si chiamano ${m.id}`);
+			members.push({ id, name: m.name });
+		}
+		const made: string[] = [];
+		for (const [i, m] of chosen.members.entries()) {
+			const { id, name } = members[i] as { id: string; name: string };
+			try {
+				await deps.make(p, { id, name, instructions: teamJob(chosen, i, members), persona: { emoji: m.emoji, tagline: m.tagline, tone: m.tone } });
+			} catch (error) {
+				// The ones made stay, ordinary agenti: said, so the owner deletes them or tries again.
+				if (made.length === 0 || !(error instanceof Error)) throw error;
+				throw new HttpError(error instanceof HttpError ? error.status : 500, `${error.message}. Creati intanto: ${made.join(", ")}`);
+			}
+			made.push(name);
+		}
+		// Each may ask the others of the squadra, nobody else: the owner widens it in Impostazioni.
+		for (const m of members) await deps.allow(p, m.id, members.filter((x) => x.id !== m.id).map((x) => x.id));
+		let room: string | undefined;
+		let note: string | undefined;
+		try {
+			room = await deps.room(p, `Squadra ${chosen.name}`, members.map((m) => m.id));
+		} catch (error) {
+			note = `La stanza non è stata creata: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		await deps.audit({ type: "team.created", team: chosen.key, personId: p.id, agents: members.map((m) => m.id).join(","), room: room !== undefined });
+		return { agents: members, room: room ?? null, ...(note === undefined ? {} : { note }) };
+	});
+}

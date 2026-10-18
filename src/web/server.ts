@@ -52,6 +52,7 @@ import type { BrowserState } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
 import { boardRoutes } from "./board-routes.ts";
+import { teamRoutes } from "./team-routes.ts";
 import { type Ctx, type Handler, HttpError, MAX_JSON, type Route, readBody, readJson, STREAMED } from "./http.ts";
 import { screenRoutes } from "./screen-routes.ts";
 import { handles, type Room, type RoomEntry, RoomError, type RoomEvent, type Rooms } from "./rooms.ts";
@@ -385,13 +386,12 @@ export function createWebApp(options: WebAppOptions): Server {
 		);
 		return { agents };
 	});
-	route("POST", "/api/instances", "owner", async ({ person, req }) => {
+	/** A new agente from the console, open to the owner who makes it: from the form, or in a squadra. */
+	const makeAgent = async (person: Person, input: { id: string; name: string; instructions: string | undefined; persona: Persona }) => {
 		if (options.createInstance === undefined) throw new HttpError(501, "Questa installazione non crea agenti dalla console");
-		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown; persona?: unknown };
-		const id = typeof body.id === "string" ? body.id.trim() : "";
-		const persona = personaOf(body.persona);
-		const name = typeof body.name === "string" ? cleanName(body.name) : "";
-		const given = typeof body.instructions === "string" && body.instructions.trim() !== "" ? body.instructions : undefined;
+		const { id, persona } = input;
+		const name = cleanName(input.name);
+		const given = input.instructions !== undefined && input.instructions.trim() !== "" ? input.instructions : undefined;
 		if (given !== undefined && options.defaultInstructions !== undefined && given.length > ABOUT_MAX) throw new HttpError(400, `Istruzioni troppo lunghe: al massimo ${ABOUT_MAX} caratteri`);
 		// Like «Primi passi»: the owner's words go after the defaults, so what Annie can do stays said.
 		const instructions = given === undefined ? undefined : options.defaultInstructions === undefined ? given.slice(0, INSTRUCTIONS_MAX) : withAbout(options.defaultInstructions, given);
@@ -401,22 +401,32 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw new HttpError(400, "ID non valido: minuscole, numeri, - e _, fino a 63 caratteri, iniziando con una lettera o un numero");
 		}
 		if (name === "") throw new HttpError(400, "Serve un nome");
+		if (await agentExists(id)) throw new HttpError(409, "Un agente con questo ID esiste già");
 		try {
-			await runtime.registry.getInstance(tenantId, id);
-			throw new HttpError(409, "Un agente con questo ID esiste già");
-		} catch (error) {
-			if (!(error instanceof NotFound)) throw error;
-		}
-		try {
-			await options.createInstance({ id, name, instructions, persona, ownerId: (person as Person).id });
+			await options.createInstance({ id, name, instructions, persona, ownerId: person.id });
 		} catch (error) {
 			// Two creations of the same id at once: the second loses here.
 			if (error instanceof Error && error.message.startsWith("Already exists")) throw new HttpError(409, "Un agente con questo ID esiste già");
 			throw error;
 		}
-		await runtime.audit(tenantId).append({ type: "web.instance_created", instanceId: id, personId: (person as Person).id });
+		await runtime.audit(tenantId).append({ type: "web.instance_created", instanceId: id, personId: person.id });
 		const channel = options.channels.get(id);
 		if (channel !== undefined) for (const attach of streamAttachers) attach(channel);
+	};
+	const agentExists = async (id: string) => {
+		try {
+			await runtime.registry.getInstance(tenantId, id);
+			return true;
+		} catch (error) {
+			if (error instanceof NotFound) return false;
+			throw error;
+		}
+	};
+	route("POST", "/api/instances", "owner", async ({ person, req }) => {
+		if (options.createInstance === undefined) throw new HttpError(501, "Questa installazione non crea agenti dalla console");
+		const body = (await readJson(req)) as { id?: unknown; name?: unknown; instructions?: unknown; persona?: unknown };
+		const id = typeof body.id === "string" ? body.id.trim() : "";
+		await makeAgent(person as Person, { id, name: typeof body.name === "string" ? body.name : "", instructions: typeof body.instructions === "string" ? body.instructions : undefined, persona: personaOf(body.persona) });
 		return { instance: await describeInstance(await runtime.registry.getInstance(tenantId, id), person as Person) };
 	});
 
@@ -440,6 +450,16 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	// --- the board (ADR 0050) ---
 	boardRoutes(route, { runtime, tenantId, people: options.people, board: options.board, segreterie: options.segreterie });
+
+	// --- ready-made squadre (ADR 0068) ---
+	teamRoutes(route, {
+		canCreate: options.createInstance !== undefined,
+		exists: agentExists,
+		make: (person, input) => makeAgent(person, { ...input, persona: personaOf(input.persona) }),
+		allow: (person, id, from) => allowAgents(person, id, from),
+		room: async (person, title, agents) => (options.rooms === undefined ? undefined : (await options.rooms.create(person.id, title, agents)).id),
+		audit: (event) => runtime.audit(tenantId).append(event),
+	});
 
 	// --- chat ---
 	route("GET", "/api/instances/:id/threads", "person", async ({ person, params }) => {
@@ -1188,6 +1208,19 @@ export function createWebApp(options: WebAppOptions): Server {
 		return { ok: true };
 	});
 	// --- agenti that write to each other (ADR 0042): who may write to this one ---
+	/** The agenti that may write to this one (ADR 0042): the ones known, never itself nor a segreteria. */
+	const allowAgents = async (person: Person, id: string, asked: readonly string[]): Promise<string[]> => {
+		// A segreteria has no conversations of its own: it can neither ask nor be asked.
+		if (options.segreterie?.has(id)) throw new HttpError(400, "La segreteria non scrive agli altri agenti");
+		const record = await runtime.registry.getInstance(tenantId, id);
+		const known = new Set<string>((await runtime.registry.listInstances(tenantId)).map((r) => r.id).filter((x) => !options.segreterie?.has(x)));
+		const from = [...new Set(asked)].filter((x) => x !== String(record.id) && known.has(x));
+		await runtime.registry.setAllowedUsers(tenantId, id, AGENT_CHANNEL, from);
+		const channels = record.egress.channels.filter((c) => c !== AGENT_CHANNEL);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, channels: from.length === 0 ? channels : [...channels, AGENT_CHANNEL] });
+		await runtime.audit(tenantId).append({ type: "agents.allowed", instanceId: id, personId: person.id, allowed: from.length, from: from.join(",") });
+		return from;
+	};
 	route("PUT", "/api/instances/:id/agents", "owner", async ({ person, params, req }) => {
 		const id = params[0] as string;
 		const record = await runtime.registry.getInstance(tenantId, id).catch(() => {
@@ -1195,15 +1228,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		});
 		const body = (await readJson(req)) as { from?: unknown };
 		if (!Array.isArray(body.from)) throw new HttpError(400, "Serve l'elenco degli agenti");
-		// A segreteria has no conversations of its own: it can neither ask nor be asked.
-		if (options.segreterie?.has(id)) throw new HttpError(400, "La segreteria non scrive agli altri agenti");
-		const known = new Set<string>((await runtime.registry.listInstances(tenantId)).map((r) => r.id).filter((x) => !options.segreterie?.has(x)));
-		const from = [...new Set(body.from.map(String))].filter((x) => x !== String(record.id) && known.has(x));
-		await runtime.registry.setAllowedUsers(tenantId, id, AGENT_CHANNEL, from);
-		const channels = record.egress.channels.filter((c) => c !== AGENT_CHANNEL);
-		await runtime.registry.setEgress(tenantId, id, { ...record.egress, channels: from.length === 0 ? channels : [...channels, AGENT_CHANNEL] });
-		await runtime.audit(tenantId).append({ type: "agents.allowed", instanceId: id, personId: (person as Person).id, allowed: from.length, from: from.join(",") });
-		return { from };
+		return { from: await allowAgents(person as Person, record.id, body.from.map(String)) };
 	});
 	route("GET", "/api/instances/:id/settings", "owner", async ({ params }) => {
 		const r = await runtime.registry.getInstance(tenantId, params[0] as string);
