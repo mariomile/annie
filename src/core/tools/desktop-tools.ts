@@ -16,6 +16,8 @@ export type DesktopToolsOptions = {
 	readonly log?: (message: string) => void;
 	/** How long the screen gets to change after an action before it is looked at (default 700 ms). */
 	readonly settleMs?: number;
+	/** Each screenshot taken in a conversation, with what was just done: the console shows it live (ADR 0067). */
+	readonly seen?: (thread: { readonly channel: string; readonly threadId: string }, png: Uint8Array, action: string | undefined) => void;
 };
 
 /** The last screenshot's size and the screen's: coordinates read on the first are clicked on the second. */
@@ -72,8 +74,8 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 	const refusal = "Errore: l'owner non ha acceso lo schermo per questo agente (Impostazioni, Schermo).";
 
 	/** The screen now, as the model sees it; its size kept for the next click. */
-	const look = async (signal: AbortSignal): Promise<{ text: string; images: EngineImage[] }> => {
-		const state = await desktop.call(key, "get_desktop_state", { max_image_dimension: DESKTOP_LIMITS.maxImageDimension }, signal);
+	const look = async (ctx: ToolContext, action?: string): Promise<{ text: string; images: EngineImage[] }> => {
+		const state = await desktop.call(key, "get_desktop_state", { max_image_dimension: DESKTOP_LIMITS.maxImageDimension }, ctx.signal);
 		const image = state.images.find((i) => i.mimeType === "image/png");
 		const size = image === undefined ? undefined : pngSize(Buffer.from(image.data));
 		if (image === undefined || size === undefined) throw new DesktopError("lo schermo non ha mandato l'immagine");
@@ -81,6 +83,7 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 		if (image.data.length > DESKTOP_LIMITS.maxImageBytes) throw new DesktopError(`lo schermo ha mandato un'immagine di ${Math.round(image.data.length / 1024 / 1024)} MB, troppo pesante`);
 		const original = (name: string) => (typeof state.structured?.[name] === "number" ? (state.structured[name] as number) : undefined);
 		view = { imageWidth: size.width, imageHeight: size.height, screenWidth: original("screenshot_original_width") ?? size.width, screenHeight: original("screenshot_original_height") ?? size.height };
+		if (ctx.thread !== undefined) options.seen?.(ctx.thread, image.data, action);
 		const said = state.text.trim().slice(0, DESKTOP_LIMITS.maxTextChars);
 		const head = `Lo schermo adesso, ${size.width}×${size.height} pixel: x e y per desktop_click e desktop_scroll si leggono su questa immagine, da 0,0 in alto a sinistra.`;
 		return { text: said === "" ? head : `${head}\n${fenced(said)}`, images: [image] };
@@ -137,7 +140,7 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 		if (done.startsWith("Errore")) return done;
 		try {
 			await new Promise((resolve) => setTimeout(resolve, options.settleMs ?? 700));
-			const seen = await look(ctx.signal);
+			const seen = await look(ctx, done);
 			return { text: `${done}\n${seen.text}`, images: seen.images };
 		} catch (error) {
 			options.log?.(`desktop: no screenshot after ${step}: ${error instanceof Error ? error.message : String(error)}`);
@@ -170,7 +173,7 @@ export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {
 			async execute(_args, ctx) {
 				if (!(await allowed())) return refusal;
 				try {
-					return await look(ctx.signal);
+					return await look(ctx);
 				} catch (error) {
 					return failed(error);
 				}

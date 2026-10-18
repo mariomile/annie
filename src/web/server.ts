@@ -29,6 +29,7 @@ import { parseSkillMd, type Skill, SkillError, toSkillMd } from "../core/skills.
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
 import type { BoardStore } from "../core/board.ts";
+import type { ScreenViews } from "../core/screen-views.ts";
 import type { BoardReview, BoardWork } from "../core/board-work.ts";
 import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
@@ -51,7 +52,8 @@ import type { BrowserState } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
 import { boardRoutes } from "./board-routes.ts";
-import { type Ctx, type Handler, HttpError, MAX_JSON, type Route, readBody, readJson } from "./http.ts";
+import { type Ctx, type Handler, HttpError, MAX_JSON, type Route, readBody, readJson, STREAMED } from "./http.ts";
+import { screenRoutes } from "./screen-routes.ts";
 import { handles, type Room, type RoomEntry, RoomError, type RoomEvent, type Rooms } from "./rooms.ts";
 import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
 import { REPLY_FAILED } from "../gateway.ts";
@@ -165,6 +167,8 @@ export type WebAppOptions = {
 	/** The instances' computers (ADR 0013), when this server has them: `reset` removes one with its files. */
 	readonly computer?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined> };
 	/** The agenti's screens through Cua (ADR 0045), when this server has them: whether they reach the internet, and whether one screen is shared. */
+	/** What each agente last saw on its screen, per conversation (ADR 0067). */
+	readonly screens?: ScreenViews;
 	readonly desktop?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined>; readonly network: "none" | "internet" | "unknown"; readonly shared: boolean };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
@@ -489,6 +493,14 @@ export function createWebApp(options: WebAppOptions): Server {
 		res.writeHead(200, { "content-type": "image/png", "content-length": picture.png.length, "x-content-type-options": "nosniff", "cache-control": "no-store" });
 		res.end(picture.png);
 		return STREAMED;
+	});
+	screenRoutes(route, {
+		screens: options.screens,
+		thread: async (person, instanceId, threadId) => {
+			await instanceAccess(person, instanceId);
+			const thread = await channelOf(instanceId).thread(threadId);
+			if (thread === undefined || thread.personId !== person.id) throw new HttpError(404, "No such thread");
+		},
 	});
 	route("POST", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params, req }) => {
 		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
@@ -2067,8 +2079,6 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	return server;
 }
-
-const STREAMED = Symbol("streamed");
 
 /** A task that acts for this person on the web (they created it, or it writes to their thread). */
 function mine(schedule: Schedule, person: Person): boolean {

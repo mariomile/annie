@@ -27,6 +27,9 @@ export type AddRoute = (method: string, path: string, auth: Route["auth"], handl
 
 export const MAX_JSON = 1024 * 1024;
 
+/** What a handler gives back when it wrote the answer itself (a picture, a stream). */
+export const STREAMED = Symbol("streamed");
+
 export async function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
 	const chunks: Buffer[] = [];
 	let size = 0;

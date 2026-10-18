@@ -70,6 +70,7 @@ const ICONS = {
 	send: ["M12 19V5", "m6 11 6-6 6 6"],
 	more: ["M6 12h.01M12 12h.01M18 12h.01"],
 	account: ["M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", "M4 21a8 8 0 0 1 16 0"],
+	screen: ["M3 4h18v12H3Z", "M8 20h8", "M12 16v4"],
 	browser: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z", "M3 12h18", "M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z"],
 	back: ["M19 12H5", "m11 6-6 6 6 6"],
 	close: ["M6 6l12 12M18 6 6 18"],
@@ -1390,7 +1391,11 @@ async function viewChat(main) {
 	mount(main, conversation);
 	if (!threadId) return landing(inst, conversation);
 	const browser = browserPanel(inst, threadId);
-	mount(main, h("div.chat-split", conversation, browser.el), browser.toggle);
+	const screen = screenPanel(inst, threadId);
+	// One panel at a time next to the chat.
+	browser.toggle.addEventListener("click", () => screen.show(false));
+	screen.toggle.addEventListener("click", () => browser.el.hidden || (browser.el.hidden = true));
+	mount(main, h("div.chat-split", conversation, browser.el, screen.el), h("div.panel-toggles", screen.toggle, browser.toggle));
 	state.unread.delete(threadId);
 	renderRail();
 	const { entries, model } = await api(`/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}`);
@@ -1600,6 +1605,67 @@ function browserPanel(inst, threadId) {
 			livelyUntil = Date.now() + 120_000;
 		},
 	};
+}
+
+/**
+ * The agente's screen, live next to the chat (ADR 0067): the last picture it took of its screen in
+ * this conversation, with what it just did. Only to watch: the agente works, the person follows.
+ * The button appears once the agente has used its screen here; the panel opens by itself the first
+ * time, on a wide window.
+ */
+function screenPanel(inst, threadId) {
+	const base = `/api/instances/${inst.id}/threads/${encodeURIComponent(threadId)}/screen`;
+	const seenKey = `annie.screen.${threadId}`;
+	let version = -1;
+	const picture = h("img.screen", { alt: "", hidden: true });
+	const what = h("p.browser-note");
+	const when = h("span.busy-note");
+	const el = h(
+		"aside.browser-panel",
+		{ hidden: true, "aria-label": "Schermo" },
+		h("div.browser-head", icon("screen"), h("span.page-title", `Lo schermo di ${inst.name}`), when, h("button.icon-btn", { type: "button", title: "Chiudi", "aria-label": "Chiudi lo schermo", onclick: () => show(false) }, icon("close"))),
+		h("div.browser-view", picture),
+		what,
+		h("p.browser-note", "Qui guardi soltanto. Prima di inviare, pagare o accedere a un account si ferma e te lo chiede in chat."),
+	);
+	const toggle = h("button.browser-toggle", { type: "button", hidden: true, title: "Lo schermo dell'agente", "aria-pressed": "false", onclick: () => show(el.hidden) }, icon("screen"), h("span", "Schermo"));
+	const show = (on) => {
+		el.hidden = !on;
+		toggle.setAttribute("aria-pressed", String(on));
+		toggle.classList.remove("news");
+		if (on) {
+			store(seenKey, "1");
+			void refresh();
+		}
+	};
+	const refresh = async () => {
+		const { screen } = await api(base).catch(() => ({ screen: null }));
+		if (!screen) return;
+		if (toggle.hidden) {
+			toggle.hidden = false;
+			if (store(seenKey) !== "1") {
+				if (matchMedia("(max-width: 860px)").matches) toggle.classList.add("news");
+				else show(true);
+			}
+		}
+		when.textContent = fmt.time(screen.at);
+		what.textContent = screen.action ?? "Ha guardato lo schermo.";
+		if (screen.version !== version && !el.hidden) {
+			version = screen.version;
+			picture.src = `${base}.png?v=${screen.version}`;
+			picture.alt = `Lo schermo di ${inst.name}: ${what.textContent}`;
+			picture.hidden = false;
+		}
+	};
+	// Often while the panel is open, rarely otherwise: a picture only after a change.
+	let ticks = 0;
+	const timer = setInterval(() => {
+		if (!el.isConnected) return clearInterval(timer);
+		ticks += 1;
+		if (document.visibilityState === "visible" && (!el.hidden || ticks % 5 === 0)) void refresh();
+	}, 2000);
+	void refresh();
+	return { el, toggle, show };
 }
 
 /** The empty chat: a greeting, the box in the middle and a few ideas. Sending opens a new conversation. */
