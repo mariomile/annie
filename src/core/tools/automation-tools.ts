@@ -1,4 +1,5 @@
 import { type Automation, AutomationError, AUTOMATION_LIMITS, type AutomationStore } from "../automations.ts";
+import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { AnnieTool } from "../engine.ts";
 
 type Thread = { readonly channel: string; readonly threadId: string };
@@ -17,7 +18,7 @@ export function createAutomationTools(options: {
 	readonly baseUrl?: string;
 	/** Send the address to the person, through the outbox; the same key is sent once. */
 	readonly tell: (thread: Thread, text: string, key: string) => Promise<void>;
-	readonly record?: (event: { type: "automation.created" | "automation.deleted"; automationId: string }) => Promise<void>;
+	readonly record?: (event: { type: "automation.created" | "automation.deleted"; automationId: string; channel: string; userId: string }) => Promise<void>;
 	readonly instance: string;
 }): AnnieTool[] {
 	const { store } = options;
@@ -51,16 +52,24 @@ export function createAutomationTools(options: {
 				const p = person(ctx.thread);
 				const thread = ctx.thread;
 				if (p === undefined || thread === undefined) return notPrivate;
+				// The answers and the token must be readable later: not in a call, not to another agente.
+				if (thread.channel === "phone" || thread.channel === AGENT_CHANNEL) return "Errore: un'automazione si crea in una chat scritta (console, Telegram, WhatsApp), dove arrivano l'indirizzo e le risposte; non durante una chiamata.";
 				return ctx.step("create", async () => {
 					try {
 						const { automation, token } = store.create({ name: String(args.name), instruction: String(args.instruction), channel: thread.channel, threadId: thread.threadId, person: p });
-						await options.record?.({ type: "automation.created", automationId: automation.id });
+						await options.record?.({ type: "automation.created", automationId: automation.id, ...p });
 						const url = address(automation);
-						await options.tell(
-							thread,
-							`Automazione «${automation.name}» pronta. Il servizio deve chiamare con una POST:\n${url}\ncon l'intestazione\nAuthorization: Bearer ${token}\n(se il servizio non permette intestazioni, aggiungi ?token=${token} all'indirizzo). Tieni il token per te: chi lo ha può far lavorare l'agente.${options.baseUrl === undefined ? "\nL'indirizzo va preceduto da quello pubblico del server." : ""}`,
-							`automation:${automation.id}`,
-						);
+						try {
+							await options.tell(
+								thread,
+								`Automazione «${automation.name}» pronta. A ogni chiamata farò: ${automation.instruction}\n\nIl servizio deve chiamare con una POST:\n${url}\ncon l'intestazione\nAuthorization: Bearer ${token}\n(se il servizio non permette intestazioni, aggiungi ?token=${token} all'indirizzo). Tieni il token per te: chi lo ha può far lavorare l'agente. Se non è quello che volevi, chiedimi di cancellarla.${options.baseUrl === undefined ? "\nL'indirizzo va preceduto da quello pubblico del server." : ""}`,
+								`automation:${automation.id}`,
+							);
+						} catch (error) {
+							// A token nobody received is an automazione nobody can use.
+							store.remove(automation.id, () => true);
+							throw error;
+						}
 						return `Creata l'automazione «${automation.name}» (id ${automation.id}). Ho mandato alla persona, in un messaggio a parte, l'indirizzo e il token da dare al servizio: dille di guardarlo lì. Tu non li vedi.`;
 					} catch (error) {
 						if (error instanceof AutomationError) return `Errore: ${error.message}`;
@@ -93,7 +102,7 @@ export function createAutomationTools(options: {
 				return ctx.step("delete", async () => {
 					const removed = store.remove(String(args.id), (a) => theirs(a, p));
 					if (removed === undefined) return `Non trovo una tua automazione ${String(args.id)}.`;
-					await options.record?.({ type: "automation.deleted", automationId: removed.id });
+					await options.record?.({ type: "automation.deleted", automationId: removed.id, ...p });
 					return `Cancellata l'automazione «${removed.name}»: il suo indirizzo non funziona più.`;
 				});
 			},

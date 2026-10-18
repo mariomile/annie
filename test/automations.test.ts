@@ -1,4 +1,7 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { Reply } from "../src/core/index.ts";
 import { callAutomation } from "../src/core/automation-call.ts";
 import { AUTOMATION_LIMITS, automationData, AutomationRate, AutomationStore, automationText } from "../src/core/automations.ts";
 import { createAutomationTools } from "../src/core/tools/automation-tools.ts";
@@ -27,6 +30,7 @@ describe("automazioni: store and data", () => {
 		expect(automationData(Buffer.from('{"ordine":12,"totale":"49,90"}'), "application/json")).toBe('{\n  "ordine": 12,\n  "totale": "49,90"\n}');
 		expect(automationData(Buffer.from("nome=Anna+Rossi&email=anna%40example.it"), "application/x-www-form-urlencoded")).toBe("nome: Anna Rossi\nemail: anna@example.it");
 		expect(automationData(Buffer.from(""), undefined)).toBe("(nessun dato)");
+		expect(automationData(Buffer.from([0xff, 0xfe, 0x00, 0x81]), "application/octet-stream")).toBe("(dati non testuali, 4 byte)");
 		expect(automationData(Buffer.from("x".repeat(AUTOMATION_LIMITS.dataChars + 5)), "text/plain")).toMatch(/tagliato: 5 caratteri in più\]$/);
 		const store = new AutomationStore(tempDataDir());
 		const { automation } = store.create({ name: "Ordini", instruction: "Riassumi", channel: "test", threadId: "anna", person });
@@ -41,6 +45,10 @@ describe("automazioni: store and data", () => {
 		expect(rate.allow("a", 2000)).toBe(false);
 		expect(rate.allow("b", 2000)).toBe(true);
 		expect(rate.allow("a", 1000 + 3_600_000)).toBe(true);
+		expect(rate.seen("a", "k")).toBe(false);
+		rate.ran("a", "k");
+		expect(rate.seen("a", "k")).toBe(true);
+		expect(rate.seen("b", "k")).toBe(false);
 	});
 });
 
@@ -59,10 +67,50 @@ describe("automazioni: a call runs the agente", () => {
 		expect(replies.filter((r) => r.threadId === "anna")).toHaveLength(1);
 		expect(await call({ token: "sbagliato" })).toEqual({ status: 404, error: "Not found" });
 		expect(await call({ instance: "nessuna" })).toEqual({ status: 404, error: "Not found" });
-		expect(runtime.automations("acme", "ops").list()[0]?.runs).toBe(2);
+		// A retried delivery runs once and counts once; keys that differ only in punctuation stay distinct.
+		expect(runtime.automations("acme", "ops").list()[0]?.runs).toBe(1);
+		expect(await call({ key: "a/b" })).toEqual({ status: 202 });
+		expect(await call({ key: "a_b" })).toEqual({ status: 202 });
+		await waitFor(() => replies.length >= 3);
+		expect(runtime.automations("acme", "ops").list()[0]?.runs).toBe(3);
 		await runtime.registry.setAllowedUsers("acme", "ops", "test", []);
 		expect((await call({ key: "evt_2" })).status).toBe(409);
 		expect(await runtime.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "automation.fired", automationId: automation.id }));
+		await runtime.close();
+	});
+});
+
+describe("automazioni: only where the person reads", () => {
+	it("are not made during a phone call or by another agente", async () => {
+		const tools = createAutomationTools({ store: new AutomationStore(tempDataDir()), instance: "ops", whoIs: () => "phone:+39333", tell: async () => {} });
+		const create = tools.find((t) => t.name === "automation_create");
+		const ctx = (channel: string) => ({ step: async <T,>(_k: string, work: () => Promise<T>) => work(), progress: () => {}, signal: new AbortController().signal, thread: { channel, threadId: "t" }, callId: "c" });
+		expect(await create?.execute({ name: "x", instruction: "y" }, ctx("phone") as never)).toContain("non durante una chiamata");
+		expect(await create?.execute({ name: "x", instruction: "y" }, ctx("agente") as never)).toContain("chat scritta");
+	});
+
+	it("are dropped when the token message cannot be sent", async () => {
+		const store = new AutomationStore(tempDataDir());
+		const tools = createAutomationTools({ store, instance: "ops", whoIs: () => "test:anna", tell: async () => { throw new Error("canale giù"); } });
+		const ctx = { step: async <T,>(_k: string, work: () => Promise<T>) => work(), progress: () => {}, signal: new AbortController().signal, thread: { channel: "test", threadId: "anna" }, callId: "c" };
+		await expect(tools.find((t) => t.name === "automation_create")?.execute({ name: "x", instruction: "y" }, ctx as never)).rejects.toThrow("canale giù");
+		expect(store.list()).toEqual([]);
+	});
+});
+
+describe("automazioni: the token message", () => {
+	it("keeps its key in the outbox but not its text once delivered", async () => {
+		const { runtime, replies, dataDir } = await runtimeWithInstance({ allowedUsers: { test: ["anna"] } });
+		await runtime.sendMessage("acme", "ops", { channel: "test", threadId: "anna", text: "Bearer segreto123", key: "automation:x", secret: true });
+		await waitFor(() => replies.length === 1);
+		await runtime.markDelivered(replies[0] as Reply);
+		const files = readdirSync(join(dataDir, "tenants", "acme", "instances", "ops", "outbox"));
+		const all = files.map((f) => readFileSync(join(dataDir, "tenants", "acme", "instances", "ops", "outbox", f), "utf8")).join("");
+		expect(all).not.toContain("segreto123");
+		expect(all).toContain("conteneva un segreto");
+		// Sent once: the same key again sends nothing.
+		await runtime.sendMessage("acme", "ops", { channel: "test", threadId: "anna", text: "Bearer segreto123", key: "automation:x", secret: true });
+		expect(replies).toHaveLength(1);
 		await runtime.close();
 	});
 });
@@ -97,6 +145,7 @@ describe("automazioni from the chat", () => {
 		expect(told[0]?.text).toContain(`https://annie.example.it/hooks/automazione/ops/${automation?.id}`);
 		const token = /Bearer (\S+)/.exec(told[0]?.text ?? "")?.[1] as string;
 		expect(made).not.toContain(token);
+		expect(told[0]?.text).toContain("A ogni chiamata farò: Riassumi l'ordine");
 		expect(runtime.automations("acme", "ops").check(automation?.id as string, token)).toBeDefined();
 		expect(await send(from("anna", "g", '/tool automation_create {"name":"x","instruction":"y"}', "2", false))).toContain("solo in una conversazione con una persona sola");
 		expect(await send(from("luca", "luca", "/tool automation_list {}", "3"))).toContain("Nessuna automazione");

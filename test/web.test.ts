@@ -388,6 +388,8 @@ describe("web console: automazioni", () => {
 		// The other service: no session, no X-Annie header, the token as a bearer.
 		const hook = (auth: string, body = "nome=Anna&messaggio=Vorrei+un+preventivo") => fetch(`${h.base}${automation.path}`, { method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" }, body });
 		expect((await hook("Bearer sbagliato")).status).toBe(404);
+		const header = await fetch(`${h.base}${automation.path}`, { method: "POST", headers: { "x-annie-token": token, "idempotency-key": "evt_9" }, body: "{}" });
+		expect(header.status).toBe(202);
 		expect((await hook(`Bearer ${token}`)).status).toBe(202);
 		const query = await fetch(`${h.base}${automation.path}?token=${token}`, { method: "POST", body: "{}" });
 		expect(query.status).toBe(202);
@@ -396,7 +398,7 @@ describe("web console: automazioni", () => {
 		expect(await h.runtime.audit("acme").read()).toContainEqual(expect.objectContaining({ type: "automation.fired", automationId: automation.id, threadId: thread.id }));
 		expect((await luca(`/api/instances/ops/automations/${automation.id}`, { method: "DELETE" })).status).toBe(404);
 		const owner = await h.as(h.owner.token);
-		expect((await owner("/api/instances/ops/automations")).body.automations).toHaveLength(1);
+		expect((await owner("/api/instances/ops/automations")).body.automations).toEqual([expect.objectContaining({ person: { channel: "web", userId: h.anna.person.id }, runs: 3 })]);
 		expect((await owner(`/api/instances/ops/automations/${automation.id}`, { method: "DELETE" })).status).toBe(200);
 		expect((await hook(`Bearer ${token}`)).status).toBe(404);
 	});

@@ -98,9 +98,26 @@ export class AutomationStore {
 	}
 }
 
-/** Calls per automazione in the last hour, in this process: enough to stop a loop. */
+/**
+ * Calls per automazione in the last hour, and the delivery keys that already ran, in this
+ * process: enough to stop a loop and not to count a retried delivery twice. After a restart a
+ * retried delivery is still run once (the core admits a message id once), only counted again.
+ */
 export class AutomationRate {
 	private readonly calls = new Map<string, number[]>();
+	private readonly keys = new Map<string, Set<string>>();
+
+	seen(where: string, key: string): boolean {
+		return this.keys.get(where)?.has(key) === true;
+	}
+
+	ran(where: string, key: string): void {
+		const keys = this.keys.get(where) ?? new Set<string>();
+		keys.add(key);
+		if (keys.size > 500) keys.delete(keys.values().next().value as string);
+		this.keys.set(where, keys);
+	}
+
 	allow(key: string, now = Date.now()): boolean {
 		const recent = (this.calls.get(key) ?? []).filter((t) => now - t < 3_600_000);
 		if (recent.length >= AUTOMATION_LIMITS.perHour) {
@@ -114,11 +131,16 @@ export class AutomationRate {
 
 /**
  * A request body as the model reads it: JSON indented, a form as its fields, anything else as
- * text; cut at `dataChars`. Binary bodies are not data an agente can read.
+ * text; cut at `dataChars`. A body that is not UTF-8 text is not data an agente can read.
  */
 export function automationData(body: Buffer, contentType: string | undefined): string {
 	const type = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-	const text = body.toString("utf8");
+	let text: string;
+	try {
+		text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+	} catch {
+		return `(dati non testuali, ${body.length} byte)`;
+	}
 	let data = text;
 	if (type === "application/x-www-form-urlencoded") {
 		data = [...new URLSearchParams(text)].map(([k, v]) => `${k}: ${v}`).join("\n");
@@ -129,7 +151,7 @@ export function automationData(body: Buffer, contentType: string | undefined): s
 			data = text;
 		}
 	}
-	if (data.length > AUTOMATION_LIMITS.dataChars) data = `${data.slice(0, AUTOMATION_LIMITS.dataChars)}\n[…tagliato: ${data.length - AUTOMATION_LIMITS.dataChars} caratteri in più]`;
+	if (data.length > AUTOMATION_LIMITS.dataChars) data = `${data.slice(0, AUTOMATION_LIMITS.dataChars).replace(/[\uD800-\uDBFF]$/, "")}\n[…tagliato: ${data.length - AUTOMATION_LIMITS.dataChars} caratteri in più]`;
 	return data.trim() === "" ? "(nessun dato)" : data;
 }
 

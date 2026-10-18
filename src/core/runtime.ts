@@ -151,7 +151,7 @@ export class AnnieRuntime {
 	 * A message from the instance to a thread that is not a reply (a decision, a notice),
 	 * through the outbox like a reply. The same `key` is sent once.
 	 */
-	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+	async sendMessage(tenant: string, instance: string, message: { channel: string; threadId: string; text: string; key: string; secret?: boolean }): Promise<void> {
 		await (await this.openInstance(tenant, instance)).sendMessage(message);
 	}
 
@@ -454,6 +454,9 @@ export class AnnieRuntime {
 	}
 }
 
+/** Outbox keys of messages whose text goes once delivered. */
+const SECRET_KEY = "secret:";
+
 export class AnnieInstance {
 	/** Outbox keys this process has handed to the channels. Each at most once per process. */
 	private readonly handedOff = new Set<string>();
@@ -670,7 +673,9 @@ export class AnnieInstance {
 			const entry = await this.outbox.get(deliveryId);
 			if (entry === undefined) throw new NotFound(`No outbox entry "${deliveryId}" in ${this.record.tenantId}/${this.record.id}`);
 			if (entry.deliveredAt !== undefined) return;
-			await this.outbox.put({ ...entry, deliveredAt: new Date().toISOString() });
+			// A message with a secret (an automazione's token) keeps its key, not its text, once delivered.
+			const scrubbed = entry.key.includes(`/${SECRET_KEY}`) && entry.reply?.status === "answered" ? { reply: { status: "answered" as const, text: "[tolto dopo la consegna: conteneva un segreto]" } } : {};
+			await this.outbox.put({ ...entry, ...scrubbed, deliveredAt: new Date().toISOString() });
 			await this.audit.append({
 				type: "reply.delivered",
 				instanceId: this.record.id,
@@ -712,9 +717,10 @@ export class AnnieInstance {
 		});
 	}
 
-	async sendMessage(message: { channel: string; threadId: string; text: string; key: string }): Promise<void> {
+	/** `secret`: the text is dropped from the outbox once the channel has it (ADR 0060). */
+	async sendMessage(message: { channel: string; threadId: string; text: string; key: string; secret?: boolean }): Promise<void> {
 		assertChannelAllowed(this.record.egress, message.channel);
-		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.key}`;
+		const key = `msg:${this.record.tenantId}/${this.record.id}/${message.secret === true ? SECRET_KEY : ""}${message.key}`;
 		await this.serial(key, async () => {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;

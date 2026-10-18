@@ -588,7 +588,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					instance: record.id,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					...(config.web.publicUrl === undefined ? {} : { baseUrl: config.web.publicUrl }),
-					tell: (thread, text, key) => runtime.sendMessage(record.tenantId, record.id, { ...thread, text, key }),
+					tell: (thread, text, key) => runtime.sendMessage(record.tenantId, record.id, { ...thread, text, key, secret: true }),
 					record: async (event) => {
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},

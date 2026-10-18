@@ -774,7 +774,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	const automationView = (instance: string, a: Automation, p: Person) => {
 		const { tokenHash: _secret, person: who, ...rest } = a;
 		const mineToo = who.channel === "web" && who.userId === p.id;
-		return { ...rest, path: `/hooks/automazione/${instance}/${a.id}`, mine: mineToo, canEdit: mineToo || p.role === "owner" };
+		return { ...rest, ...(p.role === "owner" ? { person: who } : {}), path: `/hooks/automazione/${instance}/${a.id}`, mine: mineToo, canEdit: mineToo || p.role === "owner" };
 	};
 	route("GET", "/api/instances/:id/automations", "person", async ({ person, params }) => {
 		const p = person as Person;
@@ -1827,7 +1827,7 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	const server = createServer((req, res) => {
 		void handle(req, res).catch((error: unknown) => {
-			options.log?.(`web: ${req.method} ${req.url}: ${error instanceof Error ? error.message : String(error)}`);
+			options.log?.(`web: ${req.method} ${new URL(req.url ?? "/", "http://annie.local").pathname}: ${error instanceof Error ? error.message : String(error)}`);
 			if (!res.headersSent) send(res, 500, { error: "Errore interno" });
 			else res.end();
 		});
@@ -1959,7 +1959,14 @@ export function createWebApp(options: WebAppOptions): Server {
 		const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
 		const token = bearer ?? String(req.headers["x-annie-token"] ?? url.searchParams.get("token") ?? "");
 		const key = req.headers["idempotency-key"] ?? req.headers["x-idempotency-key"];
-		const result = await callAutomation(runtime, { tenant: tenantId, instance, id, token, body: raw, contentType: req.headers["content-type"], key: typeof key === "string" ? key : undefined }, automationRate);
+		let result;
+		try {
+			result = await callAutomation(runtime, { tenant: tenantId, instance, id, token, body: raw, contentType: req.headers["content-type"], key: typeof key === "string" ? key : undefined }, automationRate);
+		} catch (error) {
+			// Logged by path only: the query may hold the token.
+			options.log?.(`automazione ${instance}/${id}: not run: ${error instanceof Error ? error.message : String(error)}`);
+			return send(res, 503, { error: "Riprova più tardi" });
+		}
 		send(res, result.status, result.status === 202 ? { ok: true } : { error: result.error });
 	}
 
