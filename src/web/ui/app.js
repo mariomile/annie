@@ -4219,6 +4219,12 @@ async function viewBoard(main) {
 	const beforeOf = (c) => (c.after ?? []).map((id) => data.cards.find((x) => x.id === id)).filter(Boolean);
 	const waitsOn = (c) => (c.status === "fatto" ? [] : beforeOf(c).filter((x) => x.status !== "fatto"));
 	const nums = (cards) => cards.map((x) => `#${x.n}`).join(", ");
+	// What the agente said when it moved the scheda to «Da rivedere»: the result to review, not a line of the history.
+	const resultOf = (c) => {
+		if (c.status !== "da_rivedere" && c.status !== "fatto") return undefined;
+		const moved = c.events.findLastIndex((e) => e.kind === "status" && e.status === "da_rivedere");
+		return moved < 0 ? undefined : c.events.slice(moved).find((e) => e.kind === "comment" && e.by.kind === "agent");
+	};
 	const whenDone = (cards) => (cards.length === 1 ? `quando #${cards[0].n} è fatta` : cards.length ? `quando ${nums(cards)} sono fatte` : "quando le schede prima sono fatte");
 	const started = (card) => (card.queued ? `Parte da sola ${whenDone(waitsOn(card))}` : `${agentOf(card.assignee)?.name ?? "L'agente"} ci sta lavorando`);
 	const aloneLabel = `Lavora da solo fino alla fine, senza aspettare le tue risposte (al massimo ${data.auto.replies} risposte o ${data.auto.hours} ore, poi va in «Da rivedere»)`;
@@ -4263,6 +4269,7 @@ async function viewBoard(main) {
 			},
 			h("span.board-title", h("span.muted.mono", `#${c.n} `), c.title),
 			c.parent && parentOf(c) ? h("span.muted.small", `parte di #${parentOf(c).n}`) : null,
+			c.status === "da_rivedere" && resultOf(c) ? h("span.board-result-snip", resultOf(c).text) : null,
 			h(
 				"span.board-meta",
 				c.assignee ? [faceOf(c.assignee, c.status === "in_corso" ? "thinking" : "idle"), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
@@ -4534,6 +4541,7 @@ async function viewBoard(main) {
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			h("h2", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
+			resultOf(c) ? h("div.board-result", h("span.small", `Il risultato di ${who(resultOf(c).by)}, ${fmt.time(resultOf(c).at)}`), h("p", resultOf(c).text)) : null,
 			h("div.board-checks-box", h("div.board-checks-head", h("span", "Lista di controllo"), checkCount), checkList, h("div.board-check-add", checkInput, h("button.btn.small", { type: "button", onclick: () => void addCheck() }, "Aggiungi"))),
 			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
 			children.length

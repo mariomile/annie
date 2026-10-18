@@ -786,6 +786,10 @@ dialog.board-dialog { max-width: 600px; }
 .board-alone input { flex: none; margin-top: 3px; }
 .board-children { margin: 8px 0; }
 .board-children ul { margin: 4px 0 0; padding-left: 18px; }
+.board-result-snip { font-size: 12.5px; line-height: 1.4; color: var(--fg-2); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.board-result { margin: 10px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--ok) 6%, var(--surface)); }
+.board-result > span { color: var(--fg-3); }
+.board-result > p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30vh; overflow: auto; }
 .board-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-2); max-height: 30vh; overflow: auto; }
 .board-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .board-events { list-style: none; margin: 16px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 28vh; overflow: auto; border-top: 1px solid var(--border); padding-top: 12px; }
