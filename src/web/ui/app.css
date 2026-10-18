@@ -396,6 +396,24 @@ main.dropping .file-drop { display: grid; }
 .memory-archive[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .memory-archive[open] .fold-chevron { transform: rotate(180deg); }
 .memory-filter { padding: 8px 12px 0; }
+.memory-card { display: flex; flex-direction: column; }
+.memory-head { display: flex; align-items: baseline; gap: 8px; padding-bottom: 6px; }
+.memory-head .muted { font-size: 13px; }
+.memory-empty { margin: 0; padding: 4px 20px 12px; color: var(--fg-3); font-size: 13.5px; }
+/* add a memory the way you write in chat: one rounded field, «In archivio» as a pill, send to the right */
+.memory-add { margin: auto 12px 12px; padding: 6px; border: 1px solid var(--border); border-radius: 20px; background: var(--bg-2); transition: border-color 0.12s, box-shadow 0.12s; }
+.memory-add:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--fg) 4%, transparent); }
+.memory-add textarea { display: block; width: 100%; min-height: 38px; max-height: 160px; resize: none; border: 0; box-shadow: none; background: transparent; padding: 8px 10px 2px; font-size: 14.5px; line-height: 1.5; }
+.memory-add textarea:hover { border: 0; }
+.memory-add textarea:focus { box-shadow: none; }
+.memory-add-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.memory-archive-toggle { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 99px; background: transparent; color: var(--fg-3); font-size: 13px; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
+.memory-archive-toggle .icon { width: 15px; height: 15px; }
+.memory-archive-toggle:hover { background: var(--hover); color: var(--fg); }
+.memory-archive-toggle[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.memory-add .send { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--fg); color: var(--bg); cursor: pointer; }
+.memory-add .send[disabled] { background: var(--active); color: var(--fg-3); cursor: default; }
+.memory-add .send .icon { width: 17px; height: 17px; stroke-width: 2.25; }
 /* A row of choices, one pressed (task schedules). */
 .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .choices button { border: 1px solid var(--border); background: transparent; color: var(--fg-2); border-radius: 99px; padding: 6px 12px; font-size: 13px; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
