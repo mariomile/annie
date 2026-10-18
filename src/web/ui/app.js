@@ -1929,6 +1929,84 @@ function closeModelMenu() {
 }
 
 /**
+ * The commands a message can start with, offered as soon as the box holds «/» (after the @names
+ * of a stanza): Up and Down move, Enter or Tab picks, Esc closes. `load` gives them once, as
+ * { name, note, prefix? }: `prefix` is a stanza's @name, written before the command when no name
+ * is yet, so the skill reaches the agente that has it.
+ */
+function commandMenu(input, load, onChange) {
+	const menu = h("div.command-menu", { role: "listbox", "aria-label": "Comandi", hidden: true });
+	let commands;
+	let shown = [];
+	let at = 0;
+	const typed = () => /^((?:@[\p{L}\p{N}_-]+[\s,:]*)*)\/([\w-]*)$/u.exec(input.value);
+	const close = () => {
+		menu.hidden = true;
+		shown = [];
+		input.removeAttribute("aria-activedescendant");
+	};
+	const pick = (c) => {
+		const [, names = ""] = typed() ?? [];
+		input.value = `${names === "" ? (c.prefix ?? "") : names}/${c.name} `;
+		close();
+		input.focus();
+		onChange();
+	};
+	const draw = () => {
+		mount(menu, shown.map((c, i) => h("button.model-option", { type: "button", role: "option", id: `command-${i}`, "aria-selected": i === at ? "true" : "false", onmousedown: (e) => e.preventDefault(), onclick: () => pick(c) }, h("span", h("span.model-option-name", `${c.prefix ?? ""}/${c.name}`), c.note ? h("small", c.note) : null))));
+		input.setAttribute("aria-activedescendant", `command-${at}`);
+		menu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+	};
+	const update = async () => {
+		const match = typed();
+		if (match === null) return close();
+		commands ??= await load().catch(() => []);
+		const word = (match[2] ?? "").toLowerCase();
+		// After «@vendite », only what that agente has (all of them after @tutti).
+		const names = (match[1] ?? "").toLowerCase();
+		const called = (c) => names === "" || c.prefix === undefined || /@(tutti|all)\b/.test(names) || names.includes(c.prefix.trim().toLowerCase());
+		shown = commands.filter((c) => c.name.startsWith(word) && called(c)).slice(0, 8);
+		// The box may have changed while the commands were loading.
+		if (shown.length === 0 || typed() === null) return close();
+		at = Math.min(at, shown.length - 1);
+		menu.hidden = false;
+		draw();
+	};
+	input.addEventListener("input", () => {
+		at = 0;
+		void update();
+	});
+	input.addEventListener("blur", close);
+	// Before the box's own keys, so Enter picks a command instead of sending it.
+	input.addEventListener(
+		"keydown",
+		(e) => {
+			if (menu.hidden || e.isComposing) return;
+			const move = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+			if (move !== undefined) at = (at + move + shown.length) % shown.length;
+			else if (e.key === "Enter" || e.key === "Tab") pick(shown[at]);
+			else if (e.key === "Escape") close();
+			else return;
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			if (move !== undefined) draw();
+		},
+		true,
+	);
+	return menu;
+}
+
+/** An agente's commands: its skills, /modello, and /attiva-skill when the person has drafts to turn on. */
+async function agentCommands(instanceId, prefix) {
+	const { skills, drafts } = await api(`/api/instances/${encodeURIComponent(instanceId)}/skills`);
+	return [
+		...skills.map((s) => ({ name: s.name, note: s.description, prefix })),
+		...(drafts.length > 0 ? [{ name: "attiva-skill", note: `Attiva una tua bozza: ${drafts.map((d) => d.name).join(", ")}`, prefix }] : []),
+		{ name: "modello", note: "Scegli il modello di questa chat", prefix },
+	];
+}
+
+/**
  * The message box: text, photos waiting to go with it, files noted in it, a drop zone and a paste.
  * The draft and the photos are kept per key (a conversation, or "new") until onSend succeeds;
  * when onSend throws, they come back and the error is said.
@@ -2057,7 +2135,12 @@ function chatBox(inst, key, dropZone, onSend, extra = null) {
 	});
 	drawTray();
 	requestAnimationFrame(fit);
-	const el = h("div.box", tray, h("div.composer", h("label.attach", { title: "Carica un file o una foto" }, icon("attach"), h("span.sr", "File"), file), input, extra, sendButton));
+	const commands = commandMenu(input, () => agentCommands(inst.id), () => {
+		store(draftKey, input.value);
+		fit();
+		ready();
+	});
+	const el = h("div.box", commands, tray, h("div.composer", h("label.attach", { title: "Carica un file o una foto" }, icon("attach"), h("span.sr", "File"), file), input, extra, sendButton));
 	return { el, input, submit };
 }
 
@@ -3187,7 +3270,16 @@ async function viewRoom(main, roomId) {
 		});
 	const header = h("div.room-head", h("a.icon-btn", { href: "#/stanze", "aria-label": "Tutte le stanze" }, icon("back")), h("b", room.title), h("button.btn.small.ghost", { onclick: remove }, "Cancella"));
 	if (entries.length === 0) transcript.append(h("div.room-note", `Nella stanza: ${room.agents.map((a) => a.name).join(", ")}. Scrivi @nome per chiamarne uno, @tutti per tutti.`));
-	mount(main, h("section.conversation", header, transcript, h("div.dock", chips, h("div.box", h("div.composer", input, send)))));
+	// Each agente's skills, with its @name: picked from here, a skill reaches the agente that has it.
+	const commands = commandMenu(
+		input,
+		async () => {
+			const lists = await Promise.all(present.map((a) => agentCommands(a.instanceId, `@${a.handle} `).then((list) => list.map((c) => ({ ...c, note: `${a.name} · ${c.note}` })))));
+			return lists.flat();
+		},
+		fit,
+	);
+	mount(main, h("section.conversation", header, transcript, h("div.dock", chips, h("div.box", commands, h("div.composer", input, send)))));
 	transcript.scrollTop = transcript.scrollHeight;
 	input.focus();
 }
