@@ -4757,8 +4757,8 @@ async function viewBoard(main) {
 	};
 
 	const newCard = () => {
-		const title = h("input", { type: "text", maxlength: 120, placeholder: "Es. Prepara il preventivo per Rossi" });
-		const description = h("textarea", { rows: 4, placeholder: "Cosa fare e quando è finito: l'agente vede solo questo" });
+		const title = h("input.board-new-title", { type: "text", maxlength: 120, placeholder: "Titolo della scheda", "aria-label": "Titolo" });
+		const description = h("textarea.board-new-desc", { rows: 4, placeholder: "Cosa fare e quando è finito: l'agente vede solo questo", "aria-label": "Descrizione" });
 		const assignee = h("select", h("option", { value: "" }, "Nessuno, per ora"), data.agents.filter((a) => a.canAssign).map((a) => h("option", { value: a.id }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
 		const priority = h("select", PRIORITIES.map(([v, l]) => h("option", { value: v, selected: v === "normale" ? "selected" : undefined }, l)));
 		const due = h("input", { type: "date", "aria-label": "Scadenza" });
@@ -4780,9 +4780,8 @@ async function viewBoard(main) {
 			weekday.hidden = every.value !== "settimana";
 			monthday.hidden = every.value !== "mese";
 			ok.textContent = every.value ? "Programma" : "Crea";
-			if (parentRow) parentRow.hidden = Boolean(every.value);
-			if (afterRow) afterRow.hidden = Boolean(every.value);
-			dueRow.hidden = Boolean(every.value);
+			// A scheda that repeats has no date, parent or order of its own.
+			more.hidden = Boolean(every.value);
 		};
 		every.addEventListener("change", drawRepeat);
 		assignee.addEventListener("change", () => {
@@ -4793,18 +4792,23 @@ async function viewBoard(main) {
 		});
 		const ok = h("button.btn.accent", "Crea");
 		const parentRow = parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null;
-		const dueRow = h("label.field", h("span", "Scadenza (facoltativa)"), due);
+		const dueRow = h("label.field", h("span", "Scadenza"), due);
 		const afterRow = opens.length ? h("label.field", h("span", "Viene dopo la scheda"), after) : null;
-		const dialog = h(
-			"dialog.board-dialog",
-			h("h2", "Nuova scheda"),
-			h("label.field", h("span", "Titolo"), title),
-			h("label.field", h("span", "Descrizione"), description),
-			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
-			dueRow,
-			repeatRow,
-			parentRow,
+		// What most schede do not need folds away: a date, a parent, one to wait for.
+		const more = h(
+			"details.board-new-more",
+			h("summary", h("span", `Scadenza${parentRow ? (afterRow ? ", sotto-scheda" : " e sotto-scheda") : ""}${afterRow ? " e ordine" : ""}`), h("small", "facoltativi"), h("span.fold-chevron", icon("down"))),
+			h("div.board-fields", dueRow, parentRow),
 			afterRow,
+		);
+		const dialog = h(
+			"dialog.board-dialog.board-new",
+			h("div.kicker", "Nuova scheda"),
+			title,
+			description,
+			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
+			repeatRow,
+			more,
 			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito. Se si ripete, ogni volta nasce una scheda nuova che parte con te, come se premessi Avvia."),
 			aloneRow,
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -4830,6 +4834,13 @@ async function viewBoard(main) {
 				toast(error.message, true);
 			}
 		};
+		// ⌘↵ / Ctrl↵ creates it from anywhere in the form.
+		dialog.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !ok.disabled) {
+				e.preventDefault();
+				ok.click();
+			}
+		});
 		dialog.addEventListener("close", () => dialog.remove());
 		document.body.append(dialog);
 		dialog.showModal();
