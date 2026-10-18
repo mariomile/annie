@@ -29,7 +29,7 @@ import { AUTOMATION_LIMITS, type Automation, AutomationError, AutomationRate } f
 import { parseSkillMd, type Skill, SkillError, toSkillMd } from "../core/skills.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
-import type { BoardStore } from "../core/board.ts";
+import { type BoardStore, dueText } from "../core/board.ts";
 import type { ScreenViews } from "../core/screen-views.ts";
 import type { RoutineStore } from "../core/board-routines.ts";
 import type { BoardReview, BoardWork } from "../core/board-work.ts";
@@ -627,6 +627,11 @@ export function createWebApp(options: WebAppOptions): Server {
 			if (people.includes(p.id)) res.write(`event: board\ndata: ${JSON.stringify({ kind: "review", id: card.id, n: card.n, title: card.title })}\n\n`);
 		};
 		options.board?.work.events.on("review", review);
+		// A scheda of this person due today or late (ADR 0074).
+		const due = ({ card, people }: BoardReview) => {
+			if (people.includes(p.id) && card.due !== undefined) res.write(`event: board\ndata: ${JSON.stringify({ kind: "due", id: card.id, n: card.n, title: card.title, text: dueText(card.due) })}\n\n`);
+		};
+		options.board?.work.events.on("due", due);
 		const roomEntry = (event: RoomEvent) => res.write(`event: room\ndata: ${JSON.stringify({ roomId: event.roomId, entry: shownInRoom(event.entry) })}\n\n`);
 		options.rooms?.events.on(p.id, roomEntry);
 		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
@@ -635,6 +640,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		streamAttachers.delete(attach);
 		for (const [channel, listener] of listeners) channel.events.off(p.id, listener);
 		options.board?.work.events.off("review", review);
+		options.board?.work.events.off("due", due);
 		options.rooms?.events.off(p.id, roomEntry);
 		return STREAMED;
 	});

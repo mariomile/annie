@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { BOARD_LIMITS, type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore, dueLabel, dueText } from "./board.ts";
+import { BOARD_LIMITS, type Card, type CardActor, type CardChange, type CardPriority, BoardError, type BoardStore, dueIn, dueLabel, dueText } from "./board.ts";
 
 /**
  * What happens on the board besides storing it (ADR 0050): a person handing a scheda to an
@@ -30,8 +30,11 @@ export type BoardWorkDeps = {
 /** A scheda an agente moved to «Da rivedere», and the people to tell (ADR 0051). */
 export type BoardReview = { readonly card: Card; readonly people: readonly string[] };
 
+/** The hour (Rome) from which the scadenze of the day are told (ADR 0074). */
+export const DUE_NOTICE_HOUR = 9;
+
 export class BoardWork {
-	/** "review": a BoardReview, for the console and the owner's chat. */
+	/** "review": a BoardReview, for the console and the owner's chat; "due": a BoardReview of a scheda due today or late (ADR 0074). */
 	readonly events = new EventEmitter();
 
 	constructor(private readonly deps: BoardWorkDeps) {
@@ -159,6 +162,37 @@ export class BoardWork {
 		} catch (error) {
 			await stop(`perché non sono riuscito a dirgli di andare avanti (${error instanceof Error ? error.message : String(error)})`);
 		}
+	}
+
+	/**
+	 * The scadenze come due (ADR 0074): once per scadenza, from 9 in Rome on its day (or the first
+	 * sweep after, if Annie was off), an open scheda due today or late is told to whoever is on it:
+	 * the agente working on it, in its conversation, and the console of the person it is with, or of
+	 * who created it, or the owners. A scadenza moved is told again when it comes. Returns how many.
+	 */
+	async noticeDue(now = new Date()): Promise<number> {
+		if (Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Rome", hour: "2-digit", hourCycle: "h23" }).format(now)) < DUE_NOTICE_HOUR) return 0;
+		let told = 0;
+		for (const seen of this.deps.store.list()) {
+			if (seen.due === undefined || seen.status === "fatto" || seen.dueNoticed === seen.due || dueIn(seen.due, now) > 0) continue;
+			// Recorded first: a notice that fails is not repeated every sweep.
+			const card = this.deps.store.update(seen.id, { dueNoticed: seen.due }, { kind: "agent", id: seen.assignee ?? "annie" });
+			const due = card.due as string;
+			told++;
+			const work = card.work;
+			const people = work !== undefined ? [work.personId] : card.createdBy.kind === "person" ? [card.createdBy.id] : await this.deps.owners();
+			try {
+				this.events.emit("due", { card, people } satisfies BoardReview);
+			} catch {
+				// The notice is on the board too: the scheda is red.
+			}
+			if (card.status !== "in_corso" || work === undefined || work.agent !== card.assignee) continue;
+			const late = dueIn(due, now) < 0;
+			await this.tell(card, `[Scheda #${card.n}] ${late ? `È ${dueText(due, now)}` : "Scade oggi"} (scadenza ${dueLabel(due)}). Se ti manca poco, finiscila e spostala in «Da rivedere»; se non ce la fai, dillo qui e lascia un commento sulla scheda con cosa manca.`).catch(() => {
+				// It sees the scadenza on the scheda: the console was told anyway.
+			});
+		}
+		return told;
 	}
 
 	/**

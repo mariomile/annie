@@ -530,7 +530,7 @@ function connectEvents() {
 		const event = JSON.parse(e.data);
 		void refreshCounters();
 		if (route().view === "board" && !document.querySelector("dialog[open]")) return render();
-		toast(`Scheda #${event.n} da rivedere: ${event.title}`);
+		toast(event.kind === "due" ? `Scheda #${event.n} ${event.text}: ${event.title}` : `Scheda #${event.n} da rivedere: ${event.title}`);
 	});
 	state.events = es;
 }

@@ -445,6 +445,37 @@ describe("the board (ADR 0050)", () => {
 		});
 	});
 
+	describe("scadenze told when they come (ADR 0074)", () => {
+		it("from 9 in Rome, once per scadenza: the agente at work hears it, the console of who is on it is told; moved, it is told again", async () => {
+			const { work, store, posts } = setup();
+			const dues: { n: number; people: readonly string[] }[] = [];
+			work.events.on("due", ({ card, people }) => dues.push({ n: card.n, people }));
+			const worked = await work.create({ title: "Fornitori carta", assignee: "ricerca", due: "2026-10-26" }, anna, "p_anna");
+			const waiting = store.create({ title: "Preventivo", due: "2026-10-25" }, anna);
+			store.create({ title: "Più avanti", due: "2026-10-30" }, anna);
+			const closed = store.create({ title: "Chiusa", due: "2026-10-20" }, anna);
+			store.update(closed.id, { status: "fatto" }, anna);
+			const before = posts.length;
+			// 8:30 in Rome on the 26th: not yet.
+			expect(await work.noticeDue(new Date("2026-10-26T07:30:00Z"))).toBe(0);
+			expect(await work.noticeDue(new Date("2026-10-26T08:05:00Z"))).toBe(2);
+			expect(dues).toEqual([
+				{ n: worked.n, people: ["p_anna"] },
+				{ n: waiting.n, people: ["p_anna"] },
+			]);
+			expect(posts.slice(before)).toHaveLength(1);
+			expect(posts.at(-1)).toMatchObject({ agent: "ricerca", threadId: worked.work?.threadId });
+			expect(posts.at(-1)?.text).toMatch(/^\[Scheda #1\] Scade oggi \(scadenza lunedì 26 ottobre\)/);
+			// Nothing in the history, and once only.
+			expect(store.get(waiting.id)?.events).toHaveLength(1);
+			expect(await work.noticeDue(new Date("2026-10-26T15:00:00Z"))).toBe(0);
+			// Moved to a day already gone: told again, as late.
+			store.update(worked.id, { due: "2026-10-24" }, anna);
+			expect(await work.noticeDue(new Date("2026-10-26T15:00:00Z"))).toBe(1);
+			expect(posts.at(-1)?.text).toMatch(/^\[Scheda #1\] È in ritardo di 2 giorni/);
+		});
+	});
+
 	describe("scadenze (ADR 0073)", () => {
 		it("a real day, changed or taken off with a line in the history; said in Rome's days", () => {
 			const { store } = setup();

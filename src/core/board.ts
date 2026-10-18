@@ -57,6 +57,8 @@ export type Card = {
 	readonly parent?: string;
 	/** By when it should be done (ADR 0073): a day in Rome, YYYY-MM-DD. */
 	readonly due?: string;
+	/** The scadenza already told about (ADR 0074): a moved scadenza is told again. */
+	readonly dueNoticed?: string;
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
 	readonly updatedAt: string;
@@ -97,6 +99,8 @@ export type CardChange = {
 	readonly assignee?: string | null;
 	readonly work?: Card["work"] | null;
 	readonly auto?: Card["auto"] | null;
+	/** Recorded without an event in the history. */
+	readonly dueNoticed?: string;
 	readonly comment?: string;
 	/** Refused unless the scheda is still in this column: two starts at once start it once. */
 	readonly from?: CardStatus;
@@ -191,6 +195,7 @@ export class BoardStore {
 				const { auto: _auto, ...rest } = next;
 				next = change.auto === null ? rest : { ...rest, auto: change.auto };
 			}
+			if (change.dueNoticed !== undefined && change.dueNoticed !== card.dueNoticed) next = { ...next, dueNoticed: change.dueNoticed };
 			if (change.status !== undefined && change.status !== card.status) {
 				next = { ...next, status: change.status };
 				events.push({ at, by, kind: "status", status: change.status });

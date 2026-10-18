@@ -301,6 +301,10 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await send("PUT", `/api/board/${dated.id}`, { due: 5 })).error).toMatch(/formato 2026-10-26/);
 		expect((await send("PUT", `/api/board/${dated.id}`, { due: "2026-11-05" })).card.due).toBe("2026-11-05");
 		expect((await send("PUT", `/api/board/${dated.id}`, { due: null })).card.due).toBeUndefined();
+		// Its day comes (ADR 0074): the sweep tells it once.
+		await send("PUT", `/api/board/${dated.id}`, { due: "2026-11-05" });
+		await annie.scheduler.tick(new Date("2026-11-05T09:00:00Z"));
+		expect((await api("/api/board")).cards.find((c: { id: string }) => c.id === dated.id).dueNoticed).toBe("2026-11-05");
 	}, 30_000);
 
 	it("the board (ADR 0050): a scheda handed to an agente is worked in its conversation, reviewed and closed by a person", async () => {
