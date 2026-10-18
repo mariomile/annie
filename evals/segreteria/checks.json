@@ -83,7 +83,7 @@
       "vatNumberInvalid": [
         "ricontroll",
         "non risulta corrett",
-        "double-check",
+        "check it and send",
         "not appear to be correct"
       ],
       "productOrService": [
@@ -123,7 +123,7 @@
     },
     "negative": "Se un campo NON è in mustAsk e il dato è presente nella mail, la bozza non deve richiederlo (warning, non fail).",
     "vatNumberRule": "A3: se draft.mustNotAskVatNumber == true, nessuna keyword vatNumber in frase interrogativa (fail). Ai privati mai.",
-    "vatNumberInvalidRule": "P.IVA scritta ma errata al controllo formale (offline, mai VIES): lead.vatNumber resta null, missingFields ha vatNumberInvalid e la bozza chiede di ricontrollarla senza ripeterla (A7), anche con requireVatNumber=false."
+    "vatNumberInvalidRule": "P.IVA scritta ma errata al controllo formale (offline, mai VIES): lead.vatNumber resta null, missingFields ha vatNumberInvalid e la bozza chiede di ricontrollarla senza ripeterla (A7), anche con requireVatNumber=false. La frase che chiede di ricontrollarla (keyword vatNumberInvalid) è esente da mustNotAskVatNumber: il cliente, anche privato, il numero l'ha dato lui."
   },
   "multiRequest": {
     "appliesWhen": "draft.mustListItemsAsBullets == true",

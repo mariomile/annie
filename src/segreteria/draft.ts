@@ -6,7 +6,8 @@ export type DraftResult = {
 	readonly language: "it" | "en";
 };
 
-const ASK: Record<MissingField, { it: string; en: string }> = {
+/** One question per missing field, joined after «Per prepararle un preventivo accurato,». */
+const ASK: Record<Exclude<MissingField, "vatNumberInvalid">, { it: string; en: string }> = {
 	fullName: {
 		it: "Può indicarci il nominativo del referente?",
 		en: "Could you please share the contact person's name?",
@@ -35,11 +36,6 @@ const ASK: Record<MissingField, { it: string; en: string }> = {
 		it: "Può indicarci la partita IVA per i dati di fatturazione?",
 		en: "Could you please share the VAT number for invoicing?",
 	},
-	// The wrong number is not quoted: the draft never repeats tax ids (A7, scrubPii).
-	vatNumberInvalid: {
-		it: "La partita IVA che ci ha indicato non risulta corretta: può ricontrollarla?",
-		en: "The VAT number you gave us does not appear to be correct: could you please double-check it?",
-	},
 	budget: {
 		it: "Può indicarci se ha un intervallo di budget di riferimento?",
 		en: "Could you please share a budget range, if any?",
@@ -49,6 +45,21 @@ const ASK: Record<MissingField, { it: string; en: string }> = {
 		en: "Could you please share the desired timeline?",
 	},
 };
+
+/**
+ * A wrong VAT number is not a missing datum for the quote: its own paragraph after the questions,
+ * «inoltre» / «also» only when there are some. The number is not quoted: the draft never repeats
+ * tax ids (A7, scrubPii).
+ */
+const RECHECK_VAT = {
+	it: (also: boolean) => `Le segnaliamo${also ? " inoltre" : ""} che la partita IVA indicata non risulta corretta: può cortesemente ricontrollarla e inviarcela di nuovo?`,
+	en: (also: boolean) => `We${also ? " also" : ""} noticed that the VAT number you provided does not appear to be correct: could you please check it and send it to us again?`,
+};
+
+/** «Può indicarci…» after a comma: lower case. */
+function lowerFirst(text: string): string {
+	return text.charAt(0).toLowerCase() + text.slice(1);
+}
 
 const FEMALE_FIRST =
 	/^(Maria|Anna|Giulia|Sara|Laura|Elena|Francesca|Paola|Chiara|Martina|Alessandra|Valentina|Silvia|Rita|Irene|Marta|Elisa|Sofia|Giada|Federica)$/i;
@@ -112,8 +123,11 @@ export function buildDraft(
 	const subject = formalSubject(lead.rawSubject, language);
 	const items = options.requests ?? [];
 
+	const recheck = mustAsk.includes("vatNumberInvalid");
+	const questions = mustAsk.filter((f): f is keyof typeof ASK => f !== "vatNumberInvalid");
+
 	if (language === "en") {
-		const asks = mustAsk.map((f) => ASK[f]?.en).filter(Boolean);
+		const asks = questions.map((f) => ASK[f]?.en).filter(Boolean);
 		const list =
 			items.length > 1
 				? `\n\nWe noted the following items:\n${items.map((r) => `- ${r}`).join("\n")}\n\nWhich item would you like us to prioritize?\n`
@@ -121,14 +135,14 @@ export function buildDraft(
 		const body = `${formalEnSalutation(lead)},
 
 thank you for your enquiry${companyLine}. We have received your request regarding ${product}.${list}
-${asks.length ? `\nTo prepare an accurate quote, ${asks.join(" ")}\n` : "\n"}
+${asks.length ? `\nTo prepare an accurate quote, ${lowerFirst(asks.join(" "))}\n` : "\n"}${recheck ? `\n${RECHECK_VAT.en(asks.length > 0)}\n` : ""}
 We remain at your disposal.
 Kind regards
 [Sales contact] · [Company]`;
 		return { subject, body: scrubPii(body, lead), language };
 	}
 
-	const asks = mustAsk.map((f) => ASK[f]?.it).filter(Boolean);
+	const asks = questions.map((f) => ASK[f]?.it).filter(Boolean);
 	const list =
 		items.length > 1
 			? `\n\nAbbiamo preso nota delle seguenti voci:\n${items.map((r) => `- ${r}`).join("\n")}\n\nDa quale prodotto o servizio preferisce che partiamo in priorità?\n`
@@ -136,7 +150,7 @@ Kind regards
 	const body = `${formalItSalutation(lead)},
 
 La ringraziamo per la richiesta${companyLine}. Abbiamo preso in carico la domanda relativa a ${product}.${list}
-${asks.length ? `\nPer prepararle un preventivo accurato, ${asks.join(" ")}\n` : "\n"}
+${asks.length ? `\nPer prepararle un preventivo accurato, ${lowerFirst(asks.join(" "))}\n` : "\n"}${recheck ? `\n${RECHECK_VAT.it(asks.length > 0)}\n` : ""}
 Restiamo a disposizione.
 Cordiali saluti
 [Nome commerciale] · [Azienda]`;
@@ -144,7 +158,7 @@ Cordiali saluti
 	return { subject, body: scrubPii(body, lead), language };
 }
 
-/** Strip phones, IBAN, CF, street addresses, customer email from draft (A7). */
+/** Strip phones, IBAN, CF, VAT numbers, street addresses, customer email from draft (A7). */
 export function scrubPii(body: string, lead: LeadFields): string {
 	let out = body;
 	if (lead.email) {
@@ -156,6 +170,9 @@ export function scrubPii(body: string, lead: LeadFields): string {
 	out = out.replace(/\b[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]\b/gi, "");
 	out = out.replace(/\b(?:via|viale|piazza|corso|vicolo|largo|strada)\s+[A-Za-zÀ-ú' ]{2,40}\s*,?\s*\d{1,4}\b/gi, "");
 	out = out.replace(/\b\d{11}\b/g, "");
+	// VAT numbers written in groups: 9 to 12 digits with spaces or dots (not amounts in thousands, 1.250.000.000), and with a country prefix.
+	out = out.replace(/\b(?!\d{1,3}(?:[ .]\d{3})+(?![ .]?\d))\d(?:[ .]?\d){8,11}\b/g, "");
+	out = out.replace(/\b[A-Z]{2}[ .\-]?\d(?:[ .\-]?\d){7,11}\b/g, "");
 	return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n");
 }
 

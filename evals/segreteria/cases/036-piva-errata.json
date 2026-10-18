@@ -13,7 +13,7 @@
     "messageId": "<036-piva-errata@mail.example.it>",
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta preventivo scaffali",
-    "receivedAt": "2026-10-16T10:00:00+02:00",
+    "receivedAt": "2026-10-13T9:00:00+02:00",
     "body": "Buongiorno,\nsono Paolo Rinaldi di Magazzini Rinaldi Srl. Vorremmo un preventivo per 12 scaffalature porta pallet, installazione presso il nostro deposito di Forlì entro fine novembre.\nP. IVA: IT 012 345 609 01\nCordiali saluti\nPaolo Rinaldi",
     "from": "Paolo Rinaldi <p.rinaldi@magazzini-rinaldi.example>"
   },
@@ -61,8 +61,9 @@
       ],
       "autonomousSend": false,
       "expectedSalutationContains": "Gentile Signor Rinaldi",
-      "piiCheck": true,
-      "note": "P.IVA con la cifra di controllo sbagliata (controllo formale, offline): non va nel lead, la bozza chiede di ricontrollarla senza ripeterla. Vale anche con requireVatNumber=false."
+      "note": "P.IVA con la cifra di controllo sbagliata (controllo formale, offline): non va nel lead, la bozza chiede di ricontrollarla senza ripeterla. Vale anche con requireVatNumber=false; la richiesta di ricontrollo è esente da mustNotAskVatNumber.",
+      "mustNotAskVatNumber": true,
+      "piiCheck": true
     },
     "flow": {
       "praticaAction": "create",

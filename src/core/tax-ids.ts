@@ -41,17 +41,22 @@ export const EU_VAT_COUNTRIES = {
 
 export type EuVatCountry = keyof typeof EU_VAT_COUNTRIES;
 
-/** Prefixes people write that the VIES does not take, with what to say instead. */
-const OTHER_PREFIXES: Readonly<Record<string, string>> = {
-	GB: "il Regno Unito non è più nel VIES dal 2021: lì c'è solo l'Irlanda del Nord, con il prefisso XI",
-	CH: "la Svizzera non è nell'Unione europea: il VIES non ha i suoi numeri IVA",
-	NO: "la Norvegia non è nell'Unione europea: il VIES non ha i suoi numeri IVA",
-	SM: "San Marino non è nell'Unione europea: il VIES non ha i suoi numeri IVA",
-};
+/**
+ * Prefixes people write that the VIES does not take, with what to say instead, and the shape of
+ * the rest (after the two letters): Switzerland's UID is CHE and 9 digits, with MWST, TVA or IVA
+ * after it; Norway's 9 digits may end with MVA.
+ */
+const OTHER_PREFIXES = {
+	GB: { problem: "il Regno Unito non è più nel VIES dal 2021: lì c'è solo l'Irlanda del Nord, con il prefisso XI", format: /^(?:\d{9}|\d{12})$/ },
+	CH: { problem: "la Svizzera non è nell'Unione europea: il VIES non ha i suoi numeri IVA", format: /^E\d{9}(?:MWST|TVA|IVA)?$/ },
+	NO: { problem: "la Norvegia non è nell'Unione europea: il VIES non ha i suoi numeri IVA", format: /^\d{9}(?:MVA)?$/ },
+	SM: { problem: "San Marino non è nell'Unione europea: il VIES non ha i suoi numeri IVA", format: /^\d{5}$/ },
+} as const satisfies Record<string, { readonly problem: string; readonly format: RegExp }>;
 
-/** What to say about a prefix outside the VIES, if it is one of those people write. */
-function otherPrefix(code: string): string | undefined {
-	return Object.hasOwn(OTHER_PREFIXES, code) ? OTHER_PREFIXES[code] : undefined;
+type OtherCountry = keyof typeof OTHER_PREFIXES;
+
+function isOtherCountry(code: string): code is OtherCountry {
+	return Object.hasOwn(OTHER_PREFIXES, code);
 }
 
 /**
@@ -177,13 +182,15 @@ function isEuVatCountry(code: string): code is EuVatCountry {
  * - vat: a VAT number for the VIES, with its country (from its prefix, `country`, or 11 digits alone: Italy);
  * - ente: an Italian numeric codice fiscale of a body (8 or 9 first), written right: not a partita IVA, never in the VIES;
  * - codice_fiscale: 16 characters, a person's codice fiscale, «IT» in front dropped;
+ * - outside_vies: GB, CH and the like, with the rest of the number and what to say about the VIES;
  * - each with the problem found on paper, if any.
- * GR is read as EL; GB, CH and the like are named as outside the VIES.
+ * GR is read as EL.
  */
 type TaxId =
 	| { readonly kind: "vat"; readonly country: EuVatCountry; readonly number: string; readonly problem?: string }
 	| { readonly kind: "ente"; readonly number: string }
 	| { readonly kind: "codice_fiscale"; readonly code: string; readonly checked: CodiceFiscale | { readonly problem: string } }
+	| { readonly kind: "outside_vies"; readonly country: OtherCountry; readonly number: string; readonly problem: string }
 	| { readonly kind: "unknown"; readonly problem: string };
 
 /** The start of a person's codice fiscale: 6 letters, the year (digits or omocodia letters), the month letter. */
@@ -196,7 +203,8 @@ export function parseTaxId(text: string, country?: string): TaxId {
 	if (value === "") return { kind: "unknown", problem: "manca il numero" };
 	if (value.length > 30) return { kind: "unknown", problem: "il numero è troppo lungo per una partita IVA o un codice fiscale" };
 	if (!/^[A-Z0-9+*]+$/.test(value)) return { kind: "unknown", problem: "il numero ha caratteri che non stanno in una partita IVA né in un codice fiscale" };
-	if (asked !== undefined && !isEuVatCountry(asked)) return { kind: "unknown", problem: otherPrefix(asked) ?? `${asked} non è un paese del VIES (i paesi dell'Unione europea, EL per la Grecia, XI per l'Irlanda del Nord)` };
+	if (asked !== undefined && isOtherCountry(asked)) return outsideVies(asked, value.startsWith(asked) ? value.slice(2) : value);
+	if (asked !== undefined && !isEuVatCountry(asked)) return { kind: "unknown", problem: `${asked} non è un paese del VIES (i paesi dell'Unione europea, EL per la Grecia, XI per l'Irlanda del Nord)` };
 	if (asked === undefined || asked === "IT") {
 		// «IT» and a letter: a codice fiscale with the partite IVA's habit in front (an Italian VAT
 		// number has only digits, and no codice fiscale starts with IT). Dropped; the rest is checked as one, short or not.
@@ -204,8 +212,8 @@ export function parseTaxId(text: string, country?: string): TaxId {
 		if (CODICE_FISCALE_START.test(value)) return { kind: "codice_fiscale", code: value, checked: checkCodiceFiscale(value) };
 	}
 	const prefix = value.slice(0, 2) === "GR" ? "EL" : value.slice(0, 2);
-	if (/^[A-Z]{2}/.test(value) && (isEuVatCountry(prefix) || otherPrefix(prefix) !== undefined)) {
-		if (!isEuVatCountry(prefix)) return { kind: "unknown", problem: otherPrefix(prefix) as string };
+	if (/^[A-Z]{2}/.test(value) && (isEuVatCountry(prefix) || isOtherCountry(prefix))) {
+		if (isOtherCountry(prefix)) return outsideVies(prefix, value.slice(2));
 		// A French number's two check characters may be letters that look like a prefix (FR + «DE123456789»).
 		if (asked !== undefined && asked !== prefix) return euVatProblem(asked, value) === undefined ? vat(asked, value) : { kind: "unknown", problem: `il numero comincia con ${prefix}, ma il paese indicato è ${asked}` };
 		return vat(prefix, value.slice(2));
@@ -223,15 +231,29 @@ function vat(country: EuVatCountry, number: string): TaxId {
 	return { kind: "vat", country, number, ...(problem === undefined ? {} : { problem }) };
 }
 
+function outsideVies(country: OtherCountry, number: string): TaxId {
+	return { kind: "outside_vies", country, number, problem: OTHER_PREFIXES[country].problem };
+}
+
+/**
+ * The United Kingdom's check on the first 9 digits: weights 8 to 2 on the first 7, plus the last
+ * two, make a multiple of 97, or (numbers issued since 2010) 55 short of one.
+ */
+function gbCheckDigits(digits: string): boolean {
+	const sum = [...digits.slice(0, 7)].reduce((s, c, i) => s + Number(c) * (8 - i), Number(digits.slice(7, 9)));
+	return sum % 97 === 0 || (sum + 55) % 97 === 0;
+}
+
 /**
  * A VAT number as a customer writes it («P.IVA: IT 012 345 678 90», «DE123456789»), checked on
- * paper only: the number to keep, or what is wrong with it.
+ * paper only: the number to keep, what is wrong with it, or undefined when it is no VAT number.
  * - Italian: kept as its 11 digits, without «IT»; another VIES country: its shape, kept with the prefix.
  * - A body's numeric codice fiscale (8 or 9 first, written right) is kept: not a partita IVA, but
  *   the tax id a body without one invoices with, and nothing the customer should correct.
- * - GB, CH, NO, SM: kept as written, with nothing to check them against offline.
- * - A person's codice fiscale written right: undefined. A tax id, not a VAT number: nothing to
- *   keep as one, and nothing wrong either.
+ * - GB (with its check digits), CHE, NO and SM: kept in their shape, prefix and digits only; any
+ *   other text with those letters in front («Smith», «None») is no VAT number.
+ * - A person's codice fiscale, right or wrong, is no VAT number either: never «partita IVA non
+ *   corretta» for it.
  */
 export function checkVatNumber(text: string): { readonly number: string } | { readonly problem: string } | undefined {
 	const id = parseTaxId(text);
@@ -242,10 +264,13 @@ export function checkVatNumber(text: string): { readonly number: string } | { re
 		case "ente":
 			return { number: id.number };
 		case "codice_fiscale":
-			return "problem" in id.checked ? { problem: id.checked.problem } : undefined;
-		case "unknown": {
-			const value = normalizeTaxId(text);
-			return otherPrefix(value.slice(0, 2)) !== undefined && /^[A-Z]{2}[A-Z0-9]{2,13}$/.test(value) ? { number: value } : { problem: id.problem };
+			return undefined;
+		case "outside_vies": {
+			if (!OTHER_PREFIXES[id.country].format.test(id.number)) return undefined;
+			if (id.country === "GB" && !gbCheckDigits(id.number)) return { problem: "le cifre di controllo di un numero IVA del Regno Unito (l'8ª e la 9ª) non tornano" };
+			return { number: `${id.country}${id.number.replace(/[A-Z]+$/, "")}` };
 		}
+		case "unknown":
+			return { problem: id.problem };
 	}
 }

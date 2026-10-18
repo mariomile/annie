@@ -36,7 +36,7 @@ export function leadCardAndDraft(pratica: Pratica): string {
 	// A wrong P.IVA has its own line, not a field name in the list.
 	const asked = pratica.missingFields.filter((f) => f !== "vatNumberInvalid");
 	const missing = asked.length > 0 ? asked.join(", ") : "—";
-	const vatLine = pratica.missingFields.includes("vatNumberInvalid") ? "\nP.IVA: quella indicata non supera il controllo formale, nella bozza chiedo di ricontrollarla." : "";
+	const vatLine = pratica.missingFields.includes("vatNumberInvalid") ? "\nP.IVA sbagliata: non l'ho salvata, nella bozza chiedo al cliente di ricontrollarla." : "";
 	return `Scheda lead · Pratica #${id}
 
 Nome: ${lead.fullName ?? "—"}

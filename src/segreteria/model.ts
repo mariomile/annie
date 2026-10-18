@@ -5,7 +5,7 @@ import type { ModelSelection } from "../core/registry.ts";
 import { type ChecksConfig, type CheckFailure, runDeterministicChecks } from "./checks.ts";
 import { extractEmailAddress } from "./classify.ts";
 import { buildDraft, type DraftResult, scrubPii } from "./draft.ts";
-import { vatField } from "./extract.ts";
+import { vatField, withoutVatNumber } from "./vat.ts";
 
 /** What the extraction model returns, after validation. */
 export type MailAnalysis = {
@@ -13,6 +13,8 @@ export type MailAnalysis = {
 	readonly lead: LeadFields;
 	/** One entry per product or service asked for. */
 	readonly requests: readonly string[];
+	/** The VAT number as the mail wrote it, to keep out of the draft: never stored, never logged. */
+	readonly vatAsWritten?: string;
 };
 
 export type ModelCall = { role: "classify" | "extract" | "draft"; model: ModelSelection; result: CompletionResult };
@@ -132,7 +134,7 @@ export async function analyzeMail(
 		mailMessageId: mail.messageId,
 		...(str("notes") === null ? {} : { notes: str("notes") as string }),
 	};
-	return { classification, lead, requests };
+	return { classification, lead, requests, ...(vat.asWritten === undefined ? {} : { vatAsWritten: vat.asWritten }) };
 }
 
 export type ModelDraft = DraftResult & {
@@ -149,10 +151,12 @@ export type ModelDraft = DraftResult & {
 export async function draftReply(
 	client: ModelClient,
 	model: ModelSelection,
-	args: { mail: InboundMail; lead: LeadFields; requests: readonly string[]; checks: ChecksConfig },
+	args: { mail: InboundMail; lead: LeadFields; requests: readonly string[]; checks: ChecksConfig; vatAsWritten?: string },
 	onCall?: (call: ModelCall) => Promise<void>,
 ): Promise<ModelDraft> {
-	const { mail, lead, requests, checks } = args;
+	const { mail, lead, requests, checks, vatAsWritten } = args;
+	// The customer's VAT number, right or wrong, never goes back in the draft (A7), however the model spaced it.
+	const withoutVat = (text: string) => (vatAsWritten === undefined ? text : withoutVatNumber(text, vatAsWritten));
 	const language: "it" | "en" = lead.originalLanguage === "en" ? "en" : "it";
 	const allowedAmounts = amountsIn(mail.bodyText);
 	const checkInput = (draft: { subject: string; body: string }) => ({
@@ -186,7 +190,7 @@ export async function draftReply(
 			const raw = parseJsonObject(result.text);
 			if (typeof raw.subject !== "string" || typeof raw.body !== "string" || raw.body.trim() === "") throw new Error("missing subject or body");
 			// One line only: the subject becomes a mail header.
-			parsed = { subject: raw.subject.replace(/[\r\n]+/g, " ").trim(), body: scrubPii(raw.body.trim(), lead) };
+			parsed = { subject: withoutVat(raw.subject.replace(/[\r\n]+/g, " ").trim()), body: scrubPii(withoutVat(raw.body.trim()), lead) };
 		} catch (error) {
 			failures = [{ check: "format", detail: error instanceof Error ? error.message : String(error) }];
 			continue;

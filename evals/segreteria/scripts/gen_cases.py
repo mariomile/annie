@@ -221,6 +221,19 @@ add(35,"pii-iban-indirizzo",["pii","formal","complete"],["§6-titoli","A7"],
  "Buongiorno, sono Carlo Mancuso, titolare dell'Enoteca Mancuso. Vorrei un preventivo per 2 frigo cantina da 150 bottiglie, consegna a casa mia in via delle Viole 12, 90100 Palermo, entro novembre. Per eventuale acconto il mio IBAN è IT60X0542811101000000123456. Cellulare 338 0000777. P.IVA 06162630476.",
  "richiesta_preventivo",lead("Carlo Mancuso","Enoteca Mancuso","carlo.mancuso@enoteca-mancuso.example","338 0000777","frigo cantina 150 bottiglie","2","entro novembre"),
  draft(salutation="Gentile Signor Mancuso",mustNotMention=["IT60X0542811101000000123456","338 0000777","via delle Viole"],note="A7: la bozza non ripete IBAN, cellulare, indirizzo."))
+# --- P.IVA errata al controllo formale (offline): richiesta di ricontrollarla, mai ripetuta
+add(36,"piva-errata",["wrong_vat","formal"],["§6-dati-mancanti","A3","A7"],
+ "Paolo Rinaldi <p.rinaldi@magazzini-rinaldi.example>","Richiesta preventivo scaffali",
+ "Buongiorno,\nsono Paolo Rinaldi di Magazzini Rinaldi Srl. Vorremmo un preventivo per 12 scaffalature porta pallet, installazione presso il nostro deposito di Forlì entro fine novembre.\nP. IVA: IT 012 345 609 01\nCordiali saluti\nPaolo Rinaldi",
+ "richiesta_preventivo",lead("Paolo Rinaldi","Magazzini Rinaldi Srl","p.rinaldi@magazzini-rinaldi.example",None,"scaffalature porta pallet","12","entro fine novembre",["vatNumberInvalid"]),
+ draft(["vatNumberInvalid"],salutation="Gentile Signor Rinaldi",mustNotMention=["01234560901","012 345 609 01"],note="P.IVA con la cifra di controllo sbagliata (controllo formale, offline): non va nel lead, la bozza chiede di ricontrollarla senza ripeterla. Vale anche con requireVatNumber=false; la richiesta di ricontrollo è esente da mustNotAskVatNumber."),
+ notes="Etichetta, prefisso IT e spazi nel numero: l'estrazione li tollera.")
+add(37,"vat-estera-errata",["wrong_vat","lang_en","formal"],["§6-lingua","A1","A3","A7"],
+ "Thomas Becker <t.becker@brauhaus-lindenhof.example>","Quote request - stainless steel tanks",
+ "Hello,\nI am Thomas Becker from Brauhaus Lindenhof GmbH. We would like a quote for 3 stainless steel fermentation tanks, delivered to our brewery in Bolzano by the end of March.\nVAT number: DE 1234 5678\nBest regards\nThomas Becker",
+ "richiesta_preventivo",lead("Thomas Becker","Brauhaus Lindenhof GmbH","t.becker@brauhaus-lindenhof.example",None,"stainless steel fermentation tanks","3","by the end of March",["vatNumberInvalid"],lang="en"),
+ draft(["vatNumberInvalid"],salutation="Dear Mr Becker",mustNotMention=["DE12345678","1234 5678"],note="Numero tedesco di 8 cifre (ne servono 9): errato al controllo formale. Bozza in inglese che chiede di ricontrollarlo."),
+ notes="Numero IVA estero con la forma sbagliata.")
 
 # ===== Decisioni Craft A1-A8 (15 ott 2026) =====
 import re
@@ -253,6 +266,9 @@ c["expected"]["draft"]["note"]="Tenant default (requireVatNumber=false): la P.IV
 # A1 lingua
 c=by["020"]; d=c["expected"]["draft"]; d.update(language="en",register="formal_en",expectedSalutationContains="Dear Mr Whitfield",note="A1: bozza nella lingua del cliente (inglese, registro formale). Scheda Telegram in italiano.")
 c["specRefs"]+=["A1"]
+# Un numero IVA del Regno Unito: fuori dal VIES, tenuto com'è scritto (forma e cifre di controllo giuste).
+c["expected"]["lead"]["vatNumber"]="GB000000000"
+c=by["037"]; c["expected"]["draft"].update(language="en",register="formal_en")
 c=by["021"]; c["expected"]["draft"]["note"]="A1: mail mista IT/EN con italiano presente -> default italiano (lei)."; c["specRefs"]+=["A1"]
 # A2 mittente invalido
 c=by["031"]; f=c["expected"]["flow"]; c["specRefs"]+=["A2"]

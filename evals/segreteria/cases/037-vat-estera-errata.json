@@ -15,7 +15,7 @@
     "messageId": "<037-vat-estera-errata@mail.example.it>",
     "to": "preventivi@officine-fittizie.example",
     "subject": "Quote request - stainless steel tanks",
-    "receivedAt": "2026-10-16T11:00:00+02:00",
+    "receivedAt": "2026-10-14T10:00:00+02:00",
     "body": "Hello,\nI am Thomas Becker from Brauhaus Lindenhof GmbH. We would like a quote for 3 stainless steel fermentation tanks, delivered to our brewery in Bolzano by the end of March.\nVAT number: DE 1234 5678\nBest regards\nThomas Becker",
     "from": "Thomas Becker <t.becker@brauhaus-lindenhof.example>"
   },
@@ -63,8 +63,9 @@
       ],
       "autonomousSend": false,
       "expectedSalutationContains": "Dear Mr Becker",
-      "piiCheck": true,
-      "note": "Numero tedesco di 8 cifre (ne servono 9): errato al controllo formale. Bozza in inglese che chiede di ricontrollarlo."
+      "note": "Numero tedesco di 8 cifre (ne servono 9): errato al controllo formale. Bozza in inglese che chiede di ricontrollarlo.",
+      "mustNotAskVatNumber": true,
+      "piiCheck": true
     },
     "flow": {
       "praticaAction": "create",

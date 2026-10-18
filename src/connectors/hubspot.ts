@@ -139,7 +139,7 @@ function leadNote(lead: LeadUpsert): string {
 	return [
 		`Annie: richiesta di preventivo ricevuta per email («${lead.rawSubject}»).`,
 		`Prodotto/servizio: ${lead.productOrService ?? "non indicato"}.`,
-		`Dati mancanti: ${lead.missingFields.length > 0 ? lead.missingFields.join(", ") : "nessuno"}.`,
+		`Dati mancanti: ${lead.missingFields.length > 0 ? lead.missingFields.map((f) => (f === "vatNumberInvalid" ? "P.IVA da ricontrollare" : f)).join(", ") : "nessuno"}.`,
 		`Bozza di risposta in attesa di approvazione su Telegram.`,
 	].join("\n");
 }
