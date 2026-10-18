@@ -115,9 +115,13 @@ export class ScheduleStore {
 		return updated;
 	}
 
-	/** Stop it for good, keeping it visible with the reason. */
+	/** Stop it for good, keeping it visible with the reason; a seam's reminder (with a callId) is deleted instead, so it does not count toward the cap. */
 	async disable(schedule: Schedule, reason: string): Promise<Schedule> {
 		const updated: Schedule = { ...schedule, nextRunAt: null, disabledReason: reason };
+		if (schedule.callId !== undefined) {
+			await this.remove(schedule.id);
+			return updated;
+		}
 		await this.update(updated);
 		return updated;
 	}

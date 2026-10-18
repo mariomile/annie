@@ -17,7 +17,7 @@ import { toUnits } from "./fattura-pa.ts";
 import { daysLate } from "./invoice-sums.ts";
 import { countedAmount, type Invoice, openAmount, partyName, vatOf } from "./invoices.ts";
 import { addDays, daysBetween } from "./italian-calendar.ts";
-import { businessKey, sameBusiness, spellingKey } from "./name-keys.ts";
+import { sameBusiness, spellingKey } from "./name-keys.ts";
 import { halfUp } from "./quote-sums.ts";
 import { latest, type Quote, quoteTotalsOf, shownStatus } from "./quotes.ts";
 import type { ReminderLevel } from "./reminder-book.ts";
@@ -66,6 +66,10 @@ type Group = {
 /** Every client: the cards first, then the clients without one, by the order they were met. */
 export function clientsOf(src: ClientRegisters): Client[] {
 	const groups: Group[] = [];
+	type Record = { vat?: string; cf?: string; name?: string; person: boolean; add: (g: Group) => void };
+	const records: Record[] = [];
+	/** The partite IVA the registers give to names of one business: a name alone is linked to one only when there is only one. */
+	const vatsOf = (names: readonly string[]): Set<string> => new Set(records.flatMap((r) => (r.vat !== undefined && r.name !== undefined && names.some((n) => sameBusiness(n, r.name as string)) ? [r.vat] : [])));
 	const byVat = new Map<string, Group>();
 	const byCf = new Map<string, Group>();
 	const byName = new Map<string, Group>();
@@ -92,7 +96,10 @@ export function clientsOf(src: ClientRegisters): Client[] {
 		if (n !== undefined && (vat === undefined || n.vat === undefined || n.vat === vat)) return n;
 		if (name === undefined || k === "") return undefined;
 		// A name without a partita IVA joins the one client that is the same business; a record with one joins only a client without any.
-		return vat === undefined && cf === undefined ? oneBusiness(name, () => true) : oneBusiness(name, (g) => g.vat === undefined && g.cf === undefined);
+		if (vat === undefined && cf === undefined) return oneBusiness(name, () => true);
+		// A client with no tax id (a bare name on a card) takes a partita IVA only when its business has just one in the registers.
+		const bare = oneBusiness(name, (g) => g.vat === undefined && g.cf === undefined);
+		return bare !== undefined && vatsOf(bare.names).size <= 1 ? bare : undefined;
 	};
 	const place = (vat: string | undefined, cf: string | undefined, name: string | undefined, person: boolean): Group | undefined => {
 		if (vat === undefined && cf === undefined && (name === undefined || spellingKey(name) === "")) return undefined;
@@ -116,8 +123,6 @@ export function clientsOf(src: ClientRegisters): Client[] {
 		groups.push(g);
 		for (const n of [card.name, ...card.aliases]) index(g, n);
 	}
-	type Record = { vat?: string; cf?: string; name?: string; person: boolean; add: (g: Group) => void };
-	const records: Record[] = [];
 	// The person's own words first, so their spelling is the one shown.
 	for (const q of latest(src.quotes)) records.push({ ...opt(vatKey(q.customer.vat), q.customer.fiscal?.toUpperCase(), q.customer.name), person: true, add: (g) => g.quotes.push(q) });
 	for (const e of src.entries) records.push({ ...opt(undefined, undefined, e.client), person: true, add: (g) => g.entries.push(e) });
@@ -149,10 +154,15 @@ function opt(vat: string | undefined, cf: string | undefined, name: string | und
 	return { ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }), ...(name === undefined ? {} : { name }) };
 }
 
-/** The other clients with the same name without legal form, not joined (two of them, or another legal form): maybe the same, to be asked. */
+/** The other clients that may be this one, not joined (there were two of them): the same business by name (sameBusiness), and no partita IVA or codice fiscale that says otherwise. To be asked. */
 export function lookalikes(clients: readonly Client[], client: Client): Client[] {
-	const keys = new Set([client.name, ...client.names].map(businessKey).filter((k) => k !== ""));
-	return clients.filter((c) => c.key !== client.key && [c.name, ...c.names].some((n) => keys.has(businessKey(n))));
+	const mine = [client.name, ...client.names];
+	return clients.filter((c) => {
+		if (c.key === client.key) return false;
+		if (client.vat !== undefined && c.vat !== undefined && client.vat !== c.vat) return false;
+		if (client.cf !== undefined && c.cf !== undefined && client.cf !== c.cf) return false;
+		return [c.name, ...c.names].some((n) => mine.some((m) => sameBusiness(m, n)));
+	});
 }
 
 /** What an invoice counts toward the invoiced, in cents (a credit note less), euro only: the imponibile, the total, and whether the imponibile is the total because the file does not give it. Undefined: another currency or no amount. */
@@ -172,15 +182,22 @@ export type Invoiced = { readonly taxable: bigint; readonly total: bigint; reado
 
 /** Invoiced from `from` to `to` (both included, by the invoice's date). */
 export function invoicedIn(c: Pick<Client, "invoices">, from: string, to: string): Invoiced {
+	return invoicedOf(c.invoices.filter((i) => i.doc.date !== undefined && i.doc.date >= from && i.doc.date <= to));
+}
+
+/** Every invoice ever issued to the client. */
+export function invoicedEver(c: Pick<Client, "invoices">): Invoiced {
+	return invoicedOf(c.invoices);
+}
+
+function invoicedOf(invoices: readonly Invoice[]): Invoiced {
 	let taxable = 0n;
 	let total = 0n;
 	let count = 0;
 	let estimated = 0;
 	let credits = 0;
 	let creditTaxable = 0n;
-	for (const i of c.invoices) {
-		const d = i.doc.date;
-		if (d === undefined || d < from || d > to) continue;
+	for (const i of invoices) {
 		const a = invoicedCents(i);
 		if (a === undefined) continue;
 		taxable += a.taxable;
@@ -194,9 +211,33 @@ export function invoicedIn(c: Pick<Client, "invoices">, from: string, to: string
 	return { taxable, total, count, estimated, credits, creditTaxable };
 }
 
-/** Collected from `from` to `to`: the prima nota's incassi (cash-book.ts), by the day each instalment was marked paid. */
+/**
+ * Collected from `from` to `to`: the prima nota's incassi (cash-book.ts), by the day each
+ * instalment was marked paid, less the credit notes marked used in the span: an invoice closed by
+ * a credit note is not money that came in. `earlier`: part of it is for invoices of earlier years.
+ */
+export function collectedIn(c: Pick<Client, "invoices">, from: string, to: string, dayOf: (at: string) => string): { readonly cents: bigint; readonly credits: bigint; readonly earlier: boolean } {
+	const book = cashBook(c.invoices, [], { from, to }, dayOf);
+	const credits = usedCredits(c.invoices, (i, at) => {
+		const d = dayOf(at);
+		return d >= from && d <= to;
+	});
+	const net = book.totalIn - credits;
+	return { cents: net > 0n ? net : 0n, credits, earlier: book.rows.some((r) => r.invoice?.doc.date !== undefined && r.invoice.doc.date < from) };
+}
+
+/** The credit notes to customers marked used (each instalment by `when`), in euro cents, IVA included. */
+function usedCredits(invoices: readonly Invoice[], when: (i: Invoice, at: string) => boolean): bigint {
+	let sum = 0n;
+	for (const i of invoices) {
+		if (!i.credit || i.side !== "active" || i.doc.currency !== "EUR" || i.doc.integration) continue;
+		for (const r of i.instalments) if (r.paid !== undefined && r.extra !== true && r.amount !== undefined && when(i, r.paid.at)) sum += unitsToCents(r.amount < 0n ? -r.amount : r.amount);
+	}
+	return sum;
+}
+
 function collected(c: Pick<Client, "invoices">, from: string, to: string, dayOf: (at: string) => string): bigint {
-	return cashBook(c.invoices, [], { from, to }, dayOf).totalIn;
+	return collectedIn(c, from, to, dayOf).cents;
 }
 
 export type QuoteCount = { readonly count: number; readonly taxable: bigint };
@@ -210,7 +251,11 @@ export type ClientFigures = {
 	readonly lastYear: Invoiced;
 	/** Any invoice ever, to say «nessuna fattura». */
 	readonly everInvoiced: number;
+	/** Money in this year, IVA included, credit notes used aside; `collectedEarlier`: some of it for invoices of earlier years. */
 	readonly collectedThisYear: bigint;
+	readonly collectedEarlier: boolean;
+	/** Credit notes dated this year and marked used: what they closed is not money in. */
+	readonly settledByCredit: bigint;
 	/** Open on the invoices issued, less the open credit notes, never below zero. */
 	readonly outstanding: bigint;
 	/** Instalments past their (working) due day, open, less the open credit notes (the oldest first): never above the outstanding. */
@@ -322,13 +367,19 @@ export function figuresOf(c: Client, rates: readonly RateRule[], today: string, 
 	const activity = lastActivity(c, dayOf);
 	const next = openFollowUps(c.card)[0];
 	const outstanding = open > credits ? open - credits : 0n;
+	const cash = collectedIn(c, `${year}-01-01`, today, dayOf);
 	return {
 		year,
 		thisYear: invoicedIn(c, `${year}-01-01`, `${year}-12-31`),
 		samePeriodLastYear: invoicedIn(c, `${year - 1}-01-01`, sameDayLastYear(today)),
 		lastYear: invoicedIn(c, `${year - 1}-01-01`, `${year - 1}-12-31`),
 		everInvoiced,
-		collectedThisYear: collected(c, `${year}-01-01`, today, dayOf),
+		collectedThisYear: cash.cents,
+		collectedEarlier: cash.earlier,
+		settledByCredit: usedCredits(
+			c.invoices.filter((i) => i.doc.date !== undefined && i.doc.date.startsWith(`${year}-`)),
+			() => true,
+		),
 		outstanding,
 		overdue: overdue > outstanding ? outstanding : overdue,
 		overdueDays,

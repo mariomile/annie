@@ -2,7 +2,7 @@ import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { nextRun, parseCron } from "../cron.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { addDays, todayIn } from "../italian-calendar.ts";
-import { ScheduleError, type ScheduleStore, threadPerson } from "../schedules.ts";
+import { ScheduleError, type ScheduleStore, schedulePerson, threadPerson } from "../schedules.ts";
 
 /** `whoIs`: the person a conversation is with («telegram:123»), so a reminder acts for them (memory.ts Participants). */
 type ScheduleToolsOptions = { readonly store: ScheduleStore; readonly defaultTimeZone: string; readonly now?: () => Date; readonly whoIs?: (thread: { channel: string; threadId: string }) => string | undefined };
@@ -31,8 +31,11 @@ export type Reminder = { readonly id: string; readonly at: string; readonly call
 /** What `cancel` did: removed it, it was gone already (fired, or deleted), or the task with that id is not this reminder. */
 export type Cancelled = "removed" | "gone" | "not_ours";
 
-/** The key that marks a seam's reminder: what `cancel` accepts. */
-export const REMINDER_KEY = "follow_up";
+/** The key of a ricontatto's reminder: «follow_up:FU-0001», one per ricontatto, so a call run again never finds a reminder naming another one. What `cancel` accepts. */
+export function reminderKey(followUp: string): string {
+	return `follow_up:${followUp}`;
+}
+const REMINDER_CALL = /:follow_up:FU-\d{4,6}$/;
 
 /**
  * The tasks programmati for another tool (a client's ricontatto): the same store as
@@ -40,12 +43,12 @@ export const REMINDER_KEY = "follow_up";
  * one-off task for the person of the conversation, keyed by the calling tool's callId and `key`,
  * so a call run again finds the one it made instead of making another; refused when the
  * conversation has no single person (a group, someone unknown). `cancel` removes one only when it
- * is the reminder made with `call`. `briefActive`: whether a brief del mattino is on.
+ * is the reminder made with `call`. `briefActive`: whether the person of this conversation has a brief del mattino on.
  */
 export type ReminderSeam = {
 	readonly remind: (input: ReminderInput, key: string, ctx: ToolContext) => Promise<Reminder | { readonly problem: string }>;
 	readonly cancel: (id: string, call: string) => Promise<Cancelled>;
-	readonly briefActive: () => Promise<boolean>;
+	readonly briefActive: (ctx: ToolContext) => Promise<boolean>;
 };
 
 /**
@@ -99,11 +102,16 @@ export function schedulesOf(options: ScheduleToolsOptions): { readonly tools: An
 			const s = await store.get(id).catch(() => undefined);
 			if (s === undefined) return "gone";
 			// Only a reminder of this seam, and only the one made with that call: never a task of the person's.
-			if (!call.endsWith(`:${REMINDER_KEY}`) || s.callId !== call) return "not_ours";
+			if (!REMINDER_CALL.test(call) || s.callId !== call) return "not_ours";
 			return (await store.remove(id)) ? "removed" : "gone";
 		},
-		async briefActive() {
-			return (await store.list()).some((s) => s.kind === "brief" && s.nextRunAt !== null);
+		async briefActive(ctx) {
+			const person = ctx.thread === undefined ? undefined : personOf(ctx.thread);
+			if (person === undefined) return false;
+			return (await store.list()).some((s) => {
+				const owner = s.kind === "brief" && s.nextRunAt !== null ? schedulePerson(s) : undefined;
+				return owner !== undefined && owner.channel === person.channel && owner.userId === person.userId;
+			});
 		},
 	};
 	const tools: AnnieTool[] = [

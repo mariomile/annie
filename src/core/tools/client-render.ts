@@ -13,7 +13,7 @@ import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { hoursText } from "../durations.ts";
 import { euros, n1 } from "../format-words.ts";
 import { daysBetween } from "../italian-calendar.ts";
-import { capitalized, dayMonth, italianDate, italianDay, withNearDate, withPercent, withShortDate } from "../italian-format.ts";
+import { capitalized, dayMonth, italianDate, italianDay, withDate, withNearDate, withPercent, withShortDate } from "../italian-format.ts";
 import { fence } from "../untrusted.ts";
 
 /** Rows listed in a ranking or a list; the rest are counted. */
@@ -46,6 +46,14 @@ export function counted(n: number, none: string, one: string, many: string): str
 const ACTIVITY: Readonly<Record<Activity, string>> = { fattura: "una fattura", preventivo: "un preventivo", ore: "ore di lavoro", contatto: "un contatto" };
 
 const CHANNEL_WORDS: Readonly<Record<string, string>> = { telefono: "preferisce il telefono", whatsapp: "preferisce WhatsApp", email: "preferisce l'email", pec: "preferisce la PEC", telegram: "preferisce Telegram", "di persona": "preferisce di persona" };
+
+const CHANNEL_NAMES: Readonly<Record<string, string>> = { telefono: "Telefono", whatsapp: "WhatsApp", email: "Email", pec: "PEC", telegram: "Telegram", "di persona": "Di persona" };
+
+/** «dal 1º maggio» this year, «dal 1º marzo 2025» another. */
+export function sinceDay(date: string, today: string): string {
+	const full = withDate("dal", date);
+	return date.slice(0, 4) === today.slice(0, 4) ? full.replace(/ \d{4}$/, "") : full;
+}
 
 /** A referente in a line, to be fenced: «Marco, titolare · tel. 333 1234567 · marco@rossi.it · preferisce WhatsApp». */
 export function contactLine(c: ClientContact): string {
@@ -85,18 +93,20 @@ function referentLines(card: ClientCard): string[] {
 	return [];
 }
 
-/** «(imponibile, IVA inclusa 3.660,00 €)», or the total said as such when the invoices do not give the imponibile. */
-function basis(i: Invoiced): string {
+/** «3.000,00 € di imponibile (3.660,00 € con IVA)», or the total said as such when the invoices do not give the imponibile. */
+function invoicedWords(i: Invoiced): string {
 	const all = i.count + i.credits;
-	if (all > 0 && i.estimated === all) return "(totale documento: le fatture non riportano l'imponibile)";
-	return `(imponibile${i.total !== i.taxable ? `, IVA inclusa ${euros(i.total)}` : ""})`;
+	if (all > 0 && i.estimated === all) return `${euros(i.total)} (totale documento: le fatture non riportano l'imponibile)`;
+	return `${euros(i.taxable)} di imponibile${i.total !== i.taxable ? ` (${euros(i.total)} con IVA)` : ""}`;
 }
 
-/** The first line, from what there is: «Nel 2026: 3.000,00 € fatturati (imponibile), tutto incassato.», «Nessuna fattura; 1 preventivo aperto da 500,00 €.» */
+/** The first line, from what there is: «Nel 2026 hai fatturato 3.000,00 € di imponibile (3.660,00 € con IVA); tutto incassato.», «Nessuna fattura; 1 preventivo aperto da 500,00 €.» */
 export function headline(f: ClientFigures): { readonly text: string; readonly quotes: boolean } {
 	const t = f.thisYear;
 	const owed = f.outstanding > 0n ? `${euros(f.outstanding)} da incassare${f.overdue > 0n ? `, di cui ${euros(f.overdue)} scaduti` : ""}` : undefined;
-	if (t.count + t.credits > 0) return { text: `Nel ${f.year}: ${euros(t.taxable)} fatturati ${basis(t)}, ${owed ?? "tutto incassato"}.`, quotes: false };
+	// What a credit note closed is not money in: never «tutto incassato» then.
+	const settled = f.settledByCredit > 0n ? `niente da incassare, ma ${euros(f.settledByCredit)} sono stati chiusi con note di credito, non incassati` : "tutto incassato";
+	if (t.count + t.credits > 0) return { text: `Nel ${f.year} hai fatturato ${invoicedWords(t)}; ${owed ?? settled}.`, quotes: false };
 	const parts = [f.everInvoiced === 0 ? "Nessuna fattura" : `Nessuna fattura nel ${f.year}`];
 	if (owed !== undefined) parts.push(owed);
 	const open = f.quotes.open;
@@ -121,14 +131,14 @@ export function figureLines(f: ClientFigures, today: string, o: { readonly quote
 	if (o.quotesSaid !== true && f.quotes.open.count > 0) lines.push(`Preventivi aperti: ${f.quotes.open.count}, per ${euros(f.quotes.open.taxable)} di imponibile.`);
 	if (f.unbilled.minutes > 0) {
 		const amount = f.unbilled.unpriced > 0 ? (f.unbilled.amount > 0n ? `${euros(f.unbilled.amount)} più ${n1(f.unbilled.unpriced, "1 voce", "# voci")} senza tariffa` : "senza tariffa") : euros(f.unbilled.amount);
-		lines.push(`Ore da fatturare: ${hoursText(f.unbilled.minutes)}, ${amount}.`);
+		lines.push(`Lavoro da fatturare: ${hoursText(f.unbilled.minutes)}, ${amount}.`);
 	}
 	if (o.followUps !== false && f.nextFollowUp !== undefined) lines.push(`Prossimo ricontatto: ${nearDay(f.nextFollowUp.date, today)}${f.nextFollowUp.date < today ? ", in ritardo" : ""}.`);
 	if (f.lastActivity !== undefined) lines.push(`Ultima attività: ${nearDay(f.lastActivity.date, today)}, ${ACTIVITY[f.lastActivity.what]}.`);
-	if (f.collectedThisYear > 0n) lines.push(`Incassato nel ${f.year}: ${euros(f.collectedThisYear)}.`);
+	if (f.collectedThisYear > 0n) lines.push(`Incassato nel ${f.year}, IVA inclusa: ${euros(f.collectedThisYear)}${f.collectedEarlier ? ", anche per fatture degli anni prima" : ""}.`);
 	if (f.everInvoiced > 0) {
 		const p = f.samePeriodLastYear;
-		lines.push(`Nello stesso periodo del ${f.year - 1}: ${p.count + p.credits === 0 ? "nessuna fattura" : `${euros(p.taxable)} fatturati`}.`);
+		lines.push(`Nello stesso periodo del ${f.year - 1}: ${p.count + p.credits === 0 ? "nessuna fattura" : `${euros(p.taxable)} di imponibile`}.`);
 	}
 	if (f.thisYear.credits > 0) lines.push(`Note di credito nel ${f.year}: ${f.thisYear.credits}, per ${euros(f.thisYear.creditTaxable)} di imponibile, già scalate.`);
 	const q = [quoteWords(f.quotes.accepted, "accettato", "accettati"), quoteWords(f.quotes.expired, "scaduto", "scaduti"), quoteWords(f.quotes.declined, "rifiutato", "rifiutati")].filter((x) => x !== undefined);
@@ -146,10 +156,23 @@ export function showAnswer(client: Client, f: ClientFigures, today: string, o: {
 	return [head.text, ...(o.notes ?? []), ...figureLines(f, today, { quotesSaid: head.quotes }), card, fenced([...cardLines(client, today), ...(o.inside ?? [])].join("\n"))].join("\n");
 }
 
-/** One client for another agente: the name and the figures, never referenti, recapiti, address, notes nor ricontatti. */
-export function agentShowAnswer(client: Client, f: ClientFigures, today: string): string {
-	const head = headline(f);
-	return [head.text, ...figureLines(f, today, { quotesSaid: head.quotes, followUps: false }), "Referenti, recapiti, indirizzo, note e ricontatti restano alla persona per cui lavori: a un altro agente do solo il nome e i numeri.", fenced(`Cliente: ${client.name}`)].join("\n");
+/** The ranking for another agente: totals, counts and shares only, never a client's name. */
+export function topAgentAnswer(rows: readonly Ranked[], total: bigint, span: string, by: "invoiced" | "collected"): string {
+	if (rows.length === 0) return `${capitalized(span)} non trovo fatture emesse${by === "collected" ? " segnate come pagate" : ""}.`;
+	const top3 = rows.slice(0, 3).reduce((n, r) => n + r.cents, 0n);
+	const share = (part: bigint) => (total === 0n ? "0" : String((part * 100n + total / 2n) / total));
+	const clients = n1(rows.length, "1 cliente", "# clienti");
+	const lines = [by === "invoiced" ? `${capitalized(span)} sono stati fatturati ${euros(total)} di imponibile a ${clients}.` : `${capitalized(span)} sono stati incassati ${euros(total)}, IVA inclusa, da ${clients}.`];
+	lines.push(`Il primo cliente vale ${withPercent("il", share((rows[0] as Ranked).cents))} del totale${rows.length > 3 ? `, i primi tre ${withPercent("il", share(top3))}` : ""}.`);
+	lines.push("A un altro agente do solo totali, numeri e quote, non i nomi dei clienti.");
+	return lines.join("\n");
+}
+
+/** The clients not heard from for another agente: how many and their imponibile in all, never names nor ricontatti. */
+export function dormantAgentAnswer(list: readonly Dormant[], days: number): string {
+	if (list.length === 0) return `Nessun cliente fatturato negli ultimi 2 anni è fermo da più di ${days} giorni.`;
+	const sum = list.reduce((n, d) => n + d.invoiced, 0n);
+	return [`Clienti fatturati negli ultimi 2 anni e fermi da più di ${days} giorni: ${list.length}, per ${euros(sum)} di imponibile in 2 anni.`, "A un altro agente do solo totali e numeri, non i nomi dei clienti né i ricontatti."].join("\n");
 }
 
 /** The ricontatto of the day, as its reminder reads it: who to call and how, what to do, what is overdue and the open quotes. */
@@ -160,7 +183,7 @@ export function reminderAnswer(client: Client, fu: FollowUp, f: ClientFigures, t
 	if (fu.text !== undefined) inside.push(`Da fare: ${fu.text}`);
 	if (f.overdue > 0n) inside.push(`Scaduti: ${euros(f.overdue)} (${n1(f.overdueCount, "1 rata", "# rate")}, la più vecchia da ${n1(f.overdueDays, "1 giorno", "# giorni")})`);
 	if (f.quotes.open.count > 0) inside.push(`Preventivi aperti: ${f.quotes.open.count}, per ${euros(f.quotes.open.taxable)} di imponibile`);
-	return [head, fenced(inside.join("\n")), "Ricordalo a chi ti scrive in una o due righe, con chi sentire e come. Quando l'ha sentito, segnalo come fatto."].join("\n");
+	return [head, fenced(inside.join("\n")), "Ricordalo a chi ti scrive in una o due righe, con chi sentire e come: quando l'ha sentito, lo segni come fatto; se vuole, lo sposti."].join("\n");
 }
 
 /** The ranking: «Negli ultimi 12 mesi hai fatturato X a N clienti», one fence with the rows, the concentration. `span`: «negli ultimi 12 mesi», «nel 2026». */
@@ -168,7 +191,7 @@ export function topAnswer(rows: readonly Ranked[], total: bigint, span: string, 
 	if (rows.length === 0) return `${capitalized(span)} non trovo fatture emesse${by === "collected" ? " segnate come pagate" : ""}: nessun cliente da mettere in fila.`;
 	const shown = rows.slice(0, MAX_ROWS);
 	const clients = n1(rows.length, "1 cliente", "# clienti");
-	const lines = [by === "invoiced" ? `${capitalized(span)} hai fatturato ${euros(total)} a ${clients} (imponibile, IVA esclusa).` : `${capitalized(span)} hai incassato ${euros(total)} da ${clients}.`];
+	const lines = [by === "invoiced" ? `${capitalized(span)} hai fatturato ${euros(total)} di imponibile a ${clients}.` : `${capitalized(span)} hai incassato ${euros(total)}, IVA inclusa, da ${clients}.`];
 	const top = rows[0] as Ranked;
 	const body = shown.map((r, i) => `${i + 1}. ${r.client.name}: ${euros(r.cents)} (${r.percent}%)`);
 	if (rows.length > shown.length) body.push(`e altri ${rows.length - shown.length}`);
@@ -190,10 +213,10 @@ export function dormantAnswer(list: readonly Dormant[], days: number, today: str
 	const shown = rows.slice(0, MAX_ROWS);
 	const body = shown.map((d) => {
 		const extra = [d.openQuotes.count > 0 ? `${n1(d.openQuotes.count, "preventivo aperto", "# preventivi aperti")} da ${euros(d.openQuotes.taxable)}` : undefined, d.planned === undefined ? undefined : `ricontatto fissato per ${nearDay(d.planned.date, today)}`].filter((x) => x !== undefined);
-		return `• ${d.client.name}: fermo ${withNearDate("dal", d.last, today)} (${n1(d.days, "1 giorno", "# giorni")}), ${euros(d.invoiced)} in 2 anni${extra.length === 0 ? "" : `; ${extra.join("; ")}`}`;
+		return `• ${d.client.name}: fermo ${sinceDay(d.last, today)} (${n1(d.days, "1 giorno", "# giorni")}), ${euros(d.invoiced)} in 2 anni${extra.length === 0 ? "" : `; ${extra.join("; ")}`}`;
 	});
 	if (rows.length > shown.length) body.push(`e altri ${rows.length - shown.length}`);
-	const lines = [`Clienti fatturati negli ultimi 2 anni che non senti da più di ${days} giorni: ${rows.length} (imponibile degli ultimi 2 anni).`, fenced(body.join("\n"))];
+	const lines = [`Clienti fatturati negli ultimi 2 anni che non senti da più di ${days} giorni: ${rows.length}. Accanto a ognuno, l'imponibile dei 2 anni.`, fenced(body.join("\n"))];
 	if (aside !== undefined) lines.push(aside);
 	lines.push("Chiedi a chi ti scrive se vuole ricordarsi di ricontattarne qualcuno.");
 	return lines.join("\n");
@@ -225,7 +248,7 @@ export function agendaAnswer(due: readonly Due[], today: string, until: string):
 	const shown = due.slice(0, MAX_ROWS);
 	const body = shown.map((d) => `• ${nearDay(d.followUp.date, today)}${d.followUp.date < today ? " (in ritardo)" : ""}: ${d.client.name}${d.followUp.text === undefined ? "" : ` — ${d.followUp.text}`} (${d.followUp.id})`);
 	if (due.length > shown.length) body.push(`e altri ${due.length - shown.length}`);
-	return [`Da ricontattare ${span}: ${due.length}${late > 0 ? `, di cui ${late} in ritardo` : ""}.`, fenced(body.join("\n"))].join("\n");
+	return [`${n1(due.length, "Un ricontatto da fare", "# ricontatti da fare")} ${span}${late > 0 ? `, di cui ${late} in ritardo` : ""}.`, fenced(body.join("\n"))].join("\n");
 }
 
 /** The clients in alphabetical order, with what a filter asked. */
@@ -275,7 +298,7 @@ export function clientsCsv(rows: readonly { readonly client: Client; readonly fi
 		`Fatturato ${year} totale`,
 		`Fatturato ${year - 1} imponibile`,
 		`Fatturato ${year - 1} totale`,
-		`Incassato ${year}`,
+		`Incassato ${year} (IVA inclusa)`,
 		"Da incassare",
 		"Scaduto",
 		"Ultimo sollecito",
@@ -299,7 +322,7 @@ export function clientsCsv(rows: readonly { readonly client: Client; readonly fi
 			contacts.flatMap((c) => (c.name === undefined ? [] : [c.role === undefined ? c.name : `${c.name} (${c.role})`])).join(", "),
 			contacts.flatMap((c) => (c.phone === undefined ? [] : [c.phone])).join(", "),
 			contacts.flatMap((c) => (c.email === undefined ? [] : [c.email])).join(", "),
-			[...new Set(contacts.flatMap((c) => (c.channel === undefined ? [] : [c.channel])))].join(", "),
+			[...new Set(contacts.flatMap((c) => (c.channel === undefined ? [] : [CHANNEL_NAMES[c.channel] ?? c.channel])))].join(", "),
 			card?.address ?? "",
 			csvCents(f.thisYear.taxable),
 			csvCents(f.thisYear.total),

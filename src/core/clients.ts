@@ -63,13 +63,12 @@ export function clientCallReads(args: Record<string, unknown>): boolean {
 }
 
 /**
- * What another agente may ask: the figures, never the person's data. The ranking, the clients not
- * heard from, the brief's line, and one client's card cut to its name and figures (the tool cuts
- * it); never the list of names with labels, the agenda of ricontatti, nor a write.
+ * What another agente may ask: totals, counts and shares, never the person's data nor a client's
+ * name. The ranking and the clients not heard from (the tool cuts them to numbers); never a card,
+ * a list, the brief's line, the agenda of ricontatti, nor a write.
  */
 export function clientAgentReads(args: Record<string, unknown>): boolean {
-	if (args.op === "top" || args.op === "dormant" || args.op === "show") return true;
-	return args.op === "list" && args.compact === true;
+	return args.op === "top" || args.op === "dormant";
 }
 
 export const CHANNELS = ["telefono", "whatsapp", "email", "pec", "telegram", "di persona"] as const;

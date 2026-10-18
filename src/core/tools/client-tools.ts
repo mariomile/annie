@@ -1,48 +1,44 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
-import { agendaOf, briefFollowUps, type Client, clientsOf, dormantClients, figuresOf, invoicedIn, lookalikes, newConcentration, openFollowUps, ranked } from "../client-sums.ts";
+import { agendaOf, briefFollowUps, type Client, clientsOf, dormantClients, figuresOf, invoicedEver, lookalikes, newConcentration, openFollowUps, ranked } from "../client-sums.ts";
 import { CLIENTS_BROKEN, type ClientState, type ClientStore } from "../client-store.ts";
 import {
 	CARD_ID,
 	CLIENT_LIMITS,
 	type ClientCard,
 	ClientError,
-	type ContactEntry,
 	cardCf,
 	cardId,
 	cardKeys,
 	clientAgentReads,
 	DORMANT_DAYS,
-	FOLLOW_UP_HOUR,
 	FOLLOW_UP_ID,
-	FOLLOW_UP_MAX_DAYS,
-	type FollowUp,
-	followUpId,
 	goodVat,
 	tagOf,
 	vatKey,
 } from "../clients.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
-import { euros } from "../format-words.ts";
+import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn, weekdayOf } from "../italian-calendar.ts";
-import { capitalized, withNearDate } from "../italian-format.ts";
 import type { Marker } from "../marker.ts";
-import { spellingKey } from "../name-keys.ts";
+import { sameBusiness, spellingKey } from "../name-keys.ts";
 import { type Period, PeriodError, readPeriod } from "../periods.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { resolveClient } from "../timesheet-clients.ts";
 import type { RateRule } from "../timesheet.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { clash, EDIT_FIELDS, edited, readEdits, withOptional } from "./client-input.ts";
+import { type ClientEnv, followUpOps } from "./client-follow-ups.ts";
+import { EDIT_FIELDS, edited, readEdits } from "./client-input.ts";
 import { merged, mergeRefusal } from "./client-merge.ts";
-import { agendaAnswer, agentShowAnswer, briefAnswer, cardLines, clientsCsv, dormantAnswer, fenced, listAnswer, mergeLines, nearDay, reminderAnswer, showAnswer, topAnswer } from "./client-render.ts";
-import { readFutureDay, workingDayFrom } from "./day-input.ts";
+import { agendaAnswer, briefAnswer, cardLines, clientsCsv, dormantAgentAnswer, dormantAnswer, fenced, listAnswer, mergeLines, nearDay, reminderAnswer, showAnswer, topAgentAnswer, topAnswer } from "./client-render.ts";
 import { line, textOf } from "./field-input.ts";
 import { isProblem } from "./quote-input.ts";
-import { type Cancelled, REMINDER_KEY, type Reminder, type ReminderSeam } from "./schedule-tools.ts";
+import type { ReminderSeam } from "./schedule-tools.ts";
+
+export { reminderInstruction } from "./client-follow-ups.ts";
 
 const CLIENT_OPS = ["show", "list", "top", "dormant", "agenda", "upsert", "note", "follow_up", "postpone", "cancel_follow_up", "done", "merge", "remove", "export"] as const;
 type Op = (typeof CLIENT_OPS)[number];
@@ -75,14 +71,13 @@ const DESCRIPTION = [
 	"For a ricontatto use follow_up, not schedule_create: it reminds the person on that day by itself. list with compact true: the brief's line. Repeat amounts, dates and shares as given, never compute them yourself.",
 ].join(" ");
 
-/** A reminder made, or why there is none. */
-type Reminded = Reminder | { readonly problem: string };
+/**
+ * Who a person names: one client, the close candidates, or none. `form`: no name is the one said,
+ * but one client has the same name but for the legal form («Acme» for «Acme Srl»), taken as exact.
+ */
+type Found = { readonly kind: "exact"; readonly client: Client; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly Client[] } | { readonly kind: "none" };
 
-/** A ricontatto's number moved under the call (another call took it): the reminder made for it is taken back and the write tried again. */
-class Moved extends Error {}
-
-/** Who a person names: one client, the close candidates, or none. */
-type Found = { readonly kind: "exact"; readonly client: Client; readonly respelled: boolean } | { readonly kind: "close"; readonly candidates: readonly Client[] } | { readonly kind: "none" };
+const FORM_NOTE = "Nessuno si chiama esattamente così: ho preso il cliente con lo stesso nome a meno della forma societaria, nel riquadro.";
 
 function find(clients: readonly Client[], said: string): Found {
 	const t = said.trim();
@@ -116,7 +111,13 @@ function find(clients: readonly Client[], said: string): Found {
 		const c = owners.get(spellingKey(r.name)) as Client;
 		return { kind: "exact", client: c, respelled: c.name !== t };
 	}
-	if (r.kind === "close") return { kind: "close", candidates: [...new Set(r.candidates.map((n) => owners.get(spellingKey(n)) as Client))] };
+	if (r.kind === "close") {
+		const candidates = [...new Set(r.candidates.map((n) => owners.get(spellingKey(n)) as Client))];
+		// The same business but for the legal form: the one client meant; a name only contained stays close.
+		const same = candidates.filter((c) => [c.name, ...c.names].some((n) => sameBusiness(t, n)));
+		if (same.length === 1) return { kind: "exact", client: same[0] as Client, respelled: true, form: true };
+		return { kind: "close", candidates };
+	}
 	return { kind: "none" };
 }
 
@@ -127,11 +128,6 @@ function meant(candidates: readonly Client[], more = ""): string {
 		fenced(candidates.map((c) => `• ${c.name}`).join("\n")),
 		`Chiedi a chi ti scrive ${candidates.length === 1 ? "se è lui" : "quale"}, e ripeti con il nome scritto come qui.${more}`,
 	].join("\n");
-}
-
-/** The task's instruction: only the ricontatto's id, never a name or a note (those are read, fenced, when it runs). */
-export function reminderInstruction(id: string): string {
-	return `Promemoria dei clienti: c'è un ricontatto da fare. Leggilo con lo strumento clients, operazione show e cliente ${id}, e fai come dice la risposta.`;
 }
 
 /** I clienti (clients.ts): the cards kept here; everything else read from the registers, never written. Today is read once per call. */
@@ -150,6 +146,18 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		});
 	};
 	const text = (max: number, description: string) => ({ type: "string", maxLength: max, description });
+	const env: ClientEnv = {
+		store,
+		...(options.reminders === undefined ? {} : { reminders: options.reminders }),
+		marker,
+		audit,
+		cards,
+		clients: async (ctx) => (await load(ctx)).clients,
+		target,
+		newCard,
+		cardNamed,
+	};
+	const ops = followUpOps(env);
 	const list = (description: string) => ({ anyOf: [{ type: "string", maxLength: CLIENT_LIMITS.name }, { type: "array", maxItems: 20, items: { type: "string", maxLength: CLIENT_LIMITS.name } }], description });
 	return [
 		{
@@ -199,19 +207,19 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 				// Another agente's request is not the person's word: the figures only, nothing else.
 				const agent = ctx.thread?.channel === AGENT_CHANNEL;
 				if (agent && !clientAgentReads(args)) {
-					return "Errore: in una richiesta di un altro agente non cambio le schede dei clienti, non esporto e non do elenchi di nomi o di ricontatti: lo fa chi ti scrive, nella sua conversazione.";
+					return "Errore: a un altro agente non mostro le schede dei clienti, non do elenchi di nomi o di ricontatti, non cambio niente e non esporto: posso dare solo totali, numeri e quote (i clienti migliori, quelli fermi da tempo). Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}
 				const day = todayIn(timeZone, now());
 				try {
 					switch (op) {
 						case "show":
-							return await show(args, ctx, day, agent);
+							return await show(args, ctx, day);
 						case "list":
 							return args.compact === true ? await brief(ctx, day) : await alphabetical(args, ctx, day);
 						case "top":
-							return await top(args, ctx, day);
+							return await top(args, ctx, day, agent);
 						case "dormant":
-							return await dormant(args, ctx, day);
+							return await dormant(args, ctx, day, agent);
 						case "agenda":
 							return await agenda(args, ctx, day);
 						case "upsert":
@@ -219,13 +227,13 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 						case "note":
 							return await note(args, ctx, day);
 						case "follow_up":
-							return await followUp(args, ctx, day);
+							return await ops.followUp(args, ctx, day);
 						case "postpone":
-							return await postpone(args, ctx, day);
+							return await ops.postpone(args, ctx, day);
 						case "cancel_follow_up":
-							return await cancelFollowUp(args, ctx, day);
+							return await ops.cancelFollowUp(args, ctx, day);
 						case "done":
-							return await done(args, ctx, day);
+							return await ops.done(args, ctx, day);
 						case "merge":
 							return await merge(args, ctx, day);
 						case "remove":
@@ -272,34 +280,36 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		return typeof args.client === "string" && args.client.trim() !== "" ? args.client.trim().slice(0, CLIENT_LIMITS.name) : undefined;
 	}
 
-	async function show(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
+	async function show(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 		const name = said(args);
 		if (name === undefined) return "Errore: dimmi di quale cliente.";
 		const { clients, rates, notes } = await load(ctx);
 		const found = find(clients, name);
+		// A reminder of a ricontatto taken away or merged: nothing to remind.
+		if (found.kind === "none" && FOLLOW_UP_ID.test(name.toUpperCase())) return "Questo ricontatto non c'è più (tolto o unito): non c'è niente da ricordare.";
 		if (found.kind === "none") return ["Non trovo questo cliente tra schede, fatture, preventivi e ore:", fenced(name), "Chiedi a chi ti scrive come si chiama nelle fatture, o la partita IVA."].join("\n");
 		if (found.kind === "close" && found.candidates.length > 1) return meant(found.candidates);
 		const client = found.kind === "exact" ? found.client : (found.candidates[0] as Client);
 		const figures = figuresOf(client, rates, day, dayOf);
-		if (agent) return agentShowAnswer(client, figures, day);
 		const extra = [...notes];
 		const inside: string[] = [];
-		if (found.kind === "close") extra.push("Nessun cliente si chiama esattamente così: ho preso l'unico con un nome simile, quello nel riquadro. Se non è lui, chiedi a chi ti scrive quale.");
+		if (found.kind === "close") extra.push("Nessun cliente si chiama esattamente così: ho preso l'unico con un nome simile, quello nel riquadro. Chiedi a chi ti scrive se è lui.");
+		if (found.kind === "exact" && found.form === true) extra.push(FORM_NOTE);
 		const fu = FOLLOW_UP_ID.test(name.toUpperCase()) ? client.card?.followUps.find((f) => f.id === name.toUpperCase()) : undefined;
 		if (fu !== undefined && fu.done === undefined && fu.date <= day) return reminderAnswer(client, fu, figures, day);
 		if (fu?.done !== undefined) extra.push(`Il ricontatto ${fu.id} è già segnato come fatto: non serve ricordarlo.`);
 		else if (fu !== undefined) extra.push(`Il ricontatto ${fu.id} è fissato per ${nearDay(fu.date, day)}: oggi non c'è da ricontattare.`);
 		const alike = lookalikes(clients, client);
 		if (alike.length > 0) {
-			extra.push(`${alike.length === 1 ? "C'è anche un altro cliente" : `Ci sono anche altri ${alike.length} clienti`} con un nome simile, nel riquadro con quanto hai fatturato: è lo stesso? Se sì, posso unirli.`);
+			extra.push(`${alike.length === 1 ? "C'è anche un altro cliente" : `Ci sono anche altri ${alike.length} clienti`} con un nome simile, nel riquadro con quanto hai fatturato in tutto: è lo stesso? Se sì, posso unirli.`);
 			for (const c of alike.slice(0, 3)) inside.push(`C'è anche: ${c.name}, ${everInvoiced(c)}`);
 		}
 		return showAnswer(client, figures, day, { notes: extra, inside });
 	}
 
 	function everInvoiced(c: Client): string {
-		const i = invoicedIn(c, "0000-01-01", "9999-12-31");
-		return i.count === 0 ? "nessuna fattura" : `${euros(i.taxable)} fatturati`;
+		const i = invoicedEver(c);
+		return i.count === 0 ? "nessuna fattura" : `${euros(i.taxable)} fatturati in tutto`;
 	}
 
 	function periodOf(value: unknown, day: string): { span: string; from: string; to: string } | string {
@@ -315,13 +325,14 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		return { span: period.in, from: period.from, to: period.to };
 	}
 
-	async function top(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
+	async function top(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
 		const period = periodOf(args.period, day);
 		if (typeof period === "string") return period;
 		if (args.by !== undefined && args.by !== "invoiced" && args.by !== "collected") return "Errore: si ordinano per fatturato o per incassato.";
 		const by = args.by === "collected" ? "collected" : "invoiced";
 		const { clients, notes } = await load(ctx);
 		const { rows, total, estimated } = ranked(clients, period.from, period.to, by, dayOf);
+		if (agent) return topAgentAnswer(rows, total, period.span, by);
 		const without = clients.filter((c) => c.card !== undefined && !rows.some((r) => r.client.key === c.key)).length;
 		const lines = [topAnswer(rows, total, period.span, by, estimated), ...notes];
 		if (without > 0 && rows.length > 0) lines.push(`${without === 1 ? "Un'altra scheda non ha" : `Altre ${without} schede non hanno`} ${by === "invoiced" ? "fatture" : "incassi"} nel periodo.`);
@@ -334,11 +345,12 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		return value;
 	}
 
-	async function dormant(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
+	async function dormant(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
 		const d = daysArg(args.days);
 		if (typeof d === "string") return d;
 		const days = d ?? DORMANT_DAYS;
 		const { clients, notes } = await load(ctx);
+		if (agent) return dormantAgentAnswer(dormantClients(clients, days, day, dayOf), days);
 		return [dormantAnswer(dormantClients(clients, days, day, dayOf), days, day, args.all === true), ...notes].join("\n");
 	}
 
@@ -376,10 +388,10 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 
 	/**
 	 * The client a write is for, as the timesheet records: the same name already used takes its
-	 * spelling. A name never seen starts a card ("create", "ask"). A name only close: written as
-	 * said with the close ones suggested ("create"); the one close client taken and said, or
-	 * «Intendi …?» for several ("ask": a note, a ricontatto, a contact); «Intendi …?» always
-	 * ("exact": a ricontatto moved or dropped, a merge, a removal).
+	 * spelling, and the same name but for the legal form is that client. A name never seen starts a
+	 * card ("create", "ask"). A name only close: written as said with the close ones suggested
+	 * ("create"); «Intendi …?» otherwise ("ask": a note, a ricontatto; "exact": a ricontatto moved
+	 * or dropped, a merge, a removal).
 	 */
 	function target(clients: readonly Client[], name: string, mode: "create" | "ask" | "exact"): { client?: Client; name: string; notes: string[]; inside: string[] } | string {
 		const found = find(clients, name);
@@ -387,16 +399,14 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 			const c = found.client;
 			// The person's own spelling wins over an invoice's; a name they already wrote keeps its spelling.
 			if (c.nameFrom === "file" && !/^(?:CL|FU)-\d+$/i.test(name) && spellingKey(name) === spellingKey(c.name)) return { client: c, name, notes: [], inside: [] };
+			if (found.form === true) return { client: c, name: c.name, notes: [FORM_NOTE], inside: [] };
 			const respelled = found.respelled && c.nameFrom === "person" && spellingKey(name) === spellingKey(c.name);
 			return { client: c, name: c.name, notes: respelled ? ["Ho usato il nome del cliente come lo hai già scritto, nel riquadro."] : [], inside: [] };
 		}
 		if (found.kind === "close") {
 			if (mode === "exact") return meant(found.candidates);
-			if (mode === "ask") {
-				if (found.candidates.length > 1) return meant(found.candidates, " Se è un cliente nuovo, crea prima la sua scheda.");
-				const c = found.candidates[0] as Client;
-				return { client: c, name: c.name, notes: ["Nessun cliente si chiama esattamente così: ho usato l'unico con un nome simile, nel riquadro. Se non è lui, dimmelo e lo correggo."], inside: [] };
-			}
+			// A name only contained in another («Rossi» in «Mario Rossi») is never taken for a write: asked.
+			if (mode === "ask") return meant(found.candidates, " Se è un cliente nuovo, crea prima la sua scheda.");
 			return { name, notes: ["Ho scritto il cliente come detto. Ci sono clienti con un nome simile, nel riquadro: chiedi a chi ti scrive se è uno di loro; se sì, unisco le due schede."], inside: ["Simili:", ...found.candidates.map((c) => `• ${c.name}`)] };
 		}
 		if (mode === "exact") return ["Errore: non trovo questo cliente tra le schede, le fatture, i preventivi e le ore:", fenced(name)].join("\n");
@@ -420,115 +430,10 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		};
 	}
 
-	/**
-	 * Under the lock, once per call: the card of `chosen` (by its id, or by the name it was made
-	 * with; a new one when it has none) changed by `change`. With `plan`, a new ricontatto too, its
-	 * reminder linked in the same write: the reminder is made first, for the number the ricontatto
-	 * will take; a write that fails (or finds that number taken) takes it back. `fresh`: false on a
-	 * call run again, which writes nothing.
-	 */
-	async function writeCard(
-		ctx: ToolContext,
-		chosen: { client?: Client; name: string },
-		change: (card: ClientCard, fu: FollowUp | undefined) => ClientCard | string,
-		plan?: { readonly date: string; readonly text?: string },
-	): Promise<{ readonly fresh: boolean; readonly created: boolean; readonly reminded?: Reminded }> {
-		for (let attempt = 0; ; attempt++) {
-			const book = store.read();
-			if (book.broken) throw new ClientError(CLIENTS_BROKEN);
-			if (book.calls.includes(ctx.callId)) return { fresh: false, created: false };
-			const number = book.nextFollowUp;
-			let reminded: Reminded | undefined;
-			if (plan !== undefined) reminded = options.reminders === undefined ? { problem: "i promemoria programmati non ci sono su questa istanza" } : await options.reminders.remind({ day: plan.date, hour: FOLLOW_UP_HOUR, instruction: reminderInstruction(followUpId(number)) }, REMINDER_KEY, ctx);
-			let created = false;
-			try {
-				const fresh = store.update(ctx.callId, (state) => {
-					if (plan !== undefined && state.nextFollowUp !== number) throw new Moved();
-					let card = (chosen.client?.card === undefined ? undefined : state.cards.find((c) => c.id === chosen.client?.card?.id)) ?? state.cards.find((c) => cardKeys(c).includes(spellingKey(chosen.name)));
-					let next = state;
-					if (card === undefined) {
-						if (state.cards.length >= CLIENT_LIMITS.cards) throw new ClientError(`ci sono già ${CLIENT_LIMITS.cards} schede di clienti, il massimo`);
-						card = newCard(state, chosen.name, chosen.client, ctx);
-						// A partita IVA another card has already: the name is not linked to it.
-						if (card.vat !== undefined && state.cards.some((c) => c.vat === card?.vat)) card = withOptional(card, "vat", null);
-						next = { ...state, nextCard: state.nextCard + 1, cards: [...state.cards, card] };
-						created = true;
-					}
-					const fu: FollowUp | undefined =
-						plan === undefined
-							? undefined
-							: {
-									id: followUpId(number),
-									date: plan.date,
-									...(plan.text === undefined ? {} : { text: plan.text }),
-									callId: ctx.callId,
-									...(reminded !== undefined && "id" in reminded ? { scheduleId: reminded.id, scheduleCall: reminded.call } : {}),
-									...marker(ctx),
-								};
-					const made = change(card, fu);
-					if (typeof made === "string") throw new ClientError(made);
-					const problem = clash(made, next.cards);
-					if (problem !== undefined) throw new ClientError(problem);
-					return { ...next, ...(plan === undefined ? {} : { nextFollowUp: number + 1 }), cards: next.cards.map((c) => (c.id === made.id ? made : c)) };
-				});
-				return { fresh, created: fresh && created, ...(reminded === undefined ? {} : { reminded }) };
-			} catch (error) {
-				// No ricontatto saved: no reminder left behind.
-				if (reminded !== undefined && "id" in reminded && options.reminders !== undefined) await options.reminders.cancel(reminded.id, reminded.call);
-				if (error instanceof Moved && attempt < 2) continue;
-				if (error instanceof Moved) throw new ClientError("le schede sono cambiate mentre salvavo: ripeti la richiesta");
-				throw error;
-			}
-		}
-	}
-
-	/** The card with one more ricontatto: past the cap the oldest done ones go first, never an open one. */
-	function withFollowUp(card: ClientCard, fu: FollowUp, by: Marker): ClientCard | string {
-		let followUps = [...card.followUps, fu];
-		while (followUps.length > CLIENT_LIMITS.followUps) {
-			const old = followUps.findIndex((f) => f.done !== undefined);
-			if (old < 0) return `la scheda ha già ${CLIENT_LIMITS.followUps} ricontatti aperti: segnane qualcuno come fatto`;
-			followUps = followUps.filter((_, i) => i !== old);
-		}
-		return { ...card, followUps, edited: by };
-	}
-
 	/** The card a call wrote, found again by the name it was given. */
 	function cardNamed(name: string, client: Client | undefined): ClientCard | undefined {
 		const all = cards();
 		return (client?.card === undefined ? undefined : all.find((c) => c.id === client.card?.id)) ?? all.find((c) => cardKeys(c).includes(spellingKey(name)));
-	}
-
-	/** The day of a ricontatto as said: from today on, at most two years ahead, a day to come off work moved to the next working one. */
-	function plannedDay(value: unknown, day: string): { date: string; moved?: string } | string {
-		if (typeof value !== "string" || value.trim() === "") return "Errore: dimmi quando ricontattarlo, per esempio «tra due settimane» o «il 3 novembre».";
-		const date = readFutureDay(value.slice(0, 60), day);
-		if (date === undefined) return ["Errore: non capisco il giorno; dimmelo come «tra due settimane», «lunedì» o «3 novembre»:", fenced(value.slice(0, 60))].join("\n");
-		if (date < day) return "Errore: quel giorno è già passato; dimmi un giorno da oggi in poi.";
-		if (date > addDays(day, FOLLOW_UP_MAX_DAYS)) return "Errore: un ricontatto si fissa al più due anni avanti.";
-		if (date === day) return { date };
-		const working = workingDayFrom(date);
-		if (working.why === undefined) return { date };
-		return { date: working.date, moved: `${capitalized(withNearDate("il", date, day))} ${working.why}, lo sposto a ${nearDay(working.date, day)}.` };
-	}
-
-	/** What the person hears of a ricontatto's reminder: when it comes, or why it does not and where it shows instead. */
-	async function reminderLine(fu: FollowUp, reminded: Reminded | undefined, day: string): Promise<string> {
-		if (fu.scheduleId !== undefined) return `Te lo ricordo ${fu.date === day ? "tra poco" : `quel giorno alle ${FOLLOW_UP_HOUR}`} in questa conversazione.`;
-		const why = reminded !== undefined && "problem" in reminded ? `Non posso ricordartelo con un messaggio (${reminded.problem}).` : "Per questo ricontatto non c'è un promemoria.";
-		const brief = (await options.reminders?.briefActive().catch(() => false)) === true;
-		return `${why} ${brief ? "Lo vedrai nel brief del mattino di quel giorno, e" : "Lo trovi"} nella scheda e tra i ricontatti da fare.`;
-	}
-
-	function cancelWords(result: Cancelled | undefined): string {
-		if (result === "removed") return ", e ho tolto il suo promemoria";
-		if (result === "not_ours") return "; il task programmato che aveva non è più il suo, e non l'ho toccato";
-		return "";
-	}
-
-	async function cancelReminder(fu: FollowUp | undefined): Promise<Cancelled | undefined> {
-		if (fu?.scheduleId === undefined || options.reminders === undefined) return undefined;
-		return options.reminders.cancel(fu.scheduleId, fu.scheduleCall ?? "");
 	}
 
 	async function upsert(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -542,7 +447,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		const changing = EDIT_FIELDS.some((f) => args[f] !== undefined);
 		const creating = chosen.client?.card === undefined && cardNamed(chosen.name, chosen.client) === undefined;
 		await ctx.step("apply", async () => {
-			await writeCard(ctx, chosen, (card) => (changing ? edited(card, edits, marker(ctx)) : card));
+			await ops.writeCard(ctx, chosen, (card) => (changing ? edited(card, edits, marker(ctx)) : card));
 			return true;
 		});
 		await audit(ctx, "upsert", 1);
@@ -570,7 +475,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		if (typeof chosen === "string") return chosen;
 		let dropped = false;
 		await ctx.step("apply", async () => {
-			await writeCard(ctx, chosen, (card) => {
+			await ops.writeCard(ctx, chosen, (card) => {
 				const notes = [...card.notes, { date: day, text: body, ...marker(ctx) }];
 				dropped = notes.length > CLIENT_LIMITS.notes;
 				return { ...card, notes: notes.slice(-CLIENT_LIMITS.notes), edited: marker(ctx) };
@@ -582,170 +487,6 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		const lines = [`Fatto, nota salvata${card === undefined ? "" : ` nella scheda ${card.id}`}.`, ...chosen.notes];
 		if (dropped) lines.push(`La scheda teneva già ${CLIENT_LIMITS.notes} note: ho tolto la più vecchia.`);
 		lines.push(fenced([`Cliente: ${card?.name ?? chosen.name}`, `Nota: ${body}`, ...chosen.inside].join("\n")));
-		return lines.join("\n");
-	}
-
-	function followUpText(value: unknown): string | undefined | { problem: string } {
-		if (value === undefined || value === "") return undefined;
-		return line(value, CLIENT_LIMITS.followUpChars, "cosa fare");
-	}
-
-	async function followUp(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
-		const name = said(args);
-		if (name === undefined) return "Errore: dimmi quale cliente ricontattare.";
-		const planned = plannedDay(args.when, day);
-		if (typeof planned === "string") return planned;
-		const what = followUpText(args.text);
-		if (isProblem(what)) return `Errore: ${what.problem}.`;
-		const { clients } = await load(ctx);
-		const chosen = target(clients, name, "ask");
-		if (typeof chosen === "string") return chosen;
-		const by = marker(ctx);
-		const written = await writeCard(ctx, chosen, (card, fu) => withFollowUp(card, fu as FollowUp, by), { date: planned.date, ...(what === undefined ? {} : { text: what }) });
-		const card = cardNamed(chosen.name, chosen.client);
-		const fu = card?.followUps.find((f) => f.callId === ctx.callId);
-		if (card === undefined || fu === undefined) return "Errore: il ricontatto non risulta salvato: ripeti la richiesta.";
-		await audit(ctx, "follow_up", 1);
-		const lines = [...(planned.moved === undefined ? [] : [planned.moved]), `Ricontatto fissato per ${nearDay(fu.date, day)} (${fu.id}); ${written.created ? `ho creato la scheda ${card.id}` : `è nella scheda ${card.id}`}.`, ...chosen.notes];
-		lines.push(await reminderLine(fu, written.reminded, day));
-		lines.push(fenced([`Cliente: ${card.name}`, ...(fu.text === undefined ? [] : [`Da fare: ${fu.text}`]), ...chosen.inside].join("\n")));
-		return lines.join("\n");
-	}
-
-	/** The card and the ricontatto a call names: the id said, else the client's next open one. */
-	async function namedFollowUp(args: Record<string, unknown>, ctx: ToolContext): Promise<{ card: ClientCard; fu: FollowUp | undefined; wanted?: string } | string> {
-		const fuSaid = typeof args.follow_up === "string" && FOLLOW_UP_ID.test(args.follow_up.trim().toUpperCase()) ? args.follow_up.trim().toUpperCase() : undefined;
-		if (args.follow_up !== undefined && fuSaid === undefined) return "Errore: un ricontatto si indica con il suo numero, come FU-0001.";
-		const name = said(args) ?? fuSaid;
-		if (name === undefined) return "Errore: dimmi di quale cliente, o il numero del ricontatto.";
-		const { clients } = await load(ctx);
-		const chosen = target(clients, name, "exact");
-		if (typeof chosen === "string") return chosen;
-		const card = chosen.client?.card === undefined ? undefined : cards().find((c) => c.id === chosen.client?.card?.id);
-		if (card === undefined) return "Questo cliente non ha ricontatti: non ha ancora una scheda.";
-		const wanted = fuSaid ?? (FOLLOW_UP_ID.test(name.toUpperCase()) ? name.toUpperCase() : undefined);
-		const fu = wanted !== undefined ? card.followUps.find((f) => f.id === wanted) : openFollowUps(card)[0];
-		return { card, fu, ...(wanted === undefined ? {} : { wanted }) };
-	}
-
-	async function postpone(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
-		const planned = plannedDay(args.when, day);
-		if (typeof planned === "string") return planned;
-		const named = await namedFollowUp(args, ctx);
-		if (typeof named === "string") return named;
-		const { card } = named;
-		const again = store.read().calls.includes(ctx.callId);
-		const fu = again ? card.followUps.find((f) => f.id === named.fu?.id) : named.fu;
-		if (fu === undefined) return named.wanted === undefined ? "Questo cliente non ha ricontatti aperti da spostare." : "Errore: questo cliente non ha un ricontatto con quel numero.";
-		if (fu.done !== undefined) return `Il ricontatto ${fu.id} è già segnato come fatto: non lo sposto. Se c'è da risentirlo, fissane uno nuovo.`;
-		let reminded: Reminded | undefined;
-		if (!again) {
-			if (fu.date === planned.date) return `Il ricontatto ${fu.id} è già fissato per ${nearDay(fu.date, day)}.`;
-			reminded = options.reminders === undefined ? { problem: "i promemoria programmati non ci sono su questa istanza" } : await options.reminders.remind({ day: planned.date, hour: FOLLOW_UP_HOUR, instruction: reminderInstruction(fu.id) }, REMINDER_KEY, ctx);
-			const link = reminded !== undefined && "id" in reminded ? { scheduleId: reminded.id, scheduleCall: reminded.call } : {};
-			try {
-				store.update(ctx.callId, (state) => ({
-					...state,
-					cards: state.cards.map((c) =>
-						c.id !== card.id
-							? c
-							: {
-									...c,
-									followUps: c.followUps.map((f) => {
-										if (f.id !== fu.id || f.done !== undefined) return f;
-										const { scheduleId: _id, scheduleCall: _call, ...rest } = f;
-										return { ...rest, date: planned.date, ...link };
-									}),
-									edited: marker(ctx),
-								},
-					),
-				}));
-			} catch (error) {
-				if (reminded !== undefined && "id" in reminded && options.reminders !== undefined) await options.reminders.cancel(reminded.id, reminded.call);
-				throw error;
-			}
-			// The old reminder only once the ricontatto has its new one.
-			await cancelReminder(fu);
-			await audit(ctx, "postpone", 1);
-		}
-		const now = cards()
-			.find((c) => c.id === card.id)
-			?.followUps.find((f) => f.id === fu.id);
-		if (now === undefined) return "Errore: il ricontatto non risulta salvato: ripeti la richiesta.";
-		const lines = [...(planned.moved === undefined ? [] : [planned.moved]), `Ricontatto ${now.id} spostato a ${nearDay(now.date, day)}.`, await reminderLine(now, reminded, day)];
-		lines.push(fenced([`Cliente: ${card.name}`, ...(now.text === undefined ? [] : [`Da fare: ${now.text}`])].join("\n")));
-		return lines.join("\n");
-	}
-
-	async function cancelFollowUp(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
-		if (store.read().calls.includes(ctx.callId)) {
-			await audit(ctx, "cancel_follow_up", 1);
-			return "Fatto, il ricontatto è tolto, senza segnarlo come fatto.";
-		}
-		const named = await namedFollowUp(args, ctx);
-		if (typeof named === "string") return named;
-		const { card, fu } = named;
-		if (fu === undefined) return named.wanted === undefined ? "Questo cliente non ha ricontatti aperti da togliere." : "Errore: questo cliente non ha un ricontatto con quel numero.";
-		if (fu.done !== undefined) return `Il ricontatto ${fu.id} è già segnato come fatto: resta nella storia del cliente.`;
-		// The ricontatto first, then its reminder: a reminder never outlives what it reminds.
-		store.update(ctx.callId, (state) => ({ ...state, cards: state.cards.map((c) => (c.id !== card.id ? c : { ...c, followUps: c.followUps.filter((f) => f.id !== fu.id), edited: marker(ctx) })) }));
-		const cancelled = await cancelReminder(fu);
-		await audit(ctx, "cancel_follow_up", 1);
-		return [`Fatto, ho tolto il ricontatto ${fu.id} di ${nearDay(fu.date, day)}, senza segnarlo come fatto${cancelWords(cancelled)}.`, fenced([`Cliente: ${card.name}`, ...(fu.text === undefined ? [] : [`Era da fare: ${fu.text}`])].join("\n"))].join("\n");
-	}
-
-	async function done(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
-		const fuSaid = typeof args.follow_up === "string" && FOLLOW_UP_ID.test(args.follow_up.trim().toUpperCase()) ? args.follow_up.trim().toUpperCase() : undefined;
-		if (args.follow_up !== undefined && fuSaid === undefined) return "Errore: un ricontatto si indica con il suo numero, come FU-0001.";
-		const name = said(args) ?? fuSaid;
-		if (name === undefined) return "Errore: dimmi quale cliente hai sentito.";
-		let outcome: string | undefined;
-		if (args.note !== undefined && args.note !== "") {
-			const n = textOf(args.note, CLIENT_LIMITS.noteChars, "com'è andata");
-			if (isProblem(n)) return `Errore: ${n.problem}.`;
-			outcome = n;
-		}
-		const planned = args.when === undefined || args.when === "" ? undefined : plannedDay(args.when, day);
-		if (typeof planned === "string") return planned;
-		const { clients } = await load(ctx);
-		const wanted = fuSaid ?? (FOLLOW_UP_ID.test(name.toUpperCase()) ? name.toUpperCase() : undefined);
-		const chosen = target(clients, name, wanted !== undefined ? "exact" : "ask");
-		if (typeof chosen === "string") return chosen;
-		const before = chosen.client?.card === undefined ? undefined : cards().find((c) => c.id === chosen.client?.card?.id);
-		// A call run again finds the ricontatto it marked; otherwise the one named, or the next open one.
-		const mine = before?.followUps.find((f) => f.doneCall === ctx.callId);
-		const fu = mine ?? (wanted !== undefined ? before?.followUps.find((f) => f.id === wanted) : openFollowUps(before)[0]);
-		if (wanted !== undefined && fu === undefined) return "Errore: questo cliente non ha un ricontatto con quel numero.";
-		if (fu?.done !== undefined && mine === undefined) return `Il ricontatto ${fu.id} era già segnato come fatto.`;
-		const by = marker(ctx);
-		const written = await writeCard(
-			ctx,
-			chosen,
-			(card, next) => {
-				const entry: ContactEntry = { date: day, ...(outcome === undefined ? {} : { note: outcome }), ...(fu === undefined ? {} : { done: fu.id }), ...(next === undefined ? {} : { next: next.id }), ...by };
-				let c: ClientCard = { ...card, followUps: card.followUps.map((f) => (f.id === fu?.id && f.done === undefined ? { ...f, done: by, doneCall: ctx.callId } : f)), log: [...(card.log ?? []), entry].slice(-CLIENT_LIMITS.log), edited: by };
-				if (next !== undefined) {
-					const withNext = withFollowUp(c, next, by);
-					if (typeof withNext === "string") return withNext;
-					c = withNext;
-				}
-				return c;
-			},
-			planned === undefined ? undefined : { date: planned.date },
-		);
-		const cancelled = written.fresh ? await cancelReminder(fu) : undefined;
-		await audit(ctx, "done", 1);
-		const card = cardNamed(chosen.name, chosen.client);
-		if (card === undefined) return "Errore: il contatto non risulta salvato: ripeti la richiesta.";
-		const lines = [fu === undefined ? `Fatto: ho segnato che l'hai sentito oggi${written.created ? `, nella nuova scheda ${card.id}` : `, nella scheda ${card.id}`}.` : `Fatto: ricontatto ${fu.id} di ${nearDay(fu.date, day)} segnato come fatto${cancelWords(cancelled)}.`, ...chosen.notes];
-		const next = card.followUps.find((f) => f.callId === ctx.callId && f.done === undefined);
-		if (planned?.moved !== undefined) lines.push(planned.moved);
-		if (next !== undefined) lines.push(`Prossimo ricontatto fissato per ${nearDay(next.date, day)} (${next.id}).`, await reminderLine(next, written.reminded, day));
-		else {
-			const other = openFollowUps(card).filter((f) => f.id !== fu?.id)[0];
-			if (other !== undefined) lines.push(`Il prossimo è ${nearDay(other.date, day)} (${other.id}).`);
-		}
-		lines.push(fenced([`Cliente: ${card.name}`, ...(fu?.text === undefined ? [] : [`Era da fare: ${fu.text}`]), ...(outcome === undefined ? [] : [`Com'è andata: ${outcome}`])].join("\n")));
 		return lines.join("\n");
 	}
 
@@ -774,7 +515,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 			return [
 				"Unirei questi due clienti in una sola scheda (nel riquadro): i nomi, i referenti, le etichette, le note, i contatti e i ricontatti del primo passano al secondo, e il nome del primo resta come altro nome.",
 				"Fatture, preventivi e ore non cambiano. Chiedi conferma a chi ti scrive, poi ripeti la richiesta confermata.",
-				fenced(mergeLines(a, b, (c) => invoicedIn(c, "0000-01-01", "9999-12-31").taxable).join("\n")),
+				fenced(mergeLines(a, b, (c) => invoicedEver(c).taxable).join("\n")),
 			].join("\n");
 		}
 		await ctx.step("apply", async () => {
@@ -820,7 +561,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 
 	function removedText(exports: number, id?: string): string {
 		const lines = [`Fatto, ho tolto la scheda${id === undefined ? "" : ` ${id}`} con i tuoi dati: referenti, note, etichette, contatti e ricontatti, con i loro promemoria. Fatture, preventivi e ore restano nei loro registri: il cliente si vede ancora da lì, senza i tuoi dati.`];
-		if (exports > 0) lines.push(`Attenzione: ${n1x(exports)} in clienti/ ${exports === 1 ? "contiene" : "contengono"} ancora questi dati. Se non ${exports === 1 ? "ti serve, cancellalo" : "ti servono, cancellali"}.`);
+		if (exports > 0) lines.push(`Attenzione: ${n1(exports, "un file esportato", "# file esportati")} in clienti/ ${exports === 1 ? "contiene" : "contengono"} ancora questi dati. Se non ${exports === 1 ? "ti serve, cancellalo" : "ti servono, cancellali"}.`);
 		return lines.join("\n");
 	}
 
@@ -837,9 +578,4 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		await audit(ctx, "export", rows.length);
 		return [`Salvato ${written}: ${rows.length === 1 ? "un cliente" : `${rows.length} clienti`}, con fatturato (imponibile e totale), incassi, scaduto, preventivi aperti, ore da fatturare, ultima attività, prossimo ricontatto e i tuoi dati (separatore «;», si apre con Excel).`, "Mandalo con file_send se chi ti scrive lo vuole."].join("\n");
 	}
-}
-
-/** «un file esportato», «3 file esportati». */
-function n1x(n: number): string {
-	return n === 1 ? "un file esportato" : `${n} file esportati`;
 }
