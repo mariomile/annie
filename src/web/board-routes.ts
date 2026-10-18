@@ -63,10 +63,11 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		const seen = await Promise.all(all.map((c) => work.visibleTo(c, p.id)));
 		const cards = all.filter((_, i) => seen[i]);
 		const names = new Map((await people.list()).map((x) => [x.id, x.name]));
-		const involved = new Set(cards.flatMap((c) => [c.createdBy, ...c.events.map((e) => e.by)].filter((a) => a.kind === "person").map((a) => a.id)));
+		const shown = (routines?.list() ?? []).filter((r) => p.role === "owner" || r.personId === p.id);
+		const involved = new Set([...cards.flatMap((c) => [c.createdBy, ...c.events.map((e) => e.by)].filter((a) => a.kind === "person").map((a) => a.id)), ...shown.map((r) => r.personId)]);
 		return {
 			cards,
-			routines: (routines?.list() ?? []).filter((r) => p.role === "owner" || r.personId === p.id).map(routineView),
+			routines: shown.map(routineView),
 			agents: agents.map((r) => ({ id: r.id, name: r.name, ...(r.persona?.emoji === undefined ? {} : { emoji: r.persona.emoji }), canAssign: r.egress.channels.includes("web") && (r.allowedUsers.web ?? []).includes(p.id) })),
 			people: Object.fromEntries([...involved].map((id) => [id, names.get(id) ?? "una persona"])),
 			auto: { replies: BOARD_LIMITS.autoRounds, hours: BOARD_LIMITS.autoMs / 3_600_000 },
@@ -81,10 +82,13 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		if (body.repeat !== undefined && body.repeat !== null) {
 			if (!assignee) throw new HttpError(400, "Una scheda che si ripete va affidata a un agente");
 			const routines = routinesOf();
-			const routine = await (async () => {
+			let routine: Routine;
+			try {
 				await work.checkAgent(assignee, p.id);
-				return routines.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), assignee, auto: body.auto === true, when: routineWhen(body.repeat), personId: p.id });
-			})().catch(boardError);
+				routine = routines.create({ title: typeof body.title === "string" ? body.title : "", ...(typeof body.description === "string" ? { description: body.description } : {}), ...(priority === undefined ? {} : { priority }), assignee, auto: body.auto === true, when: routineWhen(body.repeat), personId: p.id });
+			} catch (error) {
+				return boardError(error);
+			}
 			await runtime.audit(tenantId).append({ type: "board.routine_created", routineId: routine.id, personId: p.id, assignee, every: routine.when.every });
 			return { routine: routineView(routine) };
 		}
@@ -125,22 +129,26 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 		return { card: started };
 	});
 	route("PUT", "/api/board/routines/:id", "person", async ({ person, params, req }) => {
+		const { work } = boardOf();
 		const p = person as Person;
 		const r = ownRoutine(params[0] as string, p);
 		const body = (await readJson(req)) as { paused?: unknown };
 		if (typeof body.paused !== "boolean") throw new HttpError(400, "paused: true o false");
 		const pausing = body.paused;
-		const changed = (() => {
-			try {
-				// Started again, it counts from now: no scheda for the times it was paused.
-				return routinesOf().update(r.id, (x) => {
-					const { paused: _p, problem: _q, ...rest } = x;
-					return pausing ? { ...rest, paused: true as const } : { ...rest, next: nextTime(x.when, new Date()) };
-				});
-			} catch (error) {
-				return boardError(error);
+		let changed: Routine;
+		try {
+			// Started again only if its person may still hand schede to its agente; it counts from now.
+			if (!pausing) {
+				if ((await people.get(r.personId)) === undefined) throw new BoardError("La persona che l'ha impostata non c'è più: creane una nuova");
+				await work.checkAgent(r.assignee, r.personId);
 			}
-		})();
+			changed = routinesOf().update(r.id, (x) => {
+				const { paused: _p, problem: _q, ...rest } = x;
+				return pausing ? { ...rest, paused: true as const } : { ...rest, next: nextTime(x.when, new Date()) };
+			});
+		} catch (error) {
+			return boardError(error);
+		}
 		await runtime.audit(tenantId).append({ type: "board.routine_changed", routineId: r.id, personId: p.id, paused: pausing });
 		return { routine: routineView(changed) };
 	});

@@ -1858,6 +1858,8 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (params[0] === (person as Person).id) throw new HttpError(400, "Non puoi eliminare te stesso");
 		const removed = await options.people.remove(params[0] as string);
 		await options.sessions.endAllOf(params[0] as string);
+		// What they set to come back on the board stops: nobody would work it with them (ADR 0069).
+		options.board?.routines?.pausePerson(params[0] as string);
 		await runtime.audit(tenantId).append({ type: "person.removed", personId: params[0] });
 		return { removed };
 	});

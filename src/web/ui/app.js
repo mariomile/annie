@@ -3907,7 +3907,7 @@ const REPEATS = [
 ];
 /** «lunedì 20 ott, 09:00»: when a scheda that comes back is made next. */
 function whenNext(iso) {
-	return new Date(iso).toLocaleString("it-IT", { weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+	return new Date(iso).toLocaleString("it-IT", { timeZone: "Europe/Rome", weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 const WEEKDAYS = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
 const PRIORITIES = [
@@ -4231,7 +4231,7 @@ async function viewBoard(main) {
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
 			repeatRow,
 			parentRow,
-			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito. Se si ripete, a ogni volta nasce una scheda nuova che parte da sola con te, come se premessi Avvia."),
+			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito. Se si ripete, ogni volta nasce una scheda nuova che parte con te, come se premessi Avvia."),
 			aloneRow,
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 		);
@@ -4242,7 +4242,7 @@ async function viewBoard(main) {
 					const repeat = { every: every.value, time: time.value, ...(every.value === "settimana" ? { day: Number(weekday.value) } : every.value === "mese" ? { day: Number(monthday.value) } : {}) };
 					const { routine } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, assignee: assignee.value, auto: alone.checked, repeat } });
 					dialog.close();
-					toast(`Si ripete ${routine.whenText}: la prima ${whenNext(routine.next)}`);
+					toast(`Si ripete ${routine.whenText}: la prima volta ${whenNext(routine.next)}`);
 					render();
 					return;
 				}
@@ -4274,11 +4274,14 @@ async function viewBoard(main) {
 			}
 		};
 		const remove = () =>
-			confirmDialog("Non ripeterla più?", `«${r.title}» non crea più schede. Quelle già create restano sulla board.`, "Togli", async () => {
-				await api(`/api/board/routines/${r.id}`, { method: "DELETE" });
-				toast("Non si ripete più");
-				render();
-			});
+			confirmDialog("Non ripeterla più?", `«${r.title}» non crea più schede. Quelle già create restano sulla board.`, "Togli", () =>
+				api(`/api/board/routines/${r.id}`, { method: "DELETE" })
+					.then(() => {
+						toast("Non si ripete più");
+						render();
+					})
+					.catch((error) => toast(error.message, true)),
+			);
 		const last = r.last ? data.cards.find((c) => c.id === r.last) : undefined;
 		return h(
 			`li.board-routine${r.paused ? ".paused" : ""}`,
@@ -4288,7 +4291,7 @@ async function viewBoard(main) {
 				h("b", r.title),
 				h(
 					"p.muted.small",
-					[agent ? agent.name : "agente non disponibile", r.whenText, r.paused ? "in pausa" : `la prossima ${whenNext(r.next)}`, r.auto ? "da solo" : null, last ? `ultima #${last.n}` : null].filter(Boolean).join(" · "),
+					[agent ? agent.name : "agente non disponibile", r.whenText, r.personId === state.me.id ? null : `impostata da ${data.people[r.personId] ?? "una persona"}`, r.paused ? "in pausa" : `la prossima ${whenNext(r.next)}`, r.auto ? "da solo" : null, last ? `ultima #${last.n}` : null].filter(Boolean).join(" · "),
 				),
 				r.problem ? h("p.small.board-routine-problem", `L'ultima volta non è partita: ${r.problem}.`) : null,
 			),
@@ -4303,13 +4306,14 @@ async function viewBoard(main) {
 		columns,
 	);
 	// The agenti move schede while the page is open: it follows them, unless a scheda is open.
-	const shown = JSON.stringify(data.cards.map((c) => [c.id, c.updatedAt]));
+	const look = (d) => JSON.stringify([d.cards.map((c) => [c.id, c.updatedAt]), (d.routines ?? []).map((r) => [r.id, r.next, r.problem, r.paused, r.last])]);
+	const shown = look(data);
 	const timer = setInterval(async () => {
 		if (!main.isConnected) return clearInterval(timer);
 		if (document.querySelector("dialog[open]") || document.hidden) return;
 		try {
 			const next = await api("/api/board");
-			if (main.isConnected && JSON.stringify(next.cards.map((c) => [c.id, c.updatedAt])) !== shown) render();
+			if (main.isConnected && look(next) !== shown) render();
 		} catch {
 			/* next round */
 		}

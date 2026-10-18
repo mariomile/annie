@@ -1295,9 +1295,12 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			})),
 		log,
 		async (now) => {
-			await tellExpired(now);
+			// One failing does not keep the other from running.
+			await tellExpired(now).catch((error: unknown) => log(`annie: expired actions not told: ${error instanceof Error ? error.message : String(error)}`));
 			// Schede that come back (ADR 0069).
-			await runRoutines(routines, boardWork, board, log, now).catch((error: unknown) => log(`board: routines not run: ${error instanceof Error ? error.message : String(error)}`));
+			await runRoutines({ routines, work: boardWork, board, personExists: async (id) => (await people.get(id)) !== undefined, audit: (event) => runtime.audit(tenant).append(event), log }, now).catch((error: unknown) =>
+				log(`board: routines not run: ${error instanceof Error ? error.message : String(error)}`),
+			);
 		},
 	);
 	scheduler.start(options.schedulerIntervalMs ?? 30_000);

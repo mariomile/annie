@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import type { AuditEvent } from "./audit.ts";
 import { BOARD_LIMITS, BoardError, type BoardStore, type CardPriority } from "./board.ts";
 import type { BoardWork } from "./board-work.ts";
 import { nextDistinctRun, parseCron } from "./cron.ts";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 
 /**
- * Schede ricorrenti (ADR 0069): work that comes back («ogni lunedì alle 9 il report vendite»). At
- * each time a new scheda is made from the routine and handed to its agente with the person who set
+ * Schede ricorrenti (ADR 0069): work that comes back («ogni lunedì alle 9 il report vendite»). Each
+ * time a new scheda is made from the routine and handed to its agente with the person who set
  * it, as if that person had pressed Avvia; alone if they asked. Only people set them: an agente
  * that could start work by itself every week is what Avvia is there to prevent.
  */
@@ -143,53 +144,101 @@ export class RoutineStore {
 
 	/** An agente deleted (ADR 0046): what came back to it stops, and says why. */
 	pauseAgent(agent: string): void {
-		updateJsonFile<RoutineFile>(this.file, { routines: [] }, (f) =>
-			f.routines.some((r) => r.assignee === agent) ? { routines: f.routines.map((r) => (r.assignee === agent ? { ...r, paused: true as const, problem: "l'agente è stato eliminato" } : r)) } : f,
-		);
+		this.pauseWhere((r) => r.assignee === agent, "l'agente è stato eliminato");
+	}
+
+	/** A person removed: what they set stops, and says why. */
+	pausePerson(personId: string): void {
+		this.pauseWhere((r) => r.personId === personId, "la persona che l'ha impostata non c'è più");
+	}
+
+	private pauseWhere(match: (r: Routine) => boolean, problem: string): void {
+		updateJsonFile<RoutineFile>(this.file, { routines: [] }, (f) => (f.routines.some(match) ? { routines: f.routines.map((r) => (match(r) ? { ...r, paused: true as const, problem } : r)) } : f));
 	}
 }
 
+export type RoutineRunDeps = {
+	readonly routines: RoutineStore;
+	readonly work: BoardWork;
+	readonly board: BoardStore;
+	/** Whether the person who set a routine is still one of the tenant's people. */
+	readonly personExists: (personId: string) => Promise<boolean>;
+	readonly audit: (event: AuditEvent) => Promise<void>;
+	readonly log: (message: string) => void;
+};
+
 /**
  * Make the schede that are due: each routine at most once per tick, its next time set before the
- * scheda is made, so a crash in between skips a time rather than making two. A time missed while
- * Annie was off makes one scheda, not one per time missed. While the last scheda is still open,
- * no new one: a comment on it says so.
+ * scheda is made and the scheda recorded as its last before it starts, so neither a crash nor an
+ * agente out of reach makes two. A time missed while Annie was off makes one scheda, not one per
+ * time missed. While the last scheda is still open, no new one: a comment on it says so. A routine
+ * whose person is gone, or can no longer hand schede to its agente, pauses with why.
  */
-export async function runRoutines(routines: RoutineStore, work: BoardWork, board: BoardStore, log: (message: string) => void, now = new Date()): Promise<number> {
+export async function runRoutines(d: RoutineRunDeps, now = new Date()): Promise<number> {
+	const { routines, work, board } = d;
+	/** A change that finds the routine removed meanwhile does nothing. */
+	const change = (id: string, f: (r: Routine) => Routine): Routine | undefined => {
+		try {
+			return routines.update(id, f);
+		} catch (error) {
+			if (error instanceof BoardError) return undefined;
+			throw error;
+		}
+	};
+	const withProblem = (problem: string | undefined, pause = false) => (x: Routine): Routine => {
+		const { problem: _old, ...rest } = x;
+		return { ...rest, ...(problem === undefined ? {} : { problem }), ...(pause ? { paused: true as const } : {}) };
+	};
 	let made = 0;
 	for (const r of routines.list()) {
 		if (r.paused === true || Date.parse(r.next) > now.getTime()) continue;
 		const planned = r.next;
 		let claimed = false;
-		routines.update(r.id, (x) => {
-			if (x.next !== planned) return x;
+		// Paused or moved meanwhile (a person pressed Pausa during this tick): left alone.
+		change(r.id, (x) => {
+			if (x.next !== planned || x.paused === true) return x;
 			claimed = true;
 			return { ...x, next: nextTime(x.when, now, new Date(planned)) };
 		});
 		if (!claimed) continue;
-		const by = { kind: "person", id: r.personId } as const;
-		const said = (problem: string | undefined) =>
-			routines.update(r.id, (x) => {
-				const { problem: _old, ...rest } = x;
-				return problem === undefined ? rest : { ...rest, problem };
-			});
-		const last = r.last === undefined ? undefined : board.get(r.last);
-		if (last !== undefined && last.status !== "fatto") {
-			const when = new Intl.DateTimeFormat("it-IT", { timeZone: ROUTINE_ZONE, weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" }).format(new Date(planned));
-			board.update(last.id, { comment: `Doveva ripartire ${when}, ma questa scheda non è ancora chiusa: si riparte la volta dopo.` }, by);
-			said(`la scheda #${last.n} non era ancora chiusa`);
-			continue;
-		}
 		try {
-			const card = await work.create({ title: r.title, description: r.description, priority: r.priority, assignee: r.assignee, auto: r.auto }, by, r.personId);
-			routines.update(r.id, (x) => {
-				const { problem: _old, ...rest } = x;
-				return { ...rest, last: card.id };
-			});
+			if (!(await d.personExists(r.personId))) {
+				change(r.id, withProblem("la persona che l'ha impostata non c'è più", true));
+				continue;
+			}
+			const last = r.last === undefined ? undefined : board.get(r.last);
+			if (last !== undefined && last.status !== "fatto") {
+				const when = new Intl.DateTimeFormat("it-IT", { timeZone: ROUTINE_ZONE, weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" }).format(new Date(planned));
+				// Said by the routine's agente, as when an agente is deleted: nobody wrote it.
+				board.update(last.id, { comment: `Doveva ripartire ${when}, ma questa scheda non è ancora chiusa: riparte la volta dopo.` }, { kind: "agent", id: r.assignee });
+				change(r.id, withProblem(`la scheda #${last.n} non era ancora chiusa`));
+				continue;
+			}
+			const by = { kind: "person", id: r.personId } as const;
+			try {
+				await work.checkAgent(r.assignee, r.personId);
+			} catch (error) {
+				if (!(error instanceof BoardError)) throw error;
+				// As a task programmato whose person lost access: it stops until someone looks.
+				change(r.id, withProblem(error.message, true));
+				continue;
+			}
+			const card = board.create({ title: r.title, description: r.description, priority: r.priority, assignee: r.assignee }, by);
+			change(r.id, (x) => ({ ...withProblem(undefined)(x), last: card.id }));
+			await d.audit({ type: "board.card_created", cardId: card.id, personId: r.personId, assignee: r.assignee, routineId: r.id });
 			made++;
+			try {
+				await work.startWaiting(card.id, r.personId, by, r.auto);
+				await d.audit({ type: "board.card_started", cardId: card.id, personId: r.personId, assignee: r.assignee, auto: r.auto, routineId: r.id });
+			} catch (error) {
+				// It waits in «Da fare», with why: the next time comments on it instead of making another.
+				if (!(error instanceof BoardError)) throw error;
+				board.update(card.id, { comment: `Non è partita: ${error.message}. Avviala dalla board.` }, { kind: "agent", id: r.assignee });
+				change(r.id, withProblem(`la scheda #${card.n} non è partita`));
+			}
 		} catch (error) {
-			if (!(error instanceof BoardError)) log(`board: routine ${r.id} made no scheda: ${error instanceof Error ? error.message : String(error)}`);
-			said(error instanceof BoardError ? error.message : "errore interno");
+			d.log(`board: routine ${r.id}: ${error instanceof Error ? error.message : String(error)}`);
+			change(r.id, withProblem("errore interno"));
 		}
 	}
 	return made;

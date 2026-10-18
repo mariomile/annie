@@ -37,7 +37,7 @@ Una scheda che fa parte di un'altra, un solo livello. Quella che crea l'agente d
 _Avoid_: sub-task, child card
 
 **Scheda che si ripete**:
-Una scheda affidata a un agente che torna ogni giorno, nei feriali, ogni settimana o ogni mese: a ogni volta nasce una scheda nuova che parte con la persona che l'ha impostata. Non ne nasce un'altra finché l'ultima è aperta. Diversa dal task programmato, che è un messaggio in chat. Vedi ADR 0069.
+Una scheda affidata a un agente che torna ogni giorno, nei feriali, ogni settimana o ogni mese: ogni volta nasce una scheda nuova che parte con la persona che l'ha impostata. Non ne nasce un'altra finché l'ultima è aperta. Diversa dal task programmato, che è un messaggio in chat. Vedi ADR 0069.
 _Avoid_: routine, ricorrenza (nel testo per le persone)
 
 **Messaggio tra agenti**:
