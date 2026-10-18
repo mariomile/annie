@@ -49,6 +49,8 @@ export type Card = {
 		/** The last reply counted: one handed over again after a restart is not counted twice. */
 		readonly last?: string;
 	};
+	/** The scheda this one is part of (ADR 0066): one level only, so a sotto-scheda has none of its own. */
+	readonly parent?: string;
 	readonly createdBy: CardActor;
 	readonly createdAt: string;
 	readonly updatedAt: string;
@@ -70,6 +72,8 @@ export const BOARD_LIMITS = {
 	/** «Esegui da solo»: at most this many «go on» per start, and for at most this long. */
 	autoRounds: 10,
 	autoMs: 2 * 60 * 60 * 1000,
+	/** Sotto-schede not yet «Fatto» under one scheda. */
+	children: 10,
 } as const;
 
 export class BoardError extends Error {
@@ -107,7 +111,7 @@ export class BoardStore {
 		return this.list().find((c) => c.id === ref || (n !== undefined && c.n === Number(n)));
 	}
 
-	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string }, by: CardActor, now = new Date()): Card {
+	create(input: { title: string; description?: string; priority?: CardPriority; assignee?: string; parent?: string }, by: CardActor, now = new Date()): Card {
 		const title = clean(input.title, BOARD_LIMITS.title, "il titolo");
 		if (title === "") throw new BoardError("Serve un titolo");
 		const description = clean(input.description ?? "", BOARD_LIMITS.description, "la descrizione", true);
@@ -115,6 +119,13 @@ export class BoardStore {
 		let made: Card | undefined;
 		updateJsonFile<BoardFile>(this.file, { next: 1, cards: [] }, (board) => {
 			if (board.cards.filter((c) => c.status !== "fatto").length >= BOARD_LIMITS.open) throw new BoardError(`Ci sono già ${BOARD_LIMITS.open} schede aperte: chiudine qualcuna`);
+			if (input.parent !== undefined) {
+				const parent = board.cards.find((c) => c.id === input.parent);
+				if (parent === undefined) throw new BoardError("La scheda di cui fa parte non c'è più");
+				if (parent.parent !== undefined) throw new BoardError(`La scheda #${parent.n} è già una sotto-scheda: le sotto-schede non ne hanno altre`);
+				if (parent.status === "fatto") throw new BoardError(`La scheda #${parent.n} è chiusa`);
+				if (board.cards.filter((c) => c.parent === parent.id && c.status !== "fatto").length >= BOARD_LIMITS.children) throw new BoardError(`La scheda #${parent.n} ha già ${BOARD_LIMITS.children} sotto-schede aperte`);
+			}
 			made = {
 				id: `c_${randomBytes(6).toString("hex")}`,
 				n: board.next,
@@ -123,6 +134,7 @@ export class BoardStore {
 				status: "da_fare",
 				priority: input.priority ?? "normale",
 				...(input.assignee === undefined ? {} : { assignee: input.assignee }),
+				...(input.parent === undefined ? {} : { parent: input.parent }),
 				createdBy: by,
 				createdAt: at,
 				updatedAt: at,
@@ -187,7 +199,17 @@ export class BoardStore {
 	remove(id: string): void {
 		updateJsonFile<BoardFile>(this.file, { next: 1, cards: [] }, (board) => {
 			if (!board.cards.some((c) => c.id === id)) throw new BoardError("Scheda inesistente");
-			return { ...board, cards: board.cards.filter((c) => c.id !== id) };
+			// Its sotto-schede stay, on their own.
+			return {
+				...board,
+				cards: board.cards
+					.filter((c) => c.id !== id)
+					.map((c) => {
+						if (c.parent !== id) return c;
+						const { parent: _p, ...rest } = c;
+						return rest;
+					}),
+			};
 		});
 	}
 

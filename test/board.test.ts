@@ -347,4 +347,101 @@ describe("the board (ADR 0050)", () => {
 			expect(store.get(card.id)?.auto).toBeUndefined();
 		});
 	});
+
+	describe("sotto-schede e passaggi tra agenti (ADR 0066)", () => {
+		it("the agente working on a scheda hands part of it to another: it starts with the same person, and the result comes back", async () => {
+			const { work, store, posts, opened } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
+			const reviews: { card: { n: number }; people: string[] }[] = [];
+			work.events.on("review", (r) => reviews.push(r));
+			const parent = await work.create({ title: "Newsletter di novembre", assignee: "ricerca", auto: true }, anna, "p_anna");
+			// Asked anywhere else than the conversation of #1 (another person's chat, Telegram): it waits.
+			const elsewhere = await work.create({ title: "Altrove", assignee: "scrittore", parent: parent.id }, ricerca, undefined, "t_altro");
+			expect(elsewhere.status).toBe("da_fare");
+			store.remove(elsewhere.id);
+			const sub = await work.create({ title: "Scrivi il testo", description: "Tono leggero", assignee: "scrittore", parent: parent.id }, ricerca, undefined, parent.work?.threadId);
+			expect(sub).toMatchObject({ parent: parent.id, status: "in_corso", work: { agent: "scrittore", personId: "p_anna" }, auto: { rounds: 0 } });
+			expect(opened.at(-1)).toMatchObject({ agent: "scrittore", personId: "p_anna", title: "#3 Scrivi il testo" });
+			const brief = posts.at(-1)?.text ?? "";
+			expect(brief).toMatch(/Fa parte della scheda #1 «Newsletter di novembre»/);
+			// Written by an agente: fenced.
+			expect(brief).toMatch(/<<<scheda [0-9a-f]+: scritta da un agente/);
+			await work.change(sub.id, { status: "da_rivedere", comment: "Testo pronto nel file" }, { kind: "agent", id: "scrittore" }, undefined);
+			expect(reviews.map((r) => [r.card.n, r.people])).toEqual([[3, ["p_anna"]]]);
+			const back = posts.at(-1);
+			expect(back).toMatchObject({ agent: "ricerca", threadId: parent.work?.threadId, personId: "p_anna" });
+			expect(back?.text).toMatch(/^\[Scheda #1\] Scrittore ha finito la sotto-scheda #3 e l'ha messa in «Da rivedere»/);
+			expect(back?.text).toMatch(/<<<sotto-scheda [0-9a-f]+: scritto da un agente[^\n]*\nScrivi il testo\nTesto pronto nel file\n<<<fine sotto-scheda/);
+			expect(store.get(parent.id)?.status).toBe("in_corso");
+		});
+
+		it("waits for a person when it is not the creator's own scheda in progress, or the person may not talk to that agente", async () => {
+			const { work } = setup();
+			const parent = await work.create({ title: "x", assignee: "ricerca" }, anna, "p_anna");
+			// Another agente: waits.
+			expect((await work.create({ title: "a", assignee: "ricerca", parent: parent.id }, { kind: "agent", id: "annie" }, undefined)).status).toBe("da_fare");
+			// Anna may not talk to Vendite: the scheda is made, and waits.
+			const refused = await work.create({ title: "b", assignee: "vendite", parent: parent.id }, ricerca, undefined, parent.work?.threadId);
+			expect(refused).toMatchObject({ status: "da_fare", parent: parent.id });
+			expect(refused.work).toBeUndefined();
+			expect(refused.events.at(-1)?.text).toMatch(/^Non è partita: Non puoi affidare schede a Vendite/);
+			// The parent waiting in Da fare: no start either.
+			const waiting = await work.create({ title: "y" }, anna, "p_anna");
+			expect((await work.create({ title: "c", assignee: "ricerca", parent: waiting.id }, ricerca, undefined, parent.work?.threadId)).status).toBe("da_fare");
+		});
+
+		it("one level, at most ten open, never under a closed scheda; deleting the scheda leaves its sotto-schede on their own", async () => {
+			const { work, store } = setup();
+			const parent = store.create({ title: "x" }, anna);
+			const sub = store.create({ title: "s", parent: parent.id }, anna);
+			expect(() => store.create({ title: "ss", parent: sub.id }, anna)).toThrow(/già una sotto-scheda/);
+			for (let i = 1; i < BOARD_LIMITS.children; i++) store.create({ title: `s${i}`, parent: parent.id }, anna);
+			expect(() => store.create({ title: "troppe", parent: parent.id }, anna)).toThrow(/già 10 sotto-schede aperte/);
+			store.update(sub.id, { status: "fatto" }, anna);
+			expect(store.create({ title: "ora sì", parent: parent.id }, anna).parent).toBe(parent.id);
+			store.remove(parent.id);
+			expect(store.list().every((c) => c.parent === undefined)).toBe(true);
+			const closed = store.create({ title: "chiusa" }, anna);
+			store.update(closed.id, { status: "fatto" }, anna);
+			expect(() => store.create({ title: "z", parent: closed.id }, anna)).toThrow(/è chiusa/);
+			await expect(work.create({ title: "z", parent: "c_nessuna" }, anna, "p_anna")).rejects.toThrow(/non c'è/);
+		});
+
+		it("the tools: board_create with parent hands it over; board_show lists the sotto-schede", async () => {
+			const { work, store } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
+			const parent = await work.create({ title: "Newsletter", assignee: "ricerca" }, anna, "p_anna");
+			const tools = createBoardTools({ self: "ricerca", store, work, agents: async () => [{ id: "ricerca", name: "Ricercatore" }, { id: "scrittore", name: "Scrittore" }], personOf: (t) => (t.channel === "web" ? "p_anna" : undefined) });
+			const tool = (n: string) => tools.find((t) => t.name === n) as (typeof tools)[number];
+			const said = await tool("board_create").execute({ title: "Testo", assignee: "Scrittore", parent: "#1" }, ctx(parent.work?.threadId));
+			expect(said).toMatch(/Sotto-scheda #2 \(parte di #1\) affidata a Scrittore, che ci sta lavorando/);
+			expect(await tool("board_show").execute({ card: "1" }, ctx(parent.work?.threadId))).toMatch(/Sotto-schede:\n- #2 \[In corso\] Testo: assegnata a Scrittore/);
+			// From Telegram, the same ask waits for a person.
+			expect(await tool("board_create").execute({ title: "Da Telegram", assignee: "Scrittore", parent: "#1" }, { ...(ctx() as object), thread: { channel: "telegram", threadId: "7" } } as never)).toMatch(/parte quando una persona la avvia/);
+			// «parte di #n» only for a scheda the caller sees.
+			const hidden = store.create({ title: "Riservata" }, { kind: "person", id: "p_owner" });
+			store.create({ title: "Mia", assignee: "ricerca", parent: hidden.id }, { kind: "person", id: "p_owner" });
+			expect(await tool("board_list").execute({ mine: true }, { ...(ctx() as object), thread: { channel: "telegram", threadId: "7" } } as never)).not.toMatch(new RegExp(`parte di #${hidden.n}`));
+			expect(await tool("board_create").execute({ title: "x", parent: "#99" }, ctx(parent.work?.threadId))).toMatch(/non c'è/);
+		});
+	
+		it("one cap for a scheda alone and its sotto-schede; the agente of the scheda hears when one stopped, and only of its own hand-offs", async () => {
+			const { work, store, posts } = setup({ agentName: async (id) => ({ ricerca: "Ricercatore", scrittore: "Scrittore" })[id] });
+			const parent = await work.create({ title: "Newsletter", assignee: "ricerca", auto: true }, anna, "p_anna");
+			const sub = await work.create({ title: "Testo", assignee: "scrittore", parent: parent.id }, ricerca, undefined, parent.work?.threadId);
+			const subThread = sub.work?.threadId as string;
+			for (let i = 0; i < 4; i++) await work.afterReply("scrittore", subThread, `s${i}`);
+			expect(store.get(parent.id)?.auto?.rounds).toBe(4);
+			for (let i = 0; i < 6; i++) await work.afterReply("ricerca", parent.work?.threadId as string, `p${i}`);
+			expect(store.get(parent.id)?.auto?.rounds).toBe(10);
+			// The scheda's replies are spent: the sotto-scheda stops at its next reply, and #1 hears it stopped.
+			await work.afterReply("scrittore", subThread, "s-last");
+			expect(store.get(sub.id)?.status).toBe("da_rivedere");
+			expect(store.get(sub.id)?.events.at(-1)?.text).toMatch(/la scheda #1, di cui fa parte, ha finito le risposte/);
+			expect(posts.at(-1)?.text).toMatch(/^\[Scheda #1\] Scrittore si è fermato sulla sotto-scheda #2 senza finirla/);
+			// A sotto-scheda a person added under #1: its review stays on the board.
+			const byPerson = await work.create({ title: "Immagini", assignee: "scrittore", parent: parent.id }, anna, "p_anna");
+			const before = posts.length;
+			await work.change(byPerson.id, { status: "da_rivedere", comment: "fatto" }, { kind: "agent", id: "scrittore" }, undefined);
+			expect(posts.slice(before).some((p) => p.text.includes("sotto-scheda"))).toBe(false);
+		});
+	});
 });

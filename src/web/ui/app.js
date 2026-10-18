@@ -3672,6 +3672,9 @@ async function viewBoard(main) {
 			return false;
 		}
 	};
+	// Sotto-schede (ADR 0066): one level, shown under the scheda they are part of.
+	const parentOf = (c) => (c.parent ? data.cards.find((x) => x.id === c.parent) : undefined);
+	const childrenOf = (c) => data.cards.filter((x) => x.parent === c.id).sort((a, b) => a.n - b.n);
 	const aloneLabel = `Lavora da solo fino alla fine, senza aspettare le tue risposte (al massimo ${data.auto.replies} risposte o ${data.auto.hours} ore, poi va in «Da rivedere»)`;
 	// Dragged to another column (ADR 0051): the same moves as the buttons of the scheda.
 	const moveTo = async (c, status) => {
@@ -3713,6 +3716,7 @@ async function viewBoard(main) {
 				ondragend: (e) => e.currentTarget.classList.remove("dragging"),
 			},
 			h("span.board-title", h("span.muted.mono", `#${c.n} `), c.title),
+			c.parent && parentOf(c) ? h("span.muted.small", `parte di #${parentOf(c).n}`) : null,
 			h(
 				"span.board-meta",
 				c.assignee ? [face(c.assignee), h("span", agentOf(c.assignee)?.name ?? "agente eliminato")] : h("span.muted", "Non assegnata"),
@@ -3847,11 +3851,30 @@ async function viewBoard(main) {
 				if (!(await save(c, { auto: alone.checked }, alone.checked ? `${agentOf(c.assignee)?.name ?? "L'agente"} va avanti da solo` : "Ora l'agente aspetta le tue risposte"))) alone.checked = !alone.checked;
 			});
 		const canDelete = state.me.role === "owner" || (c.createdBy.kind === "person" && c.createdBy.id === state.me.id);
+		const parent = parentOf(c);
+		const children = childrenOf(c);
 		// Without what is not there: append would write «null».
 		const parts = [
 			h("div.kicker", `Scheda #${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			h("h3", c.title),
 			c.description ? h("p.board-desc", c.description) : null,
+			parent ? h("p.small", "Fa parte di ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(parent)) }, `#${parent.n} ${parent.title}`)) : null,
+			children.length
+				? h(
+						"div.board-children",
+						h("span.muted.small", `Sotto-schede: ${children.filter((x) => x.status === "fatto").length} di ${children.length} fatte`),
+						h(
+							"ul",
+							children.map((x) =>
+								h(
+									"li",
+									h("a", { href: "#", onclick: (e) => (e.preventDefault(), dialog.close(), cardDialog(x)) }, `#${x.n} ${x.title}`),
+									h("span.muted.small", ` · ${BOARD_COLUMNS.find(([v]) => v === x.status)[1]}${x.assignee ? ` · ${agentOf(x.assignee)?.name ?? "agente eliminato"}` : ""}`),
+								),
+							),
+						),
+					)
+				: null,
 			h("div.board-fields", h("label.field", h("span", "Assegnata a"), assignee), h("label.field", h("span", "Colonna"), status)),
 			moves.length ? h("div.actions", moves) : null,
 			startable || working ? aloneRow : null,
@@ -3910,6 +3933,8 @@ async function viewBoard(main) {
 		const description = h("textarea", { rows: 4, placeholder: "Cosa fare e quando è finito: l'agente vede solo questo" });
 		const assignee = h("select", h("option", { value: "" }, "Nessuno, per ora"), data.agents.filter((a) => a.canAssign).map((a) => h("option", { value: a.id }, a.emoji ? `${a.emoji} ${a.name}` : a.name)));
 		const priority = h("select", PRIORITIES.map(([v, l]) => h("option", { value: v, selected: v === "normale" ? "selected" : undefined }, l)));
+		const parents = data.cards.filter((x) => !x.parent && x.status !== "fatto").sort((a, b) => a.n - b.n);
+		const parent = h("select", h("option", { value: "" }, "Nessuna"), parents.map((x) => h("option", { value: x.id }, `#${x.n} ${x.title}`)));
 		const alone = h("input", { type: "checkbox" });
 		const aloneRow = h("label.board-alone", { hidden: true }, alone, h("span", aloneLabel));
 		assignee.addEventListener("change", () => (aloneRow.hidden = !assignee.value));
@@ -3920,6 +3945,7 @@ async function viewBoard(main) {
 			h("label.field", h("span", "Titolo"), title),
 			h("label.field", h("span", "Descrizione"), description),
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
+			parents.length ? h("label.field", h("span", "Fa parte di"), parent) : null,
 			h("p.muted.small", "Se la affidi a un agente, ci lavora subito in una conversazione con te e la sposta in «Da rivedere» quando ha finito."),
 			aloneRow,
 			h("div.actions", ok, h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
@@ -3927,7 +3953,7 @@ async function viewBoard(main) {
 		ok.onclick = async () => {
 			ok.disabled = true;
 			try {
-				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}) } });
+				const { card } = await api("/api/board", { method: "POST", body: { title: title.value, description: description.value, priority: priority.value, ...(assignee.value ? { assignee: assignee.value, auto: alone.checked } : {}), ...(parent.value ? { parent: parent.value } : {}) } });
 				dialog.close();
 				toast(card.status === "in_corso" ? `Scheda #${card.n} affidata a ${agentOf(card.assignee)?.name}` : `Scheda #${card.n} creata`);
 				render();
