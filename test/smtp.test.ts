@@ -110,40 +110,40 @@ describe("SMTP mailer", () => {
 
 	it("sends over TLS from the first byte (smtps, port 465)", async () => {
 		const smtp = await fakeSmtp({ implicitTls: true, auth: "LOGIN" });
-		await new SmtpMailer({ host: "localhost", port: smtp.port, security: "tls", user: "u", password: "p", from: "a@b.it", ca: cert }).send(mail);
+		await new SmtpMailer({ host: "localhost", port: smtp.port, security: "tls", user: "u", password: "p", from: "a@b.example", ca: cert }).send(mail);
 		expect(smtp.log.map((l) => l.split(" ")[0])).toEqual(["EHLO", "AUTH", "dQ==", "cA==", "MAIL", "RCPT", "DATA", "QUIT"]);
 		expect(smtp.mails).toHaveLength(1);
 	});
 
 	it("refuses replies injected in clear text before the TLS handshake (CVE-2011-0411)", async () => {
 		const smtp = await fakeSmtp({ starttls: true, auth: "PLAIN", injectAfterStarttls: true });
-		const sending = new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "p", from: "a@b.it", ca: cert }).send(mail);
+		const sending = new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "p", from: "a@b.example", ca: cert }).send(mail);
 		await expect(sending).rejects.toThrow(/before the TLS handshake/);
 		expect(smtp.mails).toEqual([]);
 	});
 
 	it("refuses a server that does not offer STARTTLS, and plain SMTP to another machine", async () => {
 		const smtp = await fakeSmtp({ starttls: false, auth: "PLAIN" });
-		await expect(new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "p", from: "a@b.it" }).send(mail)).rejects.toThrow(/does not offer STARTTLS/);
+		await expect(new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "p", from: "a@b.example" }).send(mail)).rejects.toThrow(/does not offer STARTTLS/);
 		expect(smtp.log.some((l) => l.startsWith("AUTH"))).toBe(false);
-		expect(() => new SmtpMailer({ host: "smtp.example.com", port: 25, security: "plain", from: "a@b.it" })).toThrow(/this machine/);
+		expect(() => new SmtpMailer({ host: "smtp.example.com", port: 25, security: "plain", from: "a@b.example" })).toThrow(/this machine/);
 	});
 
 	it("never lets an address or subject carry its own headers", async () => {
 		const smtp = await fakeSmtp();
-		const mailer = new SmtpMailer({ host: "127.0.0.1", port: smtp.port, security: "plain", from: "a@b.it" });
-		await expect(mailer.send({ ...mail, to: "x@y.it\r\nBcc: tutti@z.it" })).rejects.toThrow(/line break/);
+		const mailer = new SmtpMailer({ host: "127.0.0.1", port: smtp.port, security: "plain", from: "a@b.example" });
+		await expect(mailer.send({ ...mail, to: "x@y.example\r\nBcc: tutti@z.example" })).rejects.toThrow(/line break/);
 		expect(smtp.log).toEqual([]);
 	});
 
 	it("encodes a non-ASCII subject and sender name; parses the service URL", () => {
-		const text = message("Annie Città <a@b.it>", { to: "c@d.it", subject: "Il tuo accesso è pronto", text: ".riga che inizia con un punto" }, new Date("2026-10-16T10:00:00Z"));
+		const text = message("Annie Città <a@b.example>", { to: "c@d.example", subject: "Il tuo accesso è pronto", text: ".riga che inizia con un punto" }, new Date("2026-10-16T10:00:00Z"));
 		expect(text).toContain(`Subject: =?UTF-8?B?${Buffer.from("Il tuo accesso è pronto").toString("base64")}?=`);
 		expect(text).toContain("From: =?UTF-8?B?");
 		expect(text).toContain("Date: Fri, 16 Oct 2026 10:00:00 +0000");
-		expect(parseSmtpUrl("smtps://user%40x:p%3Ass@smtp.example.eu", "a@b.it")).toEqual({ host: "smtp.example.eu", port: 465, security: "tls", user: "user@x", password: "p:ss", from: "a@b.it" });
-		expect(parseSmtpUrl("smtp://smtp.example.eu", "Annie <a@b.it>")).toMatchObject({ port: 587, security: "starttls" });
-		expect(() => parseSmtpUrl("http://x", "a@b.it")).toThrow(/smtps/);
-		expect(() => parseSmtpUrl("smtps://x", "a@b.it\r\nBcc: z")).toThrow(/MAIL_FROM/);
+		expect(parseSmtpUrl("smtps://user%40x:p%3Ass@smtp.example.eu", "a@b.example")).toEqual({ host: "smtp.example.eu", port: 465, security: "tls", user: "user@x", password: "p:ss", from: "a@b.example" });
+		expect(parseSmtpUrl("smtp://smtp.example.eu", "Annie <a@b.example>")).toMatchObject({ port: 587, security: "starttls" });
+		expect(() => parseSmtpUrl("http://x", "a@b.example")).toThrow(/smtps/);
+		expect(() => parseSmtpUrl("smtps://x", "a@b.example\r\nBcc: z")).toThrow(/MAIL_FROM/);
 	});
 });

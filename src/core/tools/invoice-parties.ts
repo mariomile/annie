@@ -123,7 +123,7 @@ function onePartyLines(only: PartyGroup, view: View): string[] {
 }
 
 /**
- * «Alfa Forniture S.r.l. (IT02987650013): aperto 3.529,15 € (3.629,15 € meno la nota di credito
+ * «Alfa Forniture S.r.l. (IT00000510016): aperto 3.529,15 € (3.629,15 € meno la nota di credito
  * di 100,00 €) su 2 fatture; pagato 500,00 €»; without the company, «da Alfa a Beta: …».
  */
 function partyLine(g: PartyGroup): string {
@@ -142,7 +142,7 @@ function partyLine(g: PartyGroup): string {
 	return `${who}: aperto ${nettedText(netted([share(g)]))} su ${invoices}${paid}`;
 }
 
-/** «IBAN Alfa Forniture S.r.l.: IT60X0542811101000000123456», the open invoices' IBANs once, an invalid one said. */
+/** «IBAN Alfa Forniture S.r.l.: IT74X0000000000000000123456», the open invoices' IBANs once, an invalid one said. */
 export function ibanLine(party: FatturaParty, invoices: readonly Invoice[]): string | undefined {
 	const open = invoices.flatMap((i) => i.instalments.filter((n) => n.paid === undefined && n.iban !== undefined).map((n) => n.iban as string));
 	const ibans = [...new Set(open.map((i) => i.replace(/\s+/g, "").toUpperCase()))];

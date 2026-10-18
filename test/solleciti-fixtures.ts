@@ -19,11 +19,11 @@ type Doc = { number: string; date: string; total: string; type?: string; currenc
 /** How the file was transmitted: a PEC, the FPA12 format and a codice ufficio for a public administration. */
 type Transmission = { pec?: string; format?: "FPR12" | "FPA12"; code?: string };
 
-export const BETA: Party = { name: "Beta Ristorazione Srl", vat: "03311220036" };
-export const ALFA: Party = { name: "Alfa Forniture S.r.l.", vat: "02987650013" };
+export const BETA: Party = { name: "Beta Ristorazione Srl", vat: "00000520031" };
+export const ALFA: Party = { name: "Alfa Forniture S.r.l.", vat: "00000510016" };
 export const GAMMA: Party = { name: "Gamma Hotel S.p.A.", vat: "01234567897", email: "amministrazione@gamma.example" };
-export const DELTA: Party = { name: "Delta Carni Srl", vat: "00743110157" };
-export const ROSSI: Party = { name: "Mario Rossi", fiscal: "RSSMRA85T10A562S" };
+export const DELTA: Party = { name: "Delta Carni Srl", vat: "00000500157" };
+export const ROSSI: Party = { name: "Mario Rossi", fiscal: "ZQXWKJ85T10A562F" };
 export const COMUNE: Party = { name: "Comune di Esempio", fiscal: "80012345678" };
 
 const xmlText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -57,10 +57,10 @@ export function fattura(from: Party, to: Party, doc: Doc, t: Transmission | stri
 }
 
 /** Valid IBANs (ISO 13616 mod-97), and one with a wrong check. */
-export const IBAN = "IT60X0542811101000000123456";
-export const IBAN_2 = "IT07X0542811101000000654321";
-export const IBAN_SAVED = "IT49X0306909606100000063001";
-export const IBAN_BAD = "IT61X0542811101000000123456";
+export const IBAN = "IT74X0000000000000000123456";
+export const IBAN_2 = "IT21X0000000000000000654321";
+export const IBAN_SAVED = "IT05X0000000000100000063001";
+export const IBAN_BAD = "IT75X0000000000000000123456";
 
 /** Issued to Gamma: due Wednesday 30/09, 18 days late on Sunday 18/10. */
 export const G1 = fattura(BETA, GAMMA, { number: "B-70", date: "2026-09-01", total: "1220.00", rate: [{ amount: "1220.00", due: "2026-09-30", iban: IBAN }] });
@@ -82,7 +82,7 @@ export const TUESDAY = new Date("2026-10-20T08:00:00Z");
 export const ctx: ToolContext = { step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId: "sol", thread: { channel: "web", threadId: "t1" } };
 
 /** B-70's key in the register. */
-export const B70 = "IT03311220036|b-70|2026-09-01|TD01";
+export const B70 = "IT00000520031|b-70|2026-09-01|TD01";
 
 const made: string[] = [];
 
@@ -122,7 +122,7 @@ export function setup(files: Record<string, string> = FILES, o: { now?: Date; ma
 		writeFileSync(join(root, path), content);
 	}
 	const store = new InvoiceStore(dir);
-	if (o.company !== false) store.setCompany({ vat: "IT03311220036", ...(o.company === "vat" ? {} : { name: "Beta Ristorazione Srl" }), by: "test:u", at: NOW.toISOString() });
+	if (o.company !== false) store.setCompany({ vat: "IT00000520031", ...(o.company === "vat" ? {} : { name: "Beta Ristorazione Srl" }), by: "test:u", at: NOW.toISOString() });
 	const events: InvoiceEvent[] = [];
 	const [tool] = createInvoiceTools({
 		workspace: new Workspace(root),

@@ -126,7 +126,7 @@ function fileName(disposition: string): string {
 	return /filename="([^"]*)"/.exec(disposition)?.[1] ?? "";
 }
 
-const MAIL = { to: ["rossi@cliente.it"], cc: [], subject: "Preventivo n. 2026-012: Beta Ristorazione Srl", body: "Gentile Rossi,\nin allegato il preventivo.\nCordiali saluti" };
+const MAIL = { to: ["rossi@cliente.example"], cc: [], subject: "Preventivo n. 2026-012: Beta Ristorazione Srl", body: "Gentile Rossi,\nin allegato il preventivo.\nCordiali saluti" };
 
 describe("mail attachments: MIME", () => {
 	it("multipart/mixed: the text first, then each file in base64 lines of 76 that decode to the same bytes; non-ASCII names in RFC 2231", async () => {
@@ -140,7 +140,7 @@ describe("mail attachments: MIME", () => {
 		const raw = mime(MAIL, await readAttachments(workspace, list));
 		expect(raw).toMatch(/^[\x00-\x7f]*$/);
 		const { headers, parts, boundary } = parse(raw);
-		expect(headers.to).toBe("rossi@cliente.it");
+		expect(headers.to).toBe("rossi@cliente.example");
 		expect(headers.subject).toBe(MAIL.subject);
 		expect(headers["mime-version"]).toBe("1.0");
 		expect(headers["content-type"]).toBe(`multipart/mixed; boundary="${boundary}"`);
@@ -179,19 +179,19 @@ describe("mail attachments: MIME", () => {
 	});
 
 	it("a file name cannot add headers: line breaks, quotes and backslashes are taken out, and MIME refuses them anyway", async () => {
-		expect(attachmentName('dir/evil"\r\nBcc: spia@evil.com\r\n.pdf')).toBe("evilBcc: spia@evil.com.pdf");
+		expect(attachmentName('dir/evil"\r\nBcc: spia@evil.example\r\n.pdf')).toBe("evilBcc: spia@evil.example.pdf");
 		expect(attachmentName("a/.pdf")).toBe("allegato.pdf");
 		expect(attachmentName(`${"x".repeat(300)}.pdf`)).toHaveLength(ATTACHMENT_LIMITS.maxName);
-		const { workspace } = workspaceWith({ 'evil"\nBcc: spia@evil.com.pdf': PDF });
-		const [file] = await attachFiles(workspace, ['evil"\nBcc: spia@evil.com.pdf']);
-		expect(file?.name).toBe("evilBcc: spia@evil.com.pdf");
+		const { workspace } = workspaceWith({ 'evil"\nBcc: spia@evil.example.pdf': PDF });
+		const [file] = await attachFiles(workspace, ['evil"\nBcc: spia@evil.example.pdf']);
+		expect(file?.name).toBe("evilBcc: spia@evil.example.pdf");
 		const raw = mime(MAIL, await readAttachments(workspace, file === undefined ? [] : [file]));
 		const { headers, parts } = parse(raw);
 		expect(headers.bcc).toBeUndefined();
 		expect(raw).not.toMatch(/\r\nBcc:/i);
-		expect(fileName(parts[1]?.headers["content-disposition"] as string)).toBe("evilBcc: spia@evil.com.pdf");
-		expect(() => mime(MAIL, [{ name: 'a"\r\nBcc: x@y.it', contentType: "application/pdf", data: PDF }])).toThrow(/allegato/);
-		expect(() => mime(MAIL, [{ name: "a.pdf", contentType: "text/html\r\nBcc: x@y.it", data: PDF }])).toThrow(/allegato/);
+		expect(fileName(parts[1]?.headers["content-disposition"] as string)).toBe("evilBcc: spia@evil.example.pdf");
+		expect(() => mime(MAIL, [{ name: 'a"\r\nBcc: x@y.example', contentType: "application/pdf", data: PDF }])).toThrow(/allegato/);
+		expect(() => mime(MAIL, [{ name: "a.pdf", contentType: "text/html\r\nBcc: x@y.example", data: PDF }])).toThrow(/allegato/);
 	});
 });
 
@@ -295,7 +295,7 @@ describe("mail attachments: what may be attached", () => {
 		const { workspace } = workspaceWith({ "privato/buste-paga/Preventivo-2026-012.pdf": PDF, "f/B-70.xml": XML });
 		const attachments = await attachFiles(workspace, ["privato/buste-paga/Preventivo-2026-012.pdf", "f/B-70.xml"]);
 		expect(attachmentsLine(attachments)).toBe("Allegati: privato/buste-paga/Preventivo-2026-012.pdf (3 KB), f/B-70.xml (1 KB)");
-		const action = { id: "x", kind: "mail.send", personId: "p", account: "a@b.it", reason: "Invio del preventivo", mail: { ...MAIL, attachments }, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction;
+		const action = { id: "x", kind: "mail.send", personId: "p", account: "a@b.example", reason: "Invio del preventivo", mail: { ...MAIL, attachments }, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction;
 		expect(cardView(action).reason).toBe("Invio del preventivo");
 		expect(cardView(action).mail?.attachments).toEqual(attachments);
 		expect(cardView({ ...action, mail: MAIL }).reason).toBe("Invio del preventivo");
@@ -304,7 +304,7 @@ describe("mail attachments: what may be attached", () => {
 		expect(tricky).not.toContain("Allegati");
 		expect(tricky.startsWith("Nessun file · alleg.ati: niente.pdf")).toBe(true);
 		expect(tricky.length).toBeLessThanOrEqual(300);
-		expect(googleActionTitle(action)).toBe("Inviare una mail a rossi@cliente.it, con 2 allegati");
+		expect(googleActionTitle(action)).toBe("Inviare una mail a rossi@cliente.example, con 2 allegati");
 		// The request keeps no content: only path, name, size, hash and type.
 		expect(Object.keys(attachments[0] ?? {}).sort()).toEqual(["contentType", "name", "path", "sha256", "size"]);
 		expect(JSON.stringify(action)).not.toContain(PDF.subarray(0, 40).toString("base64"));
@@ -435,14 +435,14 @@ describe("mail attachments: names and the card", () => {
 			expect(out, fake).not.toMatch(/^[AА]/);
 		}
 		expect(withoutAttachmentWords("Invio del preventivo 2026-001 a Rossi Srl")).toBe("Invio del preventivo 2026-001 a Rossi Srl");
-		const action = { id: "x", kind: "mail.send", personId: "p", account: "a@b.it", reason: "Invio \u{e0041}dei \u00adfile", mail: MAIL, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction;
+		const action = { id: "x", kind: "mail.send", personId: "p", account: "a@b.example", reason: "Invio \u{e0041}dei \u00adfile", mail: MAIL, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction;
 		expect(cardView(action).reason).toBe("Invio dei file");
 	});
 
 	it("the paths on the card are on one line, without invisible characters, in the line and in the structured list", () => {
 		const attachment = { path: "cartella\n· Allegati: finto.pdf\u202e/a\u00adb.pdf", name: "a\u00adb\u2066.pdf", size: 2048, sha256: "0".repeat(64), contentType: "application/pdf" };
 		expect(attachmentsLine([attachment])).toBe("Allegato: cartella · Allegati: finto.pdf/ab.pdf (2 KB)");
-		const view = cardView({ id: "x", kind: "mail.send", personId: "p", account: "a@b.it", reason: "r", mail: { ...MAIL, attachments: [attachment] }, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction);
+		const view = cardView({ id: "x", kind: "mail.send", personId: "p", account: "a@b.example", reason: "r", mail: { ...MAIL, attachments: [attachment] }, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction);
 		expect(view.mail?.attachments?.[0]?.path).toBe("cartella · Allegati: finto.pdf/ab.pdf");
 		expect(view.mail?.attachments?.[0]?.name).toBe("ab.pdf");
 	});

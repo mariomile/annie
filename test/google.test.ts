@@ -44,14 +44,14 @@ function fakeGoogle() {
 		if (url.pathname === "/gmail/v1/users/me/messages") return Response.json({ messages: [{ id: "m1" }] });
 		if (url.pathname === "/gmail/v1/users/me/messages/m1") {
 			const headers = [
-				{ name: "From", value: "Rossi <rossi@cliente.it>" },
+				{ name: "From", value: "Rossi <rossi@cliente.example>" },
 				{ name: "Subject", value: "Preventivo" },
 				{ name: "Date", value: "Thu, 15 Oct 2026 09:00:00 +0200" },
 				{ name: "To", value: "anna@example.com" },
 			];
 			return Response.json({ id: "m1", snippet: "Ci mandate il preventivo?", labelIds: ["UNREAD"], payload: { mimeType: "multipart/alternative", headers, parts: [{ mimeType: "text/plain", body: { data: b64("Buongiorno, ci mandate il preventivo entro venerdì?") } }] } });
 		}
-		if (url.pathname === "/calendar/v3/calendars/primary/events") return Response.json({ items: [{ id: "e1", summary: "Call con Rossi", start: { dateTime: "2026-10-16T10:00:00+02:00" }, end: { dateTime: "2026-10-16T10:30:00+02:00" }, attendees: [{ email: "rossi@cliente.it" }] }] });
+		if (url.pathname === "/calendar/v3/calendars/primary/events") return Response.json({ items: [{ id: "e1", summary: "Call con Rossi", start: { dateTime: "2026-10-16T10:00:00+02:00" }, end: { dateTime: "2026-10-16T10:30:00+02:00" }, attendees: [{ email: "rossi@cliente.example" }] }] });
 		return Response.json({ error: "not found" }, { status: 404 });
 	}) as typeof fetch;
 	return { fetch: fetchImpl, calls, revoked };

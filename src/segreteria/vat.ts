@@ -132,7 +132,7 @@ export function vatInMail(body: string): VatReading {
 /**
  * The model's value for the VAT number: placeholders («N/A», «n.d.», «Chiedere al cliente»)
  * have no digit and are none; otherwise only what has a VAT number's shape is checked
- * («IT00743110157 (da verificare)»), never a phone number («+39 02 1234 5678», «tel 02 12345678»).
+ * («IT00000500157 (da verificare)»), never a phone number («+39 02 1234 5678», «tel 02 12345678»).
  */
 export function vatField(text: string | null): VatReading {
 	if (text === null || !/\d/.test(text)) return NONE;

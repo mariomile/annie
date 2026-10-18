@@ -13,7 +13,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "ciao, preventivo fusti",
     "receivedAt": "2026-10-15T11:00:00+02:00",
-    "body": "Ciao! Sono Matteo del Birrificio La Quercia. Mi mandi un preventivo per 30 fusti in acciaio da 20 litri? Consegna a Perugia entro 3 settimane. P.IVA 04455660797. Grazie mille, a presto!",
+    "body": "Ciao! Sono Matteo del Birrificio La Quercia. Mi mandi un preventivo per 30 fusti in acciaio da 20 litri? Consegna a Perugia entro 3 settimane. P.IVA 00000690792. Grazie mille, a presto!",
     "from": "Matteo Rinaldi <matteo@birrificio-quercia.example>"
   },
   "expected": {
@@ -30,7 +30,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "04455660797"
+      "vatNumber": "00000690792"
     },
     "requests": [
       {

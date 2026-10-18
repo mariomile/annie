@@ -13,7 +13,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Preventivo installazione cappa",
     "receivedAt": "2026-10-14T16:00:00+02:00",
-    "body": "Gentili,\nsono Chiara Pellizzari di Laboratori Arno Srl. Ci servirebbe l'installazione di 2 cappe chimiche aspiranti entro febbraio. P.IVA 03344550680.\nGrazie mille",
+    "body": "Gentili,\nsono Chiara Pellizzari di Laboratori Arno Srl. Ci servirebbe l'installazione di 2 cappe chimiche aspiranti entro febbraio. P.IVA 00000670687.\nGrazie mille",
     "from": "Chiara Pellizzari <chiara.p@laboratori-arno.example>"
   },
   "expected": {
@@ -32,7 +32,7 @@
       ],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "03344550680"
+      "vatNumber": "00000670687"
     },
     "requests": [
       {

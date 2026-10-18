@@ -13,7 +13,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Preventivo carta patinata",
     "receivedAt": "2026-10-15T14:00:00+02:00",
-    "body": "Buongiorno,\nTipografia Adige Srl, Davide Conti. L'anno scorso ci avete fornito 200 risme di carta patinata 150 g a 6,50 € a risma. Ci serve la stessa quantità, consegna a Verona entro novembre, P.IVA 06677880913. Potete confermare lo stesso prezzo?",
+    "body": "Buongiorno,\nTipografia Adige Srl, Davide Conti. L'anno scorso ci avete fornito 200 risme di carta patinata 150 g a 6,50 € a risma. Ci serve la stessa quantità, consegna a Verona entro novembre, P.IVA 00000730911. Potete confermare lo stesso prezzo?",
     "from": "Davide Conti <davide.conti@tipografia-adige.example>"
   },
   "expected": {
@@ -30,7 +30,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "06677880913"
+      "vatNumber": "00000730911"
     },
     "requests": [
       {

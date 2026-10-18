@@ -51,7 +51,7 @@ function holdsNumber(text: string, number: string): boolean {
 	return pattern !== "" && new RegExp(`(^|[^0-9A-Za-z])${pattern}(?![0-9A-Za-z])`, "i").test(text);
 }
 
-/** Whether `text` holds these digits not inside a longer number («IT03311220036» holds «03311220036»). */
+/** Whether `text` holds these digits not inside a longer number («IT00000520031» holds «00000520031»). */
 function holdsDigits(text: string, digits: string): boolean {
 	return new RegExp(`(^|[^0-9])${escaped(digits)}(?![0-9])`).test(text);
 }

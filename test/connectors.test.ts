@@ -122,7 +122,7 @@ describe("Gmail adapter (mocked fetch)", () => {
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages": () => Response.json({ resultSizeEstimate: 0 }),
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages/m1": () =>
 				Response.json({ id: "m1", threadId: "thr-m1", payload: { headers: [{ name: "Message-ID", value: "<orig@example.it>" }, { name: "References", value: "<a@x>" }] } }),
-			"GET gmail.googleapis.com/gmail/v1/users/me/profile": () => Response.json({ emailAddress: "vendite@acme.it" }),
+			"GET gmail.googleapis.com/gmail/v1/users/me/profile": () => Response.json({ emailAddress: "vendite@acme.example" }),
 			"POST gmail.googleapis.com/gmail/v1/users/me/messages/send": () => Response.json({ id: "sent-1", threadId: "thr-m1" }),
 		});
 		const gmail = new GmailMailAdapter({ credentials: creds, fetch: api.fetch });
@@ -135,7 +135,7 @@ describe("Gmail adapter (mocked fetch)", () => {
 		const body = send?.body as { raw: string; threadId: string };
 		expect(body.threadId).toBe("thr-m1");
 		const mime = Buffer.from(body.raw, "base64url").toString("utf8");
-		expect(mime).toContain("From: vendite@acme.it\r\nTo: irene@example.it\r\nSubject: Re: Preventivo forno\r\n");
+		expect(mime).toContain("From: vendite@acme.example\r\nTo: irene@example.it\r\nSubject: Re: Preventivo forno\r\n");
 		expect(mime).toContain("In-Reply-To: <orig@example.it>\r\nReferences: <a@x> <orig@example.it>\r\n");
 		expect(mime).toContain(`Message-ID: ${lookup?.url.searchParams.get("q")?.split("rfc822msgid:")[1]}`);
 		const encodedBody = mime.split("\r\n\r\n")[1] ?? "";
@@ -148,7 +148,7 @@ describe("Gmail adapter (mocked fetch)", () => {
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages": () => Response.json({ messages: [{ id: "sent-earlier" }] }),
 		});
 		const gmail = new GmailMailAdapter({ credentials: creds, fetch: api.fetch });
-		expect(await gmail.sendReply("acme", { to: "a@b.it", subject: "s", bodyText: "b", inReplyToMessageId: "m1", idempotencyKey: "k1" })).toEqual({ sentMessageId: "sent-earlier" });
+		expect(await gmail.sendReply("acme", { to: "a@b.example", subject: "s", bodyText: "b", inReplyToMessageId: "m1", idempotencyKey: "k1" })).toEqual({ sentMessageId: "sent-earlier" });
 		expect(api.calls.some((c) => c.url.pathname.endsWith("/send"))).toBe(false);
 	});
 
@@ -159,11 +159,11 @@ describe("Gmail adapter (mocked fetch)", () => {
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages": () =>
 				++lists === 1 ? Response.json({ error: { code: 429, message: "slow down" } }, { status: 429 }) : Response.json({}),
 			"GET gmail.googleapis.com/gmail/v1/users/me/messages/m1": () => Response.json({ id: "m1", threadId: "t", payload: { headers: [] } }),
-			"GET gmail.googleapis.com/gmail/v1/users/me/profile": () => Response.json({ emailAddress: "v@acme.it" }),
+			"GET gmail.googleapis.com/gmail/v1/users/me/profile": () => Response.json({ emailAddress: "v@acme.example" }),
 			"POST gmail.googleapis.com/gmail/v1/users/me/messages/send": () => Response.json({ error: { code: 500, message: "backend" } }, { status: 500 }),
 		});
 		const gmail = new GmailMailAdapter({ credentials: creds, fetch: api.fetch, retryBaseMs: 1 });
-		await expect(gmail.sendReply("acme", { to: "a@b.it", subject: "s", bodyText: "b", inReplyToMessageId: "m1", idempotencyKey: "k" })).rejects.toThrow("gmail messages.send failed: HTTP 500");
+		await expect(gmail.sendReply("acme", { to: "a@b.example", subject: "s", bodyText: "b", inReplyToMessageId: "m1", idempotencyKey: "k" })).rejects.toThrow("gmail messages.send failed: HTTP 500");
 		expect(lists).toBe(2);
 		expect(api.calls.filter((c) => c.url.pathname.endsWith("/send"))).toHaveLength(1);
 

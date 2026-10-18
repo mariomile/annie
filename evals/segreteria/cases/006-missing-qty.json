@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta preventivo vetri",
     "receivedAt": "2026-10-13T15:00:00+02:00",
-    "body": "Buongiorno,\nRoberto Zanin, Serramenti Zanin Snc. Vorremmo un preventivo per vetrocamera basso emissivi 4/16/4, consegna a Pordenone, appena possibile. P.IVA 02233440573.\nSaluti",
+    "body": "Buongiorno,\nRoberto Zanin, Serramenti Zanin Snc. Vorremmo un preventivo per vetrocamera basso emissivi 4/16/4, consegna a Pordenone, appena possibile. P.IVA 00000650572.\nSaluti",
     "from": "Roberto Zanin <r.zanin@serramenti-zanin.example>"
   },
   "expected": {
@@ -33,7 +33,7 @@
       ],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "02233440573"
+      "vatNumber": "00000650572"
     },
     "requests": [
       {

@@ -109,7 +109,7 @@ function markerOf(entry: PaidEntry | undefined, n: number): PaidMark | undefined
 }
 
 /**
- * A partita IVA as the owner may write it, with or without a label («P.IVA 03311220036»), checked
+ * A partita IVA as the owner may write it, with or without a label («P.IVA 00000520031»), checked
  * on paper (tax-ids.ts): «IT» and the 11 digits for an Italian one (a body's numeric codice
  * fiscale too), the prefix and the number for a foreign one. InvoiceError otherwise.
  */
@@ -120,7 +120,7 @@ export function companyVat(text: string): string {
 	return /^\d{11}$/.test(checked.number) ? `IT${checked.number}` : checked.number;
 }
 
-/** «IT02987650013», with Italy assumed when the country is missing. */
+/** «IT00000510016», with Italy assumed when the country is missing. */
 export function vatOf(party: FatturaParty): string | undefined {
 	return party.vat === undefined ? undefined : `${(party.vat.country ?? "IT").toUpperCase()}${party.vat.code.toUpperCase()}`;
 }

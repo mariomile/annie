@@ -15,7 +15,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Preventivo standing desk",
     "receivedAt": "2026-10-13T12:00:00+02:00",
-    "body": "Hi, buongiorno! Sono Laura Bassi, office manager di TechStart Milano Srl. We need 15 standing desks per il nuovo open space, ASAP please. P.IVA 02122230432. Thanks!",
+    "body": "Hi, buongiorno! Sono Laura Bassi, office manager di TechStart Milano Srl. We need 15 standing desks per il nuovo open space, ASAP please. P.IVA 00000640433. Thanks!",
     "from": "Laura Bassi <laura.bassi@techstart-milano.example>"
   },
   "expected": {
@@ -34,7 +34,7 @@
       ],
       "source": "email",
       "originalLanguage": "it+en",
-      "vatNumber": "02122230432"
+      "vatNumber": "00000640433"
     },
     "requests": [
       {

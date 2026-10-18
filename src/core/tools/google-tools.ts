@@ -368,7 +368,7 @@ function writeTools(write: WriteOptions, withClient: WithClient, timeZone: strin
 	];
 }
 
-/** The bare addresses of a From, To or Cc header ("Rossi <rossi@x.it>, b@y.it" → rossi@x.it, b@y.it), lower case. */
+/** The bare addresses of a From, To or Cc header ("Rossi <rossi@x.example>, b@y.example" → rossi@x.example, b@y.example), lower case. */
 function mailboxes(value: string): string[] {
 	const found = [...value.matchAll(/<([^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+)/g)].map((m) => (m[1] ?? m[2] ?? "").toLowerCase());
 	return [...new Set(found.filter(validAddress))];

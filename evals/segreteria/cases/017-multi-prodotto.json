@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Preventivo attrezzature cucina",
     "receivedAt": "2026-10-15T17:00:00+02:00",
-    "body": "Buongiorno,\nper il Ristorante Due Ponti (Pisa, via Lungarno Fittizio 3) chiediamo preventivo per:\n- 1 abbattitore di temperatura 5 teglie\n- 2 frigoriferi verticali 700 l\n- 1 lavastoviglie a capotta\nConsegna entro metà dicembre. P.IVA 08899000130.\nIrene Basile",
+    "body": "Buongiorno,\nper il Ristorante Due Ponti (Pisa, via Lungarno Fittizio 3) chiediamo preventivo per:\n- 1 abbattitore di temperatura 5 teglie\n- 2 frigoriferi verticali 700 l\n- 1 lavastoviglie a capotta\nConsegna entro metà dicembre. P.IVA 00000750133.\nIrene Basile",
     "from": "Irene Basile <irene.basile@ristorante-due-ponti.example>"
   },
   "expected": {
@@ -31,7 +31,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "08899000130"
+      "vatNumber": "00000750133"
     },
     "requests": [
       {

@@ -15,7 +15,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "=?UTF-8?Q?Richiesta_preventivo_etichettatrice_=E2=80=93_urgente?=",
     "receivedAt": "2026-10-13T12:00:00+02:00",
-    "body": "<p>Buongiorno,</p><p>sono Nicol=C3=B2 Cant=C3=B9 della Vinicola La Perla S.r.l. di Canel=\nli (AT). Vorrei un preventivo per 1 etichettatrice semiautomatica per bottiglie, entro l&#39;inizio della vendemmia tardiva (fine ottobre). P.IVA 05152530464.</p><p>Grazie &amp; saluti</p>",
+    "body": "<p>Buongiorno,</p><p>sono Nicol=C3=B2 Cant=C3=B9 della Vinicola La Perla S.r.l. di Canel=\nli (AT). Vorrei un preventivo per 1 etichettatrice semiautomatica per bottiglie, entro l&#39;inizio della vendemmia tardiva (fine ottobre). P.IVA 00000700468.</p><p>Grazie &amp; saluti</p>",
     "from": "=?UTF-8?Q?Nicol=C3=B2_Cant=C3=B9?= <nicolo.cantu@vinicola-perla.example>"
   },
   "expected": {
@@ -32,7 +32,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "05152530464"
+      "vatNumber": "00000700468"
     },
     "requests": [
       {

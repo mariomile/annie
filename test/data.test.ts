@@ -294,7 +294,7 @@ describe("tables as people export them", () => {
 		const bank = csv(
 			[
 				"Estratto conto ottobre 2026",
-				"Conto;IT60X0542811101000000123456",
+				"Conto;IT74X0000000000000000123456",
 				"Periodo;01/10/2026 - 31/10/2026",
 				"Data;Valuta;Descrizione;Dare;Avere",
 				"Saldo iniziale;;;;5.000,00",

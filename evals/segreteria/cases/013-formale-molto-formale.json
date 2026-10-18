@@ -14,7 +14,7 @@
     "to": "preventivi@officine-fittizie.example",
     "subject": "Richiesta di offerta - quadri elettrici",
     "receivedAt": "2026-10-14T13:00:00+02:00",
-    "body": "Spett.le Ditta,\ncon la presente la sottoscritta Ing. Valeria Morelli, per conto di Impianti Morelli Srl, richiede cortese offerta per n. 4 quadri elettrici di distribuzione IP65, da consegnarsi presso il cantiere di Lecce entro il 30 novembre p.v.\nP.IVA 05566770904.\nDistinti saluti",
+    "body": "Spett.le Ditta,\ncon la presente la sottoscritta Ing. Valeria Morelli, per conto di Impianti Morelli Srl, richiede cortese offerta per n. 4 quadri elettrici di distribuzione IP65, da consegnarsi presso il cantiere di Lecce entro il 30 novembre p.v.\nP.IVA 00000710905.\nDistinti saluti",
     "from": "Ing. Valeria Morelli <v.morelli@impianti-morelli.example>"
   },
   "expected": {
@@ -31,7 +31,7 @@
       "missingFields": [],
       "source": "email",
       "originalLanguage": "it",
-      "vatNumber": "05566770904"
+      "vatNumber": "00000710905"
     },
     "requests": [
       {

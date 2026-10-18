@@ -21,10 +21,10 @@ const NS = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2";
 type Party = { name: string; vat: string };
 type Rata = { amount: string; due?: string; method?: string; iban?: string };
 
-const ALFA: Party = { name: "Alfa Forniture S.r.l.", vat: "02987650013" };
-const BETA: Party = { name: "Beta Ristorazione Srl", vat: "03311220036" };
+const ALFA: Party = { name: "Alfa Forniture S.r.l.", vat: "00000510016" };
+const BETA: Party = { name: "Beta Ristorazione Srl", vat: "00000520031" };
 const GAMMA: Party = { name: "Gamma Hotel S.p.A.", vat: "01234567897" };
-const DELTA: Party = { name: "Delta Carni Srl", vat: "00743110157" };
+const DELTA: Party = { name: "Delta Carni Srl", vat: "00000500157" };
 
 const xmlText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -64,7 +64,7 @@ function fattura(o: Doc & { from: Party; to: Party }): string {
 	return invoiceFile(o.from, o.to, [o]);
 }
 
-const IBAN = "IT60X0542811101000000123456";
+const IBAN = "IT74X0000000000000000123456";
 /** Received by Beta from Alfa: two instalments, one overdue. */
 const RICEVUTA = fattura({ from: ALFA, to: BETA, number: "2026/0153", date: "2026-09-15", total: "1253.50", rate: [{ amount: "626.75", due: "2026-10-12", iban: IBAN }, { amount: "626.75", due: "2026-11-12", iban: IBAN }] });
 /** Issued by Beta to Gamma: due on a Saturday. */
@@ -155,8 +155,8 @@ const HINT = [
 describe("the scadenzario: due", () => {
 	it("golden: with the company set, a summary first, then what is to pay and to collect, the credit note once and the total net of it", async () => {
 		const { run } = setup(ALL);
-		const set = await run({ op: "set_company", vat: "IT 033 112 200 36" });
-		expect(set).toMatch(/P\.IVA IT03311220036\n<<<fine dati dalle fatture [0-9a-f]+>>>: le fatture in cui è cliente sono da pagare/);
+		const set = await run({ op: "set_company", vat: "IT 000 005 200 31" });
+		expect(set).toMatch(/P\.IVA IT00000520031\n<<<fine dati dalle fatture [0-9a-f]+>>>: le fatture in cui è cliente sono da pagare/);
 		expect(set).toMatch(/Delle fatture trovate \(4\): 3 ricevute \(da pagare\), una emessa \(da incassare\)\.$/);
 		const answer = await run({ op: "due" });
 		expect(answer.split("\n")[0]).toBe("Scadenze dei prossimi 30 giorni (fatture trovate: 4).");
@@ -194,7 +194,7 @@ describe("the scadenzario: due", () => {
 		expect(data).toContain("Totale da Alfa Forniture S.r.l. e Delta Carni Srl a Beta Ristorazione Srl, scadute comprese: 1.163,50 € (1.263,50 € meno la nota di credito di 100,00 €).");
 		expect(data).toContain("\nDa Beta Ristorazione Srl a Gamma Hotel S.p.A.:\n• sab 31/10 (slitta a lun 02/11): 99,90 €, fatt. B-77");
 		expect(data).not.toMatch(/da pagare|da incassare|→/);
-		expect(data).toContain("La partita IVA IT03311220036 (Beta Ristorazione Srl) compare in tutte le fatture.");
+		expect(data).toContain("La partita IVA IT00000520031 (Beta Ristorazione Srl) compare in tutte le fatture.");
 		// The hint outside the fence, word for word, and the partita IVA only inside.
 		expect(after(answer).trim()).toBe(HINT);
 		expect(await run({ op: "due", side: "pagare" })).toContain("Errore: per dividere da pagare e da incassare serve l'azienda");
@@ -202,7 +202,7 @@ describe("the scadenzario: due", () => {
 
 	it("names at most three suppliers in a direction, then «e altri N»", async () => {
 		const files: Record<string, string> = {};
-		const parties = [ALFA, DELTA, GAMMA, { name: "Epsilon Srl", vat: "00488410010" }, { name: "Zeta Srl", vat: "01114601006" }];
+		const parties = [ALFA, DELTA, GAMMA, { name: "Epsilon Srl", vat: "00000540013" }, { name: "Zeta Srl", vat: "00000551002" }];
 		parties.forEach((p, i) => {
 			files[`f${i}.xml`] = fattura({ from: p, to: BETA, number: `Z-${i}`, date: "2026-10-01", total: "1.00", rate: [{ amount: "1.00", due: "2026-10-20" }] });
 		});
@@ -248,7 +248,7 @@ describe("the scadenzario: due", () => {
 		const sabato = fattura({ from: ALFA, to: BETA, number: "W-1", date: "2026-10-01", total: "40.00", rate: [{ amount: "40.00", due: "2026-10-17" }] });
 		const venerdi = fattura({ from: ALFA, to: BETA, number: "W-2", date: "2026-10-01", total: "30.00", rate: [{ amount: "30.00", due: "2026-10-16" }] });
 		const { run } = setup({ "w1.xml": sabato, "w2.xml": venerdi });
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		const data = inside(await run({ op: "due", range: "settimana" }));
 		expect(data).toContain("• ven 16/10 (da 2 giorni): 30,00 € ad Alfa Forniture S.r.l., fatt. W-2");
 		expect(data).toContain("• sab 17/10 (slitta a lun 19/10): 40,00 € ad Alfa Forniture S.r.l., fatt. W-1");
@@ -259,7 +259,7 @@ describe("the scadenzario: due", () => {
 	it("a credit note never takes a total below zero, and a month lists it without taking it off", async () => {
 		const grossa = fattura({ from: ALFA, to: BETA, number: "NC 2026/10", date: "2026-10-06", total: "2000.00", type: "TD04" });
 		const { run } = setup({ ...ALL, "grossa.xml": grossa });
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		const data = inside(await run({ op: "due" }));
 		expect(data).toContain("Totale da pagare, scadute comprese: 0,00 € (1.253,50 € meno le note di credito di 1.253,50 €; restano 846,50 € di note di credito da scalare).");
 		const november = inside(await run({ op: "due", month: "novembre" }));
@@ -282,18 +282,18 @@ describe("the scadenzario: due", () => {
 		const alfa = fattura({ from: ALFA, to: BETA, number: "A-1", date: "2026-10-01", total: "50.00", rate: [{ amount: "50.00", due: "2026-10-12" }] });
 		const gamma = fattura({ from: GAMMA, to: BETA, number: "G-1", date: "2026-10-01", total: "200.00", rate: [{ amount: "200.00", due: "2026-10-14" }] });
 		const { run } = setup({ "a.xml": alfa, "g.xml": gamma, "n.xml": NOTA });
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		const due = inside(await run({ op: "due" }));
 		expect(due).toContain("Totale da pagare, scadute comprese: 200,00 € (250,00 € meno la nota di credito di 50,00 €; restano 50,00 € di note di credito da scalare).");
 		const parties = inside(await run({ op: "by_party" }));
-		expect(parties).toContain("• Alfa Forniture S.r.l. (IT02987650013): aperto 0,00 € (50,00 € meno la nota di credito di 50,00 €; restano 50,00 € di note di credito da scalare) su una fattura");
+		expect(parties).toContain("• Alfa Forniture S.r.l. (IT00000510016): aperto 0,00 € (50,00 € meno la nota di credito di 50,00 €; restano 50,00 € di note di credito da scalare) su una fattura");
 		expect(parties).toContain("• Gamma Hotel S.p.A. (IT01234567897): aperto 200,00 € su una fattura");
 		expect(parties).toContain("Totale aperto: da pagare 200,00 € (ogni nota di credito scalata dalla sua controparte).");
 	});
 
 	it("without the company, shows at most five directions and counts the others", async () => {
 		const files: Record<string, string> = {};
-		const customers = [BETA, GAMMA, DELTA, ALFA, { name: "Epsilon Srl", vat: "00488410010" }, { name: "Zeta Srl", vat: "01114601006" }, { name: "Eta Srl", vat: "02241850367" }];
+		const customers = [BETA, GAMMA, DELTA, ALFA, { name: "Epsilon Srl", vat: "00000540013" }, { name: "Zeta Srl", vat: "00000551002" }, { name: "Eta Srl", vat: "00000570366" }];
 		customers.forEach((c, i) => {
 			const from = c === ALFA ? BETA : ALFA;
 			files[`c${i}.xml`] = fattura({ from, to: c, number: `C-${i}`, date: "2026-10-01", total: `${i + 1}.00`, rate: [{ amount: `${i + 1}.00`, due: "2026-10-20" }] });
@@ -331,13 +331,13 @@ describe("the scadenzario: by_party and list", () => {
 			"a4.xml": fattura({ from: ALFA, to: BETA, number: "D-4", date: "2026-10-04", total: "66.667", rate: [{ amount: "66.667", due: "2026-12-01" }] }),
 		};
 		const { run } = setup(files);
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		await run({ op: "mark_paid", number: "D-1", party: "alfa" });
 		// 1253,50 + 50 + 0,20 + 33,333 + 66,667 = 1403,70 open, less 100; 0,10 paid.
 		expect(inside(await run({ op: "by_party" }))).toBe(
 			[
 				"Da pagare:",
-				"• Alfa Forniture S.r.l. (IT02987650013): aperto 1.303,70 € (1.403,70 € meno la nota di credito di 100,00 €) su 5 fatture; pagato 0,10 €",
+				"• Alfa Forniture S.r.l. (IT00000510016): aperto 1.303,70 € (1.403,70 € meno la nota di credito di 100,00 €) su 5 fatture; pagato 0,10 €",
 				"",
 				"Da incassare:",
 				"• Gamma Hotel S.p.A. (IT01234567897): aperto 99,90 € su una fattura",
@@ -349,16 +349,16 @@ describe("the scadenzario: by_party and list", () => {
 
 	it("a 16-letter name is a name, not a codice fiscale", async () => {
 		expect(matchesParty({ name: "Alfa Forniture Srl" }, "Alfa Forniture Srl")).toBe(true);
-		expect(matchesParty({ name: "Rossi Mario", fiscal: "RSSMRA85T10A562S" }, "rssmra85t10a562s")).toBe(true);
-		expect(matchesParty({ name: "Rossi Mario", fiscal: "RSSMRA85T10A562S" }, "Alfa Forniture Srl")).toBe(false);
+		expect(matchesParty({ name: "Rossi Mario", fiscal: "ZQXWKJ85T10A562F" }, "zqxwkj85t10a562f")).toBe(true);
+		expect(matchesParty({ name: "Rossi Mario", fiscal: "ZQXWKJ85T10A562F" }, "Alfa Forniture Srl")).toBe(false);
 		const { run } = setup(ALL);
-		expect(inside(await run({ op: "by_party", party: "Alfa Forniture Srl" }))).toContain("• da Alfa Forniture S.r.l. (IT02987650013) a Beta Ristorazione Srl (IT03311220036): aperto");
+		expect(inside(await run({ op: "by_party", party: "Alfa Forniture Srl" }))).toContain("• da Alfa Forniture S.r.l. (IT00000510016) a Beta Ristorazione Srl (IT00000520031): aperto");
 	});
 
 	it("one party: its open instalments without its name on each row, the credit note, the IBAN once", async () => {
 		const { run } = setup(ALL);
-		await run({ op: "set_company", vat: "03311220036" });
-		const alfa = inside(await run({ op: "by_party", party: "02987650013" }));
+		await run({ op: "set_company", vat: "00000520031" });
+		const alfa = inside(await run({ op: "by_party", party: "00000510016" }));
 		expect(alfa).toContain("Rate aperte:\n• lun 12/10 (da 6 giorni): 626,75 €, fatt. 2026/0153 rata 1/2\n• gio 12/11: 626,75 €, fatt. 2026/0153 rata 2/2\n");
 		expect(alfa).toContain("• nota di credito NC 2026/9 del 05/10 da scalare: 100,00 €");
 		expect(alfa.match(/IBAN/g)).toHaveLength(1);
@@ -369,14 +369,14 @@ describe("the scadenzario: by_party and list", () => {
 	it("without the company, one line per supplier and customer, and no grand total", async () => {
 		const { run } = setup(ALL);
 		const data = inside(await run({ op: "by_party" }));
-		expect(data).toContain("Fornitore e cliente:\n• da Alfa Forniture S.r.l. (IT02987650013) a Beta Ristorazione Srl (IT03311220036): aperto 1.203,50 € (1.303,50 € meno la nota di credito di 100,00 €) su 2 fatture");
-		expect(data).toContain("• da Beta Ristorazione Srl (IT03311220036) a Gamma Hotel S.p.A. (IT01234567897): aperto 99,90 € su una fattura");
+		expect(data).toContain("Fornitore e cliente:\n• da Alfa Forniture S.r.l. (IT00000510016) a Beta Ristorazione Srl (IT00000520031): aperto 1.203,50 € (1.303,50 € meno la nota di credito di 100,00 €) su 2 fatture");
+		expect(data).toContain("• da Beta Ristorazione Srl (IT00000520031) a Gamma Hotel S.p.A. (IT01234567897): aperto 99,90 € su una fattura");
 		expect(data).not.toContain("Totale");
 	});
 
 	it("list: newest first, with due date, status and file; credit notes «da scalare» or «già scalata»", async () => {
 		const { run } = setup(ALL);
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		await run({ op: "mark_paid", number: "B-77", party: "gamma" });
 		const answer = await run({ op: "list" });
 		expect(answer.split("\n")[0]).toBe("Fatture: 4, dalla più recente.");
@@ -392,7 +392,7 @@ describe("the scadenzario: by_party and list", () => {
 	it("a negative invoice that is not a credit note counts as one toward that party, and says so", async () => {
 		const negativa = fattura({ from: ALFA, to: BETA, number: "R-1", date: "2026-10-07", total: "-50.00", rate: [{ amount: "-50.00", due: "2026-11-30" }] });
 		const { run } = setup({ "r.xml": RICEVUTA, "n.xml": negativa });
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		expect(inside(await run({ op: "by_party" }))).toContain("aperto 1.203,50 € (1.253,50 € meno la nota di credito di 50,00 €) su una fattura");
 		expect(inside(await run({ op: "list" }))).toContain("importo negativo, conta come nota di credito, da scalare");
 		expect(inside(await run({ op: "due" }))).toContain("• fattura R-1 del 07/10 di Alfa Forniture S.r.l. (fattura con importo negativo, conta come nota di credito) da scalare: 50,00 €");
@@ -407,14 +407,14 @@ describe("the scadenzario: by_party and list", () => {
 			total: "200.00",
 			rate: [
 				{ amount: "100.00", due: "2026-11-10", iban: IBAN },
-				{ amount: "100.00", due: "2026-11-10", iban: "IT02A0301503200000003517230" },
+				{ amount: "100.00", due: "2026-11-10", iban: "IT08A0000000000000003517230" },
 				{ amount: "100.00", due: "2026-12-10", iban: IBAN },
-				{ amount: "100.00", due: "2026-12-10", iban: "IT02A0301503200000003517230" },
+				{ amount: "100.00", due: "2026-12-10", iban: "IT08A0000000000000003517230" },
 			],
 		});
 		const wrong = fattura({ from: GAMMA, to: BETA, number: "BAD-1", date: "2026-10-01", total: "100.00", rate: [{ amount: "80.00", due: "2026-11-10" }, { amount: "80.00", due: "2026-11-20" }] });
 		const { run } = setup({ "alt.xml": alternative, "bad.xml": wrong });
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		const data = inside(await run({ op: "due", range: "prossimi", days: 60 }));
 		expect(data).toContain("• mar 10/11: 100,00 € ad Alfa Forniture S.r.l., fatt. ALT-1 rata 1/2");
 		expect(data).toContain("• gio 10/12: 100,00 € ad Alfa Forniture S.r.l., fatt. ALT-1 rata 2/2");
@@ -432,11 +432,11 @@ describe("the scadenzario: by_party and list", () => {
 describe("the scadenzario: mark_paid and mark_unpaid", () => {
 	it("marks one instalment, then the whole invoice, then takes one back: a whole-invoice mark and its exceptions; the audit has the op and a count", async () => {
 		const { run, store, events, dir } = setup(ALL);
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		const one = await run({ op: "mark_paid", number: "2026/0153", party: "Alfa", instalment: 1 });
 		expect(one.startsWith("Fatto, annotato il 18/10/2026: <<<dati dalle fatture")).toBe(true);
 		expect(inside(one)).toBe(`rata 1/2 (626,75 €, scadenza lun 12/10) della fattura 2026/0153 del 15/09/2026 di Alfa Forniture S.r.l., 1.253,50 €: segnata pagata.\nIBAN Alfa Forniture S.r.l.: ${IBAN}`);
-		const key = expect.stringContaining("IT02987650013|2026/0153|2026-09-15");
+		const key = expect.stringContaining("IT00000510016|2026/0153|2026-09-15");
 		const marker = { by: "test:u", at: NOW.toISOString() };
 		expect(store.read().paid).toEqual([{ invoice: key, instalments: [{ n: 1, ...marker }] }]);
 		expect(inside(await run({ op: "due" }))).not.toContain("da 6 giorni");
@@ -454,14 +454,14 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 			{ type: "invoice.marked", op: "mark_paid", count: 1 },
 			{ type: "invoice.marked", op: "mark_unpaid", count: 1 },
 		]);
-		expect(JSON.parse(readFileSync(join(dir, "invoices.json"), "utf8")).company).toEqual({ vat: "IT03311220036", ...marker });
+		expect(JSON.parse(readFileSync(join(dir, "invoices.json"), "utf8")).company).toEqual({ vat: "IT00000520031", ...marker });
 		// The copy holds the last state written.
 		expect(readFileSync(join(dir, "invoices.json.bak"), "utf8")).toBe(readFileSync(join(dir, "invoices.json"), "utf8"));
 	});
 
 	it("golden: a credit note marked is used, said so, and no longer taken off", async () => {
 		const { run } = setup(ALL);
-		await run({ op: "set_company", vat: "03311220036" });
+		await run({ op: "set_company", vat: "00000520031" });
 		const marked = await run({ op: "mark_paid", number: "NC 2026/9", party: "alfa" });
 		expect(marked.split("<<<")[0]).toBe("Fatto, annotato il 18/10/2026: ");
 		expect(inside(marked)).toBe("nota di credito NC 2026/9 del 05/10/2026 di Alfa Forniture S.r.l., 100,00 €: segnata come usata.");
@@ -473,17 +473,17 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 
 	it("finds a number by its last digits when only one fits, by any copy's path written loosely; lists the party's open invoices when not found", async () => {
 		const older = new Date("2026-10-01T08:00:00Z");
-		const { run, dir, store } = setup({ "copia/IT02987650013_00042.xml": RICEVUTA, "IT02987650013_00042.xml.p7m": p7m(Buffer.from(RICEVUTA)), "e.xml": EMESSA, "s.xml": SENZA });
-		utimesSync(join(dir, "workspace", "copia", "IT02987650013_00042.xml"), older, older);
-		await run({ op: "set_company", vat: "03311220036" });
+		const { run, dir, store } = setup({ "copia/IT00000510016_00042.xml": RICEVUTA, "IT00000510016_00042.xml.p7m": p7m(Buffer.from(RICEVUTA)), "e.xml": EMESSA, "s.xml": SENZA });
+		utimesSync(join(dir, "workspace", "copia", "IT00000510016_00042.xml"), older, older);
+		await run({ op: "set_company", vat: "00000520031" });
 		expect(inside(await run({ op: "mark_paid", number: "153", party: "alfa", instalment: 1 }))).toContain("fattura 2026/0153");
 		expect(inside(await run({ op: "mark_paid", number: "0153", party: "alfa", instalment: 2 }))).toContain("rata 2/2");
-		expect(await run({ op: "mark_unpaid", path: ".\\copia\\IT02987650013_00042.xml" })).toMatch(/^Fatto, tolta l'annotazione/);
+		expect(await run({ op: "mark_unpaid", path: ".\\copia\\IT00000510016_00042.xml" })).toMatch(/^Fatto, tolta l'annotazione/);
 		expect(store.read().paid).toEqual([]);
 		const missing = await run({ op: "mark_paid", number: "999", party: "alfa" });
 		expect(missing).toMatch(/^Errore: non trovo la fattura <<</);
 		expect(missing).toContain("Quelle aperte di questa controparte: <<<dati dalle fatture");
-		expect(missing).toContain("• fattura 2026/0160 del 10/10/2026, 50,00 €, file s.xml\n• fattura 2026/0153 del 15/09/2026, 1.253,50 €, file IT02987650013_00042.xml.p7m");
+		expect(missing).toContain("• fattura 2026/0160 del 10/10/2026, 50,00 €, file s.xml\n• fattura 2026/0153 del 15/09/2026, 1.253,50 €, file IT00000510016_00042.xml.p7m");
 		expect(missing).toMatch(/Guarda l'elenco con op list\.$/);
 	});
 
@@ -560,7 +560,7 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 			expect(answer).toContain("Attenzione, lo stato delle fatture pagate non si legge: le mostro tutte aperte.");
 			expect(inside(answer)).toContain("lun 12/10 (da 6 giorni)");
 			expect(await run({ op: "mark_paid", number: "B-77", party: "gamma" })).toMatch(/^Errore: lo stato delle fatture pagate \(invoices\.json\) non si legge: non lo cambio/);
-			expect(await run({ op: "set_company", vat: "03311220036" })).toMatch(/^Errore: lo stato delle fatture pagate/);
+			expect(await run({ op: "set_company", vat: "00000520031" })).toMatch(/^Errore: lo stato delle fatture pagate/);
 			expect(await run({ op: "set_company" })).toContain("L'azienda non è impostata");
 			expect(readFileSync(join(dir, "invoices.json"), "utf8")).toBe(broken);
 		}
@@ -577,7 +577,7 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 		expect(String(await guarded?.execute({ op: "list" }, brief))).toContain("Fatture: 4");
 		expect(String(await guarded?.execute({ op: "set_company" }, brief))).toContain("L'azienda non è impostata");
 		expect(String(await guarded?.execute({ op: "mark_paid", number: "B-77" }, brief))).toContain("Errore: nella chat del brief del mattino Annie legge soltanto.");
-		expect(String(await guarded?.execute({ op: "set_company", vat: "03311220036" }, brief))).toContain("legge soltanto");
+		expect(String(await guarded?.execute({ op: "set_company", vat: "00000520031" }, brief))).toContain("legge soltanto");
 		expect(String(await guarded?.execute({ op: "set_company", clear: true }, brief))).toContain("legge soltanto");
 		expect(store.read()).toEqual({ paid: [], broken: false });
 		expect(invoiceCallReads({ op: "set_company", name: "x" })).toBe(false);
@@ -585,12 +585,12 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 
 	it("set_company: the partita IVA with its label or spaces, checked; a name matched by its words; shows and clears", async () => {
 		const { run, store, events } = setup(ALL);
-		expect(inside(await run({ op: "set_company", vat: "P.IVA 03311220036" }))).toBe("P.IVA IT03311220036");
-		expect(inside(await run({ op: "set_company", vat: "partita iva: IT 033 112 200 36" }))).toBe("P.IVA IT03311220036");
-		expect(await run({ op: "set_company", vat: "02987650014" })).toBe("Errore: la partita IVA non va: la cifra di controllo (l'ultima) non torna: probabilmente c'è un errore di battitura.");
+		expect(inside(await run({ op: "set_company", vat: "P.IVA 00000520031" }))).toBe("P.IVA IT00000520031");
+		expect(inside(await run({ op: "set_company", vat: "partita iva: IT 000 005 200 31" }))).toBe("P.IVA IT00000520031");
+		expect(await run({ op: "set_company", vat: "00000510017" })).toBe("Errore: la partita IVA non va: la cifra di controllo (l'ultima) non torna: probabilmente c'è un errore di battitura.");
 		expect(await run({ op: "set_company", vat: "BETAXX1" })).toMatch(/^Errore: la partita IVA non va: /);
 		expect(await run({ op: "set_company", vat: "ciao" })).toMatch(/^Errore: la partita IVA non va: /);
-		expect(await run({ op: "set_company", vat: "RSSMRA85T10A562S" })).toContain("codice fiscale di una persona");
+		expect(await run({ op: "set_company", vat: "ZQXWKJ85T10A562F" })).toContain("codice fiscale di una persona");
 		expect(await run({ op: "set_company", name: "Beta Rist" })).toContain("3 ricevute (da pagare), una emessa (da incassare).");
 		expect(inside(await run({ op: "set_company" }))).toBe("Beta Rist");
 		expect(inside(await run({ op: "due" }))).toContain("626,75 € ad Alfa Forniture S.r.l.");
@@ -621,8 +621,8 @@ describe("the scadenzario: reading the workspace", () => {
 
 	it("reads signed invoices in the document worker, and the same invoice as .xml and .xml.p7m once", async () => {
 		const files = {
-			"IT02987650013_00042.xml.p7m": p7m(Buffer.from(RICEVUTA)),
-			"copia/IT02987650013_00042.xml": RICEVUTA,
+			"IT00000510016_00042.xml.p7m": p7m(Buffer.from(RICEVUTA)),
+			"copia/IT00000510016_00042.xml": RICEVUTA,
 			"firmato.p7m": p7m(Buffer.from(EMESSA)),
 			"contratto.pdf.p7m": p7m(Buffer.from("%PDF-1.4 non una fattura")),
 		};
@@ -814,11 +814,11 @@ describe("the scadenzario in the app", () => {
 		// Sent earlier, as a file in the instance's workspace.
 		const workspace = workspaceDir(dataDir, tenantId(config.tenantId), instanceId(config.instanceId));
 		mkdirSync(join(workspace, "fatture"), { recursive: true });
-		writeFileSync(join(workspace, "fatture", "IT02987650013_00042.xml.p7m"), p7m(Buffer.from(RICEVUTA)));
-		const answer = await reply('/tool invoices {"op":"set_company","vat":"03311220036"}');
+		writeFileSync(join(workspace, "fatture", "IT00000510016_00042.xml.p7m"), p7m(Buffer.from(RICEVUTA)));
+		const answer = await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		expect(answer).toContain("Delle fatture trovate (1): una ricevuta (da pagare), nessuna emessa (da incassare)");
 		const due = await reply('/tool invoices {"op":"by_party","party":"alfa"}');
-		expect(due).toContain("Alfa Forniture S.r.l. (IT02987650013): aperto 1.253,50 € su una fattura");
+		expect(due).toContain("Alfa Forniture S.r.l. (IT00000510016): aperto 1.253,50 € su una fattura");
 		expect(await reply('/tool invoices {"op":"mark_paid","number":"0153","party":"alfa","instalment":1}')).toContain("rata 1/2 (626,75 €");
 		const audit = readFileSync(auditFile(dataDir, tenantId(config.tenantId)), "utf8");
 		const marked = audit
