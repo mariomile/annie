@@ -2504,6 +2504,12 @@ function confirmDialog(title, text, okLabel, onOk) {
 }
 
 // ---------- approvazioni ----------
+/** A proposed tool's name as a title: «cambio_eur» reads «Cambio eur». */
+function toolTitle(name) {
+	const words = name.replace(/[_-]+/g, " ").trim();
+	return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 async function viewApprovals(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
@@ -2513,9 +2519,9 @@ async function viewApprovals(main) {
 	const card = (p) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Proposta ${p.id} · ${fmt.time(p.proposedAt)}`), h("h2", `${inst.name} propone uno strumento nuovo: `, h("span.mono", `custom_${p.name}`))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Strumento nuovo · ${fmt.time(p.proposedAt)}`), h("h2", toolTitle(p.name))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", p.description),
-			h("div.reach", h("span", "Può raggiungere"), p.hosts.length ? p.hosts.map((x) => h("span.chip.mono", x)) : h("span.chip.ok", "Nessun sito: niente rete")),
+			h("div.reach", h("span", "Si chiama"), h("span.chip.mono", `custom_${p.name}`), h("span", "e può raggiungere"), p.hosts.length ? p.hosts.map((x) => h("span.chip.mono", x)) : h("span.chip.ok", "Nessun sito: niente rete")),
 			h("details", { open: p.status === "pending" ? true : undefined }, h("summary", `Codice · ${p.code.split("\n").length} righe`), h("pre.code", p.code)),
 			h("details", h("summary", "Argomenti (JSON Schema)"), h("pre.code", JSON.stringify(p.parameters, null, 2))),
 			p.status !== "pending" ? h(`div.stamp.${p.status === "approved" ? "ok" : "bad"}`, p.status === "approved" ? "Approvato" : "Rifiutato") : null,
@@ -2542,7 +2548,7 @@ async function viewApprovals(main) {
 	const actionCard = (a) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", `${inst.name} vuole inviare un modulo a `, h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("div.kicker", `Modulo da inviare · ${fmt.time(a.proposedAt)}`), h("h2", `${inst.name} vuole inviare un modulo a `, h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
@@ -2624,7 +2630,7 @@ const CONNECTOR_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"]
 function connectorActionCard(inst, a, after, compact = false) {
 	const el = h(
 		"article.card.pad.dossier",
-		h("header", h("div", h("div.kicker", `${a.connectorName} · richiesta ${a.id} · ${fmt.time(a.proposedAt)}`), h("h2", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
+		h("header", h("div", h("div.kicker", `${a.connectorName} · ${fmt.time(a.proposedAt)}`), h("h2", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
 		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
