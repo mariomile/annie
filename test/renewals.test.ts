@@ -984,7 +984,8 @@ describe("renewals in the app", () => {
 			["renewal.changed", "export", 1],
 		]);
 		expect(audit).not.toContain("Zeta");
-		expect(audit).not.toContain("480");
+		// The amount as a number, not inside a random id («…480b7ad…») or a time («….480Z»).
+		expect(audit).not.toMatch(/(?<![\w.])480(?!\w)/);
 	}, 60_000);
 });
 
