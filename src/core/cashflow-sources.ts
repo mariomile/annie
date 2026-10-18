@@ -35,6 +35,11 @@
  *   AVERAGE_DAYS, half up to the cent.
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
  *   up to `until`, at the amount of that day.
+ * - Taxes: the F24 the tax profile's calendar estimates (tax-sums.ts), on their working day, when a
+ *   profile exists. A voce out whose name says F24, tasse, INPS, imposta or contributi, within
+ *   TAX_TWIN_DAYS of one and within TAX_TWIN_PERCENT of its amount, is the person's own record of
+ *   it: the voce stays, the estimate goes, and the pair is listed; each estimate pairs once, the
+ *   closest first.
  * - A balance is brought to now by instant, from min(when it was said, the end of its day in the
  *   instance's time zone) — a balance said today for 10 October counts what was marked from the
  *   11th: plus the instalments to collect marked paid after it,
@@ -45,6 +50,7 @@
 import { AVERAGE_DAYS, AVERAGE_MIN_DAYS, type Balance, CASHFLOW_LIMITS, type CashItem, itemAmountAt, itemRecurrence, type Kind, STALE_OVERDUE_DAYS } from "./cashflow.ts";
 import { NEAR_DAYS, providerMatches, renewalSeries, sameAmount, similarName } from "./cashflow-items.ts";
 import { unitsToCents } from "./cash-book.ts";
+import { words } from "./name-keys.ts";
 import type { Expense } from "./expenses.ts";
 import { cents as expenseCents } from "./expense-sums.ts";
 import { payDay } from "./invoice-sums.ts";
@@ -58,7 +64,7 @@ import type { Renewal } from "./renewals.ts";
 import { summarize } from "./timesheet-sums.ts";
 import type { RateRule, WorkEntry } from "./timesheet.ts";
 
-export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average";
+export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average" | "tax";
 
 /** An accepted quote is expected this many days after its acceptance, and never before QUOTE_MIN_DAYS from today; past QUOTE_STALE_DAYS it is asked about. */
 export const QUOTE_PAY_DAYS = 60;
@@ -83,6 +89,8 @@ export type Movement = {
 	readonly quote?: Quote;
 	readonly item?: CashItem;
 	readonly hypothetical?: Hypothetical;
+	/** An F24 estimated from the tax profile (taxes.ts): what it pays for. */
+	readonly tax?: { readonly what: string };
 	/** Moved by a what_if delay: the days. */
 	readonly delayed?: number;
 };
@@ -655,4 +663,45 @@ export function applyChanges(movements: readonly Movement[], changes: readonly C
 export function unbilledPotential(entries: readonly WorkEntry[], rates: readonly RateRule[]): { readonly minutes: number; readonly cents: bigint; readonly unpriced: number } {
 	const { unbilled } = summarize(entries, rates).totals;
 	return { minutes: unbilled.minutes, cents: unbilled.amount, unpriced: unbilled.unpriced };
+}
+
+/** An estimated F24 and a voce of the person's this close (days) and this near in amount (percent of the estimate) are one payment. */
+export const TAX_TWIN_DAYS = 10;
+export const TAX_TWIN_PERCENT = 30n;
+
+/** Folded words that make a voce's name a tax payment. */
+const TAX_WORDS = new Set(["f24", "tasse", "tassa", "inps", "imposta", "imposte", "contributi", "contributo", "acconto", "acconti", "irpef", "sostitutiva"]);
+
+/** The estimated F24 from `today` to `end`, as movements out. */
+export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string }[], today: string, end: string): Movement[] {
+	return payments.filter((p) => p.date >= today && p.date <= end && p.cents > 0n).map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what } }));
+}
+
+/** An estimated F24 and the voce that is the same payment: the voce counts. */
+export type TaxTwin = { readonly voce: Movement; readonly tax: Movement };
+
+/** The estimated F24 a voce of the person's already stands for (see the choices above): those go, the voci stay. */
+export function taxDuplicates(taxes: readonly Movement[], items: readonly Movement[]): { readonly taxes: Movement[]; readonly twins: TaxTwin[] } {
+	const used = new Set<Movement>();
+	const gone = new Set<Movement>();
+	const twins: TaxTwin[] = [];
+	for (const t of taxes) {
+		let best: Movement | undefined;
+		let bestDays = Number.POSITIVE_INFINITY;
+		for (const m of items) {
+			if (used.has(m) || m.kind !== "out" || m.item === undefined || !words(m.item.name).some((w) => TAX_WORDS.has(w))) continue;
+			const diff = m.cents > t.cents ? m.cents - t.cents : t.cents - m.cents;
+			if (diff * 100n > t.cents * TAX_TWIN_PERCENT) continue;
+			const days = Math.abs(daysBetween(m.date, t.date));
+			if (days <= TAX_TWIN_DAYS && days < bestDays) {
+				best = m;
+				bestDays = days;
+			}
+		}
+		if (best === undefined) continue;
+		used.add(best);
+		gone.add(t);
+		twins.push({ voce: best, tax: t });
+	}
+	return { taxes: taxes.filter((t) => !gone.has(t)), twins };
 }

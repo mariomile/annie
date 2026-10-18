@@ -15,6 +15,7 @@ import { ExpenseStore } from "./expense-store.ts";
 import { TimesheetStore } from "./timesheet-store.ts";
 import { RenewalStore } from "./renewal-store.ts";
 import { CashflowStore } from "./cashflow-store.ts";
+import { TaxStore } from "./tax-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
@@ -211,6 +212,11 @@ export class AnnieRuntime {
 	/** La previsione di cassa of an instance: the balances said and the voci added by hand. */
 	cashflow(tenant: string, instance: string): CashflowStore {
 		return new CashflowStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Le tasse del forfettario of an instance: the profile and the figures said per year. */
+	taxes(tenant: string, instance: string): TaxStore {
+		return new TaxStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Whom a private thread is with, as "<channel>:<userId>"; undefined for a group or unknown thread. */
