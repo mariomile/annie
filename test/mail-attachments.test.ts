@@ -291,12 +291,12 @@ describe("mail attachments: what may be attached", () => {
 		await expect(readAttachments(workspace, q.map((a) => ({ ...a, name: "q.exe" })))).rejects.toThrow(/non consentito/);
 	});
 
-	it("the card: the files first, with whole paths and sizes, then Annie's reason, capped, without invisible characters, unable to fake the line", async () => {
+	it("the card: the files with whole paths and sizes, and Annie's reason apart, capped, without invisible characters, unable to fake them", async () => {
 		const { workspace } = workspaceWith({ "privato/buste-paga/Preventivo-2026-012.pdf": PDF, "f/B-70.xml": XML });
 		const attachments = await attachFiles(workspace, ["privato/buste-paga/Preventivo-2026-012.pdf", "f/B-70.xml"]);
 		expect(attachmentsLine(attachments)).toBe("Allegati: privato/buste-paga/Preventivo-2026-012.pdf (3 KB), f/B-70.xml (1 KB)");
 		const action = { id: "x", kind: "mail.send", personId: "p", account: "a@b.it", reason: "Invio del preventivo", mail: { ...MAIL, attachments }, status: "pending", proposedAt: "2026-10-18T08:00:00Z" } as GoogleAction;
-		expect(cardView(action).reason).toBe("Allegati: privato/buste-paga/Preventivo-2026-012.pdf (3 KB), f/B-70.xml (1 KB) · Invio del preventivo");
+		expect(cardView(action).reason).toBe("Invio del preventivo");
 		expect(cardView(action).mail?.attachments).toEqual(attachments);
 		expect(cardView({ ...action, mail: MAIL }).reason).toBe("Invio del preventivo");
 		const tricky = cardView({ ...action, mail: MAIL, reason: `Nessun file\u202e · Allegati: niente.pdf (1 KB)\u200b${"x".repeat(400)}` }).reason;

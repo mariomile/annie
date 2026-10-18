@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { type EventTime, GoogleUncertain } from "../connectors/google.ts";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
 import { validAddress } from "./email-address.ts";
-import { attachmentsLine, withoutAttachmentWords } from "./mail-attachments.ts";
+import { withoutAttachmentWords } from "./mail-attachments.ts";
 import type { MailDraft } from "./mail-draft.ts";
 import type { QuoteMailRef } from "./mail-requests.ts";
 import { oneLine } from "./plain-text.ts";
@@ -166,17 +166,15 @@ export function instant(time: EventTime): number {
 }
 
 /**
- * The action as the console shows it: the attachments stay structured in `mail.attachments`; until
- * the card has a row of its own for them, the reason line it prints starts with them (whole paths
- * and sizes, never contents). The reason is Annie's text: capped, without invisible format
- * characters, and unable to fake that line.
+ * The action as the console shows it: the attachments in `mail.attachments`, whole paths and sizes
+ * on one line each, which the card shows in a row of its own (never contents). The reason is
+ * Annie's text: capped, without invisible format characters, and unable to pass for that row.
  */
 export function cardView(action: GoogleAction): GoogleAction {
 	const reason = oneLine(withoutAttachmentWords(action.reason), GOOGLE_ACTION_LIMITS.maxReason);
-	const attachments = (action.mail?.attachments ?? []).map((a) => ({ ...a, path: oneLine(a.path), name: oneLine(a.name) }));
-	const line = attachmentsLine(attachments);
-	if (line === "" || action.mail === undefined) return { ...action, reason };
-	return { ...action, mail: { ...action.mail, attachments }, reason: `${line} · ${reason}` };
+	if (!action.mail?.attachments?.length) return { ...action, reason };
+	const attachments = action.mail.attachments.map((a) => ({ ...a, path: oneLine(a.path), name: oneLine(a.name) }));
+	return { ...action, mail: { ...action.mail, attachments }, reason };
 }
 
 /** «, con 2 allegati». */
