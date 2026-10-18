@@ -1178,6 +1178,8 @@ function accountDialog() {
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
 const SIDEBAR = new Set(["inizia", "agenti", "stanze", "board", "segreteria", "approvazioni", "task", "automazioni", "file", "memoria", "skill"]);
+/** Sections folded under «Altro», so that the chats get the room: shown anyway when open or with something waiting. */
+const SIDEBAR_MORE = new Set(["automazioni", "file", "memoria", "skill"]);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -1257,9 +1259,31 @@ function renderRail() {
 	const { view, rest } = route();
 	const items = PALETTE.filter((p) => SIDEBAR.has(p.id) && (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
 	const nav = h("nav.sections", { "aria-label": "Sezioni" });
+	const more = h("div.more-items", { id: "rail-more" });
 	for (const item of items) {
 		const count = item.count?.() ?? 0;
-		nav.append(h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: closeRailOnPhone }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", String(count)) : null));
+		const link = h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: closeRailOnPhone }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", String(count)) : null);
+		(SIDEBAR_MORE.has(item.id) && view !== item.id && count === 0 ? more : nav).append(link);
+	}
+	if (more.childElementCount) {
+		const open = store("annie.rail.more") === "1";
+		more.hidden = !open;
+		const toggle = h(
+			"button.rail-more",
+			{
+				"aria-expanded": String(open),
+				"aria-controls": "rail-more",
+				onclick: () => {
+					more.hidden = !more.hidden;
+					toggle.setAttribute("aria-expanded", String(!more.hidden));
+					store("annie.rail.more", more.hidden ? null : "1");
+				},
+			},
+			icon("more"),
+			h("span.label", "Altro"),
+			h("span.fold-chevron", icon("down")),
+		);
+		nav.append(toggle, more);
 	}
 	const past = h("nav.history", { "aria-label": "Conversazioni" });
 	let group;
