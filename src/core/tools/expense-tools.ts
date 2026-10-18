@@ -3,7 +3,7 @@ import { cashBook } from "../cash-book.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { CATEGORIES, type Category, DOC_TYPES, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
 import { EXPENSES_BROKEN, type ExpenseStore } from "../expense-store.ts";
-import { currentMonth, inPeriod, type Period, readPeriod, underWay } from "../expense-sums.ts";
+import { currentMonth, inPeriod, type Period, PeriodError, readPeriod, underWay } from "../periods.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { register } from "../invoices.ts";
@@ -130,7 +130,7 @@ export function createExpenseTools(options: ExpenseToolsOptions): AnnieTool[] {
 							return await exportCsv(args, ctx);
 					}
 				} catch (error) {
-					if (error instanceof ExpenseError) return `Errore: ${error.message}.`;
+					if (error instanceof ExpenseError || error instanceof PeriodError) return `Errore: ${error.message}.`;
 					if (error instanceof WorkspaceError) return `Errore: ${error.message}`;
 					throw error;
 				}

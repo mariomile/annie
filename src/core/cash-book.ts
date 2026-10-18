@@ -7,7 +7,8 @@
  * notes marked used are counted apart, to be said.
  */
 import type { Expense } from "./expenses.ts";
-import { cents, inPeriod, type Span } from "./expense-sums.ts";
+import { cents } from "./expense-sums.ts";
+import { inPeriod, type Span } from "./periods.ts";
 import { type Invoice, partyKey } from "./invoices.ts";
 
 type CashKind = "in" | "out";

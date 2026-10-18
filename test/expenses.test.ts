@@ -10,8 +10,9 @@ import { csvCents, csvFile, csvLine, csvText } from "../src/core/csv.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
-import { cents, comparedSpans, percentChange, previousPeriod, readPeriod, totalsOf, vatInGross } from "../src/core/expense-sums.ts";
-import { EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, matchCategory, matchMethod } from "../src/core/expenses.ts";
+import { cents, totalsOf, vatInGross } from "../src/core/expense-sums.ts";
+import { comparedSpans, PeriodError, percentChange, previousPeriod, readPeriod } from "../src/core/periods.ts";
+import { EXPENSE_LIMITS, type Expense, expenseCallReads, expenseId, findExpenses, matchCategory, matchMethod } from "../src/core/expenses.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Company, register } from "../src/core/invoices.ts";
@@ -211,7 +212,7 @@ describe("expense periods and sums", () => {
 		expect(p("anno scorso")[2]).toBe("2025");
 		// A quarter not begun yet this year is last year's.
 		expect(readPeriod("T4", "2026-05-02").slug).toBe("2025-T4");
-		for (const bad of ["../../etc/passwd", "1999", "T5", "boh", "2026-13", "13/25"]) expect(() => readPeriod(bad, TODAY)).toThrow(ExpenseError);
+		for (const bad of ["../../etc/passwd", "1999", "T5", "boh", "2026-13", "13/25"]) expect(() => readPeriod(bad, TODAY)).toThrow(PeriodError);
 		// Echoed back only when plain.
 		// Echoed back only when plain and like a period (a digit, a month, mese, trimestre, anno).
 		expect(() => readPeriod("boh", TODAY)).toThrow(/^non riconosco il periodo: scrivilo/);
