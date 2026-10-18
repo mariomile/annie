@@ -44,18 +44,23 @@ export const START_RATE_YEARS = 5;
 /** Gestione separata INPS, professionisti without other cover: 26,07% (25% IVS + 0,72% + 0,35%), unchanged for 2026 (INPS circolare 8/2026). Editable by the person. */
 export const GS_RATE_DEFAULT = "26.07";
 export const GS_RATE_YEAR = 2026;
-/** Massimale contributivo of the gestione separata, the reddito over which no contribution is due: 2025 120.607 €, 2026 122.295 € (INPS circolari annuali; 2026 circolare 8/2026). A year not here takes the closest year before it, or the first. */
-export const GS_MASSIMALE: Readonly<Record<number, string>> = { 2025: "120607", 2026: "122295" };
+/** Massimale contributivo of the gestione separata, the reddito over which no contribution is due: 2024 119.650 €, 2025 120.607 €, 2026 122.295 € (INPS circolari annuali; 2026 circolare 8/2026). A year not here takes the closest year before it (or the first), and the answer says so. */
+export const GS_MASSIMALE: Readonly<Record<number, string>> = { 2024: "119650", 2025: "120607", 2026: "122295" };
 
 /** Riduzione contributiva del 35% for artigiani and commercianti in the forfettario, on the fixed and the variable contributions: L. 190/2014, art. 1, commi 76-84. */
 export const ARTIGIANI_REDUCTION_PERCENT = 35;
 /** Riduzione del 50% for 36 months for those first registered with INPS as artigiani or commercianti in 2025, instead of the 35% (L. 207/2024, Legge di Bilancio 2025, art. 1, comma 186). Da verificare with the commercialista. */
 export const NEW_2025_REDUCTION_PERCENT = 50;
+/** The last year of the 50%: 36 months from a registration in 2025, counted as through 2027 (da verificare: from the month of registration it ends during 2028). Then the 35% with the reduction, else none. */
+export const NEW_2025_LAST_YEAR = 2027;
+/** The year of the first INPS registration that gives the 50%. */
+export const NEW_2025_YEAR = 2025;
 /**
  * INPS artigiani e commercianti of a year (INPS circolare 14/2026, as reported by partitaiva.it):
  * the reddito minimale; the fixed contributions on it, whole, before any reduction; the rate on the
- * reddito over the minimale up to `top`, and IVS_TOP_EXTRA points more above it. A year not here
- * (2025 included) is asked of the person.
+ * reddito over the minimale up to `top`, and IVS_TOP_EXTRA points more above it. Looked up for the
+ * year computed, never stored in the profile; a year not here takes the closest year before it (or
+ * the first), and the answer says to check.
  */
 export const IVS_YEARS: Readonly<Record<number, { readonly minimale: string; readonly top: string; readonly fixed: { readonly artigiani: string; readonly commercianti: string }; readonly rate: { readonly artigiani: string; readonly commercianti: string } }>> = {
 	2026: { minimale: "18808", top: "56224", fixed: { artigiani: "4521.36", commercianti: "4611.64" }, rate: { artigiani: "24", commercianti: "24.48" } },
@@ -70,8 +75,8 @@ export const HARD_LIMIT_CENTS = 10_000_000n;
 /** Annie warns from this share of the 85.000 € limit, in percent; the brief again at each of the next bands. */
 export const LIMIT_WARN_PERCENT = 80n;
 export const LIMIT_BANDS = [80n, 90n, 100n] as const;
-/** The brief says a limit band when the incassi of these last days crossed it. */
-export const LIMIT_BAND_DAYS = 7;
+/** The brief says a limit band when the incassi of these last days crossed it (past 100.000 € it says it every day until the end of the year). */
+export const LIMIT_BAND_DAYS = 3;
 
 /** Acconto dell'imposta: none when last year's imposta is up to 51,65 € (istruzioni del modello Redditi PF, art. 1 L. 97/1977 in euro). */
 export const ACCONTO_NONE_MAX_CENTS = 5_165n;
@@ -98,7 +103,7 @@ export const JUNE_DEADLINES: Readonly<Record<number, { readonly due: string; rea
 	2024: { due: "2024-07-31", alternative: "2024-08-30", extra: "0.40" },
 	// D.Lgs. 81/2025: 21 July, or 20 August with 0,40% more.
 	2025: { due: "2025-07-21", alternative: "2025-08-20", extra: "0.40" },
-	// DL 89/2026, converted by L. 113/2026: 20 July, or 20 August with 0,80% more.
+	// Art. 6 DL 89/2026 (poi abrogato da L. 113/2026 che ne ha ripreso gli effetti; maggiorazione 0,80% secondo ecnews, informazionefiscale, ItaliaOggi; da verificare in Gazzetta): 20 July, or 20 August with 0,80% more.
 	2026: { due: "2026-07-20", alternative: "2026-08-20", extra: "0.80" },
 };
 /**
@@ -134,6 +139,15 @@ export function taxCallReads(args: Record<string, unknown>): boolean {
 	return TAX_BRIEF_OPS.some((o) => o === args.op);
 }
 
+/** The entry of `table` for `year`: its own, else the closest year before it, else the first; and the year it is of. */
+export function yearValues<T>(table: Readonly<Record<number, T>>, year: number): { readonly values: T; readonly year: number } {
+	const years = Object.keys(table)
+		.map(Number)
+		.sort((a, b) => a - b);
+	const at = (years.filter((y) => y <= year).at(-1) ?? years[0]) as number;
+	return { values: table[at] as T, year: at };
+}
+
 /** The ops another agente may ask: they read (what_if saves nothing). Everything else is refused. */
 const TAX_AGENT_OPS = ["estimate", "calendar", "what_if"] as const;
 
@@ -145,26 +159,29 @@ const PENSIONS = ["gestione_separata", "artigiani", "commercianti", "cassa", "ne
 export type PensionKind = (typeof PENSIONS)[number];
 
 /**
- * The person's pension scheme. Gestione separata: a percentage of the reddito, with the year its
- * rate is of. Artigiani and commercianti: the whole fixed contributions of a year (before any
- * reduction), plus a percentage of the reddito over the minimale (one point more over `top`), the
- * whole reduced by 35% when they asked for it, or by 50% when first registered in 2025 (`new2025`).
- * Cassa professionale: a percentage, a minimum, and the contributo integrativo charged in the
- * invoices, which is not a ricavo (undefined: not known).
+ * The person's pension scheme, with only what the person said: what they did not say is the
+ * year's own value, looked up when computed. Gestione separata: a percentage of the reddito, with
+ * the year it was said (default GS_RATE_DEFAULT). Artigiani and commercianti: the whole fixed
+ * contributions of a year (before any reduction), plus a percentage of the reddito over the
+ * minimale (one point more over `top`), default the year's INPS figures (IVS_YEARS); the whole
+ * reduced by 35% when they asked for it, or by 50% through NEW_2025_LAST_YEAR when first registered
+ * in 2025 (`new2025`). Cassa professionale: a percentage, a minimum, and the contributo integrativo
+ * charged in the invoices, which is not a ricavo (undefined: not known).
  */
 export type Pension =
-	| { readonly kind: "gestione_separata"; readonly rate: string; readonly rateYear: number }
-	| { readonly kind: "artigiani" | "commercianti"; readonly fixed: string; readonly rate: string; readonly minimale: string; readonly top?: string; readonly reduction: boolean; readonly new2025?: true }
+	| { readonly kind: "gestione_separata"; readonly rate?: string; readonly rateYear?: number }
+	| { readonly kind: "artigiani" | "commercianti"; readonly fixed?: string; readonly rate?: string; readonly minimale?: string; readonly top?: string; readonly reduction: boolean; readonly new2025?: true }
 	| { readonly kind: "cassa"; readonly rate: string; readonly minimum?: string; readonly integrativo?: string }
 	| { readonly kind: "nessuna" };
 
 export type TaxProfile = Marker & {
 	/** The coefficiente di redditività, a percentage («78»). */
 	readonly coefficient: string;
-	/** The ATECO group when said by words or code. */
+	/** The ATECO group when said by words or code, and which. */
 	readonly group?: Group;
-	/** «15» or «5». */
-	readonly rate: string;
+	readonly groupFrom?: "ateco" | "parole";
+	/** «15» or «5» when said; undefined: 15, by default. */
+	readonly rate?: string;
 	readonly startYear?: number;
 	readonly pension: Pension;
 	readonly edited?: Marker;
@@ -201,10 +218,10 @@ function validPension(v: unknown): v is Pension {
 	const p = v as Pension;
 	switch (p.kind) {
 		case "gestione_separata":
-			return isPercent(p.rate) && isYear(p.rateYear);
+			return (p.rate === undefined || isPercent(p.rate)) && (p.rateYear === undefined || isYear(p.rateYear));
 		case "artigiani":
 		case "commercianti":
-			return isFigure(p.fixed) && isPercent(p.rate) && isFigure(p.minimale) && (p.top === undefined || isFigure(p.top)) && typeof p.reduction === "boolean" && (p.new2025 === undefined || p.new2025 === true);
+			return (p.fixed === undefined || isFigure(p.fixed)) && (p.rate === undefined || isPercent(p.rate)) && (p.minimale === undefined || isFigure(p.minimale)) && (p.top === undefined || isFigure(p.top)) && typeof p.reduction === "boolean" && (p.new2025 === undefined || p.new2025 === true);
 		case "cassa":
 			return isPercent(p.rate) && (p.minimum === undefined || isFigure(p.minimum)) && (p.integrativo === undefined || isPercent(p.integrativo));
 		case "nessuna":
@@ -217,7 +234,8 @@ function validPension(v: unknown): v is Pension {
 export function validProfile(v: unknown): v is TaxProfile {
 	if (!isMarker(v)) return false;
 	const p = v as TaxProfile;
-	if (!isPercent(p.coefficient) || (p.rate !== RATE_FULL && p.rate !== RATE_START)) return false;
+	if (!isPercent(p.coefficient) || (p.rate !== undefined && p.rate !== RATE_FULL && p.rate !== RATE_START)) return false;
+	if (p.groupFrom !== undefined && p.groupFrom !== "ateco" && p.groupFrom !== "parole") return false;
 	if (p.group !== undefined && !GROUP_KEYS.includes(p.group)) return false;
 	if (p.startYear !== undefined && !isYear(p.startYear)) return false;
 	// The 5% needs its first year: it ends by itself after five.

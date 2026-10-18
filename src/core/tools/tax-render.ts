@@ -12,10 +12,10 @@ import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { offDayWhy } from "../dates.ts";
 import { euros, n1 } from "../format-words.ts";
 import { daysBetween } from "../italian-calendar.ts";
-import { capitalized, italianDate, monthName, withDate, withPercent } from "../italian-format.ts";
+import { capitalized, italianDate, toMonth, withDate, withPercent } from "../italian-format.ts";
 import { decimalText, scaled } from "../quote-sums.ts";
 import { type Base, type Deadline, deadlineCents, dueCents, type Estimate, hasUnknown, type Incassi, type Limit, limitShare, type Part, type PlainDeadline, type Projection, type Slip } from "../tax-sums.ts";
-import { ARTIGIANI_REDUCTION_PERCENT, type FigureKey, GROUPS, IVS_TOP_EXTRA, NEW_2025_REDUCTION_PERCENT, type Pension, RATE_START, START_RATE_YEARS, type TaxProfile, type YearFigures } from "../taxes.ts";
+import { ARTIGIANI_REDUCTION_PERCENT, type FigureKey, GROUPS, GS_RATE_DEFAULT, GS_RATE_YEAR, IVS_TOP_EXTRA, IVS_YEARS, NEW_2025_LAST_YEAR, NEW_2025_REDUCTION_PERCENT, type Pension, RATE_START, START_RATE_YEARS, type TaxProfile, type YearFigures, yearValues } from "../taxes.ts";
 import { fence } from "../untrusted.ts";
 import { partyName } from "./invoice-words.ts";
 
@@ -43,21 +43,25 @@ export function asWho(kind: "artigiani" | "commercianti"): string {
 	return kind === "artigiani" ? "come artigiano" : "come commerciante";
 }
 
-/** The reduction of artigiani and commercianti in words, or nothing. */
-function reductionText(p: Extract<Pension, { kind: "artigiani" | "commercianti" }>): string {
-	if (p.new2025 === true) return `, ridotti del ${NEW_2025_REDUCTION_PERCENT}% (iscrizione nel 2025)`;
+/** The reduction of artigiani and commercianti in `year` in words, or nothing. */
+function reductionText(p: Extract<Pension, { kind: "artigiani" | "commercianti" }>, year: number): string {
+	if (p.new2025 === true && year <= NEW_2025_LAST_YEAR) return `, ridotti del ${NEW_2025_REDUCTION_PERCENT}% fino al ${NEW_2025_LAST_YEAR} per l'iscrizione nel 2025`;
 	return p.reduction ? `, ridotti del ${ARTIGIANI_REDUCTION_PERCENT}%` : "";
 }
 
-/** The pension in words: «gestione separata INPS al 26,07% (aliquota del 2026)». */
-function pensionText(p: Pension): string {
+/** The pension in words for `year`: «gestione separata INPS al 26,07% (aliquota del 2026)»; what the person did not say is the INPS value of the year. */
+function pensionText(p: Pension, year: number): string {
 	switch (p.kind) {
 		case "gestione_separata":
-			return `gestione separata INPS ${withPercent("al", p.rate)} (aliquota del ${p.rateYear})`;
+			return `gestione separata INPS ${withPercent("al", p.rate ?? GS_RATE_DEFAULT)} (aliquota del ${p.rateYear ?? GS_RATE_YEAR})`;
 		case "artigiani":
 		case "commercianti": {
-			const top = p.top === undefined ? "" : ` (${percentText(String(Number(p.rate) + Number(IVS_TOP_EXTRA)))} sopra ${euros(scaled(p.top, 2))})`;
-			return `INPS ${asWho(p.kind)}, fissi ${euros(scaled(p.fixed, 2))} l'anno più ${withPercent("il", p.rate)} del reddito sopra il minimale di ${euros(scaled(p.minimale, 2))}${top}${reductionText(p)}`;
+			const t = yearValues(IVS_YEARS, year);
+			const rate = p.rate ?? t.values.rate[p.kind];
+			const topValue = p.top ?? t.values.top;
+			const own = p.fixed !== undefined && p.rate !== undefined && p.minimale !== undefined;
+			const top = ` (${percentText(String(Number(rate) + Number(IVS_TOP_EXTRA)))} sopra ${euros(scaled(topValue, 2))})`;
+			return `INPS ${asWho(p.kind)}, fissi ${euros(scaled(p.fixed ?? t.values.fixed[p.kind], 2))} l'anno più ${withPercent("il", rate)} del reddito sopra il minimale di ${euros(scaled(p.minimale ?? t.values.minimale, 2))}${top}${reductionText(p, year)}${own ? "" : `; valori INPS del ${t.year}`}`;
 		}
 		case "cassa":
 			return `cassa professionale ${withPercent("al", p.rate)}${p.minimum === undefined ? "" : `, minimo ${euros(scaled(p.minimum, 2))}`}${p.integrativo === undefined ? ", contributo integrativo non detto" : `, integrativo ${withPercent("al", p.integrativo)} fuori dai ricavi`}`;
@@ -74,7 +78,7 @@ export function profileLines(p: TaxProfile, year: number): string[] {
 		lines.push(year <= last ? `Imposta sostitutiva al 5% fino al ${last}, poi al 15%.` : `Imposta sostitutiva al 15%: i ${START_RATE_YEARS} anni al 5% sono finiti nel ${last}.`);
 	} else lines.push("Imposta sostitutiva al 15%.");
 	if (p.startYear !== undefined) lines.push(`Attività iniziata nel ${p.startYear}.`);
-	lines.push(`Contributi: ${pensionText(p.pension)}.`);
+	lines.push(`Contributi: ${pensionText(p.pension, year)}.`);
 	return lines;
 }
 
@@ -143,9 +147,10 @@ function estimateRows(e: Estimate, p: TaxProfile): string[] {
 	const c = e.contributi;
 	const pension = p.pension;
 	if (pension.kind === "nessuna") rows.push("Contributi: nessuno.");
-	else if (pension.kind === "artigiani" || pension.kind === "commercianti") rows.push(`Contributi INPS ${asWho(pension.kind)}: ${euros(c.total)} (fissi ${euros(c.fixed)}, sopra il minimale ${euros(c.variable)}${reductionText(pension).replace(/^, /, "; ")}).`);
-	else if (pension.kind === "gestione_separata") rows.push(`Contributi alla gestione separata (${percentText(pension.rate)}, aliquota del ${pension.rateYear}): ${euros(c.total)}.`);
+	else if (pension.kind === "artigiani" || pension.kind === "commercianti") rows.push(`Contributi INPS ${asWho(pension.kind)}: ${euros(c.total)} (fissi ${euros(c.fixed)}, sopra il minimale ${euros(c.variable)}${reductionText(pension, e.year).replace(/^, /, "; ")}).`);
+	else if (pension.kind === "gestione_separata") rows.push(`Contributi alla gestione separata (${percentText(pension.rate ?? GS_RATE_DEFAULT)}, aliquota del ${pension.rateYear ?? GS_RATE_YEAR}): ${euros(c.total)}.`);
 	else if (pension.kind === "cassa") rows.push(`Contributi alla cassa professionale (${percentText(pension.rate)}${pension.minimum === undefined ? "" : `, minimo ${euros(scaled(pension.minimum, 2))}`}): ${euros(c.total)}.`);
+	if (c.valuesOf !== undefined) rows.push(`Per il ${e.year} uso i valori INPS del ${c.valuesOf}: verifica quelli dell'anno.`);
 	if (e.deducted > 0n || e.deductedFrom !== "stima") {
 		const from: Readonly<Record<Estimate["deductedFrom"], string>> = {
 			detti: `Dedotti i contributi versati nel ${e.year}, come mi hai detto: ${euros(e.deducted)}.`,
@@ -199,7 +204,7 @@ export function estimateAnswer(v: EstimateView): string {
 	const pension = v.profile.pension;
 	if (pension.kind === "artigiani" || pension.kind === "commercianti") {
 		lines.push("Contributi fissi, minimale e percentuale sono quelli dell'INPS per l'anno, o quelli che mi hai detto: se cambiano, dimmelo.");
-		if (pension.new2025 === true) lines.push(`La riduzione del ${NEW_2025_REDUCTION_PERCENT}% per chi si è iscritto nel 2025 vale per 36 mesi: verifica con il commercialista quando finisce.`);
+		if (pension.new2025 === true) lines.push(`La riduzione del ${NEW_2025_REDUCTION_PERCENT}% per chi si è iscritto nel 2025 vale per 36 mesi: la conto fino al ${NEW_2025_LAST_YEAR}, poi ${pension.reduction ? `il ${ARTIGIANI_REDUCTION_PERCENT}%` : "niente riduzione"}. Verifica con il commercialista quando finisce.`);
 	}
 	lines.push(ESTIMATE_NOTE, REPEAT);
 	return lines.join("\n");
@@ -234,19 +239,19 @@ function whenText(d: { readonly due: string; readonly date: string; readonly sli
 
 const amountOf = (p: Part) => (p.cents === undefined ? "da calcolare" : euros(p.cents));
 
-/** One deadline: a head line with when and the total, then a short line per part, then the alternative on its own line. */
+/** One deadline: a head line with when and the total, then a short line per part («  – », the nested style of the other renderers, never a Markdown «-» list), then the alternative on its own line. */
 function deadlineRows(d: Deadline, pension: Pension): string[] {
 	const word = contributionsWord(pension);
 	const total = deadlineCents(d);
 	const atLeast = hasUnknown(d) ? "almeno " : "";
 	if (d.late !== undefined) {
-		return [`• ${capitalized(whenText(d))}, se non l'hai già pagato: ${atLeast}${euros(d.late.cents)}, ${extraText(d.late.extra)} (scadeva ${withDate("il", d.late.date)}).`, ...d.parts.map((p) => `  - ${partLabel(p, word)}: ${amountOf(p)}`)];
+		return [`• ${capitalized(whenText(d))}, se non l'hai già pagato: ${atLeast}${euros(d.late.cents)}, ${extraText(d.late.extra)} (scadeva ${withDate("il", d.late.date)}).`, ...d.parts.map((p) => `  – ${partLabel(p, word)}: ${amountOf(p)}`)];
 	}
 	const only = d.parts.length === 1 ? d.parts[0] : undefined;
 	const rows =
 		only !== undefined
 			? [`• ${capitalized(whenText(d))}: ${partLabel(only, word)}, ${amountOf(only)}.`]
-			: [`• ${capitalized(whenText(d))}${total > 0n ? `, in tutto ${atLeast}${euros(total)}` : ""}:`, ...d.parts.map((p) => `  - ${partLabel(p, word)}: ${amountOf(p)}`)];
+			: [`• ${capitalized(whenText(d))}${total > 0n ? `, in tutto ${atLeast}${euros(total)}` : ""}:`, ...d.parts.map((p) => `  – ${partLabel(p, word)}: ${amountOf(p)}`)];
 	const a = d.alternative;
 	if (a !== undefined) rows.push(`  Oppure ${whenText(a)} ${extraText(a.extra)}: ${atLeast}${euros(a.cents)}.`);
 	return rows;
@@ -275,30 +280,60 @@ type CalendarView = {
 	readonly lastYear: number;
 	readonly accontiSource: "detti" | "regola" | "nessuno" | "ignoti";
 	/** The metodo previsionale: this year's estimate, whether on the incassi the person expects, the storico calendar to compare, and whether the June acconto paid is not known. */
-	readonly previsionale?: { readonly estimate: Estimate; readonly expected: boolean; readonly storico: readonly Deadline[]; readonly juneUnknown: boolean };
+	readonly previsionale?: {
+		readonly estimate: Estimate;
+		readonly expected: boolean;
+		readonly storico: readonly Deadline[];
+		readonly juneUnknown: boolean;
+		/** The June F24 of this year gone by: its day, the first acconti paid on the storico, and whether it may still be paid late. */
+		readonly paidJune?: { readonly date: string; readonly imposta?: bigint; readonly contributi?: bigint; readonly late: boolean };
+	};
+	/** What this year's acconti exceed its estimated imposta and contributions by. */
+	readonly credit?: bigint;
 };
 
-/** «a novembre verseresti 37,98 € invece di 1.000,00 € di acconto d'imposta e …»: each acconto of this year still to pay, previsionale against storico. */
+/** The acconti of this year in one deadline, by kind; 0 when not there. */
+function accontiIn(d: Deadline | undefined, year: number, kind: "acconto_imposta" | "acconto_contributi"): bigint | undefined {
+	const part = d?.parts.find((p) => p.kind === kind && p.forYear === year);
+	return part === undefined ? 0n : part.cents;
+}
+
+const ACCONTO_KINDS = [
+	["acconto_imposta", "di acconto d'imposta"],
+	["acconto_contributi", "di acconto dei contributi"],
+] as const;
+
+/**
+ * Storico against previsionale, acconto by acconto: «a novembre verseresti 366,77 € invece di
+ * 1.000,00 €», «ad agosto non verseresti niente invece di 3.000,00 €», walking the deadlines of
+ * both methods; the June acconto already gone, «hai versato».
+ */
 function compareLines(v: CalendarView): string[] {
 	const pv = v.previsionale;
 	if (pv === undefined) return [];
 	const year = v.lastYear + 1;
 	const out: string[] = [];
-	for (const d of v.deadlines) {
-		if (d.kind === "fissi") continue;
-		const s = pv.storico.find((x) => x.kind === d.kind && x.due === d.due);
+	const paid = pv.paidJune;
+	if (paid !== undefined) {
+		const what = [paid.imposta === undefined ? undefined : `${euros(paid.imposta)} di primo acconto d'imposta`, paid.contributi === undefined || paid.contributi === 0n ? undefined : `${euros(paid.contributi)} di contributi`].filter((x) => x !== undefined);
+		if (what.length > 0) out.push(`${paid.late ? `${capitalized(toMonth(paid.date))}, se l'hai pagato,` : capitalized(toMonth(paid.date))} hai versato ${what.join(" e ")}, con il metodo storico.`);
+	}
+	const current = (d: Deadline) => d.kind !== "fissi" && d.late === undefined && d.parts.some((p) => p.forYear === year && p.kind.startsWith("acconto"));
+	const dues = [...new Set([...v.deadlines.filter(current), ...pv.storico.filter(current)].map((d) => d.due))].sort();
+	for (const due of dues) {
+		const now = v.deadlines.find((d) => d.due === due && current(d));
+		const was = pv.storico.find((d) => d.due === due && current(d));
+		const date = (now ?? was)?.date as string;
 		const pairs: string[] = [];
-		for (const [kind, what] of [
-			["acconto_imposta", "di acconto d'imposta"],
-			["acconto_contributi", "di acconto dei contributi"],
-		] as const) {
-			const now = d.parts.find((p) => p.kind === kind && p.forYear === year);
-			if (now === undefined) continue;
-			const was = s?.parts.find((p) => p.kind === kind && p.forYear === year);
-			const was0 = was === undefined ? 0n : was.cents;
-			pairs.push(`${amountOf(now)} ${was0 === undefined ? "(con il metodo storico non so calcolarlo)" : `invece di ${euros(was0)}`} ${what}`);
+		for (const [kind, what] of ACCONTO_KINDS) {
+			const a = accontiIn(now, year, kind);
+			const b = accontiIn(was, year, kind);
+			if (a === 0n && b === 0n) continue;
+			pairs.push(`${a === undefined ? "da calcolare" : a === 0n ? "niente" : euros(a)} ${b === undefined ? "(con il metodo storico non so calcolarlo)" : `invece di ${euros(b)}`} ${what}`);
 		}
-		if (pairs.length > 0) out.push(`Con il metodo previsionale a ${monthName(d.date)} verseresti ${pairs.join(", e ")}.`);
+		if (pairs.length === 0) continue;
+		const nothing = pairs.every((x) => x.startsWith("niente "));
+		out.push(nothing ? `Con il metodo previsionale ${toMonth(date)} non verseresti niente invece di ${pairs.map((x) => x.replace(/^niente invece di /, "")).join(", e ")}.` : `Con il metodo previsionale ${toMonth(date)} verseresti ${pairs.join(", e ")}.`);
 	}
 	return out;
 }
@@ -318,6 +353,7 @@ export function calendarAnswer(v: CalendarView): string {
 	const lines = [...lead, `Il prossimo F24 è ${whenText(next)}${late}: ${amount} (${deadlineWhat(next)}).`, "Le scadenze dei prossimi 12 mesi:", ...v.deadlines.flatMap((d) => deadlineRows(d, v.profile.pension))];
 	if (v.deadlines.some((d) => d.slip !== undefined || d.alternative?.slip !== undefined)) lines.push("Le scadenze di sabato, domenica o festivi slittano al primo giorno lavorativo.");
 	for (const d of v.deadlines) if (d.noProroga === true) lines.push(`Per i forfettari di solito c'è una proroga a luglio dell'F24 ${withDate("del", d.due)}: verifica.`);
+	if (v.credit !== undefined && v.credit > 0n) lines.push(`Gli acconti del ${v.lastYear + 1} superano le tasse stimate dell'anno: a credito circa ${euros(v.credit)}, da usare in compensazione: verifica col commercialista.`);
 	lines.push(...sourceLines(v));
 	if (v.profile.pension.kind === "cassa") lines.push("I contributi della cassa professionale hanno le scadenze della tua cassa: non li metto qui.");
 	lines.push(ESTIMATE_NOTE, REPEAT);
@@ -328,7 +364,7 @@ export function calendarAnswer(v: CalendarView): string {
 function sourceLines(v: CalendarView): string[] {
 	const out: string[] = [];
 	const y = v.lastYear;
-	if (v.previsionale !== undefined) out.push(`Acconti del ${y + 1} e saldo del ${y + 2} con il metodo previsionale, sulla stima del ${y + 1}${v.previsionale.expected ? " con gli incassi che prevedi" : " se continui così"}: imposta ${euros(v.previsionale.estimate.imposta)}.`);
+	if (v.previsionale !== undefined) out.push(`Acconti del ${y + 1} e saldo del ${y + 1} (si versa nel ${y + 2}) con il metodo previsionale, sulla stima del ${y + 1}${v.previsionale.expected ? " con gli incassi che prevedi" : " se continui così"}: imposta ${euros(v.previsionale.estimate.imposta)}.`);
 	else out.push("Acconti con il metodo storico, sulle cifre dell'anno prima.");
 	const noStart = v.profile.startYear === undefined;
 	const missing = v.base.source === "ignota" || (v.accontiSource === "ignoti" && v.base.source !== "nessuna");
@@ -423,7 +459,7 @@ export function briefAnswer(soon: readonly Deadline[], today: string, limit: Lim
 	}
 	if (limit !== undefined) {
 		const year = Number(today.slice(0, 4));
-		rows.push(limit === "vicino" ? `sei ${withPercent("al", limitShare(ricavi))} del limite di 85.000 € di ricavi del forfettario (stima).` : limit === "oltre_85" ? `hai superato gli 85.000 € di ricavi: dal ${year + 1} esci dal forfettario (stima, parlane con il commercialista).` : "hai superato i 100.000 € di ricavi: esci dal forfettario già quest'anno (stima, parlane subito con il commercialista).");
+		rows.push(limit === "vicino" ? `sei ${withPercent("al", limitShare(ricavi))} del limite di 85.000 € di ricavi del forfettario (stima).` : limit === "oltre_85" ? `hai superato gli 85.000 € di ricavi: dal ${year + 1} esci dal forfettario (stima, parlane con il commercialista).` : "oltre 100.000 € di ricavi, fuori dal forfettario da quest'anno (stima).");
 	}
 	if (rows.length === 0) return NOTHING;
 	return `Tasse: ${rows.join(" Inoltre ")} Nel brief riporta questo in una riga.`;
@@ -444,21 +480,23 @@ const FIGURE_ORDER: readonly FigureKey[] = ["imposta", "contributi", "accontiImp
 /** The profile, the figures said, the incassi, the yearly estimate and the calendar as a CSV for Excel; a column says what was said and what estimated. Made inert by csvFile. */
 export function taxCsv(v: CsvView): { readonly csv: string; readonly rows: number } {
 	const rows: CsvCell[][] = [];
-	const add = (section: string, date: string, what: string, cents: bigint | undefined, source: "detto" | "stimato" | "da calcolare" | "") => rows.push([section, date, what, cents === undefined ? "" : csvCents(cents), source]);
+	const add = (section: string, date: string, what: string, cents: bigint | undefined, source: "detto" | "stimato" | "da calcolare" | "fatture" | "predefinito" | "dal codice ATECO" | "") => rows.push([section, date, what, cents === undefined ? "" : csvCents(cents), source]);
 	const e = v.estimate;
 	const p = v.profile;
-	add("Profilo", "", `Coefficiente di redditività ${percentText(p.coefficient)}${p.group === undefined ? "" : ` (${GROUPS[p.group].label})`}`, undefined, "detto");
-	add("Profilo", "", `Imposta sostitutiva ${percentText(e.rate)} nel ${e.year}`, undefined, "detto");
-	add("Profilo", "", `Contributi: ${pensionText(p.pension)}`, undefined, "detto");
+	const pension = p.pension;
+	const defaulted = (pension.kind === "gestione_separata" && pension.rate === undefined) || ((pension.kind === "artigiani" || pension.kind === "commercianti") && (pension.fixed === undefined || pension.rate === undefined || pension.minimale === undefined));
+	add("Profilo", "", `Coefficiente di redditività ${percentText(p.coefficient)}${p.group === undefined ? "" : ` (${GROUPS[p.group].label})`}`, undefined, p.groupFrom === "ateco" ? "dal codice ATECO" : "detto");
+	add("Profilo", "", `Imposta sostitutiva ${percentText(e.rate)} nel ${e.year}`, undefined, p.rate === undefined ? "predefinito" : "detto");
+	add("Profilo", "", `Contributi: ${pensionText(pension, e.year)}`, undefined, defaulted ? "predefinito" : "detto");
 	add("Profilo", "", p.startYear === undefined ? "Anno di inizio dell'attività non detto" : `Attività iniziata nel ${p.startYear}`, undefined, p.startYear === undefined ? "" : "detto");
 	for (const f of v.figures) for (const key of FIGURE_ORDER) if (f[key] !== undefined) add("Cifre dette", "", capitalized(figureWords(key, f.year)), scaled(f[key] as string, 2), "detto");
 	for (const r of v.incassi) {
 		const i = r.invoice;
 		if (i === undefined) continue;
 		const rata = r.instalment !== undefined && r.instalment.count > 1 ? `, rata ${r.instalment.n} di ${r.instalment.count}` : "";
-		add("Incassi", italianDate(r.date), `Fattura ${i.doc.number ?? "senza numero"}${rata}, ${partyName(i.customer)}`, r.cents, "detto");
+		add("Incassi", italianDate(r.date), `Fattura ${i.doc.number ?? "senza numero"}${rata}, ${partyName(i.customer)}`, r.cents, "fatture");
 	}
-	add("Stima", "", `Incassi ${e.year} (fatture segnate come pagate)`, e.incassi, "detto");
+	add("Stima", "", `Incassi ${e.year} (fatture segnate come pagate)`, e.incassi, "fatture");
 	if (e.ricavi !== e.incassi) add("Stima", "", "Ricavi senza il contributo integrativo", e.ricavi, "stimato");
 	add("Stima", "", `Reddito (coefficiente ${percentText(e.coefficient)})`, e.reddito, "stimato");
 	add("Stima", "", "Contributi", e.contributi.total, "stimato");

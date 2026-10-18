@@ -36,13 +36,17 @@
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
  *   up to `until`, at the amount of that day.
  * - Taxes: the F24 the tax profile's calendar estimates (tax-sums.ts), on their working day, when a
- *   profile exists; a June F24 gone by stays to its alternative day, at its amount. A voce out
- *   whose name says F24, tasse, INPS, imposta, contributi, acconto or IRPEF, within TAX_TWIN_DAYS
- *   of one, is the person's own record of it whatever its amount: the voci stay (several summed),
- *   the estimate goes, and they are listed. An expense recorded with such a name within
- *   TAX_TWIN_DAYS of one says it is paid: the estimate goes, listed too. Each voce or expense goes
- *   to the closest estimate (from its first day too, for a June F24 gone by). With the taxes on,
- *   such expenses are not in the average spending either.
+ *   profile exists; a June F24 gone by stays to its alternative day, at its amount. A tax name says
+ *   F24, IRPEF, sostitutiva, INPS, tasse or Agenzia (delle) Entrate, or saldo/acconto with imposta,
+ *   contributi or tassa; never with bollo, associazione, automobilistica, rifiuti, TARI or
+ *   fornitore. A voce out with a tax name within TAX_TWIN_DAYS of an estimate is the person's own
+ *   record of it: the voci stay (several summed) and are listed; the estimate goes, or, when they
+ *   sum under TAX_VOCI_PERCENT of it, its rest stays. An expense with a tax name within
+ *   TAX_TWIN_DAYS of one says it is paid from TAX_PAID_PERCENT of it (of its INPS part for an INPS
+ *   name): the estimate goes, listed too; below, the estimate stays and the expense is listed as a
+ *   maybe. Each voce or expense goes to the closest estimate (from its first day too, for a June
+ *   F24 gone by), an INPS name to one with contributions, the closer amount on the same distance.
+ *   With the taxes on, expenses with a tax name are not in the average spending either.
  * - A balance is brought to now by instant, from min(when it was said, the end of its day in the
  *   instance's time zone) — a balance said today for 10 October counts what was marked from the
  *   11th: plus the instalments to collect marked paid after it,
@@ -93,7 +97,7 @@ export type Movement = {
 	readonly item?: CashItem;
 	readonly hypothetical?: Hypothetical;
 	/** An F24 estimated from the tax profile (taxes.ts): what it pays for; `was` the first day of a June F24 gone by. */
-	readonly tax?: { readonly what: string; readonly was?: string };
+	readonly tax?: { readonly what: string; readonly contributi?: bigint; readonly was?: string };
 	/** Moved by a what_if delay: the days. */
 	readonly delayed?: number;
 };
@@ -674,49 +678,113 @@ export function unbilledPotential(entries: readonly WorkEntry[], rates: readonly
 /** An estimated F24 and a voce or an expense of the person's this close (days) are one payment, whatever their amounts. */
 export const TAX_TWIN_DAYS = 10;
 
-/** Folded words that make a name a tax payment. */
-const TAX_WORDS = new Set(["f24", "tasse", "tassa", "inps", "imposta", "imposte", "contributi", "contributo", "acconto", "acconti", "irpef", "sostitutiva"]);
+/** Folded words that alone make a name a tax payment. */
+const TAX_CLEAR = new Set(["f24", "irpef", "sostitutiva", "inps", "tasse"]);
+/** Folded phrases that alone make a name a tax payment. */
+const TAX_PHRASES = [["agenzia", "delle", "entrate"], ["agenzia", "entrate"]] as const;
+/** Generic words: a tax payment only with «saldo» or «acconto» (or with a clear word, which is enough by itself). */
+const TAX_GENERIC = new Set(["imposta", "imposte", "contributi", "contributo", "tassa"]);
+const TAX_STEPS = new Set(["saldo", "acconto", "acconti"]);
+/** Words that make a name not a tax payment, whatever else it says: «imposta di bollo», «tassa automobilistica», «contributo associazione», «acconto fornitore». */
+const NOT_TAX = new Set(["bollo", "associazione", "automobilistica", "rifiuti", "tari", "fornitore"]);
+/** Words of a name that say it is INPS contributions: it pairs with the F24 that has contributions in it. */
+const INPS_WORDS = new Set(["inps", "contributi", "contributo"]);
+
+const hasPhrase = (w: readonly string[], phrase: readonly string[]) => w.some((_, i) => phrase.every((p, k) => w[i + k] === p));
 
 export function isTaxName(text: string): boolean {
-	return words(text).some((w) => TAX_WORDS.has(w));
+	const w = words(text);
+	if (w.some((x) => NOT_TAX.has(x))) return false;
+	if (w.some((x) => TAX_CLEAR.has(x)) || TAX_PHRASES.some((p) => hasPhrase(w, p))) return true;
+	return w.some((x) => TAX_STEPS.has(x)) && w.some((x) => TAX_GENERIC.has(x));
 }
 
-/** The estimated F24 from `today` to `end`, as movements out. */
-export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string; readonly was?: string }[], today: string, end: string): Movement[] {
-	return payments.filter((p) => p.date >= today && p.date <= end && p.cents > 0n).map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what, ...(p.was === undefined ? {} : { was: p.was }) } }));
+/** A tax name that says INPS contributions (and not F24, imposta or Agenzia delle Entrate). */
+function isInpsName(text: string): boolean {
+	const w = words(text);
+	return w.some((x) => INPS_WORDS.has(x)) && !w.some((x) => x === "f24" || x === "irpef" || x === "sostitutiva" || x === "imposta" || x === "imposte") && !TAX_PHRASES.some((p) => hasPhrase(w, p));
 }
 
-/** An estimated F24 and what stands for it: the voci that count instead (summed), the expenses that say it is paid. */
-export type TaxTwin = { readonly tax: Movement; readonly voci: readonly Movement[]; readonly expenses: readonly Expense[] };
-
-/** The estimate closest to `date` within TAX_TWIN_DAYS, from its day or the first day of a June F24 gone by. */
-function closestTax(taxes: readonly Movement[], date: string): Movement | undefined {
-	let best: Movement | undefined;
-	let bestDays = Number.POSITIVE_INFINITY;
-	for (const t of taxes) {
-		const days = Math.min(Math.abs(daysBetween(date, t.date)), t.tax?.was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.tax.was)));
-		if (days <= TAX_TWIN_DAYS && days < bestDays) {
-			best = t;
-			bestDays = days;
-		}
-	}
-	return best;
+/** The estimated F24 from `today` to `end`, as movements out; `contributi` the INPS part of each. */
+export function taxFlows(payments: readonly { readonly date: string; readonly cents: bigint; readonly what: string; readonly contributi?: bigint; readonly was?: string }[], today: string, end: string): Movement[] {
+	return payments
+		.filter((p) => p.date >= today && p.date <= end && p.cents > 0n)
+		.map((p) => ({ date: p.date, kind: "out" as const, cents: p.cents, source: "tax" as const, tax: { what: p.what, ...(p.contributi === undefined || p.contributi === 0n ? {} : { contributi: p.contributi }), ...(p.was === undefined ? {} : { was: p.was }) } }));
 }
 
-/** The estimated F24 a voce of the person's or a recorded expense already stands for (see the choices above): those go, the voci stay. */
-export function taxDuplicates(taxes: readonly Movement[], items: readonly Movement[], expenses: readonly Expense[] = []): { readonly taxes: Movement[]; readonly twins: TaxTwin[] } {
+/** An expense says an estimated F24 is paid from this share of it (or of its INPS part, for an INPS expense), in percent. */
+export const TAX_PAID_PERCENT = 30n;
+/** The voci for an F24 stand for all of it from this share of the estimate, in percent; below, the rest of the estimate stays. */
+export const TAX_VOCI_PERCENT = 70n;
+
+/**
+ * An estimated F24 and what stands for it: the voci that count instead (summed), the expenses that
+ * say it is paid; `rest` the part of the estimate still counted when the voci are well below it.
+ */
+export type TaxTwin = { readonly tax: Movement; readonly voci: readonly Movement[]; readonly expenses: readonly Expense[]; readonly rest?: bigint };
+/** An expense with a tax name well below the F24 it is near: maybe the same payment, the estimate stays. */
+export type TaxMaybe = { readonly tax: Movement; readonly expense: Expense };
+
+/** What an amount is set against: the INPS part for an INPS name, when the F24 has one; the whole F24 otherwise. */
+const measureOf = (t: Movement, inps: boolean) => (inps && t.tax?.contributi !== undefined ? t.tax.contributi : t.cents);
+
+/**
+ * The estimate closest to `date` within TAX_TWIN_DAYS, from its day or the first day of a June F24
+ * gone by. An INPS name looks only at the F24 with contributions, when any is near. On the same
+ * distance (the late June F24 and the fixed INPS instalment both on 20 August), the closer amount.
+ */
+function closestTax(taxes: readonly Movement[], date: string, cents: bigint, inps: boolean): Movement | undefined {
+	const near = taxes
+		.map((t) => ({ t, days: Math.min(Math.abs(daysBetween(date, t.date)), t.tax?.was === undefined ? Number.POSITIVE_INFINITY : Math.abs(daysBetween(date, t.tax.was))) }))
+		.filter((x) => x.days <= TAX_TWIN_DAYS);
+	const withInps = inps ? near.filter((x) => x.t.tax?.contributi !== undefined) : [];
+	const pool = withInps.length > 0 ? withInps : near;
+	const gap = (t: Movement) => {
+		const d = measureOf(t, inps) - cents;
+		return d < 0n ? -d : d;
+	};
+	pool.sort((a, b) => a.days - b.days || (gap(a.t) < gap(b.t) ? -1 : gap(a.t) > gap(b.t) ? 1 : 0));
+	return pool[0]?.t;
+}
+
+/**
+ * The estimated F24 a voce of the person's or a recorded expense already stands for (see the
+ * choices above): those go, the voci stay. An expense under TAX_PAID_PERCENT of the F24 leaves it
+ * counted and is listed as maybe; voci under TAX_VOCI_PERCENT leave the rest of the estimate.
+ */
+export function taxDuplicates(taxes: readonly Movement[], items: readonly Movement[], expenses: readonly Expense[] = []): { readonly taxes: Movement[]; readonly twins: TaxTwin[]; readonly maybe: TaxMaybe[] } {
 	const voci = new Map<Movement, Movement[]>();
 	const paid = new Map<Movement, Expense[]>();
+	const maybe: TaxMaybe[] = [];
 	for (const m of items) {
 		if (m.kind !== "out" || m.item === undefined || !isTaxName(m.item.name)) continue;
-		const t = closestTax(taxes, m.date);
+		const t = closestTax(taxes, m.date, m.cents, isInpsName(m.item.name));
 		if (t !== undefined) voci.set(t, [...(voci.get(t) ?? []), m]);
 	}
 	for (const e of expenses) {
-		if (!isTaxName(expenseName(e))) continue;
-		const t = closestTax(taxes, e.date);
-		if (t !== undefined) paid.set(t, [...(paid.get(t) ?? []), e]);
+		const name = expenseName(e);
+		if (!isTaxName(name)) continue;
+		const inps = isInpsName(name);
+		const amount = expenseCents(e.amount);
+		const t = closestTax(taxes, e.date, amount, inps);
+		if (t === undefined) continue;
+		if (amount * 100n >= measureOf(t, inps) * TAX_PAID_PERCENT) paid.set(t, [...(paid.get(t) ?? []), e]);
+		else maybe.push({ tax: t, expense: e });
 	}
-	const twins = taxes.filter((t) => voci.has(t) || paid.has(t)).map((t) => ({ tax: t, voci: voci.get(t) ?? [], expenses: paid.get(t) ?? [] }));
-	return { taxes: taxes.filter((t) => !voci.has(t) && !paid.has(t)), twins };
+	const kept: Movement[] = [];
+	const twins: TaxTwin[] = [];
+	for (const t of taxes) {
+		const v = voci.get(t);
+		const e = paid.get(t);
+		if (v === undefined && e === undefined) {
+			kept.push(t);
+			continue;
+		}
+		const sum = (v ?? []).reduce((n, m) => n + m.cents, 0n);
+		// Voci well below the estimate and no expense that says it is paid: the rest of the estimate stays.
+		const rest = e === undefined && sum * 100n < t.cents * TAX_VOCI_PERCENT ? t.cents - sum : undefined;
+		if (rest !== undefined) kept.push({ ...t, cents: rest });
+		twins.push({ tax: t, voci: v ?? [], expenses: e ?? [], ...(rest === undefined ? {} : { rest }) });
+	}
+	return { taxes: kept, twins, maybe: maybe.filter((x) => !paid.has(x.tax)) };
 }

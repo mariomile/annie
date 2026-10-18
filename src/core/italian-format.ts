@@ -121,3 +121,9 @@ export function withPercent(preposition: "il" | "al", value: string | number): s
 export function monthName(date: string): string {
 	return MONTHS_LONG[Number(date.slice(5, 7)) - 1] ?? "";
 }
+
+/** «a novembre», «ad agosto»: the month of a date after «a», with the «d» before a vowel. */
+export function toMonth(date: string): string {
+	const month = monthName(date);
+	return `${/^[aeiou]/.test(month) ? "ad" : "a"} ${month}`;
+}

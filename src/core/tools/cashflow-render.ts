@@ -11,7 +11,8 @@
  */
 import { type Balance, BRIEF_DAYS, BRIEF_STALE_DAYS, type CashItem, type Kind, ROLL_NOTE_DAYS, STALE_BALANCE_DAYS, signedCents, STALE_OVERDUE_DAYS } from "../cashflow.ts";
 import { buckets, firstBelow, type Point, type Projection, WEEKLY_MAX_DAYS } from "../cashflow-projection.ts";
-import { type AverageSpend, type Duplicate, type Hypothetical, type InvoiceFlows, type Movement, QUOTE_MIN_DAYS, QUOTE_PAY_DAYS, QUOTE_STALE_DAYS, type QuoteFlows, type RenewalFlows, type Rolled, type RolledInvoice, type Source, type TaxTwin } from "../cashflow-sources.ts";
+import { type AverageSpend, type Duplicate, type Hypothetical, type InvoiceFlows, type Movement, QUOTE_MIN_DAYS, QUOTE_PAY_DAYS, QUOTE_STALE_DAYS, type QuoteFlows, type RenewalFlows, type Rolled, type RolledInvoice, type Source, type TaxMaybe, type TaxTwin } from "../cashflow-sources.ts";
+import type { Expense } from "../expenses.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { euros, n1 } from "../format-words.ts";
 import { daysBetween, weekdayOf } from "../italian-calendar.ts";
@@ -106,6 +107,8 @@ export type View = {
 	readonly taxes?: true;
 	/** A voce of the person's that is an estimated F24: the voce counts. */
 	readonly taxTwins?: readonly TaxTwin[];
+	/** An expense with a tax name well below the F24 near it: the estimate stays. */
+	readonly taxMaybe?: readonly TaxMaybe[];
 	readonly notes?: readonly string[];
 };
 
@@ -131,9 +134,23 @@ function section(head: string, rows: readonly string[]): Section[] {
 
 /** «F24 saldo (voce C-0001), 800,00 €: sembra l'F24 del 30 novembre stimato a 820,00 €, conto la voce», or an expense that says it is paid; to be fenced. */
 function taxTwinRow(t: TaxTwin, today: string): string {
-	const what = [...t.voci.map((v) => `${movementLabel(v, today)}, ${euros(v.cents)}`), ...t.expenses.map((e) => `spesa ${withShortDate("del", e.date, today)} ${[e.supplier, e.note].filter((x) => x !== undefined).join(", ") || e.id}, ${euros(scaled(e.amount, 2))}`)];
-	const tail = t.voci.length === 0 ? "già pagato, non lo conto" : t.voci.length === 1 ? "conto la voce" : "conto le voci";
+	const what = [...t.voci.map((v) => `${movementLabel(v, today)}, ${euros(v.cents)}`), ...t.expenses.map((e) => expenseText(e, today))];
+	if (t.rest !== undefined) {
+		const sum = t.voci.reduce((n, v) => n + v.cents, 0n);
+		return `• ${what.join("; ")}: ${n1(t.voci.length, "voce", "voci")} ${euros(sum)} contro una stima di ${euros(t.tax.cents)} per l'F24 ${withNearDate("del", t.tax.date, today)}: ${n1(t.voci.length, "conto la voce", "conto le voci")} e i ${euros(t.rest)} che restano della stima`;
+	}
+	const tail = t.voci.length === 0 ? "lo considero già pagato e non lo conto" : t.voci.length === 1 ? "conto la voce" : "conto le voci";
 	return `• ${what.join("; ")}: ${what.length === 1 ? "sembra" : "sembrano"} l'F24 ${withNearDate("del", t.tax.date, today)} stimato a ${euros(t.tax.cents)}, ${tail}`;
+}
+
+/** «spesa del 3 ott Agenzia, 2,00 €»; to be fenced. */
+function expenseText(e: Expense, today: string): string {
+	return `spesa ${withShortDate("del", e.date, today)} ${[e.supplier, e.note].filter((x) => x !== undefined).join(", ") || e.id}, ${euros(scaled(e.amount, 2))}`;
+}
+
+/** «spesa del 3 ott INPS, 50,00 €: forse è l'F24 del 20 agosto stimato a 3.000,00 €, ma è molto meno: conto la stima»; to be fenced. */
+function taxMaybeRow(m: TaxMaybe, today: string): string {
+	return `• ${expenseText(m.expense, today)}: forse è l'F24 ${withNearDate("del", m.tax.date, today)} stimato a ${euros(m.tax.cents)}, ma è molto meno: conto la stima`;
 }
 
 /** The one fence of an answer: every list that names someone. */
@@ -264,7 +281,7 @@ function forecastSections(p: Projection, v: View): Section[] {
 		...section(`Da incassare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleIn(v).map(row)),
 		...section(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleOut(v).map(row)),
 		...section("Probabili doppioni:", [...v.duplicates.map((d) => duplicateRow(d, today)), ...(v.taxTwins ?? []).map((t) => taxTwinRow(t, today))]),
-		...section("Forse doppioni, contati tutti e due:", (v.maybe ?? []).map((d) => duplicateRow(d, today, true))),
+		...section("Forse doppioni, contati tutti e due:", [...(v.maybe ?? []).map((d) => duplicateRow(d, today, true)), ...(v.taxMaybe ?? []).map((m) => taxMaybeRow(m, today))]),
 		...section(`Preventivi accettati da più di ${QUOTE_STALE_DAYS} giorni:`, (v.quotes?.old ?? []).map((o) => `• ${o.quote.customer.name}, preventivo accettato ${o.quote.number}, ${euros(o.cents)} non ancora fatturati. È ancora da fare o da fatturare?`)),
 	];
 }
@@ -284,6 +301,8 @@ function summaryLines(v: View): string[] {
 	if (v.autoPaid.length > 0) out.push(`${n1(v.autoPaid.length, "Una fattura scaduta di un fornitore ha", "# fatture scadute di fornitori hanno")} l'addebito automatico di un rinnovo: ${n1(v.autoPaid.length, "la conto pagata", "le conto pagate")}.`);
 	const twins = v.duplicates.length + (v.taxTwins?.length ?? 0);
 	if (twins > 0) out.push(`Probabili doppioni, contati una volta sola: ${twins}.`);
+	const taxMaybe = v.taxMaybe?.length ?? 0;
+	if (taxMaybe > 0) out.push(`${n1(taxMaybe, "Una spesa sembra un F24 ma è molto più bassa della stima", "# spese sembrano F24 ma sono molto più basse della stima")}: tengo la stima. Se l'F24 è già pagato, chiedi a chi ti scrive di dirmelo.`);
 	const maybe = v.maybe?.length ?? 0;
 	if (maybe > 0) out.push(`${n1(maybe, "Una fattura di un fornitore forse è il pagamento di un rinnovo", "# fatture di fornitori forse sono il pagamento di un rinnovo")}: per ora conto sia la fattura sia il rinnovo. Chiedi a chi ti scrive se è lo stesso pagamento: se sì, va indicato il fornitore nel rinnovo.`);
 	const old = v.quotes?.old ?? [];

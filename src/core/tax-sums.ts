@@ -41,9 +41,11 @@ import {
 	GS_ACCONTO_FIRST_PERCENT,
 	GS_ACCONTO_PERCENT,
 	GS_MASSIMALE,
+	GS_RATE_DEFAULT,
 	HARD_LIMIT_CENTS,
 	IVS_ACCONTO_FIRST_PERCENT,
 	IVS_TOP_EXTRA,
+	IVS_YEARS,
 	JUNE_ALTERNATIVE_DAYS,
 	JUNE_DEADLINES,
 	JUNE_DUE,
@@ -51,11 +53,13 @@ import {
 	LIMIT_BANDS,
 	LIMIT_CENTS,
 	LIMIT_WARN_PERCENT,
+	NEW_2025_LAST_YEAR,
 	NEW_2025_REDUCTION_PERCENT,
 	type Pension,
 	rateFor,
 	type TaxProfile,
 	type YearFigures,
+	yearValues,
 } from "./taxes.ts";
 
 /** `cents` × `percent` (a decimal string, two decimals at most) / 100, half up. */
@@ -110,26 +114,19 @@ export function ricaviOf(pension: Pension, incassi: bigint): bigint {
 	return halfUp(incassi * 10_000n, 10_000n + scaled(pension.integrativo, 2));
 }
 
-/** The gestione separata's massimale for `year`: the closest year before it in the table, or the first. */
-function massimaleOf(year: number): bigint {
-	const years = Object.keys(GS_MASSIMALE)
-		.map(Number)
-		.sort((a, b) => a - b);
-	const at = years.filter((y) => y <= year).at(-1) ?? years[0];
-	return scaled(GS_MASSIMALE[at as number] as string, 2);
-}
-
 export type Contributi = {
 	readonly total: bigint;
 	/** Artigiani and commercianti: the fixed part, reduced as the variable one, paid in four instalments. */
 	readonly fixed: bigint;
 	/** The part on the reddito: what the June and November acconti are of. */
 	readonly variable: bigint;
+	/** The INPS values used are of this other year: the year computed has none in the tables. */
+	readonly valuesOf?: number;
 };
 
-/** What is left of artigiani and commercianti contributions after the reduction, in percent. */
-function keptPercent(p: Extract<Pension, { kind: "artigiani" | "commercianti" }>): bigint {
-	if (p.new2025 === true) return BigInt(100 - NEW_2025_REDUCTION_PERCENT);
+/** What is left of artigiani and commercianti contributions after the reduction in `year`, in percent: 50% through NEW_2025_LAST_YEAR for the new ones of 2025, then 35% with the reduction. */
+export function keptPercent(p: Extract<Pension, { kind: "artigiani" | "commercianti" }>, year: number): bigint {
+	if (p.new2025 === true && year <= NEW_2025_LAST_YEAR) return BigInt(100 - NEW_2025_REDUCTION_PERCENT);
 	return p.reduction ? BigInt(100 - ARTIGIANI_REDUCTION_PERCENT) : 100n;
 }
 
@@ -137,21 +134,24 @@ function keptPercent(p: Extract<Pension, { kind: "artigiani" | "commercianti" }>
 export function contributiOf(pension: Pension, reddito: bigint, year: number): Contributi {
 	switch (pension.kind) {
 		case "gestione_separata": {
-			const cap = massimaleOf(year);
-			const v = percentOf(reddito > cap ? cap : reddito, pension.rate);
-			return { total: v, fixed: 0n, variable: v };
+			const m = yearValues(GS_MASSIMALE, year);
+			const cap = scaled(m.values, 2);
+			const v = percentOf(reddito > cap ? cap : reddito, pension.rate ?? GS_RATE_DEFAULT);
+			return { total: v, fixed: 0n, variable: v, ...(reddito > cap && m.year !== year ? { valuesOf: m.year } : {}) };
 		}
 		case "artigiani":
 		case "commercianti": {
-			const kept = keptPercent(pension);
-			const fixed = halfUp(scaled(pension.fixed, 2) * kept, 100n);
-			const over = reddito - scaled(pension.minimale, 2);
-			const top = pension.top === undefined ? undefined : scaled(pension.top, 2);
-			const above = top !== undefined && reddito > top ? reddito - top : 0n;
+			const t = yearValues(IVS_YEARS, year);
+			const own = pension.fixed !== undefined && pension.rate !== undefined && pension.minimale !== undefined;
+			const kept = keptPercent(pension, year);
+			const fixed = halfUp(scaled(pension.fixed ?? t.values.fixed[pension.kind], 2) * kept, 100n);
+			const over = reddito - scaled(pension.minimale ?? t.values.minimale, 2);
+			const top = scaled(pension.top ?? t.values.top, 2);
+			const above = reddito > top ? reddito - top : 0n;
 			// Cents × percent × 100, reduced, rounded once.
-			const raw = over > 0n ? over * scaled(pension.rate, 2) + above * scaled(IVS_TOP_EXTRA, 2) : 0n;
+			const raw = over > 0n ? over * scaled(pension.rate ?? t.values.rate[pension.kind], 2) + above * scaled(IVS_TOP_EXTRA, 2) : 0n;
 			const v = halfUp(raw * kept, 1_000_000n);
-			return { total: fixed + v, fixed, variable: v };
+			return { total: fixed + v, fixed, variable: v, ...(!own && t.year !== year ? { valuesOf: t.year } : {}) };
 		}
 		case "cassa": {
 			const v = percentOf(reddito, pension.rate);
@@ -336,10 +336,10 @@ function contributiBase(i: CalendarInputs, year: number): bigint | undefined {
 	return contributiOf(p.pension, percentOf(ricaviOf(p.pension, inc), p.coefficient), year).variable;
 }
 
-/** The fixed contributions of artigiani and commercianti, reduced, in four instalments: the fourth balances the rounding. */
-function fixedQuarter(p: Pension, q: 1 | 2 | 3 | 4): bigint {
+/** The fixed contributions of artigiani and commercianti of `year`, reduced, in four instalments: the fourth balances the rounding. */
+function fixedQuarter(p: Pension, q: 1 | 2 | 3 | 4, year: number): bigint {
 	if (p.kind !== "artigiani" && p.kind !== "commercianti") return 0n;
-	const fixed = contributiOf(p, 0n, 0).fixed;
+	const fixed = contributiOf(p, 0n, year).fixed;
 	const quarter = halfUp(fixed, 4n);
 	return q === 4 ? fixed - quarter * 3n : quarter;
 }
@@ -353,8 +353,8 @@ function contributiPaidIn(i: CalendarInputs, year: number): bigint | undefined {
 	const acconti = contributiAcconti(i, year);
 	if (last === undefined || acconti?.first === undefined) return undefined;
 	let fixed = 0n;
-	if (!before(i, year - 1)) fixed += fixedQuarter(p, 4);
-	fixed += fixedQuarter(p, 1) + fixedQuarter(p, 2) + fixedQuarter(p, 3);
+	if (!before(i, year - 1)) fixed += fixedQuarter(p, 4, year - 1);
+	fixed += fixedQuarter(p, 1, year) + fixedQuarter(p, 2, year) + fixedQuarter(p, 3, year);
 	return last + acconti.first + acconti.second + fixed;
 }
 
@@ -510,7 +510,7 @@ function deadlinesOfYear(i: CalendarInputs, year: number): Deadline[] {
 	};
 	// Artigiani and commercianti: the fixed part in four instalments, the fourth in February of the next year.
 	if (p.pension.kind === "artigiani" || p.pension.kind === "commercianti") {
-		const of = (q: 1 | 2 | 3 | 4, forYear: number): Part => ({ kind: "fissi", cents: fixedQuarter(p.pension, q), quarter: q, forYear });
+		const of = (q: 1 | 2 | 3 | 4, forYear: number): Part => ({ kind: "fissi", cents: fixedQuarter(p.pension, q, forYear), quarter: q, forYear });
 		if (!before(i, year - 1)) make(`${year}-02-16`, "fissi", [of(4, year - 1)]);
 		if (!before(i, year)) {
 			make(`${year}-05-16`, "fissi", [of(1, year)]);
@@ -543,10 +543,12 @@ function opt<K extends string>(key: K, c: bigint | undefined): { [k in K]?: bigi
 	return (c === undefined ? {} : { [key]: c }) as { [k in K]?: bigint };
 }
 
-/** A June F24 whose day is before `from` but whose alternative is not: on the alternative's day, at its amount. */
-function lateOf(d: Deadline, from: string): Deadline | undefined {
+/** A June F24 whose day is before `from` but whose alternative is not: on the alternative's day, at its amount; none when the person said acconti paid that year (it was paid). */
+function lateOf(i: CalendarInputs, d: Deadline, from: string): Deadline | undefined {
 	const a = d.alternative;
 	if (a === undefined || d.date >= from || a.date < from) return undefined;
+	const said = figuresOf(i, yearOf(d.due));
+	if ((cents(said?.accontiImposta) ?? 0n) > 0n || (cents(said?.accontiContributi) ?? 0n) > 0n) return undefined;
 	const { alternative: _, slip: __, ...rest } = d;
 	return { ...rest, due: a.due, date: a.date, ...(a.slip === undefined ? {} : { slip: a.slip }), late: { due: d.due, date: d.date, cents: a.cents, extra: a.extra } };
 }
@@ -555,7 +557,7 @@ function lateOf(d: Deadline, from: string): Deadline | undefined {
 export function calendar(i: CalendarInputs, days = CALENDAR_DAYS, from = i.today): Deadline[] {
 	const end = addDays(from, days - 1);
 	const year = yearOf(from);
-	const all = [...deadlinesOfYear(i, year), ...deadlinesOfYear(i, year + 1)].map((d) => lateOf(d, from) ?? d);
+	const all = [...deadlinesOfYear(i, year), ...deadlinesOfYear(i, year + 1)].map((d) => lateOf(i, d, from) ?? d);
 	return all.filter((d) => d.date >= from && d.date <= end).sort((a, b) => a.date.localeCompare(b.date) || a.due.localeCompare(b.due));
 }
 
@@ -583,17 +585,26 @@ export function plainCalendar(today: string, ordinario: boolean, days = CALENDAR
 /** What a deadline pays for, in a few words, for the cashflow's label. */
 function deadlineWords(d: Deadline): string {
 	const what = d.kind === "fissi" ? "contributi fissi INPS" : d.kind === "giugno" ? "saldo e primo acconto" : "secondo acconto";
-	return d.late === undefined ? what : `${what}, se non l'hai già pagato`;
+	return d.late === undefined ? what : `${what}, se non l'hai già pagato, dimmelo`;
 }
 
-/** An F24 for the cashflow: its day, amount and words; `was` the June day a late one had first. */
-export type TaxPayment = { readonly date: string; readonly cents: bigint; readonly what: string; readonly was?: string };
+/** An F24 for the cashflow: its day, amount and words; the part of it that is INPS contributions; `was` the June day a late one had first. */
+export type TaxPayment = { readonly date: string; readonly cents: bigint; readonly what: string; readonly contributi: bigint; readonly was?: string };
+
+const CONTRIBUTI_PARTS: readonly string[] = ["saldo_contributi", "acconto_contributi", "fissi"];
 
 /** The F24 the cashflow counts: the calendar's deadlines with a known amount from `today` to `end`. */
 export function taxPayments(i: CalendarInputs, end: string): TaxPayment[] {
 	const days = daysBetween(i.today, end) + 1;
 	if (days < 1) return [];
 	return calendar(i, days)
-		.map((d): TaxPayment => ({ date: d.date, cents: dueCents(d), what: deadlineWords(d), ...(d.late === undefined ? {} : { was: d.late.date }) }))
+		.map((d): TaxPayment => ({ date: d.date, cents: dueCents(d), what: deadlineWords(d), contributi: d.parts.filter((p) => CONTRIBUTI_PARTS.includes(p.kind)).reduce((n, p) => n + (p.cents ?? 0n), 0n), ...(d.late === undefined ? {} : { was: d.late.date }) }))
 		.filter((d) => d.cents > 0n);
+}
+
+/** What the acconti paid for `year` exceed its imposta and contributions by: a credit for the commercialista to use in compensazione. */
+export function creditOf(i: CalendarInputs, year: number): { readonly imposta: bigint; readonly contributi: bigint } {
+	const paid = accontiPaid(i, year);
+	const over = (p: bigint | undefined, due: bigint | undefined) => (p === undefined || due === undefined || p <= due ? 0n : p - due);
+	return { imposta: over(paid.imposta, impostaBase(i, year)), contributi: over(paid.contributi, contributiBase(i, year)) };
 }

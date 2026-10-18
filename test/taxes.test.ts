@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
-import { averageSpend, type Movement, TAX_TWIN_DAYS, taxDuplicates, taxFlows } from "../src/core/cashflow-sources.ts";
+import { averageSpend, isTaxName, type Movement, TAX_PAID_PERCENT, TAX_TWIN_DAYS, TAX_VOCI_PERCENT, taxDuplicates, taxFlows } from "../src/core/cashflow-sources.ts";
 import { CashflowStore } from "../src/core/cashflow-store.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
@@ -294,7 +294,9 @@ describe("taxes: the tool", () => {
 		expect(saved).toContain("Coefficiente di redditività 78% (attività professionali");
 		expect(saved).toContain("Contributi: gestione separata INPS al 26,07% (aliquota del 2026).");
 		expect(saved).toContain("L'aliquota della gestione separata è quella del 2026");
-		expect(s.store.read().profile).toMatchObject({ coefficient: "78", group: "professionali", rate: "15", startYear: 2020, pension: GS });
+		expect(s.store.read().profile).toMatchObject({ coefficient: "78", group: "professionali", groupFrom: "parole", rate: "15", startYear: 2020 });
+		// Only what the person said: the gestione separata rate is read at compute time.
+		expect(s.store.read().profile?.pension).toEqual({ kind: "gestione_separata" });
 		const t = await setup();
 		const asked = await t.run({ ...CONSULENTE, activity: "consulente immobiliare" });
 		expect(asked).toContain("Non l'ho salvato: da queste parole l'attività può stare in più gruppi");
@@ -377,34 +379,36 @@ describe("taxes: the tool", () => {
 		// Last year from its incassi: 10.000 € in 2025, imposta 864,57 €, contributi 2.033,46 €; no acconti said, so the rule on 2024 (unknown).
 		const fromInvoices = await s.run({ op: "calendar" });
 		expect(fromInvoices.split("\n")[0]).toBe("Il prossimo F24 è il 30 novembre 2026: circa 1.245,88 € (secondo acconto di imposta e contributi).");
-		expect(fromInvoices).toContain("• Il 30 novembre 2026, in tutto 1.245,88 €:\n  - secondo acconto imposta 2026: 432,49 €\n  - secondo acconto contributi 2026: 813,39 €\n");
+		expect(fromInvoices).toContain("• Il 30 novembre 2026, in tutto 1.245,88 €:\n  – secondo acconto imposta 2026: 432,49 €\n  – secondo acconto contributi 2026: 813,39 €\n");
 		expect(fromInvoices).toContain("Imposta e contributi del 2025 stimati dalle fatture incassate quell'anno");
 		expect(fromInvoices).toContain("Non so quanto hai versato di acconti nel 2025: dimmelo per avere il saldo giusto.");
 		// 2027 has no proroga known: 30 June, the alternative 30 days later on its own line, and a note to check.
-		expect(fromInvoices).toContain("• Il 30 giugno 2027, in tutto 7.904,64 €:\n  - saldo imposta 2026: 1.304,90 €\n");
+		expect(fromInvoices).toContain("• Il 30 giugno 2027, in tutto 7.904,64 €:\n  – saldo imposta 2026: 1.304,90 €\n");
 		expect(fromInvoices).toContain("\n  Oppure il 30 luglio 2027 con lo 0,40% in più: 7.936,26 €.\n");
 		expect(fromInvoices).toContain("Per i forfettari di solito c'è una proroga a luglio dell'F24 del 30 giugno 2027: verifica.");
 		expect(fromInvoices).not.toMatch(/31 luglio|0,40% se/);
 		for (const line of fromInvoices.split("\n")) expect(line.length).toBeLessThanOrEqual(170);
 		await s.run({ op: "set_profile", last_year_imposta: "2000", last_year_contributi: "5000", last_year_acconti_imposta: "1500", last_year_acconti_contributi: "3000" });
 		const said = await s.run({ op: "calendar" });
-		expect(said).toContain("• Il 30 novembre 2026, in tutto 3.000,00 €:\n  - secondo acconto imposta 2026: 1.000,00 €\n  - secondo acconto contributi 2026: 2.000,00 €\n");
+		expect(said).toContain("• Il 30 novembre 2026, in tutto 3.000,00 €:\n  – secondo acconto imposta 2026: 1.000,00 €\n  – secondo acconto contributi 2026: 2.000,00 €\n");
 		expect(said).toContain("Imposta e contributi del 2025: quelli che mi hai detto.");
 		expect(said).toContain("È una stima");
 		const prev = await s.run({ op: "calendar", method: "previsionale", expected_income: "18.000" });
 		// Storico against previsionale first, then the penalties: the first acconti were paid in July on last year (1.000 € and 2.000 €), the second is the new total less them.
-		expect(prev.split("\n").slice(0, 2)).toEqual([
+		expect(prev.split("\n").slice(0, 3)).toEqual([
+			// The June F24 already gone: «hai versato», the month with its preposition.
+			"A luglio hai versato 1.000,00 € di primo acconto d'imposta e 2.000,00 € di contributi, con il metodo storico.",
 			"Con il metodo previsionale a novembre verseresti 366,77 € invece di 1.000,00 € di acconto d'imposta, e 928,18 € invece di 2.000,00 € di acconto dei contributi.",
 			"Attenzione: se a consuntivo gli acconti risultano troppo bassi, la differenza si paga con sanzioni e interessi. Decidilo con il commercialista.",
 		]);
-		expect(prev).toContain("Acconti del 2026 e saldo del 2027 con il metodo previsionale, sulla stima del 2026 con gli incassi che prevedi: imposta 1.366,77 €.");
+		expect(prev).toContain("Acconti del 2026 e saldo del 2026 (si versa nel 2027) con il metodo previsionale, sulla stima del 2026 con gli incassi che prevedi: imposta 1.366,77 €.");
 		// The expected incassi feed the next June's saldo too: the imposta's saldo is nil, the contributions' on 18.000 €.
-		expect(prev).toContain("• Il 30 giugno 2027, in tutto 2.879,53 €:\n  - primo acconto imposta 2027: 683,39 €\n  - saldo contributi 2026: 732,05 €\n");
+		expect(prev).toContain("• Il 30 giugno 2027, in tutto 2.879,53 €:\n  – primo acconto imposta 2027: 683,39 €\n  – saldo contributi 2026: 732,05 €\n");
 		s.at("2026-05-02");
 		const may = await s.run({ op: "calendar", method: "previsionale", expected_income: "12.000" });
 		expect(may.split("\n")[0]).toBe("Con il metodo previsionale a luglio verseresti 405,59 € invece di 1.000,00 € di acconto d'imposta, e 976,06 € invece di 2.000,00 € di acconto dei contributi.");
 		// 2026: the forfettari's proroga to 20 July, or 20 August with 0,80% more.
-		expect(may).toContain("• Il 20 luglio 2026, in tutto 3.881,65 €:\n  - saldo imposta 2025: 500,00 €\n  - primo acconto imposta 2026: 405,59 €\n");
+		expect(may).toContain("• Il 20 luglio 2026, in tutto 3.881,65 €:\n  – saldo imposta 2025: 500,00 €\n  – primo acconto imposta 2026: 405,59 €\n");
 		expect(may).toContain("\n  Oppure il 20 agosto 2026 con lo 0,80% in più: 3.912,70 €.");
 		for (const text of [fromInvoices, said, prev]) expect(outside(text)).not.toMatch(NO_OPS);
 	});
@@ -429,20 +433,24 @@ describe("taxes: the tool", () => {
 });
 
 describe("taxes in the cashflow", () => {
-	it("a voce named like a tax within 10 days replaces an estimated F24 whatever its amount, several summed; the closest estimate takes it", () => {
+	it("a voce named like a tax within 10 days replaces an estimated F24 from 70% of it, several summed; below, the rest stays; the closest estimate takes it", () => {
 		const tax = taxFlows([{ date: "2026-11-30", cents: 300_000n, what: "secondo acconto" }], TODAY, "2026-12-31");
 		const voce = (name: string, date: string, cents: bigint, id = "C-0001"): Movement => ({ date, kind: "out", cents, source: "item", item: { id, kind: "out", amount: "1", name, date, by: "u", at: "x" } });
 		expect(taxDuplicates(tax, [voce("F24 novembre", "2026-12-05", 280_000n)]).twins).toHaveLength(1);
-		// Any amount: far below or above the estimate, the voce counts instead.
+		// Above the estimate, or from 70% of it, the voce counts instead.
 		expect(taxDuplicates(tax, [voce("Acconto IRPEF", "2026-11-25", 390_000n)]).taxes).toEqual([]);
-		expect(taxDuplicates(tax, [voce("F24", "2026-11-30", 40_000n)]).taxes).toEqual([]);
+		expect(taxDuplicates(tax, [voce("F24", "2026-11-30", 210_000n)]).taxes).toEqual([]);
+		// Far below: the voce counts and the rest of the estimate stays.
+		const low = taxDuplicates(tax, [voce("F24", "2026-11-30", 40_000n)]);
+		expect(low.taxes.map((t) => t.cents)).toEqual([260_000n]);
+		expect(low.twins[0]?.rest).toBe(260_000n);
 		expect(taxDuplicates(tax, [voce("F24 novembre", "2026-12-11", 300_000n)]).taxes).toHaveLength(1);
 		expect(taxDuplicates(tax, [voce("Affitto", "2026-11-30", 300_000n)]).taxes).toHaveLength(1);
 		const two = taxDuplicates(tax, [voce("Acconto imposta", "2026-11-30", 100_000n), voce("Contributi INPS", "2026-11-30", 150_000n, "C-0002")]);
 		expect(two.taxes).toEqual([]);
 		expect(two.twins.map((t) => t.voci.map((v) => v.cents))).toEqual([[100_000n, 150_000n]]);
 		const both = taxFlows([{ date: "2026-11-16", cents: 100_000n, what: "contributi fissi INPS" }, { date: "2026-11-30", cents: 300_000n, what: "secondo acconto" }], TODAY, "2026-12-31");
-		expect(taxDuplicates(both, [voce("F24", "2026-11-28", 1n)]).taxes.map((t) => t.date)).toEqual(["2026-11-16"]);
+		expect(taxDuplicates(both, [voce("F24", "2026-11-28", 300_000n)]).taxes.map((t) => t.date)).toEqual(["2026-11-16"]);
 		expect(TAX_TWIN_DAYS).toBe(10);
 	});
 
@@ -472,7 +480,7 @@ describe("taxes in the cashflow", () => {
 
 	it("the cashflow reads the F24 from the same calendar, from today to the horizon", () => {
 		const figures = [{ year: 2025, imposta: "2000", contributi: "5000", accontiImposta: "1500", accontiContributi: "3000" }];
-		expect(taxPayments(inputs(profile(), TODAY, { figures }), "2026-12-31")).toEqual([{ date: "2026-11-30", cents: 300_000n, what: "secondo acconto" }]);
+		expect(taxPayments(inputs(profile(), TODAY, { figures }), "2026-12-31")).toEqual([{ date: "2026-11-30", cents: 300_000n, what: "secondo acconto", contributi: 200_000n }]);
 		expect(taxPayments(inputs(profile(), TODAY, { figures }), "2026-11-29")).toEqual([]);
 	});
 });
@@ -573,14 +581,14 @@ describe("taxes: the brief, another agente, audit, fence, CSV, a broken file", (
 			"Sezione;Data;Voce;Importo;Fonte",
 			"Profilo;;Coefficiente di redditività 78% (attività professionali, scientifiche, tecniche, sanitarie, di istruzione, servizi finanziari ed assicurativi);;detto",
 			"Profilo;;Imposta sostitutiva 15% nel 2026;;detto",
-			"Profilo;;Contributi: gestione separata INPS al 26,07% (aliquota del 2026);;detto",
+			"Profilo;;Contributi: gestione separata INPS al 26,07% (aliquota del 2026);;predefinito",
 			"Profilo;;Attività iniziata nel 2020;;detto",
 			"Cifre dette;;Imposta sostitutiva del 2025;2000,00;detto",
 			"Cifre dette;;Contributi del 2025;5000,00;detto",
 			"Cifre dette;;Acconti d'imposta versati nel 2025;1500,00;detto",
 			"Cifre dette;;Acconti di contributi versati nel 2025;3000,00;detto",
-			"Incassi;15/03/2026;Fattura T-1, Gamma Hotel S.p.A.;20000,00;detto",
-			"Stima;;Incassi 2026 (fatture segnate come pagate);20000,00;detto",
+			"Incassi;15/03/2026;Fattura T-1, Gamma Hotel S.p.A.;20000,00;fatture",
+			"Stima;;Incassi 2026 (fatture segnate come pagate);20000,00;fatture",
 			"Stima;;Reddito (coefficiente 78%);15600,00;stimato",
 			"Stima;;Contributi;4066,92;stimato",
 			// Paid in 2026 by the calendar: the saldo of 2025 (2.000 €) and the acconti of 2026 (4.000 €).
@@ -648,19 +656,19 @@ describe("taxes: the review fixes", () => {
 		const ask = await s.run({ op: "set_profile", activity: "commercio", pension: "artigiani", start_year: 2020 });
 		expect(ask).toBe("Per i contributi come artigiano mi manca solo una cosa: chiedi a chi ti scrive se ha la riduzione del 35% per i forfettari (si chiede all'INPS) o, se si è iscritto all'INPS per la prima volta nel 2025, quella del 50%.");
 		const saved = await s.run({ op: "set_profile", activity: "commercio", pension: "artigiani", start_year: 2020, reduction: true });
-		expect(saved).toContain("Contributi: INPS come artigiano, fissi 4.521,36 € l'anno più il 24% del reddito sopra il minimale di 18.808,00 € (25% sopra 56.224,00 €), ridotti del 35%.");
-		expect(s.store.read().profile?.pension).toEqual({ kind: "artigiani", fixed: "4521.36", rate: "24", minimale: "18808", top: "56224", reduction: true });
+		expect(saved).toContain("Contributi: INPS come artigiano, fissi 4.521,36 € l'anno più il 24% del reddito sopra il minimale di 18.808,00 € (25% sopra 56.224,00 €), ridotti del 35%; valori INPS del 2026.");
+		// Only what the person said: the year's INPS figures are read at compute time.
+		expect(s.store.read().profile?.pension).toEqual({ kind: "artigiani", reduction: true });
 		// The reduction on the fixed part too: 4.521,36 € less 35% is 2.938,88 €, four instalments of 734,72 €.
 		const cal = calendar(inputs(profile({ pension: s.store.read().profile?.pension as Pension }), "2026-01-01"));
 		expect(cal.filter((d) => d.kind === "fissi").map((d) => d.parts[0]?.cents)).toEqual([73_472n, 73_472n, 73_472n, 73_472n]);
 		const fifty: Pension = { kind: "commercianti", fixed: "4611.64", rate: "24.48", minimale: "18808", reduction: false, new2025: true };
 		expect(contributiOf(fifty, 2_400_000n, 2026)).toEqual({ total: 294_132n, fixed: 230_582n, variable: 63_550n });
 		const t = await setup();
-		await t.run({ ...CONSULENTE, activity: "commercio", pension: "commercianti", first_registered_2025: true });
-		expect(await t.run({ op: "estimate" })).toContain("La riduzione del 50% per chi si è iscritto nel 2025 vale per 36 mesi: verifica con il commercialista quando finisce.");
-		const u = await setup();
-		u.at("2027-02-01");
-		expect(await u.run({ op: "set_profile", activity: "commercio", pension: "commercianti", reduction: false })).toContain("Per i contributi come commerciante del 2027 non ho le cifre dell'INPS: mi servono i contributi fissi dell'anno (interi, senza riduzione), il reddito minimale, la percentuale sopra il minimale.");
+		await t.run({ ...CONSULENTE, activity: "commercio", pension: "commercianti", first_registered_2025: true, start_year: 2025 });
+		const fiftyAnswer = await t.run({ op: "estimate" });
+		expect(fiftyAnswer).toContain("Contributi INPS come commerciante: 2.305,82 € (fissi 2.305,82 €, sopra il minimale 0,00 €; ridotti del 50% fino al 2027 per l'iscrizione nel 2025).");
+		expect(fiftyAnswer).toContain("La riduzione del 50% per chi si è iscritto nel 2025 vale per 36 mesi: la conto fino al 2027, poi niente riduzione.");
 		for (const text of [ask, saved]) expect(text).not.toMatch(NO_OPS);
 	});
 
@@ -700,9 +708,9 @@ describe("taxes: the review fixes", () => {
 		expect(answer).toContain("Reddito (78% dei ricavi): 15.000,00 €.");
 	});
 
-	it("8. an expense named like a tax within 10 days says the F24 is paid; the tax payments are not in the average spending when the estimates are on", async () => {
+	it("8. an expense named like a tax within 10 days, from 30% of the F24, says it is paid; the tax payments are not in the average spending when the estimates are on", async () => {
 		const tax = taxFlows([{ date: "2026-10-19", cents: 300_000n, what: "secondo acconto" }], TODAY, "2026-12-31");
-		const paid = taxDuplicates(tax, [], [expense("S-2026-0001", "2026-10-16", "50", { supplier: "Agenzia Entrate", note: "F24 acconto" })]);
+		const paid = taxDuplicates(tax, [], [expense("S-2026-0001", "2026-10-16", "900", { supplier: "Agenzia Entrate", note: "F24 acconto" })]);
 		expect(paid.taxes).toEqual([]);
 		expect(paid.twins.map((t) => t.expenses.map((e) => e.id))).toEqual([["S-2026-0001"]]);
 		expect(taxDuplicates(tax, [], [expense("S-2026-0002", "2026-10-16", "50", { supplier: "Bar Sport" })]).taxes).toHaveLength(1);
@@ -715,11 +723,13 @@ describe("taxes: the review fixes", () => {
 		await s.cash({ op: "set_balance", amount: 10000 });
 		s.at("2026-11-30");
 		s.expenses.add(2026, "x1", (id) => expense(id, "2026-11-30", "3000", { supplier: "Agenzia delle Entrate", note: "F24 secondo acconto" }));
-		s.expenses.add(2026, "x2", (id) => expense(id, "2026-11-10", "400", { note: "contributi cassa edile" }));
+		s.expenses.add(2026, "x2", (id) => expense(id, "2026-11-10", "400", { note: "F24 contributi INPS" }));
+		// Not a tax name: in the average spending.
+		s.expenses.add(2026, "x4", (id) => expense(id, "2026-11-11", "200", { note: "contributi cassa edile" }));
 		s.expenses.add(2026, "x3", (id) => expense(id, "2026-11-12", "100", { supplier: "Cartoleria" }));
 		const today = await s.cash({ op: "forecast", horizon: "fine anno" });
 		expect(today).not.toContain("Uscite 3.000,00 €: tasse stimate");
-		expect(cashInside(today)).toContain("sembra l'F24 del 30 novembre stimato a 3.000,00 €, già pagato, non lo conto");
+		expect(cashInside(today)).toContain("sembra l'F24 del 30 novembre stimato a 3.000,00 €, lo considero già pagato e non lo conto");
 		expect(today).toContain("1 pagamento di tasse già nelle tasse stimate");
 	});
 
@@ -727,14 +737,14 @@ describe("taxes: the review fixes", () => {
 		const s = await setup();
 		const [cash] = createCashflowTools({ workspace: new Workspace(s.root), store: new CashflowStore(s.dir), invoices: new InvoiceStore(s.dir), expenses: s.expenses, renewals: new RenewalStore(s.dir), timesheet: { read: () => NO_HOURS }, timeZone: "Europe/Rome", whoIs: () => "u" });
 		expect(cash?.description).toContain("«F24 non stimati da taxes»");
-		expect(cash?.description).toContain("replaces the estimate whatever its amount");
+		expect(cash?.description).toContain("replaces the estimate, or its part when well below it");
 	});
 
 	it("10. a June F24 not paid stays after its day, to its alternative day and at its amount, «se non l'hai già pagato»", async () => {
 		const figures = [{ year: 2025, imposta: "3000", contributi: "6000", accontiImposta: "2000", accontiContributi: "4000" }];
 		const late = calendar(inputs(profile(), "2026-07-25", { figures }))[0];
 		expect([late?.date, late?.late?.date, late?.late?.cents, late?.late?.extra]).toEqual(["2026-08-20", "2026-07-20", 695_520n, "0.80"]);
-		expect(taxPayments(inputs(profile(), "2026-07-25", { figures }), "2026-08-31")).toEqual([{ date: "2026-08-20", cents: 695_520n, what: "saldo e primo acconto, se non l'hai già pagato", was: "2026-07-20" }]);
+		expect(taxPayments(inputs(profile(), "2026-07-25", { figures }), "2026-08-31")).toEqual([{ date: "2026-08-20", cents: 695_520n, what: "saldo e primo acconto, se non l'hai già pagato, dimmelo", contributi: 440_000n, was: "2026-07-20" }]);
 		expect(calendar(inputs(profile(), "2026-08-21", { figures })).some((d) => d.kind === "giugno")).toBe(false);
 		// A voce for the June F24 near its first day still replaces the late one.
 		const tax = taxFlows(taxPayments(inputs(profile(), "2026-07-25", { figures }), "2026-08-31"), "2026-07-25", "2026-08-31");
@@ -758,13 +768,13 @@ describe("taxes: the review fixes", () => {
 		await s.run(CONSULENTE);
 		const unknown = await s.run({ op: "calendar", method: "previsionale", expected_income: "18.000" });
 		expect(unknown).toContain("Non so quanto hai versato di primo acconto: a novembre metto la seconda rata della stima, la parte di giugno è da calcolare. Dimmi quanto hai versato.");
-		expect(unknown).toContain("  - secondo acconto imposta 2026: 778,48 €\n  - secondo acconto contributi 2026: 1.464,09 €");
+		expect(unknown).toContain("  – secondo acconto imposta 2026: 778,48 €\n  – secondo acconto contributi 2026: 1.464,09 €");
 		const said = await s.run({ op: "set_profile", paid_acconti_imposta: "300", paid_acconti_contributi: "1000" });
 		expect(said).toContain("Acconti d'imposta versati nel 2026: 300,00 €.");
 		expect(s.store.read().years).toEqual([{ year: 2026, accontiImposta: "300", accontiContributi: "1000" }]);
 		const known = await s.run({ op: "calendar", method: "previsionale", expected_income: "18.000" });
 		expect(known).not.toContain("la parte di giugno è da calcolare");
-		expect(known).toContain("  - secondo acconto imposta 2026: 1.256,97 €\n  - secondo acconto contributi 2026: 1.928,18 €");
+		expect(known).toContain("  – secondo acconto imposta 2026: 1.256,97 €\n  – secondo acconto contributi 2026: 1.928,18 €");
 		expect(outside(known)).not.toMatch(NO_OPS);
 	});
 
@@ -818,17 +828,18 @@ describe("taxes: the review fixes", () => {
 		await s.run(SAID_2025);
 		const lines = (await s.run({ op: "calendar" })).split("\n");
 		const head = lines.indexOf("• Il 30 giugno 2027, in tutto 4.194,15 €:");
-		expect(lines.slice(head + 1, head + 6)).toEqual(["  - saldo imposta 2026: 35,05 €", "  - primo acconto imposta 2027: 1.017,53 €", "  - saldo contributi 2026: 1.101,12 €", "  - primo acconto contributi 2027: 2.040,45 €", "  Oppure il 30 luglio 2027 con lo 0,40% in più: 4.210,93 €."]);
+		expect(lines.slice(head + 1, head + 6)).toEqual(["  – saldo imposta 2026: 35,05 €", "  – primo acconto imposta 2027: 1.017,53 €", "  – saldo contributi 2026: 1.101,12 €", "  – primo acconto contributi 2027: 2.040,45 €", "  Oppure il 30 luglio 2027 con lo 0,40% in più: 4.210,93 €."]);
 		for (const line of lines.filter((l) => l.startsWith("•") || l.startsWith("  "))) expect(line.length).toBeLessThanOrEqual(80);
 	});
 
-	it("19. the brief says a limit band only when the last week's incassi crossed it: 90% after 80%", async () => {
+	it("19. the brief says a limit band only when the incassi of the last 3 days crossed it: 90% after 80%", async () => {
 		const big = fattura(BETA, GAMMA, { number: "T-5", date: "2026-02-01", total: "70000.00", rate: [{ amount: "70000.00", due: "2026-02-28" }] });
 		const more = fattura(BETA, GAMMA, { number: "T-6", date: "2026-10-01", total: "7000.00", rate: [{ amount: "7000.00", due: "2026-10-31" }] });
-		const s = await setup({ files: { "f/t5.xml": big, "f/t6.xml": more }, paid: { "T-5": "2026-02-20T10:00:00.000Z", "T-6": "2026-10-15T10:00:00.000Z" } });
+		const s = await setup({ files: { "f/t5.xml": big, "f/t6.xml": more }, paid: { "T-5": "2026-02-20T10:00:00.000Z", "T-6": "2026-10-16T10:00:00.000Z" } });
 		await s.run(CONSULENTE);
 		expect(await s.run({ op: "calendar", compact: true })).toBe("Tasse: sei al 90% del limite di 85.000 € di ricavi del forfettario (stima). Nel brief riporta questo in una riga.");
-		s.at("2026-10-23");
+		expect(taxRules.LIMIT_BAND_DAYS).toBe(3);
+		s.at("2026-10-20");
 		expect(await s.run({ op: "calendar", compact: true })).toBe("Niente da segnalare sulle tasse: nel brief non scrivere niente sulle tasse.");
 		expect([sums.limitBand(6_799_999n), sums.limitBand(6_800_000n), sums.limitBand(7_650_000n), sums.limitBand(8_500_001n), sums.limitBand(10_000_001n)]).toEqual([0, 1, 2, 3, 4]);
 	});
@@ -840,6 +851,65 @@ describe("taxes: the review fixes", () => {
 		for (const name of ["PartKind", "BaseSource", "deadlineWords", "accontiOfYearStorico"]) expect(name in sums).toBe(false);
 		for (const name of ["PENSIONS", "isFigure", "isPercent", "validPension"]) expect(name in taxRules).toBe(false);
 		for (const name of ["withPercent", "pensionText", "limitLine", "contributionsWord", "deadlineRow"]) expect(name in render).toBe(false);
+	});
+});
+
+describe("taxes: the second review", () => {
+	const SAID_2025 = { op: "set_profile", last_year_imposta: "2000", last_year_contributi: "5000", last_year_acconti_imposta: "1500", last_year_acconti_contributi: "3000" };
+	const expense = (id: string, date: string, amount: string, more: Partial<Expense> = {}): Expense => ({ id, date, amount, category: "altro", by: "u", at: NOW.toISOString(), ...more });
+
+	it("1. only clear tax names pair with an F24; an expense from 30% of it says it is paid, below it is a maybe; voci well below leave the rest; an INPS expense on 20 August takes the F24 with contributions of its amount", async () => {
+		const tax = taxFlows([{ date: "2026-11-30", cents: 300_000n, what: "secondo acconto" }], TODAY, "2026-12-31");
+		const not = [
+			expense("S-1", "2026-11-25", "200", { note: "Acconto fornitore Rossi" }),
+			expense("S-2", "2026-11-25", "50", { supplier: "ACI", note: "tassa automobilistica" }),
+			expense("S-3", "2026-11-25", "2", { supplier: "Poste", note: "imposta di bollo" }),
+			expense("S-4", "2026-11-25", "16", { note: "imposta di bollo fatture elettroniche" }),
+			expense("S-5", "2026-11-25", "50", { note: "contributo associazione" }),
+			expense("S-6", "2026-11-25", "120", { note: "TARI rifiuti" }),
+		];
+		for (const e of not) {
+			const r = taxDuplicates(tax, [], [e]);
+			expect(r.taxes.map((t) => t.cents)).toEqual([300_000n]);
+			expect(r.twins).toEqual([]);
+		}
+		for (const name of ["Acconto fornitore Rossi", "ACI tassa automobilistica", "Poste imposta di bollo", "imposta di bollo fatture elettroniche", "contributo associazione", "contributi cassa edile", "acconto", "imposta"]) expect(isTaxName(name)).toBe(false);
+		for (const name of ["F24", "IRPEF", "imposta sostitutiva", "INPS", "tasse", "Agenzia delle Entrate", "agenzia entrate", "contributi INPS", "saldo imposta", "acconto contributi"]) expect(isTaxName(name)).toBe(true);
+		const paid = taxDuplicates(tax, [], [expense("S-7", "2026-11-30", "3000", { supplier: "Agenzia delle Entrate" })]);
+		expect(paid.taxes).toEqual([]);
+		expect(paid.twins[0]?.expenses.map((e) => e.id)).toEqual(["S-7"]);
+		// A clear name but under 30% of the F24: maybe the same, the estimate stays.
+		const low = taxDuplicates(tax, [], [expense("S-8", "2026-11-30", "200", { note: "F24" })]);
+		expect(low.taxes.map((t) => t.cents)).toEqual([300_000n]);
+		expect(low.maybe.map((m) => m.expense.id)).toEqual(["S-8"]);
+		expect([TAX_PAID_PERCENT, TAX_VOCI_PERCENT]).toEqual([30n, 70n]);
+		// 20 August 2026: the late June F24 and the third fixed INPS instalment on the same day.
+		const august = taxFlows(
+			[
+				{ date: "2026-08-20", cents: 695_520n, what: "saldo e primo acconto", contributi: 440_000n, was: "2026-07-20" },
+				{ date: "2026-08-20", cents: 73_472n, what: "contributi fissi", contributi: 73_472n },
+			],
+			"2026-08-01",
+			"2026-08-31",
+		);
+		const fixed = taxDuplicates(august, [], [expense("S-9", "2026-08-20", "734.72", { supplier: "INPS" })]);
+		expect(fixed.twins.map((t) => t.tax.cents)).toEqual([73_472n]);
+		expect(fixed.taxes.map((t) => t.cents)).toEqual([695_520n]);
+		const june = taxDuplicates(august, [], [expense("S-10", "2026-08-20", "4400", { supplier: "INPS" })]);
+		expect(june.twins.map((t) => t.tax.cents)).toEqual([695_520n]);
+		// The forecast: a voce of 50 € for a 3.000 € F24 keeps the rest, said in the fence.
+		const s = await setup();
+		await s.run(CONSULENTE);
+		await s.run(SAID_2025);
+		await s.cash({ op: "set_balance", amount: 10000 });
+		await s.cash({ op: "add_item", kind: "uscita", amount: "50", name: "F24 novembre", date: "30/11/2026" });
+		const forecast = await s.cash({ op: "forecast", horizon: "fine anno", include_average_spend: false });
+		expect(forecast).toContain("Uscite 3.000,00 €: voci aggiunte 50,00 €; tasse stimate (F24) 2.950,00 €.");
+		expect(cashInside(forecast)).toContain("• F24 novembre (voce C-0001), 50,00 €: voce 50,00 € contro una stima di 3.000,00 € per l'F24 del 30 novembre: conto la voce e i 2.950,00 € che restano della stima");
+		s.expenses.add(2026, "y1", (id) => expense(id, "2026-10-17", "100", { note: "F24 acconto" }));
+		s.at("2026-11-25");
+		const maybe = await s.cash({ op: "forecast", horizon: "fine anno", include_average_spend: false });
+		expect(maybe).toContain("XXX");
 	});
 });
 
