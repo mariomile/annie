@@ -85,3 +85,66 @@ export function saysPhrase(tokens: readonly string[], key: string): boolean {
 	}
 	return false;
 }
+
+/** Words that only join a name's words: «rotoli di carta» is «rotoli carta». */
+const JOINERS = new Set(["di", "da", "del", "dello", "della", "dei", "degli", "delle", "per", "il", "lo", "la", "i", "gli", "le", "l", "un", "uno", "una"]);
+
+/** The words of a name that say what it is, the joining words out: «rotoli di carta» is «rotoli carta». */
+export function sayingWords(text: string): string[] {
+	return words(text).filter((w) => !JOINERS.has(w));
+}
+
+/**
+ * The other number of an Italian word, the gender kept: a singular in -a is a plural in -e
+ * (cartuccia, cartucce), in -o is one in -i (rotolo, rotoli; foglio, fogli), in -e is one in -i
+ * (cartone, cartoni); and the plural back. Never -o with -a nor -a with -o or -i: «colla» is
+ * not «collo», «panna» not «panno», «cera» not «ceri». The few spellings that move a letter
+ * (-cia/-ce, -ca/-che, -co/-chi, -io/-i) are in. A word of less than three letters is only itself.
+ */
+export function otherNumbers(w: string): string[] {
+	if (w.length < 3 || !/[a-z]$/.test(w)) return [w];
+	const base = w.slice(0, -1);
+	const out = new Set([w]);
+	switch (w.at(-1)) {
+		case "a":
+			out.add(`${base}e`);
+			if (/[cg]i$/.test(base)) out.add(`${base.slice(0, -1)}e`);
+			if (/[cg]$/.test(base)) out.add(`${base}he`);
+			break;
+		case "o":
+			out.add(`${base}i`);
+			if (base.endsWith("i")) out.add(base);
+			if (/[cg]$/.test(base)) out.add(`${base}hi`);
+			break;
+		case "e":
+			out.add(`${base}a`);
+			out.add(`${base}i`);
+			if (/[cg]h$/.test(base)) out.add(`${base.slice(0, -1)}a`);
+			if (/[cg]$/.test(base)) out.add(`${base}ia`);
+			break;
+		case "i":
+			out.add(`${base}o`);
+			out.add(`${base}e`);
+			out.add(`${w}o`);
+			if (/[cg]h$/.test(base)) out.add(`${base.slice(0, -1)}o`);
+			break;
+	}
+	return [...out];
+}
+
+/** The same word, or the same word in the other number (otherNumbers, either way round). */
+export function sameWord(a: string, b: string): boolean {
+	return a === b || otherNumbers(a).includes(b) || otherNumbers(b).includes(a);
+}
+
+/** Whether every word of `said` is among those of `name`, in either number («cartucce» in «Cartuccia XL»); never an empty one. */
+export function stemsWithin(said: string, name: string): boolean {
+	const s = sayingWords(said);
+	const n = sayingWords(name);
+	return s.length > 0 && s.every((w) => n.some((x) => sameWord(w, x)));
+}
+
+/** Two names the same in either number, as sets of words: «rotoli di carta» and «carta rotolo». */
+export function sameStems(a: string, b: string): boolean {
+	return stemsWithin(a, b) && stemsWithin(b, a);
+}

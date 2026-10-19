@@ -124,6 +124,8 @@ export type SalesLine = {
 	readonly reference?: string;
 	/** Not a fee: a spesa anticipata in nome e per conto del cliente (N1) or the bollo. Outside the ritenuta's and the cassa's base. */
 	readonly notFee?: true;
+	/** The voce of the listino it was filled from (LS-0001): issued, it moves the magazzino when the voce is an article there. */
+	readonly item?: string;
 };
 
 export type Ritenuta = { readonly type: typeof RITENUTA_PERSON | typeof RITENUTA_COMPANY; readonly causale: string };
@@ -396,6 +398,7 @@ function lineProblem(v: unknown, n: number): string | undefined {
 		[l.vat === 0 ? !NATURE.includes(l.natura as Natura) : l.natura !== undefined || l.reference !== undefined, `la natura della riga ${n}`],
 		// A spesa anticipata (N1) is never a fee, and only it is not.
 		[l.notFee !== undefined && l.notFee !== true, `la riga ${n}`],
+		[l.item !== undefined && (typeof l.item !== "string" || !/^LS-\d{4,7}$/.test(l.item)), `la voce del listino della riga ${n}`],
 		[(l.notFee === true) !== (l.natura === NOT_FEE_NATURA), `la riga ${n}: le spese anticipate sono senza IVA (N1), e solo loro`],
 	]);
 }

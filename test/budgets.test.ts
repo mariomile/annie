@@ -467,7 +467,7 @@ describe("budgets: the brief and another agente", () => {
 		expect(String(await briefed?.execute({ op: "set", target: "carburante", amount: 5 }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(budgetCallReads({ op: "status", compact: true })).toBe(true);
 		expect(budgetCallReads({ op: "export" })).toBe(false);
-		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool [^\n]*\bbudgets \(status\)\./);
+		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool [^\n]*\bbudgets \(status\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		expect(DEFAULT_INSTRUCTIONS).toContain("seguire budget e obiettivi (budgets:");
 		expect(DEFAULT_INSTRUCTIONS).toContain("l'andamento è business_report");

@@ -8,7 +8,9 @@
  * 2. the XML in `fatture/emesse/`, never over another file: a name taken by a different file
  *    gets a new progressive; the same content there already is this call's own write;
  * 3. the courtesy PDF beside it, same name (a failure is said, the invoice stands);
- * 4. the hours marked «fatturate» with the invoice's number, the quote marked invoiced;
+ * 4. the hours marked «fatturate» with the invoice's number, the quote marked invoiced, the
+ *    magazzino moved (an invoice unloads the articles its lines sell, a credit note puts them
+ *    back: once per invoice and line, stock-store.ts sale);
  * 5. the invoice marked finished; then the audit (op and count), and the invoice marked audited,
  *    so an audit a crash left out is written on the next run, and never twice.
  * The number comes after the store's counter, the last number said before Annie and the highest
@@ -28,6 +30,7 @@ import { termsOf } from "../timesheet-sums.ts";
 import { WorkspaceError } from "../workspace.ts";
 import { askGroups, dueOf, filesSay, findIssued, namedDraft, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { courtesyMarkdown, fenced, invoiceLines, issuedAnswer } from "./sales-invoice-render.ts";
+import { markStock, stockPreview } from "./sales-invoice-stock.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
 /** Tries at a free file name before giving up. */
@@ -57,6 +60,7 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 		return [
 			`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
 			fenced(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
+			...stockPreview(env, target, day, env.marker(ctx)),
 			"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
 		].join("\n");
 	}
@@ -125,8 +129,9 @@ async function complete(env: SalesEnv, start: IssuedInvoice, ctx: ToolContext, n
 	inv = await writePdf(env, inv, notes);
 	const hours = await markHours(env, inv, ctx);
 	const quote = await markQuote(env, inv, ctx);
-	notes.push(...hours.notes, ...quote.notes);
-	if (inv.file !== undefined && hours.done && quote.done) {
+	const stock = await markStock(env, inv, ctx);
+	notes.push(...hours.notes, ...quote.notes, ...stock.notes);
+	if (inv.file !== undefined && hours.done && quote.done && stock.done) {
 		env.store.setFinished(inv.id);
 		// The audit once: on the run that finishes it, or the next one when a crash came in between.
 		const now = env.book().invoices.find((i) => i.id === inv.id);
@@ -281,3 +286,4 @@ async function markQuote(env: SalesEnv, inv: IssuedInvoice, ctx: ToolContext): P
 	});
 	return done ? { notes: [`Il preventivo ${quote} ora risulta fatturato.`], done } : { notes: [`Attenzione: non sono riuscita a segnare il preventivo ${quote} come fatturato.`], done };
 }
+
