@@ -4,10 +4,29 @@ const form = document.querySelector("form");
 const input = document.querySelector("#server");
 const error = document.querySelector("#error");
 const button = form.querySelector("button");
+const local = document.querySelector("#locale");
 
-const current = await invoke("current");
-if (current) input.value = current;
-input.focus();
+// The app reloads this page when Annie on this computer is ready or did not start.
+const state = await invoke("state");
+document.querySelector(state.starting ? "#avvio" : "#collega").hidden = false;
+if (state.current) input.value = state.current;
+if (state.error) {
+	error.textContent = state.error;
+	error.hidden = false;
+}
+local.hidden = !state.local;
+if (!state.starting) input.focus();
+
+local.addEventListener("click", async () => {
+	local.disabled = true;
+	try {
+		await invoke("use_local");
+	} catch (message) {
+		error.textContent = String(message);
+		error.hidden = false;
+		local.disabled = false;
+	}
+});
 
 form.addEventListener("submit", async (event) => {
 	event.preventDefault();

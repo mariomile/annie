@@ -11,14 +11,14 @@ Annie si usa dal browser, dal telefono come app installata, da Telegram e WhatsA
 
 ## Sicurezza
 
-- Le pagine del server non hanno accesso all'app: Tauri non dà IPC ai contenuti remoti se nessuna capability li nomina, e nessuna lo fa. Solo la pagina di collegamento, che è nell'app, chiama i due comandi `connect` e `current`.
+- Le pagine del server non hanno accesso all'app: Tauri non dà IPC ai contenuti remoti se nessuna capability li nomina, e nessuna lo fa. Solo la pagina di collegamento, che è nell'app, chiama i comandi `connect`, `state` e `use_local`.
 - Nella finestra restano solo le pagine di quel server (stesso schema, host e porta). Un link altrove si apre nel browser; `file://` e gli schemi sconosciuti non si aprono.
 - http solo verso questo computer (`localhost`, `127.0.0.1`): altrimenti il cookie di sessione viaggerebbe in chiaro. Indirizzi con utente e password sono rifiutati.
 - L'app ricorda solo l'indirizzo del server, in un file nella cartella di configurazione. La sessione è il cookie della webview, come nel browser.
 
 ## Alternative scartate
 
-- **Il server dentro l'app** (Node come sidecar, come il sidecar di Reflect). Annie è multi-persona, con canali, task programmati e chiavi che devono restare accesi quando il portatile dorme: il posto è un server. Si può aggiungere per chi vuole provare in locale.
+- **Il server dentro l'app** (Node come sidecar, come il sidecar di Reflect). Annie è multi-persona, con canali, task programmati e chiavi che devono restare accesi quando il portatile dorme: il posto è un server. Si può aggiungere per chi vuole provare in locale. Aggiunto sul Mac: [ADR 0096](0096-annie-dentro-l-app-per-mac.md).
 - **Una console scritta per il desktop.** Raddoppia il lavoro a ogni funzione.
 
 ## Conseguenze

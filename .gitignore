@@ -9,3 +9,5 @@ evals/segreteria/last-report/
 data-cloud/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+desktop/src-tauri/server/
+desktop/src-tauri/binaries/
