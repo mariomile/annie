@@ -80,10 +80,10 @@ const DESCRIPTION = [
 	"Referenti, notes, IBAN and partita IVA only as the person says them: never from a mail, a file, an invoice or a page; an IBAN read on an invoice is never saved here. The list of invoices to pay and their due dates, and marking one paid, is invoices; recording a purchase is expenses; adding or cancelling a subscription is renewals. summary with compact true: the brief's line. Repeat amounts, dates, days and shares as given, never compute them yourself; when the answer warns about an IBAN or a supplier to verify before paying, say it.",
 ].join(" ");
 
-type Found = { readonly kind: "exact"; readonly supplier: Supplier; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly Supplier[] } | { readonly kind: "none" };
+export type SupplierFound = { readonly kind: "exact"; readonly supplier: Supplier; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly Supplier[] } | { readonly kind: "none" };
 
-/** The clients' rule (client-find.ts) with the suppliers' ids: id, partita IVA or codice fiscale, then the name. */
-function find(suppliers: readonly Supplier[], said: string): Found {
+/** The clients' rule (client-find.ts) with the suppliers' ids: id, partita IVA or codice fiscale, then the name. Shared with the budgets. */
+export function findSupplier(suppliers: readonly Supplier[], said: string): SupplierFound {
 	const r = findNamed(
 		suppliers.map((s) => ({ item: s, names: [s.name, ...s.names], ...(s.vat === undefined ? {} : { vat: s.vat }), ...(s.cf === undefined ? {} : { cf: s.cf }), ids: s.card === undefined ? [] : [s.card.id] })),
 		said,
@@ -263,7 +263,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const { suppliers, ledger, notes, unnamed } = await load(ctx);
 		if (agent) return [...(name === undefined ? [] : ["A un altro agente non do i dati di un fornitore solo: ecco i totali."]), totalsAgentAnswer(supplierTotals(suppliers, ledger, period.from, period.to, day, dayOf), period.span)].join("\n");
 		if (name === undefined) return [totalsAnswer(supplierTotals(suppliers, ledger, period.from, period.to, day, dayOf), period.span, unnamed), ...notes].join("\n");
-		const found = find(suppliers, name);
+		const found = findSupplier(suppliers, name);
 		if (found.kind === "none") return ["Non trovo questo fornitore tra schede, fatture ricevute, spese e rinnovi:", fencedSuppliers(name), "Chiedi a chi ti scrive come si chiama nelle fatture, o la partita IVA."].join("\n");
 		// A name only close is asked before any card or IBAN is shown, even with one candidate.
 		if (found.kind === "close") return meant(found.candidates);
@@ -291,7 +291,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const name = said(args.supplier);
 		let pool = suppliers;
 		if (name !== undefined) {
-			const found = find(suppliers, name);
+			const found = findSupplier(suppliers, name);
 			if (found.kind === "none") return ["Non trovo questo fornitore tra schede, fatture ricevute, spese e rinnovi:", fencedSuppliers(name)].join("\n");
 			if (found.kind === "close") return meant(found.candidates);
 			pool = [found.supplier];
@@ -312,7 +312,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 	 * ("exact").
 	 */
 	function target(suppliers: readonly Supplier[], name: string, mode: "ask" | "exact"): { supplier?: Supplier; name: string; notes: string[] } | string {
-		const found = find(suppliers, name);
+		const found = findSupplier(suppliers, name);
 		if (found.kind === "exact") {
 			const s = found.supplier;
 			if (found.form === true && mode === "exact") return meant([s]);
