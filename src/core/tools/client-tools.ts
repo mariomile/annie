@@ -1,5 +1,5 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
-import { agendaOf, briefFollowUps, type Client, clientsOf, dormantClients, figuresOf, invoicedEver, lookalikes, newConcentration, openFollowUps, ranked } from "../client-sums.ts";
+import { agendaOf, briefFollowUps, type Client, clientsOf, dormantClients, figuresOf, invoicedEver, newConcentration, openFollowUps, ranked } from "../client-sums.ts";
 import { CLIENTS_BROKEN, type ClientState, type ClientStore } from "../client-store.ts";
 import {
 	CARD_ID,
@@ -8,7 +8,6 @@ import {
 	ClientError,
 	cardCf,
 	cardId,
-	cardKeys,
 	clientAgentReads,
 	DORMANT_DAYS,
 	FOLLOW_UP_ID,
@@ -16,6 +15,8 @@ import {
 	tagOf,
 } from "../clients.ts";
 import { FORM_NOTE, findNamed } from "../client-find.ts";
+import { lookalikeParties } from "../party-groups.ts";
+import { cardNameKeys } from "../party-cards.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -24,7 +25,7 @@ import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn, weekdayOf } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
 import { spellingKey } from "../name-keys.ts";
-import { type Period, PeriodError, readPeriod } from "../periods.ts";
+import { rollingPeriodOf } from "../periods.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import type { RateRule } from "../timesheet.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
@@ -265,7 +266,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		if (fu !== undefined && fu.done === undefined && fu.date <= day) return reminderAnswer(client, fu, figures, day);
 		if (fu?.done !== undefined) extra.push(`Il ricontatto ${fu.id} è già segnato come fatto: non serve ricordarlo.`);
 		else if (fu !== undefined) extra.push(`Il ricontatto ${fu.id} è fissato per ${nearDay(fu.date, day)}: oggi non c'è da ricontattare.`);
-		const alike = lookalikes(clients, client);
+		const alike = lookalikeParties(clients, client);
 		if (alike.length > 0) {
 			extra.push(`${alike.length === 1 ? "C'è anche un altro cliente" : `Ci sono anche altri ${alike.length} clienti`} con un nome simile, nel riquadro con quanto hai fatturato in tutto: è lo stesso? Se sì, posso unirli.`);
 			for (const c of alike.slice(0, 3)) inside.push(`C'è anche: ${c.name}, ${everInvoiced(c)}`);
@@ -278,21 +279,9 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 		return i.count === 0 ? "nessuna fattura" : `${euros(i.taxable)} fatturati in tutto`;
 	}
 
-	function periodOf(value: unknown, day: string): { span: string; from: string; to: string } | string {
-		if (value === undefined || (typeof value === "string" && /^(?:(?:negli )?ultimi 12 mesi|ultimo anno|12 mesi)$/i.test(value.trim()))) return { span: "negli ultimi 12 mesi", from: addDays(day, -364), to: day };
-		if (typeof value !== "string") return "Errore: il periodo va scritto come «2026», «anno scorso» o «T3 2026».";
-		let period: Period;
-		try {
-			period = readPeriod(value.slice(0, 40), day);
-		} catch (error) {
-			if (error instanceof PeriodError) return ["Errore: non riconosco il periodo; scrivilo come «2026», «anno scorso», «T3 2026» o «ottobre»:", fenced(value.slice(0, 40))].join("\n");
-			throw error;
-		}
-		return { span: period.in, from: period.from, to: period.to };
-	}
 
 	async function top(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
-		const period = periodOf(args.period, day);
+		const period = rollingPeriodOf(args.period, day, fenced);
 		if (typeof period === "string") return period;
 		if (args.by !== undefined && args.by !== "invoiced" && args.by !== "collected") return "Errore: si ordinano per fatturato o per incassato.";
 		const by = args.by === "collected" ? "collected" : "invoiced";
@@ -401,7 +390,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 	/** The card a call wrote, found again by the name it was given. */
 	function cardNamed(name: string, client: Client | undefined): ClientCard | undefined {
 		const all = cards();
-		return (client?.card === undefined ? undefined : all.find((c) => c.id === client.card?.id)) ?? all.find((c) => cardKeys(c).includes(spellingKey(name)));
+		return (client?.card === undefined ? undefined : all.find((c) => c.id === client.card?.id)) ?? all.find((c) => cardNameKeys(c).includes(spellingKey(name)));
 	}
 
 	async function upsert(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -491,7 +480,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 			return true;
 		});
 		await audit(ctx, "merge", 1);
-		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : cardKeys(c).includes(spellingKey(b.name))));
+		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : cardNameKeys(c).includes(spellingKey(b.name))));
 		const client = { ...b, ...(card === undefined ? {} : { card, name: card.name }) } as Client;
 		return [`Fatto, ho unito i due clienti${card === undefined ? "" : ` nella scheda ${card.id}`}. Fatture, preventivi e ore restano dove sono e ora si leggono insieme.`, fenced(cardLines(client, day).join("\n"))].join("\n");
 	}

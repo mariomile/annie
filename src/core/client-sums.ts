@@ -17,7 +17,7 @@ import { toUnits } from "./fattura-pa.ts";
 import { daysLate } from "./invoice-sums.ts";
 import { countedAmount, type Invoice, openAmount, partyName, vatOf } from "./invoices.ts";
 import { addDays, daysBetween } from "./italian-calendar.ts";
-import { sameBusiness, spellingKey } from "./name-keys.ts";
+import { groupParties, type PartyRecord, partyOf } from "./party-groups.ts";
 import { halfUp } from "./quote-sums.ts";
 import { latest, type Quote, quoteTotalsOf, shownStatus } from "./quotes.ts";
 import type { ReminderLevel } from "./reminder-book.ts";
@@ -50,120 +50,25 @@ export type Client = {
 	readonly entries: readonly WorkEntry[];
 };
 
-type Group = {
-	key: string;
-	card?: ClientCard;
-	personName?: string;
-	fileName?: string;
-	vat?: string;
-	cf?: string;
-	names: string[];
-	invoices: Invoice[];
-	quotes: Quote[];
-	entries: WorkEntry[];
-};
+type Item = { readonly kind: "invoice"; readonly invoice: Invoice } | { readonly kind: "quote"; readonly quote: Quote } | { readonly kind: "entry"; readonly entry: WorkEntry };
 
-/** Every client: the cards first, then the clients without one, by the order they were met. */
+/** Every client: the cards first, then the clients without one, by the order they were met (party-groups.ts). */
 export function clientsOf(src: ClientRegisters): Client[] {
-	const groups: Group[] = [];
-	type Record = { vat?: string; cf?: string; name?: string; person: boolean; add: (g: Group) => void };
-	const records: Record[] = [];
-	/** The partite IVA the registers give to names of one business: a name alone is linked to one only when there is only one. */
-	const vatsOf = (names: readonly string[]): Set<string> => new Set(records.flatMap((r) => (r.vat !== undefined && r.name !== undefined && names.some((n) => sameBusiness(n, r.name as string)) ? [r.vat] : [])));
-	const byVat = new Map<string, Group>();
-	const byCf = new Map<string, Group>();
-	const byName = new Map<string, Group>();
-	const index = (g: Group, name?: string) => {
-		if (g.vat !== undefined && !byVat.has(g.vat)) byVat.set(g.vat, g);
-		if (g.cf !== undefined && !byCf.has(g.cf)) byCf.set(g.cf, g);
-		const k = name === undefined ? "" : spellingKey(name);
-		if (k !== "" && !byName.has(k)) byName.set(k, g);
-		if (name !== undefined && !g.names.includes(name)) g.names.push(name);
-	};
-	/** The one group a name may be without its legal form (sameBusiness); undefined when none or more than one. */
-	const oneBusiness = (name: string, only: (g: Group) => boolean): Group | undefined => {
-		const found = new Set(groups.filter((g) => only(g) && g.names.some((n) => sameBusiness(n, name))));
-		return found.size === 1 ? [...found][0] : undefined;
-	};
-	/** The group of a record: by partita IVA, codice fiscale, then name (only into a client with no partita IVA or the same), then the one business. */
-	const find = (vat: string | undefined, cf: string | undefined, name: string | undefined): Group | undefined => {
-		const v = vat === undefined ? undefined : byVat.get(vat);
-		if (v !== undefined) return v;
-		const c = cf === undefined ? undefined : byCf.get(cf);
-		if (c !== undefined) return c;
-		const k = name === undefined ? "" : spellingKey(name);
-		const n = k === "" ? undefined : byName.get(k);
-		// Two homonyms with two partite IVA or two codici fiscali are two clients.
-		if (n !== undefined && (vat === undefined || n.vat === undefined || n.vat === vat) && (cf === undefined || n.cf === undefined || n.cf === cf)) return n;
-		if (name === undefined || k === "") return undefined;
-		// A name without a partita IVA joins the one client that is the same business; a record with one joins only a client without any.
-		if (vat === undefined && cf === undefined) return oneBusiness(name, () => true);
-		// A client with no tax id (a bare name on a card) takes a partita IVA only when its business has just one in the registers.
-		const bare = oneBusiness(name, (g) => g.vat === undefined && g.cf === undefined);
-		return bare !== undefined && vatsOf(bare.names).size <= 1 ? bare : undefined;
-	};
-	const place = (vat: string | undefined, cf: string | undefined, name: string | undefined, person: boolean): Group | undefined => {
-		if (vat === undefined && cf === undefined && (name === undefined || spellingKey(name) === "")) return undefined;
-		let g = find(vat, cf, name);
-		if (g === undefined) {
-			g = { key: vat !== undefined ? `vat:${vat}` : cf !== undefined ? `cf:${cf}` : `nome:${spellingKey(name ?? "")}`, names: [], invoices: [], quotes: [], entries: [] };
-			groups.push(g);
-		}
-		// A name joined to a client links it to the partita IVA it brings.
-		if (g.vat === undefined && vat !== undefined) g.vat = vat;
-		if (g.cf === undefined && cf !== undefined) g.cf = cf;
-		if (name !== undefined && name.trim() !== "") {
-			if (person) g.personName ??= name;
-			else g.fileName ??= name;
-		}
-		index(g, name);
-		return g;
-	};
-	for (const card of src.cards) {
-		const g: Group = { key: card.id, card, names: [], invoices: [], quotes: [], entries: [], ...(card.vat === undefined ? {} : { vat: card.vat }), ...(card.cf === undefined ? {} : { cf: card.cf }) };
-		groups.push(g);
-		for (const n of [card.name, ...card.aliases]) index(g, n);
-	}
+	const records: PartyRecord<Item>[] = [];
 	// The person's own words first, so their spelling is the one shown.
-	for (const q of latest(src.quotes)) records.push({ ...opt(vatKey(q.customer.vat), q.customer.fiscal?.toUpperCase(), q.customer.name), person: true, add: (g) => g.quotes.push(q) });
-	for (const e of src.entries) records.push({ ...opt(undefined, undefined, e.client), person: true, add: (g) => g.entries.push(e) });
+	for (const q of latest(src.quotes)) records.push({ ...partyOf(vatKey(q.customer.vat), q.customer.fiscal?.toUpperCase(), q.customer.name), person: true, item: { kind: "quote", quote: q } });
+	for (const e of src.entries) records.push({ ...partyOf(undefined, undefined, e.client), person: true, item: { kind: "entry", entry: e } });
 	for (const i of src.invoices) {
 		if (i.side !== "active" || i.doc.integration) continue;
 		const party = i.customer;
-		records.push({ ...opt(vatKey(vatOf(party)), party.fiscal?.toUpperCase(), party.name === undefined ? undefined : partyName(party)), person: false, add: (g) => g.invoices.push(i) });
+		records.push({ ...partyOf(vatKey(vatOf(party)), party.fiscal?.toUpperCase(), party.name === undefined ? undefined : partyName(party)), person: false, item: { kind: "invoice", invoice: i } });
 	}
-	// The records with a tax id first: a name alone then joins the client they made.
-	for (const r of [...records.filter((x) => x.vat !== undefined || x.cf !== undefined), ...records.filter((x) => x.vat === undefined && x.cf === undefined)]) {
-		const g = place(r.vat, r.cf, r.name, r.person);
-		if (g !== undefined) r.add(g);
-	}
-	return groups.map((g) => ({
-		key: g.key,
-		...(g.card === undefined ? {} : { card: g.card }),
-		name: g.card?.name ?? g.personName ?? g.fileName ?? g.names[0] ?? (g.vat === undefined ? g.key : `P.IVA ${g.vat}`),
-		nameFrom: g.card !== undefined ? "card" : g.personName !== undefined ? "person" : "file",
-		...(g.vat === undefined ? {} : { vat: g.vat }),
-		...(g.cf === undefined ? {} : { cf: g.cf }),
-		names: g.names,
-		invoices: g.invoices,
-		quotes: g.quotes,
-		entries: g.entries,
+	return groupParties(src.cards, records).map(({ items, ...g }) => ({
+		...g,
+		invoices: items.flatMap((x) => (x.kind === "invoice" ? [x.invoice] : [])),
+		quotes: items.flatMap((x) => (x.kind === "quote" ? [x.quote] : [])),
+		entries: items.flatMap((x) => (x.kind === "entry" ? [x.entry] : [])),
 	}));
-}
-
-function opt(vat: string | undefined, cf: string | undefined, name: string | undefined): { vat?: string; cf?: string; name?: string } {
-	return { ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }), ...(name === undefined ? {} : { name }) };
-}
-
-/** The other clients that may be this one, not joined (there were two of them): the same business by name (sameBusiness), and no partita IVA or codice fiscale that says otherwise. To be asked. */
-export function lookalikes(clients: readonly Client[], client: Client): Client[] {
-	const mine = [client.name, ...client.names];
-	return clients.filter((c) => {
-		if (c.key === client.key) return false;
-		if (client.vat !== undefined && c.vat !== undefined && client.vat !== c.vat) return false;
-		if (client.cf !== undefined && c.cf !== undefined && client.cf !== c.cf) return false;
-		return [c.name, ...c.names].some((n) => mine.some((m) => sameBusiness(m, n)));
-	});
 }
 
 /** What an invoice counts toward the invoiced, in cents (a credit note less), euro only: the imponibile, the total, and whether the imponibile is the total because the file does not give it. Undefined: another currency or no amount. */

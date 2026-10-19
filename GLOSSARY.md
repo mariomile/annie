@@ -305,6 +305,10 @@ _Avoid_: scadenziario fiscale, calendario delle tasse (per l'agenda fiscale)
 L'elenco di quello che la persona vende, servizi e prodotti, ognuno una voce con prezzo, unità e IVA (LS-NNNN, con un codice suo se vuole). Preventivi, fatture in uscita e ore da fatturare prendono il prezzo da lì; un nome che può essere più voci si chiede. Vedi ADR 0084.
 _Avoid_: catalogo, tariffario (per il listino)
 
+**Scheda del fornitore**:
+Quello che Annie sa di chi la persona paga (FO-NNNN): note, referenti e IBAN o partita IVA solo come li dice la persona; spesa, fatture aperte, giorni di pagamento e abbonamenti letti ogni volta dai registri. Un IBAN da pagare diverso da quelli già pagati si verifica per telefono prima di pagare. Vedi ADR 0085.
+_Avoid_: anagrafica fornitore, vendor (per la scheda del fornitore)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
