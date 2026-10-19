@@ -18,16 +18,14 @@ import type { DeductMark, PaidMark } from "../vat.ts";
 import type { LeftOut, VatDoc } from "../vat-docs.ts";
 import { ACCONTO_MIN_CENTS, ANNUAL_MIN_CENTS, CREDIT_VISTO_CENTS, PARTIAL_EXAMPLES, PERIODIC_MIN_CENTS, type Periodicity, type VatPeriod } from "../vat-rules.ts";
 import type { Acconto, Deadline, Liquidation, Slip } from "../vat-sums.ts";
+import { deadlineWhat, periodLabel, periodOf } from "../vat-forecast.ts";
 import { fenced } from "./vat-settlement-input.ts";
+
+export { deadlineWhat, periodLabel, periodOf };
 
 /** Said with every answer that shows an amount. */
 export const ESTIMATE_NOTE = "È una stima: verificala con il commercialista prima di pagare.";
 const REPEAT = "Ripeti cifre e date come sono scritte, non rifare i conti a mente.";
-
-/** «ottobre 2026», «3º trimestre 2026». */
-export function periodLabel(p: VatPeriod): string {
-	return p.kind === "month" ? `${MONTH_NAMES[p.n - 1]} ${p.year}` : `${p.n}º trimestre ${p.year}`;
-}
 
 /** What a paid mark's key says: «Settembre 2026», «3º trimestre 2026», «Acconto IVA 2026», «Saldo IVA 2025». */
 function paidLabel(key: string): string {
@@ -36,11 +34,6 @@ function paidLabel(key: string): string {
 	if (what === "annuale") return `Saldo IVA ${year}`;
 	if (what.startsWith("T")) return `${what.slice(1)}º trimestre ${year}`;
 	return capitalized(periodLabel({ year: Number(year), kind: "month", n: Number(what) }));
-}
-
-/** «di ottobre 2026», «del 3º trimestre 2026». */
-export function periodOf(p: VatPeriod): string {
-	return `${p.kind === "month" ? "di" : "del"} ${periodLabel(p)}`;
 }
 
 /** «a ottobre 2026», «nel 3º trimestre 2026»: when something counts. */
@@ -57,13 +50,6 @@ export function whenText(d: { readonly due: string; readonly date: string; reado
 
 /** «il 16 ottobre»: a day of `today`'s year without the year; «il 29 dicembre 2025» another year's. */
 const shortDay = (date: string, today: string) => (date.slice(0, 4) === today.slice(0, 4) ? withDate("il", date).replace(/ \d{4}$/, "") : withDate("il", date));
-
-/** What a deadline pays for: «IVA di ottobre 2026», «acconto IVA 2026», «saldo IVA 2026». */
-export function deadlineWhat(d: Deadline): string {
-	if (d.kind === "acconto") return `acconto IVA ${d.year}`;
-	if (d.kind === "annuale") return d.period === undefined ? `saldo IVA ${d.year}` : `saldo IVA ${d.year} con il 4º trimestre`;
-	return d.period === undefined ? "IVA" : `IVA ${periodOf(d.period)}`;
-}
 
 /** «dell'IVA di settembre 2026», «dell'acconto IVA 2026», «del saldo IVA 2026». */
 function f24Of(d: Deadline): string {

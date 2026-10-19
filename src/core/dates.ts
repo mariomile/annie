@@ -318,6 +318,15 @@ export function paymentSlip(date: string, patrono?: string): { readonly to: stri
 	return { to, ...(holiday === undefined ? {} : { holiday }) };
 }
 
+/** Why a payment's day moved: the working day it moves to, and the holiday that moved it. */
+export type Slip = { readonly to: string; readonly holiday?: string };
+
+/** The day a payment due on `due` is made, and why it moved: the next working day for a weekend or a holiday (paymentSlip). */
+export function dueSlip(due: string): { readonly date: string; readonly slip?: Slip } {
+	const slip = paymentSlip(due);
+	return slip === undefined ? { date: due } : { date: slip.to, slip };
+}
+
 /** «cade di sabato», «è festivo (Natale)»: why a day is not a working day. */
 export function offDayWhy(date: string, holiday: string | undefined): string {
 	return holiday === undefined ? `cade di ${italianWeekday(date)}` : `è festivo (${holiday})`;

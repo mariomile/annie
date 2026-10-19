@@ -23,7 +23,7 @@
  *   (unless the person said its base or what they expect).
  * - every deadline moves to the next working day (dates.ts, Saturday included), and carries why.
  */
-import { addMonths, paymentSlip } from "./dates.ts";
+import { addMonths, dueSlip, type Slip } from "./dates.ts";
 import { addDays } from "./italian-calendar.ts";
 import { eurosToCents, halfUp, halfUpSigned, scaled } from "./quote-sums.ts";
 import { type PaidMark, paidKeyOf, periodOfDay, periodSpan, periodsOf, type YearFigures } from "./vat.ts";
@@ -124,12 +124,9 @@ export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Fi
 }
 
 /** The day a payment is made, and why it moved: the next working day for a weekend or a holiday. */
-export type Slip = { readonly to: string; readonly holiday?: string };
+export type { Slip };
 
-function slipOf(due: string): { readonly date: string; readonly slip?: Slip } {
-	const slip = paymentSlip(due);
-	return slip === undefined ? { date: due } : { date: slip.to, slip };
-}
+const slipOf = dueSlip;
 
 export type Liquidation = {
 	readonly period: VatPeriod;

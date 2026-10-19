@@ -108,10 +108,11 @@ function said(text: string): string {
  * A period as a person writes it: «oggi», «ieri», «questa settimana», «settimana scorsa», «ottobre», «ottobre 2025», «ottobre 25», «2026-10», «10/2026»,
  * «10/25», «T3 2026», «Q3», «3° trimestre», «terzo trimestre 2026», «2026», «mese», «mese
  * scorso», «trimestre», «trimestre scorso», «ultimo trimestre», «anno», «anno scorso», «da inizio
- * anno». A month or a quarter without a year is the latest one begun (this one or before).
- * PeriodError otherwise.
+ * anno». A month or a quarter without a year is the latest one begun (this one or before);
+ * with `ahead` (deadlines, which are of the future) the next one (this one or after), and «mese
+ * prossimo», «trimestre prossimo», «anno prossimo» read too. PeriodError otherwise.
  */
-export function readPeriod(written: string, today: string): Period {
+export function readPeriod(written: string, today: string, ahead = false): Period {
 	// A leading article goes: «il mese scorso», «l'anno scorso», «la settimana scorsa» («I trimestre» keeps its roman one).
 	const text = written.replace(/^\s*(?:(?:il|lo|la|gli|le)\s+|l['’]\s*)/i, "");
 	const t = fold(text).replace(/\s+/g, " ").trim();
@@ -123,6 +124,9 @@ export function readPeriod(written: string, today: string): Period {
 	if (t === "settimana scorsa" || t === "la settimana scorsa" || t === "scorsa settimana" || t === "ultima settimana") return weekPeriod(addDays(today, -7));
 	if (t === "" || t === "mese" || t === "questo mese" || t === "mese corrente") return currentMonth(today);
 	if (t === "mese scorso" || t === "ultimo mese") return previousPeriod(currentMonth(today));
+	if (ahead && (t === "mese prossimo" || t === "prossimo mese")) return nextPeriod(currentMonth(today));
+	if (ahead && (t === "trimestre prossimo" || t === "prossimo trimestre")) return nextPeriod(thisQuarter);
+	if (ahead && (t === "anno prossimo" || t === "prossimo anno")) return yearPeriod(year + 1);
 	if (t === "trimestre" || t === "questo trimestre" || t === "trimestre corrente") return thisQuarter;
 	if (t === "trimestre scorso" || t === "ultimo trimestre") return previousPeriod(thisQuarter);
 	if (t === "anno" || t === "quest'anno" || t === "anno corrente") return yearPeriod(year);
@@ -135,7 +139,7 @@ export function readPeriod(written: string, today: string): Period {
 	if (q !== null || w !== null) {
 		const quarter = q !== null ? Number(q[2]) : (ORDINALS[(w as RegExpExecArray)[1] as string] ?? Number.parseInt((w as RegExpExecArray)[1] as string, 10));
 		const written = q !== null ? (q[1] ?? q[3]) : (w as RegExpExecArray)[2];
-		const y = written === undefined ? (quarter > quarterOf(today) ? year - 1 : year) : Number(written);
+		const y = written === undefined ? (ahead ? (quarter < quarterOf(today) ? year + 1 : year) : quarter > quarterOf(today) ? year - 1 : year) : Number(written);
 		return quarterPeriod(checkedYear(y, text), quarter);
 	}
 	const short = MONTH_SHORT_YEAR.exec(t);
@@ -144,13 +148,14 @@ export function readPeriod(written: string, today: string): Period {
 		if (month < 1 || month > 12) throw new PeriodError(`non riconosco il periodo${said(text)}: ${month} non è un mese`);
 		const y = 2000 + Number(short[2]);
 		// «12-99» is no 2099; a month to come has no expenses: said, with how to write it.
-		if (y > year || (y === year && month > Number(today.slice(5, 7)))) throw new PeriodError(`il periodo${said(text)} non è ancora cominciato: scrivi il mese con l'anno per intero, come 10/${year} o ottobre ${year}`);
+		if (!ahead && (y > year || (y === year && month > Number(today.slice(5, 7))))) throw new PeriodError(`il periodo${said(text)} non è ancora cominciato: scrivi il mese con l'anno per intero, come 10/${year} o ottobre ${year}`);
 		return monthPeriod(y, month);
 	}
 	try {
 		const parsed = parseMonth(text, today);
-		// With a year written (four digits or two), that one; without, the latest month begun.
-		const y = /\d/.test(t) ? parsed.year : parsed.month <= Number(today.slice(5, 7)) ? year : year - 1;
+		// With a year written (four digits or two), that one; without, the latest month begun (ahead: the next one, this one included).
+		const thisMonth = Number(today.slice(5, 7));
+		const y = /\d/.test(t) ? parsed.year : ahead ? (parsed.month >= thisMonth ? year : year + 1) : parsed.month <= thisMonth ? year : year - 1;
 		return monthPeriod(checkedYear(y, text), parsed.month);
 	} catch (error) {
 		if (error instanceof DateError) throw new PeriodError(`non riconosco il periodo${said(text)}: scrivilo come «ottobre», «ottobre 2026», «T3 2026», «2026», «da inizio anno» o «settimana scorsa»`);
@@ -176,6 +181,14 @@ export function previousPeriod(p: Period): Period {
 	if (p.kind === "year") return yearPeriod(year - 1);
 	if (p.kind === "quarter") return quarterOf(p.from) === 1 ? quarterPeriod(year - 1, 4) : quarterPeriod(year, quarterOf(p.from) - 1);
 	return month === 1 ? monthPeriod(year - 1, 12) : monthPeriod(year, month - 1);
+}
+
+/** The period after, of the same kind as a month or a quarter: November for October, T4 for T3. */
+function nextPeriod(p: Period): Period {
+	const year = Number(p.from.slice(0, 4));
+	const month = Number(p.from.slice(5, 7));
+	if (p.kind === "quarter") return quarterOf(p.from) === 4 ? quarterPeriod(year + 1, 1) : quarterPeriod(year, quarterOf(p.from) + 1);
+	return month === 12 ? monthPeriod(year + 1, 1) : monthPeriod(year, month + 1);
 }
 
 /** «del giorno prima», «della settimana prima», «del mese prima», «del trimestre prima», «dell'anno prima». */

@@ -14,7 +14,7 @@ import { euros, n1 } from "../format-words.ts";
 import { daysBetween } from "../italian-calendar.ts";
 import { capitalized, italianDate, toMonth, withDate, withPercent } from "../italian-format.ts";
 import { decimalText, scaled } from "../quote-sums.ts";
-import { type Base, type Deadline, deadlineCents, dueCents, type Estimate, hasUnknown, type Incassi, type Limit, limitShare, type Part, type PlainDeadline, type Projection, type Slip } from "../tax-sums.ts";
+import { type Base, type Deadline, deadlineCents, deadlineWhat, dueCents, PLAIN_WHAT, type Estimate, hasUnknown, type Incassi, type Limit, limitShare, type Part, type PlainDeadline, type Projection, type Slip } from "../tax-sums.ts";
 import { ARTIGIANI_REDUCTION_PERCENT, type FigureKey, GROUPS, GS_RATE_DEFAULT, GS_RATE_YEAR, IVS_TOP_EXTRA, IVS_YEARS, NEW_2025_LAST_YEAR, NEW_2025_REDUCTION_PERCENT, type Pension, RATE_START, START_RATE_YEARS, type TaxProfile, type YearFigures, yearValues } from "../taxes.ts";
 import { fence } from "../untrusted.ts";
 import { partyName } from "./invoice-words.ts";
@@ -260,20 +260,6 @@ function deadlineRows(d: Deadline, pension: Pension): string[] {
 	return rows;
 }
 
-/** What the deadlines are made of, in words: «saldo e primo acconto di imposta e contributi». */
-function deadlineWhat(d: Deadline): string {
-	if (d.kind === "fissi") return "contributi fissi INPS";
-	const contrib = d.parts.some((p) => p.kind === "saldo_contributi" || p.kind === "acconto_contributi");
-	const imposta = d.parts.some((p) => p.kind === "saldo_imposta" || p.kind === "acconto_imposta");
-	const of = imposta && contrib ? "di imposta e contributi" : imposta ? "dell'imposta" : "dei contributi";
-	if (d.kind === "giugno") {
-		const saldo = d.parts.some((p) => p.kind.startsWith("saldo"));
-		const acconto = d.parts.some((p) => p.kind.startsWith("acconto"));
-		return `${saldo && acconto ? "saldo e primo acconto" : saldo ? "saldo" : "primo acconto"} ${of}`;
-	}
-	return d.parts.some((p) => p.single === true) ? `acconto ${of}` : `secondo acconto ${of}`;
-}
-
 type CalendarView = {
 	readonly today: string;
 	readonly profile: TaxProfile;
@@ -399,13 +385,6 @@ function nextYearLine(v: CalendarView): string[] {
 	const y = v.lastYear;
 	return v.deadlines.some((d) => d.parts.some((p) => p.forYear > y + 1 || (p.forYear === y + 1 && p.kind.startsWith("saldo")))) && v.previsionale === undefined ? [`Le scadenze del ${y + 2} usano la stima del ${y + 1} se continui così.`] : [];
 }
-
-const PLAIN_WHAT: Readonly<Record<PlainDeadline["what"], string>> = {
-	iva_trimestrale: "IVA trimestrale",
-	iva_annuale: "IVA annuale",
-	imposte_giugno: "saldo e primo acconto delle imposte",
-	imposte_novembre: "secondo acconto delle imposte",
-};
 
 /** The regime ordinario, or no profile: the dates without amounts; the ordinario's IVA is vat_settlement's. */
 export function plainAnswer(all: readonly PlainDeadline[], ordinario: boolean): string {
