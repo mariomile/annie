@@ -342,7 +342,7 @@ Il documento con cui la persona spedisce merce a un cliente (DT-NNNN finché è 
 _Avoid_: bolla (per i DDT che fa la persona; la bolla è quella del fornitore che accompagna la merce in arrivo)
 
 **Fattura differita**:
-La fattura che a fine mese raccoglie i DDT di vendita di un cliente di quel mese, con i loro riferimenti (DatiDDT); va emessa entro il 15 del mese dopo. Non scarica il magazzino, perché la merce è uscita con i DDT; i DDT risultano fatturati solo quando è emessa. Vedi ADR 0093.
+La fattura (tipo TD24) che a fine mese raccoglie i DDT di vendita di un cliente di quel mese, al netto dei resi, con i loro riferimenti (DatiDDT); va emessa entro il 15 del mese dopo, e la sua IVA va nel mese dei DDT. Non scarica il magazzino, perché la merce è uscita con i DDT; i DDT risultano fatturati solo quando è emessa. Vedi ADR 0093.
 _Avoid_: fattura riepilogativa
 
 **Download**:

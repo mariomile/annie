@@ -127,6 +127,9 @@ export type Ddt = Marker & {
 	/** The magazzino moved (or nothing to move): the issue is complete. */
 	readonly stocked?: true;
 	readonly cancelled?: Marker;
+	/** Annulled after it moved the magazzino: whether the person said the goods left anyway, and the call that annulled it (a rerun puts the goods back all the same). */
+	readonly left?: boolean;
+	readonly cancelCall?: string;
 	readonly billed?: DdtBilled;
 	readonly file?: string;
 };
@@ -204,7 +207,7 @@ function validBilled(v: unknown): v is DdtBilled {
 	return Object.keys(b).every((k) => ["invoice", "number", "day"].includes(k)) && typeof b.invoice === "string" && /^BZ-\d{4,6}$/.test(b.invoice) && plain(b.number, 20) && isDay(b.day);
 }
 
-const FIELDS = ["id", "status", "day", "client", "destination", "causale", "transport", "aspect", "packages", "weight", "notes", "of", "theirs", "lines", "callId", "edited", "number", "year", "seq", "issued", "issueCall", "stocked", "cancelled", "billed", "file", "by", "at"];
+const FIELDS = ["id", "status", "day", "client", "destination", "causale", "transport", "aspect", "packages", "weight", "notes", "of", "theirs", "lines", "callId", "edited", "number", "year", "seq", "issued", "issueCall", "stocked", "cancelled", "left", "cancelCall", "billed", "file", "by", "at"];
 
 /** A DDT as stored, checked field by field: what does not have this shape makes the store unreadable. */
 export function validDdt(v: unknown): v is Ddt {
@@ -230,6 +233,8 @@ export function validDdt(v: unknown): v is Ddt {
 	if (issued && (!plain(d.number, 20) || !Number.isInteger(d.year) || Number(d.day.slice(0, 4)) !== d.year || !Number.isInteger(d.seq) || (d.seq as number) < 1 || (d.seq as number) > DDT_LIMITS.perYear)) return false;
 	if (d.status === "issued" && !out) return false;
 	if ((d.status === "cancelled") !== (d.cancelled !== undefined)) return false;
+	if (d.left !== undefined && (d.status !== "cancelled" || typeof d.left !== "boolean")) return false;
+	if (d.cancelCall !== undefined && (d.status !== "cancelled" || !isText(d.cancelCall, 200))) return false;
 	if (!out && (d.stocked !== undefined || d.issueCall !== undefined)) return false;
 	if (d.billed !== undefined && (d.status !== "issued" || !BILLED.includes(d.causale) || !validBilled(d.billed))) return false;
 	return true;

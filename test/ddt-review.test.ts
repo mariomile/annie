@@ -8,10 +8,11 @@ import { marginLines } from "../src/core/margins.ts";
 import { paceOf } from "../src/core/order-suggest.ts";
 import { isIssued, type SalesInvoice, validInvoice } from "../src/core/sales-invoices.ts";
 import type { Movement, StockItem } from "../src/core/stock.ts";
+import { stateOf } from "../src/core/stock-sums.ts";
 import { unstock } from "../src/core/tools/ddt-stock.ts";
 import { vatDocs } from "../src/core/vat-docs.ts";
 import { figuresOf } from "../src/core/vat-sums.ts";
-import { checkIn, cleanup, EMDASH, fresh, inside, LISTINO, MARK, onHand, outside, PAPER_AND_TONER, type S, setup, shipped } from "./ddt-fixtures.ts";
+import { checkIn, cleanup, durable, EMDASH, fresh, inside, LISTINO, MARK, onHand, outside, PAPER_AND_TONER, type S, setup, shipped } from "./ddt-fixtures.ts";
 
 afterEach(cleanup);
 
@@ -323,5 +324,136 @@ describe("the brief, the prices, the reso's own DDT, the date (UX 6-12)", () => 
 		expect(s.tool.description).toContain("«lo porta il corriere BRT» → change with transport vettore and carrier");
 		expect(s.tool.description).toContain("Never say a draft's reference (DT-…) to the person");
 		expect(s.tool.description).not.toMatch(EMDASH);
+	});
+});
+
+describe("the closing verify (N1-N3, L1-L3)", () => {
+	const there = (s: S, id: string) => {
+		const book = s.stock.read();
+		return stateOf(book.items.find((i) => i.id === id) as StockItem, book.moves).onHand / 1000n;
+	};
+
+	it("N1: a wrong_customer credit note reverses all of the invoice, never some lines", async () => {
+		const s = setup();
+		await shipped(s);
+		s.clock.now = NOV;
+		await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001" });
+		await s.sell({ op: "issue", draft: "BZ-0001", confirm: true });
+		const partial = await s.sell({ op: "credit_note", invoice: "1", wrong_customer: true, lines: [{ description: "Carta A4", quantity: 10, price: 5, vat: 22 }] });
+		expect(partial).toBe("Per cambiare cliente la nota di credito deve stornare tutta la fattura: rifalla senza le voci, solo con la fattura e il cliente sbagliato.");
+		expect(s.sales.read().invoices.filter((i) => i.type === "TD04")).toEqual([]);
+		// A partial credit note (not for the wrong customer) never gives the DDTs back.
+		await s.sell({ op: "credit_note", invoice: "1", lines: [{ description: "Sconto", quantity: 1, price: 5, vat: 22 }] });
+		expect(s.sales.read().invoices.find((i) => i.type === "TD04")?.release).toBeUndefined();
+		await s.sell({ op: "remove", draft: "BZ-0002" });
+		const whole = await s.sell({ op: "credit_note", invoice: "1", wrong_customer: true });
+		expect(whole).not.toContain("Errore");
+		const note = s.sales.read().invoices.find((i) => i.type === "TD04") as SalesInvoice;
+		expect(note).toMatchObject({ release: true });
+		expect(note.lines.map((l) => l.quantity)).toEqual(["10", "2"]);
+	});
+
+	it("L3: after a reso's credit note, the wrong customer's note reverses what is left and the redo bills the DDT net of the reso; no loop", async () => {
+		const s = setup();
+		await shipped(s);
+		s.clock.now = NOV;
+		await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001" });
+		await s.sell({ op: "issue", draft: "BZ-0001", confirm: true });
+		await s.run({ op: "create", client: "Rossi Prova Srl", lines: [{ item: "Toner XL", quantity: 1 }], causale: "reso", of: "1/2026", transport: "destinatario" });
+		await s.run({ op: "issue", ddt: lastDraft(s).id, confirm: true });
+		await s.sell({ op: "credit_note", invoice: "1", reso: "2/2026" });
+		await s.sell({ op: "issue", draft: "BZ-0002", confirm: true });
+		const credit = await s.sell({ op: "credit_note", invoice: "1", wrong_customer: true });
+		expect(credit).not.toContain("Errore");
+		expect(invoice(s, "BZ-0003").lines.map((l) => [l.description, l.quantity])).toEqual([
+			["Carta A4", "10"],
+			["Toner XL", "1"],
+		]);
+		await s.sell({ op: "issue", draft: "BZ-0003", confirm: true });
+		const redo = await s.sell({ op: "draft", customer: "Verdi Prova Spa", ddt: true, redo: "1", recipient_code: "ZZZ0001" });
+		expect(redo).toContain("al netto dei resi");
+		expect(invoice(s, "BZ-0004").lines.map((l) => [l.description, l.quantity])).toEqual([
+			["Carta A4", "10"],
+			["Toner XL", "1"],
+		]);
+		await s.sell({ op: "issue", draft: "BZ-0004", confirm: true });
+		expect(s.store.read().ddts[0]?.billed?.invoice).toBe("BZ-0004");
+		expect(there(s, "MG-0001")).toBe(40n);
+		expect(there(s, "MG-0002")).toBe(9n);
+		// The reso is credited already: no second credit note, so no other wrong-customer round.
+		expect(await s.sell({ op: "credit_note", invoice: "1", reso: "2/2026" })).toContain("Errore");
+	});
+
+	it("N2: the same voce as a DDT to bill, in another quantity: always asked; apart unloads, the DDT answer points to the reso and the differita", async () => {
+		const s = setup();
+		await shipped(s, "Rossi Prova Srl", [{ item: "Carta A4", quantity: 10 }]);
+		const asked = await s.sell({ op: "draft", customer: "Rossi Prova Srl", lines: [{ item: "Carta A4", quantity: 8 }], recipient_code: "ZZZ0001" });
+		expect(outside(asked)).toContain("Una voce è su un DDT ancora da fatturare, ma in un'altra quantità (nel riquadro): è una parte di quella merce");
+		expect(inside(asked)).toContain("• Al cliente è già partito il DDT n. 1/2026 del 5 ottobre con 10 risme di Carta A4; in fattura 8 risme: 2 risme in meno");
+		expect(s.sales.read().invoices).toEqual([]);
+		const part = await s.sell({ op: "draft", customer: "Rossi Prova Srl", lines: [{ item: "Carta A4", quantity: 8 }], recipient_code: "ZZZ0001", shipped: "ddt" });
+		expect(part).toContain("fai prima il DDT di reso per quello che torna, poi la fattura differita");
+		expect(s.sales.read().invoices).toEqual([]);
+		await s.sell({ op: "draft", customer: "Rossi Prova Srl", lines: [{ item: "Carta A4", quantity: 8 }], recipient_code: "ZZZ0001", shipped: "apart" });
+		expect(invoice(s, "BZ-0001")).toMatchObject({ type: "TD01" });
+		await s.sell({ op: "issue", draft: "BZ-0001", confirm: true });
+		expect(there(s, "MG-0001")).toBe(32n);
+	});
+
+	it("N3: a date ahead warned before the yes, after tomorrow only with no other draft; an annulled DDT's date no longer blocks", async () => {
+		const s = setup();
+		await s.run({ op: "create", client: "Rossi Prova Srl", lines: PAPER_AND_TONER, transport: "mittente" });
+		const first = lastDraft(s).id;
+		await s.run({ op: "create", client: "Verdi Prova Spa", lines: PAPER_AND_TONER, transport: "mittente" });
+		const second = lastDraft(s).id;
+		expect(await s.run({ op: "issue", ddt: first, date: "08/10/2026", confirm: true })).toContain("Con una data dopo domani");
+		const preview = await s.run({ op: "issue", ddt: first, date: "domani" });
+		expect(outside(preview)).toContain("Dopo questo, fino al 6 ottobre non potrai emettere DDT con una data precedente.");
+		await s.run({ op: "issue", ddt: first, date: "domani", confirm: true });
+		expect(await s.run({ op: "issue", ddt: second, confirm: true })).toContain("non può avere una data prima di quella");
+		const c = await s.run({ op: "cancel", ddt: "1/2026" });
+		await s.run({ op: "cancel", ddt: "1/2026", confirm: true, check: checkIn(c), left: true });
+		expect(await s.run({ op: "issue", ddt: second, confirm: true })).toContain("Fatto: ho emesso il DDT n. 2/2026");
+		expect(s.store.read().ddts[0]).toMatchObject({ status: "cancelled", day: "2026-10-06", left: true });
+	});
+
+	it("L1: annulled after the magazzino's year is closed, the goods come back from the archived keys, never more", async () => {
+		const s = setup();
+		await shipped(s);
+		expect(s.stock.close("close-1", "2026-10-05", MARK)).not.toBeUndefined();
+		expect(s.stock.read().moves.some((m) => m.sale?.invoice === "DT-0001")).toBe(false);
+		const c = await s.run({ op: "cancel", ddt: "1/2026" });
+		expect(outside(c)).toContain("La merce è partita lo stesso?");
+		const done = await s.run({ op: "cancel", ddt: "1/2026", confirm: true, check: checkIn(c), left: false });
+		expect(done).toContain("Ho rimesso in magazzino 2 righe del DDT annullato");
+		expect(there(s, "MG-0001")).toBe(50n);
+		await unstock(s.stock, s.store.read().ddts[0] as Ddt, "2026-10-06", fresh(), MARK);
+		expect(there(s, "MG-0001")).toBe(50n);
+	});
+
+	it("L2: a stop between the annulment and the magazzino: the same call run again puts the goods back, once", async () => {
+		const s = setup();
+		await shipped(s);
+		const c = await s.run({ op: "cancel", ddt: "1/2026" });
+		const memo = new Map<string, unknown>();
+		const crash: ReturnType<typeof fresh> = {
+			...durable("cancel-1", memo),
+			step: async (key, work) => {
+				if (key === "unstock") throw new Error("stop");
+				if (memo.has(key)) return memo.get(key) as never;
+				const v = await work();
+				memo.set(key, v);
+				return v;
+			},
+		};
+		await expect(s.run({ op: "cancel", ddt: "1/2026", confirm: true, check: checkIn(c), left: false }, crash)).rejects.toThrow("stop");
+		expect(s.store.read().ddts[0]).toMatchObject({ status: "cancelled", left: false, cancelCall: "cancel-1" });
+		expect(there(s, "MG-0001")).toBe(40n);
+		const again = await s.run({ op: "cancel", ddt: "1/2026", confirm: true, check: checkIn(c), left: false }, durable("cancel-1", memo));
+		expect(again).toContain("Ho rimesso in magazzino 2 righe del DDT annullato");
+		expect(there(s, "MG-0001")).toBe(50n);
+		// Another call: only «già annullato».
+		expect(await s.run({ op: "cancel", ddt: "1/2026" })).toContain("è già annullato");
+		expect(there(s, "MG-0001")).toBe(50n);
 	});
 });

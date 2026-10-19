@@ -28,6 +28,7 @@ import { findBuyer, type Known } from "./sales-invoice-buyer.ts";
 import { findIssued, type SalesEnv } from "./sales-invoice-env.ts";
 import { type GivenLine, readLines } from "./sales-invoice-input.ts";
 import { fenced } from "./sales-invoice-render.ts";
+import { netLines } from "./sales-ddt-redo.ts";
 
 /** What a fattura differita's draft starts from: the customer, the lines (each with its DDT line), the DDTs, the notes. */
 export type DdtSource = { readonly known: Known; readonly given: readonly GivenLine[]; readonly ddt: readonly DdtRef[]; readonly notes: readonly string[] };
@@ -244,18 +245,8 @@ export function redoSource(env: SalesEnv, args: Record<string, unknown>, book: S
 		if (d.billed !== undefined || links.issued.has(d.id)) return `Errore: il DDT n. ${ref.number} è già fatturato di nuovo${d.billed === undefined ? "" : ` con la fattura n. ${d.billed.number}`}.`;
 		if (links.draft.has(d.id)) return `I DDT della fattura n. ${original.number} sono già in una bozza di fattura (${links.draft.get(d.id) ?? ""}: non serve dirlo a chi ti scrive): emetti quella, oppure la rifaccio prendendo il suo posto.`;
 	}
-	const given: GivenLine[] = original.lines.map((l) => ({
-		description: l.description,
-		quantity: l.quantity,
-		price: l.price,
-		vat: l.vat,
-		...(l.unit === undefined ? {} : { unit: l.unit }),
-		...(l.discount === undefined ? {} : { discount: l.discount }),
-		...(l.natura === undefined ? {} : { natura: l.natura }),
-		...(l.reference === undefined ? {} : { reference: l.reference }),
-		...(l.notFee === undefined ? {} : { notFee: l.notFee }),
-		...(l.item === undefined ? {} : { item: l.item }),
-		...(l.ddt === undefined ? {} : { ddt: l.ddt }),
-	}));
-	return { given, ddt: original.ddt ?? [], notes: [`Rifaccio la fattura n. ${original.number} al cliente giusto, come fattura differita (TD24) degli stessi DDT: stesse righe e prezzi, e il magazzino non si scarica di nuovo.`] };
+	// Each DDT line as it stands now, net of every reso: one credited already is not billed again.
+	const given = netLines(original, ddtBook.ddts);
+	if (given.length === 0) return `La merce della fattura n. ${original.number} è tornata tutta con i resi: non c'è niente da rifatturare.`;
+	return { given, ddt: (original.ddt ?? []).filter((r) => given.some((g) => g.ddt?.id === r.id)), notes: [`Rifaccio la fattura n. ${original.number} al cliente giusto, come fattura differita (TD24) degli stessi DDT: stesse righe e prezzi (al netto dei resi), e il magazzino non si scarica di nuovo.`] };
 }

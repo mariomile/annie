@@ -90,7 +90,7 @@ export class DdtStore {
 			const year = Number(day.slice(0, 4));
 			const seq = nextDdtSeq(book, year);
 			if (seq > DDT_LIMITS.perYear) throw new DdtError(`i DDT del ${year} sono arrivati al massimo di ${DDT_LIMITS.perYear}`);
-			const later = book.ddts.find((d) => isIssuedDdt(d) && d.year === year && d.day > day);
+			const later = book.ddts.find((d) => isIssuedDdt(d) && d.status === "issued" && d.year === year && d.day > day);
 			if (later !== undefined) throw new DdtError(`c'è già il DDT n. ${later.number} con una data successiva: la numerazione deve seguire le date`);
 			const issued: IssuedDdt = { ...draft, status: "issued", day, number: ddtNumber(year, seq, book.settings?.numbering), year, seq, issued: marker, issueCall: callId };
 			made = issued;

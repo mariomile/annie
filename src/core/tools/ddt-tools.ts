@@ -18,7 +18,7 @@ import type { AnnieTool, ToolContext } from "../engine.ts";
 import { n1 } from "../format-words.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import type { Company } from "../invoices.ts";
-import { todayIn } from "../italian-calendar.ts";
+import { addDays, todayIn } from "../italian-calendar.ts";
 import { italianLongDate } from "../italian-format.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
 import type { Marker } from "../marker.ts";
@@ -304,8 +304,13 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		const when = issueDaySaid(args.date, day);
 		if (typeof when === "object") return { text: when.answer, count: 0 };
 		const year = Number(when.slice(0, 4));
-		const later = loaded.book.ddts.find((x) => isIssuedDdt(x) && x.year === year && x.day > when);
+		// The numbering follows the dates: an annulled DDT keeps its date on record, but no longer blocks.
+		const later = loaded.book.ddts.find((x) => isIssuedDdt(x) && x.status === "issued" && x.year === year && x.day > when);
 		if (later !== undefined && isIssuedDdt(later)) return { text: `C'è già il DDT n. ${later.number} del ${italianLongDate(later.day)}: la numerazione segue le date, quindi questo DDT non può avere una data prima di quella.`, count: 0 };
+		// A date after tomorrow only when no other draft waits: it would keep them from today's date.
+		const ahead = when > day;
+		const waiting = loaded.book.ddts.filter((x) => x.status === "draft" && x.id !== d.id).length;
+		if (when > addDays(day, 1) && waiting > 0) return { text: `Con una data dopo domani, fino al ${italianLongDate(when)} non potresti emettere ${n1(waiting, "l'altra bozza di DDT", "le altre # bozze di DDT")} con la data di oggi. Emetti prima ${waiting === 1 ? "quella" : "quelle"}, oppure usa al più la data di domani.`, count: 0 };
 		// The first DDT of the year with Annie: the last number the person reached before, asked as the invoices ask it; written only with the yes.
 		const last = args.last_number;
 		if (last !== undefined && (typeof last !== "number" || !Number.isInteger(last) || last < 0 || last >= DDT_LIMITS.perYear)) return { text: "Errore: il numero dell'ultimo DDT è un numero intero, 0 se non ce n'è nessuno.", count: 0 };
@@ -322,6 +327,7 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 					`Lo emetto ${issueDayWords(when, day)}: prende il numero ${numberNow}. Una volta emesso non si cancella più, si può solo annullare (e il numero resta).`,
 					fencedDdt(ddtBlock(d, loaded.links, loaded.book.ddts)),
 					...stockPreview(options.stock, d, when, marker(ctx)),
+					...(ahead ? [`Dopo questo, fino al ${italianLongDate(when).replace(/ \d{4}$/, "")} non potrai emettere DDT con una data precedente.`] : []),
 					...missingNotes(d, loaded),
 					`Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: lo emetto solo dopo il suo sì${last === undefined ? "" : ", ripetendo anche l'ultimo numero che ha detto"}${args.date === undefined ? "" : " e la stessa data"}.`,
 				].join("\n"),
@@ -398,6 +404,8 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 	async function cancel(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		const d = target(args, loaded, (x) => x.status !== "cancelled", "aperto");
 		if (typeof d === "string") return { text: d, count: 0 };
+		// The same call run again after a stop between the annulment and the magazzino: the goods put back all the same, once.
+		if (d.status === "cancelled" && d.cancelCall === ctx.callId && d.left === false) return { text: [`Annullato il ${ddtTitle(d)}.`, ...(await unstock(options.stock, d, day, ctx, marker(ctx)))].join(" "), count: 0 };
 		if (d.status === "cancelled") return { text: `${capital(ddtTitle(d))}: è già annullato.`, count: 0 };
 		const billed = d.billed?.number ?? loaded.links.issued.get(d.id);
 		if (billed !== undefined) return { text: `Il ${ddtTitle(d)} è già fatturato con la fattura n. ${billed}: non si annulla. Se la merce è tornata, si fa un DDT di reso; per la fattura, una nota di credito.`, count: 0 };
@@ -426,7 +434,7 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		if (moved && typeof args.left !== "boolean") return { text: "Prima di annullarlo mi serve sapere se la merce è partita lo stesso: se non è partita, la rimetto in magazzino. Chiedilo a chi ti scrive.", count: 0 };
 		const refused = requirePersonFor(ctx, isIssuedDdt(d) ? `annullo il DDT n. ${d.number}` : "annullo il reso registrato");
 		if (refused !== undefined) return { text: refused, count: 0 };
-		await cancelled(d, ctx);
+		await cancelled(d, ctx, moved ? (args.left as boolean) : undefined);
 		const out = [isIssuedDdt(d) ? `Annullato il DDT n. ${d.number}: resta nell'elenco come annullato, con il suo numero, che non si usa più.` : "Annullato il reso registrato: resta nell'elenco come annullato."];
 		if (moved && args.left === false) out.push(...(await unstock(options.stock, d, day, ctx, marker(ctx))));
 		else if (moved) out.push("La merce è partita lo stesso: il magazzino resta com'è.");
@@ -434,13 +442,13 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		return { text: out.join(" "), count: 1 };
 	}
 
-	async function cancelled(d: Ddt, ctx: ToolContext): Promise<void> {
+	async function cancelled(d: Ddt, ctx: ToolContext, left?: boolean): Promise<void> {
 		const by = marker(ctx);
 		await ctx.step("cancel", async () => {
 			store.update(ctx.callId, (state) => {
 				const cur = state.ddts.find((x) => x.id === d.id);
 				if (cur === undefined || cur.status === "cancelled") return state;
-				return { ...state, ddts: state.ddts.map((x) => (x.id === d.id ? { ...cur, status: "cancelled" as const, cancelled: by } : x)) };
+				return { ...state, ddts: state.ddts.map((x) => (x.id === d.id ? { ...cur, status: "cancelled" as const, cancelled: by, cancelCall: ctx.callId, ...(left === undefined ? {} : { left }) } : x)) };
 			});
 			return true;
 		});

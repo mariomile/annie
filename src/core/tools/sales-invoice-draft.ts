@@ -32,6 +32,7 @@ import { draftAnswer, fenced } from "./sales-invoice-render.ts";
 import { draftStockLines } from "./sales-invoice-stock.ts";
 import { ddtHeld } from "./sales-ddt.ts";
 import { resoCredit, shippedLines } from "./sales-ddt-lines.ts";
+import { wrongCustomerLines } from "./sales-ddt-redo.ts";
 import { ddtSource, redoSource } from "./sales-ddt-source.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
@@ -503,6 +504,14 @@ export async function creditNote(env: SalesEnv, args: Record<string, unknown>, c
 	if (args.lines !== undefined && reso !== undefined) return "Errore: la nota di credito del reso prende le righe del reso: senza altre voci.";
 	// The DDT lines a fattura differita billed stay pointed at: the credit note never moves the magazzino for them (the DDTs did).
 	let given: readonly GivenLine[] = reso?.given ?? original.lines;
+	if (args.wrong_customer !== undefined && typeof args.wrong_customer !== "boolean") return "Errore: il cliente sbagliato è sì o no.";
+	if (args.wrong_customer === true) {
+		// To the wrong customer: all of it, never some lines (the DDTs given back would be billed whole again).
+		if (args.lines !== undefined || reso !== undefined) return "Per cambiare cliente la nota di credito deve stornare tutta la fattura: rifalla senza le voci, solo con la fattura e il cliente sbagliato.";
+		const all = wrongCustomerLines(env, original, book, typeof args.replace === "string" ? args.replace.trim().toUpperCase() : undefined);
+		if (typeof all === "string") return all;
+		given = all;
+	}
 	if (args.lines !== undefined) {
 		const read = readLines(args.lines);
 		if (isProblem(read)) return `Errore: ${read.problem}.`;
@@ -525,7 +534,6 @@ export async function creditNote(env: SalesEnv, args: Record<string, unknown>, c
 	if (stranger >= 0) return `Errore: la riga ${stranger + 1} della nota di credito è ${rowName(lines[stranger] as SalesLine)}, che la fattura n. ${original.number} non ha: ogni riga va con un'aliquota della fattura (${originalRows.map(rowName).join(", ")}).`;
 	const causale = cleanText(args.notes, SALES_LIMITS.causale, "il testo delle note");
 	if (isProblem(causale)) return `Errore: ${causale.problem}.`;
-	if (args.wrong_customer !== undefined && typeof args.wrong_customer !== "boolean") return "Errore: il cliente sbagliato è sì o no.";
 	const fields = {
 		type: CREDIT_NOTE_TYPE,
 		regime: original.regime,

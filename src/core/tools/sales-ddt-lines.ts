@@ -3,7 +3,8 @@
  * - an invoice dictated with voci that a DDT of the customer took out already (issued, not billed,
  *   in no draft; or given back by a credit note for the wrong customer): said before the draft,
  *   with the choice of billing them as the fattura differita of that DDT (the lines point at the
- *   DDT lines: no scarico, the DDT billed at issue) or as goods apart;
+ *   DDT lines: no scarico, the DDT billed at issue) or as goods apart; the same voce in another
+ *   quantity or unit is asked too (a part of the DDT's goods goes the differita and reso way);
  * - the credit note for goods back with a DDT di reso of a DDT already billed: its lines priced as
  *   the invoice billed them, each pointing at the reso's line, so it does not put the goods back a
  *   second time and the margins find the cost of the DDT they went out with.
@@ -13,6 +14,7 @@ import { type Ddt, DDT_LIMITS, dueDayOf, isIssuedDdt, type IssuedDdt } from "../
 import { italianLongDate } from "../italian-format.ts";
 import type { SalesBook } from "../sales-invoice-store.ts";
 import { type DdtRef, type IssuedInvoice, isIssued } from "../sales-invoices.ts";
+import { stockUnit } from "../stock.ts";
 import { qtyOf, qtyText } from "../stock-sums.ts";
 import { cleanText, isProblem } from "../text-input.ts";
 import { lineQty } from "./ddt-render.ts";
@@ -26,6 +28,7 @@ import { fenced } from "./sales-invoice-render.ts";
 export type Shipped = { readonly given: readonly GivenLine[]; readonly ddt?: readonly DdtRef[]; readonly notes: readonly string[] };
 
 const QTY = /^\d{1,10}(?:\.\d{1,3})?$/;
+const sameUnit = (a: string | undefined, b: string | undefined): boolean => a === undefined || b === undefined || stockUnit(a) === stockUnit(b);
 const sameQty = (a: string, b: bigint): boolean => QTY.test(a) && qtyOf(a) === b;
 
 /**
@@ -49,15 +52,31 @@ export function shippedLines(env: SalesEnv, args: Record<string, unknown>, who: 
 		for (const d of pool)
 			for (const l of d.lines) {
 				const k = `${d.id}#${l.n}`;
-				if (l.item !== g.item || used.has(k) || !sameQty(g.quantity, netOf(d, l.n, returns))) continue;
+				if (l.item !== g.item || used.has(k) || !sameUnit(g.unit, l.unit) || !sameQty(g.quantity, netOf(d, l.n, returns))) continue;
 				used.add(k);
 				return { d, l };
 			}
 		return undefined;
 	});
 	const found = bound.filter((b) => b !== undefined);
-	if (found.length === 0) return undefined;
+	// The same voce on a DDT left to bill, in another quantity or unit: always asked, never unloaded silently.
+	const near = given.flatMap((g, i) => {
+		if (g.item === undefined || bound[i] !== undefined) return [];
+		for (const d of pool) for (const l of d.lines) if (l.item === g.item && netOf(d, l.n, returns) > 0n) return [{ g, d, l }];
+		return [];
+	});
+	if (found.length === 0 && near.length === 0) return undefined;
 	if (args.shipped === "apart") return { given, notes: ["Fatturo le voci come merce a parte, non quella partita con i DDT: emessa la fattura, la scarico dal magazzino."] };
+	if (near.length > 0) {
+		const rows = near.map(({ g, d, l }) => {
+			const left = { ...l, qty: qtyText(netOf(d, l.n, returns)) };
+			const less = sameUnit(g.unit, l.unit) && QTY.test(g.quantity) && qtyOf(g.quantity) < qtyOf(left.qty) ? `: ${lineQty({ ...left, qty: qtyText(qtyOf(left.qty) - qtyOf(g.quantity)) })} in meno` : "";
+			return `• Al cliente è già partito il ${ddtWords({ number: d.number, date: d.day })} con ${lineQty(left)} di ${l.description}; in fattura ${lineQty({ qty: g.quantity, ...(g.unit === undefined ? {} : { unit: g.unit }) })}${less}`;
+		});
+		const ask = `${near.length === 1 ? "Una voce è" : `${near.length} voci sono`} su un DDT ancora da fatturare, ma in un'altra quantità (nel riquadro): è una parte di quella merce (allora la fattura va fatta come fattura differita del DDT, e quello che non tiene il cliente torna con un DDT di reso) o è merce diversa?`;
+		if (args.shipped === "ddt") return [`${ask} Se è la merce del DDT, fai prima il DDT di reso per quello che torna, poi la fattura differita del mese del DDT: così il magazzino non si scarica due volte. Non ho preparato niente.`, fenced(rows.join("\n"))].join("\n");
+		return [`${ask} Chiedilo a chi ti scrive: se è merce diversa, rifai la bozza come merce a parte; se è la merce del DDT, fai il DDT di reso e la fattura differita.`, fenced(rows.join("\n"))].join("\n");
+	}
 	if (args.shipped === undefined) {
 		const visione = found.some((b) => b.d.causale === "conto_visione");
 		return [

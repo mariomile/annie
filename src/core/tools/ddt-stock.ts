@@ -113,10 +113,12 @@ export async function completeStock(store: DdtStore, stock: StockLink | undefine
 	return { notes, done: true };
 }
 
-/** Whether the DDT took goods out of the magazzino (its own scarichi there). */
+/** Whether the DDT took goods out of the magazzino (its own scarichi there, or archived by a year closed). */
 export function unloaded(stock: StockLink | undefined, d: Ddt): boolean {
 	const book = stock?.read();
-	return book !== undefined && !book.broken && book.moves.some((m) => m.kind === "scarico" && m.sale?.invoice === d.id);
+	if (book === undefined || book.broken) return false;
+	// After a year of the magazzino is closed, its scarichi live on as archived keys.
+	return book.moves.some((m) => m.kind === "scarico" && m.sale?.invoice === d.id) || book.archived.some((a) => a.of === undefined && a.k.startsWith(`${d.id}#`));
 }
 
 /**
