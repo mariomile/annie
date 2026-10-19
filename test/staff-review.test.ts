@@ -1,8 +1,9 @@
 /** The review of week 75: dates read the right way, the month day by day, hiring and leaving, health data, the appointments told why not (never why). */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { looksHealth, validAbsence, validPerson } from "../src/core/staff.ts";
+import { looksHealth, type Person, validAbsence, validPerson } from "../src/core/staff.ts";
+import { monthRows } from "../src/core/staff-month.ts";
 import { protocolSaid, reasonSaid, staffDay, staffDayNoted } from "../src/core/tools/staff-input.ts";
 import { agent, checkIn, cleanup, fresh, GIULIA, HOURS, inside, MARK, MARCO, outside, type S, setup } from "./staff-fixtures.ts";
 
@@ -14,7 +15,8 @@ const TODAY = "2026-10-19";
 describe("H1: dates read the right way", () => {
 	it("«12 ottobre» on 19 October: past for a malattia, extra hours and a balance; the nearest for an absence, asked when unclear; a year not this one said", async () => {
 		expect(staffDay("12 ottobre", TODAY, "past")).toBe("2026-10-12");
-		expect(staffDay("12 ottobre", TODAY, "next")).toBe("2027-10-12");
+		// "next" reads only a bare weekday ahead: a day and month is the nearer.
+		expect(staffDay("12 ottobre", TODAY, "next")).toBe("2026-10-12");
 		expect(staffDay("12 ottobre", TODAY, "nearest")).toBe("2026-10-12");
 		expect(staffDay("3 agosto", TODAY, "nearest")).toBe("2026-08-03");
 		expect(staffDay("lunedì scorso", TODAY)).toBe("2026-10-12");
@@ -23,7 +25,7 @@ describe("H1: dates read the right way", () => {
 		expect(staffDay("lunedì", TODAY, "past")).toBe(TODAY);
 		expect(staffDay("lunedì", TODAY, "next")).toBe("2026-10-26");
 		expect(staffDay("15 aprile", TODAY)).toEqual({ answer: "Errore: il 15 aprile è quello già passato (15/04/2026) o quello che viene (15/04/2027)? Dimmelo con l'anno." });
-		expect(staffDayNoted("10 gennaio", TODAY)).toEqual({ day: "2027-01-10", note: "Ho letto il 10 gennaio come 10/01/2027, dell'anno prossimo: se intendevi un altro anno, dimmelo." });
+		expect(staffDayNoted("10 gennaio", TODAY)).toEqual({ day: "2027-01-10", yearless: true, note: "Ho letto il 10 gennaio come 10/01/2027, dell'anno prossimo: se intendevi un altro anno, dimmelo." });
 		const s = setup();
 		await s.run({ op: "absence", person: "Marco", kind: "malattia", from: "12 ottobre", to: "14 ottobre" });
 		expect(all(s)[0]).toMatchObject({ from: "2026-10-12", to: "2026-10-14" });
@@ -107,7 +109,8 @@ describe("UX 2: hiring, leaving, archive, delete", () => {
 		const s = setup();
 		const ask = await s.run({ op: "person", person: "Giulia Verde", role: "cassiera" });
 		expect(outside(ask)).toContain("Intendi questa persona?");
-		expect(outside(ask)).toContain("ripeti con new true");
+		expect(outside(ask)).toContain("ripeti dicendo che è una persona nuova");
+		expect(outside(ask)).not.toMatch(/\bnew\b|true/);
 		expect(s.store.read().people).toHaveLength(2);
 		const made = await s.run({ op: "person", person: "Giulia Verde", role: "cassiera", new: true });
 		expect(outside(made)).toContain("Fatto: ho aggiunto la persona");
@@ -141,7 +144,7 @@ describe("UX 2: hiring, leaving, archive, delete", () => {
 		expect(await s.run({ op: "delete", person: "Giulia", confirm: true, check: checkIn(ask) })).toContain("il controllo non torna");
 		const again = await s.run({ op: "delete", person: "Giulia" });
 		s.events.length = 0;
-		expect(await s.run({ op: "delete", person: "Giulia", confirm: true, check: checkIn(again) })).toBe("Fatto: ho cancellato la persona, con le sue assenze, le ore in più e i turni cambiati.");
+		expect(await s.run({ op: "delete", person: "Giulia", confirm: true, check: checkIn(again) })).toBe("Fatto: ho cancellato la persona, con le sue assenze, le ore in più e i turni cambiati. I file già salvati nella cartella personale/ (turni, riepiloghi per la consulente) la contengono ancora: se non servono più, cancellali tu.");
 		const b = s.store.read();
 		expect(b.people.map((p) => p.name)).toEqual(["Marco Neri"]);
 		expect(b.absences).toHaveLength(0);
@@ -207,7 +210,7 @@ describe("M1-M3, UX 4-5: health data", () => {
 		expect(outside(role)).toContain("Il ruolo non l'ho salvato: sembra un dato sanitario");
 		expect(s.store.read().people[0]?.role).toBe("commessa");
 		const ferie = await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "26/10/2026", note: "per la chemio" });
-		expect(outside(ferie)).toContain("La nota non l'ho salvato: sembra un dato sanitario");
+		expect(outside(ferie)).toContain("Le note sulle assenze non le scrivo");
 		const extra = await s.run({ op: "extra", person: "Marco", date: "sabato scorso", hours: 1, note: "dopo la visita medica" });
 		expect(outside(extra)).toContain("La nota non l'ho salvato");
 		const shift = await s.run({ op: "shift", person: "Giulia", date: "sabato", hours: "9-13", note: "copre Marco" });
@@ -217,8 +220,11 @@ describe("M1-M3, UX 4-5: health data", () => {
 		expect(JSON.stringify(b)).not.toMatch(/chemio|visita medica|gravidanza|influenza/);
 		expect(b.shifts.find((x) => x.day === "2026-10-24")?.note).toBe("copre Marco");
 		expect(looksHealth("parrucchiere")).toBe(false);
-		expect(looksHealth("fisioterapista")).toBe(false);
-		expect(validPerson({ ...GIULIA, role: "diabetica" })).toBe(false);
+		// A job title passes only as a role: «dal fisioterapista» in a note says something of health.
+		expect(looksHealth("fisioterapista", true)).toBe(false);
+		expect(looksHealth("fisioterapista")).toBe(true);
+		// Checked when said, never when read: a file saved before stays readable.
+		expect(validPerson({ ...GIULIA, role: "diabetica" })).toBe(true);
 	});
 
 	it("the protocol is digits only, 6 to 12, spaces, «/» and «-» taken out", () => {
@@ -268,8 +274,9 @@ describe("M1-M3, UX 4-5: health data", () => {
 		expect(await s.run({ op: "who", compact: true })).not.toContain("sai fino a quando");
 		s.clock.now = new Date("2026-10-21T07:00:00Z");
 		const ask = await s.run({ op: "who", compact: true });
-		expect(outside(ask)).toContain("una domanda su una malattia senza fine detta");
-		expect(inside(ask)).toContain("Marco Neri è in malattia da lunedì 19 ottobre, fine non detta: sai fino a quando? E il protocollo del certificato?");
+		expect(outside(ask)).toContain("una domanda su un'assenza senza fine");
+		expect(inside(ask)).toContain("Marco Neri è assente da lunedì 19 ottobre, fine non detta: sai fino a quando?");
+		expect(ask).not.toMatch(/malattia|protocollo/);
 		s.clock.now = new Date("2026-10-22T07:00:00Z");
 		expect(await s.run({ op: "who", compact: true })).not.toContain("sai fino a quando");
 	});
@@ -356,5 +363,133 @@ describe("LOW", () => {
 	it("a person without a usual week blocks the resource only with an absence", () => {
 		const s = setup({ people: [GIULIA, { ...MARCO, week: undefined }] });
 		expect(s.store.blocksOn("2026-10-26")).toEqual([]);
+	});
+});
+
+describe("Closing verify (week 75)", () => {
+	it("M-A: health stems anywhere in a word, job titles pass only as a role, notes short; never checked on read", async () => {
+		for (const t of ["fa terapia", "è ricoverata", "ha la febbre", "sta male", "dal medico", "dopo la tac", "visita oncologica", "in convalescenza", "certificato"]) expect(looksHealth(t)).toBe(true);
+		for (const t of ["attacco", "simpatica", "empatia", "copre la collega", "parrucchiere"]) expect(looksHealth(t)).toBe(false);
+		for (const t of ["farmacista", "psicologa", "medico", "autista", "fisioterapista"]) expect(looksHealth(t, true)).toBe(false);
+		expect(looksHealth("dalla psicologa")).toBe(true);
+		expect(reasonSaid("congedo di maternità")).toBe("congedo parentale");
+		expect(reasonSaid("104 per la disabilità del padre")).toBe("L.104");
+		expect(reasonSaid("congedo per malattia")).toBe("health");
+		const s = setup();
+		const role = await s.run({ op: "person", person: "Giulia", role: "farmacista" });
+		expect(outside(role)).toContain("Fatto: ho aggiornato la scheda");
+		// Names are not checked: a surname like Medici is a name.
+		const named = await s.run({ op: "person", person: "Lucia Medici", role: "commessa" });
+		expect(outside(named)).toContain("Fatto: ho aggiunto la persona");
+		const ferie = await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "26/10/2026", note: "va al mare" });
+		expect(outside(ferie)).toContain("Le note sulle assenze non le scrivo");
+		expect(all(s).at(-1)?.note).toBeUndefined();
+		expect(await s.run({ op: "shift", person: "Giulia", date: "sabato", hours: "9-13", note: "x".repeat(81) })).toContain("la nota è lunga");
+		// A file saved before a stem was added stays readable.
+		s.store.update("old", (st) => ({ ...st, nextAbsence: 100, shifts: [{ person: "PE-0001", day: "2026-10-24", hours: [], note: "febbre", ...MARK }], absences: [...st.absences, { id: "AS-0099", person: "PE-0001", kind: "ferie", from: "2026-11-02", to: "2026-11-02", note: "dal medico", callId: "old", ...MARK }] }));
+		expect(s.store.broken()).toBe(false);
+	});
+
+	it("M-B: the protocol is asked in the owner's chat when the end of a malattia is said", async () => {
+		const s = setup();
+		await s.run({ op: "absence", person: "Marco", kind: "malattia", from: "oggi" });
+		const end = await s.run({ op: "change", person: "Marco", to: "giovedì" });
+		expect(outside(end)).toContain("Quando hai il certificato, dimmi il numero di protocollo: serve alla consulente.");
+		const given = await s.run({ op: "change", person: "Marco", protocol: "123456789" });
+		expect(outside(given)).not.toContain("dimmi il numero di protocollo");
+	});
+
+	it("N1: a name alone is looked up, never added; more people for one name are said", async () => {
+		const s = setup({ people: [GIULIA, MARCO, { id: "PE-0003", name: "Giulia Rossi", ...MARK }] });
+		const alone = await s.run({ op: "person", person: "Luca" });
+		expect(outside(alone)).toContain("non trovo questa persona");
+		expect(s.store.read().people).toHaveLength(3);
+		const many = await s.run({ op: "person", person: "Giulia", role: "cassiera" });
+		expect(outside(many)).toContain("il nome va bene per più persone");
+		expect(s.store.read().people).toHaveLength(3);
+		expect(outside(await s.run({ op: "person", person: "Luca", role: "barbiere" }))).toContain("Fatto: ho aggiunto la persona");
+		expect(outside(await s.run({ op: "person", person: "Sara", new: true }))).toContain("Fatto: ho aggiunto la persona");
+		expect(s.store.read().people).toHaveLength(5);
+	});
+
+	it("N2: a new person's first day: a weekday ahead, a day and month the nearer (asked when unclear), the year said", async () => {
+		const s = setup();
+		await s.run({ op: "person", person: "Luca", new: true, from: "lunedì" });
+		expect(s.store.read().people.at(-1)?.from).toBe("2026-10-26");
+		await s.run({ op: "person", person: "Sara", new: true, from: "3 novembre" });
+		expect(s.store.read().people.at(-1)?.from).toBe("2026-11-03");
+		expect(await s.run({ op: "person", person: "Anna", new: true, from: "15 aprile" })).toContain("Dimmelo con l'anno.");
+		const jan = await s.run({ op: "person", person: "Anna", new: true, from: "10 gennaio" });
+		expect(outside(jan)).toContain("Ho letto il 10 gennaio come 10/01/2027, dell'anno prossimo");
+	});
+
+	it("N3: ferie or a permesso more than a week back, said without the year, are asked; yes, already taken, saves them", async () => {
+		const s = setup();
+		expect(await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "2 giugno", to: "5 giugno" })).toBe("Il 2-5 giugno è già passato: le segno come ferie già fatte, o intendi giugno 2027?");
+		expect(await s.run({ op: "absence", person: "Giulia", kind: "permesso", from: "8 settembre", start: "10", end: "12" })).toBe("L'8 settembre è già passato: lo segno come permesso già fatto, o intendi settembre 2027?");
+		expect(all(s)).toHaveLength(0);
+		await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "2 giugno", to: "5 giugno", past: true });
+		expect(all(s)[0]).toMatchObject({ from: "2026-06-02", to: "2026-06-05" });
+		await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "12 ottobre" });
+		expect(all(s)).toHaveLength(2);
+		await s.run({ op: "absence", person: "Marco", kind: "ferie", from: "02/06/2026" });
+		expect(all(s)).toHaveLength(3);
+	});
+
+	it("a malattia's start without its year more than 60 days back is asked", async () => {
+		expect(staffDayNoted("25 ottobre", TODAY, "recent")).toEqual({ answer: "Errore: il 25 ottobre è quello già passato (25/10/2025) o quello che viene (25/10/2026)? Dimmelo con l'anno." });
+		expect(staffDay("15 ottobre", TODAY, "recent")).toBe("2026-10-15");
+		const s = setup();
+		expect(await s.run({ op: "absence", person: "Marco", kind: "malattia", from: "25 ottobre" })).toContain("Dimmelo con l'anno.");
+		expect(all(s)).toHaveLength(0);
+	});
+
+	it("archive from: the first day gone, the last the day before", async () => {
+		const s = setup();
+		const text = await s.run({ op: "archive", person: "Marco", from: "venerdì" });
+		expect(s.store.read().people[1]?.to).toBe("2026-10-22");
+		expect(outside(text)).toContain("in forza fino a giovedì 22 ottobre: da venerdì 23 ottobre non è più nei turni");
+	});
+
+	it("delete: the check is bound to each absence as it is; the files in personale/ said", async () => {
+		const s = setup();
+		await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "26/10/2026" });
+		const ask = await s.run({ op: "delete", person: "Giulia" });
+		expect(outside(ask)).toContain("I file già salvati nella cartella personale/ restano come sono.");
+		// Cancelled: the counts are the same, the check is not.
+		await s.run({ op: "cancel", person: "Giulia", from: "26/10/2026" });
+		expect(await s.run({ op: "delete", person: "Giulia", confirm: true, check: checkIn(ask) })).toContain("il controllo non torna");
+		expect(s.store.read().people).toHaveLength(2);
+	});
+
+	it("a malattia over ferie and a permesso: says which one blocks, nothing changed", async () => {
+		const s = setup();
+		await s.run({ op: "absence", person: "Giulia", kind: "ferie", from: "26/10/2026", to: "28/10/2026" });
+		await s.run({ op: "absence", person: "Giulia", kind: "permesso", from: "29/10/2026", start: "10", end: "12" });
+		const text = await s.run({ op: "absence", person: "Giulia", kind: "malattia", from: "26/10/2026", to: "29/10/2026" });
+		expect(outside(text)).toContain("le ferie di quei giorni le accorcerei, ma c'è anche un'altra assenza che le blocca (permesso giovedì 29 ottobre dalle 10 alle 12)");
+		expect(all(s)).toHaveLength(2);
+		expect(all(s).every((a) => a.kind !== "malattia")).toBe(true);
+	});
+
+	it("the month's totals count only the days on the staff", () => {
+		const luca: Person = { id: "PE-0003", name: "Luca Bianchi", week: GIULIA.week, from: "2026-10-15", ...MARK };
+		const absences = [
+			{ id: "AS-0001", person: "PE-0003", kind: "malattia" as const, from: "2026-10-01", to: "2026-10-20", callId: "a", ...MARK },
+			{ id: "AS-0002", person: "PE-0003", kind: "permesso" as const, from: "2026-10-09", to: "2026-10-09", start: "10:00", end: "12:00", callId: "b", ...MARK },
+		];
+		const [row] = monthRows({ people: [luca], absences, shifts: [] }, [], "2026-10-01", "2026-10-31");
+		expect(row?.malattia).toBe(600);
+		expect(row?.permesso).toBe(0);
+	});
+
+	it("the staff file not read: said once a day on bookings", async () => {
+		const s = setup();
+		writeFileSync(join(s.dir, "staff.json"), "{ non è json");
+		const warn = "il file del personale non si legge";
+		expect(await s.book({ op: "book", client: "Anna Rossi", services: ["taglio"], date: "domani", time: "11", resource: "Marco" })).toContain(warn);
+		expect(await s.book({ op: "book", client: "Bea Neri", services: ["taglio"], date: "domani", time: "15", resource: "Marco" })).not.toContain(warn);
+		s.clock.now = new Date("2026-10-20T07:00:00Z");
+		expect(await s.book({ op: "book", client: "Carla Blu", services: ["taglio"], date: "domani", time: "11", resource: "Marco" })).toContain(warn);
 	});
 });

@@ -25,7 +25,8 @@ export { isAnswer };
 const folded = (t: string) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().replace(/\s+/g, " ");
 
 /** The person named: exact (a name, a first name only one has, PE-0001), or close (asked), or none. */
-export function personSaid(raw: unknown, people: readonly Person[]): { readonly person: Person; readonly close?: true } | Answer {
+/** The person named; an answer when none is (`many` when the name fits more than one). */
+export function personSaid(raw: unknown, people: readonly Person[]): { readonly person: Person; readonly close?: true } | (Answer & { readonly many?: true }) {
 	if (typeof raw !== "string" || raw.trim() === "" || raw.length > STAFF_LIMITS.name) return { answer: "Errore: dimmi di chi, con il nome." };
 	const candidates: Candidate<Person>[] = people.map((p) => {
 		const first = p.name.split(/\s+/)[0] as string;
@@ -35,17 +36,18 @@ export function personSaid(raw: unknown, people: readonly Person[]): { readonly 
 	const r = findNamed(candidates, raw, STAFF_LIMITS.name, PERSON_ID);
 	if (r.kind === "exact") return { person: r.item };
 	if (r.kind === "close" && r.candidates.length === 1) return { person: r.candidates[0] as Person, close: true };
-	if (r.kind === "close") return { answer: ["Errore: il nome va bene per più persone: dimmi quale.", fencedStaff(r.candidates.map((p) => `• ${p.name}`).join("\n"))].join("\n") };
+	if (r.kind === "close") return { many: true, answer: ["Errore: il nome va bene per più persone: dimmi quale.", fencedStaff(r.candidates.map((p) => `• ${p.name}`).join("\n"))].join("\n") };
 	return { answer: ["Errore: non trovo questa persona tra il personale. Se è nuova, aggiungila con il nome, il ruolo e il suo orario di lavoro.", fencedStaff(raw.slice(0, STAFF_LIMITS.name))].join("\n") };
 }
 
 /**
  * Which way a day without its year (or a bare weekday) is read: "past", the latest up to today (a
- * day of extra hours, a balance, the start of a malattia); "next", the first from today (a bare
- * weekday: after today, as the first day of someone hired); "nearest",
- * the closer of the two, asked when both are about as far.
+ * day of extra hours, a balance); "recent", the same, but a day without its year landing more than
+ * UNCLEAR days back is asked (the start of a malattia: «dal 25 ottobre» said on the 19th may be
+ * next week); "next", a bare weekday after today (the first day of someone hired), a day without
+ * its year as "nearest"; "nearest", the closer of the two, asked when both are about as far.
  */
-export type Direction = "past" | "next" | "nearest";
+export type Direction = "past" | "recent" | "next" | "nearest";
 
 const WEEKDAY_NAMES: Readonly<Record<string, number>> = { domenica: 0, lunedi: 1, martedi: 2, mercoledi: 3, giovedi: 4, venerdi: 5, sabato: 6 };
 const mondayOf = (day: string) => addDays(day, -((weekdayOf(day) + 6) % 7));
@@ -54,8 +56,8 @@ const theDay = (day: string) => `${day.slice(8, 10) === "08" || day.slice(8, 10)
 /** Two readings about as far (less than this many days of difference) are asked. */
 const UNCLEAR = 60;
 
-/** A day said, and a note when the year read is not this one. */
-export function staffDayNoted(raw: unknown, today: string, dir: Direction = "nearest"): { readonly day: string; readonly note?: string } | Answer {
+/** A day said, a note when the year read is not this one, and whether it came without its year (a date, not a weekday). */
+export function staffDayNoted(raw: unknown, today: string, dir: Direction = "nearest"): { readonly day: string; readonly note?: string; readonly yearless?: true } | Answer {
 	const bad = { answer: ["Errore: non capisco il giorno: dimmelo come «domani», «lunedì», «lunedì scorso» o 03/08/2026.", fencedStaff(String(raw ?? "").slice(0, 40))].join("\n") };
 	if (typeof raw !== "string" || raw.trim() === "" || raw.length > 40) return bad;
 	const t = folded(raw).replace(/^(?:da |dal |dall'|a |al |fino a |fino al |il |l')/, "");
@@ -76,7 +78,7 @@ export function staffDayNoted(raw: unknown, today: string, dir: Direction = "nea
 	const wd = /^([a-z]+)(?: (scorso|scorsa|prossimo|prossima))?$/.exec(t);
 	const n = wd === null ? undefined : WEEKDAY_NAMES[wd[1] as string];
 	if (wd !== null && n !== undefined) {
-		const back = wd[2] === "scorso" || wd[2] === "scorsa" || (wd[2] === undefined && dir === "past");
+		const back = wd[2] === "scorso" || wd[2] === "scorsa" || (wd[2] === undefined && (dir === "past" || dir === "recent"));
 		if (back) {
 			// «lunedì scorso»: the last before today; «lunedì» read back: today too.
 			for (let d = wd[2] === undefined ? 0 : 1; d < 8; d++) if (weekdayOf(addDays(today, -d)) === n) return { day: addDays(today, -d) };
@@ -96,16 +98,21 @@ export function staffDayNoted(raw: unknown, today: string, dir: Direction = "nea
 		const back = readDate(t, today, { rule: "past" }).date;
 		const toNext = daysBetween(today, ahead.date);
 		const toBack = daysBetween(back, today);
+		const which = { answer: `Errore: ${theDay(ahead.date)} è quello già passato (${italianDate(back)}) o quello che viene (${italianDate(ahead.date)})? Dimmelo con l'anno.` };
 		let day = ahead.date;
 		if (dir === "past") day = back;
-		else if (dir === "nearest" && back !== ahead.date) {
-			if (Math.abs(toNext - toBack) < UNCLEAR) return { answer: `Errore: ${theDay(ahead.date)} è quello già passato (${italianDate(back)}) o quello che viene (${italianDate(ahead.date)})? Dimmelo con l'anno.` };
+		else if (dir === "recent") {
+			if (back !== ahead.date && toBack > UNCLEAR) return which;
+			day = back;
+		} else if (back !== ahead.date) {
+			if (Math.abs(toNext - toBack) < UNCLEAR) return which;
 			if (toBack < toNext) day = back;
 		}
 		const r = near(day);
+		if (isAnswer(r)) return r;
 		const year = Number(day.slice(0, 4)) - Number(today.slice(0, 4));
-		if (isAnswer(r) || year === 0) return r;
-		return { day, note: `Ho letto ${theDay(day)} come ${italianDate(day)}, ${year > 0 ? "dell'anno prossimo" : "dell'anno scorso"}: se intendevi un altro anno, dimmelo.` };
+		if (year === 0) return { day, yearless: true };
+		return { day, yearless: true, note: `Ho letto ${theDay(day)} come ${italianDate(day)}, ${year > 0 ? "dell'anno prossimo" : "dell'anno scorso"}: se intendevi un altro anno, dimmelo.` };
 	} catch (error) {
 		if (error instanceof DateError) return bad;
 		throw error;
@@ -134,19 +141,20 @@ function endSaid(to: unknown, first: string, today: string): string | Answer {
 }
 
 /** From and to («dal 3 al 14 agosto» comes as from and to); to before from is asked; «la settimana scorsa» is that whole week. */
-export function rangeSaid(from: unknown, to: unknown, today: string, open = false, dir: Direction = "nearest"): { readonly from: string; readonly to?: string; readonly notes: readonly string[] } | Answer {
+export function rangeSaid(from: unknown, to: unknown, today: string, open = false, dir: Direction = "nearest"): { readonly from: string; readonly to?: string; readonly notes: readonly string[]; readonly yearless?: true } | Answer {
 	const a = staffDayNoted(from ?? "oggi", today, dir);
 	if (isAnswer(a)) return a;
 	const notes = a.note === undefined ? [] : [a.note];
+	const y = a.yearless === true ? { yearless: true as const } : {};
 	if (to === undefined) {
 		if (typeof from === "string" && WEEK_WORDS.test(folded(from))) return { from: a.day, to: addDays(a.day, 6), notes };
-		return open ? { from: a.day, notes } : { from: a.day, to: a.day, notes };
+		return open ? { from: a.day, notes, ...y } : { from: a.day, to: a.day, notes, ...y };
 	}
 	const end = endSaid(to, a.day, today);
 	if (isAnswer(end)) return end;
 	if (end < a.day) return { answer: "Errore: l'ultimo giorno viene prima del primo: dimmeli di nuovo." };
 	if (daysBetween(a.day, end) >= STAFF_LIMITS.absenceDays) return { answer: "Errore: un'assenza dura al più un anno: dividila in due." };
-	return { from: a.day, to: end, notes };
+	return { from: a.day, to: end, notes, ...y };
 }
 
 /** A time said («15», «15:30», «alle 3»: the afternoon from 1 to 7, as a shift would be): «HH:MM». */
@@ -212,11 +220,12 @@ export function reasonSaid(raw: unknown): AltroReason | "health" | "unknown" {
 	const t = folded(raw);
 	// «Malattia del figlio» is a congedo, not the person's own health.
 	if (/\bfigli[oa]?\b|\bbambin[oa]\b/.test(t) && /malat|febbre|sta male|influenz/.test(t)) return "congedo malattia figlio";
+	// A leave by law names words that are health stems («maternità», «104 per disabilità»): read first.
+	if (/\b104\b/.test(t)) return "L.104";
+	if (/congedo parentale|maternita|paternita|parentale|\bcongedo\b/.test(t) && !/malat/.test(t)) return "congedo parentale";
 	if (looksHealth(t)) return "health";
 	const list: [RegExp, AltroReason][] = [
 		[/\blutto\b|decess|funeral|\bmort[oae]\b|scompars/, "lutto"],
-		[/\b104\b/, "L.104"],
-		[/congedo parentale|maternita|paternita|parentale|\bcongedo\b/, "congedo parentale"],
 		[/matrimon|nozze|si sposa/, "matrimoniale"],
 		[/donazion|dona(?:re)? (?:il )?sangue|\bavis\b/, "donazione sangue"],
 		[/\bstudio\b|esami? universitar|\besame\b|diritto allo studio|150 ore/, "studio"],

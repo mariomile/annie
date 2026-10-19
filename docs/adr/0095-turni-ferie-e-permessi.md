@@ -36,9 +36,24 @@ Una piccola attività con due o tre dipendenti tiene i turni e le assenze su un 
 - **Appuntamenti**: «la risorsa nel riquadro domani dalle 15 non c'è: con questa risorsa non ho fissato niente», con il nome nel recinto e mai il tipo; prima un'altra risorsa alla stessa ora, poi gli orari vicini della stessa. Bloccano anche i turni: chi ha la settimana solita e un giorno di riposo, o è fuori dal turno, non si prenota in quelle ore. Con `staff.json` illeggibile, fissare e spostare lo dicono in una riga.
 - **Saldi**: «permessi (ROL ed ex festività insieme)», una riga più leggera, e cosa manca detto («quante gliene spettano non me l'hai detto»).
 
+## Verifica di chiusura (settimana 75)
+
+- **Dati sanitari, controllati quando si dicono**: le parole sanitarie sono radici cercate dentro le parole (terapi, patia, chirurg, psic, ricover, oncolog, diabet, malat, febbre, medic, certificato e le altre in `staff.ts`), più tac, hiv e aids come parole intere. Simpatia, empatia, antipatia e telepatia non contano. In un ruolo passano i mestieri fisioterapista, farmacista, psicologa/o, medico/a e autista. Il controllo vale per il ruolo, la nota di un turno e quella delle ore in più (corte: al più 80 caratteri), solo quando la persona li dice: la lettura del file non lo rifà, così un `staff.json` salvato prima non diventa illeggibile. I nomi non si controllano (Medici è un cognome). Le assenze non hanno più note: la lista chiusa dei motivi basta, e una nota detta non si salva e lo dice. Nei motivi, «maternità» e «104 per disabilità» sono il congedo e la L.104 prima del controllo sanitario; «congedo per malattia» resta sanitario.
+- **Il brief non dice malattia**: la domanda è «Marco Neri è assente da lunedì 19 ottobre, fine non detta: sai fino a quando?», e fuori dal recinto «una domanda su un'assenza senza fine». Il protocollo si chiede solo nella chat della persona, quando dice la fine (o cambia la malattia) e il protocollo manca.
+- **Una persona si aggiunge solo quando è detta nuova** (`new`), o quando se ne dice qualcosa (ruolo, orario, ore, primo giorno…) e nessuno ha quel nome; un nome da solo si cerca, e se non c'è: «non trovo questa persona». Un nome che va bene per più persone lo dice, invece di aggiungerne una.
+- **Il primo giorno di chi è assunto**: un giorno della settimana è il prossimo; un giorno e mese il più vicino, con la domanda quando è in dubbio; l'anno, quando non è questo, è detto.
+- **Ferie e permessi già passati**: detti senza l'anno e caduti più di una settimana fa, si chiede: «Il 2-5 giugno è già passato: le segno come ferie già fatte, o intendi giugno 2027?»; con il sì (`past`) si segnano.
+- **L'inizio di una malattia** senza l'anno si legge all'indietro, ma se cade più di 60 giorni fa si chiede l'anno («dal 25 ottobre», detto il 19, può essere la settimana dopo).
+- **Uscita**: «non lavora più da venerdì» è `archive` con `from`, il primo giorno fuori: l'ultimo in forza è il giorno prima. `to` resta l'ultimo giorno.
+- **Cancellare**: il controllo è legato alla scheda e a ogni assenza (id, cambio, annullamento), ora in più e turno come sono, non ai conteggi; la proposta e la risposta dicono che i file già salvati in `personale/` hanno ancora la persona.
+- **Malattia su ferie e un'altra assenza**: le ferie le accorcerebbe, ma dice quale altra assenza blocca e non cambia niente.
+- **Il mese** conta i totali (malattia, permessi, ferie, altre) solo nei giorni in forza.
+- **Il personale illeggibile** negli appuntamenti si dice una volta al giorno, con lo stesso claim degli orari che mancano (una chiamata ha un claim solo).
+
 ## Scelte aperte
 
 - I buchi liberi dell'agenda degli appuntamenti non tolgono le assenze né le ore fuori turno (fissare e gli orari liberi sì).
 - Il riepilogo del mese in corso si ferma a oggi invece di mostrare il resto come previsto.
 - La settimana delle ferie a 5 giorni conta i giorni lavorativi soliti della persona tra lunedì e venerdì: chi lavora da martedì a sabato non consuma ferie il sabato; a 6 giorni sì.
 - Ferie a ore (non a giorni) e residui degli anni prima automatici: non ancora.
+- Il controllo sanitario è grezzo per scelta: radici come «certificato» o «medic» fermano anche una nota innocua («porta il certificato del corso»); la risposta lo dice e basta riformulare. Le malattie nel riepilogo del mese mostrano le date intere del certificato, anche fuori dai giorni in forza; i totali no.

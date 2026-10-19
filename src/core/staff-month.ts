@@ -74,16 +74,19 @@ export function monthDetail(d: StaffDay, extras: readonly ExtraHours[], first: s
 				const festivo = festivoOn(day);
 				return { day, planned: p?.planned ?? [], closed: plan?.closed ?? false, minutes: p === undefined ? 0 : minutesIn(p.hours), codes, extra, ...(festivo === undefined ? {} : { festivo }) };
 			});
-			const mine = d.absences.filter((a) => isActive(a) && a.person === person.id && a.from <= last && lastDay(a, until) >= first);
+			// The totals count only the days the person is on the staff: before the hiring or after the last day, nothing.
+			const lo = person.from !== undefined && person.from > first ? person.from : first;
+			const hi = person.to !== undefined && person.to < last ? person.to : last;
+			const mine = d.absences.filter((a) => isActive(a) && a.person === person.id && a.from <= hi && lastDay(a, until) >= lo);
 			const sum = (f: (a: Absence) => number, kind: Absence["kind"], hourly?: boolean) => mine.filter((a) => a.kind === kind && (hourly === undefined || (a.start !== undefined) === hourly)).reduce((n, a) => n + f(a), 0);
-			const inMonth = (a: Absence) => a.from >= first && a.from <= last;
+			const inMonth = (a: Absence) => a.from >= lo && a.from <= hi;
 			const altre = new Map<AltroReason, { days: number; minutes: number; spans: { from: string; to: string }[] }>();
 			for (const a of mine.filter((x) => x.kind === "altro")) {
 				const reason = a.reason ?? "altro";
 				const g = altre.get(reason) ?? { days: 0, minutes: 0, spans: [] };
 				if (a.start !== undefined) g.minutes += inMonth(a) ? permessoMinutes(person, a, d.shifts, d.settings) : 0;
-				else g.days += absenceDays(person, a, first, last, until, rule);
-				g.spans.push({ from: a.from > first ? a.from : first, to: lastDay(a, until) < last ? lastDay(a, until) : last });
+				else g.days += absenceDays(person, a, lo, hi, until, rule);
+				g.spans.push({ from: a.from > lo ? a.from : lo, to: lastDay(a, until) < hi ? lastDay(a, until) : hi });
 				altre.set(reason, g);
 			}
 			const extraAll = rows.reduce((n, r) => n + r.extra, 0);
@@ -91,10 +94,10 @@ export function monthDetail(d: StaffDay, extras: readonly ExtraHours[], first: s
 				person,
 				workedDays: rows.filter((r) => r.minutes > 0).length,
 				workedMinutes: rows.reduce((n, r) => n + r.minutes, 0),
-				ferie: sum((a) => absenceDays(person, a, first, last, until, rule), "ferie"),
+				ferie: sum((a) => absenceDays(person, a, lo, hi, until, rule), "ferie"),
 				permesso: sum((a) => (inMonth(a) ? permessoMinutes(person, a, d.shifts, d.settings) : 0), "permesso"),
-				malattia: sum((a) => calendarDays(a, first, last, until), "malattia"),
-				altro: sum((a) => absenceDays(person, a, first, last, until, rule), "altro", false),
+				malattia: sum((a) => calendarDays(a, lo, hi, until), "malattia"),
+				altro: sum((a) => absenceDays(person, a, lo, hi, until, rule), "altro", false),
 				altroMinutes: sum((a) => (inMonth(a) ? permessoMinutes(person, a, d.shifts, d.settings) : 0), "altro", true),
 				extra: extraAll,
 				extraFestivo: rows.filter((r) => r.festivo !== undefined).reduce((n, r) => n + r.extra, 0),

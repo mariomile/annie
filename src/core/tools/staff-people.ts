@@ -16,7 +16,7 @@ import { looksHealth, type Person, personId, STAFF_LIMITS, StaffError } from "..
 import type { StaffBook, StaffStore } from "../staff-store.ts";
 import { cleanText, isProblem } from "../text-input.ts";
 import { requirePersonFor } from "../turn-origin.ts";
-import { decimalSaid, isAnswer, personSaid, staffDay, vagueWeek, weekOfPerson } from "./staff-input.ts";
+import { decimalSaid, isAnswer, personSaid, staffDay, staffDayNoted, vagueWeek, weekOfPerson } from "./staff-input.ts";
 import { fencedStaff, personRow, plainDay } from "./staff-render.ts";
 
 export type Answer = { text: string; count: number };
@@ -36,7 +36,11 @@ const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).dige
 
 /** «Intendi questa persona?»: a name only close to one, asked; nothing written. */
 export const closeAsk = (p: Person, creating = false): string =>
-	["Intendi questa persona? Non si chiama esattamente come è stata detta:", fencedStaff(p.name), `Se chi ti scrive dice di sì, ripeti con il nome scritto come qui.${creating ? " Se invece è una persona nuova con un nome simile, ripeti con new true." : ""}`].join("\n");
+	["Intendi questa persona? Non si chiama esattamente come è stata detta:", fencedStaff(p.name), `Se chi ti scrive dice di sì, ripeti con il nome scritto come qui.${creating ? " Se invece è una persona nuova con un nome simile, ripeti dicendo che è una persona nuova." : ""}`].join("\n");
+
+/** What of a person can be said: one of these makes a name not found a new person. */
+const PERSON_FIELDS = ["role", "weekly_hours", "ferie_days", "rol_hours", "week", "ferie_left", "rol_left", "resource", "from", "to"] as const;
+const NOT_FOUND = "Errore: non trovo questa persona tra il personale. Se è nuova, dimmi almeno il ruolo, l'orario o da quando lavora.";
 
 const NO_RESOURCE = /^(?:nessuna|nessuno|niente|no|-)?$/i;
 
@@ -48,7 +52,7 @@ export function createPeopleOps(kit: StaffKit) {
 		const r = cleanText(raw, STAFF_LIMITS.role, "il ruolo");
 		if (isProblem(r)) return `Errore: ${r.problem}.`;
 		if (r === undefined) return {};
-		if (looksHealth(r)) return { note: HEALTH_FIELD("Il ruolo") };
+		if (looksHealth(r, true)) return { note: HEALTH_FIELD("Il ruolo") };
 		if (/[,;]/.test(r) || r.split(/\s+/).length > 3) return "Errore: il ruolo è un nome di mestiere corto, come «commessa» o «parrucchiere»: al più tre parole, senza virgole.";
 		return { role: r };
 	}
@@ -60,6 +64,9 @@ export function createPeopleOps(kit: StaffKit) {
 		const creating = args.new === true;
 		const found = b.people.length === 0 || creating ? undefined : personSaid(said, b.people);
 		if (found !== undefined && !isAnswer(found) && found.close === true) return { text: closeAsk(found.person, true), count: 0 };
+		if (found !== undefined && isAnswer(found) && found.many === true) return { text: found.answer, count: 0 };
+		// A person is added only when said new, or when something of theirs is said and nobody has that name: a name alone is a question.
+		if (!creating && (found === undefined || isAnswer(found)) && !PERSON_FIELDS.some((k) => args[k] !== undefined)) return { text: isAnswer(found) ? found.answer : NOT_FOUND, count: 0 };
 		const current = found === undefined || isAnswer(found) ? undefined : found.person;
 		const fields: Record<string, unknown> = {};
 		const unset: string[] = [];
@@ -114,10 +121,11 @@ export function createPeopleOps(kit: StaffKit) {
 		}
 		for (const [arg, key] of [["from", "from"], ["to", "to"]] as const) {
 			if (args[arg] === undefined) continue;
-			// «assumo Luca da lunedì»: the Monday to come.
-			const day = staffDay(args[arg], at.day, arg === "from" && current === undefined ? "next" : "nearest");
+			// «assumo Luca da lunedì»: the Monday to come; «dal 3 novembre»: the nearer, asked when unclear.
+			const day = staffDayNoted(args[arg], at.day, arg === "from" && current === undefined ? "next" : "nearest");
 			if (isAnswer(day)) return { text: day.answer, count: 0 };
-			fields[key] = day;
+			if (day.note !== undefined) notes.push(day.note);
+			fields[key] = day.day;
 		}
 		const from = (fields.from ?? current?.from) as string | undefined;
 		const to = (fields.to ?? current?.to) as string | undefined;
@@ -164,15 +172,17 @@ export function createPeopleOps(kit: StaffKit) {
 		return { text: [head, fencedStaff(saved === undefined ? "" : personRow(saved)), ...notes, ...(asks.length === 0 ? [] : [asks.join(" ")]), ...later].join("\n"), count: 1 };
 	}
 
-	/** Someone who left: the last day (default today); kept for the summaries. */
+	/** Someone who left: the last day (to, default today) or the first day gone (from); kept for the summaries. */
 	async function archive(args: Record<string, unknown>, ctx: ToolContext, b: StaffBook, at: Now): Promise<Answer> {
 		const refused = requirePersonFor(ctx, "archivio la persona");
 		if (refused !== undefined) return { text: refused, count: 0 };
 		const w = personSaid(args.person, b.people);
 		if (isAnswer(w)) return { text: w.answer, count: 0 };
 		if (w.close === true) return { text: closeAsk(w.person), count: 0 };
-		const day = staffDay(args.to ?? args.date ?? "oggi", at.day, "nearest");
-		if (isAnswer(day)) return { text: day.answer, count: 0 };
+		// «non lavora più da venerdì»: from is the first day gone, the last is the day before; to (or date) is the last.
+		const said = args.from !== undefined ? staffDay(args.from, at.day, "nearest") : staffDay(args.to ?? args.date ?? "oggi", at.day, "nearest");
+		if (isAnswer(said)) return { text: said.answer, count: 0 };
+		const day = args.from !== undefined ? addDays(said, -1) : said;
 		if (w.person.from !== undefined && day < w.person.from) return { text: "Errore: l'ultimo giorno viene prima dell'assunzione: dimmelo di nuovo.", count: 0 };
 		const by = marker(ctx);
 		await ctx.step("archive", async () => {
@@ -189,8 +199,18 @@ export function createPeopleOps(kit: StaffKit) {
 		};
 	}
 
-	/** What a deletion takes along, for the check: bound to the person and to what is there now. */
+	/** What a deletion takes along, counted for the words. */
 	const takes = (b: Pick<StaffBook, "absences" | "extras" | "shifts">, id: string) => ({ absences: b.absences.filter((a) => a.person === id).length, extras: b.extras.filter((e) => e.person === id).length, shifts: b.shifts.filter((s) => s.person === id).length });
+	/** The check of a deletion: bound to the person's card and to each thing of theirs as it is now (an absence changed or cancelled, a shift said again, changes it). */
+	const deleteCheck = (b: Pick<StaffBook, "people" | "absences" | "extras" | "shifts">, id: string) =>
+		hash([
+			"delete",
+			id,
+			b.people.find((p) => p.id === id)?.at,
+			b.absences.filter((a) => a.person === id).map((a) => [a.id, a.at, a.changed?.at, a.cancelled?.at]),
+			b.extras.filter((e) => e.person === id).map((e) => [e.callId, e.day, e.minutes, e.at]),
+			b.shifts.filter((x) => x.person === id).map((x) => [x.day, x.at]),
+		]);
 
 	/** Delete a person and what is theirs: a proposal with a check first; never while a resource of the appointments is theirs. */
 	async function remove(args: Record<string, unknown>, ctx: ToolContext, b: StaffBook): Promise<Answer> {
@@ -202,10 +222,10 @@ export function createPeopleOps(kit: StaffKit) {
 		const p = w.person;
 		if (p.resource !== undefined) return { text: ["Non la cancello: è ancora la risorsa degli appuntamenti nel riquadro. Prima togli il legame (dimmi che non è più una risorsa degli appuntamenti), poi la cancello.", fencedStaff(`${p.name}: «${p.resource}»`)].join("\n"), count: 0 };
 		const t = takes(b, p.id);
-		const check = hash(["delete", p.id, t]);
+		const check = deleteCheck(b, p.id);
 		const parts = [t.absences === 0 ? undefined : `${t.absences} ${t.absences === 1 ? "assenza" : "assenze"}`, t.extras === 0 ? undefined : `${t.extras} ${t.extras === 1 ? "giorno" : "giorni"} di ore in più`, t.shifts === 0 ? undefined : `${t.shifts} ${t.shifts === 1 ? "turno cambiato" : "turni cambiati"}`].filter((x) => x !== undefined);
 		const what = parts.length === 0 ? "" : ` con ${parts.join(", ")}`;
-		const ask = [`Cancello la persona nel riquadro${what}? Non si torna indietro, e i riepiloghi dei mesi passati non l'avranno più: se vuoi solo che non sia più nei turni, meglio archiviarla con l'ultimo giorno.`, fencedStaff(personRow(p)), `Se chi ti scrive dice di sì, ripeti con la conferma e il controllo ${check}.`].join("\n");
+		const ask = [`Cancello la persona nel riquadro${what}? Non si torna indietro, e i riepiloghi dei mesi passati non l'avranno più: se vuoi solo che non sia più nei turni, meglio archiviarla con l'ultimo giorno. I file già salvati nella cartella personale/ restano come sono.`, fencedStaff(personRow(p)), `Se chi ti scrive dice di sì, ripeti con la conferma e il controllo ${check}.`].join("\n");
 		if (args.confirm !== true) return { text: ask, count: 0 };
 		const given = typeof args.check === "string" ? args.check.trim().toLowerCase() : "";
 		if (given !== check) return { text: `Errore: il controllo non torna: non ho cancellato niente.\n${ask}`, count: 0 };
@@ -213,12 +233,12 @@ export function createPeopleOps(kit: StaffKit) {
 			store.update(ctx.callId, (state) => {
 				const now = state.people.find((x) => x.id === p.id);
 				if (now === undefined) return state;
-				if (now.resource !== undefined || hash(["delete", p.id, takes(state, p.id)]) !== check) throw new StaffError("intanto i dati di questa persona sono cambiati: non ho cancellato niente. Chiedi di nuovo la proposta");
+				if (now.resource !== undefined || deleteCheck(state, p.id) !== check) throw new StaffError("intanto i dati di questa persona sono cambiati: non ho cancellato niente. Chiedi di nuovo la proposta");
 				return { ...state, people: state.people.filter((x) => x.id !== p.id), absences: state.absences.filter((a) => a.person !== p.id), extras: state.extras.filter((e) => e.person !== p.id), shifts: state.shifts.filter((s) => s.person !== p.id) };
 			});
 			return true;
 		});
-		return { text: "Fatto: ho cancellato la persona, con le sue assenze, le ore in più e i turni cambiati.", count: 1 };
+		return { text: "Fatto: ho cancellato la persona, con le sue assenze, le ore in più e i turni cambiati. I file già salvati nella cartella personale/ (turni, riepiloghi per la consulente) la contengono ancora: se non servono più, cancellali tu.", count: 1 };
 	}
 
 	return { person, archive, remove };

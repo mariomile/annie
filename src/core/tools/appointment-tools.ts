@@ -68,6 +68,7 @@ const AGENT_REFUSAL = "Gli appuntamenti dicono clienti, servizi e orari: a un al
 const BRIEF_NOTHING = "Appuntamenti: niente da segnalare.";
 const BRIEF_BROKEN = "Appuntamenti: il file non si legge, guarda il runbook.";
 const FORCE_OFFER = "Se vuoi fissarlo lo stesso, dimmi «fissalo lo stesso».";
+const STAFF_BROKEN = "Attenzione: il file del personale non si legge, quindi non so se chi fa l'appuntamento è assente o di riposo.";
 const HOURS_NOTE = "Non conosco ancora gli orari di apertura, quindi non ho controllato che tu sia aperto: dimmeli in una riga, come «mar-sab 9-13 e 14-19, chiuso domenica e lunedì».";
 const READ_OPS: readonly AppointmentOp[] = ["agenda", "free_slots", "history", "reminders"];
 const ORDINALS = ["prima", "seconda", "terza", "quarta", "quinta", "sesta", "settima", "ottava", "nona", "decima"];
@@ -259,8 +260,6 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		return undefined;
 	}
 
-	const staffWarning = () => (options.staffBroken?.() === true ? ["Attenzione: il file del personale non si legge, quindi non so se chi fa l'appuntamento è assente o di riposo."] : []);
-
 	function bookedAnswer(a: Appointment, b: AppointmentBook, today: string, notes: readonly string[]): string {
 		const missed = noShows(b, a.client);
 		const last = missed.at(-1);
@@ -268,18 +267,21 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			`Fatto: ho fissato l'appuntamento ${dayWords(a.day, today)} dalle ${clockOf(minutesOf(a.start))} alle ${clockOf(minutesOf(a.start) + a.minutes)}. Chi e per cosa è nel riquadro.`,
 			fencedAppointments([appointmentRow(a), ...(options.calendar === true ? [`Per il calendario: inizio ${a.day}T${a.start}, fine ${a.day}T${endOf(a)} (${timeZone})`] : [])].join("\n")),
 			...notes,
-			...staffWarning(),
 			...(missed.length >= 3 && last !== undefined ? [`Attenzione: questo cliente non si è presentato ${missed.length} volte (l'ultima il ${dateOnly(last.day)}).`] : []),
 			"Vuoi mandare al cliente un messaggio di conferma? Lo preparo io, con il link per WhatsApp se ha il cellulare nella scheda.",
 			...(options.calendar === true ? ["Se lo vuoi anche nel tuo calendario Google, lo aggiungo con google_calendar_create (inizio e fine nel riquadro)."] : []),
 		].join("\n");
 	}
 
-	/** The missing hours said once a day (claimed), on a call that books. */
-	async function hoursNote(ctx: ToolContext, settings: AppointmentSettings | undefined, today: string): Promise<string[]> {
-		if (settings?.week !== undefined) return [];
-		const said = await ctx.step("hours-note", async () => store.claim(ctx.callId, today, ["hours"]));
-		return said.includes("hours") ? [HOURS_NOTE] : [];
+	/**
+	 * Said once a day (claimed together: a call claims once, so one claim for both), on a call that
+	 * books or moves: the missing opening hours (only on a booking), the staff file not read.
+	 */
+	async function onceNotes(ctx: ToolContext, settings: AppointmentSettings | undefined, today: string, booking: boolean): Promise<string[]> {
+		const wanted = [...(booking && settings?.week === undefined ? ["hours"] : []), ...(options.staffBroken?.() === true ? ["staff-broken"] : [])];
+		if (wanted.length === 0) return [];
+		const said = await ctx.step("once-notes", async () => store.claim(ctx.callId, today, wanted));
+		return [...(said.includes("hours") ? [HOURS_NOTE] : []), ...(said.includes("staff-broken") ? [STAFF_BROKEN] : [])];
 	}
 
 	async function book(args: Record<string, unknown>, ctx: ToolContext, b: AppointmentBook, at: Now): Promise<Answer> {
@@ -361,7 +363,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			...(client.fresh === true ? ["Il cliente non è tra le schede né tra gli appuntamenti: l'ho scritto come detto. Se vuoi, gli faccio la scheda con il cellulare, per i messaggi."] : []),
 			...(force ? ["L'ho fissato lo stesso, come mi hai detto, anche se si sovrappone o è fuori orario."] : []),
 			...when.notes,
-			...(await hoursNote(ctx, settings, today)),
+			...(await onceNotes(ctx, settings, today, true)),
 		];
 		return { text: bookedAnswer(made, after, today, extra), count: 1 };
 	}
@@ -372,7 +374,6 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			`Fatto: ho spostato l'appuntamento da ${whenWords(fromDay, fromStart, today)} a ${whenWords(after.day, after.start, today)} (fino alle ${clockOf(minutesOf(after.start) + after.minutes)}). Chi e per cosa è nel riquadro.`,
 			fencedAppointments(appointmentRow(after)),
 			...notes,
-			...staffWarning(),
 			"Vuoi mandare al cliente il messaggio con il nuovo orario? Lo preparo io.",
 			...(options.calendar === true ? ["Se era anche nel calendario Google, va spostato anche lì."] : []),
 		].join("\n");
@@ -415,7 +416,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			return true;
 		});
 		const after = store.read().appointments.find((x) => x.id === a.id) as Appointment;
-		return { text: movedAnswer(after, at.day, when.notes), count: 1 };
+		return { text: movedAnswer(after, at.day, [...when.notes, ...(await onceNotes(ctx, b.settings, at.day, false))]), count: 1 };
 	}
 
 	function closedAnswer(op: "cancel" | "no_show" | "done", after: readonly Appointment[], b: AppointmentBook, today: string): string {

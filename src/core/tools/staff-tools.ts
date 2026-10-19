@@ -62,7 +62,7 @@ const DESCRIPTION = [
 	"Il personale di una piccola attività: le persone che ci lavorano (non gli utenti di Annie), il loro orario di solito, ferie, permessi, malattia, i turni, il riepilogo per la consulente del lavoro. Not the appointments with clients (appointments), not the agents of the board, not the people who use Annie. «chiudo per ferie dal 10 al 20 agosto» is the business closing: appointments settings, not staff.",
 	"What the person says → op: «Giulia è in ferie dal 3 al 14 agosto» → absence with person, kind ferie, from, to (half mattina/pomeriggio for half a day); «Marco domani ha un permesso dalle 15» → absence kind permesso, from, start (end when said); «Marco è in malattia da oggi» → absence kind malattia, from (to only when said; protocol only the certificate's number: never a diagnosis, never ask for one); lutto, congedo parentale, «malattia del figlio» (reason congedo malattia figlio), matrimoniale, L.104 (by the day, or by the hour with start and end), donazione sangue, studio, sindacale, non retribuito → kind altro with reason from that list. «sposta le ferie di Giulia» → change; «annulla il permesso di Marco» → cancel (with on, the day). «Marco ieri ha fatto 2 ore in più» → extra with person, date, hours. «sabato Giulia fa 9-13» → shift with person, date, hours («riposo» for a day off). These only on the person's own word.",
 	"«chi lavora sabato?» → who with date; «fammi i turni della prossima settimana» → shifts with date (a day of that week); «quante ferie le restano a Giulia?» → balance with person (an estimate: say so); «chi è in ferie ad agosto?» → absences with period; «mandami il riepilogo ore di ottobre per la consulente del lavoro» → summary with month, then export what summary (CSV and PDF in personale/): never sent; offer google_mail_send with the file (it asks its approval). Turni as a file → export what shifts.",
-	"«assumo Luca da lunedì, 20 ore, mattina» → person with person (a first name is enough), from (the first day), weekly_hours, week as said: Annie asks what is missing. person: «Giulia Verdi, commessa, 40 ore, lun-ven 9-13 e 14-18, 26 giorni di ferie e 72 ore di permessi; le restano 12 giorni di ferie» → person with name, role (a short job title), weekly_hours, week (one line), ferie_days, rol_hours, ferie_left, rol_left (as_of: the day of that balance); resource: her name in the appointments («nessuna» takes it off); name: a new full name; new true for a new person whose name is like another's. «Luca non lavora più da noi da venerdì» → archive with person and to. Deleting a person (delete) shows a proposal: only after the person's yes repeat with confirm true and the check. A malattia in the ferie: Annie proposes to shorten them; on the yes repeat with confirm true and the check.",
+	"«assumo Luca da lunedì, 20 ore, mattina» → person with person (a first name is enough), from (the first day), weekly_hours, week as said: Annie asks what is missing. person: «Giulia Verdi, commessa, 40 ore, lun-ven 9-13 e 14-18, 26 giorni di ferie e 72 ore di permessi; le restano 12 giorni di ferie» → person with name, role (a short job title), weekly_hours, week (one line), ferie_days, rol_hours, ferie_left, rol_left (as_of: the day of that balance); resource: her name in the appointments («nessuna» takes it off); name: a new full name; new true for a new person («assumo», «è arrivata», a name like another's): without it, a name with nothing else said is only looked up. «Luca non lavora più da noi da venerdì» → archive with person and from (the first day he does not work: the last is the day before); «il suo ultimo giorno è venerdì» → archive with person and to. Ferie or a permesso on days more than a week ago said without the year: Annie asks if they are already taken; on «sì, già fatte» repeat with past true. Deleting a person (delete) shows a proposal: only after the person's yes repeat with confirm true and the check. A malattia in the ferie: Annie proposes to shorten them; on the yes repeat with confirm true and the check.",
 	"settings: monthly true when ferie and permessi accrue month by month; ferie_week 5 or 6 (the days a week ferie are counted on). summary of the brief: who with compact true. Never say a reference (PE-…, AS-…) to the person: name the person.",
 ].join(" ");
 
@@ -71,6 +71,20 @@ const BRIEF_NOTHING = "Personale: niente da segnalare.";
 const BRIEF_BROKEN = "Personale: il file non si legge, guarda il runbook.";
 const HEALTH_REASON = "Il motivo non lo scrivo da nessuna parte, è un dato sanitario: mi basta il numero di protocollo del certificato, quando ce l'hai, che serve alla consulente.";
 const BAD_PROTOCOL = "Questo non sembra un numero di protocollo (sono solo cifre): non l'ho salvato. Quando hai il certificato, dimmi il numero.";
+const elides = (day: string) => day.slice(8, 10) === "08" || day.slice(8, 10) === "11";
+const monthOfDay = (day: string) => MONTH_NAMES[Number(day.slice(5, 7)) - 1] as string;
+const dayMonth = (day: string) => `${Number(day.slice(8, 10))} ${monthOfDay(day)}`;
+/** Ferie or a permesso said without the year, read more than a week back: asked, never guessed. «Il 2-5 giugno è già passato: …». */
+function pastAsk(kind: "ferie" | "permesso", from: string, to: string): string {
+	const the = elides(from) ? "L'" : "Il ";
+	const when = from === to ? `${the}${dayMonth(from)}` : from.slice(0, 7) === to.slice(0, 7) ? `${the}${Number(from.slice(8, 10))}-${dayMonth(to)}` : `Il periodo ${elides(from) ? "dall'" : "dal "}${dayMonth(from)} ${elides(to) ? "all'" : "al "}${dayMonth(to)}`;
+	const what = kind === "ferie" ? "le segno come ferie già fatte" : "lo segno come permesso già fatto";
+	return `${when} è già passato: ${what}, o intendi ${monthOfDay(from)} ${Number(from.slice(0, 4)) + 1}?`;
+}
+/** A note said now: short (a file may hold up to STAFF_LIMITS.note, from before). */
+const NOTE_SAID = 80;
+const PROTOCOL_ASK = "Quando hai il certificato, dimmi il numero di protocollo: serve alla consulente.";
+const NO_ABSENCE_NOTE = "Le note sulle assenze non le scrivo: bastano il tipo, i giorni e, per le altre assenze, il motivo dalla lista.";
 const ESTIMATE = "stima: il dato ufficiale ce l'ha la consulente";
 const REASONS = ALTRO_REASONS.filter((r) => r !== "altro").join(", ");
 
@@ -112,12 +126,13 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 		return `Personale: oggi ${absentCount(offOn(b, at.day).length)}, domani ${absentCount(offOn(b, addDays(at.day, 1)).length)}. ${AGENT_NOTE}`;
 	}
 
-	/** A note said with an absence, a shift or extra hours: kept unless it looks like health data. */
+	/** A short note said with a shift or extra hours (at most NOTE_SAID characters): kept unless it looks like health data. */
 	function noteSaid(raw: unknown, notes: string[]): string | undefined | { error: string } {
 		if (raw === undefined) return undefined;
 		const n = cleanText(raw, STAFF_LIMITS.note, "la nota");
 		if (isProblem(n)) return { error: `Errore: ${n.problem}.` };
 		if (n === undefined) return undefined;
+		if (n.length > NOTE_SAID) return { error: `Errore: la nota è lunga: tienila in poche parole (al più ${NOTE_SAID} caratteri), come «copre la collega».` };
 		if (looksHealth(n)) {
 			notes.push(HEALTH_FIELD("La nota"));
 			return undefined;
@@ -125,7 +140,7 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 		return n;
 	}
 
-	/** The absence as said, checked: kind, days, times, protocol, reason, note. Notes for the answer (the health ones, a year read). */
+	/** The absence as said, checked: kind, days, times, protocol, reason (no free note: an old one is dropped on a change). Notes for the answer (the health ones, a year read). */
 	function absenceSaid(args: Record<string, unknown>, p: Person, at: Now, base?: Absence): { absence: Omit<Absence, "id" | "callId" | "by" | "at">; notes: string[] } | string {
 		const kind = (args.kind ?? base?.kind) as AbsenceKind;
 		if (!KINDS.includes(kind)) return `Errore: l'assenza è ferie, permesso, malattia o altro (${REASONS}).`;
@@ -139,6 +154,7 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 			if (isAnswer(read)) return read.answer;
 			if (read.note !== undefined) notes.push(read.note);
 			const day = read.day;
+			if (kind === "permesso" && read.yearless === true && args.past !== true && day < addDays(at.day, -7)) return pastAsk(kind, day, day);
 			const start = args.start !== undefined ? staffTime(args.start) : kindChanged ? undefined : base?.start;
 			if (start === undefined) return `Errore: dimmi da che ora è ${kind === "permesso" ? "il permesso" : "l'assenza"}.`;
 			if (isAnswer(start)) return start.answer;
@@ -150,8 +166,9 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 		} else {
 			// The start of a malattia without its year is past: it has begun.
 			const keep = !changedDays && base !== undefined && !(kindChanged && base.to === undefined && kind !== "malattia");
-			const r = keep ? { from: base.from, ...(base.to === undefined ? {} : { to: base.to }), notes: [] as string[] } : rangeSaid(args.from ?? base?.from, args.to ?? (kind === "malattia" || base === undefined ? undefined : (base.to ?? args.from ?? base.from)), at.day, kind === "malattia", kind === "malattia" ? "past" : "nearest");
+			const r = keep ? { from: base.from, ...(base.to === undefined ? {} : { to: base.to }), notes: [] as string[] } : rangeSaid(args.from ?? base?.from, args.to ?? (kind === "malattia" || base === undefined ? undefined : (base.to ?? args.from ?? base.from)), at.day, kind === "malattia", kind === "malattia" ? "recent" : "nearest");
 			if (isAnswer(r)) return r.answer;
+			if (kind === "ferie" && !keep && r.yearless === true && args.past !== true && r.from < addDays(at.day, -7)) return pastAsk(kind, r.from, r.to ?? r.from);
 			notes.push(...r.notes);
 			Object.assign(out, { from: r.from, ...(r.to === undefined ? {} : { to: r.to }) });
 			// A half day stays only on ferie of the same days: a kind or days changed drop it.
@@ -177,9 +194,7 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 				} else if (!kindChanged && base?.reason !== undefined) out.reason = base.reason;
 				else out.reason = "altro";
 			} else if (args.reason !== undefined) notes.push(`Il motivo lo tengo solo per le altre assenze (${REASONS}): per ferie e permessi non serve.`);
-			const n = args.note !== undefined ? noteSaid(args.note, notes) : kindChanged ? undefined : base?.note;
-			if (typeof n === "object") return n.error;
-			if (n !== undefined) out.note = n;
+			if (args.note !== undefined) notes.push(NO_ABSENCE_NOTE);
 			if (args.protocol !== undefined) notes.push("Il numero di protocollo vale solo per la malattia: non l'ho salvato.");
 		}
 		return { absence: out as Omit<Absence, "id" | "callId" | "by" | "at">, notes };
@@ -270,7 +285,11 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 		if (typeof said === "string") return { text: said, count: 0 };
 		const clashes = b.absences.filter((x) => isActive(x) && x.person === p.id && overlaps(x, said.absence));
 		if (said.absence.kind === "malattia" && clashes.length > 0 && clashes.every((x) => x.kind === "ferie")) return sickInFerie(args, ctx, p, said, clashes, at);
-		const clash = clashes[0];
+		// A malattia over ferie and something else: the ferie it could shorten, the rest blocks; say which.
+		const blocking = said.absence.kind === "malattia" ? clashes.filter((x) => x.kind !== "ferie") : clashes;
+		const clash = blocking[0];
+		if (clash !== undefined && blocking.length < clashes.length)
+			return { text: [`Non l'ho segnata: le ferie di quei giorni le accorcerei, ma c'è anche un'altra assenza che le blocca (${absenceWords(clash, at.day)}), e quella la malattia non la cambia da sola. Annulla o cambia prima quella (nel riquadro), poi ripeti la malattia e ti propongo come accorciare le ferie.`, fencedStaff(blocking.map((x) => absenceRow(x, p, at.day)).join("\n"))].join("\n"), count: 0 };
 		if (clash !== undefined) return { text: [`Non l'ho segnata: si sovrappone a un'assenza già segnata (${absenceWords(clash, at.day)}). Se è cambiata, cambia quella.`, fencedStaff(absenceRow(clash, p, at.day))].join("\n"), count: 0 };
 		const by = marker(ctx);
 		await ctx.step("absence", async () => {
@@ -329,7 +348,9 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 		});
 		const after = store.read();
 		const saved = after.absences.find((x) => x.id === a.id) as Absence;
-		return { text: [`Fatto: ora è ${absenceWords(saved, at.day)}, per la persona nel riquadro.`, fencedStaff(absenceRow(saved, named.person, at.day)), ...said.notes, ...countWords(named.person, saved, after, at), ...appointmentsHit(named.person, saved, at.day)].join("\n"), count: 1 };
+		// The brief asks only the end; the protocol is asked here, in the owner's own chat.
+		const protocolAsk = saved.kind === "malattia" && saved.protocol === undefined && !said.notes.includes(BAD_PROTOCOL) ? [PROTOCOL_ASK] : [];
+		return { text: [`Fatto: ora è ${absenceWords(saved, at.day)}, per la persona nel riquadro.`, fencedStaff(absenceRow(saved, named.person, at.day)), ...said.notes, ...protocolAsk, ...countWords(named.person, saved, after, at), ...appointmentsHit(named.person, saved, at.day)].join("\n"), count: 1 };
 	}
 
 	/** «(domenica)», «(festivo: Natale)». */
@@ -616,14 +637,15 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 			...today.map((p) => `Oggi: ${personDayRow(p, false)}`),
 			...next.map((p) => `Domani: ${personDayRow(p, false)}`),
 			...starting.map((a) => `In settimana: ${name(a.person)}: ${absenceWords({ ...a, kind: "altro" }, at.day)}`),
-			...ask.map((a) => `${name(a.person)} è in malattia da ${plainDay(a.from, at.day)}, fine non detta: sai fino a quando?${a.protocol === undefined ? " E il protocollo del certificato?" : ""}`),
+			// Never «malattia» here: the brief may be read by anyone near the owner. The protocol is asked in the owner's chat, when they answer.
+			...ask.map((a) => `${name(a.person)} è assente da ${plainDay(a.from, at.day)}, fine non detta: sai fino a quando?`),
 		];
 		const parts = [
 			...(today.length === 0 ? [] : [`oggi ${n1(today.length, "un assente", "# assenti")}`]),
 			...(next.length === 0 ? [] : [`domani ${n1(next.length, "un assente", "# assenti")}`]),
 			...(starting.length === 0 ? [] : [`${n1(starting.length, "un'assenza comincia", "# assenze cominciano")} più avanti in settimana`]),
 			...(gaps.length === 0 ? [] : [`domani scoperto ${spansWords(gaps)}`]),
-			...(ask.length === 0 ? [] : [n1(ask.length, "una domanda su una malattia senza fine detta", "# domande su malattie senza fine detta")]),
+			...(ask.length === 0 ? [] : [n1(ask.length, "una domanda su un'assenza senza fine", "# domande su assenze senza fine")]),
 		];
 		await audit(ctx, "brief", rows.length);
 		return [`Personale: ${parts.join("; ")}.`, ...(rows.length === 0 ? [] : [fencedStaff(rows.join("\n"))])].join("\n");
@@ -675,15 +697,16 @@ export function createStaffTools(options: StaffToolsOptions): AnnieTool[] {
 					person: text(STAFF_LIMITS.name, "the person as said (a name, a first name), or PE-0001; person: the name of a new one (a first name is enough to start)"),
 					name: text(STAFF_LIMITS.name, "person: a new full name (the surname said later)"),
 					new: { type: "boolean", description: "person: a new person, even if the name is like another's" },
+					past: { type: "boolean", description: "absence: ferie or a permesso already taken, said without the year on days more than a week ago (after Annie asked)" },
 					kind: { type: "string", enum: [...KINDS], description: "absence: ferie, permesso, malattia, altro (with reason); absences: only this kind" },
-					from: text(40, "absence, change: the first day («domani», «3 agosto», «da oggi», «lunedì scorso»); permesso: its day; person: the first day of work"),
+					from: text(40, "absence, change: the first day («domani», «3 agosto», «da oggi», «lunedì scorso»); permesso: its day; person: the first day of work; archive: the first day no longer at work"),
 					to: text(40, "absence, change: the last day (a malattia only when said); person, archive: the last day of work"),
 					half: { type: "string", enum: [...HALVES], description: "absence: ferie of half a day" },
 					start: text(20, "absence permesso (or altro by the hour, as L.104): from what time («15»)"),
 					end: text(20, "absence permesso or altro: to what time (default the end of the shift)"),
 					protocol: text(60, "absence malattia: the INPS certificate's protocol number only (digits), when said; never a diagnosis"),
 					reason: text(60, `absence altro: one of ${ALTRO_REASONS.join(", ")} («malattia del figlio» is congedo malattia figlio)`),
-					note: text(STAFF_LIMITS.note, "absence (not malattia), extra, shift: a short note; never health data"),
+					note: text(STAFF_LIMITS.note, "extra, shift: a short note, a few words; never health data. Absences take no note"),
 					absence: text(10, "change, cancel: the reference AS-0001 (never said to the person)"),
 					on: text(40, "change, cancel: a day of the absence"),
 					date: text(40, "who: the day (default today); shifts, export: a day of the week (default next week); shift: the day; extra: the day (default today)"),

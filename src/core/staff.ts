@@ -5,9 +5,10 @@
  * usual shifts and the extra hours the owner recorded. Days are the business's own («2026-08-03»,
  * Europe/Rome); times wall clock («15:00»), in minutes from midnight when counted. Days and hours
  * are exact: hundredths of a day, whole minutes. Health data: of a malattia only the dates and,
- * optionally, the INPS certificate's protocol number (digits); never a diagnosis, and no free text
- * that looks like one (a role, a note: looksHealth). The reason of another absence is from a
- * closed list. Ids (PE-0001, AS-0001)
+ * optionally, the INPS certificate's protocol number (digits); never a diagnosis. A role, a shift's
+ * note and an extra hours' note that look like one are refused when said (looksHealth), not when
+ * read. Absences carry no free note (an old file's note is still read). The reason of another
+ * absence is from a closed list. Ids (PE-0001, AS-0001)
  * are for the model only, never said.
  */
 import { type Opening, TIME, toMinutes, minutesOf } from "./appointments.ts";
@@ -55,11 +56,26 @@ export const REASON_CODES: Readonly<Record<AltroReason, string>> = { lutto: "LU"
 export const codeOf = (a: Pick<Absence, "kind" | "reason">): string => (a.kind === "altro" ? REASON_CODES[a.reason ?? "altro"] : KIND_CODES[a.kind]);
 
 /**
- * Words that say something of someone's health: a field holding one (a role, a note) is never
- * saved. Coarse on purpose: a word too many asks again, a word too few would keep a diagnosis.
+ * Stems that say something of someone's health, matched anywhere in a word (no leading \b): a
+ * role, a shift's note or an extra hours' note holding one is not saved. Coarse on purpose: a word
+ * too many asks again, a word too few would keep a diagnosis. Checked when the owner says it,
+ * never when a file is read: a file saved before a stem was added stays readable. Names are not
+ * checked (a surname like Medici would match).
  */
-const HEALTH_WORDS = /\b(?:malat\w*|influenz\w*|febbr\w*|covid\w*|virus|virale|tumor\w*|cancro|oncolog\w*|chemio\w*|depress\w*|ansia|attacchi di panico|gravidanz\w*|incinta|aborto|operazion\w* chirurgic\w*|frattur\w*|ricover\w*|ospedal\w*|pronto soccorso|diabet\w*|epiless\w*|allergi\w*|asma|infezion\w*|terapi[ae]|disturb\w*|invalid\w*|handicap|sclerosi|ernia|gastrit\w*|gastroenterit\w*|emicrani\w*|bronchit\w*|polmonit\w*|otite|lombalgi\w*|sciatic\w*|distorsion\w*|ingessat\w*|diagnos\w*|sintom\w*|farmaci|visita medica|esami del sangue|dialisi|hiv|infarto|ictus|mal di \w+)\b/i;
-export const looksHealth = (text: string): boolean => HEALTH_WORDS.test(text.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+const HEALTH_STEMS = /terapi|patia|chirurg|psic|ricover|oncolog|diabet|tumor|cancro|leucem|epatit|sieropos|gravid|maternit|convalesc|riabilit|ospedal|risonanza|ecograf|prelievo|vaccin|frattur|gesso|ingessat|malat|febbre|influenz|covid|depress|ansia|bipolar|schizofren|autis|anoress|bulim|alzheimer|parkinson|celiach|tiroid|ipertens|artros|endometr|cistit|disabil|invalid|handicap|medic|sta male|certificato/;
+/** Stems too short to match inside a word («attacco», «chiaids»): whole words only. */
+const HEALTH_WORDS = /\b(?:tac|hiv|aids)\b/;
+/** Words that hold a stem and say nothing of health: taken out before the check. */
+const NOT_HEALTH = /\b(?:simpati\w*|antipati\w*|empati\w*|telepati\w*)/g;
+/** Job titles that hold a stem: taken out of a role (only a role) before the check. */
+const HEALTH_JOBS = /\b(?:fisioterapist[ae]|farmacist[ae]|psicolog[ao]|medic[oa]|autist[ae])\b/g;
+const folded = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+/** Whether a text said by the owner looks like health data; `role` lets the job titles above pass. */
+export const looksHealth = (text: string, role = false): boolean => {
+	let t = folded(text).replace(NOT_HEALTH, " ");
+	if (role) t = t.replace(HEALTH_JOBS, " ");
+	return HEALTH_STEMS.test(t) || HEALTH_WORDS.test(t);
+};
 
 export const HALVES = ["mattina", "pomeriggio"] as const;
 export type Half = (typeof HALVES)[number];
@@ -198,7 +214,7 @@ const DECIMAL = /^\d{1,4}(?:\.\d{1,2})?$/;
 const decimalUpTo = (v: unknown, max: number) => typeof v === "string" && DECIMAL.test(v) && Number(v) <= max;
 /** A certificate's protocol: digits only, 6 to 12 (spaces, «/» and «-» taken out before). A word never passes. */
 export const PROTOCOL = /^\d{6,12}$/;
-const note = (v: unknown) => v === undefined || (plain(v, STAFF_LIMITS.note) && !looksHealth(v as string));
+const note = (v: unknown) => v === undefined || plain(v, STAFF_LIMITS.note);
 
 function validOpening(v: unknown): v is Opening {
 	if (typeof v !== "object" || v === null || !Object.keys(v).every((k) => k === "from" || k === "to")) return false;
@@ -222,7 +238,7 @@ export function validPerson(v: unknown): v is Person {
 	const p = v as Person;
 	if (!Object.keys(p).every((k) => ["id", "name", "role", "weeklyHours", "week", "ferieDays", "rolHours", "opening", "resource", "from", "to", "by", "at"].includes(k))) return false;
 	if (typeof p.id !== "string" || !PERSON_ID.test(p.id) || !plain(p.name, STAFF_LIMITS.name)) return false;
-	if (p.role !== undefined && (!plain(p.role, STAFF_LIMITS.role) || looksHealth(p.role))) return false;
+	if (p.role !== undefined && !plain(p.role, STAFF_LIMITS.role)) return false;
 	if (p.from !== undefined && !isDay(p.from)) return false;
 	if (p.to !== undefined && (!isDay(p.to) || (p.from !== undefined && p.to < p.from))) return false;
 	if (p.weeklyHours !== undefined && !decimalUpTo(p.weeklyHours, STAFF_LIMITS.weeklyHours)) return false;

@@ -350,11 +350,11 @@ Un cliente che viene per uno o più servizi in un giorno e a un'ora, con la sua 
 _Avoid_: prenotazione (per il dato salvato; «prenotare» va bene come verbo), evento (quello è il calendario Google)
 
 **Personale**:
-Le persone che lavorano nell'attività (PE-NNNN, mai detto), con ruolo, ore del contratto, la settimana solita, ferie e permessi dell'anno, e se c'è la risorsa degli appuntamenti che sono. Non sono utenti di Annie né agenti del board. Vedi ADR 0095.
+Le persone che lavorano nell'attività (PE-NNNN, mai detto), con ruolo, ore del contratto, la settimana solita, ferie e permessi dell'anno, e se c'è la risorsa degli appuntamenti che sono. Non sono utenti di Annie né agenti del board. Ha il primo e l'ultimo giorno in forza; chi se ne va si archivia, non si cancella. Si aggiunge solo quando è detta nuova, o quando se ne dice qualcosa e nessuno ha quel nome. Vedi ADR 0095.
 _Avoid_: dipendenti (per il dato salvato; va bene come parola), utenti, membri
 
 **Assenza**:
-Un periodo in cui una persona del personale non lavora: ferie (giorni o mezza giornata), permesso (ore), malattia (giorni, solo il protocollo, mai la diagnosi) o altro (lutto, congedo, 104). Si cambia o si annulla, e annullata resta nello storico. Blocca la sua risorsa negli appuntamenti. Vedi ADR 0095.
+Un periodo in cui una persona del personale non lavora: ferie (giorni o mezza giornata), permesso (ore), malattia (giorni, solo il protocollo, mai la diagnosi) o altro (un motivo dalla lista chiusa: lutto, congedo, 104…). Non ha note libere. Si cambia o si annulla, e annullata resta nello storico. Blocca la sua risorsa negli appuntamenti. Vedi ADR 0095.
 _Avoid_: chiusura (quella è dell'attività), ferie (per tutte le assenze)
 
 **Turno**:
