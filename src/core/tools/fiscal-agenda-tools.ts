@@ -148,9 +148,9 @@ export function createFiscalAgendaTools(options: FiscalAgendaToolsOptions): Anni
 		if (regime === undefined) more.push("Per un'agenda più completa dimmi il regime (forfettario o ordinario).");
 		if (regime === "forfettario" && profile === undefined && taxBook?.broken !== true) more.push("Per un'agenda più completa dimmi coefficiente, aliquota e contributi delle tasse: aggiungo le stime degli F24.");
 		if (ordinario && vatBook !== undefined && !vatBook.broken && vatBook.settings === undefined) more.push("Per un'agenda più completa dimmi se liquidi l'IVA ogni mese o ogni trimestre: aggiungo gli F24 dell'IVA con la stima.");
-		// The REA only to who may have one: the regime unknown, or an activity of an impresa (commercio, costruzioni, ristorazione...), not a professionista.
-		const professional = pension === "gestione_separata" || pension === "cassa" || profile?.group === "professionali" || profile?.group === "altre";
-		if (!impresa && !professional && (regime === undefined || profile?.group !== undefined)) more.push("Se hai un'impresa iscritta in Camera di Commercio, salva il numero REA: aggiungo il diritto camerale.");
+		// The REA only to who may have one: the regime unknown, an ordinario without a tax profile, or an activity that may be an impresa (any group but the professionali), never under a professionista's pension.
+		const professional = pension === "gestione_separata" || pension === "cassa" || profile?.group === "professionali";
+		if (!impresa && !professional && (regime === undefined || (ordinario && profile === undefined) || profile?.group !== undefined)) more.push("Se hai un'impresa iscritta in Camera di Commercio, salva il numero REA: aggiungo il diritto camerale.");
 		return { items: agendaIn(items, window, day), notes, ...(more.length === 0 ? {} : { more: more.join("\n") }) };
 	}
 

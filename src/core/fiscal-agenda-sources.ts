@@ -186,7 +186,7 @@ export function invoiceItems(invoices: readonly Invoice[], today: string, to: st
 				...dueSlip(s.due),
 				date,
 				what: "fattura da pagare",
-				title: count > 1 ? `fattura da pagare, rata ${s.n} di ${count}` : "fattura da pagare",
+				title: "fattura da pagare",
 				...(count > 1 ? { note: `rata ${s.n} di ${count}` } : {}),
 				name: partyName(invoice.supplier),
 				...(invoice.doc.number === undefined ? {} : { ref: invoice.doc.number }),
@@ -214,12 +214,12 @@ function ruleWhat(d: RuleDeadline): { readonly what: string; readonly title: str
 		case "iva_annuale":
 			return { what: `dichiarazione IVA ${d.year}`, title: `dichiarazione IVA ${d.year}`, filing: true };
 		case "lipe":
-			return { what: `comunicazione LIPE delle liquidazioni IVA ${span}`, title: `LIPE ${short}`, filing: true, ...(d.quarters?.includes(4) === true ? { note: "o dentro la dichiarazione IVA, se la mandi entro febbraio" } : {}) };
+			return { what: `LIPE, la comunicazione delle liquidazioni IVA ${span}`, title: `LIPE ${short}`, filing: true, ...(d.quarters?.includes(4) === true ? { note: "o dentro la dichiarazione IVA, se la mandi entro febbraio" } : {}) };
 		case "camerale":
 			return { what: `diritto annuale della Camera di Commercio ${d.year}`, title: `diritto camerale ${d.year}`, note: "importo fisso della tua Camera, con l'F24 delle imposte" };
 		case "bollo": {
-			const soFar = d.partial === true ? ", finora" : "";
-			const note = d.count === 1 ? `1 fattura con il bollo emessa con me${soFar}` : `${d.count ?? 0} fatture con il bollo emesse con me${soFar}`;
+			// «finora» is the amount's, when partial: not said twice.
+			const note = d.count === 1 ? "1 fattura con il bollo emessa con me" : `${d.count ?? 0} fatture con il bollo emesse con me`;
 			return { what: `F24 imposta di bollo sulle fatture elettroniche ${span}`, title: `F24 bollo fatture ${short}`, note };
 		}
 	}

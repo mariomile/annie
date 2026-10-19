@@ -88,7 +88,7 @@ export type RuleKind = "redditi" | "iva_annuale" | "lipe" | "camerale" | "bollo"
 /** A deadline of a rule: the day written in the law (with the year's proroga), the working day it moves to, and why. */
 export type RuleDeadline = {
 	readonly kind: RuleKind;
-	/** Stable per deadline: «redditi:2026», «lipe:2026-T3», «bollo:2026-T1+T2». */
+	/** Stable per deadline: «redditi:2026», «lipe:2026-T3»; the bollo by its written day, «bollo:2026-11-30», so it stays the same as later quarters fill. */
 	readonly key: string;
 	readonly due: string;
 	readonly date: string;
@@ -97,7 +97,7 @@ export type RuleDeadline = {
 	readonly year: number;
 	readonly quarters?: readonly (1 | 2 | 3 | 4)[];
 	readonly code?: string;
-	/** The bollo: the amount and how many invoices; `partial` while a quarter in it is under way. */
+	/** The bollo: the amount and how many invoices; `partial` while a quarter of its group is under way or still to come. */
 	readonly cents?: bigint;
 	readonly count?: number;
 	readonly partial?: boolean;
@@ -160,6 +160,9 @@ export type QuarterBollo = { readonly cents: bigint; readonly count: number; rea
  * The payments of the bollo of `year` (Q1 to Q3 in `year`, Q4 in February of the next), with the
  * deferrals under BOLLO_DEFER_BELOW_CENTS: Q1 with Q2, or Q1 and Q2 with Q3. Only payments with an
  * amount; the deferral is decided on the amounts known (a quarter under way counts what it has).
+ * The quarters, the codes and the amount are those with invoices; the payment is partial while any
+ * quarter of its group is under way or still to come (more invoices may join it); its key is its
+ * written day, the same however the group fills.
  */
 export function bolloDeadlines(year: number, of: (quarter: 1 | 2 | 3 | 4) => QuarterBollo): RuleDeadline[] {
 	const q = ([1, 2, 3, 4] as const).map((n) => ({ n, ...of(n) }));
@@ -179,7 +182,7 @@ export function bolloDeadlines(year: number, of: (quarter: 1 | 2 | 3 | 4) => Qua
 		const count = paid.reduce((n, x) => n + x.count, 0);
 		const due = bolloDue(year, last.n);
 		const code = quarters.map(bolloCode).join(", ");
-		out.push(make("bollo", `bollo:${year}-${quarters.map((n) => `T${n}`).join("+")}`, due, year, { quarters, code, cents, count, ...(paid.some((x) => x.partial) ? { partial: true } : {}) }));
+		out.push(make("bollo", `bollo:${due}`, due, year, { quarters, code, cents, count, ...(g.some((x) => x.partial) ? { partial: true } : {}) }));
 	}
 	return out;
 }

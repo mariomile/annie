@@ -23,7 +23,7 @@ import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import type { TaxBook } from "../src/core/tax-store.ts";
 import type { TaxProfile } from "../src/core/taxes.ts";
 import { createFiscalAgendaTools, type FiscalAgendaEvent } from "../src/core/tools/fiscal-agenda-tools.ts";
-import { BRIEF_NOTHING } from "../src/core/tools/fiscal-agenda-render.ts";
+import { amountWords, BRIEF_NOTHING, icsEvents } from "../src/core/tools/fiscal-agenda-render.ts";
 import { createTaxTools } from "../src/core/tools/tax-tools.ts";
 import type { VatBook } from "../src/core/vat-store.ts";
 import { vatInputsOf } from "../src/core/vat-forecast.ts";
@@ -282,20 +282,35 @@ describe("agenda: the generic rules and their sources", () => {
 		expect(BOLLO_DEFER_BELOW_CENTS).toBe(500_000n);
 		expect([1, 2, 3, 4].map((n) => bolloCode(n as 1 | 2 | 3 | 4))).toEqual(["2521", "2522", "2523", "2524"]);
 		const small = bolloDeadlines(2026, q({ 1: 2_000n, 2: 400n, 3: 600n }));
-		expect(small.map((d) => [d.key, d.date, d.cents, d.count, d.code])).toEqual([["bollo:2026-T1+T2+T3", "2026-11-30", 3_000n, 15, "2521, 2522, 2523"]]);
+		expect(small.map((d) => [d.key, d.date, d.cents, d.count, d.code])).toEqual([["bollo:2026-11-30", "2026-11-30", 3_000n, 15, "2521, 2522, 2523"]]);
 		const mid = bolloDeadlines(2026, q({ 1: 300_000n, 2: 300_000n, 3: 300_000n, 4: 200n }));
 		expect(mid.map((d) => [d.key, d.date])).toEqual([
-			["bollo:2026-T1+T2", "2026-09-30"],
-			["bollo:2026-T3", "2026-11-30"],
+			["bollo:2026-09-30", "2026-09-30"],
+			["bollo:2026-11-30", "2026-11-30"],
 			// 28 February 2027 is a Sunday.
-			["bollo:2026-T4", "2027-03-01"],
+			["bollo:2027-02-28", "2027-03-01"],
 		]);
 		const big = bolloDeadlines(2026, q({ 1: 600_000n, 2: 600_000n }));
 		expect(big.map((d) => [d.key, d.date])).toEqual([
-			["bollo:2026-T1", "2026-06-01"],
-			["bollo:2026-T2", "2026-09-30"],
+			["bollo:2026-05-31", "2026-06-01"],
+			["bollo:2026-09-30", "2026-09-30"],
 		]);
 		expect(bolloDeadlines(2026, q({}))).toEqual([]);
+	});
+
+	it("the bollo on 10 May: Q1 alone is «finora» while Q2 and Q3 may join it, under one key however it fills", () => {
+		const may = "2026-05-10";
+		const q1 = [sale(1, "2026-01-10"), sale(2, "2026-02-10"), sale(3, "2026-03-10")];
+		const first = bolloItems(q1, may, may, "2026-12-31");
+		expect(first.map((i) => [i.key, i.date, i.cents, i.partial === true, i.code])).toEqual([["bollo:2026-11-30", "2026-11-30", 600n, true, "2521"]]);
+		expect(first[0]?.note).toBe("3 fatture con il bollo emesse con me");
+		// Two invoices in Q2: the same payment, the same key (so the same .ics UID), more quarters and amount.
+		const more = bolloItems([...q1, sale(4, "2026-04-10"), sale(5, "2026-05-05")], may, may, "2026-12-31");
+		expect(more.map((i) => [i.key, i.date, i.cents, i.partial === true, i.code])).toEqual([["bollo:2026-11-30", "2026-11-30", 1_000n, true, "2521, 2522"]]);
+		expect(icsEvents(more, undefined)[0]?.uid).toBe(icsEvents(first, undefined)[0]?.uid);
+		expect(icsEvents(first, undefined)[0]?.summary).toBe("F24 bollo fatture 1º trim. 2026 (6,00 € finora)");
+		// Once the group's last quarter is over, the amount is final.
+		expect(bolloItems(q1, "2026-10-01", "2026-10-01", "2026-12-31")[0]?.partial).toBeUndefined();
 	});
 });
 
@@ -445,13 +460,15 @@ describe("agenda: each source through its own functions", () => {
 		const sales = [sale(1, "2026-02-10"), sale(2, "2026-05-10"), sale(3, "2026-07-10"), sale(4, "2026-10-12"), { ...sale(5, "2026-10-13"), number: undefined } as unknown as SalesInvoice];
 		const items = bolloItems(sales, TODAY, TODAY, "2027-03-31");
 		expect(items.map((i) => [i.key, i.date, i.cents, i.partial === true])).toEqual([
-			["bollo:2026-T1+T2+T3", "2026-11-30", 600n, false],
-			["bollo:2026-T4", "2027-03-01", 200n, true],
+			["bollo:2026-11-30", "2026-11-30", 600n, false],
+			["bollo:2027-02-28", "2027-03-01", 200n, true],
 		]);
 		// Counted, 2,00 € each, not estimated; the title short for a calendar.
 		expect(items[0]).toMatchObject({ code: "2521, 2522, 2523", brief: true, note: "3 fatture con il bollo emesse con me", title: "F24 bollo fatture 1º, 2º e 3º trim. 2026" });
 		expect(items[0]?.estimate).toBeUndefined();
-		expect(items[1]).toMatchObject({ note: "1 fattura con il bollo emessa con me, finora", title: "F24 bollo fatture 4º trim. 2026" });
+		// «finora» once, with the amount, not in the note.
+		expect(items[1]).toMatchObject({ note: "1 fattura con il bollo emessa con me", title: "F24 bollo fatture 4º trim. 2026" });
+		expect(amountWords(items[1] as AgendaItem)).toBe("2,00 € finora");
 		// An invoice with VAT bears no bollo.
 		const withVat = { ...sale(6, "2026-10-14"), lines: [{ description: "Consulenza", quantity: "1", price: "500", vat: 22 }] } as unknown as SalesInvoice;
 		expect(bolloItems([withVat], TODAY, TODAY, "2027-03-31")).toEqual([]);
@@ -536,11 +553,11 @@ describe("agenda: upcoming", () => {
 		expect(sixty).toContain("• Lunedì 30 novembre: F24 secondo acconto delle imposte");
 		expect(sixty).not.toContain("Per un'agenda più completa");
 		expect(sixty).not.toContain("numero REA");
-		// The ordinario: the periodicity; not the REA (nothing says an impresa).
+		// The ordinario without a tax profile: the periodicity, and the REA (it may be an impresa).
 		const ordinario = await setup({ files: {} });
 		const ord = await ordinario.run({ op: "upcoming" });
 		expect(ord).toContain("Per un'agenda più completa dimmi se liquidi l'IVA ogni mese o ogni trimestre: aggiungo gli F24 dell'IVA con la stima.");
-		expect(ord).not.toContain("numero REA");
+		expect(ord).toContain("Se hai un'impresa iscritta in Camera di Commercio, salva il numero REA: aggiungo il diritto camerale.");
 		const forfettario = await setup({ regime: "forfettario", files: {} });
 		expect(await forfettario.run({ op: "upcoming" })).toContain("Per un'agenda più completa dimmi coefficiente, aliquota e contributi delle tasse: aggiungo le stime degli F24.");
 		// An activity of an impresa (commercio) without the REA: the hint; a professionista never.
@@ -548,6 +565,8 @@ describe("agenda: upcoming", () => {
 		expect(await shop.run({ op: "upcoming" })).not.toContain("numero REA");
 		const trader = await setup({ regime: "forfettario", profile: { ...PROFILE, coefficient: "40", group: "commercio", pension: { kind: "nessuna" } }, files: {} });
 		expect(await trader.run({ op: "upcoming" })).toContain("salva il numero REA");
+		const other = await setup({ regime: "forfettario", profile: { ...PROFILE, coefficient: "67", group: "altre", pension: { kind: "nessuna" } }, files: {} });
+		expect(await other.run({ op: "upcoming" })).toContain("salva il numero REA");
 		const pro = await setup({ regime: "forfettario", profile: { ...PROFILE, group: "professionali" }, files: {} });
 		expect(await pro.run({ op: "upcoming" })).not.toContain("numero REA");
 	});
@@ -660,6 +679,10 @@ describe("agenda: another agente", () => {
 		expect(answer).not.toContain("A1");
 		expect(answer).toContain("• Venerdì 30 ottobre: fattura da pagare a un fornitore, 1.220,00 €");
 		expect(answer).toContain("• Domenica 25 ottobre: rinnovo da pagare, 120,00 €");
+		const auto = await setup({ periodicity: "trimestrale", renewals: [renewal({ id: "R-0002", name: "Adobe CC", due: "2026-11-05", autoRenew: true })] });
+		const autoAnswer = await auto.run({ op: "upcoming" }, agent());
+		expect(autoAnswer).toContain("• Giovedì 5 novembre: un abbonamento si rinnova da solo, poi da pagare, 120,00 €");
+		expect(autoAnswer).not.toContain("Adobe");
 		expect(await s.run({ op: "export_ics" }, agent())).toContain("Errore: a un altro agente do solo le scadenze");
 		expect(filesUnder(s.root).some((f) => f.startsWith("agenda/"))).toBe(false);
 	});
@@ -784,6 +807,25 @@ describe("agenda: the .ics", () => {
 		expect(new Set(events.map((e) => e.UID)).size).toBe(events.length);
 		expect(s.events).toHaveLength(2);
 		for (const e of s.events) expect(Object.keys(e).sort()).toEqual(["count", "op", "type"]);
+	});
+
+	it("an invoice in two instalments: the title once, the instalment in the description; the taxes' source in words", async () => {
+		const one = xml(SUPPLIER, COMPANY, { number: "R1", date: "2026-10-10", due: "2026-11-10", taxable: "1000.00", pay: "610.00" });
+		const detail = (due: string) => `<DettaglioPagamento><ModalitaPagamento>MP05</ModalitaPagamento><DataScadenzaPagamento>${due}</DataScadenzaPagamento><ImportoPagamento>610.00</ImportoPagamento></DettaglioPagamento>`;
+		const two = one.replace(/<DettaglioPagamento>[\s\S]*<\/DettaglioPagamento>/, `${detail("2026-11-10")}${detail("2026-12-10")}`).replace("TP02", "TP01");
+		const s = await setup({ files: { "f/r1.xml": two } });
+		const answer = await s.run({ op: "upcoming", days: 60 });
+		expect(inside(answer)).toContain(`• Martedì 10 novembre: fattura da pagare a ${SUPPLIER.name}, n. R1, 610,00 €, rata 1 di 2`);
+		await s.run({ op: "export_ics" });
+		const { events } = parseIcs(readFileSync(join(s.root, "agenda", "scadenze-2026-10-19_2027-10-19.ics"), "utf8"));
+		const rate = events.filter((e) => e.SUMMARY?.includes("R1"));
+		expect(rate.map((e) => [e.SUMMARY, e.DESCRIPTION])).toEqual([
+			[`${SUPPLIER.name} n. R1: fattura da pagare (610,00 €)`, "Dallo scadenzario di Annie.\nRata 1 di 2."],
+			[`${SUPPLIER.name} n. R1: fattura da pagare (610,00 €)`, "Dallo scadenzario di Annie.\nRata 2 di 2."],
+		]);
+		expect(events.find((e) => e.SUMMARY === "F24 secondo acconto delle imposte")?.DESCRIPTION).toBe("Dal calcolo di tasse e contributi di Annie.");
+		const lipe = events.find((e) => e.SUMMARY === "LIPE 3º trim. 2026: invio");
+		expect(lipe?.DESCRIPTION?.split("\n")[0]).toBe("LIPE, la comunicazione delle liquidazioni IVA del 3º trimestre 2026.");
 	});
 
 	it("without a reminder unless asked; a period; nothing to export makes no file; a bad reminder refused", async () => {

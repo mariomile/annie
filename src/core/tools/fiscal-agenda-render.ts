@@ -20,7 +20,7 @@ export const BRIEF_NOTHING = "Niente da segnalare sulle scadenze: nel brief non 
 
 /** Where a deadline comes from, for a calendar's description: «Dai rinnovi di Annie.». The chat does not say it. */
 export const SOURCE_FROM: Readonly<Record<AgendaSource, string>> = {
-	tasse: "Dalle tasse e dai contributi di Annie.",
+	tasse: "Dal calcolo di tasse e contributi di Annie.",
 	iva: "Dalla liquidazione IVA di Annie.",
 	ritenute: "Dalle ritenute di Annie.",
 	rinnovi: "Dai rinnovi di Annie.",
@@ -56,7 +56,7 @@ const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 function whatWords(i: AgendaItem, named: boolean): string {
 	if (i.name === undefined) return i.what;
 	if (i.source === "fatture") return named ? `${i.what} a ${oneLine(i.name)}${i.ref === undefined ? "" : `, n. ${oneLine(i.ref)}`}` : `${i.what} a un fornitore`;
-	if (!named) return i.what.startsWith("si ") ? `un rinnovo ${i.what}` : i.what;
+	if (!named) return i.what.startsWith("si ") ? `un abbonamento ${i.what}` : i.what;
 	return i.what.startsWith("si ") ? `${oneLine(i.name)} ${i.what}` : `${oneLine(i.name)}, ${i.what}`;
 }
 
