@@ -11,6 +11,7 @@ import { CATEGORIES, type Category } from "./expenses.ts";
 import type { Marker } from "./marker.ts";
 import { isMarker, isText } from "./stored-fields.ts";
 import { realDate } from "./italian-calendar.ts";
+import { spellingKey } from "./name-keys.ts";
 
 export class BudgetError extends Error {
 	override readonly name = "BudgetError";
@@ -35,7 +36,7 @@ export const BUDGET_LIMITS = {
 export const ALERT_PERCENTS = [80, 100] as const;
 /** An income target is behind when, in the last third of its period, the estimate at the end is under this share of it. */
 export const BEHIND_PERCENT = 80;
-/** No estimate before this share of the period is gone (3 days of a month, 9 of a quarter, 37 of a year): too few days say nothing. */
+/** No estimate while fewer than this many tenths of the period are gone (the first estimate on day 3 of a 30-day month, day 4 of a 31-day one, day 9 or 10 of a quarter, day 37 of a year): too few days say nothing. */
 export const ESTIMATE_MIN_TENTHS = 1;
 
 export const EVERY = ["month", "quarter", "year"] as const;
@@ -81,7 +82,7 @@ export function subjectKey(s: BudgetSubject): string {
 		case "category":
 			return `category:${s.category}`;
 		case "supplier":
-			return s.vat !== undefined ? `supplier:vat:${s.vat}` : s.cf !== undefined ? `supplier:cf:${s.cf}` : s.card !== undefined ? `supplier:card:${s.card}` : `supplier:name:${s.name.toLowerCase()}`;
+			return s.vat !== undefined ? `supplier:vat:${s.vat}` : s.cf !== undefined ? `supplier:cf:${s.cf}` : s.card !== undefined ? `supplier:card:${s.card}` : `supplier:name:${spellingKey(s.name)}`;
 		case "all":
 			return "all";
 		case "income":

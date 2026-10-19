@@ -726,7 +726,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},
 				}),
-				// Budget e obiettivi read the scadenzario (through the shared scanner), the fatture in uscita, the expenses and the supplier cards, never writing them; they write only the budgets, the brief's alerts said and the export.
+				// Budget e obiettivi read the scadenzario (through the shared scanner), the fatture in uscita, the expenses, the supplier cards, the renewals and the bank statement, never writing them; they write only the budgets, the brief's alerts said and the export.
 				...createBudgetTools({
 					workspace: runtime.workspace(record.tenantId, record.id),
 					store: runtime.budgets(record.tenantId, record.id),
@@ -735,6 +735,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					sales: runtime.salesInvoices(record.tenantId, record.id),
 					expenses: runtime.expenses(record.tenantId, record.id),
 					suppliers: runtime.suppliers(record.tenantId, record.id),
+					renewals: runtime.renewals(record.tenantId, record.id),
+					bank: runtime.bank(record.tenantId, record.id),
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {

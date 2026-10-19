@@ -37,7 +37,7 @@ export function readTarget(args: Record<string, unknown>): SaidTarget | undefine
 	if (FATTURATO.test(t)) return { subject: { kind: "income", measure: "fatturato" as Measure } };
 	const category = matchCategory(args.target);
 	if (category !== undefined) return { subject: { kind: "category", category } };
-	return { problem: `non è una delle categorie delle spese (${CATEGORY_LIST}). Chiedi a chi ti scrive in quale categoria registra queste spese; per un fornitore solo, dimmi il fornitore` };
+	return { problem: `questa non è una delle categorie delle spese (${CATEGORY_LIST}). Chiedi a chi ti scrive in quale categoria registra queste spese; per un fornitore solo, dimmi il fornitore` };
 }
 
 const EVERY_WORDS: Readonly<Record<string, Every>> = {
@@ -75,10 +75,17 @@ export function readBudgetAmount(value: unknown): string | undefined | Problem {
 	return readEuros(plainEuros(value), EURO_WORDS);
 }
 
-/** The first day a budget counts from: a month, a quarter or a year («novembre», «T1 2027», «2027»: their first day), or a date. */
-export function readStart(value: unknown, today: string): string | undefined | Problem {
+const NO_START = /^(?:|subito|da subito|nessun[oa]?|nessuna data|senza data|senza inizio|togli la data|dall'inizio del periodo)$/;
+
+/**
+ * The first day a budget counts from: a month, a quarter or a year («novembre», «T1 2027», «2027»:
+ * their first day), or a date; null when the person clears it («subito», «senza data», or empty):
+ * then it counts from the start of each period.
+ */
+export function readStart(value: unknown, today: string): string | null | undefined | Problem {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string" || value.trim() === "") return { problem: "start è il giorno da cui conta il budget, come «novembre» o «01/11/2026»" };
+	if (typeof value !== "string") return { problem: "il giorno da cui conta il budget va scritto come «novembre» o «01/11/2026»" };
+	if (NO_START.test(fold(value).trim())) return null;
 	const text = value.trim().slice(0, 40);
 	try {
 		return parseDate(text, today);

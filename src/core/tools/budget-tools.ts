@@ -1,29 +1,30 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
+import type { BankStore } from "../bank-store.ts";
 import { BUDGETS_BROKEN, type BudgetState, type BudgetStore } from "../budget-store.ts";
-import { alertsOf, type BudgetFacts, type Progress, progressOf } from "../budget-sums.ts";
+import { alertsOf, type BudgetFacts, type Progress, periodFor, progressOf } from "../budget-sums.ts";
 import { BUDGET_LIMITS, BUDGET_OPS, type Budget, budgetAgentReads, BudgetError, budgetId, type BudgetOp, type BudgetSubject, type Every, sameTarget, subjectKey } from "../budgets.ts";
 import { sourcesOf } from "../business-report-sums.ts";
 import { formNote } from "../client-find.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
-import type { Expense } from "../expenses.ts";
 import { cents as expenseCents } from "../expense-sums.ts";
 import { euros } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
-import { type Invoice, register } from "../invoices.ts";
 import { dayOfIn, todayIn } from "../italian-calendar.ts";
 import { withDate } from "../italian-format.ts";
 import type { Marker } from "../marker.ts";
 import { legalForm, spellingKey } from "../name-keys.ts";
+import { readRegister } from "../register-read.ts";
+import type { RenewalStore } from "../renewal-store.ts";
 import type { SalesInvoiceStore } from "../sales-invoice-store.ts";
-import { ledgerOf, type Supplier, suppliersOf } from "../supplier-sums.ts";
+import { findSupplier, loadSuppliers, meantSupplier, supplierNotFound } from "../supplier-find.ts";
+import type { Supplier } from "../supplier-sums.ts";
 import type { SupplierStore } from "../supplier-store.ts";
 import { isProblem } from "../text-input.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { readBudgetAmount, readEvery, readStart, readTarget, type SaidTarget } from "./budget-input.ts";
-import { BRIEF_NOTHING, briefAnswer, budgetsCsv, fencedBudgets, listAnswer, NO_BUDGETS, perWords, progressLines, statusAnswer, subjectWords, supplierLine } from "./budget-render.ts";
-import { findSupplier } from "./supplier-tools.ts";
+import { BRIEF_NOTHING, briefAnswer, budgetsCsv, fencedBudgets, listAnswer, NO_BUDGETS, perWords, progressLines, statusAnswer, subjectShort, subjectWords, supplierLine } from "./budget-render.ts";
 
 /** What changed, for the audit: the op and how many, never what a budget is on, amounts or names. */
 export type BudgetEvent = { readonly type: "budgets.changed"; readonly op: "set" | "remove" | "export"; readonly count: number };
@@ -31,13 +32,15 @@ export type BudgetEvent = { readonly type: "budgets.changed"; readonly op: "set"
 export type BudgetToolsOptions = {
 	readonly workspace: Workspace;
 	readonly store: BudgetStore;
-	/** The registers, read only through their own stores: the scadenzario (paid marks, the company), the fatture in uscita, the expenses, the supplier cards. */
+	/** The registers, read only through their own stores: the scadenzario (paid marks, the company), the fatture in uscita, the expenses, the supplier cards, the renewals and the bank statement (the suppliers' way, for a supplier's budget). */
 	readonly invoices: Pick<InvoiceStore, "read">;
 	/** The scadenzario's scanner of the same workspace, shared (one cache); one of its own otherwise. */
 	readonly scanner?: InvoiceScanner;
 	readonly sales?: Pick<SalesInvoiceStore, "read">;
 	readonly expenses: Pick<ExpenseStore, "read">;
 	readonly suppliers?: Pick<SupplierStore, "read">;
+	readonly renewals?: Pick<RenewalStore, "read">;
+	readonly bank?: Pick<BankStore, "read">;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: BudgetEvent) => Promise<void>;
@@ -48,7 +51,7 @@ export type BudgetToolsOptions = {
 const DESCRIPTION = [
 	"Budget e obiettivi the person sets, followed from the registers that exist and never changing them: a spending limit on one expense category, one supplier or all the spending (expenses and supplier invoices paid, each payment once), or an income target on the fatturato (imponibile of the invoices issued, by date) or the incassato (money in, by the day paid), each per month, quarter or year.",
 	"What the person says → op: «metti un budget di 300 € al mese per il software» → set (target «software», amount 300, every month); «obiettivo di 60.000 € di fatturato quest'anno» → set (target fatturato, every year); «un tetto di 500 € al mese con Aruba» → set with supplier; «quanto ho speso per il software questo mese rispetto al budget?», «come vado con l'obiettivo di fatturato?», «sono in linea per arrivarci?» → status with target (or supplier); «quali budget sto sforando?» → status without target; «quali budget ho?» → list; «togli il budget viaggi» → remove (target, or id BU-0001); «fammi il file dei budget» → export, then file_send.",
-	"Setting a budget again on the same thing for the same kind of period replaces it. How the business is doing (fatturato, margine, a period against another) is business_report: budgets is only for the limits and targets the person set. Estimates are linear and indicative: say so. summary of the brief: status with compact true. Repeat amounts and shares as given, never compute them yourself.",
+	"Setting a budget again on the same thing for the same kind of period replaces it (start kept unless a new one is given, or «subito» to clear it). A supplier's budget counts what the suppliers tool counts for it; all the spending counts what business_report counts. How the business is doing (fatturato, margine, a period against another) is business_report: budgets is only for the limits and targets the person set. Estimates are linear and indicative: say so. summary of the brief: status with compact true. Repeat amounts and shares as given, never compute them yourself.",
 ].join(" ");
 
 /**
@@ -84,7 +87,7 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 					supplier: text(BUDGET_LIMITS.name, "set, remove, status: a supplier instead of target: name as said, partita IVA or card id FO-0001"),
 					amount: { type: ["number", "string"], description: "set: euros, as said («300», «60.000», «60k»)" },
 					every: { type: "string", enum: ["month", "quarter", "year"], description: "set: per month, quarter or year (default: month for spending, year for a target); remove: which one, when there are two" },
-					start: text(40, "set: from when it counts, if not now: «novembre», «2027», «01/11/2026»"),
+					start: text(40, "set: from when it counts, if not now: «novembre», «2027», «01/11/2026»; «subito» clears it"),
 					id: text(12, "remove, status: the budget's id, BU-0001"),
 					compact: { type: "boolean", description: "status: the brief's line only" },
 				},
@@ -132,24 +135,20 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 
 	/** Every register, read once; one that does not read is said, never guessed, and nothing is written. */
 	async function load(ctx: ToolContext, day: string): Promise<Loaded> {
-		const notes: string[] = [];
-		const book = options.invoices.read();
-		let invoices: Invoice[] | undefined;
-		if (book.broken) notes.push("Lo stato delle fatture non si legge: fatture emesse e ricevute qui non ci sono.");
-		else {
-			const scan = await scanner.scan(ctx.signal, (t) => ctx.progress(t));
-			invoices = register(scan.invoices, book.paid, book.company, book.reminders);
-			if (book.company === undefined && invoices.length > 0) notes.push("Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le emesse dalle ricevute e qui non ci sono.");
-		}
+		const read = await readRegister(options.invoices, scanner, ctx, {
+			broken: "Lo stato delle fatture non si legge: fatture emesse e ricevute qui non ci sono.",
+			noCompany: "Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le emesse dalle ricevute e qui non ci sono.",
+		});
+		const notes = [...read.notes];
 		const salesBook = options.sales?.read();
 		if (salesBook?.broken === true) notes.push("Le fatture in uscita non si leggono: il loro fatturato qui non c'è.");
 		const expenseBook = options.expenses.read();
 		if (expenseBook.broken) notes.push("Il registro delle spese non si legge: le spese qui non ci sono.");
 		const cardBook = options.suppliers?.read();
-		const expenses: readonly Expense[] | undefined = expenseBook.broken ? undefined : expenseBook.expenses;
+		const expenses = expenseBook.broken ? undefined : expenseBook.expenses;
 		const sources = sourcesOf(
 			{
-				...(invoices === undefined ? {} : { invoices }),
+				...(read.invoices === undefined ? {} : { invoices: read.invoices }),
 				...(salesBook?.broken === true ? {} : { sales: salesBook?.invoices ?? [] }),
 				...(expenses === undefined ? {} : { expenses }),
 				marks: [],
@@ -158,36 +157,40 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 			day,
 			dayOf,
 		);
-		const suppliers = suppliersOf({ cards: cardBook === undefined || cardBook.broken ? [] : cardBook.cards, invoices: invoices ?? [], expenses: expenses ?? [], renewals: [] });
-		const ledger = ledgerOf(invoices ?? [], expenses ?? [], dayOf);
-		const supplierOf = (s: Extract<BudgetSubject, { kind: "supplier" }>): Supplier | undefined => {
+		// A supplier's budget the suppliers' way: the bank's confirmations and the renewals count.
+		const loaded = loadSuppliers({
+			cards: cardBook === undefined || cardBook.broken ? [] : cardBook.cards,
+			invoices: read.invoices ?? [],
+			expenses: expenses ?? [],
+			...(options.renewals === undefined ? {} : { renewals: options.renewals.read() }),
+			...(options.bank === undefined ? {} : { bank: options.bank.read() }),
+			dayOf,
+		});
+		notes.push(...loaded.notes);
+		const suppliers = loaded.suppliers;
+		const supplierOf = (s: SupplierSubject): Supplier | undefined => {
 			if (s.vat !== undefined) return suppliers.find((x) => x.vat === s.vat);
 			if (s.cf !== undefined) return suppliers.find((x) => x.cf === s.cf);
 			if (s.card !== undefined) return suppliers.find((x) => x.card?.id === s.card);
 			const found = findSupplier(suppliers, s.name);
 			return found.kind === "exact" ? found.supplier : undefined;
 		};
-		return { facts: { sources, ledger, supplierOf }, suppliers, notes };
+		return { facts: { sources, ledger: loaded.ledger, supplierOf }, suppliers, notes };
+	}
+
+	type SupplierSubject = Extract<BudgetSubject, { kind: "supplier" }>;
+
+	/** The subject a supplier is kept by: its partita IVA, else codice fiscale, else card, else the name. */
+	function subjectOf(s: Supplier): SupplierSubject {
+		return { kind: "supplier", name: s.name.slice(0, BUDGET_LIMITS.name), ...(s.vat !== undefined ? { vat: s.vat } : s.cf !== undefined ? { cf: s.cf } : s.card !== undefined ? { card: s.card.id } : {}) };
 	}
 
 	/** The supplier said for a budget: the one found (with a note when only its legal form differs), or the answer to give instead. */
-	function supplierSaid(suppliers: readonly Supplier[], said: string): { subject: Extract<BudgetSubject, { kind: "supplier" }>; note?: string } | string {
+	function supplierSaid(suppliers: readonly Supplier[], said: string): { subject: SupplierSubject; supplier: Supplier; note?: string } | string {
 		const found = findSupplier(suppliers, said);
-		if (found.kind === "none") return ["Non trovo questo fornitore tra schede, fatture ricevute e spese:", fencedBudgets(said), "Chiedi a chi ti scrive come si chiama nelle fatture, o la partita IVA."].join("\n");
-		if (found.kind === "close") {
-			return [
-				found.candidates.length === 1 ? "Intendi questo fornitore? Nessuno si chiama esattamente così, ma questo ha un nome simile:" : "Intendi uno di questi? Nessun fornitore si chiama esattamente così; quelli con un nome simile sono:",
-				fencedBudgets(found.candidates.map((c) => `• ${c.name}${c.vat === undefined ? "" : ` (partita IVA ${c.vat})`}`).join("\n")),
-				`Chiedi a chi ti scrive ${found.candidates.length === 1 ? "se è lui" : "quale"}, e ripeti con il nome scritto come qui o con la partita IVA.`,
-			].join("\n");
-		}
-		const s = found.supplier;
-		const subject: Extract<BudgetSubject, { kind: "supplier" }> = {
-			kind: "supplier",
-			name: s.name.slice(0, BUDGET_LIMITS.name),
-			...(s.vat !== undefined ? { vat: s.vat } : s.cf !== undefined ? { cf: s.cf } : s.card !== undefined ? { card: s.card.id } : {}),
-		};
-		return { subject, ...(found.form === true ? { note: formNote("fornitore", legalForm(said) !== undefined) } : {}) };
+		if (found.kind === "none") return supplierNotFound(said, fencedBudgets);
+		if (found.kind === "close") return meantSupplier(found.candidates, fencedBudgets);
+		return { subject: subjectOf(found.supplier), supplier: found.supplier, ...(found.form === true ? { note: formNote("fornitore", legalForm(said) !== undefined) } : {}) };
 	}
 
 	async function set(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -201,45 +204,68 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 		if (isProblem(said)) return `Errore: ${said.problem}.`;
 		const start = readStart(args.start, day);
 		if (isProblem(start)) return `Errore: ${start.problem}.`;
-		budgets();
+		const all = budgets();
 		const loaded = await load(ctx, day);
 		let subject: BudgetSubject;
+		let supplier: Supplier | undefined;
 		const notes: string[] = [];
 		if ("supplier" in target) {
 			const found = supplierSaid(loaded.suppliers, target.supplier);
 			if (typeof found === "string") return found;
 			subject = found.subject;
+			supplier = found.supplier;
 			if (found.note !== undefined) notes.push(found.note);
 		} else subject = target.subject;
 		const every: Every = said ?? (subject.kind === "income" ? "year" : "month");
+		// The same target: the same thing for the same kind of period, else a supplier's budget whose supplier is the same one now (a name now grouped with a partita IVA).
+		const sameNow = (b: Budget) => supplier !== undefined && b.every === every && b.subject.kind === "supplier" && loaded.facts.supplierOf(b.subject) === supplier;
+		const oldOf = (list: readonly Budget[]) => list.find((b) => sameTarget(b, { subject, every })) ?? list.find(sameNow);
+		// The start is kept unless a new one is said, or cleared.
+		const shaped = (id: string, old: Budget | undefined): Pick<Budget, "id" | "subject" | "amount" | "every" | "start"> => {
+			const first = start === null ? undefined : (start ?? old?.start);
+			return { id, subject, amount, every, ...(first === undefined ? {} : { start: first }) };
+		};
 		const by = marker(ctx);
+		// The alerts said in this period stay while the budget as set now is still past that level.
+		const before = oldOf(all);
+		const still = alertsOf(progressOf({ ...shaped(before?.id ?? budgetId(1), before), ...by }, loaded.facts, day));
+		const slug = periodFor(every, day).slug;
 		const applied = await ctx.step("apply", async () => {
 			let id = "";
 			let replaced = false;
-			const wrote = store.update(
+			let same = false;
+			const outcome = store.update(
 				ctx.callId,
 				(state): BudgetState => {
-					const old = state.budgets.find((b) => sameTarget(b, { subject, every }));
+					const old = oldOf(state.budgets);
 					replaced = old !== undefined;
 					if (old === undefined && state.budgets.length >= BUDGET_LIMITS.budgets) throw new BudgetError(`ci sono già ${BUDGET_LIMITS.budgets} budget, il massimo: togline qualcuno prima`);
 					id = old?.id ?? budgetId(state.nextId);
-					const made: Budget = { id, subject, amount, every, ...(start === undefined ? {} : { start }), callId: ctx.callId, ...(old === undefined ? by : { by: old.by, at: old.at, edited: by }) };
+					const body = shaped(id, old);
+					if (old !== undefined && JSON.stringify(old.subject) === JSON.stringify(subject) && old.amount === body.amount && old.start === body.start) {
+						// The same budget said again: nothing to write, and its alerts stay said.
+						same = true;
+						return state;
+					}
+					const made: Budget = { ...body, callId: ctx.callId, ...(old === undefined ? by : { by: old.by, at: old.at, edited: by }) };
 					return old === undefined ? { nextId: state.nextId + 1, budgets: [...state.budgets, made] } : { ...state, budgets: state.budgets.map((b) => (b.id === id ? made : b)) };
 				},
+				(claim) => claim.period !== slug || still.includes(claim.level),
 			);
-			if (!wrote) {
+			if (outcome === "rerun") {
 				// Run again: the budget this call set.
 				const mine = budgets().find((b) => b.callId === ctx.callId);
-				return { id: mine?.id ?? "", replaced: false };
+				return { id: mine?.id ?? "", replaced: false, same: false };
 			}
-			return { id, replaced };
+			return { id, replaced, same };
 		});
-		await audit(ctx, "set", 1);
+		if (!applied.same) await audit(ctx, "set", 1);
 		const saved = budgets().find((b) => b.id === applied.id);
 		if (saved === undefined) return "Fatto.";
 		const income = saved.subject.kind === "income";
+		const what = `${saved.id}: ${subjectShort(saved.subject)}${saved.subject.kind === "supplier" ? " (nel riquadro)" : ""}, ${euros(expenseCents(saved.amount))} ${perWords(saved.every)}${saved.start === undefined ? "" : `, ${withDate("dal", saved.start)}`}`;
 		const lines = [
-			`Fatto, ${applied.replaced ? `ho aggiornato ${income ? "l'obiettivo" : "il budget"}` : income ? "nuovo obiettivo" : "nuovo budget"} ${saved.id}: ${subjectWords(saved.subject)}${saved.subject.kind === "supplier" ? " (nel riquadro)" : ""}, ${euros(expenseCents(saved.amount))} ${perWords(saved.every)}${saved.start === undefined ? "" : `, ${withDate("dal", saved.start)}`}.`,
+			applied.same ? `${income ? "L'obiettivo" : "Il budget"} ${what} era già così: non ho cambiato niente.` : `Fatto, ${applied.replaced ? `ho aggiornato ${income ? "l'obiettivo" : "il budget"}` : income ? "nuovo obiettivo" : "nuovo budget"} ${what}.`,
 			...notes,
 		];
 		lines.push(...progressLines(progressOf(saved, loaded.facts, day)).slice(0, 2));
@@ -249,62 +275,74 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 		return lines.join("\n");
 	}
 
-	/** The budgets `args` names: by id, by target (and kind of period when said), or by supplier. */
-	async function named(args: Record<string, unknown>, ctx: ToolContext, day: string, all: readonly Budget[]): Promise<{ list: Budget[]; what: string } | string> {
+	/**
+	 * The budgets `args` names: by id, by target (and kind of period when said), or by supplier
+	 * (the name it was set with, or the same supplier now). For another agente a supplier fits or
+	 * not: no candidates, no words said back.
+	 */
+	async function named(args: Record<string, unknown>, ctx: ToolContext, day: string, all: readonly Budget[], agent: boolean): Promise<{ list: Budget[]; loaded?: Loaded } | string> {
 		if (args.id !== undefined) {
 			const id = typeof args.id === "string" ? args.id.trim().toUpperCase() : "";
 			const b = all.find((x) => x.id === id);
-			return b === undefined ? "Errore: non c'è un budget con questo numero." : { list: [b], what: id };
+			return b === undefined ? "Errore: non c'è un budget con questo numero." : { list: [b] };
 		}
 		const target: SaidTarget | undefined | { problem: string } = readTarget(args);
-		if (target === undefined) return { list: [...all], what: "" };
+		if (target === undefined) return { list: [...all] };
 		if (isProblem(target)) return `Errore: ${target.problem}.`;
 		const every = readEvery(args.every);
 		if (isProblem(every)) return `Errore: ${every.problem}.`;
-		let keys: string[];
-		if ("supplier" in target) {
-			const loaded = await load(ctx, day);
-			const found = supplierSaid(loaded.suppliers, target.supplier);
-			const said = spellingKey(target.supplier);
-			// A supplier no longer in the registers is still found by the name it was set with.
-			const byName = all.filter((b) => b.subject.kind === "supplier" && spellingKey(b.subject.name) === said).map((b) => subjectKey(b.subject));
-			if (typeof found === "string" && byName.length === 0) return found;
-			keys = [...byName, ...(typeof found === "string" ? [] : [subjectKey(found.subject)])];
-		} else keys = [subjectKey(target.subject)];
-		const list = all.filter((b) => keys.includes(subjectKey(b.subject)) && (every === undefined || b.every === every));
-		return { list, what: "supplier" in target ? "fornitore" : subjectWords(target.subject) };
+		const period = (b: Budget) => every === undefined || b.every === every;
+		if (!("supplier" in target)) return { list: all.filter((b) => subjectKey(b.subject) === subjectKey(target.subject) && period(b)) };
+		const loaded = await load(ctx, day);
+		const found = findSupplier(loaded.suppliers, target.supplier);
+		const now = found.kind === "exact" ? found.supplier : undefined;
+		const said = spellingKey(target.supplier);
+		const list = all.filter(
+			(b) => b.subject.kind === "supplier" && period(b) && (spellingKey(b.subject.name) === said || (now !== undefined && (subjectKey(b.subject) === subjectKey(subjectOf(now)) || loaded.facts.supplierOf(b.subject) === now))),
+		);
+		if (list.length === 0 && !agent) {
+			if (found.kind === "none") return supplierNotFound(target.supplier, fencedBudgets);
+			if (found.kind === "close") return meantSupplier(found.candidates, fencedBudgets);
+		}
+		return { list, loaded };
 	}
 
 	async function remove(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
 		const day = todayIn(timeZone, now());
-		// A call run again after it removed: the same answer, from the step.
 		const all = budgets();
-		const found = args.id === undefined && args.target === undefined && args.supplier === undefined ? "Errore: dimmi quale budget togliere: su cosa è, o il suo numero (BU-0001)." : await named(args, ctx, day, all);
+		const found = args.id === undefined && args.target === undefined && args.supplier === undefined ? "Errore: dimmi quale budget togliere: su cosa è, o il suo numero (BU-0001)." : await named(args, ctx, day, all, false);
 		const done = store.read().calls.includes(ctx.callId);
 		if (typeof found === "string" && !done) return found;
 		const list = typeof found === "string" ? [] : found.list;
 		if (!done && list.length === 0) return "Non c'è un budget su questo: non c'è niente da togliere.";
 		if (!done && list.length > 1) return [`Ci sono ${list.length} budget su questo: quale tolgo?`, ...list.map((b) => `• ${b.id}: ${subjectWords(b.subject)}, ${euros(expenseCents(b.amount))} ${perWords(b.every)}`), "Ripeti con il numero del budget."].join("\n");
-		const gone = list[0];
+		const gone = done ? undefined : list[0];
+		// A call run again after it removed: the same answer, from the step.
 		const said = await ctx.step("apply", async () => {
 			if (gone === undefined) return "";
-			store.update(ctx.callId, (state) => ({ ...state, budgets: state.budgets.filter((b) => b.id !== gone.id) }));
-			return `${gone.id}: ${subjectWords(gone.subject)}, ${euros(expenseCents(gone.amount))} ${perWords(gone.every)}`;
+			const outcome = store.update(ctx.callId, (state) => ({ ...state, budgets: state.budgets.filter((b) => b.id !== gone.id) }));
+			return outcome === "written" ? `${gone.id}: ${subjectWords(gone.subject)}, ${euros(expenseCents(gone.amount))} ${perWords(gone.every)}` : "";
 		});
+		// Nothing removed (a call run again with its steps lost): nothing to audit.
+		if (said === "") return "Fatto, il budget è tolto.";
 		await audit(ctx, "remove", 1);
-		return said === "" ? "Fatto, il budget è tolto." : `Fatto, ho tolto il budget ${said}.`;
+		return `Fatto, ho tolto il budget ${said}.`;
 	}
 
 	async function status(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
 		const all = budgets();
 		if (all.length === 0) return NO_BUDGETS;
-		const found = await named(args, ctx, day, all);
+		const found = await named(args, ctx, day, all, agent);
 		if (typeof found === "string") return found;
-		if (found.list.length === 0) return `Non c'è un budget su questo. ${listAnswer(all)}`;
-		const loaded = await load(ctx, day);
+		if (found.list.length === 0) {
+			// Another agente asking for a supplier: whether there is a budget on it, nothing else.
+			if (agent && args.supplier !== undefined) return "Non c'è un budget su questo.";
+			return `Non c'è un budget su questo. ${listAnswer(all, agent)}`;
+		}
+		const loaded = found.loaded ?? (await load(ctx, day));
 		return statusAnswer(
 			found.list.map((b) => progressOf(b, loaded.facts, day)),
-			{ agent, notes: loaded.notes },
+			{ agent, notes: loaded.notes, hasAll: all.some((b) => b.subject.kind === "all") },
 		);
 	}
 

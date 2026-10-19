@@ -8,7 +8,11 @@
  * - one category: the expenses of that category dated in the span (expense-sums.ts totalsOf). A
  *   supplier invoice paid without an expense has no category: it counts only in everything spent
  *   and in its supplier's budget, and that is said.
- * - one supplier: what was spent with it (supplier-sums.ts spentIn), the same rule.
+ * - one supplier: what was spent with it, the suppliers tool's way (supplier-find.ts
+ *   loadSuppliers, supplier-sums.ts spentIn): its invoices paid, with the payments the bank
+ *   statement confirmed, and its expenses, each payment once. So a supplier's budget says what
+ *   the suppliers tool says, while everything spent says what the business report says (which
+ *   counts no bank confirmation): the two can differ by the payments only the bank confirmed.
  * - incassato and fatturato: the business report's (figuresIn): the money in by the day it was
  *   paid, IVA included, credit notes used less; the imponibile of the invoices issued by their
  *   date, credit notes less.
@@ -24,7 +28,7 @@ import { currentMonth, type Period, readPeriod } from "./periods.ts";
 import { halfUp } from "./quote-sums.ts";
 import { type Ledger, spentIn, type Supplier } from "./supplier-sums.ts";
 
-/** What the figures are read from: the business report's sources, the suppliers and their ledger, and how a budget's supplier is found again. */
+/** What the figures are read from: the business report's sources, the suppliers' ledger (with the bank's confirmations), and how a budget's supplier is found again. */
 export type BudgetFacts = {
 	readonly sources: Sources;
 	readonly ledger: Ledger;
@@ -126,5 +130,6 @@ export function behind(p: Progress): boolean {
 export function alertsOf(p: Progress): AlertLevel[] {
 	if (p.notYet === true || p.actual === undefined) return [];
 	if (isIncome(p.budget.subject)) return behind(p) ? ["behind"] : [];
-	return ALERT_PERCENTS.filter((n) => p.actual !== undefined && p.actual * 100n >= p.target * BigInt(n)).map((n) => String(n) as AlertLevel);
+	// Past 80% at 80% and over; superato only past the amount: exactly the amount is reached, not exceeded.
+	return ALERT_PERCENTS.filter((n) => p.actual !== undefined && (n === 100 ? p.actual > p.target : p.actual * 100n >= p.target * BigInt(n))).map((n) => String(n) as AlertLevel);
 }

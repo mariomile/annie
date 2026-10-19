@@ -4,6 +4,7 @@
  * referenti, notes, renewals' names), the totals and the ranking cut for another agente, the
  * late payments, the brief's line, the CSV. Text for the person never names an op or a parameter.
  */
+import { twinsLine } from "../supplier-find.ts";
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { euros, n1 } from "../format-words.ts";
 import { capitalized, italianDate, withDate, withPercent } from "../italian-format.ts";
@@ -36,9 +37,6 @@ const afterInvoice = (n: number) => (n === 0 ? "il giorno stesso della fattura" 
 
 /** «1 rata pagata dopo la scadenza su 2», «3 rate pagate dopo la scadenza su 5». */
 const paidAfter = (late: number, of: number) => (late === 1 ? `1 rata pagata dopo la scadenza su ${of}` : `${late} rate pagate dopo la scadenza su ${of}`);
-
-/** Payments of invoices that may be an expense too: both counted, said. */
-const twinsLine = (n: number) => `${n1(n, "Un pagamento di fattura potrebbe", "# pagamenti di fatture potrebbero")} essere anche una spesa registrata: ${n === 1 ? "l'ho contato" : "li ho contati"} una volta come fattura e una come spesa. Controlla se sono gli stessi soldi.`;
 
 /** What the card holds, to be fenced: name, tax ids, IBAN, referenti, notes. */
 export function supplierCardLines(s: Supplier, f: (Pick<SupplierFigures, "iban" | "renewals"> & { readonly impostor?: SupplierFigures["impostor"] }) | undefined, today: string): string[] {

@@ -4,16 +4,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
+import type { BankMatch, BankMovement } from "../src/core/bank.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { BudgetStore } from "../src/core/budget-store.ts";
 import { periodFor } from "../src/core/budget-sums.ts";
-import { budgetAgentReads, budgetCallReads } from "../src/core/budgets.ts";
+import { budgetAgentReads, budgetCallReads, subjectKey } from "../src/core/budgets.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import type { Expense } from "../src/core/expenses.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { register } from "../src/core/invoices.ts";
+import type { Renewal } from "../src/core/renewals.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import type { SalesBook } from "../src/core/sales-invoice-store.ts";
 import { type BudgetEvent, createBudgetTools } from "../src/core/tools/budget-tools.ts";
@@ -108,7 +110,7 @@ const EXPENSES = (): Expense[] => [
 
 const salesBook = (): SalesBook => ({ next: {}, nextDraft: 1, nextFile: 1, invoices: [], calls: [], broken: false }) as unknown as SalesBook;
 
-async function setup(o: { expenses?: Expense[]; files?: Record<string, string> } = {}) {
+async function setup(o: { expenses?: Expense[]; files?: Record<string, string>; renewals?: Renewal[]; bank?: { movements: BankMovement[]; matches: BankMatch[] } } = {}) {
 	const dir = temp();
 	const root = join(dir, "workspace");
 	mkdirSync(root, { recursive: true });
@@ -122,8 +124,10 @@ async function setup(o: { expenses?: Expense[]; files?: Record<string, string> }
 	invoices.setCompany(company);
 	const scanner = new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) });
 	const scan = await scanner.scan(new AbortController().signal);
+	const keys = new Map<string, string>();
 	for (const i of register(scan.invoices, [], company)) {
 		const number = i.doc.number ?? "";
+		keys.set(number, i.key);
 		const all = PAID[number];
 		if (all !== undefined) invoices.mark({ invoice: i.key, count: i.instalments.length, paid: true, by: "test:u", at: all });
 		for (const [key, at] of Object.entries(PAID)) {
@@ -142,6 +146,8 @@ async function setup(o: { expenses?: Expense[]; files?: Record<string, string> }
 		scanner,
 		sales: { read: salesBook },
 		expenses: { read: () => ({ expenses, broken: false }) as never },
+		renewals: { read: () => ({ renewals: o.renewals ?? [], broken: false }) },
+		...(o.bank === undefined ? {} : { bank: { read: () => ({ next: { movement: 9, import: 2 }, movements: o.bank?.movements ?? [], imports: [], matches: o.bank?.matches ?? [], calls: [], broken: false }) as never } }),
 		timeZone: "Europe/Rome",
 		whoIs: () => "test:u",
 		record: async (e) => {
@@ -157,6 +163,7 @@ async function setup(o: { expenses?: Expense[]; files?: Record<string, string> }
 		store,
 		events,
 		expenses,
+		keys,
 		file: join(dir, "budgets.json"),
 		at: (iso: string) => {
 			clock.now = new Date(iso);
@@ -216,7 +223,7 @@ describe("budgets: set, replace, remove", () => {
 	it("«marketing» is not a category: the categories are said, and nothing is saved", async () => {
 		const s = await setup();
 		const answer = await s.run({ op: "set", target: "marketing", amount: "500" });
-		expect(answer).toContain("non è una delle categorie delle spese (carburante, auto e veicoli,");
+		expect(answer).toContain("Errore: questa non è una delle categorie delle spese (carburante, auto e veicoli,");
 		expect(answer).toContain("per un fornitore solo, dimmi il fornitore");
 		expect(existsSync(s.file)).toBe(false);
 		expect(await s.run({ op: "set", target: "software", amount: "-5" })).toContain("non è negativo");
@@ -233,7 +240,14 @@ describe("budgets: what is counted", () => {
 		await s.run({ op: "set", target: "software", amount: "300" });
 		const answer = await s.run({ op: "status", target: "software" });
 		expect(answer).toContain("spesi 304,00 € su 300,00 € (101%)");
-		expect(answer).toContain("Nelle categorie conto le spese registrate: una fattura di un fornitore pagata senza una spesa non ha categoria e qui non c'è (le conta il budget su tutte le spese).");
+		expect(answer).toContain("Una fattura di fornitore pagata senza una spesa registrata non ha categoria, quindi non entra nei budget per categoria.");
+		expect(answer).not.toContain("La conta il budget su tutte le spese");
+		// With a budget on all the spending: where it is counted, said once for all the category budgets.
+		await s.run({ op: "set", target: "tutto", amount: "1000" });
+		await s.run({ op: "set", target: "carburante", amount: "100" });
+		const both = await s.run({ op: "status" });
+		expect(both.split("\n")[1]).toBe("Una fattura di fornitore pagata senza una spesa registrata non ha categoria, quindi non entra nei budget per categoria. La conta il budget su tutte le spese.");
+		expect(both.match(/non ha categoria/g)).toHaveLength(1);
 	});
 
 	it("all the spending: each payment once, A-1 with its expense once, A-2 and the 244 under another name both counted and said", async () => {
@@ -242,7 +256,8 @@ describe("budgets: what is counted", () => {
 		const answer = await s.run({ op: "status", target: "tutte le spese" });
 		// 122 + 50 + 244 + 60 expenses + A-2 244 paid with no expense.
 		expect(answer).toContain("Tutte le spese (BU-0001), ottobre 2026 fino a oggi: spesi 720,00 € su 1.000,00 € (72%), restano 280,00 €.");
-		expect(answer).toContain("Un pagamento di fattura potrebbe essere anche una spesa registrata con un altro nome: l'ho contato due volte. Controlla se sono gli stessi soldi.");
+		expect(answer).toContain("Un pagamento di fattura potrebbe essere anche una spesa registrata: l'ho contato una volta come fattura e una come spesa. Controlla se sono gli stessi soldi.");
+		expect(answer).not.toContain("due volte");
 	});
 
 	it("a supplier, found by name or partita IVA; a name two suppliers have is asked, its names in the fence", async () => {
@@ -267,14 +282,22 @@ describe("budgets: what is counted", () => {
 	it("«come vado con l'obiettivo di 60.000 € di fatturato quest'anno?»: the business report's fatturato, the credit note less, the monthly pace", async () => {
 		const s = await setup();
 		const made = await s.run({ op: "set", target: "fatturato", amount: "60.000" });
-		expect(made).toContain("Fatto, nuovo obiettivo BU-0001: obiettivo di fatturato, 60.000,00 € all'anno.");
+		expect(made).toContain("Fatto, nuovo obiettivo BU-0001: fatturato, 60.000,00 € all'anno.");
 		const answer = await s.run({ op: "status", target: "fatturato" });
 		// FV-1 1.000 + FV-2 500 + FV-3 2.000 less NC-1 100.
 		expect(answer).toContain("Obiettivo di fatturato (BU-0001), 2026 fino a oggi: 3.400,00 € su 60.000,00 € (6%), mancano 56.600,00 €.");
-		expect(answer).toContain("a questo ritmo non ci arrivi");
+		// 3.400 in 291 days of 365.
+		expect(answer).toContain("Stima a fine anno, al ritmo tenuto finora: 4.264,60 €, cioè 55.735,40 € sotto l'obiettivo. A questo ritmo non ci arrivi.");
 		expect(answer).toContain("Per arrivarci servono 18.866,67 € al mese da qui a dicembre (3 mesi, questo compreso).");
 		expect(answer).toContain(MEASURE_NOTES.fatturato);
-		expect(answer).toContain("Le stime vanno in linea retta con il ritmo dei giorni passati: sono indicative.");
+		expect(answer).toContain("Le stime allungano a tutto il periodo quello che è successo finora: sono indicative, e una spesa fatta una volta sola le fa sembrare più alte.");
+		// In December, the last month: what is missing by the end of the year.
+		s.at("2026-12-10T08:00:00Z");
+		expect(await s.run({ op: "status", target: "fatturato" })).toContain("Per arrivarci servono 56.600,00 € entro fine anno.");
+		// On a lower target, in line.
+		s.at(NOW.toISOString());
+		await s.run({ op: "set", target: "fatturato", amount: "3000" });
+		expect(await s.run({ op: "status", target: "fatturato" })).toContain("Stima a fine anno, al ritmo tenuto finora: 4.264,60 €, cioè 1.264,60 € sopra l'obiettivo. Sei in linea per arrivarci.");
 	});
 
 	it("incassato: money in by the Rome day it was paid, IVA included", async () => {
@@ -307,10 +330,12 @@ describe("budgets: periods and the estimate", () => {
 		s.at("2026-10-18T08:00:00Z");
 		const middle = await s.run({ op: "status", target: "carburante" });
 		// 50 in 18 days, times 31.
-		expect(middle).toContain("Stima a fine mese, al ritmo di questi 18 giorni: 86,11 €, dentro il budget.");
+		expect(middle).toContain("Stima a fine mese, se continui a questo ritmo: 86,11 €, dentro il budget.");
+		await s.run({ op: "set", target: "carburante", amount: "60" });
+		expect(await s.run({ op: "status", target: "carburante" })).toContain("Stima a fine mese, se continui a questo ritmo: 86,11 €, cioè 26,11 € oltre il budget.");
 		s.at("2026-10-31T20:00:00Z");
 		const end = await s.run({ op: "status", target: "carburante" });
-		expect(end).toContain("Carburante (BU-0001), ottobre 2026: spesi 50,00 € su 100,00 € (50%), restano 50,00 €.");
+		expect(end).toContain("Carburante (BU-0001), ottobre 2026: spesi 50,00 € su 60,00 € (83%), restano 10,00 €.");
 		expect(end).toContain("Il mese finisce oggi.");
 		expect(end).not.toContain("Stima");
 	});
@@ -323,7 +348,7 @@ describe("budgets: periods and the estimate", () => {
 		await s.run({ op: "set", target: "tutto", amount: "3000", every: "trimestre" });
 		const quarter = await s.run({ op: "status", target: "tutto" });
 		expect(quarter).toContain("Tutte le spese (BU-0001), 4º trimestre 2026 fino a oggi: spesi 720,00 €");
-		expect(quarter).toContain("Stima a fine trimestre, al ritmo di questi 18 giorni:");
+		expect(quarter).toContain("Stima a fine trimestre, se continui a questo ritmo:");
 		await s.run({ op: "set", target: "incassato", amount: "1000", every: "month" });
 		// 23:30 UTC of 30 September is 01:30 of 1 October in Rome: October's first day, FV-1 paid at 00:30 is in.
 		s.at("2026-09-30T23:30:00Z");
@@ -357,25 +382,25 @@ describe("budgets: the brief and another agente", () => {
 		const s = await setup();
 		await s.run({ op: "set", target: "tutto", amount: "800" });
 		const first = await s.run({ op: "status", compact: true });
-		expect(first).toContain("Budget: il budget su tutte le spese del mese è oltre l'80% (90%).");
+		expect(first).toContain("Budget oltre l'80%: tutte le spese questo mese (90%).");
 		expect(first).toContain("non ripetere la riga dell'andamento dell'attività");
 		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
 		s.expenses.push(expense("S-2026-0006", "2026-10-17", "100", { category: "attrezzatura" }));
 		const over = await s.run({ op: "status", compact: true });
-		expect(over).toContain("Budget: il budget su tutte le spese del mese è superato (103%).");
+		expect(over).toContain("Budget superato: tutte le spese questo mese (103%).");
 		expect(over).not.toContain("80%");
 		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
 		// November: a new period, said again once past the threshold.
 		s.expenses.push(expense("S-2026-0007", "2026-11-02", "900", { category: "attrezzatura" }));
 		s.at("2026-11-03T08:00:00Z");
 		const next = await s.run({ op: "status", compact: true });
-		expect(next).toContain("superato (113%)");
+		expect(next).toContain("Budget superato: tutte le spese questo mese (113%).");
 		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
 		// A target behind pace in the last third of the year.
 		s.at(NOW.toISOString());
 		await s.run({ op: "set", target: "fatturato", amount: "60000" });
 		const behind = await s.run({ op: "status", compact: true });
-		expect(behind).toContain("l'obiettivo di fatturato dell'anno è indietro: stima");
+		expect(behind).toContain("L'obiettivo di fatturato di quest'anno è indietro: a questo ritmo a fine anno arriva a 4.264,60 € su 60.000,00 €.");
 		expect(behind).not.toContain("tutte le spese");
 		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
 		const claims = JSON.parse(readFileSync(s.file, "utf8")).alerts as { level: string; period: string }[];
@@ -384,23 +409,49 @@ describe("budgets: the brief and another agente", () => {
 		expect(s.events.map((e) => e.op)).toEqual(["set", "set"]);
 	});
 
-	it("a supplier's budget in the brief: no name in the line, the name in the fence; a budget changed is said again", async () => {
+	it("a supplier's budget in the brief: no name in the line, the name in the fence; a budget changed is said again only past the level again", async () => {
 		const s = await setup();
 		await s.run({ op: "set", supplier: SUPPLIER.name, amount: "300" });
 		const line = await s.run({ op: "status", compact: true });
-		expect(outside(line)).toContain("Budget: il budget di un fornitore del mese è superato (122%). Il fornitore è nel riquadro.");
+		expect(outside(line)).toContain("Budget superato: un fornitore questo mese (122%). Il fornitore è nel riquadro.");
 		expect(outside(line)).not.toContain("Fornitore Tre");
 		expect(inside(line)).toContain(SUPPLIER.name);
 		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
+		// The same budget said again: nothing written, nothing audited, its alerts still said.
+		const before = readFileSync(s.file, "utf8");
+		expect(await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "300" })).toContain("Il budget BU-0001: un fornitore (nel riquadro), 300,00 € al mese era già così: non ho cambiato niente.");
+		expect(readFileSync(s.file, "utf8")).toBe(before);
+		expect(s.events).toHaveLength(1);
+		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
+		// Raised but still past it: still said.
 		await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "350" });
-		expect(await s.run({ op: "status", compact: true })).toContain("superato (105%)");
+		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
+		// Raised under it: the 80% stays said, the 100% goes, and comes back when lowered past it again.
+		await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "400" });
+		expect(await s.run({ op: "status", compact: true })).toBe(BRIEF_NOTHING);
+		await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "360" });
+		expect(outside(await s.run({ op: "status", compact: true }))).toContain("Budget superato: un fornitore questo mese (102%).");
+		const claims = JSON.parse(readFileSync(s.file, "utf8")).alerts as { level: string }[];
+		expect(claims.map((c) => c.level)).toEqual(["80", "100"]);
+	});
+
+	it("exactly the amount is reached, not exceeded: in the status, the overview and the brief", async () => {
+		const s = await setup();
+		await s.run({ op: "set", target: "carburante", amount: "50" });
+		await s.run({ op: "set", target: "software", amount: "300" });
+		const status = await s.run({ op: "status" });
+		expect(status.split("\n")[0]).toBe("Superato: software e abbonamenti. Raggiunto: carburante.");
+		expect(status).toContain("Carburante (BU-0001), ottobre 2026 fino a oggi: spesi 50,00 € su 50,00 € (100%), budget raggiunto.");
+		expect(await s.run({ op: "status", compact: true })).toContain("Budget superato: software e abbonamenti questo mese (101%). Budget raggiunto: carburante questo mese (100%).");
+		const claims = JSON.parse(readFileSync(s.file, "utf8")).alerts as { budget: string; level: string }[];
+		expect(claims.filter((c) => c.budget === "BU-0001").map((c) => c.level)).toEqual(["80"]);
 	});
 
 	it("in the brief's thread it reads and claims; setting is refused; the instruction names it within the limit", async () => {
 		const s = await setup();
 		await s.run({ op: "set", target: "software", amount: "300" });
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		expect(String(await briefed?.execute({ op: "status", compact: true }, fresh()))).toContain("Budget: il budget di software e abbonamenti del mese è superato (101%).");
+		expect(String(await briefed?.execute({ op: "status", compact: true }, fresh()))).toContain("Budget superato: software e abbonamenti questo mese (101%).");
 		expect(String(await briefed?.execute({ op: "set", target: "carburante", amount: 5 }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(budgetCallReads({ op: "status", compact: true })).toBe(true);
 		expect(budgetCallReads({ op: "export" })).toBe(false);
@@ -485,5 +536,99 @@ describe("budgets: the file, reruns and the audit", () => {
 		expect(existsSync(`${s.file}.bak`)).toBe(true);
 		// The audit: the op and how many, nothing of what a budget is on.
 		for (const e of s.events) expect(Object.keys(e).sort()).toEqual(["count", "op", "type"]);
+	});
+});
+
+describe("budgets: review fixes", () => {
+	it("another agente asking for a supplier: whether there is a budget, never candidates, names or the words said", async () => {
+		const s = await setup();
+		await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "500" });
+		await s.run({ op: "set", target: "software", amount: "300" });
+		for (const said of ["Rossi", "Nessuno Tale", ROSSI1.vat]) {
+			const answer = await s.run({ op: "status", supplier: said }, agent());
+			expect(answer).toBe("Non c'è un budget su questo.");
+		}
+		const mine = await s.run({ op: "status", supplier: "Fornitore Tre" }, agent());
+		expect(mine).toContain("Un fornitore (BU-0001), ottobre 2026 fino a oggi: spesi 366,00 € su 500,00 € (73%)");
+		expect(mine).not.toContain("Fornitore Tre");
+		expect(fences(mine)).toHaveLength(0);
+		// A target with no budget: the list, with no supplier's name and no fence.
+		const none = await s.run({ op: "status", target: "carburante" }, agent());
+		expect(none).toContain("Non c'è un budget su questo. Ci sono 2 budget:");
+		expect(none).toContain("• BU-0001: un fornitore, 500,00 € al mese");
+		expect(none).not.toContain("riquadro");
+		expect(none).not.toContain(SUPPLIER.name);
+		expect(none).not.toContain(SUPPLIER.vat);
+		expect(fences(none)).toHaveLength(0);
+		// The person, in their own thread: the list with the name in the fence.
+		expect(inside(await s.run({ op: "status", target: "carburante" }))).toContain(SUPPLIER.name);
+	});
+
+	it("a supplier's budget counts like the suppliers tool: a payment only the bank confirmed counts; all the spending stays the business report's", async () => {
+		const files = { ...FILES, "f/a3.xml": xml(SUPPLIER, COMPANY, { number: "A-3", date: "2026-10-05", rows: [r22("100.00")], due: "2026-10-15" }) };
+		const first = await setup({ files });
+		const key = first.keys.get("A-3") as string;
+		const movement: BankMovement = { id: "B-000001", hash: "h1", seq: 1, date: "2026-10-15", amount: "-122", description: "BONIFICO", importId: "I-0001" };
+		const match: BankMatch = { movement: "B-000001", state: "confirmed", kind: "invoice_in", target: key, instalment: 1, label: "A-3", by: "test:u", at: NOW.toISOString() };
+		const s = await setup({ files, bank: { movements: [movement], matches: [match] } });
+		await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "500" });
+		await s.run({ op: "set", target: "tutto", amount: "1000" });
+		const answer = await s.run({ op: "status" });
+		// 122 (A-1's expense) + 244 (A-2) + 122 (A-3, confirmed by the bank only).
+		expect(answer).toContain("Un fornitore (BU-0001, nel riquadro), ottobre 2026 fino a oggi: spesi 488,00 €");
+		expect(answer).toContain("Tutte le spese (BU-0002), ottobre 2026 fino a oggi: spesi 720,00 €");
+		// Without the bank, A-3 is not paid.
+		await first.run({ op: "set", supplier: SUPPLIER.vat, amount: "500" });
+		expect(await first.run({ op: "status" })).toContain("spesi 366,00 €");
+	});
+
+	it("a supplier only in the renewals is found", async () => {
+		const renewal = { id: "R-0001", name: "Abbonamento grafica", provider: "Grafica Prova", category: "software e abbonamenti", amount: "60", months: 1, due: "2026-11-01", day: 1, autoRenew: true, status: "active", by: "test:u", at: NOW.toISOString() } as unknown as Renewal;
+		const s = await setup({ renewals: [renewal] });
+		const made = await s.run({ op: "set", supplier: "Grafica Prova", amount: "100" });
+		expect(outside(made)).toContain("Fatto, nuovo budget BU-0001: un fornitore (nel riquadro), 100,00 € al mese.");
+		expect(inside(made)).toContain("BU-0001: Grafica Prova");
+		expect(await (await setup()).run({ op: "set", supplier: "Grafica Prova", amount: "100" })).toContain("Non trovo questo fornitore tra schede, fatture ricevute, spese e rinnovi:");
+	});
+
+	it("replacing keeps the start unless a new one is said, or cleared", async () => {
+		const s = await setup();
+		await s.run({ op: "set", target: "formazione", amount: "200", start: "novembre" });
+		expect(await s.run({ op: "set", target: "formazione", amount: "250" })).toContain("Fatto, ho aggiornato il budget BU-0001: formazione, 250,00 € al mese, dal 1º novembre 2026.");
+		expect(JSON.parse(readFileSync(s.file, "utf8")).budgets[0].start).toBe("2026-11-01");
+		expect(await s.run({ op: "set", target: "formazione", amount: "250", start: "dicembre" })).toContain("dal 1º dicembre 2026");
+		const cleared = await s.run({ op: "set", target: "formazione", amount: "250", start: "subito" });
+		expect(cleared).toContain("Fatto, ho aggiornato il budget BU-0001: formazione, 250,00 € al mese.");
+		expect(JSON.parse(readFileSync(s.file, "utf8")).budgets[0].start).toBeUndefined();
+	});
+
+	it("a budget kept by a supplier's name is the same target once that name groups with a partita IVA", async () => {
+		const s = await setup();
+		// Set when only the name was known.
+		s.store.update("old", (st) => ({ nextId: 2, budgets: [...st.budgets, { id: "BU-0001", subject: { kind: "supplier", name: "fornitore tre srl" }, amount: "300", every: "month", by: "test:u", at: NOW.toISOString() }] }));
+		const replaced = await s.run({ op: "set", supplier: SUPPLIER.vat, amount: "500" });
+		expect(outside(replaced)).toContain("Fatto, ho aggiornato il budget BU-0001: un fornitore (nel riquadro), 500,00 € al mese.");
+		const book = JSON.parse(readFileSync(s.file, "utf8"));
+		expect(book.budgets).toHaveLength(1);
+		expect(book.budgets[0].subject.vat).toBe(`IT${SUPPLIER.vat}`);
+		expect(subjectKey({ kind: "supplier", name: "Rossi  SRL" })).toBe(subjectKey({ kind: "supplier", name: "rossi srl" }));
+	});
+
+	it("a remove run again with its steps lost removes nothing and audits nothing", async () => {
+		const s = await setup();
+		await s.run({ op: "set", target: "carburante", amount: "100" });
+		expect(await s.run({ op: "remove", id: "BU-0001" }, fresh("rm-x"))).toBe("Fatto, ho tolto il budget BU-0001: carburante, 100,00 € al mese.");
+		expect(await s.run({ op: "remove", id: "BU-0001" }, fresh("rm-x"))).toBe("Fatto, il budget è tolto.");
+		expect(s.events.map((e) => e.op)).toEqual(["set", "remove"]);
+	});
+
+	it("routing: business_report and the expenses send limits and targets to budgets", async () => {
+		const { createBusinessReportTools } = await import("../src/core/tools/business-report-tools.ts");
+		const { createExpenseTools } = await import("../src/core/tools/expense-tools.ts");
+		const dir = temp();
+		const report = createBusinessReportTools({ workspace: new Workspace(dir), invoices: new InvoiceStore(dir), expenses: { read: () => ({ expenses: [], broken: false }) as never }, timeZone: "Europe/Rome" } as never)[0];
+		expect(report?.description).toContain("A limit or target the person set (budget, obiettivo) is budgets.");
+		const expenses = createExpenseTools({ workspace: new Workspace(dir), store: { read: () => ({ expenses: [], broken: false }) } } as never)[0];
+		expect(expenses?.description).toContain("Spending against a budget the person set → budgets status.");
 	});
 });

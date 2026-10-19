@@ -43,26 +43,30 @@ export class BudgetStore {
 
 	/**
 	 * Under the lock, once per `callId`: `change` gets the state as saved now and gives the new one
-	 * (the same object: nothing to write). Returns false when the call wrote already (run again),
-	 * and then nothing changes. The alerts of a budget gone, or changed (a new object for its id),
-	 * go with it: a budget changed is said again against what it is now. BudgetError from `change`
-	 * stops it with nothing written.
+	 * (the same object: nothing to write, "unchanged"). "rerun" when the call wrote already, and
+	 * then nothing changes. The alerts of a budget gone go with it; those of a budget changed (a new
+	 * object for its id) stay only where `keep` says so (a raised amount still past that level).
+	 * BudgetError from `change` stops it with nothing written.
 	 */
-	update(callId: string, change: (state: BudgetState) => BudgetState): boolean {
-		let fresh = false;
+	update(callId: string, change: (state: BudgetState) => BudgetState, keep: (claim: AlertClaim) => boolean = () => false): "written" | "rerun" | "unchanged" {
+		let outcome: "written" | "rerun" | "unchanged" = "unchanged";
 		updateBook(this.book, (book) => {
-			if (book.calls.includes(callId)) return book;
+			if (book.calls.includes(callId)) {
+				outcome = "rerun";
+				return book;
+			}
 			const state: BudgetState = { nextId: book.nextId, budgets: book.budgets };
 			const next = change(state);
 			if (next === state) return book;
-			fresh = true;
-			const kept = new Set(next.budgets.filter((b) => book.budgets.includes(b)).map((b) => b.id));
-			const alerts = book.alerts.filter((a) => kept.has(a.budget));
+			outcome = "written";
+			const ids = new Set(next.budgets.map((b) => b.id));
+			const same = new Set(next.budgets.filter((b) => book.budgets.includes(b)).map((b) => b.id));
+			const alerts = book.alerts.filter((a) => ids.has(a.budget) && (same.has(a.budget) || keep(a)));
 			const made: Book = { nextId: next.nextId, budgets: next.budgets, alerts, calls: [...book.calls, callId].slice(-BUDGET_LIMITS.calls) };
 			if (validBook(made) === undefined) throw new BudgetError("il budget non è valido: non l'ho salvato");
 			return made;
 		});
-		return fresh;
+		return outcome;
 	}
 
 	/**

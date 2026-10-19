@@ -335,7 +335,8 @@ describe("suppliers: IBAN checked against what was paid, not the dates a file wr
 		const s = await setup({ files: { "f/u1.xml": rec(UNO, "U-1", "2026-10-01", "300.00", "2026-10-31", IBAN_A), "f/f1.xml": forged("F-1"), "f/f2.xml": forged("F-2") }, paid: {} });
 		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno S.r.l." });
 		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-1: ${IBAN_A}`);
-		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura F-1: ${IBAN_B}`);
+		// F-1 and F-2 share the date, the amount and the IBAN: either is the one named, by the order the files are read in.
+		expect(inside(uno)).toMatch(new RegExp(`IBAN da verificare sulla fattura F-[12]: ${IBAN_B}`));
 		expect(outside(uno)).toContain("hanno IBAN diversi tra loro");
 		const csv = await s.run({ op: "export" }, durable("exp-probe"));
 		expect(csv).toContain("Salvato");
