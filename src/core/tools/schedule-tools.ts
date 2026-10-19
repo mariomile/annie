@@ -119,7 +119,7 @@ export function schedulesOf(options: ScheduleToolsOptions): { readonly tools: An
 			name: "schedule_create",
 			description:
 				"Schedule an instruction for yourself to run later, once (at) or repeatedly (cron), with the result sent to this conversation. " +
-				"Use it for reminders and recurring reports; to be told when a page or a price changes, use watch_create instead. cron has 5 fields in the given time zone, e.g. '30 8 * * 1-5' = weekdays at 8:30.",
+				"Use it for reminders and recurring reports; to be told when a page or a price changes, use watch_create instead; for an invoice that repeats to a customer, use recurring_invoices, not this. cron has 5 fields in the given time zone, e.g. '30 8 * * 1-5' = weekdays at 8:30.",
 			parameters: {
 				type: "object",
 				properties: {

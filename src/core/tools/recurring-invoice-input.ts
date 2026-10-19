@@ -8,10 +8,11 @@
 import { validIban } from "../iban.ts";
 import { fold } from "../text-match.ts";
 import { PeriodError, readPeriod } from "../periods.ts";
-import { type ListSource, listLines } from "../price-list-lines.ts";
+import { forfettarioOf, type ListSource, listLines } from "../price-list-lines.ts";
 import { lineCents } from "../quote-sums.ts";
-import { CADENCE_NAMES, type Cadence, type DueDay, RECURRING_LIMITS, type RecurringLine, type RecurringTerms, type Schedule } from "../recurring-invoices.ts";
-import { FIELD_LIMITS, MAX_PAYMENT_DAYS, RITENUTA_CAUSALI } from "../sales-invoice-rules.ts";
+import { CADENCE_NAMES, type Cadence, type DueDay, hasPlaceholder, longestFilled, longestLabel, RECURRING_LIMITS, type RecurringLine, type RecurringTerms, type Schedule } from "../recurring-invoices.ts";
+import type { Natura } from "../sales-invoice-rules.ts";
+import { FIELD_LIMITS, MAX_PAYMENT_DAYS, naturaWords, RITENUTA_CAUSALI } from "../sales-invoice-rules.ts";
 import { cleanText, isProblem, type Problem } from "../text-input.ts";
 import { fitsLatin, readCassa, readLines, readNatura, readPayment, readVatRate } from "./sales-invoice-input.ts";
 
@@ -36,15 +37,20 @@ export function readCadence(value: unknown): Cadence | undefined | Problem {
 
 const DAY_PROBLEM = "il giorno va da 1 a 28, oppure «fine mese» (così vale anche a febbraio)";
 
-/** The day of the month the draft is due: 1 to 28, or the last («fine mese»). */
-export function readDay(value: unknown): DueDay | undefined | Problem {
+/** A day 29 to 31: not in every month, so asked. */
+export const lateDay = (n: number) => `Il ${n} non c'è in tutti i mesi: la preparo l'ultimo giorno del mese? (oppure dimmi un giorno da 1 a 28)`;
+
+/** The day of the month the draft is due: 1 to 28, or the last («fine mese»); «il 5», «il 5 di ogni mese», «5 del mese» read too. */
+export function readDay(value: unknown): DueDay | undefined | Problem | { readonly ask: string } {
 	if (value === undefined) return undefined;
 	if (typeof value === "string") {
 		const t = fold(value).replace(/\s+/g, " ").trim();
-		if (/^(?:end|fine mese|a fine mese|l'ultimo|ultimo|ultimo giorno|l'ultimo giorno|ultimo del mese|l'ultimo del mese)$/.test(t)) return "end";
-		if (!/^\d{1,2}$/.test(t)) return { problem: DAY_PROBLEM };
-		value = Number(t);
+		if (/^(?:end|(?:a |il |l')?fine (?:del )?mese|(?:l')?ultimo(?: giorno)?(?: del mese| di ogni mese)?)$/.test(t)) return "end";
+		const m = /^(?:ogni |il |l')?(\d{1,2})\s*[°º]?(?: (?:di ogni mese|del mese|di ogni|ogni mese))?$/.exec(t);
+		if (m === null) return { problem: DAY_PROBLEM };
+		value = Number(m[1]);
 	}
+	if (typeof value === "number" && Number.isInteger(value) && value >= 29 && value <= 31) return { ask: lateDay(value) };
 	if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 28) return { problem: DAY_PROBLEM };
 	return value;
 }
@@ -53,8 +59,8 @@ const NONE = /^(?:mai|nessuna|nessuno|senza|senza fine|niente|no)$/;
 
 /**
  * A month as said, «2026-10», «10/2026», «ottobre», «ottobre 2027», «2027»: the next one when no
- * year is said (it is of the future). `edge`: the period's first month (a start) or last (an end).
- * null for «mai» when `clearable`.
+ * year is said (it is of the future). `edge`: the period's first
+ * month (a start) or last (an end). null for «mai» when `clearable`.
  */
 export function readMonth(value: unknown, today: string, edge: "first" | "last", what: string, clearable = false): string | null | undefined | Problem {
 	if (value === undefined) return undefined;
@@ -72,6 +78,27 @@ export function readMonth(value: unknown, today: string, edge: "first" | "last",
 	}
 }
 
+/**
+ * The first month, and the day when it leads it: «1 novembre», «dal 1° novembre», «il 5 ottobre»
+ * (the day only when the person did not say one on its own).
+ */
+export function readStart(value: unknown, today: string): { readonly month?: string; readonly day?: number | { readonly ask: string } } | Problem {
+	if (value === undefined) return {};
+	if (typeof value !== "string") return readMonthOnly(value, today);
+	const m = /^\s*(?:(?:dal|da|il|a partire dal)\s+)?(\d{1,2})\s*[°º]?\s+(?!\d{4}\b)(.+)$/i.exec(value);
+	if (m === null) return readMonthOnly(value.replace(/^\s*(?:dal|da|a partire da)\s+/i, ""), today);
+	const n = Number(m[1]);
+	const month = readMonth(m[2], today, "first", "il primo mese");
+	if (isProblem(month) || month === null) return month === null ? { problem: "il primo mese: dimmi da quale mese" } : month;
+	return { ...(month === undefined ? {} : { month }), day: n >= 1 && n <= 28 ? n : n <= 31 ? { ask: lateDay(n) } : { ask: DAY_PROBLEM } };
+}
+
+function readMonthOnly(value: unknown, today: string): { readonly month?: string } | Problem {
+	const month = readMonth(value, today, "first", "il primo mese");
+	if (isProblem(month)) return month;
+	return month === undefined || month === null ? {} : { month };
+}
+
 /** How many invoices in all: 1 to the limit; null for «mai» (no limit). */
 export function readCount(value: unknown): number | null | undefined | Problem {
 	if (value === undefined) return undefined;
@@ -81,18 +108,18 @@ export function readCount(value: unknown): number | null | undefined | Problem {
 	return n;
 }
 
-/** The longest «{periodo}» there is, to leave room for it. */
-const LONGEST_LABEL = "novembre 2026 - gennaio 2027";
-
 /** The note as said, with {mese} and {periodo} when wanted; null for «niente» (no note). */
 export function readNote(value: unknown): string | null | undefined | Problem {
 	if (value === undefined) return undefined;
 	if (typeof value === "string" && NONE.test(fold(value).trim())) return null;
-	const note = cleanText(value, RECURRING_LIMITS.note, "la nota");
-	if (isProblem(note) || note === undefined) return note;
-	const longest = note.replaceAll("{mese}", LONGEST_LABEL).replaceAll("{periodo}", LONGEST_LABEL);
-	if (!fitsLatin(longest, FIELD_LIMITS.causale)) return { problem: `la nota è troppo lunga per la fattura, con il periodo messo dentro (al massimo ${FIELD_LIMITS.causale} caratteri)` };
+	const note = cleanText(value, RECURRING_LIMITS.note, "il testo della nota");
 	return note;
+}
+
+/** Whether the note fits the invoice with the longest period of the cadence put in. */
+export function noteProblem(note: string | undefined, cadence: Cadence): Problem | undefined {
+	if (note === undefined || fitsLatin(longestFilled(note, cadence), FIELD_LIMITS.causale)) return undefined;
+	return { problem: `la nota è troppo lunga per la fattura, con il periodo messo dentro (al massimo ${FIELD_LIMITS.causale} caratteri)` };
 }
 
 /** The draft's terms said now, over the ones kept: checked with sales_invoices' readers. */
@@ -146,18 +173,21 @@ export function readTerms(args: Record<string, unknown>, kept: RecurringTerms = 
 	return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined)) as RecurringTerms;
 }
 
-/** Room kept in each description for «, novembre 2026 - gennaio 2027». */
-export const DESCRIPTION_ROOM = FIELD_LIMITS.descrizione - RECURRING_LIMITS.label;
+/** The longest description a line may have so that «, <the longest period>» still fits. */
+export const descriptionRoom = (cadence: Cadence): number => FIELD_LIMITS.descrizione - longestLabel(cadence).length - 2;
+
+/** A description with the period of the cadence put in at its longest (added, or in place of {mese} and {periodo}). */
+const longestDescription = (description: string, cadence: Cadence) => (hasPlaceholder(description) ? longestFilled(description, cadence) : `${description}, ${longestLabel(cadence)}`);
 
 /**
  * The lines as said, kept as said (a voce by `item`, the rest written as sales_invoices reads
  * it), after checking that they make an invoice: a voce not in the listino or not clear is asked
- * (the listino's own question), a description leaves room for the period.
+ * (the listino's own question), a description leaves room for the longest period of the cadence.
  */
-export function readScheduleLines(src: ListSource, raw: unknown, terms: RecurringTerms): RecurringLine[] | { readonly ask: string } | Problem {
+export function readScheduleLines(src: ListSource, raw: unknown, terms: RecurringTerms, cadence: Cadence): RecurringLine[] | { readonly ask: string } | Problem {
 	if (!Array.isArray(raw) || raw.length === 0) return { problem: "mancano le voci: ognuna con descrizione e prezzo, o la voce del listino" };
 	if (raw.length > RECURRING_LIMITS.lines) return { problem: `al massimo ${RECURRING_LIMITS.lines} voci in una fattura ricorrente` };
-	const listed = listLines(src, raw, { kind: "invoice", descriptionMax: DESCRIPTION_ROOM, doc: { vat: terms.vat, natura: terms.natura } });
+	const listed = listLines(src, raw, { kind: "invoice", descriptionMax: descriptionRoom(cadence), doc: { vat: terms.vat, natura: terms.natura } });
 	if (listed !== undefined && "ask" in listed) return { ask: listed.ask };
 	const read = readLines(listed?.lines ?? raw);
 	if (isProblem(read)) return read;
@@ -166,7 +196,7 @@ export function readScheduleLines(src: ListSource, raw: unknown, terms: Recurrin
 		const said = given as Record<string, unknown>;
 		const line = read[n];
 		if (line === undefined) return { problem: "le voci non si leggono" };
-		if (!fitsLatin(line.description, DESCRIPTION_ROOM) && !/\{(?:mese|periodo)\}/.test(line.description)) return { problem: `riga ${n + 1}: la descrizione è troppo lunga, con il periodo da aggiungere (al massimo ${DESCRIPTION_ROOM} caratteri)` };
+		if (!fitsLatin(longestDescription(line.description, cadence), FIELD_LIMITS.descrizione)) return { problem: `riga ${n + 1}: la descrizione è troppo lunga, con il periodo da aggiungere (al massimo ${descriptionRoom(cadence)} caratteri)` };
 		const item = said.item === undefined ? undefined : String(said.item).trim().slice(0, 120);
 		const kept: Record<string, unknown> = {
 			...(item === undefined ? {} : { item }),
@@ -185,12 +215,32 @@ export function readScheduleLines(src: ListSource, raw: unknown, terms: Recurrin
 	return out;
 }
 
-/** The amount of one period without VAT (the lines, at the listino's prices of today); undefined when it cannot be told. */
-export function periodCents(src: ListSource, s: Pick<Schedule, "lines" | "terms">): bigint | undefined {
+/** The amount of one period without VAT and the VAT in words («IVA 22%», a nature, the forfettario's none). */
+export type Amount = { readonly cents: bigint; readonly tax?: string };
+
+/** The amount of one period (the lines, at the listino's prices of today); undefined when it cannot be told. */
+export function periodAmount(src: ListSource, s: Pick<Schedule, "lines" | "terms">): Amount | undefined {
 	const raw = s.lines.map((l) => Object.fromEntries(Object.entries(l).filter(([, v]) => v !== undefined)));
 	const listed = listLines(src, raw, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: s.terms.vat, natura: s.terms.natura } });
 	if (listed !== undefined && "ask" in listed) return undefined;
 	const read = readLines(listed?.lines ?? raw);
 	if (isProblem(read)) return undefined;
-	return read.reduce((n, l) => n + lineCents({ quantity: l.quantity, price: l.price, vat: 0, ...(l.discount === undefined ? {} : { discount: l.discount }) }), 0n);
+	const cents = read.reduce((n, l) => n + lineCents({ quantity: l.quantity, price: l.price, vat: 0, ...(l.discount === undefined ? {} : { discount: l.discount }) }), 0n);
+	if (forfettarioOf(src)) return { cents, tax: "senza IVA (regime forfettario)" };
+	const wide = s.terms.vat === undefined ? undefined : Number(s.terms.vat);
+	const keyOf = (l: (typeof read)[number]) => {
+		const rate = l.vat ?? wide;
+		const natura = l.natura ?? s.terms.natura;
+		if (rate === undefined) return natura === undefined ? "?" : `0|${natura}`;
+		return rate === 0 ? `0|${natura ?? ""}` : String(rate);
+	};
+	const rates = new Set(read.map(keyOf));
+	if (rates.size !== 1) return { cents, tax: "+ IVA" };
+	const only = [...rates][0] as string;
+	if (only === "?") return { cents, tax: "+ IVA" };
+	if (only.startsWith("0|")) {
+		const natura = only.slice(2);
+		return { cents, tax: natura === "" ? "senza IVA" : `senza IVA, ${naturaWords(natura as Natura)}` };
+	}
+	return { cents, tax: `+ IVA ${only}%` };
 }
