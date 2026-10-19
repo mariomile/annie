@@ -173,15 +173,25 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		return [close.length === 1 ? "Intendi questo articolo? Nessuno si chiama esattamente così:" : "Intendi uno di questi? Più articoli vanno bene con queste parole:", fencedStock(close.slice(0, 8).map((i) => `• ${i.name} (${i.id})`).join("\n")), "Chiedi a chi ti scrive quale, e ripeti con il suo numero."].join("\n");
 	}
 
-	/** The article an op names (with the line to say when it was taken from other words), or the answer to give instead. */
-	function named(args: Record<string, unknown>, items: readonly StockItem[]): Named | string {
+	/** The line said when a read took the article from other words: outside the fence, so it is said; the name stays inside. */
+	function tookLine(item: StockItem): string {
+		return `Ho preso l'articolo ${item.id} (nel riquadro): dillo a chi ti scrive.`;
+	}
+
+	/**
+	 * The article an op names, or the answer to give instead. A name that is not the article's own
+	 * (other words, the other number) is asked about before a change (`write`): «Intendi questo
+	 * articolo?», confirmed by its number; a read takes it, with the line to say.
+	 */
+	function named(args: Record<string, unknown>, items: readonly StockItem[], write: boolean): Named | string {
 		const said = cleanText(args.item, STOCK_LIMITS.name, "il nome dell'articolo");
 		if (isProblem(said)) return `Errore: ${said.problem}.`;
 		if (said === undefined) return "Errore: dimmi quale articolo: il nome, o il suo numero (MG-0001).";
 		const f = findStockItem(active(items), said);
 		if (f === "none") return ["Non trovo questo articolo in magazzino:", fencedStock(said), "Chiedi a chi ti scrive se va aggiunto, con la sua unità (pezzi, kg, metri, litri)."].join("\n");
 		if ("close" in f) return which(f.close);
-		return { item: f.item, ...(f.respelled ? { took: `Ho preso ${f.item.name} (${f.item.id}).` } : {}) };
+		if (f.respelled && write) return which([f.item]);
+		return { item: f.item, ...(f.respelled ? { took: tookLine(f.item) } : {}) };
 	}
 
 	function readQuantity(value: unknown, what: string, zero: boolean): string | { problem: string } {
@@ -400,6 +410,8 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		if (said === undefined) return "Errore: dimmi quale articolo è arrivato.";
 		const f = findStockItem(active(b.items), said);
 		if (typeof f === "object" && "close" in f) return which(f.close);
+		// Other words for an article there: asked, never loaded onto it (nor a new one made) on a guess.
+		if (typeof f === "object" && f.respelled) return which([f.item]);
 		const found = f === "none" ? undefined : f;
 		// Nothing there by these words: the carico adds the article, from the voce of the listino of the same name when there is one.
 		const voce = found === undefined ? listinoOf(said) : undefined;
@@ -488,7 +500,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 			: [`Fatto, ho caricato ${priced}. ${totals}`];
 		if (cost.said !== undefined) lines.push(`Il costo: ${cost.said}.`);
 		if (supplier?.note !== undefined) lines.push(supplier.note);
-		const inside = [`Articolo: ${item.name}`, ...(found?.respelled === true ? [`Ho preso ${item.name} (${item.id}).`] : []), ...(supplier === undefined ? [] : [`Fornitore: ${supplier.name}`]), ...(doc === undefined ? [] : [`Documento: ${doc}`]), ...(note === undefined ? [] : [`Nota: ${note}`])];
+		const inside = [`Articolo: ${item.name}`, ...(supplier === undefined ? [] : [`Fornitore: ${supplier.name}`]), ...(doc === undefined ? [] : [`Documento: ${doc}`]), ...(note === undefined ? [] : [`Nota: ${note}`])];
 		lines.push(fencedStock(inside.join("\n")));
 		return lines.join("\n");
 	}
@@ -513,13 +525,9 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		return move;
 	}
 
-	function took(n: Named): string[] {
-		return n.took === undefined ? [] : [n.took];
-	}
-
 	async function unload(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 		const b = book();
-		const n = named(args, b.items);
+		const n = named(args, b.items, true);
 		if (typeof n === "string") return n;
 		const item = n.item;
 		const units = unitsOf(args, item, "quanti ne sono usciti");
@@ -537,7 +545,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 			if (args.confirm !== true)
 				return [
 					`Di questo articolo (nel riquadro) ne risultano ${qtyWords(before.onHand, item.unit)}: togliendone ${qtyNumber(q)} il magazzino andrebbe a ${qtyNumber(before.onHand - q)}. Chiedi a chi ti scrive se va bene lo stesso (di solito manca un carico); con il suo sì ripeti con la conferma, e resta segnato in negativo fino al prossimo conteggio.`,
-					fencedStock([`Articolo: ${nameOf(item)}`, ...took(n)].join("\n")),
+					fencedStock([`Articolo: ${nameOf(item)}`].join("\n")),
 				].join("\n");
 			const refused = requirePersonFor(ctx, "registro uno scarico che manda il magazzino in negativo");
 			if (refused !== undefined) return refused;
@@ -557,13 +565,13 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		if (after.negative) lines.push("È in negativo: resta segnato così fino al prossimo conteggio.");
 		else if (after.lowSince !== undefined) lines.push("Ora è sottoscorta.");
 		if (reason === "vendita" && item.listino !== undefined) lines.push(`Attenzione: questo articolo è la voce ${item.listino} del listino, e le fatture emesse con quella voce lo scaricano da sole. Se questa vendita ha una fattura così, è contata due volte: dillo a chi ti scrive.`);
-		lines.push(fencedStock([`Articolo: ${item.name}`, ...took(n), ...(note === undefined ? [] : [`Nota: ${note}`])].join("\n")));
+		lines.push(fencedStock([`Articolo: ${item.name}`, ...(note === undefined ? [] : [`Nota: ${note}`])].join("\n")));
 		return lines.join("\n");
 	}
 
 	async function count(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 		const b = book();
-		const n = named(args, b.items);
+		const n = named(args, b.items, true);
 		if (typeof n === "string") return n;
 		const item = n.item;
 		const counted = readQuantity(args.quantity, "quanti ne hai contati", true);
@@ -582,7 +590,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		if (before.negative) lines.push("Non è più in negativo.");
 		const after = stateOf(item, book().moves);
 		if (after.lowSince !== undefined) lines.push("È sottoscorta.");
-		lines.push(fencedStock([`Articolo: ${item.name}`, ...took(n), ...(note === undefined ? [] : [`Nota: ${note}`])].join("\n")));
+		lines.push(fencedStock([`Articolo: ${item.name}`, ...(note === undefined ? [] : [`Nota: ${note}`])].join("\n")));
 		return lines.join("\n");
 	}
 
@@ -593,7 +601,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 	 */
 	async function fixCost(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 		const b = book();
-		const n = named(args, b.items);
+		const n = named(args, b.items, true);
 		if (typeof n === "string") return n;
 		const item = n.item;
 		const before = stateOf(item, b.moves);
@@ -616,7 +624,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		const after = stateOf(item, book().moves);
 		return [
 			`Fatto, ho corretto il costo dell'ultimo carico (${qtyWords(qtyOf(last.move.qty), item.unit)} ${italianDate(last.move.day)}): ${costWords(cost.cost)} per unità invece di ${costWords(costOf(last.cost))}. Ora il costo medio è ${after.average === undefined ? "da sapere" : costWords(after.average)}, valore ${euros(after.value ?? 0n)}.`,
-			fencedStock([`Articolo: ${item.name}`, ...took(n)].join("\n")),
+			fencedStock([`Articolo: ${item.name}`].join("\n")),
 		].join("\n");
 	}
 
@@ -624,21 +632,23 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		const b = book();
 		if (active(b.items).length === 0) return NO_ITEMS;
 		if (args.item === undefined) return listAnswer(states(), false);
-		const n = named(args, b.items);
+		const n = named(args, b.items, false);
 		if (typeof n === "string") return n;
 		const answer = statusAnswer(stateOf(n.item, b.moves));
-		return n.took === undefined ? answer : `${answer}\n${fencedStock(n.took)}`;
+		return n.took === undefined ? answer : `${answer}\n${n.took}`;
 	}
 
 	function movements(args: Record<string, unknown>, day: string): string {
 		const b = book();
 		let moves = b.moves;
 		const parts: string[] = [];
+		let tookNote = "";
 		if (args.item !== undefined) {
-			const n = named(args, b.items);
+			const n = named(args, b.items, false);
 			if (typeof n === "string") return n;
 			moves = moves.filter((m) => m.item === n.item.id);
 			parts.push(`di ${n.item.id}`);
+			if (n.took !== undefined) tookNote = `\n${n.took}\n${fencedStock(`Articolo: ${n.item.name}`)}`;
 		}
 		if (args.period !== undefined) {
 			if (typeof args.period !== "string") return "Errore: il periodo è un testo, come «ottobre».";
@@ -651,7 +661,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 				throw error;
 			}
 		}
-		return movesAnswer(moves, b.items, parts.length === 0 ? "in tutto" : parts.join(" "));
+		return movesAnswer(moves, b.items, parts.length === 0 ? "in tutto" : parts.join(" ")) + tookNote;
 	}
 
 	async function removeItem(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
@@ -659,7 +669,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		const done = b.calls.includes(ctx.callId);
 		let item: StockItem | undefined;
 		if (!done) {
-			const n = named(args, b.items);
+			const n = named(args, b.items, true);
 			if (typeof n === "string") return n;
 			const s = stateOf(n.item, b.moves);
 			if (s.onHand !== 0n) return `Non lo tolgo: di questo articolo (${n.item.id}) risultano ancora ${qtyWords(s.onHand, n.item.unit)}. Se in realtà non ce ne sono, prima un conteggio a zero, poi lo tolgo; i suoi movimenti restano comunque nello storico.`;

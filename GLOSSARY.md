@@ -321,6 +321,10 @@ _Avoid_: abbonamento (per i canoni che fattura la persona: gli abbonamenti che p
 Da dove nasce un turno di Annie: un messaggio della persona, un avviso, un'attività programmata o un altro agente. Le azioni che non si annullano si confermano solo nei turni della persona. Vedi ADR 0088.
 _Avoid_: mittente (per l'origine)
 
+**Articolo di magazzino**:
+Una cosa che la persona tiene in magazzino (MG-NNNN), con la sua unità, il minimo sotto cui avvisare e i movimenti (carico, scarico, rettifica) da cui Annie ricava quanto ne resta e quanto vale al costo medio. Vedi ADR 0089.
+_Avoid_: prodotto (per l'articolo; il prezzo è la voce del listino)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { type LowClaim, MOVE_ID, moveId, type Movement, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockUnit, validItem, validLowClaim, validMove, validSaleKey, validStockCall } from "./stock.ts";
+import { isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockUnit, validItem, validLowClaim, validMove, validSaleKey, validStockCall } from "./stock.ts";
 import { costText, packUnits, qtyOf, qtyText, stateOf } from "./stock-sums.ts";
 
 /** What a change works on: the articles, the movements and the next numbers. */
@@ -33,7 +33,7 @@ export type SaleLine = { readonly line: number; readonly listino: string; readon
 /** An invoice issued, or a credit note (with `of`, the invoice it corrects), as the magazzino takes it. */
 export type Sale = { readonly invoice: string; readonly number: string; readonly day: string; readonly of?: string; readonly lines: readonly SaleLine[] };
 
-export type Skipped = { readonly description: string; readonly why: "unit" | "quantity" | "nothing" };
+export type Skipped = { readonly description: string; readonly why: "unit" | "pack" | "quantity" | "nothing" };
 
 /** What a sale would move now: the new movements (numbered from the next), the lines left out, and each article as it would be. */
 export type SalePlan = { readonly added: readonly Movement[]; readonly skipped: readonly Skipped[] };
@@ -74,9 +74,11 @@ export function planSale(book: Pick<Book, "items" | "moves" | "archived" | "next
 		}
 		// A line without a unit is in the article's own; in its pack, so many each; in another unit, not counted.
 		const unit = l.unit === undefined ? item.unit : stockUnit(l.unit);
-		let qty = unit === item.unit ? qtyOf(l.quantity) : item.pack !== undefined && unit === item.pack.unit ? packUnits(l.quantity, item.pack.size) : undefined;
+		const inPacks = unit !== item.unit && item.pack !== undefined && unit === item.pack.unit;
+		let qty = unit === item.unit ? qtyOf(l.quantity) : inPacks && item.pack !== undefined ? packUnits(l.quantity, item.pack.size) : undefined;
 		if (qty === undefined) {
-			skipped.push({ description: l.description, why: "unit" });
+			// In its pack, but the packs times the size is not a quantity to the thousandth.
+			skipped.push({ description: l.description, why: inPacks ? "pack" : "unit" });
 			continue;
 		}
 		if (sale.of !== undefined) {
@@ -250,7 +252,12 @@ export class StockStore {
 				});
 			}
 			openings.sort((a, b) => a.id.localeCompare(b.id));
-			const archived = [...book.archived, ...old.flatMap((m): SaleKey[] => (m.sale === undefined ? [] : [{ k: saleKey(m.sale.invoice, m.sale.line), i: m.item, q: m.qty, ...(m.sale.of === undefined ? {} : { of: m.sale.of }) }]))];
+			// An article in negativo past what a line holds: counted first, then the year closes.
+			const under = openings.find((o) => !isQuantity(o.qty, true));
+			if (under !== undefined) throw new StockError(`l'articolo ${under.item} a quella data risulta a ${qtyText(qtyOf(under.qty))}, troppo in negativo per una riga di apertura: prima chi ti scrive faccia un conteggio di quell'articolo, poi chiudi l'anno`);
+			// The sale keys kept, with the invoice's year; those of invoices ten years or more before the year closed go (no credit note corrects them any more).
+			const year = Number(day.slice(0, 4));
+			const archived = [...book.archived, ...old.flatMap((m): SaleKey[] => (m.sale === undefined ? [] : [{ k: saleKey(m.sale.invoice, m.sale.line), i: m.item, q: m.qty, y: Number(m.day.slice(0, 4)), ...(m.sale.of === undefined ? {} : { of: m.sale.of }) }]))].filter((a) => a.y === undefined || a.y > year - 10);
 			result = { folded: old.length, items: openings.length };
 			if (plan) return book;
 			const out: Book = { ...book, moves: [...openings, ...kept], archived, calls: [...book.calls, callId].slice(-STOCK_LIMITS.calls) };

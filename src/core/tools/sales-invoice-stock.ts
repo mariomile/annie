@@ -3,17 +3,17 @@
  * done when it is issued (an invoice unloads the articles its lines sell, a credit note puts them
  * back, once per invoice and line: stock-store.ts planSale and sale, the same mapping both
  * times); the lines that look like an article but are not linked, said; and, at the draft, a line
- * dictated with an article's name linked to its voce, and a line whose voce does not match its
+ * dictated with an article's own name linked to its voce (in other words, only asked about), and a line whose voce does not match its
  * description asked about. Names and descriptions only inside the fences.
  */
 import type { ToolContext } from "../engine.ts";
 import { n1 } from "../format-words.ts";
 import type { Marker } from "../marker.ts";
-import { sameStems, stemsWithin } from "../name-keys.ts";
+import { sameStems, spellingKey, stemsWithin } from "../name-keys.ts";
 import { CREDIT_NOTE_TYPE } from "../sales-invoice-rules.ts";
 import type { IssuedInvoice, SalesInvoice } from "../sales-invoices.ts";
 import { StockError, type StockItem } from "../stock.ts";
-import { planSale, type Sale, type StockBook } from "../stock-store.ts";
+import { planSale, STOCK_BROKEN, STOCK_FULL, type Sale, type StockBook } from "../stock-store.ts";
 import { qtyOf, stateOf } from "../stock-sums.ts";
 import type { SalesEnv } from "./sales-invoice-env.ts";
 import { fenced } from "./sales-invoice-render.ts";
@@ -30,6 +30,7 @@ export function saleOf(inv: SalesInvoice, number: string, day: string): Sale | u
 
 const SKIP_WHY: Readonly<Record<string, string>> = {
 	unit: "l'unità della riga non è quella dell'articolo in magazzino",
+	pack: "in confezioni, ma le confezioni per quanto ne contiene ognuna non danno un numero preciso di unità",
 	quantity: "la quantità della riga non è un numero",
 	nothing: "la fattura stornata non le aveva scaricate",
 };
@@ -63,7 +64,7 @@ export function stockPreview(env: SalesEnv, draft: SalesInvoice, day: string, ma
 	if (env.stock === undefined) return [];
 	const book = env.stock.read();
 	const sale = saleOf(draft, "anteprima", day);
-	if (book.broken) return sale === undefined ? [] : ["Attenzione: il magazzino non si legge, quindi questa fattura non potrà scaricare gli articoli venduti finché il file non è sistemato."];
+	if (book.broken) return sale === undefined ? [] : [`Attenzione: il magazzino non si legge, quindi le righe con voci del listino di questa ${sale.of === undefined ? "fattura non potranno essere scaricate dal magazzino" : "nota di credito non potranno essere rimesse in magazzino"} finché il file non è sistemato.`];
 	const out = unlinkedNote(draft, book);
 	if (sale === undefined) return out;
 	const plan = planSale(book, sale, marker);
@@ -86,7 +87,10 @@ export function stockPreview(env: SalesEnv, draft: SalesInvoice, day: string, ma
 	return out;
 }
 
-type StockStep = { readonly broken: boolean; readonly full: boolean; readonly moved: { readonly row: string; readonly negative: boolean }[]; readonly skipped: { readonly description: string; readonly why: string }[]; readonly unlinked: string[] };
+/** Why the magazzino did not move: its file does not read, it holds no more movements, or what the invoice would write is refused. */
+type StockStop = "broken" | "full" | "invalid";
+
+type StockStep = { readonly stop?: StockStop; readonly moved: { readonly row: string; readonly negative: boolean }[]; readonly skipped: { readonly description: string; readonly why: string }[]; readonly unlinked: string[] };
 
 /**
  * The magazzino moved by the invoice issued, once per invoice and line however many times this
@@ -102,26 +106,27 @@ export async function markStock(env: SalesEnv, inv: IssuedInvoice, ctx: ToolCont
 	const result: StockStep = await ctx.step("stock", async () => {
 		const book = stock.read();
 		const unlinked = book.broken ? [] : unlinkedNote(inv, book);
-		if (sale === undefined) return { broken: false, full: false, moved: [], skipped: [], unlinked };
+		if (sale === undefined) return { moved: [], skipped: [], unlinked };
+		const stopped = (stop: StockStop): StockStep => ({ stop, moved: [], skipped: [], unlinked });
 		try {
 			const r = stock.sale(sale, marker);
-			if ("full" in r) return { broken: false, full: true, moved: [], skipped: [], unlinked };
-			if (r.broken) return { broken: true, full: false, moved: [], skipped: [], unlinked };
+			if ("full" in r) return stopped("full");
+			if (r.broken) return stopped("broken");
 			return {
-				broken: false,
-				full: false,
 				moved: r.moved.map((m) => ({ row: `• ${nameOf(m.item)} (${m.item.id}): ${credit ? "+" : "−"}${qtyWords(qtyOf(m.move.qty), m.item.unit)}`, negative: m.negative })),
 				skipped: r.skipped.map((s) => ({ description: s.description, why: s.why })),
 				unlinked,
 			};
 		} catch (error) {
-			if (error instanceof StockError) return { broken: true, full: false, moved: [], skipped: [], unlinked };
+			if (error instanceof StockError) return stopped(error.message === STOCK_FULL ? "full" : error.message === STOCK_BROKEN ? "broken" : "invalid");
 			throw error;
 		}
 	});
 	const again = `Quando è sistemato, si completa emettendo di nuovo questa ${credit ? "nota di credito" : "fattura"}, con lo stesso numero.`;
-	if (result.full) return { notes: [`Attenzione: il magazzino è pieno di movimenti, quindi ${credit ? "gli articoli della nota di credito non sono rimessi" : "gli articoli venduti non sono scaricati"}: il documento è emesso, ma l'emissione resta da completare. Chi ti scrive può chiudere un anno passato del magazzino. ${again}`], done: false };
-	if (result.broken) return { notes: [`Attenzione: il magazzino non si legge, quindi ${credit ? "gli articoli della nota di credito non sono rimessi" : "gli articoli venduti non sono scaricati"}. ${again}`], done: false };
+	const lines = credit ? "le righe con voci del listino non sono rimesse in magazzino" : "le righe con voci del listino non sono scaricate dal magazzino";
+	if (result.stop === "full") return { notes: [`Attenzione: il magazzino è pieno di movimenti, quindi ${lines}: il documento è emesso, ma l'emissione resta da completare. Chi ti scrive può chiudere un anno passato del magazzino. ${again}`], done: false };
+	if (result.stop === "broken") return { notes: [`Attenzione: il magazzino non si legge, quindi ${lines}: il documento è emesso, ma l'emissione resta da completare. ${again}`], done: false };
+	if (result.stop === "invalid") return { notes: [`Attenzione: il magazzino non ha accettato questi movimenti (il file ne uscirebbe non valido), quindi ${lines}: il documento è emesso, ma l'emissione resta da completare. Va controllato il file del magazzino. ${again}`], done: false };
 	const notes: string[] = [];
 	if (result.moved.length > 0) notes.push([credit ? `Ho rimesso in magazzino ${n1(result.moved.length, "una riga", "# righe")} della nota di credito:` : `Ho scaricato dal magazzino ${n1(result.moved.length, "una riga venduta", "# righe vendute")}:`, fencedStock(result.moved.map((m) => m.row).join("\n"))].join("\n"));
 	const negative = result.moved.filter((m) => m.negative).length;
@@ -132,7 +137,8 @@ export async function markStock(env: SalesEnv, inv: IssuedInvoice, ctx: ToolCont
 
 /**
  * At the draft: a line dictated without a voce whose description is the name of an article that
- * is a voce of the listino gets that voce (so the issue unloads it), said; a line whose voce's
+ * is a voce of the listino, spelled the same, gets that voce (so the issue unloads it), said; one
+ * only like it (the other number, other words) is asked about, never linked; a line whose voce's
  * name is not in its description is asked about. `lines` as the draft reads them.
  */
 export function draftStockLines(env: SalesEnv, lines: unknown): { lines: unknown; notes: string[] } {
@@ -141,16 +147,22 @@ export function draftStockLines(env: SalesEnv, lines: unknown): { lines: unknown
 	const book = env.stock?.read();
 	const articles = book === undefined || book.broken ? [] : book.items.filter((i) => i.removed === undefined && i.listino !== undefined);
 	const linked: string[] = [];
+	const unsure: string[] = [];
 	const out = lines.map((raw) => {
 		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
 		const l = raw as Record<string, unknown>;
 		if (l.item !== undefined || typeof l.description !== "string") return raw;
-		const match = articles.filter((i) => sameStems(i.name, l.description as string));
-		if (match.length !== 1) return raw;
-		const item = match[0] as StockItem;
+		const exact = articles.filter((i) => spellingKey(i.name) === spellingKey(l.description as string));
+		if (exact.length !== 1) {
+			const like = articles.filter((i) => sameStems(i.name, l.description as string));
+			if (exact.length === 0 && like.length > 0) unsure.push(`• la riga «${l.description}» sembra ${like.length === 1 ? "l'articolo" : "uno degli articoli"} ${like.map((i) => `${i.name} (voce ${i.listino})`).join(", ")}`);
+			return raw;
+		}
+		const item = exact[0] as StockItem;
 		linked.push(`• ${l.description}: ${item.name} (${item.listino})`);
 		return { ...l, item: item.listino };
 	});
+	if (unsure.length > 0) notes.push([`${unsure.length === 1 ? "Una riga sembra" : "Alcune righe sembrano"} un articolo del magazzino, ma il nome non è proprio quello: non l'ho legata alla voce, quindi alla fattura emessa non si scarica. Chiedi a chi ti scrive se è quell'articolo: se sì, metti la voce del listino nella riga.`, fencedStock(unsure.join("\n"))].join("\n"));
 	if (linked.length > 0) notes.push([linked.length === 1 ? "Ho legato la riga nel riquadro alla voce del listino che è un articolo del magazzino: quando la fattura è emessa, si scarica." : "Ho legato le righe nel riquadro alle voci del listino che sono articoli del magazzino: quando la fattura è emessa, si scaricano.", fencedStock(linked.join("\n"))].join("\n"));
 	const list = env.priceList?.read();
 	if (list !== undefined && !list.broken) {

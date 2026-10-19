@@ -14,8 +14,9 @@ import { PriceListStore } from "../src/core/price-list-store.ts";
 import { SalesInvoiceStore } from "../src/core/sales-invoice-store.ts";
 import { isIssued } from "../src/core/sales-invoices.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
-import { stockAgentReads, stockCallReads } from "../src/core/stock.ts";
-import { STOCK_BROKEN, STOCK_FULL, StockStore } from "../src/core/stock-store.ts";
+import { sameWord, stemsWithin } from "../src/core/name-keys.ts";
+import { STOCK_LIMITS, StockError, stockAgentReads, stockCallReads } from "../src/core/stock.ts";
+import { STOCK_BROKEN, STOCK_FULL, type StockLink, StockStore } from "../src/core/stock-store.ts";
 import { stateOf } from "../src/core/stock-sums.ts";
 import { TaxStore } from "../src/core/tax-store.ts";
 import { createSalesInvoiceTools } from "../src/core/tools/sales-invoice-tools.ts";
@@ -50,7 +51,7 @@ function temp(): string {
 	return dir;
 }
 
-function setup(o: { stockStore?: (store: StockStore) => StockStore } = {}) {
+function setup(o: { stockStore?: (store: StockStore) => StockStore; salesStock?: (store: StockStore) => StockLink } = {}) {
 	const dir = temp();
 	const root = join(dir, "workspace");
 	mkdirSync(root, { recursive: true });
@@ -72,7 +73,7 @@ function setup(o: { stockStore?: (store: StockStore) => StockStore } = {}) {
 		company: invoices,
 		taxes: new TaxStore(dir),
 		priceList,
-		stock: store,
+		stock: o.salesStock?.(store) ?? store,
 		scanner: new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) }),
 		timeZone: "Europe/Rome",
 		whoIs: () => "test:u",
@@ -421,11 +422,16 @@ describe("week 69 review", () => {
 		for (const said of ["cartuccia xl", "cartucce"]) {
 			const status = await s.run({ op: "status", item: said });
 			expect(status).toContain("MG-0001: 10 pezzi in magazzino");
-			expect(inside(status)).toContain("Ho preso Cartucce XL (MG-0001).");
+			// Said outside the fence (so the model says it), the name inside.
+			expect(status).toContain("Ho preso l'articolo MG-0001 (nel riquadro): dillo a chi ti scrive.");
+			expect(inside(status)).not.toContain("Ho preso");
 		}
-		const paper = await s.run({ op: "receive", item: "rotoli di carta", quantity: 4, cost: 2 });
-		expect(paper).toContain("Fatto, ho caricato 4 rotoli");
-		expect(inside(paper)).toContain("Ho preso Rotolo carta (MG-0002).");
+		// A change on other words is asked, confirmed by the number.
+		const asked = await s.run({ op: "receive", item: "rotoli di carta", quantity: 4, cost: 2 });
+		expect(asked).toContain("Intendi questo articolo?");
+		expect(inside(asked)).toContain("Rotolo carta (MG-0002)");
+		expect(s.store.read().moves).toHaveLength(1);
+		expect(await s.run({ op: "receive", item: "MG-0002", quantity: 4, cost: 2 })).toContain("Fatto, ho caricato 4 rotoli");
 		// Two that hold the words: asked, never picked.
 		await s.run({ op: "add_item", item: "Cartucce S" });
 		expect(await s.run({ op: "status", item: "cartucce" })).toContain("Più articoli vanno bene con queste parole");
@@ -507,7 +513,7 @@ describe("week 69 review", () => {
 		const after = s.onHand();
 		expect(s.store.read().moves.map((m) => m.kind)).toEqual(["apertura"]);
 		expect([after.onHand, after.average, after.value, after.negative, after.negativeSince]).toEqual([before.onHand, before.average, before.value, before.negative, before.negativeSince]);
-		expect(s.store.read().archived).toEqual([{ k: `${id}#1`, i: "MG-0001", q: "5" }]);
+		expect(s.store.read().archived).toEqual([{ k: `${id}#1`, i: "MG-0001", q: "5", y: 2026 }]);
 		expect(s.store.read().broken).toBe(false);
 		// The invoice issued again moves nothing; its credit note puts back at most the 5 it took out.
 		await s.sell({ op: "issue", draft: id, confirm: true });
@@ -530,7 +536,7 @@ describe("week 69 review", () => {
 		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 1, reason: "scarto" })).toBe(`Errore: ${STOCK_FULL}.`);
 		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: 5 }]);
 		const issued = await s.sell({ op: "issue", draft: id, confirm: true });
-		expect(issued).toContain("il magazzino è pieno di movimenti, quindi gli articoli venduti non sono scaricati");
+		expect(issued).toContain("il magazzino è pieno di movimenti, quindi le righe con voci del listino non sono scaricate dal magazzino");
 		expect(issued).toContain("non è completa");
 		// A closed year makes room; the issue completes, once.
 		s.clock.now = new Date("2026-10-20T09:00:00Z");
@@ -651,5 +657,164 @@ describe("week 69 review", () => {
 		await s.run({ op: "count", item: "colla", quantity: 0 });
 		await s.run({ op: "unload", item: "colla", quantity: 1, reason: "scarto", confirm: true });
 		expect(await s.run({ op: "low", compact: true })).toContain("in negativo, va ricontato");
+	});
+});
+
+describe("week 69 last round", () => {
+	const draftOf = async (s: ReturnType<typeof setup>, lines: unknown[]) => {
+		const answer = await s.sell({ op: "draft", ...DELTA, lines });
+		const id = s.sales.read().invoices.at(-1)?.id as string;
+		return { answer, id };
+	};
+	// Singular and plural of the same gender are one word; another gender never is.
+	const PAIRS: readonly (readonly [string, string, boolean])[] = [
+		["cartuccia", "cartucce", true],
+		["busta", "buste", true],
+		["barca", "barche", true],
+		["rotolo", "rotoli", true],
+		["foglio", "fogli", true],
+		["pacco", "pacchi", true],
+		["cartone", "cartoni", true],
+		["colla", "collo", false],
+		["colla", "colli", false],
+		["cera", "ceri", false],
+		["cera", "cero", false],
+		["foglia", "foglio", false],
+		["foglia", "fogli", false],
+		["panna", "panno", false],
+		["panna", "panni", false],
+		["problema", "problemi", false],
+		["xl", "xl", true],
+	];
+	it.each(PAIRS)("N1: «%s» and «%s» the same word: %s", (a, b, same) => {
+		expect(sameWord(a, b)).toBe(same);
+		expect(sameWord(b, a)).toBe(same);
+	});
+
+	it("N1: names in either number, never another article's", () => {
+		expect(stemsWithin("cartuccia xl", "Cartucce XL")).toBe(true);
+		expect(stemsWithin("rotoli di carta", "Rotolo carta")).toBe(true);
+		for (const [said, name] of [["colla", "Collo"], ["cera", "Ceri"], ["foglia", "Foglio A4"], ["panna", "Panno"]]) expect(stemsWithin(said as string, name as string)).toBe(false);
+	});
+
+	it("N1: «colla», «cera», «foglia», «panna» never move Collo, Ceri, Foglio A4, Panno", async () => {
+		const s = setup();
+		for (const name of ["Collo", "Ceri", "Foglio A4", "Panno"]) await s.run({ op: "add_item", item: name });
+		await s.run({ op: "receive", item: "MG-0004", quantity: 1, cost: 1 });
+		const before = s.store.read().moves.length;
+		// A carico of a name that is none of them adds its own article.
+		await s.run({ op: "receive", item: "colla", quantity: 2, cost: 3 });
+		await s.run({ op: "receive", item: "cera", quantity: 2, cost: 3 });
+		await s.run({ op: "receive", item: "foglia", quantity: 2, cost: 3 });
+		expect(s.store.read().items.map((i) => i.name)).toEqual(["Collo", "Ceri", "Foglio A4", "Panno", "colla", "cera", "foglia"]);
+		for (const id of ["MG-0001", "MG-0002", "MG-0003"]) expect(s.onHand(id).onHand).toBe(0n);
+		expect(await s.run({ op: "unload", item: "panna", quantity: 1, reason: "scarto" })).toContain("Non trovo questo articolo in magazzino");
+		expect(await s.run({ op: "count", item: "panna", quantity: 0 })).toContain("Non trovo questo articolo in magazzino");
+		expect(s.onHand("MG-0004").onHand).toBe(1000n);
+		expect(s.store.read().moves).toHaveLength(before + 3);
+	});
+
+	it("N1: a change on a name that is not the article's own asks «Intendi questo articolo?»; a read takes it and says so outside the fence", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Cartucce XL" });
+		await s.run({ op: "receive", item: "Cartucce XL", quantity: 10, cost: 12 });
+		const moves = s.store.read().moves.length;
+		const writes: Record<string, unknown>[] = [
+			{ op: "receive", item: "cartuccia xl", quantity: 1, cost: 12 },
+			{ op: "unload", item: "cartuccia xl", quantity: 1, reason: "scarto" },
+			{ op: "count", item: "cartucce", quantity: 3 },
+			{ op: "fix_cost", item: "cartucce", cost: 11 },
+			{ op: "remove_item", item: "cartucce" },
+		];
+		for (const args of writes) {
+			const asked = await s.run(args);
+			expect(asked).toContain("Intendi questo articolo?");
+			expect(inside(asked)).toContain("Cartucce XL (MG-0001)");
+			expect(outside(asked)).not.toContain("Cartucce XL");
+		}
+		expect(s.store.read().moves).toHaveLength(moves);
+		expect(s.store.read().items[0]?.removed).toBeUndefined();
+		// Confirmed by its number.
+		expect(await s.run({ op: "unload", item: "MG-0001", quantity: 1, reason: "scarto" })).toContain("Fatto, ho scaricato 1 pezzo");
+		for (const op of ["status", "movements"]) {
+			const read = await s.run({ op, item: "cartuccia xl" });
+			expect(outside(read)).toContain("Ho preso l'articolo MG-0001 (nel riquadro): dillo a chi ti scrive.");
+			expect(inside(read)).toContain("Cartucce XL");
+		}
+	});
+
+	it("N1: the draft links a line only by the article's own name; one only like it is asked, not linked", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 20, cost: 12 });
+		const { answer } = await draftOf(s, [{ description: "Cartuccia XL", quantity: 3, price: 25, vat: 22 }]);
+		expect(answer).toContain("Una riga sembra un articolo del magazzino, ma il nome non è proprio quello: non l'ho legata alla voce");
+		expect(inside(answer)).toContain("la riga «Cartuccia XL» sembra l'articolo Cartucce XL (voce LS-0001)");
+		expect(s.sales.read().invoices.at(-1)?.lines[0]?.item).toBeUndefined();
+		const exact = await draftOf(s, [{ description: "cartucce  xl", quantity: 3, price: 25, vat: 22 }]);
+		expect(exact.answer).toContain("Ho legato la riga nel riquadro");
+		expect(s.sales.read().invoices.at(-1)?.lines[0]?.item).toBe("LS-0001");
+	});
+
+	it("L1/L2: an unreadable magazzino speaks of the lines with a voce; a refused write is said apart from unreadable and full", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: 1 }]);
+		writeFileSync(join(s.dir, "stock.json"), "{");
+		const asked = await s.sell({ op: "issue", draft: id });
+		expect(asked).toContain("il magazzino non si legge, quindi le righe con voci del listino di questa fattura non potranno essere scaricate dal magazzino");
+		expect(asked).not.toContain("articoli venduti");
+		const issued = await s.sell({ op: "issue", draft: id, confirm: true });
+		expect(issued).toContain("il magazzino non si legge, quindi le righe con voci del listino non sono scaricate dal magazzino");
+		const t = setup({ salesStock: (store) => ({ read: () => store.read(), sale: () => { throw new StockError("il magazzino non è valido: non l'ho salvato"); } }) });
+		await t.run({ op: "add_item", item: "LS-0001" });
+		const other = await draftOf(t, [{ item: "Cartucce XL", quantity: 1 }]);
+		const refused = await t.sell({ op: "issue", draft: other.id, confirm: true });
+		expect(refused).toContain("il magazzino non ha accettato questi movimenti (il file ne uscirebbe non valido), quindi le righe con voci del listino non sono scaricate dal magazzino");
+		expect(refused).not.toContain("non si legge");
+		expect(refused).toContain("non è completa");
+	});
+
+	it("L3: a line in packs that is no exact number of units is skipped with its own reason", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001", pack_unit: "scatola", per_pack: "0,333" });
+		await s.run({ op: "receive", item: "MG-0001", quantity: 10, cost: 1 });
+		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: "1,5", unit: "scatole" }]);
+		const issued = await s.sell({ op: "issue", draft: id, confirm: true });
+		expect(issued).toContain("in confezioni, ma le confezioni per quanto ne contiene ognuna non danno un numero preciso di unità");
+		expect(issued).not.toContain("l'unità della riga non è quella");
+		expect(s.onHand().onHand).toBe(10_000n);
+	});
+
+	it("L4: closing a year drops the sale keys of invoices ten years or more before it, and keeps the others", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		await s.run({ op: "receive", item: "MG-0001", quantity: 5, cost: 1 });
+		const raw = JSON.parse(readFileSync(join(s.dir, "stock.json"), "utf8"));
+		raw.archived = [
+			{ k: "BZ-0900#1", i: "MG-0001", q: "1", y: 2015 },
+			{ k: "BZ-0901#1", i: "MG-0001", q: "1", y: 2016 },
+			{ k: "BZ-0902#1", i: "MG-0001", q: "1", y: 2017 },
+			{ k: "BZ-0903#1", i: "MG-0001", q: "1" },
+		];
+		writeFileSync(join(s.dir, "stock.json"), JSON.stringify(raw));
+		s.clock.now = new Date("2027-01-10T09:00:00Z");
+		expect(await s.run({ op: "close_year", year: 2026, confirm: true })).toContain("Fatto, ho chiuso il 2026");
+		expect(s.store.read().archived.map((a) => a.k)).toEqual(["BZ-0902#1", "BZ-0903#1"]);
+	});
+
+	it("L5: a year whose article is too far in negativo for an opening line asks for a count first", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Colla" });
+		const max = STOCK_LIMITS.maxQuantity;
+		await s.run({ op: "unload", item: "MG-0001", quantity: max, reason: "scarto", confirm: true });
+		await s.run({ op: "unload", item: "MG-0001", quantity: 1, reason: "scarto", confirm: true });
+		const moves = s.store.read().moves.length;
+		s.clock.now = new Date("2027-01-10T09:00:00Z");
+		for (const confirm of [false, true]) {
+			const answer = await s.run({ op: "close_year", year: 2026, confirm });
+			expect(answer).toContain("l'articolo MG-0001 a quella data risulta a -1000000001, troppo in negativo per una riga di apertura: prima chi ti scrive faccia un conteggio di quell'articolo, poi chiudi l'anno");
+		}
+		expect(s.store.read().moves).toHaveLength(moves);
 	});
 });

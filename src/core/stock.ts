@@ -124,7 +124,7 @@ export type Movement = Marker & {
 };
 
 /** A sale's movement folded by a closed year: its key (invoice#line), the article, how much, and (a storno) the invoice it corrected. */
-export type SaleKey = { readonly k: string; readonly i: string; readonly q: string; readonly of?: string };
+export type SaleKey = { readonly k: string; readonly i: string; readonly q: string; readonly of?: string; /** The year of the invoice (or credit note): a key ten years older than a year closed is dropped. */ readonly y?: number };
 
 /** A sottoscorta (or in negativo) said in the brief: the article, the crossing and the call that said it. */
 export type LowClaim = { readonly item: string; readonly crossing: string; readonly call: string };
@@ -174,9 +174,10 @@ export type StockFound = { readonly item: StockItem; readonly respelled: boolean
 
 /**
  * The article said, among `items`: by its id (MG-0001), its voce of the listino (LS-0001), its
- * code, or its name with the Italian endings off; when no name is that, the only article whose
- * name holds every word said («cartucce» for «Cartucce XL»), `respelled`. More than one is
- * asked, never picked. `strict`: only the same name (an article said again, never another one).
+ * code, or its own name (case, accents and punctuation aside); then, `respelled`, its name in
+ * the other number of the same gender («cartuccia xl» for «Cartucce XL», never «colla» for
+ * «Collo»), or the only article whose name holds every word said («cartucce»). A change asks
+ * about a `respelled` one before writing. More than one is asked, never picked. `strict`: only the same name (an article said again, never another one).
  */
 export function findStockItem(items: readonly StockItem[], said: string, strict = false): StockFound {
 	const t = said.trim();
@@ -269,7 +270,7 @@ export function validMove(v: unknown): v is Movement {
 export function validSaleKey(v: unknown): v is SaleKey {
 	if (typeof v !== "object" || v === null) return false;
 	const s = v as SaleKey;
-	return Object.keys(s).every((k) => ["k", "i", "q", "of"].includes(k)) && typeof s.k === "string" && /^BZ-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of)));
+	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y"].includes(k)) && typeof s.k === "string" && /^BZ-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
 }
 
 export function validLowClaim(v: unknown): v is LowClaim {
