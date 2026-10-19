@@ -537,6 +537,8 @@ export type PriceCheck = {
 	readonly flag?: "loss" | "low" | "estimate";
 	/** The listino's price (in its own unit, with VAT when it is said with VAT, cents) that brings the margin back to the threshold. */
 	readonly restore?: bigint;
+	/** Flagged, with a cost, yet no price restores the threshold (its search gave up): said, never left out. */
+	readonly restoreFailed?: true;
 };
 
 /**
@@ -586,8 +588,10 @@ export function priceChecks(data: Pick<MarginData, "listino" | "items" | "moves"
 		const tenths = price === undefined || cost === undefined ? undefined : marginTenths(price - cost, price);
 		const under = tenths !== undefined && tenths < threshold;
 		const flag = !under ? undefined : basis === "latest" && latest?.byName === true ? "estimate" : (tenths as bigint) < 0n ? "loss" : "low";
-		const restore = under && cost !== undefined && flag !== "estimate" ? restorePrice(voce, article, cost, threshold) : undefined;
-		out.push({ voce, article, ...(price === undefined ? {} : { price }), ...(average === undefined ? {} : { average }), ...(latest === undefined ? {} : { latest }), ...(basis === undefined ? {} : { basis }), ...(tenths === undefined ? {} : { tenths }), ...(flag === undefined ? {} : { flag }), ...(restore === undefined ? {} : { restore }) });
+		const tries = under && cost !== undefined && flag !== "estimate";
+		const restore = tries ? restorePrice(voce, article, cost, threshold) : undefined;
+		const restoreFailed = tries && restore === undefined;
+		out.push({ voce, article, ...(price === undefined ? {} : { price }), ...(average === undefined ? {} : { average }), ...(latest === undefined ? {} : { latest }), ...(basis === undefined ? {} : { basis }), ...(tenths === undefined ? {} : { tenths }), ...(flag === undefined ? {} : { flag }), ...(restore === undefined ? {} : { restore }), ...(restoreFailed ? { restoreFailed: true as const } : {}) });
 	}
 	const rank = (c: PriceCheck) => (c.flag === "loss" ? 0 : c.flag === "low" ? 1 : c.flag === "estimate" ? 2 : 3);
 	return out.sort((a, b) => rank(a) - rank(b) || (a.flag !== undefined ? byBig(a.tenths as bigint, b.tenths as bigint) : 0) || a.voce.name.localeCompare(b.voce.name, "it"));

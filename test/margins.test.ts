@@ -11,7 +11,7 @@ import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import type { Company } from "../src/core/invoices.ts";
 import { MarginStore } from "../src/core/margin-store.ts";
-import { marginCallReads, marginTenths } from "../src/core/margins.ts";
+import { marginCallReads, marginTenths, priceChecks } from "../src/core/margins.ts";
 import type { PriceItem } from "../src/core/price-list.ts";
 import type { SalesInvoice, SalesLine } from "../src/core/sales-invoices.ts";
 import { type Movement, type StockItem, validMove } from "../src/core/stock.ts";
@@ -359,6 +359,21 @@ describe("price check", () => {
 	});
 });
 
+describe("price check, no restoring price", () => {
+	it("L-e: when no price restores the threshold, the row is kept and flagged as failed, never dropped", () => {
+		const article: StockItem = { id: "MG-0001", name: "Toner XL", unit: "pezzo", listino: "LS-0001", ...MARK };
+		const voce = LISTINO[0] as PriceItem;
+		// A threshold of 100% no price reaches: the search gives up.
+		const [c] = priceChecks({ listino: [voce], items: [article], moves: [], purchases: [], codes: [], units: [] }, new Map([["MG-0001", 240000n]]), "2026-10-19", 1000n);
+		expect(c?.flag).toBe("low");
+		expect(c?.restore).toBeUndefined();
+		expect(c?.restoreFailed).toBe(true);
+		const [ok] = priceChecks({ listino: [voce], items: [article], moves: [], purchases: [], codes: [], units: [] }, new Map([["MG-0001", 240000n]]), "2026-10-19", 250n);
+		expect(ok?.restore).toBe(3200n);
+		expect(ok?.restoreFailed).toBeUndefined();
+	});
+});
+
 describe("what if", () => {
 	it("a price up 5% on the same quantities: the new unit price and how much more; a simulation, nothing changed; the forfettario's tax only in a note, never taken off", async () => {
 		const s = setup({ regime: "RF19" });
@@ -579,7 +594,7 @@ describe("agents, audit, fences, CSV and the brief", () => {
 		const nonce = (t: string) => t.replace(/[0-9a-f]{12}/g, "#");
 		expect(nonce(await s.run({ op: "ranking", compact: true }, durable("brief-1", memo)))).toBe(nonce(first));
 		// Past the week's cap: how many are left, never «niente».
-		const left = "Margini: della settimana scorsa c'è ancora un prodotto venduto sotto costo o con poco guadagno, non detti per non riempire il brief: chiedimi quali rendono di meno per vederlo.";
+		const left = "Margini: questa settimana te ne ho già segnalati 3, il massimo che ti dico in una settimana; della settimana scorsa c'è ancora un prodotto venduto sotto costo o con poco guadagno: chiedimi quali rendono di meno per vederlo.";
 		expect(await s.run({ op: "ranking", compact: true })).toBe(left);
 		s.clock.now = new Date("2026-10-21T08:00:00Z");
 		expect(await s.run({ op: "ranking", compact: true })).toBe(left);
@@ -588,6 +603,8 @@ describe("agents, audit, fences, CSV and the brief", () => {
 		s.sell("2026-10-20", [line("LS-0004", "Articolo 4", "1", "10")]);
 		const next = await s.run({ op: "ranking", compact: true });
 		expect(inside(next)).toBe("• Articolo 4: ci hai guadagnato solo 1,00 € (10%)");
+		// Every voce already said this week: said plainly, never «niente».
+		expect(await s.run({ op: "ranking", compact: true })).toBe("Margini: il prodotto venduto la settimana scorsa sotto costo o con poco guadagno te l'ho già segnalato questa settimana.");
 		expect(s.events.filter((e) => e.op === "brief")).toEqual([
 			{ type: "margins.used", op: "brief", count: 3 },
 			{ type: "margins.used", op: "brief", count: 1 },

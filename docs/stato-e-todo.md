@@ -4,7 +4,7 @@ Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 70, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 71, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -109,6 +109,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Conferme solo dalla persona: emettere, applicare la banca, unire, cambiare prezzi e numerazione si confermano solo da un messaggio della persona, mai da un avviso, un'attività o un altro agente; i canoni nella previsione di cassa (settimana 68, [week68.md](week68.md), [ADR 0088](adr/0088-conferme-solo-dalla-persona.md))
 - [x] Magazzino: carichi e scarichi a parole, anche a confezioni, quanto resta, sottoscorta nel brief, valore al costo medio, inventario, e le fatture emesse che scaricano da sole gli articoli venduti (settimana 69, [week69.md](week69.md), [ADR 0089](adr/0089-magazzino.md))
 - [x] Prezzi d'acquisto: le righe delle fatture dei fornitori, quanto si paga ogni prodotto, chi lo vende meno caro, gli aumenti nel brief, e la fattura del fornitore che carica il magazzino dopo il sì della persona (settimana 70, [week70.md](week70.md), [ADR 0090](adr/0090-prezzi-d-acquisto.md))
+- [x] Margini: quanto rende davvero ogni prodotto e ogni cliente al costo medio di ogni vendita, i prodotti in perdita, il listino contro i costi di adesso con il prezzo che lo riporta alla soglia, le simulazioni di prezzo e costo, e le voci sotto costo nel brief (settimana 71, [week71.md](week71.md), [ADR 0091](adr/0091-margini.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))

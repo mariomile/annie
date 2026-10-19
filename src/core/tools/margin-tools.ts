@@ -342,7 +342,7 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		const cost = c.basis === "latest" ? (c.latest?.cost ?? 0n) : (c.average ?? 0n);
 		const flag = c.flag === "loss" ? ": IN PERDITA" : c.flag === "low" ? `: SOTTO IL ${tenthsWords(threshold)}` : c.flag === "estimate" ? ": STIMA (l'ultimo acquisto l'ho trovato solo dal nome: da verificare)" : "";
 		const voceUnit = c.voce.unit === undefined ? c.article.unit : stockUnit(c.voce.unit);
-		const restore = c.restore === undefined ? "" : `; per tornare al ${tenthsWords(threshold)}: ${euros(c.restore)} ${perUnitWords(voceUnit)}${c.voce.includesVat === true ? " IVA inclusa" : ""} (${signedEuros(c.restore - eurosToCents(c.voce.price))}, voce ${c.voce.id})`;
+		const restore = c.restoreFailed === true ? `; non riesco a calcolare il prezzo giusto per tornare al ${tenthsWords(threshold)}: va deciso a mano` : c.restore === undefined ? "" : `; per tornare al ${tenthsWords(threshold)}: ${euros(c.restore)} ${perUnitWords(voceUnit)}${c.voce.includesVat === true ? " IVA inclusa" : ""} (${signedEuros(c.restore - eurosToCents(c.voce.price))}, voce ${c.voce.id})`;
 		return `• ${c.voce.name}: ${parts.join(", ")}: margine${basis}${percentSaid(c.tenths, c.price - cost).replace(/^ \((.*)\)$/, " $1")}${flag}${restore}`;
 	}
 
@@ -480,13 +480,13 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		// What other calls said this week: a call run again says its own voci again.
 		const said = new Set(store.read().alerts.filter((a) => a.week === monday && a.call !== ctx.callId).map((a) => a.v));
 		const open = found.filter((p) => !said.has(p.voce));
-		if (open.length === 0) return BRIEF_NOTHING;
+		if (open.length === 0) return `Margini: ${n1(found.length, "il prodotto venduto", "i # prodotti venduti")} la settimana scorsa sotto costo o con poco guadagno ${found.length === 1 ? "te l'ho già segnalato" : "te li ho già segnalati"} questa settimana.`;
 		const claimed = new Set(await ctx.step("claim", async () => store.claim(ctx.callId, monday, open.map((p) => p.voce))));
 		const mine = open.filter((p) => claimed.has(p.voce));
 		const rest = open.length - mine.length;
 		const more = (n: number) => (n === 1 ? "c'è un altro prodotto" : `ci sono altri ${n} prodotti`);
 		const see = (n: number) => `chiedimi quali rendono di meno per ${n === 1 ? "vederlo" : "vederli"}`;
-		if (mine.length === 0) return `Margini: della settimana scorsa ${n1(rest, "c'è ancora un prodotto venduto", "ci sono ancora # prodotti venduti")} sotto costo o con poco guadagno, non detti per non riempire il brief: ${see(rest)}.`;
+		if (mine.length === 0) return `Margini: questa settimana ${n1(said.size, "te ne ho già segnalato uno", "te ne ho già segnalati #")}, il massimo che ti dico in una settimana; della settimana scorsa ${n1(rest, "c'è ancora un prodotto venduto", "ci sono ancora # prodotti venduti")} sotto costo o con poco guadagno: ${see(rest)}.`;
 		await audit(ctx, "brief", mine.length);
 		const rows = mine.map((p) => (p.margin < 0n ? `• ${p.name}: ci hai perso ${euros(-p.margin)}${percentSaid(p.tenths, p.margin)}` : `• ${p.name}: ci hai guadagnato solo ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}`));
 		return [`La settimana scorsa hai venduto ${n1(mine.length, "un prodotto", "# prodotti")} sotto costo o guadagnandoci meno del ${MARGIN_LIMITS.threshold}% (nel riquadro)${rest === 0 ? "" : `; ${more(rest)}, ${see(rest)}`}.`, fenced(rows.join("\n"))].join("\n");
