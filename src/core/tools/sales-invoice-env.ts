@@ -18,6 +18,7 @@ import { CREDIT_NOTE_TYPE, ISSUED_FOLDER } from "../sales-invoice-rules.ts";
 import { SALES_BROKEN, type SalesBook, type SalesInvoiceStore } from "../sales-invoice-store.ts";
 import { type IssuedInvoice, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError } from "../sales-invoices.ts";
 import { makeDocumentFile } from "../document-reader.ts";
+import type { StockLink } from "../stock-store.ts";
 import type { TaxStore } from "../tax-store.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import type { Workspace } from "../workspace.ts";
@@ -38,6 +39,8 @@ export type SalesStores = {
 	readonly timesheet?: Pick<TimesheetStore, "read" | "setBilled">;
 	/** The listino, read only: a line naming a voce (item) takes its description, unit, price and VAT or nature. */
 	readonly priceList?: Pick<PriceListStore, "read">;
+	/** Il magazzino: an invoice issued unloads the articles its lines sell (by the voce of the listino), a credit note puts them back; once per invoice and line. */
+	readonly stock?: StockLink;
 	/** The workspace's invoices (the scadenzario's scanner): the numbers already used this year. */
 	readonly scanner: Pick<InvoiceScanner, "scan">;
 	readonly timeZone: string;

@@ -1,0 +1,204 @@
+/**
+ * Il magazzino: the stock of a small shop or an artisan. Each article (MG-0001, never given
+ * twice) has a unit, an optional minimum level, code, place and category, and may be a voce of the
+ * listino (LS-0001): then a sales invoice issued with that voce unloads it by itself. What there
+ * is comes only from the movements (MV-000001, append-only, never edited): carichi, scarichi,
+ * rettifiche from a count, and the storni of a credit note. Kept per instance in `stock.json`
+ * (stock-store.ts); the figures in stock-sums.ts.
+ *
+ * Choices, tested:
+ * - Quantities are canonical decimal strings with at most 3 decimals (kg, m, l), read into bigint
+ *   thousandths; money is euros to the fourth decimal for a unit cost, cents for a value. Never a float.
+ * - The weighted average cost changes only on a carico; a scarico, a rettifica and a storno go at
+ *   the average and never change it.
+ * - A count never edits a movement: the difference is a new rettifica.
+ * - Another agente gets only the articles' names and quantities (list, low): never a cost, a
+ *   value, a supplier or a movement.
+ */
+import type { Marker } from "./marker.ts";
+import { unitOf } from "./price-list.ts";
+import { isMarker, isText, optText } from "./stored-fields.ts";
+import { realDate } from "./italian-calendar.ts";
+
+export class StockError extends Error {
+	override readonly name = "StockError";
+}
+
+export const STOCK_OPS = ["add_item", "receive", "unload", "count", "status", "list", "low", "value", "movements", "remove_item", "export"] as const;
+export type StockOp = (typeof STOCK_OPS)[number];
+
+export const STOCK_LIMITS = {
+	items: 2000,
+	moves: 20_000,
+	/** Call ids remembered, so a call run again writes nothing twice. */
+	calls: 500,
+	/** The brief's alerts said, remembered so each crossing is said once: the oldest go first. */
+	alerts: 2000,
+	name: 120,
+	unit: 10,
+	code: 30,
+	place: 60,
+	category: 60,
+	doc: 60,
+	note: 200,
+	/** The largest quantity of one movement or of a minimum level. */
+	maxQuantity: 1_000_000_000,
+	/** The largest unit cost, in euros. */
+	maxCost: 1_000_000,
+	/** Rows shown in one answer, before «e altri N». */
+	shown: 40,
+	fileBytes: 8 * 1024 * 1024,
+} as const;
+
+export const REASONS = ["vendita", "uso_interno", "reso", "scarto"] as const;
+export type Reason = (typeof REASONS)[number];
+
+export const REASON_WORDS: Readonly<Record<Reason, string>> = { vendita: "vendita", uso_interno: "uso interno", reso: "reso al fornitore", scarto: "scarto" };
+
+export type StockItem = Marker & {
+	/** «MG-0001», never given again. */
+	readonly id: string;
+	readonly name: string;
+	/** «pezzo», «kg», «m», «litro»…: folded to its singular when known. */
+	readonly unit: string;
+	/** Below this the article is sottoscorta: a canonical decimal, 3 decimals at most. */
+	readonly min?: string;
+	readonly code?: string;
+	readonly place?: string;
+	readonly category?: string;
+	/** The voce of the listino it is (LS-0001): an invoice line with it unloads it. */
+	readonly listino?: string;
+	readonly callId?: string;
+	readonly edited?: Marker;
+	/** Taken off the list with nothing on hand: its movements stay. */
+	readonly removed?: Marker;
+};
+
+/** Where a movement of a sale comes from: the invoice (or credit note) and its line; a storno says the invoice it corrects. */
+export type SaleRef = { readonly invoice: string; readonly line: number; readonly number: string; readonly of?: string };
+
+export type MoveKind = "carico" | "scarico" | "rettifica" | "storno";
+
+export type Movement = Marker & {
+	/** «MV-000001», never given again; the order of the movements is the order of their numbers. */
+	readonly id: string;
+	readonly item: string;
+	readonly kind: MoveKind;
+	/** How much: positive; a rettifica's is signed (the counted less what there was), and 0 when the count matched. */
+	readonly qty: string;
+	readonly day: string;
+	/** carico: the unit cost, euros to the fourth decimal. */
+	readonly cost?: string;
+	/** carico: the supplier, as found (with its partita IVA when known) or as said. */
+	readonly supplier?: { readonly name: string; readonly vat?: string };
+	/** carico: the document's reference (a DDT, an invoice number). */
+	readonly doc?: string;
+	/** scarico: why. */
+	readonly reason?: Reason;
+	/** rettifica: the quantity counted. */
+	readonly counted?: string;
+	/** scarico vendita or storno from an invoice issued. */
+	readonly sale?: SaleRef;
+	readonly note?: string;
+	readonly callId?: string;
+};
+
+/** A sottoscorta said in the brief: the article, the crossing (the movement that took it under, with the level) and the call that said it. */
+export type LowClaim = { readonly item: string; readonly crossing: string; readonly call: string };
+
+export const stockItemId = (n: number) => `MG-${String(n).padStart(4, "0")}`;
+export const STOCK_ID = /^MG-(\d{4,6})$/;
+export const moveId = (n: number) => `MV-${String(n).padStart(6, "0")}`;
+export const MOVE_ID = /^MV-(\d{6,7})$/;
+const LISTINO_ID = /^LS-\d{4,7}$/;
+const DRAFT_ID = /^BZ-\d{4,6}$/;
+
+const QTY = /^\d{1,10}(?:\.\d{1,3})?$/;
+const SIGNED_QTY = /^-?\d{1,10}(?:\.\d{1,3})?$/;
+const COST = /^\d{1,7}(?:\.\d{1,4})?$/;
+
+/** A canonical quantity: digits, at most 3 decimals, no trailing zeros. */
+export function isQuantity(v: unknown, signed = false): v is string {
+	if (typeof v !== "string" || !(signed ? SIGNED_QTY : QTY).test(v)) return false;
+	if (/\.\d*0$/.test(v) || /^-?0\d/.test(v) || v === "-0") return false;
+	return Math.abs(Number(v)) <= STOCK_LIMITS.maxQuantity;
+}
+
+const isCost = (v: unknown): v is string => typeof v === "string" && COST.test(v) && !/\.\d*0$/.test(v) && !/^0\d/.test(v) && Number(v) <= STOCK_LIMITS.maxCost;
+
+/** Units a person says that the listino does not fold: litri, metri, grammi… */
+const MORE_UNITS: Readonly<Record<string, string>> = { litro: "litro", litri: "litro", l: "litro", lt: "litro", metro: "m", metri: "m", m: "m", mt: "m", ml: "ml", grammo: "g", grammi: "g", g: "g", gr: "g", chilo: "kg", chili: "kg", chilogrammi: "kg", kg: "kg", confezione: "confezione", confezioni: "confezione", conf: "confezione", scatola: "scatola", scatole: "scatola", rotolo: "rotolo", rotoli: "rotolo", paio: "paio", paia: "paio", mq: "mq" };
+
+/** A unit as said, to the one kept: «pezzi» is «pezzo», «litri» is «litro», «metri» is «m». */
+export function stockUnit(said: string): string {
+	const folded = unitOf(said.trim().toLowerCase());
+	return MORE_UNITS[folded] ?? folded;
+}
+
+/** The ops that only read, and the brief's low (compact), which only marks its alerts as said: they run in a brief's thread. */
+const READ_OPS: readonly StockOp[] = ["status", "list", "low", "value", "movements"];
+
+export function stockCallReads(args: Record<string, unknown>): boolean {
+	return READ_OPS.some((o) => o === args.op);
+}
+
+/** What another agente may ask: the list and what is running low, as names and quantities; never the brief's line, a cost, a value, a supplier or a change. */
+export function stockAgentReads(args: Record<string, unknown>): boolean {
+	return args.op === "list" || (args.op === "low" && args.compact !== true);
+}
+
+const plain = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
+const optPlain = (v: unknown, max: number) => v === undefined || plain(v, max);
+
+/** An article as stored, checked field by field: what does not have this shape makes the store unreadable. */
+export function validItem(v: unknown): v is StockItem {
+	if (!isMarker(v)) return false;
+	const i = v as StockItem;
+	for (const key of Object.keys(i)) if (!["id", "name", "unit", "min", "code", "place", "category", "listino", "callId", "edited", "removed", "by", "at"].includes(key)) return false;
+	if (typeof i.id !== "string" || !STOCK_ID.test(i.id) || !plain(i.name, STOCK_LIMITS.name) || !plain(i.unit, STOCK_LIMITS.unit)) return false;
+	if (i.min !== undefined && !isQuantity(i.min)) return false;
+	if (!optPlain(i.code, STOCK_LIMITS.code) || !optPlain(i.place, STOCK_LIMITS.place) || !optPlain(i.category, STOCK_LIMITS.category)) return false;
+	if (i.listino !== undefined && (typeof i.listino !== "string" || !LISTINO_ID.test(i.listino))) return false;
+	if (!optText(i.callId, 200)) return false;
+	return (i.edited === undefined || isMarker(i.edited)) && (i.removed === undefined || isMarker(i.removed));
+}
+
+function validSale(v: unknown): v is SaleRef {
+	if (typeof v !== "object" || v === null) return false;
+	const s = v as SaleRef;
+	if (!Object.keys(s).every((k) => ["invoice", "line", "number", "of"].includes(k))) return false;
+	return typeof s.invoice === "string" && DRAFT_ID.test(s.invoice) && Number.isInteger(s.line) && s.line >= 1 && s.line <= 1000 && plain(s.number, 40) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of)));
+}
+
+/** A movement as stored: each kind with its own fields only. */
+export function validMove(v: unknown): v is Movement {
+	if (!isMarker(v)) return false;
+	const m = v as Movement;
+	for (const key of Object.keys(m)) if (!["id", "item", "kind", "qty", "day", "cost", "supplier", "doc", "reason", "counted", "sale", "note", "callId", "by", "at"].includes(key)) return false;
+	if (typeof m.id !== "string" || !MOVE_ID.test(m.id) || typeof m.item !== "string" || !STOCK_ID.test(m.item)) return false;
+	if (typeof m.day !== "string" || !realDate(m.day) || !optPlain(m.note, STOCK_LIMITS.note) || !optText(m.callId, 200)) return false;
+	const only = (allowed: readonly string[]) => ["cost", "supplier", "doc", "reason", "counted", "sale"].every((k) => allowed.includes(k) || (m as Record<string, unknown>)[k] === undefined);
+	switch (m.kind) {
+		case "carico": {
+			if (!isQuantity(m.qty) || Number(m.qty) <= 0 || !isCost(m.cost) || !only(["cost", "supplier", "doc"]) || !optPlain(m.doc, STOCK_LIMITS.doc)) return false;
+			const s = m.supplier;
+			return s === undefined || (typeof s === "object" && s !== null && Object.keys(s).every((k) => ["name", "vat"].includes(k)) && plain(s.name, STOCK_LIMITS.name) && optPlain(s.vat, 40));
+		}
+		case "scarico":
+			return isQuantity(m.qty) && Number(m.qty) > 0 && REASONS.includes(m.reason as Reason) && only(["reason", "sale"]) && (m.sale === undefined || (validSale(m.sale) && m.reason === "vendita" && m.sale.of === undefined));
+		case "rettifica":
+			return isQuantity(m.qty, true) && isQuantity(m.counted) && only(["counted"]);
+		case "storno":
+			return isQuantity(m.qty) && Number(m.qty) > 0 && only(["sale"]) && validSale(m.sale) && m.sale.of !== undefined;
+		default:
+			return false;
+	}
+}
+
+export function validLowClaim(v: unknown): v is LowClaim {
+	if (typeof v !== "object" || v === null) return false;
+	const c = v as LowClaim;
+	return Object.keys(c).every((k) => ["item", "crossing", "call"].includes(k)) && typeof c.item === "string" && STOCK_ID.test(c.item) && plain(c.crossing, 40) && isText(c.call, 200);
+}
+
+export const validStockCall = (v: unknown): boolean => isText(v, 200);

@@ -36,6 +36,8 @@ export type LineTarget = {
 	/** The longest description a line holds. */
 	readonly descriptionMax: number;
 	readonly doc?: DocVat;
+	/** invoice: each filled line keeps the voce's id in `item` (LS-0001), so the magazzino knows what was sold when it is issued. */
+	readonly keepItem?: boolean;
 };
 
 export type FillTarget = LineTarget & { readonly forfettario: boolean };
@@ -168,7 +170,7 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 		if (item === undefined) return line;
 		const { item: _said, ...own } = line as Record<string, unknown>;
 		const quantity = own.quantity === undefined ? "1" : String(own.quantity);
-		const out: Record<string, unknown> = { ...own };
+		const out: Record<string, unknown> = { ...own, ...(t.keepItem === true && t.kind === "invoice" ? { item: item.id } : {}) };
 		if (own.description === undefined) {
 			const full = item.description === undefined ? item.name : `${item.name} (${item.description})`;
 			out.description = full.length <= t.descriptionMax ? full : item.name;

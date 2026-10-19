@@ -42,8 +42,11 @@ import { fenced } from "./sales-invoice-render.ts";
 const readAmount = (value: unknown, decimals: number, what: string) => readNumber(value, decimals, what, fenced);
 const readPercent = (value: unknown, where: string) => readShare(value, where, fenced);
 
+/** A voce of the listino's id on a line: LS-0001. */
+const LISTINO_ITEM = /^LS-\d{4,7}$/;
+
 /** A line as given, before the invoice-wide rate and nature. */
-export type GivenLine = { description: string; quantity: string; unit?: string; price: string; discount?: string; vat?: SalesVatRate; natura?: Natura; reference?: string; notFee?: true };
+export type GivenLine = { description: string; quantity: string; unit?: string; price: string; discount?: string; vat?: SalesVatRate; natura?: Natura; reference?: string; notFee?: true; item?: string };
 
 /** Whether text fits a field of `max` characters as the XML writes it (latin1 may lengthen «…» or «€»). */
 export function fitsLatin(text: string, max: number): boolean {
@@ -91,6 +94,8 @@ function readLine(raw: unknown, n: number): GivenLine | Problem {
 	const reference = cleanText(o.reference, FIELD_LIMITS.riferimentoNormativo, `${where}, il riferimento normativo`);
 	if (isProblem(reference)) return reference;
 	if (o.advance !== undefined && typeof o.advance !== "boolean") return { problem: `${where}: spesa anticipata è sì o no` };
+	// The voce of the listino the line was filled from (price-list-lines.ts): kept only as its id, for the magazzino.
+	const item = typeof o.item === "string" && LISTINO_ITEM.test(o.item) ? o.item : undefined;
 	if (o.advance === true) {
 		// A spesa anticipata in nome e per conto del cliente: outside VAT (N1), not a fee.
 		if ((vat !== undefined && vat !== 0) || (natura !== undefined && natura !== NOT_FEE_NATURA)) return { problem: `${where}: una spesa anticipata per conto del cliente è senza IVA (natura N1)` };
@@ -105,6 +110,7 @@ function readLine(raw: unknown, n: number): GivenLine | Problem {
 		...(vat === undefined ? {} : { vat }),
 		...(natura === undefined ? {} : { natura }),
 		...(reference === undefined ? {} : { reference }),
+		...(item === undefined ? {} : { item }),
 	};
 }
 
