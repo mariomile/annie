@@ -1,10 +1,10 @@
 # Stato del progetto e cose da fare
 
-Aggiornato al 18 ottobre 2026.
+Aggiornato al 19 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 74, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 75, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -113,6 +113,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Ordini ai fornitori: cosa riordinare contando gli ordini già fatti, le bozze per fornitore dal solito o dal più conveniente, il documento da mandare, l'arrivo con la bolla o con la fattura senza caricare due volte, gli ordini in ritardo nel brief (settimana 72, [week72.md](week72.md), [ADR 0092](adr/0092-ordini-ai-fornitori.md))
 - [x] DDT e fattura differita: i DDT della merce spedita con la loro numerazione, lo scarico del magazzino all'emissione, il documento da stampare, la fattura differita del mese con i DatiDDT e senza doppio scarico, i DDT da fatturare nel brief con la scadenza del 15 (settimana 73, [week73.md](week73.md), [ADR 0093](adr/0093-ddt-e-fattura-differita.md))
 - [x] Appuntamenti e prenotazioni: fissare controllando orari, chiusure, festivi e sovrapposizioni per risorsa, gli orari liberi più vicini su un conflitto, spostare, disdire e non presentato solo dalla persona, la giornata con i buchi, lo storico del cliente, i promemoria ai clienti preparati e mai mandati, la fattura degli appuntamenti fatti segnati all'emissione, il brief (settimana 74, [week74.md](week74.md), [ADR 0094](adr/0094-appuntamenti-e-prenotazioni.md))
+- [x] Turni, ferie e permessi del personale: le persone con la settimana solita, ferie, permessi, malattie (solo il protocollo) e altre assenze senza sovrapposizioni, saldi come stima, i turni della settimana con le ore scoperte, le assenze che bloccano le risorse degli appuntamenti, il riepilogo del mese per la consulente giorno per giorno e mai mandato, assunzioni e uscite, il brief che non dice mai il perché, i dati sanitari controllati quando si dicono (settimana 75, [week75.md](week75.md), [ADR 0095](adr/0095-turni-ferie-e-permessi.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))
