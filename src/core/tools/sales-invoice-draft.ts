@@ -14,6 +14,7 @@ import { italianDate } from "../italian-format.ts";
 import { inPeriod, type Period, PeriodError, readPeriod } from "../periods.ts";
 import { QUOTES_BROKEN } from "../quote-store.ts";
 import { FORM_NOTE } from "../client-find.ts";
+import { listLines } from "../price-list-lines.ts";
 import { findQuotes, type Quote, type QuoteCustomer, STATUS_WORDS } from "../quotes.ts";
 import { CREDIT_NOTE_TYPE, DEFAULT_METHOD, FIELD_LIMITS, INPS_CASSA, INVOICE_TYPE, naturaWords, REGIME_FORFETTARIO, REGIME_ORDINARIO } from "../sales-invoice-rules.ts";
 import { nextSeq, type SalesBook, type SalesSettings, type SalesState } from "../sales-invoice-store.ts";
@@ -253,20 +254,31 @@ function fromHours(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 	});
 }
 
+/** The lines that name a voce of the listino filled from it (price-list-lines.ts), in the regime known; the arguments as they are when none does. */
+function fromList(env: SalesEnv, args: Record<string, unknown>): { args: Record<string, unknown>; notes: readonly string[] } | string {
+	const filled = listLines({ ...(env.priceList === undefined ? {} : { priceList: env.priceList }), company: env.company, taxes: env.taxes }, args.lines, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: args.vat, natura: args.natura } });
+	if (filled === undefined) return { args, notes: [] };
+	if ("ask" in filled) return filled.ask;
+	return { args: { ...args, lines: filled.lines }, notes: filled.notes };
+}
+
 /** A draft of an invoice (TD01), from a quote, the hours or the lines. */
-export async function draft(env: SalesEnv, args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
+export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
 	const book = env.book();
 	const done = again(book, ctx, day);
 	if (done !== undefined) {
 		await env.audit(ctx, "draft", 1);
 		return done;
 	}
+	const listed = fromList(env, given);
+	if (typeof listed === "string") return listed;
+	const args = listed.args;
 	if (args.hours === true && (args.quote !== undefined || args.lines !== undefined)) return "Errore: la fattura delle ore parte solo dalle ore del cliente: per aggiungere altre voci, detta tutte le voci.";
 	if (args.quote === undefined && args.hours !== true && args.lines === undefined) return "Errore: la fattura parte da un preventivo accettato, dalle ore da fatturare di un cliente, oppure dalle voci dettate.";
 	if (args.new_customer !== undefined && typeof args.new_customer !== "boolean") return "Errore: il cliente nuovo è sì o no.";
 	const fields = readBuyerFields(args);
 	if (isProblem(fields)) return `Errore: ${fields.problem}.`;
-	const notes: string[] = [];
+	const notes: string[] = [...listed.notes];
 	const src = args.quote !== undefined ? fromQuote(env, args, book, notes, fields) : args.hours === true ? fromHours(env, args, book, day) : fromLines(env, args, book, notes, fields);
 	if (typeof src === "string") return src;
 	notes.push(...src.notes);

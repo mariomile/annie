@@ -78,7 +78,7 @@ function readLine(raw: unknown, n: number): GivenLine | Problem {
 	const quantity = o.quantity === undefined ? "1" : readAmount(o.quantity, 3, `${where}, quantità`);
 	if (isProblem(quantity)) return quantity;
 	if (quantity === undefined || Number(quantity) <= 0 || Number(quantity) > SALES_LIMITS.maxQuantity) return { problem: `${where}: la quantità è un numero maggiore di zero, al più 3 decimali` };
-	const price = readAmount(o.price, 8, `${where}, prezzo`);
+	const price = readAmount(o.price, 4, `${where}, prezzo`);
 	if (isProblem(price)) return price;
 	if (price === undefined || Number(price) > SALES_LIMITS.maxPrice) return { problem: `${where}: manca il prezzo unitario, senza IVA` };
 	if (Number(price) === 0) return { problem: `${where}: il prezzo è zero; una voce gratuita scrivila nelle note` };

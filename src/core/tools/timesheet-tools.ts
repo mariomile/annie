@@ -1,3 +1,4 @@
+import type { PriceListStore } from "../price-list-store.ts";
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { makeDocumentFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
@@ -69,6 +70,8 @@ export type TimesheetToolsOptions = {
 	readonly quotes: Pick<QuoteStore, "read">;
 	/** quotes' own create (its rules, numbering and document): to_quote's only way to make a quote. */
 	readonly createQuote?: CreateQuote;
+	/** The listino, read only: to_quote prices hours without a rate with its hourly voce for the client or the activity, and says so. */
+	readonly priceList?: Pick<PriceListStore, "read">;
 	/** The scadenzario's scanner of the same workspace, for the invoices' customers' names (suggestions only); none: those names are not used. */
 	readonly scanner?: InvoiceScanner;
 	readonly timeZone: string;
@@ -199,7 +202,7 @@ export function createTimesheetTools(options: TimesheetToolsOptions): AnnieTool[
 						case "report":
 							return await report(args, ctx);
 						case "to_quote":
-							return await toQuote(args, ctx, periodFrom(args), { store, quotes: options.quotes, ...(options.createQuote === undefined ? {} : { createQuote: options.createQuote }), by: who, now, audit: (c, count) => audit(c, "to_quote", count) });
+							return await toQuote(args, ctx, periodFrom(args), { store, quotes: options.quotes, ...(options.createQuote === undefined ? {} : { createQuote: options.createQuote }), ...(options.priceList === undefined ? {} : { priceList: options.priceList }), forfettario, by: who, now, audit: (c, count) => audit(c, "to_quote", count) });
 						case "mark_billed":
 						case "mark_unbilled":
 							return await mark(op, args, ctx);

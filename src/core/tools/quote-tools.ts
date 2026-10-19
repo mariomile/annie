@@ -16,6 +16,8 @@ import { FILTERS, listAnswer } from "./quote-list.ts";
 import { fenced, type QuoteView, quoteLines } from "./quote-render.ts";
 import { sendQuote } from "./quote-send.ts";
 import type { MailRequests } from "../mail-requests.ts";
+import { listLines, namesItems } from "../price-list-lines.ts";
+import type { PriceListStore } from "../price-list-store.ts";
 
 export const QUOTE_OPS = ["create", "revise", "list", "show", "set_status", "send"] as const;
 type Op = (typeof QUOTE_OPS)[number];
@@ -39,6 +41,8 @@ export type QuoteToolsOptions = {
 	readonly record?: (event: QuoteEvent) => Promise<void>;
 	/** Sending a quote by mail, on the person's approval card; without it, the text comes back to copy. */
 	readonly mail?: MailRequests;
+	/** The listino, read only: a line naming a voce (item) takes its description, unit, price and VAT. */
+	readonly priceList?: Pick<PriceListStore, "read">;
 	/** Tests: the clock and the document maker (default: the document worker). */
 	readonly now?: () => Date;
 	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
@@ -52,6 +56,7 @@ const notSaved = (number: string) => `Errore: il preventivo ${number} non è sta
 const DESCRIPTION = [
 	"Preventivi (quotes) for customers: numbered per year (2026-012), totals computed exactly here, a PDF in the workspace with the letterhead saved by invoices set_company.",
 	"create: customer (+ tax_id, address, email; reused from the customer's last quote when not given), items [{description, quantity, unit, price, discount, vat, vat_note}].",
+	"A line may name a voce of the listino with item (its name as said, or LS-0001) instead of description and price: description, unit, price and VAT come from the listino, what the line gives itself wins; a voce not in the listino or not clear is asked, never priced by you.",
 	"Pass amounts as JSON numbers (1250, 12.5); a string like «1.250» is refused as ambiguous. unit: ore, giornate, pezzi, mq; a corpo: quantity 1 and no unit, with «a corpo» in the description.",
 	"If the person gives prices IVA inclusa («ivato», «IVA compresa»), pass the price as said with prices_include_vat true; never take the VAT out yourself.",
 	"vat for every line, only as the person says; if not said, call without it and the tool says what to ask (with regime forfettario saved, lines are at 0% with its dicitura).",
@@ -114,7 +119,7 @@ export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieToo
 		});
 	};
 	const amount = { type: ["number", "string"] };
-	const item = { type: "object", properties: { description: { type: "string" }, quantity: amount, unit: { type: "string" }, price: amount, discount: amount, vat: amount, vat_note: { type: "string" } }, required: ["description", "price"] };
+	const item = { type: "object", properties: { item: { type: "string", maxLength: 120, description: "a voce of the listino: its name as said or LS-0001" }, description: { type: "string" }, quantity: amount, unit: { type: "string" }, price: amount, discount: amount, vat: amount, vat_note: { type: "string" } } };
 	const create: CreateQuote = async (input, ctx) => {
 		const scoped: ToolContext = { ...ctx, step: (key, work) => ctx.step(`quote:${key}`, work) };
 		let text: string;
@@ -267,7 +272,9 @@ export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieToo
 			const changes = ["customer", "tax_id", "address", "email", "items", "add_items", "prices_include_vat", "vat", "vat_note", "discount", "cassa", "deposit", "delivery", "valid_days", "terms", "notes", "ritenuta", "bollo", "format"];
 			if (!changes.some((k) => args[k] !== undefined)) return "Errore: dimmi cosa cambia nel preventivo (voci, sconto, IVA, validità, condizioni, note).";
 		}
-		const draft = draftOf(args, { ...(previous === undefined ? {} : { previous }), company, quotes });
+		const listed = fromList(args, previous);
+		if (typeof listed === "string") return listed;
+		const draft = draftOf(listed.args, { ...(previous === undefined ? {} : { previous }), company, quotes });
 		if (typeof draft === "string") return draft;
 		const v = view();
 		const year = Number(v.today.slice(0, 4));
@@ -277,7 +284,24 @@ export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieToo
 		);
 		const quote = readable().find((q) => q.number === number);
 		if (quote === undefined) return notSaved(number);
-		return await finish(op, quote, args, ctx, draft.notes);
+		return await finish(op, quote, args, ctx, [...listed.notes, ...draft.notes]);
+	}
+
+	/** The lines that name a voce of the listino filled from it (price-list-lines.ts); the arguments as they are when none does. */
+	function fromList(args: Record<string, unknown>, previous: Quote | undefined): { args: Record<string, unknown>; notes: readonly string[] } | string {
+		const key = namesItems(args.items) ? "items" : namesItems(args.add_items) ? "add_items" : undefined;
+		if (key === undefined) return { args, notes: [] };
+		const said = typeof args.prices_include_vat === "boolean" ? args.prices_include_vat : previous === undefined ? undefined : previous.pricesIncludeVat === true;
+		// The quote's regime is the company's (no tax profile), as its own lines read it.
+		const filled = listLines({ ...(options.priceList === undefined ? {} : { priceList: options.priceList }), company: options.company }, args[key], {
+			kind: "quote",
+			...(said === undefined ? {} : { includeVat: said }),
+			descriptionMax: QUOTE_LIMITS.description,
+			doc: { vat: args.vat, vatNote: args.vat_note },
+		});
+		if (filled === undefined) return { args, notes: [] };
+		if ("ask" in filled) return filled.ask;
+		return { args: { ...args, [key]: filled.lines, ...(said === undefined && filled.includeVat ? { prices_include_vat: true } : {}) }, notes: filled.notes };
 	}
 
 	/** The saved quote's document made and the answer: from the quote as saved, also when run again. */

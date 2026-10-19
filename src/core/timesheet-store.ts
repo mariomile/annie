@@ -220,7 +220,7 @@ export class TimesheetStore {
 	 * each with its minutes, rate and rounding of now. The reservation `callId` already has, when
 	 * there is one (a call run again). An empty pick reserves nothing.
 	 */
-	reserve(callId: string, by: string, pick: (free: readonly WorkEntry[], rates: readonly RateRule[]) => readonly WorkEntry[]): Reservation | undefined {
+	reserve(callId: string, by: string, pick: (free: readonly WorkEntry[], rates: readonly RateRule[]) => readonly WorkEntry[], fallbackRate?: (entry: WorkEntry) => { readonly rate: string; readonly listed: { readonly id: string; readonly name: string } } | undefined): Reservation | undefined {
 		let result: Reservation | undefined;
 		this.update((book) => {
 			const own = (book.reservations ?? []).find((r) => r.callId === callId);
@@ -236,7 +236,10 @@ export class TimesheetStore {
 			if (chosen.length === 0) return book;
 			const entries = chosen.map((e): ReservedEntry => {
 				const terms = termsOf(e, book.rates);
-				return { id: e.id, client: e.client, date: e.date, minutes: e.minutes, ...(terms.rate === undefined ? {} : { rate: terms.rate }), rounding: terms.rounding };
+				// No rate of the timesheet's own: the caller's (the listino's hourly voce), recorded as the rate it is billed at, with the voce it came from.
+				const fallback = terms.rate === undefined && e.billable ? fallbackRate?.(e) : undefined;
+				const rate = terms.rate ?? fallback?.rate;
+				return { id: e.id, client: e.client, date: e.date, minutes: e.minutes, ...(rate === undefined ? {} : { rate }), rounding: terms.rounding, ...(fallback === undefined ? {} : { listed: fallback.listed }) };
 			});
 			const reservation: Reservation = { callId, entries, by, at: this.now().toISOString() };
 			result = reservation;
