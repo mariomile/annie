@@ -55,6 +55,7 @@ import { agentAnswer, choiceRow, fencedRecurring, listAnswer, monthsWords, NO_SC
 import { billedFor, checkDraft, coveredMonths, draftGone, invoiceOf, preparePeriod, type RecurringEnv, type RecurringEvent } from "./recurring-invoice-run.ts";
 import { findBuyer } from "./sales-invoice-buyer.ts";
 import { type BuyerFields, readBuyerFields } from "./sales-invoice-input.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 export type { RecurringEvent } from "./recurring-invoice-run.ts";
 
@@ -77,6 +78,15 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
  * Le fatture ricorrenti: the schedules kept here; each period's draft made by the sweep or by
  * run_now with the same env (recurring-invoice-run.ts). Today is read once per call.
  */
+/** The ops that need a person's own message (ADR 0088), with the step in words for the refusal. Pause is always fine. */
+const PERSON_OPS: Partial<Record<RecurringOp, string>> = {
+	add: "programmo una fattura ricorrente",
+	change: "cambio la fattura ricorrente",
+	resume: "faccio ripartire la fattura ricorrente",
+	run_now: "preparo la bozza del canone",
+	remove: "tolgo la fattura ricorrente",
+};
+
 export function createRecurringInvoiceTools(options: RecurringToolsOptions): AnnieTool[] {
 	const env: RecurringEnv = options;
 	const { store, timeZone, sales } = env;
@@ -161,6 +171,10 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 				if (agent && !recurringAgentReads(args)) {
 					return "Errore: a un altro agente do solo quante fatture ricorrenti ci sono e quanto valgono al mese, in tutto. Non le cambio, non preparo bozze e non dico per quali clienti; il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}
+				// A standing schedule, a draft made now, a removal: only on a person's own message, never a notice's, a schedule's or another agente's (ADR 0088).
+				const personal = PERSON_OPS[op];
+				const notPerson = personal === undefined ? undefined : requirePersonFor(ctx, personal);
+				if (notPerson !== undefined) return notPerson;
 				const day = todayIn(timeZone, env.now());
 				try {
 					switch (op) {

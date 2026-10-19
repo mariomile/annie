@@ -19,6 +19,7 @@ import { creditNote, draft, lowNumberNote, readLastNumber } from "./sales-invoic
 import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEnvOptions, type SalesStores, salesEnvOf } from "./sales-invoice-env.ts";
 import { finish, issue } from "./sales-invoice-issue.ts";
 import { agentListAnswer, briefLine, fenced, invoiceLines, listAnswer } from "./sales-invoice-render.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 export type { SalesEvent } from "./sales-invoice-env.ts";
 
@@ -193,6 +194,9 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 		if ("answer" in named) return named.answer;
 		const target = named.found;
 		if (isIssued(target)) return `Errore: la ${target.type === CREDIT_NOTE_TYPE ? "nota di credito" : "fattura"} n. ${target.number} è già emessa e non si può togliere: per annullarla si fa una nota di credito.`;
+		// Removed only when the person asks, in their own message (ADR 0088).
+		const notPerson = requirePersonFor(ctx, `tolgo la bozza ${target.id}`);
+		if (notPerson !== undefined) return notPerson;
 		// Under the lock: a draft issued meanwhile by another call is never removed.
 		store.removeDraft(target.id, ctx.callId);
 		await env.audit(ctx, "remove", 1);
@@ -210,6 +214,11 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 		if (typeof last === "string") return last;
 		const issuedIn = (y: number) => book.invoices.some((i) => isIssued(i) && i.year === y);
 		if (args.numbering === undefined && args.bollo_to_client === undefined && args.ritenuta === undefined && last === undefined) return shown(book, thisYear);
+		// How the invoices are numbered, and from which number: the person's own word (ADR 0088).
+		if (args.numbering !== undefined || last !== undefined) {
+			const notPerson = requirePersonFor(ctx, "cambio la numerazione delle fatture");
+			if (notPerson !== undefined) return notPerson;
+		}
 		const changesNumbering = args.numbering !== undefined && args.numbering !== (book.settings?.numbering ?? "plain");
 		if (changesNumbering && issuedIn(thisYear)) return `Nel ${thisYear} ho già emesso fatture con questa numerazione: si può scegliere da gennaio, prima della prima fattura del ${thisYear + 1}. Non ho cambiato niente.`;
 		if (last !== undefined && issuedIn(year)) return `Nel ${year} ho già emesso fatture, quindi la numerazione va avanti da quelle: l'ultimo numero prima di me si può correggere solo prima della prima fattura dell'anno. Non ho cambiato niente.`;

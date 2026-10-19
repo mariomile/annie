@@ -622,7 +622,7 @@ describe("clients: merge and remove", () => {
 		await s.run({ op: "note", client: "Bianchi Mario", note: "conosciuto alla fiera" });
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
 			const out = await s.run({ op: "merge", client: "Bianchi Mario", into: "Studio Bianchi", confirm: true }, { ...fresh(), origin });
-			expect(out).toContain("Questo lo confermo solo dopo un messaggio della persona");
+			expect(out).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
 			expect(s.store.read().cards).toHaveLength(2);
 		}
 		expect(await s.run({ op: "merge", client: "Bianchi Mario", into: "Studio Bianchi" }, { ...fresh(), origin: "notice" })).toContain("Chiedi conferma a chi ti scrive");

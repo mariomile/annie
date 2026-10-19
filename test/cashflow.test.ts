@@ -9,6 +9,7 @@ import { CASHFLOW_LIMITS, type CashItem, cashflowAgentReads, cashflowCallReads, 
 import { buckets, firstBelow, project } from "../src/core/cashflow-projection.ts";
 import { applyChanges, averageSpend, datesOf, dedupe, invoiceFlows, itemFlows, type Movement, quoteFlows, renewalFlows, rollForward, voceDuplicates } from "../src/core/cashflow-sources.ts";
 import { CashflowStore, latestBalance } from "../src/core/cashflow-store.ts";
+import { movementLabel } from "../src/core/tools/cashflow-render.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
@@ -653,7 +654,7 @@ describe("cashflow: balance, alert and voci", () => {
 		const args = { op: "add_item", kind: "uscita", amount: 690, name: "Affitto", date: "ogni 1 del mese" };
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
 			expect(await s.run(args, { ...fresh(), origin })).toContain("Non l'ho aggiunta: c'è già qualcosa di simile");
-			expect(await s.run({ ...args, confirm: true }, { ...fresh(), origin })).toContain("Questo lo confermo solo dopo un messaggio della persona");
+			expect(await s.run({ ...args, confirm: true }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
 		}
 		expect(s.store.read().items).toHaveLength(0);
 		// Nothing alike: the confirm overrides nothing, and a scheduled turn adds as without it.
@@ -842,17 +843,17 @@ describe("cashflow: what_if", () => {
 		expect(args.items).toEqual([{ amount: 1000, date: "10/11/2026", name: "Computer nuovo" }]);
 		expect(inside(ok)).toBe("• Computer nuovo: uscita 1.000,00 € il 10 novembre 2026");
 		// Every verdict names its case; the end balance is of the same case as the lowest point (r2-5).
-		expect(ok).toContain("Senza contare fatture in ritardo e preventivi, te lo puoi permettere: il punto più basso passa da 3.150,92 € (il 30 ottobre 2026) a 2.663,20 € (il 16 novembre 2026).");
+		expect(ok).toContain("Senza contare fatture in ritardo, preventivi e canoni, te lo puoi permettere: il punto più basso passa da 3.150,92 € (il 30 ottobre 2026) a 2.663,20 € (il 16 novembre 2026).");
 		expect(ok).toContain("Se arrivano anche 1.370,00 € di fatture in ritardo da incassare, il punto più basso con l'ipotesi è 4.033,20 € il 16 novembre 2026.");
-		expect(ok).toContain("Saldo al 16 novembre 2026, senza contare fatture in ritardo e preventivi: da 3.663,20 € a 2.663,20 €.");
+		expect(ok).toContain("Saldo al 16 novembre 2026, senza contare fatture in ritardo, preventivi e canoni: da 3.663,20 € a 2.663,20 €.");
 		expect(ok).not.toContain("Per settimana");
 		expect(outside(ok)).not.toContain("Computer");
 		const no = await s.run({ op: "what_if", amount: 4500, date: "10/11/2026", name: "Auto", days: 30 });
-		expect(no).toContain("Senza contare fatture in ritardo e preventivi, così vai in rosso dal ");
+		expect(no).toContain("Senza contare fatture in ritardo, preventivi e canoni, così vai in rosso dal ");
 		expect(no).toContain("con queste cifre non ci sta, salvo entrate che non conosco");
 		await s.run({ op: "set_balance", amount: 200 });
 		const already = await s.run({ op: "what_if", amount: 100, date: "10/11/2026", days: 30 });
-		expect(already).toContain("Senza contare fatture in ritardo e preventivi, sei già in rosso dal ");
+		expect(already).toContain("Senza contare fatture in ritardo, preventivi e canoni, sei già in rosso dal ");
 		expect(already).toContain(" anche senza; con l'ipotesi il punto più basso passa da ");
 		const december = await s.run({ op: "what_if", amount: 2000, date: "dicembre" });
 		expect(december).toContain("uscita 2.000,00 € il 31 dicembre 2026");
@@ -920,6 +921,42 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 		for (const text of [hint, red, stale]) expect(text).not.toMatch(NO_OPS);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bcashflow \(forecast\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
+	});
+
+	it("week 68: another agente reads forecast, list and what_if with no name of anyone (ADR 0088)", async () => {
+		const accepted = { number: "2026-004", base: "2026-004", revision: 0, date: "2026-09-20", validDays: 30, customer: { name: "Cliente Preventivo Srl" }, lines: [{ description: "Sito", quantity: "1", price: "1500", vat: 0, vatNote: "N2.2" }], status: "accepted", statusMark: { by: "u", at: "2026-10-01T09:00:00Z" }, by: "u", at: NOW.toISOString() } as Quote;
+		const s = await scene({ quotes: [accepted] });
+		await s.run({ op: "set_balance", amount: 3000 });
+		const NAMES = [GAMMA.name, DELTA.name, ALFA.name, "Gamma", "Delta", "Alfa", "Cliente Preventivo", "Canva", "Dominio", "rossi.example", "Hosting", "Palestra", "Stipendio", "Rossi", "F24 saldo"];
+		// The owner sees them, in the fence.
+		const own = await s.run({ op: "forecast", horizon: "fine anno" });
+		for (const n of ["Gamma Hotel", "Stipendio titolare"]) expect(own).toContain(n);
+		const outs = [
+			await s.run({ op: "forecast", horizon: "fine anno" }, agent()),
+			await s.run({ op: "forecast", horizon: "fine anno", include_overdue: false }, agent()),
+			await s.run({ op: "list_items" }, agent()),
+			await s.run({ op: "what_if", amount: 2000, date: "15/12/2026", name: "Computer" }, agent()),
+			await s.run({ op: "what_if", delay: { invoice: "B-70", days: 30 }, horizon: "fine anno" }, agent()),
+			await s.run({ op: "what_if", drop: { party: "Cliente Preventivo Srl" }, horizon: "fine anno" }, agent()),
+		];
+		for (const out of outs) for (const n of NAMES) expect(out).not.toContain(n);
+		const forecast = outs[0] as string;
+		expect(forecast).toContain("• 18/10 entrata 1.120,00 €: fattura da incassare n. B-70\n");
+		expect(forecast).toContain("• 18/10 entrata 250,00 €: fattura da incassare n. B-71 (rata 1 di 2)\n");
+		expect(forecast).toContain("• 18/10 uscita 400,00 €: fattura da pagare n. A-1\n");
+		expect(forecast).toContain("• 27/10 uscita 1.500,00 €: voce\n");
+		expect(outs[2]).toMatch(/• C-0001 uscita 1\.500,00 € [^\n]*: voce$/m);
+		expect(outs[4]).toContain("fattura da incassare n. B-70");
+		expect(outs[5]).toContain("• preventivo accettato, 1.500,00 €: non pagato");
+		// Every kind, for another agente: what it is, never whose.
+		const at = { date: TODAY, cents: 100n } as const;
+		const canone = { id: "RI-0001", period: "2026-10", label: "ottobre 2026", customer: "Delta Carni Srl", date: TODAY, cents: 100n };
+		expect(movementLabel({ ...at, kind: "out", source: "renewal", renewal: { id: "R-0001", name: "Canva Pro" } as never }, TODAY, false, true)).toBe("rinnovo");
+		expect(movementLabel({ ...at, kind: "in", source: "quote", quote: accepted }, TODAY, false, true)).toBe("preventivo accettato");
+		expect(movementLabel({ ...at, kind: "in", source: "item", item: { id: "C-0003", name: "Incasso Rossi" } as never }, TODAY, false, true)).toBe("voce");
+		expect(movementLabel({ ...at, kind: "in", source: "recurring", canone }, TODAY, false, true)).toBe("canone di ottobre 2026");
+		expect(movementLabel({ ...at, kind: "in", source: "recurring_draft", canone: { ...canone, draft: "BZ-0002" } }, TODAY, false, true)).toBe("canone di ottobre 2026");
+		expect(movementLabel({ ...at, kind: "in", source: "recurring", canone: { ...canone, label: "4º trimestre 2026" } }, TODAY)).toBe("canone del 4º trimestre 2026 da Delta Carni Srl (fattura ricorrente, da preparare)");
 	});
 
 	it("another agente may only forecast, list and what_if (23); the brief runs only forecast", async () => {
@@ -1145,9 +1182,9 @@ describe("cashflow, week 55 second round", () => {
 		expect(inside(answer)).toContain("Preventivi accettati da più di 150 giorni:\n• Gamma Hotel S.p.A., preventivo accettato 2026-006, 1.000,00 € non ancora fatturati. È ancora da fare o da fatturare?");
 		expect(answer).toContain("Entrate 1.500,00 €: preventivi accettati 1.500,00 €.");
 		const w = await s.run({ op: "what_if", amount: 2500, date: "10/12/2026", name: "Auto", horizon: "fine anno" });
-		expect(w).toContain("Senza contare fatture in ritardo e preventivi, così vai in rosso dal 10 dicembre 2026 (−500,00 €)");
+		expect(w).toContain("Senza contare fatture in ritardo, preventivi e canoni, così vai in rosso dal 10 dicembre 2026 (−500,00 €)");
 		expect(w).toContain("Se arrivano anche 1.500,00 € di preventivi accettati, il punto più basso con l'ipotesi è 1.000,00 € il 10 dicembre 2026.");
-		expect(w).toContain("Saldo al 31 dicembre 2026, senza contare fatture in ritardo e preventivi: da 2.000,00 € a −500,00 €.");
+		expect(w).toContain("Saldo al 31 dicembre 2026, senza contare fatture in ritardo, preventivi e canoni: da 2.000,00 € a −500,00 €.");
 	});
 
 	it("r2-6: edit_item applies only the fields it touches onto the voce as saved: a change in between survives", async () => {

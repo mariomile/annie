@@ -296,8 +296,8 @@ describe("listino: week 68, the yes is a person's own message (ADR 0088)", () =>
 		const importCheck = /check «([0-9a-f]{8})»/.exec(await s.run({ op: "import", path: "listino.csv" }, { ...fresh(), origin: "notice" }))?.[1] as string;
 		expect(importCheck).toMatch(/^[0-9a-f]{8}$/);
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
-			expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check }, { ...fresh(), origin })).toContain("Questo lo confermo solo dopo un messaggio della persona");
-			expect(await s.run({ op: "import", path: "listino.csv", confirm: true, check: importCheck }, { ...fresh(), origin })).toContain("Questo lo confermo solo dopo un messaggio della persona");
+			expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(await s.run({ op: "import", path: "listino.csv", confirm: true, check: importCheck }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
 		}
 		expect(s.store.read().items.map((i) => i.price)).toEqual(["500", "1500", "4000", "60", "24.4"]);
 		expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check })).toContain("Fatto: nuovi prezzi per 5 voci.");

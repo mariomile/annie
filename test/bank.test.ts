@@ -1346,7 +1346,7 @@ describe("week 68: the yes is a person's own message", () => {
 	it("matching by itself is turned on only in a person's turn; turned off by anyone", async () => {
 		const s = await setup();
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
-			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).toContain("Abbino da sola le fatture sicure solo dopo un messaggio della persona");
+			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).toContain("Non abbino da sola le fatture sicure ");
 			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).not.toMatch(/\bauto_confirm\b/);
 		}
 		expect(s.store.read().settings).toBeUndefined();
@@ -1363,13 +1363,13 @@ describe("week 68: the yes is a person's own message", () => {
 		const before = JSON.stringify(s.store.read());
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
 			const c = () => ({ ...fresh(), origin });
-			expect(await s.run({ op: "confirm", all: true }, c())).toContain("Confermo gli abbinamenti della banca (fatture segnate pagate o incassate) solo dopo un messaggio della persona");
-			expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true }, c())).toContain("Registro le spese dall'estratto conto solo dopo un messaggio della persona");
+			expect(await s.run({ op: "confirm", all: true }, c())).toContain("Non confermo gli abbinamenti della banca (fatture segnate pagate o incassate) ");
+			expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true }, c())).toContain("Non registro le spese dall'estratto conto ");
 			expect(await s.run({ op: "to_expense", ids: ["B-000002"] }, c())).toContain("Registrerei questa spesa");
-			expect(await s.run({ op: "set_balance", confirm: true }, c())).toContain("Salvo il saldo dall'estratto conto solo dopo un messaggio della persona");
-			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true }, c())).toContain("Tolgo il movimento doppio solo dopo un messaggio della persona");
+			expect(await s.run({ op: "set_balance", confirm: true }, c())).toContain("Non salvo il saldo dall'estratto conto ");
+			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true }, c())).toContain("Non tolgo il movimento doppio ");
 			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"] }, c())).toContain("Tolgo B-000005 come copia di B-000003");
-			expect(await s.run({ op: "remove_import", import_id: "I-0002", confirm: true }, c())).toContain("Tolgo l'estratto conto solo dopo un messaggio della persona");
+			expect(await s.run({ op: "remove_import", import_id: "I-0002", confirm: true }, c())).toContain("Non tolgo l'estratto conto ");
 		}
 		expect(JSON.stringify(s.store.read())).toBe(before);
 		expect(s.invoices.read().paid).toHaveLength(0);

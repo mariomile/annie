@@ -33,12 +33,14 @@
  *   the scadenzario (partita IVA and number, or partita IVA and amount within 1% within 10 days);
  *   divided by the days since the first expense of the window, between AVERAGE_MIN_DAYS and
  *   AVERAGE_DAYS, half up to the cent.
- * - Canoni (le fatture ricorrenti, ADR 0088): the periods of the active recurring invoices not
- *   drafted yet, within their end and number of invoices, at the draft's total to pay (VAT in, the
- *   ritenuta and the split payment off), on the day it would be paid by the draft's own terms; marked
- *   «previsto (canone)». A period with a draft or an invoice (by the draft's lineage, one made in its
- *   place too) is never counted here: a draft is not money yet, an invoice issued is in the
- *   scadenzario. Paused ones, and periods missed while down, are not counted.
+ * - Canoni (le fatture ricorrenti, ADR 0088): counted before they are invoiced, once each. A period
+ *   of an active recurring invoice not drafted yet, within its end and number of invoices, at the
+ *   total to pay the draft would have (VAT in, the ritenuta and the split payment off), paid after
+ *   the recurring invoice's payment days from its due day (today, for the one due now); a period
+ *   whose draft is there and not issued, at the draft's own total to pay and due date (issued
+ *   today at the earliest). Issued, it is among the invoices to collect and no longer here. The
+ *   drafts' lineage (one made in its place, the same canone removed and added again) counts each
+ *   draft once. Paused ones and periods missed while down are not expected; their drafts still count.
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
  *   up to `until`, at the amount of that day.
  * - Taxes: the F24 the tax profile's calendar estimates (tax-sums.ts), on their working day, when a
@@ -88,10 +90,22 @@ import type { Renewal } from "./renewals.ts";
 import { summarize } from "./timesheet-sums.ts";
 import type { RateRule, WorkEntry } from "./timesheet.ts";
 
-export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average" | "tax" | "recurring";
+export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average" | "tax" | "recurring" | "recurring_draft";
 
-/** A period of a recurring invoice not drafted yet, as the forecast expects it (tools/recurring-invoice-cash.ts): never a customer's name. */
-export type ExpectedCanone = { readonly id: string; readonly period: string; readonly label: string; readonly date: string; readonly cents: bigint };
+/** A period of a recurring invoice, not drafted yet or drafted and not issued, as the forecast expects it (tools/recurring-invoice-cash.ts). */
+export type ExpectedCanone = {
+	/** The recurring invoice, «RI-0001». */
+	readonly id: string;
+	readonly period: string;
+	/** The months in words, «ottobre 2026», «4º trimestre 2026». */
+	readonly label: string;
+	/** The customer's name: for the owner, in the fence; never for another agente. */
+	readonly customer: string;
+	readonly date: string;
+	readonly cents: bigint;
+	/** The draft made for the period, not issued yet («BZ-0002»): counted as a draft to issue. */
+	readonly draft?: string;
+};
 
 /** An accepted quote is expected this many days after its acceptance, and never before QUOTE_MIN_DAYS from today; past QUOTE_STALE_DAYS it is asked about. */
 export const QUOTE_PAY_DAYS = 60;
@@ -434,7 +448,7 @@ export function quoteFlows(quotes: readonly Quote[], invoices: readonly Invoice[
 export function canoneFlows(expected: readonly ExpectedCanone[], today: string, end: string): Movement[] {
 	return expected.flatMap((c): Movement[] => {
 		const date = c.date < today ? today : c.date;
-		return date > end || c.cents <= 0n ? [] : [{ date, kind: "in", cents: c.cents, source: "recurring", canone: c }];
+		return date > end || c.cents <= 0n ? [] : [{ date, kind: "in", cents: c.cents, source: c.draft === undefined ? "recurring" : "recurring_draft", canone: c }];
 	});
 }
 

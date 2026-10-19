@@ -73,7 +73,7 @@ export type CashflowToolsOptions = {
 };
 
 const DESCRIPTION = [
-	"Previsione di cassa of the owner: how much money there will be on the bank account, day by day, from the balance they say plus what comes in and goes out (open invoices to collect and to pay by due date, accepted quotes not invoiced yet, the canoni of the recurring invoices not drafted yet («previsto (canone)»), renewals, the average spending of the expenses, the voci added here).",
+	"Previsione di cassa of the owner: how much money there will be on the bank account, day by day, from the balance they say plus what comes in and goes out (open invoices to collect and to pay by due date, accepted quotes not invoiced yet, the canoni of the recurring invoices until they are issued (to prepare, then drafts to issue), renewals, the average spending of the expenses, the voci added here).",
 	"What the person says → op: «ho 3.200 euro sul conto» → set_balance; «avvisami se scendo sotto 1000» → set_alert; «quanti soldi avrò a fine mese?», «come sono messo nei prossimi 90 giorni?», «quando vado in rosso?» → forecast (horizon); «posso permettermi un computer da 2000 euro a dicembre?» → what_if (amount, date, name); «e se Gamma paga con 30 giorni di ritardo?» → what_if with delay; «e se Beta non paga?» → what_if with drop; nothing of a what_if is saved.",
 	`Rule: fixed recurring costs (rent, software, insurance, utilities, subscriptions) belong to renewals, not here. Voci (add_item) are only for F24 not estimated by taxes or vat_settlement (other taxes; the IVA only when the person wants to fix its amount: the voce then counts instead of the estimate. An F24 the taxes or vat_settlement tool estimates is counted already, and a voce named F24 IVA, liquidazione IVA, acconto IVA, or F24, tasse, INPS, IRPEF, sostitutiva, Agenzia delle Entrate, or saldo/acconto with imposta or contributi, within ${TAX_TWIN_DAYS} days of it replaces the estimate, or its part when well below it), the owner's withdrawals, loan instalments and money expected without an invoice. Before adding, the tool checks for a renewal or voce of about the same amount and name: when it asks, ask the person and repeat with confirm true only if it is a different one.`,
 	"set_balance: amount (euros on the account, a minus when overdrawn; «8.400», «8,4k», «8 mila» are read), date (default today, never in the future). set_alert: amount, the balance under which the morning brief warns (\"\" removes; alert_below on set_balance works too).",
@@ -183,7 +183,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 						case "remove_item":
 							return await removeItem(args, ctx, day);
 						case "list_items":
-							return listItems(day);
+							return listItems(day, ctx);
 						case "forecast":
 							return await forecast(args, ctx, day);
 						case "what_if":
@@ -386,9 +386,9 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		return `Fatto, tolta la voce ${id}; il suo numero non sarà riusato.${line === null ? "" : `\n${fenced(line)}`}`;
 	}
 
-	function listItems(day: string): string {
+	function listItems(day: string, ctx: ToolContext): string {
 		const book = readable();
-		return listAnswer(latestBalance(book.balances), book.alertBelow === undefined ? undefined : signedCents(book.alertBelow), book.items, day);
+		return listAnswer(latestBalance(book.balances), book.alertBelow === undefined ? undefined : signedCents(book.alertBelow), book.items, day, ctx.thread?.channel === AGENT_CHANNEL);
 	}
 
 	type Gathered = { readonly movements: readonly Movement[]; readonly dailySpend: bigint; readonly view: View; readonly somethingToForecast: boolean };
@@ -430,7 +430,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const canRoll = !invoiceBook.broken && !expenseBook.broken && !renewalBook.broken && daysBetween(balance.date, day) <= CASHFLOW_LIMITS.maxDays;
 		const bankBook = balance.source === "bank" ? options.bank?.read() : undefined;
 		const rolled = canRoll ? rollForward(balance, now().toISOString(), day, invoices, expenseBook.expenses, renewalBook.renewals, dayOf, bankBook === undefined || bankBook.broken ? [] : statementOf(bankBook.movements, bankBook.matches)) : undefined;
-		// The canoni of the recurring invoices not drafted yet: a draft or an invoice of a period counts there, never here.
+		// The canoni of the recurring invoices until issued: to draft, then drafts to issue; issued, among the invoices.
 		const canoni = options.recurring === undefined || options.sales === undefined ? undefined : expectedCanoni({ recurring: options.recurring, sales: { store: options.sales, ...(options.clients === undefined ? {} : { clients: options.clients }) }, company: options.invoices, ...(options.taxes === undefined ? {} : { taxes: options.taxes }), ...(options.priceList === undefined ? {} : { priceList: options.priceList }) }, day, end);
 		const canoneMoves = canoni === undefined ? [] : canoneFlows(canoni.expected, day, end);
 		const movements = [...inv.movements, ...(ren?.movements ?? []), ...(quotes?.movements ?? []), ...canoneMoves, ...voci.items, ...taxed.taxes];
@@ -443,7 +443,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		else if (vatOn && salesBook?.broken === true) notes.push("Le fatture in uscita non si leggono: l'IVA stimata conta solo le fatture XML.");
 		else if (!o.includeTaxes && ordinario && options.vat?.read().settings !== undefined) notes.push("IVA stimata (F24) esclusa.");
 		if (o.includeAverage && average !== undefined && average.count === 0) notes.push("Nessuna spesa da contare negli ultimi 90 giorni: niente spesa media nella previsione.");
-		if (!o.includeAverage) notes.push("Spesa media esclusa: contate solo fatture, preventivi, rinnovi e voci.");
+		if (!o.includeAverage) notes.push("Spesa media esclusa: contate solo fatture, preventivi, canoni, rinnovi e voci.");
 		if (!o.includeQuotes) notes.push("Preventivi accettati esclusi.");
 		const view: View = {
 			today: day,
@@ -469,6 +469,8 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 			...(taxOn ? { taxes: true as const } : {}),
 			...(vatOn ? { vat: true as const } : {}),
 			notes,
+			// Another agente reads the forecast with no name of anyone (ADR 0088).
+			...(ctx.thread?.channel === AGENT_CHANNEL ? { agent: true as const } : {}),
 		};
 		const openInvoices = invoices.some((i) => !i.paid && i.side !== undefined && !i.doc.integration);
 		const activeRenewals = renewalBook.renewals.some((r) => r.status === "active");
@@ -572,7 +574,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const late = new Set<Movement>(g.view.invoices?.late ?? []);
 		const changed = applyChanges(g.movements, all, day);
 		if (changed.ambiguous !== undefined) {
-			const rows = changed.ambiguous.movements.map((m) => `• ${movementLabel(m, day)}, ${euros(m.cents)}`);
+			const rows = changed.ambiguous.movements.map((m) => `• ${movementLabel(m, day, false, g.view.agent === true)}, ${euros(m.cents)}`);
 			return `Errore: più fatture aperte hanno questo numero; quale? Ripeti con party, il cliente o il fornitore:\n${fenced(rows.join("\n"))}`;
 		}
 		const missing = all.filter((_, i) => (changed.touched[i] ?? []).length === 0);
@@ -580,12 +582,13 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const added = hypotheticalFlows(hyps, day, end);
 		const withMoves = [...changed.movements, ...added];
 		const p = (list: readonly Movement[]): Projection => project(start, list, day, end, g.dailySpend);
-		// The cautious case: no late money to collect, no accepted quote.
-		const cautious = (list: readonly Movement[]) => list.filter((m) => !late.has(m) && m.source !== "quote" && m.source !== "recurring");
+		// The cautious case: no late money to collect, no accepted quote, no canone not issued yet.
+		const cautious = (list: readonly Movement[]) => list.filter((m) => !late.has(m) && m.source !== "quote" && m.source !== "recurring" && m.source !== "recurring_draft");
 		const lateCents = (g.view.invoices?.late ?? []).reduce((n, m) => n + m.cents, 0n);
 		const quoteCents = g.movements.filter((m) => m.source === "quote").reduce((n, m) => n + m.cents, 0n);
+		const canoneCents = g.movements.filter((m) => m.source === "recurring" || m.source === "recurring_draft").reduce((n, m) => n + m.cents, 0n);
 		const changes: ChangeLine[] = changed.touched.map((touched) => ({ touched }));
-		return whatIfAnswer({ base: p(g.movements), withThem: p(withMoves), cautiousBase: p(cautious(g.movements)), cautiousWith: p(cautious(withMoves)), hyps, changes, lateCents, quoteCents }, g.view);
+		return whatIfAnswer({ base: p(g.movements), withThem: p(withMoves), cautiousBase: p(cautious(g.movements)), cautiousWith: p(cautious(withMoves)), hyps, changes, lateCents, quoteCents, canoneCents }, g.view);
 	}
 
 	async function exportCsv(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {

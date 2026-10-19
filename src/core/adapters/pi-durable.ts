@@ -382,11 +382,17 @@ async function turnOrigin(api: OriginApi, callContext: OriginContext): Promise<T
 }
 
 /**
- * The origin of the inputs the model is answering: the newest ones, back to the last answer before
- * them. A person's only when every one of them is; an input without an origin (written before
- * origins were kept) is not.
+ * The origin of the inputs the model is answering: every input since the run began, back to the
+ * last answer that ended a run (an assistant message without tool calls). A person's only when
+ * every one of them is; an input without an origin (written before origins were kept) is not.
+ *
+ * Robust to steering: inputs are admitted as follow-ups today (submit leaves `whenBusy` at its
+ * default, so a new message waits for the run to end), but a message steered into a running turn
+ * lands after an assistant message with tool calls; scanning past those to the run's start keeps
+ * a notice that began the run in the reckoning even when a person's message is steered in later.
+ * Past the scan's bound, the turn is not taken for a person's.
  */
-async function inputsOrigin(tx: Tx, conversationId: ConversationId): Promise<TurnOrigin> {
+export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId): Promise<TurnOrigin> {
 	const found: (TurnOrigin | undefined)[] = [];
 	let cursor: Cursor | undefined;
 	for (let page = 0; page < 20; page++) {
@@ -396,12 +402,17 @@ async function inputsOrigin(tx: Tx, conversationId: ConversationId): Promise<Tur
 			if (input) {
 				const data = entry.data as { origin?: unknown } | undefined;
 				found.push(entry.kind === INPUT_KIND && isTurnOrigin(data?.origin) ? data.origin : undefined);
-			} else if (found.length > 0 && entry.model?.some((m) => m.role === "assistant") === true) return worst(found);
+			} else if (found.length > 0 && endsRun(entry)) return worst(found);
 		}
-		if (next === undefined) break;
+		if (next === undefined) return found.length === 0 ? "scheduled" : worst(found);
 		cursor = next;
 	}
-	return found.length === 0 ? "scheduled" : worst(found);
+	return worst([...found, undefined]);
+}
+
+/** An assistant message that answered without calling a tool: the run it belongs to ended there. */
+function endsRun(entry: EntryRecord): boolean {
+	return entry.model?.some((m) => m.role === "assistant" && !(Array.isArray(m.content) && m.content.some((c) => (c as { type?: string }).type === "toolCall"))) === true;
 }
 
 /** The least trusted of the inputs: another agente, then a notice, then something scheduled (or not known). */

@@ -157,11 +157,11 @@ describe("quotes op send", () => {
 		clock.now = new Date("2026-12-01T08:00:00Z");
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
 			const c = { ...fresh(), origin };
-			expect(await run({ op: "send", number: "1", confirm_expired: true }, c)).toContain("Questo lo confermo solo dopo un messaggio della persona");
+			expect(await run({ op: "send", number: "1", confirm_expired: true }, c)).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
 			expect(await run({ op: "send", number: "1" }, c)).toContain("è scaduto il 17/11/2026");
 		}
 		clock.now = NOW;
-		for (const origin of ["notice", "scheduled", "agent"] as const) expect(await run({ op: "send", number: "2", confirm_declined: true }, { ...fresh(), origin })).toContain("Questo lo confermo solo dopo un messaggio della persona");
+		for (const origin of ["notice", "scheduled", "agent"] as const) expect(await run({ op: "send", number: "2", confirm_declined: true }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
 		expect(proposals).toEqual([]);
 		expect(await run({ op: "send", number: "2", confirm_declined: true })).toContain("Richiesta req1 pronta");
 	});

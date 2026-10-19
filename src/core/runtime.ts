@@ -630,10 +630,11 @@ export class AnnieInstance {
 			this.memory.participants.clear(key);
 			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)), this.memory.store.archivedFor(SHARED));
 		}
-		const text = await this.withSkills(request, privateThread === true);
 		const { origin: given, ...said } = message;
 		// Another agente's words are never the person's, whatever the request says.
 		const origin: TurnOrigin = request.channel === AGENT_CHANNEL ? "agent" : (given ?? "person");
+		// Only a person's own words run a skill or turn a draft on (ADR 0059, 0088): never the board's, a stanza's agente's.
+		const text = origin === "person" ? await this.withSkills(request, privateThread === true) : request.text;
 		return this.admit({ ...said, text: `${text}${skipped}${note}` }, origin, images);
 	}
 

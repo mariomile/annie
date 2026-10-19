@@ -17,7 +17,7 @@ async function withSkills() {
 	});
 	let seen = 0;
 	/** The reply to the next message sent. */
-	const send = async (message: ReturnType<typeof from> & { command?: string }) => {
+	const send = async (message: ReturnType<typeof from> & { command?: string; origin?: "agent" | "scheduled" }) => {
 		await runtime.submit(message);
 		seen++;
 		await waitFor(() => replies.length >= seen);
@@ -188,5 +188,25 @@ describe("skill in a conversation", () => {
 		runtime.skills("acme", "ops").save({ name: "reclamo", description: "Quando un cliente si lamenta", body: "Passi", by: "owner" }, () => true);
 		expect(now()).toContain("- reclamo: Quando un cliente si lamenta");
 		await runtime.close();
+	});
+});
+
+describe("skill: only a person's own words (ADR 0088)", () => {
+	it("the board's work, a stanza's agente or a notice never turns a draft on nor runs /nome", async () => {
+		const { runtime, send, replies } = await withSkills();
+		expect(await send(from("anna", "t1", save({ name: "Chiusura mese", description: "Quando chiedono di chiudere il mese", steps: "1. Fatture scadute\n2. Spese del mese" }), "1"))).toContain("/attiva-skill chiusura-mese");
+		// In anna's own chat, but the board's or another agente's turn: no activation.
+		expect(await send({ ...from("anna", "t1", "/attiva-skill chiusura-mese", "2"), origin: "scheduled" })).not.toContain("ha attivato");
+		expect(await send({ ...from("anna", "t1", "/attiva-skill chiusura-mese", "3"), origin: "agent" })).not.toContain("ha attivato");
+		await runtime.submitNotice("acme", "ops", { channel: "test", threadId: "t1", text: "/attiva-skill chiusura-mese", messageId: "n1", event: { kind: "test" } });
+		await waitFor(() => replies.length >= 4);
+		expect((replies[3] as { text?: string } | undefined)?.text ?? "").not.toContain("ha attivato");
+		expect((await runtime.audit("acme").read()).filter((e) => e.type === "skill.activated")).toEqual([]);
+		replies.splice(3, 1);
+		// anna's own message does.
+		expect(await send(from("anna", "t1", "/attiva-skill chiusura-mese", "4"))).toContain("ha attivato la skill «chiusura-mese»");
+		// Active now: /nome from the board's turn still brings no steps.
+		expect(await send({ ...from("anna", "t1", "/chiusura-mese ottobre", "5"), origin: "scheduled" })).not.toContain("Fatture scadute");
+		expect(await send(from("anna", "t1", "/chiusura-mese ottobre", "6"))).toContain("Fatture scadute");
 	});
 });
