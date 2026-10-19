@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import type { BankStore } from "../bank-store.ts";
 import { BUDGETS_BROKEN, type BudgetState, type BudgetStore } from "../budget-store.ts";
 import { alertsOf, type BudgetFacts, type Progress, periodFor, progressOf } from "../budget-sums.ts";
@@ -100,7 +100,7 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 				const op = args.op as BudgetOp;
 				if (args.compact !== undefined && typeof args.compact !== "boolean") return "Errore: compact è true o false.";
 				// Another agente's request is not the person's word: the figures only, nothing else.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && !budgetAgentReads(args)) return "Errore: a un altro agente do solo come vanno i budget, in cifre e percentuali. Non li cambio, non do i nomi dei fornitori e non esporto; il resto lo chiede chi ti scrive, nella sua conversazione.";
 				const day = todayIn(timeZone, now());
 				try {

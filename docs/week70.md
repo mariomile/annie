@@ -16,3 +16,5 @@ Branch `week-70`. Annie legge le righe delle fatture dei fornitori: quanto paghi
 ## Revisioni
 
 Prima revisione, corretta: sigle come RS, NR e CF non erano unità e niente si caricava; «Beta» chiedeva sempre quale fornitore; lo stesso prodotto scritto in due modi da due fornitori non si confrontava; gli sconti di fine anno non entravano nei prezzi; «la fattura di ieri» non si poteva dire; gli aumenti senza la data di prima; due righe con lo stesso codice bloccavano il carico; il sì poteva caricare una proposta diversa da quella vista; un codice già imparato poteva caricare un articolo sbagliato senza avviso; il numero della fattura fuori dal recinto.
+
+Verifica finale, corretta: uno sconto scritto sia come riga sia nell'intestazione si contava due volte (ora gli sconti si controllano con il riepilogo IVA della fattura); un agente chiamato in una stanza riceveva prezzi e nomi, perché il controllo guardava il canale e non da dove nasce il turno: ora un solo controllo (`isAgentTurn`) vale per tutti gli strumenti.

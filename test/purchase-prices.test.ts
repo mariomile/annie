@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ import { stateOf } from "../src/core/stock-sums.ts";
 import { createPurchasePriceTools, type PurchaseEvent } from "../src/core/tools/purchase-price-tools.ts";
 import { createInvoiceTools } from "../src/core/tools/invoice-tools.ts";
 import { createStockTools, type StockEvent } from "../src/core/tools/stock-tools.ts";
-import type { TurnOrigin } from "../src/core/turn-origin.ts";
+import { isAgentTurn, type TurnOrigin } from "../src/core/turn-origin.ts";
 import { Workspace } from "../src/core/workspace.ts";
 
 // Synthetic data only: checksum-valid fake partite IVA, invented names.
@@ -33,6 +33,8 @@ const GAMMA = { name: "Gamma Carta Spa", vat: "00000040014" };
 let calls = 0;
 const fresh = (callId = `p${++calls}`, origin: TurnOrigin = "person", thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin, signal: new AbortController().signal, callId, thread });
 const agent = () => fresh(undefined, "agent", { channel: AGENT_CHANNEL, threadId: "a1" });
+/** An agente in a stanza: its own origin, the stanza's channel. */
+const roomAgent = () => fresh(undefined, "agent", { channel: "web", threadId: "stanza-1" });
 /** A call run again the durable way: each step's result kept. */
 const durable = (callId: string, memo: Map<string, unknown>): ToolContext => ({
 	...fresh(callId),
@@ -63,21 +65,30 @@ type Party = { name: string; vat: string };
 type Line = { n?: string; desc?: string; qty?: string; unit?: string; price?: string; total?: string; rate?: string; natura?: string; code?: string; discount?: string; kind?: string; raw?: string };
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** A received FatturaPA with its DettaglioLinee (total: quantity times price, less the discount, unless given). */
-function xml(from: Party, to: Party, o: { number: string; date: string; type?: string; currency?: string; extra?: string; lines: Line[] }): string {
+/** A received FatturaPA with its DettaglioLinee (total: quantity times price, less the discount, unless given) and its riepilogo IVA, the lines' totals by rate unless `riepilogo` is given. */
+function xml(from: Party, to: Party, o: { number: string; date: string; type?: string; currency?: string; extra?: string; riepilogo?: string; lines: Line[] }): string {
 	const party = (p: Party) => `<DatiAnagrafici><IdFiscaleIVA><IdPaese>IT</IdPaese><IdCodice>${p.vat}</IdCodice></IdFiscaleIVA><Anagrafica><Denominazione>${esc(p.name)}</Denominazione></Anagrafica></DatiAnagrafici>`;
+	const byRate = new Map<string, number>();
 	const lines = o.lines
 		.map((l, i) => {
 			const n = `<NumeroLinea>${l.n ?? i + 1}</NumeroLinea>`;
 			if (l.raw !== undefined) return `<DettaglioLinee>${n}${l.raw}</DettaglioLinee>`;
 			const gross = Number(l.price ?? "0") * Number(l.qty ?? "1");
 			const total = l.total ?? (l.discount === undefined ? gross : gross * (1 - Number(l.discount) / 100)).toFixed(2);
+			const rate = `${l.rate ?? "22.00"}|${l.natura ?? ""}`;
+			byRate.set(rate, (byRate.get(rate) ?? 0) + Number(total));
 			return `<DettaglioLinee>${n}${l.kind === undefined ? "" : `<TipoCessionePrestazione>${l.kind}</TipoCessionePrestazione>`}${l.code === undefined ? "" : `<CodiceArticolo><CodiceTipo>FORN</CodiceTipo><CodiceValore>${esc(l.code)}</CodiceValore></CodiceArticolo>`}<Descrizione>${esc(l.desc ?? "Voce")}</Descrizione>${l.qty === undefined ? "" : `<Quantita>${l.qty}</Quantita>`}${l.unit === undefined ? "" : `<UnitaMisura>${l.unit}</UnitaMisura>`}<PrezzoUnitario>${l.price ?? "0"}</PrezzoUnitario>${l.discount === undefined ? "" : `<ScontoMaggiorazione><Tipo>SC</Tipo><Percentuale>${l.discount}</Percentuale></ScontoMaggiorazione>`}<PrezzoTotale>${total}</PrezzoTotale><AliquotaIVA>${l.rate ?? "22.00"}</AliquotaIVA>${l.natura === undefined ? "" : `<Natura>${l.natura}</Natura>`}</DettaglioLinee>`;
+		})
+		.join("");
+	const riepilogo = [...(byRate.size === 0 ? new Map([["22.00|", 100]]) : byRate)]
+		.map(([key, taxable]) => {
+			const [rate, natura] = key.split("|") as [string, string];
+			return `<DatiRiepilogo><AliquotaIVA>${rate}</AliquotaIVA>${natura === "" ? "" : `<Natura>${natura}</Natura>`}<ImponibileImporto>${taxable.toFixed(2)}</ImponibileImporto><Imposta>${((taxable * Number(rate)) / 100).toFixed(2)}</Imposta></DatiRiepilogo>`;
 		})
 		.join("");
 	const generali = `<TipoDocumento>${o.type ?? "TD01"}</TipoDocumento><Divisa>${o.currency ?? "EUR"}</Divisa><Data>${o.date}</Data><Numero>${esc(o.number)}</Numero><ImportoTotaleDocumento>100.00</ImportoTotaleDocumento>${o.extra ?? ""}`;
 	return `<?xml version="1.0" encoding="UTF-8"?>
-<p:FatturaElettronica versione="FPR12" xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"><FatturaElettronicaHeader><DatiTrasmissione><FormatoTrasmissione>FPR12</FormatoTrasmissione><CodiceDestinatario>0000000</CodiceDestinatario></DatiTrasmissione><CedentePrestatore>${party(from)}</CedentePrestatore><CessionarioCommittente>${party(to)}</CessionarioCommittente></FatturaElettronicaHeader><FatturaElettronicaBody><DatiGenerali><DatiGeneraliDocumento>${generali}</DatiGeneraliDocumento></DatiGenerali><DatiBeniServizi>${lines}<DatiRiepilogo><AliquotaIVA>22.00</AliquotaIVA><ImponibileImporto>100.00</ImponibileImporto><Imposta>22.00</Imposta></DatiRiepilogo></DatiBeniServizi></FatturaElettronicaBody></p:FatturaElettronica>`;
+<p:FatturaElettronica versione="FPR12" xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2"><FatturaElettronicaHeader><DatiTrasmissione><FormatoTrasmissione>FPR12</FormatoTrasmissione><CodiceDestinatario>0000000</CodiceDestinatario></DatiTrasmissione><CedentePrestatore>${party(from)}</CedentePrestatore><CessionarioCommittente>${party(to)}</CessionarioCommittente></FatturaElettronicaHeader><FatturaElettronicaBody><DatiGenerali><DatiGeneraliDocumento>${generali}</DatiGeneraliDocumento></DatiGenerali><DatiBeniServizi>${lines}${o.riepilogo ?? riepilogo}</DatiBeniServizi></FatturaElettronicaBody></p:FatturaElettronica>`;
 }
 
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -210,23 +221,44 @@ describe("week 70 review: reading and matching", () => {
 		]);
 	});
 
-	it("spreads SC and AB lines and the document's discount over the goods in proportion; the spese apart; never down to zero", () => {
+	it("spreads only the discount the riepilogo IVA reconciles: SC/AB lines, a header discount compounded, an amount with VAT; else says why", () => {
 		const E = 100_000_000n;
 		const line = (n: number, total: string, kind?: string) => ({ n, description: `Riga ${n}`, unitPrice: total, total, vat: "22", ...(kind === undefined ? {} : { kind }) });
-		const got = spreadOf({ lines: [line(1, "100"), line(2, "300"), line(3, "-20", "SC"), line(4, "15", "AC"), line(5, "0", "PR")], adjustments: [{ kind: "SC", percent: "10" }] });
-		// 20 from the line, then 10% of the 380 left: 58 in all, on 400 of goods.
-		expect(got.spread).toBe(58n * E);
-		expect(got.goods.map((g) => [g.line.n, g.total])).toEqual([
+		const riepilogo = (taxable: string) => [{ rate: "22", taxable, tax: "0" }];
+		const lines = [line(1, "100"), line(2, "300"), line(3, "-20", "SC"), line(4, "15", "AC"), line(5, "0", "PR")];
+		// The riepilogo has both: 20 from the line, then 10% of the 380 left; 58 in all on 400 of goods.
+		const both = spreadOf({ lines, adjustments: [{ kind: "SC", percent: "10" }], vatRows: riepilogo("357") });
+		expect(both.spread).toBe(58n * E);
+		expect(both.goods.map((g) => [g.line.n, g.total])).toEqual([
 			[1, 8550n * (E / 100n)],
 			[2, 25650n * (E / 100n)],
 		]);
-		expect(got.expenses.map((l) => l.n)).toEqual([4]);
-		expect([...got.discounts]).toEqual([3]);
-		// A surcharge on the whole document raises them.
-		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "MG", amount: "5" }] }).goods[0]?.total).toBe(105n * E);
-		// A discount as large as the goods is not spread: the line is said as no goods.
-		const whole = spreadOf({ lines: [line(1, "10"), line(2, "-10", "SC")] });
-		expect([whole.spread, whole.goods[0]?.total, whole.discounts.size]).toEqual([0n, 10n * E, 0]);
+		expect([both.expenses.map((l) => l.n), [...both.discounts], both.notes]).toEqual([[4], [3], []]);
+		// The header discount is not in the riepilogo: only the line's, and said.
+		const lineOnly = spreadOf({ lines, adjustments: [{ kind: "SC", percent: "10" }], vatRows: riepilogo("395") });
+		expect([lineOnly.spread, lineOnly.notes]).toEqual([20n * E, ["Lo sconto scritto in testa alla fattura non è nel riepilogo IVA: non l'ho contato."]]);
+		// Two percentages compound: 10% then 10% of 100 is 19, not 20.
+		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "SC", percent: "10" }, { kind: "SC", percent: "10" }], vatRows: riepilogo("81") }).spread).toBe(19n * E);
+		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "SC", percent: "10" }, { kind: "SC", percent: "10" }], vatRows: riepilogo("80") }).notes).toEqual(["Gli sconti della fattura non tornano con il riepilogo IVA: non li ho divisi sulle righe."]);
+		// An amount with VAT, when only that reconciles: 12,20 is 10 of imponibile at 22%.
+		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "SC", amount: "12.2" }], vatRows: riepilogo("90") }).spread).toBe(10n * E);
+		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "SC", amount: "12.2" }], vatRows: riepilogo("87.8") }).spread).toBe(1220n * (E / 100n));
+		// Nothing explains the difference: nothing spread, said.
+		const odd = spreadOf({ lines: [line(1, "100"), line(2, "-10", "SC")], vatRows: riepilogo("85") });
+		expect([odd.spread, odd.goods[0]?.total, odd.discounts.size, odd.notes]).toEqual([0n, 100n * E, 0, ["Gli sconti della fattura non tornano con il riepilogo IVA: non li ho divisi sulle righe."]]);
+		// A discount of the whole goods is dropped, said.
+		const whole = spreadOf({ lines: [line(1, "10"), line(2, "-10", "SC")], vatRows: riepilogo("0") });
+		expect([whole.spread, whole.goods[0]?.total, whole.notes]).toEqual([0n, 10n * E, ["Lo sconto su tutta la fattura è pari o oltre il totale della merce: l'ho lasciato fuori, non l'ho diviso sulle righe."]]);
+		// A surcharge raises the lines; one more than doubling them is refused, said.
+		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "MG", amount: "5" }], vatRows: riepilogo("105") }).goods[0]?.total).toBe(105n * E);
+		expect(spreadOf({ lines: [line(1, "100")], adjustments: [{ kind: "MG", amount: "150" }], vatRows: riepilogo("250") }).notes).toEqual(["La maggiorazione su tutta la fattura più che raddoppierebbe le righe: l'ho lasciata fuori, non l'ho divisa."]);
+		// More than half a line's total: flagged.
+		const heavy = spreadOf({ lines: [line(1, "100"), line(2, "100"), line(3, "-120", "SC")], vatRows: riepilogo("80") });
+		expect([heavy.spread, [...heavy.heavy]]).toEqual([120n * E, [1, 2]]);
+		expect(spreadOf({ lines: [line(1, "100"), line(2, "100"), line(3, "-100", "SC")], vatRows: riepilogo("100") }).heavy.size).toBe(0);
+		// Without a riepilogo: the lines' discounts only, the header said.
+		const bare = spreadOf({ lines: [line(1, "100"), line(2, "-10", "SC")], adjustments: [{ kind: "SC", amount: "5" }] });
+		expect([bare.spread, bare.notes]).toEqual([10n * E, ["Lo sconto scritto in testa alla fattura non si controlla con il riepilogo IVA, che manca: non l'ho contato."]]);
 		expect(spreadWords("B-9", "2026-10-18", 20n * E)).toBe("La fattura n. B-9 ha uno sconto di 20,00 € su tutta la fattura: l'ho diviso sulle righe in proporzione.");
 	});
 
@@ -470,8 +502,8 @@ describe("purchase_prices", () => {
 		s.clock.now = new Date("2026-10-20T08:00:00Z");
 		expect(inside(await s.run({ op: "increases", compact: true }))).toContain("TONER NERO HP 305A dell'8%");
 		expect(await s.run({ op: "increases", compact: true })).toBe("Prezzi d'acquisto: niente da segnalare.");
-		// The staples are an increase all the same, when asked.
-		expect(inside(await s.run({ op: "increases" }))).toContain("Graffette ora costa 0,008 € al pezzo");
+		// Nor when asked: from under a cent, a rise is never an increase.
+		expect(inside(await s.run({ op: "increases" }))).not.toContain("Graffette");
 	});
 
 	it("an old increase is not the brief's: only invoices of the last 30 days", async () => {
@@ -502,7 +534,7 @@ describe("purchase_prices", () => {
 });
 
 /** The check a proposal gave, to confirm it. */
-const checkIn = (answer: string) => /il controllo ([0-9a-f]{8})/.exec(answer)?.[1] as string;
+const checkIn = (answer: string) => /il controllo ([0-9a-f]{16})/.exec(answer)?.[1] as string;
 
 describe("stock receive_invoice", () => {
 	it("the review's invoice: proposed with costs per unit after the discount, the spese apart, a new article added; loaded with the person's yes and the proposal's check, each line once", async () => {
@@ -671,9 +703,12 @@ describe("stock receive_invoice", () => {
 		const told = await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "U-1", lines: [{ line: 1, each: 5 }] });
 		expect(inside(told)).toContain("• riga 1, Carta A4 → MG-0001 Carta A4: 10 risme a 4,00 € (una «SCT» è 5 risme)");
 		await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "U-1", lines: [{ line: 1, each: 5 }], confirm: true, check: checkIn(told) });
-		expect(s.stock.read().units).toEqual([{ s: "IT00000030015", u: "sct", i: "MG-0001", q: "5" }]);
+		expect(s.stock.read().units).toEqual([{ s: "IT00000030015", u: "sct", i: "MG-0001", q: "5", c: "4" }]);
 		s.file(xml(BETA, ME, { number: "U-2", date: "2026-10-09", lines: [{ desc: "Carta A4", qty: "3", unit: "SCT", price: "20.00" }] }));
 		expect(inside(await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "U-2" }))).toContain("→ MG-0001 Carta A4: 15 risme a 4,00 € (una «SCT» è 5 risme)");
+		// The same conversion, a cost 50% above the last under it: to be confirmed.
+		s.file(xml(BETA, ME, { number: "U-4", date: "2026-10-10", lines: [{ desc: "Carta A4", qty: "1", unit: "SCT", price: "30.00" }] }));
+		expect(inside(await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "U-4" }))).toContain("→ MG-0001 Carta A4: 5 risme a 6,00 € (da confermare: con una «SCT» = 5 risme il costo è cambiato molto dall'ultima volta (4,00 €); una «SCT» è 5 risme)");
 		// Another supplier's SCT is not known.
 		s.file(xml(GAMMA, ME, { number: "U-3", date: "2026-10-09", lines: [{ desc: "Carta A4", qty: "3", unit: "SCT", price: "20.00" }] }));
 		expect(inside(await s.stockRun({ op: "receive_invoice", supplier: "Gamma Carta Spa", invoice: "U-3" }))).toContain("la fattura conta in «SCT»");
@@ -698,5 +733,57 @@ describe("stock receive_invoice", () => {
 		expect(await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", date: "il giorno dopo" })).toContain("Errore: la data della fattura");
 		s.file(xml(GAMMA, ME, { number: "G-1", date: "1999-12-31", lines: [{ desc: "Carta A4", qty: "1", unit: "RISMA", price: "5.00" }] }));
 		expect(await s.stockRun({ op: "receive_invoice", supplier: "Gamma Carta Spa", invoice: "G-1" })).toContain("Questa fattura ha una data che non esiste, o di prima del 2000: non la carico in magazzino.");
+	});
+});
+
+describe("week 70 last round", () => {
+	it("an agente in a stanza (origin agent, channel web) gets the agente's answers: purchase_prices counts, no increase in the invoices answer", async () => {
+		const s = setup();
+		office(s);
+		const count = await s.run({ op: "item", item: "carta A4" }, roomAgent());
+		expect(count).toBe(await s.run({ op: "item", item: "carta A4" }, agent()));
+		expect(count).toContain("Prezzi e fornitori li dico solo a chi mi scrive.");
+		expect(count).not.toMatch(/€|Beta|Gamma/);
+		expect(await s.run({ op: "supplier", supplier: "beta" }, roomAgent())).toContain("a un altro agente dico solo");
+		expect(await s.invoiceRun({ op: "list", number: "B-9", party: "Beta" }, roomAgent())).not.toContain("Prezzi aumentati");
+		expect(await s.invoiceRun({ op: "mark_paid", number: "B-9", party: "Beta" }, roomAgent())).toContain("in una richiesta di un altro agente non cambio lo scadenzario");
+		expect(s.purchases.read().alerts).toEqual([]);
+		expect(await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "B-9" }, roomAgent())).toContain("Errore");
+	});
+
+	it("every agent gate in the tools asks isAgentTurn; only routing reads the agenti's channel", () => {
+		const dir = join(import.meta.dirname, "..", "src", "core", "tools");
+		// Where the channel itself is the point: where a task or an automazione can be delivered, the thread a recurring invoice reports to.
+		const routing = new Set(["schedule-tools.ts", "automation-tools.ts", "recurring-invoice-tools.ts"]);
+		const gated = ["bank-tools.ts", "budget-tools.ts", "business-report-tools.ts", "cashflow-tools.ts", "client-tools.ts", "expense-tools.ts", "fiscal-agenda-tools.ts", "invoice-tools.ts", "price-list-tools.ts", "purchase-price-tools.ts", "quote-tools.ts", "recurring-invoice-tools.ts", "renewal-tools.ts", "sales-invoice-tools.ts", "stock-tools.ts", "supplier-tools.ts", "tax-tools.ts", "timesheet-tools.ts", "vat-settlement-tools.ts", "withholding-tools.ts"];
+		const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+		for (const f of files) {
+			const text = readFileSync(join(dir, f), "utf8");
+			if (!routing.has(f)) expect([f, /channel\s*[!=]==\s*AGENT_CHANNEL|channel\s*[!=]==\s*"agente"/.test(text)]).toEqual([f, false]);
+			// A tool that refuses another agente something gates with the helper.
+			if (f.endsWith("-tools.ts") && /a un altro agente|di un altro agente/.test(text) && !routing.has(f) && f !== "agent-tools.ts") expect([f, text.includes("isAgentTurn(ctx)")]).toEqual([f, true]);
+		}
+		for (const f of gated) expect([f, readFileSync(join(dir, f), "utf8").includes("isAgentTurn(ctx)")]).toEqual([f, true]);
+		expect(isAgentTurn({ origin: "agent", thread: { channel: "web", threadId: "x" } })).toBe(true);
+		expect(isAgentTurn({ origin: "person", thread: { channel: AGENT_CHANNEL, threadId: "x" } })).toBe(true);
+		expect(isAgentTurn({ origin: "person", thread: { channel: "web", threadId: "x" } })).toBe(false);
+	});
+
+	it("receive_invoice: a header discount the riepilogo does not have is not counted, said; a very large share is to be checked", async () => {
+		const s = setup();
+		await s.stockRun({ op: "add_item", item: "Carta A4", unit: "risma" });
+		await s.stockRun({ op: "add_item", item: "Toner nero" });
+		s.file(xml(BETA, ME, { number: "H-1", date: "2026-10-05", extra: "<ScontoMaggiorazione><Tipo>SC</Tipo><Importo>10.00</Importo></ScontoMaggiorazione>", lines: [{ desc: "Carta A4", qty: "10", unit: "RS", price: "4.00" }] }));
+		const header = await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "H-1" });
+		expect(inside(header)).toContain("→ MG-0001 Carta A4: 10 risme a 4,00 €");
+		expect(outside(header)).toContain("Lo sconto scritto in testa alla fattura non è nel riepilogo IVA: non l'ho contato.");
+		expect(inside(await s.run({ op: "item", item: "carta" }))).toContain("Fattura n. H-1: lo sconto scritto in testa alla fattura non è nel riepilogo IVA: non l'ho contato.");
+		s.file(xml(BETA, ME, { number: "H-2", date: "2026-10-06", lines: [{ desc: "Carta A4", qty: "10", unit: "RS", price: "10.00" }, { desc: "Toner nero", qty: "1", unit: "PZ", price: "100.00" }, { desc: "Sconto", price: "-120.00", kind: "SC" }] }));
+		const heavy = await s.stockRun({ op: "receive_invoice", supplier: "Beta Forniture Srl", invoice: "H-2" });
+		expect(inside(heavy)).toContain("→ MG-0001 Carta A4: 10 risme a 4,00 € (sconto molto alto su questa riga: da controllare)");
+		expect(outside(heavy)).toContain("2 righe sono da confermare");
+		expect(inside(await s.run({ op: "item", item: "toner" }))).toContain("sconto molto alto su questa riga: da controllare");
+		// The check is 16 hex digits.
+		expect(/il controllo [0-9a-f]{16}\b/.test(heavy)).toBe(true);
 	});
 });

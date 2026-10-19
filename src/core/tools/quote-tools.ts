@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { makeDocumentFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
@@ -175,7 +175,7 @@ export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieToo
 				if (!QUOTE_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${QUOTE_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads, it never makes or marks a quote.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !quoteCallReads(args)) {
+				if (isAgentTurn(ctx) && !quoteCallReads(args)) {
 					return "Errore: in una richiesta di un altro agente non faccio e non cambio preventivi: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				try {

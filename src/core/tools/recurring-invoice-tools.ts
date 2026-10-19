@@ -55,7 +55,7 @@ import { agentAnswer, choiceRow, fencedRecurring, listAnswer, monthsWords, NO_SC
 import { billedFor, checkDraft, coveredMonths, draftGone, invoiceOf, preparePeriod, type RecurringEnv, type RecurringEvent } from "./recurring-invoice-run.ts";
 import { findBuyer } from "./sales-invoice-buyer.ts";
 import { type BuyerFields, readBuyerFields } from "./sales-invoice-input.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 export type { RecurringEvent } from "./recurring-invoice-run.ts";
 
@@ -167,7 +167,7 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 				if (!RECURRING_OPS.includes(args.op as RecurringOp)) return "Errore: non conosco questa operazione sulle fatture ricorrenti.";
 				const op = args.op as RecurringOp;
 				// Another agente's request is not the person's word: the totals only, never by a customer.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && !recurringAgentReads(args)) {
 					return "Errore: a un altro agente do solo quante fatture ricorrenti ci sono e quanto valgono al mese, in tutto. Non le cambio, non preparo bozze e non dico per quali clienti; il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}

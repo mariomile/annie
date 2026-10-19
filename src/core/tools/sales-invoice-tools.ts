@@ -7,7 +7,6 @@
  * and nothing is mailed: the person uploads the file, or mails it with the approval flow.
  * Another agente gets only the year's counts and totals; the audit only the op and a count.
  */
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { todayIn } from "../italian-calendar.ts";
 import { CREDIT_NOTE_TYPE, FIELD_LIMITS, RITENUTA_CAUSALI, STALE_DRAFT_DAYS } from "../sales-invoice-rules.ts";
@@ -19,7 +18,7 @@ import { creditNote, draft, lowNumberNote, readLastNumber } from "./sales-invoic
 import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEnvOptions, type SalesStores, salesEnvOf } from "./sales-invoice-env.ts";
 import { finish, issue } from "./sales-invoice-issue.ts";
 import { agentListAnswer, briefLine, fenced, invoiceLines, listAnswer } from "./sales-invoice-render.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 export type { SalesEvent } from "./sales-invoice-env.ts";
 
@@ -120,7 +119,7 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 				if (!SALES_OPS.includes(args.op as Op)) return "Errore: non conosco questa operazione sulle fatture.";
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: the year's counts and totals only.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && !salesAgentReads(args)) {
 					return "Errore: a un altro agente non preparo, non emetto e non mostro fatture: posso dare solo quante sono e i totali dell'anno. Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}

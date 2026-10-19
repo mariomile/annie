@@ -1215,7 +1215,7 @@ describe("renewals: a disdetta or a removal is a person's own word (ADR 0088)", 
 		await s.run({ op: "add", name: "Hosting Alfa", provider: "Fornitore Alfa", amount: "120", frequency: "annuale", due: "01/12/2026" });
 		const before = JSON.stringify(s.store.read());
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
-			for (const op of ["cancel", "remove"]) expect(await s.run({ op, id: "R-0001" }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			for (const op of ["cancel", "remove"]) expect(await s.run({ op, id: "R-0001" }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive|altro agente/);
 		}
 		expect(JSON.stringify(s.store.read())).toBe(before);
 		expect(await s.run({ op: "remove", id: "R-0001" })).toContain("R-0001");

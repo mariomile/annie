@@ -652,10 +652,12 @@ describe("cashflow: balance, alert and voci", () => {
 		const s = setup();
 		await s.renewal({ op: "add", name: "Affitto ufficio", provider: "Immobiliare Sole", amount: "700", frequency: "mensile", due: "01/11/2026" });
 		const args = { op: "add_item", kind: "uscita", amount: 690, name: "Affitto", date: "ogni 1 del mese" };
-		for (const origin of ["notice", "scheduled", "agent"] as const) {
+		for (const origin of ["notice", "scheduled"] as const) {
 			expect(await s.run(args, { ...fresh(), origin })).toContain("Non l'ho aggiunta: c'è già qualcosa di simile");
-			expect(await s.run({ ...args, confirm: true }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(await s.run({ ...args, confirm: true }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive/);
 		}
+		// Another agente's turn, whatever its channel (week 70): no change at all.
+		expect(await s.run({ ...args, confirm: true }, { ...fresh(), origin: "agent" })).toContain("in una richiesta di un altro agente non cambio il saldo");
 		expect(s.store.read().items).toHaveLength(0);
 		// Nothing alike: the confirm overrides nothing, and a scheduled turn adds as without it.
 		expect(await s.run({ op: "add_item", kind: "uscita", amount: 300, name: "F24", date: "16/11/2026", confirm: true }, { ...fresh(), origin: "scheduled" })).toContain("Aggiunta la voce C-0001");
@@ -967,6 +969,20 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 		expect(movementLabel({ ...at, kind: "in", source: "recurring", canone }, TODAY, false, true)).toBe("canone di ottobre 2026");
 		expect(movementLabel({ ...at, kind: "in", source: "recurring_draft", canone: { ...canone, draft: "BZ-0002" } }, TODAY, false, true)).toBe("canone di ottobre 2026");
 		expect(movementLabel({ ...at, kind: "in", source: "recurring", canone: { ...canone, label: "4º trimestre 2026" } }, TODAY)).toBe("canone del 4º trimestre 2026 da Delta Carni Srl (fattura ricorrente, da preparare)");
+	});
+
+	it("week 70: an agente in a stanza on the web (origin agent) gets the agente's answer, not the owner's", async () => {
+		const s = await scene();
+		await s.run({ op: "set_balance", amount: 3000 });
+		const room = (): ToolContext => ({ ...fresh(), origin: "agent", thread: { channel: "web", threadId: "stanza-1" } });
+		const own = await s.run({ op: "forecast", horizon: "fine anno" });
+		const theirs = await s.run({ op: "forecast", horizon: "fine anno" }, room());
+		// The same answer as on the agenti's channel, the fences' random marks aside.
+		const unfenced = (t: string) => t.replace(/[0-9a-f]{12}/g, "#");
+		expect(unfenced(theirs)).toBe(unfenced(await s.run({ op: "forecast", horizon: "fine anno" }, agent())));
+		expect(unfenced(theirs)).not.toBe(unfenced(own));
+		expect(theirs).not.toContain("Gamma Hotel");
+		expect(await s.run({ op: "set_balance", amount: 10 }, room())).toContain("in una richiesta di un altro agente non cambio il saldo");
 	});
 
 	it("another agente may only forecast, list and what_if (23); the brief runs only forecast", async () => {

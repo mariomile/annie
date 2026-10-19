@@ -35,7 +35,7 @@ export const PURCHASE_LIMITS = {
 	suppliers: 8,
 	/** The brief says at most this many increases of one supplier a day. */
 	perSupplier: 1,
-	/** An earlier price under this (hundred-millionths: 0,01 €) is no base for a rise in the brief. */
+	/** An earlier price under this (hundred-millionths: 0,01 €) is no base for a rise, anywhere. */
 	floor: 1_000_000,
 	/** An invoice number shown, at most. */
 	number: 20,
@@ -75,6 +75,10 @@ export type PurchaseRow = {
 	readonly perLine: boolean;
 	/** The discount on the whole invoice spread over its lines (negative: a surcharge), in hundred-millionths: already in `total` and `price`. */
 	readonly spread?: bigint;
+	/** Its share of that discount is more than half its total: to be checked. */
+	readonly heavy?: true;
+	/** Why a discount of its invoice was not counted or not spread (spreadOf notes). */
+	readonly spreadNotes?: readonly string[];
 };
 
 /** A spesa accessoria of an invoice (transport, packing): the invoice's cost, never a product. */
@@ -101,38 +105,110 @@ const DISCOUNT_LINES = new Set(["SC", "AB"]);
 /** One goods line with its total after the invoice's discounts, in hundred-millionths. */
 export type SpreadLine = { readonly line: FatturaLine; readonly total: bigint };
 
+/** What spreadOf gives: the goods with their totals after the discounts, the spese apart, what was spread, the SC/AB lines spread, the lines whose share is very large, and what was left out, said. */
+export type Spread = {
+	readonly goods: readonly SpreadLine[];
+	readonly expenses: readonly FatturaLine[];
+	readonly spread: bigint;
+	readonly discounts: ReadonlySet<number>;
+	/** Lines whose share of the discount is more than half their total: to be checked. */
+	readonly heavy: ReadonlySet<number>;
+	/** Why a discount was not counted or not spread, in words (no data of the file). */
+	readonly notes: readonly string[];
+};
+
+/** A share of the discount above this part of a line's total is flagged. */
+const HEAVY_SHARE = 2n;
+
+const rateKey = (vat: string, natura: string | undefined) => `${toUnits(vat) ?? vat}|${natura ?? ""}`;
+
 /**
  * An invoice's goods lines with the discounts of the whole invoice spread over them in proportion
- * to their totals: the SC and AB lines (each a discount, whatever its sign) and the document's
- * ScontoMaggiorazione (a percentage on the goods after those lines, or an amount; MG a
- * surcharge). `spread` is what was spread, 0 when nothing was, or when it is the whole goods'
- * total or more (then nothing is spread, never a price at zero). The spese accessorie (AC) are
- * apart, never products nor spread over; a premio (PR) is neither.
+ * to their totals, as the riepilogo IVA (DatiRiepilogo) says them: the goods' imponibile, for the
+ * goods' rates, less the spese and premi at those rates, is what the goods cost; the difference
+ * from the goods lines is spread when it is explained by the SC and AB lines (a discount whatever
+ * their sign), or by those and the document's ScontoMaggiorazione (percentages compounded, on the
+ * goods after those lines; an amount without VAT, or with it when only that reconciles, at one
+ * rate). A header discount the riepilogo does not have is not counted; a difference nothing
+ * explains is not spread; a discount of the whole goods or more, or a surcharge more than
+ * doubling them, is left out: each said in `notes`. Without a riepilogo only the SC and AB lines
+ * are spread. The spese accessorie (AC) are apart, never products nor spread over; a premio (PR)
+ * is neither.
  */
-export function spreadOf(doc: Pick<FatturaDocument, "lines" | "adjustments">): { readonly goods: readonly SpreadLine[]; readonly expenses: readonly FatturaLine[]; readonly spread: bigint; readonly discounts: ReadonlySet<number> } {
+export function spreadOf(doc: Pick<FatturaDocument, "lines" | "adjustments" | "vatRows">): Spread {
 	const goods: SpreadLine[] = [];
 	const expenses: FatturaLine[] = [];
-	const discounts = new Set<number>();
-	let fromLines = 0n;
+	const discountLines: FatturaLine[] = [];
+	const others: FatturaLine[] = [];
 	for (const l of doc.lines ?? []) {
 		const total = toUnits(l.total);
 		if (total === undefined) continue;
-		if (l.kind !== undefined && DISCOUNT_LINES.has(l.kind)) {
-			fromLines += total < 0n ? -total : total;
-			discounts.add(l.n);
-		} else if (l.kind === "AC") {
+		if (l.kind !== undefined && DISCOUNT_LINES.has(l.kind)) discountLines.push(l);
+		else if (l.kind === "AC") {
+			others.push(l);
 			if (total > 0n) expenses.push(l);
 		} else if (l.kind !== "PR" && total > 0n) goods.push({ line: l, total });
+		else others.push(l);
 	}
+	const none = (notes: string[] = [], discounts = new Set<number>()): Spread => ({ goods, expenses, spread: 0n, discounts, heavy: new Set(), notes });
 	const sum = goods.reduce((t, g) => t + g.total, 0n);
-	let spread = fromLines;
-	for (const a of doc.adjustments ?? []) {
-		const base = sum > fromLines ? sum - fromLines : 0n;
-		const units = a.percent !== undefined ? halfUp(base * (toUnits(a.percent) ?? 0n), 100n * EURO) : (toUnits(a.amount ?? "0") ?? 0n);
-		spread += a.kind === "SC" ? units : -units;
+	const header = doc.adjustments ?? [];
+	if (sum === 0n || (discountLines.length === 0 && header.length === 0)) return none();
+	const rates = new Set(goods.map((g) => rateKey(g.line.vat, g.line.natura)));
+	const atRates = (l: FatturaLine) => rates.has(rateKey(l.vat, l.natura));
+	const abs = (n: bigint) => (n < 0n ? -n : n);
+	const fromLines = discountLines.filter(atRates).reduce((t, l) => t + abs(toUnits(l.total) as bigint), 0n);
+	// The header on the goods after the lines' discounts, percentages compounded; an amount as written.
+	let base = sum > fromLines ? sum - fromLines : 0n;
+	let net = 0n;
+	let amounts = 0n;
+	for (const a of header) {
+		const sign = a.kind === "SC" ? 1n : -1n;
+		if (a.percent !== undefined) {
+			const part = halfUp(base * (toUnits(a.percent) ?? 0n), 100n * EURO);
+			net += sign * part;
+			base -= sign * part;
+		} else {
+			const amount = toUnits(a.amount ?? "0") ?? 0n;
+			net += sign * amount;
+			amounts += sign * amount;
+		}
 	}
-	if (spread === 0n || sum === 0n || spread >= sum || -spread >= sum) return { goods, expenses, spread: 0n, discounts: spread === 0n ? discounts : new Set() };
-	return { goods: goods.map((g) => ({ line: g.line, total: g.total - halfUpSigned(spread * g.total, sum) })), expenses, spread, discounts };
+	let spread: bigint;
+	const notes: string[] = [];
+	const rows = (doc.vatRows ?? []).filter((r) => rates.has(rateKey(r.rate, r.natura)));
+	if (doc.vatRows === undefined || rows.length === 0) {
+		// Nothing to check against: the lines' discounts only.
+		spread = fromLines;
+		if (header.length > 0) notes.push("Lo sconto scritto in testa alla fattura non si controlla con il riepilogo IVA, che manca: non l'ho contato.");
+	} else {
+		const taxable = rows.reduce((t, r) => t + (toUnits(r.taxable) ?? 0n), 0n);
+		const rest = others.filter(atRates).reduce((t, l) => t + (toUnits(l.total) as bigint), 0n);
+		const owed = sum - (taxable - rest);
+		const near = (a: bigint, b: bigint) => abs(a - b) <= 1_000_000n * BigInt(rows.length);
+		// An amount with VAT, at the goods' one rate: its imponibile.
+		const only = rates.size === 1 ? toUnits(goods[0]?.line.vat ?? "0") : undefined;
+		const gross = only === undefined || only === 0n || amounts === 0n ? undefined : net - amounts + halfUpSigned(amounts * 100n * EURO, 100n * EURO + only);
+		if (near(owed, fromLines)) {
+			spread = owed;
+			if (header.length > 0 && net !== 0n) notes.push("Lo sconto scritto in testa alla fattura non è nel riepilogo IVA: non l'ho contato.");
+		} else if (header.length > 0 && near(owed, fromLines + net)) spread = owed;
+		else if (gross !== undefined && near(owed, fromLines + gross)) spread = owed;
+		else {
+			notes.push("Gli sconti della fattura non tornano con il riepilogo IVA: non li ho divisi sulle righe.");
+			return none(notes);
+		}
+	}
+	if (spread === 0n) return none(notes);
+	if (spread >= sum) return none([...notes, "Lo sconto su tutta la fattura è pari o oltre il totale della merce: l'ho lasciato fuori, non l'ho diviso sulle righe."]);
+	if (-spread > sum) return none([...notes, "La maggiorazione su tutta la fattura più che raddoppierebbe le righe: l'ho lasciata fuori, non l'ho divisa."]);
+	const heavy = new Set<number>();
+	const spreadGoods = goods.map((g) => {
+		const share = halfUpSigned(spread * g.total, sum);
+		if (share * HEAVY_SHARE > g.total) heavy.add(g.line.n);
+		return { line: g.line, total: g.total - share };
+	});
+	return { goods: spreadGoods, expenses, spread, discounts: new Set(discountLines.map((l) => l.n)), heavy, notes };
 }
 
 /** «La fattura n. B-9 ha uno sconto di 20,00 € su tutta la fattura: l'ho diviso sulle righe in proporzione.» */
@@ -212,6 +288,8 @@ export function purchaseRows(invoices: readonly Invoice[], suppliers: readonly S
 				price: quantity === undefined ? total : halfUp(total * EURO, quantity),
 				perLine: quantity === undefined,
 				...(spread.spread === 0n ? {} : { spread: spread.spread }),
+				...(spread.heavy.has(l.n) ? { heavy: true as const } : {}),
+				...(spread.notes.length === 0 ? {} : { spreadNotes: spread.notes }),
 			});
 		}
 	}
@@ -314,7 +392,8 @@ export function increasesOf(rows: readonly PurchaseRow[], threshold: bigint, fro
 	const out: Increase[] = [];
 	for (const product of productsOf(rows.filter((r) => !r.perLine))) {
 		for (const s of bySupplier(product)) {
-			if (s.previous === undefined || s.latest.day < from || s.latest.day > to) continue;
+			// From a price under a cent any rise is noise: never an increase.
+			if (s.previous === undefined || s.previous.price < BigInt(PURCHASE_LIMITS.floor) || s.latest.day < from || s.latest.day > to) continue;
 			if (!risesBy(s.previous.price, s.latest.price, threshold)) continue;
 			out.push({ product, supplier: s.supplier, supplierKey: s.supplierKey, latest: s.latest, previous: s.previous, tenths: riseTenths(s.previous.price, s.latest.price) });
 		}

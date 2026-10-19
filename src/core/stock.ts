@@ -148,8 +148,8 @@ export type CodeMap = { readonly s: string; readonly c?: string; readonly d?: st
 /** One code map's key: the supplier, and its code (case aside) or its description. */
 export const codeMapKey = (c: Pick<CodeMap, "s" | "c" | "d">) => `${c.s}\u0000${c.c !== undefined ? `c:${c.c.toLowerCase()}` : `d:${c.d ?? ""}`}`;
 
-/** A supplier's unit for an article, learned when the person said it: one `u` (the unit as kept, «rs») is `q` of the article's units. */
-export type UnitMap = { readonly s: string; readonly u: string; readonly i: string; readonly q: string };
+/** A supplier's unit for an article, learned when the person said it: one `u` (the unit as kept, «rs») is `q` of the article's units; `c` the cost per unit of the last load under it. */
+export type UnitMap = { readonly s: string; readonly u: string; readonly i: string; readonly q: string; readonly c?: string };
 
 export const unitMapKey = (u: Pick<UnitMap, "s" | "u" | "i">) => `${u.s}\u0000${u.u}\u0000${u.i}`;
 
@@ -169,7 +169,7 @@ export function validCodeMap(v: unknown): v is CodeMap {
 export function validUnitMap(v: unknown): v is UnitMap {
 	if (typeof v !== "object" || v === null) return false;
 	const u = v as UnitMap;
-	return Object.keys(u).every((k) => ["s", "u", "i", "q"].includes(k)) && plain(u.s, STOCK_LIMITS.supplierKey) && plain(u.u, STOCK_LIMITS.unit) && typeof u.i === "string" && STOCK_ID.test(u.i) && isQuantity(u.q) && Number(u.q) > 0;
+	return Object.keys(u).every((k) => ["s", "u", "i", "q", "c"].includes(k)) && plain(u.s, STOCK_LIMITS.supplierKey) && plain(u.u, STOCK_LIMITS.unit) && typeof u.i === "string" && STOCK_ID.test(u.i) && isQuantity(u.q) && Number(u.q) > 0 && (u.c === undefined || isCost(u.c));
 }
 
 /** A sottoscorta (or in negativo) said in the brief: the article, the crossing and the call that said it. */

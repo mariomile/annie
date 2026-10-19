@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
 import { euros, n1 } from "../format-words.ts";
@@ -20,7 +19,7 @@ import { findSupplier, loadSuppliers, meantSupplier } from "../supplier-find.ts"
 import type { SupplierStore } from "../supplier-store.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
 import type { PurchaseStore } from "../purchase-store.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { receiveInvoice } from "./stock-invoice.ts";
 import { BRIEF_NOTHING, briefAnswer, costWords, fencedStock, listAnswer, lowAnswer, movesAnswer, nameOf, NO_ITEMS, qtyNumber, qtyWords, statusAnswer, stockCsv, unitPlural, valueAnswer } from "./stock-render.ts";
@@ -155,7 +154,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 				const op = args.op as StockOp;
 				for (const key of ["compact", "confirm"]) if (args[key] !== undefined && typeof args[key] !== "boolean") return `Errore: ${key === "compact" ? "compact" : "la conferma"} è sì o no.`;
 				// Another agente's request is not the person's word: names and quantities, nothing else.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && !stockAgentReads(args)) return "Errore: a un altro agente do solo l'elenco degli articoli e cosa sta finendo, con nomi e quantità. Non do costi, valori, fornitori o movimenti e non cambio niente; il resto lo chiede chi ti scrive, nella sua conversazione.";
 				const day = todayIn(timeZone, now());
 				try {

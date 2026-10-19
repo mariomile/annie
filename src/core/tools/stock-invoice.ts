@@ -23,7 +23,7 @@ import { italianDate } from "../italian-format.ts";
 import { sameStems, spelledOut, wordsWithin } from "../name-keys.ts";
 import { goodDate, increasesIn, increaseWords, lineKey, PURCHASE_LIMITS, priceWords, purchaseUnit, spreadOf, spreadWords } from "../purchase-prices.ts";
 import { claimIncreases, type PurchaseStore } from "../purchase-store.ts";
-import { halfUp } from "../quote-sums.ts";
+import { halfUp, scaled } from "../quote-sums.ts";
 import { type CodeMap, codeMapKey, findStockItem, isCost, isQuantity, moveId, type Movement, type ReceivedKey, STOCK_LIMITS, type StockItem, stockItemId, stockUnit, type UnitMap } from "../stock.ts";
 import type { InvoiceLoad, StockBook, StockStore } from "../stock-store.ts";
 import { costText, packUnits, qtyOf, qtyText, stateOf } from "../stock-sums.ts";
@@ -50,6 +50,9 @@ const NUMBER = PURCHASE_LIMITS.number;
 
 /** Two invoices of one supplier with the same goods this many days apart or less may be one delivery invoiced twice. */
 const SAME_GOODS_DAYS = 60;
+
+/** A cost under a learned conversion moved more than this percent from the last one under it is asked about. */
+const CONVERSION_MOVE = 30n;
 
 /** A unit cost this many times the article's average, or its inverse, is asked about. */
 const COST_FACTOR = 3n;
@@ -199,7 +202,8 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 		const notes: string[] = [];
 		let thousandths: bigint | undefined;
 		let teach: UnitMap | undefined;
-		const known = unit === undefined ? undefined : (picked?.each ?? book.units.find((u) => u.s === supplier && u.u === unit && u.i === (item as StockItem).id)?.q);
+		const learnedUnit = unit === undefined || picked?.each !== undefined ? undefined : book.units.find((u) => u.s === supplier && u.u === unit && u.i === (item as StockItem).id);
+		const known = unit === undefined ? undefined : (picked?.each ?? learnedUnit?.q);
 		if (unit === undefined || unit === item.unit) {
 			thousandths = written;
 			if (unit === undefined) notes.push(`la riga non dice l'unità: contata ${inUnits(item.unit)}`);
@@ -217,7 +221,7 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 			}
 			thousandths = n / 1000n;
 			notes.push(`una «${cut(l.unit ?? unit, STOCK_LIMITS.unit)}» è ${qtyWords(qtyOf(known), item.unit)}`);
-			if (picked?.each !== undefined) teach = { s: supplier.slice(0, STOCK_LIMITS.supplierKey), u: unit.slice(0, STOCK_LIMITS.unit), i: item.id, q: picked.each };
+			teach = { s: supplier.slice(0, STOCK_LIMITS.supplierKey), u: unit.slice(0, STOCK_LIMITS.unit), i: item.id, q: known };
 		} else {
 			const said = cut(l.unit ?? unit, STOCK_LIMITS.unit);
 			out.push({ ...base, skip: "unit", why: `la fattura conta in «${said}», l'articolo ${inUnits(item.unit)}: dimmi quante ${unitPlural(item.unit)} è una «${said}» e lo ricordo per questo fornitore` });
@@ -233,6 +237,14 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 			out.push({ ...base, skip: "cost" });
 			continue;
 		}
+		// A conversion learned, and a cost far from the last one under it: maybe the supplier's unit changed.
+		if (learnedUnit?.c !== undefined) {
+			const last = scaled(learnedUnit.c, 4);
+			const moved = cost > last ? cost - last : last - cost;
+			if (last > 0n && moved * 100n > CONVERSION_MOVE * last) flags.push(`da confermare: con una «${cut(l.unit ?? unit ?? "", STOCK_LIMITS.unit)}» = ${qtyWords(qtyOf(learnedUnit.q), item.unit)} il costo è cambiato molto dall'ultima volta (${costWords(last)})`);
+		}
+		if (teach !== undefined) teach = { ...teach, c: costText(cost) };
+		if (spread.heavy.has(l.n)) flags.push("sconto molto alto su questa riga: da controllare");
 		if (!isNew) {
 			const average = stateOf(item, book.moves).average;
 			if (average !== undefined && average > 0n && (cost >= COST_FACTOR * average || cost * COST_FACTOR <= average)) flags.push(`da confermare: il costo è molto diverso dal costo medio dell'articolo (${costWords(average)})`);
@@ -246,7 +258,7 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 /** The check of a proposal: the invoice, and each line it loads with its article, quantity and cost. Another check is another proposal. */
 function checkOf(inv: Invoice, plan: readonly Proposal[]): string {
 	const rows = plan.filter(loads).map((p) => [p.line, p.created ? `+${p.item.unit}|${p.item.name}` : p.item.id, p.qty.toString(), p.cost.toString(), p.unit?.q ?? ""]);
-	return createHash("sha256").update(JSON.stringify([inv.key, rows])).digest("hex").slice(0, 8);
+	return createHash("sha256").update(JSON.stringify([inv.key, rows])).digest("hex").slice(0, 16);
 }
 
 /** «ieri», «18/10», «la più recente»: the day said, or "latest", or why not. */
@@ -395,6 +407,7 @@ function notesOf(inv: Invoice, plan: readonly Proposal[]): string[] {
 	const past = inv.doc.linesCut ?? 0;
 	if (unread > 0) out.push(unread === 1 ? "Una riga della fattura non si legge (manca la descrizione, o un prezzo o una quantità non è un numero): non la propongo." : `${unread} righe della fattura non si leggono (manca la descrizione, o un prezzo o una quantità non è un numero): non le propongo.`);
 	if (past > 0) out.push(`${n1(past, "Una riga è", "# righe sono")} oltre le prime 2000 della fattura: ${past === 1 ? "non la propongo, va caricata" : "non le propongo, vanno caricate"} a mano.`);
+	out.push(...spreadOf(inv.doc).notes);
 	if (spreadOf(inv.doc).expenses.length > 0) out.push("Le spese della fattura (trasporto e simili) non sono merce: le elenco a parte e non le aggiungo ai costi degli articoli.");
 	return out;
 }
@@ -439,7 +452,7 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 	const refused = requirePersonFor(ctx, "carico in magazzino la merce di una fattura");
 	if (refused !== undefined) return refused;
 	const check = typeof args.check === "string" ? args.check.trim().toLowerCase() : undefined;
-	if (check === undefined || !/^[0-9a-f]{8}$/.test(check)) return "Errore: per caricare serve il controllo della proposta: chiedi prima la proposta, mostrala a chi ti scrive e, con il suo sì, ripeti con il controllo che ti ho dato.";
+	if (check === undefined || !/^[0-9a-f]{16}$/.test(check)) return "Errore: per caricare serve il controllo della proposta: chiedi prima la proposta, mostrala a chi ti scrive e, con il suo sì, ripeti con il controllo che ti ho dato.";
 	const by = env.marker(ctx);
 	const supplier = { name: partyName(inv.supplier).slice(0, STOCK_LIMITS.name), ...(vatOf(inv.supplier) === undefined ? {} : { vat: vatOf(inv.supplier) as string }) };
 	const s = partyKey(inv.supplier).slice(0, STOCK_LIMITS.supplierKey);

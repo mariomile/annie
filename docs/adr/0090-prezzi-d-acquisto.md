@@ -13,7 +13,7 @@ Le fatture dei fornitori arrivano con le righe (DettaglioLinee), ma Annie ne leg
 ## Sicurezza
 
 - Le fatture dei fornitori sono testo di altri: descrizioni, codici, numeri e nomi solo nel recinto dei dati non fidati, il numero tagliato a 20 caratteri. Un codice già imparato con una descrizione che non è quella dell'articolo, un costo tre volte sopra o sotto la media, la stessa merce di una fattura di meno di 60 giorni prima e date impossibili si segnalano o si saltano.
-- Il carico si conferma solo in un turno della persona (ADR 0088); un altro agente non può né proporre né caricare.
+- Il carico si conferma solo in un turno della persona (ADR 0088); un altro agente non può né proporre né caricare. Un turno è di un altro agente sia sul canale degli agenti sia quando un agente chiama Annie in una stanza: un solo controllo, `isAgentTurn` in `turn-origin.ts`, vale per tutti gli strumenti che rispondono diversamente agli agenti.
 - Agli altri agenti `purchase_prices` dà solo conteggi (quanti acquisti, da quanti fornitori, quanti prodotti aumentati, con soglie e periodi fissi): quello che l'attività paga dice i suoi margini, e un agente che parla con i clienti potrebbe ripeterlo. L'audit registra operazione e conteggio. CSV con celle protette dalle formule.
 
 ## Alternative scartate
@@ -21,4 +21,4 @@ Le fatture dei fornitori arrivano con le righe (DettaglioLinee), ma Annie ne leg
 - **Caricare da sole le fatture dei fornitori**: una fattura sbagliata o falsa sposterebbe il costo medio, che non si annulla.
 - **Unire i prodotti per somiglianza**: «colla» e «collo» diventavano lo stesso prodotto; meglio confrontare per le parole che dice la persona.
 - **Ignorare gli sconti**: i prezzi e i costi di carico risultavano più alti, e un aumento poteva essere solo uno sconto mancato.
-- Uno sconto scritto due volte (come riga e nell'intestazione) si conta due volte: il file non permette di distinguerli.
+- **Sommare tutti gli sconti che la fattura scrive**: molti programmi ripetono lo sconto di riga nell'intestazione, e si contava due volte; ora si divide solo lo sconto che fa tornare il riepilogo IVA, e se non torna si dice.

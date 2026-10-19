@@ -234,7 +234,7 @@ describe("suppliers: who is who", () => {
 		const s = await setup();
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
 			const out = await s.run({ op: "merge", supplier: "Uno Forniture", into: "Fornitore Uno S.r.l.", confirm: true }, { ...fresh(), origin });
-			expect(out).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(out).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive|altro agente/);
 			expect(s.store.read().cards).toEqual([]);
 		}
 		expect(outside(await s.run({ op: "merge", supplier: "Uno Forniture", into: "Fornitore Uno S.r.l." }, { ...fresh(), origin: "scheduled" }))).toContain("l'IBAN che mi hai dato per il primo passano al secondo");

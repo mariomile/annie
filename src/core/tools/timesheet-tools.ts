@@ -1,5 +1,5 @@
 import type { PriceListStore } from "../price-list-store.ts";
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { makeDocumentFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
 import { clockText, hoursText, parseDuration } from "../durations.ts";
@@ -176,7 +176,7 @@ export function createTimesheetTools(options: TimesheetToolsOptions): AnnieTool[
 				if (!TIMESHEET_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${TIMESHEET_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads, it never records, changes or writes a file.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !timesheetCallReads(args)) {
+				if (isAgentTurn(ctx) && !timesheetCallReads(args)) {
 					return "Errore: in una richiesta di un altro agente non registro, non cambio e non esporto ore: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				try {

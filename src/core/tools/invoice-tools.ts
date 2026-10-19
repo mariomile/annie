@@ -19,7 +19,7 @@ import {
 	type Side,
 } from "../invoices.ts";
 import { COMPANY_LIMITS, type InvoiceStore } from "../invoice-store.ts";
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { todayIn } from "../italian-calendar.ts";
 import { increasesIn, increaseWords } from "../purchase-prices.ts";
 import { claimIncreases, type PurchaseStore } from "../purchase-store.ts";
@@ -171,7 +171,7 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 				if (problem !== undefined) return `Errore: ${problem}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads, it never changes the scadenzario nor sends.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !invoiceCallReads(args)) {
+				if (isAgentTurn(ctx) && !invoiceCallReads(args)) {
 					return "Errore: in una richiesta di un altro agente non cambio lo scadenzario e non mando solleciti: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				try {
@@ -205,7 +205,7 @@ export function createInvoiceTools(options: InvoiceToolsOptions): AnnieTool[] {
 		const found = findInvoices(loaded.invoices, { number: args.number, ...(read.party === undefined ? {} : { party: read.party }) });
 		const answer = listAnswer({ ...loaded, invoices: found }, read, view);
 		const one = found.length === 1 ? found[0] : undefined;
-		if (one === undefined || one.side !== "passive" || ctx.thread?.channel === AGENT_CHANNEL) return answer;
+		if (one === undefined || one.side !== "passive" || isAgentTurn(ctx)) return answer;
 		const said = await claimIncreases(options.purchases, ctx, view.today, increasesIn(loaded.invoices, [], one));
 		if (said.length === 0) return answer;
 		return [answer, "Prezzi aumentati in questa fattura, rispetto all'acquisto precedente dallo stesso fornitore (senza IVA): dillo a chi ti scrive.", fenced(said.map(increaseWords).join("\n"))].join("\n");

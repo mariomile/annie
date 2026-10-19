@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { statementOf } from "../bank.ts";
 import type { BankStore } from "../bank-store.ts";
 import { type Candidate, FORM_NOTE, findNamed, taxIdOf } from "../client-find.ts";
@@ -89,7 +89,7 @@ export function createWithholdingTools(options: WithholdingToolsOptions): AnnieT
 				if (!WITHHOLDING_OPS.includes(args.op as WithholdingOp)) return `Errore: op è una di queste: ${WITHHOLDING_OPS.join(", ")}.`;
 				const op = args.op as WithholdingOp;
 				// Another agente's request is not the person's word: the year's totals only, never names, CU nor files.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !withholdingAgentReads(args)) return "Errore: a un altro agente do solo i totali delle ritenute dell'anno: niente nomi di clienti, niente CU e niente file. Il resto lo chiede chi ti scrive, nella sua conversazione.";
+				if (isAgentTurn(ctx) && !withholdingAgentReads(args)) return "Errore: a un altro agente do solo i totali delle ritenute dell'anno: niente nomi di clienti, niente CU e niente file. Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				if (args.compact !== undefined && typeof args.compact !== "boolean") return "Errore: compact è true o false.";
 				const day = todayIn(timeZone, now());
 				try {
@@ -146,7 +146,7 @@ export function createWithholdingTools(options: WithholdingToolsOptions): AnnieT
 	function summary(args: Record<string, unknown>, ctx: ToolContext, day: string, l: Loaded): string {
 		const year = readYear(args.year, day, Number(day.slice(0, 4)));
 		if (isProblem(year)) return `Errore: ${year.problem}.`;
-		return summaryAnswer({ summary: yearSummary(l.docs, year, l.bank), today: day, named: ctx.thread?.channel !== AGENT_CHANNEL, notes: l.notes });
+		return summaryAnswer({ summary: yearSummary(l.docs, year, l.bank), today: day, named: !isAgentTurn(ctx), notes: l.notes });
 	}
 
 	function check(args: Record<string, unknown>, day: string, l: Loaded): string {

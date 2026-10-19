@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { cashBook } from "../cash-book.ts";
 import { DateError, readDate } from "../dates.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
@@ -171,7 +171,7 @@ export function createTaxTools(options: TaxToolsOptions): AnnieTool[] {
 				if (!TAX_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${TAX_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads (estimate, calendar, what_if), nothing else.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !taxAgentReads(args)) {
+				if (isAgentTurn(ctx) && !taxAgentReads(args)) {
 					return "Errore: in una richiesta di un altro agente non cambio il profilo delle tasse, non salvo accantonamenti e non esporto: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				const day = todayIn(timeZone, now());

@@ -1345,7 +1345,9 @@ describe("week 60 third verify", () => {
 describe("week 68: the yes is a person's own message", () => {
 	it("matching by itself is turned on only in a person's turn; turned off by anyone", async () => {
 		const s = await setup();
-		for (const origin of ["notice", "scheduled", "agent"] as const) {
+		// Another agente's turn, whatever its channel, stops at the agent gate first (week 70).
+		expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin: "agent", thread: { channel: "web", threadId: "stanza" } })).toContain("in una richiesta di un altro agente");
+		for (const origin of ["notice", "scheduled"] as const) {
 			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).toContain("Non abbino da sola le fatture sicure ");
 			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).not.toMatch(/\bauto_confirm\b/);
 		}
@@ -1361,7 +1363,8 @@ describe("week 68: the yes is a person's own message", () => {
 		s.put("banca/d.csv", ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00"].join("\n"));
 		await s.run({ op: "import", path: "banca/d.csv" });
 		const before = JSON.stringify(s.store.read());
-		for (const origin of ["notice", "scheduled", "agent"] as const) {
+		expect(await s.run({ op: "confirm", all: true }, { ...fresh(), origin: "agent" })).toContain("in una richiesta di un altro agente");
+		for (const origin of ["notice", "scheduled"] as const) {
 			const c = () => ({ ...fresh(), origin });
 			expect(await s.run({ op: "confirm", all: true }, c())).toContain("Non confermo gli abbinamenti della banca (fatture segnate pagate o incassate) ");
 			expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true }, c())).toContain("Non registro le spese dall'estratto conto ");

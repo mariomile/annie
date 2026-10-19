@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { type CsvCell, csvFile } from "../csv.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
@@ -115,7 +115,7 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 				const op = args.op as PurchaseOp;
 				if (args.compact !== undefined && typeof args.compact !== "boolean") return "Errore: compact è sì o no.";
 				// Another agente's request is not the person's word: counts only, never a price or a supplier.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && !purchaseAgentReads(args)) return "Errore: a un altro agente dico solo quanti prodotti sono aumentati o quanti acquisti ci sono di un prodotto. Non do prezzi, fornitori o file; il resto lo chiede chi ti scrive, nella sua conversazione.";
 				const day = todayIn(timeZone, now());
 				try {
@@ -170,11 +170,15 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		return [answer, ...data.notes].join("\n");
 	}
 
-	/** The discounts on whole invoices spread over the rows shown, said once per invoice (inside the fence: the numbers come from the files). */
+	/** The discounts on whole invoices spread over the rows shown, and those not counted, said once per invoice (inside the fence: the numbers come from the files). */
 	function spreadNotes(rows: readonly (PurchaseRow | undefined)[]): string[] {
-		const seen = new Map<string, string>();
-		for (const r of rows) if (r?.spread !== undefined && !seen.has(r.invoice)) seen.set(r.invoice, spreadWords(r.number, r.day, r.spread));
-		return [...seen.values()];
+		const seen = new Map<string, string[]>();
+		for (const r of rows) {
+			if (r === undefined || seen.has(r.invoice) || (r.spread === undefined && r.spreadNotes === undefined)) continue;
+			const which = r.number === undefined ? `Fattura del ${italianDate(r.day)}` : `Fattura n. ${r.number}`;
+			seen.set(r.invoice, [...(r.spread === undefined ? [] : [spreadWords(r.number, r.day, r.spread)]), ...(r.spreadNotes ?? []).map((n) => `${which}: ${n.charAt(0).toLowerCase()}${n.slice(1)}`)]);
+		}
+		return [...seen.values()].flat();
 	}
 
 	/** The supplier said, or the answer to give instead: one only close to the words is taken, and named (`took`). */
@@ -234,6 +238,7 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		if (s.previous !== undefined && !r.perLine) parts.push(`prima ${priceWords(s.previous.price)} (${tenthsWords(riseTenths(s.previous.price, r.price)).replace(/^(?=\d)/, "+")})`);
 		if (s.lowest < r.price && (s.previous === undefined || s.lowest < s.previous.price)) parts.push(`il più basso ${priceWords(s.lowest)}`);
 		parts.push(n1(s.count, "un acquisto", "# acquisti"));
+		if (r.heavy === true) parts.push("sconto molto alto su questa riga: da controllare");
 		return `  - ${parts.join("; ")}`;
 	}
 
