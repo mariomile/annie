@@ -26,6 +26,7 @@ import { SupplierStore } from "./supplier-store.ts";
 import { BudgetStore } from "./budget-store.ts";
 import { PurchaseStore } from "./purchase-store.ts";
 import { MarginStore } from "./margin-store.ts";
+import { AppointmentStore } from "./appointment-store.ts";
 import { DdtStore } from "./ddt-store.ts";
 import { OrderStore } from "./order-store.ts";
 import { StockStore } from "./stock-store.ts";
@@ -288,6 +289,11 @@ export class AnnieRuntime {
 	/** I DDT in uscita of an instance: the DDTs, their numbering, what the brief said. */
 	ddt(tenant: string, instance: string): DdtStore {
 		return new DdtStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Gli appuntamenti of an instance (appointments.json), outside the workspace. */
+	appointments(tenant: string, instance: string): AppointmentStore {
+		return new AppointmentStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Gli ordini ai fornitori of an instance: the orders, the lead times said, what the brief said. */

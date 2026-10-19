@@ -154,6 +154,9 @@ export type Order = { readonly id: string; readonly cig?: string; readonly cup?:
 /** An entry of hours the invoice bills, with its minutes and terms when the draft was made: checked again at issue. */
 export type HoursRef = { readonly id: string; readonly minutes: number; readonly rate: string; readonly rounding: number };
 
+/** An appointment (gli appuntamenti) the invoice bills: marked billed when it is issued. */
+export type AppointmentRef = { readonly id: string; readonly day: string };
+
 export type SalesInvoice = Marker & {
 	/** «BZ-0001», never used again. */
 	readonly id: string;
@@ -175,6 +178,8 @@ export type SalesInvoice = Marker & {
 	readonly hours?: readonly HoursRef[];
 	/** A fattura differita (TD24): the DDTs it bills, marked billed when it is issued. */
 	readonly ddt?: readonly DdtRef[];
+	/** The appointments done it bills (gli appuntamenti), marked billed when it is issued. */
+	readonly appointments?: readonly AppointmentRef[];
 	/** A credit note of a fattura differita sent to the wrong customer: issued, the DDTs that invoice billed are to bill again (a differita to the right one). */
 	readonly release?: true;
 	/** The call that made the draft: a call run again finds it. */
@@ -433,6 +438,7 @@ const validRitenuta = (r: Ritenuta) => record(r) && (r.type === RITENUTA_PERSON 
 const code = (v: unknown, max: number) => typeof v === "string" && /^[A-Za-z0-9/._-]+$/.test(v) && v.length <= max;
 const DDT_REF = /^DT-\d{4,6}$/;
 const validDdtRef = (d: DdtRef) => record(d) && Object.keys(d).every((k) => ["id", "number", "date"].includes(k)) && typeof d.id === "string" && DDT_REF.test(d.id) && isText(d.number, 20) && isDay(d.date);
+const validAppointmentRef = (a: AppointmentRef) => record(a) && Object.keys(a).every((k) => k === "id" || k === "day") && typeof a.id === "string" && /^AP-\d{4,6}$/.test(a.id) && isDay(a.day);
 const validHours = (h: HoursRef) => record(h) && typeof h.id === "string" && /^O-\d{4}-\d{4,6}$/.test(h.id) && Number.isInteger(h.minutes) && h.minutes > 0 && typeof h.rate === "string" && PRICE.test(h.rate) && Number.isInteger(h.rounding);
 
 /** The field of a draft or an invoice that does not have its shape, in words; undefined when it all does. */
@@ -467,11 +473,12 @@ export function invoiceProblem(v: unknown): string | undefined {
 		[!optText(i.quote, 30), "il preventivo"],
 		[!optText(i.expected, FIELD_LIMITS.numero), "il numero che la bozza diceva"],
 		[i.hours !== undefined && (!Array.isArray(i.hours) || i.hours.length > SALES_LIMITS.hours || !i.hours.every(validHours)), "le ore fatturate"],
+		[i.appointments !== undefined && (i.type !== INVOICE_TYPE || !Array.isArray(i.appointments) || i.appointments.length === 0 || i.appointments.length > SALES_LIMITS.hours || !i.appointments.every(validAppointmentRef) || new Set(i.appointments.map((a) => a.id)).size !== i.appointments.length), "gli appuntamenti fatturati"],
 		// A fattura differita (TD24) and only it bills DDTs (DatiDDT); a credit note's lines may point at the DDT the goods went or came back with.
 		[(i.ddt !== undefined) !== (i.type === DEFERRED_TYPE), "il tipo di documento della fattura differita (TD24, con i suoi DDT)"],
 		[i.ddt !== undefined && (!Array.isArray(i.ddt) || i.ddt.length === 0 || i.ddt.length > SALES_LIMITS.lines || !i.ddt.every(validDdtRef) || new Set(i.ddt.map((d) => d.id)).size !== i.ddt.length), "i DDT della fattura differita"],
 		[i.type !== CREDIT_NOTE_TYPE && (i.lines.some((l) => l.ddt !== undefined && !(i.ddt ?? []).some((d) => d.id === l.ddt?.id)) || (i.ddt ?? []).some((d) => !i.lines.some((l) => l.ddt?.id === d.id))), "i DDT della fattura differita"],
-		[i.release !== undefined && (i.release !== true || i.type !== CREDIT_NOTE_TYPE), "i DDT che la nota di credito rimette da fatturare"],
+		[i.release !== undefined && (i.release !== true || i.type !== CREDIT_NOTE_TYPE), "i DDT o gli appuntamenti che la nota di credito rimette da fatturare"],
 	]);
 	if (body !== undefined) return body;
 	if (i.payment !== undefined) {

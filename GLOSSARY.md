@@ -345,6 +345,10 @@ _Avoid_: bolla (per i DDT che fa la persona; la bolla è quella del fornitore ch
 La fattura (tipo TD24) che a fine mese raccoglie i DDT di vendita di un cliente di quel mese, al netto dei resi, con i loro riferimenti (DatiDDT); va emessa entro il 15 del mese dopo, e la sua IVA va nel mese dei DDT. Non scarica il magazzino, perché la merce è uscita con i DDT; i DDT risultano fatturati solo quando è emessa. Vedi ADR 0093.
 _Avoid_: fattura riepilogativa
 
+**Appuntamento**:
+Un cliente che viene per uno o più servizi in un giorno e a un'ora, con la sua durata e, se ci sono, la risorsa che lo fa (una persona, una poltrona, un ponte). Fissato, fatto, disdetto o non presentato; non si cancella mai. Si fattura quando è fatto, segnato fatturato solo all'emissione. Non è una scadenza dell'agenda fiscale né un promemoria di Annie. Vedi ADR 0094.
+_Avoid_: prenotazione (per il dato salvato; «prenotare» va bene come verbo), evento (quello è il calendario Google)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
