@@ -80,6 +80,32 @@ function hoursLine(raw: string): { days: string; open: string }[] | undefined {
 	return out.length === 0 || out.length > 7 ? undefined : out;
 }
 
+/** What did not read of a week said (weekday keys are digits: never «bad»). */
+export const isBadWeek = (w: unknown): w is { readonly bad: string } => typeof w === "object" && w !== null && typeof (w as { bad?: unknown }).bad === "string";
+
+/**
+ * A week of hours as said («mar-sab 9-13 e 14-19; chiuso domenica e lunedì», or [{days, open}])
+ * over `current`: by weekday (0 Sunday), the openings; a weekday said «chiuso» goes. "list" when
+ * it is not a list of hours; `bad` with what did not read (for the fence). Shared with the staff's
+ * usual shifts (staff-input.ts).
+ */
+export function weekSaid(raw: unknown, current: Readonly<Record<string, readonly Opening[]>> | undefined): Record<string, Opening[]> | "list" | { readonly bad: string } {
+	const hours = typeof raw === "string" ? hoursLine(raw) : raw;
+	if (!Array.isArray(hours) || hours.length === 0 || hours.length > 7) return "list";
+	const week: Record<string, Opening[]> = { ...(current ?? {}) } as Record<string, Opening[]>;
+	for (const h of hours) {
+		const o = typeof h === "object" && h !== null ? (h as Record<string, unknown>) : {};
+		const days = typeof o.days === "string" ? daysOf(o.days) : undefined;
+		const open = typeof o.open === "string" ? openingsOf(o.open) : undefined;
+		if (days === undefined || open === undefined) return { bad: `${String(o.days ?? "")}: ${String(o.open ?? "")}`.slice(0, 200) };
+		for (const d of days) {
+			if (open.length === 0) delete week[String(d)];
+			else week[String(d)] = open;
+		}
+	}
+	return week;
+}
+
 /** The settings with what was said put in: the same object when nothing was said. */
 export function settingsSaid(args: Record<string, unknown>, current: AppointmentSettings | undefined, voci: readonly PriceItem[], today: string, by: Marker): AppointmentSettings | undefined | Answer {
 	let s: Omit<AppointmentSettings, "by" | "at"> = current === undefined ? {} : (({ by: _b, at: _a, ...rest }) => rest)(current);
@@ -91,19 +117,9 @@ export function settingsSaid(args: Record<string, unknown>, current: Appointment
 		said = true;
 	}
 	if (args.hours !== undefined) {
-		const hours = typeof args.hours === "string" ? hoursLine(args.hours) : args.hours;
-		if (!Array.isArray(hours) || hours.length === 0 || hours.length > 7) return { answer: "Errore: gli orari sono un elenco, ognuno con i giorni («mar-ven») e l'orario («9-13, 14:30-19» o «chiuso»)." };
-		const week: Record<string, Opening[]> = { ...(s.week ?? {}) } as Record<string, Opening[]>;
-		for (const h of hours) {
-			const o = typeof h === "object" && h !== null ? (h as Record<string, unknown>) : {};
-			const days = typeof o.days === "string" ? daysOf(o.days) : undefined;
-			const open = typeof o.open === "string" ? openingsOf(o.open) : undefined;
-			if (days === undefined || open === undefined) return { answer: ["Errore: non capisco questi orari: i giorni come «mar-ven» o «sabato», l'orario come «9-13, 14:30-19» o «chiuso».", fencedAppointments(`${String(o.days ?? "")}: ${String(o.open ?? "")}`.slice(0, 200))].join("\n") };
-			for (const d of days) {
-				if (open.length === 0) delete week[String(d)];
-				else week[String(d)] = open;
-			}
-		}
+		const week = weekSaid(args.hours, s.week);
+		if (week === "list") return { answer: "Errore: gli orari sono un elenco, ognuno con i giorni («mar-ven») e l'orario («9-13, 14:30-19» o «chiuso»)." };
+		if (isBadWeek(week)) return { answer: ["Errore: non capisco questi orari: i giorni come «mar-ven» o «sabato», l'orario come «9-13, 14:30-19» o «chiuso».", fencedAppointments(week.bad)].join("\n") };
 		s = { ...s, week };
 		said = true;
 	}
