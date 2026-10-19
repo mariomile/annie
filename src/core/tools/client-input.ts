@@ -20,9 +20,12 @@ export type Edits = {
 	removeAliases?: string[];
 	tags?: string[];
 	removeTags?: string[];
-	contact?: { readonly name?: string; readonly fields: Partial<Record<"role" | "phone" | "email" | "channel", string | null>> };
+	contact?: ContactEdit;
 	removeContact?: string;
 };
+
+/** A referente to set: its name, and the fields as said (null clears). */
+export type ContactEdit = { readonly name?: string; readonly fields: Partial<Record<"role" | "phone" | "email" | "channel", string | null>> };
 
 export const EDIT_FIELDS = ["new_name", "vat", "cf", "address", "aliases", "remove_aliases", "tags", "remove_tags", "contact", "remove_contact"] as const;
 
@@ -69,44 +72,9 @@ export function readEdits(args: Record<string, unknown>): Edits | Problem {
 		if (list !== undefined) e[key] = list;
 	}
 	if (args.contact !== undefined) {
-		if (typeof args.contact !== "object" || args.contact === null || Array.isArray(args.contact)) return { problem: "il referente va dato con nome, ruolo, telefono, email o canale preferito" };
-		const c = args.contact as Record<string, unknown>;
-		for (const k of Object.keys(c)) if (!["name", "role", "phone", "email", "channel"].includes(k)) return { problem: "del referente tengo solo nome, ruolo, telefono, email e canale preferito" };
-		let name: string | undefined;
-		if (c.name !== undefined && c.name !== "") {
-			const n = line(c.name, CLIENT_LIMITS.name, "il nome del referente");
-			if (isProblem(n)) return n;
-			name = n;
-		}
-		const fields: Partial<Record<"role" | "phone" | "email" | "channel", string | null>> = {};
-		for (const k of ["role", "phone", "email", "channel"] as const) {
-			const v = c[k];
-			if (v === undefined) continue;
-			if (v === "" || v === null) {
-				fields[k] = null;
-				continue;
-			}
-			const max = k === "role" ? CLIENT_LIMITS.role : k === "phone" ? CLIENT_LIMITS.phone : k === "email" ? CLIENT_LIMITS.email : 40;
-			const l = line(v, max, k === "role" ? "il ruolo" : k === "phone" ? "il telefono" : k === "email" ? "l'email" : "il canale");
-			if (isProblem(l)) return l;
-			if (k === "phone") {
-				const p = phoneProblem(l);
-				if (p !== undefined) return { problem: p };
-			}
-			if (k === "email") {
-				const p = emailProblem(l);
-				if (p !== undefined) return { problem: p };
-			}
-			if (k === "channel") {
-				const ch = channelOf(l);
-				if (ch === undefined) return { problem: "il canale preferito è telefono, WhatsApp, email, PEC, Telegram o di persona" };
-				fields[k] = ch;
-				continue;
-			}
-			fields[k] = l;
-		}
-		if (name === undefined && Object.keys(fields).length === 0) return { problem: "il referente va dato con nome, ruolo, telefono, email o canale preferito" };
-		e.contact = { ...(name === undefined ? {} : { name }), fields };
+		const c = readContact(args.contact);
+		if (isProblem(c)) return c;
+		e.contact = c;
 	}
 	if (args.remove_contact !== undefined) {
 		const n = line(args.remove_contact, CLIENT_LIMITS.name, "il referente da togliere");
@@ -114,6 +82,67 @@ export function readEdits(args: Record<string, unknown>): Edits | Problem {
 		e.removeContact = n;
 	}
 	return e;
+}
+
+/** A referente as said: a name and the fields to set ("" or null clears one). Shared with the suppliers' cards. */
+export function readContact(value: unknown): ContactEdit | Problem {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return { problem: "il referente va dato con nome, ruolo, telefono, email o canale preferito" };
+	const c = value as Record<string, unknown>;
+	for (const k of Object.keys(c)) if (!["name", "role", "phone", "email", "channel"].includes(k)) return { problem: "del referente tengo solo nome, ruolo, telefono, email e canale preferito" };
+	let name: string | undefined;
+	if (c.name !== undefined && c.name !== "") {
+		const n = line(c.name, CLIENT_LIMITS.name, "il nome del referente");
+		if (isProblem(n)) return n;
+		name = n;
+	}
+	const fields: Partial<Record<"role" | "phone" | "email" | "channel", string | null>> = {};
+	for (const k of ["role", "phone", "email", "channel"] as const) {
+		const v = c[k];
+		if (v === undefined) continue;
+		if (v === "" || v === null) {
+			fields[k] = null;
+			continue;
+		}
+		const max = k === "role" ? CLIENT_LIMITS.role : k === "phone" ? CLIENT_LIMITS.phone : k === "email" ? CLIENT_LIMITS.email : 40;
+		const l = line(v, max, k === "role" ? "il ruolo" : k === "phone" ? "il telefono" : k === "email" ? "l'email" : "il canale");
+		if (isProblem(l)) return l;
+		if (k === "phone") {
+			const p = phoneProblem(l);
+			if (p !== undefined) return { problem: p };
+		}
+		if (k === "email") {
+			const p = emailProblem(l);
+			if (p !== undefined) return { problem: p };
+		}
+		if (k === "channel") {
+			const ch = channelOf(l);
+			if (ch === undefined) return { problem: "il canale preferito è telefono, WhatsApp, email, PEC, Telegram o di persona" };
+			fields[k] = ch;
+			continue;
+		}
+		fields[k] = l;
+	}
+	if (name === undefined && Object.keys(fields).length === 0) return { problem: "il referente va dato con nome, ruolo, telefono, email o canale preferito" };
+	return { ...(name === undefined ? {} : { name }), fields };
+}
+
+/** The referenti with one set as said: the same name updates it (the spelling written first kept), else the only one or the one without a name, else a new one. A problem when it would have no name, phone nor email, or be one too many. */
+export function withContact(contacts: readonly ClientContact[], edit: ContactEdit, max: number, where = "una scheda"): ClientContact[] | string {
+	const { name, fields } = edit;
+	const at = name !== undefined ? contacts.findIndex((x) => x.name !== undefined && spellingKey(x.name) === spellingKey(name)) : contacts.length === 1 ? 0 : contacts.findIndex((x) => x.name === undefined);
+	const old: ClientContact = at >= 0 ? (contacts[at] as ClientContact) : {};
+	const made: Record<string, string> = { ...old } as Record<string, string>;
+	// A referente already named keeps the spelling written first.
+	if (name !== undefined && made.name === undefined) made.name = name;
+	for (const [k, v] of Object.entries(fields)) {
+		if (v === null) delete made[k];
+		else if (v !== undefined) made[k] = v;
+	}
+	const contact = made as ClientContact;
+	if (contact.name === undefined && contact.phone === undefined && contact.email === undefined) return "un referente ha almeno un nome, un telefono o un'email";
+	const next = at >= 0 ? contacts.map((x, i) => (i === at ? contact : x)) : [...contacts, contact];
+	if (next.length > max) return `${where} tiene al più ${max} referenti`;
+	return next;
 }
 
 /** The card with the edits applied (a new object), or why not. Uniqueness against the other cards is checked by the caller. */
@@ -134,20 +163,8 @@ export function edited(card: ClientCard, e: Edits, by: Marker): ClientCard | str
 	if (e.removeTags !== undefined) c = { ...c, tags: c.tags.filter((t) => !e.removeTags?.some((r) => tagOf(r) === t)) };
 	if (c.tags.length > CLIENT_LIMITS.tags) return `una scheda tiene al più ${CLIENT_LIMITS.tags} etichette`;
 	if (e.contact !== undefined) {
-		const { name, fields } = e.contact;
-		const at = name !== undefined ? c.contacts.findIndex((x) => x.name !== undefined && spellingKey(x.name) === spellingKey(name)) : c.contacts.length === 1 ? 0 : c.contacts.findIndex((x) => x.name === undefined);
-		const old: ClientContact = at >= 0 ? (c.contacts[at] as ClientContact) : {};
-		const made: Record<string, string> = { ...old } as Record<string, string>;
-		// A referente already named keeps the spelling written first.
-		if (name !== undefined && made.name === undefined) made.name = name;
-		for (const [k, v] of Object.entries(fields)) {
-			if (v === null) delete made[k];
-			else if (v !== undefined) made[k] = v;
-		}
-		const contact = made as ClientContact;
-		if (contact.name === undefined && contact.phone === undefined && contact.email === undefined) return "un referente ha almeno un nome, un telefono o un'email";
-		const contacts = at >= 0 ? c.contacts.map((x, i) => (i === at ? contact : x)) : [...c.contacts, contact];
-		if (contacts.length > CLIENT_LIMITS.contacts) return `una scheda tiene al più ${CLIENT_LIMITS.contacts} referenti`;
+		const contacts = withContact(c.contacts, e.contact, CLIENT_LIMITS.contacts);
+		if (typeof contacts === "string") return contacts;
 		c = { ...c, contacts };
 	}
 	if (e.removeContact !== undefined) {

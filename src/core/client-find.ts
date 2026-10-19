@@ -1,6 +1,6 @@
 /**
  * Who a person names among some clients: one rule for the clients' cards and the outgoing
- * invoices. By id (a card's CL-0001, a ricontatto's FU-0001), by partita IVA or codice fiscale,
+ * invoices, and the suppliers' cards (supplier-sums.ts) with their own ids. By id (a card's CL-0001, a ricontatto's FU-0001), by partita IVA or codice fiscale,
  * then by name with the timesheet's rule (timesheet-clients.ts): the same spelling is the client;
  * a name close to one only (another legal form, a name inside the other, a slip of a letter) is
  * asked, except when exactly one client has the same name but for the legal form («Acme» for
@@ -40,10 +40,11 @@ export function taxIdOf(said: string): TaxId | undefined {
 	return vat === undefined && cf === undefined ? undefined : { ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }) };
 }
 
-export function findNamed<T>(candidates: readonly Candidate<T>[], said: string, maxName: number): NamedFound<T> {
+/** `ids`: what a card's id looks like (the clients' CL-0001 and FU-0001 by default; the suppliers' FO-0001). */
+export function findNamed<T>(candidates: readonly Candidate<T>[], said: string, maxName: number, ids: RegExp = ID): NamedFound<T> {
 	const t = said.trim();
 	const id = t.toUpperCase();
-	if (ID.test(id)) {
+	if (ids.test(id)) {
 		const c = candidates.find((x) => x.ids?.includes(id) === true);
 		return c === undefined ? { kind: "none" } : { kind: "exact", item: c.item, respelled: false };
 	}

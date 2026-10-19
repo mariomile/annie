@@ -21,6 +21,7 @@ import { VatStore } from "./vat-store.ts";
 import { BankStore } from "./bank-store.ts";
 import { WithholdingStore } from "./withholding-store.ts";
 import { ClientStore } from "./client-store.ts";
+import { SupplierStore } from "./supplier-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
@@ -248,6 +249,11 @@ export class AnnieRuntime {
 	/** I clienti of an instance: the cards with what the person said about each client. */
 	clients(tenant: string, instance: string): ClientStore {
 		return new ClientStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** I fornitori of an instance: the cards with what the person said about each supplier. */
+	suppliers(tenant: string, instance: string): SupplierStore {
+		return new SupplierStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Le fatture emesse of an instance: drafts, invoices issued, numbering. */

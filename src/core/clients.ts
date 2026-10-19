@@ -215,7 +215,8 @@ export function cardKeys(card: Pick<ClientCard, "name" | "aliases">): string[] {
 
 const plainText = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
 
-function validContact(v: unknown): v is ClientContact {
+/** A referente as stored (the suppliers keep theirs the same way). */
+export function validContact(v: unknown): v is ClientContact {
 	if (typeof v !== "object" || v === null) return false;
 	const c = v as ClientContact;
 	for (const key of Object.keys(c)) if (!["name", "role", "phone", "email", "channel"].includes(key)) return false;
@@ -227,7 +228,8 @@ function validContact(v: unknown): v is ClientContact {
 	return c.channel === undefined || CHANNELS.includes(c.channel);
 }
 
-function validNote(v: unknown): v is ClientNote {
+/** A dated note as stored (the suppliers keep theirs the same way). */
+export function validNote(v: unknown): v is ClientNote {
 	if (!isMarker(v)) return false;
 	const n = v as ClientNote;
 	return isDay(n.date) && isText(n.text, CLIENT_LIMITS.noteChars);
