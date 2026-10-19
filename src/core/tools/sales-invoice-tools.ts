@@ -8,17 +8,15 @@
  * Another agente gets only the year's counts and totals; the audit only the op and a count.
  */
 import { AGENT_CHANNEL } from "../agent-messages.ts";
-import { makeDocumentFile } from "../document-reader.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { todayIn } from "../italian-calendar.ts";
-import type { MadeDocument, MakeInput } from "../make-document.ts";
 import { CREDIT_NOTE_TYPE, FIELD_LIMITS, RITENUTA_CAUSALI, STALE_DRAFT_DAYS } from "../sales-invoice-rules.ts";
-import { nextSeq, SALES_BROKEN, type SalesBook } from "../sales-invoice-store.ts";
+import { nextSeq, type SalesBook } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { type IssuedInvoice, invoiceNumber, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, salesAgentReads } from "../sales-invoices.ts";
 import { WorkspaceError } from "../workspace.ts";
 import { creditNote, draft, lowNumberNote, readLastNumber } from "./sales-invoice-draft.ts";
-import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEvent, type SalesStores } from "./sales-invoice-env.ts";
+import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEnvOptions, type SalesStores, salesEnvOf } from "./sales-invoice-env.ts";
 import { finish, issue } from "./sales-invoice-issue.ts";
 import { agentListAnswer, briefLine, fenced, invoiceLines, listAnswer } from "./sales-invoice-render.ts";
 
@@ -27,12 +25,12 @@ export type { SalesEvent } from "./sales-invoice-env.ts";
 const SALES_OPS = ["draft", "credit_note", "show", "list", "issue", "finish", "remove", "settings"] as const;
 type Op = (typeof SALES_OPS)[number];
 
+/** The stores, who is who, the audit, and (tests) the clock and the PDF maker: what builds the env (sales-invoice-env.ts salesEnvOf). */
 export type SalesToolsOptions = SalesStores & {
-	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
-	readonly record?: (event: SalesEvent) => Promise<void>;
-	/** Tests: the clock and the PDF maker. */
-	readonly now?: () => Date;
-	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
+	readonly whoIs: SalesEnvOptions["whoIs"];
+	readonly record?: SalesEnvOptions["record"];
+	readonly now?: SalesEnvOptions["now"];
+	readonly make?: SalesEnvOptions["make"];
 };
 
 const DESCRIPTION = [
@@ -45,28 +43,8 @@ const DESCRIPTION = [
 ].join(" ");
 
 export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[] {
-	const { whoIs, record, now: clock, make, ...stores } = options;
-	const { store, timeZone } = stores;
-	const now = clock ?? (() => new Date());
-	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
-	const env: SalesEnv = {
-		...stores,
-		now,
-		make: make ?? ((input: MakeInput) => makeDocumentFile(input)),
-		marker: (ctx) => ({ by: who(ctx), at: now().toISOString() }),
-		audit: async (ctx, op, count) => {
-			// Its own step: an audit that failed is written on the rerun, after the change it records.
-			await ctx.step(`audit-${op}`, async () => {
-				await record?.({ type: "sales_invoices.changed", op, count });
-				return true;
-			});
-		},
-		book: () => {
-			const book = store.read();
-			if (book.broken) throw new SalesInvoiceError(SALES_BROKEN);
-			return book;
-		},
-	};
+	const env: SalesEnv = salesEnvOf(options);
+	const { store, timeZone, now } = env;
 	const text = (max: number, description: string) => ({ type: "string", maxLength: max, description });
 	const line = {
 		type: "object",
