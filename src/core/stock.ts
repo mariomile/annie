@@ -65,10 +65,19 @@ export const STOCK_LIMITS = {
 	fileBytes: 16 * 1024 * 1024,
 } as const;
 
+/** Why the person unloads by hand. */
 export const REASONS = ["vendita", "uso_interno", "reso", "scarto"] as const;
-export type Reason = (typeof REASONS)[number];
+/**
+ * Why a document unloads (an invoice issued, a DDT): a vendita, or goods that leave without being
+ * sold, each on its own reason: an omaggio (never a sale: no revenue, no pace) and a conto visione
+ * (sold only when billed).
+ */
+export const SALE_REASONS = ["vendita", "omaggio", "conto_visione"] as const;
+export type SaleReason = (typeof SALE_REASONS)[number];
+export type Reason = (typeof REASONS)[number] | SaleReason;
+const MOVE_REASONS: readonly string[] = [...REASONS, ...SALE_REASONS];
 
-export const REASON_WORDS: Readonly<Record<Reason, string>> = { vendita: "vendita", uso_interno: "uso interno", reso: "reso al fornitore", scarto: "scarto" };
+export const REASON_WORDS: Readonly<Record<Reason, string>> = { vendita: "vendita", uso_interno: "uso interno", reso: "reso al fornitore", scarto: "scarto", omaggio: "omaggio", conto_visione: "conto visione" };
 
 /** A pack of the article: so many units in one («scatola» of 12 pezzi). */
 export type Pack = { readonly unit: string; readonly size: string };
@@ -196,7 +205,8 @@ export const STOCK_ID = /^MG-(\d{4,6})$/;
 export const moveId = (n: number) => `MV-${String(n).padStart(6, "0")}`;
 export const MOVE_ID = /^MV-(\d{6,7})$/;
 const LISTINO_ID = /^LS-\d{4,7}$/;
-const DRAFT_ID = /^BZ-\d{4,6}$/;
+/** An invoice's draft id (BZ-0001), or a DDT's (DT-0001): what moves the magazzino as a sale. */
+const DRAFT_ID = /^(?:BZ|DT)-\d{4,6}$/;
 
 const QTY = /^\d{1,10}(?:\.\d{1,3})?$/;
 const SIGNED_QTY = /^-?\d{1,10}(?:\.\d{1,3})?$/;
@@ -315,7 +325,7 @@ export function validMove(v: unknown): v is Movement {
 			return s === undefined || (typeof s === "object" && s !== null && Object.keys(s).every((k) => ["name", "vat"].includes(k)) && plain(s.name, STOCK_LIMITS.name) && optPlain(s.vat, 40));
 		}
 		case "scarico":
-			return isQuantity(m.qty) && Number(m.qty) > 0 && REASONS.includes(m.reason as Reason) && only(["reason", "sale", "cost"]) && (m.sale === undefined || (validSale(m.sale) && m.reason === "vendita" && m.sale.of === undefined)) && (m.cost === undefined || (m.reason === "vendita" && isCost(m.cost)));
+			return isQuantity(m.qty) && Number(m.qty) > 0 && MOVE_REASONS.includes(m.reason as string) && only(["reason", "sale", "cost"]) && (m.sale === undefined ? m.reason !== "omaggio" && m.reason !== "conto_visione" : validSale(m.sale) && SALE_REASONS.some((r) => r === m.reason) && m.sale.of === undefined) && (m.cost === undefined || (SALE_REASONS.some((r) => r === m.reason) && isCost(m.cost)));
 		case "rettifica":
 			return isQuantity(m.qty, true, 2 * STOCK_LIMITS.maxQuantity) && isQuantity(m.counted) && only(["counted"]);
 		case "storno":
@@ -333,7 +343,7 @@ export function validSaleKey(v: unknown): v is SaleKey {
 	if (typeof v !== "object" || v === null) return false;
 	const s = v as SaleKey;
 	if (s.c !== undefined && (!isCost(s.c) || s.of !== undefined)) return false;
-	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y", "c"].includes(k)) && typeof s.k === "string" && /^BZ-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
+	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y", "c"].includes(k)) && typeof s.k === "string" && /^(?:BZ|DT)-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
 }
 
 export function validLowClaim(v: unknown): v is LowClaim {

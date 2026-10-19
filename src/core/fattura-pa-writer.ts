@@ -129,6 +129,15 @@ function general(inv: IssuedInvoice, t: SalesTotals): Node {
 		),
 		inv.order !== undefined && el("DatiOrdineAcquisto", leaf("IdDocumento", inv.order.id, FIELD_LIMITS.idDocumento), leaf("CodiceCUP", inv.order.cup, FIELD_LIMITS.cup), leaf("CodiceCIG", inv.order.cig, FIELD_LIMITS.cig)),
 		inv.related !== undefined && el("DatiFattureCollegate", leaf("IdDocumento", inv.related.number, FIELD_LIMITS.idDocumento), leaf("Data", inv.related.date, 10)),
+		// A fattura differita: each DDT it bills, with the numbers of the lines that bill it (none when one DDT covers every line: it refers to the whole document).
+		...(inv.ddt ?? []).map((d) =>
+			el(
+				"DatiDDT",
+				leaf("NumeroDDT", d.number, 20),
+				leaf("DataDDT", d.date, 10),
+				...(inv.ddt?.length === 1 && inv.lines.every((l) => l.ddt?.id === d.id) ? [] : inv.lines.flatMap((l, i) => (l.ddt?.id === d.id ? [leaf("RiferimentoNumeroLinea", String(i + 1), 4)] : []))),
+			),
+		),
 	);
 }
 

@@ -16,12 +16,14 @@ import { scaled } from "./quote-sums.ts";
 import {
 	CASSA_TYPES,
 	CREDIT_NOTE_TYPE,
+	DEFERRED_TYPE,
 	type DocType,
 	FIELD_LIMITS,
 	FOREIGN_CAP,
 	FOREIGN_CODE,
 	INPS_CASSA,
 	INVOICE_TYPE,
+	isInvoiceType,
 	MAX_CASSA_RATE,
 	MAX_PAYMENT_DAYS,
 	NATURE,
@@ -126,7 +128,15 @@ export type SalesLine = {
 	readonly notFee?: true;
 	/** The voce of the listino it was filled from (LS-0001): issued, it moves the magazzino when the voce is an article there. */
 	readonly item?: string;
+	/** A fattura differita's line: the DDT (DT-0001) and its line it bills. The DDT moved the magazzino already: the invoice does not. */
+	readonly ddt?: LineDdt;
 };
+
+/** The DDT line an invoice line bills. */
+export type LineDdt = { readonly id: string; readonly line: number };
+
+/** A DDT a fattura differita bills (DatiDDT): its id, its number and its date. */
+export type DdtRef = { readonly id: string; readonly number: string; readonly date: string };
 
 export type Ritenuta = { readonly type: typeof RITENUTA_PERSON | typeof RITENUTA_COMPANY; readonly causale: string };
 
@@ -163,6 +173,10 @@ export type SalesInvoice = Marker & {
 	/** The quote it bills, and the hours. */
 	readonly quote?: string;
 	readonly hours?: readonly HoursRef[];
+	/** A fattura differita (TD24): the DDTs it bills, marked billed when it is issued. */
+	readonly ddt?: readonly DdtRef[];
+	/** A credit note of a fattura differita sent to the wrong customer: issued, the DDTs that invoice billed are to bill again (a differita to the right one). */
+	readonly release?: true;
 	/** The call that made the draft: a call run again finds it. */
 	readonly callId: string;
 	/** A draft made in place of another (replace): the call that made the first of them, so who made that one still finds it. */
@@ -399,6 +413,7 @@ function lineProblem(v: unknown, n: number): string | undefined {
 		// A spesa anticipata (N1) is never a fee, and only it is not.
 		[l.notFee !== undefined && l.notFee !== true, `la riga ${n}`],
 		[l.item !== undefined && (typeof l.item !== "string" || !/^LS-\d{4,7}$/.test(l.item)), `la voce del listino della riga ${n}`],
+		[l.ddt !== undefined && (!record(l.ddt) || Object.keys(l.ddt).some((k) => k !== "id" && k !== "line") || typeof l.ddt.id !== "string" || !DDT_REF.test(l.ddt.id) || !Number.isInteger(l.ddt.line) || l.ddt.line < 1 || l.ddt.line > 9999), `il DDT della riga ${n}`],
 		[(l.notFee === true) !== (l.natura === NOT_FEE_NATURA), `la riga ${n}: le spese anticipate sono senza IVA (N1), e solo loro`],
 	]);
 }
@@ -416,6 +431,8 @@ function paymentProblem(v: unknown): string | undefined {
 const validCassa = (c: Cassa) => record(c) && (c.type === INPS_CASSA || CASSA_TYPES.includes(c.type)) && percent(c.rate, MAX_CASSA_RATE) && typeof c.subject === "boolean";
 const validRitenuta = (r: Ritenuta) => record(r) && (r.type === RITENUTA_PERSON || r.type === RITENUTA_COMPANY) && RITENUTA_CAUSALI.some((c) => c === r.causale);
 const code = (v: unknown, max: number) => typeof v === "string" && /^[A-Za-z0-9/._-]+$/.test(v) && v.length <= max;
+const DDT_REF = /^DT-\d{4,6}$/;
+const validDdtRef = (d: DdtRef) => record(d) && Object.keys(d).every((k) => ["id", "number", "date"].includes(k)) && typeof d.id === "string" && DDT_REF.test(d.id) && isText(d.number, 20) && isDay(d.date);
 const validHours = (h: HoursRef) => record(h) && typeof h.id === "string" && /^O-\d{4}-\d{4,6}$/.test(h.id) && Number.isInteger(h.minutes) && h.minutes > 0 && typeof h.rate === "string" && PRICE.test(h.rate) && Number.isInteger(h.rounding);
 
 /** The field of a draft or an invoice that does not have its shape, in words; undefined when it all does. */
@@ -424,7 +441,7 @@ export function invoiceProblem(v: unknown): string | undefined {
 	const i = v as SalesInvoice;
 	const head = first([
 		[typeof i.id !== "string" || !DRAFT_ID.test(i.id), "il numero della bozza"],
-		[i.type !== INVOICE_TYPE && i.type !== CREDIT_NOTE_TYPE, "il tipo di documento"],
+		[i.type !== INVOICE_TYPE && i.type !== CREDIT_NOTE_TYPE && i.type !== DEFERRED_TYPE, "il tipo di documento"],
 		[i.regime !== REGIME_ORDINARIO && i.regime !== REGIME_FORFETTARIO, "il regime fiscale"],
 		[!isText(i.callId, 200), "la richiesta che l'ha fatta"],
 		[i.origin !== undefined && !isText(i.origin, 200), "la richiesta della prima bozza"],
@@ -442,14 +459,19 @@ export function invoiceProblem(v: unknown): string | undefined {
 		[i.cassa !== undefined && !validCassa(i.cassa), "la cassa previdenziale"],
 		[i.bolloToClient !== undefined && typeof i.bolloToClient !== "boolean", "chi paga il bollo"],
 		[i.splitPayment !== undefined && i.splitPayment !== true, "la scissione dei pagamenti"],
-		[i.payment !== undefined && i.type !== INVOICE_TYPE, "il pagamento, che una nota di credito non ha"],
+		[i.payment !== undefined && !isInvoiceType(i.type), "il pagamento, che una nota di credito non ha"],
 		[i.order !== undefined && (!record(i.order) || !code(i.order.id, FIELD_LIMITS.idDocumento) || (i.order.cig !== undefined && !code(i.order.cig, FIELD_LIMITS.cig)) || (i.order.cup !== undefined && !code(i.order.cup, FIELD_LIMITS.cup))), "l'ordine (numero, CIG, CUP)"],
-		[(i.related === undefined) !== (i.type === INVOICE_TYPE), "la fattura che la nota di credito storna"],
+		[(i.related === undefined) !== isInvoiceType(i.type), "la fattura che la nota di credito storna"],
 		[i.related !== undefined && (!record(i.related) || !isText(i.related.number, FIELD_LIMITS.numero) || !isDay(i.related.date) || typeof i.related.id !== "string" || !DRAFT_ID.test(i.related.id)), "la fattura che la nota di credito storna"],
 		[!optText(i.causale, SALES_LIMITS.causale), `le note (al massimo ${SALES_LIMITS.causale} caratteri)`],
 		[!optText(i.quote, 30), "il preventivo"],
 		[!optText(i.expected, FIELD_LIMITS.numero), "il numero che la bozza diceva"],
 		[i.hours !== undefined && (!Array.isArray(i.hours) || i.hours.length > SALES_LIMITS.hours || !i.hours.every(validHours)), "le ore fatturate"],
+		// A fattura differita (TD24) and only it bills DDTs (DatiDDT); a credit note's lines may point at the DDT the goods went or came back with.
+		[(i.ddt !== undefined) !== (i.type === DEFERRED_TYPE), "il tipo di documento della fattura differita (TD24, con i suoi DDT)"],
+		[i.ddt !== undefined && (!Array.isArray(i.ddt) || i.ddt.length === 0 || i.ddt.length > SALES_LIMITS.lines || !i.ddt.every(validDdtRef) || new Set(i.ddt.map((d) => d.id)).size !== i.ddt.length), "i DDT della fattura differita"],
+		[i.type !== CREDIT_NOTE_TYPE && (i.lines.some((l) => l.ddt !== undefined && !(i.ddt ?? []).some((d) => d.id === l.ddt?.id)) || (i.ddt ?? []).some((d) => !i.lines.some((l) => l.ddt?.id === d.id))), "i DDT della fattura differita"],
+		[i.release !== undefined && (i.release !== true || i.type !== CREDIT_NOTE_TYPE), "i DDT che la nota di credito rimette da fatturare"],
 	]);
 	if (body !== undefined) return body;
 	if (i.payment !== undefined) {

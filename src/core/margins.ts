@@ -249,8 +249,10 @@ export function marginLines(data: MarginData, from: string, to: string): MarginL
 			// A spesa anticipata is the client's money back, not revenue.
 			if (l.notFee === true) return;
 			const base = { invoice: inv.id, number: inv.number, day: inv.date, credit, line: n + 1, client: clientKey(inv), clientName: inv.buyer.name, description: l.description, revenue: sign * (amounts[n] as bigint) };
-			const key = `${inv.id}#${n + 1}`;
-			const move = data.moves.find((m) => m.sale?.invoice === inv.id && m.sale.line === n + 1);
+			// A fattura differita's line: the goods went out with its DDT, whose scarico holds the cost.
+			const from = l.ddt === undefined ? { invoice: inv.id, line: n + 1 } : { invoice: l.ddt.id, line: l.ddt.line };
+			const key = `${from.invoice}#${from.line}`;
+			const move = data.moves.find((m) => m.sale?.invoice === from.invoice && m.sale.line === from.line);
 			const folded = move === undefined ? data.archived.find((a) => a.k === key) : undefined;
 			const moved = move?.item ?? folded?.i;
 			const article = l.item === undefined ? undefined : moved !== undefined ? data.items.find((i) => i.id === moved) : articleOf(data.items, l.item);
@@ -267,9 +269,10 @@ export function marginLines(data: MarginData, from: string, to: string): MarginL
 						out.push({ ...goods, qty: 0n, cost: 0n, source: "sale", noReturn: true });
 						return;
 					}
-					const of = inv.related?.id;
+					// A credit note for goods back with a DDT di reso: the cost of the DDT they went out with.
+					const of = l.ddt !== undefined && move?.kind === "storno" ? move.sale?.of : inv.related?.id;
 					const outs = of === undefined ? [] : [...data.moves.filter((m) => m.kind === "scarico" && m.item === article.id && m.sale?.invoice === of).map((m) => ({ line: m.sale?.line, qty: qtyOf(m.qty), ...(m.cost === undefined ? {} : { cost: m.cost }) })), ...data.archived.filter((a) => a.i === article.id && a.of === undefined && a.k.startsWith(`${of}#`)).map((a) => ({ line: Number(a.k.split("#")[1]), qty: qtyOf(a.q), ...(a.c === undefined ? {} : { cost: a.c }) }))];
-					const same = outs.filter((o) => o.line === n + 1);
+					const same = l.ddt !== undefined ? [] : outs.filter((o) => o.line === n + 1);
 					const unitCost = weighted(same.length > 0 ? same : outs);
 					const qty = -back;
 					if (unitCost !== undefined) {

@@ -337,6 +337,14 @@ _Avoid_: utile, guadagno netto (i margini non tolgono spese e tasse; quello è l
 Quello che la persona ordina a un fornitore (OR-NNNN), riga per riga sugli articoli del magazzino, con il prezzo atteso. È una bozza finché la persona non dice di averlo mandato; arriva in parte o tutto secondo le ricevute: le righe delle fatture caricate, la merce arrivata con la bolla, quella già in magazzino. Annie non lo manda mai. Vedi ADR 0092.
 _Avoid_: acquisto (per l'ordine; l'acquisto è la fattura ricevuta), bolla (la bolla è come arriva la merce, non l'ordine)
 
+**DDT (documento di trasporto)**:
+Il documento con cui la persona spedisce merce a un cliente (DT-NNNN finché è una bozza, poi «12/2026»), riga per riga, senza prezzi, con la causale e chi fa il trasporto. Emesso, scarica il magazzino (un reso rimette la merce del DDT da cui torna); non si cancella, si annulla tenendo il numero. Vedi ADR 0093.
+_Avoid_: bolla (per i DDT che fa la persona; la bolla è quella del fornitore che accompagna la merce in arrivo)
+
+**Fattura differita**:
+La fattura (tipo TD24) che a fine mese raccoglie i DDT di vendita di un cliente di quel mese, al netto dei resi, con i loro riferimenti (DatiDDT); va emessa entro il 15 del mese dopo, e la sua IVA va nel mese dei DDT. Non scarica il magazzino, perché la merce è uscita con i DDT; i DDT risultano fatturati solo quando è emessa. Vedi ADR 0093.
+_Avoid_: fattura riepilogativa
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

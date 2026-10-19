@@ -19,10 +19,18 @@ export const FATTURA_SCHEMA = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/
 export const FORMAT_PRIVATE = "FPR12";
 export const FORMAT_PA = "FPA12";
 
-/** TipoDocumento issued here: an invoice and a credit note (specifiche tecniche, tabella TipoDocumento). */
+/**
+ * TipoDocumento issued here (specifiche tecniche, tabella TipoDocumento): an invoice, a credit
+ * note, and the fattura differita (TD24: goods delivered with a DDT, billed by the 15th of the
+ * month after, DPR 633/1972 art. 21 c. 4 lett. a).
+ */
 export const INVOICE_TYPE = "TD01";
 export const CREDIT_NOTE_TYPE = "TD04";
-export type DocType = typeof INVOICE_TYPE | typeof CREDIT_NOTE_TYPE;
+export const DEFERRED_TYPE = "TD24";
+export type DocType = typeof INVOICE_TYPE | typeof CREDIT_NOTE_TYPE | typeof DEFERRED_TYPE;
+
+/** An invoice (immediate or differita), not a credit note: it has a payment, a credit note may correct it. */
+export const isInvoiceType = (t: string): boolean => t === INVOICE_TYPE || t === DEFERRED_TYPE;
 
 /**
  * CodiceDestinatario without a channel of the customer's own: «0000000» for an Italian customer
