@@ -108,7 +108,24 @@ export type FatturaDocument = {
 	readonly linesCut?: number;
 	/** The discounts and surcharges on the whole document (DatiGeneraliDocumento ScontoMaggiorazione) that read: SC sconto, MG maggiorazione, a percentage or an amount (canonical decimals). */
 	readonly adjustments?: readonly FatturaAdjustment[];
+	/** The orders the document names (DatiOrdineAcquisto IdDocumento) that are ours (OR-0001), at most MAX_ORDER_REFS. */
+	readonly orderRefs?: readonly string[];
 };
+
+/** At most this many of the orders a document names are kept. */
+const MAX_ORDER_REFS = 10;
+
+/** The orders of ours a document names: «OR-0003», «or 3», as OR-0003. */
+function orderRefsOf(body: XmlElement): string[] {
+	const out: string[] = [];
+	for (const o of children(child(body, "DatiGenerali"), "DatiOrdineAcquisto")) {
+		const m = /^\s*OR\s*-?\s*0*(\d{1,6})\s*$/i.exec(value(o, "IdDocumento") ?? "");
+		if (m === null) continue;
+		const id = `OR-${String(Number(m[1])).padStart(4, "0")}`;
+		if (!out.includes(id)) out.push(id);
+	}
+	return out.slice(0, MAX_ORDER_REFS);
+}
 
 /** A discount (SC) or surcharge (MG) on the whole document: its percentage, or else its amount. */
 export type FatturaAdjustment = { readonly kind: "SC" | "MG"; readonly percent?: string; readonly amount?: string };
@@ -264,6 +281,7 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const funds = fundsOf(general);
 	const lines = linesOf(child(body, "DatiBeniServizi"));
 	const adjustments = adjustmentsOf(general);
+	const orderRefs = orderRefsOf(body);
 	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
@@ -277,6 +295,7 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 		...(lines.skipped === 0 ? {} : { linesSkipped: lines.skipped }),
 		...(lines.cut === 0 ? {} : { linesCut: lines.cut }),
 		...(adjustments.length === 0 ? {} : { adjustments }),
+		...(orderRefs.length === 0 ? {} : { orderRefs }),
 	};
 	return { doc, body, instalmentOf };
 }

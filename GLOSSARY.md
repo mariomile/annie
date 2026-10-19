@@ -333,6 +333,10 @@ _Avoid_: costo (per il prezzo d'acquisto; il costo medio è quello del magazzino
 Quanto la persona guadagna davvero su un prodotto o un cliente: il ricavo senza IVA delle fatture emesse meno il costo della merce venduta, al costo medio del magazzino al momento di ogni vendita. Un costo trovato solo dal nome è una stima, mai una perdita. Annie li ricava ogni volta dai registri, senza salvarli. Vedi ADR 0091.
 _Avoid_: utile, guadagno netto (i margini non tolgono spese e tasse; quello è l'andamento dell'attività)
 
+**Ordine al fornitore**:
+Quello che la persona ordina a un fornitore (OR-NNNN), riga per riga sugli articoli del magazzino, con il prezzo atteso. È una bozza finché la persona non dice di averlo mandato; arriva in parte o tutto secondo le ricevute: le righe delle fatture caricate, la merce arrivata con la bolla, quella già in magazzino. Annie non lo manda mai. Vedi ADR 0092.
+_Avoid_: acquisto (per l'ordine; l'acquisto è la fattura ricevuta), bolla (la bolla è come arriva la merce, non l'ordine)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

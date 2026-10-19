@@ -31,7 +31,10 @@ import { findSupplier, meantSupplier, supplierNotFound } from "../supplier-find.
 import type { Supplier } from "../supplier-sums.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
 import { fold } from "../text-match.ts";
+import type { Covered, InvoiceSupplier, LoadRow, OrderLink } from "../order-receive.ts";
+import { OrderError } from "../orders.ts";
 import { requirePersonFor } from "../turn-origin.ts";
+import { dayWords, matchDifferences, matchRows } from "./order-render.ts";
 import { costWords, fencedStock, qtyWords, unitPlural } from "./stock-render.ts";
 
 /** What receive_invoice needs from the stock tool: the store, the register and the suppliers as read, the increases said, who and when. */
@@ -41,6 +44,8 @@ export type StockInvoiceEnv = {
 	/** The register read and the suppliers, the suppliers' way; a string when the register does not read. */
 	readonly register: (ctx: ToolContext) => Promise<{ readonly invoices: readonly Invoice[]; readonly suppliers: readonly Supplier[] } | string>;
 	readonly purchases?: PurchaseStore;
+	/** The orders to suppliers: an invoice of a supplier with orders awaited is matched to them, and marks them when loaded. */
+	readonly orders?: OrderLink;
 	readonly marker: (ctx: ToolContext) => { readonly by: string; readonly at: string };
 	readonly audit: (ctx: ToolContext, count: number) => Promise<void>;
 };
@@ -79,7 +84,7 @@ type Choice = { readonly item?: StockItem; readonly unit?: string; readonly each
 type Load = { readonly item: StockItem; readonly created: boolean; readonly qty: bigint; readonly cost: bigint; readonly flags: readonly string[]; readonly notes: readonly string[]; readonly learn: boolean; readonly unit?: UnitMap };
 
 /** One line as proposed: what it loads; or why it is left out (a reason of SKIPPED, or one said in full). */
-type Proposal = { readonly line: number; readonly description: string; readonly code?: string } & (Load | { readonly skip: string; readonly why?: string });
+type Proposal = { readonly line: number; readonly description: string; readonly code?: string } & (Load | { readonly skip: string; readonly why?: string; readonly held?: LoadRow; readonly differs?: true });
 
 const active = (items: readonly StockItem[]) => items.filter((i) => i.removed === undefined);
 const loads = (p: Proposal): p is Proposal & Load => !("skip" in p);
@@ -111,8 +116,10 @@ const related = (name: string, description: string) => wordsWithin(name, descrip
  * Each line of `inv` against the magazzino as `book` has it: `choose` what the person said for
  * some lines (by line number). Its articles new are numbered from the book's next.
  */
-function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "received" | "codes" | "units" | "nextItem">, choose: ReadonlyMap<number, Choice>): Proposal[] {
+function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "received" | "codes" | "units" | "nextItem">, choose: ReadonlyMap<number, Choice>, covered?: Covered): Proposal[] {
 	const supplier = partyKey(inv.supplier);
+	// The goods the person said came with the delivery note, loaded then: what of each is not billed yet.
+	const bolla = new Map([...(covered?.items ?? new Map<string, { day: string; qty: bigint; price?: bigint }>()).entries()].map(([k, v]) => [k, { ...v }]));
 	const done = new Set(book.received.map((r) => r.k));
 	const items = active(book.items);
 	const spread = spreadOf(inv.doc);
@@ -124,6 +131,10 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 		const base = { line: l.n, description: l.description, ...(l.code === undefined ? {} : { code: l.code.value }) };
 		if (done.has(lineKey(inv.key, l.n))) {
 			out.push({ ...base, skip: "done" });
+			continue;
+		}
+		if (covered?.keys.has(lineKey(inv.key, l.n)) === true) {
+			out.push({ ...base, skip: "done", why: "già segnata: paga la merce arrivata con la bolla e caricata allora" });
 			continue;
 		}
 		if (spread.discounts.has(l.n)) {
@@ -249,6 +260,19 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 			const average = stateOf(item, book.moves).average;
 			if (average !== undefined && average > 0n && (cost >= COST_FACTOR * average || cost * COST_FACTOR <= average)) flags.push(`da confermare: il costo è molto diverso dal costo medio dell'articolo (${costWords(average)})`);
 		}
+		// Came with the delivery note and loaded then: the invoice bills it, it is not loaded again; only what the line has past it is (also when the person chose this article).
+		const hand = isNew ? undefined : bolla.get(item.id);
+		if (hand !== undefined && hand.qty > 0n) {
+			const held = thousandths < hand.qty ? thousandths : hand.qty;
+			hand.qty -= held;
+			const part = held < thousandths ? ` (${qtyWords(held, item.unit)} su ${qtyWords(thousandths, item.unit)}: il resto lo carico)` : "";
+			const differs = hand.price !== undefined && hand.price !== cost;
+			const dear = differs ? `; in fattura costa ${costWords(cost)}, con la bolla l'ho caricata a ${costWords(hand.price as bigint)}` : "";
+			out.push({ ...base, skip: "bolla", why: `già caricata con la bolla il ${dayWords(hand.day, inv.doc.date)}${part}: la fattura la paga, non la carico di nuovo${dear}`, held: { line: l.n, item: item.id, qty: qtyText(held), cost: costText(cost) }, ...(differs ? { differs: true as const } : {}) });
+			if (held === thousandths) continue;
+			thousandths -= held;
+			notes.push(`il resto della riga: ${qtyWords(held, item.unit)} erano già arrivati con la bolla`);
+		}
 		if (isNew) created++;
 		out.push({ ...base, item, created: isNew, qty: thousandths, cost, flags, notes, learn, ...(teach === undefined ? {} : { unit: teach }) });
 	}
@@ -258,7 +282,8 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 /** The check of a proposal: the invoice, and each line it loads with its article, quantity and cost. Another check is another proposal. */
 function checkOf(inv: Invoice, plan: readonly Proposal[]): string {
 	const rows = plan.filter(loads).map((p) => [p.line, p.created ? `+${p.item.unit}|${p.item.name}` : p.item.id, p.qty.toString(), p.cost.toString(), p.unit?.q ?? ""]);
-	return createHash("sha256").update(JSON.stringify([inv.key, rows])).digest("hex").slice(0, 16);
+	const held = heldOf(plan).map((h) => [h.line, h.item, h.qty, h.cost]);
+	return createHash("sha256").update(JSON.stringify(held.length === 0 ? [inv.key, rows] : [inv.key, rows, held])).digest("hex").slice(0, 16);
 }
 
 /** «ieri», «18/10», «la più recente»: the day said, or "latest", or why not. */
@@ -413,21 +438,86 @@ function notesOf(inv: Invoice, plan: readonly Proposal[]): string[] {
 }
 
 /** The proposal's answer: what can be loaded, how to confirm it, or the next step when nothing can. */
-function proposalText(inv: Invoice, plan: readonly Proposal[], took: string | undefined, twin: Invoice | undefined, first: string): string {
+function proposalText(inv: Invoice, plan: readonly Proposal[], took: string | undefined, twin: Invoice | undefined, first: string, orders: OrderWords = NO_ORDERS): string {
 	const ok = plan.filter(loads);
+	const held = heldOf(plan);
 	const head = `Fattura del ${inv.doc.date === undefined ? "giorno non indicato" : italianDate(inv.doc.date)} (fornitore e numero nel riquadro)`;
 	const out = [
-		`${first}${ok.length === 0 ? `${head}: nessuna riga da caricare in magazzino.` : `${head}: ${n1(ok.length, "una riga si può caricare", "# righe si possono caricare")} in magazzino, come nel riquadro (costi per unità, senza IVA)${ok.length === plan.length ? "" : `; ${n1(plan.length - ok.length, "una no", "# no")}, con il motivo`}.`}`,
-		fenceOf(inv, plan, took, twin === undefined ? [] : [`Sembra la stessa merce della fattura n. ${cut(twin.doc.number ?? "?", NUMBER)} del ${italianDate(twin.doc.date as string)}: è un'altra consegna?`]),
+		`${first}${ok.length === 0 ? `${head}: nessuna riga da caricare in magazzino${held.length === 0 ? "" : ": la merce è già arrivata con la bolla ed è caricata da allora (nel riquadro)"}.` : `${head}: ${n1(ok.length, "una riga si può caricare", "# righe si possono caricare")} in magazzino, come nel riquadro (costi per unità, senza IVA)${leftOut(plan) === 0 ? "" : `; ${n1(leftOut(plan), "una no", "# no")}, con il motivo`}.`}`,
+		fenceOf(inv, plan, took, [...(twin === undefined ? [] : [`Sembra la stessa merce della fattura n. ${cut(twin.doc.number ?? "?", NUMBER)} del ${italianDate(twin.doc.date as string)}: è un'altra consegna?`]), ...orders.rows]),
 		...notesOf(inv, plan),
+		...orders.notes,
 	];
 	if (twin !== undefined) out.push("Attenzione: questa fattura ha le stesse righe di una già caricata in magazzino (nel riquadro): prima di caricarla chiedi a chi ti scrive se è davvero un'altra consegna.");
 	const unsure = ok.filter((p) => p.flags.length > 0).length;
 	if (unsure > 0) out.push(`${n1(unsure, "Una riga è", "# righe sono")} da confermare (nel riquadro il perché): chiedi a chi ti scrive di guardarle.`);
-	if (ok.length > 0) {
+	if (held.length > 0) out.push(`${n1(held.length, "Una riga è merce già arrivata con la bolla", "# righe sono merce già arrivata con la bolla")}: non la carico di nuovo; con la conferma segno che questa fattura la paga, così un'altra fattura non la salta.`);
+	if (plan.some((p) => !loads(p) && p.differs === true)) out.push("Per la merce della bolla il costo in fattura è diverso da quello con cui l'ho caricata (nel riquadro): se vuoi, dopo il carico correggo il costo dell'articolo con quello della fattura.");
+	if (ok.length === 0 && held.length > 0) out.push(`Chiedi a chi ti scrive se va bene: con il suo sì ripeti con la conferma e il controllo ${checkOf(inv, plan)}.`);
+	else if (ok.length > 0) {
 		out.push(`Chiedi a chi ti scrive se va bene: con il suo sì ripeti con la conferma, le stesse righe e il controllo ${checkOf(inv, plan)}. Per una riga con l'articolo sbagliato, o senza articolo, dimmi il numero della riga e l'articolo giusto (MG-0001), o di aggiungerlo nuovo con la sua unità, e rifaccio la proposta. Niente si carica da solo.`);
 	} else out.push("Per caricare una riga dimmi il suo numero e l'articolo del magazzino («la riga 1 è la carta A4»); se è un articolo nuovo, lo aggiungo.");
 	return out.join("\n");
+}
+
+/** What the orders say about an invoice: the rows for its fence and the notes under it. */
+type OrderWords = { readonly rows: readonly string[]; readonly notes: readonly string[] };
+const NO_ORDERS: OrderWords = { rows: [], notes: [] };
+
+/** The lines a plan loads, as the orders match them. */
+const rowsOf = (plan: readonly Proposal[]): LoadRow[] => plan.filter(loads).map((p) => ({ line: p.line, item: p.item.id, qty: qtyText(p.qty), cost: costText(p.cost) }));
+
+const supplierOf = (inv: Invoice): InvoiceSupplier => ({ name: partyName(inv.supplier), ...(vatOf(inv.supplier) === undefined ? {} : { vat: vatOf(inv.supplier) as string }) });
+
+/** The orders the invoice names (its DatiOrdineAcquisto): ours are matched first. */
+const refsOf = (inv: Invoice): readonly string[] => inv.doc.orderRefs ?? [];
+
+/** What the delivery note brought from this supplier, or nothing when the orders do not read (said by orderWords). */
+function coveredOf(link: OrderLink | undefined, inv: Invoice): Covered | undefined {
+	const c = link?.covered(supplierOf(inv));
+	return c === undefined || c === "broken" ? undefined : c;
+}
+
+/** The proposal's words on the orders awaited from this supplier: each line on its order, the differences; nothing when there is none. */
+function orderWords(link: OrderLink | undefined, inv: Invoice, plan: readonly Proposal[], items: readonly StockItem[], day: string): OrderWords {
+	if (link === undefined) return NO_ORDERS;
+	const m = link.match(supplierOf(inv), inv.key, inv.doc.date ?? day, rowsOf(plan), heldOf(plan), refsOf(inv));
+	if (m === "broken") return { rows: [], notes: ["Gli ordini ai fornitori non si leggono: non controllo questa fattura con i suoi ordini."] };
+	const orders = link.orders();
+	if (m === undefined || orders === "broken") return NO_ORDERS;
+	const diff = matchDifferences(m);
+	return {
+		rows: matchRows(m, orders, items, day),
+		notes: [`${m.orders.length === 0 ? "Questa fattura paga merce di un ordine arrivata con la bolla" : `Questo fornitore ha ${n1(m.orders.length, "un ordine in arrivo", "# ordini in arrivo")}`}: con la conferma lo segno nell'ordine.${diff === 0 ? "" : " Ci sono differenze con l'ordine (nel riquadro): falle vedere a chi ti scrive."}`],
+	};
+}
+
+/** The invoice lines left out: none of the line loads (the part of a line held back for the delivery note, with its rest loaded, is not one). */
+function leftOut(plan: readonly Proposal[]): number {
+	const loading = new Set(plan.filter(loads).map((p) => p.line));
+	return new Set(plan.filter((p) => !loads(p) && !loading.has(p.line)).map((p) => p.line)).size;
+}
+
+/** The lines held back: goods of the delivery note the invoice bills. */
+function heldOf(plan: readonly Proposal[]): LoadRow[] {
+	return plan.flatMap((p) => (!loads(p) && p.held !== undefined ? [p.held] : []));
+}
+
+/** The goods loaded marked on the orders awaited from the invoice's supplier, and the goods of the delivery note billed, said. The stock is loaded already: an order that does not take it is said, never thrown. */
+function orderReceipt(link: OrderLink | undefined, inv: Invoice, rows: readonly LoadRow[], held: readonly LoadRow[], items: readonly StockItem[], day: string): string[] {
+	if (link === undefined || (rows.length === 0 && held.length === 0)) return [];
+	try {
+		const got = link.receive(supplierOf(inv), inv.key, inv.doc.date ?? day, rows, held, refsOf(inv));
+		if (got === "broken") return ["La merce è caricata, ma non sono riuscita a segnarla nell'ordine: gli ordini ai fornitori non si leggono."];
+		const orders = link.orders();
+		if (got === undefined || orders === "broken" || (got.match.matched.length === 0 && got.match.billedRows.length === 0)) return [];
+		const diff = matchDifferences(got.match);
+		const touched = new Set([...got.match.matched.map((m) => m.order), ...got.match.billedRows.map((b) => b.order)]).size;
+		return [`Ho segnato la merce ${n1(touched, "nel suo ordine", "nei suoi ordini")}, come nel riquadro${diff === 0 ? "" : ", con le differenze: falle vedere a chi ti scrive"}.`, fencedStock(matchRows(got.match, orders, items, day).join("\n"))];
+	} catch (error) {
+		if (error instanceof OrderError) return [`La merce è caricata, ma non sono riuscita a segnarla nell'ordine: ${error.message}.`];
+		throw error;
+	}
 }
 
 /**
@@ -448,7 +538,11 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 	const picked = choices(args, b.items);
 	if (typeof picked === "string") return picked;
 	const chosen = (plan: Proposal[]) => plan.filter((p) => picked.only === undefined || picked.only.has(p.line));
-	if (args.confirm !== true) return proposalText(inv, chosen(propose(inv, b, picked.choose)), took, sameGoods(inv, reg.invoices, b), "");
+	const covered = coveredOf(env.orders, inv);
+	if (args.confirm !== true) {
+		const plan = chosen(propose(inv, b, picked.choose, covered));
+		return proposalText(inv, plan, took, sameGoods(inv, reg.invoices, b), "", orderWords(env.orders, inv, plan, b.items, day));
+	}
 	const refused = requirePersonFor(ctx, "carico in magazzino la merce di una fattura");
 	if (refused !== undefined) return refused;
 	const check = typeof args.check === "string" ? args.check.trim().toLowerCase() : undefined;
@@ -458,13 +552,25 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 	const s = partyKey(inv.supplier).slice(0, STOCK_LIMITS.supplierKey);
 	const year = Number((inv.doc.date ?? day).slice(0, 4));
 	const doc = `fattura n. ${cut(inv.doc.number ?? "?", NUMBER)}`.slice(0, STOCK_LIMITS.doc);
+	// The orders unreadable: a line may have come with the delivery note, loaded already; nothing is loaded.
+	if (env.orders !== undefined && env.orders.orders() === "broken") return "Gli ordini ai fornitori non si leggono: non carico questa fattura, perché qualche riga potrebbe essere già arrivata con la bolla e la caricherei due volte. Va prima sistemato il file degli ordini.";
+	// What this call means to load and to bill, pinned by the check before anything is written: a run after a crash marks the orders with it.
+	const intended = await ctx.step("intended", async () => {
+		// The delivery notes read again here: one marked since the proposal changes it.
+		const plan = chosen(propose(inv, env.book(), picked.choose, coveredOf(env.orders, inv)));
+		return checkOf(inv, plan) === check ? { rows: rowsOf(plan), held: heldOf(plan), differs: plan.some((p) => !loads(p) && p.differs === true) } : null;
+	});
+	if (intended === null) {
+		const plan = chosen(propose(inv, env.book(), picked.choose, coveredOf(env.orders, inv)));
+		return proposalText(inv, plan, took, sameGoods(inv, reg.invoices, env.book()), "La proposta è cambiata da quando l'hai mostrata (una riga caricata nel frattempo, un articolo o un costo diverso): non ho caricato niente. Ecco quella nuova.\n", orderWords(env.orders, inv, plan, env.book().items, day));
+	}
 	const loaded = await ctx.step("apply", async () => {
 		let plan: Proposal[] = [];
 		let changed = false;
 		const kept: string[] = [];
 		const outcome = env.store.receiveInvoice(ctx.callId, (book): InvoiceLoad => {
 			// Again under the lock: a line loaded meanwhile, an article removed or a cost changed are seen here.
-			plan = chosen(propose(inv, book, picked.choose));
+			plan = chosen(propose(inv, book, picked.choose, coveredOf(env.orders, inv)));
 			if (checkOf(inv, plan) !== check) {
 				changed = true;
 				return { items: [], moves: [], keys: [], codes: [], units: [] };
@@ -496,18 +602,24 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 			return { items, moves, keys, codes: [...codes.entries()].filter(([k]) => !clashing.has(k)).map(([, c]) => c), units };
 		});
 		const rows = plan.filter(loads);
-		if (outcome === "rerun") return { rerun: true, changed: false, text: "", count: env.book().moves.filter((m) => m.callId === ctx.callId).length };
-		if (changed) return { rerun: false, changed: true, text: proposalText(inv, plan, took, sameGoods(inv, reg.invoices, env.book()), "La proposta è cambiata da quando l'hai mostrata (una riga caricata nel frattempo, un articolo o un costo diverso): non ho caricato niente. Ecco quella nuova.\n"), count: 0 };
-		if (rows.length === 0) return { rerun: false, changed: false, text: [`Non ho caricato niente: nessuna riga di questa fattura si può caricare ora.`, fenceOf(inv, plan, took), ...notesOf(inv, plan), "Per caricare una riga dimmi il suo numero e l'articolo del magazzino («la riga 1 è la carta A4»); se è un articolo nuovo, lo aggiungo."].join("\n"), count: 0 };
-		const head = `Fatto, ho caricato in magazzino ${n1(rows.length, "una riga", "# righe")} della fattura del ${inv.doc.date === undefined ? "giorno non indicato" : italianDate(inv.doc.date)} (fornitore e numero nel riquadro)${rows.length === plan.length ? "" : `; ${n1(plan.length - rows.length, "una no", "# no")}, con il motivo`}. Ogni riga resta caricata una volta sola, anche se me lo chiedi di nuovo.`;
+		const none: LoadRow[] = [];
+		if (outcome === "rerun") return { rerun: true, changed: false, text: "", count: env.book().moves.filter((m) => m.callId === ctx.callId).length, rows: none };
+		if (changed) return { rerun: false, changed: true, text: proposalText(inv, plan, took, sameGoods(inv, reg.invoices, env.book()), "La proposta è cambiata da quando l'hai mostrata (una riga caricata nel frattempo, un articolo o un costo diverso): non ho caricato niente. Ecco quella nuova.\n", orderWords(env.orders, inv, plan, env.book().items, day)), count: 0, rows: none };
+		if (rows.length === 0 && heldOf(plan).length > 0) return { rerun: false, changed: false, text: ["Non c'era niente da caricare: la merce di questa fattura era già arrivata con la bolla, ed è caricata da allora.", fenceOf(inv, plan, took), ...notesOf(inv, plan)].join("\n"), count: 0, rows: none };
+		if (rows.length === 0) return { rerun: false, changed: false, text: [`Non ho caricato niente: nessuna riga di questa fattura si può caricare ora.`, fenceOf(inv, plan, took), ...notesOf(inv, plan), "Per caricare una riga dimmi il suo numero e l'articolo del magazzino («la riga 1 è la carta A4»); se è un articolo nuovo, lo aggiungo."].join("\n"), count: 0, rows: none };
+		const head = `Fatto, ho caricato in magazzino ${n1(rows.length, "una riga", "# righe")} della fattura del ${inv.doc.date === undefined ? "giorno non indicato" : italianDate(inv.doc.date)} (fornitore e numero nel riquadro)${leftOut(plan) === 0 ? "" : `; ${n1(leftOut(plan), "una no", "# no")}, con il motivo`}. Ogni riga resta caricata una volta sola, anche se me lo chiedi di nuovo.`;
 		const added = rows.filter((p) => p.created).length;
-		return { rerun: false, changed: false, text: [head, fenceOf(inv, plan, took, kept), ...notesOf(inv, plan), ...(added === 0 ? [] : [`${n1(added, "Ho aggiunto un articolo nuovo", "Ho aggiunto # articoli nuovi")} al magazzino, con il nome della riga: se vuoi, dimmi sotto quanto avvisarti.`])].join("\n"), count: rows.length };
+		return { rerun: false, changed: false, text: [head, fenceOf(inv, plan, took, kept), ...notesOf(inv, plan), ...(added === 0 ? [] : [`${n1(added, "Ho aggiunto un articolo nuovo", "Ho aggiunto # articoli nuovi")} al magazzino, con il nome della riga: se vuoi, dimmi sotto quanto avvisarti.`])].join("\n"), count: rows.length, rows: rowsOf(plan) };
 	});
-	if (loaded.rerun) return `Fatto: ${n1(loaded.count, "una riga di questa fattura è caricata", "# righe di questa fattura sono caricate")} in magazzino.`;
-	if (loaded.changed || loaded.count === 0) return loaded.text;
+	if (loaded.changed) return loaded.text;
+	// The orders: the goods loaded marked on those awaited, the goods of the delivery note billed; each invoice line once, also on a run after a crash.
+	const mark = () => ctx.step("orders", async () => orderReceipt(env.orders, inv, intended.rows, intended.held, env.book().items, day));
+	if (loaded.rerun) return [`Fatto: ${n1(loaded.count, "una riga di questa fattura è caricata", "# righe di questa fattura sono caricate")} in magazzino.`, ...(await mark())].join("\n");
+	if (loaded.count === 0) return [loaded.text, ...(intended.held.length === 0 ? [] : await mark())].join("\n");
 	await env.audit(ctx, loaded.count);
+	const marked = [...(await mark()), ...(intended.differs ? ["Per la merce della bolla il costo in fattura è diverso da quello con cui l'ho caricata (nel riquadro): se vuoi, correggo il costo dell'articolo con quello della fattura."] : [])];
 	// The increases of this invoice's prices, said here once (the brief does not say them again).
 	const said = await claimIncreases(env.purchases, ctx, day, increasesIn(reg.invoices, reg.suppliers, inv));
 	const rises = said.length === 0 ? [] : [`${n1(said.length, "Un prezzo di questa fattura è aumentato", "# prezzi di questa fattura sono aumentati")} rispetto all'acquisto precedente dallo stesso fornitore: dillo a chi ti scrive.`, fencedStock(said.map(increaseWords).join("\n"))];
-	return [loaded.text, ...rises].join("\n");
+	return [loaded.text, ...marked, ...rises].join("\n");
 }

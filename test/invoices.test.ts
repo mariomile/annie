@@ -691,6 +691,8 @@ describe("the scadenzario: reading the workspace", () => {
 	it("keeps the cache within its memory bound: past it, the rest is left for later and counted", async () => {
 		const dir = temp();
 		writeFiles(join(dir, "w"), { "a.xml": RICEVUTA, "b.xml": EMESSA, "c.xml": SENZA });
+		// Distinct times, so the newest-first order (c, b, a) does not hang on the clock.
+		["a.xml", "b.xml", "c.xml"].forEach((name, i) => utimesSync(join(dir, "w", name), 1_700_000_000 + i, 1_700_000_000 + i));
 		const scanner = new InvoiceScanner(new Workspace(join(dir, "w")), { read: async (_n, data) => documentFattura(data), maxWeight: 5 });
 		const outcome = await scanner.scan(new AbortController().signal);
 		expect([outcome.invoices.length, outcome.leftOut]).toEqual([2, 1]);

@@ -19,6 +19,8 @@ import { findSupplier, loadSuppliers, meantSupplier } from "../supplier-find.ts"
 import type { SupplierStore } from "../supplier-store.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
 import type { PurchaseStore } from "../purchase-store.ts";
+import type { OrderLink } from "../order-receive.ts";
+import { OrderError } from "../orders.ts";
 import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { receiveInvoice } from "./stock-invoice.ts";
@@ -39,6 +41,8 @@ export type StockToolsOptions = {
 	readonly suppliers?: Pick<SupplierStore, "read">;
 	/** The increases of an invoice's prices already said (purchase_prices'), so the proposal of an invoice received says each once. */
 	readonly purchases?: PurchaseStore;
+	/** The orders to suppliers: an invoice received loaded marks the goods on the orders awaited from its supplier. */
+	readonly orders?: OrderLink;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: StockEvent) => Promise<void>;
@@ -93,6 +97,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 			return { invoices: read.invoices, suppliers: loaded.suppliers };
 		},
 		...(options.purchases === undefined ? {} : { purchases: options.purchases }),
+		...(options.orders === undefined ? {} : { orders: options.orders }),
 		marker,
 		audit: (ctx: ToolContext, count: number) => audit(ctx, "receive_invoice", count),
 	};
@@ -190,6 +195,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 					}
 				} catch (error) {
 					if (error instanceof StockError) return `Errore: ${error.message}.`;
+					if (error instanceof OrderError) return `Errore: ${error.message}.`;
 					if (error instanceof WorkspaceError) return `Errore: ${error.message}`;
 					throw error;
 				}
