@@ -32,11 +32,23 @@ export type PartyGroup<C, T> = {
 
 type Group<C, T> = { key: string; card?: C; personName?: string; fileName?: string; vat?: string; cf?: string; names: string[]; items: T[] };
 
-/** Every party: the cards first, then the parties without one, by the order they were met. The records with a tax id are placed first: a name alone then joins the party they made. */
-export function groupParties<C extends PartyCard, T>(cards: readonly C[], records: readonly PartyRecord<T>[]): PartyGroup<C, T>[] {
+/**
+ * Every party: the cards first, then the parties without one, by the order they were met. The
+ * records with a tax id are placed first: a name alone then joins the party they made.
+ * `splitHomonyms`: a name with no tax id (a record, or a bare card) whose business has two
+ * partite IVA in the registers and cards joins neither: the name alone does not say which, and
+ * someone using another's name must not take the person's record or card.
+ */
+export function groupParties<C extends PartyCard, T>(cards: readonly C[], records: readonly PartyRecord<T>[], o: { readonly splitHomonyms?: boolean } = {}): PartyGroup<C, T>[] {
 	const groups: Group<C, T>[] = [];
 	/** The partite IVA the registers give to names of one business: a name alone is linked to one only when there is only one. */
 	const vatsOf = (names: readonly string[]): Set<string> => new Set(records.flatMap((r) => (r.vat !== undefined && r.name !== undefined && names.some((n) => sameBusiness(n, r.name as string)) ? [r.vat] : [])));
+	/** The same, with the cards' partite IVA too. */
+	const businessVats = (names: readonly string[]): Set<string> => {
+		const vats = vatsOf(names);
+		for (const c of cards) if (c.vat !== undefined && [c.name, ...c.aliases].some((n) => names.some((m) => sameBusiness(m, n)))) vats.add(c.vat);
+		return vats;
+	};
 	const byVat = new Map<string, Group<C, T>>();
 	const byCf = new Map<string, Group<C, T>>();
 	const byName = new Map<string, Group<C, T>>();
@@ -59,7 +71,11 @@ export function groupParties<C extends PartyCard, T>(cards: readonly C[], record
 		const c = cf === undefined ? undefined : byCf.get(cf);
 		if (c !== undefined) return c;
 		const k = name === undefined ? "" : spellingKey(name);
-		const n = k === "" ? undefined : byName.get(k);
+		let n = k === "" ? undefined : byName.get(k);
+		// A name alone of a business with two partite IVA: neither of them (a party with no tax id of the same name, yes).
+		if (o.splitHomonyms === true && vat === undefined && cf === undefined && name !== undefined && k !== "" && businessVats([name]).size > 1) return n !== undefined && n.vat === undefined && n.cf === undefined ? n : undefined;
+		// A bare card (no tax id) of a business with two partite IVA takes neither.
+		if (o.splitHomonyms === true && n !== undefined && vat !== undefined && n.vat === undefined && n.cf === undefined && vatsOf(n.names).size > 1) n = undefined;
 		// Two homonyms with two partite IVA or two codici fiscali are two parties.
 		if (n !== undefined && (vat === undefined || n.vat === undefined || n.vat === vat) && (cf === undefined || n.cf === undefined || n.cf === cf)) return n;
 		if (name === undefined || k === "") return undefined;

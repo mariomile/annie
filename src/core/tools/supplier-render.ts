@@ -8,7 +8,7 @@ import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { euros, n1 } from "../format-words.ts";
 import { capitalized, italianDate, withDate, withPercent } from "../italian-format.ts";
 import { fileIbans, type IbanAlert, type LateRow, type RankedSupplier, type Supplier, type SupplierFigures, type SupplierTotals } from "../supplier-sums.ts";
-import { IBAN_BRIEF_DAYS, IBAN_WARNING_MIXED, IBAN_WARNING_PINNED, IBAN_WARNING_WRONG_PIN, ibanPaidMany, ibanWarning, ibanWarningBoth, impostorWarning, type SupplierCard } from "../suppliers.ts";
+import { IBAN_BRIEF_DAYS, IBAN_WARNING_MIXED, IBAN_WARNING_PINNED, IBAN_WARNING_WRONG_PIN, ibanPaidMany, ibanWarning, IBAN_WARNING_BOTH, impostorWarning, type SupplierCard } from "../suppliers.ts";
 import { fence } from "../untrusted.ts";
 import { cents as renewalCents } from "../renewal-sums.ts";
 import { contactLine, counted } from "./client-render.ts";
@@ -48,7 +48,7 @@ export function supplierCardLines(s: Supplier, f: (Pick<SupplierFigures, "iban" 
 	if (s.cf !== undefined && s.cf !== s.vat?.slice(2)) out.push(`Codice fiscale: ${s.cf}`);
 	if (f !== undefined) {
 		const i = f.iban;
-		if (i.history !== undefined) out.push(`${i.history.from === "paid" ? `IBAN dell'ultima fattura pagata${i.history.number === undefined ? "" : ` (${i.history.number})`}` : "IBAN scritto sulla maggior parte delle fatture già pagate"}: ${i.history.iban}`);
+		if (i.history !== undefined) out.push(`IBAN dell'ultima fattura pagata${i.history.number === undefined ? "" : ` (${i.history.number})`}: ${i.history.iban}`);
 		for (const p of i.paid) if (p !== i.history?.iban) out.push(`IBAN già pagato anche: ${p}`);
 		for (const d of i.differs) out.push(`IBAN da verificare sulla fattura ${d.number ?? "senza numero"}${d.of > 1 ? ` (rata ${d.n} di ${d.of})` : ""}: ${d.iban}${d.valid ? "" : " (non passa il controllo delle cifre)"}`);
 		// Nothing to compare with (nothing dictated, nothing paid): the one IBAN to pay is shown as such, neither good nor bad.
@@ -76,10 +76,10 @@ export function ibanWarnings(f: Pick<SupplierFigures, "iban" | "impostor">): str
 	if (i.differs.length > 0) {
 		const files = fileIbans(i);
 		const both = i.pinned !== undefined && i.history !== undefined && i.differs.some((d) => !files.includes(d.iban));
-		if (both) out.push(attention(ibanWarningBoth(i.history?.from === "paid" ? "paid" : "common")));
+		if (both) out.push(attention(IBAN_WARNING_BOTH));
 		else if (i.pinned !== undefined) out.push(attention(i.wrongPin ? IBAN_WARNING_WRONG_PIN : IBAN_WARNING_PINNED));
 		else if (i.mixed) out.push(attention(IBAN_WARNING_MIXED));
-		else out.push(attention(ibanWarning(i.history?.from === "paid" ? "paid" : "common", i.differs.length)));
+		else out.push(attention(ibanWarning(i.differs.length)));
 	}
 	if (i.paid.length > 1) out.push(attention(ibanPaidMany(i.paid.length)));
 	if (i.open.some((o) => !o.valid)) out.push("Un IBAN delle fatture da pagare non passa il controllo delle cifre: non usarlo prima di averlo verificato.");
@@ -243,11 +243,15 @@ export function supplierMergeLines(from: Supplier, into: Supplier, spent: (s: Su
 	return [`Da unire: ${side(from)}`, `Dentro: ${side(into)}`];
 }
 
-/** The CSV's «Da verificare prima di pagare»: with nothing dictated nor paid, the IBAN to pay (never paid so far); else «sì» when an IBAN differs or the name is another's. */
+/** The IBAN to verify before paying: those that differ; with nothing dictated nor paid, every one to pay (never paid so far). */
+function ibansToVerify(i: SupplierFigures["iban"]): string[] {
+	return (i.pinned === undefined && i.paid.length === 0 ? i.open : i.differs).map((o) => o.iban);
+}
+
+/** The CSV's «Da verificare prima di pagare»: «sì», with the reason when the name is another supplier's. */
 function toVerify(f: Pick<SupplierFigures, "iban" | "impostor">): string {
-	const i = f.iban;
-	if (i.pinned === undefined && i.paid.length === 0 && i.open.length > 0) return i.open.map((o) => o.iban).join(", ");
-	return i.differs.length > 0 || f.impostor !== undefined ? "sì" : "";
+	if (f.impostor !== undefined) return "sì (stesso nome di un altro fornitore)";
+	return ibansToVerify(f.iban).length > 0 ? "sì" : "";
 }
 
 /** The CSV: one supplier per row, the figures (years in the headers) and the person's data (the notes counted, not copied). */
@@ -284,8 +288,8 @@ export function suppliersCsv(rows: readonly { readonly supplier: Supplier; reado
 			s.vat ?? "",
 			s.cf ?? "",
 			s.card?.iban ?? "",
-			f.iban.history?.from === "paid" ? f.iban.paid.join(", ") : "",
-			f.iban.differs.map((d) => d.iban).join(", "),
+			f.iban.paid.join(", "),
+			ibansToVerify(f.iban).join(", "),
 			toVerify(f),
 			contacts.flatMap((c) => (c.name === undefined ? [] : [c.role === undefined ? c.name : `${c.name} (${c.role})`])).join(", "),
 			contacts.flatMap((c) => (c.phone === undefined ? [] : [c.phone])).join(", "),

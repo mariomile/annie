@@ -16,6 +16,7 @@ import { rollingPeriodOf } from "../periods.ts";
 import type { RenewalStore } from "../renewal-store.ts";
 import {
 	ibanAlerts,
+	impostorOf,
 	type Ledger,
 	lateSuppliers,
 	ledgerOf,
@@ -307,19 +308,28 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		return { id: supplierId(state.nextCard), name, ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }), aliases: [], contacts: [], notes: [], ...marker(ctx) };
 	}
 
+	/**
+	 * A supplier never confirmed whose name another supplier with another partita IVA or IBAN uses:
+	 * a note or a referente makes a card without its partita IVA, so a note never confirms it.
+	 */
+	function doubtful(suppliers: readonly Supplier[], s: Supplier | undefined): boolean {
+		return s !== undefined && impostorOf(suppliers, s, dayOf) !== undefined;
+	}
+
 	/** The card a write is for, found again: by the supplier's card, else by the name. */
 	function cardOf(list: readonly SupplierCard[], chosen: { supplier?: Supplier; name: string }): SupplierCard | undefined {
 		return (chosen.supplier?.card === undefined ? undefined : list.find((c) => c.id === chosen.supplier?.card?.id)) ?? list.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)));
 	}
 
 	/** Under the lock, once per call: the card (made when there is none) changed by `change`. Returns whether this call wrote (false: run again). */
-	function writeCard(ctx: ToolContext, chosen: { supplier?: Supplier; name: string }, change: (card: SupplierCard) => SupplierCard | string): boolean {
+	/** `link`: false when a new card must not take the partita IVA of the registers (doubtful). */
+	function writeCard(ctx: ToolContext, chosen: { supplier?: Supplier; name: string }, change: (card: SupplierCard) => SupplierCard | string, link = true): boolean {
 		return store.update(ctx.callId, (state) => {
 			let card = cardOf(state.cards, chosen);
 			let next = state;
 			if (card === undefined) {
 				if (state.cards.length >= SUPPLIER_LIMITS.cards) throw new SupplierError(`ci sono già ${SUPPLIER_LIMITS.cards} schede di fornitori, il massimo`);
-				card = newCard(state, chosen.name, chosen.supplier, ctx);
+				card = newCard(state, chosen.name, link ? chosen.supplier : undefined, ctx);
 				next = { ...state, nextCard: state.nextCard + 1, cards: [...state.cards, card] };
 			}
 			const changed = change(card);
@@ -345,7 +355,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 				const notes = [...card.notes, { date: day, text: body, ...marker(ctx) }];
 				full = notes.length > SUPPLIER_LIMITS.notes;
 				return { ...card, notes: notes.slice(-SUPPLIER_LIMITS.notes), edited: marker(ctx) };
-			});
+			}, !doubtful(suppliers, chosen.supplier));
 			return full;
 		});
 		await audit(ctx, "note_add", 1);
@@ -399,7 +409,8 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const refused = taxRefusal(suppliers, s, chosen.name, edits);
 		if (refused !== undefined) return refused;
 		await ctx.step("apply", async () => {
-			writeCard(ctx, chosen, (card) => supplierEdited(card, edits, marker(ctx)));
+			// A referente alone does not tie a doubtful supplier's partita IVA to the card; an IBAN or a partita IVA dictated confirms it.
+			writeCard(ctx, chosen, (card) => supplierEdited(card, edits, marker(ctx)), typeof edits.iban === "string" || typeof edits.vat === "string" || !doubtful(suppliers, s));
 			return true;
 		});
 		await audit(ctx, "contact_set", 1);

@@ -32,10 +32,10 @@ export const SUPPLIER_LIMITS = {
 /** An IBAN that changed is said in the brief when the supplier has an open invoice due within these days. */
 export const IBAN_BRIEF_DAYS = 7;
 
-/** What the person is told when an IBAN to pay differs from the files' own (the IBAN already paid to, else the common one): never paid before a call. */
-export function ibanWarning(from: "paid" | "common", count: number): string {
+/** What the person is told when an IBAN to pay differs from every IBAN already paid to: never paid before a call. */
+export function ibanWarning(count: number): string {
 	const what = count === 1 ? "L'IBAN di una fattura da pagare è diverso" : `Gli IBAN di ${count} fatture da pagare sono diversi`;
-	return `${what} da quello ${from === "paid" ? "delle fatture già pagate" : "delle altre fatture"}. Prima di pagare, ${count === 1 ? "verificalo" : "verificali"} con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.`;
+	return `${what} da quello delle fatture già pagate. Prima di pagare, ${count === 1 ? "verificalo" : "verificali"} con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.`;
 }
 
 export const IBAN_WARNING_PINNED = "Una fattura da pagare ha un IBAN diverso da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
@@ -43,10 +43,8 @@ export const IBAN_WARNING_PINNED = "Una fattura da pagare ha un IBAN diverso da 
 /** The IBAN to pay differs from the one dictated but is the one already paid to: the one dictated may be the wrong one. */
 export const IBAN_WARNING_WRONG_PIN = "Una fattura da pagare ha un IBAN diverso da quello che mi hai dato tu, ed è quello delle fatture già pagate: forse è sbagliato quello che mi hai dato. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
 
-/** The IBAN to pay differs from the one dictated and from the files' own. */
-export function ibanWarningBoth(from: "paid" | "common"): string {
-	return `Una fattura da pagare ha un IBAN diverso da quello ${from === "paid" ? "delle fatture già pagate" : "delle altre fatture"} e da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.`;
-}
+/** The IBAN to pay differs from the one dictated and from those already paid to. */
+export const IBAN_WARNING_BOTH = "Una fattura da pagare ha un IBAN diverso da quello delle fatture già pagate e da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
 
 export const IBAN_WARNING_MIXED = "Le fatture da pagare di questo fornitore hanno IBAN diversi tra loro, e non ce n'è uno già pagato con cui confrontarli. Prima di pagare, chiedi al fornitore per telefono quale è giusto, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.";
 
