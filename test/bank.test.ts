@@ -48,7 +48,7 @@ const NOW = new Date("2026-11-05T09:00:00Z");
 const ROME = "Europe/Rome";
 const dayOf = dayOfIn(ROME);
 let calls = 0;
-const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 /** A context whose steps remember their results: a call run again after a stop. */
 function durable(callId = `d${++calls}`): ToolContext {
 	const done = new Map<string, unknown>();
@@ -1339,5 +1339,43 @@ describe("week 60 third verify", () => {
 		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, b])).toBe(true);
 		// Another open invoice dated after the movement does not count.
 		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, inv("B", "2026-10-09")])).toBe(true);
+	});
+});
+
+describe("week 68: the yes is a person's own message", () => {
+	it("matching by itself is turned on only in a person's turn; turned off by anyone", async () => {
+		const s = await setup();
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).toContain("Abbino da sola le fatture sicure solo dopo un messaggio della persona");
+			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).not.toMatch(/\bauto_confirm\b/);
+		}
+		expect(s.store.read().settings).toBeUndefined();
+		expect(await s.run({ op: "settings", auto_confirm: true })).toContain("segno da sola");
+		expect(await s.run({ op: "settings", auto_confirm: false }, { ...fresh(), origin: "scheduled" })).toContain("aspetto il sì");
+	});
+
+	it("confirm, to_expense, set_balance, same and remove_import refuse in a notice, scheduled or agente turn; the previews work; a person's turn goes on", async () => {
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		s.put("banca/d.csv", ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00"].join("\n"));
+		await s.run({ op: "import", path: "banca/d.csv" });
+		const before = JSON.stringify(s.store.read());
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			const c = () => ({ ...fresh(), origin });
+			expect(await s.run({ op: "confirm", all: true }, c())).toContain("Confermo gli abbinamenti della banca (fatture segnate pagate o incassate) solo dopo un messaggio della persona");
+			expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true }, c())).toContain("Registro le spese dall'estratto conto solo dopo un messaggio della persona");
+			expect(await s.run({ op: "to_expense", ids: ["B-000002"] }, c())).toContain("Registrerei questa spesa");
+			expect(await s.run({ op: "set_balance", confirm: true }, c())).toContain("Salvo il saldo dall'estratto conto solo dopo un messaggio della persona");
+			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true }, c())).toContain("Tolgo il movimento doppio solo dopo un messaggio della persona");
+			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"] }, c())).toContain("Tolgo B-000005 come copia di B-000003");
+			expect(await s.run({ op: "remove_import", import_id: "I-0002", confirm: true }, c())).toContain("Tolgo l'estratto conto solo dopo un messaggio della persona");
+		}
+		expect(JSON.stringify(s.store.read())).toBe(before);
+		expect(s.invoices.read().paid).toHaveLength(0);
+		expect(s.expenses.read().expenses).toHaveLength(0);
+		expect(s.cashflow.read().balances).toHaveLength(0);
+		expect(await s.run({ op: "confirm", all: true })).toContain("2 abbinamenti confermati");
+		expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true })).toContain("Fatto: tolto B-000005");
 	});
 });

@@ -39,7 +39,7 @@ const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
 let calls = 0;
 /** A context of its own for each call, as the engine gives: a call run again shares its callId. */
-const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 /** A call that remembers its steps, as the engine does when it runs a call again after a stop. */
 function durable(callId = `d${++calls}`): ToolContext {
 	const done = new Map<string, unknown>();
@@ -645,6 +645,20 @@ describe("cashflow: balance, alert and voci", () => {
 		expect(inside(once)).toBe("• C-0001 uscita 1.600,00 € il 27 ottobre 2026: Stipendio titolare · nota: dal 2027 aumenta");
 		expect(once).toContain("tolti la fine e il nuovo importo");
 		expect(s.events.filter((e) => e.op === "edit_item").map((e) => e.count)).toEqual([1, 1, 1, 1, 1]);
+	});
+
+	it("week 68: the yes over a lookalike is a person's own message (ADR 0088)", async () => {
+		const s = setup();
+		await s.renewal({ op: "add", name: "Affitto ufficio", provider: "Immobiliare Sole", amount: "700", frequency: "mensile", due: "01/11/2026" });
+		const args = { op: "add_item", kind: "uscita", amount: 690, name: "Affitto", date: "ogni 1 del mese" };
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			expect(await s.run(args, { ...fresh(), origin })).toContain("Non l'ho aggiunta: c'è già qualcosa di simile");
+			expect(await s.run({ ...args, confirm: true }, { ...fresh(), origin })).toContain("Questo lo confermo solo dopo un messaggio della persona");
+		}
+		expect(s.store.read().items).toHaveLength(0);
+		// Nothing alike: the confirm overrides nothing, and a scheduled turn adds as without it.
+		expect(await s.run({ op: "add_item", kind: "uscita", amount: 300, name: "F24", date: "16/11/2026", confirm: true }, { ...fresh(), origin: "scheduled" })).toContain("Aggiunta la voce C-0001");
+		expect(await s.run({ ...args, confirm: true })).toContain("Aggiunta la voce C-0002");
 	});
 
 	it("add_item checks for a renewal or voce of about the same amount and name, and adds only with confirm (12)", async () => {

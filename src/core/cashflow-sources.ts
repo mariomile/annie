@@ -33,6 +33,12 @@
  *   the scadenzario (partita IVA and number, or partita IVA and amount within 1% within 10 days);
  *   divided by the days since the first expense of the window, between AVERAGE_MIN_DAYS and
  *   AVERAGE_DAYS, half up to the cent.
+ * - Canoni (le fatture ricorrenti, ADR 0088): the periods of the active recurring invoices not
+ *   drafted yet, within their end and number of invoices, at the draft's total to pay (VAT in, the
+ *   ritenuta and the split payment off), on the day it would be paid by the draft's own terms; marked
+ *   «previsto (canone)». A period with a draft or an invoice (by the draft's lineage, one made in its
+ *   place too) is never counted here: a draft is not money yet, an invoice issued is in the
+ *   scadenzario. Paused ones, and periods missed while down, are not counted.
  * - Voci: once on their date, or every so many months keeping their day, or every so many days,
  *   up to `until`, at the amount of that day.
  * - Taxes: the F24 the tax profile's calendar estimates (tax-sums.ts), on their working day, when a
@@ -82,7 +88,10 @@ import type { Renewal } from "./renewals.ts";
 import { summarize } from "./timesheet-sums.ts";
 import type { RateRule, WorkEntry } from "./timesheet.ts";
 
-export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average" | "tax";
+export type Source = "invoice" | "quote" | "renewal" | "item" | "whatif" | "average" | "tax" | "recurring";
+
+/** A period of a recurring invoice not drafted yet, as the forecast expects it (tools/recurring-invoice-cash.ts): never a customer's name. */
+export type ExpectedCanone = { readonly id: string; readonly period: string; readonly label: string; readonly date: string; readonly cents: bigint };
 
 /** An accepted quote is expected this many days after its acceptance, and never before QUOTE_MIN_DAYS from today; past QUOTE_STALE_DAYS it is asked about. */
 export const QUOTE_PAY_DAYS = 60;
@@ -106,6 +115,7 @@ export type Movement = {
 	readonly renewal?: Renewal;
 	readonly quote?: Quote;
 	readonly item?: CashItem;
+	readonly canone?: ExpectedCanone;
 	readonly hypothetical?: Hypothetical;
 	/** An F24 estimated from the tax profile (taxes.ts) or, `iva`, from la liquidazione IVA (vat.ts): what it pays for; `was` the first day of a June F24 gone by. */
 	readonly tax?: { readonly what: string; readonly contributi?: bigint; readonly was?: string; readonly iva?: true; readonly late?: true; readonly key?: string };
@@ -418,6 +428,14 @@ export function quoteFlows(quotes: readonly Quote[], invoices: readonly Invoice[
 		movements.push({ date, kind: "in", cents: left, source: "quote", quote: q });
 	}
 	return { movements, count, beyond, invoiced, old };
+}
+
+/** The canoni expected (see the choices above), from today to `end`: money to collect, never before today. */
+export function canoneFlows(expected: readonly ExpectedCanone[], today: string, end: string): Movement[] {
+	return expected.flatMap((c): Movement[] => {
+		const date = c.date < today ? today : c.date;
+		return date > end || c.cents <= 0n ? [] : [{ date, kind: "in", cents: c.cents, source: "recurring", canone: c }];
+	});
 }
 
 /** The days of a voce (or a hypothetical one) from `from` to `to`: once, or by its recurrence up to `until`. */

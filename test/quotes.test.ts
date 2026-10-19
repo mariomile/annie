@@ -29,7 +29,7 @@ const NOW = new Date("2026-10-18T08:00:00Z");
 const IBAN = "IT74X0000000000000000123456";
 let calls = 0;
 /** A context of its own for each call, as the engine gives: a call run again shares its callId. */
-const fresh = (thread = { channel: "test", threadId: "t1" }, callId = `q${++calls}`): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (thread = { channel: "test", threadId: "t1" }, callId = `q${++calls}`): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 
 const dirs: string[] = [];
 const closers: (() => Promise<void>)[] = [];

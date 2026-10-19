@@ -18,6 +18,7 @@ import { PREPARING } from "../quote-store.ts";
 import type { Workspace } from "../workspace.ts";
 import { euros, fenced, totalsOf } from "./quote-render.ts";
 import { isPrivateParty, mailtoLink } from "./letter-shared.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 type QuoteSendDeps = {
 	readonly workspace: Workspace;
@@ -66,9 +67,14 @@ function quoteBody(quote: Quote, company: Partial<Company>): string {
 	].join("\n");
 }
 
-/** Why the quote should not go as it is, unless the person confirms it. */
-function statusProblem(quote: Quote, args: Record<string, unknown>, today: string): string | undefined {
-	if (shownStatus(quote, today) === "expired" && args.confirm_expired !== true) {
+/** Why the quote should not go as it is, unless the person confirms it (in a message of their own: ADR 0088). */
+function statusProblem(quote: Quote, args: Record<string, unknown>, today: string, ctx: ToolContext): string | undefined {
+	const expired = shownStatus(quote, today) === "expired";
+	if ((expired && args.confirm_expired === true) || (quote.status === "declined" && args.confirm_declined === true)) {
+		const notPerson = requirePersonFor(ctx, expired ? "mando il preventivo scaduto così com'è" : "mando il preventivo rifiutato dal cliente");
+		if (notPerson !== undefined) return notPerson;
+	}
+	if (expired && args.confirm_expired !== true) {
 		return `Errore: il preventivo ${quote.number} è scaduto il ${italianDate(validUntil(quote))}. Chiedi se vuole rifarlo con una nuova validità (op revise con valid_days) o mandarlo così com'è (op send con confirm_expired true).`;
 	}
 	if (quote.status === "declined" && args.confirm_declined !== true) {
@@ -84,7 +90,7 @@ export async function sendQuote(quote: Quote, args: Record<string, unknown>, ctx
 	if (typeof args.customer === "string" && args.customer.trim() !== "" && !matchesCustomer(quote, args.customer)) {
 		return `Errore: non preparo l'invio. ${fenced(`Il preventivo ${quote.number} è di ${quote.customer.name}, non di ${args.customer.trim()}: controlla`)}`;
 	}
-	const problem = statusProblem(quote, args, deps.today);
+	const problem = statusProblem(quote, args, deps.today, ctx);
 	if (problem !== undefined) return problem;
 	const given = typeof args.email === "string" ? args.email.trim().toLowerCase() : undefined;
 	if (given !== undefined && !validAddress(given)) return "Errore: email non è un indirizzo valido.";

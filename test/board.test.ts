@@ -3,6 +3,7 @@ import { BOARD_LIMITS, BoardError, BoardStore, dueText } from "../src/core/board
 import { digestText, digestWeek } from "../src/core/board-digest.ts";
 import { type BoardDigest, BoardWork, type BoardWorkDeps } from "../src/core/board-work.ts";
 import { createBoardTools } from "../src/core/tools/board-tools.ts";
+import { approveFromChat } from "../src/app/board.ts";
 import { tempDataDir } from "./helpers.ts";
 
 const anna = { kind: "person", id: "p_anna" } as const;
@@ -100,6 +101,20 @@ describe("the board (ADR 0050)", () => {
 		expect(posts).toHaveLength(3);
 		// Closed: the agente cannot reopen it.
 		await expect(work.change(c.id, { status: "da_rivedere" }, ricerca, undefined)).rejects.toThrow(/chiusa/);
+	});
+
+	it("week 68: «Approva» tapped in the chat is a person's own act, the owner's, with no model turn in between (ADR 0088)", async () => {
+		const { work, store, posts } = setup();
+		const c = await work.create({ title: "Fornitori", assignee: "ricerca" }, anna, "p_anna");
+		await work.change(c.id, { status: "da_rivedere" }, ricerca, undefined);
+		const people = { list: async () => [{ id: "p_owner", role: "owner" }] } as never;
+		expect(await approveFromChat(work, people, `board:${c.id}:fatto`)).toBe(`Scheda #${c.n} approvata e chiusa.`);
+		const closed = store.get(c.id);
+		expect(closed?.status).toBe("fatto");
+		expect(closed?.events.at(-1)?.by).toEqual({ kind: "person", id: "p_owner" });
+		// Nothing reaches an agente's conversation: no turn, so no origin to get wrong.
+		expect(posts).toHaveLength(1);
+		expect(await approveFromChat(work, people, "tool:abc:approved")).toBeUndefined();
 	});
 
 	it("sent back by someone else than the person it is worked with: back to «Da fare», and Avvia picks up the same conversation", async () => {

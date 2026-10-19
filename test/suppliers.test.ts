@@ -70,7 +70,7 @@ afterEach(() => {
 });
 
 let calls = 0;
-const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 /** A context whose steps are kept, as the engine keeps them: a call run again gets them back. */
 const kept = new Map<string, unknown>();
 const durable = (callId: string): ToolContext => ({
@@ -81,7 +81,7 @@ const durable = (callId: string): ToolContext => ({
 		kept.set(k, v);
 		return v;
 	}) as ToolContext["step"],
-	progress: () => {},
+	progress: () => {}, origin: "person",
 	signal: new AbortController().signal,
 	callId,
 	thread: { channel: "test", threadId: "t1" },
@@ -228,6 +228,17 @@ describe("suppliers: who is who", () => {
 		expect(outside(other)).toContain("Non la segno");
 		expect(s.store.read().cards).toEqual([]);
 		clean(s.answers);
+	});
+
+	it("week 68: the merge's yes is a person's own message (ADR 0088)", async () => {
+		const s = await setup();
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			const out = await s.run({ op: "merge", supplier: "Uno Forniture", into: "Fornitore Uno S.r.l.", confirm: true }, { ...fresh(), origin });
+			expect(out).toContain("Questo lo confermo solo dopo un messaggio della persona");
+			expect(s.store.read().cards).toEqual([]);
+		}
+		expect(outside(await s.run({ op: "merge", supplier: "Uno Forniture", into: "Fornitore Uno S.r.l." }, { ...fresh(), origin: "scheduled" }))).toContain("l'IBAN che mi hai dato per il primo passano al secondo");
+		expect(outside(await s.run({ op: "merge", supplier: "Uno Forniture", into: "Fornitore Uno S.r.l.", confirm: true }))).toContain("Fatto, ho unito i due fornitori");
 	});
 
 	it("merges two spellings after a preview and a yes, once", async () => {

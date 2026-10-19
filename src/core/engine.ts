@@ -1,4 +1,5 @@
 import type { ModelSelection } from "./registry.ts";
+import type { TurnOrigin } from "./turn-origin.ts";
 
 /**
  * The durable execution engine behind an instance. Annie code depends on this
@@ -35,8 +36,10 @@ export interface EngineSession {
 	 * Durably admit `text`, and the pictures that came with it, into the conversation identified
 	 * by `threadKey` (created on first use). Resolves once admitted; the answer arrives through
 	 * `onReply`. The same `requestId` on the same thread is admitted once, also across restarts.
+	 * `origin`: where the turn comes from (turn-origin.ts), stored with it so a rerun or a recovery
+	 * keeps it, and given to its tools as `ctx.origin`; not given, it is not a person's.
 	 */
-	submit(threadKey: string, text: string, requestId?: string, images?: readonly EngineImage[]): Promise<{ submissionId: string }>;
+	submit(threadKey: string, text: string, requestId?: string, images?: readonly EngineImage[], origin?: TurnOrigin): Promise<{ submissionId: string }>;
 	/** Continue whatever a previous process left unfinished; replies arrive through `onReply`. */
 	resume(): Promise<{ pending: number }>;
 	/**
@@ -103,4 +106,10 @@ export type ToolContext = {
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	/** Stable across reruns of the same call: a key for idempotent side effects. */
 	readonly callId: string;
+	/**
+	 * Where the turn this call belongs to comes from (turn-origin.ts): set by the engine on every
+	 * call, the same on a rerun. Undefined only in a context built by hand, which a confirmation
+	 * gate (requirePersonFor) never takes for a person's.
+	 */
+	readonly origin?: TurnOrigin;
 };

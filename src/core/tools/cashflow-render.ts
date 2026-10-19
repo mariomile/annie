@@ -62,12 +62,16 @@ export function movementLabel(m: Movement, today: string, fullDates = false): st
 			return "spesa media stimata";
 		case "tax":
 			return m.tax?.iva === true ? m.tax.what : `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
+		case "recurring":
+			// Never the customer: another agente reads the forecast too.
+			return m.canone === undefined ? "previsto (canone)" : `canone ${m.canone.label}, fattura ricorrente ${m.canone.id}, previsto (canone)${delayed}`;
 	}
 }
 
 const SOURCE_WORDS: Partial<Readonly<Record<`${Kind}:${Source}`, string>>> = {
 	"in:invoice": "fatture da incassare",
 	"in:quote": "preventivi accettati",
+	"in:recurring": "canoni previsti (fatture ricorrenti)",
 	"in:item": "voci aggiunte",
 	"in:whatif": "ipotesi",
 	"out:invoice": "fatture da pagare",
@@ -78,7 +82,7 @@ const SOURCE_WORDS: Partial<Readonly<Record<`${Kind}:${Source}`, string>>> = {
 	"out:whatif": "ipotesi",
 };
 
-const ORDER: readonly Source[] = ["invoice", "quote", "renewal", "item", "tax", "average", "whatif"];
+const ORDER: readonly Source[] = ["invoice", "quote", "recurring", "renewal", "item", "tax", "average", "whatif"];
 
 /** Everything around the projection that the answers say: where it starts, what was gathered, what is left out. */
 export type View = {
@@ -98,6 +102,8 @@ export type View = {
 	readonly maybe?: readonly Duplicate[];
 	readonly autoPaid: readonly Movement[];
 	readonly renewals?: RenewalFlows;
+	/** Canoni of the recurring invoices counted (periods not drafted yet). */
+	readonly canoni?: number;
 	readonly renewalsBroken: boolean;
 	readonly quotes?: QuoteFlows;
 	readonly quotesBroken: boolean;
@@ -377,6 +383,7 @@ function assumptions(p: Projection, v: View): string[] {
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}
+	if ((v.canoni ?? 0) > 0) out.push("canoni delle fatture ricorrenti attive solo per i periodi senza ancora una bozza (una bozza non conta finché non è emessa, una fattura emessa conta fra quelle da incassare), al totale da pagare della bozza con l'IVA, pagati dopo i giorni di pagamento della fattura ricorrente");
 	if (v.quotes !== undefined && v.quotes.count > 0) out.push(`preventivi accettati attesi ${QUOTE_PAY_DAYS} giorni dopo l'accettazione e non prima di ${QUOTE_MIN_DAYS} giorni da oggi, meno quanto già fatturato`);
 	if (p.days.length > 31) out.push("le entrate senza fattura, preventivo o voce non ci sono, quindi manca il lavoro ancora da fatturare");
 	if (v.taxes === true) out.push("tasse stimate (F24) dal profilo del forfettario con il metodo storico, una stima da verificare con il commercialista", "stipendi e rate non registrati non ci sono");

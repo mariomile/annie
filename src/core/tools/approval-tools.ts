@@ -1,5 +1,6 @@
 import type { AnnieTool } from "../engine.ts";
 import type { PracticeStore } from "../practice.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 /**
  * Durable approval gate: writes approval state on the pratica before any send.
@@ -47,6 +48,9 @@ export function createApprovalTools(options: { practices: PracticeStore }): Anni
 		},
 		replaySafe: true,
 		async execute(args, ctx) {
+			// A human Approva is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+			const notPerson = requirePersonFor(ctx, "registro l'approvazione della pratica");
+			if (notPerson !== undefined) return JSON.stringify({ ok: false, error: "not_from_person", message: notPerson });
 			const praticaId = String(args.praticaId);
 			const draftVersion = Number(args.draftVersion);
 			return ctx.step(`record_approval:${praticaId}:v${draftVersion}`, async () => {

@@ -28,6 +28,7 @@ import { termsOf } from "../timesheet-sums.ts";
 import { WorkspaceError } from "../workspace.ts";
 import { askGroups, dueOf, filesSay, findIssued, namedDraft, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { courtesyMarkdown, fenced, invoiceLines, issuedAnswer } from "./sales-invoice-render.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 /** Tries at a free file name before giving up. */
 const NAME_TRIES = 5;
@@ -59,6 +60,9 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 			"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
 		].join("\n");
 	}
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+	const notPerson = requirePersonFor(ctx, `emetto la ${docWord(target.type)}`);
+	if (notPerson !== undefined) return notPerson;
 	const due = dueOf(target, day);
 	const marker = env.marker(ctx);
 	const year = Number(day.slice(0, 4));

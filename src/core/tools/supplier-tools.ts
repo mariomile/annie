@@ -47,6 +47,7 @@ import {
 	totalsAgentAnswer,
 	totalsAnswer,
 } from "./supplier-render.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 const SUPPLIER_OPS = ["summary", "top", "late", "note_add", "note_remove", "contact_set", "merge", "export"] as const;
 type Op = (typeof SUPPLIER_OPS)[number];
@@ -483,6 +484,9 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 				fencedSuppliers(supplierMergeLines(a, b, ever).join("\n")),
 			].join("\n");
 		}
+		// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+		const notPerson = requirePersonFor(ctx, "unisco i due fornitori");
+		if (notPerson !== undefined) return notPerson;
 		await ctx.step("apply", async () => {
 			store.update(ctx.callId, (state) => mergedSuppliers(state, a, b, (st, n, sup) => newCard(st, n, sup, ctx), marker(ctx)));
 			return true;
