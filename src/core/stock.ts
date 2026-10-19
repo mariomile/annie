@@ -110,7 +110,7 @@ export type Movement = Marker & {
 	 */
 	readonly qty: string;
 	readonly day: string;
-	/** carico: the unit cost, euros to the fourth decimal; costo: the right one; apertura: the average at the close. */
+	/** carico: the unit cost, euros to the fourth decimal; costo: the right one; apertura: the average at the close; scarico vendita: the average at the moment it went out (recorded from week 71 on; older ones have none). */
 	readonly cost?: string;
 	/** costo: the carico it corrects (the last of the article), and the cost it had. */
 	readonly fixes?: string;
@@ -299,7 +299,7 @@ export function validMove(v: unknown): v is Movement {
 			return s === undefined || (typeof s === "object" && s !== null && Object.keys(s).every((k) => ["name", "vat"].includes(k)) && plain(s.name, STOCK_LIMITS.name) && optPlain(s.vat, 40));
 		}
 		case "scarico":
-			return isQuantity(m.qty) && Number(m.qty) > 0 && REASONS.includes(m.reason as Reason) && only(["reason", "sale"]) && (m.sale === undefined || (validSale(m.sale) && m.reason === "vendita" && m.sale.of === undefined));
+			return isQuantity(m.qty) && Number(m.qty) > 0 && REASONS.includes(m.reason as Reason) && only(["reason", "sale", "cost"]) && (m.sale === undefined || (validSale(m.sale) && m.reason === "vendita" && m.sale.of === undefined)) && (m.cost === undefined || (m.reason === "vendita" && isCost(m.cost)));
 		case "rettifica":
 			return isQuantity(m.qty, true, 2 * STOCK_LIMITS.maxQuantity) && isQuantity(m.counted) && only(["counted"]);
 		case "storno":

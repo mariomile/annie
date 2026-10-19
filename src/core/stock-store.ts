@@ -11,8 +11,8 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { type CodeMap, codeMapKey, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockItemId, stockUnit, type UnitMap, unitMapKey, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall, validUnitMap } from "./stock.ts";
-import { costText, packUnits, qtyOf, qtyText, stateOf } from "./stock-sums.ts";
+import { type CodeMap, codeMapKey, isCost, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockItemId, type UnitMap, unitMapKey, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall, validUnitMap } from "./stock.ts";
+import { costText, qtyOf, qtyText, saleQuantity, stateOf } from "./stock-sums.ts";
 
 /** What a change works on: the articles, the movements and the next numbers. */
 export type StockState = { readonly nextItem: number; readonly nextMove: number; readonly items: readonly StockItem[]; readonly moves: readonly Movement[] };
@@ -71,19 +71,12 @@ export function planSale(book: Pick<Book, "items" | "moves" | "archived" | "next
 	for (const l of sale.lines) {
 		const item = book.items.find((i) => i.removed === undefined && i.listino === l.listino);
 		if (item === undefined || done.has(saleKey(sale.invoice, l.line))) continue;
-		if (!/^\d{1,10}(?:\.\d{1,3})?$/.test(l.quantity) || Number(l.quantity) <= 0) {
-			skipped.push({ description: l.description, why: "quantity" });
+		const read = saleQuantity(item, l.quantity, l.unit);
+		if ("why" in read) {
+			skipped.push({ description: l.description, why: read.why });
 			continue;
 		}
-		// A line without a unit is in the article's own; in its pack, so many each; in another unit, not counted.
-		const unit = l.unit === undefined ? item.unit : stockUnit(l.unit);
-		const inPacks = unit !== item.unit && item.pack !== undefined && unit === item.pack.unit;
-		let qty = unit === item.unit ? qtyOf(l.quantity) : inPacks && item.pack !== undefined ? packUnits(l.quantity, item.pack.size) : undefined;
-		if (qty === undefined) {
-			// In its pack, but the packs times the size is not a quantity to the thousandth.
-			skipped.push({ description: l.description, why: inPacks ? "pack" : "unit" });
-			continue;
-		}
+		let qty = read.qty;
 		if (sale.of !== undefined) {
 			const of = sale.of;
 			const moves = [...book.moves, ...added];
@@ -98,12 +91,18 @@ export function planSale(book: Pick<Book, "items" | "moves" | "archived" | "next
 		const ref = { invoice: sale.invoice, line: l.line, number: sale.number, ...(sale.of === undefined ? {} : { of: sale.of }) };
 		added.push(
 			sale.of === undefined
-				? { id: moveId(next), item: item.id, kind: "scarico", qty: qtyText(qty), day: sale.day, reason: "vendita", sale: ref, ...marker }
+				? { id: moveId(next), item: item.id, kind: "scarico", qty: qtyText(qty), day: sale.day, reason: "vendita", sale: ref, ...costAt(item, [...book.moves, ...added]), ...marker }
 				: { id: moveId(next), item: item.id, kind: "storno", qty: qtyText(qty), day: sale.day, sale: ref, ...marker },
 		);
 		next += 1;
 	}
 	return { added, skipped };
+}
+
+/** The average cost an article goes out at now (the margin's cost of goods sold), when it has one that a movement holds. */
+function costAt(item: StockItem, moves: readonly Movement[]): { cost?: string } {
+	const average = stateOf(item, moves).average;
+	return average === undefined || average <= 0n || !isCost(costText(average)) ? {} : { cost: costText(average) };
 }
 
 /** What a closed year folded: the movements and the articles. */

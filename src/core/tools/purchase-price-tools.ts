@@ -2,11 +2,11 @@ import { isAgentTurn } from "../turn-origin.ts";
 import { type CsvCell, csvFile } from "../csv.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
-import { fromUnits, MAX_DOC_LINES } from "../fattura-pa.ts";
+import { fromUnits } from "../fattura-pa.ts";
 import { n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
-import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
+import { addDays, todayIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
 import { type Period, PeriodError, readPeriod } from "../periods.ts";
 import {
@@ -14,7 +14,6 @@ import {
 	briefIncreaseWords,
 	bySupplier,
 	cheapestOf,
-	type ExpenseRow,
 	type Increase,
 	increasesOf,
 	increaseWords,
@@ -28,7 +27,6 @@ import {
 	PurchaseError,
 	type PurchaseOp,
 	type PurchaseRow,
-	purchaseRows,
 	priceWords,
 	productsOf,
 	riseTenths,
@@ -38,9 +36,9 @@ import {
 	tenthsWords,
 } from "../purchase-prices.ts";
 import { PURCHASES_BROKEN, type PurchaseStore } from "../purchase-store.ts";
+import { loadPurchases, type PurchaseData } from "./purchase-data.ts";
 import { scaled } from "../quote-sums.ts";
-import { readRegister } from "../register-read.ts";
-import { findSupplier, loadSuppliers, meantSupplier, supplierNotFound } from "../supplier-find.ts";
+import { findSupplier, meantSupplier, supplierNotFound } from "../supplier-find.ts";
 import type { Supplier } from "../supplier-sums.ts";
 import type { SupplierStore } from "../supplier-store.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
@@ -143,27 +141,11 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		},
 	];
 
-	type Data = { readonly rows: readonly PurchaseRow[]; readonly expenses: readonly ExpenseRow[]; readonly suppliers: readonly Supplier[]; readonly notes: readonly string[] };
+	type Data = PurchaseData;
 
-	/** The prices paid, with what is missing said once: files that do not read, lines left out or past the 2000 kept, invoices in another currency, without lines, or with a date that is no real day. */
-	async function load(ctx: ToolContext): Promise<Data | string> {
-		const read = await readRegister(options.invoices, scanner, ctx, {
-			broken: "Lo stato delle fatture non si legge: senza, non so quali sono le fatture ricevute.",
-			noCompany: "Non so ancora qual è la tua azienda (la sua partita IVA): senza, non distinguo le fatture ricevute da quelle emesse, e i prezzi d'acquisto non li ho.",
-		});
-		if (read.invoices === undefined || read.noCompany) return read.notes.join("\n") || "Non trovo fatture ricevute nel workspace.";
-		const cards = options.suppliers?.read();
-		const expenses = options.expenses?.read();
-		const loaded = loadSuppliers({ cards: cards === undefined || cards.broken ? [] : cards.cards, invoices: read.invoices, expenses: expenses === undefined || expenses.broken ? [] : expenses.expenses, dayOf: dayOfIn(timeZone) });
-		const got = purchaseRows(read.invoices, loaded.suppliers);
-		const notes: string[] = [];
-		if (read.unread > 0) notes.push(`${n1(read.unread, "Un file di fattura non si legge", "# file di fatture non si leggono")} (per esempio uno oltre i 20 MB, di cui leggo solo il testo): le sue righe qui mancano.`);
-		if (got.unread > 0) notes.push(got.unread === 1 ? "Una riga di fattura non si legge (manca la descrizione, o un prezzo o una quantità non è un numero): l'ho lasciata fuori, senza indovinare." : `${got.unread} righe di fatture non si leggono (manca la descrizione, o un prezzo o una quantità non è un numero): le ho lasciate fuori, senza indovinare.`);
-		if (got.cut > 0) notes.push(`${n1(got.cut, "Una riga", "# righe")} di fatture molto lunghe ${got.cut === 1 ? "è" : "sono"} oltre le prime ${MAX_DOC_LINES} di una fattura: qui ${got.cut === 1 ? "manca" : "mancano"}.`);
-		if (got.otherCurrency > 0) notes.push(`${n1(got.otherCurrency, "Una fattura è", "# fatture sono")} in un'altra valuta: non la confronto con quelle in euro.`);
-		if (got.noLines > 0) notes.push(`${n1(got.noLines, "Una fattura ricevuta non ha", "# fatture ricevute non hanno")} righe con prezzo e quantità (per esempio le fatture semplificate): qui non ${got.noLines === 1 ? "c'è" : "ci sono"}.`);
-		if (got.badDates > 0) notes.push(`${n1(got.badDates, "Una fattura ricevuta ha", "# fatture ricevute hanno")} una data che non esiste o prima del 2000: ${got.badDates === 1 ? "l'ho lasciata" : "le ho lasciate"} fuori.`);
-		return { rows: got.rows, expenses: got.expenses, suppliers: loaded.suppliers, notes };
+	/** The prices paid, with what is missing said once (purchase-data.ts). */
+	function load(ctx: ToolContext): Promise<Data | string> {
+		return loadPurchases({ invoices: options.invoices, scanner, ...(options.expenses === undefined ? {} : { expenses: options.expenses }), ...(options.suppliers === undefined ? {} : { suppliers: options.suppliers }), timeZone }, ctx);
 	}
 
 	function withNotes(answer: string, data: Data): string {

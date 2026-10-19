@@ -25,6 +25,7 @@ import { ClientStore } from "./client-store.ts";
 import { SupplierStore } from "./supplier-store.ts";
 import { BudgetStore } from "./budget-store.ts";
 import { PurchaseStore } from "./purchase-store.ts";
+import { MarginStore } from "./margin-store.ts";
 import { StockStore } from "./stock-store.ts";
 import { RecurringStore } from "./recurring-invoice-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
@@ -275,6 +276,11 @@ export class AnnieRuntime {
 	/** I prezzi d'acquisto of an instance: only the increases already said (the prices are read from the invoices received). */
 	purchases(tenant: string, instance: string): PurchaseStore {
 		return new PurchaseStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** I margini of an instance: only the voci the brief already said (the margins are read from the registers). */
+	margins(tenant: string, instance: string): MarginStore {
+		return new MarginStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Il magazzino of an instance: the articles and their movements. */
