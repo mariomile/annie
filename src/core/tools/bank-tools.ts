@@ -24,6 +24,7 @@ import { removeImportOp, sameOp } from "./bank-remove.ts";
 import { readColumns, readDirection, readSpan, readStatus } from "./bank-input.ts";
 import { anomaliesAnswer, askAnswer, briefAnswer, countLine, countsOf, importAnswer, liveOf, monthTotals, reconciledCsv, rowsBlock, totalsAnswer, twins } from "./bank-render.ts";
 import type { ExpenseSeam } from "./expense-tools.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 /** What changed, for the audit: the op and how many, never descriptions, amounts, dates or IBANs. */
 export type BankEvent = { readonly type: "bank.changed"; readonly op: "import" | "confirm" | "refuse" | "to_expense" | "set_balance" | "settings" | "export" | "same" | "remove_import"; readonly count: number };
@@ -383,6 +384,9 @@ export function createBankTools(options: BankToolsOptions): AnnieTool[] {
 		if (args.auto_confirm === undefined) return `Abbina da sola le fatture sicure (importo esatto e il nome o la partita IVA nella causale): ${book.settings?.autoConfirm === true ? "sì" : "no, le propone e aspetta il sì"}.`;
 		if (typeof args.auto_confirm !== "boolean") return "Errore: auto_confirm è true o false.";
 		const value = args.auto_confirm;
+		// Matching by itself from now on is a standing yes: only a person's own message turns it on (ADR 0088).
+		const notPerson = value ? requirePersonFor(ctx, "abbino da sola le fatture sicure") : undefined;
+		if (notPerson !== undefined) return notPerson;
 		await ctx.step("apply", async () => {
 			store.update(ctx.callId, (s) => ({ ...s, settings: { autoConfirm: value, by: deps.who(ctx), at: now().toISOString() } satisfies BankSettings }));
 			return true;

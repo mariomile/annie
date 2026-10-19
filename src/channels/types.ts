@@ -31,6 +31,8 @@ export type InboundMessage = {
 	readonly voice?: boolean;
 	/** The person's own words when `text` wraps them in more (a stanza): commands (/skill, /modello) are read from these alone. */
 	readonly command?: string;
+	/** Not the person's turn although it comes through their chat (ADR 0088): an agente in a stanza, the board's own work. */
+	readonly origin?: "agent" | "scheduled";
 };
 
 /** A tap on a button of an earlier outbound message (Telegram: a callback query). */

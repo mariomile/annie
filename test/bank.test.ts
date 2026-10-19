@@ -48,7 +48,7 @@ const NOW = new Date("2026-11-05T09:00:00Z");
 const ROME = "Europe/Rome";
 const dayOf = dayOfIn(ROME);
 let calls = 0;
-const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 /** A context whose steps remember their results: a call run again after a stop. */
 function durable(callId = `d${++calls}`): ToolContext {
 	const done = new Map<string, unknown>();
@@ -1339,5 +1339,43 @@ describe("week 60 third verify", () => {
 		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, b])).toBe(true);
 		// Another open invoice dated after the movement does not count.
 		expect(inStatement(a, 100000n, "2026-10-31", statement, [a, inv("B", "2026-10-09")])).toBe(true);
+	});
+});
+
+describe("week 68: the yes is a person's own message", () => {
+	it("matching by itself is turned on only in a person's turn; turned off by anyone", async () => {
+		const s = await setup();
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).toContain("Non abbino da sola le fatture sicure ");
+			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).not.toMatch(/\bauto_confirm\b/);
+		}
+		expect(s.store.read().settings).toBeUndefined();
+		expect(await s.run({ op: "settings", auto_confirm: true })).toContain("segno da sola");
+		expect(await s.run({ op: "settings", auto_confirm: false }, { ...fresh(), origin: "scheduled" })).toContain("aspetto il sì");
+	});
+
+	it("confirm, to_expense, set_balance, same and remove_import refuse in a notice, scheduled or agente turn; the previews work; a person's turn goes on", async () => {
+		const s = await setup();
+		s.put("banca/o.csv", SIGNED_CSV);
+		await s.run({ op: "import", path: "banca/o.csv" });
+		s.put("banca/d.csv", ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00"].join("\n"));
+		await s.run({ op: "import", path: "banca/d.csv" });
+		const before = JSON.stringify(s.store.read());
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			const c = () => ({ ...fresh(), origin });
+			expect(await s.run({ op: "confirm", all: true }, c())).toContain("Non confermo gli abbinamenti della banca (fatture segnate pagate o incassate) ");
+			expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true }, c())).toContain("Non registro le spese dall'estratto conto ");
+			expect(await s.run({ op: "to_expense", ids: ["B-000002"] }, c())).toContain("Registrerei questa spesa");
+			expect(await s.run({ op: "set_balance", confirm: true }, c())).toContain("Non salvo il saldo dall'estratto conto ");
+			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true }, c())).toContain("Non tolgo il movimento doppio ");
+			expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"] }, c())).toContain("Tolgo B-000005 come copia di B-000003");
+			expect(await s.run({ op: "remove_import", import_id: "I-0002", confirm: true }, c())).toContain("Non tolgo l'estratto conto ");
+		}
+		expect(JSON.stringify(s.store.read())).toBe(before);
+		expect(s.invoices.read().paid).toHaveLength(0);
+		expect(s.expenses.read().expenses).toHaveLength(0);
+		expect(s.cashflow.read().balances).toHaveLength(0);
+		expect(await s.run({ op: "confirm", all: true })).toContain("2 abbinamenti confermati");
+		expect(await s.run({ op: "same", ids: ["B-000003", "B-000005"], confirm: true })).toContain("Fatto: tolto B-000005");
 	});
 });

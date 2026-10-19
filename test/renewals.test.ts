@@ -27,7 +27,7 @@ const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
 let calls = 0;
 /** A context of its own for each call, as the engine gives: a call run again shares its callId. */
-const fresh = (callId = `r${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (callId = `r${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 /** A call that remembers its steps, as the engine does when it runs a call again after a stop. */
 function durable(callId = `d${++calls}`): ToolContext {
 	const done = new Map<string, unknown>();
@@ -1206,5 +1206,19 @@ describe("renewals: prices over time, rolls of today, names, reactivating", () =
 		expect(csv).toMatch(/Dominio rossi\.example;[^\r\n]*;10\/10\/2026;[^\r\n]*;scaduto;/);
 		const upcoming = outside(await s.run({ op: "upcoming" }));
 		expect(upcoming).toContain("Totale da pagare o addebitato, scadute e nel periodo, contando ogni scadenza: 74,80 €.");
+	});
+});
+
+describe("renewals: a disdetta or a removal is a person's own word (ADR 0088)", () => {
+	it("cancel and remove are refused in a notice, a schedule or another agente's turn", async () => {
+		const s = await setup();
+		await s.run({ op: "add", name: "Hosting Alfa", provider: "Fornitore Alfa", amount: "120", frequency: "annuale", due: "01/12/2026" });
+		const before = JSON.stringify(s.store.read());
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			for (const op of ["cancel", "remove"]) expect(await s.run({ op, id: "R-0001" }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+		}
+		expect(JSON.stringify(s.store.read())).toBe(before);
+		expect(await s.run({ op: "remove", id: "R-0001" })).toContain("R-0001");
+		expect(s.store.read().renewals).toEqual([]);
 	});
 });

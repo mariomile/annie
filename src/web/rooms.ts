@@ -297,7 +297,7 @@ export class Rooms {
 		if (prepared === undefined) return;
 		const channel = this.agents.channel(instanceId);
 		if (channel === undefined) throw new RoomError(`${instanceId} non ha più la chat`);
-		await channel.post(prepared.seat.threadId, prepared.room.personId, prepared.text, prepared.command === undefined ? {} : { command: prepared.command });
+		await channel.post(prepared.seat.threadId, prepared.room.personId, prepared.text, { ...(prepared.command === undefined ? {} : { command: prepared.command }), ...(by === undefined ? {} : { origin: "agent" as const }) });
 		// Only what reached the agente counts as seen.
 		await this.serial(roomId, async () => {
 			const room = await this.store.get(roomId);

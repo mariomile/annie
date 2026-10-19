@@ -29,6 +29,7 @@ import { composeBuyer, findBuyer, type Known, quoteIds } from "./sales-invoice-b
 import { anyMissing, askFor, askGroups, dueOf, type FilesSay, filesSay, findIssued, type Missing, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { type BuyerFields, fitsLatin, type GivenLine, paymentTermsOf, quoteLine, readBuyerFields, readCassa, readLines, readNatura, readOrder, readPayment, readRitenuta, readVatRate, withRates } from "./sales-invoice-input.ts";
 import { draftAnswer, fenced } from "./sales-invoice-render.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 /** Where a draft's lines and customer come from, before the person's own fields. */
 type Source = {
@@ -365,6 +366,9 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 	const year = Number(day.slice(0, 4));
 	const last = readLastNumber(args.last_number);
 	if (typeof last === "string") return last;
+	// The number the invoices go on from is the person's own word (ADR 0088).
+	const notPerson = last === undefined ? undefined : requirePersonFor(ctx, "fisso da che numero partono le fatture");
+	if (notPerson !== undefined) return notPerson;
 	const first = await firstOfYear(env, book, ctx, day, company?.vat, last);
 	if (first.ask !== undefined) missing.invoice.push(first.ask);
 	// With a question the notes are not said: the file a proposed number comes from goes with it.

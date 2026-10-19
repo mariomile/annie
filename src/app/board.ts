@@ -47,7 +47,7 @@ export function startBoard(w: BoardWiring): BoardWork {
 			return (await channel.createThread(personId, title)).id;
 		},
 		post: async (agent, threadId, personId, text) => {
-			await consoleOf(agent).post(threadId, personId, text);
+			await consoleOf(agent).post(threadId, personId, text, { origin: "scheduled" });
 		},
 	});
 	// «Esegui da solo» (ADR 0061): each reply in the conversation of a scheda may be followed by «go on».

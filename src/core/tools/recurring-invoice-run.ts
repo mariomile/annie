@@ -21,6 +21,7 @@
  * A draft made in place of another with sales_invoices (replace) keeps the first call as `origin`:
  * it is still this run's draft.
  */
+import type { ClientStore } from "../client-store.ts";
 import type { ToolContext } from "../engine.ts";
 import { todayIn } from "../italian-calendar.ts";
 import { listLines } from "../price-list-lines.ts";
@@ -28,6 +29,7 @@ import { centsDecimal, halfUp, scaled } from "../quote-sums.ts";
 import type { RecurringBook, RecurringStore } from "../recurring-invoice-store.ts";
 import { type Billed, CADENCES, canoneKey, duePeriod, filled, hasPlaceholder, longestLabel, type RecurringCustomer, type RecurringLine, type Run, runMonths, rangeLabel, type Schedule, scheduleNumber, TELL_TRIES } from "../recurring-invoices.ts";
 import { FIELD_LIMITS } from "../sales-invoice-rules.ts";
+import type { SalesInvoiceStore } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { type SalesInvoice, SalesInvoiceError } from "../sales-invoices.ts";
 import { failedNotice, readyNotice } from "./recurring-invoice-render.ts";
@@ -49,11 +51,14 @@ export type RecurringEnv = {
 	readonly log?: (message: string) => void;
 };
 
+/** What the lineage of the drafts reads: the sales store, and the client cards (a card's own tax ids). The cash-flow forecast reads it too. */
+export type SalesReads = { readonly sales: { readonly store: Pick<SalesInvoiceStore, "read">; readonly clients?: Pick<ClientStore, "read"> } };
+
 /** The first call id of a period's draft; a draft made again after the person removed it takes «:2», «:3»… */
 export const draftCallId = (s: Pick<Schedule, "id">, period: string) => `recurring:${s.id}:${period}`;
 
 /** A call id for a period's draft that the sales store has never seen (a removed draft's call stays there). */
-export function freshCall(env: Pick<RecurringEnv, "sales">, s: Pick<Schedule, "id">, period: string): string {
+export function freshCall(env: SalesReads, s: Pick<Schedule, "id">, period: string): string {
 	const base = draftCallId(s, period);
 	const book = env.sales.store.read();
 	const used = new Set([...book.calls, ...book.invoices.flatMap((i) => (i.origin === undefined ? [i.callId] : [i.callId, i.origin]))]);
@@ -67,12 +72,12 @@ export function freshCall(env: Pick<RecurringEnv, "sales">, s: Pick<Schedule, "i
 const madeBy = (i: SalesInvoice, call: string) => i.callId === call || i.origin === call;
 
 /** The sales invoice (draft or issued) a call made, or the one made in its place, when it is still there. */
-export function invoiceOf(env: Pick<RecurringEnv, "sales">, call: string): SalesInvoice | undefined {
+export function invoiceOf(env: SalesReads, call: string): SalesInvoice | undefined {
 	return env.sales.store.read().invoices.find((i) => madeBy(i, call));
 }
 
 /** A run whose draft the person removed (never an issued invoice: that is never removed). Unknown when the sales store does not read. */
-export function draftGone(env: Pick<RecurringEnv, "sales">, r: Run): boolean {
+export function draftGone(env: SalesReads, r: Run): boolean {
 	if (r.state !== "drafted") return false;
 	const book = env.sales.store.read();
 	return !book.broken && !book.invoices.some((i) => madeBy(i, r.call));
@@ -85,7 +90,7 @@ type Who = Pick<RecurringCustomer, "name" | "card" | "vat" | "cf">;
  * card's own tax ids count, so a card on one side and its partita IVA on the other match); by name
  * only when neither has any.
  */
-export function sameCustomer(env: Pick<RecurringEnv, "sales">, a: Who, b: Who): boolean {
+export function sameCustomer(env: SalesReads, a: Who, b: Who): boolean {
 	const cardBook = a.card === undefined && b.card === undefined ? undefined : env.sales.clients?.read();
 	const cards = cardBook === undefined || cardBook.broken ? [] : cardBook.cards;
 	const ids = (c: Who) => {
@@ -107,14 +112,14 @@ export function sameCustomer(env: Pick<RecurringEnv, "sales">, a: Who, b: Who): 
  * still there: the same customer and the same canone (lines and cadence) added again after it was
  * removed; never another canone of the customer, never one that was there already.
  */
-export function billedFor(env: Pick<RecurringEnv, "sales">, book: Pick<RecurringBook, "billed">, s: Pick<Schedule, "id" | "customer" | "lines" | "terms" | "cadence">): Billed[] {
+export function billedFor(env: SalesReads, book: Pick<RecurringBook, "billed">, s: Pick<Schedule, "id" | "customer" | "lines" | "terms" | "cadence">): Billed[] {
 	const key = canoneKey(s);
 	const n = scheduleNumber(s.id);
 	return book.billed.filter((b) => b.canone === key && b.after !== undefined && n >= b.after && sameCustomer(env, b.customer, s.customer) && invoiceOf(env, b.call) !== undefined);
 }
 
 /** The months covered for a schedule: its runs (all but those `skip` leaves out) and the drafts still there of one removed for the same customer. */
-export function coveredMonths(env: Pick<RecurringEnv, "sales">, book: Pick<RecurringBook, "runs" | "billed">, s: Schedule, skip: (r: Run) => boolean = () => false): Set<string> {
+export function coveredMonths(env: SalesReads, book: Pick<RecurringBook, "runs" | "billed">, s: Schedule, skip: (r: Run) => boolean = () => false): Set<string> {
 	const covered = new Set<string>();
 	for (const r of book.runs) if (r.schedule === s.id && !skip(r)) for (const m of runMonths(r)) covered.add(m);
 	for (const b of billedFor(env, book, s)) for (const m of runMonths(b)) covered.add(m);

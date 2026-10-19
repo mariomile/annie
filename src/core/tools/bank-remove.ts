@@ -15,6 +15,7 @@ import { isProblem } from "../text-input.ts";
 import { fenced, readIds } from "./bank-input.ts";
 import { signed } from "./bank-render.ts";
 import type { BankDeps } from "./bank-tools.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 /** Whether a movement's live match wrote another register: confirmed, or an invoice marked by itself. */
 function wrote(m: BankMatch | undefined): boolean {
@@ -48,6 +49,9 @@ export async function sameOp(d: BankDeps, args: Record<string, unknown>, ctx: To
 	if (wrote(live.get(older.id)) && wrote(live.get(newer.id))) return `Errore: ${older.id} e ${newer.id} sono confermati tutti e due (fatture segnate o spese registrate): non tolgo niente da qui.`;
 	const [kept, copy] = wrote(live.get(newer.id)) ? [newer, older] : [older, newer];
 	if (args.confirm !== true) return [`Tolgo ${copy.id} come copia di ${kept.id}, con le sue proposte:`, fenced([row(copy), row(kept)].join("\n")), "Chiedi a chi ti scrive se sono proprio lo stesso movimento; solo dopo il sì ripeti con confirm true."].join("\n");
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+	const notPerson = requirePersonFor(ctx, "tolgo il movimento doppio");
+	if (notPerson !== undefined) return notPerson;
 	await ctx.step("apply", async () => {
 		// The kept one stands for the copy from now on: its hash and its imports, so loading that file again brings nothing back.
 		d.store.update(ctx.callId, (s) => {
@@ -84,6 +88,9 @@ export async function removeImportOp(d: BankDeps, args: Record<string, unknown>,
 	const staying = home.size === 0 ? "" : `; ${home.size === 1 ? "uno resta perché c'è" : `${home.size} restano perché ci sono`} anche in ${homes.join(", ")}`;
 	const what = `l'estratto conto ${record.id} (${withDate("dal", record.from)} ${withDate("al", record.to)}, ${mine.length === 1 ? "un movimento" : `${mine.length} movimenti`} portati da quel file${staying})`;
 	if (args.confirm !== true) return `Tolgo ${what}, con le loro proposte. Chiedi a chi ti scrive se va bene; solo dopo il sì ripeti con confirm true.`;
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+	const notPerson = requirePersonFor(ctx, "tolgo l'estratto conto");
+	if (notPerson !== undefined) return notPerson;
 	await ctx.step("apply", async () => {
 		d.store.update(ctx.callId, (s) => {
 			const rest = without(s, new Set(gone.map((m) => m.id)));

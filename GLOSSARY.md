@@ -317,6 +317,10 @@ _Avoid_: tetto di spesa, target (per il budget)
 Un canone che la persona fattura sempre allo stesso cliente (RI-NNNN) ogni mese, bimestre, trimestre, semestre o anno; Annie ne prepara la bozza a ogni periodo e avvisa, l'emissione resta della persona. Vedi ADR 0087.
 _Avoid_: abbonamento (per i canoni che fattura la persona: gli abbonamenti che paga sono i rinnovi)
 
+**Origine del turno**:
+Da dove nasce un turno di Annie: un messaggio della persona, un avviso, un'attività programmata o un altro agente. Le azioni che non si annullano si confermano solo nei turni della persona. Vedi ADR 0088.
+_Avoid_: mittente (per l'origine)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

@@ -43,7 +43,7 @@ const PDF_HEAD = "%PDF-1.7\n";
 /** A document that reads as a PDF, its text after the header: no worker needed. */
 const pdfMake = async (input: MakeInput) => ({ data: new Uint8Array(Buffer.from(`${PDF_HEAD}${input.text}`)), pages: 1, notes: [] });
 let calls = 0;
-const fresh = (thread: { channel: string; threadId: string } = { channel: "web", threadId: "t1" }): ToolContext => ({ step: (_k, work) => work(), progress: () => {}, signal: new AbortController().signal, callId: `qs${++calls}`, thread });
+const fresh = (thread: { channel: string; threadId: string } = { channel: "web", threadId: "t1" }): ToolContext => ({ step: (_k, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId: `qs${++calls}`, thread });
 
 function quoteMail(unavailable?: string, o: { capacity?: number; pending?: ReadonlySet<string> } = {}) {
 	const proposals: MailProposal[] = [];
@@ -145,6 +145,25 @@ describe("quotes op send", () => {
 		// The confirmation goes with the request: at approval a declined quote is sent only with it.
 		expect(proposals[0]?.quote?.confirmedDeclined).toBeUndefined();
 		expect(proposals[1]?.quote?.confirmedDeclined).toBe(true);
+	});
+
+	it("week 68: sending an expired or declined quote anyway is a person's own word, never a notice, a schedule or another agente (ADR 0088)", async () => {
+		const clock = { now: NOW };
+		const { mail, proposals } = quoteMail();
+		const { run } = quotes(mail, clock);
+		await run({ ...CREATE, email: "a@b.example" });
+		await run({ ...CREATE, customer: "Gialli Srl", email: "g@b.example" });
+		await run({ op: "set_status", number: "2", status: "declined" });
+		clock.now = new Date("2026-12-01T08:00:00Z");
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			const c = { ...fresh(), origin };
+			expect(await run({ op: "send", number: "1", confirm_expired: true }, c)).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(await run({ op: "send", number: "1" }, c)).toContain("è scaduto il 17/11/2026");
+		}
+		clock.now = NOW;
+		for (const origin of ["notice", "scheduled", "agent"] as const) expect(await run({ op: "send", number: "2", confirm_declined: true }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+		expect(proposals).toEqual([]);
+		expect(await run({ op: "send", number: "2", confirm_declined: true })).toContain("Richiesta req1 pronta");
 	});
 
 	it("at approval: a quote declined since is not sent, unless the request was confirmed so; replaced, not sent", async () => {

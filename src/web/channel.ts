@@ -130,8 +130,8 @@ export class WebChannel implements ChannelAdapter {
 	 * A person writes in their thread. Rejects if the core does not admit it. `command`: their own
 	 * words, when `text` wraps them (a stanza's seat).
 	 */
-	async post(threadId: string, personId: string, text: string, more: { readonly attachments?: InboundMessage["attachments"]; readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[]; readonly command?: string } = {}): Promise<WebEntry> {
-		const { attachments, images = [], command } = more;
+	async post(threadId: string, personId: string, text: string, more: { readonly attachments?: InboundMessage["attachments"]; readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[]; readonly command?: string; readonly origin?: InboundMessage["origin"] } = {}): Promise<WebEntry> {
+		const { attachments, images = [], command, origin } = more;
 		const thread = await this.thread(threadId);
 		if (thread === undefined || thread.personId !== personId) throw new Error("No such thread");
 		if (this.handler === undefined) throw new Error("Web channel not connected");
@@ -155,6 +155,7 @@ export class WebChannel implements ChannelAdapter {
 			...(attachments === undefined ? {} : { attachments }),
 			...(images.length === 0 ? {} : { images }),
 			...(command === undefined ? {} : { command }),
+			...(origin === undefined ? {} : { origin }),
 			});
 			await this.append(threadId, entry);
 			const title = thread.title === "Nuova chat" ? (text.trim() !== "" ? chatTitle(text) : images.length > 0 ? "Foto" : thread.title) : thread.title;

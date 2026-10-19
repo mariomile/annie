@@ -673,6 +673,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					taxes: runtime.taxes(record.tenantId, record.id),
 					vat: runtime.vat(record.tenantId, record.id),
 					sales: runtime.salesInvoices(record.tenantId, record.id),
+					// The canoni not drafted yet (ADR 0088), with what their drafts read.
+					recurring: runtime.recurringInvoices(record.tenantId, record.id),
+					priceList: runtime.priceList(record.tenantId, record.id),
+					clients: runtime.clients(record.tenantId, record.id),
 					timeZone: config.timeZone,
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					record: async (event) => {

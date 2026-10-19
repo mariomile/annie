@@ -137,5 +137,6 @@ export async function relayAgentAnswer(
 		messageId: `agente:${record.id}:${answer.key}`,
 		text: agentReplyText({ id: record.id, name: record.name }, { ...(answer.text === undefined ? {} : { text: answer.text }), ...(file === undefined ? {} : { file }) }),
 		event: { source: "agent", from: record.id, ...(file === undefined ? {} : { file: true }) },
+		origin: "agent",
 	});
 }

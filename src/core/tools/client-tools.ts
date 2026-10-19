@@ -37,6 +37,7 @@ import { agendaAnswer, briefAnswer, cardLines, clientsCsv, dormantAgentAnswer, d
 import { line, textOf } from "./field-input.ts";
 import { isProblem } from "../text-input.ts";
 import type { ReminderSeam } from "./schedule-tools.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 export { reminderInstruction } from "./client-follow-ups.ts";
 
@@ -472,6 +473,9 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 				fenced(mergeLines(a, b, (c) => invoicedEver(c).taxable).join("\n")),
 			].join("\n");
 		}
+		// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+		const notPerson = requirePersonFor(ctx, "unisco i due clienti");
+		if (notPerson !== undefined) return notPerson;
 		await ctx.step("apply", async () => {
 			store.update(ctx.callId, (state) => merged(state, a, b, (s, name, client) => newCard(s, name, client, ctx), marker(ctx)));
 			return true;

@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
 import { ConnectorActionStore } from "./connector-actions.ts";
 import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession } from "./engine.ts";
+import type { TurnOrigin } from "./turn-origin.ts";
 import { IMAGE_LIMITS, imageProblem, imageType } from "./images.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
@@ -57,6 +58,12 @@ export type SubmitRequest = {
 	readonly images?: readonly { readonly path: string; readonly data: Uint8Array }[];
 	/** The person's own words when `text` wraps them in more (a stanza, ADR 0063): skill commands are read from these. */
 	readonly command?: string;
+	/**
+	 * Not a person's turn although it comes in through a person's chat (ADR 0088): an agente that
+	 * called this one in a stanza (`agent`), the board's own work (`scheduled`). Without it, a
+	 * person's; on the agenti's channel always `agent`.
+	 */
+	readonly origin?: Exclude<TurnOrigin, "person">;
 };
 
 export type Reply = {
@@ -351,7 +358,8 @@ export class AnnieRuntime {
 	}
 
 	/** Something that happened for a conversation (the outcome of an approved action), for the instance to report there. */
-	async submitNotice(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean> }): Promise<{ submissionId: string }> {
+	/** `origin`: a notice from the instance's own work (default), or another agente's answer (`agent`). */
+	async submitNotice(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean>; origin?: "notice" | "agent" }): Promise<{ submissionId: string }> {
 		return (await this.openInstance(tenant, instance)).submitNotice(request);
 	}
 
@@ -622,8 +630,12 @@ export class AnnieInstance {
 			this.memory.participants.clear(key);
 			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)), this.memory.store.archivedFor(SHARED));
 		}
-		const text = await this.withSkills(request, privateThread === true);
-		return this.admit({ ...message, text: `${text}${skipped}${note}` }, images);
+		const { origin: given, ...said } = message;
+		// Another agente's words are never the person's, whatever the request says.
+		const origin: TurnOrigin = request.channel === AGENT_CHANNEL ? "agent" : (given ?? "person");
+		// Only a person's own words run a skill or turn a draft on (ADR 0059, 0088): never the board's, a stanza's agente's.
+		const text = origin === "person" ? await this.withSkills(request, privateThread === true) : request.text;
+		return this.admit({ ...said, text: `${text}${skipped}${note}` }, origin, images);
 	}
 
 	/**
@@ -705,7 +717,7 @@ export class AnnieInstance {
 		// So the tools know whom the thread is with even before the person writes in it (a brief's).
 		if (subject !== undefined) this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
 		const note = memoryNote(this.memory.store.forSubject(subject ?? SHARED), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject ?? SHARED));
-		return this.admit({ ...request, text: `${request.text}${note}` });
+		return this.admit({ ...request, text: `${request.text}${note}` }, "scheduled");
 	}
 
 	/**
@@ -713,7 +725,7 @@ export class AnnieInstance {
 	 * approved): not from a person, so no allowlist, but the channel must still be allowed.
 	 * `messageId` makes it idempotent.
 	 */
-	async submitNotice(request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean> }): Promise<{ submissionId: string }> {
+	async submitNotice(request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean>; origin?: "notice" | "agent" }): Promise<{ submissionId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
 		try {
@@ -725,7 +737,8 @@ export class AnnieInstance {
 			throw error;
 		}
 		await this.audit.append({ ...request.event, type: "notice.submitted", instanceId: this.record.id, channel: request.channel, threadId: request.threadId });
-		return this.admit(request);
+		const { origin = "notice", ...notice } = request;
+		return this.admit(notice, origin);
 	}
 
 	/**
@@ -744,9 +757,10 @@ export class AnnieInstance {
 		await this.audit.append({ type: "chat.model.updated", instanceId: this.record.id, channel, threadId, by, ...(model === undefined ? {} : { modelProvider: model.provider, modelId: model.modelId }) });
 	}
 
-	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }, images: readonly EngineImage[] = []): Promise<{ submissionId: string }> {
+	/** Into the engine, with where the turn comes from (ADR 0088): its tools read it as ctx.origin, also after a restart. */
+	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }, origin: TurnOrigin, images: readonly EngineImage[] = []): Promise<{ submissionId: string }> {
 		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
-		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId, images);
+		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId, images, origin);
 		// Record the admitted submission in the outbox: if the process dies after the engine
 		// has answered and before the reply is in the outbox, resume() reattaches it by ID.
 		const key = this.replyKey(submissionId);

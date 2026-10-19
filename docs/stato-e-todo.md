@@ -4,7 +4,7 @@ Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 67, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 68, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -106,6 +106,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Schede dei fornitori: spesa contata una volta da fatture, spese e rinnovi, fatture aperte, giorni di pagamento e ritardi, abbonamenti, referenti e note, e l'avviso quando un IBAN da pagare è diverso da quelli già pagati o un fornitore ha lo stesso nome di un altro (settimana 65, [week65.md](week65.md), [ADR 0085](adr/0085-schede-dei-fornitori.md))
 - [x] Budget e obiettivi: limiti di spesa per categoria, fornitore o tutto e obiettivi di fatturato o incassato, con la stima a fine periodo e l'avviso nel brief una volta per soglia (settimana 66, [week66.md](week66.md), [ADR 0086](adr/0086-budget-e-obiettivi.md))
 - [x] Fatture ricorrenti: per i canoni dei clienti Annie prepara la bozza a ogni periodo e avvisa, senza doppioni e senza mesi persi, con i periodi saltati da recuperare; l'emissione resta della persona (settimana 67, [week67.md](week67.md), [ADR 0087](adr/0087-fatture-ricorrenti.md))
+- [x] Conferme solo dalla persona: emettere, applicare la banca, unire, cambiare prezzi e numerazione si confermano solo da un messaggio della persona, mai da un avviso, un'attività o un altro agente; i canoni nella previsione di cassa (settimana 68, [week68.md](week68.md), [ADR 0088](adr/0088-conferme-solo-dalla-persona.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))

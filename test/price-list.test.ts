@@ -32,7 +32,7 @@ import { Workspace } from "../src/core/workspace.ts";
 const NOW = new Date("2026-10-19T08:00:00Z");
 const SELLER_VAT = "IT00000010017";
 let calls = 0;
-const fresh = (thread = { channel: "test", threadId: "t1" }, callId = `p${++calls}`): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (thread = { channel: "test", threadId: "t1" }, callId = `p${++calls}`): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 const agent = () => fresh({ channel: AGENT_CHANNEL, threadId: "a1" });
 /** A call whose finished steps give back their stored result when it runs again, as the durable engine does after a crash. */
 const durable = (callId = `d${++calls}`): ToolContext => {
@@ -44,7 +44,7 @@ const durable = (callId = `d${++calls}`): ToolContext => {
 			done.set(key, value);
 			return value;
 		},
-		progress: () => {},
+		progress: () => {}, origin: "person",
 		signal: new AbortController().signal,
 		callId,
 		thread: { channel: "test", threadId: "t1" },
@@ -284,6 +284,24 @@ describe("listino: price_change, a preview then the yes", () => {
 		expect(await s.run({ op: "price_change", id: "LS-0004", amount: -100 })).toContain("andrebbero a zero o sotto");
 		expect(await s.run({ op: "price_change", all: true, id: "LS-0004", percent: 5 })).toContain("non tutti e due");
 		expect(s.events.filter((e) => e.op === "price_change")).toEqual([{ type: "price_list.changed", op: "price_change", count: 5 }]);
+	});
+});
+
+describe("listino: week 68, the yes is a person's own message (ADR 0088)", () => {
+	it("price_change and import with the check are refused in a notice, a schedule or another agente's turn; the previews still come", async () => {
+		const s = await stocked();
+		const check = /check «([0-9a-f]{8})»/.exec(await s.run({ op: "price_change", all: true, percent: 5 }, { ...fresh(), origin: "agent" }))?.[1] as string;
+		expect(check).toMatch(/^[0-9a-f]{8}$/);
+		writeFileSync(join(s.root, "listino.csv"), "Nome;Prezzo;IVA\r\nLogo;300,00;22\r\n");
+		const importCheck = /check «([0-9a-f]{8})»/.exec(await s.run({ op: "import", path: "listino.csv" }, { ...fresh(), origin: "notice" }))?.[1] as string;
+		expect(importCheck).toMatch(/^[0-9a-f]{8}$/);
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(await s.run({ op: "import", path: "listino.csv", confirm: true, check: importCheck }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+		}
+		expect(s.store.read().items.map((i) => i.price)).toEqual(["500", "1500", "4000", "60", "24.4"]);
+		expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check })).toContain("Fatto: nuovi prezzi per 5 voci.");
+		expect(await s.run({ op: "import", path: "listino.csv", confirm: true, check: importCheck })).toContain("Fatto: aggiunte al listino 1 voce");
 	});
 });
 

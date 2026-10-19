@@ -14,6 +14,7 @@ import { sameDraft } from "./field-input.ts";
 import { isProblem } from "../text-input.ts";
 import { applyFields, editsSomething, readFields, readPeriodAmount } from "./renewal-input.ts";
 import { briefAnswer, fenced, listAnswer, renewalLine, renewalsCsv, summaryAnswer, upcomingAnswer} from "./renewal-render.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 
 const RENEWAL_OPS = ["add", "list", "upcoming", "summary", "renewed", "paid", "cancel", "reactivate", "edit", "remove", "export"] as const;
@@ -134,6 +135,11 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 				// Another agente's request is not the person's word: it reads, it never records, changes or writes a file.
 				if (ctx.thread?.channel === AGENT_CHANNEL && !renewalCallReads(args)) {
 					return "Errore: in una richiesta di un altro agente non aggiungo, non cambio e non esporto rinnovi: lo fa chi ti scrive, nella sua conversazione.";
+				}
+				// Cancelled or removed only when the person asks, in their own message (ADR 0088).
+				if (op === "cancel" || op === "remove") {
+					const notPerson = requirePersonFor(ctx, op === "cancel" ? "disdico il rinnovo" : "tolgo il rinnovo");
+					if (notPerson !== undefined) return notPerson;
 				}
 				try {
 					switch (op) {

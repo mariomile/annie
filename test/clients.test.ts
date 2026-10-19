@@ -37,7 +37,7 @@ const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
 const dayOf = dayOfIn("Europe/Rome");
 let calls = 0;
-const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, thread });
+const fresh = (callId = `c${++calls}`, thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, thread });
 const agent = () => fresh(undefined, { channel: AGENT_CHANNEL, threadId: "a1" });
 
 const dirs: string[] = [];
@@ -616,6 +616,19 @@ describe("clients: ricontatti through the tasks programmati", () => {
 });
 
 describe("clients: merge and remove", () => {
+	it("week 68: the merge's yes is a person's own message, never a notice, a schedule or another agente (ADR 0088)", async () => {
+		const s = await setup();
+		await s.run({ op: "upsert", client: "Studio Bianchi", contact: { name: "Anna", phone: "+39 02 1234567" } });
+		await s.run({ op: "note", client: "Bianchi Mario", note: "conosciuto alla fiera" });
+		for (const origin of ["notice", "scheduled", "agent"] as const) {
+			const out = await s.run({ op: "merge", client: "Bianchi Mario", into: "Studio Bianchi", confirm: true }, { ...fresh(), origin });
+			expect(out).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(s.store.read().cards).toHaveLength(2);
+		}
+		expect(await s.run({ op: "merge", client: "Bianchi Mario", into: "Studio Bianchi" }, { ...fresh(), origin: "notice" })).toContain("Chiedi conferma a chi ti scrive");
+		expect(await s.run({ op: "merge", client: "Bianchi Mario", into: "Studio Bianchi", confirm: true })).toContain("Fatto, ho unito i due clienti");
+	});
+
 	it("#13 merge shows VAT, invoiced and «nessun …», joins only with the confirmation, refuses two partite IVA or codici fiscali", async () => {
 		const s = await setup();
 		await s.run({ op: "upsert", client: "Studio Bianchi", contact: { name: "Anna", phone: "+39 02 1234567" } });

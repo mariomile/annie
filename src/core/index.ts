@@ -38,4 +38,3 @@ export {
 export { DEFAULT_MODEL_ROLES, FAUX_MODEL_ROLES, roleModel, type ModelRoles } from "./model-routing.ts";
 export { createMailTools } from "./tools/mail-tools.ts";
 export { createCrmTools } from "./tools/crm-tools.ts";
-export { createApprovalTools } from "./tools/approval-tools.ts";

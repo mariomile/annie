@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
+import { CashflowStore } from "../src/core/cashflow-store.ts";
+import { ExpenseStore } from "../src/core/expense-store.ts";
+import { RenewalStore } from "../src/core/renewal-store.ts";
+import { createCashflowTools } from "../src/core/tools/cashflow-tools.ts";
 import type { ClientCard } from "../src/core/clients.ts";
 import { documentFattura } from "../src/core/documents.ts";
 import type { ToolContext } from "../src/core/engine.ts";
@@ -38,7 +42,7 @@ const EM_DASH = /\u2014/;
 
 let calls = 0;
 const THREAD = { channel: "test", threadId: "t1" };
-const fresh = (callId = `c${++calls}`, thread: ToolContext["thread"] = THREAD): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, signal: new AbortController().signal, callId, ...(thread === undefined ? {} : { thread }) });
+const fresh = (callId = `c${++calls}`, thread: ToolContext["thread"] = THREAD): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin: "person", signal: new AbortController().signal, callId, ...(thread === undefined ? {} : { thread }) });
 const agent = () => fresh(undefined, { channel: AGENT_CHANNEL, threadId: "a1" });
 
 const dirs: string[] = [];
@@ -880,5 +884,178 @@ describe("the tool", () => {
 		await known(s);
 		const answer = await s.sales({ op: "draft", customer: "Delta Servizi Srl", lines: [{ description: "A", price: 10 }], vat: 22, notes: "n".repeat(300) });
 		expect(answer).toContain("il testo delle note è troppo lungo");
+	});
+});
+
+describe("recurring invoices: the standing schedule is a person's own word (ADR 0088)", () => {
+	it("add, change, resume, run_now and remove are refused in a notice, a schedule or another agente's turn; pause is not", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		const refused = /serve il sì di chi ti scrive|lo conferma solo chi ti scrive/;
+		for (const origin of ["notice", "scheduled"] as const) {
+			const c = () => ({ ...fresh(), origin });
+			expect(await s.run({ ...CANONE, lines: [{ description: "Hosting", price: 50 }] }, c())).toMatch(refused);
+			expect(await s.run({ op: "change", id: "RI-0001", lines: [{ description: "Canone", price: 900 }] }, c())).toMatch(refused);
+			expect(await s.run({ op: "run_now", id: "RI-0001" }, c())).toMatch(refused);
+			expect(await s.run({ op: "remove", id: "RI-0001" }, c())).toMatch(refused);
+			expect(await s.run({ op: "pause", id: "RI-0001" }, c())).toContain("in pausa");
+			expect(await s.run({ op: "resume", id: "RI-0001" }, c())).toMatch(refused);
+			expect(await s.run({ op: "resume", id: "RI-0001" })).not.toMatch(refused);
+		}
+		expect(s.recurring.read().schedules.map((x) => [x.id, x.status, x.lines[0]?.price])).toEqual([["RI-0001", "active", "300"]]);
+		expect(s.drafts()).toEqual([]);
+		expect(await s.run({ op: "run_now", id: "RI-0001" })).toContain("Fatto, ho preparato la bozza");
+	});
+});
+
+describe("recurring invoices in the previsione di cassa (ADR 0088)", () => {
+	function cash(s: ReturnType<typeof setup>) {
+		const store = new CashflowStore(s.dir);
+		const priceList = new PriceListStore(s.dir);
+		const [tool] = createCashflowTools({
+			workspace: new Workspace(join(s.dir, "workspace")),
+			store,
+			invoices: s.env.sales.company,
+			expenses: new ExpenseStore(s.dir),
+			renewals: new RenewalStore(s.dir),
+			timesheet: { read: () => ({ entries: [], timers: [], rates: [], reservations: [], broken: false }) },
+			sales: s.store,
+			recurring: s.recurring,
+			priceList,
+			clients: { read: () => ({ cards: s.cards.list, nextCard: 3, nextFollowUp: 1, calls: [], broken: false }) as never },
+			timeZone: "Europe/Rome",
+			whoIs: () => "test:u",
+			now: () => s.clock.now,
+		});
+		if (tool === undefined) throw new Error("no tool");
+		return async (args: Record<string, unknown>, c: ToolContext = fresh()) => String(await tool.execute(args, c));
+	}
+
+	const person = (): ToolContext => ({ ...fresh(), origin: "person" });
+	const canoni = (text: string) => text.split("\n").filter((l) => /: canone (di|del) /.test(l));
+	const FORECAST = { op: "forecast", horizon: "fine anno", include_average_spend: false };
+	const entrate = (text: string) => text.split("\n").find((l) => l.startsWith("Entrate "));
+
+	it("counted until issued: to prepare, then a draft to issue, then among the invoices to collect; once each", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		const before = await run(FORECAST);
+		// October is due now: its draft is made today, paid 30 days after today.
+		expect(canoni(before)).toEqual([
+			"• 17/11 entrata 366,00 €: canone di ottobre 2026 da Delta Servizi Srl (fattura ricorrente, da preparare)",
+			"• 01/12 entrata 366,00 €: canone di novembre 2026 da Delta Servizi Srl (fattura ricorrente, da preparare)",
+			"• 31/12 entrata 366,00 €: canone di dicembre 2026 da Delta Servizi Srl (fattura ricorrente, da preparare)",
+		]);
+		expect(entrate(before)).toBe("Entrate 1.098,00 €: canoni delle fatture ricorrenti 1.098,00 €.");
+		expect(before).toContain("• i canoni delle fatture ricorrenti attive contano prima di essere fatturati: come canone previsto, poi come bozza da emettere, poi tra le fatture da incassare; al totale con l'IVA, pagati alla scadenza della loro fattura\n• le bozze di una fattura ricorrente tolta del tutto non contano, come le bozze fatte a mano");
+		expect(before).not.toMatch(EM_DASH);
+		// The sweep drafts October: a draft to issue now, at its own total and due date, once.
+		expect(await s.sweep()).toBe(1);
+		const drafted = await run(FORECAST);
+		expect(canoni(drafted)[0]).toBe("• 17/11 entrata 366,00 €: canone di ottobre 2026 da Delta Servizi Srl (bozza da emettere)");
+		expect(canoni(drafted)).toHaveLength(3);
+		expect(entrate(drafted)).toBe("Entrate 1.098,00 €: bozze di canoni da emettere 366,00 €; canoni delle fatture ricorrenti 732,00 €.");
+		// Issued: among the invoices to collect, once; the canone no longer.
+		const id = s.drafts()[0]?.id as string;
+		expect(await s.sales({ op: "issue", draft: id, confirm: true }, person())).toContain("ho emesso la fattura");
+		const issued = await run(FORECAST);
+		expect(canoni(issued)).toHaveLength(2);
+		expect(issued).toContain("• 17/11 entrata 366,00 €: fatt. 1 da Delta Servizi Srl");
+		expect(entrate(issued)).toBe("Entrate 1.098,00 €: fatture da incassare 366,00 €; canoni delle fatture ricorrenti 732,00 €.");
+		// The cautious case of a what_if leaves both out, and says so.
+		const w = await run({ op: "what_if", amount: 100, date: "20/12/2026", name: "Stampante" });
+		expect(w).toContain("Senza contare fatture in ritardo, preventivi e canoni");
+		expect(w).toContain("732,00 € di canoni delle fatture ricorrenti");
+	});
+
+	it("a draft made in its place counts once, at its own amount; the same canone removed and added again too", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		await s.sales({ op: "draft", replace: "BZ-0002", ...DELTA, lines: [{ description: "Canone di manutenzione, ottobre 2026", price: 320 }], vat: 22 });
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		const out = await run(FORECAST);
+		expect(canoni(out).filter((l) => l.includes("ottobre"))).toEqual(["• 17/11 entrata 390,40 €: canone di ottobre 2026 da Delta Servizi Srl (bozza da emettere)"]);
+		expect(entrate(out)).toBe("Entrate 1.122,40 €: bozze di canoni da emettere 390,40 €; canoni delle fatture ricorrenti 732,00 €.");
+		// Removed and added again: October is still its one draft, never expected again.
+		await s.run({ op: "remove", id: "RI-0001" });
+		expect(await s.run(CANONE)).toContain("RI-0002");
+		const again = await run(FORECAST);
+		expect(canoni(again).filter((l) => l.includes("ottobre"))).toEqual(["• 17/11 entrata 390,40 €: canone di ottobre 2026 da Delta Servizi Srl (bozza da emettere)"]);
+		expect(entrate(again)).toBe("Entrate 1.122,40 €: bozze di canoni da emettere 390,40 €; canoni delle fatture ricorrenti 732,00 €.");
+	});
+
+	it("a recurring invoice removed for good: its draft no longer counts, as a draft made by hand", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		expect(entrate(await run(FORECAST))).toBe("Entrate 1.098,00 €: bozze di canoni da emettere 366,00 €; canoni delle fatture ricorrenti 732,00 €.");
+		await s.run({ op: "remove", id: "RI-0001" });
+		const out = await run(FORECAST);
+		expect(canoni(out)).toEqual([]);
+		expect(out).not.toContain("bozze di canoni");
+		expect(s.drafts()).toHaveLength(1);
+	});
+
+	it("never a paused one, nothing past its end or its number of invoices; a paused one's draft still counts", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		// Hosting ends with November: 61,00 € for October and November only.
+		await s.run({ ...CANONE, lines: [{ description: "Hosting", price: 50 }], end: "novembre 2026" });
+		// Two invoices in all: October and November, 122,00 € each.
+		await s.run({ ...CANONE, lines: [{ description: "Assistenza", price: 100 }], count: 2 });
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		// 3 × 366 + 2 × 61 + 2 × 122.
+		expect(entrate(await run(FORECAST))).toBe("Entrate 1.464,00 €: canoni delle fatture ricorrenti 1.464,00 €.");
+		await s.run({ op: "pause", id: "RI-0001" });
+		expect(entrate(await run(FORECAST))).toBe("Entrate 366,00 €: canoni delle fatture ricorrenti 366,00 €.");
+		await s.run({ op: "pause", id: "RI-0002" });
+		await s.run({ op: "pause", id: "RI-0003" });
+		expect(await run(FORECAST)).not.toContain("canoni delle fatture ricorrenti");
+		// Drafted before the pause: the draft is still to issue.
+		await s.run({ op: "resume", id: "RI-0001" });
+		await s.sweep();
+		await s.run({ op: "pause", id: "RI-0001" });
+		expect(entrate(await run(FORECAST))).toBe("Entrate 366,00 €: bozze di canoni da emettere 366,00 €.");
+	});
+
+	it("the customer's kind from the card's own ids: a codice fiscale alone is a private person, no ritenuta", async () => {
+		const s = setup();
+		await known(s);
+		s.store.update("ritenuta", (st) => ({ ...st, settings: { ...(st.settings as object), ritenutaToBusiness: true } as never }));
+		await s.run(CANONE);
+		await s.run({ ...CANONE, customer: "Mario Bianchi", cf: "XQZKWJ80A41H501T", address: "Via Roma 3, 20121 Milano MI" });
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		const out = canoni(await run({ ...FORECAST, horizon: "fine novembre" }));
+		// A company: 300 + IVA 66 − ritenuta 60.
+		expect(out.filter((l) => l.includes("Delta"))).toEqual(["• 17/11 entrata 306,00 €: canone di ottobre 2026 da Delta Servizi Srl (fattura ricorrente, da preparare)"]);
+		expect(out.filter((l) => l.includes("Bianchi"))).toEqual(["• 17/11 entrata 366,00 €: canone di ottobre 2026 da Mario Bianchi (fattura ricorrente, da preparare)"]);
+	});
+
+	it("another agente: the canoni with no customer, and the recurring invoices still as totals only", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		const out = await run(FORECAST, agent());
+		expect(out).not.toContain("Delta");
+		expect(canoni(out)).toEqual(["• 17/11 entrata 366,00 €: canone di ottobre 2026", "• 01/12 entrata 366,00 €: canone di novembre 2026", "• 31/12 entrata 366,00 €: canone di dicembre 2026"]);
+		expect(out).toContain("bozze di canoni da emettere 366,00 €");
+		expect(out).not.toMatch(EM_DASH);
+		expect(await s.run({ op: "list", customer: "Delta" }, agent())).toContain("Errore");
 	});
 });

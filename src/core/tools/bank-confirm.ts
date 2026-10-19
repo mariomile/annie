@@ -19,6 +19,7 @@ import { isProblem } from "../text-input.ts";
 import { fenced, readIds } from "./bank-input.ts";
 import { isWeak, markedWords, signed, twins } from "./bank-render.ts";
 import type { BankDeps } from "./bank-tools.ts";
+import { requirePersonFor } from "../turn-origin.ts";
 
 /** A movement and what the person (or the setting) chose for it. */
 export type ChosenMatch = { readonly movement: BankMovement; readonly target: MatchTarget; readonly strong?: true };
@@ -141,6 +142,9 @@ export async function confirmOp(d: BankDeps, args: Record<string, unknown>, ctx:
 	const weakLines = weak.length === 0 ? [] : [`${weak.length === 1 ? "Questa proposta coincide solo per l'importo: non la confermo" : "Queste proposte coincidono solo per l'importo: non le confermo"} insieme alle altre. Chiedi a chi ti scrive una per una, con l'importo e il giorno; dopo il sì su una, ripeti con quell'id e weak_ok true.`, fenced(weak.join("\n"))];
 	if (chosen.length === 0) return [notes.length === 0 && weak.length === 0 ? "Non ci sono proposte da confermare." : "Non ho confermato niente.", ...notes, ...weakLines].join("\n");
 	if (chosen.length > BANK_LIMITS.batch) return `Errore: al più ${BANK_LIMITS.batch} conferme alla volta: dai gli ids.`;
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+	const notPerson = requirePersonFor(ctx, "confermo gli abbinamenti della banca (fatture segnate pagate o incassate)");
+	if (notPerson !== undefined) return notPerson;
 	const r = await applyPicks(d, ctx, chosen, "confirmed", ctx.callId);
 	if (r.done.length > 0) {
 		await d.audit(ctx, "confirm", r.done.length);
@@ -209,6 +213,9 @@ export async function toExpenseOp(d: BankDeps, args: Record<string, unknown>, ct
 	if (args.confirm !== true) {
 		return [`Registrerei ${plan.length === 1 ? "questa spesa" : `queste ${plan.length} spese`}, con il giorno e l'importo della banca:`, fenced(plan.map(line).join("\n")), `Chiedi a chi ti scrive se va bene; solo dopo il sì ripeti con confirm true.${plan.some((p) => p.warn !== "") ? " Quelle con «chiedi prima» le registro solo se lo conferma per ognuna: ripeti con i loro ids, confirm true e anyway true." : ""}`].join("\n");
 	}
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+	const notPerson = requirePersonFor(ctx, "registro le spese dall'estratto conto");
+	if (notPerson !== undefined) return notPerson;
 	const held = plan.filter((p) => p.warn !== "" && args.anyway !== true);
 	const made: { id: string; expense: string; label: string }[] = [];
 	const problems: string[] = [];
@@ -286,6 +293,9 @@ export async function setBalanceOp(d: BankDeps, args: Record<string, unknown>, c
 		const head = newer === undefined ? `Il saldo finale dell'estratto conto è ${amountText} ${withDate("al", closing.date)}. Chiedi a chi ti scrive se vuole salvarlo come saldo della previsione di cassa; solo dopo il sì ripeti con confirm true.` : `Il saldo finale dell'estratto conto è ${amountText} ${withDate("al", closing.date)}. Hai già un saldo più recente (${newerAmount} ${short(newer.date)}): salvare quello di ${MONTH_NAMES[Number(closing.date.slice(5, 7)) - 1]} non cambia la previsione, non serve.`;
 		return [head, ...markLines].join("\n");
 	}
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+	const notPerson = requirePersonFor(ctx, "salvo il saldo dall'estratto conto");
+	if (notPerson !== undefined) return notPerson;
 	if (closing.date > d.today()) throw new BankError("il saldo dell'estratto conto ha una data futura: non lo salvo");
 	await ctx.step("cashflow", async () => {
 		d.options.cashflow.setBalance({ amount: closing.amount, date: closing.date, by: d.who(ctx), at: d.now().toISOString(), callId: ctx.callId, source: "bank" }, undefined);

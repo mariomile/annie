@@ -20,6 +20,7 @@ import { daysBetween, weekdayOf } from "../italian-calendar.ts";
 import { capitalized, dayMonth, italianDate, withDate, withNearDate, withShortDate } from "../italian-format.ts";
 import { scaled } from "../quote-sums.ts";
 import { frequencyText } from "../renewal-dates.ts";
+import { ofLabel } from "../recurring-invoices.ts";
 import { renewalName } from "../renewals.ts";
 import { fence } from "../untrusted.ts";
 import { docShort, otherParty, partyName, to } from "./invoice-words.ts";
@@ -37,8 +38,9 @@ export function daysText(days: number): string {
 	return `${n1(days, "1 giorno", "# giorni")}, oggi compreso`;
 }
 
-/** What a movement is, to be fenced: «fatt. B-70 da Gamma Hotel (rata 1 di 2)», «fatt. 12 ad Alfa», «Canva Pro (rinnovo R-0002)», «Stipendio (voce C-0001)». */
-export function movementLabel(m: Movement, today: string, fullDates = false): string {
+/** What a movement is, to be fenced: «fatt. B-70 da Gamma Hotel (rata 1 di 2)», «fatt. 12 ad Alfa», «Canva Pro (rinnovo R-0002)», «Stipendio (voce C-0001)». `agent`: for another agente, with no name at all (agentLabel). */
+export function movementLabel(m: Movement, today: string, fullDates = false, agent = false): string {
+	if (agent) return agentLabel(m);
 	const short = (date: string) => (fullDates ? `il ${italianDate(date)}` : withShortDate("il", date, today));
 	const delayed = m.delayed === undefined ? "" : `, ${n1(m.delayed, "1 giorno", "# giorni")} dopo (ipotesi)`;
 	switch (m.source) {
@@ -62,12 +64,50 @@ export function movementLabel(m: Movement, today: string, fullDates = false): st
 			return "spesa media stimata";
 		case "tax":
 			return m.tax?.iva === true ? m.tax.what : `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
+		case "recurring":
+		case "recurring_draft": {
+			const c = m.canone;
+			if (c === undefined) return "canone";
+			return `canone ${ofLabel(c.label)} da ${c.customer} (${c.draft === undefined ? "fattura ricorrente, da preparare" : "bozza da emettere"})${delayed}`;
+		}
+	}
+}
+
+/**
+ * A movement for another agente: what it is, never whose (ADR 0088). A voce's name is the person's
+ * free text, so it is «voce»; an invoice keeps its number, a canone its months.
+ */
+function agentLabel(m: Movement): string {
+	const delayed = m.delayed === undefined ? "" : `, ${n1(m.delayed, "1 giorno", "# giorni")} dopo (ipotesi)`;
+	switch (m.source) {
+		case "invoice": {
+			const number = m.invoice?.doc.number;
+			const rata = m.instalment !== undefined && m.instalment.count > 1 ? ` (rata ${m.instalment.n} di ${m.instalment.count})` : "";
+			return `fattura da ${m.kind === "in" ? "incassare" : "pagare"}${number === undefined ? "" : ` n. ${number}`}${rata}${delayed}`;
+		}
+		case "quote":
+			return `preventivo accettato${delayed}`;
+		case "renewal":
+			return "rinnovo";
+		case "item":
+			return "voce";
+		case "whatif":
+			return "ipotesi, non salvata";
+		case "average":
+			return "spesa media stimata";
+		case "tax":
+			return m.tax?.iva === true ? m.tax.what : `tasse stimate (F24): ${m.tax?.what ?? "imposta e contributi"}`;
+		case "recurring":
+		case "recurring_draft":
+			return m.canone === undefined ? "canone" : `canone ${ofLabel(m.canone.label)}${delayed}`;
 	}
 }
 
 const SOURCE_WORDS: Partial<Readonly<Record<`${Kind}:${Source}`, string>>> = {
 	"in:invoice": "fatture da incassare",
 	"in:quote": "preventivi accettati",
+	"in:recurring": "canoni delle fatture ricorrenti",
+	"in:recurring_draft": "bozze di canoni da emettere",
 	"in:item": "voci aggiunte",
 	"in:whatif": "ipotesi",
 	"out:invoice": "fatture da pagare",
@@ -78,7 +118,7 @@ const SOURCE_WORDS: Partial<Readonly<Record<`${Kind}:${Source}`, string>>> = {
 	"out:whatif": "ipotesi",
 };
 
-const ORDER: readonly Source[] = ["invoice", "quote", "renewal", "item", "tax", "average", "whatif"];
+const ORDER: readonly Source[] = ["invoice", "recurring_draft", "recurring", "quote", "renewal", "item", "tax", "average", "whatif"];
 
 /** Everything around the projection that the answers say: where it starts, what was gathered, what is left out. */
 export type View = {
@@ -98,6 +138,10 @@ export type View = {
 	readonly maybe?: readonly Duplicate[];
 	readonly autoPaid: readonly Movement[];
 	readonly renewals?: RenewalFlows;
+	/** Canoni of the recurring invoices counted (to draft, or drafted and not issued). */
+	readonly canoni?: number;
+	/** For another agente: no name of anyone, only what each movement is (ADR 0088). */
+	readonly agent?: true;
 	readonly renewalsBroken: boolean;
 	readonly quotes?: QuoteFlows;
 	readonly quotesBroken: boolean;
@@ -251,8 +295,8 @@ function tableLines(p: Projection, today: string): string[] {
 }
 
 /** «• 18/10 entrata 1.220,00 €: fatt. B-70 da Gamma Hotel», to be fenced. */
-function movementRow(m: Movement, today: string): string {
-	return `• ${dayMonth(m.date, today)} ${m.kind === "in" ? "entrata" : "uscita"} ${euros(m.cents)}: ${movementLabel(m, today)}`;
+function movementRow(m: Movement, today: string, agent = false): string {
+	return `• ${dayMonth(m.date, today)} ${m.kind === "in" ? "entrata" : "uscita"} ${euros(m.cents)}: ${movementLabel(m, today, false, agent)}`;
 }
 
 /** An instalment marked paid after the balance, to be fenced: what, how much, when it was marked. */
@@ -282,7 +326,17 @@ const staleOut = (v: View) => (v.invoices?.stale ?? []).filter((m) => m.kind ===
 /** Every list of the forecast that names someone, for its one fence. */
 function forecastSections(p: Projection, v: View): Section[] {
 	const today = v.today;
-	const row = (m: Movement) => movementRow(m, today);
+	const row = (m: Movement) => movementRow(m, today, v.agent === true);
+	// For another agente only the movements, with no name: the doubles and the old quotes name someone, their counts are said outside.
+	if (v.agent === true) {
+		return [
+			...section("Le entrate e le uscite più grandi:", p.top.map(row)),
+			...section("In ritardo da incassare:", (v.invoices?.late ?? []).map(row)),
+			...section("In ritardo da pagare:", (v.invoices?.latePay ?? []).map(row)),
+			...section(`Da incassare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleIn(v).map(row)),
+			...section(`Da pagare, scadute da più di ${STALE_OVERDUE_DAYS} giorni:`, staleOut(v).map(row)),
+		];
+	}
 	return [
 		...section("Le entrate e le uscite più grandi:", p.top.map(row)),
 		...section("Incassi segnati come pagati dopo il saldo:", (v.rolled?.incassi ?? []).map((r) => rolledRow(r, today, "in"))),
@@ -377,6 +431,7 @@ function assumptions(p: Projection, v: View): string[] {
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}
+	if ((v.canoni ?? 0) > 0) out.push("i canoni delle fatture ricorrenti attive contano prima di essere fatturati: come canone previsto, poi come bozza da emettere, poi tra le fatture da incassare; al totale con l'IVA, pagati alla scadenza della loro fattura", "le bozze di una fattura ricorrente tolta del tutto non contano, come le bozze fatte a mano");
 	if (v.quotes !== undefined && v.quotes.count > 0) out.push(`preventivi accettati attesi ${QUOTE_PAY_DAYS} giorni dopo l'accettazione e non prima di ${QUOTE_MIN_DAYS} giorni da oggi, meno quanto già fatturato`);
 	if (p.days.length > 31) out.push("le entrate senza fattura, preventivo o voce non ci sono, quindi manca il lavoro ancora da fatturare");
 	if (v.taxes === true) out.push("tasse stimate (F24) dal profilo del forfettario con il metodo storico, una stima da verificare con il commercialista", "stipendi e rate non registrati non ci sono");
@@ -417,9 +472,9 @@ function hypotheticalLine(h: Hypothetical): string {
 export type ChangeLine = { readonly touched: readonly { readonly before: Movement; readonly after?: Movement }[] };
 
 /** «fatt. B-90 da Delta Carni Srl, 3.000,00 €: dall'8 novembre al 7 gennaio», «…: non pagata», to be fenced. */
-function changeRows(c: ChangeLine, today: string): string[] {
+function changeRows(c: ChangeLine, today: string, agent = false): string[] {
 	return c.touched.map(({ before, after }) => {
-		const what = `• ${movementLabel(before, today)}, ${euros(before.cents)}`;
+		const what = `• ${movementLabel(before, today, false, agent)}, ${euros(before.cents)}`;
 		if (after === undefined) return `${what}: ${before.source === "quote" ? "non pagato" : "non pagata"}`;
 		return `${what}: ${withNearDate("dal", before.date, today)} ${withNearDate("al", after.date, today)}`;
 	});
@@ -429,7 +484,7 @@ export type WhatIf = {
 	/** As the forecast counts (late money to collect as include_overdue says, the quotes as include_quotes says). */
 	readonly base: Projection;
 	readonly withThem: Projection;
-	/** The cautious case: late money to collect and accepted quotes left out. */
+	/** The cautious case: late money to collect, accepted quotes and canoni not issued left out. */
 	readonly cautiousBase: Projection;
 	readonly cautiousWith: Projection;
 	readonly hyps: readonly Hypothetical[];
@@ -437,10 +492,12 @@ export type WhatIf = {
 	/** Late money to collect and accepted quotes in the horizon, all of it. */
 	readonly lateCents: bigint;
 	readonly quoteCents: bigint;
+	/** The canoni of the recurring invoices not issued yet, in the horizon. */
+	readonly canoneCents?: bigint;
 };
 
 /** The cautious case's name, said with every verdict on it. */
-export const CAUTIOUS = "senza contare fatture in ritardo e preventivi";
+export const CAUTIOUS = "senza contare fatture in ritardo, preventivi e canoni";
 
 /** «da 1.200,00 € (il 3 novembre 2026) a −300,00 € (il 12 novembre 2026)»; one date when it is the same: «da 1.200,00 € a 900,00 €, il 3 novembre 2026». */
 function lowestMove(a: Projection, b: Projection): string {
@@ -455,7 +512,7 @@ function lowestMove(a: Projection, b: Projection): string {
  * forecast counts.
  */
 export function whatIfAnswer(w: WhatIf, v: View): string {
-	const said = [...w.hyps.map(hypotheticalLine), ...w.changes.flatMap((c) => changeRows(c, v.today))];
+	const said = [...w.hyps.map(hypotheticalLine), ...w.changes.flatMap((c) => changeRows(c, v.today, v.agent === true))];
 	const lines = ["Ipotesi, non salvate:", fenced(said.join("\n"))];
 	let from = w.base;
 	let to = w.withThem;
@@ -474,7 +531,7 @@ export function whatIfAnswer(w: WhatIf, v: View): string {
 		else if (to.red !== undefined) lines.push(`${head}, così vai in rosso ${withDate("dal", to.red.date)} (${euros(to.red.balance)}): con queste cifre non ci sta, salvo entrate che non conosco. Il punto più basso passa ${lowestMove(from, to)}.`);
 		else if (under !== undefined) lines.push(`${head}, non vai sotto zero, ma scendi sotto la soglia di ${euros(v.alertBelow as bigint)} ${withDate("il", under.date)}; il punto più basso passa ${lowestMove(from, to)}.`);
 		else lines.push(`${head}, te lo puoi permettere: il punto più basso passa ${lowestMove(from, to)}.`);
-		const extra = [w.lateCents > 0n ? `${euros(w.lateCents)} di fatture in ritardo da incassare` : undefined, w.quoteCents > 0n ? `${euros(w.quoteCents)} di preventivi accettati` : undefined].filter((x) => x !== undefined);
+		const extra = [w.lateCents > 0n ? `${euros(w.lateCents)} di fatture in ritardo da incassare` : undefined, w.quoteCents > 0n ? `${euros(w.quoteCents)} di preventivi accettati` : undefined, (w.canoneCents ?? 0n) > 0n ? `${euros(w.canoneCents ?? 0n)} di canoni delle fatture ricorrenti` : undefined].filter((x) => x !== undefined);
 		if (extra.length > 0) lines.push(`Se arrivano anche ${extra.join(" e ")}, il punto più basso con l'ipotesi è ${pointText(w.withThem.lowest)}.`);
 	}
 	if (to.end !== from.end) lines.push(`Saldo ${withDate("al", from.to)}${w.changes.length > 0 ? "" : `, ${CAUTIOUS}`}: da ${euros(from.end)} a ${euros(to.end)}.`);
@@ -506,18 +563,20 @@ export function briefAnswer(p: Projection | undefined, v: { readonly balance?: B
 }
 
 /** One voce in a line, to be fenced: «C-0001 uscita 1.500,00 € mensile dal 27 ottobre 2026: Stipendio titolare · nota: …». */
-export function itemLine(i: CashItem, today: string): string {
+export function itemLine(i: CashItem, today: string, agent = false): string {
 	const every = recurrenceText(i);
 	const when =
 		every === undefined
 			? `${withDate("il", i.date)}${i.date < today ? " (passata)" : ""}`
 			: `${every} ${withDate("dal", i.date)}${i.until === undefined ? "" : ` fino ${withDate("al", i.until)}${i.until < today ? " (finita)" : ""}`}`;
 	const from = i.amountFrom === undefined ? "" : `, poi ${euros(scaled(i.amountFrom.amount, 2))} ${withDate("dal", i.amountFrom.from)}`;
-	return `• ${i.id} ${i.kind === "in" ? "entrata" : "uscita"} ${euros(scaled(i.amount, 2))} ${when}${from}: ${i.name.replace(/\n/g, " ")}${i.note === undefined ? "" : ` · nota: ${i.note.replace(/\n/g, " ")}`}`;
+	// The name and the note are the person's free text: never for another agente.
+	const what = agent ? "voce" : `${i.name.replace(/\n/g, " ")}${i.note === undefined ? "" : ` · nota: ${i.note.replace(/\n/g, " ")}`}`;
+	return `• ${i.id} ${i.kind === "in" ? "entrata" : "uscita"} ${euros(scaled(i.amount, 2))} ${when}${from}: ${what}`;
 }
 
 /** The balance, the threshold and the voci. */
-export function listAnswer(balance: Balance | undefined, alertBelow: bigint | undefined, items: readonly CashItem[], today: string): string {
+export function listAnswer(balance: Balance | undefined, alertBelow: bigint | undefined, items: readonly CashItem[], today: string, agent = false): string {
 	const lines: string[] = [];
 	if (balance === undefined) lines.push("Saldo del conto non ancora indicato. Chiedi a chi ti scrive quanto ha sul conto oggi.");
 	else {
@@ -529,7 +588,7 @@ export function listAnswer(balance: Balance | undefined, alertBelow: bigint | un
 	if (items.length === 0) lines.push("Nessuna voce aggiunta: stipendio del titolare, F24, rata del mutuo o un incasso senza fattura si possono aggiungere.");
 	else {
 		const more = items.length > 40 ? `\ne altre ${items.length - 40}` : "";
-		lines.push(`${n1(items.length, "1 voce aggiunta", "# voci aggiunte")}:`, fenced(`${items.slice(0, 40).map((i) => itemLine(i, today)).join("\n")}${more}`));
+		lines.push(`${n1(items.length, "1 voce aggiunta", "# voci aggiunte")}:`, fenced(`${items.slice(0, 40).map((i) => itemLine(i, today, agent)).join("\n")}${more}`));
 	}
 	return lines.join("\n");
 }
