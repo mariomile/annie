@@ -11,13 +11,13 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockUnit, validItem, validLowClaim, validMove, validSaleKey, validStockCall } from "./stock.ts";
+import { type CodeMap, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockUnit, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall } from "./stock.ts";
 import { costText, packUnits, qtyOf, qtyText, stateOf } from "./stock-sums.ts";
 
 /** What a change works on: the articles, the movements and the next numbers. */
 export type StockState = { readonly nextItem: number; readonly nextMove: number; readonly items: readonly StockItem[]; readonly moves: readonly Movement[] };
 
-type Book = StockState & { readonly archived: readonly SaleKey[]; readonly alerts: readonly LowClaim[]; readonly calls: readonly string[] };
+type Book = StockState & { readonly archived: readonly SaleKey[]; readonly received: readonly ReceivedKey[]; readonly codes: readonly CodeMap[]; readonly alerts: readonly LowClaim[]; readonly calls: readonly string[] };
 
 export type StockBook = Book & { readonly broken: boolean };
 
@@ -25,7 +25,10 @@ export const STOCK_BROKEN = "il magazzino (stock.json) non si legge: non lo camb
 
 export const STOCK_FULL = "il magazzino è pieno: ci sono troppi movimenti per salvarne altri. Chi ti scrive può chiudere un anno passato: i movimenti fino alla fine di quell'anno diventano una riga di apertura per articolo, con la quantità e il costo medio di allora";
 
-const EMPTY: Book = { nextItem: 1, nextMove: 1, items: [], moves: [], archived: [], alerts: [], calls: [] };
+const EMPTY: Book = { nextItem: 1, nextMove: 1, items: [], moves: [], archived: [], received: [], codes: [], alerts: [], calls: [] };
+
+/** What loading an invoice received writes: its carichi (numbered from the next), the keys of its lines, the supplier codes learned. */
+export type InvoiceLoad = { readonly moves: readonly Movement[]; readonly keys: readonly ReceivedKey[]; readonly codes: readonly CodeMap[] };
 
 /** One line of an invoice issued (or a credit note) that names a voce of the listino. */
 export type SaleLine = { readonly line: number; readonly listino: string; readonly quantity: string; readonly unit?: string; readonly description: string };
@@ -149,6 +152,34 @@ export class StockStore {
 	}
 
 	/**
+	 * An invoice received loaded, once per `callId`: `plan` gets the book as saved now and gives
+	 * the carichi, the keys of the lines they load and the codes learned (a code said again for the
+	 * same supplier points to its new article). A line already loaded is refused, nothing written.
+	 */
+	receiveInvoice(callId: string, plan: (book: Book) => InvoiceLoad): "written" | "rerun" | "unchanged" {
+		let outcome: "written" | "rerun" | "unchanged" = "unchanged";
+		updateBook(this.book, (book) => {
+			if (book.calls.includes(callId)) {
+				outcome = "rerun";
+				return book;
+			}
+			const load = plan(book);
+			if (load.moves.length === 0) return book;
+			const done = new Set(book.received.map((r) => r.k));
+			if (load.keys.some((k) => done.has(k.k))) throw new StockError("una riga di questa fattura è già stata caricata nel frattempo: non ho caricato niente, ricontrolla");
+			if (book.received.length + load.keys.length > STOCK_LIMITS.received) throw new StockError(STOCK_FULL);
+			const base = made(book, { nextItem: book.nextItem, nextMove: book.nextMove + load.moves.length, items: book.items, moves: [...book.moves, ...load.moves] }, [...book.calls, callId].slice(-STOCK_LIMITS.calls));
+			const learned = new Set(load.codes.map((c) => `${c.s}\u0000${c.c.toLowerCase()}`));
+			const codes = [...book.codes.filter((c) => !learned.has(`${c.s}\u0000${c.c.toLowerCase()}`)), ...load.codes].slice(-STOCK_LIMITS.codes);
+			const out: Book = { ...base, received: [...book.received, ...load.keys], codes };
+			if (validBook(out) === undefined) throw new StockError("il magazzino non è valido: non l'ho salvato");
+			outcome = "written";
+			return out;
+		});
+		return outcome;
+	}
+
+	/**
 	 * The crossings of `wanted` not said yet, marked said by `callId`: each crossing once. A call
 	 * run again gets back what it claimed.
 	 */
@@ -258,9 +289,11 @@ export class StockStore {
 			// The sale keys kept, with the invoice's year; those of invoices ten years or more before the year closed go (no credit note corrects them any more).
 			const year = Number(day.slice(0, 4));
 			const archived = [...book.archived, ...old.flatMap((m): SaleKey[] => (m.sale === undefined ? [] : [{ k: saleKey(m.sale.invoice, m.sale.line), i: m.item, q: m.qty, y: Number(m.day.slice(0, 4)), ...(m.sale.of === undefined ? {} : { of: m.sale.of }) }]))].filter((a) => a.y === undefined || a.y > year - 10);
+			// The invoices received loaded go the same way, ten years on.
+			const received = book.received.filter((r) => r.y > year - 10);
 			result = { folded: old.length, items: openings.length };
 			if (plan) return book;
-			const out: Book = { ...book, moves: [...openings, ...kept], archived, calls: [...book.calls, callId].slice(-STOCK_LIMITS.calls) };
+			const out: Book = { ...book, moves: [...openings, ...kept], archived, received, calls: [...book.calls, callId].slice(-STOCK_LIMITS.calls) };
 			if (validBook(out) === undefined) throw new StockError("la chiusura dell'anno non torna: non l'ho salvata");
 			return out;
 		});
@@ -288,6 +321,11 @@ function validBook(raw: unknown): Book | undefined {
 	if (!Array.isArray(b.archived) || b.archived.length > STOCK_LIMITS.archived || !b.archived.every(validSaleKey)) return undefined;
 	if (!Array.isArray(b.alerts) || b.alerts.length > STOCK_LIMITS.alerts || !b.alerts.every(validLowClaim)) return undefined;
 	if (!Array.isArray(b.calls) || b.calls.length > STOCK_LIMITS.calls || !b.calls.every(validStockCall)) return undefined;
+	// A file from before the invoices received were loaded has neither list.
+	const received = b.received ?? [];
+	const codes = b.codes ?? [];
+	if (!Array.isArray(received) || received.length > STOCK_LIMITS.received || !received.every(validReceivedKey) || new Set(received.map((r) => r.k)).size !== received.length) return undefined;
+	if (!Array.isArray(codes) || codes.length > STOCK_LIMITS.codes || !codes.every(validCodeMap) || new Set(codes.map((c) => `${c.s}\u0000${c.c.toLowerCase()}`)).size !== codes.length) return undefined;
 	// Numbers never given again: every id below its counter, each once; one article on the list per name, code and voce.
 	const ids = new Set<string>();
 	const taken = new Set<string>();
@@ -326,5 +364,6 @@ function validBook(raw: unknown): Book | undefined {
 		}
 		seen.set(m.id, m);
 	}
-	return b;
+	if (codes.some((c) => !ids.has(c.i))) return undefined;
+	return { ...b, received, codes };
 }

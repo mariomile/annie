@@ -19,12 +19,14 @@ import { costOf, costText, type ItemState, isLow, packUnits, qtyOf, qtyText, sta
 import { findSupplier, loadSuppliers, meantSupplier } from "../supplier-find.ts";
 import type { SupplierStore } from "../supplier-store.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
+import type { PurchaseStore } from "../purchase-store.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
+import { receiveInvoice } from "./stock-invoice.ts";
 import { BRIEF_NOTHING, briefAnswer, costWords, fencedStock, listAnswer, lowAnswer, movesAnswer, nameOf, NO_ITEMS, qtyNumber, qtyWords, statusAnswer, stockCsv, unitPlural, valueAnswer } from "./stock-render.ts";
 
 /** What changed, for the audit: the op and how many, never names, quantities, costs or suppliers. */
-export type StockEvent = { readonly type: "stock.changed"; readonly op: "add_item" | "receive" | "unload" | "count" | "fix_cost" | "remove_item" | "close_year" | "export"; readonly count: number };
+export type StockEvent = { readonly type: "stock.changed"; readonly op: "add_item" | "receive" | "receive_invoice" | "unload" | "count" | "fix_cost" | "remove_item" | "close_year" | "export"; readonly count: number };
 
 export type StockToolsOptions = {
 	readonly workspace: Workspace;
@@ -36,6 +38,8 @@ export type StockToolsOptions = {
 	readonly scanner?: InvoiceScanner;
 	readonly expenses?: Pick<ExpenseStore, "read">;
 	readonly suppliers?: Pick<SupplierStore, "read">;
+	/** The increases of an invoice's prices already said (purchase_prices'), so the proposal of an invoice received says each once. */
+	readonly purchases?: PurchaseStore;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: StockEvent) => Promise<void>;
@@ -45,7 +49,7 @@ export type StockToolsOptions = {
 
 const DESCRIPTION = [
 	"Il magazzino: the stock of the person's shop or workshop, article by article (MG-0001), from its movements: carichi, scarichi, inventory counts and the credit notes' returns. Quantities may have 3 decimals (kg, m, l). The value is at the weighted average cost, which only a carico changes.",
-	"What the person says → op: «ho ricevuto 50 cartucce XL dal fornitore Beta a 12 € l'una» → receive (item, quantity 50, cost 12, supplier; an article not there yet is added by it, with unit and min if said); «3 scatole da 12 a 30 € la scatola» → receive (quantity 3, unit scatole, per_pack 12, pack_cost 30); «aggiungi le cartucce XL al magazzino, a pezzi, avvisami sotto le 10» → add_item (item, unit, min); «avvisami sotto le 10 cartucce» on an article there already → add_item with min; «una scatola ne contiene 12» → add_item with pack_unit and per_pack; «ne ho usate 2 in negozio» → unload (reason uso_interno); «ho buttato 3 rotoli rovinati» → unload (reason scarto); «quante cartucce mi restano?» → status; «cosa ho in magazzino?» → list; «cosa sta finendo?» → low; «quanto vale il magazzino?» → value; «movimenti delle cartucce di ottobre» → movements (item, period); «ho contato 37 cartucce, sistema» → count (item, quantity 37); «l'ultimo carico era a 11 €, non 12» → fix_cost; «togli le cartucce dal magazzino» → remove_item; «chiudi il 2025 del magazzino» → close_year; «fammi il file del magazzino» → export, then file_send.",
+	"What the person says → op: «ho ricevuto 50 cartucce XL dal fornitore Beta a 12 € l'una» → receive (item, quantity 50, cost 12, supplier; an article not there yet is added by it, with unit and min if said); «3 scatole da 12 a 30 € la scatola» → receive (quantity 3, unit scatole, per_pack 12, pack_cost 30); «la fattura di Beta n. 12: carica la merce in magazzino» → receive_invoice (supplier, invoice, or file), which first proposes each line's article, quantity and cost: show it, and only after the person's yes repeat with confirm true (lines to load only some, each with item to set its article); «aggiungi le cartucce XL al magazzino, a pezzi, avvisami sotto le 10» → add_item (item, unit, min); «avvisami sotto le 10 cartucce» on an article there already → add_item with min; «una scatola ne contiene 12» → add_item with pack_unit and per_pack; «ne ho usate 2 in negozio» → unload (reason uso_interno); «ho buttato 3 rotoli rovinati» → unload (reason scarto); «quante cartucce mi restano?» → status; «cosa ho in magazzino?» → list; «cosa sta finendo?» → low; «quanto vale il magazzino?» → value; «movimenti delle cartucce di ottobre» → movements (item, period); «ho contato 37 cartucce, sistema» → count (item, quantity 37); «l'ultimo carico era a 11 €, non 12» → fix_cost; «togli le cartucce dal magazzino» → remove_item; «chiudi il 2025 del magazzino» → close_year; «fammi il file del magazzino» → export, then file_send.",
 	"The cost is per unit and without IVA: if the person says it with IVA, or it is unclear, ask once; never take the VAT out yourself. A move to another shelf only changes the article's place (add_item with place): stock split across two places is not kept, say so.",
 	"An article that is a voce of the listino (item LS-0001 on add_item) is unloaded by the sales invoices issued with that voce, and put back by their credit notes: never unload a sale invoiced so. price_list is the prices, stock the quantities. A scarico past what there is, and closing a year, ask first: repeat with confirm true only after the person's yes. summary of the brief: low with compact true. Repeat quantities and amounts as given, never compute them yourself.",
 ].join(" ");
@@ -73,6 +77,27 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 	};
 	const text = (max: number, description: string) => ({ type: "string", maxLength: max, description });
 	const amount = (description: string) => ({ type: ["number", "string"], description });
+	/** What receive_invoice reads and writes through this tool. */
+	const invoiceEnv = {
+		store,
+		book: () => book(),
+		register: async (ctx: ToolContext) => {
+			if (options.invoices === undefined) return "Qui non vedo le fatture ricevute.";
+			const read = await readRegister(options.invoices, options.scanner ?? new InvoiceScanner(workspace), ctx, {
+				broken: "Lo stato delle fatture non si legge: senza, non so quali sono le fatture ricevute.",
+				noCompany: "Non so ancora qual è la tua azienda (la sua partita IVA): senza, non distinguo le fatture ricevute da quelle emesse.",
+			});
+			if (read.invoices === undefined || read.noCompany) return read.notes.join("\n") || "Non trovo fatture ricevute nel workspace.";
+			const cards = options.suppliers?.read();
+			const expenses = options.expenses?.read();
+			const loaded = loadSuppliers({ cards: cards === undefined || cards.broken ? [] : cards.cards, invoices: read.invoices, expenses: expenses === undefined || expenses.broken ? [] : expenses.expenses, dayOf: dayOfIn(timeZone) });
+			return { invoices: read.invoices, suppliers: loaded.suppliers };
+		},
+		...(options.purchases === undefined ? {} : { purchases: options.purchases }),
+		marker,
+		audit: (ctx: ToolContext, count: number) => audit(ctx, "receive_invoice", count),
+	};
+
 	return [
 		{
 			name: "stock",
@@ -92,13 +117,21 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 					quantity: amount("receive, unload: how many (packs, with per_pack); count: how many were counted"),
 					cost: amount("receive, fix_cost: the cost of one unit in euros, without IVA («12», «0,85»)"),
 					pack_cost: amount("receive: the cost of one pack in euros, without IVA, instead of cost"),
-					supplier: text(STOCK_LIMITS.name, "receive: the supplier, as said or partita IVA"),
+					supplier: text(STOCK_LIMITS.name, "receive, receive_invoice: the supplier, as said or partita IVA"),
+					invoice: text(40, "receive_invoice: the number of the invoice received"),
+					file: text(300, "receive_invoice: the invoice's file in the workspace, instead of supplier and number"),
+					lines: {
+						type: "array",
+						maxItems: 500,
+						description: "receive_invoice with confirm: only these lines (by number), each with item to give it its article (MG-0001) when the proposal had none or the wrong one",
+						items: { type: "object", properties: { line: { type: "integer" }, item: { type: "string", maxLength: STOCK_LIMITS.name } }, required: ["line"], additionalProperties: false },
+					},
 					doc: text(STOCK_LIMITS.doc, "receive: the document's reference (DDT, invoice number)"),
 					reason: { type: "string", enum: [...REASONS], description: "unload: why: vendita, uso_interno, reso (to the supplier), scarto" },
 					note: text(STOCK_LIMITS.note, "receive, unload, count: a short note"),
 					period: text(40, "movements: «ottobre», «questo mese», «2026»"),
 					year: { type: "integer", description: "close_year: the year to close (its movements become one apertura per article)" },
-					confirm: { type: "boolean", description: "unload: the person said yes to going under zero; close_year: the person said yes" },
+					confirm: { type: "boolean", description: "unload: the person said yes to going under zero; close_year, receive_invoice: the person said yes" },
 					compact: { type: "boolean", description: "low: the brief's line only" },
 				},
 				required: ["op"],
@@ -119,6 +152,8 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 							return await addItem(args, ctx);
 						case "receive":
 							return await receive(args, ctx, day);
+						case "receive_invoice":
+							return await receiveInvoice(invoiceEnv, args, ctx, day);
 						case "unload":
 							return await unload(args, ctx, day);
 						case "count":

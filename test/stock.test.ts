@@ -396,7 +396,7 @@ describe("il magazzino: sottoscorta, elenco, togliere, file", () => {
 		const [guarded] = readOnlyInBriefs([tool], async () => true);
 		expect(await guarded?.execute({ op: "add_item", item: "Viti" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(await guarded?.execute({ op: "list" }, fresh())).toContain("Il magazzino è vuoto");
-		expect(DEFAULT_INSTRUCTIONS).toContain("il listino sono i prezzi, il magazzino le quantità");
+		expect(DEFAULT_INSTRUCTIONS).toContain("il listino sono i prezzi a cui vende, purchase_prices quello che paga lui, il magazzino le quantità");
 		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il magazzino (stock:");
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
 	});

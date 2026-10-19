@@ -237,6 +237,7 @@ export type Invoice = {
 	readonly modifiedAt: string;
 	readonly supplier: FatturaParty;
 	readonly customer: FatturaParty;
+	/** As read; its `lines` only when the invoice is received (passive): the prices paid (purchase-prices.ts), never those of an invoice issued. */
 	readonly doc: FatturaDocument;
 	readonly side?: Side;
 	/** A credit note, or a document with a negative total, which works as one. */
@@ -269,7 +270,9 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 	const newest = [...found].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path));
 	for (const { path, modifiedAt, fattura } of newest) {
 		const side = sideOf(fattura.supplier, fattura.customer, company);
-		for (const doc of fattura.documents) {
+		for (const read of fattura.documents) {
+			// The lines are the prices paid: kept for an invoice received only.
+			const doc = side === "passive" || read.lines === undefined ? read : withoutLines(read);
 			const key = invoiceKey(fattura.supplier, fattura.customer, doc, path);
 			const seen = byKey.get(key);
 			if (seen !== undefined) {
@@ -309,6 +312,12 @@ export function register(found: readonly FoundFattura[], paid: readonly PaidEntr
 		}
 	}
 	return [...byKey.values()].sort((a, b) => (b.doc.date ?? "").localeCompare(a.doc.date ?? "") || b.modifiedAt.localeCompare(a.modifiedAt));
+}
+
+/** A document without its structured lines (and their counts). */
+function withoutLines(doc: FatturaDocument): FatturaDocument {
+	const { lines: _lines, linesSkipped: _skipped, linesCut: _cut, ...rest } = doc;
+	return rest;
 }
 
 /**

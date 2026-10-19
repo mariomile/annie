@@ -28,7 +28,7 @@ export class StockError extends Error {
 	override readonly name = "StockError";
 }
 
-export const STOCK_OPS = ["add_item", "receive", "unload", "count", "fix_cost", "status", "list", "low", "value", "movements", "remove_item", "close_year", "export"] as const;
+export const STOCK_OPS = ["add_item", "receive", "receive_invoice", "unload", "count", "fix_cost", "status", "list", "low", "value", "movements", "remove_item", "close_year", "export"] as const;
 export type StockOp = (typeof STOCK_OPS)[number];
 
 export const STOCK_LIMITS = {
@@ -36,6 +36,12 @@ export const STOCK_LIMITS = {
 	moves: 20_000,
 	/** The sales of movements folded by a closed year, kept as keys (an invoice line moved once, a credit note's cap). */
 	archived: 200_000,
+	/** The lines of invoices received loaded (each once), and the supplier codes learned for an article. */
+	received: 200_000,
+	codes: 5000,
+	/** A supplier's key (partita IVA first) and a supplier's code, as kept for a code learned. */
+	supplierKey: 140,
+	supplierCode: 60,
 	/** Call ids remembered, so a call run again writes nothing twice. */
 	calls: 500,
 	/** The brief's alerts said, remembered so each crossing is said once: the oldest go first. */
@@ -126,6 +132,24 @@ export type Movement = Marker & {
 /** A sale's movement folded by a closed year: its key (invoice#line), the article, how much, and (a storno) the invoice it corrected. */
 export type SaleKey = { readonly k: string; readonly i: string; readonly q: string; readonly of?: string; /** The year of the invoice (or credit note): a key ten years older than a year closed is dropped. */ readonly y?: number };
 
+/** A line of an invoice received loaded into the magazzino (purchase-prices.ts lineKey: a digest of the invoice and the line), with the invoice's year: never loaded twice. */
+export type ReceivedKey = { readonly k: string; readonly y: number };
+
+/** A supplier's code for an article, learned when the person confirmed a line of theirs with it: the supplier's key (partita IVA first), the code, the article. */
+export type CodeMap = { readonly s: string; readonly c: string; readonly i: string };
+
+export function validReceivedKey(v: unknown): v is ReceivedKey {
+	if (typeof v !== "object" || v === null) return false;
+	const r = v as ReceivedKey;
+	return Object.keys(r).every((k) => ["k", "y"].includes(k)) && typeof r.k === "string" && /^[0-9a-f]{24}#\d{1,4}$/.test(r.k) && Number.isInteger(r.y) && r.y >= 2000 && r.y <= 9999;
+}
+
+export function validCodeMap(v: unknown): v is CodeMap {
+	if (typeof v !== "object" || v === null) return false;
+	const c = v as CodeMap;
+	return Object.keys(c).every((k) => ["s", "c", "i"].includes(k)) && plain(c.s, STOCK_LIMITS.supplierKey) && plain(c.c, STOCK_LIMITS.supplierCode) && typeof c.i === "string" && STOCK_ID.test(c.i);
+}
+
 /** A sottoscorta (or in negativo) said in the brief: the article, the crossing and the call that said it. */
 export type LowClaim = { readonly item: string; readonly crossing: string; readonly call: string };
 
@@ -150,7 +174,7 @@ export function isQuantity(v: unknown, signed = false, max: number = STOCK_LIMIT
 export const isCost = (v: unknown): v is string => typeof v === "string" && COST.test(v) && !/\.\d*0$/.test(v) && !/^0\d/.test(v) && Number(v) <= STOCK_LIMITS.maxCost;
 
 /** Units a person says that the listino does not fold: litri, metri, grammi… */
-const MORE_UNITS: Readonly<Record<string, string>> = { litro: "litro", litri: "litro", l: "litro", lt: "litro", metro: "m", metri: "m", m: "m", mt: "m", ml: "ml", grammo: "g", grammi: "g", g: "g", gr: "g", chilo: "kg", chili: "kg", chilogrammi: "kg", kg: "kg", confezione: "confezione", confezioni: "confezione", conf: "confezione", scatola: "scatola", scatole: "scatola", rotolo: "rotolo", rotoli: "rotolo", paio: "paio", paia: "paio", mq: "mq", cartone: "cartone", cartoni: "cartone", pacco: "pacco", pacchi: "pacco", bancale: "bancale", bancali: "bancale", busta: "busta", buste: "busta" };
+const MORE_UNITS: Readonly<Record<string, string>> = { litro: "litro", litri: "litro", l: "litro", lt: "litro", metro: "m", metri: "m", m: "m", mt: "m", ml: "ml", grammo: "g", grammi: "g", g: "g", gr: "g", chilo: "kg", chili: "kg", chilogrammi: "kg", kg: "kg", confezione: "confezione", confezioni: "confezione", conf: "confezione", scatola: "scatola", scatole: "scatola", rotolo: "rotolo", rotoli: "rotolo", paio: "paio", paia: "paio", mq: "mq", cartone: "cartone", cartoni: "cartone", pacco: "pacco", pacchi: "pacco", bancale: "bancale", bancali: "bancale", busta: "busta", buste: "busta", risma: "risma", risme: "risma", flacone: "flacone", flaconi: "flacone" };
 
 /** A unit as said, to the one kept: «pezzi» is «pezzo», «litri» is «litro», «metri» is «m». */
 export function stockUnit(said: string): string {
