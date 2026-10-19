@@ -52,7 +52,7 @@ export type Progress = {
 	/** Spent or earned so far; undefined when its register does not read, or the supplier is not found. */
 	readonly actual?: bigint;
 	readonly target: bigint;
-	/** Actual over target, a whole percent (half up). */
+	/** Actual over target, a whole percent rounded down; at least 101 above the target (100 only when exactly reached). */
 	readonly percent?: number;
 	/** Target less actual: negative when past it. */
 	readonly left?: bigint;
@@ -71,7 +71,11 @@ export type Progress = {
 	readonly lost?: true;
 };
 
-const pct = (actual: bigint, target: bigint) => Number(halfUp(actual * 100n, target));
+/** Actual over target, a whole percent, rounded down; above the target at least 101, so 100% is only exactly reached. */
+const pct = (a: bigint, t: bigint) => {
+	const down = Number((a * 100n) / t);
+	return a === t ? 100 : a < t ? down : Math.max(101, down);
+};
 
 /** How `budget` is going on `today`. */
 export function progressOf(budget: Budget, facts: BudgetFacts, today: string): Progress {

@@ -62,5 +62,6 @@ export function loadSuppliers(r: SupplierSources): { suppliers: Supplier[]; ledg
 	return { suppliers, ledger: ledgerOf(paid, r.expenses, r.dayOf), notes };
 }
 
-/** Payments of supplier invoices that may be an expense too: both counted, said (the suppliers' and the budgets' words). */
-export const twinsLine = (n: number) => `${n1(n, "Un pagamento di fattura potrebbe", "# pagamenti di fatture potrebbero")} essere anche una spesa registrata: ${n === 1 ? "l'ho contato" : "li ho contati"} una volta come fattura e una come spesa. Controlla se sono gli stessi soldi.`;
+/** Payments of supplier invoices that may be an expense too: both counted, said (the suppliers' and the budgets' words, these with the budgets they are in). */
+export const twinsLine = (n: number, where: readonly string[] = []) =>
+	`${n1(n, "Un pagamento di fattura potrebbe", "# pagamenti di fatture potrebbero")} essere anche una spesa registrata${where.length === 0 ? "" : ` (${where.join(", ")})`}: ${n === 1 ? "l'ho contato" : "li ho contati"} una volta come fattura e una come spesa. Controlla se sono gli stessi soldi.`;

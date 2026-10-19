@@ -101,7 +101,7 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 				if (args.compact !== undefined && typeof args.compact !== "boolean") return "Errore: compact è true o false.";
 				// Another agente's request is not the person's word: the figures only, nothing else.
 				const agent = ctx.thread?.channel === AGENT_CHANNEL;
-				if (agent && !budgetAgentReads(args)) return "Errore: a un altro agente do solo come vanno i budget, in cifre e percentuali: non li cambio, non do i nomi dei fornitori e non esporto. Il resto lo chiede chi ti scrive, nella sua conversazione.";
+				if (agent && !budgetAgentReads(args)) return "Errore: a un altro agente do solo come vanno i budget, in cifre e percentuali. Non li cambio, non do i nomi dei fornitori e non esporto; il resto lo chiede chi ti scrive, nella sua conversazione.";
 				const day = todayIn(timeZone, now());
 				try {
 					switch (op) {
@@ -112,7 +112,7 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 						case "status":
 							return args.compact === true ? await brief(ctx, day) : await status(args, ctx, day, agent);
 						case "list":
-							return listAnswer(budgets());
+							return listAnswer(budgets(), agent);
 						case "export":
 							return await exportCsv(ctx, day);
 					}
@@ -263,9 +263,11 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 		const saved = budgets().find((b) => b.id === applied.id);
 		if (saved === undefined) return "Fatto.";
 		const income = saved.subject.kind === "income";
-		const what = `${saved.id}: ${subjectShort(saved.subject)}${saved.subject.kind === "supplier" ? " (nel riquadro)" : ""}, ${euros(expenseCents(saved.amount))} ${perWords(saved.every)}${saved.start === undefined ? "" : `, ${withDate("dal", saved.start)}`}`;
+		const body = `${subjectShort(saved.subject)}${saved.subject.kind === "supplier" ? " (nel riquadro)" : ""}, ${euros(expenseCents(saved.amount))} ${perWords(saved.every)}${saved.start === undefined ? "" : `, ${withDate("dal", saved.start)}`}`;
 		const lines = [
-			applied.same ? `${income ? "L'obiettivo" : "Il budget"} ${what} era già così: non ho cambiato niente.` : `Fatto, ${applied.replaced ? `ho aggiornato ${income ? "l'obiettivo" : "il budget"}` : income ? "nuovo obiettivo" : "nuovo budget"} ${what}.`,
+			applied.same
+				? `Era già così, non ho cambiato niente: ${income ? "l'obiettivo" : "il budget"} ${saved.id}, ${body}.`
+				: `Fatto, ${applied.replaced ? `ho aggiornato ${income ? "l'obiettivo" : "il budget"}` : income ? "nuovo obiettivo" : "nuovo budget"} ${saved.id}: ${body}.`,
 			...notes,
 		];
 		lines.push(...progressLines(progressOf(saved, loaded.facts, day)).slice(0, 2));
@@ -314,7 +316,7 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 		const done = store.read().calls.includes(ctx.callId);
 		if (typeof found === "string" && !done) return found;
 		const list = typeof found === "string" ? [] : found.list;
-		if (!done && list.length === 0) return "Non c'è un budget su questo: non c'è niente da togliere.";
+		if (!done && list.length === 0) return "Non c'è un budget su questo da togliere.";
 		if (!done && list.length > 1) return [`Ci sono ${list.length} budget su questo: quale tolgo?`, ...list.map((b) => `• ${b.id}: ${subjectWords(b.subject)}, ${euros(expenseCents(b.amount))} ${perWords(b.every)}`), "Ripeti con il numero del budget."].join("\n");
 		const gone = done ? undefined : list[0];
 		// A call run again after it removed: the same answer, from the step.
@@ -332,13 +334,11 @@ export function createBudgetTools(options: BudgetToolsOptions): AnnieTool[] {
 	async function status(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
 		const all = budgets();
 		if (all.length === 0) return NO_BUDGETS;
+		// Another agente never asks by a supplier's name: whether a name has a budget would say who the suppliers are.
+		if (agent && args.supplier !== undefined) return `A un altro agente non do i budget di un singolo fornitore: ecco tutti, in cifre.\n${listAnswer(all, true)}`;
 		const found = await named(args, ctx, day, all, agent);
 		if (typeof found === "string") return found;
-		if (found.list.length === 0) {
-			// Another agente asking for a supplier: whether there is a budget on it, nothing else.
-			if (agent && args.supplier !== undefined) return "Non c'è un budget su questo.";
-			return `Non c'è un budget su questo. ${listAnswer(all, agent)}`;
-		}
+		if (found.list.length === 0) return `Non c'è un budget su questo. ${listAnswer(all, agent)}`;
 		const loaded = found.loaded ?? (await load(ctx, day));
 		return statusAnswer(
 			found.list.map((b) => progressOf(b, loaded.facts, day)),

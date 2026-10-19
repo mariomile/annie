@@ -99,9 +99,9 @@ export function budgetCallReads(args: Record<string, unknown>): boolean {
 	return BUDGET_READ_OPS.some((o) => o === args.op);
 }
 
-/** What another agente may ask: the status as totals and shares, never a supplier's name, never the brief's line, a change or a file. */
+/** What another agente may ask: the status as totals and shares and the list, never by a supplier's name (the tool says so), never the brief's line, a change or a file. */
 export function budgetAgentReads(args: Record<string, unknown>): boolean {
-	return args.op === "status" && args.compact !== true;
+	return (args.op === "status" && args.compact !== true) || args.op === "list";
 }
 
 const plain = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);

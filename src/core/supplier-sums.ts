@@ -333,7 +333,9 @@ export function ibanOf(s: Pick<Supplier, "invoices" | "card">, dayOf: (at: strin
 		.sort((a, b) => a.day.localeCompare(b.day))[0]?.iban;
 	const pinned = s.card?.iban;
 	const open: OpenIban[] = [];
-	for (const i of invoices) {
+	// In a stable order of what the invoices say (number, then file), never the order files are read in: the same IBAN on two invoices names the same one.
+	const byContent = [...invoices].sort((a, b) => (a.doc.number ?? "").localeCompare(b.doc.number ?? "", "it", { numeric: true }) || (a.paths[0] ?? "").localeCompare(b.paths[0] ?? ""));
+	for (const i of byContent) {
 		if (i.paid) continue;
 		for (const n of i.instalments) {
 			if (!toPay(n) || n.iban === undefined || ibanText(n.iban) === "") continue;

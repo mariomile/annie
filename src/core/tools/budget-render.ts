@@ -103,7 +103,6 @@ export function progressLines(p: Progress, agent = false): string[] {
 		} else lines.push(`Stima ${w.end}, se continui a questo ritmo: ${euros(p.estimate)}, ${gap > 0n ? `cioè ${euros(gap)} oltre il budget` : "dentro il budget"}.`);
 	}
 	if (p.monthly !== undefined) lines.push(p.monthly.months === 1 ? `Per arrivarci servono ${euros(p.monthly.cents)} entro fine anno.` : `Per arrivarci servono ${euros(p.monthly.cents)} al mese da qui a dicembre (${p.monthly.months} mesi, questo compreso).`);
-	if (p.maybeTwins > 0) lines.push(twinsLine(p.maybeTwins));
 	return lines;
 }
 
@@ -145,12 +144,22 @@ export function statusAnswer(list: readonly Progress[], o: { readonly agent?: bo
 	const lines: string[] = [];
 	const top = list.length > 1 ? overview(list) : undefined;
 	if (top !== undefined) lines.push(top);
+	// After the overview when there are several budgets; after the budget's own lines when there is one.
 	const uncategorized = uncategorizedLine(list, o.hasAll === true);
-	if (uncategorized !== undefined) lines.push(uncategorized);
+	if (uncategorized !== undefined && list.length > 1) lines.push(uncategorized);
 	for (const p of list) lines.push(...progressLines(p, agent));
+	if (uncategorized !== undefined && list.length === 1) lines.push(uncategorized);
 	for (const m of ["fatturato", "incassato"] as const) if (list.some((p) => p.budget.subject.kind === "income" && p.budget.subject.measure === m)) lines.push(MEASURE_NOTES[m]);
-	if (list.some((p) => p.estimate !== undefined && !p.ended)) lines.push("Le stime allungano a tutto il periodo quello che è successo finora: sono indicative, e una spesa fatta una volta sola le fa sembrare più alte.");
+	const estimated = list.filter((p) => p.estimate !== undefined && !p.ended);
+	if (estimated.length > 0) {
+		const income = estimated.filter((p) => p.budget.subject.kind === "income").length;
+		const tail = income === 0 ? "una spesa fatta una volta sola le fa sembrare più alte" : income === estimated.length ? "un incasso arrivato una volta sola le cambia molto" : "una spesa o un incasso arrivati una volta sola le cambiano molto";
+		lines.push(`Le stime allungano a tutto il periodo quello che è successo finora: sono indicative, e ${tail}.`);
+	}
 	lines.push(...(o.notes ?? []));
+	// The payments that may be an expense too: once, with the budgets they are counted in.
+	const twins = list.filter((p) => p.maybeTwins > 0);
+	if (twins.length > 0) lines.push(twinsLine(Math.max(...twins.map((p) => p.maybeTwins)), twins.map((p) => p.budget.id)));
 	if (agent) lines.push("A un altro agente do solo cifre e percentuali, non i nomi dei fornitori.");
 	else {
 		const inside = list.flatMap((p) => supplierLine(p.budget) ?? []);
