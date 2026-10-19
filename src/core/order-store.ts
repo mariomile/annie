@@ -8,7 +8,7 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import { addDays } from "./italian-calendar.ts";
-import { type LeadTime, type Order, ORDER_ID, ORDER_LIMITS, type OrderClaim, OrderError, type Receipt, validLead, validOrder, validOrderCall, validOrderClaim } from "./orders.ts";
+import { type Billed, type LeadTime, type Order, ORDER_ID, ORDER_LIMITS, type OrderClaim, OrderError, type Receipt, validLead, validOrder, validOrderCall, validOrderClaim } from "./orders.ts";
 
 /** What a change works on: the orders, the lead times and the next number. */
 export type OrderState = { readonly nextOrder: number; readonly orders: readonly Order[]; readonly leads: readonly LeadTime[] };
@@ -21,8 +21,9 @@ export const ORDERS_BROKEN = "gli ordini ai fornitori (orders.json) non si leggo
 
 const EMPTY: Book = { nextOrder: 1, orders: [], leads: [], alerts: [], calls: [] };
 
-/** Goods of an invoice line to mark on an order line. */
+/** Goods of an invoice line to mark on an order line, and an invoice line that billed goods of the delivery note. */
 export type ReceiptFor = Receipt & { readonly order: string };
+export type BilledFor = Billed & { readonly order: string };
 
 export class OrderStore {
 	private readonly book: BookFile<Book>;
@@ -68,25 +69,32 @@ export class OrderStore {
 	}
 
 	/**
-	 * The goods of invoice lines marked on their orders: an invoice line already marked anywhere is
-	 * skipped (each once), and so is an order cancelled meanwhile. The receipts written.
+	 * The goods of an invoice marked on its orders: `plan` gets the orders as saved now, under the
+	 * lock (an order sent, received or cancelled meanwhile is seen), and gives the receipts and the
+	 * billings. An invoice line already marked anywhere is skipped (each once), and so is a line of
+	 * an order that is no longer sent. What was written comes back, with what `plan` found.
 	 */
-	receive(receipts: readonly ReceiptFor[]): ReceiptFor[] {
-		let written: ReceiptFor[] = [];
+	receive<T>(plan: (orders: readonly Order[]) => { readonly receipts: readonly ReceiptFor[]; readonly billed: readonly BilledFor[]; readonly found: T }): { readonly receipts: readonly ReceiptFor[]; readonly billed: readonly BilledFor[]; readonly found: T } | undefined {
+		let out: { receipts: readonly ReceiptFor[]; billed: readonly BilledFor[]; found: T } | undefined;
 		updateBook(this.book, (book) => {
-			const done = new Set(book.orders.flatMap((o) => o.receipts.map((r) => r.k)));
-			const fresh = receipts.filter((r) => !done.has(r.k) && book.orders.some((o) => o.id === r.order && o.status === "sent" && o.lines.some((l) => l.n === r.n)));
-			written = fresh;
-			if (fresh.length === 0) return book;
+			const got = plan(book.orders);
+			const received = new Set(book.orders.flatMap((o) => o.receipts.map((r) => r.k)));
+			const billedKeys = new Set(book.orders.flatMap((o) => (o.billed ?? []).map((b) => b.k)));
+			const sentLine = (order: string, n: number) => book.orders.some((o) => o.id === order && o.status === "sent" && o.lines.some((l) => l.n === n));
+			const receipts = got.receipts.filter((r) => !received.has(r.k) && !billedKeys.has(r.k) && sentLine(r.order, r.n));
+			const billed = got.billed.filter((b) => !received.has(b.k) && !billedKeys.has(b.k) && book.orders.some((o) => o.id === b.order && o.status !== "cancelled"));
+			out = { receipts, billed, found: got.found };
+			if (receipts.length === 0 && billed.length === 0) return book;
 			const orders = book.orders.map((o) => {
-				const mine = fresh.filter((r) => r.order === o.id).map(({ order: _, ...r }) => r);
-				return mine.length === 0 ? o : { ...o, receipts: [...o.receipts, ...mine] };
+				const r = receipts.filter((x) => x.order === o.id).map(({ order: _, ...x }) => x);
+				const b = billed.filter((x) => x.order === o.id).map(({ order: _, ...x }) => x);
+				return r.length === 0 && b.length === 0 ? o : { ...o, receipts: [...o.receipts, ...r], ...(b.length === 0 && o.billed === undefined ? {} : { billed: [...(o.billed ?? []), ...b] }) };
 			});
-			const out: Book = { ...book, orders };
-			if (validBook(out) === undefined) throw new OrderError("la merce arrivata non si segna così sull'ordine: non l'ho segnata");
-			return out;
+			const next: Book = { ...book, orders };
+			if (validBook(next) === undefined) throw new OrderError("la merce arrivata non si segna così sull'ordine: non l'ho segnata");
+			return next;
 		});
-		return written;
+		return out;
 	}
 
 	/**

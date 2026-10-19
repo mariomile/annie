@@ -4,14 +4,17 @@
  * magazzino and how many, in its unit or its pack, maybe with the price), the days. What does
  * not read comes back as the answer to give, with the words said inside the fence.
  */
-import { type Order, ORDER_ID, ORDER_LIMITS, orderId, isOpen } from "../orders.ts";
+import { DateError, parseDate } from "../dates.ts";
+import { italianDate } from "../italian-format.ts";
+import { type Order, ORDER_ID, ORDER_LIMITS, orderId, isAwaited, isOpen, orderState } from "../orders.ts";
 import { supplierKeyOf } from "../order-suggest.ts";
 import { findStockItem, isCost, STOCK_LIMITS, type StockItem } from "../stock.ts";
-import { costOf, qtyText, saleQuantity } from "../stock-sums.ts";
+import { costOf, qtyOf, qtyText, saleQuantity } from "../stock-sums.ts";
 import { findSupplier, meantSupplier, supplierNotFound } from "../supplier-find.ts";
 import type { Supplier } from "../supplier-sums.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
-import { fencedOrders } from "./order-render.ts";
+import { agree, fencedOrders } from "./order-render.ts";
+import { qtyNumber, unitPlural } from "./stock-render.ts";
 
 /** A line said: the article, the quantity in its unit (thousandths), the price per unit said (ten-thousandths). */
 export type LineSaid = { readonly item: StockItem; readonly qty: bigint; readonly price?: bigint };
@@ -50,14 +53,25 @@ export function orderSaid(args: Record<string, unknown>, orders: readonly Order[
 	const mine = orders.filter((o) => o.supplier.key === supplier.key && pick(o)).sort((a, b) => b.id.localeCompare(a.id));
 	if (mine.length === 1) return mine[0] as Order;
 	if (mine.length === 0) return [`Per questo fornitore non c'è un ordine ${what}.`, fencedOrders(supplier.name)].join("\n");
-	return [`Per questo fornitore ci sono ${mine.length} ordini ${what}: dimmi quale, con il numero.`, fencedOrders(mine.slice(0, ORDER_LIMITS.shown).map((o) => `• ${o.id} del ${o.day}`).join("\n"))].join("\n");
+	return [`Per questo fornitore ci sono ${mine.length} ordini ${what}: dimmi quale, con il numero.`, fencedOrders(mine.slice(0, ORDER_LIMITS.shown).map((o) => `• ${o.id} del ${italianDate(o.day)}`).join("\n"))].join("\n");
 }
 
-/** The open orders of a supplier, newest first (for «è arrivato l'ordine di Beta?»: the latest not cancelled). */
-export const latestOf = (orders: readonly Order[], key: string): Order | undefined => orders.filter((o) => o.supplier.key === key && o.status !== "cancelled").sort((a, b) => (isOpen(b) ? 1 : 0) - (isOpen(a) ? 1 : 0) || b.id.localeCompare(a.id))[0];
+/**
+ * The orders of a supplier «è arrivato l'ordine di Beta?» means: those awaited (sent, not all
+ * arrived), oldest first; else the latest arrived; else the latest draft.
+ */
+export function asked(orders: readonly Order[], key: string): Order[] {
+	const mine = orders.filter((o) => o.supplier.key === key && o.status !== "cancelled").sort((a, b) => b.id.localeCompare(a.id));
+	const awaited = mine.filter(isAwaited);
+	if (awaited.length > 0) return awaited.reverse();
+	const arrived = mine.find((o) => orderState(o) === "received");
+	if (arrived !== undefined) return [arrived];
+	const draft = mine.find(isOpen);
+	return draft === undefined ? [] : [draft];
+}
 
 /** The lines said: [{item, quantity, unit?, price?}], each an article of the magazzino; a quantity of 0 only where `zero` allows (a change that takes a line off). */
-export function linesSaid(raw: unknown, items: readonly StockItem[], zero = false): LineSaid[] | string {
+export function linesSaid(raw: unknown, items: readonly StockItem[], zero = false, packs = true): LineSaid[] | string {
 	if (!Array.isArray(raw) || raw.length === 0 || raw.length > ORDER_LIMITS.lines) return `Errore: le righe sono un elenco (al massimo ${ORDER_LIMITS.lines}), ognuna con l'articolo e quanti.`;
 	const out: LineSaid[] = [];
 	for (const entry of raw) {
@@ -66,8 +80,8 @@ export function linesSaid(raw: unknown, items: readonly StockItem[], zero = fals
 		const said = cleanText(item, STOCK_LIMITS.name, "l'articolo");
 		if (said === undefined || isProblem(said)) return `Errore: ${said === undefined ? "ogni riga dice l'articolo" : said.problem}.`;
 		const f = findStockItem(items.filter((i) => i.removed === undefined), said);
-		if (f === "none") return ["Non trovo questo articolo in magazzino: per ordinarlo va prima aggiunto al magazzino, con la sua unità.", fencedOrders(said)].join("\n");
-		if ("close" in f) return ["Vanno bene più articoli: chiedi a chi ti scrive quale, e ripeti con il suo numero (MG-0001).", fencedOrders(f.close.slice(0, 10).map((i) => `• ${i.id} ${i.name}`).join("\n"))].join("\n");
+		if (f === "none") return ["Questo articolo non è ancora in magazzino: vuoi che lo aggiunga? Dimmi come lo conti (a pezzi, a scatole).", fencedOrders(said)].join("\n");
+		if ("close" in f) return ["Ci sono più articoli con questo nome: dimmi quale.", fencedOrders(f.close.slice(0, 10).map((i) => `• ${i.id} ${i.name}`).join("\n"))].join("\n");
 		const q = readAmount(quantity, 3, "la quantità", fencedOrders);
 		if (q === undefined || isProblem(q)) return `Errore: ${q === undefined ? "ogni riga dice quanti" : q.problem}.`;
 		const u = cleanText(unit, STOCK_LIMITS.unit, "l'unità");
@@ -75,8 +89,11 @@ export function linesSaid(raw: unknown, items: readonly StockItem[], zero = fals
 		let qty = 0n;
 		if (Number(q) !== 0 || !zero) {
 			const read = saleQuantity(f.item, q, u);
-			if ("why" in read) return [read.why === "unit" ? `L'articolo si conta a ${f.item.unit}${f.item.pack === undefined ? "" : ` o a ${f.item.pack.unit}`}: dimmi la quantità così.` : read.why === "pack" ? "Le confezioni per quanto ne contiene ognuna non danno un numero preciso di unità." : "La quantità è un numero maggiore di zero, al più 3 decimali.", fencedOrders(f.item.name)].join("\n");
+			if ("why" in read) return [read.why === "unit" ? `L'articolo si conta a ${unitPlural(f.item.unit)}${f.item.pack === undefined ? "" : ` o a ${unitPlural(f.item.pack.unit)}`}: dimmi la quantità così.` : read.why === "pack" ? "Le confezioni per quanto ne contiene ognuna non danno un numero preciso di unità." : "La quantità è un numero maggiore di zero, al più 3 decimali.", fencedOrders(f.item.name)].join("\n");
 			qty = read.qty;
+			// Sold by the pack: a count that is no whole number of packs is asked again.
+			const pack = f.item.pack;
+			if (packs && pack !== undefined && qty % qtyOf(pack.size) !== 0n) return [`Questo articolo va a ${unitPlural(pack.unit)} da ${qtyNumber(qtyOf(pack.size))}: ${qtyNumber(qty)} non è un numero intero di ${unitPlural(pack.unit)}. Dimmi ${agree(f.item.unit, "quanti", "quante")} ${unitPlural(f.item.unit)} o ${agree(pack.unit, "quanti", "quante")} ${unitPlural(pack.unit)}.`, fencedOrders(f.item.name)].join("\n");
 		}
 		const p = readAmount(price, 4, "il prezzo", fencedOrders);
 		if (isProblem(p)) return `Errore: ${p.problem}.`;
@@ -94,4 +111,17 @@ export function daysSaid(raw: unknown, what: string, max: number): number | stri
 	const n = typeof raw === "number" ? raw : typeof raw === "string" && /^\s*\d{1,4}\s*$/.test(raw) ? Number(raw) : Number.NaN;
 	if (!Number.isInteger(n) || n < 1 || n > max) return `Errore: ${what} è un numero intero di giorni, da 1 a ${max}.`;
 	return n;
+}
+
+/** The day something happened, as said («ieri», «venerdì», «16/10»): never after today; undefined when not said. */
+export function daySaid(raw: unknown, today: string, what: string): string | { readonly problem: string } | undefined {
+	const said = cleanText(raw, 40, what);
+	if (said === undefined || isProblem(said)) return said;
+	try {
+		const day = parseDate(said, today, { rule: "past" });
+		return day > today ? { problem: `${what} non può essere dopo oggi` } : day;
+	} catch (error) {
+		if (error instanceof DateError) return { problem: `${what}: dimmelo come 16/10, «ieri» o «venerdì»` };
+		throw error;
+	}
 }

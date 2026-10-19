@@ -9,9 +9,9 @@
  * it), else the carichi with a supplier: the cheapest of the recent ones and the usual one.
  */
 import { vatKey } from "./clients.ts";
-import { addDays } from "./italian-calendar.ts";
+import { addDays, daysBetween } from "./italian-calendar.ts";
 import { sameStems, spelledOut, spellingKey } from "./name-keys.ts";
-import { ORDER_LIMITS } from "./orders.ts";
+import { isOpen, type Order, ORDER_LIMITS, remainingOf } from "./orders.ts";
 import type { PurchaseRow } from "./purchase-prices.ts";
 import { halfUp } from "./quote-sums.ts";
 import { type CodeMap, type Movement, STOCK_LIMITS, type StockItem, type UnitMap } from "./stock.ts";
@@ -50,7 +50,8 @@ export function offersFor(item: StockItem, data: SuggestData): Offer[] {
 		if (learned !== undefined ? learned !== item.id : !sameStems(item.name, r.description) || names.filter((n) => sameStems(n, r.description)).length > 1) continue;
 		const cost = perUnit(item, r, data.units);
 		if (cost === undefined || cost <= 0n) continue;
-		out.push({ key: supplierKeyOf(r.supplier, r.vat ?? r.party), supplier: r.supplier, ...(r.vat === undefined ? {} : { vat: r.vat }), cost, day: r.day, from: "invoice" });
+		const vat = r.vat ?? vatKey(r.party);
+		out.push({ key: supplierKeyOf(r.supplier, vat), supplier: r.supplier, ...(vat === undefined ? {} : { vat }), cost, day: r.day, from: "invoice" });
 	}
 	if (out.length > 0) return out;
 	for (const m of data.moves) {
@@ -89,21 +90,49 @@ export function sellersOf(offers: readonly Offer[], today: string): Sellers {
 	return { ...(cheapest === undefined ? {} : { cheapest }), ...(usual === undefined ? {} : { usual: { ...usual, count: counts.get(usual.key) ?? 0 } }) };
 }
 
+/** What is on its way for an article: still awaited on the orders sent, or on a draft; with each order. */
+export type Incoming = { readonly qty: bigint; readonly orders: readonly { readonly id: string; readonly supplier: string; readonly day: string; readonly draft: boolean; readonly qty: bigint }[] };
+
+/** Per article, what the open orders still bring: a draft's lines whole, a sent order's what has not arrived. */
+export function incomingOf(orders: readonly Order[]): Map<string, Incoming> {
+	const out = new Map<string, { qty: bigint; orders: Incoming["orders"][number][] }>();
+	for (const o of orders) {
+		if (!isOpen(o)) continue;
+		for (const l of o.lines) {
+			const left = remainingOf(o, l);
+			if (left <= 0n) continue;
+			const was = out.get(l.item) ?? { qty: 0n, orders: [] };
+			was.qty += left;
+			was.orders.push({ id: o.id, supplier: o.supplier.name, day: o.sentDay ?? o.day, draft: o.status === "draft", qty: left });
+			out.set(l.item, was);
+		}
+	}
+	return out;
+}
+
 export type Suggestion = {
 	readonly item: StockItem;
 	readonly state: ItemState;
-	/** Thousandths gone out in the window, and in how many scarichi. */
+	/** Thousandths sold in the window, in how many scarichi, and the window's days (fewer when the article is followed since less). */
 	readonly sold: bigint;
 	readonly sales: number;
-	/** Under its minimum or in negativo now, or about to be before an order arrives. */
+	readonly days: number;
+	/** Under its minimum or in negativo now (counting what is on its way), or about to be before an order arrives. */
 	readonly why: "low" | "soon";
-	/** The lead time counted, in days. */
+	/** soon: in how many days it goes under. */
+	readonly toMin?: number;
+	/** The lead time counted, in days, and whether the person said it (else it is the default, an assumption). */
 	readonly lead: number;
-	/** The quantity to reach (minimum plus the cover's sales), what is missing, and what to order (whole units, whole packs). */
+	readonly leadKnown: boolean;
+	/** On its way already: on the orders sent and the drafts. */
+	readonly incoming?: Incoming;
+	/** The quantity to reach (minimum plus the sales of the lead time and the cover), what is missing, and what to order (whole units, whole packs). */
 	readonly target: bigint;
 	readonly need: bigint;
 	readonly qty: bigint;
 	readonly packs?: bigint;
+	/** The need had decimals: rounded up to whole units. */
+	readonly rounded: boolean;
 	readonly few: boolean;
 	readonly sellers: Sellers;
 };
@@ -124,29 +153,50 @@ export function paceOf(item: StockItem, moves: readonly Movement[], from: string
 	return { sold: sold > 0n ? sold : 0n, sales };
 }
 
+/** The days the pace is read over: ORDER_LIMITS.window, or fewer when the article's first movement is more recent. */
+export function windowOf(item: StockItem, moves: readonly Movement[], today: string): number {
+	let first: string | undefined;
+	for (const m of moves) if (m.item === item.id && m.day <= today && (first === undefined || m.day < first)) first = m.day;
+	if (first === undefined) return ORDER_LIMITS.window;
+	return Math.max(1, Math.min(ORDER_LIMITS.window, daysBetween(first, today) + 1));
+}
+
+export type SuggestOptions = {
+	readonly cover: number;
+	/** A supplier's lead time in days, and whether the person said it. */
+	readonly lead: (key: string | undefined) => { readonly days: number; readonly known: boolean };
+	/** What the open orders bring, per article. */
+	readonly incoming?: ReadonlyMap<string, Incoming>;
+};
+
 /**
  * The articles to reorder today, the furthest under first: under the minimum (or in negativo),
  * or that at their pace go under it (under zero without one) within the lead time of the supplier
- * they would come from. `lead` gives a supplier's days; `cover` the days of sales past the minimum.
+ * they would come from; what the open orders bring counts as had. The quantity reaches the
+ * minimum plus the sales of the lead time and of `cover` days.
  */
-export function suggestions(data: SuggestData, today: string, o: { readonly cover: number; readonly lead: (key: string | undefined) => number }): Suggestion[] {
-	const from = addDays(today, -(ORDER_LIMITS.window - 1));
-	const window = BigInt(ORDER_LIMITS.window);
+export function suggestions(data: SuggestData, today: string, o: SuggestOptions): Suggestion[] {
 	const out: Suggestion[] = [];
 	for (const item of data.items) {
 		if (item.removed !== undefined) continue;
 		const state = stateOf(item, data.moves);
-		const { sold, sales } = paceOf(item, data.moves, from, today);
+		const days = windowOf(item, data.moves, today);
+		const window = BigInt(days);
+		const { sold, sales } = paceOf(item, data.moves, addDays(today, -(days - 1)), today);
 		const min = item.min === undefined ? 0n : qtyOf(item.min);
 		if (item.min === undefined && sold === 0n) continue;
+		const incoming = o.incoming?.get(item.id);
+		const coming = incoming?.qty ?? 0n;
+		const have = state.onHand + coming;
 		const sellers = sellersOf(offersFor(item, data), today);
 		const lead = o.lead((sellers.usual ?? sellers.cheapest)?.key);
-		const gone = ceilDiv(sold * BigInt(lead), window);
-		const low = isLow(state);
-		const soon = !low && state.onHand - gone < min;
+		const gone = ceilDiv(sold * BigInt(lead.days), window);
+		const low = coming === 0n ? isLow(state) : have < 0n || (item.min !== undefined && have < min);
+		const soon = !low && have - gone < min;
 		if (!low && !soon) continue;
-		const target = min + ceilDiv(sold * BigInt(o.cover), window);
-		const need = target - state.onHand;
+		// The minimum and the sales of the delivery and the cover, up to whole units.
+		const target = ceilDiv(min + ceilDiv(sold * BigInt(lead.days + o.cover), window), 1000n) * 1000n;
+		const need = target - have;
 		if (need <= 0n) continue;
 		let qty = ceilDiv(need, 1000n) * 1000n;
 		let packs: bigint | undefined;
@@ -155,7 +205,9 @@ export function suggestions(data: SuggestData, today: string, o: { readonly cove
 			packs = ceilDiv(qty, size);
 			qty = packs * size;
 		}
-		out.push({ item, state, sold, sales, why: low ? "low" : "soon", lead, target, need, qty, ...(packs === undefined ? {} : { packs }), few: sales < ORDER_LIMITS.fewSales, sellers });
+		// soon: the days until it is under the minimum at this pace (at least one).
+		const toMin = soon && sold > 0n ? Math.max(1, Number(ceilDiv((have - min) * window, sold))) : undefined;
+		out.push({ item, state, sold, sales, days, why: low ? "low" : "soon", ...(toMin === undefined ? {} : { toMin }), lead: lead.days, leadKnown: lead.known, ...(incoming === undefined ? {} : { incoming }), target, need, qty, ...(packs === undefined ? {} : { packs }), rounded: need % 1000n !== 0n, few: sales < ORDER_LIMITS.fewSales, sellers });
 	}
 	const gap = (s: Suggestion) => s.need;
 	return out.sort((a, b) => Number(b.why === "low") - Number(a.why === "low") || (gap(b) > gap(a) ? 1 : gap(b) < gap(a) ? -1 : 0) || a.item.name.localeCompare(b.item.name, "it"));

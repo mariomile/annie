@@ -20,6 +20,7 @@ import type { SupplierStore } from "../supplier-store.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
 import type { PurchaseStore } from "../purchase-store.ts";
 import type { OrderLink } from "../order-receive.ts";
+import { OrderError } from "../orders.ts";
 import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { receiveInvoice } from "./stock-invoice.ts";
@@ -194,6 +195,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 					}
 				} catch (error) {
 					if (error instanceof StockError) return `Errore: ${error.message}.`;
+					if (error instanceof OrderError) return `Errore: ${error.message}.`;
 					if (error instanceof WorkspaceError) return `Errore: ${error.message}`;
 					throw error;
 				}

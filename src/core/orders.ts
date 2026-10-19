@@ -9,7 +9,9 @@
  *
  * Choices, tested:
  * - Only the status said is stored (draft, sent, cancelled); «arrivato in parte» and «arrivato»
- *   come from the receipts, each an invoice line once (its key, purchase-prices.ts lineKey).
+ *   come from the receipts, each an invoice line once (its key, purchase-prices.ts lineKey), or
+ *   the goods the person said came with the delivery note (from "person", a «bolla:» key): the
+ *   invoice that comes later bills those (`billed`) instead of loading them again.
  * - Quantities are canonical decimals in the article's unit (stock.ts isQuantity), a price per
  *   unit euros to the fourth decimal (isCost); never a float.
  * - Another agente gets counts only: never a supplier, an article, a quantity or a price.
@@ -24,7 +26,7 @@ export class OrderError extends Error {
 	override readonly name = "OrderError";
 }
 
-export const ORDER_OPS = ["suggest", "create", "change", "mark_sent", "cancel", "list", "status", "document", "export", "lead_time"] as const;
+export const ORDER_OPS = ["suggest", "create", "change", "mark_sent", "received", "cancel", "list", "status", "document", "export", "lead_time"] as const;
 export type OrderOp = (typeof ORDER_OPS)[number];
 
 export const ORDER_LIMITS = {
@@ -75,8 +77,15 @@ export type OrderLine = {
 	readonly priceDay?: string;
 };
 
-/** Goods of an invoice line received on an order line: the invoice line's key, the order line, how many (in the article's unit), the invoice's day. */
-export type Receipt = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string };
+/**
+ * Goods received on an order line: from an invoice line loaded (`k` its key), or (`from`
+ * «person») from the person's word with the delivery note, loaded then by hand (`k` the call's
+ * own key); the order line, how many (in the article's unit), the day.
+ */
+export type Receipt = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string; readonly from?: "person" };
+
+/** An invoice line that billed goods received with the delivery note: not loaded again, not received twice. */
+export type Billed = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string };
 
 export const ORDER_STATUSES = ["draft", "sent", "cancelled"] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
@@ -96,6 +105,8 @@ export type Order = Marker & {
 	/** The document in the workspace, the last made. */
 	readonly file?: string;
 	readonly receipts: readonly Receipt[];
+	/** The invoice lines that billed what came with the delivery note (absent before week 72's hand receipts). */
+	readonly billed?: readonly Billed[];
 	readonly callId?: string;
 	readonly edited?: Marker;
 	readonly sent?: Marker;
@@ -116,6 +127,23 @@ export const STATE_WORDS: Readonly<Record<OrderState, string>> = { draft: "bozza
 export const orderId = (n: number) => `OR-${String(n).padStart(4, "0")}`;
 export const ORDER_ID = /^OR-(\d{4,6})$/;
 const LINE_KEY = /^[0-9a-f]{24}#\d{1,4}$/;
+/** The key of goods received by the person's word: «bolla:» and a digest of the call. */
+const HAND_KEY = /^bolla:[0-9a-f]{16}$/;
+
+/** How many of order line `n` came with the delivery note and no invoice billed yet (thousandths). */
+export function unbilledOf(order: Pick<Order, "receipts" | "billed">, n: number): bigint {
+	const hand = order.receipts.filter((r) => r.n === n && r.from === "person").reduce((s, r) => s + qtyOf(r.qty), 0n);
+	const billed = (order.billed ?? []).filter((b) => b.n === n).reduce((s, b) => s + qtyOf(b.qty), 0n);
+	return hand > billed ? hand - billed : 0n;
+}
+
+/** The day the delivery note brought the goods of line `n` (the latest), when it did. */
+export const handDayOf = (order: Pick<Order, "receipts">, n: number): string | undefined =>
+	order.receipts
+		.filter((r) => r.n === n && r.from === "person")
+		.map((r) => r.day)
+		.sort()
+		.at(-1);
 
 /** How many of order line `n` were received (thousandths). */
 export function receivedOf(order: Pick<Order, "receipts">, n: number): bigint {
@@ -169,20 +197,31 @@ function validLine(v: unknown): v is OrderLine {
 function validReceipt(v: unknown): v is Receipt {
 	if (typeof v !== "object" || v === null) return false;
 	const r = v as Receipt;
-	return Object.keys(r).every((k) => ["k", "n", "qty", "day"].includes(k)) && typeof r.k === "string" && LINE_KEY.test(r.k) && Number.isInteger(r.n) && r.n >= 1 && isQuantity(r.qty) && Number(r.qty) > 0 && typeof r.day === "string" && realDate(r.day);
+	if (!Object.keys(r).every((k) => ["k", "n", "qty", "day", "from"].includes(k)) || (r.from !== undefined && r.from !== "person")) return false;
+	return typeof r.k === "string" && (r.from === "person" ? HAND_KEY : LINE_KEY).test(r.k) && Number.isInteger(r.n) && r.n >= 1 && isQuantity(r.qty) && Number(r.qty) > 0 && typeof r.day === "string" && realDate(r.day);
 }
+
+function validBilled(v: unknown): v is Billed {
+	if (typeof v !== "object" || v === null) return false;
+	const b = v as Billed;
+	return Object.keys(b).every((k) => ["k", "n", "qty", "day"].includes(k)) && typeof b.k === "string" && LINE_KEY.test(b.k) && Number.isInteger(b.n) && b.n >= 1 && isQuantity(b.qty) && Number(b.qty) > 0 && typeof b.day === "string" && realDate(b.day);
+}
+
+/** Each pair of a key and an order line once. */
+const uniquePairs = (xs: readonly { readonly k: string; readonly n: number }[]) => new Set(xs.map((x) => `${x.k}|${x.n}`)).size === xs.length;
 
 /** An order as stored, checked field by field: what does not have this shape makes the store unreadable. */
 export function validOrder(v: unknown): v is Order {
 	if (!isMarker(v)) return false;
 	const o = v as Order;
-	for (const key of Object.keys(o)) if (!["id", "supplier", "status", "day", "sentDay", "lines", "notes", "noPrices", "file", "receipts", "callId", "edited", "sent", "cancelled", "by", "at"].includes(key)) return false;
+	for (const key of Object.keys(o)) if (!["id", "supplier", "status", "day", "sentDay", "lines", "notes", "noPrices", "file", "receipts", "billed", "callId", "edited", "sent", "cancelled", "by", "at"].includes(key)) return false;
 	if (typeof o.id !== "string" || !ORDER_ID.test(o.id) || !validSupplier(o.supplier) || !(ORDER_STATUSES as readonly string[]).includes(o.status)) return false;
 	if (typeof o.day !== "string" || !realDate(o.day) || (o.sentDay !== undefined && (typeof o.sentDay !== "string" || !realDate(o.sentDay)))) return false;
 	if ((o.status === "sent") !== (o.sentDay !== undefined) && o.status !== "cancelled") return false;
 	if (!Array.isArray(o.lines) || o.lines.length === 0 || o.lines.length > ORDER_LIMITS.lines || !o.lines.every(validLine)) return false;
 	if (new Set(o.lines.map((l) => l.n)).size !== o.lines.length || new Set(o.lines.map((l) => l.item)).size !== o.lines.length) return false;
-	if (!Array.isArray(o.receipts) || o.receipts.length > ORDER_LIMITS.receipts || !o.receipts.every((r) => validReceipt(r) && o.lines.some((l) => l.n === r.n))) return false;
+	if (!Array.isArray(o.receipts) || o.receipts.length > ORDER_LIMITS.receipts || !o.receipts.every((r) => validReceipt(r) && o.lines.some((l) => l.n === r.n)) || !uniquePairs(o.receipts)) return false;
+	if (o.billed !== undefined && (!Array.isArray(o.billed) || o.billed.length > ORDER_LIMITS.receipts || !o.billed.every((b) => validBilled(b) && o.lines.some((l) => l.n === b.n)) || !uniquePairs(o.billed))) return false;
 	if (!optText(o.notes, ORDER_LIMITS.notes) || (o.noPrices !== undefined && o.noPrices !== true) || !optText(o.file, ORDER_LIMITS.file) || !optText(o.callId, 200)) return false;
 	return [o.edited, o.sent, o.cancelled].every((m) => m === undefined || isMarker(m));
 }
