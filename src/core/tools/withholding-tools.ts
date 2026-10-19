@@ -16,11 +16,11 @@ import { regimeOf } from "../sales-invoices.ts";
 import type { TaxStore } from "../tax-store.ts";
 import { isProblem } from "../text-input.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { CU_ID, type CuClient, type CuRecord, WITHHOLDING_LIMITS, WITHHOLDING_OPS, withholdingAgentReads, WithholdingError, type WithholdingOp } from "../withholding.ts";
+import { CU_ID, type CuClient, cuId, type CuRecord, WITHHOLDING_LIMITS, WITHHOLDING_OPS, withholdingAgentReads, WithholdingError, type WithholdingOp } from "../withholding.ts";
 import { type WithheldDoc, withheldDocs } from "../withholding-docs.ts";
 import { briefYear } from "../withholding-rules.ts";
 import { type Recorded, WITHHOLDING_BROKEN, type WithholdingStore } from "../withholding-store.ts";
-import { bankReceipts, checkPayment, compareCu, countsIn, cuKey, cuList, yearSummary } from "../withholding-sums.ts";
+import { bankReceipts, checkPayment, compareCu, countsIn, cuKey, cuList, paidGrossByBank, yearSummary } from "../withholding-sums.ts";
 import { fenced, readClient, readCuAmount, readNumber, readPaidPeriod, readReceived, readYear } from "./withholding-input.ts";
 import { askClient, BRIEF_NOTHING, briefLine, checkListAnswer, checkOneAnswer, cuAnswer, cuListAnswer, cuRemovedAnswer, DEFAULT_YEAR, docWords, FORFETTARIO, loadNotes, REPEAT, SIMILAR_NOTE, summaryAnswer, withholdingCsv } from "./withholding-render.ts";
 
@@ -75,7 +75,7 @@ export function createWithholdingTools(options: WithholdingToolsOptions): AnnieT
 					period: text(40, "check_payment: the payments of a period («ottobre», «T3 2026», «2026»), instead of number; default this year"),
 					number: text(40, "check_payment: the invoice's number"),
 					client: text(WITHHOLDING_LIMITS.name, "record_cu: the client of the CU, by name, partita IVA or codice fiscale (a client not in the invoices only by partita IVA or codice fiscale); check_payment: that client's payments, or with number when two clients have the same one"),
-					id: text(12, "cu_remove: the CU's id (CU-0001)"),
+					id: { type: ["string", "integer"], maxLength: 12, description: "cu_remove: the CU's id (CU-0001, or its number)" },
 					amount: amount("check_payment with number: what the person says came in, in euros"),
 					gross: amount("record_cu: the compensi lordi (ammontare lordo corrisposto) the CU writes, in euros"),
 					withheld: amount("record_cu: the ritenute a titolo d'acconto the CU writes, in euros (0 when none)"),
@@ -229,9 +229,11 @@ export function createWithholdingTools(options: WithholdingToolsOptions): AnnieT
 		const who = ctx.thread === undefined ? "annie" : (options.whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`);
 		const done = (await ctx.step("record", async () => {
 			const at = now().toISOString();
-			const r = store.record(ctx.callId, found.client.key, year, (id): CuRecord => ({ id, client: found.client, year, gross, withheld, callId: ctx.callId, by: who, at }));
+			// A client taken by a name not its own (a similar one, another legal form) never takes another CU's place.
+			const r = store.record(ctx.callId, found.client.key, year, (id): CuRecord => ({ id, client: found.client, year, gross, withheld, callId: ctx.callId, by: who, at }), found.note === undefined);
 			return r as unknown as JsonValue;
 		})) as unknown as Recorded;
+		if (done.kind === "exists") return [`Errore: ho già la CU del ${year} di un cliente con un nome simile (nel riquadro): se è lui e vuoi sostituirla, dimmi la sua partita IVA o il nome esatto.`, fenced(done.cu.client.name)].join("\n");
 		if (done.kind !== "again") {
 			await ctx.step("audit", async () => {
 				await options.record?.({ type: "withholding.changed", op: "record_cu", count: 1 });
@@ -244,11 +246,13 @@ export function createWithholdingTools(options: WithholdingToolsOptions): AnnieT
 
 	/** A CU said by mistake, removed by its id; its id is never used again. */
 	async function removeCu(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-		const id = typeof args.id === "string" ? args.id.trim().toUpperCase() : "";
+		// «CU-0001», «CU-1», «cu 1», «1»: the number, padded.
+		const n = /^(?:CU)?[\s-]*0*(\d{1,6})$/i.exec(typeof args.id === "number" ? String(args.id) : typeof args.id === "string" ? args.id.trim() : "")?.[1];
+		const id = n === undefined || Number(n) < 1 ? "" : cuId(Number(n));
 		if (!CU_ID.test(id)) return "Errore: dimmi quale CU togliere con il suo codice, come CU-0001: lo trovi nella risposta che l'ha salvata.";
 		if (store.read().broken) return `Errore: ${WITHHOLDING_BROKEN}.`;
 		const r = (await ctx.step("remove", async () => store.remove(id) as unknown as JsonValue)) as unknown as ReturnType<WithholdingStore["remove"]>;
-		if (r.kind !== "removed") return r.kind === "gone" ? `La CU ${id} non c'è più: è già stata tolta.` : `Errore: non ho nessuna CU ${id}: chiedimi le CU dell'anno per vedere i codici.`;
+		if (r.kind !== "removed") return r.kind === "gone" ? `La ${id} non c'è più: è già stata tolta.` : `Errore: non ho nessuna CU con il codice ${id}: chiedimi le CU dell'anno per vedere i codici.`;
 		await ctx.step("audit", async () => {
 			await options.record?.({ type: "withholding.changed", op: "cu_remove", count: 1 });
 			return true;
@@ -283,7 +287,7 @@ export function createWithholdingTools(options: WithholdingToolsOptions): AnnieT
 		if (counted.length === 0) return [`Nel ${year} non ho fatture con ritenuta d'acconto: non c'è niente da esportare.`, ...l.notes].join("\n");
 		const book = store.read();
 		const comparisons = new Map((book.broken ? [] : book.cus.filter((c) => c.year === year)).map((c) => [c.client.key, compareCu(c, l.docs, l.bank)]));
-		const { csv, rows } = withholdingCsv({ year, docs: counted, checks: (d) => checkPayment(d, l.bank), comparisons });
+		const { csv, rows } = withholdingCsv({ year, docs: counted, checks: (d) => checkPayment(d, l.bank), paidGross: (d) => paidGrossByBank(d, l.bank), comparisons });
 		const to = String(year) === day.slice(0, 4) ? day : `${year}-12-31`;
 		// The name only from the dates, under ritenute/; a new file never replaces one there.
 		const path = await ctx.step("path", async () => freePath(workspace, `ritenute/ritenute-${year}-01-01_${to}`, ".csv"));

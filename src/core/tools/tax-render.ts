@@ -183,7 +183,10 @@ export function estimateAnswer(v: EstimateView): string {
 	const e = v.estimate;
 	const lines = [headline(e, v.soFar)];
 	if (e.incassi > 0n) {
-		lines.push(`Incassi ${v.soFar ? "finora" : `del ${e.year}`}: ${euros(e.incassi)} (${n1(v.incassi.count, "1 rata", "# rate")} di fatture segnate come pagate, alla data in cui le hai segnate).`, ...estimateRows(e, v.profile));
+		lines.push(`Incassi ${v.soFar ? "finora" : `del ${e.year}`}: ${euros(e.incassi)} (${n1(v.incassi.count, "1 rata", "# rate")} di fatture segnate come pagate, alla data in cui le hai segnate).`);
+		const withheld = v.incassi.contributions ?? 0n;
+		if (withheld > 0n && e.incassi === v.incassi.cents) lines.push(`Di cui ${euros(withheld)} di contributi trattenuti dal mandante: non arrivano sul conto, ma sono compensi e contano nel reddito.`);
+		lines.push(...estimateRows(e, v.profile));
 		lines.push(`In tutto: ${euros(e.total)}.`);
 	}
 	lines.push(...incassiNotes(v.incassi));
@@ -496,6 +499,8 @@ export function taxCsv(v: CsvView): { readonly csv: string; readonly rows: numbe
 		if (i === undefined) continue;
 		const rata = r.instalment !== undefined && r.instalment.count > 1 ? `, rata ${r.instalment.n} di ${r.instalment.count}` : "";
 		add("Incassi", italianDate(r.date), `Fattura ${i.doc.number ?? "senza numero"}${rata}, ${partyName(i.customer)}`, r.cents, "fatture");
+		// What the customer withheld is income too: its own row, so the rows add up to the incassi of the estimate.
+		if (r.contributions !== undefined && r.contributions !== 0n) add("Incassi", italianDate(r.date), `Contributi trattenuti dal mandante, fattura ${i.doc.number ?? "senza numero"}${rata}`, r.contributions, "fatture");
 	}
 	add("Stima", "", `Incassi ${e.year} (fatture segnate come pagate)`, e.incassi, "fatture");
 	if (e.ricavi !== e.incassi) add("Stima", "", "Ricavi senza il contributo integrativo", e.ricavi, "stimato");

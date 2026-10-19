@@ -104,13 +104,13 @@ function verdictWords(c: PaymentCheck): string {
 	const v: Verdict = c.verdict;
 	switch (v) {
 		case "net":
-			return "ha pagato al netto della ritenuta, come deve: la ritenuta è un credito per la tua dichiarazione.";
+			return "ha pagato al netto della ritenuta, come deve. La ritenuta è un credito per la tua dichiarazione.";
 		case "gross":
-			return "ha pagato il lordo, senza trattenere la ritenuta: quella ritenuta non è un credito per te, non metterla in dichiarazione, e il cliente non dovrebbe certificarla nella CU.";
+			return "ha pagato il lordo, senza trattenere la ritenuta. Quella ritenuta non è un credito per te: non metterla in dichiarazione. E il cliente non dovrebbe certificarla nella CU.";
 		case "under":
-			return `mancano ${euros(-c.diff)} rispetto al netto: chiedi al cliente.`;
+			return `mancano ${euros(-c.diff)} rispetto al netto. Chiedi al cliente.`;
 		case "other":
-			return `è diverso sia dal netto sia dal lordo (${euros(c.diff)} rispetto al netto): controlla con il cliente.`;
+			return `è diverso sia dal netto sia dal lordo (${euros(c.diff)} rispetto al netto). Controlla con il cliente.`;
 	}
 }
 
@@ -132,7 +132,9 @@ const checkRow = (c: PaymentCheck): string =>
 		? `${docWords(c.doc)}, ${partyName(c.doc.client)}: netto ${euros(c.doc.net)}, ${c.verdict === "gross" ? "chiede il lordo: da verificare" : "da verificare"}`
 		: `${docWords(c.doc)}, ${partyName(c.doc.client)}: netto ${euros(c.doc.net)}, arrivati ${euros(c.received)}, ${verdictShort(c)}`;
 
-const BANK_NEEDED = "Per sapere cosa è arrivato davvero serve l'estratto conto: caricalo, o dimmi quanto è arrivato per una fattura.";
+const BANK_NEEDED = "Per sapere cosa è arrivato serve l'estratto conto: caricalo, o dimmi quanto è arrivato per una fattura.";
+/** After a line that already says «non quello arrivato davvero». */
+const BANK_NEEDED_AFTER = "Per saperlo serve l'estratto conto: caricalo, o dimmi quanto è arrivato per una fattura.";
 
 /** The invoices paid in a period checked: counts outside, the rows inside one fence. */
 export function checkListAnswer(checks: readonly PaymentCheck[], periodWords: string, notes: readonly string[]): string {
@@ -142,7 +144,7 @@ export function checkListAnswer(checks: readonly PaymentCheck[], periodWords: st
 		const asksGross = fromRegister.filter((c) => c.verdict === "gross").length;
 		const lines = [`${n1(checks.length, "Una fattura con ritenuta pagata", "# fatture con ritenuta pagate")} (${periodWords}): lo scadenzario conta il netto che chiede la fattura, non quello arrivato davvero.`];
 		if (asksGross > 0) lines.push(`${n1(asksGross, "Una chiede", "# chiedono")} il totale lordo nei dati di pagamento: da verificare.`);
-		lines.push(BANK_NEEDED, ...notes, REPEAT);
+		lines.push(BANK_NEEDED_AFTER, ...notes, REPEAT);
 		return lines.join("\n");
 	}
 	const count = (v: Verdict, from?: ReceivedFrom) => checks.filter((c) => c.verdict === v && (from === undefined ? c.from !== "register" : c.from === from)).length;
@@ -222,7 +224,7 @@ export function cuAnswer(v: CuView): string {
 
 /** A CU removed: its client inside the fence. */
 export function cuRemovedAnswer(cu: CuRecord): string {
-	return [`Ho tolto la CU ${cu.id} del ${cu.year} del cliente nel riquadro: compensi ${euros(eurosToCents(cu.gross))}, ritenute ${euros(eurosToCents(cu.withheld))}.`, fenced(`cliente: ${cu.client.name}`), "Se ti arriva quella giusta, dimmela e la confronto con le mie fatture."].join("\n");
+	return [`Ho tolto la ${cu.id} del ${cu.year} del cliente nel riquadro: compensi ${euros(eurosToCents(cu.gross))}, ritenute ${euros(eurosToCents(cu.withheld))}.`, fenced(`cliente: ${cu.client.name}`), "Se ti arriva quella giusta, dimmela e la confronto con le mie fatture."].join("\n");
 }
 
 /** A client said for a CU that is close to several: asked, the candidates inside the fence. */
@@ -240,7 +242,7 @@ function firstReason(r: CuComparison): string {
 /** `defaulted`: the year was not said (last year is meant), said in the header. */
 export function cuListAnswer(l: CuList, today: string, notes: readonly string[], defaulted = false): string {
 	const deadline = italianLongDate(l.deadline);
-	const status = l.late ? `scadenza ${deadline}, passata: chi non l'ha mandata è in ritardo` : today >= `${l.year + 1}-01-01` ? `scadenza ${deadline}` : `arriveranno dopo la fine dell'anno, entro il ${deadline}`;
+	const status = l.missing.length === 0 ? `scadenza ${deadline}` : l.late ? `scadenza ${deadline}, passata: chi non l'ha mandata è in ritardo` : today >= `${l.year + 1}-01-01` ? `scadenza ${deadline}` : `arriveranno dopo la fine dell'anno, entro il ${deadline}`;
 	const total = l.missing.length + l.received.length;
 	if (total === 0 && l.unexpected.length === 0) return [`Nel ${l.year} non ho fatture con ritenuta pagate, quindi nessuna CU da aspettare.`, ...notes, REPEAT].join("\n");
 	const rows: string[] = [];
@@ -288,29 +290,34 @@ const FROM_CSV: Readonly<Record<ReceivedFrom, string>> = { bank: "estratto conto
 /** The scadenzario's figure is the invoice's own: never a verdict on what came in. */
 const verdictCsv = (c: PaymentCheck): string => (c.from !== "register" ? VERDICT_CSV[c.verdict] : c.verdict === "gross" ? "chiede il lordo: da verificare" : "da verificare (manca l'estratto conto)");
 
-export type CsvView = { readonly year: number; readonly docs: readonly WithheldDoc[]; readonly checks: (d: WithheldDoc) => PaymentCheck; readonly comparisons: ReadonlyMap<string, CuComparison> };
+/** `paidGross`: the bank says the client paid it gross (withholding-sums.ts paidGrossByBank): no credit. */
+export type CsvView = { readonly year: number; readonly docs: readonly WithheldDoc[]; readonly checks: (d: WithheldDoc) => PaymentCheck; readonly paidGross: (d: WithheldDoc) => boolean; readonly comparisons: ReadonlyMap<string, CuComparison> };
 
 /**
  * One row per invoice given (counted in the year, or dated in it and counted in another, to say
- * why), with the shares paid in the year and the client's CU; the CU's columns only on the rows
+ * why), with the shares paid in the year, the credit for the dichiarazione (the share, none when
+ * the bank says it was paid gross: the summary's credit) and the client's CU; the CU's columns only on the rows
  * counted in that CU's year, «nella CU del 2027» on the others. Last, the year's total of the rows
  * counted.
  */
 export function withholdingCsv(v: CsvView): { readonly csv: string; readonly rows: number } {
 	const y = v.year;
-	const header = ["Cliente", "P.IVA o codice fiscale", "Documento", "Numero", "Data", "Pagata il", "Anni di cassa", "Compensi", "Ritenuta", "Regola", "Totale", "Netto da ricevere", `Compensi del ${y}`, `Ritenuta del ${y}`, "Ricevuto", "Fonte del ricevuto", "Esito del pagamento", "CU: ritenute dichiarate", "CU: differenza con le fatture", "CU"];
+	const header = ["Cliente", "P.IVA o codice fiscale", "Documento", "Numero", "Data", "Pagata il", "Anni di cassa", "Compensi", "Ritenuta", "Regola", "Totale", "Netto da ricevere", `Compensi del ${y}`, `Ritenuta del ${y}`, `Credito del ${y}`, "Ricevuto", "Fonte del ricevuto", "Esito del pagamento", "CU: ritenute dichiarate", "CU: differenza con le fatture", "CU"];
 	const rows: CsvCell[][] = [];
 	let compensi = 0n;
 	let ritenuta = 0n;
+	let credit = 0n;
 	for (const d of v.docs) {
 		const share = sharesIn(d, y);
 		const years = [...new Set(d.payments.map((p) => Number(p.day.slice(0, 4))))];
 		const check = d.paidOn === undefined || d.credit ? undefined : v.checks(d);
 		const cmp = share === undefined ? undefined : v.comparisons.get(d.clientKey);
 		const other = years.find((n) => n !== y);
+		const owed = share === undefined ? undefined : v.paidGross(d) ? 0n : share.ritenuta;
 		if (share !== undefined) {
 			compensi += share.compensi;
 			ritenuta += share.ritenuta;
+			credit += owed ?? 0n;
 		}
 		const last = d.payments[d.payments.length - 1];
 		rows.push([
@@ -328,6 +335,7 @@ export function withholdingCsv(v: CsvView): { readonly csv: string; readonly row
 			csvCents(d.net),
 			share === undefined ? "" : csvCents(share.compensi),
 			share === undefined ? "" : csvCents(share.ritenuta),
+			owed === undefined ? "" : csvCents(owed),
 			check === undefined ? "" : csvCents(check.received),
 			check === undefined ? "" : FROM_CSV[check.from],
 			check === undefined ? "" : verdictCsv(check),
@@ -340,5 +348,6 @@ export function withholdingCsv(v: CsvView): { readonly csv: string; readonly row
 	total[0] = `Totale ${y}`;
 	total[12] = csvCents(compensi);
 	total[13] = csvCents(ritenuta);
+	total[14] = csvCents(credit);
 	return { csv: csvFile(header, [...rows, total]), rows: rows.length };
 }

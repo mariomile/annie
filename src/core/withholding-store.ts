@@ -20,8 +20,12 @@ export const WITHHOLDING_BROKEN = "le CU salvate non si leggono: non le cambio, 
 
 const EMPTY: Book = { next: 1, cus: [], calls: [] };
 
-/** What a record did: a new CU, one that took the place of the CU of the same client and year, or the call run again (nothing written). */
-export type Recorded = { readonly cu: CuRecord; readonly kind: "new" | "replaced" | "again" };
+/**
+ * What a record did: a new CU, one that took the place of the CU of the same client and year, the
+ * call run again (nothing written), or a CU of that client and year already there that this call
+ * may not replace (`exists`, nothing written: the client was not named exactly).
+ */
+export type Recorded = { readonly cu: CuRecord; readonly kind: "new" | "replaced" | "again" | "exists" };
 
 export class WithholdingStore {
 	private readonly book: BookFile<Book>;
@@ -44,10 +48,11 @@ export class WithholdingStore {
 
 	/**
 	 * A CU, once per `callId`: `make` gets the id it takes (the one of the CU of the same client
-	 * and year, when there is one) and gives the record. Checked as the file is: a WithholdingError,
+	 * and year, when there is one) and gives the record. `replace` false: the CU of the same client
+	 * and year is kept and given back as `exists`. Checked as the file is: a WithholdingError,
 	 * nothing written, when it does not hold.
 	 */
-	record(callId: string, key: string, year: number, make: (id: string) => CuRecord): Recorded {
+	record(callId: string, key: string, year: number, make: (id: string) => CuRecord, replace = true): Recorded {
 		let out: Recorded | undefined;
 		updateBook(this.book, (book) => {
 			if (book.calls.includes(callId)) {
@@ -59,6 +64,10 @@ export class WithholdingStore {
 			}
 			const calls = [...book.calls, callId].slice(-WITHHOLDING_LIMITS.calls);
 			const same = book.cus.find((c) => c.client.key === key && c.year === year);
+			if (same !== undefined && !replace) {
+				out = { cu: same, kind: "exists" };
+				return book;
+			}
 			if (same !== undefined) {
 				const made = make(same.id);
 				const cu = checked({ ...made, replaced: made.at });

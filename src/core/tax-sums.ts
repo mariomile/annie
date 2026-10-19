@@ -84,6 +84,8 @@ export type Incassi = {
 	/** Left out: in another currency; an amount that does not read. */
 	readonly otherCurrency: number;
 	readonly unreadable: number;
+	/** Of `cents`, the contributions the customers withheld (an agent's ENASARCO): income that never came in. */
+	readonly contributions?: bigint;
 };
 
 /** The incassi of `year` up to `to` (default its last day): by the day marked paid, in euros, the contributions the customers withheld (RT03 to RT06) added back. */
@@ -91,7 +93,7 @@ export function incassiOf(invoices: readonly Invoice[], year: number, dayOf: (at
 	if (to < `${year}-01-01`) return { cents: 0n, count: 0, otherCurrency: 0, unreadable: 0 };
 	const book = cashBook(invoices, [], { from: `${year}-01-01`, to }, dayOf);
 	// The income, not only what came in: the contributions a customer withheld (an agent's ENASARCO) are compensi too.
-	return { cents: book.totalIn + book.contributions, count: book.rows.length, otherCurrency: book.otherCurrency, unreadable: book.unreadable };
+	return { cents: book.totalIn + book.contributions, count: book.rows.length, otherCurrency: book.otherCurrency, unreadable: book.unreadable, ...(book.contributions === 0n ? {} : { contributions: book.contributions }) };
 }
 
 /** The incassi of each year, read once: this year up to `today`, a year to come none. */
@@ -360,7 +362,20 @@ function contributiPaidIn(i: CalendarInputs, year: number): bigint | undefined {
 
 /** `year`'s estimate on its incassi (default as the calendar takes them), with the contributions the calendar pays in it deducted. */
 export function yearEstimate(i: CalendarInputs, year: number, incassi?: bigint): Estimate {
-	return estimate(i.profile, year, incassi ?? incassiFor(i, year) ?? i.incassi(year).cents, figuresOf(i, year), contributiPaidIn(i, year));
+	const e = estimate(i.profile, year, incassi ?? incassiFor(i, year) ?? i.incassi(year).cents, figuresOf(i, year), contributiPaidIn(i, year));
+	return onReceived(e, i.incassi(year));
+}
+
+/**
+ * The share to set aside of what comes in: when customers withhold contributions (an agent's
+ * ENASARCO), the incassi counted are more than what reaches the account, so the percent is of the
+ * part that arrives (in the year's proportion), and that percent of each payment covers the estimate.
+ */
+function onReceived(e: Estimate, year: Incassi): Estimate {
+	const withheld = year.contributions ?? 0n;
+	if (withheld <= 0n || year.cents <= withheld || e.incassi <= 0n) return e;
+	const received = (e.incassi * (year.cents - withheld)) / year.cents;
+	return received <= 0n ? e : { ...e, setAsidePercent: Number((e.total * 100n + received - 1n) / received) };
 }
 
 /** This year's estimate projected to its end, or on the incassi expected. */

@@ -338,8 +338,10 @@ function withheldNet(doc: FatturaDocument): bigint | undefined {
 	if (doc.withholdings === undefined || doc.withholdings.length === 0 || doc.vatRows === undefined || doc.total === undefined) return undefined;
 	const total = toUnits(doc.total);
 	if (total === undefined) return undefined;
-	let gross = 0n;
-	for (const r of doc.vatRows) gross += absCents(toUnits(r.taxable) ?? 0n) + absCents(toUnits(r.tax) ?? 0n);
+	// The rows with their sign (a discount row is negative), the sign of the whole taken off once.
+	let rows = 0n;
+	for (const r of doc.vatRows) rows += (toUnits(r.taxable) ?? 0n) + (toUnits(r.tax) ?? 0n);
+	const gross = absCents(rows);
 	let withheld = 0n;
 	for (const w of doc.withholdings) withheld += absCents(toUnits(w.amount) ?? 0n);
 	const split = absCents(doc.splitVat === undefined ? 0n : (toUnits(doc.splitVat) ?? 0n));

@@ -69,7 +69,9 @@ const plainRate = (raw: string | undefined): string | undefined => {
 	const units = raw === undefined ? undefined : toUnits(raw);
 	return units === undefined ? undefined : String(Number(unitsCents(units)) / 100);
 };
-const cents = (raw: string | undefined): bigint => absCents(unitsCents(toUnits(raw ?? "0") ?? 0n));
+/** An amount as written, in cents with its sign. */
+const signedCents = (raw: string | undefined): bigint => unitsCents(toUnits(raw ?? "0") ?? 0n);
+const cents = (raw: string | undefined): bigint => absCents(signedCents(raw));
 
 type Amounts = { readonly ritenuta: bigint; readonly compensi: bigint; readonly net: bigint };
 
@@ -130,9 +132,10 @@ function fromRegister(register: readonly Invoice[], known: ReadonlySet<string>, 
 		const withheld = (i.doc.withholdings ?? []).reduce((n, w) => n + cents(w.amount), 0n);
 		const rows = i.doc.vatRows ?? [];
 		const integrativo = (i.doc.funds ?? []).filter((f) => integrativoFund(f.type)).reduce((n, f) => n + cents(f.amount), 0n);
-		const taxable = rows.length > 0 ? rows.filter((r) => r.natura?.startsWith("N1") !== true).reduce((n, r) => n + cents(r.taxable), 0n) : cents(i.doc.taxable);
+		// The rows with their sign (a discount row is negative); `signed` takes the document's sign once.
+		const taxable = rows.length > 0 ? absCents(rows.filter((r) => r.natura?.startsWith("N1") !== true).reduce((n, r) => n + signedCents(r.taxable), 0n)) : cents(i.doc.taxable);
 		// The gross from the summary rows: an ImportoTotaleDocumento may be written already net of the ritenuta.
-		const total = rows.length > 0 ? rows.reduce((n, r) => n + cents(r.taxable) + cents(r.tax), 0n) : cents(i.doc.total);
+		const total = rows.length > 0 ? absCents(rows.reduce((n, r) => n + signedCents(r.taxable) + signedCents(r.tax), 0n)) : cents(i.doc.total);
 		const split = cents(i.doc.splitVat);
 		const rates = [...new Set(own.map((w) => plainRate(w.rate)).filter((r) => r !== undefined))];
 		const causale = own.find((w) => w.causale !== undefined)?.causale;
