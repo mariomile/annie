@@ -13,7 +13,7 @@
  */
 import { createHash } from "node:crypto";
 import { type Appointment, APPOINTMENT_LIMITS, AppointmentError, type AppointmentSettings, appointmentId, type BookedService, clockOf, DEFAULT_MINUTES, DEFAULT_SLOT, endOf, minutesOf, timeOf } from "../appointments.ts";
-import { fits, type Fit, type FitInput, freeSlots, gapsOf, localNow, nearestFree, openOn, type Span } from "../appointment-slots.ts";
+import { type Block, fits, type Fit, type FitInput, freeSlots, gapsOf, localNow, nearestFree, openOn, type Span } from "../appointment-slots.ts";
 import { APPOINTMENTS_BROKEN, type AppointmentBook, type AppointmentStore } from "../appointment-store.ts";
 import type { ClientStore } from "../client-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
@@ -47,6 +47,8 @@ export type AppointmentToolsOptions = {
 	readonly calendar?: boolean;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: AppointmentEvent) => Promise<void>;
+	/** What the staff's absences block of the resources on a day (il personale): never forced. */
+	readonly absences?: (day: string) => readonly Block[];
 	/** Tests: the clock. */
 	readonly now?: () => Date;
 };
@@ -148,6 +150,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		const b = options.priceList?.read();
 		return b === undefined || b.broken ? [] : b.items;
 	};
+	const blocked = options.absences === undefined ? {} : { blocked: options.absences };
 	const checkOf = (p: Proposed) => hash([p.client, p.services, p.day, p.start, p.minutes, p.resource ?? "", p.notes ?? "", p.force === true]);
 
 	/** The client's «non presentato», oldest first. */
@@ -180,6 +183,10 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 	/** Why it does not fit, and the nearest free times: nothing is booked (or moved). */
 	function refusal(fit: Exclude<Fit, { ok: true }>, input: FitInput, b: AppointmentBook, today: string, verb: string, forceCheck?: string): string {
 		if (fit.why === "past") return "Quell'ora è già passata: dimmi un altro giorno o un'altra ora.";
+		if (fit.why === "absent") {
+			// An absence is never forced: no «fissalo lo stesso».
+			return [`${fit.resource === undefined ? "Chi lo fa" : "La risorsa"} in quell'orario è assente (chi è nel riquadro): ${verb}. Un'assenza non si scavalca.`, ...(fit.resource === undefined ? [] : [fencedAppointments(fit.resource)]), ...proposalsText(nearestFree({ ...input, force: false }), today)].join("\n");
+		}
 		const open = fit.open ?? openOn(input.settings, input.day);
 		const lines: string[] = [];
 		if (fit.why === "closed") lines.push(`${capital(closedWords(open, input.day))}: ${verb}.`);
@@ -207,7 +214,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 	/** «fissalo lo stesso»: the fit without force; a refusal (or a check that does not match) stops it. */
 	function forced(input: FitInput, args: Record<string, unknown>, what: unknown, b: AppointmentBook, today: string, verb: string): Fit | string {
 		const plain = fits({ ...input, force: false });
-		if (plain.ok || input.force !== true || plain.why === "past") return plain;
+		if (plain.ok || input.force !== true || plain.why === "past" || plain.why === "absent") return plain;
 		const check = forceCheckOf(what, plain);
 		const given = typeof args.force_check === "string" ? args.force_check.trim().toLowerCase() : "";
 		if (given === check) return fits(input);
@@ -281,7 +288,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		const notes = cleanText(args.notes, APPOINTMENT_LIMITS.notes, "le note", true);
 		if (isProblem(notes)) return { text: `Errore: ${notes.problem}.`, count: 0 };
 		if (when.minutes + minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
-		const input: FitInput = { settings, appointments: b.appointments, day, start: when.minutes, minutes, ...(resource === undefined ? {} : { resource }), ...(sv.needs === undefined ? {} : { needs: sv.needs }), now: at, force };
+		const input: FitInput = { settings, appointments: b.appointments, day, start: when.minutes, minutes, ...(resource === undefined ? {} : { resource }), ...(sv.needs === undefined ? {} : { needs: sv.needs }), now: at, force, ...blocked };
 		const what = ["book", client.client, services, day, when.minutes, minutes, resource ?? ""];
 		const fit = forced(input, args, what, b, today, "non ho fissato niente");
 		if (typeof fit === "string") return { text: [fit, ...when.notes].join("\n"), count: 0 };
@@ -359,7 +366,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		if (ask !== undefined) return { text: ask, count: 0 };
 		if (when.day === a.day && timeOf(when.minutes) === a.start && resource === a.resource) return { text: `L'appuntamento è già ${whenWords(a.day, a.start, at.day)}: non ho cambiato niente.`, count: 0 };
 		if (when.minutes + a.minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
-		const input: FitInput = { settings: b.settings, appointments: b.appointments, day: when.day, start: when.minutes, minutes: a.minutes, ...(resource === undefined ? {} : { resource }), except: a.id, now: at, force };
+		const input: FitInput = { settings: b.settings, appointments: b.appointments, day: when.day, start: when.minutes, minutes: a.minutes, ...(resource === undefined ? {} : { resource }), except: a.id, now: at, force, ...blocked };
 		const what = ["move", a.id, when.day, when.minutes, resource ?? ""];
 		const fit = forced(input, args, what, b, at.day, "non l'ho spostato");
 		if (typeof fit === "string") return { text: [fit, ...when.notes].join("\n"), count: 0 };
@@ -480,7 +487,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 				if (days.length === 1) plain.push(`${capital(closedWords(open, day))}.`);
 				continue;
 			}
-			const slots = freeSlots({ settings, appointments: b.appointments, day, minutes, ...(resource === undefined ? {} : { resource }), ...(needs === undefined ? {} : { needs }), now: at, ...(window === undefined ? {} : { from: window.from, to: window.to }) });
+			const slots = freeSlots({ settings, appointments: b.appointments, day, minutes, ...(resource === undefined ? {} : { resource }), ...(needs === undefined ? {} : { needs }), now: at, ...blocked, ...(window === undefined ? {} : { from: window.from, to: window.to }) });
 			if (slots.length === 0) {
 				if (days.length === 1) plain.push(`${label} non c'è posto per ${durationWords(minutes)}.`);
 				continue;

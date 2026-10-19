@@ -167,7 +167,8 @@ const isDay = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2
 const plain = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
 const DECIMAL = /^\d{1,4}(?:\.\d{1,2})?$/;
 const decimalUpTo = (v: unknown, max: number) => typeof v === "string" && DECIMAL.test(v) && Number(v) <= max;
-export const PROTOCOL = /^[A-Za-z0-9][A-Za-z0-9/-]{3,39}$/;
+/** A certificate's protocol: a code with at least three digits (a word such as a diagnosis never passes). */
+export const PROTOCOL = /^(?=(?:[^0-9]*[0-9]){3})[A-Za-z0-9][A-Za-z0-9/-]{3,39}$/;
 
 function validOpening(v: unknown): v is Opening {
 	if (typeof v !== "object" || v === null || !Object.keys(v).every((k) => k === "from" || k === "to")) return false;

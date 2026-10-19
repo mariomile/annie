@@ -349,6 +349,18 @@ _Avoid_: fattura riepilogativa
 Un cliente che viene per uno o più servizi in un giorno e a un'ora, con la sua durata e, se ci sono, la risorsa che lo fa (una persona, una poltrona, un ponte). Fissato, fatto, disdetto o non presentato; non si cancella mai. Si fattura quando è fatto, segnato fatturato solo all'emissione. Non è una scadenza dell'agenda fiscale né un promemoria di Annie. Vedi ADR 0094.
 _Avoid_: prenotazione (per il dato salvato; «prenotare» va bene come verbo), evento (quello è il calendario Google)
 
+**Personale**:
+Le persone che lavorano nell'attività (PE-NNNN, mai detto), con ruolo, ore del contratto, la settimana solita, ferie e permessi dell'anno, e se c'è la risorsa degli appuntamenti che sono. Non sono utenti di Annie né agenti del board. Vedi ADR 0095.
+_Avoid_: dipendenti (per il dato salvato; va bene come parola), utenti, membri
+
+**Assenza**:
+Un periodo in cui una persona del personale non lavora: ferie (giorni o mezza giornata), permesso (ore), malattia (giorni, solo il protocollo, mai la diagnosi) o altro (lutto, congedo, 104). Si cambia o si annulla, e annullata resta nello storico. Blocca la sua risorsa negli appuntamenti. Vedi ADR 0095.
+_Avoid_: chiusura (quella è dell'attività), ferie (per tutte le assenze)
+
+**Turno**:
+Le ore in cui una persona del personale lavora in un giorno: dalla settimana solita, o detto a parte per quel giorno, meno le assenze e le chiusure. Le ore in cui l'attività è aperta e nessuno è di turno sono scoperte. Vedi ADR 0095.
+_Avoid_: orario (quello è dell'attività), slot
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
