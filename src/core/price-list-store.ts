@@ -8,8 +8,7 @@
  */
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
-import { spellingKey } from "./name-keys.ts";
-import { idNumber, itemId, PRICE_LIST_LIMITS, type PriceItem, PriceListError, validItem } from "./price-list.ts";
+import { idNumber, itemId, nameKey, PRICE_LIST_LIMITS, type PriceItem, PriceListError, validItem } from "./price-list.ts";
 import { isText } from "./stored-fields.ts";
 
 type Book = { readonly next: number; readonly items: readonly PriceItem[]; readonly calls?: readonly string[] };
@@ -61,7 +60,7 @@ export class PriceListStore {
 			if (book.items.length + count > PRICE_LIST_LIMITS.items) throw new PriceListError(`il listino terrebbe più di ${PRICE_LIST_LIMITS.items} voci, il massimo: togline qualcuna che non vendi più prima di aggiungerne altre`);
 			const fresh = Array.from({ length: count }, (_, n) => checked({ ...make(itemId(book.next + n), n), callId }));
 			const all = [...book.items, ...fresh];
-			clash(all);
+			clash(all, new Set(fresh.map((i) => i.id)));
 			made = fresh;
 			return { ...book, next: book.next + count, items: all };
 		});
@@ -78,7 +77,7 @@ export class PriceListStore {
 			edited = next;
 			if (next === item) return book;
 			const items = book.items.map((i) => (i === item ? checked(next) : i));
-			clash(items);
+			clash(items, new Set([id]));
 			return { ...book, items };
 		});
 		return edited as PriceItem;
@@ -131,12 +130,15 @@ function checked(item: PriceItem): PriceItem {
 	return item;
 }
 
-/** Two voci with one name or one code: refused, so a phrase names one voce. */
-function clash(items: readonly PriceItem[]): void {
+/**
+ * Two voci with one name or one code, or a code that is another voce's name («LOGO» and «Logo»):
+ * refused, so a phrase names one voce.
+ */
+function clash(items: readonly PriceItem[], changed: ReadonlySet<string>): void {
 	const names = new Map<string, string>();
 	const codes = new Map<string, string>();
 	for (const i of items) {
-		const k = spellingKey(i.name);
+		const k = nameKey(i.name);
 		const other = names.get(k);
 		if (other !== undefined) throw new PriceListError(`nel listino c'è già una voce con questo nome (${other}): cambia quella con op update, oppure scegli un altro nome`);
 		names.set(k, i.id);
@@ -146,6 +148,14 @@ function clash(items: readonly PriceItem[]): void {
 			if (was !== undefined) throw new PriceListError(`il codice è già della voce ${was}: scegline un altro`);
 			codes.set(c, i.id);
 		}
+	}
+	for (const i of items) {
+		if (i.code === undefined) continue;
+		const named = names.get(nameKey(i.code));
+		if (named === undefined || named === i.id) continue;
+		// The voce already there is named: the one being saved has no id the person knows yet.
+		if (changed.has(i.id)) throw new PriceListError(`il codice è il nome di un'altra voce (${named}): detto così, non si saprebbe quale delle due è. Scegli un altro codice`);
+		throw new PriceListError(`il nome è il codice di un'altra voce (${i.id}): detto così, non si saprebbe quale delle due è. Scegli un altro nome`);
 	}
 }
 

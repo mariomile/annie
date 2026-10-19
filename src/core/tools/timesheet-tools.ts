@@ -202,7 +202,7 @@ export function createTimesheetTools(options: TimesheetToolsOptions): AnnieTool[
 						case "report":
 							return await report(args, ctx);
 						case "to_quote":
-							return await toQuote(args, ctx, periodFrom(args), { store, quotes: options.quotes, ...(options.createQuote === undefined ? {} : { createQuote: options.createQuote }), ...(options.priceList === undefined ? {} : { priceList: options.priceList }), by: who, now, audit: (c, count) => audit(c, "to_quote", count) });
+							return await toQuote(args, ctx, periodFrom(args), { store, quotes: options.quotes, ...(options.createQuote === undefined ? {} : { createQuote: options.createQuote }), ...(options.priceList === undefined ? {} : { priceList: options.priceList }), forfettario, by: who, now, audit: (c, count) => audit(c, "to_quote", count) });
 						case "mark_billed":
 						case "mark_unbilled":
 							return await mark(op, args, ctx);

@@ -14,8 +14,7 @@ import { italianDate } from "../italian-format.ts";
 import { inPeriod, type Period, PeriodError, readPeriod } from "../periods.ts";
 import { QUOTES_BROKEN } from "../quote-store.ts";
 import { FORM_NOTE } from "../client-find.ts";
-import { fillFromList, namesItems } from "../price-list-lines.ts";
-import { PRICE_LIST_BROKEN } from "../price-list-store.ts";
+import { listLines } from "../price-list-lines.ts";
 import { findQuotes, type Quote, type QuoteCustomer, STATUS_WORDS } from "../quotes.ts";
 import { CREDIT_NOTE_TYPE, DEFAULT_METHOD, FIELD_LIMITS, INPS_CASSA, INVOICE_TYPE, naturaWords, REGIME_FORFETTARIO, REGIME_ORDINARIO } from "../sales-invoice-rules.ts";
 import { nextSeq, type SalesBook, type SalesSettings, type SalesState } from "../sales-invoice-store.ts";
@@ -257,14 +256,8 @@ function fromHours(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 
 /** The lines that name a voce of the listino filled from it (price-list-lines.ts), in the regime known; the arguments as they are when none does. */
 function fromList(env: SalesEnv, args: Record<string, unknown>): { args: Record<string, unknown>; notes: readonly string[] } | string {
-	if (!namesItems(args.lines)) return { args, notes: [] };
-	if (env.priceList === undefined) return "Errore: qui non vedo il listino: detta le voci con descrizione e prezzo.";
-	const book = env.priceList.read();
-	if (book.broken) return `Errore: ${PRICE_LIST_BROKEN}.`;
-	const company = env.company.read();
-	const taxes = env.taxes.read();
-	const regime = regimeOf(company.broken ? undefined : company.company, taxes.broken ? undefined : taxes.profile);
-	const filled = fillFromList(args.lines as unknown[], book.items, { kind: "invoice", forfettario: regime === REGIME_FORFETTARIO, descriptionMax: FIELD_LIMITS.descrizione });
+	const filled = listLines({ ...(env.priceList === undefined ? {} : { priceList: env.priceList }), company: env.company, taxes: env.taxes }, args.lines, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: args.vat, natura: args.natura } });
+	if (filled === undefined) return { args, notes: [] };
 	if ("ask" in filled) return filled.ask;
 	return { args: { ...args, lines: filled.lines }, notes: filled.notes };
 }

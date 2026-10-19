@@ -16,8 +16,8 @@ import { FILTERS, listAnswer } from "./quote-list.ts";
 import { fenced, type QuoteView, quoteLines } from "./quote-render.ts";
 import { sendQuote } from "./quote-send.ts";
 import type { MailRequests } from "../mail-requests.ts";
-import { fillFromList, namesItems } from "../price-list-lines.ts";
-import { PRICE_LIST_BROKEN, type PriceListStore } from "../price-list-store.ts";
+import { listLines, namesItems } from "../price-list-lines.ts";
+import type { PriceListStore } from "../price-list-store.ts";
 
 export const QUOTE_OPS = ["create", "revise", "list", "show", "set_status", "send"] as const;
 type Op = (typeof QUOTE_OPS)[number];
@@ -272,7 +272,7 @@ export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieToo
 			const changes = ["customer", "tax_id", "address", "email", "items", "add_items", "prices_include_vat", "vat", "vat_note", "discount", "cassa", "deposit", "delivery", "valid_days", "terms", "notes", "ritenuta", "bollo", "format"];
 			if (!changes.some((k) => args[k] !== undefined)) return "Errore: dimmi cosa cambia nel preventivo (voci, sconto, IVA, validità, condizioni, note).";
 		}
-		const listed = fromList(args, previous, company.regime === "forfettario");
+		const listed = fromList(args, previous);
 		if (typeof listed === "string") return listed;
 		const draft = draftOf(listed.args, { ...(previous === undefined ? {} : { previous }), company, quotes });
 		if (typeof draft === "string") return draft;
@@ -288,14 +288,18 @@ export function quotesOf(options: QuoteToolsOptions): { readonly tools: AnnieToo
 	}
 
 	/** The lines that name a voce of the listino filled from it (price-list-lines.ts); the arguments as they are when none does. */
-	function fromList(args: Record<string, unknown>, previous: Quote | undefined, forfettario: boolean): { args: Record<string, unknown>; notes: readonly string[] } | string {
+	function fromList(args: Record<string, unknown>, previous: Quote | undefined): { args: Record<string, unknown>; notes: readonly string[] } | string {
 		const key = namesItems(args.items) ? "items" : namesItems(args.add_items) ? "add_items" : undefined;
 		if (key === undefined) return { args, notes: [] };
-		if (options.priceList === undefined) return "Errore: qui non vedo il listino: detta le voci con descrizione e prezzo.";
-		const book = options.priceList.read();
-		if (book.broken) return `Errore: ${PRICE_LIST_BROKEN}.`;
 		const said = typeof args.prices_include_vat === "boolean" ? args.prices_include_vat : previous === undefined ? undefined : previous.pricesIncludeVat === true;
-		const filled = fillFromList(args[key] as unknown[], book.items, { kind: "quote", forfettario, ...(said === undefined ? {} : { includeVat: said }), descriptionMax: QUOTE_LIMITS.description });
+		// The quote's regime is the company's (no tax profile), as its own lines read it.
+		const filled = listLines({ ...(options.priceList === undefined ? {} : { priceList: options.priceList }), company: options.company }, args[key], {
+			kind: "quote",
+			...(said === undefined ? {} : { includeVat: said }),
+			descriptionMax: QUOTE_LIMITS.description,
+			doc: { vat: args.vat, vatNote: args.vat_note },
+		});
+		if (filled === undefined) return { args, notes: [] };
 		if ("ask" in filled) return filled.ask;
 		return { args: { ...args, [key]: filled.lines, ...(said === undefined && filled.includeVat ? { prices_include_vat: true } : {}) }, notes: filled.notes };
 	}

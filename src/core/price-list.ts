@@ -16,9 +16,10 @@
  * - The price list is the business's own data: another agente may read it (list, find), never change it.
  */
 import type { Marker } from "./marker.ts";
-import { keyWithin, nearKey, spellingKey, words } from "./name-keys.ts";
-import { eurosToCents, halfUp, netOf, VAT_RATES, type VatRate } from "./quote-sums.ts";
-import { NATURE, type Natura, naturaWords } from "./sales-invoice-rules.ts";
+import { createHash } from "node:crypto";
+import { businessKey, keyWithin, nearKey, spellingKey, words } from "./name-keys.ts";
+import { eurosToCents, halfUp, netOf, scaled, VAT_RATES, type VatRate } from "./quote-sums.ts";
+import { FORFETTARIO_NATURA, NATURE, type Natura, naturaWords } from "./sales-invoice-rules.ts";
 import { isMarker, isText, optText } from "./stored-fields.ts";
 import { fence } from "./untrusted.ts";
 
@@ -144,10 +145,24 @@ const UNITS: Readonly<Record<string, string>> = {
 	settimane: "settimana",
 };
 
-/** A unit as said, folded to its singular when it is a known one. */
+const KNOWN_UNITS = new Set(Object.values(UNITS));
+
+/** «a giornata», «all'ora», «per pezzo»: the preposition a person puts before a unit. */
+const UNIT_PREPOSITION = /^\s*(?:a|al|all|alla|allo|ai|per)(?:\s+|['’]\s*)/i;
+
+/** A unit as said, without a preposition before it, folded to its singular when it is a known one: «a giornata» is «giornata». */
 export function unitOf(said: string): string {
-	const key = words(said).join(" ");
-	return UNITS[key] ?? said.trim();
+	const bare = said.replace(UNIT_PREPOSITION, "").trim();
+	const key = words(bare).join(" ");
+	return UNITS[key] ?? bare;
+}
+
+/** A key with each word that is a unit folded to its singular: «ore di sviluppo» is «ora di sviluppo». */
+function foldUnits(key: string): string {
+	return key
+		.split(" ")
+		.map((w) => UNITS[w] ?? w)
+		.join(" ");
 }
 
 /** The unit's plural for a line, when known: «giornate», «ore». */
@@ -168,9 +183,9 @@ export function perUnit(unit: string | undefined): string {
 	return `a ${unit}`;
 }
 
-/** The voce's VAT in words: «IVA 22%», «IVA 22% inclusa», «senza IVA, non soggette, altri casi (N2.2)». */
+/** The voce's VAT in words: «IVA 22%», «IVA 22% inclusa», «senza IVA (regime forfettario)», «senza IVA, esenti (N4)». */
 export function vatWords(i: Pick<PriceItem, "vat" | "natura" | "includesVat">): string {
-	if (i.vat === 0) return `senza IVA${i.natura === undefined ? "" : `, ${naturaWords(i.natura)}`}`;
+	if (i.vat === 0) return i.natura === FORFETTARIO_NATURA ? "senza IVA (regime forfettario)" : `senza IVA${i.natura === undefined ? "" : `, ${naturaWords(i.natura)}`}`;
 	return `IVA ${i.vat}%${i.includesVat === true ? " inclusa" : ""}`;
 }
 
@@ -186,9 +201,14 @@ export function grossCents(i: Pick<PriceItem, "price" | "vat" | "includesVat">):
 	return i.includesVat === true || i.vat === 0 ? cents : cents + halfUp(cents * BigInt(i.vat), 100n);
 }
 
-/** A voce's every name a person may say it by: its name and code. */
+/** A voce's every name a person may say it by: its name and code, units folded to the singular. */
 function keysOf(i: PriceItem): string[] {
-	return [spellingKey(i.name), ...(i.code === undefined ? [] : [spellingKey(i.code)])].filter((k) => k !== "");
+	return [nameKey(i.name), ...(i.code === undefined ? [] : [nameKey(i.code)])].filter((k) => k !== "");
+}
+
+/** A name as compared: its spelling, units folded to the singular («Ore di sviluppo» is «ora di sviluppo»). */
+export function nameKey(name: string): string {
+	return foldUnits(spellingKey(name));
 }
 
 /**
@@ -200,8 +220,8 @@ function keysOf(i: PriceItem): string[] {
  */
 export type Found = { readonly kind: "exact"; readonly item: PriceItem; readonly slip?: true } | { readonly kind: "close"; readonly items: readonly PriceItem[] } | { readonly kind: "unit"; readonly items: readonly PriceItem[] } | { readonly kind: "none" };
 
-/** Articles and fillers a person puts before a voce: «il sito base», «una giornata». */
-const FILLERS = /^(?:(?:il|lo|la|i|gli|le|l|un|uno|una|del|della|dei|delle|di|per|mio|mia|prezzo|tariffa)\s+)+/;
+/** Articles, fillers and the question a person puts before a voce: «il sito base», «una giornata», «quanto faccio pagare una giornata?», «qual è il mio prezzo per il sito base?». */
+const FILLERS = /^(?:(?:il|lo|la|i|gli|le|l|un|uno|una|del|della|dei|delle|di|per|mio|mia|miei|mie|prezzo|prezzi|tariffa|quanto|quanti|faccio|fai|pagare|costa|costano|chiedo|qual\s+e|quale\s+e|che)\s+)+/;
 
 /** The voce a phrase names, or the ones to ask about. Never a guess between two. */
 export function findItems(items: readonly PriceItem[], said: string): Found {
@@ -212,8 +232,10 @@ export function findItems(items: readonly PriceItem[], said: string): Found {
 		return i === undefined ? { kind: "none" } : { kind: "exact", item: i };
 	}
 	const byCode = items.find((x) => x.code !== undefined && x.code.toUpperCase() === text.toUpperCase());
-	if (byCode !== undefined) return { kind: "exact", item: byCode };
-	const key = spellingKey(text).replace(FILLERS, "");
+	const key = foldUnits(spellingKey(text).replace(FILLERS, ""));
+	// A code that is also another voce's name («LOGO» and «Logo»): which one is meant is asked, never picked.
+	const byName = key === "" ? [] : items.filter((x) => nameKey(x.name) === key);
+	if (byCode !== undefined) return byName.some((x) => x !== byCode) ? { kind: "close", items: [byCode, ...byName.filter((x) => x !== byCode)] } : { kind: "exact", item: byCode };
 	if (key === "") return { kind: "none" };
 	const same = items.filter((x) => keysOf(x).includes(key));
 	if (same.length === 1) return { kind: "exact", item: same[0] as PriceItem };
@@ -222,7 +244,7 @@ export function findItems(items: readonly PriceItem[], said: string): Found {
 	// a name that holds the word («Giornata di consulenza» is one of them when sold by the day).
 	const unit = unitOf(key);
 	const byUnit = items.filter((x) => x.unit !== undefined && x.unit === unit);
-	if (UNITS[key] !== undefined && byUnit.length > 0) return { kind: "unit", items: byUnit };
+	if (KNOWN_UNITS.has(unit) && byUnit.length > 0) return { kind: "unit", items: byUnit };
 	const near = items.filter((x) => keysOf(x).some((k) => nearKey(k, key)));
 	const within = items.filter((x) => !near.includes(x) && keysOf(x).some((k) => keyWithin(k, key)));
 	if (near.length === 1 && within.length === 0) return { kind: "exact", item: near[0] as PriceItem, slip: true };
@@ -231,22 +253,32 @@ export function findItems(items: readonly PriceItem[], said: string): Found {
 	return byUnit.length > 0 ? { kind: "unit", items: byUnit } : { kind: "none" };
 }
 
+/** Words of an hourly voce's name that say neither a client nor an activity: «Tariffa oraria», «Ora di consulenza». */
+const GENERIC = new Set(["ora", "oraria", "orario", "orarie", "tariffa", "prezzo", "costo", "di", "del", "della", "dello", "per", "a", "al", "all", "la", "il", "l", "h", "standard", "base", "ordinaria", "normale", "lavoro", "prestazione", "servizio", "servizi", "consulenza", "assistenza"]);
+
 /**
- * The listino's hourly voce for some hours without a rate: the one named like the activity, else
- * the one named with the client, else the only voce sold by the hour; undefined when none or more
- * than one could be meant (never a guess between two).
+ * The listino's hourly voce for some hours without a rate. Each hourly voce's name without the
+ * generic words (GENERIC) is what it is for: nothing (a voce for everyone), an activity or a client.
+ * In order: the one named exactly like the activity, or whose words are all in it («Ora di sviluppo»
+ * for «Sviluppo app»); else the one whose name is the client's («Consulenza Rossi» for «Rossi
+ * Srl», never «Assistenza Alfa Beta» for «Alfa»); else the only voce for everyone. Undefined when
+ * none fits or more than one could be meant: the hours then wait for a rate, never a guess.
  */
 export function hourlyItemFor(items: readonly PriceItem[], work: { readonly client: string; readonly project?: string }): PriceItem | undefined {
 	const hourly = items.filter((i) => i.unit === "ora");
+	const own = (i: PriceItem) => nameKey(i.name).split(" ").filter((w) => w !== "" && !GENERIC.has(w));
+	const one = (found: readonly PriceItem[]) => (found.length === 1 ? found[0] : undefined);
 	if (work.project !== undefined) {
 		const f = findItems(hourly, work.project);
-		if (f.kind === "exact") return f.item;
+		if (f.kind === "exact" && f.slip !== true) return f.item;
+		const activity = new Set(nameKey(work.project).split(" "));
+		const named = hourly.filter((i) => own(i).length > 0 && own(i).every((w) => activity.has(w)));
+		if (named.length > 0) return one(named);
 	}
-	const client = spellingKey(work.client).replace(/\s(?:srl|srls|spa|snc|sas)$/, "");
-	const named = client === "" ? [] : hourly.filter((i) => keyWithin(spellingKey(i.name), client) && spellingKey(i.name).length > client.length);
-	if (named.length === 1) return named[0];
-	if (named.length > 1) return undefined;
-	return hourly.length === 1 ? hourly[0] : undefined;
+	const client = foldUnits(businessKey(work.client));
+	const forClient = client === "" ? [] : hourly.filter((i) => own(i).join(" ") === client);
+	if (forClient.length > 0) return one(forClient);
+	return one(hourly.filter((i) => own(i).length === 0));
 }
 
 /** The voci whose name, code, description or unit holds every word of `query` (at the start of a word). */
@@ -267,12 +299,15 @@ export function changedCents(cents: bigint, change: PriceChange): bigint | undef
 	let next: bigint;
 	if ("cents" in change) next = cents + change.cents;
 	else {
-		const [integer, fraction = ""] = change.percent.split(".");
-		const scaledPercent = BigInt(`${integer}${fraction.padEnd(2, "0")}`);
-		const delta = halfUp(cents * scaledPercent, 10_000n);
+		const delta = halfUp(cents * scaled(change.percent, 2), 10_000n);
 		next = change.down ? cents - delta : cents + delta;
 	}
 	return next > 0n ? next : undefined;
+}
+
+/** The check a preview gives and the yes passes back: 8 hex of what would be done, so the yes applies exactly what was shown. */
+export function checkOf(parts: unknown): string {
+	return createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 8);
 }
 
 const PRICE = /^\d{1,7}(?:\.\d{1,2})?$/;

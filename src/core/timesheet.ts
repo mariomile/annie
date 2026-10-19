@@ -111,7 +111,8 @@ export type Timer = {
 };
 
 /** An entry as to_quote picked it: its client, day, minutes, rate and rounding then, checked again when it is billed. */
-export type ReservedEntry = { readonly id: string; readonly client?: string; readonly date?: string; readonly minutes: number; readonly rate?: string; readonly rounding: Rounding };
+/** `listed`: the listino's voce whose hourly price is `rate` (the entry had no rate of the timesheet's own), as it was then. */
+export type ReservedEntry = { readonly id: string; readonly client?: string; readonly date?: string; readonly minutes: number; readonly rate?: string; readonly rounding: Rounding; readonly listed?: { readonly id: string; readonly name: string } };
 
 /** The entries a to_quote call picked, reserved to it while its quote is made. */
 export type Reservation = Marker & { readonly callId: string; readonly entries: readonly ReservedEntry[] };
@@ -265,5 +266,5 @@ export function validReservation(v: unknown): v is Reservation {
 	if (!isMarker(v)) return false;
 	const r = v as Reservation;
 	if (!isText(r.callId, 200) || !Array.isArray(r.entries) || r.entries.length === 0 || r.entries.length > TIMESHEET_LIMITS.perYear) return false;
-	return r.entries.every((e) => typeof e === "object" && e !== null && typeof e.id === "string" && ID.test(e.id) && optText(e.client, TIMESHEET_LIMITS.client) && (e.date === undefined || (typeof e.date === "string" && DAY.test(e.date))) && Number.isInteger(e.minutes) && e.minutes >= MIN_MINUTES && e.minutes <= MAX_MINUTES && optRate(e.rate) && validRounding(e.rounding));
+	return r.entries.every((e) => typeof e === "object" && e !== null && typeof e.id === "string" && ID.test(e.id) && optText(e.client, TIMESHEET_LIMITS.client) && (e.date === undefined || (typeof e.date === "string" && DAY.test(e.date))) && Number.isInteger(e.minutes) && e.minutes >= MIN_MINUTES && e.minutes <= MAX_MINUTES && optRate(e.rate) && validRounding(e.rounding) && (e.listed === undefined || (typeof e.listed === "object" && e.listed !== null && isText(e.listed.id, 20) && isText(e.listed.name, 200) && e.rate !== undefined)));
 }

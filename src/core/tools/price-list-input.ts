@@ -4,7 +4,7 @@
  * the person's own), a change of price (a percent or an amount, up or down). A problem comes back
  * in words; what the person typed is echoed only inside the listino's fence.
  */
-import { readEuros } from "../money-input.ts";
+import { readEuros, readSignedEuros } from "../money-input.ts";
 import { fencedList, isCode, PRICE_LIST_LIMITS, type PriceChange, type PriceItem, unitOf } from "../price-list.ts";
 import { eurosToCents, VAT_RATES, type VatRate } from "../quote-sums.ts";
 import { FORFETTARIO_NATURA, NATURE, type Natura } from "../sales-invoice-rules.ts";
@@ -19,8 +19,8 @@ export function readPrice(value: unknown, what = "il prezzo"): string | undefine
 		negative: `${what} non può essere negativo`,
 		zero: `${what} è zero: una voce gratuita non va nel listino`,
 	});
-	if (read === undefined || isProblem(read)) return read;
-	return read;
+	// The reader names the amount by its parameter: here it is the price, in words.
+	return isProblem(read) ? { problem: read.problem.replace(/^amount: /, `${what}: `) } : read;
 }
 
 /** The VAT as said: a rate (22, «22%») or a nature («N2.2», «n4»); 0 needs its nature. */
@@ -131,24 +131,20 @@ export function changedItem(i: PriceItem, f: GivenFields): PriceItem {
 /** The change of a price_change: a percent (10, «+10%», «-5%») or an amount in euros («+50», -20), not both. */
 export function readChange(args: Record<string, unknown>): PriceChange | Problem {
 	if ((args.percent === undefined) === (args.amount === undefined)) return { problem: "dimmi di quanto cambiano i prezzi: una percentuale (percent, come 10 o -5) oppure un importo in euro (amount, come 50 o -20), non tutti e due" };
-	const signed = (v: unknown): { down: boolean; value: unknown } => {
-		if (typeof v === "number") return { down: v < 0, value: Math.abs(v) };
-		if (typeof v === "string") {
-			const t = v.trim();
-			return { down: /^[-−]/.test(t), value: t.replace(/^[+\-−]\s*/, "") };
-		}
-		return { down: false, value: v };
-	};
+	// A plus in front says up, as no sign does; the minus is the signed reader's (money-input.ts).
+	const unplus = (v: unknown, what: string) => readSignedEuros(typeof v === "string" ? v.replace(/^\s*\+\s*/, "").replace(/\s*%\s*$/, "") : v, fencedList, what);
 	if (args.percent !== undefined) {
-		const { down, value } = signed(args.percent);
-		const read = readAmount(typeof value === "string" ? value.replace("%", "") : value, 2, "la percentuale", fencedList);
+		const read = unplus(args.percent, "la percentuale");
 		if (read === undefined || isProblem(read)) return read ?? { problem: "manca la percentuale" };
-		if (Number(read) <= 0 || (down && Number(read) >= 100) || Number(read) > 500) return { problem: "la percentuale va da più di 0 a 500 in aumento, a meno di 100 in calo" };
-		return { percent: read, down };
+		const down = read.startsWith("-");
+		const percent = down ? read.slice(1) : read;
+		if (Number(percent) <= 0 || (down && Number(percent) >= 100) || Number(percent) > 500) return { problem: "la percentuale va da più di 0 a 500 in aumento, a meno di 100 in calo" };
+		return { percent, down };
 	}
-	const { down, value } = signed(args.amount);
-	const read = readPrice(value, "l'importo");
+	const read = unplus(args.amount, "l'importo");
 	if (read === undefined || isProblem(read)) return read ?? { problem: "manca l'importo" };
 	const cents = eurosToCents(read);
-	return { cents: down ? -cents : cents };
+	if (cents === 0n) return { problem: "l'importo è zero: i prezzi resterebbero uguali" };
+	if ((cents < 0n ? -cents : cents) > BigInt(PRICE_LIST_LIMITS.maxPrice) * 100n) return { problem: `l'importo è oltre ${PRICE_LIST_LIMITS.maxPrice.toLocaleString("it-IT")} €: ricontrollalo con chi ti scrive` };
+	return { cents };
 }

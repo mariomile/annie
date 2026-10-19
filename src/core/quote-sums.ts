@@ -125,6 +125,14 @@ export function scaled(value: string, scale: number): bigint {
 	return BigInt(`${integer}${fraction.padEnd(scale, "0")}`);
 }
 
+/** A scaled integer (positive) as a canonical decimal string, the inverse of scaled: 1234500n at 4 → «123.45». */
+export function scaledDecimal(value: bigint, scale: number): string {
+	const digits = value.toString().padStart(scale + 1, "0");
+	const fraction = digits.slice(-scale).replace(/0+$/, "");
+	const integer = digits.slice(0, -scale);
+	return fraction === "" ? integer : `${integer}.${fraction}`;
+}
+
 /** Cents as a canonical decimal string, the inverse of scaled(…, 2): 4550n → «45.5», 4500n → «45». */
 export function centsDecimal(value: bigint): string {
 	const digits = (value < 0n ? -value : value).toString().padStart(3, "0");

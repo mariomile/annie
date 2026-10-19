@@ -7,12 +7,11 @@
  * to the person only inside the listino's fence (the caller's). The plan against the listino
  * (planImport) adds only voci whose code or name is not there yet.
  */
-import { createHash } from "node:crypto";
 import { spreadsheetRows } from "./documents.ts";
 import { parseCsv } from "./make-xlsx.ts";
-import { spellingKey, words } from "./name-keys.ts";
+import { words } from "./name-keys.ts";
 import { oneLine } from "./plain-text.ts";
-import { isCode, PRICE_LIST_LIMITS, type PriceItem, PriceListError, unitOf } from "./price-list.ts";
+import { checkOf, isCode, nameKey, PRICE_LIST_LIMITS, type PriceItem, PriceListError, unitOf } from "./price-list.ts";
 import { AMBIGUOUS, eurosToCents, readDecimal, VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { NATURE, type Natura } from "./sales-invoice-rules.ts";
 
@@ -22,13 +21,17 @@ export type ImportedItem = Pick<PriceItem, "name" | "code" | "description" | "un
 /** A row left out, and why (in words). */
 export type Skipped = { readonly row: number; readonly name: string; readonly why: string };
 
-export type ReadFile = { readonly items: readonly (ImportedItem & { readonly row: number })[]; readonly skipped: readonly Skipped[]; readonly cut: number; readonly noVat: number };
+/** `cut`: the rows of the file past the ones read. `prices`: whether the file's prices are with VAT (a column «Prezzo IVA inclusa»), without, or both columns. */
+export type ReadFile = { readonly items: readonly (ImportedItem & { readonly row: number })[]; readonly skipped: readonly Skipped[]; readonly cut: number; readonly noVat: number; readonly prices: "gross" | "net" | "both" };
+
+/** The rows of a file, at most PRICE_LIST_LIMITS.importRows + 20 kept, and how many there were in all. */
+export type FileRows = { readonly rows: string[][]; readonly total: number };
 
 type Column = "name" | "description" | "price" | "gross" | "unit" | "vat" | "code";
 
 /** Header words, folded, for each column; the longest first where one holds another. */
 const HEADERS: readonly (readonly [Column, readonly string[]])[] = [
-	["gross", ["prezzo ivato", "prezzo iva inclusa", "prezzo con iva", "prezzo lordo", "ivato"]],
+	["gross", ["prezzo ivato", "prezzo con iva", "prezzo lordo", "ivato"]],
 	["price", ["prezzo unitario", "prezzo netto", "prezzo", "importo", "tariffa", "costo", "euro", "eur", "imponibile", "price"]],
 	["vat", ["aliquota iva", "aliquota", "iva", "vat", "natura"]],
 	["unit", ["unita di misura", "unita", "um", "u m", "unit", "misura"]],
@@ -39,10 +42,20 @@ const HEADERS: readonly (readonly [Column, readonly string[]])[] = [
 
 const cell = (text: string | undefined, max: number) => oneLine((text ?? "").slice(0, max * 4), max);
 
+/** A header of a price with VAT in it, in any words: «Prezzo IVA compresa», «Prezzo (IVA incl.)», «Importo IVA inclusa», «Totale ivato». */
+const PRICE_WORDS = /^(?:prezzo|prezzi|importo|tariffa|costo|totale|euro|eur|price)$/;
+function grossHeader(key: string): boolean {
+	const w = key.split(" ");
+	const priceLike = w.some((x) => PRICE_WORDS.test(x));
+	return priceLike && ((w.includes("iva") && w.some((x) => /^(?:compres|inclus|incl$|ivat)/.test(x))) || w.some((x) => /^ivat[oaie]$/.test(x)));
+}
+
 /** The column each header cell is, by its words; undefined when none. */
 function columnOf(header: string): Column | undefined {
 	const key = words(header).join(" ");
 	if (key === "") return undefined;
+	// Before the plain price words: «Prezzo IVA inclusa» is a price with VAT, not a price nor the VAT.
+	if (grossHeader(key)) return "gross";
 	for (const [column, names] of HEADERS) if (names.some((n) => key === n || key.startsWith(`${n} `))) return column;
 	return undefined;
 }
@@ -77,7 +90,7 @@ function vatOf(text: string): { vat: VatRate; natura?: Natura } | "empty" | "bad
 }
 
 /** The rows of the file: the first sheet with something in it, or the CSV. PriceListError when it is neither. */
-export function fileRows(name: string, data: Uint8Array): string[][] {
+export function fileRows(name: string, data: Uint8Array): FileRows {
 	if (data.byteLength > PRICE_LIST_LIMITS.importBytes) throw new PriceListError(`il file è troppo grande (più di ${PRICE_LIST_LIMITS.importBytes / 1024 / 1024} MB)`);
 	let sheets: ReturnType<typeof spreadsheetRows>;
 	try {
@@ -85,14 +98,13 @@ export function fileRows(name: string, data: Uint8Array): string[][] {
 	} catch {
 		throw new PriceListError("il foglio Excel non si legge: è rovinato o protetto");
 	}
+	const keep = (all: readonly (readonly string[])[]): FileRows => ({ rows: all.slice(0, PRICE_LIST_LIMITS.importRows + 20).map((r) => r.slice(0, 40)), total: all.length });
 	if (sheets !== undefined) {
 		const sheet = sheets.find((s) => !s.hidden && s.rows.some((r) => r.some((c) => c.trim() !== ""))) ?? sheets[0];
-		return (sheet?.rows ?? []).slice(0, PRICE_LIST_LIMITS.importRows + 20).map((r) => r.slice(0, 40));
+		return keep(sheet?.rows ?? []);
 	}
 	if (!/\.(?:csv|txt|tsv)$/i.test(name) || data.includes(0)) throw new PriceListError("leggo il listino da un CSV o da un foglio Excel (.xlsx, .ods)");
-	return parseCsv(new TextDecoder("utf-8").decode(data))
-		.slice(0, PRICE_LIST_LIMITS.importRows + 20)
-		.map((r) => r.slice(0, 40));
+	return keep(parseCsv(new TextDecoder("utf-8").decode(data)));
 }
 
 /**
@@ -100,7 +112,8 @@ export function fileRows(name: string, data: Uint8Array): string[][] {
  * N2.2), and whether the prices include VAT. Rows without a name or a price that reads are left
  * out with the reason; `noVat`: rows left out only because they have no VAT.
  */
-export function readRows(rows: readonly (readonly string[])[], defaults: { readonly vat?: { vat: VatRate; natura?: Natura }; readonly includesVat?: boolean }): ReadFile | { readonly header: readonly string[] } {
+export function readRows(file: FileRows, defaults: { readonly vat?: { vat: VatRate; natura?: Natura }; readonly includesVat?: boolean }): ReadFile | { readonly header: readonly string[] } {
+	const { rows } = file;
 	const h = header(rows);
 	if (h === undefined) return { header: (rows.find((r) => r.some((c) => c.trim() !== "")) ?? []).slice(0, 12).map((c) => cell(c, 40)) };
 	const c = h.columns;
@@ -148,7 +161,7 @@ export function readRows(rows: readonly (readonly string[])[], defaults: { reado
 			skip("il codice ha caratteri che non tengo (solo lettere, cifre e . _ / -, e non come LS-0001)");
 			continue;
 		}
-		const key = spellingKey(name);
+		const key = nameKey(name);
 		if (key === "" || seen.has(key) || (code !== undefined && seen.has(`code:${code.toUpperCase()}`))) {
 			skip(key === "" ? "il nome non ha lettere né cifre" : "ripetuta nel file");
 			continue;
@@ -170,24 +183,35 @@ export function readRows(rows: readonly (readonly string[])[], defaults: { reado
 			...(includes ? { includesVat: true as const } : {}),
 		});
 	}
-	return { items, skipped, cut: Math.max(0, body.length - take), noVat };
+	// Every row of the file past the header that was not read: those beyond the rows kept count too.
+	const prices = c.gross === undefined ? (defaults.includesVat === true ? "gross" : "net") : c.price === undefined ? "gross" : "both";
+	return { items, skipped, cut: Math.max(0, file.total - (h.at + 1) - take), noVat, prices };
 }
 
 /** What an import would do: the voci to add, those already in the listino (by code or name, kept as they are). */
-export type ImportPlan = { readonly add: readonly (ImportedItem & { readonly row: number })[]; readonly known: readonly { readonly row: number; readonly name: string; readonly id: string; readonly samePrice: boolean }[]; readonly check: string };
+/** `refused`: rows whose code is another voce's name, or whose name is another voce's code (a phrase would name two). */
+export type ImportPlan = { readonly add: readonly (ImportedItem & { readonly row: number })[]; readonly known: readonly { readonly row: number; readonly name: string; readonly id: string; readonly samePrice: boolean }[]; readonly refused: readonly Skipped[]; readonly check: string };
 
 export function planImport(read: ReadFile, listino: readonly PriceItem[]): ImportPlan {
 	const add: (ImportedItem & { row: number })[] = [];
 	const known: { row: number; name: string; id: string; samePrice: boolean }[] = [];
+	const refused: Skipped[] = [];
+	const names = new Set(listino.map((x) => nameKey(x.name)));
+	const codes = new Set(listino.flatMap((x) => (x.code === undefined ? [] : [nameKey(x.code)])));
 	for (const i of read.items) {
-		const same = listino.find((x) => (i.code !== undefined && x.code?.toUpperCase() === i.code.toUpperCase()) || spellingKey(x.name) === spellingKey(i.name));
-		if (same === undefined) add.push(i);
-		else known.push({ row: i.row, name: i.name, id: same.id, samePrice: same.price === i.price && same.vat === i.vat && (same.includesVat === true) === (i.includesVat === true) });
+		const same = listino.find((x) => (i.code !== undefined && x.code?.toUpperCase() === i.code.toUpperCase()) || nameKey(x.name) === nameKey(i.name));
+		if (same !== undefined) {
+			known.push({ row: i.row, name: i.name, id: same.id, samePrice: same.price === i.price && same.vat === i.vat && (same.includesVat === true) === (i.includesVat === true) });
+			continue;
+		}
+		const taken = [...add.map((a) => nameKey(a.name)), ...names];
+		const takenCodes = [...add.flatMap((a) => (a.code === undefined ? [] : [nameKey(a.code)])), ...codes];
+		if ((i.code !== undefined && taken.includes(nameKey(i.code))) || takenCodes.includes(nameKey(i.name))) {
+			refused.push({ row: i.row, name: i.name, why: "il codice è il nome di un'altra voce, o il nome è il codice di un'altra: detto così non si saprebbe quale delle due è" });
+			continue;
+		}
+		add.push(i);
 	}
 	// What the person saw is what is added: the yes names this check.
-	const check = createHash("sha256")
-		.update(JSON.stringify(add.map(({ row: _r, ...rest }) => rest)))
-		.digest("hex")
-		.slice(0, 8);
-	return { add, known, check };
+	return { add, known, refused, check: checkOf(add.map(({ row: _r, ...rest }) => rest)) };
 }

@@ -22,12 +22,12 @@ import { inPeriod, type Period } from "../periods.ts";
 import { fencedList, hourlyItemFor, netCents, type PriceItem } from "../price-list.ts";
 import type { PriceListStore } from "../price-list-store.ts";
 import { QUOTE_LIMITS } from "../quotes.ts";
-import { centsDecimal } from "../quote-sums.ts";
+import { centsDecimal, eurosToCents } from "../quote-sums.ts";
 import { euros } from "../format-words.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { billingState, oldestFirst, type ReservedEntry, sameClient, TIMESHEET_LIMITS, type WorkEntry } from "../timesheet.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
-import { hoursLines, lineWords, priced, QUOTE_GROUPS, type QuoteGroup, termsOf } from "../timesheet-sums.ts";
+import { hoursLines, lineWords, priced, QUOTE_GROUPS, type QuoteGroup } from "../timesheet-sums.ts";
 import type { CreateQuote } from "./quote-tools.ts";
 import { billClient } from "./timesheet-clients.ts";
 import { entries, whichClientAnswer } from "./timesheet-render.ts";
@@ -41,6 +41,8 @@ export type ToQuoteDeps = {
 	readonly audit: (ctx: ToolContext, count: number) => Promise<void>;
 	/** The listino, read only: hours without a rate take its hourly voce for the client or the activity (price-list.ts hourlyItemFor), and the answer says so. */
 	readonly priceList?: Pick<PriceListStore, "read">;
+	/** In the forfettario a voce's price is taken as written (no VAT to take off), as quote lines from the listino take it. */
+	readonly forfettario?: () => boolean;
 };
 
 /** The listino's voci, when it reads: none otherwise (the hours then wait for a rate as before). */
@@ -49,12 +51,15 @@ function listino(deps: ToQuoteDeps): readonly PriceItem[] {
 	return book === undefined || book.broken ? [] : book.items;
 }
 
-/** The hourly rate of the listino for an entry, VAT excluded, as the timesheet keeps rates; undefined when none fits. */
-function listinoRate(items: readonly PriceItem[], e: WorkEntry): { readonly rate: string; readonly item: PriceItem } | undefined {
+/**
+ * The hourly rate of the listino for an entry, as the timesheet keeps rates (VAT excluded; in the
+ * forfettario the price as written), and the voce it comes from; undefined when none fits.
+ */
+function listinoRate(items: readonly PriceItem[], e: WorkEntry, forfettario: boolean): { readonly rate: string; readonly listed: { readonly id: string; readonly name: string } } | undefined {
 	const item = hourlyItemFor(items, { client: e.client, ...(e.project === undefined ? {} : { project: e.project }) });
 	if (item === undefined) return undefined;
-	const cents = netCents(item);
-	return cents > 0n && cents <= BigInt(TIMESHEET_LIMITS.maxRate) * 100n ? { rate: centsDecimal(cents), item } : undefined;
+	const cents = forfettario ? eurosToCents(item.price) : netCents(item);
+	return cents > 0n && cents <= BigInt(TIMESHEET_LIMITS.maxRate) * 100n ? { rate: centsDecimal(cents), listed: { id: item.id, name: item.name } } : undefined;
 }
 
 const NO_QUOTES = "Errore: qui non posso fare preventivi. Prepara il riepilogo con op report.";
@@ -83,7 +88,7 @@ export async function toQuote(args: Record<string, unknown>, ctx: ToolContext, p
 			ctx.callId,
 			deps.by(ctx),
 			(free) => free.filter((e) => sameClient(e.client, chosen.client) && e.billable && e.billed === undefined && inPeriod(e.date, period)),
-			items.length === 0 ? undefined : (e) => listinoRate(items, e)?.rate,
+			items.length === 0 ? undefined : (e) => listinoRate(items, e, deps.forfettario?.() === true),
 		);
 		if (reservation !== undefined) return { kind: "reserved", client: chosen.client, entries: [...reservation.entries] };
 		const held = store.read().reservations.flatMap((r) => r.entries.map((x) => x.id));
@@ -114,16 +119,11 @@ export async function toQuote(args: Record<string, unknown>, ctx: ToolContext, p
 		const which = unpriced.slice(0, 10).map((p) => p.entry.id).join(", ");
 		return release(`Errore: ${unpriced.length === 1 ? "una voce non ha" : `${unpriced.length} voci non hanno`} una tariffa (${which}). Chiedi a chi ti scrive: «Quanto fai all'ora con questo cliente?» Poi salvala con op set_rate (client e rate) e rifai.`);
 	}
-	// The entries priced with the listino's hourly voce (no rate of the timesheet's own): said in the answer.
-	const fromList = new Map<string, PriceItem>();
-	const voci = listino(deps);
-	for (const r of picked.entries) {
-		const e = byId.get(r.id);
-		if (e === undefined || r.rate === undefined || termsOf(e, book.rates).rate !== undefined) continue;
-		const found = listinoRate(voci, e);
-		if (found !== undefined && found.rate === r.rate) fromList.set(found.item.id, found.item);
-	}
-	const listNote = fromList.size === 0 ? [] : [`Per le ore senza una tariffa ho usato quella oraria del listino: ${fencedList([...fromList.values()].map((i) => `${i.name} (${i.id}): ${euros(netCents(i))} all'ora, IVA esclusa`).join("\n"))}\nDillo a chi ti scrive; se la tariffa con questo cliente è un'altra, salvala con op set_rate e rifai il preventivo.`];
+	// The entries priced with the listino's hourly voce, as the reservation recorded them: said in the answer, also when run again or the voce changed since.
+	const fromList = new Map<string, string>();
+	const vatSaid = deps.forfettario?.() === true ? "" : ", IVA esclusa";
+	for (const r of picked.entries) if (r.listed !== undefined && r.rate !== undefined) fromList.set(`${r.listed.id} ${r.rate}`, `${r.listed.name} (${r.listed.id}): ${euros(eurosToCents(r.rate))} all'ora${vatSaid}`);
+	const listNote = fromList.size === 0 ? [] : [`Per le ore senza una tariffa ho usato quella oraria del listino: ${fencedList([...fromList.values()].join("\n"))}\nDillo a chi ti scrive; se la tariffa con questo cliente è un'altra, salvala con op set_rate e rifai il preventivo.`];
 	const lines = hoursLines(items, group, lineWords(period), QUOTE_LIMITS.description);
 	if (lines.length > QUOTE_LIMITS.lines) return release(`Errore: verrebbero ${lines.length} righe, più delle ${QUOTE_LIMITS.lines} di un preventivo: usa group project o total.`);
 	const passed = Object.fromEntries(PASSED.filter((k) => args[k] !== undefined && !(k === "format" && args[k] === "csv")).map((k) => [k, args[k]]));
