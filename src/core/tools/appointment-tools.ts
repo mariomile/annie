@@ -53,7 +53,7 @@ export type AppointmentToolsOptions = {
 
 const DESCRIPTION = [
 	"Gli appuntamenti dei clienti di un'attività di servizi (parrucchiere, estetista, studio, officina, consulente): chi viene, per cosa, quando, con quale risorsa (una persona, una poltrona, un ponte). Not the fiscal deadlines (fiscal_agenda), not the board's scadenze, not Annie's own reminders (schedule_create), not the person's Google calendar (google_calendar_events).",
-	"What the person says → op: «fissa la signora Rossi giovedì alle 15 per taglio e piega» → book with client as said (the title too), services [as said], date, time as said («15», «15:30», «alle 3 e mezza», «mezzogiorno»: Annie reads morning or afternoon from the opening hours, or asks); resource, notes, minutes when said. When Annie is not sure of the client, of a service, or does not know how long a service lasts, book shows the proposal with a check: show it, and only after the person's yes repeat with confirm true and that check. On a clash, out of hours or closed, book books nothing and gives the nearest free times: offer those; only when the person says «fissalo lo stesso» repeat with force true. After a booking, offer the confirmation message (reminders with client, date and confirmation true).",
+	"What the person says → op: «fissa la signora Rossi giovedì alle 15 per taglio e piega» → book with client as said (the title too), services [as said], date, time as said («15», «15:30», «alle 3 e mezza», «mezzogiorno»: Annie reads morning or afternoon from the opening hours, or asks); resource, notes, minutes when said. When Annie is not sure of the client, of a service, or does not know how long a service lasts, book shows the proposal with a check: show it, and only after the person's yes repeat with confirm true and that check. On a clash, out of hours or closed, book books nothing and gives the nearest free times: offer those; only when the person says «fissalo lo stesso» repeat with force true and force_check (the check the refusal gave). After a booking, offer the confirmation message (reminders with client, date and confirmation true).",
 	"«sposta Rossi a venerdì stessa ora» → move with client and date (time only when said: otherwise the same); «Rossi ha disdetto» → cancel; «Rossi non si è presentata» → no_show; «Rossi è fatta», «tutti fatti» (yesterday's too, with date) → done (all true with date); these only on the person's own word, and with confirm and check when Annie asks «intendi questo appuntamento?». «quando ho un'ora libera giovedì pomeriggio?» → free_slots with date, window, minutes (or services); «cosa ho domani?», «la settimana» → agenda with date (week true); if the person also has Google Calendar, add their own events (google_calendar_events). «com'è andata con Rossi?», «cosa fa di solito Bianchi?» → history with client.",
 	"«fammi i promemoria per domani», «fammi il messaggio di promemoria per gli appuntamenti di domani» are the messages to the clients → reminders (date default tomorrow), not Annie's own reminders (schedule_create): the texts, the WhatsApp links for the mobiles and the emails from the cards are in the fence; Annie never sends them: the person taps the link and sends, or for an email offer google_mail_send (it asks its approval). «fattura gli appuntamenti fatti da Bianchi questo mese» is sales_invoices (draft with customer, appointments true, period), not this tool.",
 	"settings: «siamo aperti mar-sab 9-13 e 14:30-19, chiusi domenica e lunedì» → hours as that one line (or [{days, open}]); «chiusi dal 10 al 20 agosto per ferie» → closure_from, closure_to, closure_note; «il taglio dura 30 minuti, il colore un'ora e mezza» → services [{name, minutes}]; «le poltrone sono Marco e Giulia» → resources; «il salone si chiama Salone Anna» → business; «aperti anche nei festivi» → holidays_open; «gli appuntamenti ogni mezz'ora» → slot. «fammi il file degli appuntamenti» → export, then file_send. summary of the brief: agenda with compact true.",
@@ -178,7 +178,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 	}
 
 	/** Why it does not fit, and the nearest free times: nothing is booked (or moved). */
-	function refusal(fit: Exclude<Fit, { ok: true }>, input: FitInput, b: AppointmentBook, today: string, verb: string): string {
+	function refusal(fit: Exclude<Fit, { ok: true }>, input: FitInput, b: AppointmentBook, today: string, verb: string, forceCheck?: string): string {
 		if (fit.why === "past") return "Quell'ora è già passata: dimmi un altro giorno o un'altra ora.";
 		const open = fit.open ?? openOn(input.settings, input.day);
 		const lines: string[] = [];
@@ -193,7 +193,25 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			lines.push(`A quell'ora c'è già un appuntamento${many ? " per ogni risorsa che può farlo" : ""}${other === undefined ? "" : `, dalle ${clockOf(minutesOf(other.start))} alle ${clockOf(minutesOf(other.start) + other.minutes)} (chi è nel riquadro)`}: ${verb}.`);
 			if (other !== undefined) lines.push(fencedAppointments(appointmentRow(other)));
 		}
-		return [...lines, ...proposalsText(nearestFree({ ...input, force: false }), today), fit.why === "overlap" ? "Se vuoi sovrapporlo, dimmi «fissalo lo stesso»." : FORCE_OFFER].join("\n");
+		return [
+			...lines,
+			...proposalsText(nearestFree({ ...input, force: false }), today),
+			fit.why === "overlap" ? "Se vuoi sovrapporlo, dimmi «fissalo lo stesso»." : FORCE_OFFER,
+			...(forceCheck === undefined ? [] : [`Solo se chi ti scrive dice «fissalo lo stesso», ripeti con fissalo lo stesso e il controllo ${forceCheck}.`]),
+		].join("\n");
+	}
+
+	/** The check a refusal gives, bound to what was refused and why: «fissalo lo stesso» only after it was shown. */
+	const forceCheckOf = (what: unknown, fit: Exclude<Fit, { ok: true }>) => hash(["force", what, fit.why, fit.with ?? ""]);
+
+	/** «fissalo lo stesso»: the fit without force; a refusal (or a check that does not match) stops it. */
+	function forced(input: FitInput, args: Record<string, unknown>, what: unknown, b: AppointmentBook, today: string, verb: string): Fit | string {
+		const plain = fits({ ...input, force: false });
+		if (plain.ok || input.force !== true || plain.why === "past") return plain;
+		const check = forceCheckOf(what, plain);
+		const given = typeof args.force_check === "string" ? args.force_check.trim().toLowerCase() : "";
+		if (given === check) return fits(input);
+		return [`Errore: lo fisso lo stesso solo dopo aver mostrato perché non si può: ${verb}.`, refusal(plain, input, b, today, verb, check)].join("\n");
 	}
 
 	/** The check on an appointment named by a name only close to the client's: «intendi questo appuntamento?». */
@@ -264,8 +282,10 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		if (isProblem(notes)) return { text: `Errore: ${notes.problem}.`, count: 0 };
 		if (when.minutes + minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
 		const input: FitInput = { settings, appointments: b.appointments, day, start: when.minutes, minutes, ...(resource === undefined ? {} : { resource }), ...(sv.needs === undefined ? {} : { needs: sv.needs }), now: at, force };
-		const fit = fits(input);
-		if (!fit.ok) return { text: [refusal(fit, input, b, today, "non ho fissato niente"), ...when.notes].join("\n"), count: 0 };
+		const what = ["book", client.client, services, day, when.minutes, minutes, resource ?? ""];
+		const fit = forced(input, args, what, b, today, "non ho fissato niente");
+		if (typeof fit === "string") return { text: [fit, ...when.notes].join("\n"), count: 0 };
+		if (!fit.ok) return { text: [refusal(fit, input, b, today, "non ho fissato niente", fit.why === "past" ? undefined : forceCheckOf(what, fit)), ...when.notes].join("\n"), count: 0 };
 		const p: Proposed = { client: client.client, services, day, start: timeOf(when.minutes), minutes, ...(fit.resource === undefined ? {} : { resource: fit.resource }), ...(notes === undefined ? {} : { notes }), ...(force ? { force: true as const } : {}) };
 		const why: string[] = [];
 		if (client.close === true) why.push("il cliente l'ho preso dalla scheda con il nome più vicino a come è stato detto");
@@ -340,8 +360,10 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		if (when.day === a.day && timeOf(when.minutes) === a.start && resource === a.resource) return { text: `L'appuntamento è già ${whenWords(a.day, a.start, at.day)}: non ho cambiato niente.`, count: 0 };
 		if (when.minutes + a.minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
 		const input: FitInput = { settings: b.settings, appointments: b.appointments, day: when.day, start: when.minutes, minutes: a.minutes, ...(resource === undefined ? {} : { resource }), except: a.id, now: at, force };
-		const fit = fits(input);
-		if (!fit.ok) return { text: [refusal(fit, input, b, at.day, "non l'ho spostato"), ...when.notes].join("\n"), count: 0 };
+		const what = ["move", a.id, when.day, when.minutes, resource ?? ""];
+		const fit = forced(input, args, what, b, at.day, "non l'ho spostato");
+		if (typeof fit === "string") return { text: [fit, ...when.notes].join("\n"), count: 0 };
+		if (!fit.ok) return { text: [refusal(fit, input, b, at.day, "non l'ho spostato", fit.why === "past" ? undefined : forceCheckOf(what, fit)), ...when.notes].join("\n"), count: 0 };
 		const by = marker(ctx);
 		await ctx.step("move", async () => {
 			store.update(ctx.callId, (state) => {
@@ -536,6 +558,8 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 
 	function reminders(args: Record<string, unknown>, b: AppointmentBook, at: Now): Answer {
 		const confirm = args.confirmation === true;
+		// A confirmation is one client's: never every appointment to come.
+		if (confirm && (typeof args.client !== "string" || args.client.trim() === "")) return { text: "Errore: il messaggio di conferma è per un cliente: dimmi per quale.", count: 0 };
 		const day = daySaid(args.date ?? (confirm ? "oggi" : "domani"), at.day);
 		if (isAnswer(day)) return { text: day.answer, count: 0 };
 		if (day < at.day) return { text: "Errore: i messaggi si fanno per oggi o per i prossimi giorni.", count: 0 };
@@ -673,7 +697,8 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 					minutes: { type: ["integer", "string"], description: "book: the duration when said (default the services'); free_slots: how long («un'ora», 45)" },
 					resource: text(APPOINTMENT_LIMITS.resource, "book, move, free_slots: the resource as said («Marco», «poltrona 2»)"),
 					notes: text(APPOINTMENT_LIMITS.notes, "book: notes as said"),
-					force: { type: "boolean", description: "book, move: true only when the person said «fissalo lo stesso» after the clash or the closed time was shown" },
+					force: { type: "boolean", description: "book, move: true only when the person said «fissalo lo stesso» after the clash or the closed time was shown, with force_check" },
+					force_check: text(16, "book, move with force: the check the refusal gave"),
 					appointment: text(10, "move, cancel, no_show, done: the reference AP-0001 (never said to the person)"),
 					from_date: text(40, "move, cancel, no_show, done: the day of the appointment, when the client has more than one"),
 					to_date: text(40, "agenda, free_slots: the last day (at most 14 days)"),
@@ -682,7 +707,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 					all: { type: "boolean", description: "done: every appointment of the day already begun" },
 					confirm: { type: "boolean", description: "book: true only after the person's yes to the proposal; move, cancel, no_show, done: after the yes to «intendi questo appuntamento?»" },
 					check: text(20, "with confirm: the check given with the proposal"),
-					confirmation: { type: "boolean", description: "reminders: the confirmation message of a new appointment (with client) instead of the reminder" },
+					confirmation: { type: "boolean", description: "reminders: the confirmation message of a new appointment (client required) instead of the reminder" },
 					compact: { type: "boolean", description: "agenda: the brief's line only" },
 					business: text(APPOINTMENT_LIMITS.business, "settings: the business's name, for the messages"),
 					hours: {

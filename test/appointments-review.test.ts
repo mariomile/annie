@@ -6,8 +6,8 @@ import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import type { Appointment } from "../src/core/appointments.ts";
 import { timeOnDay, timeSaid } from "../src/core/tools/appointment-input.ts";
 import { hoursWords, mobileOf } from "../src/core/tools/appointment-render.ts";
-import { hoursOfMinutes } from "../src/core/tools/sales-appointments.ts";
-import type { SalesInvoice } from "../src/core/sales-invoices.ts";
+import { hourlyLine, hoursOfMinutes } from "../src/core/tools/sales-appointments.ts";
+import { type SalesInvoice, validInvoice } from "../src/core/sales-invoices.ts";
 import { agent, checkIn, cleanup, EMDASH, fresh, inside, MARK, outside, type S, SETTINGS, setup } from "./appointment-fixtures.ts";
 
 afterEach(cleanup);
@@ -15,6 +15,7 @@ afterEach(cleanup);
 const rossi = { op: "book", client: "Maria Rossi", services: ["taglio", "piega"], date: "giovedì", time: "15" };
 const all = (s: S) => s.store.read().appointments;
 const one = (s: S, id = "AP-0001") => all(s).find((a) => a.id === id) as Appointment;
+const forceCheckIn = (answer: string) => /fissalo lo stesso e il controllo ([0-9a-f]{16})/.exec(answer)?.[1] as string;
 
 async function doneOn(s: S, client: string, services: string[], date: string, time: string): Promise<void> {
 	const saved = s.clock.now;
@@ -209,25 +210,52 @@ describe("L2, L3, L6, L7", () => {
 	});
 });
 
-describe("L4: a voce priced by the hour bills the minutes", () => {
-	it("hours from the minutes, exact decimals, the rounding said", async () => {
-		expect(hoursOfMinutes(90)).toEqual({ quantity: "1.5", exact: true });
-		expect(hoursOfMinutes(45)).toEqual({ quantity: "0.75", exact: true });
-		expect(hoursOfMinutes(60)).toEqual({ quantity: "1", exact: true });
-		expect(hoursOfMinutes(20)).toEqual({ quantity: "0.33", exact: false });
-		expect(hoursOfMinutes(40)).toEqual({ quantity: "0.67", exact: false });
-		const items = [{ id: "LS-0001", name: "Taglio", unit: "ora", price: "40", vat: 22 as const, ...MARK }];
-		const s = setup({ items, settings: { ...SETTINGS, services: [{ name: "Taglio", item: "LS-0001", minutes: 45 }] } });
+describe("L4, L-a: a voce priced by the hour bills the minutes, to the cent", () => {
+	it("the line total is minutes × hourly / 60 to the cent: 100 minutes at 60 euro an hour is exactly 100,00", async () => {
+		expect(hourlyLine(90, "40")).toEqual({ quantity: "1.5", unit: "ore", price: "40", how: "ore" });
+		expect(hourlyLine(100, "60")).toEqual({ quantity: "100", unit: "minuti", price: "1", how: "minuti" });
+		expect(hourlyLine(100, "50")).toEqual({ quantity: "1", unit: "a corpo", price: "83.33", how: "corpo" });
+		expect(hourlyLine(20, "45.5")).toEqual({ quantity: "1", unit: "a corpo", price: "15.17", how: "corpo" });
+		expect(hoursOfMinutes(100)).toEqual({ quantity: "1.67", exact: false });
+		const items = [{ id: "LS-0001", name: "Taglio", unit: "ora", price: "60", vat: 22 as const, ...MARK }];
+		const settings = { ...SETTINGS, services: [{ name: "Taglio", item: "LS-0001", minutes: 50 }] };
+		const s = setup({ items, settings });
 		await doneOn(s, "Bianchi", ["taglio"], "2026-10-02", "10");
 		await doneOn(s, "Bianchi", ["taglio"], "2026-10-09", "10");
 		const text = await s.sell({ op: "draft", customer: "Bianchi", appointments: true, recipient_code: "ZZZ0001" });
-		expect(outside(text)).toContain("Le voci a ore le conto dai minuti degli appuntamenti:");
-		expect(inside(text)).toContain("• Taglio: 90 minuti, cioè 1,5 ore");
-		expect((s.sales.read().invoices[0] as SalesInvoice).lines[0]).toMatchObject({ quantity: "1.5", price: "40" });
-		const r = setup({ items, settings: { ...SETTINGS, services: [{ name: "Taglio", item: "LS-0001", minutes: 20 }] } });
+		expect(outside(text)).toContain("Le voci a ore le conto dai minuti degli appuntamenti, con il totale esatto al centesimo");
+		expect(inside(text)).toContain("• Taglio: 100 minuti (circa 1,67 ore) a 60 € l'ora: al minuto, 1 € l'uno");
+		const inv = s.sales.read().invoices[0] as SalesInvoice;
+		expect(inv.lines[0]).toMatchObject({ quantity: "100", price: "1", item: "LS-0001" });
+		expect(inside(text)).toContain("= 100,00 €");
+		expect(inside(text)).not.toContain("100,20");
+		expect(validInvoice(inv)).toBe(true);
+		// 50 euro an hour, 100 minutes: 83,33 once (1,67 hours would be 83,50).
+		const r = setup({ items: [{ ...items[0], price: "50" }] as never, settings });
 		await doneOn(r, "Bianchi", ["taglio"], "2026-10-02", "10");
-		const rounded = await r.sell({ op: "draft", customer: "Bianchi", appointments: true, recipient_code: "ZZZ0001" });
-		expect(inside(rounded)).toContain("• Taglio: 20 minuti, cioè 0,33 ore (arrotondato al centesimo)");
+		await doneOn(r, "Bianchi", ["taglio"], "2026-10-09", "10");
+		const fifty = await r.sell({ op: "draft", customer: "Bianchi", appointments: true, recipient_code: "ZZZ0001" });
+		expect(inside(fifty)).toContain("83,33 €");
+		expect(inside(fifty)).not.toContain("83,50");
+		expect((r.sales.read().invoices[0] as SalesInvoice).lines[0]).toMatchObject({ quantity: "1", price: "83.33", unit: "a corpo" });
+		// 90 minutes: exact hours.
+		const h = setup({ items, settings: { ...SETTINGS, services: [{ name: "Taglio", item: "LS-0001", minutes: 45 }] } });
+		await doneOn(h, "Bianchi", ["taglio"], "2026-10-02", "10");
+		await doneOn(h, "Bianchi", ["taglio"], "2026-10-09", "10");
+		await h.sell({ op: "draft", customer: "Bianchi", appointments: true, recipient_code: "ZZZ0001" });
+		expect((h.sales.read().invoices[0] as SalesInvoice).lines[0]).toMatchObject({ quantity: "1.5", price: "60" });
+	});
+});
+
+describe("L-b: the confirmation message is one client's", () => {
+	it("without a client it is refused, not every appointment to come", async () => {
+		const s = setup();
+		await s.run(rossi);
+		await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "venerdì", time: "10" });
+		expect(await s.run({ op: "reminders", confirmation: true })).toBe("Errore: il messaggio di conferma è per un cliente: dimmi per quale.");
+		const one_ = await s.run({ op: "reminders", confirmation: true, client: "Luca Neri" });
+		expect(inside(one_)).toContain("Luca Neri");
+		expect(inside(one_)).not.toContain("Maria Rossi");
 	});
 });
 
@@ -247,10 +275,23 @@ describe("UX: the refusals", () => {
 		expect(await s.run(over, fresh(undefined, "notice"))).toContain("Non fisso l'appuntamento sovrapposto o fuori orario");
 		expect(await s.run(over, agent())).toContain("a un altro agente do solo quanti sono");
 		expect(all(s)).toHaveLength(1);
-		const ok = await s.run(over);
+		// L-c: force only after the clash was shown, with the refusal's check.
+		const blind = await s.run(over);
+		expect(blind).toContain("Errore: lo fisso lo stesso solo dopo aver mostrato perché non si può");
+		expect(all(s)).toHaveLength(1);
+		const { force: _f, ...plain } = over;
+		const refused = await s.run(plain);
+		const check = forceCheckIn(refused);
+		expect(check).toMatch(/^[0-9a-f]{16}$/);
+		expect(await s.run({ ...over, force_check: "0123456789abcdef" })).toContain("Errore: lo fisso lo stesso solo dopo");
+		// The check of another time does not force this one.
+		expect(await s.run({ ...over, time: "15:15", force_check: check })).toContain("Errore: lo fisso lo stesso solo dopo");
+		const ok = await s.run({ ...over, force_check: check });
 		expect(outside(ok)).toContain("Fatto: ho fissato l'appuntamento giovedì 22 ottobre dalle 15:30 alle 16.");
 		expect(outside(ok)).toContain("L'ho fissato lo stesso, come mi hai detto");
-		const late = await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "giovedì", time: "19", force: true });
+		const lateArgs = { op: "book", client: "Luca Neri", services: ["taglio"], date: "giovedì", time: "19" };
+		const lateCheck = forceCheckIn(await s.run(lateArgs));
+		const late = await s.run({ ...lateArgs, force: true, force_check: lateCheck });
 		expect(late).toContain("Fatto");
 		expect(all(s)).toHaveLength(3);
 		expect(await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "oggi", time: "9", force: true })).toBe("Quell'ora è già passata: dimmi un altro giorno o un'altra ora.");

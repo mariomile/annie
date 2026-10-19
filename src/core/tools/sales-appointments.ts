@@ -15,6 +15,7 @@ import { n1 } from "../format-words.ts";
 import { italianDate } from "../italian-format.ts";
 import { spellingKey } from "../name-keys.ts";
 import { type Period, PeriodError, readPeriod } from "../periods.ts";
+import { netCents } from "../price-list.ts";
 import { listLines } from "../price-list-lines.ts";
 import { CREDIT_NOTE_TYPE, FIELD_LIMITS } from "../sales-invoice-rules.ts";
 import type { SalesBook, SalesState } from "../sales-invoice-store.ts";
@@ -51,14 +52,33 @@ export function appointmentInvoicesOf(invoices: readonly SalesInvoice[], except?
 /** The voce billed by the hour: «ora», «ore», «h». */
 const HOURLY = /^(?:or[ae]|h|hh)$/i;
 
-/** Minutes in hours, exact decimals: «1,5»; rounded half up to the hundredth when not exact, and said. */
+/** A decimal with up to `scale` places from a scaled integer, trailing zeros dropped. */
+function decimalOf(n: bigint, scale: number): string {
+	const unit = 10n ** BigInt(scale);
+	const frac = (n % unit).toString().padStart(scale, "0").replace(/0+$/, "");
+	return frac === "" ? (n / unit).toString() : `${n / unit}.${frac}`;
+}
+
+/**
+ * A voce priced by the hour, for these minutes: a line whose total is minutes × hourly / 60 to the
+ * cent (quantities have 3 decimals here, prices 4, so 1,67 hours would overbill). Hours when they
+ * are exact (minutes a multiple of 3); else the minutes at the price of a minute when it is exact;
+ * else one line «a corpo» at the total, rounded once to the cent.
+ */
+export function hourlyLine(minutes: number, hourly: string): { readonly quantity: string; readonly unit: string; readonly price: string; readonly how: "ore" | "minuti" | "corpo" } {
+	const m = /^(\d+)(?:\.(\d{1,4}))?$/.exec(hourly);
+	if (m === null) throw new Error("not a price");
+	const rate4 = BigInt(`${m[1]}${(m[2] ?? "").padEnd(4, "0")}`);
+	const n = BigInt(minutes);
+	if (minutes % 3 === 0) return { quantity: decimalOf((n * 1000n) / 60n, 3), unit: "ore", price: hourly, how: "ore" };
+	if (rate4 % 60n === 0n) return { quantity: String(minutes), unit: "minuti", price: decimalOf(rate4 / 60n, 4), how: "minuti" };
+	const cents = (2n * n * rate4 + 6000n) / 12000n;
+	return { quantity: "1", unit: "a corpo", price: decimalOf(cents, 2), how: "corpo" };
+}
+
+/** Minutes in hours for the words: «1,5»; «1,67» when not exact (said as rounded). */
 export function hoursOfMinutes(minutes: number): { readonly quantity: string; readonly exact: boolean } {
-	const exact = (minutes * 100) % 60 === 0;
-	const hundredths = Math.floor((minutes * 200 + 60) / 120);
-	const whole = Math.floor(hundredths / 100);
-	const cents = hundredths % 100;
-	const quantity = cents === 0 ? String(whole) : `${whole}.${String(cents).padStart(2, "0").replace(/0$/, "")}`;
-	return { quantity, exact };
+	return { quantity: decimalOf(BigInt(Math.floor((minutes * 200 + 60) / 120)), 2), exact: (minutes * 100) % 60 === 0 };
 }
 
 /** The receipt question, asked once in the draft of an invoice of appointments (an open tax point: ADR 0094). */
@@ -181,15 +201,21 @@ export function appointmentSource(env: SalesEnv, args: Record<string, unknown>, 
 	const raw = groupsList.map((g) => {
 		const own = prices.get(spellingKey(g.name));
 		const voce = g.item === undefined ? undefined : voci.find((v) => v.id === g.item);
-		// A voce priced by the hour bills the minutes, in hours (exact decimals); any other, the times.
-		let quantity = String(g.days.length);
+		// A voce priced by the hour bills the minutes (hourlyLine: exact to the cent); any other, the times.
 		if (voce?.unit !== undefined && HOURLY.test(voce.unit.trim())) {
+			// The hourly price without VAT: the person's, else the voce's (net of VAT when it includes it).
+			const rate = own ?? (voce.includesVat === true ? decimalOf(netCents(voce), 2) : voce.price);
 			const h = hoursOfMinutes(g.minutes);
-			quantity = h.quantity;
-			hourly.push(`${g.name}: ${g.minutes} minuti, cioè ${h.quantity.replace(".", ",")} ${h.quantity === "1" ? "ora" : "ore"}${h.exact ? "" : " (arrotondato al centesimo)"}`);
+			const line = hourlyLine(g.minutes, rate);
+			const comma = (x: string) => x.replace(".", ",");
+			const how = line.how === "ore" ? `${comma(line.quantity)} ${line.quantity === "1" ? "ora" : "ore"}` : line.how === "minuti" ? `al minuto, ${comma(line.price)} € l'uno` : `a corpo, ${comma(line.price)} € in tutto`;
+			hourly.push(`${g.name}: ${g.minutes} minuti (${h.exact ? "" : "circa "}${comma(h.quantity)} ${h.quantity === "1" ? "ora" : "ore"}) a ${comma(rate)} € l'ora: ${how}`);
+			const words = lineWords(g.name, g.days);
+			const description = line.how === "corpo" && words.length + 14 <= FIELD_LIMITS.descrizione ? `${words} (${g.minutes} minuti)` : words;
+			return { description, quantity: line.quantity, unit: line.unit, item: voce.id, price: line.price };
 		}
 		// The person's price wins over the voce's (price-list-lines.ts: what the line gives itself).
-		return { description: lineWords(g.name, g.days), quantity, ...(voce === undefined ? {} : { item: voce.id }), ...(own === undefined ? {} : { price: own }) };
+		return { description: lineWords(g.name, g.days), quantity: String(g.days.length), ...(voce === undefined ? {} : { item: voce.id }), ...(own === undefined ? {} : { price: own }) };
 	});
 	const filled = listLines({ ...(env.priceList === undefined ? {} : { priceList: env.priceList }), company: env.company, taxes: env.taxes }, raw, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: args.vat, natura: args.natura }, keepItem: true });
 	if (filled !== undefined && "ask" in filled) return filled.ask;
@@ -214,7 +240,7 @@ export function appointmentSource(env: SalesEnv, args: Record<string, unknown>, 
 		notes: [
 			`Fatturo ${n1(picked.length, "un appuntamento fatto", "# appuntamenti fatti")}, ${period.label}: li segno come fatturati quando la fattura è emessa.`,
 			...(billTo === undefined ? [] : ["La intesto al cliente giusto, nel riquadro della bozza: gli appuntamenti sono quelli tornati da fatturare con la nota di credito."]),
-			...(hourly.length === 0 ? [] : ["Le voci a ore le conto dai minuti degli appuntamenti:", fenced(hourly.map((h) => `• ${h}`).join("\n"))]),
+			...(hourly.length === 0 ? [] : ["Le voci a ore le conto dai minuti degli appuntamenti, con il totale esatto al centesimo (minuti per prezzo dell'ora diviso 60):", fenced(hourly.map((h) => `• ${h}`).join("\n"))]),
 			RECEIPT_NOTE,
 			...bookedNote,
 			...(filled?.notes ?? []),
