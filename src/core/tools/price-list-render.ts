@@ -62,13 +62,14 @@ export function priceListCsv(items: readonly PriceItem[]): string {
 }
 
 /** The preview of a price change: each voce from → to, the check to pass back on the yes. */
-export function repricePreview(plan: readonly { item: PriceItem; to: bigint }[], skipped: readonly PriceItem[], check: string): string {
+export function repricePreview(plan: readonly { item: PriceItem; to: bigint }[], low: readonly PriceItem[], high: readonly PriceItem[], check: string): string {
 	const shown = plan.slice(0, PRICE_LIST_LIMITS.shown).map(({ item, to }) => `• ${item.name}: ${euros(eurosToCents(item.price))} → ${euros(to)} ${perUnit(item.unit)} · ${item.id}`);
 	const more = plan.length - shown.length;
 	return [
 		`Ecco i nuovi prezzi (${n1(plan.length, "1 voce", "# voci")}), non ancora salvati:`,
 		fencedList(`${shown.join("\n")}${more > 0 ? `\ne altre ${more}` : ""}`),
-		...(skipped.length === 0 ? [] : [`${n1(skipped.length, "1 voce resterebbe", "# voci resterebbero")} a zero o sotto: le lascio come sono (${skipped.slice(0, 10).map((i) => i.id).join(", ")}).`]),
+		...(low.length === 0 ? [] : [`${n1(low.length, "1 voce resterebbe", "# voci resterebbero")} a zero o sotto: le lascio come sono (${low.slice(0, 10).map((i) => i.id).join(", ")}).`]),
+		...(high.length === 0 ? [] : [`${n1(high.length, "1 voce andrebbe", "# voci andrebbero")} oltre ${PRICE_LIST_LIMITS.maxPrice.toLocaleString("it-IT")} €: le lascio come sono (${high.slice(0, 10).map((i) => i.id).join(", ")}).`]),
 		`Chiedi a chi ti scrive se va bene. Solo dopo il sì, rifai la stessa richiesta con confirm true e check «${check}».`,
 	].join("\n");
 }

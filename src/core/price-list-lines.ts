@@ -11,7 +11,9 @@
  *   with VAT included shows the prices as said (prices_include_vat), and one with VAT excluded in a
  *   quote with VAT included is grossed up exactly (to the fourth decimal, as quote lines hold);
  *   elsewhere, and in an invoice (always VAT excluded), the line's amount without VAT is the one a
- *   quote with VAT included would give for it, to the cent (netLine), and said.
+ *   quote with VAT included would give for it (netLine), and said. The VAT always comes off at the
+ *   voce's own rate: a line at another rate (said for the line or the document) keeps the voce's
+ *   price without VAT, and that is said too.
  * - Forfettario: the VAT comes from the regime as for every line (0% with its dicitura or N2.2),
  *   never from the voce; the price is the voce's as written.
  */
@@ -19,7 +21,7 @@ import { euros } from "./format-words.ts";
 import type { InvoiceStore } from "./invoice-store.ts";
 import { fencedList, findItems, lineUnit, perUnit, type PriceItem } from "./price-list.ts";
 import { PRICE_LIST_BROKEN, type PriceListStore } from "./price-list-store.ts";
-import { AMBIGUOUS, eurosToCents, halfUp, lineCents, netOf, readDecimal, scaled, scaledDecimal, VAT_RATES, type VatRate } from "./quote-sums.ts";
+import { AMBIGUOUS, decimalText, eurosToCents, halfUp, lineCents, netOf, readDecimal, scaled, scaledDecimal, VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { naturaWords, REGIME_FORFETTARIO } from "./sales-invoice-rules.ts";
 import { regimeOf } from "./sales-invoices.ts";
 import type { TaxStore } from "./tax-store.ts";
@@ -92,12 +94,13 @@ function decimalOf(v: unknown, decimals: number): string | undefined {
 
 /**
  * The unit price without VAT, to the fourth decimal as quote lines hold, of a line of `quantity`
- * (less `discount`) of a voce at `gross` with VAT included at `rate`: chosen so that the line's
- * amount is exactly the amount without VAT of the same line with VAT included (quote-sums.ts netOf
- * of its lineCents), as a quote with VAT included takes it apart. Undefined when no such price
- * exists (a very large quantity) or the quantity does not read.
+ * (less `discount`) of a voce at `gross` with VAT included at `rate` (the voce's own): chosen so
+ * that the line's amount is the amount without VAT of the same line with VAT included (quote-sums.ts
+ * netOf of its lineCents), as a quote with VAT included takes it apart. When no 4-decimal price
+ * gives it exactly (a very large quantity), the nearest one: `off` is the line's difference in
+ * cents (0 when exact). Undefined when the quantity or the discount does not read.
  */
-export function netLine(gross: string, quantity: unknown, discount: unknown, rate: VatRate): { readonly price: string; readonly net: bigint; readonly gross: bigint } | undefined {
+export function netLine(gross: string, quantity: unknown, discount: unknown, rate: VatRate): { readonly price: string; readonly net: bigint; readonly gross: bigint; readonly off: bigint } | undefined {
 	const q = decimalOf(quantity ?? "1", 3);
 	const d = discount === undefined ? undefined : decimalOf(discount, 2);
 	if (q === undefined || (discount !== undefined && d === undefined)) return undefined;
@@ -107,11 +110,18 @@ export function netLine(gross: string, quantity: unknown, discount: unknown, rat
 	const denominator = scaled(q, 3) * (10_000n - (d === undefined ? 0n : scaled(d, 2)));
 	if (target <= 0n || denominator <= 0n) return undefined;
 	const first = halfUp(target * 1_000_000_000n, denominator);
+	let best: { price: string; net: bigint; off: bigint } | undefined;
 	for (const step of [0n, -1n, 1n, -2n, 2n, -3n, 3n]) {
 		const p = first + step;
-		if (p > 0n && line(scaledDecimal(p, 4)) === target) return { price: scaledDecimal(p, 4), net: target, gross: grossTotal };
+		if (p <= 0n) continue;
+		const price = scaledDecimal(p, 4);
+		const net = line(price);
+		const off = net - target;
+		if (off === 0n) return { price, net, gross: grossTotal, off };
+		if (best === undefined || (off < 0n ? -off : off) < (best.off < 0n ? -best.off : best.off)) best = { price, net, off };
 	}
-	return undefined;
+	const nearest = best ?? { price: scaledDecimal(1n, 4), net: line("0.0001"), off: line("0.0001") - target };
+	return { ...nearest, gross: grossTotal };
 }
 
 /** The lines with every voce named filled in, or the question to ask. Pure: the listino is the caller's. */
@@ -141,13 +151,14 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 	const named = found.filter((f): f is PriceItem => f !== undefined);
 	// Nothing said of VAT in a quote: the voci's own way, when every line is a voce with VAT included.
 	const includeVat = t.kind === "invoice" ? false : (t.includeVat ?? (!t.forfettario && named.length === raw.length && named.every((i) => i.includesVat === true && i.vat > 0)));
-	const docVat = t.doc?.vat !== undefined;
+	// In an invoice a nature for the whole document says VAT 0 (its reader puts the lines at 0 with it): the voce's rate never fills them.
+	const docVat = t.doc?.vat !== undefined || (t.kind === "invoice" && t.doc?.natura !== undefined);
 	const docNature = t.doc?.natura !== undefined || t.doc?.vatNote !== undefined;
-	const docRate = rateOf(t.doc?.vat);
+	const docRate = rateOf(t.doc?.vat) ?? (t.kind === "invoice" && t.doc?.natura !== undefined ? 0 : undefined);
 	const notes: string[] = [];
 	const asWritten: string[] = [];
 	const takenApart: string[] = [];
-	const tooMany: string[] = [];
+	const otherRate: string[] = [];
 	const lines = raw.map((line, n) => {
 		const item = found[n];
 		if (item === undefined) return line;
@@ -164,6 +175,7 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 		}
 		const ownVat = own.vat !== undefined || own.vat_note !== undefined || own.natura !== undefined;
 		// The document's VAT, nature or reason fills the line as the document's reader fills it: the voce's never over it.
+		if (!t.forfettario && !ownVat && docVat && t.kind === "invoice" && t.doc?.vat === undefined) out.vat = 0;
 		if (!t.forfettario && !ownVat && !docVat) {
 			out.vat = item.vat;
 			if (item.vat === 0 && item.natura !== undefined && !docNature) {
@@ -181,20 +193,32 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 				const net = item.includesVat === true ? netOf(cents, item.vat) : cents;
 				out.price = item.includesVat === true && rate === item.vat ? item.price : scaledDecimal(net * BigInt(100 + rate), 4);
 			} else if (item.includesVat === true && item.vat > 0) {
-				const taken = netLine(item.price, own.quantity, own.discount, rate);
-				if (taken === undefined) tooMany.push(`• ${itemShort(item)}`);
+				// The VAT comes off at the voce's own rate: its price without VAT is the same whatever the line's rate.
+				const taken = netLine(item.price, own.quantity, own.discount, item.vat);
+				if (taken === undefined) out.price = scaledDecimal(halfUp(cents * 10_000n, BigInt(100 + item.vat)), 4);
 				else {
 					out.price = taken.price;
-					takenApart.push(`${itemShort(item)}: ${lineUnit(item.unit, quantity) === undefined ? "" : `${quantity.replace(".", ",")} ${lineUnit(item.unit, quantity)}, `}${euros(taken.net)} senza IVA (${euros(taken.gross)} IVA inclusa)`);
+					const q = decimalOf(own.quantity ?? "1", 3) ?? quantity;
+					const unit = lineUnit(item.unit, q);
+					const off = taken.off === 0n ? "" : ` (${euros(taken.off < 0n ? -taken.off : taken.off)} ${taken.off < 0n ? "in meno" : "in più"}: con questa quantità nessun prezzo per unità a quattro decimali torna al centesimo)`;
+					takenApart.push(`${itemShort(item)}: ${unit === undefined ? `${decimalText(q)} × ` : `${decimalText(q)} ${unit}, `}${euros(taken.net)} senza IVA${off}`);
 				}
 			} else out.price = item.price;
+			if (!t.forfettario && item.includesVat === true && item.vat > 0 && rate !== item.vat) otherRate.push(`${itemShort(item)}: nel listino con l'IVA al ${item.vat}%, qui la riga è al ${rate}%`);
 		}
 		return out;
 	});
-	if (tooMany.length > 0) return { ask: [`Non ho fatto ${docName(t.kind)}: per queste voci, IVA inclusa nel listino, non trovo un prezzo senza IVA che torni al centesimo con questa quantità.`, fencedList(tooMany.join("\n")), "Chiedi a chi ti scrive il prezzo senza IVA a unità e rifai con price sulla riga."].join("\n") };
 	if (slips.length > 0) notes.push(`Ho preso dal listino le voci più vicine a come sono state dette: ${fencedList(slips.join("\n"))}`);
-	if (takenApart.length > 0) notes.push(`Queste voci nel listino sono IVA inclusa: qui vanno senza IVA, con l'IVA tolta come nei preventivi IVA inclusa (il prezzo a unità ha fino a quattro decimali, così il totale torna al centesimo): ${fencedList(takenApart.join("\n"))}`);
-	if (asWritten.length > 0) notes.push(`Queste voci nel listino hanno il prezzo IVA inclusa: nel regime forfettario l'IVA non c'è, quindi ho messo il prezzo com'è scritto. Chiedi a chi ti scrive se va bene. ${fencedList(asWritten.join("\n"))}`);
+	if (takenApart.length > 0)
+		notes.push(
+			[
+				"Nel listino queste voci sono IVA inclusa: qui le ho messe senza IVA, togliendo l'IVA dal totale della riga.",
+				fencedList(takenApart.join("\n")),
+				"L'imponibile di ogni riga è quello del prezzo del listino senza IVA; il totale del documento può differire di un centesimo dai prezzi del listino con IVA.",
+			].join("\n"),
+		);
+	if (otherRate.length > 0) notes.push(["Queste voci hanno nel listino un'altra aliquota: il prezzo senza IVA è quello del listino, l'IVA è quella della riga. Controlla con chi ti scrive che l'aliquota sia giusta.", fencedList(otherRate.join("\n"))].join("\n"));
+	if (asWritten.length > 0) notes.push(["Queste voci nel listino hanno il prezzo IVA inclusa:", fencedList(asWritten.join("\n")), "Nel regime forfettario l'IVA non c'è, quindi ho messo il prezzo com'è scritto. Chiedi a chi ti scrive se va bene."].join("\n"));
 	if (includeVat && t.includeVat === undefined && named.length > 0) notes.push("I prezzi di queste voci nel listino sono IVA inclusa: il preventivo li mostra così.");
 	return { lines, includeVat, notes, used: named.length };
 }

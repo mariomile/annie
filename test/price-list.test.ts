@@ -421,8 +421,10 @@ describe("listino: lines of quotes and invoices", () => {
 		// Mixed with a voce without VAT: the gross taken apart to the fourth decimal, and said.
 		const mixed = await s.quote({ items: [{ item: "manuale stampato" }, { item: "ora di sviluppo" }] });
 		expect(s.quotes.read().quotes[2]?.lines.map((l) => l.price)).toEqual(["20", "60"]);
-		expect(mixed).toContain("Queste voci nel listino sono IVA inclusa: qui vanno senza IVA");
-		expect(inside(mixed)).toContain("Manuale stampato (LS-0005): 24,40 € al pezzo IVA inclusa: 1 pezzo, 20,00 € senza IVA (24,40 € IVA inclusa)");
+		expect(mixed).toMatch(/Nel listino queste voci sono IVA inclusa: qui le ho messe senza IVA, togliendo l'IVA dal totale della riga\.\n<<<dati del listino/);
+		expect(mixed).toContain("L'imponibile di ogni riga è quello del prezzo del listino senza IVA; il totale del documento può differire di un centesimo dai prezzi del listino con IVA.");
+		expect(inside(mixed)).toContain("Manuale stampato (LS-0005): 24,40 € al pezzo IVA inclusa: 1 pezzo, 20,00 € senza IVA");
+		expect(mixed).not.toContain("a unità");
 	});
 
 	it("an invoice's lines from the listino: by code and by name, overrides, the gross taken apart, ambiguity asked", async () => {
@@ -435,7 +437,7 @@ describe("listino: lines of quotes and invoices", () => {
 			["Sito base (fino a 5 pagine)", "1", "", "1400", 22],
 			["Manuale stampato", "2", "pezzi", "20", 22],
 		]);
-		expect(inside(answer)).toContain("Manuale stampato (LS-0005): 24,40 € al pezzo IVA inclusa: 2 pezzi, 40,00 € senza IVA (48,80 € IVA inclusa)");
+		expect(inside(answer)).toContain("Manuale stampato (LS-0005): 24,40 € al pezzo IVA inclusa: 2 pezzi, 40,00 € senza IVA");
 		const ask = await s.draft({ lines: [{ item: "sito" }] });
 		expect(ask).toMatch(/^Non ho fatto la bozza della fattura: nel listino alcune voci non sono chiare\./);
 		expect(s.sales.read().invoices).toHaveLength(1);
@@ -561,7 +563,8 @@ describe("listino: a code that is another voce's name", () => {
 		const preview = await s.run({ op: "import", path: "codici.csv" });
 		expect(preview).toContain("Da aggiungere (1):");
 		expect(inside(preview)).toContain("riga 2, Nuova voce: il codice è il nome di un'altra voce");
-		expect(inside(preview)).toContain("riga 3, Logo X: il codice è il nome di un'altra voce");
+		expect(inside(preview)).toContain("riga 3, Logo X: il nome è il codice di un'altra voce: detto così non si saprebbe quale delle due è");
+		expect(inside(preview)).not.toContain("riga 2, Nuova voce: il codice è il nome di un'altra voce, o");
 	});
 
 	it("written before the rule (a file of the week before): lookup, an invoice line and a remove ask which", async () => {
@@ -598,22 +601,32 @@ describe("listino: the document's VAT wins over the voce's", () => {
 		await s.quote({ items: [{ item: "manuale stampato" }], vat: 10 });
 		expect(s.quotes.read().quotes[2]?.lines[0]).toMatchObject({ price: "22", vat: 10 });
 		expect(s.quotes.read().quotes[2]?.pricesIncludeVat).toBe(true);
+		// VAT excluded: the voce loses its own 22%, never the line's rate (20,00 €, not 22,18 €), and that is said.
+		const ten = await s.quote({ items: [{ item: "manuale stampato" }], vat: 10, prices_include_vat: false });
+		expect(s.quotes.read().quotes[3]?.lines[0]).toMatchObject({ price: "20", vat: 10 });
+		expect(ten).toContain("Queste voci hanno nel listino un'altra aliquota");
+		expect(inside(ten)).toContain("nel listino con l'IVA al 22%, qui la riga è al 10%");
+		await s.quote({ items: [{ item: "manuale stampato" }], vat: 0, vat_note: "Operazione esente art. 10 DPR 633/72", prices_include_vat: false });
+		expect(s.quotes.read().quotes[4]?.lines[0]).toMatchObject({ price: "20", vat: 0 });
 	});
 
 	it("an invoice at 0% with its nature for all, or at 10%: the line takes the document's; a price with VAT taken apart at that rate", async () => {
 		const s = await stocked();
 		await s.draft({ lines: [{ item: "LS-0004", quantity: 2 }], vat: 0, natura: "N4", bollo_to_client: false });
 		expect((s.sales.read().invoices.at(-1) as SalesInvoice).lines[0]).toMatchObject({ price: "60", vat: 0, natura: "N4" });
-		await s.draft({ lines: [{ item: "manuale stampato" }], vat: 10 });
+		await s.run({ op: "add", name: "Licenza annuale", price: 122, unit: "pezzo", vat: 22, prices_include_vat: true });
+		await s.draft({ lines: [{ item: "licenza annuale", quantity: 3 }], vat: 10 });
 		const line = (s.sales.read().invoices.at(-1) as SalesInvoice).lines[0];
-		expect(line).toMatchObject({ vat: 10, price: "22.18" });
+		expect(line).toMatchObject({ vat: 10, price: "100", quantity: "3" });
+		// A nature alone for the whole invoice says VAT 0: the voce's 22% does not fill the line.
+		await s.draft({ lines: [{ item: "LS-0004" }], natura: "N4", bollo_to_client: false });
+		expect((s.sales.read().invoices.at(-1) as SalesInvoice).lines[0]).toMatchObject({ price: "60", vat: 0, natura: "N4" });
 		// A rate given on the line as text is a rate: «10» converts as 10.
 		const items = [item({ id: "LS-0001", name: "Corso", price: "122", includesVat: true, unit: "ora" })];
 		const q = fillFromList([{ item: "corso", quantity: 2, vat: "10" }], items, { kind: "quote", forfettario: false, includeVat: true, descriptionMax: 300 });
 		expect("lines" in q ? q.lines[0] : undefined).toMatchObject({ vat: "10", price: "110" });
 		const inv = fillFromList([{ item: "corso", vat: "10" }], items, { kind: "invoice", forfettario: false, descriptionMax: 300 });
-		expect("lines" in inv ? inv.lines[0] : undefined).toMatchObject({ vat: "10", price: netLine("122", 1, undefined, 10)?.price });
-		expect(netLine("122", 1, undefined, 10)?.price).toBe("110.91");
+		expect("lines" in inv ? inv.lines[0] : undefined).toMatchObject({ vat: "10", price: "100" });
 	});
 });
 
@@ -631,6 +644,7 @@ describe("listino: a price with VAT taken apart, to the cent", () => {
 						const expected = quoteTotals([line], { includeVat: true }).rates[0]?.taxable;
 						expect(taken.net).toBe(netOf(lineCents(line), vat));
 						expect(lineCents({ ...line, price: taken.price })).toBe(expected);
+						expect(taken.off).toBe(0n);
 						expect(taken.price).toMatch(/^\d+(?:\.\d{1,4})?$/);
 						cases++;
 					}
@@ -687,8 +701,10 @@ describe("listino: words", () => {
 	it("prices said as words are asked as the price; VAT words; a lowercase name capitalised; a unit with its preposition", async () => {
 		const s = setup();
 		const bad = await s.run({ op: "add", name: "Logo", price: "tanto", vat: 22 });
-		expect(bad).toContain("il prezzo:");
+		expect(bad).toMatch(/^Errore: il prezzo <<<dati del listino/);
 		expect(bad).not.toContain("amount");
+		const thousands = await s.run({ op: "add", name: "Logo", price: "1.500", vat: 22 });
+		expect(thousands).toMatch(/^Errore: il prezzo «1\.500» può voler dire migliaia o decimali/);
 		expect(vatWords({ vat: 0, natura: "N2.2" })).toBe("senza IVA (regime forfettario)");
 		expect(vatWords({ vat: 0, natura: "N4" })).toMatch(/^senza IVA, .+\(N4\)$/);
 		await s.run({ op: "add", name: "sito vetrina", price: 900, unit: "a corpo", vat: 22 });
@@ -740,5 +756,69 @@ describe("listino: the timesheet's rate, recorded and in the forfettario", () =>
 		expect(reserved?.entries[0]).toMatchObject({ rate: "50", listed: { id: "LS-0009", name: "Tariffa oraria" } });
 		expect(timesheet.read().broken).toBe(false);
 		expect(timesheet.read().reservations.find((r) => r.callId === "call-listed")?.entries[0]?.listed).toEqual({ id: "LS-0009", name: "Tariffa oraria" });
+	});
+});
+
+describe("listino: second-pass review", () => {
+	it("no 4-decimal price fits a line exactly: the nearest one, its cent difference said; quantities written as on the lines", () => {
+		const items = [item({ id: "LS-0001", name: "Adesivo", price: "3.33", includesVat: true, unit: "pezzo" }), item({ id: "LS-0002", name: "Manuale", price: "24.4", includesVat: true, unit: "pezzo" })];
+		const odd = fillFromList([{ item: "adesivo", quantity: 777 }], items, { kind: "invoice", forfettario: false, descriptionMax: 300 });
+		if (!("lines" in odd)) throw new Error(odd.ask);
+		expect(odd.lines[0]).toMatchObject({ price: "2.7295", vat: 22 });
+		expect(inside(odd.notes.join("\n"))).toContain("Adesivo (LS-0001): 3,33 € al pezzo IVA inclusa: 777 pezzi, 2.120,82 € senza IVA (0,01 € in meno: con questa quantità nessun prezzo per unità a quattro decimali torna al centesimo)");
+		const many = fillFromList([{ item: "manuale", quantity: 1234 }], items, { kind: "invoice", forfettario: false, descriptionMax: 300 });
+		expect("lines" in many ? inside(many.notes.join("\n")) : "").toContain("1.234 pezzi, 24.680,00 € senza IVA");
+	});
+
+	it("the phrase as said is matched before the articles go; more questions a person asks", async () => {
+		const items = [item({ id: "LS-0001", name: "Una tantum attivazione" }), item({ id: "LS-0002", name: "Sito" }), item({ id: "LS-0003", name: "Il sito" })];
+		expect(findItems(items, "Una tantum attivazione")).toMatchObject({ kind: "exact", item: { id: "LS-0001" } });
+		expect(findItems(items, "il sito")).toMatchObject({ kind: "exact", item: { id: "LS-0003" } });
+		expect(findItems(items, "sito")).toMatchObject({ kind: "exact", item: { id: "LS-0002" } });
+		const s = await stocked();
+		const all = s.store.read().items;
+		expect(findItems(all, "che prezzo ha l'ora di sviluppo?")).toMatchObject({ kind: "exact", item: { id: "LS-0004" } });
+		expect(findItems(all, "quanto prendo per il sito e-commerce")).toMatchObject({ kind: "exact", item: { id: "LS-0003" } });
+		// «il manuale» is inside one name only: asked, never taken.
+		expect(findItems(all, "a quanto vendo il manuale?")).toMatchObject({ kind: "close", items: [{ id: "LS-0005" }] });
+		expect(await s.run({ op: "find", query: "a quanto vendo il manuale?" })).toMatch(/^Nel listino c'è una voce simile:/);
+	});
+
+	it("a price change by an amount is read as a price; low and high skips said apart", async () => {
+		const s = await stocked();
+		expect(await s.run({ op: "price_change", id: "LS-0004", amount: "1.250" })).toContain("può voler dire migliaia o decimali");
+		expect(await s.run({ op: "price_change", id: "LS-0004", amount: "1k" })).toMatch(/^Errore: l'importo /);
+		expect(await s.run({ op: "price_change", id: "LS-0004", amount: "-1.250" })).toContain("può voler dire migliaia o decimali");
+		expect(inside(await s.run({ op: "price_change", id: "LS-0004", amount: "+5" }))).toBe("• Ora di sviluppo: 60,00 € → 65,00 € all'ora · LS-0004");
+		await s.run({ op: "add", name: "Impianto", price: 900000, vat: 22 });
+		expect(await s.run({ op: "price_change", id: "LS-0006", percent: 50 })).toBe("Errore: con questo cambio i prezzi andrebbero oltre 1.000.000 €: non cambio niente.");
+		expect(await s.run({ op: "price_change", id: "LS-0004", amount: -60 })).toBe("Errore: con questo cambio i prezzi andrebbero a zero o sotto: non cambio niente.");
+		const all = await s.run({ op: "price_change", all: true, percent: 50 });
+		expect(all).toContain("1 voce andrebbe oltre 1.000.000 €: le lascio come sono (LS-0006).");
+		expect(all).not.toContain("a zero o sotto");
+	});
+
+	it("import: one price however written, headers «comprensivo di IVA» and «I.V.A. inclusa»", async () => {
+		const s = await stocked();
+		writeFileSync(join(s.root, "ivati.csv"), "Nome;Prezzo IVA inclusa;IVA\nSito base;1830;22\n");
+		const preview = await s.run({ op: "import", path: "ivati.csv" });
+		expect(preview).toContain("1 voce è già nel listino: la lascio com'è.");
+		expect(preview).not.toContain("diversa");
+		const bytes = (text: string) => new Uint8Array(Buffer.from(text));
+		for (const head of ["Prezzo comprensivo di IVA", "Prezzo I.V.A. inclusa"]) {
+			const read = readRows(fileRows("a.csv", bytes(`Nome;${head};IVA\nCorso;122;22\n`)), {});
+			expect("items" in read ? read.items[0]?.includesVat : undefined, head).toBe(true);
+		}
+	});
+
+	it("forfettario note: the fence after its first line; an invoice price with more than 4 decimals is asked, never a crash", async () => {
+		const f = await stocked({ company: FORFETTARIO });
+		await f.run({ op: "add", name: "Assistenza ivata", price: 122, unit: "ora", vat: 22, prices_include_vat: true });
+		const answer = await f.quote({ items: [{ item: "assistenza ivata" }] });
+		expect(answer).toMatch(/Queste voci nel listino hanno il prezzo IVA inclusa:\n<<<dati del listino[^\n]*>>>\n[^\n]*\n<<<fine dati del listino [0-9a-f]{12}>>>\nNel regime forfettario l'IVA non c'è, quindi ho messo il prezzo com'è scritto\. Chiedi a chi ti scrive se va bene\./);
+		const s = setup();
+		const asked = await s.draft({ lines: [{ description: "Consulenza", quantity: 1, price: 12.345678 }], vat: 22 });
+		expect(asked).toContain("al più 4 decimali");
+		expect(s.sales.read().invoices).toHaveLength(0);
 	});
 });

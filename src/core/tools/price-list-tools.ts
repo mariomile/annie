@@ -233,7 +233,7 @@ export function createPriceListTools(options: PriceListToolsOptions): AnnieTool[
 		if ((args.all === true) === (args.id !== undefined)) return "Errore: dimmi quale voce cambia (id) oppure tutte (all true), non tutti e due.";
 		const change = readChange(args);
 		if (isProblem(change)) return `Errore: ${change.problem}.`;
-		const planned = ((): { plan: { item: PriceItem; to: string }[]; skipped: PriceItem[] } | string => {
+		const planned = ((): { plan: { item: PriceItem; to: string }[]; low: PriceItem[]; high: PriceItem[] } | string => {
 			let targets: readonly PriceItem[];
 			if (args.all === true) {
 				const all = readable();
@@ -244,17 +244,22 @@ export function createPriceListTools(options: PriceListToolsOptions): AnnieTool[
 				targets = [one];
 			}
 			const plan: { item: PriceItem; to: string }[] = [];
-			const skipped: PriceItem[] = [];
+			const low: PriceItem[] = [];
+			const high: PriceItem[] = [];
 			for (const item of targets) {
 				const to = changedCents(eurosToCents(item.price), change);
-				if (to === undefined || to > BigInt(PRICE_LIST_LIMITS.maxPrice) * 100n) skipped.push(item);
+				if (to === undefined) low.push(item);
+				else if (to > BigInt(PRICE_LIST_LIMITS.maxPrice) * 100n) high.push(item);
 				else if (to !== eurosToCents(item.price)) plan.push({ item, to: centsDecimal(to) });
 			}
-			return { plan, skipped };
+			return { plan, low, high };
 		})();
 		const repricingOf = (p: Exclude<typeof planned, string>) => p.plan.map(({ item, to }) => ({ id: item.id, from: item.price, to }));
-		const preview = (p: Exclude<typeof planned, string>) => repricePreview(p.plan.map(({ item, to }) => ({ item, to: eurosToCents(to) })), p.skipped, checkOf(repricingOf(p)));
-		const nothing = (p: Exclude<typeof planned, string>) => (p.skipped.length > 0 ? "Errore: con questo cambio i prezzi andrebbero a zero o sotto: non cambio niente." : "Nessuna voce da cambiare: con questo cambio i prezzi restano uguali.");
+		const preview = (p: Exclude<typeof planned, string>) => repricePreview(p.plan.map(({ item, to }) => ({ item, to: eurosToCents(to) })), p.low, p.high, checkOf(repricingOf(p)));
+		const nothing = (p: Exclude<typeof planned, string>) => {
+			const why = [...(p.low.length > 0 ? ["a zero o sotto"] : []), ...(p.high.length > 0 ? [`oltre ${PRICE_LIST_LIMITS.maxPrice.toLocaleString("it-IT")} €`] : [])];
+			return why.length > 0 ? `Errore: con questo cambio i prezzi andrebbero ${why.join(" o ")}: non cambio niente.` : "Nessuna voce da cambiare: con questo cambio i prezzi restano uguali.";
+		};
 		if (args.confirm !== true) {
 			if (typeof planned === "string") return planned;
 			return planned.plan.length === 0 ? nothing(planned) : preview(planned);

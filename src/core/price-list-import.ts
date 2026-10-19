@@ -11,7 +11,7 @@ import { spreadsheetRows } from "./documents.ts";
 import { parseCsv } from "./make-xlsx.ts";
 import { words } from "./name-keys.ts";
 import { oneLine } from "./plain-text.ts";
-import { checkOf, isCode, nameKey, PRICE_LIST_LIMITS, type PriceItem, PriceListError, unitOf } from "./price-list.ts";
+import { checkOf, grossCents, isCode, nameKey, netCents, PRICE_LIST_LIMITS, type PriceItem, PriceListError, unitOf } from "./price-list.ts";
 import { AMBIGUOUS, eurosToCents, readDecimal, VAT_RATES, type VatRate } from "./quote-sums.ts";
 import { NATURE, type Natura } from "./sales-invoice-rules.ts";
 
@@ -45,9 +45,10 @@ const cell = (text: string | undefined, max: number) => oneLine((text ?? "").sli
 /** A header of a price with VAT in it, in any words: «Prezzo IVA compresa», «Prezzo (IVA incl.)», «Importo IVA inclusa», «Totale ivato». */
 const PRICE_WORDS = /^(?:prezzo|prezzi|importo|tariffa|costo|totale|euro|eur|price)$/;
 function grossHeader(key: string): boolean {
-	const w = key.split(" ");
+	// «I.V.A.» reads as three letters: one word again.
+	const w = ` ${key} `.replace(/ i v a /g, " iva ").trim().split(" ");
 	const priceLike = w.some((x) => PRICE_WORDS.test(x));
-	return priceLike && ((w.includes("iva") && w.some((x) => /^(?:compres|inclus|incl$|ivat)/.test(x))) || w.some((x) => /^ivat[oaie]$/.test(x)));
+	return priceLike && ((w.includes("iva") && w.some((x) => /^(?:compres|comprensiv|inclus|incl$|ivat)/.test(x))) || w.some((x) => /^ivat[oaie]$/.test(x)));
 }
 
 /** The column each header cell is, by its words; undefined when none. */
@@ -201,13 +202,15 @@ export function planImport(read: ReadFile, listino: readonly PriceItem[]): Impor
 	for (const i of read.items) {
 		const same = listino.find((x) => (i.code !== undefined && x.code?.toUpperCase() === i.code.toUpperCase()) || nameKey(x.name) === nameKey(i.name));
 		if (same !== undefined) {
-			known.push({ row: i.row, name: i.name, id: same.id, samePrice: same.price === i.price && same.vat === i.vat && (same.includesVat === true) === (i.includesVat === true) });
+			// One price however it is written: 1.830 IVA inclusa is 1.500 + 22%.
+			known.push({ row: i.row, name: i.name, id: same.id, samePrice: same.vat === i.vat && same.natura === i.natura && netCents(same) === netCents(i) && grossCents(same) === grossCents(i) });
 			continue;
 		}
 		const taken = [...add.map((a) => nameKey(a.name)), ...names];
 		const takenCodes = [...add.flatMap((a) => (a.code === undefined ? [] : [nameKey(a.code)])), ...codes];
-		if ((i.code !== undefined && taken.includes(nameKey(i.code))) || takenCodes.includes(nameKey(i.name))) {
-			refused.push({ row: i.row, name: i.name, why: "il codice è il nome di un'altra voce, o il nome è il codice di un'altra: detto così non si saprebbe quale delle due è" });
+		const codeIsName = i.code !== undefined && taken.includes(nameKey(i.code));
+		if (codeIsName || takenCodes.includes(nameKey(i.name))) {
+			refused.push({ row: i.row, name: i.name, why: `${codeIsName ? "il codice è il nome di un'altra voce" : "il nome è il codice di un'altra voce"}: detto così non si saprebbe quale delle due è` });
 			continue;
 		}
 		add.push(i);

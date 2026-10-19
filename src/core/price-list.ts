@@ -221,7 +221,7 @@ export function nameKey(name: string): string {
 export type Found = { readonly kind: "exact"; readonly item: PriceItem; readonly slip?: true } | { readonly kind: "close"; readonly items: readonly PriceItem[] } | { readonly kind: "unit"; readonly items: readonly PriceItem[] } | { readonly kind: "none" };
 
 /** Articles, fillers and the question a person puts before a voce: «il sito base», «una giornata», «quanto faccio pagare una giornata?», «qual è il mio prezzo per il sito base?». */
-const FILLERS = /^(?:(?:il|lo|la|i|gli|le|l|un|uno|una|del|della|dei|delle|di|per|mio|mia|miei|mie|prezzo|prezzi|tariffa|quanto|quanti|faccio|fai|pagare|costa|costano|chiedo|qual\s+e|quale\s+e|che)\s+)+/;
+const FILLERS = /^(?:(?:il|lo|la|i|gli|le|l|un|uno|una|del|della|dei|delle|di|per|mio|mia|miei|mie|prezzo|prezzi|tariffa|quanto|quanti|faccio|fai|pagare|costa|costano|chiedo|qual\s+e|quale\s+e|che|ha|hai|prendo|vendo|metto|a\s+quanto)\s+)+/;
 
 /** The voce a phrase names, or the ones to ask about. Never a guess between two. */
 export function findItems(items: readonly PriceItem[], said: string): Found {
@@ -232,7 +232,9 @@ export function findItems(items: readonly PriceItem[], said: string): Found {
 		return i === undefined ? { kind: "none" } : { kind: "exact", item: i };
 	}
 	const byCode = items.find((x) => x.code !== undefined && x.code.toUpperCase() === text.toUpperCase());
-	const key = foldUnits(spellingKey(text).replace(FILLERS, ""));
+	// The phrase as said first («Una tantum attivazione», «Il sito»); without the articles and the question only when no voce is named so.
+	const full = foldUnits(spellingKey(text));
+	const key = items.some((x) => keysOf(x).includes(full)) ? full : foldUnits(spellingKey(text).replace(FILLERS, ""));
 	// A code that is also another voce's name («LOGO» and «Logo»): which one is meant is asked, never picked.
 	const byName = key === "" ? [] : items.filter((x) => nameKey(x.name) === key);
 	if (byCode !== undefined) return byName.some((x) => x !== byCode) ? { kind: "close", items: [byCode, ...byName.filter((x) => x !== byCode)] } : { kind: "exact", item: byCode };
