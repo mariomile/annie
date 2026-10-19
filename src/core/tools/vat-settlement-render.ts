@@ -17,11 +17,12 @@ import { scaled } from "../quote-sums.ts";
 import type { DeductMark, PaidMark } from "../vat.ts";
 import type { LeftOut, VatDoc } from "../vat-docs.ts";
 import { ACCONTO_MIN_CENTS, ANNUAL_MIN_CENTS, CREDIT_VISTO_CENTS, PARTIAL_EXAMPLES, PERIODIC_MIN_CENTS, type Periodicity, type VatPeriod } from "../vat-rules.ts";
-import type { Acconto, Deadline, Liquidation, Slip } from "../vat-sums.ts";
-import { deadlineWhat, periodLabel, periodOf } from "../vat-forecast.ts";
+import type { Slip } from "../dates.ts";
+import type { Acconto, Deadline, Liquidation } from "../vat-sums.ts";
+import { periodLabel, periodOf, vatDeadlineWhat } from "../vat-forecast.ts";
 import { fenced } from "./vat-settlement-input.ts";
 
-export { deadlineWhat, periodLabel, periodOf };
+export { periodLabel, periodOf };
 
 /** Said with every answer that shows an amount. */
 export const ESTIMATE_NOTE = "È una stima: verificala con il commercialista prima di pagare.";
@@ -54,8 +55,8 @@ const shortDay = (date: string, today: string) => (date.slice(0, 4) === today.sl
 /** «dell'IVA di settembre 2026», «dell'acconto IVA 2026», «del saldo IVA 2026». */
 function f24Of(d: Deadline): string {
 	if (d.kind === "acconto") return `dell'acconto IVA ${d.year}`;
-	if (d.kind === "annuale") return `del ${deadlineWhat(d)}`;
-	return `dell'${deadlineWhat(d)}`;
+	if (d.kind === "annuale") return `del ${vatDeadlineWhat(d)}`;
+	return `dell'${vatDeadlineWhat(d)}`;
 }
 
 /** What the person's regime allows: the forfettario has no IVA; an unknown regime is asked; the periodicity is asked, with how to find it. */
@@ -184,8 +185,8 @@ export function creditLine(credit: bigint): string {
 /** One deadline in a row: when (and why it moved), what, how much, the code. */
 function deadlineRow(d: Deadline, today: string): string {
 	const amount = d.cents === undefined ? (d.kind === "acconto" ? "importo da calcolare" : "importo a fine periodo") : d.cents === 0n ? `niente da versare${d.partial ? " finora" : ""}${confirmed(d)}` : `circa ${euros(d.cents)}${d.partial ? " finora" : ""}${confirmed(d)}`;
-	if (d.date < today) return `• Scaduto ${whenText(d)}, ${notYet(d)}: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
-	return `• ${capitalized(whenText(d))}: ${deadlineWhat(d)}, ${amount}, codice ${d.code}.`;
+	if (d.date < today) return `• Scaduto ${whenText(d)}, ${notYet(d)}: ${vatDeadlineWhat(d)}, ${amount}, codice ${d.code}.`;
+	return `• ${capitalized(whenText(d))}: ${vatDeadlineWhat(d)}, ${amount}, codice ${d.code}.`;
 }
 
 /** «se non l'hai già pagato»; an acconto of a year before Annie kept the IVA «se non l'hai già versato». */
@@ -206,7 +207,7 @@ export function calendarAnswer(deadlines: readonly Deadline[], today: string, ro
 	const next = deadlines.find((d) => d.date >= today && d.cents !== undefined && d.cents > 0n);
 	const lines: string[] = [];
 	if (next === undefined) lines.push(`Nessun${deadlines.some((d) => d.date < today) ? " altro" : ""} F24 dell'IVA con un importo da versare per ora, con le fatture che vedo.`);
-	else lines.push(`Il prossimo F24 dell'IVA è ${whenText(next)}: circa ${euros(next.cents as bigint)}${next.partial ? " finora" : ""}${confirmed(next)} (${deadlineWhat(next)}, codice ${next.code}).`);
+	else lines.push(`Il prossimo F24 dell'IVA è ${whenText(next)}: circa ${euros(next.cents as bigint)}${next.partial ? " finora" : ""}${confirmed(next)} (${vatDeadlineWhat(next)}, codice ${next.code}).`);
 	const shown = shownRows(deadlines, today, rows, next);
 	if (shown.length > 0) lines.push(next === undefined ? "Le prossime scadenze:" : "Poi:", ...shown.map((d) => deadlineRow(d, today)));
 	const more = deadlines.filter((d) => d.date >= today && d !== next && !shown.includes(d)).length;
@@ -229,10 +230,10 @@ export function briefAnswer(soon: readonly Deadline[], today: string): string {
 		if (d.cents === undefined || d.cents <= 0n || d.date < today) continue;
 		const days = daysBetween(today, d.date);
 		const inDays = days === 0 ? "oggi" : days === 1 ? "domani" : `tra ${days} giorni`;
-		rows.push(`F24 ${withDate("il", d.date)} (${inDays}), circa ${euros(d.cents)}${confirmed(d)} (${deadlineWhat(d)}, codice ${d.code}), stima da verificare con il commercialista.`);
+		rows.push(`F24 ${withDate("il", d.date)} (${inDays}), circa ${euros(d.cents)}${confirmed(d)} (${vatDeadlineWhat(d)}, codice ${d.code}), stima da verificare con il commercialista.`);
 	}
 	const late = soon.filter((d) => d.date < today && d.cents !== undefined && d.cents > 0n && d.paid === undefined).at(-1);
-	if (late !== undefined) rows.push(`F24 ${deadlineWhat(late)} scaduto ${shortDay(late.date, today)} (circa ${euros(late.cents as bigint)}${confirmed(late)}): ${late.beforeSetup === true ? "se non l'hai già versato, parlane con il commercialista; se l'hai versato dimmelo" : "se l'hai pagato dimmelo, se no parlane con il commercialista"}.`);
+	if (late !== undefined) rows.push(`F24 ${vatDeadlineWhat(late)} scaduto ${shortDay(late.date, today)} (circa ${euros(late.cents as bigint)}${confirmed(late)}): ${late.beforeSetup === true ? "se non l'hai già versato, parlane con il commercialista; se l'hai versato dimmelo" : "se l'hai pagato dimmelo, se no parlane con il commercialista"}.`);
 	if (rows.length === 0) return NOTHING;
 	return `IVA: ${rows.join(" Inoltre ")} Nel brief riporta questo in una riga.`;
 }
@@ -318,7 +319,7 @@ export function vatCsv(v: CsvView): { readonly csv: string; readonly rows: numbe
 		if (l.interest > 0n) add("Liquidazione", label, "", "Interessi 1% trimestrale", undefined, l.interest, "");
 		add("Liquidazione", label, "", l.due > 0n ? "Da versare" : l.credit > 0n ? "A credito" : "Sotto il minimo, al periodo dopo", undefined, l.due > 0n ? l.due : l.credit > 0n ? l.credit : l.under, "stimato");
 	}
-	for (const d of v.deadlines.filter((x) => x.cents !== 0n || x.paid !== undefined)) add("F24", d.period === undefined ? "" : capitalized(periodLabel(d.period)), italianDate(d.date), `${capitalized(deadlineWhat(d))}, codice ${d.code}`, undefined, d.cents, d.cents === undefined ? "da calcolare" : "stimato");
+	for (const d of v.deadlines.filter((x) => x.cents !== 0n || x.paid !== undefined)) add("F24", d.period === undefined ? "" : capitalized(periodLabel(d.period)), italianDate(d.date), `${capitalized(vatDeadlineWhat(d))}, codice ${d.code}`, undefined, d.cents, d.cents === undefined ? "da calcolare" : "stimato");
 	for (const p of v.paid) add("F24 pagati", paidLabel(p.key), italianDate(p.date), "F24 pagato", undefined, scaled(p.amount, 2), "detto");
 	add("Nota", "", "", "Stima da verificare con il commercialista", undefined, undefined, "");
 	return { csv: csvFile(["Sezione", "Periodo", "Data", "Voce", "Imponibile", "IVA", "Note"], rows), rows: rows.length };

@@ -24,7 +24,7 @@ export function periodOf(p: VatPeriod): string {
 }
 
 /** What a deadline pays for: «IVA di ottobre 2026», «acconto IVA 2026», «saldo IVA 2026». */
-export function deadlineWhat(d: Deadline): string {
+export function vatDeadlineWhat(d: Deadline): string {
 	if (d.kind === "acconto") return `acconto IVA ${d.year}`;
 	if (d.kind === "annuale") return d.period === undefined ? `saldo IVA ${d.year}` : `saldo IVA ${d.year} con il 4º trimestre`;
 	return d.period === undefined ? "IVA" : `IVA ${periodOf(d.period)}`;
@@ -36,11 +36,9 @@ export function deadlineWhat(d: Deadline): string {
  * 2026, scaduto il 16/10 (stima)»; the first of a year with the credit the person confirmed taken off.
  */
 export function vatWhat(d: Deadline, today?: string): string {
-	const p = d.period;
-	const what = d.kind === "acconto" ? `acconto IVA ${d.year}` : d.kind === "annuale" ? `saldo IVA ${d.year}` : p === undefined ? "IVA" : p.kind === "month" ? `IVA di ${MONTH_NAMES[p.n - 1]} ${p.year}` : `IVA del ${p.n}º trimestre ${p.year}`;
 	const late = today !== undefined && d.date < today ? `, scaduto il ${italianDate(d.date).slice(0, 5)}` : "";
 	const credit = d.opening !== undefined && d.opening > 0n ? ", tolto il credito confermato" : "";
-	return `F24 ${what}${late} (stima${credit})`;
+	return `F24 ${vatDeadlineWhat(d)}${late} (stima${credit})`;
 }
 
 type VatSources = { readonly book: VatBook; readonly sales: readonly SalesInvoice[]; readonly register: readonly Invoice[]; readonly dayOf: (at: string) => string; readonly today: string };

@@ -10,7 +10,7 @@ import type { ToolContext } from "../src/core/engine.ts";
 import { type AgendaItem, AGENDA_LIMITS, agendaAgentReads, agendaCallReads, agendaIn, byDate, dedupe } from "../src/core/fiscal-agenda.ts";
 import { BOLLO_DEFER_BELOW_CENTS, bolloCode, bolloDeadlines, cameraleDue, genericDeadlines, ivaReturnDue, lipeDue, redditiDue } from "../src/core/fiscal-agenda-rules.ts";
 import { bolloItems, cuItems, invoiceItems, renewalItems, ruleItems, taxItems, vatItems } from "../src/core/fiscal-agenda-sources.ts";
-import { foldLine, icsFile, icsStamp, icsText, icsUid, LINE_OCTETS, remindTrigger } from "../src/core/ics.ts";
+import { foldLine, icsFile, icsSequence, icsStamp, icsText, icsUid, LINE_OCTETS, remindTrigger } from "../src/core/ics.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
 import { InvoiceStore } from "../src/core/invoice-store.ts";
 import { type Invoice, type Regime, register } from "../src/core/invoices.ts";
@@ -212,7 +212,7 @@ const NO_EM_DASH = /\u2014/;
 const NAMES = [SUPPLIER.name, OTHER.name, CLIENT.name, "Hosting Prova"];
 
 /** A minimal agenda item for the pure functions. */
-const item = (o: Partial<AgendaItem> & Pick<AgendaItem, "source" | "key" | "date">): AgendaItem => ({ due: o.date, what: o.key, tracked: false, brief: false, ...o });
+const item = (o: Partial<AgendaItem> & Pick<AgendaItem, "source" | "key" | "date">): AgendaItem => ({ due: o.date, what: o.key, title: o.key, tracked: false, brief: false, ...o });
 
 /** A .ics read back: the lines unfolded (RFC 5545 §3.1), the events with their properties unescaped. */
 function parseIcs(text: string): { lines: string[]; events: Record<string, string>[] } {
@@ -337,14 +337,14 @@ describe("agenda: one calendar, each deadline once", () => {
 	});
 
 	it("a month without a year is the next one, ahead; the past readers keep the latest begun", () => {
-		expect(readPeriod("novembre", TODAY, true)).toMatchObject({ from: "2026-11-01", to: "2026-11-30" });
-		expect(readPeriod("ottobre", TODAY, true)).toMatchObject({ from: "2026-10-01" });
-		expect(readPeriod("settembre", TODAY, true)).toMatchObject({ from: "2027-09-01" });
-		expect(readPeriod("T1", TODAY, true)).toMatchObject({ from: "2027-01-01", to: "2027-03-31" });
-		expect(readPeriod("mese prossimo", TODAY, true)).toMatchObject({ from: "2026-11-01" });
-		expect(readPeriod("trimestre prossimo", TODAY, true)).toMatchObject({ from: "2027-01-01" });
-		expect(readPeriod("anno prossimo", TODAY, true)).toMatchObject({ from: "2027-01-01", to: "2027-12-31" });
-		expect(readPeriod("11/26", TODAY, true)).toMatchObject({ from: "2026-11-01" });
+		expect(readPeriod("novembre", TODAY, { ahead: true })).toMatchObject({ from: "2026-11-01", to: "2026-11-30" });
+		expect(readPeriod("ottobre", TODAY, { ahead: true })).toMatchObject({ from: "2026-10-01" });
+		expect(readPeriod("settembre", TODAY, { ahead: true })).toMatchObject({ from: "2027-09-01" });
+		expect(readPeriod("T1", TODAY, { ahead: true })).toMatchObject({ from: "2027-01-01", to: "2027-03-31" });
+		expect(readPeriod("mese prossimo", TODAY, { ahead: true })).toMatchObject({ from: "2026-11-01" });
+		expect(readPeriod("trimestre prossimo", TODAY, { ahead: true })).toMatchObject({ from: "2027-01-01" });
+		expect(readPeriod("anno prossimo", TODAY, { ahead: true })).toMatchObject({ from: "2027-01-01", to: "2027-12-31" });
+		expect(readPeriod("11/26", TODAY, { ahead: true })).toMatchObject({ from: "2026-11-01" });
 		expect(readPeriod("novembre", TODAY)).toMatchObject({ from: "2025-11-01" });
 		expect(readPeriod("T1", TODAY)).toMatchObject({ from: "2026-01-01" });
 		expect(() => readPeriod("mese prossimo", TODAY)).toThrow();
@@ -379,9 +379,10 @@ describe("agenda: each source through its own functions", () => {
 		if (inputs === undefined) throw new Error("no inputs");
 		const items = vatItems(inputs, "2027-03-31");
 		expect(items.map((i) => [i.key, i.date, i.code, i.dedup, i.partial === true])).toEqual([
-			["iva:2026-T3", "2026-11-16", "6033", "iva:2026-11-16", false],
+			// Only the annual saldo shares its dedup with the taxes' plain «IVA annuale»: every other F24 is its own.
+			["iva:2026-T3", "2026-11-16", "6033", undefined, false],
 			// The acconto: no base said nor last year's documents, the analitico not over until 20 December.
-			["iva:2026-acconto", "2026-12-28", "6035", "iva:2026-12-27", true],
+			["iva:2026-acconto", "2026-12-28", "6035", undefined, true],
 			["iva:2026-annuale", "2027-03-16", "6099", "iva:2027-03-16", true],
 		]);
 		// The 3rd quarter: 1.100 € on V0 less 55 € on A2 and 22 € on A3, plus the quarterly 1%.
@@ -436,7 +437,7 @@ describe("agenda: each source through its own functions", () => {
 			["2026-10-30", "2026-10-30", 122_000n, false, true],
 			["2026-10-05", "2026-10-05", 30_500n, true, true],
 		]);
-		expect(items[0]?.name).toBe(`${SUPPLIER.name}, n. A1`);
+		expect(items[0]).toMatchObject({ name: SUPPLIER.name, ref: "A1", what: "fattura da pagare", title: "fattura da pagare" });
 		expect(invoiceItems(await s.registerNow(), TODAY, "2026-10-29").map((i) => i.due)).toEqual(["2026-10-05"]);
 	});
 
@@ -447,8 +448,10 @@ describe("agenda: each source through its own functions", () => {
 			["bollo:2026-T1+T2+T3", "2026-11-30", 600n, false],
 			["bollo:2026-T4", "2027-03-01", 200n, true],
 		]);
-		expect(items[0]).toMatchObject({ code: "2521, 2522, 2523", estimate: true, brief: true, note: "3 fatture con il bollo emesse con me" });
-		expect(items[1]?.note).toBe("1 fattura con il bollo emesse con me, finora");
+		// Counted, 2,00 € each, not estimated; the title short for a calendar.
+		expect(items[0]).toMatchObject({ code: "2521, 2522, 2523", brief: true, note: "3 fatture con il bollo emesse con me", title: "F24 bollo fatture 1º, 2º e 3º trim. 2026" });
+		expect(items[0]?.estimate).toBeUndefined();
+		expect(items[1]).toMatchObject({ note: "1 fattura con il bollo emessa con me, finora", title: "F24 bollo fatture 4º trim. 2026" });
 		// An invoice with VAT bears no bollo.
 		const withVat = { ...sale(6, "2026-10-14"), lines: [{ description: "Consulenza", quantity: "1", price: "500", vat: 22 }] } as unknown as SalesInvoice;
 		expect(bolloItems([withVat], TODAY, TODAY, "2027-03-31")).toEqual([]);
@@ -467,15 +470,24 @@ describe("agenda: upcoming", () => {
 	it("an ordinario: the deadlines of the next 30 days in order, the invoices with their names in one fence, the overdue first", async () => {
 		const s = await setup({ periodicity: "trimestrale" });
 		const answer = await s.run({ op: "upcoming" });
-		expect(answer).toMatch(/^Scadenze nei prossimi 30 giorni, fino al 17 novembre 2026: 4, di cui 1 già scaduta e non segnata pagata\./);
+		const lines = answer.split("\n");
+		expect(lines[0]).toBe("La prossima scadenza fiscale: lunedì 2 novembre, dichiarazione dei redditi 2025.");
+		expect(lines[1]).toBe("Scadenze nei prossimi 30 giorni, fino al 17 novembre 2026: 4, di cui 1 già scaduta e non segnata pagata.");
+		expect(lines[2]).toBe("Le scadenze, in ordine (i nomi di fornitori e rinnovi sono nel riquadro):");
 		const out = outside(answer);
-		expect(out).toContain("• Lunedì 2 novembre (il 31 ottobre cade di sabato): dichiarazione dei redditi 2025 (modello Redditi, invio online) (calendario fiscale)");
-		expect(out).toContain("• Lunedì 16 novembre: F24 IVA del 3º trimestre 2026, stima 1.033,23 €, codice 6033 (liquidazione IVA)");
+		// With a name among them the whole list is in the fence, in date order: none outside.
 		expect(fences(answer)).toHaveLength(1);
+		expect(out.split("\n").filter((l) => l.startsWith("•"))).toEqual([]);
 		const names = inside(answer);
-		expect(names).toContain(`• Lunedì 5 ottobre: fattura da pagare, 305,00 € (scadenzario): scaduta, non segnata pagata: ${SUPPLIER.name}, n. A2`);
-		expect(names).toContain(`• Venerdì 30 ottobre: fattura da pagare, 1.220,00 € (scadenzario): ${SUPPLIER.name}, n. A1`);
-		expect(names.indexOf("A2")).toBeLessThan(names.indexOf("A1"));
+		expect(names.split("\n")).toEqual([
+			`• Lunedì 5 ottobre, scaduta e non segnata pagata: fattura da pagare a ${SUPPLIER.name}, n. A2, 305,00 €`,
+			`• Venerdì 30 ottobre: fattura da pagare a ${SUPPLIER.name}, n. A1, 1.220,00 €`,
+			"• Lunedì 2 novembre (il 31 ottobre cade di sabato): dichiarazione dei redditi 2025, invio online del modello Redditi",
+			"• Lunedì 16 novembre: F24 IVA del 3º trimestre 2026, stima 1.033,23 €, codice 6033",
+		]);
+		// No source tag, no colon chain, no double brackets in a row.
+		expect(answer).not.toMatch(/\)\s*\(|\(\(|\)\)/);
+		expect(answer).not.toContain("(scadenzario)");
 		for (const n of NAMES) expect(out).not.toContain(n);
 		expect(answer).not.toContain(OTHER.name);
 		expect(answer).not.toContain(CLIENT.name);
@@ -486,48 +498,112 @@ describe("agenda: upcoming", () => {
 	it("a month by name: the next one; the estimates said as such; who is not an impresa told how to add the diritto camerale", async () => {
 		const s = await setup({ regime: "forfettario", profile: PROFILE, sales: [sale(1, "2026-02-10"), sale(2, "2026-07-10")] });
 		const answer = await s.run({ op: "upcoming", period: "novembre" });
-		expect(answer).toMatch(/^Scadenze a novembre 2026: 3\./);
-		expect(answer).toMatch(/• Lunedì 30 novembre: F24 secondo acconto di imposta e contributi, stima [\d.]+,\d\d € \(tasse e contributi\)/);
-		expect(answer).toContain("• Lunedì 30 novembre: F24 imposta di bollo sulle fatture elettroniche del 1º e 3º trimestre 2026, stima 4,00 €, codice 2521, 2523, 2 fatture con il bollo emesse con me (calendario fiscale)");
+		// A period whose list starts with the next fiscal deadline: no opening line, the plain list (no names) in order.
+		expect(answer).toMatch(/^Scadenze a novembre 2026: 3\.\n/);
+		expect(fences(answer)).toHaveLength(0);
+		const rows = answer.split("\n").filter((l) => l.startsWith("•"));
+		expect(rows).toHaveLength(3);
+		expect(rows[0]).toBe("• Lunedì 2 novembre (il 31 ottobre cade di sabato): dichiarazione dei redditi 2025, invio online del modello Redditi");
+		expect(rows[1]).toMatch(/^• Lunedì 30 novembre: F24 secondo acconto di imposta e contributi, stima [\d.]+,\d\d €$/);
+		expect(rows[2]).toBe("• Lunedì 30 novembre: F24 imposta di bollo sulle fatture elettroniche del 1º e 3º trimestre 2026, 4,00 €, codice 2521, 2523, 2 fatture con il bollo emesse con me");
 		expect(answer).toContain("dichiarazione dei redditi 2025");
 		expect(answer).not.toContain("LIPE");
 		expect(answer).not.toContain("dichiarazione IVA");
 		expect(answer).toContain("Gli importi con «stima» sono stime: verificale con il commercialista prima di pagare.");
-		expect(answer).not.toContain("Per averne di più");
+		expect(answer).not.toContain("Per un'agenda più completa");
 		const impresa = await setup({ regime: "forfettario", profile: { ...PROFILE, pension: { kind: "commercianti", reduction: false } }, now: new Date("2027-06-01T08:00:00Z") });
 		const june = await impresa.run({ op: "upcoming", period: "giugno" });
-		expect(june).toContain("diritto annuale della Camera di Commercio 2027, importo fisso della tua Camera, con l'F24 delle imposte (calendario fiscale)");
+		expect(june).toContain("diritto annuale della Camera di Commercio 2027, importo fisso della tua Camera, con l'F24 delle imposte");
 		const rea = await setup({ regime: "ordinario", rea: "RM-123456", now: new Date("2027-06-01T08:00:00Z") });
 		expect(await rea.run({ op: "upcoming", period: "giugno" })).toContain("• Mercoledì 30 giugno: diritto annuale della Camera di Commercio 2027");
 		const none = await setup({ regime: "ordinario", now: new Date("2027-06-01T08:00:00Z") });
 		const plain = await none.run({ op: "upcoming", period: "giugno" });
 		expect(plain).not.toContain("Camera di Commercio 2027");
-		expect(plain).toContain("se sei iscritto al registro delle imprese, salva il numero REA nei dati dell'azienda: aggiungo il diritto camerale");
+		// What would add more only with the default window, never to a question about a period.
+		expect(plain).not.toContain("numero REA");
+		expect(plain).not.toContain("Per un'agenda più completa");
 	});
 
 	it("without a regime: what applies to everyone, and one line of what would add more", async () => {
 		const s = await setup({ regime: "none", files: {} });
-		const answer = await s.run({ op: "upcoming", days: 60 });
+		const answer = await s.run({ op: "upcoming" });
 		expect(answer).toContain("dichiarazione dei redditi 2025");
-		expect(answer).toContain("F24 secondo acconto delle imposte (tasse e contributi)");
 		expect(answer.split("\n").filter((l) => l.startsWith("•") && l.includes("LIPE"))).toEqual([]);
-		const more = answer.split("\n").filter((l) => l.startsWith("Per averne di più"));
-		expect(more).toEqual(["Per averne di più: dimmi se sei in regime forfettario o ordinario: aggiungo le stime delle tasse, oppure IVA, LIPE e dichiarazione IVA; se sei iscritto al registro delle imprese, salva il numero REA nei dati dell'azienda: aggiungo il diritto camerale."]);
+		const tail = answer.split("\n").slice(-2);
+		expect(tail).toEqual(["Per un'agenda più completa dimmi il regime (forfettario o ordinario).", "Se hai un'impresa iscritta in Camera di Commercio, salva il numero REA: aggiungo il diritto camerale."]);
+		// Some days asked: the deadlines only.
+		const sixty = await s.run({ op: "upcoming", days: 60 });
+		expect(sixty).toContain("• Lunedì 30 novembre: F24 secondo acconto delle imposte");
+		expect(sixty).not.toContain("Per un'agenda più completa");
+		expect(sixty).not.toContain("numero REA");
+		// The ordinario: the periodicity; not the REA (nothing says an impresa).
 		const ordinario = await setup({ files: {} });
-		expect(await ordinario.run({ op: "upcoming", days: 60 })).toContain("dimmi se liquidi l'IVA ogni mese o ogni trimestre: aggiungo gli F24 dell'IVA con la stima");
+		const ord = await ordinario.run({ op: "upcoming" });
+		expect(ord).toContain("Per un'agenda più completa dimmi se liquidi l'IVA ogni mese o ogni trimestre: aggiungo gli F24 dell'IVA con la stima.");
+		expect(ord).not.toContain("numero REA");
 		const forfettario = await setup({ regime: "forfettario", files: {} });
-		expect(await forfettario.run({ op: "upcoming", days: 60 })).toContain("con il profilo delle tasse (coefficiente, aliquota, contributi) aggiungo gli importi stimati degli F24");
+		expect(await forfettario.run({ op: "upcoming" })).toContain("Per un'agenda più completa dimmi coefficiente, aliquota e contributi delle tasse: aggiungo le stime degli F24.");
+		// An activity of an impresa (commercio) without the REA: the hint; a professionista never.
+		const shop = await setup({ regime: "forfettario", profile: { ...PROFILE, coefficient: "40", group: "commercio", pension: { kind: "gestione_separata" } }, files: {} });
+		expect(await shop.run({ op: "upcoming" })).not.toContain("numero REA");
+		const trader = await setup({ regime: "forfettario", profile: { ...PROFILE, coefficient: "40", group: "commercio", pension: { kind: "nessuna" } }, files: {} });
+		expect(await trader.run({ op: "upcoming" })).toContain("salva il numero REA");
+		const pro = await setup({ regime: "forfettario", profile: { ...PROFILE, group: "professionali" }, files: {} });
+		expect(await pro.run({ op: "upcoming" })).not.toContain("numero REA");
 	});
 
 	it("the same F24 from the taxes' dates and the liquidazione is said once", async () => {
 		const s = await setup({ periodicity: "trimestrale", now: new Date("2027-03-01T08:00:00Z") });
 		const answer = await s.run({ op: "upcoming", period: "marzo" });
 		expect(answer.split("\n").filter((l) => l.includes("16 marzo") && l.includes("F24"))).toHaveLength(1);
-		expect(answer).toMatch(/F24 saldo IVA 2026 con il 4º trimestre, stima [\d.]+,\d\d €, codice 6099 \(liquidazione IVA\)/);
+		expect(answer).toMatch(/F24 saldo IVA 2026 con il 4º trimestre, stima [\d.]+,\d\d €, codice 6099/);
 		expect(answer).not.toContain("F24 IVA annuale");
 		// Without the periodicity the taxes' date stands alone.
 		const plain = await setup({ files: {}, now: new Date("2027-03-01T08:00:00Z") });
-		expect(await plain.run({ op: "upcoming", period: "marzo" })).toContain("F24 IVA annuale (tasse e contributi)");
+		expect(await plain.run({ op: "upcoming", period: "marzo" })).toContain("• Martedì 16 marzo: F24 IVA annuale");
+	});
+
+	it("a monthly payer: the annual saldo and February's F24 on the same 16 March are two payments, in the chat and in the .ics", async () => {
+		// December leaves 20,00 € of IVA, under the monthly minimum: it rolls into the annual saldo, due 16 March like February's F24.
+		const files = {
+			"f/d1.xml": xml(COMPANY, CLIENT, { number: "D1", date: "2026-12-10", due: "2027-01-10", taxable: "90.91", pay: "110.91" }),
+			"f/f1.xml": xml(COMPANY, CLIENT, { number: "F1", date: "2027-02-10", due: "2027-03-10", taxable: "1000.00", pay: "1220.00" }),
+		};
+		const s = await setup({ periodicity: "mensile", files, now: new Date("2027-03-01T08:00:00Z") });
+		const answer = await s.run({ op: "upcoming", period: "marzo" });
+		const march16 = answer.split("\n").filter((l) => l.startsWith("• Martedì 16 marzo: F24"));
+		expect(march16).toHaveLength(2);
+		expect(march16.some((l) => l.includes("saldo IVA 2026") && l.includes("20,00 €") && l.includes("codice 6099"))).toBe(true);
+		expect(march16.some((l) => l.includes("IVA di febbraio 2027") && l.includes("220,00 €") && l.includes("codice 6002"))).toBe(true);
+		const exported = await s.run({ op: "export_ics", period: "marzo" });
+		expect(exported).toMatch(/^Salvato agenda\/scadenze-2027-03-01_2027-03-31\.ics/);
+		const { events } = parseIcs(readFileSync(join(s.root, "agenda", "scadenze-2027-03-01_2027-03-31.ics"), "utf8"));
+		const f24 = events.filter((e) => e["DTSTART;VALUE=DATE"] === "20270316" && e.SUMMARY?.startsWith("F24"));
+		expect(f24.map((e) => e.SUMMARY).sort()).toEqual(["F24 IVA di febbraio 2027 (stima 220,00 €)", "F24 saldo IVA 2026 (stima 20,00 €)"]);
+		expect(new Set(f24.map((e) => e.UID)).size).toBe(2);
+	});
+
+	it("the next fiscal deadline: not an invoice nor a renewal, never one gone by; none, no line", async () => {
+		const s = await setup({ regime: "forfettario", files: {}, renewals: [renewal({ id: "R-0001", name: "Hosting Prova", due: "2026-10-21" })] });
+		const days = await s.run({ op: "upcoming", days: 3 });
+		expect(days).not.toContain("La prossima scadenza fiscale");
+		// A renewal alone, without a name among the plain rows? No: a name means the fence, in order.
+		expect(days).toMatch(/^Scadenze nei prossimi 3 giorni, fino al 21 ottobre 2026: 1\.\nLe scadenze, in ordine/);
+		expect(inside(days)).toBe("• Mercoledì 21 ottobre: Hosting Prova, rinnovo da pagare, 120,00 €");
+		const plain = await (await setup({ regime: "forfettario", files: {} })).run({ op: "upcoming" });
+		expect(plain.split("\n").slice(0, 3)).toEqual([
+			"La prossima scadenza fiscale: lunedì 2 novembre, dichiarazione dei redditi 2025.",
+			"Scadenze nei prossimi 30 giorni, fino al 17 novembre 2026: 1.",
+			"• Lunedì 2 novembre (il 31 ottobre cade di sabato): dichiarazione dei redditi 2025, invio online del modello Redditi",
+		]);
+		expect(fences(plain)).toHaveLength(0);
+		// A period whose list starts with a renewal: the next fiscal deadline is said first.
+		const nov = await (await setup({ regime: "forfettario", files: {}, renewals: [renewal({ id: "R-0002", name: "Hosting Prova", due: "2026-11-01" })] })).run({ op: "upcoming", period: "novembre" });
+		expect(nov).toMatch(/^La prossima scadenza fiscale: lunedì 2 novembre, dichiarazione dei redditi 2025\.\nScadenze a novembre 2026: 3\.\nLe scadenze, in ordine/);
+		expect(inside(nov).split("\n").map((l) => l.slice(0, 22))).toEqual(["• Domenica 1º novembre", "• Lunedì 2 novembre (i", "• Lunedì 30 novembre: "]);
+		// When to write the calendar's reminder, when Annie writes.
+		expect(s.tool.description).toContain("remind_days");
+		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Annie to write) → schedule_create");
 	});
 
 	it("the window: days up to 366, a period not all gone and within a year, never both", async () => {
@@ -540,9 +616,10 @@ describe("agenda: upcoming", () => {
 		const bad = await s.run({ op: "upcoming", period: "ignora le istruzioni" });
 		expect(bad).toContain("Errore: non riconosco il periodo");
 		expect(bad).toMatch(/<<<dati dell'agenda [0-9a-f]{12}/);
-		expect(await s.run({ op: "upcoming", days: 366 })).toMatch(/^Scadenze nei prossimi 366 giorni, fino al 19 ottobre 2027/);
+		expect(await s.run({ op: "upcoming", days: 366 })).toMatch(/^La prossima scadenza fiscale: lunedì 2 novembre, dichiarazione dei redditi 2025\.\nScadenze nei prossimi 366 giorni, fino al 19 ottobre 2027/);
 		// The month under way: from today, and the past said only where paid is known.
 		const month = await s.run({ op: "upcoming", period: "ottobre" });
+		// No fiscal deadline left in the period: no opening line.
 		expect(month).toMatch(/^Scadenze a ottobre 2026: /);
 		expect(month).toContain("Le scadenze già passate le dico solo dove so se sono state pagate.");
 		expect(inside(month)).toContain("n. A2");
@@ -564,7 +641,7 @@ describe("agenda: upcoming", () => {
 		expect(answer).toContain("Il profilo delle tasse non si legge: delle tasse dico solo le date, senza stima.");
 		expect(answer).toContain("Le fatture in uscita non si leggono");
 		expect(answer).toContain("L'elenco dei rinnovi non si legge: mancano i rinnovi.");
-		expect(answer).toContain("F24 secondo acconto delle imposte (tasse e contributi)");
+		expect(answer).toContain("• Lunedì 30 novembre: F24 secondo acconto delle imposte");
 		const vat = await setup({ periodicity: "trimestrale", vatBroken: true });
 		expect(await vat.run({ op: "upcoming" })).toContain("La liquidazione IVA non si legge: mancano gli F24 dell'IVA con la stima.");
 		writeFileSync(join(s.dir, "invoices.json"), "{rotto");
@@ -581,8 +658,8 @@ describe("agenda: another agente", () => {
 		expect(fences(answer)).toHaveLength(0);
 		for (const n of NAMES) expect(answer).not.toContain(n);
 		expect(answer).not.toContain("A1");
-		expect(answer).toContain("fattura da pagare a un fornitore, 1.220,00 € (scadenzario)");
-		expect(answer).toContain("rinnovo da pagare, 120,00 € (rinnovi)");
+		expect(answer).toContain("• Venerdì 30 ottobre: fattura da pagare a un fornitore, 1.220,00 €");
+		expect(answer).toContain("• Domenica 25 ottobre: rinnovo da pagare, 120,00 €");
 		expect(await s.run({ op: "export_ics" }, agent())).toContain("Errore: a un altro agente do solo le scadenze");
 		expect(filesUnder(s.root).some((f) => f.startsWith("agenda/"))).toBe(false);
 	});
@@ -592,7 +669,7 @@ describe("agenda: the brief", () => {
 	it("only within the next 7 days, only what no other brief line says", async () => {
 		const s = await setup({ periodicity: "trimestrale", now: new Date("2026-10-27T07:00:00Z"), renewals: [renewal({ id: "R-0001", name: "Hosting Prova", due: "2026-10-28" })] });
 		const line = await s.run({ op: "upcoming", compact: true });
-		expect(line).toBe("Scadenze: dichiarazione dei redditi 2025 (modello Redditi, invio online) il 2 novembre (tra 6 giorni). Nel brief riporta questo in una riga.");
+		expect(line).toBe("Scadenze: dichiarazione dei redditi 2025 il 2 novembre (tra 6 giorni). Nel brief riporta questo in una riga.");
 		for (const n of NAMES) expect(line).not.toContain(n);
 		// Today: nothing within 7 days that no other line says (the invoices to pay and the IVA have their own).
 		s.at(NOW.toISOString());
@@ -603,7 +680,7 @@ describe("agenda: the brief", () => {
 		const at = new Date("2026-11-25T07:00:00Z");
 		const s = await setup({ regime: "forfettario", profile: PROFILE, now: at, sales: [sale(1, "2026-02-10"), sale(2, "2026-07-10")] });
 		const line = await s.run({ op: "upcoming", compact: true });
-		expect(line).toBe("Scadenze: F24 imposta di bollo sulle fatture elettroniche del 1º e 3º trimestre 2026 il 30 novembre (tra 5 giorni), stima 4,00 €. Gli importi sono stime da verificare con il commercialista. Nel brief riporta questo in una riga.");
+		expect(line).toBe("Scadenze: F24 bollo fatture 1º e 3º trim. 2026 il 30 novembre (tra 5 giorni), 4,00 €. Nel brief riporta questo in una riga.");
 		const [taxes] = createTaxTools({ workspace: s.workspace, store: { read: () => taxBook(PROFILE) } as never, invoices: s.invoices, scanner: s.scanner, timeZone: "Europe/Rome", whoIs: () => undefined, now: () => at });
 		const taxLine = String(await taxes?.execute({ op: "calendar", compact: true }, fresh()));
 		expect(taxLine).toContain("F24 il 30 novembre 2026");
@@ -632,6 +709,8 @@ describe("agenda: the .ics", () => {
 	it("text escaped per RFC 5545, lines folded at 75 octets without splitting a character", () => {
 		expect(icsText("a,b;c\\d\ne\r\nf")).toBe("a\\,b\\;c\\\\d\\ne\\nf");
 		expect(icsText("x\u0007y")).toBe("xy");
+		// The C1 controls go too (U+0080 to U+009F, NEL among them); U+00A0 and what follows stay.
+		expect(icsText("a\u0080b\u0085c\u009fd\u00a0è")).toBe("abcd\u00a0è");
 		const long = `SUMMARY:${"è".repeat(60)}`;
 		const folded = foldLine(long);
 		const parts = folded.split("\r\n");
@@ -654,16 +733,25 @@ describe("agenda: the .ics", () => {
 		expect(text.endsWith("\r\n")).toBe(true);
 		expect(text.split("\r\n").every((l) => !l.includes("\n"))).toBe(true);
 		const back = parseIcs(text);
-		expect(back.events).toEqual([{ UID: "u1@annie", DTSTAMP: "20261019T080000Z", "DTSTART;VALUE=DATE": "20261231", "DTEND;VALUE=DATE": "20270101", SUMMARY: "Fine, anno; prova", DESCRIPTION: "riga 1\nriga 2", TRANSP: "TRANSPARENT" }]);
+		// SEQUENCE: the seconds from 2020-01-01T00:00:00Z to the stamp, so a later export wins over an earlier one.
+		const sequence = String((Date.UTC(2026, 9, 19, 8) - Date.UTC(2020, 0, 1)) / 1000);
+		expect(back.events).toEqual([{ UID: "u1@annie", DTSTAMP: "20261019T080000Z", "LAST-MODIFIED": "20261019T080000Z", SEQUENCE: sequence, "DTSTART;VALUE=DATE": "20261231", "DTEND;VALUE=DATE": "20270101", SUMMARY: "Fine, anno; prova", DESCRIPTION: "riga 1\nriga 2", TRANSP: "TRANSPARENT" }]);
 		expect(back.lines.slice(0, 2)).toEqual(["BEGIN:VCALENDAR", "VERSION:2.0"]);
 		expect(back.lines.at(-1)).toBe("END:VCALENDAR");
+		expect(icsSequence("20261019T080001Z")).toBe(Number(sequence) + 1);
+		expect(icsSequence("20191231T235959Z")).toBe(0);
+		expect(icsSequence("nope")).toBe(0);
+		expect(icsSequence("20261019T080000Z")).toBeLessThan(2 ** 31);
 	});
 
 	it("the export: a new file under agenda/ named by its dates, one all-day event per deadline, a reminder when asked, the audit with the count only", async () => {
 		const s = await setup({ periodicity: "trimestrale", renewals: [renewal({ id: "R-0001", name: "Hosting; Prova, Srl", due: "2026-12-01" })] });
 		const answer = await s.run({ op: "export_ics", remind: true });
-		expect(answer).toMatch(/^Salvato agenda\/scadenze-2026-10-19_2027-10-19\.ics: \d+ scadenze nei prossimi 366 giorni, fino al 19 ottobre 2027, ognuna con un avviso 3 giorni prima, alle 9, ciascuna come evento di un giorno intero\./);
-		expect(answer).toContain("io non scrivo nel calendario di nessuno");
+		expect(answer).toMatch(/^Salvato agenda\/scadenze-2026-10-19_2027-10-19\.ics: \d+ scadenze nei prossimi 366 giorni, fino al 19 ottobre 2027, come eventi di un giorno intero con un avviso 3 giorni prima alle 9\.\n/);
+		expect(answer).toContain("Sul telefono, l'iPhone lo apre con Calendario («Aggiungi tutto»). Google Calendar lo importa solo dal computer (Impostazioni, Importa) e lì gli avvisi diventano quelli predefiniti del calendario. Il file non tocca il tuo calendario finché non lo importi.");
+		expect(answer).toContain("Se lo importi di nuovo, di solito il calendario riconosce le stesse scadenze e non le raddoppia.");
+		expect(answer).not.toContain("io non scrivo");
+		expect(answer).not.toMatch(/ognuna|ciascuna/);
 		expect(answer).not.toMatch(NO_EM_DASH);
 		const text = readFileSync(join(s.root, "agenda", "scadenze-2026-10-19_2027-10-19.ics"), "utf8");
 		const { events } = parseIcs(text);
@@ -672,17 +760,24 @@ describe("agenda: the .ics", () => {
 		expect(s.events).toEqual([{ type: "fiscal_agenda.exported", op: "export_ics", count }]);
 		// Gone by: said in the chat, never put in a calendar.
 		expect(events.some((e) => e.SUMMARY?.includes("A2"))).toBe(false);
-		const redditi = events.find((e) => e.SUMMARY?.startsWith("dichiarazione dei redditi 2025"));
+		const redditi = events.find((e) => e.SUMMARY === "Dichiarazione dei redditi 2025: invio");
+		expect(redditi?.DESCRIPTION?.split("\n").slice(0, 2)).toEqual(["Dichiarazione dei redditi 2025, invio online del modello Redditi.", "Dal calendario fiscale di Annie."]);
 		expect(redditi).toMatchObject({ "DTSTART;VALUE=DATE": "20261102", "DTEND;VALUE=DATE": "20261103", "VALARM.TRIGGER": "-PT63H", "VALARM.ACTION": "DISPLAY" });
 		expect(redditi?.DESCRIPTION).toContain("La scadenza scritta è il 31 ottobre 2026: cade di sabato, slitta al giorno lavorativo dopo.");
 		const hosting = events.find((e) => e.SUMMARY?.includes("Hosting"));
-		expect(hosting?.SUMMARY).toBe("rinnovo da pagare: Hosting; Prova, Srl (120,00 €)");
-		expect(text).toContain("SUMMARY:rinnovo da pagare: Hosting\\; Prova\\, Srl (120\\,00 €)");
+		expect(hosting?.SUMMARY).toBe("Hosting; Prova, Srl: rinnovo da pagare (120,00 €)");
+		expect(hosting?.DESCRIPTION).toBe("Dai rinnovi di Annie.");
+		expect(text).toContain("SUMMARY:Hosting\\; Prova\\, Srl: rinnovo da pagare (120\\,00 €)");
+		expect(events.find((e) => e.SUMMARY?.includes("A1"))?.SUMMARY).toBe(`${SUPPLIER.name} n. A1: fattura da pagare (1.220,00 €)`);
+		expect(events.find((e) => e.SUMMARY?.startsWith("Arrivo delle CU"))?.SUMMARY).toBe("Arrivo delle CU dei clienti (compensi del 2026)");
+		expect(events.find((e) => e.SUMMARY?.startsWith("F24 IVA del 3º"))?.DESCRIPTION).toContain("Dalla liquidazione IVA di Annie.\nCodice tributo 6033.");
+		expect(events.find((e) => e.SUMMARY?.startsWith("LIPE 3º trim. 2026"))?.SUMMARY).toBe("LIPE 3º trim. 2026: invio");
+		expect(events.every((e) => e.SEQUENCE === events[0]?.SEQUENCE && e["LAST-MODIFIED"] === e.DTSTAMP)).toBe(true);
 		for (const line of text.split("\r\n")) expect(Buffer.byteLength(line, "utf8")).toBeLessThanOrEqual(LINE_OCTETS);
 		// Again: a new file, never the old one written over, with the same UIDs.
 		const again = await s.run({ op: "export_ics", remind_days: 7 });
 		expect(again).toMatch(/^Salvato agenda\/scadenze-2026-10-19_2027-10-19-2\.ics/);
-		expect(again).toContain("ognuna con un avviso 7 giorni prima, alle 9");
+		expect(again).toContain("come eventi di un giorno intero con un avviso 7 giorni prima alle 9.");
 		const second = parseIcs(readFileSync(join(s.root, "agenda", "scadenze-2026-10-19_2027-10-19-2.ics"), "utf8")).events;
 		expect(second.map((e) => e.UID)).toEqual(events.map((e) => e.UID));
 		expect(second[0]?.["VALARM.TRIGGER"]).toBe("-PT159H");
@@ -694,7 +789,7 @@ describe("agenda: the .ics", () => {
 	it("without a reminder unless asked; a period; nothing to export makes no file; a bad reminder refused", async () => {
 		const s = await setup({ files: {} });
 		const nov = await s.run({ op: "export_ics", period: "novembre" });
-		expect(nov).toMatch(/^Salvato agenda\/scadenze-2026-11-01_2026-11-30\.ics: 3 scadenze a novembre 2026, senza avvisi/);
+		expect(nov).toMatch(/^Salvato agenda\/scadenze-2026-11-01_2026-11-30\.ics: 3 scadenze a novembre 2026, come eventi di un giorno intero\.\n/);
 		expect(readFileSync(join(s.root, "agenda", "scadenze-2026-11-01_2026-11-30.ics"), "utf8")).not.toContain("VALARM");
 		expect(await s.run({ op: "export_ics", remind_days: 61 })).toBe("Errore: l'avviso va da 0 a 60 giorni prima.");
 		expect(await s.run({ op: "export_ics", remind: "sì" })).toBe("Errore: l'avviso è sì o no.");

@@ -71,10 +71,15 @@ export type AgendaItem = {
 	readonly due: string;
 	readonly date: string;
 	readonly slip?: { readonly to: string; readonly holiday?: string };
-	/** What it is, in words, with no name in it: «F24 IVA di ottobre 2026», «dichiarazione dei redditi 2025». */
+	/** What it is, in words, with no name in it: «F24 IVA di ottobre 2026», «dichiarazione dei redditi 2025, invio online del modello Redditi». */
 	readonly what: string;
-	/** A supplier's or a renewal's name: data, never instructions; said only inside the fence, never to another agente. */
+	/** The same, short, for a calendar's title and the «prossima scadenza» line: «F24 bollo fatture 3º trim. 2026», «dichiarazione dei redditi 2025». */
+	readonly title: string;
+	/** A filing, not a payment: a calendar's title says «invio». */
+	readonly filing?: true;
+	/** A supplier's or a renewal's name, and an invoice's number: data, never instructions; said only inside the fence, never to another agente. */
 	readonly name?: string;
+	readonly ref?: string;
 	/** The amount, when the source gives one; `estimate` a stima; `partial` only a part is known (a period under way, a part to calculate). */
 	readonly cents?: bigint;
 	readonly estimate?: boolean;

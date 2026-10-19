@@ -8,7 +8,7 @@
  * tool and passed in, with today and the window's last day.
  */
 import { dueSlip } from "./dates.ts";
-import { type AgendaItem, AGENDA_LIMITS } from "./fiscal-agenda.ts";
+import type { AgendaItem } from "./fiscal-agenda.ts";
 import { bolloDeadlines, BOLLO_CENTS, genericDeadlines, type Applies, type QuarterBollo, type RuleDeadline } from "./fiscal-agenda-rules.ts";
 import { payDay } from "./invoice-sums.ts";
 import { type Invoice, partyName } from "./invoices.ts";
@@ -18,9 +18,9 @@ import { agendaOf, amountAt } from "./renewal-dates.ts";
 import { type Renewal, renewalName } from "./renewals.ts";
 import { salesTotals } from "./sales-invoice-sums.ts";
 import { isIssued, type SalesInvoice } from "./sales-invoices.ts";
-import { calendar as taxCalendar, deadlineWhat as taxWhat, dueCents, hasUnknown, PLAIN_WHAT, plainCalendar, yearIncassi } from "./tax-sums.ts";
+import { calendar as taxCalendar, dueCents, hasUnknown, PLAIN_WHAT, plainCalendar, taxDeadlineWhat, yearIncassi } from "./tax-sums.ts";
 import type { TaxProfile, YearFigures } from "./taxes.ts";
-import { deadlineWhat as vatWhat } from "./vat-forecast.ts";
+import { vatDeadlineWhat } from "./vat-forecast.ts";
 import { calendar as vatCalendar, type VatInputs } from "./vat-sums.ts";
 import type { WithheldDoc } from "./withholding-docs.ts";
 import { CU_DUE, cuDeadline } from "./withholding-rules.ts";
@@ -63,7 +63,8 @@ export function taxItems(s: TaxSource, today: string, to: string): AgendaItem[] 
 				due: d.due,
 				date: d.date,
 				...(d.slip === undefined ? {} : { slip: d.slip }),
-				what: `F24 ${taxWhat(d)}`,
+				what: `F24 ${taxDeadlineWhat(d)}`,
+				title: `F24 ${taxDeadlineWhat(d)}`,
 				...(cents > 0n ? { cents, estimate: true } : {}),
 				...(hasUnknown(d) ? { partial: true } : {}),
 				...(d.late === undefined ? {} : { note: `se non l'hai già pagato, con lo ${d.late.extra.replace(".", ",")}% in più` }),
@@ -82,6 +83,7 @@ export function taxItems(s: TaxSource, today: string, to: string): AgendaItem[] 
 			date: d.date,
 			...(d.slip === undefined ? {} : { slip: d.slip }),
 			what: `F24 ${PLAIN_WHAT[d.what]}`,
+			title: `F24 ${PLAIN_WHAT[d.what]}`,
 			tracked: false,
 			brief: true,
 		}));
@@ -97,11 +99,13 @@ export function vatItems(inputs: VatInputs, to: string): AgendaItem[] {
 		.map((d): AgendaItem => ({
 			source: "iva",
 			key: `iva:${d.key}`,
-			dedup: ivaKey(d.due),
+			// Only the annual saldo is the plain dates' «IVA annuale»: a monthly February F24 on the same 16 March is another payment.
+			...(d.kind === "annuale" ? { dedup: ivaKey(d.due) } : {}),
 			due: d.due,
 			date: d.date,
 			...(d.slip === undefined ? {} : { slip: d.slip }),
-			what: `F24 ${vatWhat(d)}`,
+			what: `F24 ${vatDeadlineWhat(d)}`,
+			title: `F24 ${vatDeadlineWhat(d)}`,
 			...(d.cents === undefined || d.cents <= 0n ? {} : { cents: d.cents, estimate: true }),
 			...(d.partial ? { partial: true } : {}),
 			code: d.code,
@@ -123,13 +127,13 @@ export function cuItems(docs: readonly WithheldDoc[], from: string, to: string):
 		const day = cuDeadline(year);
 		if (day < from || day > to) continue;
 		if (!docs.some((d) => !d.credit && d.ritenuta > 0n && (d.paidOn ?? d.date).startsWith(`${year}-`))) continue;
-		out.push({ source: "ritenute", key: `cu:${year}`, due: `${year + 1}-${CU_DUE}`, date: day, what: `CU dei clienti per i compensi del ${year}: devono arrivarti entro questo giorno`, tracked: false, brief: true });
+		out.push({ source: "ritenute", key: `cu:${year}`, due: `${year + 1}-${CU_DUE}`, date: day, what: `arrivo delle CU dei clienti (compensi del ${year})`, title: `arrivo delle CU dei clienti (compensi del ${year})`, tracked: false, brief: true });
 	}
 	return out;
 }
 
 /** One renewal's payment, at its own price. */
-function renewalItem(r: Renewal, date: string, kind: string, what: string, today: string, o: { readonly amount?: boolean; readonly tracked?: boolean } = {}): AgendaItem {
+function renewalItem(r: Renewal, date: string, kind: string, what: string, today: string, o: { readonly amount?: boolean; readonly tracked?: boolean; readonly title?: string } = {}): AgendaItem {
 	const amount = o.amount === false ? undefined : amountAt(r, date);
 	return {
 		source: "rinnovi",
@@ -137,6 +141,7 @@ function renewalItem(r: Renewal, date: string, kind: string, what: string, today
 		due: date,
 		date,
 		what,
+		title: o.title ?? what,
 		name: renewalName(r),
 		...(amount === undefined ? {} : { cents: scaled(amount, 2) }),
 		tracked: o.tracked === true,
@@ -152,9 +157,9 @@ export function renewalItems(renewals: readonly Renewal[], today: string, to: st
 	const out: AgendaItem[] = [];
 	for (const i of a.overdue) out.push(renewalItem(i.renewal, i.date, "scadenza", "rinnovo da pagare o da disdire", today, { tracked: true }));
 	for (const i of a.toPay) for (const p of i.payments) out.push(renewalItem(i.renewal, p, "pagamento", "rinnovo da pagare", today, { tracked: true }));
-	for (const i of a.renews) for (const p of i.payments) out.push(renewalItem(i.renewal, p, "rinnovo", "rinnovo automatico, poi da pagare", today));
-	for (const i of a.charges) for (const p of i.payments) out.push(renewalItem(i.renewal, p, "addebito", "addebito automatico del rinnovo", today));
-	for (const i of a.cancelBy) out.push(renewalItem(i.renewal, i.date, "disdetta", "ultimo giorno per la disdetta del rinnovo", today, { amount: false }));
+	for (const i of a.renews) for (const p of i.payments) out.push(renewalItem(i.renewal, p, "rinnovo", "si rinnova da solo, poi da pagare", today, { title: "rinnovo automatico" }));
+	for (const i of a.charges) for (const p of i.payments) out.push(renewalItem(i.renewal, p, "addebito", "addebito automatico del rinnovo", today, { title: "addebito automatico" }));
+	for (const i of a.cancelBy) out.push(renewalItem(i.renewal, i.date, "disdetta", "ultimo giorno per la disdetta del rinnovo", today, { amount: false, title: "ultimo giorno per la disdetta" }));
 	for (const i of a.trials) out.push(renewalItem(i.renewal, i.date, "prova", "fine della prova gratuita", today));
 	return out;
 }
@@ -180,8 +185,11 @@ export function invoiceItems(invoices: readonly Invoice[], today: string, to: st
 				due: s.due,
 				...dueSlip(s.due),
 				date,
-				what: count > 1 ? `fattura da pagare, rata ${s.n} di ${count}` : "fattura da pagare",
-				name: `${partyName(invoice.supplier)}${invoice.doc.number === undefined ? "" : `, n. ${invoice.doc.number}`}`,
+				what: "fattura da pagare",
+				title: count > 1 ? `fattura da pagare, rata ${s.n} di ${count}` : "fattura da pagare",
+				...(count > 1 ? { note: `rata ${s.n} di ${count}` } : {}),
+				name: partyName(invoice.supplier),
+				...(invoice.doc.number === undefined ? {} : { ref: invoice.doc.number }),
 				...(euro ? { cents: unitsToCents(s.amount as bigint) } : {}),
 				tracked: true,
 				...(date < today ? { overdue: true } : {}),
@@ -194,21 +202,26 @@ export function invoiceItems(invoices: readonly Invoice[], today: string, to: st
 
 const QUARTER_WORDS = ["1º", "2º", "3º", "4º"] as const;
 
-/** A generic deadline in words. */
-function ruleWhat(d: RuleDeadline): { readonly what: string; readonly note?: string } {
+/** A generic deadline in words: long for the chat and a calendar's description, short for a calendar's title. */
+function ruleWhat(d: RuleDeadline): { readonly what: string; readonly title: string; readonly filing?: true; readonly note?: string } {
 	const quarters = (d.quarters ?? []).map((q) => QUARTER_WORDS[q - 1]);
-	const span = quarters.length > 1 ? `del ${quarters.slice(0, -1).join(", ")} e ${quarters.at(-1)} trimestre ${d.year}` : `del ${quarters[0] ?? ""} trimestre ${d.year}`;
+	const listed = quarters.length > 1 ? `${quarters.slice(0, -1).join(", ")} e ${quarters.at(-1)}` : (quarters[0] ?? "");
+	const span = `del ${listed} trimestre ${d.year}`;
+	const short = `${listed} trim. ${d.year}`;
 	switch (d.kind) {
 		case "redditi":
-			return { what: `dichiarazione dei redditi ${d.year} (modello Redditi, invio online)` };
+			return { what: `dichiarazione dei redditi ${d.year}, invio online del modello Redditi`, title: `dichiarazione dei redditi ${d.year}`, filing: true };
 		case "iva_annuale":
-			return { what: `dichiarazione IVA ${d.year}` };
+			return { what: `dichiarazione IVA ${d.year}`, title: `dichiarazione IVA ${d.year}`, filing: true };
 		case "lipe":
-			return { what: `comunicazione delle liquidazioni IVA (LIPE) ${span}`, ...(d.quarters?.includes(4) === true ? { note: "o dentro la dichiarazione IVA, se la mandi entro febbraio" } : {}) };
+			return { what: `comunicazione LIPE delle liquidazioni IVA ${span}`, title: `LIPE ${short}`, filing: true, ...(d.quarters?.includes(4) === true ? { note: "o dentro la dichiarazione IVA, se la mandi entro febbraio" } : {}) };
 		case "camerale":
-			return { what: `diritto annuale della Camera di Commercio ${d.year}`, note: "importo fisso della tua Camera, con l'F24 delle imposte" };
-		case "bollo":
-			return { what: `F24 imposta di bollo sulle fatture elettroniche ${span}`, note: `${d.count === 1 ? "1 fattura" : `${d.count} fatture`} con il bollo emesse con me${d.partial === true ? ", finora" : ""}` };
+			return { what: `diritto annuale della Camera di Commercio ${d.year}`, title: `diritto camerale ${d.year}`, note: "importo fisso della tua Camera, con l'F24 delle imposte" };
+		case "bollo": {
+			const soFar = d.partial === true ? ", finora" : "";
+			const note = d.count === 1 ? `1 fattura con il bollo emessa con me${soFar}` : `${d.count ?? 0} fatture con il bollo emesse con me${soFar}`;
+			return { what: `F24 imposta di bollo sulle fatture elettroniche ${span}`, title: `F24 bollo fatture ${short}`, note };
+		}
 	}
 }
 
@@ -221,8 +234,11 @@ function ruleItem(d: RuleDeadline): AgendaItem {
 		date: d.date,
 		...(d.slip === undefined ? {} : { slip: d.slip }),
 		what: w.what,
+		title: w.title,
+		...(w.filing === true ? { filing: true as const } : {}),
 		...(w.note === undefined ? {} : { note: w.note }),
-		...(d.cents === undefined ? {} : { cents: d.cents, estimate: true }),
+		// The bollo is counted, 2,00 € a fattura that bears it, not estimated; a quarter under way says «finora».
+		...(d.cents === undefined ? {} : { cents: d.cents }),
 		...(d.partial === true ? { partial: true } : {}),
 		...(d.code === undefined ? {} : { code: d.code }),
 		tracked: false,
@@ -254,9 +270,4 @@ export function bolloItems(sales: readonly SalesInvoice[], today: string, from: 
 	const out: AgendaItem[] = [];
 	for (let year = yearOf(from) - 1; year <= yearOf(to); year++) for (const d of bolloDeadlines(year, of(year))) if (d.date >= from && d.date <= to) out.push(ruleItem(d));
 	return out;
-}
-
-/** The overdue window of an answer: open deadlines gone by are said from here. */
-export function overdueFrom(today: string, periodFrom?: string): string {
-	return periodFrom ?? addDays(today, -AGENDA_LIMITS.overdueDays);
 }

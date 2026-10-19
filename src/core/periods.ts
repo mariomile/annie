@@ -109,10 +109,11 @@ function said(text: string): string {
  * «10/25», «T3 2026», «Q3», «3° trimestre», «terzo trimestre 2026», «2026», «mese», «mese
  * scorso», «trimestre», «trimestre scorso», «ultimo trimestre», «anno», «anno scorso», «da inizio
  * anno». A month or a quarter without a year is the latest one begun (this one or before);
- * with `ahead` (deadlines, which are of the future) the next one (this one or after), and «mese
+ * with `{ ahead: true }` (deadlines, which are of the future) the next one (this one or after), and «mese
  * prossimo», «trimestre prossimo», «anno prossimo» read too. PeriodError otherwise.
  */
-export function readPeriod(written: string, today: string, ahead = false): Period {
+export function readPeriod(written: string, today: string, options: { readonly ahead?: boolean } = {}): Period {
+	const ahead = options.ahead === true;
 	// A leading article goes: «il mese scorso», «l'anno scorso», «la settimana scorsa» («I trimestre» keeps its roman one).
 	const text = written.replace(/^\s*(?:(?:il|lo|la|gli|le)\s+|l['’]\s*)/i, "");
 	const t = fold(text).replace(/\s+/g, " ").trim();

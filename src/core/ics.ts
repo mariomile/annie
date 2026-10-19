@@ -2,8 +2,10 @@
  * A small iCalendar writer (RFC 5545), pure: all-day events with an optional reminder, the text
  * escaped (backslash, semicolon, comma, newline: §3.3.11), every line folded at 75 octets without
  * splitting a character (§3.1), CRLF line ends, a UID stable per event (a hash of what identifies
- * it), a DTSTAMP the caller gives (so the same call writes the same file). Any calendar imports it:
- * Annie writes no calendar of anyone.
+ * it), a DTSTAMP the caller gives (so the same call writes the same file), with LAST-MODIFIED the
+ * same instant and a SEQUENCE that grows with it (§3.8.7.4): a calendar that imports a newer file
+ * takes the newer event over the older one with the same UID. Any calendar imports it: Annie writes
+ * no calendar of anyone.
  */
 import { createHash } from "node:crypto";
 
@@ -35,13 +37,14 @@ export const LINE_OCTETS = 75;
 
 /** TEXT escaped (RFC 5545 §3.3.11): a backslash, a semicolon and a comma behind a backslash, a newline as «\n»; other control characters go. */
 export function icsText(text: string): string {
+	// C0, DEL and the C1 controls (U+0080 to U+009F) go: no calendar shows them, some break on them.
 	return text
 		.replace(/\r\n?/g, "\n")
 		.replace(/\\/g, "\\\\")
 		.replace(/;/g, "\\;")
 		.replace(/,/g, "\\,")
 		.replace(/\n/g, "\\n")
-		.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+		.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
 
 /** A content line folded (RFC 5545 §3.1): at most LINE_OCTETS octets per line, the next ones after CRLF and one space, never inside a character. */
@@ -72,6 +75,18 @@ export function icsUid(parts: readonly string[], domain = "annie"): string {
 
 const compact = (date: string) => date.replace(/-/g, "");
 
+/** SEQUENCE counts from here: seconds since 2020-01-01T00:00:00Z fit an integer until 2088. */
+const SEQUENCE_EPOCH = Date.UTC(2020, 0, 1);
+
+/** The SEQUENCE of a file made at `stamp` (20261019T080000Z): the seconds since SEQUENCE_EPOCH, so a later file has a higher one; 0 before it or unreadable. */
+export function icsSequence(stamp: string): number {
+	const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(stamp);
+	if (m === null) return 0;
+	const [y, mo, d, h, mi, se] = m.slice(1).map(Number) as [number, number, number, number, number, number];
+	const at = Date.UTC(y, mo - 1, d, h, mi, se);
+	return Number.isNaN(at) || at < SEQUENCE_EPOCH ? 0 : Math.floor((at - SEQUENCE_EPOCH) / 1000);
+}
+
 /** The day after `date` (YYYY-MM-DD): an all-day event ends the next day, not included. */
 function nextDay(date: string): string {
 	const d = new Date(`${date}T00:00:00Z`);
@@ -89,8 +104,9 @@ export function remindTrigger(days: number): string {
 export function icsFile(c: IcsCalendar): string {
 	const lines: string[] = ["BEGIN:VCALENDAR", "VERSION:2.0", `PRODID:${c.prodId}`, "CALSCALE:GREGORIAN", "METHOD:PUBLISH"];
 	if (c.name !== undefined) lines.push(`X-WR-CALNAME:${icsText(c.name)}`);
+	const sequence = icsSequence(c.stamp);
 	for (const e of c.events) {
-		lines.push("BEGIN:VEVENT", `UID:${e.uid}`, `DTSTAMP:${c.stamp}`, `DTSTART;VALUE=DATE:${compact(e.date)}`, `DTEND;VALUE=DATE:${compact(nextDay(e.date))}`, `SUMMARY:${icsText(e.summary)}`);
+		lines.push("BEGIN:VEVENT", `UID:${e.uid}`, `DTSTAMP:${c.stamp}`, `LAST-MODIFIED:${c.stamp}`, `SEQUENCE:${sequence}`, `DTSTART;VALUE=DATE:${compact(e.date)}`, `DTEND;VALUE=DATE:${compact(nextDay(e.date))}`, `SUMMARY:${icsText(e.summary)}`);
 		if (e.description !== undefined) lines.push(`DESCRIPTION:${icsText(e.description)}`);
 		lines.push("TRANSP:TRANSPARENT");
 		if (e.remindDays !== undefined) lines.push("BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${icsText(e.summary)}`, `TRIGGER:${remindTrigger(e.remindDays)}`, "END:VALARM");
