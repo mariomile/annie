@@ -12,6 +12,15 @@ import { resolveClient } from "./timesheet-clients.ts";
 
 export const FORM_NOTE = "Nessuno si chiama esattamente così: ho preso il cliente con lo stesso nome a meno della forma societaria, nel riquadro.";
 
+/**
+ * How a party taken by its name but for the legal form is said, for a side that words it so
+ * (the suppliers: `party` «fornitore»). `without`: the name said has a legal form the party's
+ * name has not. The clients keep FORM_NOTE, which their answers already give.
+ */
+export function formNote(party: string, without = false): string {
+	return without ? `Ho preso il ${party} che si chiama così senza la forma societaria, nel riquadro.` : `Ho preso il ${party} che si chiama così con la forma societaria (S.r.l., SpA…), nel riquadro.`;
+}
+
 /** One client to find: its names (the first is the one shown), tax ids and ids. */
 export type Candidate<T> = { readonly item: T; readonly names: readonly string[]; readonly vat?: string; readonly cf?: string; readonly ids?: readonly string[] };
 

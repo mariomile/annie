@@ -647,6 +647,14 @@ describe("clients: merge and remove", () => {
 		expect(await s.run({ op: "merge", client: "Tre Snc", into: "Quattro Snc", confirm: true })).toContain("Non li unisco: hanno due codici fiscali diversi");
 	});
 
+	it("a codice fiscale already on another card is refused, as a partita IVA is (party-cards.ts cardClash)", async () => {
+		const s = await setup();
+		await s.run({ op: "upsert", client: "Tre Snc", cf: "ZJQXKW90A41F205E" });
+		const clash = await s.run({ op: "upsert", client: "Cinque Snc", cf: "ZJQXKW90A41F205E" });
+		expect(clash).toMatch(/^Errore: lo stesso codice fiscale è già nella scheda CL-\d{4}: se sono lo stesso cliente, uniscile\.$/);
+		expect(s.store.read().cards.filter((c) => c.cf === "ZJQXKW90A41F205E").map((c) => c.name)).toEqual(["Tre Snc"]);
+	});
+
 	it("#13 a merge with the open ricontatti at the cap drops the done ones instead of failing", async () => {
 		const s = await setup();
 		const fifty = Array.from({ length: 50 }, (_, i) => openFu(i + 1));

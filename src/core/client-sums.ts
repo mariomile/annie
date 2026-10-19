@@ -17,7 +17,6 @@ import { toUnits } from "./fattura-pa.ts";
 import { daysLate } from "./invoice-sums.ts";
 import { countedAmount, type Invoice, openAmount, partyName, vatOf } from "./invoices.ts";
 import { addDays, daysBetween } from "./italian-calendar.ts";
-import { sameBusiness } from "./name-keys.ts";
 import { groupParties, type PartyRecord, partyOf } from "./party-groups.ts";
 import { halfUp } from "./quote-sums.ts";
 import { latest, type Quote, quoteTotalsOf, shownStatus } from "./quotes.ts";
@@ -70,17 +69,6 @@ export function clientsOf(src: ClientRegisters): Client[] {
 		quotes: items.flatMap((x) => (x.kind === "quote" ? [x.quote] : [])),
 		entries: items.flatMap((x) => (x.kind === "entry" ? [x.entry] : [])),
 	}));
-}
-
-/** The other clients that may be this one, not joined (there were two of them): the same business by name (sameBusiness), and no partita IVA or codice fiscale that says otherwise. To be asked. */
-export function lookalikes(clients: readonly Client[], client: Client): Client[] {
-	const mine = [client.name, ...client.names];
-	return clients.filter((c) => {
-		if (c.key === client.key) return false;
-		if (client.vat !== undefined && c.vat !== undefined && client.vat !== c.vat) return false;
-		if (client.cf !== undefined && c.cf !== undefined && client.cf !== c.cf) return false;
-		return [c.name, ...c.names].some((n) => mine.some((m) => sameBusiness(m, n)));
-	});
 }
 
 /** What an invoice counts toward the invoiced, in cents (a credit note less), euro only: the imponibile, the total, and whether the imponibile is the total because the file does not give it. Undefined: another currency or no amount. */

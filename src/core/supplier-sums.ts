@@ -23,8 +23,8 @@ import { validIban } from "./iban.ts";
 import { daysLate, payDay } from "./invoice-sums.ts";
 import { type Invoice, type Instalment, paidDay, partyName, vatOf } from "./invoices.ts";
 import { addDays, daysBetween } from "./italian-calendar.ts";
-import { businessKey, sameBusiness } from "./name-keys.ts";
-import { groupParties, type PartyRecord, partyOf } from "./party-groups.ts";
+import { businessKey } from "./name-keys.ts";
+import { groupParties, lookalikeParties, type PartyRecord, partyOf } from "./party-groups.ts";
 import { halfUp, unitsToCents } from "./quote-sums.ts";
 import { yearlyOf } from "./renewal-sums.ts";
 import type { Renewal } from "./renewals.ts";
@@ -129,15 +129,21 @@ export function suppliersOf(src: SupplierRegisters): Supplier[] {
 	return groups;
 }
 
-/** The other suppliers that may be this one, not joined: the same business by name, and no tax id that says otherwise. To be asked. */
-export function lookalikeSuppliers(suppliers: readonly Supplier[], supplier: Supplier): Supplier[] {
-	const mine = [supplier.name, ...supplier.names];
-	return suppliers.filter((s) => {
-		if (s.key === supplier.key) return false;
-		if (supplier.vat !== undefined && s.vat !== undefined && supplier.vat !== s.vat) return false;
-		if (supplier.cf !== undefined && s.cf !== undefined && supplier.cf !== s.cf) return false;
-		return [s.name, ...s.names].some((n) => mine.some((m) => sameBusiness(m, n)));
-	});
+/** Every partita IVA and codice fiscale the supplier's invoices and expenses write, whatever its card holds. */
+export function recordedTaxIds(s: Pick<Supplier, "invoices" | "expenses">): { readonly vats: ReadonlySet<string>; readonly cfs: ReadonlySet<string> } {
+	const vats = new Set<string>();
+	const cfs = new Set<string>();
+	for (const i of s.invoices) {
+		const vat = vatKey(vatOf(i.supplier));
+		if (vat !== undefined) vats.add(vat);
+		if (i.supplier.fiscal !== undefined && i.supplier.fiscal.trim() !== "") cfs.add(i.supplier.fiscal.trim().toUpperCase());
+	}
+	for (const e of s.expenses) {
+		const t = expenseTax(e.supplierVat);
+		if (t.vat !== undefined) vats.add(t.vat);
+		if (t.cf !== undefined) cfs.add(t.cf);
+	}
+	return { vats, cfs };
 }
 
 /** The paid instalments of every invoice received and which of them an expense stands for: run once over the whole register. */
@@ -272,38 +278,98 @@ export function lastPayment(s: Pick<Supplier, "invoices" | "expenses">, ledger: 
 	return last;
 }
 
+/** An IBAN written on an instalment still to pay: the IBAN, the invoice's number, the instalment (of how many), whether it passes the check. */
+export type OpenIban = { readonly iban: string; readonly number?: string; readonly n: number; readonly of: number; readonly valid: boolean };
+
 /**
- * The IBAN of a supplier: the one on its latest invoice that writes one, the one on the invoice
- * before (when it writes one), and the one the person dictated. `changed`: the latest invoice's
- * differs from the one before; `pinnedDiffers`: from the one dictated. Either is a fraud's sign.
+ * The IBAN of a supplier, checked against a reference that a file cannot forge by its dates: the
+ * one the person dictated; else the IBAN of the invoice paid last (by the day it was paid); else
+ * the one most invoices write, when one does. Every IBAN on every instalment still to pay is
+ * compared with it: a backdated invoice, one without a date or a second instalment on a new
+ * account all show. `history`: the reference of the files alone (paid, else most used), to tell
+ * when an IBAN differs from both. `mixed`: no reference, and the instalments to pay write more
+ * than one IBAN: all of them are to verify.
  */
 export type IbanView = {
-	readonly latest?: { readonly iban: string; readonly date?: string; readonly valid: boolean; readonly invoice: Invoice };
-	readonly before?: { readonly iban: string; readonly date?: string };
 	readonly pinned?: string;
-	readonly changed: boolean;
-	readonly pinnedDiffers: boolean;
+	readonly history?: { readonly iban: string; readonly from: "paid" | "common"; readonly number?: string };
+	/** The distinct IBAN of the instalments to pay, with the first invoice writing each. */
+	readonly open: readonly OpenIban[];
+	/** Those to verify before paying. */
+	readonly differs: readonly OpenIban[];
+	/** Some IBAN to pay differs from the one dictated; from the files' reference. */
+	readonly diffPinned: boolean;
+	readonly diffHistory: boolean;
+	readonly mixed: boolean;
 };
 
 const ibanText = (text: string) => text.replace(/[\s-]+/g, "").toUpperCase();
+const ibansOf = (i: Invoice, only: (n: Instalment) => boolean = () => true): string[] => [...new Set(i.instalments.filter((n) => only(n) && n.iban !== undefined && ibanText(n.iban) !== "").map((n) => ibanText(n.iban as string)))];
+const toPay = (n: Instalment) => n.paid === undefined && n.extra !== true;
 
-export function ibanOf(s: Pick<Supplier, "invoices" | "card">): IbanView {
-	const withIban = s.invoices
-		.filter((i) => !i.credit && i.instalments.some((n) => n.iban !== undefined && ibanText(n.iban) !== ""))
-		.sort((a, b) => (b.doc.date ?? "").localeCompare(a.doc.date ?? "") || b.modifiedAt.localeCompare(a.modifiedAt));
-	const ibanIn = (i: Invoice) => ibanText(i.instalments.find((n) => n.iban !== undefined && ibanText(n.iban) !== "")?.iban as string);
+export function ibanOf(s: Pick<Supplier, "invoices" | "card">, dayOf: (at: string) => string): IbanView {
+	const invoices = s.invoices.filter((i) => !i.credit && ibansOf(i).length > 0);
+	// The invoice paid last, by the day of its last payment: what the person already paid to.
+	const paid = invoices
+		.flatMap((i) => {
+			const days = i.instalments.flatMap((n) => (n.paid === undefined ? [] : [paidDay(n.paid, dayOf)]));
+			const ibans = ibansOf(i, (n) => n.paid !== undefined);
+			return days.length === 0 ? [] : [{ i, day: days.sort().at(-1) as string, iban: (ibans[0] ?? ibansOf(i)[0]) as string }];
+		})
+		.sort((a, b) => b.day.localeCompare(a.day))[0];
+	let history: IbanView["history"];
+	if (paid !== undefined) history = { iban: paid.iban, from: "paid", ...(paid.i.doc.number === undefined ? {} : { number: paid.i.doc.number }) };
+	else {
+		const counts = new Map<string, number>();
+		for (const i of invoices) for (const iban of ibansOf(i)) counts.set(iban, (counts.get(iban) ?? 0) + 1);
+		const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+		if (ranked[0] !== undefined && (ranked[1] === undefined || ranked[1][1] < ranked[0][1])) history = { iban: ranked[0][0], from: "common" };
+	}
 	const pinned = s.card?.iban;
-	const first = withIban[0];
-	const latest = first === undefined ? undefined : { iban: ibanIn(first), ...(first.doc.date === undefined ? {} : { date: first.doc.date }), valid: validIban(ibanIn(first)) !== undefined, invoice: first };
-	const second = withIban[1];
-	const before = second === undefined ? undefined : { iban: ibanIn(second), ...(second.doc.date === undefined ? {} : { date: second.doc.date }) };
+	const open: OpenIban[] = [];
+	for (const i of invoices) {
+		if (i.paid) continue;
+		for (const n of i.instalments) {
+			if (!toPay(n) || n.iban === undefined || ibanText(n.iban) === "") continue;
+			const iban = ibanText(n.iban);
+			if (open.some((o) => o.iban === iban)) continue;
+			open.push({ iban, ...(i.doc.number === undefined ? {} : { number: i.doc.number }), n: n.n, of: i.instalments.length, valid: validIban(iban) !== undefined });
+		}
+	}
+	const reference = pinned ?? history?.iban;
+	const mixed = reference === undefined && open.length > 1;
+	const differs = open.filter((o) => (reference === undefined ? mixed : o.iban !== reference));
 	return {
-		...(latest === undefined ? {} : { latest }),
-		...(before === undefined ? {} : { before }),
 		...(pinned === undefined ? {} : { pinned }),
-		changed: latest !== undefined && before !== undefined && latest.iban !== before.iban,
-		pinnedDiffers: latest !== undefined && pinned !== undefined && latest.iban !== pinned,
+		...(history === undefined ? {} : { history }),
+		open,
+		differs,
+		diffPinned: pinned !== undefined && open.some((o) => o.iban !== pinned),
+		diffHistory: history !== undefined && open.some((o) => o.iban !== history?.iban),
+		mixed,
 	};
+}
+
+/** At most this many invoices, and a supplier may be someone using another's name. */
+export const IMPOSTOR_MAX_INVOICES = 2;
+
+/** Another supplier with the same name (another partita IVA, or another IBAN) when this one has few invoices and one to pay: to verify by phone before paying. */
+export type Impostor = { readonly other: Supplier; readonly vat: boolean; readonly iban: boolean };
+
+export function impostorOf(all: readonly Supplier[], s: Supplier, dayOf: (at: string) => string): Impostor | undefined {
+	const invoices = s.invoices.filter((i) => !i.credit);
+	if (invoices.length === 0 || invoices.length > IMPOSTOR_MAX_INVOICES) return undefined;
+	if (!invoices.some((i) => !i.paid && i.instalments.some(toPay))) return undefined;
+	const mine = ibanOf(s, dayOf).open.map((o) => o.iban);
+	for (const other of lookalikeParties(all, s, { anyTax: true })) {
+		if (other.invoices.filter((i) => !i.credit).length === 0 && other.card === undefined) continue;
+		const vat = s.vat !== undefined && other.vat !== undefined && s.vat !== other.vat;
+		const theirs = ibanOf(other, dayOf);
+		const known = theirs.pinned ?? theirs.history?.iban;
+		const iban = known !== undefined && mine.some((m) => m !== known);
+		if (vat || iban) return { other, vat, iban };
+	}
+	return undefined;
 }
 
 /** The renewals with a supplier still active, and what they cost in a year. */
@@ -340,11 +406,14 @@ export type SupplierFigures = {
 	readonly last?: LastPayment;
 	readonly renewals: ReturnType<typeof renewalsOf>;
 	readonly iban: IbanView;
+	readonly impostor?: Impostor;
 	readonly withheld: bigint;
 };
 
-export function supplierFigures(s: Supplier, ledger: Ledger, from: string, to: string, today: string, dayOf: (at: string) => string): SupplierFigures {
+/** `all`: every supplier, to find one using the same name (impostorOf). */
+export function supplierFigures(s: Supplier, ledger: Ledger, from: string, to: string, today: string, dayOf: (at: string) => string, all: readonly Supplier[] = []): SupplierFigures {
 	const last = lastPayment(s, ledger, today);
+	const impostor = impostorOf(all, s, dayOf);
 	return {
 		spent: spentIn(s, ledger, from, to),
 		invoiced: invoicedIn(s, from, to),
@@ -352,7 +421,8 @@ export function supplierFigures(s: Supplier, ledger: Ledger, from: string, to: s
 		timing: timingOf(s, from, to, dayOf),
 		...(last === undefined ? {} : { last }),
 		renewals: renewalsOf(s, today),
-		iban: ibanOf(s),
+		iban: ibanOf(s, dayOf),
+		...(impostor === undefined ? {} : { impostor }),
 		withheld: withheldIn(s, from, to),
 	};
 }
@@ -360,13 +430,21 @@ export function supplierFigures(s: Supplier, ledger: Ledger, from: string, to: s
 export type RankedSupplier = { readonly supplier: Supplier; readonly cents: bigint; readonly percent: bigint };
 
 /** The suppliers by what was spent with them in the span, most first, with their share; zero left out. */
-export function rankedSuppliers(suppliers: readonly Supplier[], ledger: Ledger, from: string, to: string): { readonly rows: readonly RankedSupplier[]; readonly total: bigint } {
-	const values = suppliers.map((supplier) => ({ supplier, cents: spentIn(supplier, ledger, from, to).cents })).filter((r) => r.cents > 0n);
+/** `twins`: payments of invoices that may be an expense too, both counted (spentIn). */
+export function rankedSuppliers(suppliers: readonly Supplier[], ledger: Ledger, from: string, to: string): { readonly rows: readonly RankedSupplier[]; readonly total: bigint; readonly twins: number } {
+	let twins = 0;
+	const values = suppliers
+		.map((supplier) => {
+			const spent = spentIn(supplier, ledger, from, to);
+			twins += spent.twins;
+			return { supplier, cents: spent.cents };
+		})
+		.filter((r) => r.cents > 0n);
 	const total = values.reduce((n, r) => n + r.cents, 0n);
 	const rows = values
 		.map((r) => ({ ...r, percent: total === 0n ? 0n : halfUp(r.cents * 100n, total) }))
 		.sort((a, b) => (b.cents > a.cents ? 1 : b.cents < a.cents ? -1 : a.supplier.name.localeCompare(b.supplier.name, "it")));
-	return { rows, total };
+	return { rows, total, twins };
 }
 
 /** A supplier paid late: what is overdue now, and the instalments paid after their due date in the span. */
@@ -379,21 +457,31 @@ export function lateSuppliers(suppliers: readonly Supplier[], from: string, to: 
 		.sort((a, b) => (b.open.overdue > a.open.overdue ? 1 : b.open.overdue < a.open.overdue ? -1 : b.timing.late - a.timing.late || a.supplier.name.localeCompare(b.supplier.name, "it")));
 }
 
-/** The suppliers whose IBAN changed (on the latest invoice, or against the one dictated) with an invoice to pay due within IBAN_BRIEF_DAYS (or already due): the brief's line. */
-export function ibanAlerts(suppliers: readonly Supplier[], today: string): Supplier[] {
+/** Why a supplier is in the brief: an IBAN to pay that differs from the files' one, from the one dictated, or another supplier using its name. */
+export type IbanAlert = { readonly supplier: Supplier; readonly kind: "changed" | "pinned" | "impostor" };
+
+/** The suppliers with an instalment to pay due within IBAN_BRIEF_DAYS (or already due) and an IBAN to verify, or a same-name impostor: the brief's line. */
+export function ibanAlerts(suppliers: readonly Supplier[], today: string, dayOf: (at: string) => string): IbanAlert[] {
 	const until = addDays(today, IBAN_BRIEF_DAYS);
-	return suppliers.filter((s) => {
-		const iban = ibanOf(s);
-		if (!iban.changed && !iban.pinnedDiffers) return false;
-		return s.invoices.some((i) => !i.paid && !i.credit && i.instalments.some((n) => n.paid === undefined && n.extra !== true && n.due !== undefined && n.due <= until));
-	});
+	const out: IbanAlert[] = [];
+	for (const s of suppliers) {
+		if (!s.invoices.some((i) => !i.paid && !i.credit && i.instalments.some((n) => toPay(n) && n.due !== undefined && n.due <= until))) continue;
+		if (impostorOf(suppliers, s, dayOf) !== undefined) {
+			out.push({ supplier: s, kind: "impostor" });
+			continue;
+		}
+		const iban = ibanOf(s, dayOf);
+		if (iban.diffPinned) out.push({ supplier: s, kind: "pinned" });
+		else if (iban.differs.length > 0) out.push({ supplier: s, kind: "changed" });
+	}
+	return out;
 }
 
 /** The totals over every supplier for a span: what another agente may read. */
-export type SupplierTotals = { readonly suppliers: number; readonly spent: bigint; readonly open: bigint; readonly overdue: bigint; readonly overdueSuppliers: number; readonly timing: Timing; readonly first?: bigint };
+export type SupplierTotals = { readonly suppliers: number; readonly spent: bigint; readonly twins: number; readonly open: bigint; readonly overdue: bigint; readonly overdueSuppliers: number; readonly timing: Timing; readonly first?: bigint };
 
 export function supplierTotals(suppliers: readonly Supplier[], ledger: Ledger, from: string, to: string, today: string, dayOf: (at: string) => string): SupplierTotals {
-	const { rows, total } = rankedSuppliers(suppliers, ledger, from, to);
+	const { rows, total, twins } = rankedSuppliers(suppliers, ledger, from, to);
 	let open = 0n;
 	let overdue = 0n;
 	let overdueSuppliers = 0;
@@ -404,5 +492,5 @@ export function supplierTotals(suppliers: readonly Supplier[], ledger: Ledger, f
 		if (o.overdueCount > 0) overdueSuppliers++;
 	}
 	const timing = timingOf({ invoices: suppliers.flatMap((s) => s.invoices) }, from, to, dayOf);
-	return { suppliers: rows.length, spent: total, open, overdue, overdueSuppliers, timing, ...(rows[0] === undefined ? {} : { first: rows[0].percent }) };
+	return { suppliers: rows.length, spent: total, twins, open, overdue, overdueSuppliers, timing, ...(rows[0] === undefined ? {} : { first: rows[0].percent }) };
 }

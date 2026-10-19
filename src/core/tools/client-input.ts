@@ -6,6 +6,7 @@
  */
 import { CLIENT_LIMITS, type ClientCard, type ClientContact, cardCf, cardKeys, cardVat, channelOf, emailProblem, phoneProblem, tagOf } from "../clients.ts";
 import type { Marker } from "../marker.ts";
+import { cardClash, withOptional } from "../party-cards.ts";
 import { spellingKey } from "../name-keys.ts";
 import { line, strings } from "./field-input.ts";
 import { isProblem, type Problem } from "../text-input.ts";
@@ -174,18 +175,9 @@ export function edited(card: ClientCard, e: Edits, by: Marker): ClientCard | str
 	return { ...c, edited: by };
 }
 
-export function withOptional<K extends "vat" | "cf" | "address">(card: ClientCard, key: K, value: string | null): ClientCard {
-	const { [key]: _gone, ...rest } = card;
-	return (value === null ? rest : { ...rest, [key]: value }) as ClientCard;
-}
+export { withOptional } from "../party-cards.ts";
 
-/** Why `card` cannot sit with `others`: a name or a partita IVA another card has. */
+/** Why `card` cannot sit with `others`: a name, a partita IVA or a codice fiscale another card has. */
 export function clash(card: ClientCard, others: readonly ClientCard[]): string | undefined {
-	const keys = new Set(cardKeys(card));
-	for (const o of others) {
-		if (o.id === card.id) continue;
-		if (cardKeys(o).some((k) => keys.has(k))) return `un nome di questa scheda è già della scheda ${o.id}: se sono lo stesso cliente, uniscile`;
-		if (card.vat !== undefined && o.vat === card.vat) return `la stessa partita IVA è già nella scheda ${o.id}: se sono lo stesso cliente, uniscile`;
-	}
-	return undefined;
+	return cardClash(card, others, "cliente");
 }

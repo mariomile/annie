@@ -111,3 +111,21 @@ export function groupParties<C extends PartyCard, T>(cards: readonly C[], record
 export function partyOf(vat: string | undefined, cf: string | undefined, name: string | undefined): { vat?: string; cf?: string; name?: string } {
 	return { ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }), ...(name === undefined ? {} : { name }) };
 }
+
+/** What lookalikeParties compares: the key, the names and the tax ids of a party. */
+export type NamedParty = { readonly key: string; readonly name: string; readonly names: readonly string[]; readonly vat?: string; readonly cf?: string };
+
+/**
+ * The other parties that may be this one, not joined (there were two of them): the same business
+ * by name (sameBusiness), and no partita IVA or codice fiscale that says otherwise. To be asked.
+ * `anyTax`: those with another tax id too (a homonym, or someone using the name: a fraud's sign).
+ */
+export function lookalikeParties<P extends NamedParty>(parties: readonly P[], party: P, o: { readonly anyTax?: boolean } = {}): P[] {
+	const mine = [party.name, ...party.names];
+	return parties.filter((p) => {
+		if (p.key === party.key) return false;
+		if (o.anyTax !== true && party.vat !== undefined && p.vat !== undefined && party.vat !== p.vat) return false;
+		if (o.anyTax !== true && party.cf !== undefined && p.cf !== undefined && party.cf !== p.cf) return false;
+		return [p.name, ...p.names].some((n) => mine.some((m) => sameBusiness(m, n)));
+	});
+}

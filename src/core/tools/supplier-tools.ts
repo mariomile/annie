@@ -1,6 +1,6 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { BankStore } from "../bank-store.ts";
-import { findNamed } from "../client-find.ts";
+import { findNamed, formNote } from "../client-find.ts";
 import { cardCf, goodVat } from "../clients.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
@@ -9,16 +9,17 @@ import type { InvoiceStore } from "../invoice-store.ts";
 import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
-import { spellingKey } from "../name-keys.ts";
-import { type Period, PeriodError, readPeriod } from "../periods.ts";
+import { legalForm, spellingKey } from "../name-keys.ts";
+import { lookalikeParties } from "../party-groups.ts";
+import { rollingPeriodOf } from "../periods.ts";
 import type { RenewalStore } from "../renewal-store.ts";
 import {
 	ibanAlerts,
 	type Ledger,
 	lateSuppliers,
 	ledgerOf,
-	lookalikeSuppliers,
 	rankedSuppliers,
+	recordedTaxIds,
 	type Supplier,
 	spentIn,
 	supplierFigures,
@@ -32,7 +33,7 @@ import { isProblem } from "../text-input.ts";
 import { fold } from "../text-match.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { textOf } from "./field-input.ts";
-import { mergedSuppliers, readSupplierEdits, SUPPLIER_EDIT_FIELDS, supplierClash, supplierEdited, supplierMergeRefusal } from "./supplier-input.ts";
+import { mergedSuppliers, readSupplierEdits, SUPPLIER_EDIT_FIELDS, type SupplierEdits, supplierClash, supplierEdited, supplierMergeRefusal } from "./supplier-input.ts";
 import {
 	briefAnswer,
 	fencedSuppliers,
@@ -92,7 +93,8 @@ function find(suppliers: readonly Supplier[], said: string): Found {
 	return r.kind === "close" ? { kind: "close", candidates: r.candidates } : r;
 }
 
-const FORM_NOTE = "Nessuno si chiama esattamente così: ho preso il fornitore con lo stesso nome a meno della forma societaria, nel riquadro.";
+/** The same name but for the legal form: said on a write, and on a card only when the name said had a form the supplier's has not. */
+const formSaid = (said: string) => formNote("fornitore", legalForm(said) !== undefined);
 
 /** «Intendi …?»: the close ones in the fence, to be asked. */
 function meant(candidates: readonly Supplier[], more = ""): string {
@@ -222,21 +224,9 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		return typeof value === "string" && value.trim() !== "" ? value.trim().slice(0, SUPPLIER_LIMITS.name) : undefined;
 	}
 
-	function periodOf(value: unknown, day: string): { span: string; from: string; to: string } | string {
-		if (value === undefined || (typeof value === "string" && /^(?:(?:negli )?ultimi 12 mesi|ultimo anno|12 mesi)$/i.test(value.trim()))) return { span: "negli ultimi 12 mesi", from: addDays(day, -364), to: day };
-		if (typeof value !== "string") return "Errore: il periodo va scritto come «2026», «anno scorso» o «T3 2026».";
-		let period: Period;
-		try {
-			period = readPeriod(value.slice(0, 40), day);
-		} catch (error) {
-			if (error instanceof PeriodError) return ["Errore: non riconosco il periodo; scrivilo come «2026», «anno scorso», «T3 2026» o «ottobre»:", fencedSuppliers(value.slice(0, 40))].join("\n");
-			throw error;
-		}
-		return { span: period.in, from: period.from, to: period.to };
-	}
 
 	async function summary(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
-		const period = periodOf(args.period, day);
+		const period = rollingPeriodOf(args.period, day, fencedSuppliers);
 		if (typeof period === "string") return period;
 		const name = said(args.supplier);
 		const { suppliers, ledger, notes, unnamed } = await load(ctx);
@@ -244,31 +234,31 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		if (name === undefined) return [totalsAnswer(supplierTotals(suppliers, ledger, period.from, period.to, day, dayOf), period.span, unnamed), ...notes].join("\n");
 		const found = find(suppliers, name);
 		if (found.kind === "none") return ["Non trovo questo fornitore tra schede, fatture ricevute, spese e rinnovi:", fencedSuppliers(name), "Chiedi a chi ti scrive come si chiama nelle fatture, o la partita IVA."].join("\n");
-		if (found.kind === "close" && found.candidates.length > 1) return meant(found.candidates);
-		const supplier = found.kind === "exact" ? found.supplier : (found.candidates[0] as Supplier);
+		// A name only close is asked before any card or IBAN is shown, even with one candidate.
+		if (found.kind === "close") return meant(found.candidates);
+		const supplier = found.supplier;
 		const extra = [...notes];
 		const inside: string[] = [];
-		if (found.kind === "close") extra.push("Nessun fornitore si chiama esattamente così: ho preso l'unico con un nome simile, quello nel riquadro. Chiedi a chi ti scrive se è lui.");
-		if (found.kind === "exact" && found.form === true) extra.push(FORM_NOTE);
-		const alike = lookalikeSuppliers(suppliers, supplier);
+		if (found.form === true && legalForm(name) !== undefined) extra.push(formSaid(name));
+		const alike = lookalikeParties(suppliers, supplier);
 		if (alike.length > 0) {
 			extra.push(`${alike.length === 1 ? "C'è anche un altro fornitore" : `Ci sono anche altri ${alike.length} fornitori`} con un nome simile, nel riquadro: è lo stesso? Se sì, posso unirli.`);
 			for (const s of alike.slice(0, 3)) inside.push(`C'è anche: ${s.name}${s.vat === undefined ? "" : ` (partita IVA ${s.vat})`}`);
 		}
-		return summaryAnswer(supplier, supplierFigures(supplier, ledger, period.from, period.to, day, dayOf), period.span, day, { notes: extra, inside });
+		return summaryAnswer(supplier, supplierFigures(supplier, ledger, period.from, period.to, day, dayOf, suppliers), period.span, day, { notes: extra, inside });
 	}
 
 	async function top(args: Record<string, unknown>, ctx: ToolContext, day: string, agent: boolean): Promise<string> {
-		const period = periodOf(args.period, day);
+		const period = rollingPeriodOf(args.period, day, fencedSuppliers);
 		if (typeof period === "string") return period;
 		const { suppliers, ledger, notes, unnamed } = await load(ctx);
-		const { rows, total } = rankedSuppliers(suppliers, ledger, period.from, period.to);
-		if (agent) return topSuppliersAgentAnswer(rows, total, period.span);
-		return [topSuppliersAnswer(rows, total, period.span, unnamed), ...notes].join("\n");
+		const { rows, total, twins } = rankedSuppliers(suppliers, ledger, period.from, period.to);
+		if (agent) return topSuppliersAgentAnswer(rows, total, period.span, twins);
+		return [topSuppliersAnswer(rows, total, period.span, unnamed, twins), ...notes].join("\n");
 	}
 
 	async function late(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
-		const period = periodOf(args.period, day);
+		const period = rollingPeriodOf(args.period, day, fencedSuppliers);
 		if (typeof period === "string") return period;
 		const { suppliers, notes } = await load(ctx);
 		const name = said(args.supplier);
@@ -285,7 +275,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 	/** The brief's line. Read only, always. */
 	async function brief(ctx: ToolContext, day: string): Promise<string> {
 		const { suppliers } = await load(ctx);
-		return briefAnswer(ibanAlerts(suppliers, day));
+		return briefAnswer(ibanAlerts(suppliers, day, dayOf));
 	}
 
 	/**
@@ -299,7 +289,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		if (found.kind === "exact") {
 			const s = found.supplier;
 			if (found.form === true && mode === "exact") return meant([s]);
-			if (found.form === true) return { supplier: s, name: s.name, notes: [FORM_NOTE] };
+			if (found.form === true) return { supplier: s, name: s.name, notes: [formSaid(name)] };
 			const own = s.nameFrom === "file" && !SUPPLIER_ID_SAID.test(name.toUpperCase()) && spellingKey(name) === spellingKey(s.name);
 			return { supplier: s, name: own ? name : s.name, notes: [] };
 		}
@@ -405,10 +395,8 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const chosen = target(suppliers, name, "ask");
 		if (typeof chosen === "string") return chosen;
 		const s = chosen.supplier;
-		// A partita IVA said that is not the one of the supplier's invoices would split it from them: asked, never done silently.
-		if (typeof edits.vat === "string" && s?.vat !== undefined && s.vat !== edits.vat && s.card?.vat !== s.vat) {
-			return ["Non la segno: le fatture o le spese di questo fornitore hanno un'altra partita IVA, nel riquadro. Se è un altro fornitore, ripeti con il suo nome; se la partita IVA delle fatture è sbagliata, dillo al fornitore.", fencedSuppliers(`${s.name}: ${s.vat}\nDetta ora: ${edits.vat}`)].join("\n");
-		}
+		const refused = taxRefusal(suppliers, s, edits);
+		if (refused !== undefined) return refused;
 		await ctx.step("apply", async () => {
 			writeCard(ctx, chosen, (card) => supplierEdited(card, edits, marker(ctx)));
 			return true;
@@ -420,9 +408,31 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const f = supplierFigures(shown, ledger, day, day, day, dayOf);
 		const lines = [`Fatto, ho aggiornato la scheda ${card.id}.`, ...chosen.notes];
 		if (edits.iban !== undefined) lines.push(edits.iban === null ? "Ho tolto l'IBAN che mi avevi dato: resta quello delle fatture." : "L'IBAN che mi hai dato resta questo finché non me lo cambi tu: un documento non lo cambia mai.");
-		lines.push(...ibanWarnings(f).filter((w) => !w.startsWith("L'IBAN dell'ultima fattura non passa")));
+		lines.push(...ibanWarnings(f).filter((w) => !w.startsWith("Un IBAN delle fatture da pagare non passa")));
 		lines.push(fencedSuppliers(supplierCardLines(shown, f, day).filter((l) => !l.startsWith("Nota ")).join("\n")));
 		return lines.join("\n");
+	}
+
+	/**
+	 * A partita IVA or codice fiscale dictated is never written silently when it would move
+	 * invoices between suppliers: refused when another supplier of the cards or the registers has
+	 * it (a merge is the way), or when an invoice or expense of this one writes another (the two
+	 * shown, to be asked), whatever the card holds now.
+	 */
+	function taxRefusal(suppliers: readonly Supplier[], s: Supplier | undefined, edits: SupplierEdits): string | undefined {
+		for (const [kind, value] of [["vat", edits.vat], ["cf", edits.cf]] as const) {
+			if (typeof value !== "string") continue;
+			const owner = suppliers.find((t) => t.key !== s?.key && (t[kind] === value || (kind === "vat" ? recordedTaxIds(t).vats : recordedTaxIds(t).cfs).has(value)));
+			if (owner !== undefined) {
+				return [`Non ${kind === "vat" ? "la" : "lo"} segno: ${kind === "vat" ? "questa partita IVA è già" : "questo codice fiscale è già"} di un altro fornitore, nel riquadro. Se sono lo stesso fornitore, posso unirli.`, fencedSuppliers(`${owner.name}: ${owner[kind] ?? value}\nDetto ora per ${s?.name ?? "il fornitore"}: ${value}`)].join("\n");
+			}
+			if (s === undefined) continue;
+			const recorded = [...(kind === "vat" ? recordedTaxIds(s).vats : recordedTaxIds(s).cfs)].filter((v) => v !== value);
+			if (recorded.length > 0) {
+				return [`Non ${kind === "vat" ? "la" : "lo"} segno: le fatture o le spese di questo fornitore hanno ${kind === "vat" ? "un'altra partita IVA" : "un altro codice fiscale"}, nel riquadro. Chiedi a chi ti scrive quale è ${kind === "vat" ? "giusta" : "giusto"}: se è un altro fornitore, ripeti con il suo nome.`, fencedSuppliers([`Fornitore: ${s.name}`, ...recorded.map((v) => `Nelle fatture o nelle spese: ${v}`), `${kind === "vat" ? "Detta" : "Detto"} ora: ${value}`].join("\n"))].join("\n");
+			}
+		}
+		return undefined;
 	}
 
 	async function merge(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -450,7 +460,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const ever = (s: Supplier) => spentIn(s, ledger, "0000-01-01", day).cents;
 		if (args.confirm !== true) {
 			return [
-				"Unirei questi due fornitori in una sola scheda (nel riquadro): i nomi, i referenti, le note e l'IBAN che mi hai dato del primo passano al secondo, e il nome del primo resta come altro nome.",
+				"Unirei questi due fornitori in una sola scheda (nel riquadro): i nomi, i referenti, le note e l'IBAN che mi hai dato per il primo passano al secondo, e il nome del primo resta come altro nome.",
 				"Fatture, spese e rinnovi non cambiano. Chiedi conferma a chi ti scrive, poi ripeti la richiesta confermata.",
 				fencedSuppliers(supplierMergeLines(a, b, ever).join("\n")),
 			].join("\n");

@@ -204,6 +204,24 @@ export function periodOf(value: unknown, today: string): Period {
 	return typeof value === "string" ? readPeriod(value.slice(0, 40), today) : currentMonth(today);
 }
 
+/**
+ * The span of a ranking or a card (clients, suppliers): the last 12 months when not given or said
+ * so, else the period as written (readPeriod). An answer to give instead when it does not read,
+ * the text as written put in the register's fence.
+ */
+export function rollingPeriodOf(value: unknown, today: string, fenced: (text: string) => string): { readonly span: string; readonly from: string; readonly to: string } | string {
+	if (value === undefined || (typeof value === "string" && /^(?:(?:negli )?ultimi 12 mesi|ultimo anno|12 mesi)$/i.test(value.trim()))) return { span: "negli ultimi 12 mesi", from: addDays(today, -364), to: today };
+	if (typeof value !== "string") return "Errore: il periodo va scritto come «2026», «anno scorso» o «T3 2026».";
+	let period: Period;
+	try {
+		period = readPeriod(value.slice(0, 40), today);
+	} catch (error) {
+		if (error instanceof PeriodError) return ["Errore: non riconosco il periodo; scrivilo come «2026», «anno scorso», «T3 2026» o «ottobre»:", fenced(value.slice(0, 40))].join("\n");
+		throw error;
+	}
+	return { span: period.in, from: period.from, to: period.to };
+}
+
 export function inPeriod(date: string, p: Pick<Period, "from" | "to">): boolean {
 	return date >= p.from && date <= p.to;
 }

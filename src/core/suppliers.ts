@@ -32,8 +32,23 @@ export const SUPPLIER_LIMITS = {
 /** An IBAN that changed is said in the brief when the supplier has an open invoice due within these days. */
 export const IBAN_BRIEF_DAYS = 7;
 
-/** What the person is told when the IBAN changed: never paid before a call. */
-export const IBAN_WARNING = "l'IBAN dell'ultima fattura è diverso da quello di prima, verifica con il fornitore per telefono prima di pagare";
+/** What the person is told when an IBAN to pay differs from the files' own (the invoices paid, else the most used): never paid before a call. */
+export function ibanWarning(from: "paid" | "common", count: number): string {
+	const what = count === 1 ? "L'IBAN di una fattura da pagare è diverso" : `Gli IBAN di ${count} fatture da pagare sono diversi`;
+	return `${what} da quello ${from === "paid" ? "delle fatture già pagate" : "delle altre fatture"}. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.`;
+}
+
+export const IBAN_WARNING_PINNED = "Una fattura da pagare ha un IBAN diverso da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
+
+export const IBAN_WARNING_BOTH = "L'IBAN dell'ultima fattura è diverso da quello di prima e da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
+
+export const IBAN_WARNING_MIXED = "Le fatture da pagare di questo fornitore hanno IBAN diversi tra loro, e non ce n'è uno già pagato con cui confrontarli. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.";
+
+/** Another supplier with the same name: «un'altra partita IVA e un altro IBAN», as found. */
+export function impostorWarning(o: { readonly vat: boolean; readonly iban: boolean }): string {
+	const what = o.vat && o.iban ? "un'altra partita IVA e un altro IBAN" : o.vat ? "un'altra partita IVA" : "un altro IBAN";
+	return `C'è un altro fornitore con lo stesso nome ma ${what}. Prima di pagare, verifica con il fornitore per telefono, a un numero che conosci già.`;
+}
 
 /** The ops that only read: they run in the brief. */
 const SUPPLIER_READ_OPS = ["summary", "top", "late"] as const;

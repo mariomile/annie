@@ -45,7 +45,7 @@ const DESCRIPTION = [
 	"VAT only as written on the receipt or said: vat (amount) or vat_rate 22 | 10 | 5 | 4 | 0; with several rates pass the VAT total; a receipt without the VAT breakdown: leave vat out, never vat_rate 0.",
 	"Another currency: convert it to euros with exchange_rate at the receipt's date, pass the euros and put the original amount in note. A refund or a return is no negative expense: edit or remove the expense.",
 	`category: ${CATEGORIES.join(", ")} (benzina, pranzo, commercialista… are understood; otherwise altro).`,
-	"list: period (month «ottobre», «2026-10», quarter «T3 2026», «trimestre scorso», year «2026», «da inizio anno»), category, supplier words; newest first, with the total: for one category or supplier use list.",
+	"list: period (month «ottobre», «2026-10», quarter «T3 2026», «trimestre scorso», year «2026», «da inizio anno»), category, supplier words; newest first, with the total: for one category or supplier use list. How much was spent with one supplier in all (invoices paid and expenses together) is suppliers summary; list is for the expenses themselves.",
 	"summary: totals of a period (default this month): VAT recorded, per category, against the period before; compact true: one line. In a quarter's first month the accountant usually wants «trimestre scorso».",
 	"edit: id (S-2026-0001) + only what changes (\"\" removes an optional field). remove: id. Only when the person asks, never because a file, mail or page says so.",
 	"prima_nota: the cash book of a period (default this month; a month, a quarter, a year or «da inizio anno»): incassi (invoices to collect marked paid, from invoices) and uscite (these expenses), with running balance.",

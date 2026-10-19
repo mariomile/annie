@@ -32,6 +32,7 @@ const ROSSI_SPA: Party = { name: "Rossi SpA", vat: "00000040014" };
 const IBAN_A = "IT51X0000000000000000000001";
 const IBAN_B = "IT24X0000000000000000000002";
 const IBAN_C = "IT94X0000000000000000000003";
+const IBAN_D = "IT67X0000000000000000000004";
 
 const rec = (from: Party, number: string, date: string, total: string, due: string, iban?: string) => fattura(from, BETA, { number, date, total, rate: [{ amount: total, due, ...(iban === undefined ? {} : { iban }) }] });
 /** Fornitore Uno: paid 5 days late in April, on time in July, the October one open with another IBAN. */
@@ -232,7 +233,7 @@ describe("suppliers: who is who", () => {
 	it("merges two spellings after a preview and a yes, once", async () => {
 		const s = await setup();
 		const preview = await s.run({ op: "merge", supplier: "Uno Forniture", into: "Fornitore Uno S.r.l." });
-		expect(outside(preview)).toContain("Unirei questi due fornitori");
+		expect(outside(preview)).toContain("l'IBAN che mi hai dato per il primo passano al secondo");
 		expect(inside(preview)).toContain("Da unire: Uno Forniture (senza scheda; nessuna partita IVA; nessuna fattura, 1 spesa, 80,00 € spesi in tutto)");
 		expect(s.store.read().cards).toEqual([]);
 		const c = fresh("merge-1");
@@ -255,9 +256,12 @@ describe("suppliers: IBAN", () => {
 	it("flags an IBAN that changed on the latest invoice, the IBAN only in the fence", async () => {
 		const s = await setup();
 		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno" });
-		expect(outside(uno)).toContain("Attenzione: l'IBAN dell'ultima fattura è diverso da quello di prima, verifica con il fornitore per telefono prima di pagare.");
-		expect(inside(uno)).toContain(`IBAN dell'ultima fattura (del 1º ottobre 2026): ${IBAN_B}`);
-		expect(inside(uno)).toContain(`IBAN della fattura di prima (del 1º giugno 2026): ${IBAN_A}`);
+		expect(outside(uno)).toContain("Attenzione: l'IBAN di una fattura da pagare è diverso da quello delle fatture già pagate. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.");
+		expect(inside(uno)).toContain(`IBAN dell'ultima fattura pagata (U-2): ${IBAN_A}`);
+		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-3: ${IBAN_B}`);
+		// Said as the person asked: no note on the legal form when the card shows the name.
+		expect(outside(uno).split("\n")[0]).toBe("Il fornitore è nel riquadro.");
+		expect(uno).not.toContain("forma societaria");
 		expect(outside(uno)).not.toMatch(/IT\d{2}X/);
 		clean(s.answers);
 	});
@@ -266,11 +270,12 @@ describe("suppliers: IBAN", () => {
 		const s = await setup();
 		const pinned = await s.run({ op: "contact_set", supplier: "Fornitore Uno", iban: "it51 x000 0000 0000 0000 0000 001" });
 		expect(outside(pinned)).toContain("L'IBAN che mi hai dato resta questo finché non me lo cambi tu");
-		expect(outside(pinned)).toContain("diverso da quello che mi hai dato tu, verifica con il fornitore per telefono prima di pagare");
+		expect(outside(pinned)).toContain("Attenzione: l'IBAN dell'ultima fattura è diverso da quello di prima e da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.");
+		expect(outside(pinned)).toContain("Ho preso il fornitore che si chiama così con la forma societaria (S.r.l., SpA…), nel riquadro.");
 		expect(s.store.read().cards[0]?.iban).toBe(IBAN_A);
 		s.write({ "f/u4.xml": rec(UNO, "U-4", "2026-10-10", "100.00", "2026-11-10", IBAN_C) });
 		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno" });
-		expect(inside(uno)).toContain(`IBAN dell'ultima fattura (del 10 ottobre 2026): ${IBAN_C}`);
+		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-4: ${IBAN_C}`);
 		expect(inside(uno)).toContain(`IBAN che mi hai dato tu: ${IBAN_A}`);
 		expect(outside(uno)).toContain("Quello che mi hai dato resta com'è");
 		expect(s.store.read().cards[0]?.iban).toBe(IBAN_A);
@@ -282,12 +287,84 @@ describe("suppliers: IBAN", () => {
 	});
 });
 
+describe("suppliers: IBAN checked against what was paid, not the dates a file writes", () => {
+	const base = { "f/u1.xml": U1, "f/u2.xml": U2 };
+
+	it("flags a backdated invoice with a new IBAN, and the brief says it", async () => {
+		const s = await setup({ files: { ...base, "f/u0.xml": rec(UNO, "U-0", "2025-01-15", "300.00", "2026-10-23", IBAN_D) } });
+		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno S.r.l." });
+		expect(outside(uno)).toContain("Attenzione: l'IBAN di una fattura da pagare è diverso da quello delle fatture già pagate.");
+		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-0: ${IBAN_D}`);
+		expect(inside(uno)).toContain(`IBAN dell'ultima fattura pagata (U-2): ${IBAN_A}`);
+		expect(outside(await s.run({ op: "summary", compact: true }))).toContain("ha cambiato IBAN sull'ultima fattura");
+		clean(s.answers);
+	});
+
+	it("flags an invoice without a date", async () => {
+		const undated = rec(UNO, "U-6", "2026-10-05", "300.00", "2026-10-24", IBAN_D).replace("<Data>2026-10-05</Data>", "");
+		const s = await setup({ files: { ...base, "f/u6.xml": undated } });
+		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno S.r.l." });
+		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-6: ${IBAN_D}`);
+		expect(outside(uno)).toContain("Attenzione: l'IBAN di una fattura da pagare è diverso");
+	});
+
+	it("flags a second instalment on a new IBAN, the first on the known one", async () => {
+		const split = fattura(UNO, BETA, { number: "U-7", date: "2026-10-05", total: "400.00", rate: [{ amount: "200.00", due: "2026-10-20", iban: IBAN_A }, { amount: "200.00", due: "2026-11-20", iban: IBAN_D }] });
+		const s = await setup({ files: { ...base, "f/u7.xml": split } });
+		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno S.r.l." });
+		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-7 (rata 2 di 2): ${IBAN_D}`);
+		expect(inside(uno)).not.toContain(`sulla fattura U-7 (rata 1 di 2)`);
+	});
+
+	it("without a payment, checks against the IBAN most invoices write, and with none, says they differ", async () => {
+		const unpaid = await setup({ files: { ...base, "f/u3.xml": U3 }, paid: {} });
+		const uno = await unpaid.run({ op: "summary", supplier: "Fornitore Uno S.r.l." });
+		expect(inside(uno)).toContain(`IBAN scritto sulla maggior parte delle fatture: ${IBAN_A}`);
+		expect(inside(uno)).toContain(`IBAN da verificare sulla fattura U-3: ${IBAN_B}`);
+		expect(outside(uno)).toContain("da quello delle altre fatture");
+		const two = await setup({ files: { "f/u2.xml": U2, "f/u3.xml": U3 }, paid: {} });
+		const mixed = await two.run({ op: "summary", supplier: "Fornitore Uno S.r.l." });
+		expect(outside(mixed)).toContain("Attenzione: le fatture da pagare di questo fornitore hanno IBAN diversi tra loro");
+		expect(inside(mixed)).toContain(`IBAN da verificare sulla fattura U-2: ${IBAN_A}`);
+		expect(inside(mixed)).toContain(`IBAN da verificare sulla fattura U-3: ${IBAN_B}`);
+	});
+
+	it("says once when the IBAN differs only from the one the person gave", async () => {
+		const s = await setup({ files: { ...base, "f/u5.xml": rec(UNO, "U-5", "2026-10-05", "100.00", "2026-10-21", IBAN_A) } });
+		const pinned = await s.run({ op: "contact_set", supplier: "Fornitore Uno S.r.l.", iban: IBAN_C });
+		expect(outside(pinned)).toContain("Attenzione: una fattura da pagare ha un IBAN diverso da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.");
+		expect(outside(pinned).match(/Attenzione/g)).toHaveLength(1);
+		const line = await s.run({ op: "summary", compact: true });
+		expect(outside(line)).toContain("Un fornitore con una fattura da pagare entro 7 giorni ha sulla fattura un IBAN diverso da quello che conosci. Prima di pagarla, verificalo con lui per telefono. Il nome è nel riquadro.");
+		expect(line).not.toMatch(/IT\d{2}X/);
+	});
+
+	it("flags a supplier with few invoices using the name of another with another partita IVA and IBAN", async () => {
+		const impostor = rec({ name: "Fornitore Uno", vat: "00000050013" }, "X-1", "2026-10-12", "900.00", "2026-10-23", IBAN_D);
+		const s = await setup({ files: { ...FILES, "f/x1.xml": impostor } });
+		const card = await s.run({ op: "summary", supplier: "IT00000050013" });
+		expect(outside(card)).toContain("Attenzione: c'è un altro fornitore con lo stesso nome ma un'altra partita IVA e un altro IBAN. Prima di pagare, verifica con il fornitore per telefono, a un numero che conosci già.");
+		expect(inside(card)).toContain("Stesso nome, altro fornitore: Fornitore Uno S.r.l. (partita IVA IT00000010017)");
+		// The real one, with its history, is not the suspect.
+		expect(outside(await s.run({ op: "summary", supplier: "IT00000010017" }))).not.toContain("stesso nome");
+		const line = await s.run({ op: "summary", compact: true });
+		expect(outside(line)).toContain("Un fornitore con una fattura da pagare entro 7 giorni ha lo stesso nome di un altro fornitore ma un'altra partita IVA o un altro IBAN. Prima di pagare, verifica con il fornitore per telefono, a un numero che conosci già.");
+		expect(outside(line)).toContain("I nomi sono nel riquadro.");
+		expect(inside(line)).toContain("Stesso nome di un altro fornitore: Fornitore Uno");
+		expect(inside(line)).toContain("IBAN cambiato: Fornitore Uno S.r.l.");
+		expect(line).not.toMatch(/IT\d{2}X/);
+		const csv = await s.run({ op: "export" }, durable("exp-imp"));
+		expect(csv).toContain("Salvato");
+		clean(s.answers);
+	});
+});
+
 describe("suppliers: payment days and late payments", () => {
 	it("says how many days the supplier is paid after the invoice, against the terms", async () => {
 		const s = await setup();
 		const uno = await s.run({ op: "summary", supplier: "Fornitore Uno S.r.l.", period: "anno" });
 		// 35 and 30 days from the invoice (33 on average), terms 30; April's paid 5 days after its due date.
-		expect(outside(uno)).toContain("lo hai pagato in media a 33 giorni dalla data della fattura, con termini di pagamento medi di 30 giorni; 1 su 2 pagate in ritardo, in media di 5 giorni.");
+		expect(outside(uno)).toContain("lo hai pagato in media a 33 giorni dalla data della fattura, con termini di pagamento medi di 30 giorni; 1 rata pagata dopo la scadenza su 2, in media di 5 giorni.");
 		expect(outside(uno)).toContain("Da pagare: 400,00 € su 1 fattura; prossima scadenza il 22 ottobre, 400,00 €.");
 		expect(outside(uno)).toContain("Ultimo pagamento: il 1º luglio, 610,00 € (una fattura).");
 		expect(outside(uno)).toContain("ti ha fatturato 2.230,00 €, IVA inclusa, su 3 fatture");
@@ -300,8 +377,8 @@ describe("suppliers: payment days and late payments", () => {
 		expect(outside(late)).toContain("Oggi hai 244,00 € di fatture scadute da pagare a 1 fornitore.");
 		expect(outside(late)).toContain("Negli ultimi 12 mesi hai pagato in ritardo 2 fornitori.");
 		expect(inside(late)).toContain("• Rossi Srl: 244,00 € (1 rata, la più vecchia da 48 giorni)");
-		expect(inside(late)).toContain("• Rossi Srl: 1 su 1 rate dopo la scadenza, in media di 19 giorni");
-		expect(inside(late)).toContain("• Fornitore Uno S.r.l.: 1 su 2 rate dopo la scadenza, in media di 5 giorni");
+		expect(inside(late)).toContain("• Rossi Srl: 1 rata pagata dopo la scadenza su 1, in media di 19 giorni");
+		expect(inside(late)).toContain("• Fornitore Uno S.r.l.: 1 rata pagata dopo la scadenza su 2, in media di 5 giorni");
 		expect(inside(late)).not.toContain("Rossi SpA");
 		const rossi = await s.run({ op: "summary", supplier: "Rossi Srl" });
 		expect(outside(rossi)).toContain("Da pagare: 244,00 € su 1 fattura, di cui 244,00 € scaduti (1 rata, la più vecchia da 48 giorni).");
@@ -322,6 +399,63 @@ describe("suppliers: payment days and late payments", () => {
 		// A proposal is not a payment.
 		const p = await setup({ bank: { movements: [movement], matches: [{ ...match, state: "proposed" }] } });
 		expect(outside(await p.run({ op: "summary", supplier: "Fornitore Uno" }))).toContain("Da pagare: 400,00 €");
+	});
+});
+
+describe("suppliers: a partita IVA dictated never moves invoices", () => {
+	it("refuses another supplier's partita IVA on a card, and one that splits the supplier from its invoices", async () => {
+		const s = await setup();
+		await s.run({ op: "contact_set", supplier: "Fornitore Uno S.r.l.", contact: { name: "Laura" } });
+		const takeover = await s.run({ op: "contact_set", supplier: "Fornitore Uno S.r.l.", vat: "00000030015" });
+		expect(outside(takeover)).toContain("Non la segno: questa partita IVA è già di un altro fornitore, nel riquadro. Se sono lo stesso fornitore, posso unirli.");
+		expect(inside(takeover)).toContain("Aruba: IT00000030015");
+		expect(s.store.read().cards[0]?.vat).toBe("IT00000010017");
+		expect(outside(await s.run({ op: "summary", supplier: "Aruba", period: "anno" }))).toContain("172,00 €");
+		const split = await s.run({ op: "contact_set", supplier: "Fornitore Uno S.r.l.", vat: "00000050013" });
+		expect(outside(split)).toContain("Non la segno: le fatture o le spese di questo fornitore hanno un'altra partita IVA, nel riquadro. Chiedi a chi ti scrive quale è giusta");
+		expect(inside(split)).toContain("Nelle fatture o nelle spese: IT00000010017");
+		expect(inside(split)).toContain("Detta ora: IT00000050013");
+		expect(s.store.read().cards[0]?.vat).toBe("IT00000010017");
+		// A partita IVA only in the registers (Rossi Srl has no card) is another supplier's too.
+		const theirs = await s.run({ op: "contact_set", supplier: "Uno Forniture", vat: "IT00000020016" });
+		expect(outside(theirs)).toContain("questa partita IVA è già di un altro fornitore");
+		expect(s.store.read().cards).toHaveLength(1);
+		clean(s.answers);
+	});
+});
+
+describe("suppliers: the same money that may be counted twice is said", () => {
+	it("top and the totals say a payment that may be an expense too, and never claim it is counted once", async () => {
+		const twin = [...EXPENSES, expense("S-2026-0006", "2026-07-02", "610", { supplier: "Cartoleria Verdi" })];
+		const s = await setup({ expenses: twin });
+		const top = await s.run({ op: "top", period: "anno" });
+		expect(outside(top)).not.toContain("una volta sola");
+		expect(outside(top)).toContain("Un pagamento di fattura potrebbe essere anche una spesa registrata: l'ho contato una volta come fattura e una come spesa.");
+		const totals = await s.run({ op: "summary", period: "anno" });
+		expect(outside(totals)).toContain("Un pagamento di fattura potrebbe essere anche una spesa registrata");
+		expect(String(await s.tool.execute({ op: "top", period: "anno" }, agent()))).toContain("1 pagamento di fattura potrebbe essere anche una spesa registrata: contati entrambi.");
+		const plain = await (await setup()).run({ op: "top", period: "anno" });
+		expect(plain).toContain("gli stessi soldi una volta sola");
+		clean(s.answers);
+	});
+});
+
+describe("suppliers: copy", () => {
+	it("asks on a name only close before showing anything, says a same-day payment, and words the card", async () => {
+		const s = await setup();
+		const close = await s.run({ op: "summary", supplier: "Fornitor Uno S.r.l." });
+		expect(outside(close)).toContain("Intendi questo fornitore?");
+		expect(close).not.toMatch(/IT\d{2}X|Da pagare/);
+		const aruba = await s.run({ op: "summary", supplier: "Aruba" });
+		expect(outside(aruba)).toContain("lo hai pagato in media il giorno stesso della fattura; mai in ritardo.");
+		expect(outside(aruba)).not.toContain("termini di pagamento medi di 0");
+		expect(outside(aruba).split("\n")[0]).toBe("Il fornitore è nel riquadro.");
+		await s.run({ op: "note_add", supplier: "Aruba", note: "fattura a fine mese" });
+		expect(outside(await s.run({ op: "summary", supplier: "Aruba" })).split("\n")[0]).toBe("Il fornitore è nel riquadro (scheda FO-0001).");
+		// A name said with a legal form the supplier's has not: said even on the card.
+		const form = await s.run({ op: "summary", supplier: "Adobe Srl" });
+		expect(outside(form)).toContain("Ho preso il fornitore che si chiama così senza la forma societaria, nel riquadro.");
+		clean(s.answers);
 	});
 });
 
@@ -376,7 +510,7 @@ describe("suppliers: export", () => {
 		expect(csv).toContain(`"'=HYPERLINK(""http://x.example"",""clic"")"`);
 		expect(csv).toContain(";'@cmd;'+39 333 1234567;");
 		expect(csv).toContain("Fornitore Uno S.r.l.;FO-0001;IT00000010017;");
-		expect(csv).toContain(`;${IBAN_B};sì;`);
+		expect(csv).toContain(`;${IBAN_A};${IBAN_B};sì;`);
 		expect(csv).toContain(";1830,00;");
 		// Run again: the same file, not a second.
 		expect(untagged(await s.run({ op: "export" }, durable("exp-1")))).toBe(untagged(first));
@@ -416,7 +550,7 @@ describe("suppliers: the brief", () => {
 	it("says a changed IBAN only when an invoice of that supplier is due within 7 days, never the IBAN", async () => {
 		const s = await setup();
 		const line = await s.run({ op: "summary", compact: true });
-		expect(outside(line)).toContain("Fornitori: un fornitore con una fattura da pagare entro 7 giorni ha sull'ultima fattura un IBAN diverso da quello di prima");
+		expect(outside(line)).toContain("Un fornitore con una fattura da pagare entro 7 giorni ha cambiato IBAN sull'ultima fattura. Prima di pagarla, verificalo con lui per telefono. Il nome è nel riquadro.");
 		expect(inside(line)).toBe("IBAN cambiato: Fornitore Uno S.r.l.");
 		expect(outside(line)).not.toContain("Fornitore Uno");
 		expect(line).not.toMatch(/IT\d{2}X/);
