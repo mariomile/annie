@@ -309,6 +309,10 @@ _Avoid_: catalogo, tariffario (per il listino)
 Quello che Annie sa di chi la persona paga (FO-NNNN): note, referenti e IBAN o partita IVA solo come li dice la persona; spesa, fatture aperte, giorni di pagamento e abbonamenti letti ogni volta dai registri. Un IBAN da pagare diverso da quelli già pagati si verifica per telefono prima di pagare. Vedi ADR 0085.
 _Avoid_: anagrafica fornitore, vendor (per la scheda del fornitore)
 
+**Budget**:
+Un limite di spesa che la persona si dà (BU-NNNN) su una categoria, un fornitore o tutte le spese, per mese, trimestre o anno; o un obiettivo di fatturato o incassato. Annie lo segue dai registri e avvisa una volta quando passa l'80% e il 100%. Vedi ADR 0086.
+_Avoid_: tetto di spesa, target (per il budget)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

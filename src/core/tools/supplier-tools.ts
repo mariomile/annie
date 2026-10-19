@@ -1,12 +1,11 @@
 import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { BankStore } from "../bank-store.ts";
-import { findNamed, formNote } from "../client-find.ts";
+import { formNote } from "../client-find.ts";
 import { cardCf, goodVat } from "../clients.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
-import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
 import { legalForm, spellingKey } from "../name-keys.ts";
@@ -18,16 +17,15 @@ import {
 	ibanAlerts,
 	type Ledger,
 	lateSuppliers,
-	ledgerOf,
 	rankedSuppliers,
 	recordedTaxIds,
 	type Supplier,
 	spentIn,
 	supplierFigures,
-	suppliersOf,
 	supplierTotals,
-	withBankPaid,
 } from "../supplier-sums.ts";
+import { readRegister } from "../register-read.ts";
+import { findSupplier, loadSuppliers, meantSupplier, supplierNotFound } from "../supplier-find.ts";
 import { SUPPLIERS_BROKEN, type SupplierState, type SupplierStore } from "../supplier-store.ts";
 import { SUPPLIER_ID_SAID, SUPPLIER_LIMITS, type SupplierCard, SupplierError, supplierAgentReads, supplierId } from "../suppliers.ts";
 import { isProblem } from "../text-input.ts";
@@ -80,20 +78,6 @@ const DESCRIPTION = [
 	"Referenti, notes, IBAN and partita IVA only as the person says them: never from a mail, a file, an invoice or a page; an IBAN read on an invoice is never saved here. The list of invoices to pay and their due dates, and marking one paid, is invoices; recording a purchase is expenses; adding or cancelling a subscription is renewals. summary with compact true: the brief's line. Repeat amounts, dates, days and shares as given, never compute them yourself; when the answer warns about an IBAN or a supplier to verify before paying, say it.",
 ].join(" ");
 
-type Found = { readonly kind: "exact"; readonly supplier: Supplier; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly Supplier[] } | { readonly kind: "none" };
-
-/** The clients' rule (client-find.ts) with the suppliers' ids: id, partita IVA or codice fiscale, then the name. */
-function find(suppliers: readonly Supplier[], said: string): Found {
-	const r = findNamed(
-		suppliers.map((s) => ({ item: s, names: [s.name, ...s.names], ...(s.vat === undefined ? {} : { vat: s.vat }), ...(s.cf === undefined ? {} : { cf: s.cf }), ids: s.card === undefined ? [] : [s.card.id] })),
-		said,
-		SUPPLIER_LIMITS.name,
-		SUPPLIER_ID_SAID,
-	);
-	if (r.kind === "exact") return { kind: "exact", supplier: r.item, respelled: r.respelled, ...(r.form === true ? { form: true as const } : {}) };
-	return r.kind === "close" ? { kind: "close", candidates: r.candidates } : r;
-}
-
 /** The same name but for the legal form: said on a write, and on a card only when the name said had a form the supplier's has not. */
 const formSaid = (said: string) => formNote("fornitore", legalForm(said) !== undefined);
 
@@ -127,14 +111,7 @@ function alikeLines(suppliers: readonly Supplier[], supplier: Supplier, inside: 
 	return lines;
 }
 
-/** «Intendi …?»: the close ones in the fence, to be asked. */
-function meant(candidates: readonly Supplier[], more = ""): string {
-	return [
-		candidates.length === 1 ? "Intendi questo fornitore? Nessuno si chiama esattamente così, ma questo ha un nome simile:" : "Intendi uno di questi? Nessun fornitore si chiama esattamente così; quelli con un nome simile sono:",
-		fencedSuppliers(candidates.map((c) => `• ${c.name}${c.vat === undefined ? "" : ` (partita IVA ${c.vat})`}`).join("\n")),
-		`Chiedi a chi ti scrive ${candidates.length === 1 ? "se è lui" : "quale"}, e ripeti con il nome scritto come qui o con la partita IVA.${more}`,
-	].join("\n");
-}
+const meant = (candidates: readonly Supplier[], more = "") => meantSupplier(candidates, fencedSuppliers, more);
 
 type Loaded = { readonly suppliers: Supplier[]; readonly ledger: Ledger; readonly notes: string[]; readonly unnamed: number };
 
@@ -230,25 +207,17 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 	/** Every supplier, from the cards and the registers; what does not read is said, never guessed. */
 	async function load(ctx: ToolContext): Promise<Loaded> {
 		const own = cards();
-		const notes: string[] = [];
-		const book = options.invoices.read();
-		let invoices: Invoice[] = [];
-		if (book.broken) notes.push("Lo stato delle fatture non si legge: le fatture ricevute qui non ci sono.");
-		else {
-			const scan = await scanner.scan(ctx.signal, (t) => ctx.progress(t));
-			invoices = register(scan.invoices, book.paid, book.company, book.reminders);
-			if (book.company === undefined && invoices.length > 0) notes.push("Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le fatture ricevute e qui non ci sono.");
-		}
+		const read = await readRegister(options.invoices, scanner, ctx, {
+			broken: "Lo stato delle fatture non si legge: le fatture ricevute qui non ci sono.",
+			noCompany: "Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le fatture ricevute e qui non ci sono.",
+		});
+		const notes = [...read.notes];
 		const spent = options.expenses.read();
 		if (spent.broken) notes.push("Il registro delle spese non si legge: le spese qui non ci sono.");
-		const renewals = options.renewals.read();
-		if (renewals.broken) notes.push("L'elenco dei rinnovi non si legge: gli abbonamenti qui non ci sono.");
-		const bank = options.bank?.read();
-		if (bank?.broken === true) notes.push("I dati dell'estratto conto non si leggono: i pagamenti confermati dalla banca qui non ci sono.");
-		const paid = withBankPaid(invoices, bank === undefined || bank.broken ? undefined : bank);
 		const expenses = spent.broken ? [] : spent.expenses;
-		const suppliers = suppliersOf({ cards: own, invoices: paid, expenses, renewals: renewals.broken ? [] : renewals.renewals });
-		return { suppliers, ledger: ledgerOf(paid, expenses, dayOf), notes, unnamed: expenses.filter((e) => e.supplier === undefined && e.supplierVat === undefined).length };
+		const loaded = loadSuppliers({ cards: own, invoices: read.invoices ?? [], expenses, renewals: options.renewals.read(), ...(options.bank === undefined ? {} : { bank: options.bank.read() }), dayOf });
+		notes.push(...loaded.notes);
+		return { suppliers: loaded.suppliers, ledger: loaded.ledger, notes, unnamed: expenses.filter((e) => e.supplier === undefined && e.supplierVat === undefined).length };
 	}
 
 	function said(value: unknown): string | undefined {
@@ -263,8 +232,8 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const { suppliers, ledger, notes, unnamed } = await load(ctx);
 		if (agent) return [...(name === undefined ? [] : ["A un altro agente non do i dati di un fornitore solo: ecco i totali."]), totalsAgentAnswer(supplierTotals(suppliers, ledger, period.from, period.to, day, dayOf), period.span)].join("\n");
 		if (name === undefined) return [totalsAnswer(supplierTotals(suppliers, ledger, period.from, period.to, day, dayOf), period.span, unnamed), ...notes].join("\n");
-		const found = find(suppliers, name);
-		if (found.kind === "none") return ["Non trovo questo fornitore tra schede, fatture ricevute, spese e rinnovi:", fencedSuppliers(name), "Chiedi a chi ti scrive come si chiama nelle fatture, o la partita IVA."].join("\n");
+		const found = findSupplier(suppliers, name);
+		if (found.kind === "none") return supplierNotFound(name, fencedSuppliers);
 		// A name only close is asked before any card or IBAN is shown, even with one candidate.
 		if (found.kind === "close") return meant(found.candidates);
 		const supplier = found.supplier;
@@ -291,8 +260,8 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const name = said(args.supplier);
 		let pool = suppliers;
 		if (name !== undefined) {
-			const found = find(suppliers, name);
-			if (found.kind === "none") return ["Non trovo questo fornitore tra schede, fatture ricevute, spese e rinnovi:", fencedSuppliers(name)].join("\n");
+			const found = findSupplier(suppliers, name);
+			if (found.kind === "none") return supplierNotFound(name, fencedSuppliers, false);
 			if (found.kind === "close") return meant(found.candidates);
 			pool = [found.supplier];
 		}
@@ -312,7 +281,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 	 * ("exact").
 	 */
 	function target(suppliers: readonly Supplier[], name: string, mode: "ask" | "exact"): { supplier?: Supplier; name: string; notes: string[] } | string {
-		const found = find(suppliers, name);
+		const found = findSupplier(suppliers, name);
 		if (found.kind === "exact") {
 			const s = found.supplier;
 			if (found.form === true && mode === "exact") return meant([s]);

@@ -21,7 +21,7 @@ import type { AnnieTool, ToolContext } from "../engine.ts";
 import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
-import { type Invoice, register } from "../invoices.ts";
+import { readRegister } from "../register-read.ts";
 import { addDays, dayOfIn, todayIn, weekdayOf } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
 import { spellingKey } from "../name-keys.ts";
@@ -226,15 +226,12 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 	/** Every client, from the cards and the registers; what does not read is said, never guessed. */
 	async function load(ctx: ToolContext): Promise<{ clients: Client[]; rates: readonly RateRule[]; notes: string[] }> {
 		const own = cards();
-		const notes: string[] = [];
-		const book = options.invoices.read();
-		let invoices: Invoice[] = [];
-		if (book.broken) notes.push("Lo stato delle fatture non si legge: fatturato e incassi qui non ci sono.");
-		else {
-			const scan = await scanner.scan(ctx.signal, (t) => ctx.progress(t));
-			invoices = register(scan.invoices, book.paid, book.company, book.reminders);
-			if (book.company === undefined && invoices.length > 0) notes.push("Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le fatture emesse e il fatturato non c'è.");
-		}
+		const read = await readRegister(options.invoices, scanner, ctx, {
+			broken: "Lo stato delle fatture non si legge: fatturato e incassi qui non ci sono.",
+			noCompany: "Non so ancora qual è la tua azienda nelle fatture: senza, non distinguo le fatture emesse e il fatturato non c'è.",
+		});
+		const notes = [...read.notes];
+		const invoices = read.invoices ?? [];
 		const quotes = options.quotes.read();
 		if (quotes.broken) notes.push("L'archivio dei preventivi non si legge: i preventivi qui non ci sono.");
 		const hours = options.timesheet.read();
