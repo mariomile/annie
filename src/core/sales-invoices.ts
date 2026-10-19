@@ -163,6 +163,8 @@ export type SalesInvoice = Marker & {
 	readonly hours?: readonly HoursRef[];
 	/** The call that made the draft: a call run again finds it. */
 	readonly callId: string;
+	/** A draft made in place of another (replace): the call that made the first of them, so who made that one still finds it. */
+	readonly origin?: string;
 	/** The number the draft said it would take, issued that day: at issue a different one is explained. */
 	readonly expected?: string;
 	// Set when issued.
@@ -422,6 +424,7 @@ export function invoiceProblem(v: unknown): string | undefined {
 		[i.type !== INVOICE_TYPE && i.type !== CREDIT_NOTE_TYPE, "il tipo di documento"],
 		[i.regime !== REGIME_ORDINARIO && i.regime !== REGIME_FORFETTARIO, "il regime fiscale"],
 		[!isText(i.callId, 200), "la richiesta che l'ha fatta"],
+		[i.origin !== undefined && !isText(i.origin, 200), "la richiesta della prima bozza"],
 		[!Array.isArray(i.lines) || i.lines.length === 0 || i.lines.length > SALES_LIMITS.lines, `le righe (da 1 a ${SALES_LIMITS.lines})`],
 	]);
 	if (head !== undefined) return head;

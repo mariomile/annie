@@ -23,6 +23,7 @@ import { WithholdingStore } from "./withholding-store.ts";
 import { ClientStore } from "./client-store.ts";
 import { SupplierStore } from "./supplier-store.ts";
 import { BudgetStore } from "./budget-store.ts";
+import { RecurringStore } from "./recurring-invoice-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
@@ -260,6 +261,11 @@ export class AnnieRuntime {
 	/** Budget e obiettivi of an instance: the spending limits and income targets the person set. */
 	budgets(tenant: string, instance: string): BudgetStore {
 		return new BudgetStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Le fatture ricorrenti of an instance: the canoni whose drafts Annie prepares every period. */
+	recurringInvoices(tenant: string, instance: string): RecurringStore {
+		return new RecurringStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** Le fatture emesse of an instance: drafts, invoices issued, numbering. */

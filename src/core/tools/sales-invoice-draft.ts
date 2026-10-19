@@ -262,10 +262,17 @@ function fromList(env: SalesEnv, args: Record<string, unknown>): { args: Record<
 	return { args: { ...args, lines: filled.lines }, notes: filled.notes };
 }
 
-/** A draft of an invoice (TD01), from a quote, the hours or the lines. */
-export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
+/** What a draft checked with `check` answers when it could be made: every datum is there. */
+export const DRAFT_CHECKED = "[la bozza si può fare]";
+
+/**
+ * A draft of an invoice (TD01), from a quote, the hours or the lines. `check`: everything is
+ * read and asked as for a draft, and nothing is saved: DRAFT_CHECKED when it could be made (the
+ * recurring invoices ask what is missing once, when they are set).
+ */
+export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: ToolContext, day: string, o: { readonly check?: boolean } = {}): Promise<string> {
 	const book = env.book();
-	const done = again(book, ctx, day);
+	const done = o.check === true ? undefined : again(book, ctx, day);
 	if (done !== undefined) {
 		await env.audit(ctx, "draft", 1);
 		return done;
@@ -343,7 +350,7 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 	if (missing.me.length > 0) tails.unshift(SELLER_TAIL);
 	const order = readOrder(args.order);
 	if (isProblem(order)) return `Errore: ${order.problem}.`;
-	const causale = cleanText(args.notes, SALES_LIMITS.causale, "le note");
+	const causale = cleanText(args.notes, SALES_LIMITS.causale, "il testo delle note");
 	if (isProblem(causale)) return `Errore: ${causale.problem}.`;
 	if (causale !== undefined && !fitsLatin(causale, FIELD_LIMITS.causale)) return `Errore: le note sono troppo lunghe per la fattura (al massimo ${FIELD_LIMITS.causale} caratteri).`;
 	if (args.bollo_to_client !== undefined && typeof args.bollo_to_client !== "boolean") return "Errore: il bollo è a carico del cliente o no.";
@@ -388,6 +395,7 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 		...(saveRitenuta === undefined ? {} : { ritenutaToBusiness: saveRitenuta }),
 		...(first.save === undefined ? {} : { lastBefore: first.save }),
 	};
+	if (o.check === true) return DRAFT_CHECKED;
 	return save(env, args, ctx, day, fieldsOut, notes, "draft", (state) => settingsAfter(state, patch, year, env.marker(ctx)));
 }
 
@@ -471,7 +479,7 @@ export async function creditNote(env: SalesEnv, args: Record<string, unknown>, c
 	const pairs = new Set(originalRows.map(rowKey));
 	const stranger = lines.findIndex((l) => !pairs.has(rowKey(l)));
 	if (stranger >= 0) return `Errore: la riga ${stranger + 1} della nota di credito è ${rowName(lines[stranger] as SalesLine)}, che la fattura n. ${original.number} non ha: ogni riga va con un'aliquota della fattura (${originalRows.map(rowName).join(", ")}).`;
-	const causale = cleanText(args.notes, SALES_LIMITS.causale, "le note");
+	const causale = cleanText(args.notes, SALES_LIMITS.causale, "il testo delle note");
 	if (isProblem(causale)) return `Errore: ${causale.problem}.`;
 	if (args.wrong_customer !== undefined && typeof args.wrong_customer !== "boolean") return "Errore: il cliente sbagliato è sì o no.";
 	const fields = {
@@ -512,7 +520,8 @@ async function save(env: SalesEnv, args: Record<string, unknown>, ctx: ToolConte
 		const old = replace === undefined ? undefined : state.invoices.find((i) => i.id === replace);
 		if (replace !== undefined && (old === undefined || isIssued(old))) throw new SalesInvoiceError(`la bozza ${replace} da sostituire non c'è, o è già emessa`);
 		if (state.invoices.length >= SALES_LIMITS.invoices) throw new SalesInvoiceError("l'archivio delle fatture è pieno");
-		const inv: SalesInvoice = { ...marker, ...fields, id: draftId(state.nextDraft), callId: ctx.callId, expected: nextNumber(state, day) };
+		// In place of another: the lineage stays, so whoever made the first one (a recurring invoice) still finds it.
+		const inv: SalesInvoice = { ...marker, ...fields, id: draftId(state.nextDraft), callId: ctx.callId, ...(old === undefined ? {} : { origin: old.origin ?? old.callId }), expected: nextNumber(state, day) };
 		return { ...state, nextDraft: state.nextDraft + 1, invoices: [...state.invoices.filter((i) => i !== old), inv] };
 	});
 	const book = env.book();

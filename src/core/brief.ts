@@ -1,5 +1,6 @@
 import type { AuditRecord } from "./audit.ts";
 import { budgetCallReads } from "./budgets.ts";
+import { recurringCallReads } from "./recurring-invoices.ts";
 import { businessCallReads } from "./business-report.ts";
 import { cashflowCallReads } from "./cashflow.ts";
 import { clientCallReads } from "./clients.ts";
@@ -92,7 +93,8 @@ const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "goog
  * reads with summary (compact: the brief's line), top and late; notes, referenti, the IBAN
  * dictated, merges and exports write. budgets (budget e obiettivi) reads with status (compact:
  * the brief's line, which marks its alerts as said, each once a period) and list; setting,
- * removing and exporting write.
+ * removing and exporting write. recurring_invoices (le fatture ricorrenti) reads with list and
+ * show; adding, changing, pausing, resuming, removing and preparing a draft now write.
  */
 const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = new Map([
 	["invoices", invoiceCallReads],
@@ -112,6 +114,7 @@ const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = n
 	["price_list", priceListCallReads],
 	["suppliers", supplierCallReads],
 	["budgets", budgetCallReads],
+	["recurring_invoices", recurringCallReads],
 ]);
 
 /**

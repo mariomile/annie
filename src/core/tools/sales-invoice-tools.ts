@@ -8,17 +8,15 @@
  * Another agente gets only the year's counts and totals; the audit only the op and a count.
  */
 import { AGENT_CHANNEL } from "../agent-messages.ts";
-import { makeDocumentFile } from "../document-reader.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { todayIn } from "../italian-calendar.ts";
-import type { MadeDocument, MakeInput } from "../make-document.ts";
 import { CREDIT_NOTE_TYPE, FIELD_LIMITS, RITENUTA_CAUSALI, STALE_DRAFT_DAYS } from "../sales-invoice-rules.ts";
-import { nextSeq, SALES_BROKEN, type SalesBook } from "../sales-invoice-store.ts";
+import { nextSeq, type SalesBook } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { type IssuedInvoice, invoiceNumber, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, salesAgentReads } from "../sales-invoices.ts";
 import { WorkspaceError } from "../workspace.ts";
 import { creditNote, draft, lowNumberNote, readLastNumber } from "./sales-invoice-draft.ts";
-import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEvent, type SalesStores } from "./sales-invoice-env.ts";
+import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEnvOptions, type SalesStores, salesEnvOf } from "./sales-invoice-env.ts";
 import { finish, issue } from "./sales-invoice-issue.ts";
 import { agentListAnswer, briefLine, fenced, invoiceLines, listAnswer } from "./sales-invoice-render.ts";
 
@@ -27,12 +25,12 @@ export type { SalesEvent } from "./sales-invoice-env.ts";
 const SALES_OPS = ["draft", "credit_note", "show", "list", "issue", "finish", "remove", "settings"] as const;
 type Op = (typeof SALES_OPS)[number];
 
+/** The stores, who is who, the audit, and (tests) the clock and the PDF maker: what builds the env (sales-invoice-env.ts salesEnvOf). */
 export type SalesToolsOptions = SalesStores & {
-	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
-	readonly record?: (event: SalesEvent) => Promise<void>;
-	/** Tests: the clock and the PDF maker. */
-	readonly now?: () => Date;
-	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
+	readonly whoIs: SalesEnvOptions["whoIs"];
+	readonly record?: SalesEnvOptions["record"];
+	readonly now?: SalesEnvOptions["now"];
+	readonly make?: SalesEnvOptions["make"];
 };
 
 const DESCRIPTION = [
@@ -40,33 +38,14 @@ const DESCRIPTION = [
 	"What the person says → op: «fammi la fattura a Rossi per il preventivo 4» → draft with quote; «fattura a Rossi le ore non fatturate» → draft with customer and hours true (period, if said); «fattura a Rossi: consulenza 500 euro» → draft with customer and lines; «fai una nota di credito per la fattura 12» → credit_note with invoice (lines only for a partial one; wrong_customer true when it was made to the wrong customer); «emettila», «sì, va bene» after a draft → issue with draft and confirm true, only after the person said yes to the draft as shown; an invoice whose issue is not complete → finish with invoice; «le fatture emesse quest'anno» → list (only the invoices issued with Annie); «quanto ho fatturato quest'anno / a Rossi?» → clients (op top, or show for one customer), not this tool; «fammi vedere la fattura 12» → show; «togli la bozza» → remove; «numera le fatture come 2026/1», «l'ultima fattura che ho fatto era la 41», the bollo always on the customer, the ritenuta to companies → settings.",
 	"A change to a draft («cambia il prezzo della riga 2 a 900», «sì, il bollo lo paga il cliente») → draft again with the whole request and the change, and replace with the draft's id. With quote, lines or customer replace the quote's (the quote stays linked).",
 	"draft: vat (22, 10, 5, 4, or 0 with natura) and natura for every line unless a line has its own; in the forfettario nothing (no VAT, N2.2 and the dicitura by themselves); a spesa anticipata in nome e per conto del cliente → a line with advance true; ritenuta true or false only as the person answers; cassa {kind rivalsa_inps or contributo_integrativo, type TC01…TC21 for a cassa, rate}; bollo_to_client as answered; payment_days, end_of_month, method, iban; the customer's vat_number, cf, address («Via Roma 1, 20121 Milano MI»), recipient_code, pec, country only as the person says them; new_customer true only when the person says it is a customer different from the ones proposed; order {id, cig, cup} for a public office; notes; last_number: the last number the person confirms or says (to «l'ultima è la 41: questa sarà la 42, va bene?», a yes is last_number 41).",
+	"An invoice that repeats every month, quarter or year to the same customer is set once with recurring_invoices, which prepares each period's draft; this tool issues it.",
 	"A line may name a voce of the listino with item instead of description and price; a voce not in the listino or not clear is asked, never priced by you.",
 	"When the tool asks for data, ask the person everything it lists in one message and never fill it in yourself. Repeat numbers and amounts as given, never compute them yourself.",
 ].join(" ");
 
 export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[] {
-	const { whoIs, record, now: clock, make, ...stores } = options;
-	const { store, timeZone } = stores;
-	const now = clock ?? (() => new Date());
-	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
-	const env: SalesEnv = {
-		...stores,
-		now,
-		make: make ?? ((input: MakeInput) => makeDocumentFile(input)),
-		marker: (ctx) => ({ by: who(ctx), at: now().toISOString() }),
-		audit: async (ctx, op, count) => {
-			// Its own step: an audit that failed is written on the rerun, after the change it records.
-			await ctx.step(`audit-${op}`, async () => {
-				await record?.({ type: "sales_invoices.changed", op, count });
-				return true;
-			});
-		},
-		book: () => {
-			const book = store.read();
-			if (book.broken) throw new SalesInvoiceError(SALES_BROKEN);
-			return book;
-		},
-	};
+	const env: SalesEnv = salesEnvOf(options);
+	const { store, timeZone, now } = env;
 	const text = (max: number, description: string) => ({ type: "string", maxLength: max, description });
 	const line = {
 		type: "object",

@@ -313,6 +313,10 @@ _Avoid_: anagrafica fornitore, vendor (per la scheda del fornitore)
 Un limite di spesa che la persona si dà (BU-NNNN) su una categoria, un fornitore o tutte le spese, per mese, trimestre o anno; o un obiettivo di fatturato o incassato. Annie lo segue dai registri e avvisa una volta quando passa l'80% e il 100%. Vedi ADR 0086.
 _Avoid_: tetto di spesa, target (per il budget)
 
+**Fattura ricorrente**:
+Un canone che la persona fattura sempre allo stesso cliente (RI-NNNN) ogni mese, bimestre, trimestre, semestre o anno; Annie ne prepara la bozza a ogni periodo e avvisa, l'emissione resta della persona. Vedi ADR 0087.
+_Avoid_: abbonamento (per i canoni che fattura la persona: gli abbonamenti che paga sono i rinnovi)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

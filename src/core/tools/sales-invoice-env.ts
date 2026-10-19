@@ -15,8 +15,9 @@ import type { Marker } from "../marker.ts";
 import type { PriceListStore } from "../price-list-store.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { CREDIT_NOTE_TYPE, ISSUED_FOLDER } from "../sales-invoice-rules.ts";
-import type { SalesBook, SalesInvoiceStore } from "../sales-invoice-store.ts";
-import { type IssuedInvoice, isIssued, SALES_LIMITS, type SalesInvoice } from "../sales-invoices.ts";
+import { SALES_BROKEN, type SalesBook, type SalesInvoiceStore } from "../sales-invoice-store.ts";
+import { type IssuedInvoice, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError } from "../sales-invoices.ts";
+import { makeDocumentFile } from "../document-reader.ts";
 import type { TaxStore } from "../tax-store.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import type { Workspace } from "../workspace.ts";
@@ -41,6 +42,42 @@ export type SalesStores = {
 	readonly scanner: Pick<InvoiceScanner, "scan">;
 	readonly timeZone: string;
 };
+
+/** What builds the env: the stores, who is who, the audit, and (tests) the clock and the PDF maker. */
+export type SalesEnvOptions = SalesStores & {
+	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
+	readonly record?: (event: SalesEvent) => Promise<void>;
+	readonly now?: () => Date;
+	readonly make?: (input: MakeInput) => Promise<MadeDocument>;
+};
+
+/**
+ * The env every op of sales_invoices works with, and the recurring invoices too (their drafts are
+ * made by the same draft builder, with the same stores, markers and audit).
+ */
+export function salesEnvOf(options: SalesEnvOptions): SalesEnv {
+	const { whoIs, record, now: clock, make, ...stores } = options;
+	const now = clock ?? (() => new Date());
+	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
+	return {
+		...stores,
+		now,
+		make: make ?? ((input: MakeInput) => makeDocumentFile(input)),
+		marker: (ctx) => ({ by: who(ctx), at: now().toISOString() }),
+		audit: async (ctx, op, count) => {
+			// Its own step: an audit that failed is written on the rerun, after the change it records.
+			await ctx.step(`audit-${op}`, async () => {
+				await record?.({ type: "sales_invoices.changed", op, count });
+				return true;
+			});
+		},
+		book: () => {
+			const book = stores.store.read();
+			if (book.broken) throw new SalesInvoiceError(SALES_BROKEN);
+			return book;
+		},
+	};
+}
 
 export type SalesEnv = SalesStores & {
 	readonly now: () => Date;
