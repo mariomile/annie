@@ -18,6 +18,7 @@ import { CREDIT_NOTE_TYPE, ISSUED_FOLDER } from "../sales-invoice-rules.ts";
 import { SALES_BROKEN, type SalesBook, type SalesInvoiceStore } from "../sales-invoice-store.ts";
 import { type IssuedInvoice, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError } from "../sales-invoices.ts";
 import { makeDocumentFile } from "../document-reader.ts";
+import type { AppointmentLink } from "../appointment-store.ts";
 import type { DdtLink } from "../ddt-store.ts";
 import type { StockLink } from "../stock-store.ts";
 import type { TaxStore } from "../tax-store.ts";
@@ -44,6 +45,8 @@ export type SalesStores = {
 	readonly stock?: StockLink;
 	/** I DDT: a fattura differita bills the vendita DDTs of a client in a month, marked billed when it is issued. */
 	readonly ddt?: DdtLink;
+	/** Gli appuntamenti: an invoice bills a client's appointments fatti, marked billed when it is issued. */
+	readonly appointments?: AppointmentLink;
 	/** The workspace's invoices (the scadenzario's scanner): the numbers already used this year. */
 	readonly scanner: Pick<InvoiceScanner, "scan">;
 	readonly timeZone: string;

@@ -32,6 +32,7 @@ import { WorkspaceError } from "../workspace.ts";
 import { askGroups, dueOf, filesSay, findIssued, namedDraft, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { courtesyMarkdown, fenced, invoiceLines, issuedAnswer } from "./sales-invoice-render.ts";
 import { markStock, stockPreview } from "./sales-invoice-stock.ts";
+import { appointmentProblem, markAppointments } from "./sales-appointments.ts";
 import { ddtPreview, ddtProblem, markDdt } from "./sales-ddt.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
@@ -134,8 +135,9 @@ async function complete(env: SalesEnv, start: IssuedInvoice, ctx: ToolContext, n
 	const quote = await markQuote(env, inv, ctx);
 	const stock = await markStock(env, inv, ctx);
 	const ddt = await markDdt(env, inv, ctx);
-	notes.push(...hours.notes, ...quote.notes, ...stock.notes, ...ddt.notes);
-	if (inv.file !== undefined && hours.done && quote.done && stock.done && ddt.done) {
+	const appointments = await markAppointments(env, inv, ctx);
+	notes.push(...hours.notes, ...quote.notes, ...stock.notes, ...ddt.notes, ...appointments.notes);
+	if (inv.file !== undefined && hours.done && quote.done && stock.done && ddt.done && appointments.done) {
 		env.store.setFinished(inv.id);
 		// The audit once: on the run that finishes it, or the next one when a crash came in between.
 		const now = env.book().invoices.find((i) => i.id === inv.id);
@@ -160,6 +162,8 @@ async function ready(env: SalesEnv, draft: SalesInvoice, day: string): Promise<S
 	if (quote !== undefined) return quote;
 	const ddt = ddtProblem(env, draft);
 	if (ddt !== undefined) return ddt;
+	const appointments = appointmentProblem(env, draft);
+	if (appointments !== undefined) return appointments;
 	// A dry run with the longest number and progressive: a field that does not fit stops here, before a number is taken.
 	const year = Number(day.slice(0, 4));
 	const trial: IssuedInvoice = { ...draft, number: `${year}/99999`, year, seq: 99_999, date: day, seller: seller.seller, progressive: "ZZZZZ", issued: { by: draft.by, at: draft.at } };

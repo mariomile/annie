@@ -887,7 +887,7 @@ describe("week 60 review", () => {
 	});
 
 	it("U7: one line for the tools that speak only when they have something, the restored words", () => {
-		expect(BRIEF_INSTRUCTION).toContain("9. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary), business_report (summary), withholding (cu_list), fiscal_agenda (upcoming), suppliers (summary), budgets (status), stock (low), purchase_prices (increases), margins (ranking), orders (list), ddt (list).");
+		expect(BRIEF_INSTRUCTION).toContain("9. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary), business_report (summary), withholding (cu_list), fiscal_agenda (upcoming), suppliers (summary), budgets (status), stock (low), purchase_prices (increases), margins (ranking), orders (list), ddt (list), appointments (agenda).");
 		for (const words of ["il nome e quante voci restano", "sai in che città vive", "Se Google non è collegato o non è consentito"]) expect(BRIEF_INSTRUCTION).toContain(words);
 		expect(BRIEF_INSTRUCTION).not.toContain("come le ore");
 	});

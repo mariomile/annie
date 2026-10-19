@@ -211,6 +211,8 @@ export async function markDdt(env: SalesEnv, inv: IssuedInvoice, ctx: ToolContex
 async function releaseDdt(env: SalesEnv, inv: IssuedInvoice, ctx: ToolContext): Promise<{ notes: string[]; done: boolean }> {
 	const of = inv.related;
 	if (inv.release !== true || of === undefined) return { notes: [], done: true };
+	// A credit note of an invoice of appointments gives back those (sales-appointments.ts), not DDTs.
+	if (env.book().invoices.find((i) => i.id === of.id)?.ddt === undefined) return { notes: [], done: true };
 	const link = env.ddt;
 	if (link === undefined) return { notes: ["Attenzione: qui non vedo i DDT, quindi non li ho rimessi da fatturare."], done: false };
 	const n = await ctx.step("ddt-release", async () => {
