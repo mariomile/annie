@@ -63,7 +63,7 @@ export function clientsOf(src: ClientRegisters): Client[] {
 		const party = i.customer;
 		records.push({ ...partyOf(vatKey(vatOf(party)), party.fiscal?.toUpperCase(), party.name === undefined ? undefined : partyName(party)), person: false, item: { kind: "invoice", invoice: i } });
 	}
-	return groupParties(src.cards, records, { splitHomonyms: true }).map(({ items, ...g }) => ({
+	return groupParties(src.cards, records).map(({ items, ...g }) => ({
 		...g,
 		invoices: items.flatMap((x) => (x.kind === "invoice" ? [x.invoice] : [])),
 		quotes: items.flatMap((x) => (x.kind === "quote" ? [x.quote] : [])),

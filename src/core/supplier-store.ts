@@ -77,14 +77,16 @@ function validBook(raw: unknown): Book | undefined {
 		if (n >= b.nextCard || ids.has(c.id)) return undefined;
 		ids.add(c.id);
 	}
-	// Two cards never answer to the same name, partita IVA or codice fiscale.
-	const names = new Set<string>();
+	// Two cards never answer to the same partita IVA or codice fiscale, nor to the same name unless they hold two different ones (two suppliers sharing a name).
+	const names = new Map<string, SupplierCard[]>();
 	const vats = new Set<string>();
 	const cfs = new Set<string>();
+	const twoIds = (x: SupplierCard, y: SupplierCard) => (x.vat !== undefined && y.vat !== undefined && x.vat !== y.vat) || (x.cf !== undefined && y.cf !== undefined && x.cf !== y.cf);
 	for (const c of b.cards) {
 		for (const k of new Set([c.name, ...c.aliases].map(spellingKey))) {
-			if (names.has(k)) return undefined;
-			names.add(k);
+			const same = names.get(k) ?? [];
+			if (same.some((o) => !twoIds(o, c))) return undefined;
+			names.set(k, [...same, c]);
 		}
 		if (c.vat !== undefined) {
 			if (vats.has(c.vat)) return undefined;

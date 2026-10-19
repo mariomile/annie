@@ -372,9 +372,10 @@ function knownIbans(v: IbanView): string[] {
 
 /**
  * A supplier the person never confirmed, tied to its own tax id: no instalment paid, no expense
- * written with its partita IVA or codice fiscale, no card holding them or an IBAN dictated. A
- * bare card (a note, a referente) or an expense with a name only confirms nothing: the name is
- * what someone using another's would copy. Only such a supplier can be flagged as using another's
+ * written with its partita IVA or codice fiscale, no card the person confirmed (an IBAN, a
+ * partita IVA or a codice fiscale dictated). A card made by a note or a referente (its tax id
+ * taken from the registers) or an expense with a name only confirms nothing: the name is what
+ * someone using another's would copy. Only such a supplier can be flagged as using another's
  * name: once paid or confirmed, it is not flagged again, however many invoices it sends.
  */
 export function unconfirmed(s: Pick<Supplier, "invoices" | "expenses" | "card" | "vat" | "cf">): boolean {
@@ -382,7 +383,7 @@ export function unconfirmed(s: Pick<Supplier, "invoices" | "expenses" | "card" |
 	const mine = (t: { vat?: string; cf?: string }) => (s.vat !== undefined && t.vat === s.vat) || (s.cf !== undefined && t.cf === s.cf);
 	if (s.expenses.some((e) => mine(expenseTax(e.supplierVat)))) return false;
 	const c = s.card;
-	return c === undefined || (c.iban === undefined && !mine(c));
+	return c === undefined || (c.iban === undefined && (c.taxFrom === "registers" || !mine(c)));
 }
 
 /** Another supplier with the same name (another partita IVA, or another IBAN than the one known for it) when this one was never confirmed and has something to pay: to verify by phone before paying. */

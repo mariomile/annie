@@ -89,6 +89,12 @@ export type SupplierCard = Marker & {
 	readonly cf?: string;
 	/** An IBAN the person dictated: never changed by a document. */
 	readonly iban?: string;
+	/**
+	 * «registers»: the partita IVA or codice fiscale was taken from the registers when the card was
+	 * made (a note, a referente), not dictated: the card is linked to the supplier but does not
+	 * confirm it. Absent: dictated, or a card from before this field (confirmed, as it was).
+	 */
+	readonly taxFrom?: "registers";
 	readonly aliases: readonly string[];
 	readonly contacts: readonly SupplierContact[];
 	readonly notes: readonly SupplierNote[];
@@ -106,7 +112,8 @@ const plainText = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(
 export function validSupplierCard(v: unknown): v is SupplierCard {
 	if (!isMarker(v)) return false;
 	const c = v as SupplierCard;
-	for (const key of Object.keys(c)) if (!["id", "name", "vat", "cf", "iban", "aliases", "contacts", "notes", "edited", "by", "at"].includes(key)) return false;
+	for (const key of Object.keys(c)) if (!["id", "name", "vat", "cf", "iban", "taxFrom", "aliases", "contacts", "notes", "edited", "by", "at"].includes(key)) return false;
+	if (c.taxFrom !== undefined && c.taxFrom !== "registers") return false;
 	if (typeof c.id !== "string" || !SUPPLIER_ID.test(c.id) || !plainText(c.name, SUPPLIER_LIMITS.name) || spellingKey(c.name) === "") return false;
 	if (c.vat !== undefined && (typeof c.vat !== "string" || !goodVat(c.vat))) return false;
 	if (c.cf !== undefined && (typeof c.cf !== "string" || !("cf" in cardCf(c.cf)))) return false;

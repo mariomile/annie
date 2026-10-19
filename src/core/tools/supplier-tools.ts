@@ -10,13 +10,12 @@ import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
 import { legalForm, spellingKey } from "../name-keys.ts";
-import { cardNameKeys } from "../party-cards.ts";
+import { cardNameKeys, withOptional } from "../party-cards.ts";
 import { lookalikeParties } from "../party-groups.ts";
 import { rollingPeriodOf } from "../periods.ts";
 import type { RenewalStore } from "../renewal-store.ts";
 import {
 	ibanAlerts,
-	impostorOf,
 	type Ledger,
 	lateSuppliers,
 	ledgerOf,
@@ -97,6 +96,36 @@ function find(suppliers: readonly Supplier[], said: string): Found {
 
 /** The same name but for the legal form: said on a write, and on a card only when the name said had a form the supplier's has not. */
 const formSaid = (said: string) => formNote("fornitore", legalForm(said) !== undefined);
+
+/**
+ * The suppliers with a similar name, said apart by what they hold: a card with no tax id (which
+ * partita IVA is it?), the person's own expenses or renewals under a name with no partita IVA
+ * (of which of the two?), else another supplier that may be the same (to merge). Their names go
+ * into `inside`, the fence.
+ */
+function alikeLines(suppliers: readonly Supplier[], supplier: Supplier, inside: string[]): string[] {
+	const alike = lookalikeParties(suppliers, supplier);
+	const untaxed = (s: Supplier) => s.vat === undefined && s.cf === undefined && s.invoices.length === 0;
+	// Another supplier of the same name with another partita IVA: a name alone does not say which of the two.
+	const two = supplier.vat !== undefined && lookalikeParties(suppliers, supplier, { anyTax: true }).some((s) => s.vat !== undefined && s.vat !== supplier.vat);
+	const bare = alike.filter((s) => untaxed(s) && s.card !== undefined);
+	const own = two ? alike.filter((s) => untaxed(s) && s.card === undefined) : [];
+	const others = alike.filter((s) => !bare.includes(s) && !own.includes(s));
+	const lines: string[] = [];
+	if (bare.length > 0) {
+		lines.push(`${bare.length === 1 ? "C'è anche una scheda" : `Ci sono anche ${bare.length} schede`} con un nome simile e senza partita IVA, nel riquadro: chiedi a chi ti scrive di quale partita IVA ${bare.length === 1 ? "è" : "sono"}, e dimmela.`);
+		for (const s of bare.slice(0, 3)) inside.push(`Scheda senza partita IVA: ${s.name}${s.card === undefined ? "" : ` (${s.card.id})`}`);
+	}
+	if (own.length > 0) {
+		lines.push(`${own.length === 1 ? "C'è anche un fornitore" : `Ci sono anche ${own.length} fornitori`} con un nome simile senza partita IVA, con solo le spese o gli abbonamenti che mi hai detto tu, nel riquadro: dimmi di quale dei due ${own.length === 1 ? "è" : "sono"}.`);
+		for (const s of own.slice(0, 3)) inside.push(`Senza partita IVA: ${s.name}`);
+	}
+	if (others.length > 0) {
+		lines.push(`${others.length === 1 ? "C'è anche un altro fornitore" : `Ci sono anche altri ${others.length} fornitori`} con un nome simile, nel riquadro: è lo stesso? Se sì, posso unirli.`);
+		for (const s of others.slice(0, 3)) inside.push(`C'è anche: ${s.name}${s.vat === undefined ? "" : ` (partita IVA ${s.vat})`}`);
+	}
+	return lines;
+}
 
 /** «Intendi …?»: the close ones in the fence, to be asked. */
 function meant(candidates: readonly Supplier[], more = ""): string {
@@ -242,11 +271,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const extra = [...notes];
 		const inside: string[] = [];
 		if (found.form === true && legalForm(name) !== undefined) extra.push(formSaid(name));
-		const alike = lookalikeParties(suppliers, supplier);
-		if (alike.length > 0) {
-			extra.push(`${alike.length === 1 ? "C'è anche un altro fornitore" : `Ci sono anche altri ${alike.length} fornitori`} con un nome simile, nel riquadro: è lo stesso? Se sì, posso unirli.`);
-			for (const s of alike.slice(0, 3)) inside.push(`C'è anche: ${s.name}${s.vat === undefined ? "" : ` (partita IVA ${s.vat})`}`);
-		}
+		extra.push(...alikeLines(suppliers, supplier, inside));
 		return summaryAnswer(supplier, supplierFigures(supplier, ledger, period.from, period.to, day, dayOf, suppliers), period.span, day, { notes: extra, inside });
 	}
 
@@ -301,35 +326,38 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		return { name, notes: [] };
 	}
 
-	/** A new card for a supplier of the registers or for a name said: linked to the partita IVA the registers give it, never to an IBAN. */
+	/**
+	 * A new card for a supplier of the registers or for a name said: linked to the partita IVA the
+	 * registers give it (so it is that supplier's card), never to an IBAN. Linked is not confirmed:
+	 * the tax id is marked as taken from the registers until the person dictates one or an IBAN.
+	 */
 	function newCard(state: SupplierState, name: string, supplier: Supplier | undefined, ctx: ToolContext): SupplierCard {
 		const vat = supplier?.vat !== undefined && !state.cards.some((c) => c.vat === supplier.vat) && goodVat(supplier.vat) ? supplier.vat : undefined;
 		const cf = supplier?.cf !== undefined && !state.cards.some((c) => c.cf === supplier.cf) && "cf" in cardCf(supplier.cf) ? supplier.cf : undefined;
-		return { id: supplierId(state.nextCard), name, ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }), aliases: [], contacts: [], notes: [], ...marker(ctx) };
+		const linked = vat !== undefined || cf !== undefined;
+		return { id: supplierId(state.nextCard), name, ...(vat === undefined ? {} : { vat }), ...(cf === undefined ? {} : { cf }), ...(linked ? { taxFrom: "registers" as const } : {}), aliases: [], contacts: [], notes: [], ...marker(ctx) };
 	}
 
 	/**
-	 * A supplier never confirmed whose name another supplier with another partita IVA or IBAN uses:
-	 * a note or a referente makes a card without its partita IVA, so a note never confirms it.
+	 * The card a write is for, found again: by the supplier's card, else by the name, but never a
+	 * card holding another supplier's partita IVA or codice fiscale (a homonym's, or the real one's
+	 * when someone uses its name).
 	 */
-	function doubtful(suppliers: readonly Supplier[], s: Supplier | undefined): boolean {
-		return s !== undefined && impostorOf(suppliers, s, dayOf) !== undefined;
-	}
-
-	/** The card a write is for, found again: by the supplier's card, else by the name. */
 	function cardOf(list: readonly SupplierCard[], chosen: { supplier?: Supplier; name: string }): SupplierCard | undefined {
-		return (chosen.supplier?.card === undefined ? undefined : list.find((c) => c.id === chosen.supplier?.card?.id)) ?? list.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)));
+		const s = chosen.supplier;
+		if (s?.card !== undefined) return list.find((c) => c.id === s.card?.id);
+		const elsewhere = (c: SupplierCard) => s !== undefined && ((c.vat !== undefined && c.vat !== s.vat) || (c.cf !== undefined && c.cf !== s.cf));
+		return list.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)) && !elsewhere(c));
 	}
 
 	/** Under the lock, once per call: the card (made when there is none) changed by `change`. Returns whether this call wrote (false: run again). */
-	/** `link`: false when a new card must not take the partita IVA of the registers (doubtful). */
-	function writeCard(ctx: ToolContext, chosen: { supplier?: Supplier; name: string }, change: (card: SupplierCard) => SupplierCard | string, link = true): boolean {
+	function writeCard(ctx: ToolContext, chosen: { supplier?: Supplier; name: string }, change: (card: SupplierCard) => SupplierCard | string): boolean {
 		return store.update(ctx.callId, (state) => {
 			let card = cardOf(state.cards, chosen);
 			let next = state;
 			if (card === undefined) {
 				if (state.cards.length >= SUPPLIER_LIMITS.cards) throw new SupplierError(`ci sono già ${SUPPLIER_LIMITS.cards} schede di fornitori, il massimo`);
-				card = newCard(state, chosen.name, link ? chosen.supplier : undefined, ctx);
+				card = newCard(state, chosen.name, chosen.supplier, ctx);
 				next = { ...state, nextCard: state.nextCard + 1, cards: [...state.cards, card] };
 			}
 			const changed = change(card);
@@ -355,7 +383,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 				const notes = [...card.notes, { date: day, text: body, ...marker(ctx) }];
 				full = notes.length > SUPPLIER_LIMITS.notes;
 				return { ...card, notes: notes.slice(-SUPPLIER_LIMITS.notes), edited: marker(ctx) };
-			}, !doubtful(suppliers, chosen.supplier));
+			});
 			return full;
 		});
 		await audit(ctx, "note_add", 1);
@@ -409,8 +437,12 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const refused = taxRefusal(suppliers, s, chosen.name, edits);
 		if (refused !== undefined) return refused;
 		await ctx.step("apply", async () => {
-			// A referente alone does not tie a doubtful supplier's partita IVA to the card; an IBAN or a partita IVA dictated confirms it.
-			writeCard(ctx, chosen, (card) => supplierEdited(card, edits, marker(ctx)), typeof edits.iban === "string" || typeof edits.vat === "string" || !doubtful(suppliers, s));
+			// An IBAN, a partita IVA or a codice fiscale dictated confirms the card; a referente alone does not.
+			const dictated = typeof edits.iban === "string" || typeof edits.vat === "string" || typeof edits.cf === "string";
+			writeCard(ctx, chosen, (card) => {
+				const changed = supplierEdited(card, edits, marker(ctx));
+				return typeof changed === "string" || !dictated ? changed : withOptional(changed, "taxFrom", null);
+			});
 			return true;
 		});
 		await audit(ctx, "contact_set", 1);

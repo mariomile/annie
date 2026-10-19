@@ -434,21 +434,73 @@ describe("suppliers: IBAN checked against what was paid, not the dates a file wr
 		clean(s.answers);
 	});
 
-	it("a name alone never confirms someone using the name: a card made by a note", async () => {
-		// Scenario B: the impostor's invoices are in the registers first; the person adds a note to «Fornitore Uno».
+	it("a note or a referente for someone using the name goes to its own card, never to the real one's, and does not confirm it", async () => {
+		// Scenario 1: the real supplier already has FO-0001, under the same name the impostor uses.
 		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
 		const s = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), "f/x2.xml": forged("X-2", "2026-10-24"), ...FILES } });
-		expect(outside(await s.run({ op: "note_add", supplier: "Fornitore Uno", note: "chiamare Laura" }))).toContain("Fatto");
-		const [made] = s.store.read().cards;
-		expect(made?.vat).toBeUndefined();
+		s.store.update("seed", (st) => ({ ...st, nextCard: 2, cards: [{ id: "FO-0001", name: "Fornitore Uno", vat: "IT00000010017", aliases: [], contacts: [], notes: [], by: "test:u", at: NOW.toISOString() }] }));
+		expect(outside(await s.run({ op: "note_add", supplier: "IT00000050013", note: "chiamare Laura" }))).toContain("Fatto");
+		expect(outside(await s.run({ op: "contact_set", supplier: "IT00000050013", contact: { name: "Laura", phone: "+39 333 1234567" } }))).toContain("Fatto");
+		const [real, theirs] = s.store.read().cards;
+		expect(real).toMatchObject({ id: "FO-0001", vat: "IT00000010017", notes: [], contacts: [] });
+		expect(theirs).toMatchObject({ id: "FO-0002", name: "Fornitore Uno", vat: "IT00000050013", taxFrom: "registers" });
+		expect(theirs?.notes.map((n) => n.text)).toEqual(["chiamare Laura"]);
+		expect(theirs?.contacts).toHaveLength(1);
+		// Still flagged: a note and a referente confirm nothing.
 		const card = await s.run({ op: "summary", supplier: "IT00000050013" });
 		expect(outside(card)).toContain("Attenzione: c'è un altro fornitore con lo stesso nome");
-		// The card made by the note is not shown as the impostor's.
-		expect(outside(card).split("\n")[0]).toBe("Il fornitore è nel riquadro.");
-		expect(inside(card)).not.toContain("chiamare Laura");
-		const line = await s.run({ op: "summary", compact: true });
-		expect(inside(line)).toContain("Stesso nome di un altro fornitore: Fornitore Uno");
+		expect(outside(card).split("\n")[0]).toBe("Il fornitore è nel riquadro (scheda FO-0002).");
+		expect(inside(await s.run({ op: "summary", compact: true }))).toContain("Stesso nome di un altro fornitore: Fornitore Uno");
 		clean(s.answers);
+	});
+
+	it("notes go to each supplier's own card, and only an IBAN dictated confirms the one using the name", async () => {
+		// Scenario 2: no cards yet.
+		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
+		const s = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), "f/x2.xml": forged("X-2", "2026-10-24"), ...FILES } });
+		await s.run({ op: "note_add", supplier: "IT00000050013", note: "nota per il nuovo" });
+		await s.run({ op: "note_add", supplier: "Fornitore Uno S.r.l.", note: "nota per quello vero" });
+		const cards = s.store.read().cards;
+		expect(cards.find((c) => c.vat === "IT00000050013")?.notes.map((n) => n.text)).toEqual(["nota per il nuovo"]);
+		expect(cards.find((c) => c.vat === "IT00000010017")?.notes.map((n) => n.text)).toEqual(["nota per quello vero"]);
+		const flagged = await s.run({ op: "summary", supplier: "IT00000050013" });
+		expect(outside(flagged)).toContain("Attenzione: c'è un altro fornitore con lo stesso nome");
+		expect(inside(flagged)).toContain("Nota");
+		// The person dictates its IBAN: the same card, now confirmed.
+		await s.run({ op: "contact_set", supplier: "IT00000050013", iban: IBAN_D });
+		const after = s.store.read().cards.filter((c) => c.vat === "IT00000050013");
+		expect(after).toHaveLength(1);
+		expect(after[0]?.iban).toBe(IBAN_D);
+		expect(after[0]?.taxFrom).toBeUndefined();
+		expect(outside(await s.run({ op: "summary", supplier: "IT00000050013" }))).not.toContain("stesso nome");
+		clean(s.answers);
+	});
+
+	it("a card of before, holding a partita IVA, is read as confirmed, as it was", async () => {
+		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
+		const s = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES } });
+		writeFileSync(join(s.dir, "suppliers.json"), JSON.stringify({ nextCard: 2, cards: [{ id: "FO-0001", name: "Fornitore Uno", vat: "IT00000050013", aliases: [], contacts: [], notes: [], by: "a", at: "b" }], calls: [] }));
+		expect(s.store.read().broken).not.toBe(true);
+		expect(outside(await s.run({ op: "summary", supplier: "IT00000050013" }))).not.toContain("stesso nome");
+		// A field that is not one of ours is a broken file.
+		writeFileSync(join(s.dir, "suppliers.json"), JSON.stringify({ nextCard: 2, cards: [{ id: "FO-0001", name: "X", taxFrom: "fattura", aliases: [], contacts: [], notes: [], by: "a", at: "b" }], calls: [] }));
+		expect(s.store.read().broken).toBe(true);
+	});
+
+	it("a similar name with no partita IVA is asked about, not offered to merge", async () => {
+		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
+		const own = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES }, expenses: [expense("S-2026-0009", "2026-09-10", "30", { supplier: "Fornitore Uno S.r.l." })] });
+		const real = await own.run({ op: "summary", supplier: "IT00000010017" });
+		expect(outside(real)).toContain("C'è anche un fornitore con un nome simile senza partita IVA, con solo le spese o gli abbonamenti che mi hai detto tu, nel riquadro: dimmi di quale dei due è.");
+		expect(inside(real)).toContain("Senza partita IVA: Fornitore Uno S.r.l.");
+		expect(outside(real)).not.toContain("posso unirli");
+		const bare = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES } });
+		bare.store.update("seed", (st) => ({ ...st, nextCard: 2, cards: [{ id: "FO-0001", name: "Fornitore Uno", aliases: [], contacts: [], notes: [], by: "test:u", at: NOW.toISOString() }] }));
+		const asked = await bare.run({ op: "summary", supplier: "IT00000010017" });
+		expect(outside(asked)).toContain("C'è anche una scheda con un nome simile e senza partita IVA, nel riquadro: chiedi a chi ti scrive di quale partita IVA è, e dimmela.");
+		expect(inside(asked)).toContain("Scheda senza partita IVA: Fornitore Uno (FO-0001)");
+		expect(outside(asked)).not.toContain("posso unirli");
+		clean([...own.answers, ...bare.answers]);
 	});
 
 	it("when the bank moved, the IBAN dictated and paid last is right: the old one to pay is to verify, never «forse è sbagliato»", async () => {

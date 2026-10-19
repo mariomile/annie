@@ -88,7 +88,8 @@ export function supplierEdited(card: SupplierCard, e: SupplierEdits, by: Marker)
 
 /** Why `card` cannot sit with `others`: a name, a partita IVA or a codice fiscale another card has. */
 export function supplierClash(card: SupplierCard, others: readonly SupplierCard[]): string | undefined {
-	return cardClash(card, others, "fornitore");
+	// Two suppliers with the same name and two partite IVA are two: someone using another's name gets its own card.
+	return cardClash(card, others, "fornitore", { homonyms: true });
 }
 
 /** Why `a` cannot be merged into `b`, or undefined: the shared reasons (party-cards.ts), and two IBAN the person dictated. */
