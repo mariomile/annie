@@ -8,12 +8,12 @@
  */
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
-import { type Billed, RECURRING_LIMITS, RecurringError, type Run, SCHEDULE_ID, type Schedule, TELL_TRIES, validBilled, validRun, validSchedule } from "./recurring-invoices.ts";
+import { type Billed, canoneKey, RECURRING_LIMITS, RecurringError, type Run, SCHEDULE_ID, type Schedule, TELL_TRIES, validBilled, validRun, validSchedule } from "./recurring-invoices.ts";
 import { isText } from "./stored-fields.ts";
 
 export type RecurringState = { readonly nextId: number; readonly schedules: readonly Schedule[] };
 
-/** `billed`: the months the recurring invoices removed had in drafts, by customer (adding one again never bills them twice). */
+/** `billed`: the months the recurring invoices removed had in drafts, by customer and canone (adding the same one again never bills them twice). */
 type Book = RecurringState & { readonly runs: readonly Run[]; readonly billed: readonly Billed[]; readonly calls: readonly string[] };
 
 export type RecurringBook = Book & { readonly broken: boolean };
@@ -65,8 +65,11 @@ export class RecurringStore {
 			const gone: Billed[] = book.runs
 				.filter((r) => !ids.has(r.schedule) && r.state !== "failed")
 				.flatMap((r) => {
-					const c = book.schedules.find((s) => s.id === r.schedule)?.customer;
-					return c === undefined ? [] : [{ customer: { name: c.name, ...(c.card === undefined ? {} : { card: c.card }), ...(c.vat === undefined ? {} : { vat: c.vat }), ...(c.cf === undefined ? {} : { cf: c.cf }) }, period: r.period, months: r.months, call: r.call }];
+					const s = book.schedules.find((x) => x.id === r.schedule);
+					if (s === undefined) return [];
+					const c = s.customer;
+					// Only the same canone added again is held back, never one that was there already (its id is below `after`).
+					return [{ customer: { name: c.name, ...(c.card === undefined ? {} : { card: c.card }), ...(c.vat === undefined ? {} : { vat: c.vat }), ...(c.cf === undefined ? {} : { cf: c.cf }) }, period: r.period, months: r.months, call: r.call, canone: canoneKey(s), after: next.nextId }];
 				});
 			const made: Book = {
 				nextId: next.nextId,
@@ -87,7 +90,7 @@ export class RecurringStore {
 	 * in `replace` (failed, or whose draft was removed: the person asked again) give way to the new
 	 * one. Otherwise what was done.
 	 */
-	claim(schedule: string, period: string, at: string, o: { readonly months: number; readonly call: string; readonly missed?: readonly string[]; readonly replace?: readonly string[] }): Claim {
+	claim(schedule: string, period: string, at: string, o: { readonly months: number; readonly call: string; readonly missed?: readonly string[]; readonly replace?: readonly string[]; readonly share?: number }): Claim {
 		let out: Claim | undefined;
 		updateBook(this.book, (book) => {
 			if (!book.schedules.some((s) => s.id === schedule)) throw new RecurringError("la fattura ricorrente non c'è più");
@@ -97,7 +100,7 @@ export class RecurringStore {
 				out = { mine: old.state === "claimed", run: old };
 				return book;
 			}
-			const run: Run = { schedule, period, months: o.months, state: "claimed", at, call: o.call, ...(o.missed === undefined || o.missed.length === 0 ? {} : { missed: o.missed.slice(-RECURRING_LIMITS.count) }) };
+			const run: Run = { schedule, period, months: o.months, state: "claimed", at, call: o.call, ...(o.share === undefined ? {} : { share: o.share }), ...(o.missed === undefined || o.missed.length === 0 ? {} : { missed: o.missed.slice(-RECURRING_LIMITS.count) }) };
 			out = { mine: true, run };
 			const kept = book.runs.filter((r) => !(r.schedule === schedule && (r.period === period || (replace.has(r.period) && r.state !== "claimed"))));
 			return { ...book, runs: [...kept, run].slice(-RECURRING_LIMITS.runs) };
@@ -118,16 +121,18 @@ export class RecurringStore {
 		return out;
 	}
 
-	/** A notice that did not go: counted; at TELL_TRIES it is not tried again. The count now. */
-	tellFailed(schedule: string, period: string): number {
+	/** A notice that did not go on `day`: counted (up to TELL_TRIES, then tried at most once a day). The count before and now. */
+	tellFailed(schedule: string, period: string, day: string): { readonly before: number; readonly count: number } {
+		let before = 0;
 		let count = 0;
 		updateBook(this.book, (book) => {
 			const old = book.runs.find((r) => r.schedule === schedule && r.period === period);
 			if (old === undefined) return book;
-			count = Math.min((old.tellFails ?? 0) + 1, TELL_TRIES);
-			return { ...book, runs: book.runs.map((r) => (r === old ? { ...old, tellFails: count } : r)) };
+			before = old.tellFails ?? 0;
+			count = Math.min(before + 1, TELL_TRIES);
+			return { ...book, runs: book.runs.map((r) => (r === old ? { ...old, tellFails: count, lastTry: day } : r)) };
 		});
-		return count;
+		return { before, count };
 	}
 
 	/** The conversation was told how a period went: not told again. */

@@ -208,8 +208,20 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 		const runs = b.runs.filter((r) => r.schedule === s.id);
 		const last = [...runs].sort((x, y) => (x.period < y.period ? -1 : 1)).at(-1);
 		const amount = periodAmount(src, s);
-		const next = nextDue(s, day, coveredMonths(env, b, s));
-		return { schedule: s, today: day, ...(amount === undefined ? {} : { amount }), ...(last === undefined ? {} : { last, lastGone: draftGone(env, last) }), ...(next === undefined ? {} : { next }) };
+		const covered = coveredMonths(env, b, s);
+		const next = nextDue(s, day, covered);
+		// The draft as it is now: one made in its place (sales_invoices replace) is still this period's.
+		const lastId = last === undefined ? undefined : invoiceOf(env, last.call)?.id;
+		const leftOut = (s.leftOut ?? []).filter((m) => !covered.has(m));
+		return {
+			schedule: s,
+			today: day,
+			...(amount === undefined ? {} : { amount }),
+			...(last === undefined ? {} : { last, lastGone: draftGone(env, last) }),
+			...(lastId === undefined ? {} : { lastId }),
+			...(next === undefined ? {} : { next }),
+			...(leftOut.length === 0 ? {} : { leftOut }),
+		};
 	}
 
 	/** The customer's data said now, as kept for each draft. */
@@ -355,7 +367,8 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 		const thread = ctx.thread !== undefined && ctx.thread.channel !== AGENT_CHANNEL ? { channel: ctx.thread.channel, threadId: ctx.thread.threadId } : undefined;
 		const by = marker(ctx);
 		const draftOf = (id: string): Schedule => ({ ...by, id, ...shape, status: "active", from: day, ...(thread === undefined ? {} : { thread }), callId: ctx.callId });
-		const missing = await missingFor(draftOf("RI-0000"), day, ctx.signal);
+		// The id it would take: the months of the same canone removed before are held back from it.
+		const missing = await missingFor(draftOf(scheduleId(book().nextId)), day, ctx.signal);
 		if (missing !== undefined) return missing;
 		const id = await ctx.step("apply", async () => {
 			let made = "";
@@ -485,8 +498,13 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 		const lastCovered = regrid ? runs.flatMap(runMonths).sort().at(-1) : undefined;
 		const after = lastCovered === undefined ? undefined : `${addMonths(lastCovered, 1)}-01`;
 		const from = after !== undefined && after > s.from ? after : s.from;
-		const { end: _e, count: _c, note: _n, ...rest } = s;
-		const next: Schedule = { ...rest, ...shape, from, edited: marker(ctx) };
+		const { end: _e, count: _c, note: _n, leftOut: _l, ...rest } = s;
+		const moved: Schedule = { ...rest, ...shape, from, edited: marker(ctx) };
+		// The months the new grid leaves out, with those left out before and not covered yet: said by show until a draft covers them.
+		const grid = lastCovered === undefined ? undefined : regridOf(moved, lastCovered);
+		const covered = coveredMonths(env, book(), moved);
+		const leftOut = [...new Set([...(s.leftOut ?? []), ...(grid?.left ?? [])])].filter((m) => !covered.has(m) && (grid?.first === undefined || m < grid.first)).sort().slice(-11);
+		const next: Schedule = leftOut.length === 0 ? moved : { ...moved, leftOut };
 		const missing = await missingFor(next, day, ctx.signal);
 		if (missing !== undefined) return missing.replace("Non ho ancora salvato la fattura ricorrente", "Non ho ancora cambiato la fattura ricorrente");
 		await ctx.step("apply", async () => {
@@ -498,13 +516,13 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 		});
 		await audit(ctx, "change", 1);
 		const saved = schedules().find((x) => x.id === s.id) ?? next;
-		if (lastCovered !== undefined) notes.push(regridWords(saved, runs, lastCovered));
+		// The months left out are said with the recurring invoice (show), until a draft covers them.
+		if (lastCovered !== undefined) notes.push(regridWords(saved, runs, lastCovered, grid?.first));
 		return answerFor("Fatto, ho cambiato", saved, day, [...notes, "Vale dalle prossime bozze: quelle già preparate restano come sono."]);
 	}
 
-	/** After a new cadence or first month: what is covered already, the first period now, the months left out. */
-	function regridWords(s: Schedule, runs: readonly Run[], lastCovered: string): string {
-		const lastRun = runs.find((r) => runMonths(r).includes(lastCovered)) as Run;
+	/** After a new cadence or first month: the first period now (none when they are over), and the months between the last covered and it that no draft covers. */
+	function regridOf(s: Schedule, lastCovered: string): { first?: string; left: string[] } {
 		const covered = coveredMonths(env, book(), s);
 		const step = CADENCES[s.cadence];
 		let first: string | undefined;
@@ -514,12 +532,19 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 				break;
 			}
 		}
+		if (first === undefined) return { left: [] };
+		const left: string[] = [];
+		for (let m = addMonths(lastCovered, 1); m < first; m = addMonths(m, 1)) if (m >= s.start && !covered.has(m)) left.push(m);
+		return { first, left };
+	}
+
+	/** After a new cadence or first month, in words: what is covered already and the first period now. */
+	function regridWords(s: Schedule, runs: readonly Run[], lastCovered: string, first: string | undefined): string {
+		const lastRun = runs.find((r) => runMonths(r).includes(lastCovered)) as Run;
+		const step = CADENCES[s.cadence];
 		const head = `${capital(runLabel(lastRun))} è già fatturato come ${UNIT[lastRun.months] ?? "periodo"}`;
 		if (first === undefined) return `${head}: dopo non ci sono altri periodi da preparare.`;
-		const out: string[] = [];
-		for (let m = addMonths(lastCovered, 1); m < first; m = addMonths(m, 1)) if (m >= s.start && !covered.has(m)) out.push(m);
-		const left = out.length === 0 ? "" : `; ${monthsWords(out)} ${out.length === 1 ? "resta fuori" : "restano fuori"}, se servono dimmelo e li preparo`;
-		return `${head}: il primo ${UNIT[step]} sarà ${rangeLabel(first, step)}${left}.`;
+		return `${head}: il primo ${UNIT[step]} sarà ${rangeLabel(first, step)}.`;
 	}
 
 	async function remove(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -592,29 +617,50 @@ export function createRecurringInvoiceTools(options: RecurringToolsOptions): Ann
 		const gridMonths = monthsOf(grid, step);
 		if (asked.some((m) => !gridMonths.includes(m))) return `Dimmi un periodo alla volta: ${s.id} si fattura ${CADENCE_WORDS[s.cadence]}, e ${rangeLabel(asked[0] as string, asked.length)} ne prende più d'uno.`;
 		if (!within(s, grid)) return args.period === undefined ? `I periodi di ${s.id} sono finiti: non ci sono altre bozze da preparare.` : `${capital(periodLabel(s, grid))} non è tra i periodi di ${s.id}: non preparo la bozza.`;
+		// A period still to come is prepared on its day, not before (today's may be made early).
+		const current = periodOn(s, day);
+		if (current === undefined || grid > current) return `${capital(periodLabel(s, grid))} non è ancora arrivato: la bozza la preparo ${dateWords(dueDate(grid, s.day), day)}.`;
 		const b = book();
 		const overlapping = b.runs.filter((r) => r.schedule === s.id && runMonths(r).some((m) => gridMonths.includes(m)));
 		const gone = overlapping.filter((r) => draftGone(env, r));
 		const replaceable = overlapping.filter((r) => r.state === "failed" || gone.includes(r));
 		const blocking = overlapping.filter((r) => !replaceable.includes(r));
 		const covered = coveredMonths(env, b, s, (r) => replaceable.includes(r));
-		// The whole period when nothing of it is covered; otherwise only the months asked that are not.
-		const free = gridMonths.some((m) => covered.has(m)) ? asked.filter((m) => !covered.has(m)) : gridMonths;
-		if (free.length === 0) return [coveredBy(s, asked.find((m) => covered.has(m)) ?? (asked[0] as string), blocking), "Non ne preparo un'altra per gli stessi mesi."].join("\n");
-		if (free.some((m, i) => i > 0 && m !== addMonths(free[i - 1] as string, 1))) return `Alcuni mesi di ${periodLabel(s, grid)} sono già in una bozza: dimmi un mese alla volta, tra ${monthsWords(free)}.`;
-		const period = free[0] as string;
-		const months = free.length;
-		const label = rangeLabel(period, months);
-		const redone = gone.filter((r) => runMonths(r).some((m) => free.includes(m)));
-		const head = redone.map((r) => `La bozza ${ofLabel(runLabel(r))} era stata tolta: la rifaccio.`);
-		const p = await preparePeriod(env, s, period, { months, replace: replaceable.map((r) => r.period), signal: ctx.signal });
-		if (p.kind !== "handled") store.markTold(s.id, period);
-		const partial = months < step ? [`È una bozza solo per ${label}, con le voci e gli importi di un ${UNIT[step]} intero: controlla l'importo con chi ti scrive prima che la emetta.`] : [];
-		if (p.kind === "drafted") return [...head, `Fatto, ho preparato la bozza ${p.draft.id} del canone ${ofLabel(label)} (fattura ricorrente ${s.id}). È solo una bozza, senza numero: la emette chi ti scrive, dopo averla vista.`, ...partial, p.answer].join("\n");
-		if (p.kind === "failed") return [...head, `Non ho potuto preparare la bozza del canone ${ofLabel(label)} (fattura ricorrente ${s.id}). Ecco cosa ha risposto la preparazione della bozza (nel riquadro):`, fencedRecurring(p.run.why ?? ""), "Dimmi i dati che mancano e la rifaccio."].join("\n");
-		if (p.run.state === "claimed") return `La bozza del canone ${ofLabel(label)} è in preparazione: riprova tra poco.`;
-		return [coveredBy(s, period, [p.run]), "Non ne preparo un'altra per gli stessi mesi."].join("\n");
+		const leftOut = (s.leftOut ?? []).filter((m) => !covered.has(m));
+		const month = asked[0] as string;
+		// A month a new cadence left out, asked alone: made alone, with its share of the period's amount.
+		if (step > 1 && asked.length === 1 && leftOut.includes(month)) return await prepared(month, 1, step);
+		const taken = gridMonths.filter((m) => covered.has(m));
+		if (taken.length === 0) return await prepared(grid, step);
+		if (asked.every((m) => covered.has(m))) return [coveredBy(s, asked.find((m) => covered.has(m)) ?? month, blocking), "Non ne preparo un'altra per gli stessi mesi."].join("\n");
+		// Part of the period is in a draft already: never a draft for the rest with a whole period's amount.
+		const left = leftOut.filter((m) => gridMonths.includes(m));
+		const leftWords = left.length === 0 ? [] : [`${capital(monthsWords(left))} ${left.length === 1 ? "è rimasto fuori dal cambio di cadenza: se serve, chiedimi solo quel mese e lo preparo." : "sono rimasti fuori dal cambio di cadenza: se servono, chiedimi un mese alla volta e li preparo."}`];
+		return [coveredBy(s, taken[0] as string, blocking), `Non preparo una bozza solo per una parte del ${UNIT[step]}.`, ...leftWords].join("\n");
+
+		/** The draft of `months` months from `period` (with `share`: a month alone, its share of the amount); a draft removed or failed over them made again. */
+		async function prepared(period: string, months: number, share?: number): Promise<string> {
+			const these = monthsOf(period, months);
+			const label = rangeLabel(period, months);
+			const head = gone.filter((r) => runMonths(r).some((m) => these.includes(m))).map((r) => `La bozza ${ofLabel(runLabel(r))} era stata tolta: la rifaccio.`);
+			const replace = replaceable.filter((r) => runMonths(r).some((m) => these.includes(m))).map((r) => r.period);
+			const p = await preparePeriod(env, s as Schedule, period, { months, ...(share === undefined ? {} : { share }), replace, signal: ctx.signal });
+			if (p.kind !== "handled") store.markTold((s as Schedule).id, period);
+			const id = (s as Schedule).id;
+			const part = share === undefined ? [] : [`L'importo di ogni voce è quello di un ${UNIT[step]} diviso per ${share}, arrotondato al centesimo: controllalo con chi ti scrive prima che la emetta.`];
+			if (p.kind === "drafted") return [...head, `Fatto, ho preparato la bozza ${p.draft.id} del canone ${ofLabel(label)} (fattura ricorrente ${id}). È solo una bozza, senza numero: la emette chi ti scrive, dopo averla vista.`, ...part, p.answer].join("\n");
+			if (p.kind === "failed") return [...head, `Non ho potuto preparare la bozza del canone ${ofLabel(label)} (fattura ricorrente ${id}). Ecco cosa ha risposto la preparazione della bozza (nel riquadro):`, fencedRecurring(p.run.why ?? ""), "Dimmi i dati che mancano e la rifaccio."].join("\n");
+			if (p.run.state === "claimed") return `La bozza del canone ${ofLabel(label)} è in preparazione: riprova tra poco.`;
+			return [coveredBy(s as Schedule, period, [p.run]), "Non ne preparo un'altra per gli stessi mesi."].join("\n");
+		}
 	}
+}
+
+/** «il 1º novembre», with the year only when it is not this one: «il 1º gennaio 2027». */
+function dateWords(date: string, today: string): string {
+	const d = Number(date.slice(8, 10));
+	const label = monthLabel(date.slice(0, 7));
+	return `il ${d === 1 ? "1º" : d} ${date.slice(0, 4) === today.slice(0, 4) ? label.slice(0, -5) : label}`;
 }
 
 /** «il 31 ottobre 2026». */

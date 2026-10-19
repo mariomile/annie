@@ -362,19 +362,49 @@ describe("recurring invoices: add and the sweep", () => {
 		await s.sweep();
 		s.at("2026-11-05T08:00:00Z");
 		const changed = await s.run({ op: "change", id: "RI-0001", cadence: "quarterly", amount: 900 });
-		expect(changed).toContain("Novembre 2026 è già fatturato come mese: il primo trimestre sarà 1º trimestre 2027; dicembre 2026 resta fuori, se servono dimmelo e li preparo.");
-		expect(s.recurring.read().schedules[0]?.from).toBe("2026-12-01");
+		expect(changed).toContain("Novembre 2026 è già fatturato come mese: il primo trimestre sarà 1º trimestre 2027.");
+		expect(changed).toContain("Dicembre 2026 è rimasto fuori dal cambio di cadenza: se serve, dimmelo e lo preparo.");
+		expect(s.recurring.read().schedules[0]).toMatchObject({ from: "2026-12-01", leftOut: ["2026-12"] });
 		s.at("2026-12-01T08:00:00Z");
 		expect(await s.sweep()).toBe(0);
 		s.at("2027-01-01T08:00:00Z");
 		expect(await s.sweep()).toBe(1);
 		expect(s.drafts().at(-1)?.lines[0]).toMatchObject({ description: "Canone di manutenzione, 1º trimestre 2027", price: "900" });
-		// December, left out: prepared when asked, only that month, and said to check.
+		// December, left out: said by show until a draft covers it.
+		expect(await s.run({ op: "show", id: "RI-0001" })).toContain("Dicembre 2026 è rimasto fuori dal cambio di cadenza: se serve, dimmelo e lo preparo.");
+		// The whole quarter is refused, naming the draft: part of it is billed already.
+		const q4 = await s.run({ op: "run_now", id: "RI-0001", period: "4º trimestre 2026" });
+		expect(q4).toContain("Ottobre 2026 è già nella bozza BZ-0002 (ottobre 2026).");
+		expect(q4).toContain("Non preparo una bozza solo per una parte del trimestre.");
+		expect(q4).toContain("Dicembre 2026 è rimasto fuori dal cambio di cadenza: se serve, chiedimi solo quel mese e lo preparo.");
+		expect(s.drafts()).toHaveLength(3);
+		// December alone: a third of the quarter, to the cent, the month in the description.
 		const dec = await s.run({ op: "run_now", id: "RI-0001", period: "dicembre 2026" });
-		expect(dec).toContain("del canone di dicembre 2026");
-		expect(dec).toContain("È una bozza solo per dicembre 2026, con le voci e gli importi di un trimestre intero");
-		expect(s.drafts().at(-1)?.lines[0]?.description).toBe("Canone di manutenzione, dicembre 2026");
+		expect(dec).toContain("Fatto, ho preparato la bozza BZ-0005 del canone di dicembre 2026");
+		expect(dec).toContain("L'importo di ogni voce è quello di un trimestre diviso per 3, arrotondato al centesimo");
+		expect(s.drafts().at(-1)?.lines[0]).toMatchObject({ description: "Canone di manutenzione, dicembre 2026", price: "300" });
+		expect(Number(s.drafts().at(-1)?.lines[0]?.quantity)).toBe(1);
+		expect(s.recurring.read().runs.find((r) => r.period === "2026-12")).toMatchObject({ months: 1, share: 3, state: "drafted" });
+		expect(await s.run({ op: "show", id: "RI-0001" })).not.toContain("rimasto fuori");
+		expect(await s.run({ op: "run_now", id: "RI-0001", period: "dicembre 2026" })).toContain("Dicembre 2026 è già nella bozza BZ-0005 (dicembre 2026).");
 		expect(await s.run({ op: "run_now", id: "RI-0001", period: "novembre 2026" })).toContain("Novembre 2026 è già nella bozza BZ-0003 (novembre 2026).");
+	});
+
+	it("a month left out of a quarter of 1000 €: 333,33 €, half up, and a month not left out is refused", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		s.at("2026-11-05T08:00:00Z");
+		await s.run({ op: "change", id: "RI-0001", cadence: "quarterly", amount: 1000 });
+		expect(s.recurring.read().schedules[0]?.leftOut).toEqual(["2026-11", "2026-12"]);
+		const nov = await s.run({ op: "run_now", id: "RI-0001", period: "novembre 2026" });
+		expect(nov).toContain("del canone di novembre 2026");
+		expect(s.drafts().at(-1)?.lines[0]).toMatchObject({ description: "Canone di manutenzione, novembre 2026", price: "333.33" });
+		const shown = await s.run({ op: "show", id: "RI-0001" });
+		expect(shown).toContain("Dicembre 2026 è rimasto fuori");
+		expect(shown).not.toContain("Novembre 2026 è rimasto fuori");
+		expect(outside(shown)).not.toMatch(EM_DASH);
 	});
 });
 
@@ -424,6 +454,69 @@ describe("never billed twice", () => {
 		expect(redone).toContain("Fatto, ho preparato la bozza BZ-0003 del canone di ottobre 2026");
 		expect(s.drafts().map((d) => d.callId)).toEqual(["recurring:RI-0001:2026-10:2"]);
 		expect(await s.run({ op: "run_now", id: "RI-0001" })).toContain("Ottobre 2026 è già nella bozza BZ-0003");
+	});
+
+	it("a draft made in its place with sales_invoices is still the period's: show names it, run_now says it is covered", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		const replaced = await s.sales({ op: "draft", replace: "BZ-0002", ...DELTA, lines: [{ description: "Canone di manutenzione, ottobre 2026", price: 320 }], vat: 22 });
+		expect(replaced).toContain("Prende il posto della bozza BZ-0002");
+		const made = s.store.read().invoices.find((i) => i.id === "BZ-0003");
+		expect(made?.origin).toBe("recurring:RI-0001:2026-10");
+		expect(made?.callId).not.toBe("recurring:RI-0001:2026-10");
+		const shown = await s.run({ op: "show", id: "RI-0001" });
+		expect(shown).toContain("Ultima bozza: ottobre 2026 (BZ-0003).");
+		expect(shown).not.toContain("era stata tolta");
+		expect(await s.run({ op: "run_now", id: "RI-0001" })).toContain("Ottobre 2026 è già nella bozza BZ-0003 (ottobre 2026).");
+		expect(await s.sweep()).toBe(0);
+		// In place of that one too: the first call stays.
+		await s.sales({ op: "draft", replace: "BZ-0003", ...DELTA, lines: [{ description: "Canone di manutenzione, ottobre 2026", price: 330 }], vat: 22 });
+		expect(s.store.read().invoices.find((i) => i.id === "BZ-0004")?.origin).toBe("recurring:RI-0001:2026-10");
+		expect(await s.run({ op: "run_now", id: "RI-0001", period: "ottobre 2026" })).toContain("Ottobre 2026 è già nella bozza BZ-0004 (ottobre 2026).");
+		expect(s.store.read().invoices.filter((i) => !isIssued(i))).toHaveLength(2);
+	});
+
+	it("another canone of the same customer is never held back by one removed", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		await s.run({ op: "remove", id: "RI-0001" });
+		const hosting = await s.run({ ...CANONE, lines: [{ description: "Hosting", price: 50 }] });
+		expect(hosting).toContain("RI-0002");
+		expect(hosting).not.toContain("fattura ricorrente tolta");
+		expect(hosting).toContain("La prima bozza, di ottobre, la preparo oggi.");
+		expect(await s.sweep()).toBe(1);
+		expect(s.drafts().at(-1)?.lines[0]).toMatchObject({ description: "Hosting, ottobre 2026", price: "50" });
+	});
+
+	it("one that was there already is never held back by one removed after it", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		expect(await s.run({ ...CANONE, lines: [{ description: "Hosting", price: 150 }], cadence: "quarterly", day: 28 })).toContain("RI-0002");
+		await s.run({ op: "remove", id: "RI-0001" });
+		s.at("2026-10-28T08:00:00Z");
+		expect(await s.sweep()).toBe(1);
+		expect(s.drafts().at(-1)?.lines[0]).toMatchObject({ description: "Hosting, 4º trimestre 2026", price: "150" });
+	});
+
+	it("the same canone added again with the customer's card: held back by the partita IVA of the one removed", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		expect(s.recurring.read().schedules[0]?.customer).toMatchObject({ vat: "IT00000020016" });
+		expect(s.recurring.read().schedules[0]?.customer.card).toBeUndefined();
+		await s.run({ op: "remove", id: "RI-0001" });
+		s.cards.list = [DELTA_CARD];
+		const again = await s.run({ ...CANONE, recipient_code: "ZZZ0001" });
+		expect(s.recurring.read().schedules.at(-1)?.customer.card).toBe("CL-0001");
+		expect(again).toContain("Ottobre 2026 per questo cliente è già nella bozza BZ-0002 di una fattura ricorrente tolta: non la rifaccio.");
+		expect(await s.sweep()).toBe(0);
 	});
 });
 
@@ -601,8 +694,22 @@ describe("failures", () => {
 		t.notify.fails = true;
 		for (let i = 0; i < 6; i++) await t.sweep();
 		expect(t.notify.tries).toBe(3);
-		expect(t.recurring.read().runs[0]?.tellFails).toBe(3);
+		expect(t.recurring.read().runs[0]).toMatchObject({ tellFails: 3, lastTry: "2026-10-18" });
 		expect(t.logs.filter((l) => l.includes("given up"))).toHaveLength(1);
+		// Not given up for good: once a day, logged once for the whole streak.
+		t.at("2026-10-19T08:00:00Z");
+		for (let i = 0; i < 3; i++) await t.sweep();
+		expect(t.notify.tries).toBe(4);
+		expect(t.recurring.read().runs[0]?.lastTry).toBe("2026-10-19");
+		expect(t.logs.filter((l) => l.includes("given up"))).toHaveLength(1);
+		expect(t.logs).toHaveLength(3);
+		t.at("2026-10-20T08:00:00Z");
+		t.notify.fails = false;
+		await t.sweep();
+		await t.sweep();
+		expect(t.notify.tries).toBe(5);
+		expect(t.notices).toHaveLength(1);
+		expect(t.recurring.read().runs[0]?.told).toBe(true);
 	});
 
 	it("a file that does not read is never written over, and nothing is prepared", async () => {
@@ -627,6 +734,19 @@ describe("the tool", () => {
 		expect(await s.sweep()).toBe(0);
 		expect(s.drafts()).toHaveLength(1);
 		expect(s.notices).toHaveLength(0);
+	});
+
+	it("run_now: a period still to come is prepared on its day, not before", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		expect(await s.run({ op: "run_now", id: "RI-0001", period: "novembre" })).toBe("Novembre 2026 non è ancora arrivato: la bozza la preparo il 1º novembre.");
+		expect(await s.run({ op: "run_now", id: "RI-0001", period: "2027-02" })).toBe("Febbraio 2027 non è ancora arrivato: la bozza la preparo il 1º febbraio 2027.");
+		expect(s.drafts()).toHaveLength(0);
+		await s.run({ ...CANONE, lines: [{ description: "Hosting", price: 150 }], cadence: "quarterly", day: "fine mese" });
+		expect(await s.run({ op: "run_now", id: "RI-0002", period: "1º trimestre 2027" })).toBe("1º trimestre 2027 non è ancora arrivato: la bozza la preparo il 31 gennaio 2027.");
+		// Today's period may be made early.
+		expect(await s.run({ op: "run_now", id: "RI-0002" })).toContain("Fatto, ho preparato la bozza");
 	});
 
 	it("start and day as said: «dal 1° novembre», «il 5»; a day 29 to 31 is asked", async () => {

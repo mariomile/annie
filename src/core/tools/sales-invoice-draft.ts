@@ -520,7 +520,8 @@ async function save(env: SalesEnv, args: Record<string, unknown>, ctx: ToolConte
 		const old = replace === undefined ? undefined : state.invoices.find((i) => i.id === replace);
 		if (replace !== undefined && (old === undefined || isIssued(old))) throw new SalesInvoiceError(`la bozza ${replace} da sostituire non c'è, o è già emessa`);
 		if (state.invoices.length >= SALES_LIMITS.invoices) throw new SalesInvoiceError("l'archivio delle fatture è pieno");
-		const inv: SalesInvoice = { ...marker, ...fields, id: draftId(state.nextDraft), callId: ctx.callId, expected: nextNumber(state, day) };
+		// In place of another: the lineage stays, so whoever made the first one (a recurring invoice) still finds it.
+		const inv: SalesInvoice = { ...marker, ...fields, id: draftId(state.nextDraft), callId: ctx.callId, ...(old === undefined ? {} : { origin: old.origin ?? old.callId }), expected: nextNumber(state, day) };
 		return { ...state, nextDraft: state.nextDraft + 1, invoices: [...state.invoices.filter((i) => i !== old), inv] };
 	});
 	const book = env.book();

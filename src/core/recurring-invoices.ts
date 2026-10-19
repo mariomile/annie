@@ -17,6 +17,7 @@
  * (the server was down) only the latest is prepared and the others are said as skipped, never a
  * burst.
  */
+import { createHash } from "node:crypto";
 import { AGENT_CHANNEL } from "./agent-messages.ts";
 import { MONTH_NAMES, daysInMonth, isoDate, realDate } from "./italian-calendar.ts";
 import type { Marker } from "./marker.ts";
@@ -97,8 +98,13 @@ export type RecurringCustomer = {
 	readonly country?: string;
 };
 
-/** The months a recurring invoice removed had in drafts: kept by customer, so adding it again never bills them twice. */
-export type Billed = { readonly customer: Pick<RecurringCustomer, "name" | "card" | "vat" | "cf">; readonly period: string; readonly months: number; readonly call: string };
+/**
+ * The months a recurring invoice removed had in drafts: kept by customer and canone, so adding the
+ * same canone again never bills them twice. `canone`: canoneKey of the one removed (only the same
+ * lines and cadence are held back, never another canone of the customer); `after`: the next id when
+ * it was removed (a recurring invoice that was there already is never held back by it).
+ */
+export type Billed = { readonly customer: Pick<RecurringCustomer, "name" | "card" | "vat" | "cf">; readonly period: string; readonly months: number; readonly call: string; readonly canone?: string; readonly after?: number };
 
 export type Schedule = Marker & {
 	/** «RI-0001», never given again. */
@@ -120,6 +126,8 @@ export type Schedule = Marker & {
 	readonly pausedOn?: string;
 	/** The day periods count from: set and resumed (a period before it is never prepared, the one it falls in is). */
 	readonly from: string;
+	/** Months a new cadence or first month left out (before the first period after it): said by show until a draft covers them. */
+	readonly leftOut?: readonly string[];
 	/** The conversation it was set in: told there when a draft is ready, or could not be made. */
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	readonly callId?: string;
@@ -144,11 +152,15 @@ export type Run = {
 	readonly why?: string;
 	/** The conversation was told (once per period). */
 	readonly told?: true;
-	/** Sends of the notice that failed: after 3 it is not tried again. */
+	/** Sends of the notice that failed: after 3 it is tried at most once a day. */
 	readonly tellFails?: number;
+	/** The day of the last failed send, «2026-10-19». */
+	readonly lastTry?: string;
+	/** A month left out by a new cadence, made alone: the amount of a whole period divided by this many months. */
+	readonly share?: number;
 };
 
-/** After this many failed sends a notice is not tried again. */
+/** After this many failed sends a notice is tried at most once a day. */
 export const TELL_TRIES = 3;
 
 export const scheduleId = (n: number) => `RI-${String(n).padStart(4, "0")}`;
@@ -299,6 +311,20 @@ export function longestFilled(text: string, cadence: Cadence): string {
 
 export const hasPlaceholder = (text: string): boolean => /\{(?:mese|periodo)\}/.test(text);
 
+/**
+ * The canone a schedule bills, as a key: its lines as they read (description, quantity, price or
+ * voce, VAT or nature, the terms' when the line has none) and its cadence. A removed recurring
+ * invoice holds back its months only for one with the same key (ADR 0087).
+ */
+export function canoneKey(s: Pick<Schedule, "lines" | "terms" | "cadence">): string {
+	const norm = (v: string | undefined) => (v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+	const lines = s.lines.map((l) => [norm(l.description), norm(l.quantity) || "1", l.price === undefined ? `item:${norm(l.item)}` : norm(l.price), norm(l.vat ?? s.terms.vat), norm(l.natura ?? s.terms.natura)]);
+	return createHash("sha256").update(JSON.stringify([s.cadence, lines])).digest("hex");
+}
+
+/** The number of a schedule's id («RI-0012»: 12). */
+export const scheduleNumber = (id: string): number => Number(SCHEDULE_ID.exec(id)?.[1] ?? 0);
+
 /** The ops that only read: they run in a brief's thread. */
 export function recurringCallReads(args: Record<string, unknown>): boolean {
 	return args.op === "list" || args.op === "show";
@@ -352,7 +378,7 @@ export function validCustomer(c: unknown): c is RecurringCustomer {
 export function validSchedule(v: unknown): v is Schedule {
 	if (!isMarker(v) || !record(v)) return false;
 	const s = v as unknown as Schedule;
-	if (!keysIn(s, ["id", "customer", "lines", "terms", "cadence", "day", "start", "end", "count", "note", "status", "pausedOn", "from", "thread", "callId", "edited", "by", "at"])) return false;
+	if (!keysIn(s, ["id", "customer", "lines", "terms", "cadence", "day", "start", "end", "count", "note", "status", "pausedOn", "from", "leftOut", "thread", "callId", "edited", "by", "at"])) return false;
 	if (typeof s.id !== "string" || !SCHEDULE_ID.test(s.id)) return false;
 	if (!validCustomer(s.customer)) return false;
 	if (!Array.isArray(s.lines) || s.lines.length === 0 || s.lines.length > RECURRING_LIMITS.lines || !s.lines.every(validLine)) return false;
@@ -364,23 +390,27 @@ export function validSchedule(v: unknown): v is Schedule {
 	if (!opt(s.note, RECURRING_LIMITS.note) || (s.status !== "active" && s.status !== "paused")) return false;
 	if (!isDay(s.from) || (s.pausedOn !== undefined && !isDay(s.pausedOn)) || !validThread(s.thread)) return false;
 	if (s.callId !== undefined && !isText(s.callId, 200)) return false;
+	if (s.leftOut !== undefined && !(Array.isArray(s.leftOut) && s.leftOut.length <= 11 && s.leftOut.every((m) => typeof m === "string" && MONTH.test(m)))) return false;
 	return s.edited === undefined || isMarker(s.edited);
 }
 
 const months = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 12;
 
 export function validRun(v: unknown): v is Run {
-	if (!record(v) || !keysIn(v, ["schedule", "period", "months", "state", "at", "call", "draft", "missed", "why", "told", "tellFails"])) return false;
+	if (!record(v) || !keysIn(v, ["schedule", "period", "months", "state", "at", "call", "draft", "missed", "why", "told", "tellFails", "lastTry", "share"])) return false;
 	const r = v as unknown as Run;
 	if (typeof r.schedule !== "string" || !SCHEDULE_ID.test(r.schedule) || !MONTH.test(r.period) || !months(r.months)) return false;
 	if (!["claimed", "drafted", "failed"].includes(r.state) || !plain(r.at, 40) || !plain(r.call, 200) || !opt(r.draft, 10)) return false;
 	if (r.missed !== undefined && !(Array.isArray(r.missed) && r.missed.length <= RECURRING_LIMITS.count && r.missed.every((m) => typeof m === "string" && MONTH.test(m)))) return false;
 	if (r.tellFails !== undefined && !(Number.isInteger(r.tellFails) && r.tellFails >= 1 && r.tellFails <= TELL_TRIES)) return false;
+	if ((r.lastTry !== undefined && !isDay(r.lastTry)) || (r.share !== undefined && !(Number.isInteger(r.share) && r.share >= 2 && r.share <= 12 && r.months === 1))) return false;
 	return (r.why === undefined || isText(r.why, 4000)) && (r.told === undefined || r.told === true);
 }
 
 export function validBilled(v: unknown): v is Billed {
-	if (!record(v) || !keysIn(v, ["customer", "period", "months", "call"])) return false;
+	if (!record(v) || !keysIn(v, ["customer", "period", "months", "call", "canone", "after"])) return false;
 	const b = v as unknown as Billed;
+	if (b.canone !== undefined && !(typeof b.canone === "string" && /^[0-9a-f]{64}$/.test(b.canone))) return false;
+	if (b.after !== undefined && !(Number.isInteger(b.after) && b.after >= 1 && b.after <= 999_999)) return false;
 	return validCustomer(b.customer) && typeof b.period === "string" && MONTH.test(b.period) && months(b.months) && plain(b.call, 200);
 }

@@ -8,25 +8,31 @@
  * failed for that period with the builder's own words, said once, and not tried again by itself.
  *
  * A draft covers months: the sweep never prepares a period that overlaps a month already covered
- * (by this recurring invoice, or by one removed for the same customer whose draft is still there),
+ * (by this recurring invoice, or by the same canone removed for the same customer and added again,
+ * whose draft is still there),
  * and never makes again a draft the person removed; only run_now does, when asked, with a new call
  * id («recurring:RI-0001:2026-10:2»).
  *
  * The sweep: for each active schedule, the latest period due on today's date in the instance's
  * time zone (recurring-invoices.ts duePeriod), never a burst of the missed ones; then the
  * conversation it was set in is told, once per period (the notice's key), and again on a later
- * sweep only when telling failed, at most TELL_TRIES times.
+ * sweep only when telling failed: TELL_TRIES times, then at most once a day.
+ *
+ * A draft made in place of another with sales_invoices (replace) keeps the first call as `origin`:
+ * it is still this run's draft.
  */
 import type { ToolContext } from "../engine.ts";
 import { todayIn } from "../italian-calendar.ts";
 import { listLines } from "../price-list-lines.ts";
+import { centsDecimal, halfUp, scaled } from "../quote-sums.ts";
 import type { RecurringBook, RecurringStore } from "../recurring-invoice-store.ts";
-import { type Billed, CADENCES, duePeriod, filled, hasPlaceholder, longestLabel, type RecurringCustomer, type RecurringLine, type Run, runMonths, rangeLabel, type Schedule, TELL_TRIES } from "../recurring-invoices.ts";
+import { type Billed, CADENCES, canoneKey, duePeriod, filled, hasPlaceholder, longestLabel, type RecurringCustomer, type RecurringLine, type Run, runMonths, rangeLabel, type Schedule, scheduleNumber, TELL_TRIES } from "../recurring-invoices.ts";
 import { FIELD_LIMITS } from "../sales-invoice-rules.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { type SalesInvoice, SalesInvoiceError } from "../sales-invoices.ts";
 import { failedNotice, readyNotice } from "./recurring-invoice-render.ts";
 import { DRAFT_CHECKED, draft } from "./sales-invoice-draft.ts";
+import { readLines } from "./sales-invoice-input.ts";
 import type { SalesEnv } from "./sales-invoice-env.ts";
 
 /** What changed, for the audit: the op and how many, never customers, amounts, lines or notes. */
@@ -50,38 +56,61 @@ export const draftCallId = (s: Pick<Schedule, "id">, period: string) => `recurri
 export function freshCall(env: Pick<RecurringEnv, "sales">, s: Pick<Schedule, "id">, period: string): string {
 	const base = draftCallId(s, period);
 	const book = env.sales.store.read();
-	const used = new Set([...book.calls, ...book.invoices.map((i) => i.callId)]);
+	const used = new Set([...book.calls, ...book.invoices.flatMap((i) => (i.origin === undefined ? [i.callId] : [i.callId, i.origin]))]);
 	if (!used.has(base)) return base;
 	let n = 2;
 	while (used.has(`${base}:${n}`)) n++;
 	return `${base}:${n}`;
 }
 
-/** The sales invoice (draft or issued) a call made, when it is still there. */
+/** Whether a sales invoice is the one a call made: by its own call, or one made in its place (replace keeps the first call as `origin`). */
+const madeBy = (i: SalesInvoice, call: string) => i.callId === call || i.origin === call;
+
+/** The sales invoice (draft or issued) a call made, or the one made in its place, when it is still there. */
 export function invoiceOf(env: Pick<RecurringEnv, "sales">, call: string): SalesInvoice | undefined {
-	return env.sales.store.read().invoices.find((i) => i.callId === call);
+	return env.sales.store.read().invoices.find((i) => madeBy(i, call));
 }
 
 /** A run whose draft the person removed (never an issued invoice: that is never removed). Unknown when the sales store does not read. */
 export function draftGone(env: Pick<RecurringEnv, "sales">, r: Run): boolean {
 	if (r.state !== "drafted") return false;
 	const book = env.sales.store.read();
-	return !book.broken && !book.invoices.some((i) => i.callId === r.call);
+	return !book.broken && !book.invoices.some((i) => madeBy(i, r.call));
 }
 
-/** Whether two customers are the same one: a card, a partita IVA or a codice fiscale in common; by name only without any. */
-export function sameCustomer(a: Pick<RecurringCustomer, "name" | "card" | "vat" | "cf">, b: Pick<RecurringCustomer, "name" | "card" | "vat" | "cf">): boolean {
-	const vat = (v: string | undefined) => v?.replace(/^IT/, "");
-	if (a.card !== undefined && a.card === b.card) return true;
-	if (a.vat !== undefined && vat(a.vat) === vat(b.vat)) return true;
-	if (a.cf !== undefined && a.cf === b.cf) return true;
-	const none = (c: typeof a) => c.card === undefined && c.vat === undefined && c.cf === undefined;
+type Who = Pick<RecurringCustomer, "name" | "card" | "vat" | "cf">;
+
+/**
+ * Whether two customers are the same one: a card, a partita IVA or a codice fiscale in common (a
+ * card's own tax ids count, so a card on one side and its partita IVA on the other match); by name
+ * only when neither has any.
+ */
+export function sameCustomer(env: Pick<RecurringEnv, "sales">, a: Who, b: Who): boolean {
+	const cardBook = a.card === undefined && b.card === undefined ? undefined : env.sales.clients?.read();
+	const cards = cardBook === undefined || cardBook.broken ? [] : cardBook.cards;
+	const ids = (c: Who) => {
+		const card = c.card === undefined ? undefined : cards.find((x) => x.id === c.card);
+		const vats = [c.vat, card?.vat].filter((v): v is string => v !== undefined).map((v) => v.replace(/^IT/, ""));
+		const cfs = [c.cf, card?.cf].filter((v): v is string => v !== undefined);
+		return { card: c.card, vats, cfs };
+	};
+	const x = ids(a);
+	const y = ids(b);
+	if (x.card !== undefined && x.card === y.card) return true;
+	if (x.vats.some((v) => y.vats.includes(v)) || x.cfs.some((v) => y.cfs.includes(v))) return true;
+	const none = (c: Who) => c.card === undefined && c.vat === undefined && c.cf === undefined;
 	return none(a) && none(b) && a.name.trim().toLowerCase() === b.name.trim().toLowerCase();
 }
 
-/** The months of a removed recurring invoice for this customer whose draft (or invoice) is still there. */
-export function billedFor(env: Pick<RecurringEnv, "sales">, book: Pick<RecurringBook, "billed">, s: Pick<Schedule, "customer">): Billed[] {
-	return book.billed.filter((b) => sameCustomer(b.customer, s.customer) && invoiceOf(env, b.call) !== undefined);
+/**
+ * The months of a removed recurring invoice held back for this one, whose draft (or invoice) is
+ * still there: the same customer and the same canone (lines and cadence) added again after it was
+ * removed; never another canone of the customer, never one that was there already.
+ */
+export function billedFor(env: Pick<RecurringEnv, "sales">, book: Pick<RecurringBook, "billed">, s: Pick<Schedule, "id" | "customer" | "lines" | "terms" | "cadence">): Billed[] {
+	const key = canoneKey(s);
+	const n = scheduleNumber(s.id);
+	return book.billed.filter((b) => b.canone === key && b.after !== undefined && n >= b.after && sameCustomer(env, b.customer, s.customer) && invoiceOf(env, b.call) !== undefined);
 }
 
 /** The months covered for a schedule: its runs (all but those `skip` leaves out) and the drafts still there of one removed for the same customer. */
@@ -92,8 +121,12 @@ export function coveredMonths(env: Pick<RecurringEnv, "sales">, book: Pick<Recur
 	return covered;
 }
 
-/** The arguments sales_invoices' draft gets for these months: the lines with the period in their description, the terms, the customer's data, the note. */
-export function draftArgs(env: Pick<RecurringEnv, "sales">, s: Schedule, period: string, months: number): Record<string, unknown> | { readonly why: string } {
+/**
+ * The arguments sales_invoices' draft gets for these months: the lines with the period in their
+ * description, the terms, the customer's data, the note. `share`: a month left out by a new cadence,
+ * made alone: each line becomes one of its amount divided by `share`, to the cent half up.
+ */
+export function draftArgs(env: Pick<RecurringEnv, "sales">, s: Schedule, period: string, months: number, share?: number): Record<string, unknown> | { readonly why: string } {
 	const raw = s.lines.map(lineArgs);
 	const listed = listLines({ ...(env.sales.priceList === undefined ? {} : { priceList: env.sales.priceList }), company: env.sales.company, taxes: env.sales.taxes }, raw, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione - longestLabel(s.cadence).length - 2, doc: { vat: s.terms.vat, natura: s.terms.natura } });
 	if (listed !== undefined && "ask" in listed) return { why: listed.ask };
@@ -101,7 +134,8 @@ export function draftArgs(env: Pick<RecurringEnv, "sales">, s: Schedule, period:
 	const lines = (listed?.lines ?? raw).map((l) => {
 		const line = l as Record<string, unknown>;
 		const description = String(line.description ?? "");
-		return { ...line, description: hasPlaceholder(description) ? filled(description, period, months) : `${description}, ${label}` };
+		const named = { ...line, description: hasPlaceholder(description) ? filled(description, period, months) : `${description}, ${label}` };
+		return share === undefined ? named : shared(named, share);
 	});
 	const c = s.customer;
 	return {
@@ -116,6 +150,18 @@ export function draftArgs(env: Pick<RecurringEnv, "sales">, s: Schedule, period:
 		...s.terms,
 		...(s.note === undefined ? {} : { notes: filled(s.note, period, months) }),
 	};
+}
+
+/** A line as one of its amount divided by `share` (quantity 1, no unit), to the cent half up; as it is when it does not read (the draft says why). */
+function shared(line: Record<string, unknown>, share: number): Record<string, unknown> {
+	const read = readLines([line]);
+	if (!Array.isArray(read)) return line;
+	const l = read[0];
+	if (l === undefined) return line;
+	const { unit: _u, ...rest } = line;
+	// Price to 4 decimals × quantity to 3: 7 decimals, to cents divided by the share.
+	const cents = halfUp(scaled(l.price, 4) * scaled(l.quantity, 3), 100_000n * BigInt(share));
+	return { ...rest, quantity: "1", price: centsDecimal(cents) };
 }
 
 function lineArgs(l: RecurringLine): Record<string, unknown> {
@@ -144,7 +190,7 @@ async function build(env: RecurringEnv, s: Schedule, run: Run, signal: AbortSign
 		const cards = env.sales.clients?.read();
 		if (cards !== undefined && !cards.broken && !cards.cards.some((c) => c.id === s.customer.card)) return { why: `La scheda del cliente (${s.customer.card}) non c'è più tra i clienti: la fattura ricorrente va rifatta per un cliente che c'è, o tolta.` };
 	}
-	const args = draftArgs(env, s, run.period, run.months);
+	const args = draftArgs(env, s, run.period, run.months, run.share);
 	if ("why" in args) return { why: String(args.why) };
 	const ctx = ownContext(run.call, signal);
 	let answer: string;
@@ -170,12 +216,12 @@ export async function preparePeriod(
 	env: RecurringEnv,
 	s: Schedule,
 	period: string,
-	o: { readonly months?: number; readonly missed?: readonly string[]; readonly replace?: readonly string[]; readonly signal?: AbortSignal } = {},
+	o: { readonly months?: number; readonly share?: number; readonly missed?: readonly string[]; readonly replace?: readonly string[]; readonly signal?: AbortSignal } = {},
 ): Promise<Prepared> {
 	const old = env.store.read().runs.find((r) => r.schedule === s.id && r.period === period);
 	// A claim never finished keeps its call id: its draft, if it was made, is found again.
 	const call = old !== undefined && old.state === "claimed" ? old.call : freshCall(env, s, period);
-	const claim = env.store.claim(s.id, period, env.now().toISOString(), { months: o.months ?? CADENCES[s.cadence], call, ...(o.missed === undefined ? {} : { missed: o.missed }), ...(o.replace === undefined ? {} : { replace: o.replace }) });
+	const claim = env.store.claim(s.id, period, env.now().toISOString(), { months: o.months ?? CADENCES[s.cadence], call, ...(o.share === undefined ? {} : { share: o.share }), ...(o.missed === undefined ? {} : { missed: o.missed }), ...(o.replace === undefined ? {} : { replace: o.replace }) });
 	if (!claim.mine) return { kind: "handled", run: claim.run };
 	const built = await build(env, s, claim.run, o.signal ?? new AbortController().signal);
 	const run = env.store.settle(s.id, period, "draft" in built ? { draft: built.draft.id } : { why: built.why });
@@ -184,9 +230,11 @@ export async function preparePeriod(
 	return "draft" in built ? { kind: "drafted", run, draft: built.draft, answer: built.answer } : { kind: "failed", run };
 }
 
-/** Tells the schedule's conversation how its period went, once (the key); marked told when it went, given up after TELL_TRIES failed sends. */
+/** Tells the schedule's conversation how its period went, once (the key); marked told when it went; after TELL_TRIES failed sends, tried at most once a day. */
 export async function tell(env: RecurringEnv, s: Schedule, run: Run): Promise<void> {
-	if (env.notify === undefined || s.thread === undefined || run.told === true || run.state === "claimed" || (run.tellFails ?? 0) >= TELL_TRIES) return;
+	if (env.notify === undefined || s.thread === undefined || run.told === true || run.state === "claimed") return;
+	const day = todayIn(env.timeZone, env.now());
+	if ((run.tellFails ?? 0) >= TELL_TRIES && run.lastTry === day) return;
 	let text: string;
 	if (run.state === "drafted") {
 		const inv = invoiceOf(env, run.call);
@@ -200,10 +248,11 @@ export async function tell(env: RecurringEnv, s: Schedule, run: Run): Promise<vo
 		await env.notify(s.thread, text, `recurring-invoice:${run.call.replace(/^recurring:/, "")}`);
 		env.store.markTold(s.id, run.period);
 	} catch (error) {
-		const tries = env.store.tellFailed(s.id, run.period);
+		const tries = env.store.tellFailed(s.id, run.period, day);
 		const why = error instanceof Error ? error.message : String(error);
-		if (tries >= TELL_TRIES) env.log?.(`recurring invoices: ${s.id} ${run.period} not told after ${TELL_TRIES} tries, given up: ${why}`);
-		else env.log?.(`recurring invoices: ${s.id} ${run.period} not told: ${why}`);
+		// Said once when it gives up; the daily tries after it are not logged again.
+		if (tries.count >= TELL_TRIES && tries.before < TELL_TRIES) env.log?.(`recurring invoices: ${s.id} ${run.period} not told after ${TELL_TRIES} tries, given up for today, tried again once a day: ${why}`);
+		else if (tries.count < TELL_TRIES) env.log?.(`recurring invoices: ${s.id} ${run.period} not told: ${why}`);
 	}
 }
 

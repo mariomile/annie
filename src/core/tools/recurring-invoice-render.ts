@@ -49,7 +49,8 @@ export function cadenceLine(s: Schedule): string {
 /** The amount of one period: «300,00 € + IVA 22%»; «importo dal listino» when it cannot be told. */
 export const amountWords = (a: Amount | undefined) => (a === undefined ? "importo dal listino" : `${euros(a.cents)} ${a.tax ?? "+ IVA"}`);
 
-export type Shown = { readonly schedule: Schedule; readonly today: string; readonly amount?: Amount; readonly last?: Run; readonly lastGone?: boolean; readonly next?: string };
+/** `lastId`: the last draft as it is now (one made in its place keeps the run); `leftOut`: months a new cadence left out that no draft covers. */
+export type Shown = { readonly schedule: Schedule; readonly today: string; readonly amount?: Amount; readonly last?: Run; readonly lastGone?: boolean; readonly lastId?: string; readonly next?: string; readonly leftOut?: readonly string[] };
 
 /** The day of the next draft: «oggi», «il 31 ottobre 2026». */
 const nextWords = (next: string, today: string) => (next === today ? "oggi" : withDate("il", next));
@@ -87,15 +88,20 @@ export function showAnswer(x: Shown): string {
 	const lines = [`${s.id}${s.status === "paused" ? ", in pausa" : ""}: ${amountWords(x.amount)}, ${cadenceLine(s)}.`];
 	if (x.next !== undefined) lines.push(`Prossima bozza ${nextWords(x.next, x.today)}${CADENCES[s.cadence] === 1 ? "" : ` (${periodLabel(s, periodOn(s, x.next) ?? s.start)})`}.`);
 	else if (s.status === "active") lines.push("Non ci sono altre bozze da preparare: i periodi sono finiti.");
-	if (x.last !== undefined) lines.push(lastWords(x.last, x.lastGone === true));
+	if (x.last !== undefined) lines.push(lastWords(x.last, x.lastGone === true, x.lastId));
+	const left = x.leftOut ?? [];
+	if (left.length > 0) lines.push(`${capitalized(monthsWords(left))} ${left.length === 1 ? "è rimasto fuori dal cambio di cadenza: se serve, dimmelo e lo preparo" : "sono rimasti fuori dal cambio di cadenza: se servono, dimmelo e li preparo"}.`);
 	lines.push(fencedRecurring(inside.join("\n")));
 	return lines.join("\n");
 }
 
-function lastWords(r: Run, gone: boolean): string {
+const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+function lastWords(r: Run, gone: boolean, id: string | undefined): string {
 	const label = runLabel(r);
 	if (r.state === "drafted" && gone) return `La bozza ${ofLabel(label)} era stata tolta: se serve, dimmelo e la rifaccio.`;
-	if (r.state === "drafted") return `Ultima bozza: ${label}${r.draft === undefined ? "" : ` (${r.draft})`}.`;
+	const draft = id ?? r.draft;
+	if (r.state === "drafted") return `Ultima bozza: ${label}${draft === undefined ? "" : ` (${draft})`}.`;
 	if (r.state === "failed") return `La bozza ${ofLabel(label)} non si è potuta preparare: dimmi i dati che mancano e la rifaccio.`;
 	return `La bozza ${ofLabel(label)} è in preparazione.`;
 }
