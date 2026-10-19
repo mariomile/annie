@@ -57,15 +57,15 @@ export type FitInput = {
 	readonly now?: { readonly day: string; readonly minutes: number };
 	/** The person said «fissalo lo stesso»: closed, out of hours and overlaps go; the past and an absence never. */
 	readonly force?: boolean;
-	/** What the staff's absences block of the resources on a day (il personale, staff-shifts.ts). */
+	/** What the staff blocks of the resources on a day: absences and time off the shift (il personale, staff-shifts.ts). */
 	readonly blocked?: (day: string) => readonly Block[];
 };
 
-/** A resource not available from–to on the day: its person is absent. */
-export type Block = { readonly resource: string; readonly from: number; readonly to: number };
+/** A resource not available from–to on the day: its person is absent, of rest, off the shift, or not on the staff then. */
+export type Block = { readonly resource: string; readonly from: number; readonly to: number; readonly why?: "absent" | "rest" | "off" | "out" };
 
 /** `room`: the start is inside an opening but the end is not (until when there is room, and whether a pause follows or the closing). */
-export type Fit = { readonly ok: true; readonly resource?: string } | { readonly ok: false; readonly why: "closed" | "outside" | "overlap" | "past" | "absent"; readonly with?: string; readonly open?: Open; readonly room?: { readonly until: number; readonly pause: boolean }; readonly resource?: string };
+export type Fit = { readonly ok: true; readonly resource?: string } | { readonly ok: false; readonly why: "closed" | "outside" | "overlap" | "past" | "absent"; readonly with?: string; readonly open?: Open; readonly room?: { readonly until: number; readonly pause: boolean }; readonly resource?: string; readonly block?: Block };
 
 /** Whether the appointment fits: open, inside an opening, not in the past, free in a lane (the first free one taken). */
 export function fits(i: FitInput): Fit {
@@ -82,10 +82,13 @@ export function fits(i: FitInput): Fit {
 	let first: string | undefined;
 	// A resource whose person is absent is never taken, «fissalo lo stesso» or not.
 	const blocks = i.blocked?.(i.day) ?? [];
-	const absent = (lane: string | undefined) => lane !== undefined && blocks.some((b) => b.resource.toLowerCase() === lane.toLowerCase() && b.from < end && i.start < b.to);
+	const blockOf = (lane: string | undefined) => (lane === undefined ? undefined : blocks.find((b) => b.resource.toLowerCase() === lane.toLowerCase() && b.from < end && i.start < b.to));
 	const all = lanes(i.settings, i.resource, i.needs);
-	const there = all.filter((lane) => !absent(lane));
-	if (there.length === 0) return { ok: false, why: "absent", ...(all[0] === undefined ? {} : { resource: all[0] }) };
+	const there = all.filter((lane) => blockOf(lane) === undefined);
+	if (there.length === 0) {
+		const block = blockOf(all[0]);
+		return { ok: false, why: "absent", ...(all[0] === undefined ? {} : { resource: all[0] }), ...(block === undefined ? {} : { block }) };
+	}
 	for (const lane of there) {
 		const hit = busy(i.appointments, i.day, lane, i.settings, i.except).find((b) => b.span.from < end && i.start < b.span.to);
 		if (hit === undefined) return lane === undefined ? { ok: true } : { ok: true, resource: lane };

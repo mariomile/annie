@@ -3,13 +3,14 @@
  * shift said apart, less the absences and the days the business is closed (its hours, closures
  * and national holidays from the appointments' settings when there are some, else the national
  * holidays); who is off and why; the hours the business is open and nobody is on (coverage gaps);
- * the resources of the appointments an absence blocks; a month for the consulente del lavoro.
+ * the resources of the appointments an absence (or the shift) blocks. Only the people hired by
+ * the day and not yet gone count.
  * Wall-clock minutes of the day, like the appointments: the summer-time changes move nothing.
  */
 import { type AppointmentSettings, minutesOf, toMinutes } from "./appointments.ts";
-import { type Open, openOn, type Span } from "./appointment-slots.ts";
-import { addDays, daysInMonth, holidayOn, weekdayOf } from "./italian-calendar.ts";
-import { type Absence, type AbsenceKind, type ExtraHours, isActive, lastDay, type Person, type ShiftChange, spanOf } from "./staff.ts";
+import { type Block, type Open, openOn, type Span } from "./appointment-slots.ts";
+import { addDays, holidayOn, weekdayOf } from "./italian-calendar.ts";
+import { type Absence, type AbsenceKind, employed, isActive, lastDay, type Person, type ShiftChange, spanOf } from "./staff.ts";
 
 export type StaffDay = {
 	readonly people: readonly Person[];
@@ -62,7 +63,7 @@ export const minutesIn = (spans: readonly Span[]): number => spans.reduce((n, s)
 /** Every person's day: planned, less absences. */
 export function dayOf(d: StaffDay, day: string): { readonly people: readonly PersonDay[]; readonly closed: boolean; readonly open?: Open; readonly holiday?: string } {
 	const c = closedOn(d.settings, day);
-	const people = d.people.map((person) => {
+	const people = d.people.filter((p) => employed(p, day)).map((person) => {
 		const planned = plannedOn(person, day, d.shifts, c.closed);
 		const mine = absencesOn(d.absences, person.id, day);
 		const cut = mine.map((a) => spanOf(a));
@@ -81,30 +82,75 @@ export function coverageGaps(d: StaffDay, day: string, least = 15): Span[] {
 	return minus(today.open.spans, today.people.flatMap((p) => p.hours)).filter((g) => g.to - g.from >= least);
 }
 
-/** What absences block of the appointments' resources on the day: the resource and the time. */
-export function resourceBlocks(people: readonly Person[], absences: readonly Absence[], day: string): { readonly resource: string; readonly from: number; readonly to: number }[] {
-	return people.flatMap((p) => (p.resource === undefined ? [] : absencesOn(absences, p.id, day).map((a) => ({ resource: p.resource as string, ...spanOf(a) }))));
+/**
+ * What the staff blocks of the appointments' resources on the day: an absence (its time), the
+ * day outside the person's dates (all of it), and, when the person has a usual week, the time
+ * outside the shift (a day of rest: all of it). The business's own closures are the
+ * appointments' to say.
+ */
+export function resourceBlocks(people: readonly Person[], absences: readonly Absence[], shifts: readonly ShiftChange[], day: string): Block[] {
+	const DAY = { from: 0, to: 24 * 60 };
+	return people.flatMap((p): Block[] => {
+		if (p.resource === undefined) return [];
+		const resource = p.resource;
+		if (!employed(p, day)) return [{ resource, ...DAY, why: "out" }];
+		const out: Block[] = absencesOn(absences, p.id, day).map((a) => ({ resource, ...spanOf(a), why: "absent" as const }));
+		const own = shifts.some((s) => s.person === p.id && s.day === day);
+		if (p.week === undefined && !own) return out;
+		const planned = plannedOn(p, day, shifts, false);
+		if (planned.length === 0) return [...out, { resource, ...DAY, why: "rest" }];
+		return [...out, ...minus([DAY], planned).map((s) => ({ resource, ...s, why: "off" as const }))];
+	});
 }
 
-/** Whether the person works on the weekday as usual (no usual week: Monday to Friday). */
-export function usualWorkday(person: Person, day: string): boolean {
+/** How ferie days are counted: on a week of 5 days (Monday to Friday) or 6 (to Saturday), with the business's closures and the days said apart. */
+export type FerieRule = { readonly six: boolean; readonly shifts: readonly ShiftChange[]; readonly settings?: AppointmentSettings };
+
+export const FIVE: FerieRule = { six: false, shifts: [] };
+
+const closedFor = (settings: AppointmentSettings | undefined, day: string) => (settings?.closures ?? []).some((c) => c.from <= day && day <= c.to);
+
+/** Why a day of the ferie week does not count: a national holiday (its name), a closure, a day off said apart, not a working day of the person. */
+export function notCounted(person: Person, day: string, rule: FerieRule): { readonly why: "week" | "holiday" | "closure" | "off" | "person"; readonly holiday?: string } | undefined {
 	const wd = weekdayOf(day);
-	if (person.week === undefined) return wd >= 1 && wd <= 5;
-	return (person.week[String(wd)] ?? []).length > 0;
+	if (wd === 0 || (wd === 6 && !rule.six)) return { why: "week" };
+	if (!employed(person, day)) return { why: "person" };
+	const holiday = holidayOn(day);
+	if (holiday !== undefined) return { why: "holiday", holiday };
+	if (closedFor(rule.settings, day)) return { why: "closure" };
+	const own = rule.shifts.find((s) => s.person === person.id && s.day === day);
+	if (own !== undefined) return own.hours.length === 0 ? { why: "off" } : undefined;
+	// A usual day off of the person does not count; on a week of 6, Saturday does.
+	if (person.week !== undefined && (person.week[String(wd)] ?? []).length === 0 && !(rule.six && wd === 6)) return { why: "person" };
+	return undefined;
 }
 
 /**
- * The working days an absence takes in from–to, in hundredths: a usual working day of the
- * person that is not a national holiday counts 100, a half day 50. An open malattia counts up to
- * `until`.
+ * The working days an absence takes in from–to, in hundredths: a day of the ferie week that the
+ * person works, not a national holiday, a closure or a day off said apart, counts 100, a half day
+ * 50. An open malattia counts up to `until`.
  */
-export function absenceDays(person: Person, a: Absence, from: string, to: string, until: string): number {
+export function absenceDays(person: Person, a: Absence, from: string, to: string, until: string, rule: FerieRule = FIVE): number {
 	const lo = a.from > from ? a.from : from;
 	const last = lastDay(a, until);
 	const hi = last < to ? last : to;
 	let n = 0;
-	for (let day = lo; day <= hi; day = addDays(day, 1)) if (usualWorkday(person, day) && holidayOn(day) === undefined) n += a.half === undefined ? 100 : 50;
+	for (let day = lo; day <= hi; day = addDays(day, 1)) if (notCounted(person, day, rule) === undefined) n += a.half === undefined ? 100 : 50;
 	return n;
+}
+
+/** What an absence does not count in its days, said: the holidays by name, the closures and the days off. */
+export function skippedIn(person: Person, a: Absence, rule: FerieRule): { readonly holidays: readonly string[]; readonly closures: number; readonly off: number } {
+	const holidays: string[] = [];
+	let closures = 0;
+	let off = 0;
+	for (let day = a.from; day <= (a.to ?? a.from); day = addDays(day, 1)) {
+		const n = notCounted(person, day, rule);
+		if (n?.why === "holiday") holidays.push(n.holiday as string);
+		else if (n?.why === "closure") closures++;
+		else if (n?.why === "off") off++;
+	}
+	return { holidays, closures, off };
 }
 
 /** Calendar days an absence takes in from–to, in hundredths (a malattia, as INPS counts them), an open one up to `until`. */
@@ -117,55 +163,10 @@ export function calendarDays(a: Absence, from: string, to: string, until: string
 	return n;
 }
 
-/** The minutes of a permesso: its time within the person's planned hours of the day (or the time said, with no usual week). */
+/** The minutes of a permesso (or an «altro» by the hour): its time within the person's planned hours of the day (or the time said, with no usual week). */
 export function permessoMinutes(person: Person, a: Absence, shifts: readonly ShiftChange[], settings?: AppointmentSettings): number {
 	const span = spanOf(a);
 	const planned = plannedOn(person, a.from, shifts, closedOn(settings, a.from).closed);
 	if (planned.length === 0) return a.end === undefined ? 0 : span.to - span.from;
 	return minutesIn(planned.map((p) => ({ from: Math.max(p.from, span.from), to: Math.min(p.to, span.to) })).filter((s) => s.to > s.from));
 }
-
-/** A person's month for the consulente del lavoro. Days in hundredths, hours in minutes. */
-export type MonthRow = {
-	readonly person: Person;
-	readonly workedDays: number;
-	readonly workedMinutes: number;
-	readonly ferie: number;
-	readonly permesso: number;
-	readonly malattia: number;
-	readonly altro: number;
-	readonly extra: number;
-};
-
-/** The month (from its first day) up to its last day: planned shifts less absences; open malattie up to `until`. */
-export function monthRows(d: StaffDay, extras: readonly ExtraHours[], first: string, until: string): MonthRow[] {
-	const year = Number(first.slice(0, 4));
-	const month = Number(first.slice(5, 7));
-	const last = `${first.slice(0, 8)}${String(daysInMonth(year, month)).padStart(2, "0")}`;
-	const days: string[] = [];
-	for (let day = first; day <= last; day = addDays(day, 1)) days.push(day);
-	const plans = days.map((day) => dayOf(d, day));
-	return d.people.map((person) => {
-		let workedDays = 0;
-		let workedMinutes = 0;
-		for (const plan of plans) {
-			const p = plan.people.find((x) => x.person.id === person.id);
-			const m = p === undefined ? 0 : minutesIn(p.hours);
-			if (m > 0) workedDays++;
-			workedMinutes += m;
-		}
-		const mine = d.absences.filter((a) => isActive(a) && a.person === person.id && a.from <= last && lastDay(a, until) >= first);
-		const sum = (kind: AbsenceKind, f: (a: Absence) => number) => mine.filter((a) => a.kind === kind).reduce((n, a) => n + f(a), 0);
-		return {
-			person,
-			workedDays,
-			workedMinutes,
-			ferie: sum("ferie", (a) => absenceDays(person, a, first, last, until)),
-			permesso: sum("permesso", (a) => permessoMinutes(person, a, d.shifts, d.settings)),
-			malattia: sum("malattia", (a) => calendarDays(a, first, last, until)),
-			altro: sum("altro", (a) => absenceDays(person, a, first, last, until)),
-			extra: extras.filter((e) => e.person === person.id && e.day >= first && e.day <= last).reduce((n, e) => n + e.minutes, 0),
-		};
-	});
-}
-

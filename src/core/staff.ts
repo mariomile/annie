@@ -5,7 +5,9 @@
  * usual shifts and the extra hours the owner recorded. Days are the business's own («2026-08-03»,
  * Europe/Rome); times wall clock («15:00»), in minutes from midnight when counted. Days and hours
  * are exact: hundredths of a day, whole minutes. Health data: of a malattia only the dates and,
- * optionally, the INPS certificate's protocol number; never a diagnosis. Ids (PE-0001, AS-0001)
+ * optionally, the INPS certificate's protocol number (digits); never a diagnosis, and no free text
+ * that looks like one (a role, a note: looksHealth). The reason of another absence is from a
+ * closed list. Ids (PE-0001, AS-0001)
  * are for the model only, never said.
  */
 import { type Opening, TIME, toMinutes, minutesOf } from "./appointments.ts";
@@ -23,6 +25,7 @@ export const STAFF_LIMITS = {
 	name: 120,
 	role: 80,
 	reason: 200,
+	note: 200,
 	protocol: 40,
 	resource: 60,
 	/** Days of one absence. */
@@ -41,6 +44,22 @@ export const STAFF_LIMITS = {
 export const KINDS = ["ferie", "permesso", "malattia", "altro"] as const;
 export type AbsenceKind = (typeof KINDS)[number];
 export const KIND_WORDS: Readonly<Record<AbsenceKind, string>> = { ferie: "ferie", permesso: "permesso", malattia: "malattia", altro: "assenza" };
+
+/** Why an «altro» absence is: a closed list, never free text (it could hold health data). */
+export const ALTRO_REASONS = ["lutto", "congedo parentale", "congedo malattia figlio", "matrimoniale", "L.104", "donazione sangue", "studio", "sindacale", "non retribuito", "altro"] as const;
+export type AltroReason = (typeof ALTRO_REASONS)[number];
+
+/** The codes of the month for the consulente: FE, PE, MA, and one per «altro». */
+export const KIND_CODES: Readonly<Record<Exclude<AbsenceKind, "altro">, string>> = { ferie: "FE", permesso: "PE", malattia: "MA" };
+export const REASON_CODES: Readonly<Record<AltroReason, string>> = { lutto: "LU", "congedo parentale": "CP", "congedo malattia figlio": "CMF", matrimoniale: "MAT", "L.104": "104", "donazione sangue": "DS", studio: "ST", sindacale: "SIN", "non retribuito": "NR", altro: "AL" };
+export const codeOf = (a: Pick<Absence, "kind" | "reason">): string => (a.kind === "altro" ? REASON_CODES[a.reason ?? "altro"] : KIND_CODES[a.kind]);
+
+/**
+ * Words that say something of someone's health: a field holding one (a role, a note) is never
+ * saved. Coarse on purpose: a word too many asks again, a word too few would keep a diagnosis.
+ */
+const HEALTH_WORDS = /\b(?:malat\w*|influenz\w*|febbr\w*|covid\w*|virus|virale|tumor\w*|cancro|oncolog\w*|chemio\w*|depress\w*|ansia|attacchi di panico|gravidanz\w*|incinta|aborto|operazion\w* chirurgic\w*|frattur\w*|ricover\w*|ospedal\w*|pronto soccorso|diabet\w*|epiless\w*|allergi\w*|asma|infezion\w*|terapi[ae]|disturb\w*|invalid\w*|handicap|sclerosi|ernia|gastrit\w*|gastroenterit\w*|emicrani\w*|bronchit\w*|polmonit\w*|otite|lombalgi\w*|sciatic\w*|distorsion\w*|ingessat\w*|diagnos\w*|sintom\w*|farmaci|visita medica|esami del sangue|dialisi|hiv|infarto|ictus|mal di \w+)\b/i;
+export const looksHealth = (text: string): boolean => HEALTH_WORDS.test(text.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
 
 export const HALVES = ["mattina", "pomeriggio"] as const;
 export type Half = (typeof HALVES)[number];
@@ -69,6 +88,9 @@ export type Person = Marker & {
 	readonly opening?: OpeningBalance;
 	/** The resource of the appointments this person is: an absence blocks it. */
 	readonly resource?: string;
+	/** Hired on, and (archived) the last day: outside them, out of the shifts, the brief and who works. */
+	readonly from?: string;
+	readonly to?: string;
 };
 
 export type Absence = Marker & {
@@ -81,27 +103,31 @@ export type Absence = Marker & {
 	readonly to?: string;
 	/** Ferie of half a day (one day only). */
 	readonly half?: Half;
-	/** Permesso: from what time, to what time (absent: to the end of the day's shift). */
+	/** Permesso (and «altro» by the hour, as L.104): from what time, to what time (absent: to the end of the day's shift). */
 	readonly start?: string;
 	readonly end?: string;
 	/** Malattia: the INPS certificate's protocol number, only that. */
 	readonly protocol?: string;
-	/** Altro: why (lutto, congedo, 104), as said. */
-	readonly reason?: string;
+	/** Altro: why, from the closed list. */
+	readonly reason?: AltroReason;
+	/** A note (never on a malattia; never one that looks like health data). */
+	readonly note?: string;
 	readonly callId: string;
 	readonly changed?: Marker & { readonly call?: string };
 	readonly cancelled?: Marker & { readonly call?: string };
 };
 
 /** A day's shift said apart from the usual week: the hours (none: a day off). */
-export type ShiftChange = Marker & { readonly person: string; readonly day: string; readonly hours: readonly Opening[] };
+export type ShiftChange = Marker & { readonly person: string; readonly day: string; readonly hours: readonly Opening[]; readonly note?: string };
 
 /** Extra hours the owner recorded («Marco ieri ha fatto 2 ore in più»). */
-export type ExtraHours = Marker & { readonly person: string; readonly day: string; readonly minutes: number; readonly callId: string };
+export type ExtraHours = Marker & { readonly person: string; readonly day: string; readonly minutes: number; readonly callId: string; readonly note?: string };
 
 export type StaffSettings = Marker & {
 	/** Ferie and permessi accrue month by month; absent: the whole year's at once («saldo annuo, senza maturazione mensile»). */
 	readonly monthly?: true;
+	/** The week ferie are counted on: 5 (Monday to Friday) or 6 (to Saturday); absent: 5, not said. */
+	readonly ferieWeek?: 5 | 6;
 };
 
 export type StaffClaim = { readonly k: string; readonly day: string; readonly call: string };
@@ -113,6 +139,9 @@ export const absenceId = (n: number): string => `AS-${String(n).padStart(4, "0")
 
 /** Not cancelled. */
 export const isActive = (a: Absence): boolean => a.cancelled === undefined;
+
+/** Whether the person works here on the day: hired by then, not yet gone. */
+export const employed = (p: Pick<Person, "from" | "to">, day: string): boolean => (p.from === undefined || p.from <= day) && (p.to === undefined || day <= p.to);
 
 /** The last day an absence covers for counting, an open malattia up to `until`. */
 export const lastDay = (a: Absence, until: string): string => a.to ?? (until < a.from ? a.from : until);
@@ -167,8 +196,9 @@ const isDay = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2
 const plain = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
 const DECIMAL = /^\d{1,4}(?:\.\d{1,2})?$/;
 const decimalUpTo = (v: unknown, max: number) => typeof v === "string" && DECIMAL.test(v) && Number(v) <= max;
-/** A certificate's protocol: a code with at least three digits (a word such as a diagnosis never passes). */
-export const PROTOCOL = /^(?=(?:[^0-9]*[0-9]){3})[A-Za-z0-9][A-Za-z0-9/-]{3,39}$/;
+/** A certificate's protocol: digits only, 6 to 12 (spaces, «/» and «-» taken out before). A word never passes. */
+export const PROTOCOL = /^\d{6,12}$/;
+const note = (v: unknown) => v === undefined || (plain(v, STAFF_LIMITS.note) && !looksHealth(v as string));
 
 function validOpening(v: unknown): v is Opening {
 	if (typeof v !== "object" || v === null || !Object.keys(v).every((k) => k === "from" || k === "to")) return false;
@@ -190,9 +220,11 @@ export function validWeek(v: unknown): v is Week {
 export function validPerson(v: unknown): v is Person {
 	if (typeof v !== "object" || v === null || !isMarker(v)) return false;
 	const p = v as Person;
-	if (!Object.keys(p).every((k) => ["id", "name", "role", "weeklyHours", "week", "ferieDays", "rolHours", "opening", "resource", "by", "at"].includes(k))) return false;
+	if (!Object.keys(p).every((k) => ["id", "name", "role", "weeklyHours", "week", "ferieDays", "rolHours", "opening", "resource", "from", "to", "by", "at"].includes(k))) return false;
 	if (typeof p.id !== "string" || !PERSON_ID.test(p.id) || !plain(p.name, STAFF_LIMITS.name)) return false;
-	if (p.role !== undefined && !plain(p.role, STAFF_LIMITS.role)) return false;
+	if (p.role !== undefined && (!plain(p.role, STAFF_LIMITS.role) || looksHealth(p.role))) return false;
+	if (p.from !== undefined && !isDay(p.from)) return false;
+	if (p.to !== undefined && (!isDay(p.to) || (p.from !== undefined && p.to < p.from))) return false;
 	if (p.weeklyHours !== undefined && !decimalUpTo(p.weeklyHours, STAFF_LIMITS.weeklyHours)) return false;
 	if (p.week !== undefined && !validWeek(p.week)) return false;
 	if (p.ferieDays !== undefined && !decimalUpTo(p.ferieDays, STAFF_LIMITS.ferieDays)) return false;
@@ -210,19 +242,20 @@ export function validPerson(v: unknown): v is Person {
 export function validAbsence(v: unknown): v is Absence {
 	if (typeof v !== "object" || v === null || !isMarker(v)) return false;
 	const a = v as Absence;
-	if (!Object.keys(a).every((k) => ["id", "person", "kind", "from", "to", "half", "start", "end", "protocol", "reason", "callId", "changed", "cancelled", "by", "at"].includes(k))) return false;
+	if (!Object.keys(a).every((k) => ["id", "person", "kind", "from", "to", "half", "start", "end", "protocol", "reason", "note", "callId", "changed", "cancelled", "by", "at"].includes(k))) return false;
 	if (typeof a.id !== "string" || !ABSENCE_ID.test(a.id) || typeof a.person !== "string" || !PERSON_ID.test(a.person) || !KINDS.includes(a.kind)) return false;
 	if (!isDay(a.from) || (a.to !== undefined && (!isDay(a.to) || a.to < a.from))) return false;
 	// Only a malattia may be open-ended.
 	if (a.to === undefined && a.kind !== "malattia") return false;
 	if (a.half !== undefined && (a.kind !== "ferie" || !HALVES.includes(a.half) || a.to !== a.from)) return false;
-	if (a.kind === "permesso") {
+	if (a.kind === "permesso" || (a.kind === "altro" && a.start !== undefined)) {
 		if (a.to !== a.from || typeof a.start !== "string" || !TIME.test(a.start)) return false;
 		if (a.end !== undefined && (typeof a.end !== "string" || !(TIME.test(a.end) || a.end === "24:00") || toMinutes(a.end) <= minutesOf(a.start))) return false;
 	} else if (a.start !== undefined || a.end !== undefined) return false;
-	// Health data: of a malattia only the protocol; a reason only for «altro».
+	// Health data: of a malattia only the protocol, no note; a reason only for «altro», from the list.
 	if (a.protocol !== undefined && (a.kind !== "malattia" || typeof a.protocol !== "string" || !PROTOCOL.test(a.protocol))) return false;
-	if (a.reason !== undefined && (a.kind !== "altro" || !plain(a.reason, STAFF_LIMITS.reason))) return false;
+	if (a.reason !== undefined && (a.kind !== "altro" || !ALTRO_REASONS.includes(a.reason))) return false;
+	if (a.note !== undefined && (a.kind === "malattia" || !note(a.note))) return false;
 	if (!isText(a.callId, 300)) return false;
 	if (a.changed !== undefined && (!isMarker(a.changed) || !optText(a.changed.call, 300))) return false;
 	if (a.cancelled !== undefined && (!isMarker(a.cancelled) || !optText(a.cancelled.call, 300))) return false;
@@ -232,15 +265,19 @@ export function validAbsence(v: unknown): v is Absence {
 export const validShiftChange = (v: unknown): v is ShiftChange => {
 	if (typeof v !== "object" || v === null || !isMarker(v)) return false;
 	const s = v as ShiftChange;
-	return Object.keys(s).every((k) => ["person", "day", "hours", "by", "at"].includes(k)) && typeof s.person === "string" && PERSON_ID.test(s.person) && isDay(s.day) && validHours(s.hours);
+	return Object.keys(s).every((k) => ["person", "day", "hours", "note", "by", "at"].includes(k)) && typeof s.person === "string" && PERSON_ID.test(s.person) && isDay(s.day) && validHours(s.hours) && note(s.note);
 };
 
 export const validExtra = (v: unknown): v is ExtraHours => {
 	if (typeof v !== "object" || v === null || !isMarker(v)) return false;
 	const e = v as ExtraHours;
-	return Object.keys(e).every((k) => ["person", "day", "minutes", "callId", "by", "at"].includes(k)) && typeof e.person === "string" && PERSON_ID.test(e.person) && isDay(e.day) && Number.isInteger(e.minutes) && e.minutes > 0 && e.minutes <= STAFF_LIMITS.extraMinutes && isText(e.callId, 300);
+	return Object.keys(e).every((k) => ["person", "day", "minutes", "callId", "note", "by", "at"].includes(k)) && typeof e.person === "string" && PERSON_ID.test(e.person) && isDay(e.day) && Number.isInteger(e.minutes) && e.minutes > 0 && e.minutes <= STAFF_LIMITS.extraMinutes && isText(e.callId, 300) && note(e.note);
 };
 
-export const validStaffSettings = (v: unknown): v is StaffSettings => typeof v === "object" && v !== null && isMarker(v) && Object.keys(v).every((k) => ["monthly", "by", "at"].includes(k)) && ((v as StaffSettings).monthly === undefined || (v as StaffSettings).monthly === true);
+export const validStaffSettings = (v: unknown): v is StaffSettings => {
+	if (typeof v !== "object" || v === null || !isMarker(v) || !Object.keys(v).every((k) => ["monthly", "ferieWeek", "by", "at"].includes(k))) return false;
+	const s = v as StaffSettings;
+	return (s.monthly === undefined || s.monthly === true) && (s.ferieWeek === undefined || s.ferieWeek === 5 || s.ferieWeek === 6);
+};
 
 export const validStaffClaim = (v: unknown): v is StaffClaim => typeof v === "object" && v !== null && isText((v as StaffClaim).k, 80) && isDay((v as StaffClaim).day) && isText((v as StaffClaim).call, 300);

@@ -4,10 +4,12 @@
  * next ids (never given twice), the calls that wrote (a call run again writes nothing twice) and
  * what the brief said. Changed under the shared file lock through json-book.ts, with the copy
  * `staff.json.bak`. Read never throws: a file that does not read is `broken`, and nothing is
- * written over it. An absence is never deleted: cancelled, it stays as such.
+ * written over it. An absence is never deleted on its own: cancelled, it stays as such; a person
+ * deleted (on the person's word, with a check) takes their absences, shifts and extra hours along.
  */
 import { join } from "node:path";
 import { type Absence, ABSENCE_ID, type ExtraHours, type Person, PERSON_ID, STAFF_LIMITS, type StaffClaim, StaffError, type StaffSettings, type ShiftChange, validAbsence, validExtra, validPerson, validShiftChange, validStaffClaim, validStaffSettings } from "./staff.ts";
+import type { Block } from "./appointment-slots.ts";
 import { resourceBlocks } from "./staff-shifts.ts";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 
@@ -52,10 +54,15 @@ export class StaffStore {
 		return { ...book, broken: false };
 	}
 
-	/** The appointments' resources the absences block on `day` (none when the file does not read: the appointments say nothing of it). */
-	blocksOn(day: string): { readonly resource: string; readonly from: number; readonly to: number }[] {
+	/** The appointments' resources the staff blocks on `day`: absences and time off the shift (none when the file does not read: `broken` says it). */
+	blocksOn(day: string): Block[] {
 		const b = this.read();
-		return b.broken ? [] : resourceBlocks(b.people, b.absences, day);
+		return b.broken ? [] : resourceBlocks(b.people, b.absences, b.shifts, day);
+	}
+
+	/** Whether staff.json does not read (the appointments say so once when booking). */
+	broken(): boolean {
+		return this.read().broken;
 	}
 
 	/**
@@ -80,7 +87,7 @@ export class StaffStore {
 		return outcome;
 	}
 
-	/** What the brief may say today: of `wanted`, those not said today, marked said by `callId`. A call run again gets back what it claimed. */
+	/** What the brief may say today: of `wanted`, those not said today (a key «once:…» not said ever), marked said by `callId`. A call run again gets back what it claimed. */
 	claim(callId: string, day: string, wanted: readonly string[]): string[] {
 		let mine: string[] = [];
 		updateBook(this.book, (book) => {
@@ -89,7 +96,7 @@ export class StaffStore {
 				mine = before.map((a) => a.k);
 				return book;
 			}
-			const said = new Set(book.alerts.filter((a) => a.day === day).map((a) => a.k));
+			const said = new Set(book.alerts.filter((a) => a.day === day || a.k.startsWith("once:")).map((a) => a.k));
 			const fresh = [...new Set(wanted)].filter((k) => !said.has(k)).map((k) => ({ k, day, call: callId }));
 			mine = fresh.map((a) => a.k);
 			if (fresh.length === 0) return book;

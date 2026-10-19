@@ -18,7 +18,7 @@ import { APPOINTMENTS_BROKEN, type AppointmentBook, type AppointmentStore } from
 import type { ClientStore } from "../client-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { n1 } from "../format-words.ts";
-import { addDays, daysBetween } from "../italian-calendar.ts";
+import { addDays, daysBetween, weekdayOf } from "../italian-calendar.ts";
 import { italianLongDate, italianWeekday } from "../italian-format.ts";
 import type { Marker } from "../marker.ts";
 import { spellingKey } from "../name-keys.ts";
@@ -47,8 +47,10 @@ export type AppointmentToolsOptions = {
 	readonly calendar?: boolean;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: AppointmentEvent) => Promise<void>;
-	/** What the staff's absences block of the resources on a day (il personale): never forced. */
+	/** What the staff blocks of the resources on a day (il personale: absences, time off the shift): never forced. */
 	readonly absences?: (day: string) => readonly Block[];
+	/** Whether the staff's file does not read: a booking says so, once, since then no absence is seen. */
+	readonly staffBroken?: () => boolean;
 	/** Tests: the clock. */
 	readonly now?: () => Date;
 };
@@ -180,13 +182,37 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		return { day, minutes: r.minutes, notes };
 	}
 
+	/**
+	 * The resource's person is not there (absent, of rest, off the shift, not on the staff): never
+	 * forced, no «fissalo lo stesso», and never why. Another resource at the same hour first, then
+	 * the same resource's nearest times.
+	 */
+	function absentRefusal(fit: Exclude<Fit, { ok: true }>, input: FitInput, today: string, verb: string): string {
+		const blk = fit.block;
+		const when = shortDay(input.day, today);
+		const span = blk === undefined ? "" : blk.from > 0 && blk.to < 24 * 60 ? ` dalle ${clockOf(blk.from)} alle ${clockOf(blk.to)}` : blk.from > 0 ? ` dalle ${clockOf(blk.from)}` : blk.to < 24 * 60 ? ` fino alle ${clockOf(blk.to)}` : "";
+		const head =
+			blk?.why === "rest"
+				? `${weekdayOf(input.day) === 0 ? "La" : "Il"} ${italianWeekday(input.day)} la risorsa nel riquadro è di riposo`
+				: blk?.why === "out"
+					? `${capital(when)} la risorsa nel riquadro non è nel personale`
+					: blk?.why === "off"
+						? `${capital(when)}${span} la risorsa nel riquadro non è di turno`
+						: `${capital(when)}${span} la risorsa nel riquadro non c'è`;
+		const proposals: { day: string; start: number; resource?: string }[] = [];
+		if (input.resource !== undefined) {
+			const other = fits({ ...input, resource: undefined, force: false });
+			if (other.ok && other.resource !== undefined && other.resource.toLowerCase() !== input.resource.toLowerCase()) proposals.push({ day: input.day, start: input.start, resource: other.resource });
+		}
+		proposals.push(...nearestFree({ ...input, force: false }, APPOINTMENT_LIMITS.proposals - proposals.length));
+		const after = blk?.why === "rest" || blk?.why === "off" ? "Se invece quel giorno lavora, segna il suo turno nel personale." : blk?.why === "out" ? "Se lavora con voi, aggiorna le sue date nel personale." : "Se invece ci sarà, annulla prima la sua assenza nel personale.";
+		return [`${head}: con questa risorsa ${verb}.`, ...(fit.resource === undefined ? [] : [fencedAppointments(fit.resource)]), ...proposalsText(proposals, today), after].join("\n");
+	}
+
 	/** Why it does not fit, and the nearest free times: nothing is booked (or moved). */
 	function refusal(fit: Exclude<Fit, { ok: true }>, input: FitInput, b: AppointmentBook, today: string, verb: string, forceCheck?: string): string {
 		if (fit.why === "past") return "Quell'ora è già passata: dimmi un altro giorno o un'altra ora.";
-		if (fit.why === "absent") {
-			// An absence is never forced: no «fissalo lo stesso».
-			return [`${fit.resource === undefined ? "Chi lo fa" : "La risorsa"} in quell'orario è assente (chi è nel riquadro): ${verb}. Un'assenza non si scavalca.`, ...(fit.resource === undefined ? [] : [fencedAppointments(fit.resource)]), ...proposalsText(nearestFree({ ...input, force: false }), today)].join("\n");
-		}
+		if (fit.why === "absent") return absentRefusal(fit, input, today, verb);
 		const open = fit.open ?? openOn(input.settings, input.day);
 		const lines: string[] = [];
 		if (fit.why === "closed") lines.push(`${capital(closedWords(open, input.day))}: ${verb}.`);
@@ -233,6 +259,8 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		return undefined;
 	}
 
+	const staffWarning = () => (options.staffBroken?.() === true ? ["Attenzione: il file del personale non si legge, quindi non so se chi fa l'appuntamento è assente o di riposo."] : []);
+
 	function bookedAnswer(a: Appointment, b: AppointmentBook, today: string, notes: readonly string[]): string {
 		const missed = noShows(b, a.client);
 		const last = missed.at(-1);
@@ -240,6 +268,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			`Fatto: ho fissato l'appuntamento ${dayWords(a.day, today)} dalle ${clockOf(minutesOf(a.start))} alle ${clockOf(minutesOf(a.start) + a.minutes)}. Chi e per cosa è nel riquadro.`,
 			fencedAppointments([appointmentRow(a), ...(options.calendar === true ? [`Per il calendario: inizio ${a.day}T${a.start}, fine ${a.day}T${endOf(a)} (${timeZone})`] : [])].join("\n")),
 			...notes,
+			...staffWarning(),
 			...(missed.length >= 3 && last !== undefined ? [`Attenzione: questo cliente non si è presentato ${missed.length} volte (l'ultima il ${dateOnly(last.day)}).`] : []),
 			"Vuoi mandare al cliente un messaggio di conferma? Lo preparo io, con il link per WhatsApp se ha il cellulare nella scheda.",
 			...(options.calendar === true ? ["Se lo vuoi anche nel tuo calendario Google, lo aggiungo con google_calendar_create (inizio e fine nel riquadro)."] : []),
@@ -343,6 +372,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			`Fatto: ho spostato l'appuntamento da ${whenWords(fromDay, fromStart, today)} a ${whenWords(after.day, after.start, today)} (fino alle ${clockOf(minutesOf(after.start) + after.minutes)}). Chi e per cosa è nel riquadro.`,
 			fencedAppointments(appointmentRow(after)),
 			...notes,
+			...staffWarning(),
 			"Vuoi mandare al cliente il messaggio con il nuovo orario? Lo preparo io.",
 			...(options.calendar === true ? ["Se era anche nel calendario Google, va spostato anche lì."] : []),
 		].join("\n");

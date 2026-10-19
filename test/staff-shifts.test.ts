@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { hoursWords, overlaps } from "../src/core/staff.ts";
-import { balancesOf } from "../src/core/staff-balances.ts";
-import { absenceDays, coverageGaps, dayOf, monthRows, permessoMinutes, resourceBlocks } from "../src/core/staff-shifts.ts";
+import { balancesOf, monthsOn } from "../src/core/staff-balances.ts";
+import { monthDetail, monthRows } from "../src/core/staff-month.ts";
+import { absenceDays, coverageGaps, dayOf, FIVE, permessoMinutes, resourceBlocks, skippedIn } from "../src/core/staff-shifts.ts";
 import { absence, GIULIA, HOURS, MARCO, MARK } from "./staff-fixtures.ts";
 
 const d = (absences = [] as ReturnType<typeof absence>[], o: { settings?: typeof HOURS | undefined } = { settings: HOURS }) => ({ people: [GIULIA, MARCO], absences, shifts: [], ...(o.settings === undefined ? {} : { settings: o.settings }) });
@@ -35,10 +36,24 @@ describe("the day's shifts", () => {
 		expect(coverageGaps(d([], { settings: undefined }), "2026-10-19")).toEqual([]);
 	});
 
-	it("the resources an absence blocks", () => {
+	it("the resources an absence blocks, and the time off the shift when there is a usual week", () => {
 		const list = [absence({ person: "PE-0002", kind: "permesso", from: "2026-10-22", start: "15:00", end: "17:00" }), absence({ person: "PE-0001", kind: "ferie", from: "2026-10-22" })];
-		expect(resourceBlocks([GIULIA, MARCO], list, "2026-10-22")).toEqual([{ resource: "Marco", from: 900, to: 1020 }]);
-		expect(resourceBlocks([GIULIA, MARCO], list, "2026-10-23")).toEqual([]);
+		const off = [{ resource: "Marco", from: 0, to: 540, why: "off" }, { resource: "Marco", from: 780, to: 900, why: "off" }, { resource: "Marco", from: 1140, to: 1440, why: "off" }];
+		expect(resourceBlocks([GIULIA, MARCO], list, [], "2026-10-22")).toEqual([{ resource: "Marco", from: 900, to: 1020, why: "absent" }, ...off]);
+		expect(resourceBlocks([GIULIA, MARCO], list, [], "2026-10-23")).toEqual(off);
+		// Monday: Marco's day of rest; a shift said apart makes it a working day.
+		expect(resourceBlocks([MARCO], [], [], "2026-10-26")).toEqual([{ resource: "Marco", from: 0, to: 1440, why: "rest" }]);
+		expect(resourceBlocks([MARCO], [], [{ person: "PE-0002", day: "2026-10-26", hours: [{ from: "09:00", to: "19:00" }], ...MARK }], "2026-10-26")).toEqual([{ resource: "Marco", from: 0, to: 540, why: "off" }, { resource: "Marco", from: 1140, to: 1440, why: "off" }]);
+		// No usual week: only the absences block.
+		expect(resourceBlocks([{ ...MARCO, week: undefined }], [], [], "2026-10-26")).toEqual([]);
+		// Outside the person's dates: the whole day.
+		expect(resourceBlocks([{ ...MARCO, to: "2026-10-23" }], [], [], "2026-10-24")).toEqual([{ resource: "Marco", from: 0, to: 1440, why: "out" }]);
+	});
+
+	it("only the people hired by the day and not yet gone are in the day", () => {
+		const day = dayOf({ ...d(), people: [{ ...GIULIA, from: "2026-10-26" }, { ...MARCO, to: "2026-10-21" }] }, "2026-10-22");
+		expect(day.people).toEqual([]);
+		expect(coverageGaps({ ...d(), people: [{ ...GIULIA, from: "2026-10-26" }, MARCO] }, "2026-10-19")).toEqual([{ from: 540, to: 780 }, { from: 840, to: 1140 }]);
 	});
 });
 
@@ -48,9 +63,22 @@ describe("counting", () => {
 		expect(absenceDays(GIULIA, a, "2026-01-01", "2026-12-31", "2026-10-19")).toBe(1000);
 		// 7-11 December: 8 December is the Immacolata.
 		expect(absenceDays(GIULIA, absence({ person: "PE-0001", kind: "ferie", from: "2026-12-07", to: "2026-12-11" }), "2026-01-01", "2026-12-31", "2026-10-19")).toBe(400);
-		// Marco works Saturdays, not Mondays.
-		expect(absenceDays(MARCO, absence({ person: "PE-0002", kind: "ferie", from: "2026-10-19", to: "2026-10-25" }), "2026-01-01", "2026-12-31", "2026-10-19")).toBe(500);
+		// Marco works Saturdays, not Mondays: on a week of 5 his Saturday does not count, on a week of 6 it does.
+		const week = absence({ person: "PE-0002", kind: "ferie", from: "2026-10-19", to: "2026-10-25" });
+		expect(absenceDays(MARCO, week, "2026-01-01", "2026-12-31", "2026-10-19")).toBe(400);
+		expect(absenceDays(MARCO, week, "2026-01-01", "2026-12-31", "2026-10-19", { ...FIVE, six: true })).toBe(500);
+		// On a week of 6, Saturday counts for Giulia too.
+		expect(absenceDays(GIULIA, absence({ person: "PE-0001", kind: "ferie", from: "2026-10-19", to: "2026-10-25" }), "2026-01-01", "2026-12-31", "2026-10-19", { ...FIVE, six: true })).toBe(600);
 		expect(absenceDays(GIULIA, absence({ person: "PE-0001", kind: "ferie", from: "2026-10-22", half: "pomeriggio" }), "2026-01-01", "2026-12-31", "2026-10-19")).toBe(50);
+	});
+
+	it("the business's closures and the days off said apart do not count, and are said", () => {
+		const a = absence({ person: "PE-0001", kind: "ferie", from: "2026-12-07", to: "2026-12-11" });
+		const rule = { six: false, shifts: [{ person: "PE-0001", day: "2026-12-10", hours: [], ...MARK }], settings: { ...HOURS, closures: [{ from: "2026-12-09", to: "2026-12-09" }] } };
+		expect(absenceDays(GIULIA, a, "2026-01-01", "2026-12-31", "2026-10-19", rule)).toBe(200);
+		expect(skippedIn(GIULIA, a, rule)).toEqual({ holidays: ["Immacolata Concezione"], closures: 1, off: 1 });
+		expect(skippedIn(GIULIA, absence({ person: "PE-0001", kind: "ferie", from: "2026-08-10", to: "2026-08-21" }), FIVE).holidays).toEqual([]);
+		expect(skippedIn(GIULIA, absence({ person: "PE-0001", kind: "ferie", from: "2025-08-11", to: "2025-08-22" }), FIVE).holidays).toEqual(["Ferragosto"]);
 	});
 
 	it("a permesso «dalle 15» is the rest of the shift; hours as exact decimals", () => {
@@ -82,6 +110,20 @@ describe("balances: an estimate", () => {
 		expect(o.permessi.left).toBe(40 * 60 - 120);
 		expect(balancesOf({ ...GIULIA, ferieDays: undefined }, list, [], "2026-10-19", false).ferie.left).toBeUndefined();
 	});
+
+	it("hired or gone during the year: the months on the staff, a month counting from 15 days", () => {
+		expect(monthsOn({ from: "2026-10-01" }, 2026)).toBe(3);
+		expect(monthsOn({ from: "2026-10-18" }, 2026)).toBe(2);
+		expect(monthsOn({ from: "2026-10-17" }, 2026)).toBe(3);
+		expect(monthsOn({ to: "2026-03-15" }, 2026)).toBe(3);
+		expect(monthsOn({}, 2026)).toBe(12);
+		const b = balancesOf({ ...GIULIA, from: "2026-10-01" }, [], [], "2026-10-19", false, HOURS);
+		// 26 days for 3 months: 6,5.
+		expect(b.ferie.entitled).toBe(650);
+		expect(b.months).toBe(3);
+		expect(b.permessi.entitled).toBe(18 * 60);
+		expect(balancesOf(GIULIA, [], [], "2026-10-19", false, HOURS).months).toBeUndefined();
+	});
 });
 
 describe("the month for the consulente", () => {
@@ -93,5 +135,32 @@ describe("the month for the consulente", () => {
 		// Marco: Tue-Sat; sick from the 27th to the 31st (5 calendar days).
 		expect(rows[1]).toMatchObject({ malattia: 500, extra: 120 });
 		expect(rows[1]?.workedDays).toBe(18);
+	});
+
+	it("day by day: the hours planned and on, the codes, the extra hours on a Sunday; malattie with the protocol; other absences by reason; stops at the day given", () => {
+		const list = [
+			absence({ person: "PE-0002", kind: "malattia", from: "2026-10-06", to: "2026-10-09", protocol: "123456789" }),
+			absence({ person: "PE-0002", kind: "malattia", from: "2026-10-16", to: undefined }),
+			absence({ person: "PE-0001", kind: "altro", reason: "L.104", from: "2026-10-12", start: "09:00", end: "11:00" }),
+			absence({ person: "PE-0001", kind: "altro", reason: "lutto", from: "2026-10-14", to: "2026-10-15" }),
+		];
+		const [g, m] = monthDetail(d(list), [{ person: "PE-0002", day: "2026-10-11", minutes: 120, callId: "x", ...MARK }], "2026-10-01", "2026-10-19");
+		expect(g?.days).toHaveLength(19);
+		expect(g?.days.find((x) => x.day === "2026-10-12")).toMatchObject({ minutes: 360, codes: ["104"] });
+		expect(g?.days.find((x) => x.day === "2026-10-14")).toMatchObject({ minutes: 0, codes: ["LU"] });
+		expect(g?.altre).toEqual([
+			{ reason: "L.104", days: 0, minutes: 120, spans: [{ from: "2026-10-12", to: "2026-10-12" }] },
+			{ reason: "lutto", days: 200, minutes: 0, spans: [{ from: "2026-10-14", to: "2026-10-15" }] },
+		]);
+		expect(g?.totals).toMatchObject({ altro: 200, altroMinutes: 120 });
+		expect(m?.days.find((x) => x.day === "2026-10-11")).toMatchObject({ extra: 120, festivo: "domenica", minutes: 0 });
+		expect(m?.days.find((x) => x.day === "2026-10-07")).toMatchObject({ codes: ["MA"], minutes: 0, planned: [{ from: 540, to: 780 }, { from: 900, to: 1140 }] });
+		expect(m?.malattie).toEqual([{ from: "2026-10-06", to: "2026-10-09", protocol: "123456789" }, { from: "2026-10-16" }]);
+		// 6 to 9 and 16 to 19: 8 calendar days so far.
+		expect(m?.totals).toMatchObject({ malattia: 800, extra: 120, extraFestivo: 120 });
+		// Hired on the 14th: from then on, and said.
+		const [h] = monthDetail({ ...d(), people: [{ ...GIULIA, from: "2026-10-14" }] }, [], "2026-10-01", "2026-10-31");
+		expect(h?.days[0]?.day).toBe("2026-10-14");
+		expect(h?.hired).toBe("2026-10-14");
 	});
 });

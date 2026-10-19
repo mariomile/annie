@@ -50,7 +50,7 @@ export const FENCE = /<<<dati (?:del personale|degli appuntamenti) ([0-9a-f]{12}
 export const outside = (text: string) => text.replace(FENCE, "");
 export const inside = (text: string) => [...text.matchAll(FENCE)].map((m) => m[2] as string).join("\n");
 export const checkIn = (answer: string) => /il controllo ([0-9a-f]{16})/.exec(answer)?.[1] as string;
-export const EMDASH = /—/;
+export const EMDASH = /\u2014/;
 
 const dirs: string[] = [];
 /** Only the directories the tests made, each by its exact path (afterEach). */
@@ -77,7 +77,7 @@ export function setup(o: { people?: Person[]; hours?: AppointmentSettings | null
 		return { data: new TextEncoder().encode(input.text), notes: [] };
 	};
 	const [tool] = createStaffTools({ workspace, store, appointments, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => clock.now, make });
-	const [appTool] = createAppointmentTools({ workspace, store: appointments, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => clock.now, absences: (day) => store.blocksOn(day) });
+	const [appTool] = createAppointmentTools({ workspace, store: appointments, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => clock.now, absences: (day) => store.blocksOn(day), staffBroken: () => store.broken() });
 	if (tool === undefined || appTool === undefined) throw new Error("no tool");
 	const run = async (args: Record<string, unknown>, c: ToolContext = fresh()) => String(await tool.execute(args, c));
 	const book = async (args: Record<string, unknown>, c: ToolContext = fresh()) => String(await appTool.execute(args, c));
