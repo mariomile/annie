@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { type CodeMap, codeMapKey, isCost, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockItemId, type UnitMap, unitMapKey, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall, validUnitMap } from "./stock.ts";
+import { type CodeMap, codeMapKey, isCost, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, type SaleReason, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockItemId, type UnitMap, unitMapKey, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall, validUnitMap } from "./stock.ts";
 import { costText, qtyOf, qtyText, saleQuantity, stateOf } from "./stock-sums.ts";
 
 /** What a change works on: the articles, the movements and the next numbers. */
@@ -33,8 +33,12 @@ export type InvoiceLoad = { readonly items: readonly StockItem[]; readonly moves
 /** One line of an invoice issued (or a credit note) that names a voce of the listino. */
 export type SaleLine = { readonly line: number; readonly listino: string; readonly quantity: string; readonly unit?: string; readonly description: string };
 
-/** An invoice issued, or a credit note (with `of`, the invoice it corrects), as the magazzino takes it. */
-export type Sale = { readonly invoice: string; readonly number: string; readonly day: string; readonly of?: string; readonly lines: readonly SaleLine[] };
+/**
+ * An invoice issued, or a credit note (with `of`, the invoice it corrects), as the magazzino takes
+ * it; a DDT too (its id as `invoice`), with the reason its goods leave (default vendita), and a
+ * reso or an annulled DDT put back (`of`: the DDT they went out with; the same DDT for its own).
+ */
+export type Sale = { readonly invoice: string; readonly number: string; readonly day: string; readonly of?: string; readonly reason?: SaleReason; readonly lines: readonly SaleLine[] };
 
 export type Skipped = { readonly description: string; readonly why: "unit" | "pack" | "quantity" | "nothing" };
 
@@ -67,7 +71,9 @@ export function planSale(book: Pick<Book, "items" | "moves" | "archived" | "next
 	const skipped: Skipped[] = [];
 	const added: Movement[] = [];
 	let next = book.nextMove;
-	const done = new Set([...book.moves.flatMap((m) => (m.sale === undefined ? [] : [saleKey(m.sale.invoice, m.sale.line)])), ...book.archived.map((a) => a.k)]);
+	// Once per document and line, each way: an annulled DDT's own storno is keyed like its scarico, on the other side.
+	const back = sale.of !== undefined;
+	const done = new Set([...book.moves.flatMap((m) => (m.sale === undefined || (m.kind === "storno") !== back ? [] : [saleKey(m.sale.invoice, m.sale.line)])), ...book.archived.filter((a) => (a.of !== undefined) === back).map((a) => a.k)]);
 	for (const l of sale.lines) {
 		const item = book.items.find((i) => i.removed === undefined && i.listino === l.listino);
 		if (item === undefined || done.has(saleKey(sale.invoice, l.line))) continue;
@@ -91,7 +97,7 @@ export function planSale(book: Pick<Book, "items" | "moves" | "archived" | "next
 		const ref = { invoice: sale.invoice, line: l.line, number: sale.number, ...(sale.of === undefined ? {} : { of: sale.of }) };
 		added.push(
 			sale.of === undefined
-				? { id: moveId(next), item: item.id, kind: "scarico", qty: qtyText(qty), day: sale.day, reason: "vendita", sale: ref, ...costAt(item, [...book.moves, ...added]), ...marker }
+				? { id: moveId(next), item: item.id, kind: "scarico", qty: qtyText(qty), day: sale.day, reason: sale.reason ?? "vendita", sale: ref, ...costAt(item, [...book.moves, ...added]), ...marker }
 				: { id: moveId(next), item: item.id, kind: "storno", qty: qtyText(qty), day: sale.day, sale: ref, ...marker },
 		);
 		next += 1;
@@ -371,7 +377,8 @@ function validBook(raw: unknown): Book | undefined {
 	}
 	// Movements in their order, each of an article here; a sale's line moved once; a correction of an earlier carico of its article; aperture first, one per article.
 	let last = 0;
-	const sales = new Set(b.archived.map((a) => a.k));
+	// Each way once: a storno (an annulled DDT's own, keyed like its scarico) apart from the scarico.
+	const sales = new Set(b.archived.map((a) => `${a.k}${a.of === undefined ? "" : "<"}`));
 	if (sales.size !== b.archived.length) return undefined;
 	const seen = new Map<string, Movement>();
 	const opened = new Set<string>();
@@ -389,7 +396,7 @@ function validBook(raw: unknown): Book | undefined {
 			if (fixed === undefined || fixed.kind !== "carico" || fixed.item !== m.item) return undefined;
 		}
 		if (m.sale !== undefined) {
-			const key = saleKey(m.sale.invoice, m.sale.line);
+			const key = `${saleKey(m.sale.invoice, m.sale.line)}${m.kind === "storno" ? "<" : ""}`;
 			if (sales.has(key)) return undefined;
 			sales.add(key);
 		}

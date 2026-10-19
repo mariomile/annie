@@ -1,137 +1,25 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
-import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
-import type { ClientCard } from "../src/core/clients.ts";
 import { type Ddt, ddtCallReads, dueDayOf, validDdt } from "../src/core/ddt.ts";
-import { DdtStore } from "../src/core/ddt-store.ts";
-import { documentFattura } from "../src/core/documents.ts";
-import type { ToolContext } from "../src/core/engine.ts";
-import { InvoiceScanner } from "../src/core/invoice-scan.ts";
-import { InvoiceStore } from "../src/core/invoice-store.ts";
-import type { Company } from "../src/core/invoices.ts";
-import type { MakeInput } from "../src/core/make-document.ts";
 import { marginLines } from "../src/core/margins.ts";
-import type { PriceItem } from "../src/core/price-list.ts";
-import { SalesInvoiceStore } from "../src/core/sales-invoice-store.ts";
 import { isIssued, type SalesInvoice, validInvoice } from "../src/core/sales-invoices.ts";
-import type { Movement, StockItem } from "../src/core/stock.ts";
-import { StockStore } from "../src/core/stock-store.ts";
-import { TaxStore } from "../src/core/tax-store.ts";
-import { createDdtTools, type DdtEvent } from "../src/core/tools/ddt-tools.ts";
-import { saleOf } from "../src/core/tools/sales-invoice-stock.ts";
-import { createSalesInvoiceTools, type SalesEvent } from "../src/core/tools/sales-invoice-tools.ts";
-import type { TurnOrigin } from "../src/core/turn-origin.ts";
 import { Workspace } from "../src/core/workspace.ts";
+import { saleOf } from "../src/core/tools/sales-invoice-stock.ts";
+import { agent, checkIn, cleanup, durable, EMDASH, fresh, inside, LISTINO, onHand, outside, PAPER_AND_TONER, type S, setup, shipped } from "./ddt-fixtures.ts";
 
-// Synthetic data only: checksum-valid fake partite IVA, invented names.
-const NOW = new Date("2026-10-05T08:00:00Z");
-const AT = NOW.toISOString();
-const MARK = { by: "test:u", at: AT };
-const IBAN = "IT51X0000000000000000000001";
-const COMPANY: Company = { vat: "IT00000010017", name: "Bottega Prova Srl", cf: "00000010017", address: "Via Roma 1, 20121 Milano MI", regime: "ordinario", ibans: [IBAN], ...MARK };
-
-const ROSSI: ClientCard = { id: "CL-0001", name: "Rossi Prova Srl", vat: "IT00000020016", aliases: [], contacts: [], address: "Via Verdi 2, 00184 Roma RM", tags: [], notes: [], followUps: [], ...MARK };
-const VERDI: ClientCard = { id: "CL-0002", name: "Verdi Prova Spa", vat: "IT00000050013", aliases: [], contacts: [], address: "Via Neri 3, 10121 Torino TO", tags: [], notes: [], followUps: [], ...MARK };
-
-const LISTINO: PriceItem[] = [
-	{ id: "LS-0001", name: "Carta A4", unit: "risma", price: "5", vat: 22, ...MARK },
-	{ id: "LS-0002", name: "Toner XL", unit: "pezzo", price: "30", vat: 22, ...MARK },
-];
-const ITEMS: StockItem[] = [
-	{ id: "MG-0001", name: "Carta A4", unit: "risma", listino: "LS-0001", ...MARK },
-	{ id: "MG-0002", name: "Toner XL", unit: "pezzo", listino: "LS-0002", ...MARK },
-];
-
-let calls = 0;
-const fresh = (callId = `d${++calls}`, origin: TurnOrigin = "person", thread = { channel: "test", threadId: "t1" }): ToolContext => ({ step: (_key, work) => work(), progress: () => {}, origin, signal: new AbortController().signal, callId, thread });
-const agent = () => fresh(undefined, "agent", { channel: AGENT_CHANNEL, threadId: "a1" });
-const durable = (callId: string, memo: Map<string, unknown>): ToolContext => ({
-	...fresh(callId),
-	step: async (key, work) => {
-		if (memo.has(key)) return memo.get(key) as never;
-		const v = await work();
-		memo.set(key, v);
-		return v;
-	},
-});
-
-const FENCE = /<<<dati (?:dei DDT|del magazzino|delle fatture emesse|del listino) ([0-9a-f]{12}):[^\n]*>>>\n([\s\S]*?)\n<<<fine dati (?:dei DDT|del magazzino|delle fatture emesse|del listino) \1>>>/g;
-const outside = (text: string) => text.replace(FENCE, "");
-const inside = (text: string) => [...text.matchAll(FENCE)].map((m) => m[2] as string).join("\n");
-const checkIn = (answer: string) => /il controllo ([0-9a-f]{16})/.exec(answer)?.[1] as string;
-
-const EMDASH = /\u2014/;
-const dirs: string[] = [];
-afterEach(() => {
-	// Only the directories this file made, each by its exact path.
-	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-function setup(o: { askFirst?: boolean } = {}) {
-	const dir = mkdtempSync(join(tmpdir(), "annie-ddt-"));
-	dirs.push(dir);
-	const root = join(dir, "workspace");
-	mkdirSync(join(root, "fatture"), { recursive: true });
-	const workspace = new Workspace(root);
-	const invoices = new InvoiceStore(dir);
-	invoices.setCompany(COMPANY);
-	const scanner = new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) });
-	const stock = new StockStore(dir);
-	const moves: Movement[] = [
-		{ id: "MV-000001", item: "MG-0001", kind: "carico", qty: "50", day: "2026-09-01", cost: "3.2", ...MARK },
-		{ id: "MV-000002", item: "MG-0002", kind: "carico", qty: "10", day: "2026-09-01", cost: "18", ...MARK },
-	];
-	stock.update("seed", (st) => ({ ...st, nextItem: 3, nextMove: 3, items: ITEMS, moves }));
-	const store = new DdtStore(dir);
-	const sales = new SalesInvoiceStore(dir);
-	sales.update("seed", (state) => ({ ...state, settings: { ...MARK, lastBefore: { 2026: 0 } } }));
-	// The last DDT before Annie said already (none), unless the test is about asking it.
-	if (!o.askFirst) store.update("seed", (state) => ({ ...state, settings: { ...MARK, lastBefore: { 2026: 0 } } }));
-	const clients = { read: () => ({ cards: [ROSSI, VERDI], nextCard: 3, nextFollowUp: 1, calls: [], broken: false }) };
-	const priceList = { read: () => ({ items: LISTINO, broken: false }) as never };
-	const events: (DdtEvent | SalesEvent)[] = [];
-	const clock = { now: NOW };
-	const made: MakeInput[] = [];
-	const make = async (input: MakeInput) => {
-		made.push(input);
-		return { data: new TextEncoder().encode(input.text), notes: [] };
-	};
-	const [tool] = createDdtTools({ workspace, store, sales, clients, priceList, stock, company: invoices, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => clock.now, make });
-	const [salesTool] = createSalesInvoiceTools({ workspace, store: sales, company: invoices, taxes: new TaxStore(dir), clients, priceList, stock, ddt: store, scanner, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => clock.now, make });
-	if (tool === undefined || salesTool === undefined) throw new Error("no tool");
-	const run = async (args: Record<string, unknown>, c: ToolContext = fresh()) => String(await tool.execute(args, c));
-	const sell = async (args: Record<string, unknown>, c: ToolContext = fresh()) => String(await salesTool.execute(args, c));
-	return { dir, root, stock, store, sales, events, clock, made, tool, run, sell };
-}
-
-type S = ReturnType<typeof setup>;
-
-const PAPER_AND_TONER = [
-	{ item: "Carta A4", quantity: 10 },
-	{ item: "Toner XL", quantity: 2 },
-];
-
-/** A DDT made and issued for the client, on the clock's day: its number. */
-async function shipped(s: S, client = "Rossi Prova Srl", lines: unknown[] = PAPER_AND_TONER, more: Record<string, unknown> = {}): Promise<string> {
-	const made = await s.run({ op: "create", client, lines, transport: "mittente", ...more });
-	if (!made.includes("Fatto")) throw new Error(made);
-	const draft = s.store.read().ddts.filter((d) => d.status === "draft").at(-1) as Ddt;
-	const text = await s.run({ op: "issue", ddt: draft.id, confirm: true });
-	expect(text).toContain("Fatto: ho emesso il DDT n.");
-	return s.store.read().ddts.find((d) => d.id === draft.id)?.number as string;
-}
-
-const onHand = (s: S, item: string) => s.stock.read().moves.filter((m) => m.item === item).reduce((n, m) => n + (m.kind === "carico" || m.kind === "storno" ? Number(m.qty) : m.kind === "scarico" ? -Number(m.qty) : 0), 0);
+afterEach(cleanup);
 
 describe("the DDT drafts", () => {
 	it("a client and voci dictated by their very names: the draft at once, no number, causale vendita said, the transport asked before the issue; the audit op and count only", async () => {
 		const s = setup();
 		const text = await s.run({ op: "create", client: "Rossi Prova Srl", lines: [...PAPER_AND_TONER, { description: "Cavo USB", quantity: 3, unit: "pz" }] });
-		expect(outside(text)).toContain("Fatto: ho preparato la bozza del DDT (DT-0001), come nel riquadro, con causale vendita. Non ha ancora un numero");
+		expect(outside(text)).toContain("Fatto: ho preparato la bozza del DDT, come nel riquadro, con causale vendita. Non ha ancora un numero");
+		// The draft's reference stays in the fence, for the model only.
+		expect(outside(text)).not.toContain("DT-0001");
+		expect(inside(text)).toContain("rif. DT-0001");
 		expect(outside(text)).toContain("Prima di emetterlo mi serve chi fa il trasporto");
 		expect(outside(text)).not.toContain("Rossi");
 		expect(inside(text)).toContain("Cliente: Rossi Prova Srl, P.IVA 00000020016");
@@ -156,7 +44,8 @@ describe("the DDT drafts", () => {
 		expect(wrong).toContain("La proposta è cambiata");
 		expect(s.store.read().ddts).toEqual([]);
 		const ok = await s.run({ op: "create", client: "Rossi Prova", lines: [{ item: "Toner", quantity: 2 }], transport: "vettore", carrier: "Corriere Prova", confirm: true, check: checkIn(text) });
-		expect(ok).toContain("Fatto: ho preparato la bozza del DDT (DT-0001)");
+		expect(outside(ok)).toContain("Fatto: ho preparato la bozza del DDT, come nel riquadro");
+		expect(outside(ok)).not.toContain("DT-0001");
 		expect(s.store.read().ddts[0]?.lines[0]).toMatchObject({ item: "LS-0002", description: "Toner XL", qty: "2", unit: "pezzo" });
 	});
 
@@ -164,7 +53,8 @@ describe("the DDT drafts", () => {
 		const s = setup();
 		await s.run({ op: "create", client: "Rossi Prova Srl", lines: PAPER_AND_TONER });
 		const text = await s.run({ op: "change", client: "Rossi Prova Srl", lines: [{ item: "Toner XL", quantity: 0 }, { description: "Cavo USB", quantity: 1 }], transport: "destinatario", packages: 2, weight: "12,5" });
-		expect(outside(text)).toContain("Fatto: ho cambiato la bozza DT-0001");
+		expect(outside(text)).toContain("Fatto: ho cambiato la bozza del DDT, ora è così.");
+		expect(outside(text)).not.toContain("DT-0001");
 		const d = s.store.read().ddts[0] as Ddt;
 		expect(d.lines.map((l) => l.description)).toEqual(["Carta A4", "Cavo USB"]);
 		expect(d).toMatchObject({ transport: { by: "destinatario" }, packages: 2, weight: "12.5" });
@@ -181,7 +71,7 @@ describe("the DDT drafts", () => {
 		await shipped(s);
 		await s.run({ op: "create", client: "Verdi Prova Spa", lines: PAPER_AND_TONER });
 		const counts = await s.run({ op: "list" }, agent());
-		expect(counts).toBe("DDT: una bozza, uno di vendita da fatturare. A un altro agente do solo i conteggi: clienti, merce e numeri no.");
+		expect(counts).toBe("DDT: una bozza, uno da fatturare. A un altro agente do solo i conteggi: clienti, merce e numeri no.");
 		expect(await s.run({ op: "issue", ddt: "DT-0002", confirm: true }, agent())).toContain("a un altro agente do solo quanti sono");
 		expect(s.store.read().ddts.find((d) => d.id === "DT-0002")?.status).toBe("draft");
 	});
@@ -192,7 +82,7 @@ describe("issuing a DDT", () => {
 		const s = setup();
 		await s.run({ op: "create", client: "Rossi Prova Srl", lines: [...PAPER_AND_TONER, { description: "Cavo USB", quantity: 3 }], transport: "mittente" });
 		const preview = await s.run({ op: "issue", ddt: "DT-0001" });
-		expect(outside(preview)).toContain("Emetterei questo DDT con la data di oggi: prende il numero 1/2026.");
+		expect(outside(preview)).toContain("Lo emetto con la data di oggi, 5 ottobre: prende il numero 1/2026.");
 		expect(outside(preview)).toContain("Effetti sul magazzino: questo DDT scarica gli articoli nel riquadro.");
 		expect(inside(preview)).toContain("Scarica dal magazzino: Carta A4 −10 risme");
 		expect(inside(preview)).toContain("Scarica dal magazzino: Toner XL −2 pezzi");
@@ -229,7 +119,7 @@ describe("issuing a DDT", () => {
 		expect(preview).toContain("il magazzino non si legge");
 		const text = await s.run({ op: "issue", ddt: "DT-0001", confirm: true });
 		expect(outside(text)).toContain("Fatto: ho emesso il DDT n. 1/2026");
-		expect(outside(text)).toContain("l'emissione resta da completare");
+		expect(outside(text)).toContain("il DDT è emesso, ma resta da completare");
 		expect(s.store.read().ddts[0]).toMatchObject({ status: "issued", number: "1/2026" });
 		expect(s.store.read().ddts[0]?.stocked).toBeUndefined();
 		writeFileSync(file, good);
@@ -265,10 +155,15 @@ describe("issuing a DDT", () => {
 		await s.run({ op: "create", client: "Rossi Prova Srl", lines: PAPER_AND_TONER, transport: "mittente" });
 		expect(await s.run({ op: "issue", ddt: "DT-0001", confirm: true })).toContain("È il primo DDT che emetti con me nel 2026: qual è il numero dell'ultimo DDT che hai fatto quest'anno?");
 		expect(s.store.read().ddts[0]?.status).toBe("draft");
-		expect(await s.run({ op: "issue", ddt: "DT-0001", last_number: 11, confirm: true }, fresh(undefined, "notice"))).toContain("Non fisso da che numero partono i DDT");
+		expect(await s.run({ op: "issue", ddt: "DT-0001", last_number: 11, confirm: true }, fresh(undefined, "notice"))).toContain("Non emetto il DDT");
 		const preview = await s.run({ op: "issue", ddt: "DT-0001", last_number: 11 });
 		expect(preview).toContain("prende il numero 12/2026");
-		const text = await s.run({ op: "issue", ddt: "DT-0001", confirm: true });
+		expect(preview).toContain("ripetendo anche l'ultimo numero che ha detto");
+		// The last number is written only with the yes: the preview, or a notice, writes nothing.
+		expect(s.store.read().settings?.lastBefore?.["2026"]).toBeUndefined();
+		expect(await s.run({ op: "issue", ddt: "DT-0001", confirm: true })).toContain("È il primo DDT che emetti con me nel 2026");
+		const text = await s.run({ op: "issue", ddt: "DT-0001", last_number: 11, confirm: true });
+		expect(s.store.read().settings?.lastBefore?.["2026"]).toBe(11);
 		expect(text).toContain("Fatto: ho emesso il DDT n. 12/2026");
 	});
 
@@ -279,9 +174,12 @@ describe("issuing a DDT", () => {
 		expect(set).toContain("il prossimo sarà il 41/2026");
 		expect(await shipped(s)).toBe("41/2026");
 		expect(await s.run({ op: "settings", numbering: "plain" })).toContain("Nel 2026 ho già emesso DDT");
-		const cancelled = await s.run({ op: "cancel", ddt: "41/2026" });
+		const asked = await s.run({ op: "cancel", ddt: "41/2026" });
+		expect(outside(asked)).toContain("Annullo il DDT n. 41/2026 del 5 ottobre (cliente e merce nel riquadro)? Il numero 41 non si potrà più usare. La merce è partita lo stesso?");
+		expect(s.store.read().ddts[0]?.status).toBe("issued");
+		const cancelled = await s.run({ op: "cancel", ddt: "41/2026", confirm: true, check: checkIn(asked), left: true });
 		expect(cancelled).toContain("Annullato il DDT n. 41/2026: resta nell'elenco come annullato");
-		expect(cancelled).toContain("era stata scaricata dal magazzino");
+		expect(cancelled).toContain("La merce è partita lo stesso: il magazzino resta com'è.");
 		expect(await shipped(s)).toBe("42/2026");
 		expect(s.store.read().ddts.find((d) => d.id === "DT-0001")).toMatchObject({ status: "cancelled", number: "41/2026" });
 	});
@@ -300,7 +198,8 @@ describe("documents and files", () => {
 		expect(doc).toContain("# Documento di trasporto n. 1/2026");
 		expect(doc).toContain("**Causale del trasporto:** vendita");
 		expect(doc).toContain("**Trasporto:** a cura del vettore \\(Corriere Prova\\)");
-		expect(doc).toContain("Firma del vettore");
+		expect(doc).toContain("**Vettore:** Corriere Prova (dati e firma)");
+		expect(doc).toContain("**Inizio trasporto:** 05/10/2026 ore ______");
 		const csv = await s.run({ op: "export" });
 		expect(csv).toContain("Salvato il file dei DDT: un DDT");
 		const file = readdirSync(join(s.root, "ddt")).find((f) => f.endsWith(".csv")) as string;
@@ -326,11 +225,12 @@ describe("the fattura differita", () => {
 		await october(s);
 		const movesBefore = s.stock.read().moves.length;
 		const asked = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001" });
-		expect(outside(asked)).toContain("mi serve il prezzo per unità, senza IVA, di una riga dei DDT che non è una voce del listino");
-		expect(inside(asked)).toContain("3. DDT n. 1/2026: Cavo USB, 3 pz");
+		expect(outside(asked)).toContain("Mi manca un prezzo (per unità, senza IVA): la merce è nel riquadro, non è nel listino. A quanto la fatturo?");
+		expect(inside(asked)).toContain("• Cavo USB: 3 pezzi");
 		expect(s.sales.read().invoices).toEqual([]);
-		const text = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001", vat: 22, prices: [{ row: 3, price: "4,5" }] });
-		expect(outside(text)).toContain("È la fattura differita di 2 DDT di ottobre 2026: va emessa entro il 15 novembre 2026");
+		const text = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001", vat: 22, prices: [{ description: "cavo usb", price: "4,5" }] });
+		expect(outside(text)).toContain("È la fattura differita (TD24) di 2 DDT di ottobre 2026: va emessa entro il 15 novembre 2026");
+		expect(outside(text)).toContain("Li metto nel listino, i prezzi che mi hai detto");
 		const draft = s.sales.read().invoices[0] as SalesInvoice;
 		expect(draft.ddt).toEqual([
 			{ id: "DT-0001", number: "1/2026", date: "2026-10-05" },
@@ -349,11 +249,12 @@ describe("the fattura differita", () => {
 		expect(s.store.read().ddts.every((d) => d.billed === undefined)).toBe(true);
 		const list = await s.run({ op: "list", unbilled: true });
 		expect(inside(list)).toContain("nella bozza di fattura BZ-0001");
-		const twice = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001", vat: 22, prices: [{ row: 3, price: "4,5" }] });
-		expect(twice).toContain("sono già nella bozza BZ-0001");
-		expect(await s.run({ op: "cancel", ddt: "1/2026" })).toContain("è nella bozza di fattura BZ-0001");
+		const twice = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "ottobre", recipient_code: "ZZZ0001", vat: 22, prices: [{ description: "Cavo USB", price: "4,5" }] });
+		expect(twice).toContain("sono già in una bozza di fattura (BZ-0001: non serve dirlo a chi ti scrive)");
+		expect(twice).not.toContain("Errore");
+		expect(await s.run({ op: "cancel", ddt: "1/2026" })).toContain("è in una bozza di fattura: prima va tolta quella bozza");
 		const preview = await s.sell({ op: "issue", draft: "BZ-0001" });
-		expect(preview).toContain("È una fattura differita di 2 DDT: emessa, li segno come fatturati; la merce è già uscita dal magazzino con i DDT e non la scarico di nuovo.");
+		expect(preview).toContain("È una fattura differita (TD24) di 2 DDT: emessa, li segno come fatturati; la merce è già uscita dal magazzino con i DDT e non la scarico di nuovo.");
 		expect(preview).toContain("Va emessa entro il 15 novembre 2026.");
 		const issued = await s.sell({ op: "issue", draft: "BZ-0001", confirm: true });
 		expect(issued).toContain("Ho segnato come fatturati i 2 DDT della fattura differita.");
@@ -391,16 +292,16 @@ describe("the fattura differita", () => {
 		expect(s.sales.read().invoices[0]?.ddt?.map((d) => d.id)).toEqual(["DT-0003"]);
 		await s.sell({ op: "remove", draft: "BZ-0001" });
 		const again = await s.sell({ op: "draft", customer: "Verdi Prova Spa", ddt: true, period: "ottobre", recipient_code: "ZZZ0001" });
-		expect(again).toContain("È la fattura differita di un DDT di ottobre 2026");
+		expect(again).toContain("È la fattura differita (TD24) di un DDT di ottobre 2026");
 		await shipped(s, "Rossi Prova Srl", [{ item: "Toner XL", quantity: 1 }]);
 		const months = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, recipient_code: "ZZZ0001" });
-		expect(months).toContain("Questo cliente ha DDT da fatturare in più mesi (ottobre 2026, novembre 2026)");
+		expect(months).toContain("Ha DDT da fatturare di ottobre e di novembre: preparo 2 fatture differite, una per mese?");
 		const none = await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "settembre", recipient_code: "ZZZ0001" });
 		expect(none).toContain("Nessun DDT da fatturare per questo cliente a settembre 2026");
 		expect(await s.sell({ op: "draft", customer: "Rossi Prova Srl", ddt: true, period: "T3", recipient_code: "ZZZ0001" })).toContain("un mese solo");
 	});
 
-	it("a DDT file that does not read: never written over, the differita not issued before a number is taken; a credit note of it carries no DDT", async () => {
+	it("a DDT file that does not read: never written over, the differita not issued before a number is taken; a credit note of it keeps its DDT lines, so it puts nothing back", async () => {
 		const s = setup();
 		await october(s);
 		await s.sell({ op: "draft", customer: "Verdi Prova Spa", ddt: true, period: "ottobre", recipient_code: "ZZZ0001" });
@@ -417,7 +318,10 @@ describe("the fattura differita", () => {
 		expect(credit).not.toContain("Errore");
 		const note = s.sales.read().invoices.find((i) => i.type === "TD04") as SalesInvoice;
 		expect(note.ddt).toBeUndefined();
-		expect(note.lines.every((l) => l.ddt === undefined)).toBe(true);
+		// Its lines keep the DDT's: the goods went out with the DDT, the credit note does not put them back.
+		expect(note.lines.map((l) => l.ddt)).toEqual([{ id: "DT-0003", line: 1 }]);
+		expect(saleOf(note, "x", "2026-11-03")).toBeUndefined();
+		expect(note.release).toBeUndefined();
 		expect(validInvoice(note)).toBe(true);
 	});
 
@@ -442,13 +346,13 @@ describe("the brief and the routing", () => {
 		s.clock.now = new Date("2026-11-12T08:00:00Z");
 		const memo = new Map<string, unknown>();
 		const text = await s.run({ op: "list", compact: true }, durable("brief-1", memo));
-		expect(outside(text)).toContain("DDT di ottobre 2026 non ancora fatturati: 2, di 2 clienti (nel riquadro).");
+		expect(outside(text)).toContain("DDT ancora da fatturare: 2 di ottobre (entro il 15 novembre). I 2 clienti sono nel riquadro.");
 		expect(inside(text)).toContain("• Rossi Prova Srl");
-		expect(outside(text)).toContain("la fattura differita va emessa entro il 15 novembre 2026: mancano 3 giorni");
+		expect(outside(text)).toContain("Attenzione: la fattura differita di ottobre va emessa entro il 15 novembre: mancano 3 giorni.");
 		expect(outside(text)).toContain("Una bozza di DDT è ferma da più di 7 giorni");
 		expect(await s.run({ op: "list", compact: true }, fresh("brief-2"))).toBe("DDT: niente da segnalare.");
 		// The same call again gets back what it claimed.
-		expect(outside(await s.run({ op: "list", compact: true }, durable("brief-1", memo)))).toContain("non ancora fatturati: 2");
+		expect(outside(await s.run({ op: "list", compact: true }, durable("brief-1", memo)))).toContain("DDT ancora da fatturare: 2 di ottobre");
 		expect(s.events.filter((e) => e.op === "brief")).toEqual([{ type: "ddt.used", op: "brief", count: 2 }]);
 	});
 

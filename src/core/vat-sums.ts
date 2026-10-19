@@ -75,6 +75,8 @@ export type Figures = {
 	readonly deferred: { readonly sale: bigint; readonly purchase: bigint };
 	/** Purchases put in the period by their date, the day of receipt not known, dated within APPROX_DAYS of its end: they may have arrived in the next one. */
 	readonly approx: number;
+	/** Fatture differite counted here by the month of their DDTs, dated after the period. */
+	readonly deferredInvoices: number;
 };
 
 /** A purchase dated this close to a period's end may have arrived through the SdI in the next one: only those are said as an approximation. */
@@ -92,8 +94,9 @@ export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Fi
 	const sales = new Set<string>();
 	const purchases = new Set<string>();
 	const approx = new Set<string>();
+	const deferredInvoices = new Set<string>();
 	for (const d of docs) {
-		const day = d.side === "purchase" ? (d.received ?? d.date) : d.date;
+		const day = d.side === "purchase" ? (d.received ?? d.date) : (d.taxDay ?? d.date);
 		for (const r of d.rows) {
 			const deferredRow = r.esigibilita === "D";
 			const when = deferredRow ? d.paidOn : day;
@@ -104,6 +107,7 @@ export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Fi
 			if (!inSpan(when, from, to)) continue;
 			if (d.side === "sale") {
 				sales.add(d.key);
+				if (d.taxDay !== undefined && !inSpan(d.date, from, to)) deferredInvoices.add(d.key);
 				if (r.esigibilita === "S") split += r.tax;
 				else if (isReverseRow(r)) reverse += r.taxable;
 				else debito += r.tax;
@@ -120,7 +124,7 @@ export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Fi
 			}
 		}
 	}
-	return { debito, credito, sales: sales.size, purchases: purchases.size, split, reverse, integration, undeducted, deferred, approx: approx.size };
+	return { debito, credito, sales: sales.size, purchases: purchases.size, split, reverse, integration, undeducted, deferred, approx: approx.size, deferredInvoices: deferredInvoices.size };
 }
 
 

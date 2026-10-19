@@ -96,7 +96,7 @@ export function salesTotals(invoice: Pick<SalesInvoice, "type" | "regime" | "lin
 	const first = rowsOf(own, ownAmounts, invoice.cassa?.rate, invoice.regime);
 	const freeOfVat = freeOfVatOf(first.rows);
 	const due = freeOfVat > BOLLO_THRESHOLD_CENTS;
-	const charged = due && invoice.bolloToClient === true && invoice.type === "TD01";
+	const charged = due && invoice.bolloToClient === true && invoice.type !== "TD04";
 	const lines = charged ? [...own, BOLLO_LINE] : own;
 	const amounts = charged ? [...ownAmounts, BOLLO_CENTS] : ownAmounts;
 	const { rows, cassa } = charged ? rowsOf(lines, amounts, invoice.cassa?.rate, invoice.regime) : first;

@@ -584,7 +584,7 @@ export function createStockTools(options: StockToolsOptions): AnnieTool[] {
 		const item = n.item;
 		const units = unitsOf(args, item, "quanti ne sono usciti");
 		if (typeof units === "string") return units;
-		if (!REASONS.includes(args.reason as Reason)) return "Errore: dimmi perché escono: vendita, uso interno, reso al fornitore o scarto.";
+		if (!REASONS.some((r) => r === args.reason)) return "Errore: dimmi perché escono: vendita, uso interno, reso al fornitore o scarto.";
 		const reason = args.reason as Reason;
 		const note = cleanText(args.note, STOCK_LIMITS.note, "la nota");
 		if (isProblem(note)) return `Errore: ${note.problem}.`;

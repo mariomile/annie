@@ -11,13 +11,13 @@ import { euros, n1 } from "../format-words.ts";
 import { priceText } from "../invoice-sums.ts";
 import type { Company } from "../invoices.ts";
 import { addDays } from "../italian-calendar.ts";
-import { italianDate, italianDay } from "../italian-format.ts";
+import { italianDate, italianDay, withDate } from "../italian-format.ts";
 import { lead, letterhead, md } from "../markdown-text.ts";
 import { latin1 } from "../plain-text.ts";
 import { decimalText } from "../quote-sums.ts";
 import { BOLLO_CENTS, CREDIT_NOTE_TYPE, FORFETTARIO_DICITURA, FOREIGN_CODE, NO_CHANNEL_CODE, naturaWords, PAYMENT_METHODS, NOT_FEE_NATURA, REGIME_FORFETTARIO, RITENUTA_RATE, TRANSMIT_DAYS, UPLOAD_PATH } from "../sales-invoice-rules.ts";
 import { BOLLO_LINE, type SalesTotals, type SummaryRow } from "../sales-invoice-sums.ts";
-import { addressText, type Buyer, docWord, type IssuedInvoice, isIssued, type Payment, type SalesInvoice, type SalesLine, type Seller } from "../sales-invoices.ts";
+import { addressText, type Buyer, type DdtRef, docWord, type IssuedInvoice, isIssued, type Payment, type SalesInvoice, type SalesLine, type Seller } from "../sales-invoices.ts";
 import { fence } from "../untrusted.ts";
 
 /** Text from the person, a card or a quote between the sales invoices' fence markers. */
@@ -108,7 +108,7 @@ export function invoiceLines(inv: SalesInvoice, t: SalesTotals, due: string | un
 	const ids = [b.vat === undefined ? undefined : `P.IVA ${b.vat}`, b.cf === undefined ? undefined : `C.F. ${b.cf}`].filter((x) => x !== undefined).join(", ");
 	const out = [`${head}${ids === "" ? "" : `, ${ids}`}`, `Sede: ${addressText(b.address)}`, `Recapito: ${channelText(b)}`];
 	if (inv.related !== undefined) out.push(`Storna la fattura n. ${inv.related.number} del ${italianDate(inv.related.date)}`);
-	if (inv.ddt !== undefined) out.push(`Fattura differita dei DDT ${inv.ddt.map((d) => `n. ${d.number} del ${italianDate(d.date)}`).join(", ")}`);
+	if (inv.ddt !== undefined) out.push(deferredWords(inv.ddt));
 	const several = inv.regime !== REGIME_FORFETTARIO && t.rows.filter((r) => r.natura !== NOT_FEE_NATURA).length > 1;
 	t.lines.forEach((l, i) => {
 		const amount = t.amounts[i] as bigint;
@@ -126,6 +126,11 @@ export function invoiceLines(inv: SalesInvoice, t: SalesTotals, due: string | un
 }
 
 /** After a draft is made. */
+/** «Fattura differita (TD24) dei DDT n. 12/2026 del 3 ottobre, n. 15/2026 del 17 ottobre». */
+export function deferredWords(refs: readonly DdtRef[]): string {
+	return `Fattura differita (TD24) ${refs.length === 1 ? "del DDT" : "dei DDT"} ${refs.map((d) => `n. ${d.number} ${withDate("del", d.date).replace(/ \d{4}$/, "")}`).join(", ")}`;
+}
+
 export function draftAnswer(inv: SalesInvoice, t: SalesTotals, due: string | undefined, nextNumber: string, today: string, notes: readonly string[]): string {
 	const which = inv.type === CREDIT_NOTE_TYPE ? `la nota di credito n. ${nextNumber}` : `la n. ${nextNumber}`;
 	return [`Bozza pronta, non ancora emessa (emessa oggi sarebbe ${which}). Mostrala a chi ti scrive e chiedi se va bene: la emetto solo dopo il suo sì.`, fenced(invoiceLines(inv, t, due, today).join("\n")), ...notes, `Per emetterla o cambiarla usa la bozza ${inv.id} (non serve dirlo a chi ti scrive).`].join("\n");
@@ -237,7 +242,7 @@ export function courtesyMarkdown(inv: IssuedInvoice, t: SalesTotals, xmlName: st
 	const ids = [b.vat === undefined ? undefined : `P.IVA ${b.vat}`, b.cf === undefined ? undefined : `C.F. ${b.cf}`].filter((x) => x !== undefined) as string[];
 	out.push("## Cliente", "", [`**${md(b.name)}**`, ...ids.map((x) => lead(md(x))), lead(md(addressText(b.address))), lead(md(b.code === NO_CHANNEL_CODE && b.pec === undefined ? `Codice destinatario ${NO_CHANNEL_CODE}` : channelText(b)))].join("\n"), "");
 	if (inv.related !== undefined) out.push(md(`Storna la fattura n. ${inv.related.number} del ${italianDate(inv.related.date)}.`), "");
-	if (inv.ddt !== undefined) out.push(md(`Fattura differita: merce consegnata con i DDT ${inv.ddt.map((d) => `n. ${d.number} del ${italianDate(d.date)}`).join(", ")}.`), "");
+	if (inv.ddt !== undefined) out.push(md(`${deferredWords(inv.ddt)}.`), "");
 	const discounted = t.lines.some((l) => l.discount !== undefined);
 	const columns = ["Descrizione", "Quantità", "Prezzo unitario", ...(discounted ? ["Sconto"] : []), "IVA", "Importo"];
 	out.push("## Dettaglio", "", `| ${columns.join(" | ")} |`, `|---|${columns.slice(1).map(() => "---:").join("|")}|`);

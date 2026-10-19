@@ -105,7 +105,8 @@ export function moveRow(m: Movement, item: StockItem | undefined, withId: boolea
 			case "rettifica":
 				return `conteggio: ${qtyWords(qtyOf(m.counted as string), unit)}${q === 0n ? ", corrispondeva" : q < 0n ? `, ne mancavano ${qtyNumber(-q)}` : `, ce n'erano ${qtyNumber(q)} in più`}`;
 			case "storno":
-				return m.sale?.invoice.startsWith("DT-") === true ? `rientro +${qtyWords(q, unit)} con il DDT di reso n. ${m.sale.number}` : `rientro +${qtyWords(q, unit)} dalla nota di credito n. ${m.sale?.number ?? ""}`;
+				if (m.sale?.invoice.startsWith("DT-") === true) return m.sale.of === m.sale.invoice ? `rientro +${qtyWords(q, unit)}, DDT n. ${m.sale.number} annullato (la merce non era partita)` : `rientro +${qtyWords(q, unit)} con il DDT di reso n. ${m.sale.number}`;
+				return `rientro +${qtyWords(q, unit)} dalla nota di credito n. ${m.sale?.number ?? ""}`;
 			case "costo":
 				return `costo corretto ${withId ? `del carico ${m.fixes}` : "dell'ultimo carico"}: ${costWords(costOf(m.cost as string))} l'uno invece di ${costWords(costOf(m.was as string))}`;
 			case "apertura":

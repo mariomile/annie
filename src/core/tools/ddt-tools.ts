@@ -1,40 +1,40 @@
 /**
  * The tool `ddt`: i DDT in uscita. A draft for a client (the lines of the listino or free text,
  * how many, no prices); issued only after the person's yes, when it takes its number of the year
- * and moves the magazzino (vendita, omaggio and conto visione unload the lines with a voce that is
- * an article; a reso puts back the goods of the DDT it names: once per DDT and line, never
- * blocking the issue); annulled, never deleted; its PDF or Word in `ddt/`, never sent; the list,
- * what is still to bill, the CSV, the numbering. The fattura differita that bills them is
- * sales_invoices' (sales-ddt.ts). Another agente gets counts only; the audit only the op and a count.
+ * (with the day said: today, tomorrow) and moves the magazzino (ddt-stock.ts); a reso finds the DDT
+ * it comes back from, or is recorded with the client's own DDT; annulled after a yes on what it
+ * was, with the goods put back when they never left; its PDF or Word in `ddt/`, never sent; the
+ * list, what is still to bill, the CSV, the numbering (ddt-list.ts). The fattura differita that
+ * bills them is sales_invoices' (sales-ddt-source.ts). A draft's id never reaches the person: it
+ * stays in the fence, for the model. Another agente gets counts only; the audit only the op and a count.
  */
 import { createHash } from "node:crypto";
 import type { ClientStore } from "../client-store.ts";
-import { type Ddt, DDT_LIMITS, DDT_OPS, DdtError, ddtId, type DdtLine, type DdtOp, type IssuedDdt, isIssuedDdt, UNLOADING } from "../ddt.ts";
-import { DDT_BROKEN, type DdtBook, type DdtStore, nextDdtSeq } from "../ddt-store.ts";
+import { type Ddt, DDT_LIMITS, DDT_OPS, DdtError, ddtId, type DdtLine, type DdtOp, type IssuedDdt, isIssuedDdt, isRecordedReso, TRANSPORT_WORDS, UNLOADING } from "../ddt.ts";
+import { DDT_BROKEN, type DdtStore, nextDdtSeq } from "../ddt-store.ts";
 import { makeDocumentFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { n1 } from "../format-words.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import type { Company } from "../invoices.ts";
-import { addDays, todayIn } from "../italian-calendar.ts";
+import { todayIn } from "../italian-calendar.ts";
+import { italianLongDate } from "../italian-format.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
 import type { Marker } from "../marker.ts";
-import type { PriceItem } from "../price-list.ts";
 import type { PriceListStore } from "../price-list-store.ts";
 import type { SalesInvoiceStore } from "../sales-invoice-store.ts";
-import type { SalesInvoice } from "../sales-invoices.ts";
-import { StockError, type StockItem } from "../stock.ts";
-import { planSale, type Sale, STOCK_BROKEN, STOCK_FULL, type StockLink } from "../stock-store.ts";
-import { qtyOf, stateOf } from "../stock-sums.ts";
+import { StockError } from "../stock.ts";
+import type { StockLink } from "../stock-store.ts";
 import { cleanText, isProblem } from "../text-input.ts";
 import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { causaleSaid, type ClientSaid, clientSaid, ddtNamed, type LineSaid, linesSaid, ofClient, packagesSaid, transportSaid, weightSaid } from "./ddt-input.ts";
-import { briefAnswer, ddtBlock, ddtCsv, ddtMarkdown, ddtRow, ddtTitle, fencedDdt, more } from "./ddt-render.ts";
+import { causaleSaid, type ClientSaid, clientSaid, ddtNamed, issueDaySaid, issueDayWords, type LineSaid, linesSaid, ofClient, packagesSaid, resoSourceOf, theirSaid, transportSaid, weightSaid } from "./ddt-input.ts";
+import { agentCounts, briefData, list, type Loaded, status, target } from "./ddt-list.ts";
+import { briefAnswer, ddtBlock, ddtCsv, ddtMarkdown, ddtTitle, fencedDdt, lineQty } from "./ddt-render.ts";
+import { completeStock, stockPreview, unloaded, unstock } from "./ddt-stock.ts";
 import { fileSlug } from "./quote-input.ts";
-import { clientKey, ddtClientSaid, type DdtInvoices, ddtInvoicesOf, unbilled } from "./sales-ddt.ts";
-import { fencedStock, nameOf, qtyNumber, qtyWords } from "./stock-render.ts";
+import { clientKey, ddtInvoicesOf, ddtWords, returnsOf } from "./sales-ddt.ts";
 
 /** What was done, for the audit: the op and how many, never clients, lines or numbers. */
 export type DdtEvent = { readonly type: "ddt.used"; readonly op: DdtOp | "brief"; readonly count: number };
@@ -60,15 +60,21 @@ export type DdtToolsOptions = {
 
 const DESCRIPTION = [
 	"I DDT in uscita (documenti di trasporto): the goods the person ships to a client, with no prices. Annie never sends a DDT: the person prints it or sends it.",
-	"What the person says → op: «fammi il DDT per Rossi: 10 risme e 2 toner» → create with client and lines [{item (a voce of the listino as said) or description (free text), quantity, unit}]; causale vendita unless said (conto visione, reso with of: the DDT the goods come back from, riparazione, omaggio, comodato, lavorazione); transport mittente (the person), destinatario (the client) or vettore with carrier; destination when not the client's address; aspect, packages, weight when said. When Annie is not sure of the client or of a voce, create first shows the draft with a check: show it, and only after the person's yes repeat with confirm true and that check.",
-	"«aggiungi 2 toner al DDT», «il trasporto lo fa il corriere Bartolini» → change (ddt or client; lines quantity 0 takes one off) while it is a draft; «emettilo», «sì» after the draft → issue with confirm true, only after the person said yes to what issue showed (it takes the number and unloads the magazzino); «annulla il DDT 12» → cancel (an issued DDT keeps its number); «stampa il DDT», «fammi il PDF del DDT 12» → document (format pdf or docx), then offer file_send; «quali DDT non ho ancora fatturato?» → list with unbilled true (client, month when said); «a che punto è il DDT 12?» → status; «fammi il file dei DDT» → export, then file_send; «numera i DDT come 12», «l'ultimo DDT che ho fatto era il 40» → settings (numbering, last_number).",
-	"«fai la fattura differita di ottobre per Rossi» is sales_invoices (draft with ddt true and the month), not this tool. summary of the brief: list with compact true. Repeat quantities as given, never compute them yourself.",
+	"What the person says → op: «fammi il DDT per Rossi: 10 risme e 2 toner» → create with client and lines [{item (a voce of the listino as said) or description (free text), quantity, unit}]; causale vendita unless said (conto visione, reso, riparazione, omaggio, comodato, lavorazione); transport mittente (the person), destinatario (the client) or vettore with carrier; destination when not the client's address; aspect, packages, weight when said. When Annie is not sure of the client, of a voce or of the DDT a reso comes from, create first shows the draft with a check: show it, and only after the person's yes repeat with confirm true and that check.",
+	"«Rossi mi ha reso 2 toner»: if that goods is not billed yet, create with causale reso (of: the DDT it comes back from, else Annie finds the latest with that goods); when the client brought their own DDT, their_number and their_date (recorded, no number of ours); if it is billed already, after the reso sales_invoices credit_note with reso. «lo porta il corriere BRT» → change with transport vettore and carrier.",
+	"«aggiungi 2 toner al DDT» → change (ddt or client; lines quantity 0 takes one off) while it is a draft; «emettilo», «sì» after the draft → issue with confirm true, only after the person said yes to what issue showed (it takes the number and unloads the magazzino); «con la data di domani» → issue with date; «annulla il DDT 12» → cancel: it shows the DDT first with a check; with the person's yes repeat with confirm true, the check and left (whether the goods left anyway: false puts them back in the magazzino); «stampa il DDT», «fammi il PDF del DDT 12» → document (format pdf or docx), then offer file_send; «quali DDT non ho ancora fatturato?» → list with unbilled true (client, month when said); «a che punto è il DDT 12?» → status; «fammi il file dei DDT» → export, then file_send; «numera i DDT come 12», «l'ultimo DDT che ho fatto era il 40» → settings (numbering, last_number).",
+	"«fai la fattura differita di ottobre per Rossi» is sales_invoices (draft with ddt true and the month), not this tool. summary of the brief: list with compact true. Never say a draft's reference (DT-…) to the person: name a draft by its client and day. Repeat quantities as given, never compute them yourself.",
 ].join(" ");
 
 const AGENT_REFUSAL = "I DDT dicono clienti, merce e indirizzi: a un altro agente do solo quanti sono. Li prepara e li emette chi ti scrive, nella sua conversazione.";
 
-/** A draft as proposed: its client, lines and fields, with the check the person's yes is given on. */
-type Proposed = { readonly said: ClientSaid; readonly lines: readonly LineSaid[]; readonly fields: Omit<Ddt, "id" | "status" | "day" | "client" | "lines" | "callId" | "by" | "at"> };
+/** A draft as proposed: its client, lines and fields, with the check the person's yes is given on; `source`: the DDT a reso was tied to by Annie. */
+type Proposed = { readonly said: ClientSaid; readonly lines: readonly LineSaid[]; readonly fields: Omit<Ddt, "id" | "status" | "day" | "client" | "lines" | "callId" | "by" | "at">; readonly source?: IssuedDdt };
+
+type Answer = { text: string; count: number };
+
+const OMAGGIO_NOTE = "È un omaggio: niente fattura al cliente, ma per l'IVA di solito serve un'autofattura. Chiedi al commercialista come la vuole.";
+const PRINT_NOTE = "Il DDT deve viaggiare con la merce: vuoi il PDF da stampare (due copie, una resta a te firmata)? Non lo mando a nessuno da sola.";
 
 export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 	const { store, workspace, timeZone } = options;
@@ -84,15 +90,13 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 	};
 	const text = (max: number, description: string) => ({ type: "string", maxLength: max, description });
 
-	type Loaded = { readonly book: DdtBook; readonly invoices: readonly SalesInvoice[]; readonly links: DdtInvoices; readonly voci: readonly PriceItem[] };
-
 	function load(): Loaded | string {
 		const book = store.read();
 		if (book.broken) return `Errore: ${DDT_BROKEN}.`;
 		const sales = options.sales?.read();
 		const invoices = sales === undefined || sales.broken ? [] : sales.invoices;
-		const list = options.priceList?.read();
-		return { book, invoices, links: ddtInvoicesOf(invoices), voci: list === undefined || list.broken ? [] : list.items };
+		const list_ = options.priceList?.read();
+		return { book, invoices, links: ddtInvoicesOf(invoices), returns: returnsOf(book.ddts), voci: list_ === undefined || list_.broken ? [] : list_.items };
 	}
 
 	const cards = () => {
@@ -100,27 +104,16 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		return b === undefined || b.broken ? [] : b.cards;
 	};
 
-	/** The DDT named (ddt), or the client's one `pick` takes, or the only one; or the answer to give. */
-	function target(args: Record<string, unknown>, loaded: Loaded, pick: (d: Ddt) => boolean, what: string): Ddt | string {
-		const named = ddtNamed(args.ddt, loaded.book.ddts);
-		if (named !== undefined) return named;
-		let pool = loaded.book.ddts.filter(pick);
-		if (args.client !== undefined) {
-			const said = cleanText(args.client, DDT_LIMITS.name, "il cliente");
-			if (isProblem(said)) return `Errore: ${said.problem}.`;
-			const c = ddtClientSaid(said ?? "", loaded.book.ddts);
-			if (typeof c === "string") return c;
-			if ("none" in c) return ["Non trovo DDT per questo cliente.", fencedDdt(said ?? "")].join("\n");
-			pool = ofClient(pool, c);
-		}
-		pool = [...pool].sort((a, b) => b.id.localeCompare(a.id));
-		if (pool.length === 1) return pool[0] as Ddt;
-		if (pool.length === 0) return `Non c'è un DDT ${what}${args.client === undefined ? "" : " per questo cliente"}.`;
-		return [`Ci sono ${pool.length} DDT ${what}: dimmi quale, con il numero.`, fencedDdt([...pool.slice(0, DDT_LIMITS.shown).map((d) => `• ${ddtRow(d, loaded.links)}`), ...more(pool.length)].join("\n"))].join("\n");
+	/** The DDT a reso comes back from, as it must still be: ours, issued, unloading, the same client. The answer otherwise. */
+	function sourceProblem(loaded: Loaded, of: string, client: Ddt["client"]): string | undefined {
+		const from = loaded.book.ddts.find((d) => d.id === of);
+		if (from === undefined || !isIssuedDdt(from) || from.status !== "issued" || !UNLOADING.includes(from.causale)) return "Errore: il reso torna da un DDT emesso che ha scaricato la merce (vendita, omaggio o conto visione), non annullato: quel DDT non lo è.";
+		if (clientKey(from.client) !== clientKey(client)) return [`Il DDT n. ${from.number} è di un altro cliente: il reso torna da un DDT dello stesso cliente.`, fencedDdt(from.client.name)].join("\n");
+		return undefined;
 	}
 
 	/** The fields said besides the client and the lines (create: from nothing; change: over the draft's). */
-	function fieldsSaid(args: Record<string, unknown>, loaded: Loaded, client: ClientSaid["client"], was?: Ddt): Proposed["fields"] | string {
+	function fieldsSaid(args: Record<string, unknown>, loaded: Loaded, client: Ddt["client"], day: string, was?: Ddt): Proposed["fields"] | string {
 		const causale = causaleSaid(args.causale);
 		if (typeof causale === "object") return causale.answer;
 		const transport = transportSaid(args.transport, args.carrier, was?.transport);
@@ -135,16 +128,20 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		if (typeof packages === "string") return packages;
 		const weight = weightSaid(args.weight);
 		if (typeof weight === "object") return weight.answer;
+		const theirs = theirSaid(args.their_number, args.their_date, day);
+		if (theirs !== undefined && "answer" in theirs) return theirs.answer;
 		const c = causale ?? was?.causale ?? "vendita";
 		let of = was?.of;
 		if (args.of !== undefined) {
 			if (c !== "reso") return "Errore: il DDT da cui torna la merce si dice solo per un reso.";
 			const from = ddtNamed(args.of, loaded.book.ddts);
 			if (typeof from === "string" || from === undefined) return from ?? "Errore: dimmi da quale DDT torna la merce.";
-			if (!isIssuedDdt(from) || from.status !== "issued" || !UNLOADING.includes(from.causale)) return `Errore: il reso torna da un DDT emesso che ha scaricato la merce (vendita, omaggio o conto visione): ${isIssuedDdt(from) ? `il DDT n. ${from.number}` : `la ${from.id}`} non lo è.`;
-			if (clientKey(from.client) !== clientKey(client)) return [`Il DDT n. ${from.number} è di un altro cliente: il reso torna da un DDT dello stesso cliente.`, fencedDdt(from.client.name)].join("\n");
+			const problem = sourceProblem(loaded, from.id, client);
+			if (problem !== undefined) return problem;
 			of = from.id;
 		}
+		if (theirs !== undefined && c !== "reso") return "Errore: il DDT del cliente si registra solo per un reso.";
+		const their = theirs ?? (c === "reso" ? was?.theirs : undefined);
 		if (c !== "reso") of = undefined;
 		return {
 			causale: c,
@@ -155,79 +152,102 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 			...((packages ?? was?.packages) === undefined ? {} : { packages: (packages ?? was?.packages) as number }),
 			...((weight ?? was?.weight) === undefined ? {} : { weight: (weight ?? was?.weight) as string }),
 			...(of === undefined ? {} : { of }),
+			...(their === undefined ? {} : { theirs: their }),
 		};
 	}
 
-	const numbered = (lines: readonly LineSaid[]): DdtLine[] => lines.map(({ guess: _, ...l }, i) => ({ ...l, n: i + 1 }));
+	const numbered = (lines: readonly LineSaid[]): DdtLine[] => lines.map(({ guess: _, free: _f, ...l }, i) => ({ ...l, n: i + 1 }));
 
 	const checkOf = (p: Proposed) => createHash("sha256").update(JSON.stringify([p.said.client, p.lines.map((l) => [l.description, l.qty, l.unit ?? "", l.item ?? ""]), p.fields])).digest("hex").slice(0, 16);
 
-	/** What to say the draft lacks before it can be issued, and what a reso without its DDT does not do. */
-	function missingNotes(d: Pick<Ddt, "transport" | "causale" | "of">): string[] {
+	/** What to say the draft lacks before it can be issued (who carries it: the client's last choice proposed), and what a reso without its DDT does not do. */
+	function missingNotes(d: Pick<Ddt, "transport" | "causale" | "of" | "theirs" | "client">, loaded: Loaded): string[] {
 		const out: string[] = [];
-		if (d.transport === undefined) out.push("Prima di emetterlo mi serve chi fa il trasporto: tu, il cliente o un corriere (con il suo nome). Chiedilo a chi ti scrive.");
-		else if (d.transport.by === "vettore" && d.transport.carrier === undefined) out.push("Prima di emetterlo mi serve il nome del corriere che fa il trasporto. Chiedilo a chi ti scrive.");
+		if (d.theirs === undefined && d.transport === undefined) {
+			const last = ofClient(loaded.book.ddts, d.client).find((x) => x.status === "issued" && x.transport !== undefined)?.transport;
+			if (last === undefined) out.push("Prima di emetterlo mi serve chi fa il trasporto: tu, il cliente o un corriere (con il suo nome). Chiedilo a chi ti scrive.");
+			else out.push([`Prima di emetterlo mi serve chi fa il trasporto. Come l'ultima volta, ${TRANSPORT_WORDS[last.by]}${last.carrier === undefined ? "" : " (nel riquadro)"}? Chiedilo a chi ti scrive.`, ...(last.carrier === undefined ? [] : [fencedDdt(last.carrier)])].join("\n"));
+		} else if (d.transport?.by === "vettore" && d.transport.carrier === undefined) out.push("Prima di emetterlo mi serve il nome del corriere che fa il trasporto. Chiedilo a chi ti scrive.");
 		if (d.causale === "reso" && d.of === undefined) out.push("È un reso: se mi dici da quale DDT torna la merce, quando lo emetti la rimetto in magazzino; senza, non la rimetto.");
 		return out;
 	}
 
-	function proposalText(p: Proposed, first = ""): string {
+	const freeNote = (lines: readonly LineSaid[]): string[] => {
+		const free = lines.filter((l) => l.free === true).length;
+		return free === 0 ? [] : [`${n1(free, "Una voce non è nel listino: l'ho scritta", "# voci non sono nel listino: le ho scritte")} come descrizione libera, come nel riquadro (senza voce non si scarica dal magazzino).`];
+	};
+
+	function proposalText(p: Proposed, loaded: Loaded, first = ""): string {
 		const preview: Ddt = { id: "DT-0000", status: "draft", day: "2000-01-01", client: p.said.client, lines: numbered(p.lines), callId: "x", by: "x", at: "x", ...p.fields };
 		const why: string[] = [];
 		if (p.said.fresh === true) why.push("il cliente non è tra le schede né tra i clienti fatturati: lo scrivo come detto");
 		if (p.said.form === true) why.push("il cliente ha lo stesso nome a meno della forma societaria");
 		const guessed = p.lines.filter((l) => l.guess === true).length;
 		if (guessed > 0) why.push(n1(guessed, "una voce del listino l'ho presa dal nome più vicino a come è stata detta", "# voci del listino le ho prese dal nome più vicino a come sono state dette"));
+		if (p.source !== undefined) why.push(`il reso l'ho legato all'ultimo DDT di questo cliente con questa merce, il ${ddtWords({ number: p.source.number, date: p.source.day })}`);
+		const block = ddtBlock(preview, undefined, loaded.book.ddts).split("\n").slice(1).join("\n");
 		return [
-			`${first}Preparerei questa bozza di DDT, come nel riquadro: controlla ${why.join("; ")}.`,
-			fencedDdt(ddtBlock(preview).replace(/^Bozza DT-0000 \(bozza\)/, "Bozza")),
-			...missingNotes(preview),
-			`Va bene? Con il sì di chi ti scrive ripeti con la conferma e il controllo ${checkOf(p)}. Il numero il DDT lo prende quando lo emetti.`,
+			`${first}Preparerei questa bozza di DDT, come nel riquadro. Controlla con chi ti scrive: ${why.join("; ")}.`,
+			fencedDdt(`Bozza del DDT\n${block}`),
+			...freeNote(p.lines),
+			...missingNotes(preview, loaded),
+			`Va bene così? Se chi ti scrive dice di sì, ripeti con la conferma e il controllo ${checkOf(p)}. Il numero il DDT lo prende quando lo emetti.`,
 		].join("\n");
 	}
 
-	async function create(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<{ text: string; count: number }> {
+	async function create(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		const said = clientSaid(args.client, cards(), loaded.invoices, loaded.book.ddts);
 		if (typeof said === "string") return { text: said, count: 0 };
 		const lines = linesSaid(args.lines, loaded.voci);
 		if (typeof lines === "string") return { text: lines, count: 0 };
-		const fields = fieldsSaid(args, loaded, said.client);
+		let fields = fieldsSaid(args, loaded, said.client, day);
 		if (typeof fields === "string") return { text: fields, count: 0 };
-		const p: Proposed = { said, lines, fields };
+		// A reso with no DDT said: the latest of the client's with those goods, proposed.
+		let source: IssuedDdt | undefined;
+		if (fields.causale === "reso" && fields.of === undefined) {
+			source = resoSourceOf(loaded.book.ddts, said.client, lines);
+			if (source !== undefined) fields = { ...fields, of: source.id };
+		}
+		const p: Proposed = { said, lines, fields, ...(source === undefined ? {} : { source }) };
 		// The client and the lines dictated, each found by its very name: the draft is made at once (a draft moves nothing).
-		const dictated = said.form !== true && said.fresh !== true && lines.every((l) => l.guess !== true);
-		if (!dictated && args.confirm !== true) return { text: proposalText(p), count: 0 };
+		const dictated = said.form !== true && said.fresh !== true && lines.every((l) => l.guess !== true) && source === undefined;
+		if (!dictated && args.confirm !== true) return { text: proposalText(p, loaded), count: 0 };
 		const refused = requirePersonFor(ctx, "preparo il DDT");
 		if (refused !== undefined) return { text: refused, count: 0 };
 		if (!dictated) {
 			const check = typeof args.check === "string" ? args.check.trim().toLowerCase() : undefined;
 			if (check === undefined || !/^[0-9a-f]{16}$/.test(check)) return { text: "Errore: per preparare il DDT serve il controllo della proposta: chiedi prima la proposta, mostrala a chi ti scrive e, con il suo sì, ripeti con il controllo che ti ho dato.", count: 0 };
-			if (checkOf(p) !== check) return { text: proposalText(p, "La proposta è cambiata da quando l'hai mostrata: non ho preparato niente. Ecco quella nuova.\n"), count: 0 };
+			if (checkOf(p) !== check) return { text: proposalText(p, loaded, "La proposta è cambiata da quando l'hai mostrata: non ho preparato niente. Ecco quella nuova.\n"), count: 0 };
 		}
 		const by = marker(ctx);
+		const made_ = fields;
 		const id = await ctx.step("create", async () => {
 			store.update(ctx.callId, (state) => {
 				if (state.ddts.length >= DDT_LIMITS.ddts) throw new DdtError("i DDT sono troppi per salvarne altri");
-				const made: Ddt = { id: ddtId(state.nextDdt), status: "draft", day, client: said.client, lines: numbered(lines), callId: ctx.callId, ...fields, ...by };
+				const made: Ddt = { id: ddtId(state.nextDdt), status: "draft", day, client: said.client, lines: numbered(lines), callId: ctx.callId, ...made_, ...by };
 				return { ...state, nextDdt: state.nextDdt + 1, ddts: [...state.ddts, made] };
 			});
 			return store.read().ddts.find((d) => d.callId === ctx.callId)?.id ?? "";
 		});
 		const made = store.read().ddts.find((d) => d.id === id);
 		if (made === undefined) return { text: "Errore: la bozza del DDT non risulta salvata.", count: 0 };
-		const head = `Fatto: ho preparato la bozza del DDT (${made.id}), come nel riquadro${args.causale === undefined ? ", con causale vendita" : ""}. Non ha ancora un numero: lo prende quando lo emetti, e allora scarico il magazzino.`;
-		return { text: [head, fencedDdt(ddtBlock(made, loaded.links)), ...missingNotes(made), "Quando chi ti scrive dice di emetterlo, ti mostro cosa scarica dal magazzino e lo emetto dopo il suo sì."].join("\n"), count: 1 };
+		const head =
+			made.theirs !== undefined
+				? "Fatto: ho preparato il reso con il DDT del cliente, come nel riquadro. Non prende un nostro numero: quando chi ti scrive dice di registrarlo, rimetto la merce in magazzino."
+				: `Fatto: ho preparato la bozza del DDT, come nel riquadro${args.causale === undefined ? ", con causale vendita" : ""}. Non ha ancora un numero: lo prende quando lo emetti, e allora ${made.causale === "reso" ? "rimetto la merce in magazzino" : "scarico il magazzino"}.`;
+		const tail = made.theirs !== undefined ? [] : ["Quando chi ti scrive dice di emetterlo, ti mostro cosa muove nel magazzino e lo emetto dopo il suo sì."];
+		return { text: [head, fencedDdt(ddtBlock(made, loaded.links, loaded.book.ddts)), ...freeNote(lines), ...missingNotes(made, loaded), ...tail].join("\n"), count: 1 };
 	}
 
-	async function change(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded): Promise<{ text: string; count: number }> {
+	async function change(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		const d = target(args, loaded, (x) => x.status === "draft", "in bozza");
 		if (typeof d === "string") return { text: d, count: 0 };
 		if (d.status !== "draft") return { text: `Il ${ddtTitle(d)} è ${d.status === "cancelled" ? "annullato" : "già emesso"}: si cambia solo una bozza. Per altra merce, ne preparo uno nuovo.`, count: 0 };
 		const said = args.lines === undefined ? [] : linesSaid(args.lines, loaded.voci, true);
 		if (typeof said === "string") return { text: said, count: 0 };
-		const fields = fieldsSaid(args, loaded, d.client, d);
+		const fields = fieldsSaid(args, loaded, d.client, day, d);
 		if (typeof fields === "string") return { text: fields, count: 0 };
-		const refused = requirePersonFor(ctx, `cambio la bozza del DDT ${d.id}`);
+		const refused = requirePersonFor(ctx, `cambio la ${ddtTitle(d)}`);
 		if (refused !== undefined) return { text: refused, count: 0 };
 		let lines: DdtLine[] = [...d.lines];
 		const same = (a: Pick<DdtLine, "item" | "description">, b: Pick<DdtLine, "item" | "description">) => (a.item !== undefined && a.item === b.item) || (a.item === undefined && b.item === undefined && a.description.toLowerCase() === b.description.toLowerCase());
@@ -237,142 +257,81 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 				if (at >= 0) lines.splice(at, 1);
 				continue;
 			}
-			const { guess: _, ...rest } = l;
+			const { guess: _, free: _f, ...rest } = l;
 			if (at >= 0) lines[at] = { ...rest, n: (lines[at] as DdtLine).n };
 			else lines.push({ ...rest, n: 0 });
 		}
-		if (lines.length === 0) return { text: `Così la bozza ${d.id} resterebbe senza righe: se non serve più, chi ti scrive può dirmi di annullarla.`, count: 0 };
+		if (lines.length === 0) return { text: "Così la bozza resterebbe senza righe: se non serve più, chi ti scrive può dirmi di annullarla.", count: 0 };
 		lines = lines.map((l, i) => ({ ...l, n: i + 1 }));
 		const by = marker(ctx);
 		await ctx.step("change", async () => {
 			store.update(ctx.callId, (state) => {
 				const cur = state.ddts.find((x) => x.id === d.id);
-				if (cur === undefined || cur.status !== "draft") throw new DdtError(`il DDT ${d.id} non è più una bozza: non l'ho cambiato`);
-				const { transport: _t, destination: _d, aspect: _a, notes: _n, packages: _p, weight: _w, of: _o, ...base } = cur;
+				if (cur === undefined || cur.status !== "draft") throw new DdtError("la bozza del DDT intanto non è più una bozza: non l'ho cambiata");
+				const { transport: _t, destination: _d, aspect: _a, notes: _n, packages: _p, weight: _w, of: _o, theirs: _th, ...base } = cur;
 				const next: Ddt = { ...base, ...fields, lines, edited: by };
 				return { ...state, ddts: state.ddts.map((x) => (x.id === d.id ? next : x)) };
 			});
 			return true;
 		});
 		const after = store.read().ddts.find((x) => x.id === d.id) as Ddt;
-		return { text: [`Fatto: ho cambiato la bozza ${d.id}, ora è così.`, fencedDdt(ddtBlock(after, loaded.links)), ...missingNotes(after)].join("\n"), count: 1 };
+		return { text: ["Fatto: ho cambiato la bozza del DDT, ora è così.", fencedDdt(ddtBlock(after, loaded.links, loaded.book.ddts)), ...freeNote(said), ...missingNotes(after, loaded)].join("\n"), count: 1 };
 	}
 
-	/** The DDT as the magazzino takes it: its lines with a voce; a reso puts back the goods of the DDT it names. Undefined when it moves nothing. */
-	function saleOf(d: Ddt, number: string, day: string): Sale | undefined {
-		if (!UNLOADING.includes(d.causale) && !(d.causale === "reso" && d.of !== undefined)) return undefined;
-		const lines = d.lines.flatMap((l) => (l.item === undefined ? [] : [{ line: l.n, listino: l.item, quantity: l.qty, description: l.description, ...(l.unit === undefined ? {} : { unit: l.unit }) }]));
-		if (lines.length === 0) return undefined;
-		return { invoice: d.id, number, day, ...(d.causale === "reso" && d.of !== undefined ? { of: d.of } : {}), lines };
-	}
-
-	const SKIP_WHY: Readonly<Record<string, string>> = {
-		unit: "l'unità della riga non è quella dell'articolo in magazzino",
-		pack: "in confezioni, ma le confezioni per quanto ne contiene ognuna non danno un numero preciso di unità",
-		quantity: "la quantità della riga non è un numero",
-		nothing: "il DDT da cui torna non l'aveva scaricata",
-	};
-
-	function skippedNote(skipped: readonly { description: string; why: string }[], back: boolean): string[] {
-		if (skipped.length === 0) return [];
-		return [[`${n1(skipped.length, `Una riga non ${back ? "la rimetto" : "la scarico"}`, `# righe non ${back ? "le rimetto" : "le scarico"}`)} in magazzino:`, fencedStock(skipped.map((s) => `• ${s.description}: ${SKIP_WHY[s.why] ?? s.why}`).join("\n")), "Se va corretto, si fa con il magazzino (un carico, uno scarico o un conteggio)."].join("\n")];
-	}
-
-	/** What issuing `d` would move, for the question before the yes. A magazzino that does not read is said, and never stops the issue. */
-	function stockPreview(d: Ddt, day: string, by: Marker): string[] {
-		const sale = saleOf(d, "anteprima", day);
-		const back = d.causale === "reso";
-		if (sale === undefined) {
-			if (UNLOADING.includes(d.causale) && d.lines.every((l) => l.item === undefined)) return ["Nessuna riga è una voce del listino: il magazzino non si muove."];
-			if (!UNLOADING.includes(d.causale) && !back) return ["Con questa causale il magazzino non si muove."];
-			return [];
-		}
-		if (options.stock === undefined) return [];
-		const book = options.stock.read();
-		if (book.broken) return [`Attenzione: il magazzino non si legge, quindi le righe ${back ? "non potranno essere rimesse in magazzino" : "non potranno essere scaricate"} finché il file non è sistemato. Il DDT si emette lo stesso.`];
-		const plan = planSale(book, sale, by);
-		const out: string[] = [];
-		const byItem = new Map<string, { item: StockItem; qty: bigint }>();
-		for (const m of plan.added) {
-			const item = book.items.find((i) => i.id === m.item) as StockItem;
-			byItem.set(item.id, { item, qty: (byItem.get(item.id)?.qty ?? 0n) + qtyOf(m.qty) });
-		}
-		if (byItem.size > 0) {
-			out.push([back ? "Effetti sul magazzino: questo reso rimette gli articoli nel riquadro." : "Effetti sul magazzino: questo DDT scarica gli articoli nel riquadro.", fencedStock([...byItem.values()].map(({ item, qty }) => `${back ? "Rimette in magazzino" : "Scarica dal magazzino"}: ${nameOf(item)} ${back ? "+" : "−"}${qtyWords(qty, item.unit)}`).join("\n"))].join("\n"));
-			if (!back)
-				for (const { item, qty } of byItem.values()) {
-					const there = stateOf(item, book.moves).onHand;
-					if (there - qty < 0n) out.push(`In magazzino ci sono ${qtyWords(there, item.unit)} di ${item.id}: questo DDT ne scarica ${qtyNumber(qty)}, quindi andrebbe a ${qtyNumber(there - qty)}. Dillo a chi ti scrive prima del sì: di solito manca un carico. Il DDT si emette lo stesso.`);
-				}
-		} else if (plan.skipped.length === 0) out.push("Nessuna riga è un articolo del magazzino: il magazzino non si muove.");
-		out.push(...skippedNote(plan.skipped, back));
-		return out;
-	}
-
-	type Stocked = { readonly stop?: "broken" | "full" | "invalid"; readonly rows: string[]; readonly negative: number; readonly skipped: { description: string; why: string }[] };
-
-	/** The magazzino moved by the DDT issued, once per DDT and line however many times this runs; then the issue complete. A stop leaves it to complete. */
-	async function complete(d: IssuedDdt, ctx: ToolContext): Promise<{ notes: string[]; done: boolean }> {
-		const sale = saleOf(d, d.number, d.day);
-		const back = d.causale === "reso";
-		const stock = options.stock;
-		if (sale === undefined || stock === undefined) {
-			store.setStocked(d.id);
-			return { notes: [], done: true };
-		}
-		const by = marker(ctx);
-		const r = await ctx.step("stock", async (): Promise<Stocked> => {
-			try {
-				const out = stock.sale(sale, by);
-				if ("full" in out) return { stop: "full", rows: [], negative: 0, skipped: [] };
-				if (out.broken) return { stop: "broken", rows: [], negative: 0, skipped: [] };
-				return { rows: out.moved.map((m) => `• ${nameOf(m.item)} (${m.item.id}): ${back ? "+" : "−"}${qtyWords(qtyOf(m.move.qty), m.item.unit)}`), negative: back ? 0 : out.moved.filter((m) => m.negative).length, skipped: out.skipped.map((s) => ({ description: s.description, why: s.why })) };
-			} catch (error) {
-				if (error instanceof StockError) return { stop: error.message === STOCK_FULL ? "full" : error.message === STOCK_BROKEN ? "broken" : "invalid", rows: [], negative: 0, skipped: [] };
-				throw error;
-			}
-		});
-		const again = `Quando è sistemato, si completa emettendo di nuovo il DDT n. ${d.number}: il numero resta quello.`;
-		const what = back ? "la merce del reso non è rimessa in magazzino" : "le righe non sono scaricate dal magazzino";
-		if (r.stop === "full") return { notes: [`Attenzione: il magazzino è pieno di movimenti, quindi ${what}: il DDT è emesso, ma l'emissione resta da completare. Chi ti scrive può chiudere un anno passato del magazzino. ${again}`], done: false };
-		if (r.stop === "broken") return { notes: [`Attenzione: il magazzino non si legge, quindi ${what}: il DDT è emesso, ma l'emissione resta da completare. ${again}`], done: false };
-		if (r.stop === "invalid") return { notes: [`Attenzione: il magazzino non ha accettato questi movimenti, quindi ${what}: il DDT è emesso, ma l'emissione resta da completare. Va controllato il file del magazzino. ${again}`], done: false };
-		store.setStocked(d.id);
-		const notes: string[] = [];
-		if (r.rows.length > 0) notes.push([back ? `Ho rimesso in magazzino ${n1(r.rows.length, "una riga", "# righe")} del reso:` : `Ho scaricato dal magazzino ${n1(r.rows.length, "una riga", "# righe")} del DDT:`, fencedStock(r.rows.join("\n"))].join("\n"));
-		if (r.negative > 0) notes.push(`Attenzione: ${n1(r.negative, "un articolo è", "# articoli sono")} in negativo in magazzino (ne sono usciti più di quelli caricati): ${r.negative === 1 ? "va ricontato" : "vanno ricontati"}, o manca un carico.`);
-		notes.push(...skippedNote(r.skipped, back));
-		return { notes, done: true };
-	}
-
-	async function issue(args: Record<string, unknown>, ctx: ToolContext, given: Loaded, day: string): Promise<{ text: string; count: number }> {
+	async function issue(args: Record<string, unknown>, ctx: ToolContext, given: Loaded, day: string): Promise<Answer> {
 		let loaded = given;
 		// A call run again after it issued: the same DDT, completed.
-		const mine = loaded.book.ddts.find((d): d is IssuedDdt => isIssuedDdt(d) && d.issueCall === ctx.callId);
+		const mine = loaded.book.ddts.find((d) => d.issueCall === ctx.callId && d.status !== "draft");
 		if (mine !== undefined) return issuedAnswer(mine, ctx, loaded);
-		const d = target(args, loaded, (x) => x.status === "draft" || (isIssuedDdt(x) && x.status === "issued" && x.stocked !== true), "da emettere");
+		const d = target(args, loaded, (x) => x.status === "draft" || (x.status === "issued" && x.stocked !== true), "da emettere");
 		if (typeof d === "string") return { text: d, count: 0 };
-		if (d.status === "cancelled") return { text: `${ddtTitle(d)}: è annullato, non si emette.`, count: 0 };
-		if (isIssuedDdt(d)) {
-			if (d.stocked === true) return { text: `Il ${ddtTitle(d)} è già emesso.`, count: 0 };
-			const refused = requirePersonFor(ctx, `completo l'emissione del DDT n. ${d.number}`);
+		if (d.status === "cancelled") return { text: `${capital(ddtTitle(d))}: è annullato, non si emette.`, count: 0 };
+		if (d.status === "issued") {
+			if (d.stocked === true) return { text: `Il ${ddtTitle(d)} è già ${isIssuedDdt(d) ? "emesso" : "registrato"}.`, count: 0 };
+			const refused = requirePersonFor(ctx, isIssuedDdt(d) ? `completo l'emissione del DDT n. ${d.number}` : "completo la registrazione del reso");
 			if (refused !== undefined) return { text: refused, count: 0 };
 			return issuedAnswer(d, ctx, loaded);
 		}
-		const missing = missingNotes(d).filter((m) => !m.startsWith("È un reso"));
+		const missing = missingNotes(d, loaded).filter((m) => !m.startsWith("È un reso"));
 		if (missing.length > 0) return { text: missing.join("\n"), count: 0 };
 		if (args.confirm !== undefined && typeof args.confirm !== "boolean") return { text: "Errore: la conferma è sì o no.", count: 0 };
-		const year = Number(day.slice(0, 4));
-		// The first DDT of the year with Annie: the last number the person reached before, asked as the invoices ask it.
+		// A reso's DDT as it must still be: issued, not annulled, the same client.
+		if (d.of !== undefined) {
+			const problem = sourceProblem(loaded, d.of, d.client);
+			if (problem !== undefined) return { text: `${problem} Cambia la bozza del reso prima di emetterlo.`, count: 0 };
+		}
+		if (d.theirs !== undefined) return recordReso(d, args, ctx, loaded);
+		const when = issueDaySaid(args.date, day);
+		if (typeof when === "object") return { text: when.answer, count: 0 };
+		const year = Number(when.slice(0, 4));
+		const later = loaded.book.ddts.find((x) => isIssuedDdt(x) && x.year === year && x.day > when);
+		if (later !== undefined && isIssuedDdt(later)) return { text: `C'è già il DDT n. ${later.number} del ${italianLongDate(later.day)}: la numerazione segue le date, quindi questo DDT non può avere una data prima di quella.`, count: 0 };
+		// The first DDT of the year with Annie: the last number the person reached before, asked as the invoices ask it; written only with the yes.
 		const last = args.last_number;
 		if (last !== undefined && (typeof last !== "number" || !Number.isInteger(last) || last < 0 || last >= DDT_LIMITS.perYear)) return { text: "Errore: il numero dell'ultimo DDT è un numero intero, 0 se non ce n'è nessuno.", count: 0 };
 		const issuedIn = (y: number) => loaded.book.ddts.some((x) => isIssuedDdt(x) && x.year === y);
-		const allLastYear = day.slice(5, 7) === "01" && issuedIn(year - 1) && (loaded.book.settings?.lastBefore?.[String(year - 1)] ?? 0) === 0;
+		const allLastYear = when.slice(5, 7) === "01" && issuedIn(year - 1) && (loaded.book.settings?.lastBefore?.[String(year - 1)] ?? 0) === 0;
 		if (last === undefined && !issuedIn(year) && loaded.book.settings?.lastBefore?.[String(year)] === undefined && !allLastYear) return { text: `È il primo DDT che emetti con me nel ${year}: qual è il numero dell'ultimo DDT che hai fatto quest'anno? Se nessuno, parto da 1. Chiedilo a chi ti scrive, poi rifai con la sua risposta (prima di emettere ti mostro il DDT).`, count: 0 };
 		if (last !== undefined && issuedIn(year)) return { text: `Nel ${year} ho già emesso DDT, quindi la numerazione va avanti da quelli.`, count: 0 };
+		const settings = last === undefined ? loaded.book.settings : { by: "x", at: "x", ...(loaded.book.settings ?? {}), lastBefore: { ...(loaded.book.settings?.lastBefore ?? {}), [String(year)]: last as number } };
+		const next = nextDdtSeq({ next: loaded.book.next, ...(settings === undefined ? {} : { settings }) }, year);
+		const numberNow = loaded.book.settings?.numbering === "plain" ? String(next) : `${next}/${year}`;
+		if (args.confirm !== true) {
+			return {
+				text: [
+					`Lo emetto ${issueDayWords(when, day)}: prende il numero ${numberNow}. Una volta emesso non si cancella più, si può solo annullare (e il numero resta).`,
+					fencedDdt(ddtBlock(d, loaded.links, loaded.book.ddts)),
+					...stockPreview(options.stock, d, when, marker(ctx)),
+					...missingNotes(d, loaded),
+					`Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: lo emetto solo dopo il suo sì${last === undefined ? "" : ", ripetendo anche l'ultimo numero che ha detto"}${args.date === undefined ? "" : " e la stessa data"}.`,
+				].join("\n"),
+				count: 0,
+			};
+		}
+		// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
+		const refused = requirePersonFor(ctx, "emetto il DDT");
+		if (refused !== undefined) return { text: refused, count: 0 };
 		if (last !== undefined) {
-			const refused = requirePersonFor(ctx, "fisso da che numero partono i DDT");
-			if (refused !== undefined) return { text: refused, count: 0 };
 			const by = marker(ctx);
 			await ctx.step("first", async () => {
 				store.update(`${ctx.callId}:first`, (state) => {
@@ -383,52 +342,99 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 			});
 			loaded = { ...loaded, book: store.read() };
 		}
-		const next = nextDdtSeq(loaded.book, year);
-		const numberNow = loaded.book.settings?.numbering === "plain" ? String(next) : `${next}/${year}`;
-		if (args.confirm !== true) {
-			return {
-				text: [
-					`Emetterei questo DDT con la data di oggi: prende il numero ${numberNow}. Una volta emesso non si cancella più, si può solo annullare (e il numero resta).`,
-					fencedDdt(ddtBlock(d, loaded.links)),
-					...stockPreview(d, day, marker(ctx)),
-					...missingNotes(d),
-					"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: lo emetto solo dopo il suo sì.",
-				].join("\n"),
-				count: 0,
-			};
-		}
-		// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
-		const refused = requirePersonFor(ctx, "emetto il DDT");
-		if (refused !== undefined) return { text: refused, count: 0 };
-		const id = await ctx.step("issue", async () => store.issue(d.id, ctx.callId, day, marker(ctx)).id);
+		const id = await ctx.step("issue", async () => store.issue(d.id, ctx.callId, when, marker(ctx)).id);
 		const issued = store.read().ddts.find((x): x is IssuedDdt => x.id === id && isIssuedDdt(x));
 		if (issued === undefined) return { text: "Errore: il DDT non risulta emesso.", count: 0 };
 		return issuedAnswer(issued, ctx, loaded);
 	}
 
-	async function issuedAnswer(d: IssuedDdt, ctx: ToolContext, loaded: Loaded): Promise<{ text: string; count: number }> {
+	/** A reso with the client's own DDT: recorded after the yes, no number of ours. */
+	async function recordReso(d: Ddt, args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded): Promise<Answer> {
+		const their = d.theirs as NonNullable<Ddt["theirs"]>;
+		if (args.confirm !== true) {
+			return {
+				text: [`Registro questo reso con il DDT del cliente n. ${their.number} del ${italianLongDate(their.date)} (nel riquadro): non prende un nostro numero.`, fencedDdt(ddtBlock(d, loaded.links, loaded.book.ddts)), ...stockPreview(options.stock, d, their.date, marker(ctx)), ...missingNotes(d, loaded), "Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: lo registro solo dopo il suo sì."].join("\n"),
+				count: 0,
+			};
+		}
+		const refused = requirePersonFor(ctx, "registro il reso");
+		if (refused !== undefined) return { text: refused, count: 0 };
+		const id = await ctx.step("issue", async () => store.record(d.id, ctx.callId, marker(ctx)).id);
+		const recorded = store.read().ddts.find((x) => x.id === id);
+		if (recorded === undefined || !isRecordedReso(recorded)) return { text: "Errore: il reso non risulta registrato.", count: 0 };
+		return issuedAnswer(recorded, ctx, loaded);
+	}
+
+	/** A reso of a DDT billed already: the credit note it needs, offered. */
+	function resoNotes(d: Ddt, loaded: Loaded): string[] {
+		if (d.causale !== "reso" || d.of === undefined) return [];
+		const src = loaded.book.ddts.find((x) => x.id === d.of);
+		if (src === undefined || !isIssuedDdt(src)) return [];
+		const billed = src.billed?.number ?? loaded.links.issued.get(src.id);
+		const goods = d.lines.map((l) => `${lineQty(l)} di ${l.description}`).join(", ");
+		if (billed === undefined) return [`Il reso lo tolgo dalla fattura differita del DDT n. ${src.number}, quando la fai: non serve una nota di credito.`];
+		return [fencedDdt(`Il DDT n. ${src.number} è già fatturato (fattura n. ${billed}): per ${goods} resi serve una nota di credito.`), "Vuoi che la prepari? È la nota di credito di quella fattura per questo reso."];
+	}
+
+	async function issuedAnswer(d: Ddt, ctx: ToolContext, loaded: Loaded): Promise<Answer> {
 		// Counted once: on the run that completes the issue, never on a run after it.
 		const before = store.read().ddts.find((x) => x.id === d.id)?.stocked === true;
-		const done = await complete(d, ctx);
-		const after = (store.read().ddts.find((x) => x.id === d.id) ?? d) as IssuedDdt;
-		const out = [`Fatto: ho emesso il ${ddtTitle(after)}, come nel riquadro.`, fencedDdt(ddtBlock(after, loaded.links)), ...done.notes];
+		const done = await completeStock(store, options.stock, d, ctx, marker(ctx));
+		const after = store.read().ddts.find((x) => x.id === d.id) ?? d;
+		const ours = isIssuedDdt(after);
+		const out = [`Fatto: ho ${ours ? "emesso" : "registrato"} il ${ddtTitle(after)}, come nel riquadro.`, fencedDdt(ddtBlock(after, loaded.links, loaded.book.ddts)), ...done.notes];
 		if (done.done) {
 			if (after.causale === "vendita") out.push("Quando fai la fattura differita del mese, questo DDT ci entra da solo; va emessa entro il 15 del mese dopo.");
-			out.push("Vuoi il PDF da stampare o da mandare? Non lo mando a nessuno da sola.");
+			if (after.causale === "omaggio") out.push(OMAGGIO_NOTE);
+			if (after.causale === "conto_visione") out.push("È in conto visione: se il cliente tiene la merce, la fatturo con la fattura differita del mese (te lo chiedo); se la rende, si fa un DDT di reso.");
+			out.push(...resoNotes(after, loaded));
+			if (ours) out.push(PRINT_NOTE);
 		}
 		return { text: out.join("\n"), count: done.done && !before ? 1 : 0 };
 	}
 
-	async function cancel(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded): Promise<{ text: string; count: number }> {
+	const cancelCheck = (d: Ddt) => createHash("sha256").update(JSON.stringify([d.id, d.number ?? d.theirs?.number ?? "", d.status, d.day])).digest("hex").slice(0, 16);
+
+	async function cancel(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		const d = target(args, loaded, (x) => x.status !== "cancelled", "aperto");
 		if (typeof d === "string") return { text: d, count: 0 };
-		if (d.status === "cancelled") return { text: `${ddtTitle(d)}: è già annullato.`, count: 0 };
+		if (d.status === "cancelled") return { text: `${capital(ddtTitle(d))}: è già annullato.`, count: 0 };
 		const billed = d.billed?.number ?? loaded.links.issued.get(d.id);
 		if (billed !== undefined) return { text: `Il ${ddtTitle(d)} è già fatturato con la fattura n. ${billed}: non si annulla. Se la merce è tornata, si fa un DDT di reso; per la fattura, una nota di credito.`, count: 0 };
-		const draft = loaded.links.draft.get(d.id);
-		if (draft !== undefined) return { text: `Il ${ddtTitle(d)} è nella bozza di fattura ${draft}: prima va tolta quella bozza (o rifatta senza questo DDT), poi lo annullo.`, count: 0 };
-		const refused = requirePersonFor(ctx, isIssuedDdt(d) ? `annullo il DDT n. ${d.number}` : `annullo la bozza del DDT ${d.id}`);
+		if (loaded.links.draft.has(d.id)) return { text: `Il ${ddtTitle(d)} è in una bozza di fattura: prima va tolta quella bozza (o rifatta senza questo DDT), poi lo annullo.`, count: 0 };
+		if (d.status === "draft") {
+			const refused = requirePersonFor(ctx, `annullo la ${ddtTitle(d)}`);
+			if (refused !== undefined) return { text: refused, count: 0 };
+			await cancelled(d, ctx);
+			return { text: `Annullata la ${ddtTitle(d)}: nessun numero è stato usato.`, count: 1 };
+		}
+		const moved = d.causale !== "reso" && unloaded(options.stock, d);
+		const goods = `${d.client.name}: ${d.lines.map((l) => `${lineQty(l)} di ${l.description}`).join(", ")}`;
+		const which = isIssuedDdt(d) ? `il DDT n. ${d.number} ${italianLongDate(d.day).replace(/ \d{4}$/, "").replace(/^/, "del ")}` : `il ${ddtTitle(d)}`;
+		if (args.confirm !== true) {
+			return {
+				text: [
+					`Annullo ${which} (cliente e merce nel riquadro)?${isIssuedDdt(d) ? ` Il numero ${d.seq} non si potrà più usare.` : ""}${moved ? " La merce è partita lo stesso?" : ""}`,
+					fencedDdt(goods),
+					`Chiedilo a chi ti scrive: con il suo sì ripeti con la conferma e il controllo ${cancelCheck(d)}${moved ? ", dicendo se la merce è partita (se non è partita, la rimetto in magazzino)" : ""}.`,
+				].join("\n"),
+				count: 0,
+			};
+		}
+		const check = typeof args.check === "string" ? args.check.trim().toLowerCase() : undefined;
+		if (check !== cancelCheck(d)) return { text: "Errore: per annullare un DDT emesso serve il controllo che ti ho dato mostrandolo: chiedi prima l'annullamento senza conferma, mostralo a chi ti scrive e, con il suo sì, ripeti con quel controllo.", count: 0 };
+		if (moved && typeof args.left !== "boolean") return { text: "Prima di annullarlo mi serve sapere se la merce è partita lo stesso: se non è partita, la rimetto in magazzino. Chiedilo a chi ti scrive.", count: 0 };
+		const refused = requirePersonFor(ctx, isIssuedDdt(d) ? `annullo il DDT n. ${d.number}` : "annullo il reso registrato");
 		if (refused !== undefined) return { text: refused, count: 0 };
+		await cancelled(d, ctx);
+		const out = [isIssuedDdt(d) ? `Annullato il DDT n. ${d.number}: resta nell'elenco come annullato, con il suo numero, che non si usa più.` : "Annullato il reso registrato: resta nell'elenco come annullato."];
+		if (moved && args.left === false) out.push(...(await unstock(options.stock, d, day, ctx, marker(ctx))));
+		else if (moved) out.push("La merce è partita lo stesso: il magazzino resta com'è.");
+		if (d.causale === "reso" && options.stock?.read().moves.some((m) => m.sale?.invoice === d.id) === true) out.push("La merce di questo reso era stata rimessa in magazzino: se non è tornata davvero, va corretto con un conteggio del magazzino. Non lo cambio da sola.");
+		return { text: out.join(" "), count: 1 };
+	}
+
+	async function cancelled(d: Ddt, ctx: ToolContext): Promise<void> {
 		const by = marker(ctx);
 		await ctx.step("cancel", async () => {
 			store.update(ctx.callId, (state) => {
@@ -438,18 +444,14 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 			});
 			return true;
 		});
-		if (!isIssuedDdt(d)) return { text: `Annullata la bozza ${d.id}: nessun numero è stato usato.`, count: 1 };
-		const out = [`Annullato il DDT n. ${d.number}: resta nell'elenco come annullato, con il suo numero, che non si usa più.`];
-		const moved = options.stock?.read();
-		if (moved !== undefined && !moved.broken && moved.moves.some((m) => m.sale?.invoice === d.id)) out.push(d.causale === "reso" ? "La merce di questo reso era stata rimessa in magazzino: se non è tornata davvero, va corretto con un conteggio del magazzino. Non lo cambio da sola." : "La merce di questo DDT era stata scaricata dal magazzino: se non è partita, va rimessa con un conteggio del magazzino. Non lo cambio da sola.");
-		return { text: out.join(" "), count: 1 };
 	}
 
-	async function document(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded): Promise<{ text: string; count: number }> {
-		const d = target(args, loaded, (x) => x.status === "issued", "emesso");
+	async function document(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded): Promise<Answer> {
+		const d = target(args, loaded, (x) => x.status === "issued" && isIssuedDdt(x), "emesso");
 		if (typeof d === "string") return { text: d, count: 0 };
-		if (d.status === "cancelled") return { text: `${ddtTitle(d)}: è annullato, non ne faccio il documento.`, count: 0 };
-		if (!isIssuedDdt(d)) return { text: `Il DDT ${d.id} è ancora una bozza: prima va emesso (prende il numero), poi lo stampo. Vuoi che te lo mostri per emetterlo?`, count: 0 };
+		if (d.status === "cancelled") return { text: `${capital(ddtTitle(d))}: è annullato, non ne faccio il documento.`, count: 0 };
+		if (isRecordedReso(d)) return { text: "Questo reso è registrato con il DDT del cliente: il documento è il suo, non ne faccio uno nostro.", count: 0 };
+		if (!isIssuedDdt(d)) return { text: "Il DDT è ancora una bozza: prima va emesso (prende il numero), poi lo stampo. Vuoi che te lo mostri per emetterlo?", count: 0 };
 		const format = args.format === undefined ? "pdf" : args.format;
 		if (format !== "pdf" && format !== "docx") return { text: "Errore: il documento è PDF o Word.", count: 0 };
 		const refused = requirePersonFor(ctx, `faccio il documento del DDT n. ${d.number}`);
@@ -471,57 +473,14 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 				return true;
 			});
 			const bare = company.name === undefined ? ["Non ho i dati della tua azienda, quindi il documento è senza intestazione: dimmi ragione sociale, indirizzo e partita IVA e li salvo, poi lo rifaccio."] : [];
-			return { text: [`Ecco il ${format === "pdf" ? "PDF" : "documento Word"} del DDT n. ${d.number}: il file è nel riquadro. Non l'ho mandato a nessuno; se vuoi te lo mando qui.`, fencedDdt(`File: ${made.path}`), ...bare, ...made.notes].join("\n"), count: 1 };
+			return { text: [`Ecco il ${format === "pdf" ? "PDF" : "documento Word"} del DDT n. ${d.number}: il file è nel riquadro. Non l'ho mandato a nessuno; se vuoi te lo mando qui. Va stampato in due copie: una viaggia con la merce, l'altra resta a te, firmata.`, fencedDdt(`File: ${made.path}`), ...bare, ...made.notes].join("\n"), count: 1 };
 		} catch (error) {
 			if (error instanceof WorkspaceError || error instanceof DocumentError) return { text: `Errore: non sono riuscita a fare il documento del DDT (${error.message}).`, count: 0 };
 			throw error;
 		}
 	}
 
-	function list(args: Record<string, unknown>, loaded: Loaded, day: string): { text: string; count: number } {
-		if (args.unbilled !== undefined && typeof args.unbilled !== "boolean") return { text: "Errore: da fatturare è sì o no.", count: 0 };
-		if (args.all !== undefined && typeof args.all !== "boolean") return { text: "Errore: tutti è sì o no.", count: 0 };
-		let pool: Ddt[] = [...loaded.book.ddts];
-		let whose = "";
-		if (args.client !== undefined) {
-			const said = cleanText(args.client, DDT_LIMITS.name, "il cliente");
-			if (isProblem(said)) return { text: `Errore: ${said.problem}.`, count: 0 };
-			const c = ddtClientSaid(said ?? "", loaded.book.ddts);
-			if (typeof c === "string") return { text: c, count: 0 };
-			if ("none" in c) return { text: ["Non trovo DDT per questo cliente.", fencedDdt(said ?? "")].join("\n"), count: 0 };
-			pool = ofClient(pool, c);
-			whose = " di questo cliente";
-		}
-		if (args.month !== undefined) {
-			const m = cleanText(args.month, 7, "il mese");
-			if (isProblem(m) || m === undefined || !/^\d{4}-\d{2}$/.test(m)) return { text: "Errore: il mese è come 2026-10.", count: 0 };
-			pool = pool.filter((d) => d.day.slice(0, 7) === m);
-		}
-		if (args.unbilled === true) {
-			const open = pool.filter((d) => unbilled(d, loaded.links)).sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
-			if (open.length === 0) return { text: `Nessun DDT di vendita da fatturare${whose}: sono tutti in una fattura.`, count: 0 };
-			const late = open.filter((d) => day > `${d.day.slice(0, 7)}-31` && day.slice(0, 7) !== d.day.slice(0, 7)).length;
-			const held = open.filter((d) => loaded.links.draft.has(d.id)).length;
-			const clients = new Set(open.map((d) => clientKey(d.client))).size;
-			const head = `${n1(open.length, "Un DDT di vendita", "# DDT di vendita")} da fatturare${whose}, ${n1(clients, "di un cliente", "di # clienti")}${held === 0 ? "" : ` (${n1(held, "uno è già", "# sono già")} in una bozza di fattura)`}:`;
-			const tail = late === 0 ? [] : [`${n1(late, "Uno è", "# sono")} dei mesi passati: la fattura differita va emessa entro il 15 del mese dopo i DDT. Chiedimi «fai la fattura differita di <mese> per <cliente>».`];
-			return { text: [head, fencedDdt([...open.slice(0, DDT_LIMITS.shown).map((d) => `• ${ddtRow(d, loaded.links)}`), ...more(open.length)].join("\n")), ...tail].join("\n"), count: open.length };
-		}
-		const year = day.slice(0, 4);
-		const shown = pool.filter((d) => (args.all === true ? true : d.status !== "cancelled" && (d.status === "draft" || d.day.slice(0, 4) === year))).sort((a, b) => b.id.localeCompare(a.id));
-		if (shown.length === 0) return { text: args.all === true ? `Non c'è ancora nessun DDT${whose}.` : `Nessun DDT${whose} quest'anno, e nessuna bozza.`, count: 0 };
-		const drafts = shown.filter((d) => d.status === "draft").length;
-		return { text: [`${n1(shown.length, "Un DDT", "# DDT")}${whose}${args.all === true ? "" : ` del ${year} e in bozza`} (${n1(drafts, "una bozza", "# bozze")}):`, fencedDdt([...shown.slice(0, DDT_LIMITS.shown).map((d) => `• ${ddtRow(d, loaded.links)}`), ...more(shown.length)].join("\n"))].join("\n"), count: shown.length };
-	}
-
-	function status(args: Record<string, unknown>, loaded: Loaded): { text: string; count: number } {
-		const d = target(args, loaded, (x) => x.status !== "cancelled", "aperto");
-		if (typeof d === "string") return { text: d, count: 0 };
-		const extra = isIssuedDdt(d) && d.status === "issued" && d.stocked !== true ? ["L'emissione non è completa (il magazzino non si era mosso): si completa emettendolo di nuovo."] : [];
-		return { text: [`Ecco il ${isIssuedDdt(d) ? ddtTitle(d) : `DDT in bozza ${d.id}`}:`, fencedDdt([ddtBlock(d, loaded.links), ...(d.file === undefined ? [] : [`File: ${d.file}`])].join("\n")), ...extra].join("\n"), count: 1 };
-	}
-
-	async function exportCsv(ctx: ToolContext, loaded: Loaded, day: string): Promise<{ text: string; count: number }> {
+	async function exportCsv(ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		const all = loaded.book.ddts;
 		if (all.length === 0) return { text: "Non c'è ancora nessun DDT da mettere nel file.", count: 0 };
 		const path = await ctx.step("path", async () => freePath(workspace, `ddt/ddt-al-${day}`, ".csv"));
@@ -529,13 +488,13 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		return { text: [`Salvato il file dei DDT: ${n1(all.length, "un DDT", "# DDT")}, una riga per voce, con lo stato (separatore «;», decimali con la virgola, si apre con Excel). Il percorso è nel riquadro; mandalo con file_send se chi ti scrive lo vuole.`, fencedDdt(written)].join("\n"), count: all.length };
 	}
 
-	async function settings(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<{ text: string; count: number }> {
+	async function settings(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		const thisYear = Number(day.slice(0, 4));
 		if (args.numbering !== undefined && args.numbering !== "plain" && args.numbering !== "year") return { text: "Errore: il numero del DDT si scrive come «12/2026» o come «12».", count: 0 };
 		const year = typeof args.year === "number" && Number.isInteger(args.year) ? args.year : thisYear;
 		const last = args.last_number;
 		if (last !== undefined && (typeof last !== "number" || !Number.isInteger(last) || last < 0 || last >= DDT_LIMITS.perYear)) return { text: "Errore: il numero dell'ultimo DDT è un numero intero, 0 se non ce n'è nessuno.", count: 0 };
-		const shownNow = (book: DdtBook) => {
+		const shownNow = (book: Loaded["book"]) => {
 			const numbering = book.settings?.numbering;
 			const next = nextDdtSeq(book, thisYear);
 			return `I DDT sono numerati ${numbering === "plain" ? "1, 2, 3… (oppure 1/2026, 2/2026 se preferisci)" : `1/${thisYear}, 2/${thisYear}… (oppure 1, 2, 3 se preferisci)`}: il prossimo sarà il ${numbering === "plain" ? String(next) : `${next}/${thisYear}`}.`;
@@ -559,34 +518,27 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 	}
 
 	async function brief(ctx: ToolContext, loaded: Loaded, day: string): Promise<string> {
-		const last = addDays(`${day.slice(0, 7)}-01`, -1).slice(0, 7);
-		const open = loaded.book.ddts.filter((d) => unbilled(d, loaded.links) && d.day.slice(0, 7) === last);
-		const stale = loaded.book.ddts.filter((d) => d.status === "draft" && d.at < new Date(now().getTime() - DDT_LIMITS.staleDays * 86_400_000).toISOString()).length;
-		const wanted = [...(open.length > 0 ? [`unbilled:${last}`] : []), ...(stale > 0 ? ["stale"] : [])];
+		const { months, stale } = briefData(loaded, day, now());
+		const wanted = [...months.map((m) => `unbilled:${m.month}`), ...(stale > 0 ? ["stale"] : [])];
 		const said = wanted.length === 0 ? [] : await ctx.step("claim", async () => store.claim(ctx.callId, day, wanted));
-		const clients = [...new Map(open.map((d) => [clientKey(d.client), d.client.name])).values()];
-		const count = said.length;
-		if (count > 0) await audit(ctx, "brief", count);
-		return briefAnswer(said.includes(`unbilled:${last}`) ? { month: last, count: open.length, clients } : undefined, said.includes("stale") ? stale : 0, day);
+		if (said.length > 0) await audit(ctx, "brief", said.length);
+		return briefAnswer(
+			months.filter((m) => said.includes(`unbilled:${m.month}`)),
+			said.includes("stale") ? stale : 0,
+			day,
+		);
 	}
 
-	/** Another agente: how many, nothing more. */
-	function agentCounts(loaded: Loaded): string {
-		const drafts = loaded.book.ddts.filter((d) => d.status === "draft").length;
-		const open = loaded.book.ddts.filter((d) => unbilled(d, loaded.links)).length;
-		return `DDT: ${n1(drafts, "una bozza", "# bozze")}, ${n1(open, "uno di vendita da fatturare", "# di vendita da fatturare")}. A un altro agente do solo i conteggi: clienti, merce e numeri no.`;
-	}
-
-	async function run(op: DdtOp, args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<{ text: string; count: number }> {
+	async function run(op: DdtOp, args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<Answer> {
 		switch (op) {
 			case "create":
 				return create(args, ctx, loaded, day);
 			case "change":
-				return change(args, ctx, loaded);
+				return change(args, ctx, loaded, day);
 			case "issue":
 				return issue(args, ctx, loaded, day);
 			case "cancel":
-				return cancel(args, ctx, loaded);
+				return cancel(args, ctx, loaded, day);
 			case "document":
 				return document(args, ctx, loaded);
 			case "list":
@@ -621,10 +573,12 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 				properties: {
 					op: { type: "string", enum: [...DDT_OPS] },
 					client: text(DDT_LIMITS.name, "create: the client as said, partita IVA, or card id CL-0001; change, issue, cancel, document, status, list: whose DDT"),
-					ddt: text(30, "change, issue, cancel, document, status: the DDT's number («12/2026», «12») or the draft's id (DT-0001)"),
+					ddt: text(30, "change, issue, cancel, document, status: the DDT's number («12/2026», «12») or the draft's reference (DT-0001, never said to the person)"),
 					lines: { type: "array", maxItems: DDT_LIMITS.lines, items: lineSchema, description: "create: the goods; change: the lines to set" },
 					causale: text(30, "vendita (default), conto visione, reso, riparazione, omaggio, comodato, lavorazione"),
-					of: text(30, "create, change with causale reso: the DDT the goods come back from"),
+					of: text(30, "create, change with causale reso: the DDT the goods come back from (default: the client's latest with those goods, proposed)"),
+					their_number: text(20, "create, change with causale reso: the number of the client's own DDT the goods came back with"),
+					their_date: text(40, "create, change with causale reso: the date of the client's own DDT"),
 					transport: { type: "string", enum: ["mittente", "destinatario", "vettore"], description: "who carries the goods: the person (mittente), the client (destinatario), a carrier (vettore)" },
 					carrier: text(DDT_LIMITS.carrier, "the carrier's name, with transport vettore"),
 					destination: text(DDT_LIMITS.destination, "where the goods go, when not the client's address"),
@@ -632,15 +586,17 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 					packages: { type: ["integer", "string"], description: "numero colli" },
 					weight: { type: ["number", "string"], description: "peso in kg" },
 					notes: text(DDT_LIMITS.notes, "notes on the DDT"),
-					confirm: { type: "boolean", description: "create: true only after the person's yes to the proposal; issue: true only after the person's yes to what was shown" },
-					check: text(20, "create with confirm: the check given with the proposal"),
+					date: text(40, "issue: the DDT's date as said («domani», «20/10»); default today"),
+					confirm: { type: "boolean", description: "create, cancel: true only after the person's yes to the proposal; issue: true only after the person's yes to what was shown" },
+					check: text(20, "create, cancel with confirm: the check given with the proposal"),
+					left: { type: "boolean", description: "cancel of an issued DDT: whether the goods left anyway (false: they are put back in the magazzino)" },
 					format: { type: "string", enum: ["pdf", "docx"], description: "document: PDF (default) or Word" },
-					unbilled: { type: "boolean", description: "list: only the vendita DDTs not invoiced yet" },
+					unbilled: { type: "boolean", description: "list: only the DDTs not invoiced yet" },
 					month: text(7, "list: the month, as 2026-10"),
 					all: { type: "boolean", description: "list: every DDT, the annulled ones and the past years too" },
 					compact: { type: "boolean", description: "list: the brief's line only" },
 					numbering: { type: "string", enum: ["plain", "year"], description: "settings: «12» or «12/2026» (default)" },
-					last_number: { type: "integer", minimum: 0, maximum: DDT_LIMITS.perYear - 1, description: "settings, issue: the number of the last DDT the person made this year before Annie (0: none), as the person says it" },
+					last_number: { type: "integer", minimum: 0, maximum: DDT_LIMITS.perYear - 1, description: "settings, issue: the number of the last DDT the person made this year before Annie (0: none), as the person says it; with issue, again with the confirm" },
 					year: { type: "integer", minimum: 2000, maximum: 2100, description: "settings: the year of last_number" },
 				},
 				required: ["op"],
@@ -673,3 +629,4 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 	];
 }
 
+const capital = (t: string) => `${t.charAt(0).toUpperCase()}${t.slice(1)}`;

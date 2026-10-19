@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { makeDocumentFile } from "../document-reader.ts";
 import { DocumentError } from "../documents.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
+import type { DdtStore } from "../ddt-store.ts";
 import type { ExpenseStore } from "../expense-store.ts";
 import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -42,6 +43,8 @@ export type OrderToolsOptions = {
 	readonly scanner?: InvoiceScanner;
 	readonly expenses?: Pick<ExpenseStore, "read">;
 	readonly suppliers?: Pick<SupplierStore, "read">;
+	/** I DDT: a conto visione counts in the pace only once billed (the client kept the goods). */
+	readonly ddt?: Pick<DdtStore, "read">;
 	readonly timeZone: string;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: OrderEvent) => Promise<void>;
@@ -105,7 +108,9 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 				suppliers = got.suppliers;
 			}
 		}
-		return { data: { items: stock.items, moves: stock.moves, purchases: rows, codes: stock.codes, units: stock.units }, orders: book.orders, leads: book.leads, suppliers, notes };
+		const ddts = options.ddt?.read();
+		const visioneSold = new Set(ddts === undefined || ddts.broken ? [] : ddts.ddts.filter((d) => d.causale === "conto_visione" && d.billed !== undefined).map((d) => d.id));
+		return { data: { items: stock.items, moves: stock.moves, purchases: rows, codes: stock.codes, units: stock.units, visioneSold }, orders: book.orders, leads: book.leads, suppliers, notes };
 	}
 
 	/** A supplier's lead time, and whether the person said it (else the default, an assumption said as one). */

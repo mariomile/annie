@@ -101,6 +101,7 @@ function figureNotes(l: Liquidation): string[] {
 	if (f.integration !== 0n) out.push(`Reverse charge sugli acquisti: ${euros(f.integration)} di IVA contata sia a debito sia a credito.`);
 	if (f.undeducted !== 0n) out.push(`IVA non detratta per le tue indicazioni (indetraibile o in parte): ${euros(f.undeducted)}.`);
 	if (f.deferred.sale !== 0n || f.deferred.purchase !== 0n) out.push(`IVA per cassa o differita non ancora pagata, non contata: ${[f.deferred.sale === 0n ? undefined : `${euros(f.deferred.sale)} a debito`, f.deferred.purchase === 0n ? undefined : `${euros(f.deferred.purchase)} a credito`].filter((x) => x !== undefined).join(", ")}; conta quando la fattura è segnata come pagata.`);
+	if (f.deferredInvoices > 0) out.push(`${n1(f.deferredInvoices, "1 fattura differita è contata", "# fatture differite sono contate")} qui, nel mese dei suoi DDT: l'IVA va nel mese delle consegne, anche se la fattura ha la data del mese dopo.`);
 	if (f.approx > 0) out.push(`${n1(f.approx, "1 fattura ricevuta negli ultimi giorni del periodo", "# fatture ricevute negli ultimi giorni del periodo")}: le conto qui per la data della fattura; se dallo SdI è arrivata nel periodo dopo, dimmi il giorno.`);
 	return out;
 }
@@ -289,7 +290,7 @@ type CsvView = { readonly year: number; readonly docs: readonly VatDoc[]; readon
 export function vatCsv(v: CsvView): { readonly csv: string; readonly rows: number } {
 	const rows: CsvCell[][] = [];
 	const add = (section: string, period: string, date: string, what: string, taxable: bigint | undefined, tax: bigint | undefined, note: string) => rows.push([section, period, date, what, taxable === undefined ? "" : csvCents(taxable), tax === undefined ? "" : csvCents(tax), note]);
-	const ofYear = v.docs.filter((d) => (d.side === "purchase" ? (d.received ?? d.date) : d.date).startsWith(`${v.year}-`)).sort((a, b) => a.date.localeCompare(b.date));
+	const ofYear = v.docs.filter((d) => (d.side === "purchase" ? (d.received ?? d.date) : (d.taxDay ?? d.date)).startsWith(`${v.year}-`)).sort((a, b) => a.date.localeCompare(b.date));
 	for (const d of ofYear) {
 		const taxable = d.rows.reduce((n, r) => n + r.taxable, 0n);
 		const tax = d.rows.reduce((n, r) => n + r.tax, 0n);

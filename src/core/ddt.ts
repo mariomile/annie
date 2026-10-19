@@ -12,8 +12,11 @@
  *   the lines with a voce that is an article (once per DDT and line, stock-store.ts sale); a reso
  *   names the DDT the goods come back from and puts them back as a storno of it; the others
  *   (riparazione, comodato, lavorazione) move nothing.
- * - Only a vendita DDT is billed by a fattura differita; it is marked billed when that invoice is
- *   issued, never by a draft.
+ * - A vendita DDT is billed by a fattura differita (TD24), and a conto visione one when the client
+ *   keeps the goods (the person says so in the differita); marked billed when that invoice is
+ *   issued, never by a draft. A reso of a DDT not billed yet is taken off its lines in the differita.
+ * - A reso may come with the client's own DDT (`theirs`, its number and date): recorded as it is,
+ *   it takes no number of ours.
  * - Another agente gets counts only: never a client, a line or a number.
  */
 import { realDate } from "./italian-calendar.ts";
@@ -110,6 +113,8 @@ export type Ddt = Marker & {
 	readonly notes?: string;
 	/** A reso: the DDT (its id) the goods come back from. */
 	readonly of?: string;
+	/** A reso that came with the client's own DDT: its number and date (recorded, never numbered by us). */
+	readonly theirs?: TheirDdt;
 	readonly lines: readonly DdtLine[];
 	readonly callId: string;
 	readonly edited?: Marker;
@@ -126,9 +131,16 @@ export type Ddt = Marker & {
 	readonly file?: string;
 };
 
+/** The client's own DDT a reso came with. */
+export type TheirDdt = { readonly number: string; readonly date: string };
+
 export type IssuedDdt = Ddt & { readonly number: string; readonly year: number; readonly seq: number; readonly issued: Marker };
 
+/** Issued with a number of ours. */
 export const isIssuedDdt = (d: Ddt): d is IssuedDdt => d.number !== undefined;
+
+/** A reso recorded with the client's own DDT (no number of ours). */
+export const isRecordedReso = (d: Ddt): d is Ddt & { readonly theirs: TheirDdt; readonly issued: Marker } => d.theirs !== undefined && d.issued !== undefined;
 
 /** «12/2026» (the default) or «12», as the person chose once. */
 export type DdtNumbering = "plain" | "year";
@@ -192,7 +204,7 @@ function validBilled(v: unknown): v is DdtBilled {
 	return Object.keys(b).every((k) => ["invoice", "number", "day"].includes(k)) && typeof b.invoice === "string" && /^BZ-\d{4,6}$/.test(b.invoice) && plain(b.number, 20) && isDay(b.day);
 }
 
-const FIELDS = ["id", "status", "day", "client", "destination", "causale", "transport", "aspect", "packages", "weight", "notes", "of", "lines", "callId", "edited", "number", "year", "seq", "issued", "issueCall", "stocked", "cancelled", "billed", "file", "by", "at"];
+const FIELDS = ["id", "status", "day", "client", "destination", "causale", "transport", "aspect", "packages", "weight", "notes", "of", "theirs", "lines", "callId", "edited", "number", "year", "seq", "issued", "issueCall", "stocked", "cancelled", "billed", "file", "by", "at"];
 
 /** A DDT as stored, checked field by field: what does not have this shape makes the store unreadable. */
 export function validDdt(v: unknown): v is Ddt {
@@ -205,17 +217,21 @@ export function validDdt(v: unknown): v is Ddt {
 	if (d.packages !== undefined && (!Number.isInteger(d.packages) || d.packages < 1 || d.packages > DDT_LIMITS.packages)) return false;
 	if (d.weight !== undefined && (!isQuantity(d.weight, false, DDT_LIMITS.maxWeight) || Number(d.weight) <= 0)) return false;
 	if (d.of !== undefined && (d.causale !== "reso" || typeof d.of !== "string" || !DDT_ID.test(d.of) || d.of === d.id)) return false;
+	if (d.theirs !== undefined && (d.causale !== "reso" || typeof d.theirs !== "object" || d.theirs === null || !Object.keys(d.theirs).every((k) => k === "number" || k === "date") || !plain(d.theirs.number, 20) || !isDay(d.theirs.date))) return false;
 	if (!Array.isArray(d.lines) || d.lines.length === 0 || d.lines.length > DDT_LIMITS.lines || !d.lines.every(validLine) || new Set(d.lines.map((l) => l.n)).size !== d.lines.length) return false;
 	if (!isText(d.callId, 200) || !optText(d.issueCall, 200) || !optText(d.file, DDT_LIMITS.file)) return false;
 	if (![d.edited, d.issued, d.cancelled].every((m) => m === undefined || isMarker(m))) return false;
 	if (d.stocked !== undefined && d.stocked !== true) return false;
 	const issued = d.number !== undefined;
-	if (issued !== (d.issued !== undefined) || issued !== (d.year !== undefined) || issued !== (d.seq !== undefined)) return false;
+	// A reso with the client's own DDT is recorded, never numbered by us.
+	if (d.theirs !== undefined && issued) return false;
+	const out = issued || (d.theirs !== undefined && d.issued !== undefined);
+	if (out !== (d.issued !== undefined) || issued !== (d.year !== undefined) || issued !== (d.seq !== undefined)) return false;
 	if (issued && (!plain(d.number, 20) || !Number.isInteger(d.year) || Number(d.day.slice(0, 4)) !== d.year || !Number.isInteger(d.seq) || (d.seq as number) < 1 || (d.seq as number) > DDT_LIMITS.perYear)) return false;
-	if (d.status === "issued" && !issued) return false;
+	if (d.status === "issued" && !out) return false;
 	if ((d.status === "cancelled") !== (d.cancelled !== undefined)) return false;
-	if (!issued && (d.stocked !== undefined || d.issueCall !== undefined)) return false;
-	if (d.billed !== undefined && (d.status !== "issued" || d.causale !== "vendita" || !validBilled(d.billed))) return false;
+	if (!out && (d.stocked !== undefined || d.issueCall !== undefined)) return false;
+	if (d.billed !== undefined && (d.status !== "issued" || !BILLED.includes(d.causale) || !validBilled(d.billed))) return false;
 	return true;
 }
 
@@ -235,5 +251,8 @@ export function validDdtClaim(v: unknown): v is DdtClaim {
 
 export const validDdtCall = (v: unknown): boolean => isText(v, 200);
 
-/** A vendita DDT issued and not annulled, not marked billed: the fattura differita may bill it. */
-export const billable = (d: Ddt): d is IssuedDdt => d.status === "issued" && isIssuedDdt(d) && d.causale === "vendita" && d.billed === undefined;
+/** The causali a fattura differita bills: a vendita, and a conto visione the client keeps. */
+export const BILLED: readonly Causale[] = ["vendita", "conto_visione"];
+
+/** A vendita or conto visione DDT issued and not annulled, not marked billed: the fattura differita may bill it. */
+export const billable = (d: Ddt): d is IssuedDdt => d.status === "issued" && isIssuedDdt(d) && BILLED.includes(d.causale) && d.billed === undefined;

@@ -7,7 +7,7 @@
  * is `broken`, and nothing is written over it.
  */
 import { join } from "node:path";
-import { type Ddt, DDT_ID, DDT_LIMITS, type DdtBilled, type DdtClaim, DdtError, ddtNumber, type DdtSettings, type IssuedDdt, isIssuedDdt, validDdt, validDdtCall, validDdtClaim, validDdtSettings } from "./ddt.ts";
+import { BILLED, type Ddt, DDT_ID, DDT_LIMITS, type DdtBilled, type DdtClaim, DdtError, ddtNumber, type DdtSettings, type IssuedDdt, isIssuedDdt, validDdt, validDdtCall, validDdtClaim, validDdtSettings } from "./ddt.ts";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
 
@@ -22,8 +22,8 @@ export const DDT_BROKEN = "i DDT (ddt.json) non si leggono: non li cambio, perch
 
 const EMPTY: Book = { nextDdt: 1, next: {}, ddts: [], alerts: [], calls: [] };
 
-/** The seam the fatture in uscita are given: the DDTs read, and marked billed by an invoice issued. */
-export type DdtLink = Pick<DdtStore, "read" | "markBilled">;
+/** The seam the fatture in uscita are given: the DDTs read, marked billed by an invoice issued, and to bill again after a credit note for the wrong customer. */
+export type DdtLink = Pick<DdtStore, "read" | "markBilled" | "release">;
 
 /** The number the next DDT of `year` takes: after the counter and the last number said before Annie. */
 export function nextDdtSeq(state: Pick<DdtState, "next" | "settings">, year: number): number {
@@ -86,6 +86,7 @@ export class DdtStore {
 			if (draft === undefined) throw new DdtError("la bozza del DDT non c'è più");
 			if (draft.status === "cancelled") throw new DdtError("il DDT è annullato");
 			if (isIssuedDdt(draft)) throw new DdtError(`il DDT è già emesso con il numero ${draft.number}`);
+			if (draft.status !== "draft") throw new DdtError("il reso è già registrato");
 			const year = Number(day.slice(0, 4));
 			const seq = nextDdtSeq(book, year);
 			if (seq > DDT_LIMITS.perYear) throw new DdtError(`i DDT del ${year} sono arrivati al massimo di ${DDT_LIMITS.perYear}`);
@@ -98,11 +99,45 @@ export class DdtStore {
 		return made as IssuedDdt;
 	}
 
+	/**
+	 * A reso that came with the client's own DDT (`theirs`), recorded under the lock: no number of
+	 * ours, the day of their DDT. The one `callId` recorded already, when there is one.
+	 */
+	record(id: string, callId: string, marker: Marker): Ddt {
+		let made: Ddt | undefined;
+		updateBook(this.book, (book) => {
+			made = book.ddts.find((d) => d.issueCall === callId);
+			if (made !== undefined) return book;
+			const draft = book.ddts.find((d) => d.id === id);
+			if (draft === undefined || draft.theirs === undefined) throw new DdtError("la bozza del reso non c'è più");
+			if (draft.status !== "draft") throw new DdtError(draft.status === "cancelled" ? "il reso è annullato" : "il reso è già registrato");
+			const recorded: Ddt = { ...draft, status: "issued", day: draft.theirs.date, issued: marker, issueCall: callId };
+			made = recorded;
+			return checked({ ...book, ddts: book.ddts.map((d) => (d === draft ? recorded : d)) });
+		});
+		return made as Ddt;
+	}
+
+	/** The DDTs the invoice `invoice` billed, to bill again (a credit note for the wrong customer issued): how many. */
+	release(invoice: string): number {
+		let n = 0;
+		updateBook(this.book, (book) => {
+			const ddts = book.ddts.map((d) => {
+				if (d.billed?.invoice !== invoice) return d;
+				n++;
+				const { billed: _, ...rest } = d;
+				return rest;
+			});
+			return n === 0 ? book : checked({ ...book, ddts });
+		});
+		return n;
+	}
+
 	/** The issue of `id` complete: the magazzino moved, or nothing to move. */
 	setStocked(id: string): void {
 		updateBook(this.book, (book) => {
 			const d = book.ddts.find((x) => x.id === id);
-			if (d === undefined || !isIssuedDdt(d) || d.stocked === true) return book;
+			if (d === undefined || d.status === "draft" || d.issued === undefined || d.stocked === true) return book;
 			return checked({ ...book, ddts: book.ddts.map((x) => (x === d ? { ...d, stocked: true as const } : x)) });
 		});
 	}
@@ -122,7 +157,7 @@ export class DdtStore {
 					marked.push(d.id);
 					return d;
 				}
-				if (d.status !== "issued" || d.causale !== "vendita" || d.billed !== undefined) {
+				if (d.status !== "issued" || !BILLED.includes(d.causale) || d.billed !== undefined) {
 					refused.push(d.id);
 					return d;
 				}

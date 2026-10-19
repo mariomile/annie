@@ -5,7 +5,10 @@
  * What does not read comes back as the answer to give, with the words said inside the fence.
  */
 import type { ClientCard } from "../clients.ts";
-import { type Causale, CAUSALI, type Ddt, DDT_ID, DDT_LIMITS, type DdtClient, ddtId, type DdtLine, isIssuedDdt, type Transport, type TransportBy } from "../ddt.ts";
+import { DateError, readDate } from "../dates.ts";
+import { type Causale, CAUSALI, type Ddt, DDT_ID, DDT_LIMITS, type DdtClient, ddtId, type DdtLine, isIssuedDdt, type IssuedDdt, type TheirDdt, type Transport, type TransportBy, UNLOADING } from "../ddt.ts";
+import { addDays } from "../italian-calendar.ts";
+import { italianLongDate } from "../italian-format.ts";
 import { spellingKey } from "../name-keys.ts";
 import { findItems, type PriceItem } from "../price-list.ts";
 import type { SalesInvoice } from "../sales-invoices.ts";
@@ -41,8 +44,8 @@ export function clientSaid(raw: unknown, cards: readonly ClientCard[], invoices:
 	return { client: { name: said }, fresh: true };
 }
 
-/** A line said: its description, quantity (canonical), unit, voce; `guess` when the voce was taken from words only close to its name. */
-export type LineSaid = Omit<DdtLine, "n"> & { readonly guess?: true };
+/** A line said: its description, quantity (canonical), unit, voce; `guess` when the voce was taken from words only close to its name; `free` when a voce said is not in the listino and its words are kept as free text. */
+export type LineSaid = Omit<DdtLine, "n"> & { readonly guess?: true; readonly free?: true };
 
 /** The lines said: [{item or description, quantity, unit}]; a quantity of 0 only where `zero` allows (a change that takes a line off). */
 export function linesSaid(raw: unknown, voci: readonly PriceItem[], zero = false): LineSaid[] | string {
@@ -58,6 +61,7 @@ export function linesSaid(raw: unknown, voci: readonly PriceItem[], zero = false
 		if (itemSaid === undefined && text === undefined) return "Errore: ogni riga dice la voce del listino o la descrizione della merce.";
 		let voce: PriceItem | undefined;
 		let guess = false;
+		let free = false;
 		if (itemSaid !== undefined) {
 			const f = findItems(voci, itemSaid);
 			if (f.kind === "exact") {
@@ -66,7 +70,7 @@ export function linesSaid(raw: unknown, voci: readonly PriceItem[], zero = false
 			} else if (f.kind !== "none" && f.items.length === 1) {
 				voce = f.items[0] as PriceItem;
 				guess = true;
-			} else if (f.kind === "none") return ["Questa voce non è nel listino: se va scritta così, dimmelo e la metto come descrizione libera (senza voce non si scarica dal magazzino).", fencedDdt(itemSaid)].join("\n");
+			} else if (f.kind === "none") free = true;
 			else return ["Nel listino ci sono più voci così: dimmi quale.", fencedDdt(f.items.slice(0, 10).map((i) => `• ${i.id} ${i.name}`).join("\n"))].join("\n");
 		} else if (text !== undefined) {
 			// Free text with a voce's very name: that voce, so the issue unloads it.
@@ -80,8 +84,8 @@ export function linesSaid(raw: unknown, voci: readonly PriceItem[], zero = false
 		const u = cleanText(unit, DDT_LIMITS.unit, "l'unità");
 		if (isProblem(u)) return `Errore: ${u.problem}.`;
 		const lineUnit = u ?? voce?.unit;
-		const desc = (text ?? voce?.name ?? "").slice(0, DDT_LIMITS.description);
-		out.push({ description: desc, qty: qtyText(qtyOf(q)), ...(lineUnit === undefined ? {} : { unit: lineUnit }), ...(voce === undefined ? {} : { item: voce.id }), ...(guess ? { guess: true as const } : {}) });
+		const desc = (text ?? voce?.name ?? (free ? itemSaid : undefined) ?? "").slice(0, DDT_LIMITS.description);
+		out.push({ description: desc, qty: qtyText(qtyOf(q)), ...(lineUnit === undefined ? {} : { unit: lineUnit }), ...(voce === undefined ? {} : { item: voce.id }), ...(guess ? { guess: true as const } : {}), ...(free ? { free: true as const } : {}) });
 	}
 	return out;
 }
@@ -150,4 +154,50 @@ export function ddtNamed(raw: unknown, ddts: readonly Ddt[]): Ddt | string | und
 export function ofClient(ddts: readonly Ddt[], client: DdtClient): Ddt[] {
 	const key = clientKey(client);
 	return ddts.filter((d) => clientKey(d.client) === key).sort((a, b) => b.id.localeCompare(a.id));
+}
+
+/** The day the DDT is issued with: «oggi» (default), «domani», «20/10»: up to a week ahead. */
+export function issueDaySaid(raw: unknown, today: string): string | { readonly answer: string } {
+	if (raw === undefined) return today;
+	if (typeof raw !== "string" || raw.trim() === "" || raw.length > 40) return { answer: "Errore: la data del DDT è un giorno, come «domani» o 20/10/2026." };
+	let day: string;
+	try {
+		day = readDate(raw, today).date;
+	} catch (error) {
+		if (error instanceof DateError) return { answer: ["Errore: non capisco la data del DDT: dimmela come 20/10/2026.", fencedDdt(raw.slice(0, 40))].join("\n") };
+		throw error;
+	}
+	if (day > addDays(today, 7)) return { answer: `Errore: un DDT si emette al più con la data di una settimana da oggi: il ${italianLongDate(day)} è troppo avanti.` };
+	return day;
+}
+
+/** «con la data di domani, 20 ottobre»: the day of the issue in words. */
+export function issueDayWords(day: string, today: string): string {
+	const date = day.slice(0, 4) === today.slice(0, 4) ? italianLongDate(day).replace(/ \d{4}$/, "") : italianLongDate(day);
+	const name = day === today ? "di oggi, " : day === addDays(today, 1) ? "di domani, " : day === addDays(today, -1) ? "di ieri, " : "del ";
+	return `con la data ${name}${date}`;
+}
+
+/** The client's own DDT of a reso: its number and date, both said; undefined when neither is. */
+export function theirSaid(number: unknown, date: unknown, today: string): TheirDdt | undefined | { readonly answer: string } {
+	if (number === undefined && date === undefined) return undefined;
+	const n = cleanText(number, 20, "il numero del DDT del cliente");
+	if (isProblem(n) || n === undefined || typeof date !== "string" || date.trim() === "") return { answer: "Errore: del DDT del cliente mi servono il numero e la data." };
+	let day: string;
+	try {
+		day = readDate(date, today, { rule: "past" }).date;
+	} catch (error) {
+		if (error instanceof DateError) return { answer: ["Errore: non capisco la data del DDT del cliente: dimmela come 18/10/2026.", fencedDdt(date.slice(0, 40))].join("\n") };
+		throw error;
+	}
+	if (day > today) return { answer: "Errore: la data del DDT del cliente non può essere dopo oggi." };
+	return { number: n, date: day };
+}
+
+/** The DDT a reso of `lines` comes back from, for `client`: the latest issued one that took out those goods (a voce, else the words). */
+export function resoSourceOf(ddts: readonly Ddt[], client: DdtClient, lines: readonly Pick<DdtLine, "item" | "description">[]): IssuedDdt | undefined {
+	const same = (a: Pick<DdtLine, "item" | "description">, b: Pick<DdtLine, "item" | "description">) => (a.item !== undefined && a.item === b.item) || (a.item === undefined && spellingKey(a.description) === spellingKey(b.description));
+	return ofClient(ddts, client)
+		.filter((d): d is IssuedDdt => isIssuedDdt(d) && d.status === "issued" && UNLOADING.includes(d.causale) && lines.every((l) => d.lines.some((x) => same(x, l))))
+		.sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq)[0];
 }

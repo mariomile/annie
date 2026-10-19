@@ -37,6 +37,12 @@ export type VatDoc = {
 	readonly number?: string;
 	/** The invoice's date. */
 	readonly date: string;
+	/**
+	 * A fattura differita (TD24): the day of its DDTs (all of one month), whose month its IVA goes
+	 * to (DPR 633/1972 art. 21 c. 4 lett. a: the IVA is due for the month of the deliveries), while
+	 * the invoice keeps its own date.
+	 */
+	readonly taxDay?: string;
 	/** A purchase: the day of receipt the person said. */
 	readonly received?: string;
 	/** Every instalment marked paid in the scadenzario: the last day, for the deferred rows. */
@@ -71,7 +77,8 @@ function fromSales(sales: readonly SalesInvoice[]): VatDoc[] {
 		const sign = credit ? -1n : 1n;
 		const rows = salesTotals(i).rows.map((r): VatRow => ({ rate: String(r.vat), ...(r.natura === undefined ? {} : { natura: r.natura }), taxable: sign * r.taxable, tax: sign * r.tax, esigibilita: i.splitPayment === true ? "S" : "I" }));
 		const party: FatturaParty = { name: i.buyer.name, ...(i.buyer.vat === undefined ? {} : { vat: { country: i.buyer.vat.slice(0, 2), code: i.buyer.vat.slice(2) } }), ...(i.buyer.cf === undefined ? {} : { fiscal: i.buyer.cf }) };
-		out.push({ key: salesKey(i.seller.vat, i.number, i.date, i.type), side: "sale", source: "sales", number: i.number, date: i.date, credit, integration: false, party, rows });
+		const taxDay = i.ddt === undefined || i.ddt.length === 0 ? undefined : i.ddt.map((d) => d.date).sort().at(-1);
+		out.push({ key: salesKey(i.seller.vat, i.number, i.date, i.type), side: "sale", source: "sales", number: i.number, date: i.date, ...(taxDay === undefined ? {} : { taxDay }), credit, integration: false, party, rows });
 	}
 	return out;
 }

@@ -269,9 +269,10 @@ export function marginLines(data: MarginData, from: string, to: string): MarginL
 						out.push({ ...goods, qty: 0n, cost: 0n, source: "sale", noReturn: true });
 						return;
 					}
-					const of = inv.related?.id;
+					// A credit note for goods back with a DDT di reso: the cost of the DDT they went out with.
+					const of = l.ddt !== undefined && move?.kind === "storno" ? move.sale?.of : inv.related?.id;
 					const outs = of === undefined ? [] : [...data.moves.filter((m) => m.kind === "scarico" && m.item === article.id && m.sale?.invoice === of).map((m) => ({ line: m.sale?.line, qty: qtyOf(m.qty), ...(m.cost === undefined ? {} : { cost: m.cost }) })), ...data.archived.filter((a) => a.i === article.id && a.of === undefined && a.k.startsWith(`${of}#`)).map((a) => ({ line: Number(a.k.split("#")[1]), qty: qtyOf(a.q), ...(a.c === undefined ? {} : { cost: a.c }) }))];
-					const same = outs.filter((o) => o.line === n + 1);
+					const same = l.ddt !== undefined ? [] : outs.filter((o) => o.line === n + 1);
 					const unitCost = weighted(same.length > 0 ? same : outs);
 					const qty = -back;
 					if (unitCost !== undefined) {

@@ -23,6 +23,8 @@ export type SuggestData = {
 	readonly purchases: readonly PurchaseRow[];
 	readonly codes: readonly CodeMap[];
 	readonly units: readonly UnitMap[];
+	/** The conto visione DDTs (their ids) the client kept and that were billed: only then their goods count as sold. */
+	readonly visioneSold?: ReadonlySet<string>;
 };
 
 /** A price paid for an article: per its unit (ten-thousandths of a euro), the day, the supplier (its key, partita IVA first), and where it was read. */
@@ -139,13 +141,18 @@ export type Suggestion = {
 
 const ceilDiv = (a: bigint, b: bigint) => (a <= 0n ? 0n : (a + b - 1n) / b);
 
-/** The thousandths gone out of `item` from `from` to `to`: scarichi for a sale or internal use, less the returns of credit notes; and how many scarichi. */
-export function paceOf(item: StockItem, moves: readonly Movement[], from: string, to: string): { sold: bigint; sales: number } {
+/**
+ * The thousandths gone out of `item` from `from` to `to`: scarichi for a sale or internal use (a
+ * conto visione only once billed, `visioneSold`; an omaggio never), less the returns of credit
+ * notes and resi; and how many scarichi.
+ */
+export function paceOf(item: StockItem, moves: readonly Movement[], from: string, to: string, visioneSold?: ReadonlySet<string>): { sold: bigint; sales: number } {
 	let sold = 0n;
 	let sales = 0;
 	for (const m of moves) {
 		if (m.item !== item.id || m.day < from || m.day > to) continue;
-		if (m.kind === "scarico" && (m.reason === "vendita" || m.reason === "uso_interno")) {
+		const kept = m.reason === "conto_visione" && m.sale !== undefined && visioneSold?.has(m.sale.invoice) === true;
+		if (m.kind === "scarico" && (m.reason === "vendita" || m.reason === "uso_interno" || kept)) {
 			sold += qtyOf(m.qty);
 			sales++;
 		} else if (m.kind === "storno") sold -= qtyOf(m.qty);
@@ -182,7 +189,7 @@ export function suggestions(data: SuggestData, today: string, o: SuggestOptions)
 		const state = stateOf(item, data.moves);
 		const days = windowOf(item, data.moves, today);
 		const window = BigInt(days);
-		const { sold, sales } = paceOf(item, data.moves, addDays(today, -(days - 1)), today);
+		const { sold, sales } = paceOf(item, data.moves, addDays(today, -(days - 1)), today, data.visioneSold);
 		const min = item.min === undefined ? 0n : qtyOf(item.min);
 		if (item.min === undefined && sold === 0n) continue;
 		const incoming = o.incoming?.get(item.id);
