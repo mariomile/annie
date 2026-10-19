@@ -6,7 +6,7 @@ import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { addDays, todayIn, weekdayOf } from "../italian-calendar.ts";
-import { italianDate } from "../italian-format.ts";
+import { capitalized, italianDate } from "../italian-format.ts";
 import { MARGINS_BROKEN, type MarginStore } from "../margin-store.ts";
 import {
 	type Change,
@@ -19,6 +19,9 @@ import {
 	type MarginLine,
 	marginLines,
 	type MarginOp,
+	marginTenths,
+	guessed,
+	type RankedProduct,
 	type PriceCheck,
 	priceChecks,
 	type ProductMargin,
@@ -30,21 +33,21 @@ import {
 import { rollingPeriodOf } from "../periods.ts";
 import { findItems } from "../price-list.ts";
 import type { PriceListStore } from "../price-list-store.ts";
-import { perUnitWords, tenthsWords } from "../purchase-prices.ts";
-import { scaled } from "../quote-sums.ts";
+import { percentWords, perUnitWords, tenthsWords } from "../purchase-prices.ts";
+import { eurosToCents, scaled } from "../quote-sums.ts";
 import { REGIME_FORFETTARIO } from "../sales-invoice-rules.ts";
 import { isIssued } from "../sales-invoices.ts";
 import type { SalesInvoiceStore } from "../sales-invoice-store.ts";
-import { findStockItem } from "../stock.ts";
+import { findStockItem, stockUnit } from "../stock.ts";
 import type { StockStore } from "../stock-store.ts";
-import { qtyText, stateOf } from "../stock-sums.ts";
+import { qtyOf, qtyText, stateOf } from "../stock-sums.ts";
 import type { SupplierStore } from "../supplier-store.ts";
 import { cleanText, isProblem, readAmount } from "../text-input.ts";
 import { isAgentTurn } from "../turn-origin.ts";
 import { fence } from "../untrusted.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { loadPurchases } from "./purchase-data.ts";
-import { costWords, qtyWords } from "./stock-render.ts";
+import { costWords, qtyWords, unitPlural } from "./stock-render.ts";
 
 /** What was done, for the audit: the op and how many, never products, clients, prices or costs. */
 export type MarginEvent = { readonly type: "margins.used"; readonly op: MarginOp | "brief"; readonly count: number };
@@ -70,8 +73,9 @@ export type MarginToolsOptions = {
 
 const DESCRIPTION = [
 	"I margini: what each product and each client really earns, from the invoices issued (less the credit notes), the magazzino's average cost at each sale and the prices paid. Only reads.",
-	"What the person says → op: «quanto guadagno sulla carta A4?» → product (item); «quali prodotti mi rendono di più?» or «su quali ci perdo?» → ranking; «quanto mi rende il cliente Rossi?» → client (client; without it, every client; hour_cost when the person says what an hour of their work costs them); «il listino è ancora giusto con i prezzi che pago adesso?» → price_check (threshold in percent, default 20); «se alzo il toner del 5% quanto guadagno in più?» → what_if (item with price_percent 5, or price, cost_percent, cost: only one); «fammi il file dei margini» → export, then file_send. period: «quest'anno», «ottobre», «2025» (default: the last 12 months).",
-	"Amounts are without IVA. what_if is a simulation and changes nothing. «quanto guadagno / mi rende / ci perdo» on a product or a client is margins; the prices the person sells at are price_list, what they pay purchase_prices, how the whole business is going business_report.",
+	"What the person says → op: «quanto guadagno sulla carta A4?» → product (item); «quali prodotti mi rendono di più?» → ranking with focus best; «quali mi rendono meno?» → ranking with focus worst; «su quali ci perdo?» → ranking with focus loss; without focus, all of them; «quanto mi rende il cliente Rossi?» → client (client; without it, every client; hour_cost when the person says what an hour of their work costs them: if they want it remembered, memory_remember it and pass it again next time); «il listino è ancora giusto con i prezzi che pago adesso?» → price_check (threshold in percent, default 20); «se alzo il toner del 5% quanto guadagno in più?» → what_if (item with price_percent 5, or price, cost_percent, cost: only one); «fammi il file dei margini» → export, then file_send. period: «quest'anno», «ottobre», «2025» (default: the last 12 months).",
+	"After price_check, if the person says yes to updating the listino, use price_list with op price_change for each voce, with the voce's id and amount the difference price_check gave: price_list shows the change first and changes it only after the person's yes.",
+	"Amounts are without IVA. what_if is a simulation and changes nothing. margins is the margin of one product or one client; the margin of the whole business is business_report; the prices the person sells at are price_list, what they pay purchase_prices.",
 	"summary of the brief: ranking with compact true. Repeat amounts and percentages as given, never compute them yourself.",
 ].join(" ");
 
@@ -81,10 +85,10 @@ export const BRIEF_NOTHING = "Margini: niente da segnalare.";
 
 const AGENT_REFUSAL = "Errore: i margini mostrano prezzi e costi, quindi a un altro agente non li do: li chiede chi ti scrive, nella sua conversazione.";
 
-/** A margin percent said: «30%», «−5%», «meno dello 0,1%» for a margin under a tenth; nothing without revenue. */
+/** A margin percent said: «30%», «−5%», «quasi niente, meno dello 0,1%» for a margin under a tenth; nothing without revenue. */
 function percentSaid(tenths: bigint | undefined, margin: bigint): string {
 	if (tenths === undefined) return "";
-	if (tenths === 0n && margin > 0n) return " (meno dello 0,1%)";
+	if (tenths === 0n && margin > 0n) return " (quasi niente, meno dello 0,1%)";
 	return ` (${tenthsWords(tenths)})`;
 }
 
@@ -141,7 +145,7 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		const okStock = stock === undefined || stock.broken ? undefined : stock;
 		const latest = sales.invoices.filter(isIssued).sort((a, b) => b.date.localeCompare(a.date))[0];
 		return {
-			data: { invoices: sales.invoices, items: okStock?.items ?? [], moves: okStock?.moves ?? [], codes: okStock?.codes ?? [], units: okStock?.units ?? [], listino: list === undefined || list.broken ? [] : list.items, purchases: rows },
+			data: { invoices: sales.invoices, items: okStock?.items ?? [], moves: okStock?.moves ?? [], archived: okStock?.archived ?? [], codes: okStock?.codes ?? [], units: okStock?.units ?? [], listino: list === undefined || list.broken ? [] : list.items, purchases: rows },
 			notes,
 			...(noPurchases === undefined ? {} : { noPurchases }),
 			forfettario: latest?.regime === REGIME_FORFETTARIO,
@@ -169,18 +173,52 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		return ["Non trovo questo prodotto né nel listino né nel magazzino:", fenced(said)].join("\n");
 	}
 
-	/** Why lines were left out or estimated, said once. */
+	/** Where an estimated cost comes from, in words: «dalla fattura d'acquisto del 05/09/2026». */
+	function fromWords(l: MarginLine): string {
+		const e = l.estimate;
+		if (e === undefined) return "";
+		if (e.from === "apertura") return `${costWords(e.cost)} ${perUnitWords(l.unit)}, il costo medio alla chiusura dell'anno del ${italianDate(e.day)}`;
+		return `${costWords(e.cost)} ${perUnitWords(l.unit)}, ${e.from === "invoice" ? "dalla fattura d'acquisto" : "dal carico in magazzino"} del ${italianDate(e.day)}`;
+	}
+
+	/** Why lines were left out, estimated or kept as they were, said once, in plain words. */
 	function productNotes(p: ProductMargin, loaded: Loaded): string[] {
 		const out: string[] = [];
-		const unit = p.article?.unit;
 		if (p.estimated > 0) {
 			const latest = [...p.lines].filter((l) => l.source === "purchase").sort((a, b) => b.day.localeCompare(a.day))[0];
-			const example = latest?.estimate === undefined || unit === undefined ? "" : ` (per esempio ${costWords(latest.estimate.cost)} ${perUnitWords(unit)} ${latest.estimate.from === "invoice" ? "dalla fattura d'acquisto" : "dal carico in magazzino"} del ${italianDate(latest.estimate.day)})`;
-			out.push(`${n1(p.estimated, "Per una vendita il costo non era registrato al momento della vendita (è di prima che lo registrassi): l'ho stimato", "Per # vendite il costo non era registrato al momento della vendita (sono di prima che lo registrassi): l'ho stimato")} dall'ultimo prezzo d'acquisto di allora${example}.`);
+			const example = latest === undefined ? "" : ` (per esempio ${fromWords(latest)})`;
+			out.push(`${n1(p.estimated, "Per una vendita il costo non era stato salvato quando la merce è uscita: l'ho preso", "Per # vendite il costo non era stato salvato quando la merce è uscita: l'ho preso")} dall'ultimo acquisto prima della vendita${example}.`);
 		}
-		if (p.badUnit > 0) out.push(`${n1(p.badUnit, "Una riga l'ho lasciata fuori", "# righe le ho lasciate fuori")}: in fattura l'unità non è quella dell'articolo né la sua confezione, quindi non so quante unità sono.`);
-		if (p.noCost > 0) out.push(`${n1(p.noCost, "Una vendita l'ho lasciata fuori", "# vendite le ho lasciate fuori")}: il costo non è registrato e non trovo un prezzo d'acquisto${loaded.noPurchases === undefined ? "" : ` (${loaded.noPurchases.replace(/\.$/, "")})`}.`);
-		if (p.badUnit + p.noCost > 0) out.push(`Il ricavo delle righe lasciate fuori è ${euros(p.leftOut)}.`);
+		if (p.byName > 0) out.push("Quella fattura d'acquisto l'ho trovata solo perché la descrizione ha le stesse parole del prodotto: è una stima, da verificare. Se colleghi il prodotto a un articolo del magazzino, il costo lo so davvero.");
+		if (p.stale > 0) out.push(`${n1(p.stale, "Dopo una vendita", "Dopo # vendite")} hai corretto il costo di un carico: i margini delle vendite già fatte restano al costo di quando la merce è uscita.`);
+		if (p.noReturn > 0) out.push(`${n1(p.noReturn, "Una nota di credito non ha rimesso merce in magazzino", "# note di credito non hanno rimesso merce in magazzino")}: tolgo quello che hai restituito al cliente, ma il costo della merce resta, perché non è tornata.`);
+		if (p.badUnit > 0) {
+			const pack = p.article?.pack === undefined ? "" : ` (o a ${unitPlural(p.article.pack.unit)} da ${qtyText(qtyOf(p.article.pack.size)).replace(".", ",")})`;
+			out.push(`${n1(p.badUnit, "Una riga non l'ho contata", "# righe non le ho contate")}: in fattura l'unità è un'altra (nel riquadro), l'articolo in magazzino è ${unitIn(p.unit)}${pack}. Per contarle, usa nel listino e in fattura la stessa unità dell'articolo.`);
+			if (p.badUnits.length > 0) out.push(fenced(`Unità in fattura: ${p.badUnits.join(", ")}`));
+		}
+		if (p.ambiguous > 0) out.push(`${n1(p.ambiguous, "Per una vendita", "Per # vendite")} non ho il costo: nelle fatture d'acquisto più prodotti hanno questo nome, e non scelgo io quale. Se colleghi il prodotto a un articolo del magazzino, il costo lo so.`);
+		const missing = p.noCost - p.ambiguous;
+		if (missing > 0) out.push(`${n1(missing, "Una vendita non l'ho contata", "# vendite non le ho contate")}: il costo non era stato salvato e non trovo un acquisto di questo prodotto${loaded.noPurchases === undefined ? "" : ` (${loaded.noPurchases.replace(/\.$/, "")})`}.`);
+		if (p.badUnit + p.noCost > 0) out.push(`Le righe non contate valevano ${euros(p.leftOut)}.`);
+		return out;
+	}
+
+	/** «a pezzi», «a risme», «in kg». */
+	function unitIn(unit: string | undefined): string {
+		if (unit === undefined) return "in un'altra unità";
+		const plural = unitPlural(unit);
+		return plural === unit && unit.length <= 3 ? `in ${unit}` : `a ${plural}`;
+	}
+
+	/** The product's figures in plain words: what came in, what it cost, what is left, and how much on the price and on the cost. */
+	function plainMargin(p: { revenue: bigint; cost: bigint; margin: bigint; tenths?: bigint }, guess: boolean): string[] {
+		const out = [`Hai incassato ${euros(p.revenue)} (senza IVA, sconti tolti).`, `Ti è costato ${euros(p.cost)}, al costo medio del magazzino quando la merce è uscita.`];
+		const markup = p.cost > 0n ? marginTenths(p.margin, p.cost) : undefined;
+		if (p.margin < 0n) out.push(guess ? `Con il costo stimato sembra che ci hai perso ${euros(-p.margin)}: è una stima, da verificare.` : `Ci hai perso ${euros(-p.margin)}: l'hai venduto a meno di quanto l'hai pagato${p.tenths === undefined ? "" : ` (${tenthsWords(p.tenths)} sul prezzo di vendita)`}.`);
+		else if (p.margin === 0n) out.push("Non ci hai guadagnato niente: l'hai venduto a quanto l'hai pagato.");
+		else if (p.tenths === 0n) out.push(`Ci hai guadagnato ${euros(p.margin)}, cioè quasi niente (meno dello 0,1% del prezzo di vendita).`);
+		else out.push(`Ci hai guadagnato ${euros(p.margin)}${p.tenths === undefined ? "" : `, cioè ${percentWords(p.tenths)} del prezzo di vendita`}${markup === undefined || markup <= 0n ? "" : ` (${percentWords(markup)} in più di quanto l'hai pagato)`}.`);
 		return out;
 	}
 
@@ -193,49 +231,42 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		const p = productMargins(lines, loaded.data.listino).find((x) => x.voce === said.voce);
 		const head = fenced(said.name);
 		if (p === undefined) return { text: [`Il prodotto nel riquadro ${span.span} non è in nessuna fattura emessa.`, head, ...loaded.notes].join("\n"), count: 0 };
-		if (p.article === undefined) return { text: [`Il prodotto nel riquadro non è un articolo del magazzino: un costo non ce l'ho, quindi il margine non lo calcolo. ${span.span[0]?.toUpperCase()}${span.span.slice(1)} ha fatto ${euros(p.revenue)} di ricavo senza IVA in ${n1(p.lines.length, "una riga", "# righe")} di fattura.`, head, ...loaded.notes].join("\n"), count: 1 };
-		if (!ranked(p)) return { text: [`Del prodotto nel riquadro ${span.span} non posso calcolare il margine:`, head, ...productNotes(p, loaded), ...loaded.notes].join("\n"), count: 0 };
-		const unit = p.article.unit;
-		const out = [
-			`Il margine del prodotto nel riquadro ${span.span}:`,
-			head,
-			`• Venduti: ${qtyWords(p.qty, unit)} (fatture meno note di credito)`,
-			`• Ricavo: ${euros(p.revenue)} senza IVA, sconti tolti`,
-			`• Costo del venduto: ${euros(p.cost)}, al costo medio del magazzino al momento di ogni vendita`,
-			`• Margine: ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}`,
-			...productNotes(p, loaded),
-			...loaded.notes,
-		];
+		if (p.unit === undefined) return { text: [`Il prodotto nel riquadro non è un articolo del magazzino e non trovo quanto ti costa, quindi quanto ci guadagni non lo so. ${capitalized(span.span)} hai incassato ${euros(p.revenue)} senza IVA, in ${n1(p.lines.length, "una riga", "# righe")} di fattura.`, head, ...loaded.notes].join("\n"), count: 1 };
+		if (!ranked(p)) return { text: [`Del prodotto nel riquadro ${span.span} non so dire quanto ci hai guadagnato:`, head, ...productNotes(p, loaded), ...loaded.notes].join("\n"), count: 0 };
+		const out = [`Il prodotto nel riquadro ${span.span}:`, head, `Venduti: ${qtyWords(p.qty, p.unit)}, tolte le note di credito.`, ...plainMargin(p, guessed(p)), ...productNotes(p, loaded), ...loaded.notes];
 		return { text: out.join("\n"), count: 1 };
 	}
 
-	const rankRow = (p: ProductMargin & { margin: bigint }, n: number) => `${n}. ${p.name}: ${euros(p.margin)}${percentSaid(p.tenths, p.margin)} su ${euros(p.revenue)} di ricavo`;
+	const rankRow = (p: ProductMargin & { margin: bigint }, n: number) => `${n}. ${p.name}: ${euros(p.margin)}${percentSaid(p.tenths, p.margin)} su ${euros(p.revenue)} incassati`;
 
 	function ranking(args: Record<string, unknown>, loaded: Loaded, day: string): { text: string; count: number } {
+		const focus = args.focus;
+		if (focus !== undefined && focus !== "best" && focus !== "worst" && focus !== "loss") return { text: "Errore: posso mostrare quelli che rendono di più, quelli che rendono di meno o quelli in perdita.", count: 0 };
 		const span = spanOf(args, day);
 		if (typeof span === "string") return { text: span, count: 0 };
 		const products = productMargins(marginLines(loaded.data, span.from, span.to), loaded.data.listino);
 		const r = rankingOf(products);
-		const services = products.filter((p) => p.article === undefined);
+		const services = products.filter((p) => p.unit === undefined);
 		const notes: string[] = [];
-		if (services.length > 0) notes.push(`${n1(services.length, "Una voce venduta non è un articolo del magazzino (un servizio): non ha un costo, quindi non è in classifica", "# voci vendute non sono articoli del magazzino (servizi): non hanno un costo, quindi non sono in classifica")}.`);
+		if (services.length > 0) notes.push(`${n1(services.length, "Una voce venduta non ha un costo (è un servizio, o non è in magazzino e non trovo cosa ti costa): non è in classifica", "# voci vendute non hanno un costo (servizi, o voci non in magazzino di cui non trovo cosa ti costano): non sono in classifica")}.`);
 		const estimated = r.goods.reduce((s, p) => s + p.estimated, 0);
-		if (estimated > 0) notes.push(`${n1(estimated, "Per una vendita il costo", "Per # vendite il costo")} non era registrato al momento della vendita: l'ho stimato dall'ultimo prezzo d'acquisto di allora.`);
-		const out = products.filter((p) => p.article !== undefined).reduce((s, p) => s + p.badUnit + p.noCost, 0);
-		if (out > 0) notes.push(`${n1(out, "Una riga di merce l'ho lasciata fuori", "# righe di merce le ho lasciate fuori")}: unità diversa da quella dell'articolo, o nessun costo noto. Chiedimi il margine di un prodotto per sapere quali.`);
-		if (r.goods.length === 0) return { text: [`${span.span[0]?.toUpperCase()}${span.span.slice(1)} non ho vendite di articoli del magazzino con un costo: una classifica dei margini non la so fare.`, ...notes, ...loaded.notes].join("\n"), count: 0 };
+		if (estimated > 0) notes.push(`${n1(estimated, "Per una vendita il costo", "Per # vendite il costo")} non era stato salvato quando la merce è uscita: l'ho preso dall'ultimo acquisto prima della vendita.`);
+		const left = products.filter((p) => p.unit !== undefined).reduce((s, p) => s + p.badUnit + p.noCost, 0);
+		if (left > 0) notes.push(`${n1(left, "Una riga di merce non l'ho contata", "# righe di merce non le ho contate")}: un'unità diversa da quella dell'articolo, o nessun costo noto. Chiedimi di un prodotto per sapere quali.`);
+		if (r.goods.length === 0) return { text: [`${capitalized(span.span)} non ho vendite di merce di cui so il costo: una classifica non la so fare.`, ...notes, ...loaded.notes].join("\n"), count: 0 };
 		const blocks: string[] = [];
-		if (r.goods.length <= MARGIN_LIMITS.top) {
-			blocks.push(["Tutti i prodotti, dal margine più alto:", ...r.bestEuro.map((p, i) => rankRow(p, i + 1))].join("\n"));
-		} else {
-			blocks.push(["Rendono di più:", ...r.bestEuro.map((p, i) => rankRow(p, i + 1))].join("\n"));
-			blocks.push(["Margine più alto in percentuale:", ...r.bestPercent.map((p, i) => rankRow(p, i + 1))].join("\n"));
-			blocks.push(["Rendono di meno:", ...r.worstEuro.map((p, i) => rankRow(p, i + 1))].join("\n"));
-			blocks.push(["Margine più basso in percentuale:", ...r.worstPercent.map((p, i) => rankRow(p, i + 1))].join("\n"));
+		const numbered = (list: readonly (ProductMargin & { margin: bigint })[]) => list.map((p, i) => rankRow(p, i + 1));
+		if (focus === undefined || focus === "best") {
+			if (r.goods.length <= MARGIN_LIMITS.top && focus === undefined) blocks.push(["Tutti i prodotti, da quello che rende di più:", ...numbered(r.bestEuro)].join("\n"));
+			else blocks.push(["Rendono di più:", ...numbered(r.bestEuro)].join("\n"), ["In percentuale sul prezzo, rendono di più:", ...numbered(r.bestPercent)].join("\n"));
 		}
-		const losses = r.losses.slice(0, MARGIN_LIMITS.shown);
-		blocks.push(losses.length === 0 ? "In perdita: nessuno." : ["In perdita (venduti sotto costo):", ...losses.map((p) => `• ${p.name}: ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}`), ...(r.losses.length > losses.length ? [`e altri ${r.losses.length - losses.length}`] : [])].join("\n"));
-		return { text: [`I margini dei prodotti ${span.span} (ricavo senza IVA meno il costo del venduto; nomi nel riquadro):`, fenced(blocks.join("\n\n")), ...notes, ...loaded.notes].join("\n"), count: r.goods.length };
+		if (focus === "worst" || (focus === undefined && r.goods.length > MARGIN_LIMITS.top)) blocks.push(["Rendono di meno:", ...numbered(r.worstEuro)].join("\n"), ["In percentuale sul prezzo, rendono di meno:", ...numbered(r.worstPercent)].join("\n"));
+		if (focus === undefined || focus === "loss") {
+			const losses = r.losses.slice(0, MARGIN_LIMITS.shown);
+			blocks.push(losses.length === 0 ? "In perdita: nessuno." : ["In perdita (venduti a meno di quanto li hai pagati):", ...losses.map((p) => `• ${p.name}: ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}`), ...(r.losses.length > losses.length ? [`e altri ${r.losses.length - losses.length}`] : [])].join("\n"));
+			if (r.maybeLosses.length > 0) blocks.push(["Forse in perdita, ma è una stima (il costo viene da una fattura d'acquisto trovata solo dal nome, da verificare):", ...r.maybeLosses.slice(0, MARGIN_LIMITS.shown).map((p) => `• ${p.name}: ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}`)].join("\n"));
+		}
+		return { text: [`Quanto ti rendono i prodotti ${span.span} (incassato senza IVA meno quanto ti è costata la merce; nomi nel riquadro):`, fenced(blocks.join("\n\n")), ...notes, ...loaded.notes].join("\n"), count: r.goods.length };
 	}
 
 	function hourCostOf(args: Record<string, unknown>): bigint | undefined | string {
@@ -247,22 +278,23 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 	}
 
 	function clientBlock(c: ClientMargin, hourCost: bigint | undefined): string[] {
-		const parts = [`merce ${euros(c.goodsRevenue + c.goodsUnknownRevenue)}`, ...(c.hoursRevenue === 0n && c.minutes === 0n ? [] : [`ore ${euros(c.hoursRevenue)}${c.minutes === 0n ? "" : ` per ${hoursWords(c.minutes)}`}`]), ...(c.otherRevenue === 0n ? [] : [`altri servizi ${euros(c.otherRevenue)}`])];
+		const goods = c.goodsRevenue + c.goodsUnknownRevenue;
+		const parts = [...(goods === 0n && c.goodsUnknown === 0 ? [] : [`merce ${euros(goods)}`]), ...(c.hoursRevenue === 0n && c.minutes === 0n ? [] : [`ore ${euros(c.hoursRevenue)}${c.minutes === 0n ? "" : ` per ${hoursWords(c.minutes)}`}`]), ...(c.otherRevenue === 0n ? [] : [`altri servizi ${euros(c.otherRevenue)}`])];
 		return [
-			`• Ricavo: ${euros(c.revenue)} senza IVA (${parts.join(", ")})`,
-			`• Costo della merce venduta: ${euros(c.goodsCost)}`,
+			`• Incassato: ${euros(c.revenue)} senza IVA${parts.length === 0 ? "" : ` (${parts.join(", ")})`}`,
+			...(c.goodsCost === 0n && goods === 0n && c.goodsUnknown === 0 ? [] : [`• Costo della merce venduta: ${euros(c.goodsCost)}`]),
 			...(hourCost === undefined || c.minutes === 0n ? [] : [`• Costo delle ore: ${euros(c.hoursCost)}, a ${euros(hourCost)} l'ora come mi hai detto`]),
-			`• Margine: ${euros(c.margin)}${percentSaid(c.tenths, c.margin)}`,
+			`• ${c.margin < 0n ? "Perso" : "Guadagnato"}: ${euros(c.margin < 0n ? -c.margin : c.margin)}${percentSaid(c.tenths, c.margin)}`,
 		];
 	}
 
 	function clientNotes(all: readonly ClientMargin[], hourCost: bigint | undefined): string[] {
 		const notes: string[] = [];
-		if (hourCost === undefined && all.some((c) => c.minutes !== 0n || c.hoursRevenue !== 0n)) notes.push("Le ore fatturate le conto come ricavo senza costo: un costo orario non è salvato da nessuna parte. Se mi dici quanto ti costa un'ora di lavoro lo tolgo, solo per questa risposta.");
+		if (hourCost === undefined && all.some((c) => c.minutes !== 0n || c.hoursRevenue !== 0n)) notes.push("Le ore fatturate le conto senza costo, perché non so quanto ti costa un'ora di lavoro. Se me lo dici la tolgo, e se vuoi me lo ricordo per le prossime volte.");
 		const unknown = all.reduce((s, c) => s + c.goodsUnknown, 0);
-		if (unknown > 0) notes.push(`${n1(unknown, "Per una riga di merce", "Per # righe di merce")} non ho il costo (o l'unità non è quella dell'articolo): qui ${unknown === 1 ? "è contata" : "sono contate"} senza costo, quindi il margine è più alto del vero.`);
+		if (unknown > 0) notes.push(`${n1(unknown, "Per una riga di merce", "Per # righe di merce")} non so il costo (o l'unità non è quella dell'articolo): qui ${unknown === 1 ? "è contata" : "sono contate"} senza costo, quindi il guadagno è più alto del vero.`);
 		const estimated = all.reduce((s, c) => s + c.estimated, 0);
-		if (estimated > 0) notes.push(`${n1(estimated, "Per una vendita il costo", "Per # vendite il costo")} non era registrato al momento della vendita: l'ho stimato dall'ultimo prezzo d'acquisto di allora.`);
+		if (estimated > 0) notes.push(`${n1(estimated, "Per una vendita il costo", "Per # vendite il costo")} non era stato salvato quando la merce è uscita: l'ho preso dall'ultimo acquisto prima della vendita.`);
 		return notes;
 	}
 
@@ -276,14 +308,14 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		const said = cleanText(args.client, MARGIN_LIMITS.query, "il cliente");
 		if (isProblem(said)) return { text: `Errore: ${said.problem}.`, count: 0 };
 		if (said === undefined) {
-			if (all.length === 0) return { text: [`${span.span[0]?.toUpperCase()}${span.span.slice(1)} non ci sono fatture emesse: nessun cliente da mostrare.`, ...loaded.notes].join("\n"), count: 0 };
+			if (all.length === 0) return { text: [`${capitalized(span.span)} non ci sono fatture emesse: nessun cliente da mostrare.`, ...loaded.notes].join("\n"), count: 0 };
 			const shown = all.slice(0, MARGIN_LIMITS.shown);
-			const rows = shown.map((c) => `• ${c.name}: ricavo ${euros(c.revenue)}, margine ${euros(c.margin)}${percentSaid(c.tenths, c.margin)}`);
+			const rows = shown.map((c) => `• ${c.name}: incassato ${euros(c.revenue)}, guadagnato ${euros(c.margin)}${percentSaid(c.tenths, c.margin)}`);
 			if (all.length > shown.length) rows.push(`e altri ${all.length - shown.length}`);
-			return { text: [`Quanto ti rendono i clienti ${span.span}, dal margine più alto (ricavo senza IVA meno il costo della merce venduta; nomi nel riquadro):`, fenced(rows.join("\n")), ...clientNotes(all, hourCost), ...loaded.notes].join("\n"), count: shown.length };
+			return { text: [`Quanto ti rendono i clienti ${span.span}, da chi rende di più (incassato senza IVA meno il costo della merce venduta; nomi nel riquadro):`, fenced(rows.join("\n")), ...clientNotes(all, hourCost), ...loaded.notes].join("\n"), count: shown.length };
 		}
 		const found = findNamed(all.map((c) => ({ item: c, names: c.names.length > 0 ? c.names : [c.name], ...(c.vat === undefined ? {} : { vat: c.vat.replace(/^IT/, "") }), ...(c.cf === undefined ? {} : { cf: c.cf }), ...(c.card === undefined ? {} : { ids: [c.card] }) })), said, MARGIN_LIMITS.query);
-		if (found.kind === "none") return { text: [`${span.span[0]?.toUpperCase()}${span.span.slice(1)} non trovo fatture emesse a questo cliente:`, fenced(said)].join("\n"), count: 0 };
+		if (found.kind === "none") return { text: [`${capitalized(span.span)} non trovo fatture emesse a questo cliente:`, fenced(said)].join("\n"), count: 0 };
 		if (found.kind === "close" && found.candidates.length === 1 && found.same !== true) {
 			const only = found.candidates[0] as ClientMargin;
 			return { text: [`Quanto ti rende il cliente nel riquadro ${span.span} (l'unico con un nome vicino a quello che hai detto):`, fenced(only.name), ...clientBlock(only, hourCost), ...clientNotes([only], hourCost), ...loaded.notes].join("\n"), count: 1 };
@@ -308,8 +340,10 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		if (c.tenths === undefined) return `• ${c.voce.name}: ${parts.join(", ")}: senza un costo il margine non lo so`;
 		const basis = c.basis === "latest" ? " sull'ultimo acquisto" : "";
 		const cost = c.basis === "latest" ? (c.latest?.cost ?? 0n) : (c.average ?? 0n);
-		const flag = c.flag === "loss" ? ": IN PERDITA" : c.flag === "low" ? `: SOTTO IL ${tenthsWords(threshold)}` : "";
-		return `• ${c.voce.name}: ${parts.join(", ")}: margine${basis}${percentSaid(c.tenths, c.price - cost).replace(/^ \((.*)\)$/, " $1")}${flag}`;
+		const flag = c.flag === "loss" ? ": IN PERDITA" : c.flag === "low" ? `: SOTTO IL ${tenthsWords(threshold)}` : c.flag === "estimate" ? ": STIMA (l'ultimo acquisto l'ho trovato solo dal nome: da verificare)" : "";
+		const voceUnit = c.voce.unit === undefined ? c.article.unit : stockUnit(c.voce.unit);
+		const restore = c.restore === undefined ? "" : `; per tornare al ${tenthsWords(threshold)}: ${euros(c.restore)} ${perUnitWords(voceUnit)}${c.voce.includesVat === true ? " IVA inclusa" : ""} (${signedEuros(c.restore - eurosToCents(c.voce.price))}, voce ${c.voce.id})`;
+		return `• ${c.voce.name}: ${parts.join(", ")}: margine${basis}${percentSaid(c.tenths, c.price - cost).replace(/^ \((.*)\)$/, " $1")}${flag}${restore}`;
 	}
 
 	function priceCheck(args: Record<string, unknown>, loaded: Loaded, day: string): { text: string; count: number } {
@@ -322,13 +356,14 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		}
 		const checks = priceChecks(loaded.data, averages, day, threshold);
 		if (checks.length === 0) return { text: ["Nessuna voce del listino è legata a un articolo del magazzino: senza un costo per voce, il listino non lo posso confrontare con quello che paghi.", ...loaded.notes].join("\n"), count: 0 };
-		const flagged = checks.filter((c) => c.flag !== undefined);
+		const flagged = checks.filter((c) => c.flag === "loss" || c.flag === "low");
 		const shown = checks.slice(0, MARGIN_LIMITS.shown);
 		const rows = shown.map((c) => checkRow(c, threshold));
 		if (checks.length > shown.length) rows.push(`e altre ${checks.length - shown.length} voci`);
-		const head = flagged.length === 0 ? `Il listino rispetto ai costi di adesso: nessuna voce sotto il ${tenthsWords(threshold)} di margine o in perdita (nomi nel riquadro).` : `Il listino rispetto ai costi di adesso: ${n1(flagged.length, "una voce è", "# voci sono")} sotto il ${tenthsWords(threshold)} di margine o in perdita (prima nel riquadro). Il margine è sul costo medio del magazzino; senza, sull'ultimo acquisto.`;
+		const head = flagged.length === 0 ? `Il listino rispetto ai costi di adesso: nessuna voce sotto il ${tenthsWords(threshold)} di margine o in perdita (nomi nel riquadro).` : `Il listino rispetto ai costi di adesso: ${n1(flagged.length, "una voce è", "# voci sono")} sotto il ${tenthsWords(threshold)} di margine o in perdita (prima nel riquadro, con il prezzo che lo riporta al ${tenthsWords(threshold)}). Il margine è sul costo medio del magazzino; senza, sull'ultimo acquisto.`;
 		const noPurchase = loaded.noPurchases === undefined ? [] : [`Gli ultimi acquisti dalle fatture ricevute qui mancano: ${loaded.noPurchases.charAt(0).toLowerCase()}${loaded.noPurchases.slice(1)}`];
-		return { text: [head, fenced(rows.join("\n")), "Prezzi e costi sono per unità dell'articolo, senza IVA.", ...noPurchase, ...loaded.notes].join("\n"), count: checks.length };
+		const offer = checks.some((c) => c.restore !== undefined) ? ["Vuoi che aggiorni il listino a questi prezzi? Te li mostro prima di cambiarli."] : [];
+		return { text: [head, fenced(rows.join("\n")), "Prezzi e costi sono per unità dell'articolo, senza IVA.", ...offer, ...noPurchase, ...loaded.notes].join("\n"), count: checks.length };
 	}
 
 	/** A change said: a percent («5», «+5%», «-10») or an amount in euros per unit; undefined when not said. */
@@ -384,20 +419,23 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		const said = voceSaid(args, loaded);
 		if (typeof said === "string") return { text: said, count: 0 };
 		const p = productMargins(marginLines(loaded.data, span.from, span.to), loaded.data.listino).find((x) => x.voce === said.voce);
-		if (p === undefined || !ranked(p)) return { text: [`Del prodotto nel riquadro ${span.span} non ho vendite con un costo: la simulazione si fa sulle quantità vendute, quindi non la so fare.`, fenced(said.name), ...(p === undefined ? [] : productNotes(p, loaded))].join("\n"), count: 0 };
-		const unit = p.article.unit;
+		if (p === undefined || !ranked(p)) return { text: [`Del prodotto nel riquadro ${span.span} non ho vendite di cui so il costo: la simulazione si fa sulle quantità vendute, quindi non la so fare.`, fenced(said.name), ...(p === undefined ? [] : productNotes(p, loaded))].join("\n"), count: 0 };
+		const unit = p.unit;
 		const w = whatIf(p, { ...(price === undefined ? {} : { price }), ...(cost === undefined ? {} : { cost }) });
 		const change = price !== undefined ? changeWords(price, "con il prezzo", unit) : changeWords(cost as Change, "con il costo", unit);
+		const per = perUnitWords(unit);
+		const unitWords = (pr: bigint | undefined, co: bigint | undefined) => [pr === undefined ? "" : `prezzo medio ${costWords(pr)} ${per}`, co === undefined ? "" : `costo medio ${costWords(co)} ${per}`].filter((x) => x !== "").join(", ");
+		const delta = w.newMargin - w.margin;
 		const out = [
 			`Simulazione sul prodotto nel riquadro, sulle quantità vendute ${span.span} (${qtyWords(w.qty, unit)}). È solo un calcolo: non cambio né il listino né i costi.`,
 			fenced(said.name),
-			`• Adesso: ricavo ${euros(w.revenue)}, costo ${euros(w.cost)}, margine ${euros(w.margin)}${percentSaid(w.tenths, w.margin)}`,
-			`• ${change.charAt(0).toUpperCase()}${change.slice(1)}: ricavo ${euros(w.newRevenue)}, costo ${euros(w.newCost)}, margine ${euros(w.newMargin)}${percentSaid(w.newTenths, w.newMargin)}`,
-			`• Differenza: ${signedEuros(w.newMargin - w.margin)} di margine`,
+			`• Adesso: ${unitWords(w.unitPrice, w.unitCost)}; incassato ${euros(w.revenue)}, costato ${euros(w.cost)}, guadagnato ${euros(w.margin)}${percentSaid(w.tenths, w.margin)}`,
+			`• ${capitalized(change)}: ${unitWords(w.newUnitPrice, w.newUnitCost)}; incassato ${euros(w.newRevenue)}, costato ${euros(w.newCost)}, guadagnato ${euros(w.newMargin)}${percentSaid(w.newTenths, w.newMargin)}`,
+			delta >= 0n ? `• In più: ${signedEuros(delta)}` : `• In meno: ${euros(delta)}`,
 		];
 		if (price !== undefined) out.push("Con un prezzo diverso potrebbero cambiare anche le quantità vendute: qui restano le stesse.");
-		if (loaded.forfettario) out.push(price !== undefined ? `Sei nel forfettario: imposta e contributi si calcolano su una parte del ricavo (il coefficiente), non sul margine, quindi con ${signedEuros(w.newRevenue - w.revenue)} di ricavo cambiano anche loro. Qui non li tolgo: il margine è prima delle tasse.` : "Sei nel forfettario: i costi non riducono imposta e contributi, che si calcolano su una parte del ricavo. Qui non li tolgo: il margine è prima delle tasse.");
-		if (p.estimated > 0 || p.badUnit + p.noCost > 0) out.push(...productNotes(p, loaded));
+		if (loaded.forfettario) out.push(price !== undefined ? `Sei nel forfettario: imposta e contributi si calcolano su una parte di quello che incassi (il coefficiente), non su quanto guadagni, quindi con ${signedEuros(w.newRevenue - w.revenue)} di incasso cambiano anche loro. Qui non li tolgo: il guadagno è prima delle tasse.` : "Sei nel forfettario: i costi non riducono imposta e contributi, che si calcolano su una parte di quello che incassi. Qui non li tolgo: il guadagno è prima delle tasse.");
+		out.push(...productNotes(p, loaded));
 		return { text: [...out, ...loaded.notes].join("\n"), count: 1 };
 	}
 
@@ -405,7 +443,7 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		const span = spanOf(args, day);
 		if (typeof span === "string") return span;
 		const products = productMargins(marginLines(loaded.data, span.from, span.to), loaded.data.listino);
-		if (products.length === 0) return `${span.span[0]?.toUpperCase()}${span.span.slice(1)} non ci sono voci vendute da mettere nel file.`;
+		if (products.length === 0) return `${capitalized(span.span)} non ci sono voci vendute da mettere nel file.`;
 		const num = (s: string) => ({ number: s.replace(".", ",") });
 		const cents = (c: bigint) => num(`${c < 0n ? "-" : ""}${(c < 0n ? -c : c) / 100n}.${String((c < 0n ? -c : c) % 100n).padStart(2, "0")}`);
 		const tenths = (t: bigint) => num(`${t < 0n ? "-" : ""}${(t < 0n ? -t : t) / 10n}.${(t < 0n ? -t : t) % 10n}`);
@@ -413,31 +451,31 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 			p.voce,
 			p.name,
 			p.article?.name ?? "",
-			p.article?.unit ?? "",
+			p.unit ?? "",
 			p.qty === undefined ? "" : num(p.qty < 0n ? `-${qtyText(-p.qty)}` : qtyText(p.qty)),
 			cents(p.revenue),
 			p.cost === undefined ? "" : cents(p.cost),
 			p.margin === undefined ? "" : cents(p.margin),
 			p.tenths === undefined ? "" : tenths(p.tenths),
-			p.article === undefined ? "servizio, senza costo" : p.estimated > 0 ? `stimato per ${p.estimated} vendite` : "registrato alla vendita",
+			p.unit === undefined ? "servizio, senza costo" : p.byName > 0 ? `stimato dal nome per ${p.byName} vendite, da verificare` : p.estimated > 0 ? `preso dall'ultimo acquisto per ${p.estimated} vendite` : "salvato quando la merce è uscita",
 			{ number: String(p.badUnit + p.noCost) },
 		]);
-		const csv = csvFile(["Voce", "Prodotto", "Articolo", "Unità", "Quantità venduta", "Ricavo senza IVA", "Costo del venduto", "Margine", "Margine %", "Costo", "Righe lasciate fuori"], rows);
+		const csv = csvFile(["Codice voce", "Prodotto", "Articolo in magazzino", "Unità", "Quantità venduta", "Incassato senza IVA", "Costo della merce venduta", "Guadagnato", "Guadagno in % sul prezzo", "Da dove viene il costo", "Righe non contate"], rows);
 		const path = await ctx.step("path", async () => freePath(workspace, `margini/margini-al-${day}`, ".csv"));
 		const written = await ctx.step("write", async () => (await workspace.write(path, csv)).path);
 		await audit(ctx, "export", rows.length);
-		return [`Salvato ${written}: i margini di ${n1(rows.length, "una voce venduta", "# voci vendute")} ${span.span}, con quantità, ricavo senza IVA, costo del venduto e margine (separatore «;», si apre con Excel).`, "Mandalo con file_send se chi ti scrive lo vuole.", ...loaded.notes].join("\n");
+		return [`Salvato ${written}: quanto ti ha reso ${n1(rows.length, "una voce venduta", "# voci vendute")} ${span.span}, con quantità, incassato senza IVA, costo della merce e guadagno (separatore «;», si apre con Excel).`, "Mandalo con file_send se chi ti scrive lo vuole.", ...loaded.notes].join("\n");
 	}
 
-	/** The brief's line, once a week: the voci sold last week (Monday to Sunday) below cost or below the threshold, each once that week, at most three. */
+	/** The brief's line, once a week: the voci sold last week (Monday to Sunday) below cost or below the threshold, each once that week, at most three; past the cap, how many more. A cost guessed from a name is never said here. */
 	async function brief(ctx: ToolContext, loaded: Loaded, day: string): Promise<string> {
 		if (store.read().broken) return `Margini: ${MARGINS_BROKEN}.`;
 		const monday = addDays(day, -((weekdayOf(day) + 6) % 7));
-		const products = productMargins(marginLines(loaded.data, addDays(monday, -7), addDays(monday, -1)), loaded.data.listino).filter(ranked);
+		const products = productMargins(marginLines(loaded.data, addDays(monday, -7), addDays(monday, -1)), loaded.data.listino).filter((p) => ranked(p) && !guessed(p)) as RankedProduct[];
 		const threshold = BigInt(MARGIN_LIMITS.threshold * 10);
 		const found = products
 			.filter((p) => p.margin < 0n || (p.tenths !== undefined && p.tenths < threshold))
-			.sort((a, b) => (a.tenths ?? 0n) < (b.tenths ?? 0n) ? -1 : (a.tenths ?? 0n) > (b.tenths ?? 0n) ? 1 : a.name.localeCompare(b.name, "it"));
+			.sort((a, b) => ((a.tenths ?? 0n) < (b.tenths ?? 0n) ? -1 : (a.tenths ?? 0n) > (b.tenths ?? 0n) ? 1 : a.name.localeCompare(b.name, "it")));
 		if (found.length === 0) return BRIEF_NOTHING;
 		// What other calls said this week: a call run again says its own voci again.
 		const said = new Set(store.read().alerts.filter((a) => a.week === monday && a.call !== ctx.callId).map((a) => a.v));
@@ -445,11 +483,13 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 		if (open.length === 0) return BRIEF_NOTHING;
 		const claimed = new Set(await ctx.step("claim", async () => store.claim(ctx.callId, monday, open.map((p) => p.voce))));
 		const mine = open.filter((p) => claimed.has(p.voce));
-		if (mine.length === 0) return BRIEF_NOTHING;
 		const rest = open.length - mine.length;
+		const more = (n: number) => (n === 1 ? "c'è un altro prodotto" : `ci sono altri ${n} prodotti`);
+		const see = (n: number) => `chiedimi quali rendono di meno per ${n === 1 ? "vederlo" : "vederli"}`;
+		if (mine.length === 0) return `Margini: della settimana scorsa ${n1(rest, "c'è ancora un prodotto venduto", "ci sono ancora # prodotti venduti")} sotto costo o con poco guadagno, non detti per non riempire il brief: ${see(rest)}.`;
 		await audit(ctx, "brief", mine.length);
-		const rows = mine.map((p) => (p.margin < 0n ? `• ${p.name}: venduto sotto costo, margine ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}` : `• ${p.name}: margine ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}, sotto il ${MARGIN_LIMITS.threshold}%`));
-		return [`Margini della settimana scorsa: ${n1(mine.length, "una voce venduta", "# voci vendute")} sotto costo o con meno del ${MARGIN_LIMITS.threshold}% di margine (nel riquadro)${rest === 0 ? "" : `; ${rest === 1 ? "ce n'è un'altra" : `ce ne sono altre ${rest}`}, chiedimi i margini per vederle`}.`, fenced(rows.join("\n"))].join("\n");
+		const rows = mine.map((p) => (p.margin < 0n ? `• ${p.name}: ci hai perso ${euros(-p.margin)}${percentSaid(p.tenths, p.margin)}` : `• ${p.name}: ci hai guadagnato solo ${euros(p.margin)}${percentSaid(p.tenths, p.margin)}`));
+		return [`La settimana scorsa hai venduto ${n1(mine.length, "un prodotto", "# prodotti")} sotto costo o guadagnandoci meno del ${MARGIN_LIMITS.threshold}% (nel riquadro)${rest === 0 ? "" : `; ${more(rest)}, ${see(rest)}`}.`, fenced(rows.join("\n"))].join("\n");
 	}
 
 	return [
@@ -469,6 +509,7 @@ export function createMarginTools(options: MarginToolsOptions): AnnieTool[] {
 					price: amount("what_if: the new price per unit, in euros without IVA"),
 					cost_percent: amount("what_if: the cost changed by this percent"),
 					cost: amount("what_if: the new cost per unit, in euros without IVA"),
+					focus: { type: "string", enum: ["best", "worst", "loss"], description: "ranking: only those that earn the most, the least, or those sold at a loss" },
 					compact: { type: "boolean", description: "ranking: the brief's line only" },
 				},
 				required: ["op"],

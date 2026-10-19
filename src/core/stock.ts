@@ -110,7 +110,14 @@ export type Movement = Marker & {
 	 */
 	readonly qty: string;
 	readonly day: string;
-	/** carico: the unit cost, euros to the fourth decimal; costo: the right one; apertura: the average at the close; scarico vendita: the average at the moment it went out (recorded from week 71 on; older ones have none). */
+	/**
+	 * carico: the unit cost, euros to the fourth decimal; costo: the right one; apertura: the average
+	 * at the close; scarico vendita: the average at the moment it went out (recorded from week 71 on;
+	 * older ones have none). A vendita's cost is written only by stock-store.ts planSale, from this
+	 * magazzino's own movements (never from a tool's arguments, an invoice or a file), and validMove
+	 * takes it on no other scarico: the margins trust it as our own figure. It is a snapshot: a
+	 * later costo correction does not change it.
+	 */
 	readonly cost?: string;
 	/** costo: the carico it corrects (the last of the article), and the cost it had. */
 	readonly fixes?: string;
@@ -133,7 +140,16 @@ export type Movement = Marker & {
 };
 
 /** A sale's movement folded by a closed year: its key (invoice#line), the article, how much, and (a storno) the invoice it corrected. */
-export type SaleKey = { readonly k: string; readonly i: string; readonly q: string; readonly of?: string; /** The year of the invoice (or credit note): a key ten years older than a year closed is dropped. */ readonly y?: number };
+export type SaleKey = {
+	readonly k: string;
+	readonly i: string;
+	readonly q: string;
+	readonly of?: string;
+	/** The year of the invoice (or credit note): a key ten years older than a year closed is dropped. */
+	readonly y?: number;
+	/** A vendita's cost as its scarico recorded it (the margins' cost of goods sold), kept when the year closes. */
+	readonly c?: string;
+};
 
 /** A line of an invoice received loaded into the magazzino (purchase-prices.ts lineKey: a digest of the invoice and the line), with the invoice's year: never loaded twice. */
 export type ReceivedKey = { readonly k: string; readonly y: number };
@@ -316,7 +332,8 @@ export function validMove(v: unknown): v is Movement {
 export function validSaleKey(v: unknown): v is SaleKey {
 	if (typeof v !== "object" || v === null) return false;
 	const s = v as SaleKey;
-	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y"].includes(k)) && typeof s.k === "string" && /^BZ-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
+	if (s.c !== undefined && (!isCost(s.c) || s.of !== undefined)) return false;
+	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y", "c"].includes(k)) && typeof s.k === "string" && /^BZ-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
 }
 
 export function validLowClaim(v: unknown): v is LowClaim {

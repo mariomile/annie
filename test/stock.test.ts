@@ -513,7 +513,8 @@ describe("week 69 review", () => {
 		const after = s.onHand();
 		expect(s.store.read().moves.map((m) => m.kind)).toEqual(["apertura"]);
 		expect([after.onHand, after.average, after.value, after.negative, after.negativeSince]).toEqual([before.onHand, before.average, before.value, before.negative, before.negativeSince]);
-		expect(s.store.read().archived).toEqual([{ k: `${id}#1`, i: "MG-0001", q: "5", y: 2026 }]);
+		// The vendita's recorded cost stays with its key (week 71: the margins read it).
+		expect(s.store.read().archived).toEqual([{ k: `${id}#1`, i: "MG-0001", q: "5", y: 2026, c: expect.stringMatching(/^\d+(?:\.\d{1,4})?$/) }]);
 		expect(s.store.read().broken).toBe(false);
 		// The invoice issued again moves nothing; its credit note puts back at most the 5 it took out.
 		await s.sell({ op: "issue", draft: id, confirm: true });

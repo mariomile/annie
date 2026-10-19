@@ -288,9 +288,9 @@ export class StockStore {
 			// An article in negativo past what a line holds: counted first, then the year closes.
 			const under = openings.find((o) => !isQuantity(o.qty, true));
 			if (under !== undefined) throw new StockError(`l'articolo ${under.item} a quella data risulta a ${qtyText(qtyOf(under.qty))}, troppo in negativo per una riga di apertura: prima chi ti scrive faccia un conteggio di quell'articolo, poi chiudi l'anno`);
-			// The sale keys kept, with the invoice's year; those of invoices ten years or more before the year closed go (no credit note corrects them any more).
+			// The sale keys kept, with the invoice's year and a vendita's recorded cost (the margins read it); those of invoices ten years or more before the year closed go (no credit note corrects them any more).
 			const year = Number(day.slice(0, 4));
-			const archived = [...book.archived, ...old.flatMap((m): SaleKey[] => (m.sale === undefined ? [] : [{ k: saleKey(m.sale.invoice, m.sale.line), i: m.item, q: m.qty, y: Number(m.day.slice(0, 4)), ...(m.sale.of === undefined ? {} : { of: m.sale.of }) }]))].filter((a) => a.y === undefined || a.y > year - 10);
+			const archived = [...book.archived, ...old.flatMap((m): SaleKey[] => (m.sale === undefined ? [] : [{ k: saleKey(m.sale.invoice, m.sale.line), i: m.item, q: m.qty, y: Number(m.day.slice(0, 4)), ...(m.sale.of === undefined ? {} : { of: m.sale.of }), ...(m.kind === "scarico" && m.cost !== undefined ? { c: m.cost } : {}) }]))].filter((a) => a.y === undefined || a.y > year - 10);
 			// The invoices received loaded go the same way, ten years on.
 			const received = book.received.filter((r) => r.y > year - 10);
 			result = { folded: old.length, items: openings.length };

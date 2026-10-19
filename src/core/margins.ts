@@ -10,19 +10,26 @@
  * another unit is left out, and said. Hours billed are revenue with no cost. Forfettario or not,
  * the margins are the same: VAT is never in them.
  *
+ * Trust and choices: a sale's `cost` is written only by stock-store.ts planSale from the
+ * magazzino's own movements, so it is our own figure; it is a snapshot, and a later correction of
+ * a carico's cost does not change past sales (said in the answer). A closed year keeps it on the
+ * sale's key; a folded sale without one takes the apertura's average, as an estimate. A purchase
+ * matched only by name (the same words both ways, never one inside the other, one product only)
+ * is an estimate: never said as a loss.
+ *
  * Amounts in bigint: cents for money, ten-thousandths of a euro for a unit cost or price,
  * thousandths for a quantity. A margin percent is in tenths, rounded down (floor), so 100% is
  * only a margin with no cost at all, and a loss is never rounded up to nothing.
  */
 import { realDate } from "./italian-calendar.ts";
-import { spellingKey, spelledOut } from "./name-keys.ts";
+import { sameStems, spellingKey, spelledOut } from "./name-keys.ts";
 import type { PriceItem } from "./price-list.ts";
-import { type PurchaseRow, rowMatches } from "./purchase-prices.ts";
+import { productsOf, type PurchaseRow } from "./purchase-prices.ts";
 import { eurosToCents, halfUp, halfUpSigned, netOf, scaled } from "./quote-sums.ts";
 import { CREDIT_NOTE_TYPE } from "./sales-invoice-rules.ts";
 import { salesTotals } from "./sales-invoice-sums.ts";
 import { type IssuedInvoice, isIssued, type SalesInvoice } from "./sales-invoices.ts";
-import { type CodeMap, type Movement, STOCK_LIMITS, type StockItem, stockUnit, type UnitMap } from "./stock.ts";
+import { type CodeMap, type Movement, type SaleKey, STOCK_LIMITS, type StockItem, stockUnit, type UnitMap } from "./stock.ts";
 import { costOf, qtyOf, saleQuantity } from "./stock-sums.ts";
 
 export const MARGIN_OPS = ["product", "ranking", "client", "price_check", "what_if", "export"] as const;
@@ -48,10 +55,10 @@ export class MarginError extends Error {
 	override readonly name = "MarginError";
 }
 
-/** Where a sale's cost comes from: recorded at the sale, estimated from the latest purchase, or unknown. */
+/** Where a sale's cost comes from: recorded at the sale (or, for a credit note, at the sale it corrects), estimated, or unknown. */
 export type CostSource = "sale" | "purchase" | "none";
 
-/** What a line is: goods (a voce that is an article of the magazzino), a service voce (no article), hours billed, anything else. */
+/** What a line is: goods (an article of the magazzino, or a voce whose purchases are known by name), a service voce (no cost), hours billed, anything else. */
 export type LineKind = "goods" | "service" | "hours" | "other";
 
 /** One line of an issued invoice or credit note, as the margins count it (a credit note's amounts negative). */
@@ -68,10 +75,13 @@ export type MarginLine = {
 	readonly kind: LineKind;
 	readonly voce?: string;
 	readonly article?: StockItem;
-	/** Thousandths of the article's unit (goods), signed; undefined when the line's unit does not convert. */
+	/** The unit the quantity is in: the article's, or the voce's when no article. */
+	readonly unit?: string;
+	/** Thousandths of `unit`, signed: a credit note's is what its storno put back (0 when none). Undefined when the line's unit does not convert. */
 	readonly qty?: bigint;
-	/** Why a goods line is left out of its product's margin: its unit, its packs, its quantity. */
+	/** Why a goods line is left out of its product's margin: its unit, its packs, its quantity; and the unit the line was in. */
 	readonly unitWhy?: "quantity" | "unit" | "pack";
+	readonly lineUnit?: string;
 	/** Cents, net of VAT and of the line's discount; negative for a credit note. */
 	readonly revenue: bigint;
 	/** Cents, signed as the revenue; goods only, undefined when not known. */
@@ -80,18 +90,29 @@ export type MarginLine = {
 	/** The unit cost it went out at (ten-thousandths), and, estimated, the purchase it comes from. */
 	readonly unitCost?: bigint;
 	readonly estimate?: Purchase;
+	/** A credit note that put nothing back in the magazzino: revenue taken off, no cost given back. */
+	readonly noReturn?: true;
+	/** The recorded cost is from before a later correction of a carico's cost (a snapshot, kept). */
+	readonly stale?: true;
+	/** No estimate: several products bought have this name, and none is picked. */
+	readonly ambiguous?: true;
 	/** Hours: minutes billed (an invoice of the timesheet's entries puts them all on its first line), signed. */
 	readonly minutes?: bigint;
 };
 
-/** A purchase price for an article: per its unit (ten-thousandths), the day, and whether an invoice received or a carico says it. */
-export type Purchase = { readonly cost: bigint; readonly day: string; readonly from: "invoice" | "carico" };
+/**
+ * A purchase price per the unit counted (ten-thousandths), the day, and where it comes from: an
+ * invoice received, a carico, or (a year closed) the apertura's average. `byName`: an invoice line
+ * taken only because its description has the same words as the name, never a learned code.
+ */
+export type Purchase = { readonly cost: bigint; readonly day: string; readonly from: "invoice" | "carico" | "apertura"; readonly byName?: true };
 
-/** What the margins read: the invoices issued, the magazzino, the listino and the prices paid. */
+/** What the margins read: the invoices issued, the magazzino (with the sales a closed year folded), the listino and the prices paid. */
 export type MarginData = {
 	readonly invoices: readonly SalesInvoice[];
 	readonly items: readonly StockItem[];
 	readonly moves: readonly Movement[];
+	readonly archived: readonly SaleKey[];
 	readonly codes: readonly CodeMap[];
 	readonly units: readonly UnitMap[];
 	readonly listino: readonly PriceItem[];
@@ -108,44 +129,70 @@ const HOUR_UNITS = new Set(["ora", "ore", "h"]);
 
 const collapsed = (s: string, max: number) => s.replace(/\s+/g, " ").trim().slice(0, max);
 
+/** What purchases are looked for: an article (its id, for the codes it learned and its carichi), or a voce with no article (name and unit only). */
+export type Target = Pick<StockItem, "name" | "unit" | "pack"> & { readonly id?: string };
+
+/** The purchase prices of a target, and whether a name matched several products (then no name match is used). */
+export type Purchases = { readonly prices: readonly Purchase[]; readonly ambiguous: boolean };
+
 /**
- * The purchase prices of `article` per its unit: the lines of invoices received that are it (a
- * code or description the magazzino learned for it from that supplier, its own code, or its name
- * in the description and not learned for another article), in its unit, in its pack, or in a
- * supplier's unit it learned; and its carichi at their cost (corrected when a costo fixed it).
- * Per line prices and other units are left out.
+ * The purchase prices of `target` per its unit. An invoice line is it when the magazzino learned
+ * its code or description for this article from that supplier; else only when its description
+ * and the name have the same words both ways (name-keys.ts sameStems), never one inside the
+ * other, and no other of `names` (the other articles and voci) has them too. Name matches that
+ * make more than one product (another unit, another description) are `ambiguous`: none is
+ * picked. In the target's unit, its pack, or a supplier's unit it learned; per line prices and
+ * other units are left out. And the article's carichi at their cost (corrected when a costo fixed it).
  */
-export function purchasesOf(article: StockItem, data: Pick<MarginData, "purchases" | "codes" | "units" | "moves">): Purchase[] {
+export function purchasesOf(target: Target, data: Pick<MarginData, "purchases" | "codes" | "units" | "moves">, names: readonly string[]): Purchases {
 	const out: Purchase[] = [];
 	const learnedFor = (r: PurchaseRow): string | undefined => {
 		const code = r.code?.toLowerCase();
 		const d = collapsed(spelledOut(r.description), STOCK_LIMITS.supplierText);
 		return data.codes.find((c) => c.s === r.party && ((code !== undefined && c.c?.toLowerCase() === code) || (c.d !== undefined && c.d === d)))?.i;
 	};
+	const perUnit = (r: PurchaseRow): bigint | undefined => {
+		if (r.unit === undefined || r.unit === target.unit) return halfUp(r.price, 10_000n);
+		if (target.pack !== undefined && r.unit === target.pack.unit) return halfUp(r.price * 1000n, qtyOf(target.pack.size) * 10_000n);
+		const map = target.id === undefined ? undefined : data.units.find((u) => u.s === r.party && u.u === r.unit && u.i === target.id);
+		return map === undefined ? undefined : halfUp(r.price * 1000n, qtyOf(map.q) * 10_000n);
+	};
+	const byName: PurchaseRow[] = [];
+	let ambiguous = false;
 	for (const r of data.purchases) {
 		if (r.perLine) continue;
 		const learned = learnedFor(r);
-		const own = article.code !== undefined && r.code !== undefined && r.code.toLowerCase() === article.code.toLowerCase();
-		if (learned !== article.id && !(learned === undefined && (own || rowMatches(r, article.name)))) continue;
-		let cost: bigint | undefined;
-		if (r.unit === undefined || r.unit === article.unit) cost = halfUp(r.price, 10_000n);
-		else if (article.pack !== undefined && r.unit === article.pack.unit) cost = halfUp(r.price * 1000n, qtyOf(article.pack.size) * 10_000n);
-		else {
-			const map = data.units.find((u) => u.s === r.party && u.u === r.unit && u.i === article.id);
-			if (map !== undefined) cost = halfUp(r.price * 1000n, qtyOf(map.q) * 10_000n);
+		if (learned !== undefined) {
+			if (learned !== target.id) continue;
+			const cost = perUnit(r);
+			if (cost !== undefined && cost > 0n) out.push({ cost, day: r.day, from: "invoice" });
+			continue;
 		}
-		if (cost !== undefined && cost > 0n) out.push({ cost, day: r.day, from: "invoice" });
+		if (!sameStems(target.name, r.description)) continue;
+		if (names.filter((n) => sameStems(n, r.description)).length > 1) {
+			ambiguous = true;
+			continue;
+		}
+		byName.push(r);
 	}
-	const mine = data.moves.filter((m) => m.item === article.id);
-	const fixed = new Map<string, string>();
-	for (const m of mine) if (m.kind === "costo" && m.fixes !== undefined && m.cost !== undefined) fixed.set(m.fixes, m.cost);
-	for (const m of mine) if (m.kind === "carico" && m.cost !== undefined) out.push({ cost: costOf(fixed.get(m.id) ?? m.cost), day: m.day, from: "carico" });
-	return out;
+	if (productsOf(byName).length > 1) ambiguous = true;
+	else
+		for (const r of byName) {
+			const cost = perUnit(r);
+			if (cost !== undefined && cost > 0n) out.push({ cost, day: r.day, from: "invoice", byName: true });
+		}
+	if (target.id !== undefined) {
+		const mine = data.moves.filter((m) => m.item === target.id);
+		const fixed = new Map<string, string>();
+		for (const m of mine) if (m.kind === "costo" && m.fixes !== undefined && m.cost !== undefined) fixed.set(m.fixes, m.cost);
+		for (const m of mine) if (m.kind === "carico" && m.cost !== undefined) out.push({ cost: costOf(fixed.get(m.id) ?? m.cost), day: m.day, from: "carico" });
+	}
+	return { prices: out, ambiguous };
 }
 
-/** The purchase price for a sale on `day`: the latest on or before it (an invoice before a carico the same day), else the first after it. */
+/** The purchase price for a sale on `day`: the latest on or before it (learned before by name, an invoice before a carico the same day), else the first after it. */
 export function purchaseAt(prices: readonly Purchase[], day: string): Purchase | undefined {
-	const rank = (p: Purchase) => (p.from === "invoice" ? 1 : 0);
+	const rank = (p: Purchase) => (p.byName === true ? 0 : 2) + (p.from === "invoice" ? 1 : 0);
 	const before = prices.filter((p) => p.day <= day).sort((a, b) => a.day.localeCompare(b.day) || rank(a) - rank(b));
 	if (before.length > 0) return before[before.length - 1];
 	return [...prices].sort((a, b) => a.day.localeCompare(b.day) || rank(b) - rank(a))[0];
@@ -156,14 +203,39 @@ function articleOf(items: readonly StockItem[], voce: string): StockItem | undef
 	return items.find((i) => i.removed === undefined && i.listino === voce) ?? items.find((i) => i.listino === voce);
 }
 
-/** The lines of the invoices and credit notes issued from `from` to `to` (their date), each as the margins count it. */
+/** The names purchases may match by: the articles' and the voci's (one per voce linked to an article). */
+function namesOf(data: Pick<MarginData, "items" | "listino">): string[] {
+	const linked = new Set(data.items.map((i) => i.listino).filter((l) => l !== undefined));
+	return [...data.items.filter((i) => i.removed === undefined).map((i) => i.name), ...data.listino.filter((v) => !linked.has(v.id)).map((v) => v.name)];
+}
+
+/** A unit cost from scarichi, weighted by their quantities; undefined when one has no cost. */
+function weighted(out: readonly { qty: bigint; cost?: string }[]): bigint | undefined {
+	if (out.length === 0 || out.some((o) => o.cost === undefined)) return undefined;
+	const qty = out.reduce((s, o) => s + o.qty, 0n);
+	return qty <= 0n ? undefined : halfUp(out.reduce((s, o) => s + o.qty * costOf(o.cost as string), 0n), qty);
+}
+
+/**
+ * The lines of the invoices and credit notes issued from `from` to `to` (their date), each as the
+ * margins count it. A sale's cost: recorded on its scarico (or kept by a closed year), else for a
+ * folded one the apertura's average, else the latest purchase price, as an estimate. A credit
+ * note gives back the cost of what its storno put back, at the cost the corrected invoice's
+ * scarico went out at (the same line first, else all of that article's, weighted); without a
+ * storno it gives back no cost.
+ */
 export function marginLines(data: MarginData, from: string, to: string): MarginLine[] {
 	const out: MarginLine[] = [];
-	const prices = new Map<string, Purchase[]>();
-	const pricesOf = (a: StockItem) => {
-		const got = prices.get(a.id) ?? purchasesOf(a, data);
-		prices.set(a.id, got);
+	const names = namesOf(data);
+	const cache = new Map<string, Purchases>();
+	const pricesOf = (t: Target, key: string) => {
+		const got = cache.get(key) ?? purchasesOf(t, data, names);
+		cache.set(key, got);
 		return got;
+	};
+	const aperturaOf = (a: StockItem): Purchase | undefined => {
+		const m = data.moves.find((x) => x.item === a.id && x.kind === "apertura" && x.cost !== undefined);
+		return m === undefined ? undefined : { cost: costOf(m.cost as string), day: m.day, from: "apertura" };
 	};
 	const issued = data.invoices.filter((i): i is IssuedInvoice => isIssued(i) && i.date >= from && i.date <= to);
 	for (const inv of issued) {
@@ -177,34 +249,67 @@ export function marginLines(data: MarginData, from: string, to: string): MarginL
 			// A spesa anticipata is the client's money back, not revenue.
 			if (l.notFee === true) return;
 			const base = { invoice: inv.id, number: inv.number, day: inv.date, credit, line: n + 1, client: clientKey(inv), clientName: inv.buyer.name, description: l.description, revenue: sign * (amounts[n] as bigint) };
+			const key = `${inv.id}#${n + 1}`;
 			const move = data.moves.find((m) => m.sale?.invoice === inv.id && m.sale.line === n + 1);
-			const article = l.item === undefined ? undefined : move !== undefined ? data.items.find((i) => i.id === move.item) : articleOf(data.items, l.item);
+			const folded = move === undefined ? data.archived.find((a) => a.k === key) : undefined;
+			const moved = move?.item ?? folded?.i;
+			const article = l.item === undefined ? undefined : moved !== undefined ? data.items.find((i) => i.id === moved) : articleOf(data.items, l.item);
 			if (l.item !== undefined && article !== undefined) {
 				const read = saleQuantity(article, l.quantity, l.unit);
+				const goods = { ...base, kind: "goods" as const, voce: l.item, article, unit: article.unit };
 				if ("why" in read) {
-					out.push({ ...base, kind: "goods", voce: l.item, article, unitWhy: read.why });
+					out.push({ ...goods, unitWhy: read.why, lineUnit: l.unit ?? article.unit });
 					return;
 				}
-				const qty = sign * read.qty;
-				// The cost it went out at: recorded on the scarico; for a credit note, the one the corrected invoice's went out at.
-				const recorded = credit
-					? data.moves.find((m) => m.kind === "scarico" && m.item === article.id && m.cost !== undefined && m.sale !== undefined && m.sale.invoice === inv.related?.id)?.cost
-					: move?.kind === "scarico" ? move.cost : undefined;
+				if (credit) {
+					const back = move?.kind === "storno" ? qtyOf(move.qty) : folded?.of !== undefined ? qtyOf(folded.q) : undefined;
+					if (back === undefined || back === 0n) {
+						out.push({ ...goods, qty: 0n, cost: 0n, source: "sale", noReturn: true });
+						return;
+					}
+					const of = inv.related?.id;
+					const outs = of === undefined ? [] : [...data.moves.filter((m) => m.kind === "scarico" && m.item === article.id && m.sale?.invoice === of).map((m) => ({ line: m.sale?.line, qty: qtyOf(m.qty), ...(m.cost === undefined ? {} : { cost: m.cost }) })), ...data.archived.filter((a) => a.i === article.id && a.of === undefined && a.k.startsWith(`${of}#`)).map((a) => ({ line: Number(a.k.split("#")[1]), qty: qtyOf(a.q), ...(a.c === undefined ? {} : { cost: a.c }) }))];
+					const same = outs.filter((o) => o.line === n + 1);
+					const unitCost = weighted(same.length > 0 ? same : outs);
+					const qty = -back;
+					if (unitCost !== undefined) {
+						out.push({ ...goods, qty, cost: halfUpSigned(qty * unitCost, 100_000n), source: "sale", unitCost });
+						return;
+					}
+					const when = inv.related !== undefined && realDate(inv.related.date) ? inv.related.date : inv.date;
+					const p = pricesOf(article, article.id);
+					const estimate = purchaseAt(p.prices, when);
+					out.push(estimate === undefined ? { ...goods, qty, source: "none", ...(p.ambiguous ? { ambiguous: true as const } : {}) } : { ...goods, qty, cost: halfUpSigned(qty * estimate.cost, 100_000n), source: "purchase", unitCost: estimate.cost, estimate });
+					return;
+				}
+				const qty = read.qty;
+				const recorded = move?.kind === "scarico" ? move.cost : folded?.c;
 				if (recorded !== undefined) {
 					const unitCost = costOf(recorded);
-					out.push({ ...base, kind: "goods", voce: l.item, article, qty, cost: halfUpSigned(qty * unitCost, 100_000n), source: "sale", unitCost });
+					// A correction of an earlier carico's cost made after the sale: the recorded cost is a snapshot.
+					const stale = move !== undefined && data.moves.some((m) => m.kind === "costo" && m.item === article.id && m.id > move.id && m.fixes !== undefined && m.fixes < move.id);
+					out.push({ ...goods, qty, cost: halfUpSigned(qty * unitCost, 100_000n), source: "sale", unitCost, ...(stale ? { stale: true as const } : {}) });
 					return;
 				}
-				const when = credit && inv.related !== undefined && realDate(inv.related.date) ? inv.related.date : inv.date;
-				const estimate = purchaseAt(pricesOf(article), when);
-				if (estimate === undefined) {
-					out.push({ ...base, kind: "goods", voce: l.item, article, qty, source: "none" });
-					return;
-				}
-				out.push({ ...base, kind: "goods", voce: l.item, article, qty, cost: halfUpSigned(qty * estimate.cost, 100_000n), source: "purchase", unitCost: estimate.cost, estimate });
+				const p = pricesOf(article, article.id);
+				const estimate = (folded !== undefined ? aperturaOf(article) : undefined) ?? purchaseAt(p.prices, inv.date);
+				out.push(estimate === undefined ? { ...goods, qty, source: "none", ...(p.ambiguous ? { ambiguous: true as const } : {}) } : { ...goods, qty, cost: halfUpSigned(qty * estimate.cost, 100_000n), source: "purchase", unitCost: estimate.cost, estimate });
 				return;
 			}
 			if (l.item !== undefined) {
+				// A voce with no article: a cost only from purchases with its very name, as an estimate.
+				const voce = data.listino.find((v) => v.id === l.item);
+				const target: Target | undefined = voce === undefined ? undefined : { name: voce.name, unit: stockUnit(voce.unit ?? l.unit ?? "pezzo") };
+				const read = target === undefined ? undefined : saleQuantity(target, l.quantity, l.unit);
+				const p = target === undefined || read === undefined || "why" in read ? undefined : pricesOf(target, `voce:${l.item}`);
+				const estimate = p === undefined ? undefined : purchaseAt(p.prices, credit && inv.related !== undefined && realDate(inv.related.date) ? inv.related.date : inv.date);
+				if (target !== undefined && read !== undefined && !("why" in read) && estimate !== undefined) {
+					const goods = { ...base, kind: "goods" as const, voce: l.item, unit: target.unit };
+					// A credit note of a voce with no magazzino puts nothing back: no cost given back.
+					if (credit) out.push({ ...goods, qty: 0n, cost: 0n, source: "sale", noReturn: true });
+					else out.push({ ...goods, qty: read.qty, cost: halfUpSigned(read.qty * estimate.cost, 100_000n), source: "purchase", unitCost: estimate.cost, estimate });
+					return;
+				}
 				out.push({ ...base, kind: "service", voce: l.item });
 				return;
 			}
@@ -237,20 +342,28 @@ export type ProductMargin = {
 	/** The voce's name, or the first line's description when the voce is gone from the listino. */
 	readonly name: string;
 	readonly article?: StockItem;
+	/** The unit the quantity is in (goods). */
+	readonly unit?: string;
 	/** The lines counted: goods with a unit that converts and a cost (recorded or estimated); a service voce's all. */
 	readonly lines: readonly MarginLine[];
-	/** Thousandths of the article's unit (goods); undefined for a service voce. */
+	/** Thousandths of `unit` (goods); undefined for a service voce. */
 	readonly qty?: bigint;
 	readonly revenue: bigint;
 	/** Goods only. */
 	readonly cost?: bigint;
 	readonly margin?: bigint;
 	readonly tenths?: bigint;
-	/** Lines whose cost is estimated from a purchase price. */
+	/** Lines whose cost is estimated, and of them those by a name match only. */
 	readonly estimated: number;
-	/** Goods lines left out: their unit does not convert, or no cost is known; their revenue. */
+	readonly byName: number;
+	/** Credit notes that put nothing back; sales whose recorded cost a later correction did not change. */
+	readonly noReturn: number;
+	readonly stale: number;
+	/** Goods lines left out: their unit does not convert (with the units), or no cost is known (`ambiguous` of them: several products bought by that name); their revenue. */
 	readonly badUnit: number;
+	readonly badUnits: readonly string[];
 	readonly noCost: number;
+	readonly ambiguous: number;
 	readonly leftOut: bigint;
 };
 
@@ -259,15 +372,19 @@ export function productMargins(lines: readonly MarginLine[], listino: readonly P
 	const by = new Map<string, MarginLine[]>();
 	for (const l of lines) if (l.voce !== undefined && (l.kind === "goods" || l.kind === "service")) by.set(l.voce, [...(by.get(l.voce) ?? []), l]);
 	const out: ProductMargin[] = [];
+	const none = { estimated: 0, byName: 0, noReturn: 0, stale: 0, badUnit: 0, badUnits: [], noCost: 0, ambiguous: 0, leftOut: 0n };
 	for (const [voce, all] of by) {
 		const name = listino.find((i) => i.id === voce)?.name ?? (all[0] as MarginLine).description;
-		const article = all.find((l) => l.article !== undefined)?.article;
-		if (article === undefined) {
-			out.push({ voce, name, lines: all, revenue: all.reduce((s, l) => s + l.revenue, 0n), estimated: 0, badUnit: 0, noCost: 0, leftOut: 0n });
+		const goodsLines = all.filter((l) => l.kind === "goods");
+		if (goodsLines.length === 0) {
+			out.push({ voce, name, lines: all, revenue: all.reduce((s, l) => s + l.revenue, 0n), ...none });
 			continue;
 		}
-		const counted = all.filter((l) => l.qty !== undefined && l.cost !== undefined);
-		const out1 = all.filter((l) => !counted.includes(l));
+		const article = goodsLines.find((l) => l.article !== undefined)?.article;
+		const unit = goodsLines.find((l) => l.unit !== undefined)?.unit;
+		// A service line of a voce otherwise estimated has no cost: it is left out like one with none.
+		const counted = goodsLines.filter((l) => l.qty !== undefined && l.cost !== undefined);
+		const left = all.filter((l) => !counted.includes(l));
 		const revenue = counted.reduce((s, l) => s + l.revenue, 0n);
 		const cost = counted.reduce((s, l) => s + (l.cost as bigint), 0n);
 		const margin = revenue - cost;
@@ -275,7 +392,8 @@ export function productMargins(lines: readonly MarginLine[], listino: readonly P
 		out.push({
 			voce,
 			name,
-			article,
+			...(article === undefined ? {} : { article }),
+			...(unit === undefined ? {} : { unit }),
 			lines: counted,
 			qty: counted.reduce((s, l) => s + (l.qty as bigint), 0n),
 			revenue,
@@ -283,34 +401,44 @@ export function productMargins(lines: readonly MarginLine[], listino: readonly P
 			margin,
 			...(tenths === undefined ? {} : { tenths }),
 			estimated: counted.filter((l) => l.source === "purchase").length,
-			badUnit: out1.filter((l) => l.unitWhy !== undefined).length,
-			noCost: out1.filter((l) => l.unitWhy === undefined).length,
-			leftOut: out1.reduce((s, l) => s + l.revenue, 0n),
+			byName: counted.filter((l) => l.estimate?.byName === true).length,
+			noReturn: counted.filter((l) => l.noReturn === true).length,
+			stale: counted.filter((l) => l.stale === true).length,
+			badUnit: left.filter((l) => l.unitWhy !== undefined).length,
+			badUnits: [...new Set(left.flatMap((l) => (l.unitWhy === "unit" && l.lineUnit !== undefined ? [l.lineUnit] : [])))],
+			noCost: left.filter((l) => l.unitWhy === undefined).length,
+			ambiguous: left.filter((l) => l.ambiguous === true).length,
+			leftOut: left.reduce((s, l) => s + l.revenue, 0n),
 		});
 	}
 	return out.sort((a, b) => a.name.localeCompare(b.name, "it"));
 }
 
 /** Goods with a margin: counted lines and revenue. */
-export type RankedProduct = ProductMargin & { readonly article: StockItem; readonly margin: bigint; readonly cost: bigint; readonly qty: bigint };
+export type RankedProduct = ProductMargin & { readonly unit: string; readonly margin: bigint; readonly cost: bigint; readonly qty: bigint };
 
-export const ranked = (p: ProductMargin): p is RankedProduct => p.article !== undefined && p.margin !== undefined && p.lines.length > 0;
+export const ranked = (p: ProductMargin): p is RankedProduct => p.unit !== undefined && p.margin !== undefined && p.lines.length > 0;
+
+/** A loss that rests on a cost guessed from a name only: said as an estimate, never as a loss. */
+export const guessed = (p: ProductMargin): boolean => p.byName > 0;
 
 const byBig = (a: bigint, b: bigint) => (a > b ? 1 : a < b ? -1 : 0);
 
-/** The ranking: by margin in euros and in percent, top and bottom, and those sold at a loss (the biggest loss first). */
+/** The ranking: by margin in euros and in percent, top and bottom, those sold at a loss (the biggest first) and those that may be, on a cost from a name only. */
 export function rankingOf(products: readonly ProductMargin[], top: number = MARGIN_LIMITS.top) {
 	const goods = products.filter(ranked);
 	const withPercent = goods.filter((p) => p.tenths !== undefined);
 	const byEuro = [...goods].sort((a, b) => byBig(b.margin, a.margin) || a.name.localeCompare(b.name, "it"));
 	const byPercent = [...withPercent].sort((a, b) => byBig(b.tenths as bigint, a.tenths as bigint) || byBig(b.margin, a.margin) || a.name.localeCompare(b.name, "it"));
+	const under = byEuro.filter((p) => p.margin < 0n).reverse();
 	return {
 		goods,
 		bestEuro: byEuro.slice(0, top),
 		worstEuro: [...byEuro].reverse().slice(0, top),
 		bestPercent: byPercent.slice(0, top),
 		worstPercent: [...byPercent].reverse().slice(0, top),
-		losses: byEuro.filter((p) => p.margin < 0n).reverse(),
+		losses: under.filter((p) => !guessed(p)),
+		maybeLosses: under.filter(guessed),
 	};
 }
 
@@ -405,30 +533,63 @@ export type PriceCheck = {
 	/** The cost the margin is at: the average, else the latest purchase price. */
 	readonly basis?: "average" | "latest";
 	readonly tenths?: bigint;
-	readonly flag?: "loss" | "low";
+	/** At a loss, under the threshold, or either on a cost from a name only («estimate»: never said as a loss). */
+	readonly flag?: "loss" | "low" | "estimate";
+	/** The listino's price (in its own unit, with VAT when it is said with VAT, cents) that brings the margin back to the threshold. */
+	readonly restore?: bigint;
 };
+
+/**
+ * The lowest listino price, in cents of the voce's own unit (with VAT when the voce is said with
+ * it), whose margin at `cost` is the threshold or more: rounded up, never down.
+ */
+export function restorePrice(voce: PriceItem, article: StockItem, cost: bigint, threshold: bigint): bigint | undefined {
+	if (threshold >= 1000n) return undefined;
+	const ceil = (a: bigint, b: bigint) => (a + b - 1n) / b;
+	const perUnit = ceil(cost * 1000n, 1000n - threshold);
+	const unit = voce.unit === undefined ? article.unit : stockUnit(voce.unit);
+	const inUnit = unit === article.unit ? perUnit : article.pack !== undefined && unit === article.pack.unit ? ceil(perUnit * qtyOf(article.pack.size), 1000n) : undefined;
+	if (inUnit === undefined) return undefined;
+	const net = ceil(inUnit, 100n);
+	let cents = voce.includesVat === true ? ceil(net * BigInt(100 + voce.vat), 100n) : net;
+	// The listino's own rounding (VAT out, the pack's size) may take a cent off: up until it holds.
+	for (let n = 0; n < 1000; n++) {
+		const price = listPricePerUnit({ ...voce, price: centsText(cents) }, article);
+		const t = price === undefined ? undefined : marginTenths(price - cost, price);
+		if (t !== undefined && t >= threshold) return cents;
+		cents += 1n;
+	}
+	return undefined;
+}
+
+/** Cents as the listino keeps a price: «5.63», «6». */
+const centsText = (c: bigint) => `${c / 100n}${c % 100n === 0n ? "" : `.${String(c % 100n).padStart(2, "0")}`.replace(/0$/, "")}`;
 
 /**
  * Each voce that is an article on the list: its price per the article's unit, the average cost
  * now and the latest purchase price; flagged when its margin at the cost now (the average, else
- * the latest purchase) is negative («loss») or under `threshold` tenths of a percent («low»).
- * Flagged first (the worst first), then by name.
+ * the latest purchase) is negative («loss») or under `threshold` tenths of a percent («low»), with
+ * the price that restores the threshold. On a purchase matched by its name only, it is an
+ * «estimate», never a loss. Flagged first (the worst first), then by name.
  */
 export function priceChecks(data: Pick<MarginData, "listino" | "items" | "moves" | "purchases" | "codes" | "units">, averages: ReadonlyMap<string, bigint>, today: string, threshold: bigint): PriceCheck[] {
 	const out: PriceCheck[] = [];
+	const names = namesOf(data);
 	for (const voce of data.listino) {
 		const article = data.items.find((i) => i.removed === undefined && i.listino === voce.id);
 		if (article === undefined) continue;
 		const price = listPricePerUnit(voce, article);
 		const average = averages.get(article.id);
-		const latest = purchaseAt(purchasesOf(article, data), today);
+		const latest = purchaseAt(purchasesOf(article, data, names).prices, today);
 		const cost = average ?? latest?.cost;
 		const basis = average !== undefined ? "average" : latest !== undefined ? "latest" : undefined;
 		const tenths = price === undefined || cost === undefined ? undefined : marginTenths(price - cost, price);
-		const flag = tenths === undefined ? undefined : tenths < 0n ? "loss" : tenths < threshold ? "low" : undefined;
-		out.push({ voce, article, ...(price === undefined ? {} : { price }), ...(average === undefined ? {} : { average }), ...(latest === undefined ? {} : { latest }), ...(basis === undefined ? {} : { basis }), ...(tenths === undefined ? {} : { tenths }), ...(flag === undefined ? {} : { flag }) });
+		const under = tenths !== undefined && tenths < threshold;
+		const flag = !under ? undefined : basis === "latest" && latest?.byName === true ? "estimate" : (tenths as bigint) < 0n ? "loss" : "low";
+		const restore = under && cost !== undefined && flag !== "estimate" ? restorePrice(voce, article, cost, threshold) : undefined;
+		out.push({ voce, article, ...(price === undefined ? {} : { price }), ...(average === undefined ? {} : { average }), ...(latest === undefined ? {} : { latest }), ...(basis === undefined ? {} : { basis }), ...(tenths === undefined ? {} : { tenths }), ...(flag === undefined ? {} : { flag }), ...(restore === undefined ? {} : { restore }) });
 	}
-	const rank = (c: PriceCheck) => (c.flag === "loss" ? 0 : c.flag === "low" ? 1 : 2);
+	const rank = (c: PriceCheck) => (c.flag === "loss" ? 0 : c.flag === "low" ? 1 : c.flag === "estimate" ? 2 : 3);
 	return out.sort((a, b) => rank(a) - rank(b) || (a.flag !== undefined ? byBig(a.tenths as bigint, b.tenths as bigint) : 0) || a.voce.name.localeCompare(b.voce.name, "it"));
 }
 
@@ -436,7 +597,22 @@ export function priceChecks(data: Pick<MarginData, "listino" | "items" | "moves"
 export type Change = { readonly percent: bigint } | { readonly to: bigint };
 
 /** What a simulation gives: the margin as it was and as it would be, on the same quantities. */
-export type WhatIf = { readonly qty: bigint; readonly revenue: bigint; readonly cost: bigint; readonly margin: bigint; readonly tenths?: bigint; readonly newRevenue: bigint; readonly newCost: bigint; readonly newMargin: bigint; readonly newTenths?: bigint };
+export type WhatIf = {
+	readonly qty: bigint;
+	readonly revenue: bigint;
+	readonly cost: bigint;
+	readonly margin: bigint;
+	readonly tenths?: bigint;
+	readonly newRevenue: bigint;
+	readonly newCost: bigint;
+	readonly newMargin: bigint;
+	readonly newTenths?: bigint;
+	/** Per unit (ten-thousandths), the average of the quantities sold: the price and the cost before and after; undefined with no quantity. */
+	readonly unitPrice?: bigint;
+	readonly newUnitPrice?: bigint;
+	readonly unitCost?: bigint;
+	readonly newUnitCost?: bigint;
+};
 
 const changed = (amount: bigint, qty: bigint, c: Change) => ("percent" in c ? amount + halfUpSigned(amount * c.percent, 10_000n) : halfUpSigned(qty * c.to, 100_000n));
 
@@ -447,7 +623,10 @@ export function whatIf(p: RankedProduct, change: { readonly price?: Change; read
 	const newMargin = newRevenue - newCost;
 	const tenths = marginTenths(p.margin, p.revenue);
 	const newTenths = marginTenths(newMargin, newRevenue);
-	return { qty: p.qty, revenue: p.revenue, cost: p.cost, margin: p.margin, ...(tenths === undefined ? {} : { tenths }), newRevenue, newCost, newMargin, ...(newTenths === undefined ? {} : { newTenths }) };
+	const per = (cents: bigint) => (p.qty <= 0n ? undefined : halfUpSigned(cents * 100_000n, p.qty));
+	const units = { unitPrice: per(p.revenue), newUnitPrice: per(newRevenue), unitCost: per(p.cost), newUnitCost: per(newCost) };
+	const defined = Object.fromEntries(Object.entries(units).filter(([, v]) => v !== undefined)) as Partial<Record<keyof typeof units, bigint>>;
+	return { qty: p.qty, revenue: p.revenue, cost: p.cost, margin: p.margin, ...(tenths === undefined ? {} : { tenths }), newRevenue, newCost, newMargin, ...(newTenths === undefined ? {} : { newTenths }), ...defined };
 }
 
 /** A voce said by the brief in a week: the voce, the week's Monday, the call that said it. */
