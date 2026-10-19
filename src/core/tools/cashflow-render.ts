@@ -431,7 +431,7 @@ function assumptions(p: Projection, v: View): string[] {
 		].filter((x) => x !== undefined);
 		out.push(`spesa media ${euros(a.perDay)} al giorno (spese ${withShortDate("dal", a.from, v.today)} ${withShortDate("al", a.to, v.today)}, ${euros(a.total)} diviso ${a.days} giorni${left.length === 0 ? "" : `; lasciati fuori ${left.join(", ")}`})`);
 	}
-	if ((v.canoni ?? 0) > 0) out.push("i canoni delle fatture ricorrenti attive contano prima di essere fatturati: come canone previsto, poi come bozza da emettere, poi tra le fatture da incassare; al totale con l'IVA, pagati alla scadenza della loro fattura");
+	if ((v.canoni ?? 0) > 0) out.push("i canoni delle fatture ricorrenti attive contano prima di essere fatturati: come canone previsto, poi come bozza da emettere, poi tra le fatture da incassare; al totale con l'IVA, pagati alla scadenza della loro fattura", "le bozze di una fattura ricorrente tolta del tutto non contano, come le bozze fatte a mano");
 	if (v.quotes !== undefined && v.quotes.count > 0) out.push(`preventivi accettati attesi ${QUOTE_PAY_DAYS} giorni dopo l'accettazione e non prima di ${QUOTE_MIN_DAYS} giorni da oggi, meno quanto già fatturato`);
 	if (p.days.length > 31) out.push("le entrate senza fattura, preventivo o voce non ci sono, quindi manca il lavoro ancora da fatturare");
 	if (v.taxes === true) out.push("tasse stimate (F24) dal profilo del forfettario con il metodo storico, una stima da verificare con il commercialista", "stipendi e rate non registrati non ci sono");

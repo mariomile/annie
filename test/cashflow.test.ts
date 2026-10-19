@@ -937,7 +937,7 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 			await s.run({ op: "list_items" }, agent()),
 			await s.run({ op: "what_if", amount: 2000, date: "15/12/2026", name: "Computer" }, agent()),
 			await s.run({ op: "what_if", delay: { invoice: "B-70", days: 30 }, horizon: "fine anno" }, agent()),
-			await s.run({ op: "what_if", drop: { party: "Cliente Preventivo Srl" }, horizon: "fine anno" }, agent()),
+			await s.run({ op: "what_if", drop: { invoice: "A-1" }, horizon: "fine anno" }, agent()),
 		];
 		for (const out of outs) for (const n of NAMES) expect(out).not.toContain(n);
 		const forecast = outs[0] as string;
@@ -947,7 +947,17 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 		expect(forecast).toContain("• 27/10 uscita 1.500,00 €: voce\n");
 		expect(outs[2]).toMatch(/• C-0001 uscita 1\.500,00 € [^\n]*: voce$/m);
 		expect(outs[4]).toContain("fattura da incassare n. B-70");
-		expect(outs[5]).toContain("• preventivo accettato, 1.500,00 €: non pagato");
+		expect(outs[5]).toContain("• fattura da pagare n. A-1, 400,00 €: non pagata");
+		// A name, there or not, gets the same answer: by number only; nothing found says no number back.
+		const REFUSED = "Un altro agente può spostare o togliere solo una fattura per numero, non un cliente.";
+		for (const party of ["Gamma Hotel S.p.A.", "Cliente Inventato Srl"]) {
+			expect(await s.run({ op: "what_if", delay: { party, days: 30 } }, agent())).toBe(REFUSED);
+			expect(await s.run({ op: "what_if", drop: { party } }, agent())).toBe(REFUSED);
+			expect(await s.run({ op: "what_if", drop: { party, invoice: "B-70" } }, agent())).toBe(REFUSED);
+		}
+		expect(await s.run({ op: "what_if", drop: { invoice: "ZZ-99" } }, agent())).toBe("Errore: non trovo fatture aperte con questo numero nella previsione.");
+		// The owner still names the customer.
+		expect(await s.run({ op: "what_if", drop: { party: "Gamma Hotel S.p.A." }, horizon: "fine anno" })).toContain("Gamma Hotel");
 		// Every kind, for another agente: what it is, never whose.
 		const at = { date: TODAY, cents: 100n } as const;
 		const canone = { id: "RI-0001", period: "2026-10", label: "ottobre 2026", customer: "Delta Carni Srl", date: TODAY, cents: 100n };

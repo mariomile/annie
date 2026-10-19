@@ -392,7 +392,7 @@ async function turnOrigin(api: OriginApi, callContext: OriginContext): Promise<T
  * a notice that began the run in the reckoning even when a person's message is steered in later.
  * Past the scan's bound, the turn is not taken for a person's.
  */
-export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId): Promise<TurnOrigin> {
+export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, warn: (message: string) => void = warnBoundOnce): Promise<TurnOrigin> {
 	const found: (TurnOrigin | undefined)[] = [];
 	let cursor: Cursor | undefined;
 	for (let page = 0; page < 20; page++) {
@@ -407,7 +407,18 @@ export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: 
 		if (next === undefined) return found.length === 0 ? "scheduled" : worst(found);
 		cursor = next;
 	}
+	warn(SCAN_BOUND);
 	return worst([...found, undefined]);
+}
+
+const SCAN_BOUND = "annie: the scan for a turn's origin reached its bound before the start of the run; the turn is not taken for a person's";
+let boundWarned = false;
+
+/** Said once per process, with no value of the conversation: a run that long is rare, and the line is enough to look into it. */
+function warnBoundOnce(message: string): void {
+	if (boundWarned) return;
+	boundWarned = true;
+	console.error(message);
 }
 
 /** An assistant message that answered without calling a tool: the run it belongs to ended there. */

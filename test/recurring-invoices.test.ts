@@ -951,7 +951,7 @@ describe("recurring invoices in the previsione di cassa (ADR 0088)", () => {
 			"• 31/12 entrata 366,00 €: canone di dicembre 2026 da Delta Servizi Srl (fattura ricorrente, da preparare)",
 		]);
 		expect(entrate(before)).toBe("Entrate 1.098,00 €: canoni delle fatture ricorrenti 1.098,00 €.");
-		expect(before).toContain("• i canoni delle fatture ricorrenti attive contano prima di essere fatturati: come canone previsto, poi come bozza da emettere, poi tra le fatture da incassare; al totale con l'IVA, pagati alla scadenza della loro fattura");
+		expect(before).toContain("• i canoni delle fatture ricorrenti attive contano prima di essere fatturati: come canone previsto, poi come bozza da emettere, poi tra le fatture da incassare; al totale con l'IVA, pagati alla scadenza della loro fattura\n• le bozze di una fattura ricorrente tolta del tutto non contano, come le bozze fatte a mano");
 		expect(before).not.toMatch(EM_DASH);
 		// The sweep drafts October: a draft to issue now, at its own total and due date, once.
 		expect(await s.sweep()).toBe(1);
@@ -989,6 +989,21 @@ describe("recurring invoices in the previsione di cassa (ADR 0088)", () => {
 		const again = await run(FORECAST);
 		expect(canoni(again).filter((l) => l.includes("ottobre"))).toEqual(["• 17/11 entrata 390,40 €: canone di ottobre 2026 da Delta Servizi Srl (bozza da emettere)"]);
 		expect(entrate(again)).toBe("Entrate 1.122,40 €: bozze di canoni da emettere 390,40 €; canoni delle fatture ricorrenti 732,00 €.");
+	});
+
+	it("a recurring invoice removed for good: its draft no longer counts, as a draft made by hand", async () => {
+		const s = setup();
+		await known(s);
+		await s.run(CANONE);
+		await s.sweep();
+		const run = cash(s);
+		await run({ op: "set_balance", amount: 1000 });
+		expect(entrate(await run(FORECAST))).toBe("Entrate 1.098,00 €: bozze di canoni da emettere 366,00 €; canoni delle fatture ricorrenti 732,00 €.");
+		await s.run({ op: "remove", id: "RI-0001" });
+		const out = await run(FORECAST);
+		expect(canoni(out)).toEqual([]);
+		expect(out).not.toContain("bozze di canoni");
+		expect(s.drafts()).toHaveLength(1);
 	});
 
 	it("never a paused one, nothing past its end or its number of invoices; a paused one's draft still counts", async () => {

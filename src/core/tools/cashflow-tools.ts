@@ -547,6 +547,9 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const drops = readChanges(args.drop, false);
 		if (typeof drops === "string") return drops;
 		const all = [...delays, ...drops];
+		// Another agente moves or drops an invoice by its number only: a name, existing or not, gets the same answer, so nothing tells whether that customer is there (ADR 0088).
+		const agentAsks = ctx.thread?.channel === AGENT_CHANNEL;
+		if (agentAsks && all.some((c) => c.party !== undefined)) return "Un altro agente può spostare o togliere solo una fattura per numero, non un cliente.";
 		if (raw.length === 0 && all.length === 0) return "Errore: dimmi l'ipotesi: amount e date (e kind, frequency, name), o più ipotesi in items; oppure delay o drop per una fattura pagata in ritardo o non pagata.";
 		if (raw.length > CASHFLOW_LIMITS.whatIf) return `Errore: al massimo ${CASHFLOW_LIMITS.whatIf} ipotesi per volta.`;
 		const hyps: Hypothetical[] = [];
@@ -575,9 +578,11 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		const changed = applyChanges(g.movements, all, day);
 		if (changed.ambiguous !== undefined) {
 			const rows = changed.ambiguous.movements.map((m) => `• ${movementLabel(m, day, false, g.view.agent === true)}, ${euros(m.cents)}`);
+			if (agentAsks) return "Errore: più fatture aperte hanno questo numero: quale sia lo dice solo chi ti scrive, nella sua conversazione.";
 			return `Errore: più fatture aperte hanno questo numero; quale? Ripeti con party, il cliente o il fornitore:\n${fenced(rows.join("\n"))}`;
 		}
 		const missing = all.filter((_, i) => (changed.touched[i] ?? []).length === 0);
+		if (missing.length > 0 && agentAsks) return "Errore: non trovo fatture aperte con questo numero nella previsione.";
 		if (missing.length > 0) return `Errore: non trovo fatture aperte o preventivi accettati per questo, nella previsione:\n${fenced(missing.map((c) => `• ${[c.invoice, c.party].filter((x) => x !== undefined).join(", ")}`).join("\n"))}\nControlla il nome o il numero con chi ti scrive.`;
 		const added = hypotheticalFlows(hyps, day, end);
 		const withMoves = [...changed.movements, ...added];

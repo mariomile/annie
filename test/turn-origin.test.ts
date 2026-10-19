@@ -143,6 +143,25 @@ describe("the inputs a run answers (ADR 0088)", () => {
 		expect(await origin([answer, input("agent"), calling, result, input("person")])).toBe("agent");
 	});
 
+	it("past the scan's bound the run is not a person's, and that is logged once, with no value", async () => {
+		const long = [answer, input("notice"), ...Array.from({ length: 60 }, () => input("person"))];
+		const said: string[] = [];
+		expect(await inputsOrigin(of(long), 1 as never, (m) => said.push(m))).toBe("scheduled");
+		expect(said).toEqual(["annie: the scan for a turn's origin reached its bound before the start of the run; the turn is not taken for a person's"]);
+		// The default logger says it once per process.
+		const errors: unknown[] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => void errors.push(args);
+		try {
+			await inputsOrigin(of(long), 1 as never);
+			await inputsOrigin(of(long), 1 as never);
+		} finally {
+			console.error = original;
+		}
+		expect(errors).toHaveLength(1);
+		expect(String(errors[0])).not.toMatch(/\d|notice|scheduled/);
+	});
+
 	it("older inputs with no origin, and nothing at all, are not a person's", async () => {
 		expect(await origin([input(undefined), calling])).toBe("scheduled");
 		expect(await origin([])).toBe("scheduled");
