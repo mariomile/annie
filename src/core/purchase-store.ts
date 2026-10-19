@@ -8,7 +8,8 @@
  */
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
-import { type PriceClaim, PURCHASE_LIMITS, PurchaseError, validPriceClaim } from "./purchase-prices.ts";
+import type { ToolContext } from "./engine.ts";
+import { type Increase, lineKey, type PriceClaim, PURCHASE_LIMITS, PurchaseError, validPriceClaim } from "./purchase-prices.ts";
 
 type Book = { readonly alerts: readonly PriceClaim[] };
 
@@ -40,10 +41,11 @@ export class PurchaseStore {
 
 	/**
 	 * The invoice lines of `wanted` not said yet, marked said by `callId` on `day` (`via` where):
-	 * each line once, whoever says it. `perDay`, for the brief: at most so many said by the brief
-	 * on that day, all calls together. A call run again gets back what it claimed.
+	 * each line once, whoever says it. For the brief, `cap.perDay`: at most so many said by the
+	 * brief on that day, all calls together; and `cap.perGroup` of one `cap.groupOf` (a supplier)
+	 * that day. A call run again gets back what it claimed.
 	 */
-	claim(callId: string, day: string, via: PriceClaim["via"], wanted: readonly string[], perDay?: number): string[] {
+	claim(callId: string, day: string, via: PriceClaim["via"], wanted: readonly string[], cap: { readonly perDay?: number; readonly perGroup?: number; readonly groupOf?: (k: string) => string | undefined } = {}): string[] {
 		let mine: string[] = [];
 		updateBook(this.book, (book) => {
 			const before = book.alerts.filter((a) => a.call === callId);
@@ -52,10 +54,20 @@ export class PurchaseStore {
 				return book;
 			}
 			const said = new Set(book.alerts.map((a) => a.k));
-			let room = perDay === undefined ? Number.POSITIVE_INFINITY : Math.max(0, perDay - book.alerts.filter((a) => a.via === "brief" && a.day === day).length);
+			const today = book.alerts.filter((a) => a.via === "brief" && a.day === day);
+			let room = cap.perDay === undefined ? Number.POSITIVE_INFINITY : Math.max(0, cap.perDay - today.length);
+			const groups = new Map<string, number>();
+			const groupOf = cap.groupOf;
+			if (groupOf !== undefined) for (const a of today) {
+				const g = groupOf(a.k);
+				if (g !== undefined) groups.set(g, (groups.get(g) ?? 0) + 1);
+			}
 			const fresh: PriceClaim[] = [];
 			for (const k of new Set(wanted)) {
 				if (said.has(k) || room <= 0) continue;
+				const g = groupOf?.(k);
+				if (g !== undefined && cap.perGroup !== undefined && (groups.get(g) ?? 0) >= cap.perGroup) continue;
+				if (g !== undefined) groups.set(g, (groups.get(g) ?? 0) + 1);
 				fresh.push({ k, day, call: callId, via });
 				room--;
 			}
@@ -65,6 +77,18 @@ export class PurchaseStore {
 		});
 		return mine;
 	}
+}
+
+/**
+ * The increases of `found` (one invoice's) said by this answer about their invoice: those not said
+ * yet, by the brief or another answer, claimed in a step of their own; none when the store does
+ * not read.
+ */
+export async function claimIncreases(store: PurchaseStore | undefined, ctx: ToolContext, day: string, found: readonly Increase[]): Promise<Increase[]> {
+	if (store === undefined || found.length === 0 || store.read().broken) return [];
+	const keyOf = (i: Increase) => lineKey(i.latest.invoice, i.latest.line);
+	const claimed = new Set(await ctx.step("increases", async () => store.claim(ctx.callId, day, "invoice", found.map(keyOf))));
+	return found.filter((i) => claimed.has(keyOf(i)));
 }
 
 function validBook(raw: unknown): Book | undefined {

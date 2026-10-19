@@ -2,7 +2,7 @@ import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { type CsvCell, csvFile } from "../csv.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import type { ExpenseStore } from "../expense-store.ts";
-import { fromUnits } from "../fattura-pa.ts";
+import { fromUnits, MAX_DOC_LINES } from "../fattura-pa.ts";
 import { n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
@@ -10,11 +10,17 @@ import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import { italianDate } from "../italian-format.ts";
 import { type Period, PeriodError, readPeriod } from "../periods.ts";
 import {
+	agentThreshold,
+	briefIncreaseWords,
 	bySupplier,
 	cheapestOf,
+	type ExpenseRow,
 	type Increase,
 	increasesOf,
+	increaseWords,
 	lineKey,
+	offersOf,
+	perUnitWords,
 	type Product,
 	PURCHASE_LIMITS,
 	PURCHASE_OPS,
@@ -27,6 +33,8 @@ import {
 	productsOf,
 	riseTenths,
 	rowMatches,
+	spreadWords,
+	type SupplierPrice,
 	tenthsWords,
 } from "../purchase-prices.ts";
 import { PURCHASES_BROKEN, type PurchaseStore } from "../purchase-store.ts";
@@ -68,8 +76,6 @@ const fenced = (text: string) => fence(text, { name: "dati degli acquisti", note
 
 export const BRIEF_NOTHING = "Prezzi d'acquisto: niente da segnalare.";
 
-const unitWords = (p: Pick<Product, "unit" | "perLine">) => (p.perLine ? "per riga (la fattura non dice la quantità)" : `per ${p.unit ?? "unità"}`);
-const invoiceWords = (r: PurchaseRow) => `fattura${r.number === undefined ? "" : ` n. ${r.number}`} del ${italianDate(r.day)}`;
 
 /**
  * I prezzi d'acquisto (purchase-prices.ts): the invoices received read through the scadenzario,
@@ -137,9 +143,9 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		},
 	];
 
-	type Data = { readonly rows: readonly PurchaseRow[]; readonly suppliers: readonly Supplier[]; readonly notes: readonly string[] };
+	type Data = { readonly rows: readonly PurchaseRow[]; readonly expenses: readonly ExpenseRow[]; readonly suppliers: readonly Supplier[]; readonly notes: readonly string[] };
 
-	/** The prices paid, with what is missing said once: files that do not read, lines left out, invoices in another currency or without lines. */
+	/** The prices paid, with what is missing said once: files that do not read, lines left out or past the 2000 kept, invoices in another currency, without lines, or with a date that is no real day. */
 	async function load(ctx: ToolContext): Promise<Data | string> {
 		const read = await readRegister(options.invoices, scanner, ctx, {
 			broken: "Lo stato delle fatture non si legge: senza, non so quali sono le fatture ricevute.",
@@ -152,25 +158,35 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		const got = purchaseRows(read.invoices, loaded.suppliers);
 		const notes: string[] = [];
 		if (read.unread > 0) notes.push(`${n1(read.unread, "Un file di fattura non si legge", "# file di fatture non si leggono")} (per esempio uno oltre i 20 MB, di cui leggo solo il testo): le sue righe qui mancano.`);
-		if (got.skippedLines > 0) notes.push(`${n1(got.skippedLines, "Una riga di fattura non si legge", "# righe di fatture non si leggono")} (manca la descrizione, o un prezzo o una quantità non è un numero): l'ho lasciata fuori, senza indovinare.`.replace("l'ho lasciata", got.skippedLines === 1 ? "l'ho lasciata" : "le ho lasciate"));
+		if (got.unread > 0) notes.push(got.unread === 1 ? "Una riga di fattura non si legge (manca la descrizione, o un prezzo o una quantità non è un numero): l'ho lasciata fuori, senza indovinare." : `${got.unread} righe di fatture non si leggono (manca la descrizione, o un prezzo o una quantità non è un numero): le ho lasciate fuori, senza indovinare.`);
+		if (got.cut > 0) notes.push(`${n1(got.cut, "Una riga", "# righe")} di fatture molto lunghe ${got.cut === 1 ? "è" : "sono"} oltre le prime ${MAX_DOC_LINES} di una fattura: qui ${got.cut === 1 ? "manca" : "mancano"}.`);
 		if (got.otherCurrency > 0) notes.push(`${n1(got.otherCurrency, "Una fattura è", "# fatture sono")} in un'altra valuta: non la confronto con quelle in euro.`);
 		if (got.noLines > 0) notes.push(`${n1(got.noLines, "Una fattura ricevuta non ha", "# fatture ricevute non hanno")} righe con prezzo e quantità (per esempio le fatture semplificate): qui non ${got.noLines === 1 ? "c'è" : "ci sono"}.`);
-		return { rows: got.rows, suppliers: loaded.suppliers, notes };
+		if (got.badDates > 0) notes.push(`${n1(got.badDates, "Una fattura ricevuta ha", "# fatture ricevute hanno")} una data che non esiste o prima del 2000: ${got.badDates === 1 ? "l'ho lasciata" : "le ho lasciate"} fuori.`);
+		return { rows: got.rows, expenses: got.expenses, suppliers: loaded.suppliers, notes };
 	}
 
 	function withNotes(answer: string, data: Data): string {
 		return [answer, ...data.notes].join("\n");
 	}
 
-	/** The supplier said, or the answer to give instead. */
-	function supplierSaid(args: Record<string, unknown>, data: Data): Supplier | string | undefined {
+	/** The discounts on whole invoices spread over the rows shown, said once per invoice (inside the fence: the numbers come from the files). */
+	function spreadNotes(rows: readonly (PurchaseRow | undefined)[]): string[] {
+		const seen = new Map<string, string>();
+		for (const r of rows) if (r?.spread !== undefined && !seen.has(r.invoice)) seen.set(r.invoice, spreadWords(r.number, r.day, r.spread));
+		return [...seen.values()];
+	}
+
+	/** The supplier said, or the answer to give instead: one only close to the words is taken, and named (`took`). */
+	function supplierSaid(args: Record<string, unknown>, data: Data): { supplier: Supplier; took?: string } | string | undefined {
 		const said = cleanText(args.supplier, PURCHASE_LIMITS.query, "il fornitore");
 		if (isProblem(said)) return `Errore: ${said.problem}.`;
 		if (said === undefined) return undefined;
 		const f = findSupplier(data.suppliers, said);
+		if (f.kind === "close" && f.candidates.length === 1) return { supplier: f.candidates[0] as Supplier, took: `ho preso ${(f.candidates[0] as Supplier).name}` };
 		if (f.kind === "close") return meantSupplier(f.candidates, fenced);
 		if (f.kind === "none") return supplierNotFound(said, fenced);
-		return f.supplier;
+		return { supplier: f.supplier };
 	}
 
 	function itemSaid(args: Record<string, unknown>, required: boolean): string | { problem: string } | undefined {
@@ -192,45 +208,61 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		}
 	}
 
-	/** «Beta Srl: 4,86 € per risma il 15/10/2026 (fattura n. 12), prima 4,50 € (+8%); il più basso 4,40 €; 3 acquisti». */
-	function supplierLine(p: Product, s: ReturnType<typeof bySupplier>[number]): string {
-		const parts = [`${s.supplier}: ${priceWords(s.latest.price)} ${unitWords(p)} il ${italianDate(s.latest.day)} (${invoiceWords(s.latest)})`];
-		if (s.previous !== undefined && !p.perLine) parts.push(`prima ${priceWords(s.previous.price)} (${tenthsWords(riseTenths(s.previous.price, s.latest.price)).replace(/^(?=\d)/, "+")})`);
-		if (s.lowest < s.latest.price && (s.previous === undefined || s.lowest < s.previous.price)) parts.push(`il più basso ${priceWords(s.lowest)}`);
+	/** An agente's period: a month, a quarter or a year; a day or a week is its month, the year so far the year. */
+	function agentPeriod(p: Period, day: string): Period {
+		if (p.kind === "month" || p.kind === "quarter" || p.kind === "year") return p;
+		return readPeriod(p.kind === "ytd" ? p.from.slice(0, 4) : p.from.slice(0, 7), day);
+	}
+
+	/** «a risma», or for a line without a quantity «a corpo», the first time with why. */
+	function unitHeading(p: Pick<Product, "unit" | "perLine">, said: { corpo: boolean }): string {
+		if (!p.perLine) return perUnitWords(p.unit);
+		if (said.corpo) return "a corpo";
+		said.corpo = true;
+		return "a corpo (la fattura non dice la quantità)";
+	}
+
+	/** «il 18/10/2026, fattura n. B-9». */
+	function invoiceWords(r: Pick<PurchaseRow, "day" | "number">): string {
+		return `il ${italianDate(r.day)}, fattura${r.number === undefined ? "" : ` n. ${r.number}`}`;
+	}
+
+	/** «Beta Srl: CARTA A4 80GR, 4,86 € a risma il 15/10/2026, fattura n. B-2; prima 4,50 € (+8%); 3 acquisti». */
+	function supplierLine(s: SupplierPrice, description: boolean): string {
+		const r = s.latest;
+		const parts = [`${s.supplier}: ${description ? `${r.description}, ` : ""}${priceWords(r.price)}${r.perLine ? "" : ` ${perUnitWords(r.unit)}`} ${invoiceWords(r)}`];
+		if (s.previous !== undefined && !r.perLine) parts.push(`prima ${priceWords(s.previous.price)} (${tenthsWords(riseTenths(s.previous.price, r.price)).replace(/^(?=\d)/, "+")})`);
+		if (s.lowest < r.price && (s.previous === undefined || s.lowest < s.previous.price)) parts.push(`il più basso ${priceWords(s.lowest)}`);
 		parts.push(n1(s.count, "un acquisto", "# acquisti"));
 		return `  - ${parts.join("; ")}`;
 	}
 
-	function productBlock(p: Product): string[] {
-		const sellers = bySupplier(p);
-		return [`• ${p.name} (${unitWords(p)})`, ...sellers.slice(0, PURCHASE_LIMITS.suppliers).map((s) => supplierLine(p, s)), ...(sellers.length > PURCHASE_LIMITS.suppliers ? [`  - e altri ${sellers.length - PURCHASE_LIMITS.suppliers} fornitori`] : [])];
+	function sellerLines(sellers: readonly SupplierPrice[], description: boolean): string[] {
+		return [...sellers.slice(0, PURCHASE_LIMITS.suppliers).map((s) => supplierLine(s, description)), ...(sellers.length > PURCHASE_LIMITS.suppliers ? [`  - e altri ${sellers.length - PURCHASE_LIMITS.suppliers}`] : [])];
 	}
 
-	function products(blocks: readonly Product[]): string {
-		const shown = blocks.slice(0, PURCHASE_LIMITS.products).flatMap(productBlock);
-		if (blocks.length > PURCHASE_LIMITS.products) shown.push(`e altri ${blocks.length - PURCHASE_LIMITS.products} prodotti`);
-		return fenced(shown.join("\n"));
-	}
-
-	function matching(args: Record<string, unknown>, data: Data): { rows: PurchaseRow[]; supplier?: Supplier } | string {
+	function matching(args: Record<string, unknown>, data: Data): { rows: PurchaseRow[]; said: string; supplier?: Supplier; took?: string } | string {
 		const said = itemSaid(args, true);
 		if (isProblem(said)) return `Errore: ${said.problem}.`;
-		const supplier = supplierSaid(args, data);
-		if (typeof supplier === "string") return supplier;
-		const rows = data.rows.filter((r) => rowMatches(r, said as string) && (supplier === undefined || r.supplierKey === supplier.key));
-		return { rows, ...(supplier === undefined ? {} : { supplier }) };
+		const s = supplierSaid(args, data);
+		if (typeof s === "string") return s;
+		const rows = data.rows.filter((r) => rowMatches(r, said as string) && (s === undefined || r.supplierKey === s.supplier.key));
+		return { rows, said: said as string, ...(s === undefined ? {} : { supplier: s.supplier }), ...(s?.took === undefined ? {} : { took: s.took }) };
 	}
 
+	/** The rows the words fit, by unit, every supplier together, each with its own description: the latest price first, the cheapest first. */
 	function item(args: Record<string, unknown>, data: Data): string {
 		const m = matching(args, data);
 		if (typeof m === "string") return m;
-		if (m.rows.length === 0) return withNotes([`Non trovo acquisti di questo prodotto${m.supplier === undefined ? "" : " da questo fornitore"} nelle fatture ricevute:`, fenced(String(args.item))].join("\n"), data);
-		const found = productsOf(m.rows);
-		const suppliers = new Set(m.rows.map((r) => r.supplierKey)).size;
-		return withNotes(
-			[`${n1(found.length, "Un prodotto", "# prodotti")} con queste parole, ${n1(suppliers, "da un fornitore", "da # fornitori")}: per ognuno il prezzo dell'ultimo acquisto, il fornitore che lo vende meno caro per primo. Prezzi senza IVA, con gli sconti di riga già dentro; unità diverse sono prodotti diversi.`, products(found)].join("\n"),
-			data,
-		);
+		if (m.rows.length === 0) return withNotes([`Non trovo acquisti di questo prodotto${m.supplier === undefined ? "" : " da questo fornitore"} nelle fatture ricevute:`, fenced([...(m.took === undefined ? [] : [m.took]), m.said].join("\n"))].join("\n"), data);
+		const offers = offersOf(m.rows);
+		const said = { corpo: false };
+		const shown = offers.slice(0, PURCHASE_LIMITS.products);
+		const lines = [...(m.took === undefined ? [] : [m.took]), ...shown.flatMap((o) => [`• ${m.said}, ${unitHeading(o, said)}`, ...sellerLines(o.sellers, true)])];
+		if (offers.length > PURCHASE_LIMITS.products) lines.push(`e altri ${offers.length - PURCHASE_LIMITS.products}`);
+		lines.push(...spreadNotes(shown.flatMap((o) => o.sellers.slice(0, PURCHASE_LIMITS.suppliers).flatMap((s) => [s.latest, s.previous]))));
+		const notes = offers.length > 1 ? ["Le unità sono diverse: ognuna a parte, non le confronto tra loro."] : [];
+		return withNotes(["Ecco quanto l'hai pagata l'ultima volta, senza IVA (prima chi la vende meno cara):", fenced(lines.join("\n")), ...notes].join("\n"), data);
 	}
 
 	function itemCount(args: Record<string, unknown>, data: Data): string {
@@ -242,16 +274,25 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 	}
 
 	function supplierOp(args: Record<string, unknown>, data: Data): string {
-		const supplier = supplierSaid(args, data);
-		if (typeof supplier === "string") return supplier;
-		if (supplier === undefined) return "Errore: dimmi quale fornitore: il nome o la partita IVA.";
+		const s = supplierSaid(args, data);
+		if (typeof s === "string") return s;
+		if (s === undefined) return "Errore: dimmi quale fornitore: il nome o la partita IVA.";
+		const { supplier } = s;
 		const rows = data.rows.filter((r) => r.supplierKey === supplier.key);
-		if (rows.length === 0) return withNotes(["Nelle fatture ricevute da questo fornitore non trovo righe con un prezzo:", fenced(supplier.name)].join("\n"), data);
+		const extra = data.expenses.filter((e) => e.supplierKey === supplier.key);
+		const head = [...(s.took === undefined ? [] : [s.took]), `Fornitore: ${supplier.name}`];
+		if (rows.length === 0 && extra.length === 0) return withNotes(["Nelle fatture ricevute da questo fornitore non trovo righe con un prezzo:", fenced(head.join("\n"))].join("\n"), data);
 		const found = productsOf(rows).sort((a, b) => (b.rows.at(-1)?.day ?? "").localeCompare(a.rows.at(-1)?.day ?? ""));
-		return withNotes(
-			[`Da questo fornitore hai comprato ${n1(found.length, "un prodotto", "# prodotti")}: il prezzo dell'ultimo acquisto di ognuno, i più recenti per primi, senza IVA e con gli sconti di riga già dentro.`, fenced([`Fornitore: ${supplier.name}`, ...found.slice(0, PURCHASE_LIMITS.products).flatMap(productBlock), ...(found.length > PURCHASE_LIMITS.products ? [`e altri ${found.length - PURCHASE_LIMITS.products} prodotti`] : [])].join("\n"))].join("\n"),
-			data,
-		);
+		const said = { corpo: false };
+		const shown = found.slice(0, PURCHASE_LIMITS.products);
+		const lines = [...head, ...shown.flatMap((p) => [`• ${p.name}, ${unitHeading(p, said)}`, ...sellerLines(bySupplier(p), false)])];
+		if (found.length > PURCHASE_LIMITS.products) lines.push(`e altri ${found.length - PURCHASE_LIMITS.products} prodotti`);
+		const recent = extra.slice(-PURCHASE_LIMITS.products).reverse();
+		if (recent.length > 0) lines.push("Spese della fattura:", ...recent.map((e) => `• ${e.description}, ${priceWords(e.total)} ${invoiceWords(e)}`));
+		lines.push(...spreadNotes(shown.flatMap((p) => bySupplier(p).flatMap((x) => [x.latest, x.previous]))));
+		const out = [rows.length === 0 ? "Da questo fornitore non hai comprato prodotti con un prezzo, solo spese della fattura:" : `Da questo fornitore hai comprato ${n1(found.length, "un prodotto", "# prodotti")}: il prezzo dell'ultimo acquisto di ognuno, i più recenti per primi, senza IVA.`, fenced(lines.join("\n"))];
+		if (recent.length > 0) out.push("Le spese della fattura (trasporto, imballo e simili) non sono prodotti: le elenco a parte e non le metto nei prezzi.");
+		return withNotes(out.join("\n"), data);
 	}
 
 	function compare(args: Record<string, unknown>, data: Data, day: string): string {
@@ -259,16 +300,24 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		if (typeof period === "string") return period;
 		const said = itemSaid(args, false);
 		if (isProblem(said)) return `Errore: ${said.problem}.`;
-		const rows = said === undefined ? data.rows : data.rows.filter((r) => rowMatches(r, said));
-		const cheapest = cheapestOf(rows, period.from, period.to);
-		if (cheapest.length === 0) return withNotes(`Nel periodo ${period.label} nessun prodotto${said === undefined ? "" : " con queste parole"} è stato comprato da più di un fornitore nella stessa unità: non c'è niente da confrontare.`, data);
-		const lines = cheapest.slice(0, PURCHASE_LIMITS.products).flatMap((c) => {
-			const [best, ...others] = c.suppliers;
+		const within = data.rows.filter((r) => !r.perLine && r.day >= period.from && r.day <= period.to && (said === undefined || rowMatches(r, said)));
+		// The words said: every row they fit, in one unit, one group; else each product by its name.
+		const groups: { name: string; unit?: string; sellers: readonly SupplierPrice[]; description: boolean }[] =
+			said === undefined
+				? cheapestOf(within, period.from, period.to).map((c) => ({ name: c.product.name, ...(c.product.unit === undefined ? {} : { unit: c.product.unit }), sellers: c.suppliers, description: false }))
+				: offersOf(within)
+						.filter((o) => o.sellers.length >= 2)
+						.map((o) => ({ name: said, ...(o.unit === undefined ? {} : { unit: o.unit }), sellers: o.sellers, description: true }));
+		if (groups.length === 0) return withNotes(`Nel periodo ${period.label} nessun prodotto${said === undefined ? "" : " con queste parole"} è stato comprato da più di un fornitore nella stessa unità: non c'è niente da confrontare.`, data);
+		const lines = groups.slice(0, PURCHASE_LIMITS.products).flatMap((g) => {
+			const [best, ...others] = g.sellers;
 			if (best === undefined) return [];
-			return [`• ${c.product.name} (${unitWords(c.product)}): il meno caro è ${best.supplier}, ${priceWords(best.latest.price)} il ${italianDate(best.latest.day)}`, ...others.slice(0, PURCHASE_LIMITS.suppliers - 1).map((o) => `  - ${o.supplier}: ${priceWords(o.latest.price)} il ${italianDate(o.latest.day)} (${tenthsWords(riseTenths(best.latest.price, o.latest.price)).replace(/^(?=\d)/, "+")})`)];
+			const what = (s: SupplierPrice) => (g.description ? `${s.latest.description}, ` : "");
+			return [`• ${g.name}, ${perUnitWords(g.unit)}: il meno caro è ${best.supplier}, ${what(best)}${priceWords(best.latest.price)} ${invoiceWords(best.latest)}`, ...others.slice(0, PURCHASE_LIMITS.suppliers - 1).map((o) => `  - ${o.supplier}: ${what(o)}${priceWords(o.latest.price)} ${invoiceWords(o.latest)} (${tenthsWords(riseTenths(best.latest.price, o.latest.price)).replace(/^(?=\d)/, "+")})`)];
 		});
-		if (cheapest.length > PURCHASE_LIMITS.products) lines.push(`e altri ${cheapest.length - PURCHASE_LIMITS.products} prodotti`);
-		return withNotes([`${n1(cheapest.length, "Un prodotto", "# prodotti")} comprati da più fornitori ${period.in}: per ognuno il fornitore con l'ultimo prezzo più basso nel periodo, e quanto costano di più gli altri. Prezzi senza IVA, con gli sconti di riga già dentro.`, fenced(lines.join("\n"))].join("\n"), data);
+		if (groups.length > PURCHASE_LIMITS.products) lines.push(`e altri ${groups.length - PURCHASE_LIMITS.products}`);
+		lines.push(...spreadNotes(groups.slice(0, PURCHASE_LIMITS.products).flatMap((g) => g.sellers.map((s) => s.latest))));
+		return withNotes([`Chi te lo vende meno caro ${period.in}, con l'ultimo prezzo di ognuno, senza IVA, e quanto costano di più gli altri:`, fenced(lines.join("\n"))].join("\n"), data);
 	}
 
 	function thresholdOf(args: Record<string, unknown>): bigint | string {
@@ -280,10 +329,6 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		return hundredths;
 	}
 
-	function increaseLine(i: Increase): string {
-		return `• ${i.supplier}: ${i.product.name}, ${tenthsWords(i.tenths).replace(/^(?=\d)/, "+")} (da ${priceWords(i.previous.price)} a ${priceWords(i.latest.price)} per ${i.product.unit ?? "unità"}; ${invoiceWords(i.latest)})`;
-	}
-
 	function increases(args: Record<string, unknown>, data: Data, day: string): string {
 		const period = periodOf(args, day, "quest'anno") as Period | string;
 		if (typeof period === "string") return period;
@@ -292,37 +337,48 @@ export function createPurchasePriceTools(options: PurchaseToolsOptions): AnnieTo
 		const found = increasesOf(data.rows, threshold, period.from, period.to);
 		const pct = tenthsWords(threshold / 10n);
 		if (found.length === 0) return withNotes(`Nessun prezzo è aumentato di almeno il ${pct} ${period.in}, rispetto all'acquisto precedente dallo stesso fornitore.`, data);
-		const shown = found.slice(0, PURCHASE_LIMITS.products).map(increaseLine);
-		if (found.length > PURCHASE_LIMITS.products) shown.push(`e altri ${found.length - PURCHASE_LIMITS.products}`);
-		return withNotes([`${n1(found.length, "Un prezzo è aumentato", "# prezzi sono aumentati")} di almeno il ${pct} ${period.in}, rispetto all'acquisto precedente dallo stesso fornitore (per unità, senza IVA, i più forti per primi):`, fenced(shown.join("\n"))].join("\n"), data);
+		const shown = found.slice(0, PURCHASE_LIMITS.products);
+		const lines = shown.map(increaseWords);
+		if (found.length > PURCHASE_LIMITS.products) lines.push(`e altri ${found.length - PURCHASE_LIMITS.products}`);
+		lines.push(...spreadNotes(shown.flatMap((i) => [i.latest, i.previous])));
+		return withNotes([`${n1(found.length, "Un prezzo è aumentato", "# prezzi sono aumentati")} di almeno il ${pct} ${period.in}, rispetto all'acquisto precedente dallo stesso fornitore (senza IVA, i più forti per primi):`, fenced(lines.join("\n"))].join("\n"), data);
 	}
 
+	/** For another agente: how many, with the threshold taken down to 5, 10 or 20% and the period to a month, quarter or year (never a finer probe of one price). */
 	function increaseCount(args: Record<string, unknown>, data: Data, day: string): string {
-		const period = periodOf(args, day, "quest'anno") as Period | string;
-		if (typeof period === "string") return period;
-		const threshold = thresholdOf(args);
-		if (typeof threshold === "string") return threshold;
+		const asked = periodOf(args, day, "quest'anno") as Period | string;
+		if (typeof asked === "string") return asked;
+		const period = agentPeriod(asked, day);
+		const read = thresholdOf(args);
+		if (typeof read === "string") return read;
+		const threshold = agentThreshold(read);
 		const found = increasesOf(data.rows, threshold, period.from, period.to);
 		return `${found.length === 0 ? "Nessun prodotto costa" : n1(found.length, "Un prodotto costa", "# prodotti costano")} almeno il ${tenthsWords(threshold / 10n)} in più dell'acquisto precedente dallo stesso fornitore, ${period.in}. Prezzi e fornitori li dico solo a chi mi scrive.`;
 	}
 
-	/** The brief's line: the increases of 5% or more in the invoices of the last days, each invoice line said once, at most PURCHASE_LIMITS.perDay a day; the rest counted. */
+	/**
+	 * The brief's line: the increases of 5% or more in the invoices of the last days, from an
+	 * earlier price of at least 0,01 €, each invoice line said once, at most PURCHASE_LIMITS.perDay
+	 * a day and one per supplier; the rest counted, for the next days.
+	 */
 	async function brief(ctx: ToolContext, data: Data, day: string): Promise<string> {
 		if (store.read().broken) return `Prezzi d'acquisto: ${PURCHASES_BROKEN}.`;
-		const found = increasesOf(data.rows, BigInt(PURCHASE_LIMITS.threshold * 100), addDays(day, -PURCHASE_LIMITS.recentDays), day);
+		const found = increasesOf(data.rows, BigInt(PURCHASE_LIMITS.threshold * 100), addDays(day, -PURCHASE_LIMITS.recentDays), day).filter((i) => i.previous.price >= BigInt(PURCHASE_LIMITS.floor));
 		if (found.length === 0) return BRIEF_NOTHING;
+		const keyOf = (i: Increase) => lineKey(i.latest.invoice, i.latest.line);
+		const supplierOf = new Map(found.map((i) => [keyOf(i), i.supplierKey]));
 		// What other calls said: a call run again says its own lines again.
 		const said = new Set(store.read().alerts.filter((a) => a.call !== ctx.callId).map((a) => a.k));
-		const open = found.filter((i) => !said.has(lineKey(i.latest.invoice, i.latest.line)));
+		const open = found.filter((i) => !said.has(keyOf(i)));
 		if (open.length === 0) return BRIEF_NOTHING;
-		const claimed = await ctx.step("claim", async () => store.claim(ctx.callId, day, "brief", open.map((i) => lineKey(i.latest.invoice, i.latest.line)), PURCHASE_LIMITS.perDay));
+		const claimed = await ctx.step("claim", async () => store.claim(ctx.callId, day, "brief", open.map(keyOf), { perDay: PURCHASE_LIMITS.perDay, perGroup: PURCHASE_LIMITS.perSupplier, groupOf: (k) => supplierOf.get(k) }));
 		const mine = new Set(claimed);
-		const now = open.filter((i) => mine.has(lineKey(i.latest.invoice, i.latest.line)));
+		const now = open.filter((i) => mine.has(keyOf(i)));
 		const rest = open.length - now.length;
-		if (now.length === 0) return rest === 0 ? BRIEF_NOTHING : `Prezzi d'acquisto: ${n1(rest, "un altro aumento", "altri # aumenti")} da dire, nei prossimi giorni.`;
+		const later = rest === 1 ? "un altro te lo dico domani" : `altri ${rest} te li dico domani`;
+		if (now.length === 0) return rest === 0 ? BRIEF_NOTHING : `Prezzi d'acquisto: ${rest === 1 ? "un aumento te lo dico domani" : `${rest} aumenti te li dico domani`}.`;
 		await audit(ctx, "brief", now.length);
-		const lines = now.map((i) => `• ${i.supplier} ti ha fatto pagare ${i.product.name} ${tenthsWords(i.tenths)} in più dell'ultima volta (${priceWords(i.latest.price)} invece di ${priceWords(i.previous.price)} per ${i.product.unit ?? "unità"})`);
-		return [`Prezzi d'acquisto: ${n1(now.length, "un aumento", "# aumenti")} di almeno il ${PURCHASE_LIMITS.threshold}% nelle fatture ricevute (nel riquadro)${rest === 0 ? "" : `, e ${n1(rest, "un altro", "altri #")} nei prossimi giorni`}.`, fenced(lines.join("\n"))].join("\n");
+		return [`Prezzi d'acquisto: ${n1(now.length, "un aumento", "# aumenti")} di almeno il ${PURCHASE_LIMITS.threshold}% nelle fatture ricevute (nel riquadro)${rest === 0 ? "" : `; ${later}`}.`, fenced(now.map((i) => briefIncreaseWords(i, day)).join("\n"))].join("\n");
 	}
 
 	async function exportCsv(args: Record<string, unknown>, ctx: ToolContext, data: Data, day: string): Promise<string> {

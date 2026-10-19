@@ -148,3 +148,28 @@ export function stemsWithin(said: string, name: string): boolean {
 export function sameStems(a: string, b: string): boolean {
 	return stemsWithin(a, b) && stemsWithin(b, a);
 }
+
+/** The abbreviations suppliers write in an invoice line, spelled out: «gr», «g» grammi, «ff», «fg» fogli, «rs» risma, «nr» numero. */
+const ABBREVIATIONS: Readonly<Record<string, string>> = { gr: "grammi", g: "grammi", ff: "fogli", fg: "fogli", rs: "risma", nr: "numero" };
+
+/**
+ * A supplier's description the way it is matched: folded words, digits apart from the letters they
+ * are glued to («80GR» is «80 gr», «RS500» «rs 500») and the abbreviations of ABBREVIATIONS spelled
+ * out. Only for the lines of the invoices received and what is matched with them (prices paid,
+ * articles of the magazzino a line is loaded on): never the names of articles, clients or
+ * suppliers among themselves, where «g» or «rs» may be a name of their own.
+ */
+export function spelledOut(text: string): string {
+	return words(
+		fold(text)
+			.replace(/(\d)([a-z])/g, "$1 $2")
+			.replace(/([a-z])(\d)/g, "$1 $2"),
+	)
+		.map((w) => ABBREVIATIONS[w] ?? w)
+		.join(" ");
+}
+
+/** Whether every word of `said` is in `description`, in either number, both spelled out (spelledOut): «carta a4 80 grammi» in «CARTA A4 80GR RS500». */
+export function wordsWithin(said: string, description: string): boolean {
+	return stemsWithin(spelledOut(said), spelledOut(description));
+}

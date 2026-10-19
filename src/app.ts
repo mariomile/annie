@@ -619,6 +619,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 					isBriefThread,
 					...(mail === undefined ? {} : { mail }),
+					purchases: runtime.purchases(record.tenantId, record.id),
 					record: async (event) => {
 						await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 					},

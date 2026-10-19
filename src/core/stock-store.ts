@@ -11,13 +11,13 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { type CodeMap, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockUnit, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall } from "./stock.ts";
+import { type CodeMap, codeMapKey, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockItemId, stockUnit, type UnitMap, unitMapKey, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall, validUnitMap } from "./stock.ts";
 import { costText, packUnits, qtyOf, qtyText, stateOf } from "./stock-sums.ts";
 
 /** What a change works on: the articles, the movements and the next numbers. */
 export type StockState = { readonly nextItem: number; readonly nextMove: number; readonly items: readonly StockItem[]; readonly moves: readonly Movement[] };
 
-type Book = StockState & { readonly archived: readonly SaleKey[]; readonly received: readonly ReceivedKey[]; readonly codes: readonly CodeMap[]; readonly alerts: readonly LowClaim[]; readonly calls: readonly string[] };
+type Book = StockState & { readonly archived: readonly SaleKey[]; readonly received: readonly ReceivedKey[]; readonly codes: readonly CodeMap[]; readonly units: readonly UnitMap[]; readonly alerts: readonly LowClaim[]; readonly calls: readonly string[] };
 
 export type StockBook = Book & { readonly broken: boolean };
 
@@ -25,10 +25,10 @@ export const STOCK_BROKEN = "il magazzino (stock.json) non si legge: non lo camb
 
 export const STOCK_FULL = "il magazzino è pieno: ci sono troppi movimenti per salvarne altri. Chi ti scrive può chiudere un anno passato: i movimenti fino alla fine di quell'anno diventano una riga di apertura per articolo, con la quantità e il costo medio di allora";
 
-const EMPTY: Book = { nextItem: 1, nextMove: 1, items: [], moves: [], archived: [], received: [], codes: [], alerts: [], calls: [] };
+const EMPTY: Book = { nextItem: 1, nextMove: 1, items: [], moves: [], archived: [], received: [], codes: [], units: [], alerts: [], calls: [] };
 
-/** What loading an invoice received writes: its carichi (numbered from the next), the keys of its lines, the supplier codes learned. */
-export type InvoiceLoad = { readonly moves: readonly Movement[]; readonly keys: readonly ReceivedKey[]; readonly codes: readonly CodeMap[] };
+/** What loading an invoice received writes: the articles it adds (numbered from the next), its carichi (numbered from the next), the keys of its lines, the supplier codes, descriptions and units learned. */
+export type InvoiceLoad = { readonly items: readonly StockItem[]; readonly moves: readonly Movement[]; readonly keys: readonly ReceivedKey[]; readonly codes: readonly CodeMap[]; readonly units: readonly UnitMap[] };
 
 /** One line of an invoice issued (or a credit note) that names a voce of the listino. */
 export type SaleLine = { readonly line: number; readonly listino: string; readonly quantity: string; readonly unit?: string; readonly description: string };
@@ -153,8 +153,10 @@ export class StockStore {
 
 	/**
 	 * An invoice received loaded, once per `callId`: `plan` gets the book as saved now and gives
-	 * the carichi, the keys of the lines they load and the codes learned (a code said again for the
-	 * same supplier points to its new article). A line already loaded is refused, nothing written.
+	 * the articles added, the carichi, the keys of the lines they load and what was learned (a code,
+	 * description or unit said again for the same supplier points to its new article). A line
+	 * already loaded is refused, nothing written; so is a load that does not hold together, each
+	 * with why.
 	 */
 	receiveInvoice(callId: string, plan: (book: Book) => InvoiceLoad): "written" | "rerun" | "unchanged" {
 		let outcome: "written" | "rerun" | "unchanged" = "unchanged";
@@ -165,14 +167,15 @@ export class StockStore {
 			}
 			const load = plan(book);
 			if (load.moves.length === 0) return book;
-			const done = new Set(book.received.map((r) => r.k));
-			if (load.keys.some((k) => done.has(k.k))) throw new StockError("una riga di questa fattura è già stata caricata nel frattempo: non ho caricato niente, ricontrolla");
-			if (book.received.length + load.keys.length > STOCK_LIMITS.received) throw new StockError(STOCK_FULL);
-			const base = made(book, { nextItem: book.nextItem, nextMove: book.nextMove + load.moves.length, items: book.items, moves: [...book.moves, ...load.moves] }, [...book.calls, callId].slice(-STOCK_LIMITS.calls));
-			const learned = new Set(load.codes.map((c) => `${c.s}\u0000${c.c.toLowerCase()}`));
-			const codes = [...book.codes.filter((c) => !learned.has(`${c.s}\u0000${c.c.toLowerCase()}`)), ...load.codes].slice(-STOCK_LIMITS.codes);
-			const out: Book = { ...base, received: [...book.received, ...load.keys], codes };
-			if (validBook(out) === undefined) throw new StockError("il magazzino non è valido: non l'ho salvato");
+			const why = loadProblem(book, load);
+			if (why !== undefined) throw new StockError(why);
+			const base = made(book, { nextItem: book.nextItem + load.items.length, nextMove: book.nextMove + load.moves.length, items: [...book.items, ...load.items], moves: [...book.moves, ...load.moves] }, [...book.calls, callId].slice(-STOCK_LIMITS.calls));
+			const learned = new Set(load.codes.map(codeMapKey));
+			const codes = [...book.codes.filter((c) => !learned.has(codeMapKey(c))), ...load.codes].slice(-STOCK_LIMITS.codes);
+			const told = new Set(load.units.map(unitMapKey));
+			const units = [...book.units.filter((u) => !told.has(unitMapKey(u))), ...load.units].slice(-STOCK_LIMITS.units);
+			const out: Book = { ...base, received: [...book.received, ...load.keys], codes, units };
+			if (validBook(out) === undefined) throw new StockError("quello che ho imparato da questa fattura (codici, descrizioni, unità) non si salva: non ho caricato niente");
 			outcome = "written";
 			return out;
 		});
@@ -301,6 +304,33 @@ export class StockStore {
 	}
 }
 
+/** Why a load of an invoice received does not hold together, said for the person; undefined when it does. */
+function loadProblem(book: Book, load: InvoiceLoad): string | undefined {
+	const keys = new Set(load.keys.map((k) => k.k));
+	if (keys.size !== load.keys.length) return "due righe di questa fattura hanno lo stesso numero: non ho caricato niente";
+	const done = new Set(book.received.map((r) => r.k));
+	if (load.keys.some((k) => done.has(k.k))) return "una riga di questa fattura è già stata caricata nel frattempo: non ho caricato niente, ricontrolla";
+	if (book.received.length + load.keys.length > STOCK_LIMITS.received) return STOCK_FULL;
+	if (load.keys.some((k) => !validReceivedKey(k))) return "la data di questa fattura non è un giorno vero dal 2000 in poi: non ho caricato niente";
+	const learned = new Map<string, string>();
+	for (const c of load.codes) {
+		if (!validCodeMap(c)) return "un codice o una descrizione del fornitore è troppo lungo per ricordarlo: non ho caricato niente";
+		const was = learned.get(codeMapKey(c));
+		if (was !== undefined && was !== c.i) return "lo stesso codice del fornitore è su due righe con articoli diversi: non ho caricato niente";
+		learned.set(codeMapKey(c), c.i);
+	}
+	if (load.units.some((u) => !validUnitMap(u))) return "un'unità del fornitore non si ricorda così (troppo lunga, o non è una quantità): non ho caricato niente";
+	const names = new Set(book.items.filter((i) => i.removed === undefined).map((i) => i.name.toLowerCase()));
+	let next = book.nextItem;
+	for (const i of load.items) {
+		if (!validItem(i) || i.id !== stockItemId(next++)) return "un articolo nuovo di questa fattura non si aggiunge così (nome o unità non validi): non ho caricato niente";
+		if (names.has(i.name.toLowerCase())) return "c'è già un articolo con il nome di una riga da aggiungere: scegli quello, non ho caricato niente";
+		names.add(i.name.toLowerCase());
+	}
+	if (book.items.filter((i) => i.removed === undefined).length + load.items.length > STOCK_LIMITS.items) return `ci sono già troppi articoli (al massimo ${STOCK_LIMITS.items}): non ho caricato niente`;
+	return undefined;
+}
+
 /** The book after a change, checked: the movements before it all there, unchanged, in their place. */
 function made(book: Book, next: StockState, calls: readonly string[]): Book {
 	if (next.moves.length < book.moves.length || book.moves.some((m, n) => next.moves[n] !== m)) throw new StockError("i movimenti del magazzino non si cambiano: non ho salvato");
@@ -325,7 +355,9 @@ function validBook(raw: unknown): Book | undefined {
 	const received = b.received ?? [];
 	const codes = b.codes ?? [];
 	if (!Array.isArray(received) || received.length > STOCK_LIMITS.received || !received.every(validReceivedKey) || new Set(received.map((r) => r.k)).size !== received.length) return undefined;
-	if (!Array.isArray(codes) || codes.length > STOCK_LIMITS.codes || !codes.every(validCodeMap) || new Set(codes.map((c) => `${c.s}\u0000${c.c.toLowerCase()}`)).size !== codes.length) return undefined;
+	if (!Array.isArray(codes) || codes.length > STOCK_LIMITS.codes || !codes.every(validCodeMap) || new Set(codes.map(codeMapKey)).size !== codes.length) return undefined;
+	const units = b.units ?? [];
+	if (!Array.isArray(units) || units.length > STOCK_LIMITS.units || !units.every(validUnitMap) || new Set(units.map(unitMapKey)).size !== units.length) return undefined;
 	// Numbers never given again: every id below its counter, each once; one article on the list per name, code and voce.
 	const ids = new Set<string>();
 	const taken = new Set<string>();
@@ -364,6 +396,6 @@ function validBook(raw: unknown): Book | undefined {
 		}
 		seen.set(m.id, m);
 	}
-	if (codes.some((c) => !ids.has(c.i))) return undefined;
-	return { ...b, received, codes };
+	if (codes.some((c) => !ids.has(c.i)) || units.some((u) => !ids.has(u.i))) return undefined;
+	return { ...b, received, codes, units };
 }

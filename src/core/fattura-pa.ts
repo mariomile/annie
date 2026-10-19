@@ -106,7 +106,12 @@ export type FatturaDocument = {
 	readonly linesSkipped?: number;
 	/** Lines past MAX_DOC_LINES: left out. */
 	readonly linesCut?: number;
+	/** The discounts and surcharges on the whole document (DatiGeneraliDocumento ScontoMaggiorazione) that read: SC sconto, MG maggiorazione, a percentage or an amount (canonical decimals). */
+	readonly adjustments?: readonly FatturaAdjustment[];
 };
+
+/** A discount (SC) or surcharge (MG) on the whole document: its percentage, or else its amount. */
+export type FatturaAdjustment = { readonly kind: "SC" | "MG"; readonly percent?: string; readonly amount?: string };
 
 /**
  * One line of a document (DettaglioLinee) as written, its numbers in canonical decimals (12.5,
@@ -258,6 +263,7 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const withholdings = withholdingsOf(general);
 	const funds = fundsOf(general);
 	const lines = linesOf(child(body, "DatiBeniServizi"));
+	const adjustments = adjustmentsOf(general);
 	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
@@ -270,6 +276,7 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 		...(lines.lines.length === 0 ? {} : { lines: lines.lines }),
 		...(lines.skipped === 0 ? {} : { linesSkipped: lines.skipped }),
 		...(lines.cut === 0 ? {} : { linesCut: lines.cut }),
+		...(adjustments.length === 0 ? {} : { adjustments }),
 	};
 	return { doc, body, instalmentOf };
 }
@@ -283,16 +290,35 @@ function canonical(raw: string | undefined): string | undefined {
 
 const NATURE_CODE = /^N\d(?:\.\d{1,2})?$/;
 
+/** The discounts and surcharges on the whole document that read: a Tipo SC or MG with a positive percentage or amount. */
+function adjustmentsOf(general: XmlElement | undefined): FatturaAdjustment[] {
+	const out: FatturaAdjustment[] = [];
+	for (const el of children(general, "ScontoMaggiorazione").slice(0, MAX_VAT_ROWS)) {
+		const kind = value(el, "Tipo");
+		if (kind !== "SC" && kind !== "MG") continue;
+		const percent = canonical(value(el, "Percentuale"));
+		const amount = canonical(value(el, "Importo"));
+		if (percent !== undefined && Number(percent) > 0 && Number(percent) < 100) out.push({ kind, percent });
+		else if (amount !== undefined && Number(amount) > 0) out.push({ kind, amount: amount.replace(/^-/, "") });
+	}
+	return out;
+}
+
 /**
  * The lines of a document that read, at most MAX_DOC_LINES: a description, PrezzoUnitario,
  * PrezzoTotale and AliquotaIVA that are numbers, a Quantita that is one when written, a Natura
- * that is a code when written. Any other is `skipped`, never guessed.
+ * that is a code when written. Any other is `skipped`, never guessed. A line's number is its
+ * NumeroLinea when every line has one (1 to 9999) and no two the same; otherwise every line is
+ * numbered by its place (1, 2, 3…): never two lines with one number.
  */
 function linesOf(goods: XmlElement | undefined): { lines: FatturaLine[]; skipped: number; cut: number } {
 	const rows = children(goods, "DettaglioLinee");
 	const lines: FatturaLine[] = [];
 	let skipped = 0;
-	rows.slice(0, MAX_DOC_LINES).forEach((row, i) => {
+	const kept = rows.slice(0, MAX_DOC_LINES);
+	const written = kept.map((row) => value(row, "NumeroLinea"));
+	const numbered = written.every((n) => n !== undefined && /^\d{1,4}$/.test(n) && Number(n) > 0) && new Set(written.map(Number)).size === written.length;
+	kept.forEach((row, i) => {
 		const description = value(row, "Descrizione");
 		const unitPrice = canonical(value(row, "PrezzoUnitario"));
 		const total = canonical(value(row, "PrezzoTotale"));
@@ -304,8 +330,7 @@ function linesOf(goods: XmlElement | undefined): { lines: FatturaLine[]; skipped
 			skipped++;
 			return;
 		}
-		const numbered = value(row, "NumeroLinea");
-		const n = numbered !== undefined && /^\d{1,4}$/.test(numbered) && Number(numbered) > 0 ? Number(numbered) : i + 1;
+		const n = numbered ? Number(written[i]) : i + 1;
 		const codeEl = children(row, "CodiceArticolo").find((c) => value(c, "CodiceValore") !== undefined);
 		const codeValue = value(codeEl, "CodiceValore");
 		const codeType = value(codeEl, "CodiceTipo");

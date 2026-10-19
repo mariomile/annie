@@ -25,7 +25,7 @@ export const NO_ITEMS = "Il magazzino è vuoto: non c'è ancora nessun articolo.
 export const BRIEF_NOTHING = "Niente da segnalare sul magazzino: nel brief non scrivere niente sul magazzino.";
 
 /** The plurals of the magazzino's own units (the listino knows pezzi, ore, giornate). */
-const MORE_PLURALS: Readonly<Record<string, string>> = { litro: "litri", confezione: "confezioni", scatola: "scatole", rotolo: "rotoli", paio: "paia", cartone: "cartoni", pacco: "pacchi", bancale: "bancali", busta: "buste", risma: "risme", flacone: "flaconi" };
+const MORE_PLURALS: Readonly<Record<string, string>> = { litro: "litri", confezione: "confezioni", scatola: "scatole", rotolo: "rotoli", paio: "paia", cartone: "cartoni", pacco: "pacchi", bancale: "bancali", busta: "buste", risma: "risme", flacone: "flaconi", bottiglia: "bottiglie" };
 
 /** A unit in the plural, as a word: «pezzi», «rotoli», «metri» (for «si conta a …»). */
 const WORDS: Readonly<Record<string, string>> = { m: "metri", g: "grammi", ml: "millilitri" };
