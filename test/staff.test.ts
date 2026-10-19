@@ -231,11 +231,13 @@ describe("the brief, the file, routing", () => {
 
 	it("routing: the instructions and the description keep staff apart from appointments, agents and Annie's users", () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il personale di una piccola attività, cioè le persone che ci lavorano e non gli utenti di Annie né gli agenti del board (staff:");
+		// Kept short: the instructions have a size limit, the examples live in the description.
+		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il personale, cioè chi ci lavora e non gli utenti di Annie (staff:");
 		expect(DEFAULT_INSTRUCTIONS).toContain("mai la diagnosi");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«assumo Luca da lunedì, 20 ore, mattina» con op person");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«chiudo per ferie dal 10 al 20 agosto» è la chiusura dell'attività, appointments con op settings");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«sabato Giulia fa 9-13» con op shift");
+		expect(DEFAULT_INSTRUCTIONS).toContain("«chiudo per ferie» è la chiusura dell'attività, appointments con op settings");
+		expect(s.tool.description).toContain("«assumo Luca");
+		expect(s.tool.description).toContain("«chiudo per ferie dal 10 al 20 agosto» is the business closing: appointments settings, not staff.");
+		expect(s.tool.description).toContain("«sabato Giulia fa 9-13»");
 		expect(s.tool.description).toContain("«Giulia è in ferie dal 3 al 14 agosto»");
 		expect(s.tool.description).toContain("«malattia del figlio» (reason congedo malattia figlio)");
 		expect(s.tool.description).toContain("not the people who use Annie");
