@@ -1315,7 +1315,9 @@ describe("week 68: the yes is a person's own message", () => {
 		const s = setup();
 		await s.run({ op: "draft", ...DELTA, lines: [line("Sito web", 1000)], vat: 22 });
 		const id = s.last().id;
-		for (const origin of ["notice", "scheduled", "agent"] as const) {
+		// Another agente's turn, whatever its channel, stops at the agent gate first (week 70).
+		expect(await s.run({ op: "issue", draft: id, confirm: true }, { ...fresh(), origin: "agent" })).toContain("a un altro agente");
+		for (const origin of ["notice", "scheduled"] as const) {
 			const refused = await s.run({ op: "issue", draft: id, confirm: true }, { ...fresh(), origin });
 			expect(refused).toContain("Non emetto la fattura ");
 			expect(refused).not.toContain("Errore");
@@ -1329,7 +1331,7 @@ describe("week 68: the yes is a person's own message", () => {
 });
 
 describe("week 68: numbering and removals are a person's own word (ADR 0088)", () => {
-	const refused = /serve il sì di chi ti scrive|lo conferma solo chi ti scrive/;
+	const refused = /serve il sì di chi ti scrive|lo conferma solo chi ti scrive|altro agente/;
 	it("settings numbering and last_number, a draft's last_number and remove draft are refused in a notice, a schedule or another agente's turn", async () => {
 		const s = setup({ askFirst: true });
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
@@ -1337,8 +1339,8 @@ describe("week 68: numbering and removals are a person's own word (ADR 0088)", (
 			expect(await s.run({ op: "settings", numbering: "year" }, c())).toMatch(refused);
 			expect(await s.run({ op: "settings", last_number: 41 }, c())).toMatch(refused);
 			expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22, last_number: 41 }, c())).toMatch(refused);
-			// What is not the numbering still goes.
-			expect(await s.run({ op: "settings", bollo_to_client: true }, c())).toContain("Fatto, ho salvato.");
+			// What is not the numbering still goes; another agente changes nothing at all (week 70).
+			expect(await s.run({ op: "settings", bollo_to_client: true }, c())).toContain(origin === "agent" ? "a un altro agente" : "Fatto, ho salvato.");
 		}
 		expect(s.store.read().settings?.lastBefore).toBeUndefined();
 		expect(s.store.read().settings?.numbering).toBeUndefined();

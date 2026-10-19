@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import { italianLongDate as long, withDate } from "../italian-format.ts";
@@ -14,7 +13,7 @@ import { sameDraft } from "./field-input.ts";
 import { isProblem } from "../text-input.ts";
 import { applyFields, editsSomething, readFields, readPeriodAmount } from "./renewal-input.ts";
 import { briefAnswer, fenced, listAnswer, renewalLine, renewalsCsv, summaryAnswer, upcomingAnswer} from "./renewal-render.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 
 const RENEWAL_OPS = ["add", "list", "upcoming", "summary", "renewed", "paid", "cancel", "reactivate", "edit", "remove", "export"] as const;
@@ -133,7 +132,7 @@ export function createRenewalTools(options: RenewalToolsOptions): AnnieTool[] {
 				if (!RENEWAL_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${RENEWAL_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads, it never records, changes or writes a file.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !renewalCallReads(args)) {
+				if (isAgentTurn(ctx) && !renewalCallReads(args)) {
 					return "Errore: in una richiesta di un altro agente non aggiungo, non cambio e non esporto rinnovi: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				// Cancelled or removed only when the person asks, in their own message (ADR 0088).

@@ -887,7 +887,7 @@ describe("week 60 review", () => {
 	});
 
 	it("U7: one line for the tools that speak only when they have something, the restored words", () => {
-		expect(BRIEF_INSTRUCTION).toContain("9. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary), business_report (summary), withholding (cu_list), fiscal_agenda (upcoming), suppliers (summary), budgets (status), stock (low).");
+		expect(BRIEF_INSTRUCTION).toContain("9. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: timesheet (summary), renewals (upcoming), cashflow (forecast), taxes (calendar), clients (list), sales_invoices (list), vat_settlement (calendar), bank_statement (summary), business_report (summary), withholding (cu_list), fiscal_agenda (upcoming), suppliers (summary), budgets (status), stock (low), purchase_prices (increases).");
 		for (const words of ["il nome e quante voci restano", "sai in che città vive", "Se Google non è collegato o non è consentito"]) expect(BRIEF_INSTRUCTION).toContain(words);
 		expect(BRIEF_INSTRUCTION).not.toContain("come le ore");
 	});
@@ -1345,7 +1345,9 @@ describe("week 60 third verify", () => {
 describe("week 68: the yes is a person's own message", () => {
 	it("matching by itself is turned on only in a person's turn; turned off by anyone", async () => {
 		const s = await setup();
-		for (const origin of ["notice", "scheduled", "agent"] as const) {
+		// Another agente's turn, whatever its channel, stops at the agent gate first (week 70).
+		expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin: "agent", thread: { channel: "web", threadId: "stanza" } })).toContain("in una richiesta di un altro agente");
+		for (const origin of ["notice", "scheduled"] as const) {
 			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).toContain("Non abbino da sola le fatture sicure ");
 			expect(await s.run({ op: "settings", auto_confirm: true }, { ...fresh(), origin })).not.toMatch(/\bauto_confirm\b/);
 		}
@@ -1361,7 +1363,8 @@ describe("week 68: the yes is a person's own message", () => {
 		s.put("banca/d.csv", ["Data;Descrizione;Importo", "08/10/2026;ADDEBITO SDD XYZWQ;-366,00"].join("\n"));
 		await s.run({ op: "import", path: "banca/d.csv" });
 		const before = JSON.stringify(s.store.read());
-		for (const origin of ["notice", "scheduled", "agent"] as const) {
+		expect(await s.run({ op: "confirm", all: true }, { ...fresh(), origin: "agent" })).toContain("in una richiesta di un altro agente");
+		for (const origin of ["notice", "scheduled"] as const) {
 			const c = () => ({ ...fresh(), origin });
 			expect(await s.run({ op: "confirm", all: true }, c())).toContain("Non confermo gli abbinamenti della banca (fatture segnate pagate o incassate) ");
 			expect(await s.run({ op: "to_expense", ids: ["B-000002"], confirm: true }, c())).toContain("Non registro le spese dall'estratto conto ");

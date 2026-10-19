@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { briefSpeaks, businessAgentReads, REPORT_LIMITS, REPORT_OPS, type ReportOp, type Span } from "../business-report.ts";
 import { biggest, comparedTo, deltas, lastMonths, monthsOf, readAgainst, signedPercent } from "../business-report-compare.ts";
 import { figuresIn, type Presence, presenceOf, receivablesOf, type Sources, sourcesOf } from "../business-report-sums.ts";
@@ -92,7 +92,7 @@ export function createBusinessReportTools(options: BusinessReportToolsOptions): 
 				if (!REPORT_OPS.includes(args.op as ReportOp)) return `Errore: op è una di queste: ${REPORT_OPS.join(", ")}.`;
 				const op = args.op as ReportOp;
 				// Another agente's request is not the person's word: the figures only, never names nor files.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !businessAgentReads(args)) return "Errore: a un altro agente do solo le cifre dell'andamento (il riepilogo e l'andamento per mese): niente nomi di clienti, niente confronti e niente file. Il resto lo chiede chi ti scrive, nella sua conversazione.";
+				if (isAgentTurn(ctx) && !businessAgentReads(args)) return "Errore: a un altro agente do solo le cifre dell'andamento (il riepilogo e l'andamento per mese): niente nomi di clienti, niente confronti e niente file. Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				if (args.compact !== undefined && typeof args.compact !== "boolean") return "Errore: compact è true o false.";
 				const day = todayIn(timeZone, now());
 				try {
@@ -192,7 +192,7 @@ export function createBusinessReportTools(options: BusinessReportToolsOptions): 
 			...(receivables === undefined ? {} : { receivables }),
 			presence: l.presence,
 			notes: l.notes,
-			named: ctx.thread?.channel !== AGENT_CHANNEL,
+			named: !isAgentTurn(ctx),
 		});
 	}
 

@@ -28,7 +28,7 @@ export class StockError extends Error {
 	override readonly name = "StockError";
 }
 
-export const STOCK_OPS = ["add_item", "receive", "unload", "count", "fix_cost", "status", "list", "low", "value", "movements", "remove_item", "close_year", "export"] as const;
+export const STOCK_OPS = ["add_item", "receive", "receive_invoice", "unload", "count", "fix_cost", "status", "list", "low", "value", "movements", "remove_item", "close_year", "export"] as const;
 export type StockOp = (typeof STOCK_OPS)[number];
 
 export const STOCK_LIMITS = {
@@ -36,6 +36,15 @@ export const STOCK_LIMITS = {
 	moves: 20_000,
 	/** The sales of movements folded by a closed year, kept as keys (an invoice line moved once, a credit note's cap). */
 	archived: 200_000,
+	/** The lines of invoices received loaded (each once), and the supplier codes learned for an article. */
+	received: 200_000,
+	codes: 5000,
+	/** A supplier's units learned for an article («RS» is 1 risma). */
+	units: 1000,
+	/** A supplier's key (partita IVA first), a supplier's code and a line's description spelled out, as kept for a code learned. */
+	supplierKey: 140,
+	supplierCode: 60,
+	supplierText: 300,
 	/** Call ids remembered, so a call run again writes nothing twice. */
 	calls: 500,
 	/** The brief's alerts said, remembered so each crossing is said once: the oldest go first. */
@@ -126,6 +135,43 @@ export type Movement = Marker & {
 /** A sale's movement folded by a closed year: its key (invoice#line), the article, how much, and (a storno) the invoice it corrected. */
 export type SaleKey = { readonly k: string; readonly i: string; readonly q: string; readonly of?: string; /** The year of the invoice (or credit note): a key ten years older than a year closed is dropped. */ readonly y?: number };
 
+/** A line of an invoice received loaded into the magazzino (purchase-prices.ts lineKey: a digest of the invoice and the line), with the invoice's year: never loaded twice. */
+export type ReceivedKey = { readonly k: string; readonly y: number };
+
+/**
+ * What a supplier writes for an article, learned when the person confirmed a line of theirs on
+ * it: the supplier's key (partita IVA first), and the code (`c`) or the line's description spelled
+ * out (`d`, name-keys.ts spelledOut), one of the two; the article.
+ */
+export type CodeMap = { readonly s: string; readonly c?: string; readonly d?: string; readonly i: string };
+
+/** One code map's key: the supplier, and its code (case aside) or its description. */
+export const codeMapKey = (c: Pick<CodeMap, "s" | "c" | "d">) => `${c.s}\u0000${c.c !== undefined ? `c:${c.c.toLowerCase()}` : `d:${c.d ?? ""}`}`;
+
+/** A supplier's unit for an article, learned when the person said it: one `u` (the unit as kept, «rs») is `q` of the article's units; `c` the cost per unit of the last load under it. */
+export type UnitMap = { readonly s: string; readonly u: string; readonly i: string; readonly q: string; readonly c?: string };
+
+export const unitMapKey = (u: Pick<UnitMap, "s" | "u" | "i">) => `${u.s}\u0000${u.u}\u0000${u.i}`;
+
+export function validReceivedKey(v: unknown): v is ReceivedKey {
+	if (typeof v !== "object" || v === null) return false;
+	const r = v as ReceivedKey;
+	return Object.keys(r).every((k) => ["k", "y"].includes(k)) && typeof r.k === "string" && /^[0-9a-f]{24}#\d{1,4}$/.test(r.k) && Number.isInteger(r.y) && r.y >= 2000 && r.y <= 9999;
+}
+
+export function validCodeMap(v: unknown): v is CodeMap {
+	if (typeof v !== "object" || v === null) return false;
+	const c = v as CodeMap;
+	if (!Object.keys(c).every((k) => ["s", "c", "d", "i"].includes(k)) || (c.c === undefined) === (c.d === undefined)) return false;
+	return plain(c.s, STOCK_LIMITS.supplierKey) && (c.c === undefined || plain(c.c, STOCK_LIMITS.supplierCode)) && (c.d === undefined || plain(c.d, STOCK_LIMITS.supplierText)) && typeof c.i === "string" && STOCK_ID.test(c.i);
+}
+
+export function validUnitMap(v: unknown): v is UnitMap {
+	if (typeof v !== "object" || v === null) return false;
+	const u = v as UnitMap;
+	return Object.keys(u).every((k) => ["s", "u", "i", "q", "c"].includes(k)) && plain(u.s, STOCK_LIMITS.supplierKey) && plain(u.u, STOCK_LIMITS.unit) && typeof u.i === "string" && STOCK_ID.test(u.i) && isQuantity(u.q) && Number(u.q) > 0 && (u.c === undefined || isCost(u.c));
+}
+
 /** A sottoscorta (or in negativo) said in the brief: the article, the crossing and the call that said it. */
 export type LowClaim = { readonly item: string; readonly crossing: string; readonly call: string };
 
@@ -149,8 +195,8 @@ export function isQuantity(v: unknown, signed = false, max: number = STOCK_LIMIT
 
 export const isCost = (v: unknown): v is string => typeof v === "string" && COST.test(v) && !/\.\d*0$/.test(v) && !/^0\d/.test(v) && Number(v) <= STOCK_LIMITS.maxCost;
 
-/** Units a person says that the listino does not fold: litri, metri, grammi… */
-const MORE_UNITS: Readonly<Record<string, string>> = { litro: "litro", litri: "litro", l: "litro", lt: "litro", metro: "m", metri: "m", m: "m", mt: "m", ml: "ml", grammo: "g", grammi: "g", g: "g", gr: "g", chilo: "kg", chili: "kg", chilogrammi: "kg", kg: "kg", confezione: "confezione", confezioni: "confezione", conf: "confezione", scatola: "scatola", scatole: "scatola", rotolo: "rotolo", rotoli: "rotolo", paio: "paio", paia: "paio", mq: "mq", cartone: "cartone", cartoni: "cartone", pacco: "pacco", pacchi: "pacco", bancale: "bancale", bancali: "bancale", busta: "busta", buste: "busta" };
+/** Units a person says that the listino does not fold: litri, metri, grammi…; and the abbreviations invoices write («NR», «RS», «CF»). Different units stay different. */
+const MORE_UNITS: Readonly<Record<string, string>> = { litro: "litro", litri: "litro", l: "litro", lt: "litro", metro: "m", metri: "m", m: "m", mt: "m", ml: "ml", grammo: "g", grammi: "g", g: "g", gr: "g", chilo: "kg", chili: "kg", chilogrammi: "kg", kg: "kg", confezione: "confezione", confezioni: "confezione", conf: "confezione", scatola: "scatola", scatole: "scatola", rotolo: "rotolo", rotoli: "rotolo", paio: "paio", paia: "paio", mq: "mq", cartone: "cartone", cartoni: "cartone", pacco: "pacco", pacchi: "pacco", bancale: "bancale", bancali: "bancale", busta: "busta", buste: "busta", risma: "risma", risme: "risma", flacone: "flacone", flaconi: "flacone", bottiglia: "bottiglia", bottiglie: "bottiglia", nr: "pezzo", n: "pezzo", num: "pezzo", pzz: "pezzo", rs: "risma", cf: "confezione", cnf: "confezione", ct: "cartone", crt: "cartone", pk: "pacco", pac: "pacco", bt: "bottiglia", fl: "flacone", sc: "scatola" };
 
 /** A unit as said, to the one kept: «pezzi» is «pezzo», «litri» is «litro», «metri» is «m». */
 export function stockUnit(said: string): string {

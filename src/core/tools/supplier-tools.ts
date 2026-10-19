@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { BankStore } from "../bank-store.ts";
 import { formNote } from "../client-find.ts";
 import { cardCf, goodVat } from "../clients.ts";
@@ -47,7 +46,7 @@ import {
 	totalsAgentAnswer,
 	totalsAnswer,
 } from "./supplier-render.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 const SUPPLIER_OPS = ["summary", "top", "late", "note_add", "note_remove", "contact_set", "merge", "export"] as const;
 type Op = (typeof SUPPLIER_OPS)[number];
@@ -165,7 +164,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 				if (!SUPPLIER_OPS.includes(args.op as Op)) return "Errore: non conosco questa operazione sui fornitori.";
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: the figures only, nothing else.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && (!supplierAgentReads(args) || args.compact === true)) {
 					return "Errore: a un altro agente non mostro le schede dei fornitori, non do nomi, IBAN o referenti, non cambio niente e non esporto: posso dare solo totali, numeri e quote (quanto si spende con i fornitori, quanto c'è da pagare). Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}

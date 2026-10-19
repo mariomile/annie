@@ -11,13 +11,13 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import type { Marker } from "./marker.ts";
-import { isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockUnit, validItem, validLowClaim, validMove, validSaleKey, validStockCall } from "./stock.ts";
+import { type CodeMap, codeMapKey, isQuantity, type LowClaim, MOVE_ID, moveId, type Movement, type ReceivedKey, type SaleKey, STOCK_ID, STOCK_LIMITS, StockError, type StockItem, stockItemId, stockUnit, type UnitMap, unitMapKey, validCodeMap, validItem, validLowClaim, validMove, validReceivedKey, validSaleKey, validStockCall, validUnitMap } from "./stock.ts";
 import { costText, packUnits, qtyOf, qtyText, stateOf } from "./stock-sums.ts";
 
 /** What a change works on: the articles, the movements and the next numbers. */
 export type StockState = { readonly nextItem: number; readonly nextMove: number; readonly items: readonly StockItem[]; readonly moves: readonly Movement[] };
 
-type Book = StockState & { readonly archived: readonly SaleKey[]; readonly alerts: readonly LowClaim[]; readonly calls: readonly string[] };
+type Book = StockState & { readonly archived: readonly SaleKey[]; readonly received: readonly ReceivedKey[]; readonly codes: readonly CodeMap[]; readonly units: readonly UnitMap[]; readonly alerts: readonly LowClaim[]; readonly calls: readonly string[] };
 
 export type StockBook = Book & { readonly broken: boolean };
 
@@ -25,7 +25,10 @@ export const STOCK_BROKEN = "il magazzino (stock.json) non si legge: non lo camb
 
 export const STOCK_FULL = "il magazzino è pieno: ci sono troppi movimenti per salvarne altri. Chi ti scrive può chiudere un anno passato: i movimenti fino alla fine di quell'anno diventano una riga di apertura per articolo, con la quantità e il costo medio di allora";
 
-const EMPTY: Book = { nextItem: 1, nextMove: 1, items: [], moves: [], archived: [], alerts: [], calls: [] };
+const EMPTY: Book = { nextItem: 1, nextMove: 1, items: [], moves: [], archived: [], received: [], codes: [], units: [], alerts: [], calls: [] };
+
+/** What loading an invoice received writes: the articles it adds (numbered from the next), its carichi (numbered from the next), the keys of its lines, the supplier codes, descriptions and units learned. */
+export type InvoiceLoad = { readonly items: readonly StockItem[]; readonly moves: readonly Movement[]; readonly keys: readonly ReceivedKey[]; readonly codes: readonly CodeMap[]; readonly units: readonly UnitMap[] };
 
 /** One line of an invoice issued (or a credit note) that names a voce of the listino. */
 export type SaleLine = { readonly line: number; readonly listino: string; readonly quantity: string; readonly unit?: string; readonly description: string };
@@ -149,6 +152,37 @@ export class StockStore {
 	}
 
 	/**
+	 * An invoice received loaded, once per `callId`: `plan` gets the book as saved now and gives
+	 * the articles added, the carichi, the keys of the lines they load and what was learned (a code,
+	 * description or unit said again for the same supplier points to its new article). A line
+	 * already loaded is refused, nothing written; so is a load that does not hold together, each
+	 * with why.
+	 */
+	receiveInvoice(callId: string, plan: (book: Book) => InvoiceLoad): "written" | "rerun" | "unchanged" {
+		let outcome: "written" | "rerun" | "unchanged" = "unchanged";
+		updateBook(this.book, (book) => {
+			if (book.calls.includes(callId)) {
+				outcome = "rerun";
+				return book;
+			}
+			const load = plan(book);
+			if (load.moves.length === 0) return book;
+			const why = loadProblem(book, load);
+			if (why !== undefined) throw new StockError(why);
+			const base = made(book, { nextItem: book.nextItem + load.items.length, nextMove: book.nextMove + load.moves.length, items: [...book.items, ...load.items], moves: [...book.moves, ...load.moves] }, [...book.calls, callId].slice(-STOCK_LIMITS.calls));
+			const learned = new Set(load.codes.map(codeMapKey));
+			const codes = [...book.codes.filter((c) => !learned.has(codeMapKey(c))), ...load.codes].slice(-STOCK_LIMITS.codes);
+			const told = new Set(load.units.map(unitMapKey));
+			const units = [...book.units.filter((u) => !told.has(unitMapKey(u))), ...load.units].slice(-STOCK_LIMITS.units);
+			const out: Book = { ...base, received: [...book.received, ...load.keys], codes, units };
+			if (validBook(out) === undefined) throw new StockError("quello che ho imparato da questa fattura (codici, descrizioni, unità) non si salva: non ho caricato niente");
+			outcome = "written";
+			return out;
+		});
+		return outcome;
+	}
+
+	/**
 	 * The crossings of `wanted` not said yet, marked said by `callId`: each crossing once. A call
 	 * run again gets back what it claimed.
 	 */
@@ -258,14 +292,43 @@ export class StockStore {
 			// The sale keys kept, with the invoice's year; those of invoices ten years or more before the year closed go (no credit note corrects them any more).
 			const year = Number(day.slice(0, 4));
 			const archived = [...book.archived, ...old.flatMap((m): SaleKey[] => (m.sale === undefined ? [] : [{ k: saleKey(m.sale.invoice, m.sale.line), i: m.item, q: m.qty, y: Number(m.day.slice(0, 4)), ...(m.sale.of === undefined ? {} : { of: m.sale.of }) }]))].filter((a) => a.y === undefined || a.y > year - 10);
+			// The invoices received loaded go the same way, ten years on.
+			const received = book.received.filter((r) => r.y > year - 10);
 			result = { folded: old.length, items: openings.length };
 			if (plan) return book;
-			const out: Book = { ...book, moves: [...openings, ...kept], archived, calls: [...book.calls, callId].slice(-STOCK_LIMITS.calls) };
+			const out: Book = { ...book, moves: [...openings, ...kept], archived, received, calls: [...book.calls, callId].slice(-STOCK_LIMITS.calls) };
 			if (validBook(out) === undefined) throw new StockError("la chiusura dell'anno non torna: non l'ho salvata");
 			return out;
 		});
 		return result;
 	}
+}
+
+/** Why a load of an invoice received does not hold together, said for the person; undefined when it does. */
+function loadProblem(book: Book, load: InvoiceLoad): string | undefined {
+	const keys = new Set(load.keys.map((k) => k.k));
+	if (keys.size !== load.keys.length) return "due righe di questa fattura hanno lo stesso numero: non ho caricato niente";
+	const done = new Set(book.received.map((r) => r.k));
+	if (load.keys.some((k) => done.has(k.k))) return "una riga di questa fattura è già stata caricata nel frattempo: non ho caricato niente, ricontrolla";
+	if (book.received.length + load.keys.length > STOCK_LIMITS.received) return STOCK_FULL;
+	if (load.keys.some((k) => !validReceivedKey(k))) return "la data di questa fattura non è un giorno vero dal 2000 in poi: non ho caricato niente";
+	const learned = new Map<string, string>();
+	for (const c of load.codes) {
+		if (!validCodeMap(c)) return "un codice o una descrizione del fornitore è troppo lungo per ricordarlo: non ho caricato niente";
+		const was = learned.get(codeMapKey(c));
+		if (was !== undefined && was !== c.i) return "lo stesso codice del fornitore è su due righe con articoli diversi: non ho caricato niente";
+		learned.set(codeMapKey(c), c.i);
+	}
+	if (load.units.some((u) => !validUnitMap(u))) return "un'unità del fornitore non si ricorda così (troppo lunga, o non è una quantità): non ho caricato niente";
+	const names = new Set(book.items.filter((i) => i.removed === undefined).map((i) => i.name.toLowerCase()));
+	let next = book.nextItem;
+	for (const i of load.items) {
+		if (!validItem(i) || i.id !== stockItemId(next++)) return "un articolo nuovo di questa fattura non si aggiunge così (nome o unità non validi): non ho caricato niente";
+		if (names.has(i.name.toLowerCase())) return "c'è già un articolo con il nome di una riga da aggiungere: scegli quello, non ho caricato niente";
+		names.add(i.name.toLowerCase());
+	}
+	if (book.items.filter((i) => i.removed === undefined).length + load.items.length > STOCK_LIMITS.items) return `ci sono già troppi articoli (al massimo ${STOCK_LIMITS.items}): non ho caricato niente`;
+	return undefined;
 }
 
 /** The book after a change, checked: the movements before it all there, unchanged, in their place. */
@@ -288,6 +351,13 @@ function validBook(raw: unknown): Book | undefined {
 	if (!Array.isArray(b.archived) || b.archived.length > STOCK_LIMITS.archived || !b.archived.every(validSaleKey)) return undefined;
 	if (!Array.isArray(b.alerts) || b.alerts.length > STOCK_LIMITS.alerts || !b.alerts.every(validLowClaim)) return undefined;
 	if (!Array.isArray(b.calls) || b.calls.length > STOCK_LIMITS.calls || !b.calls.every(validStockCall)) return undefined;
+	// A file from before the invoices received were loaded has neither list.
+	const received = b.received ?? [];
+	const codes = b.codes ?? [];
+	if (!Array.isArray(received) || received.length > STOCK_LIMITS.received || !received.every(validReceivedKey) || new Set(received.map((r) => r.k)).size !== received.length) return undefined;
+	if (!Array.isArray(codes) || codes.length > STOCK_LIMITS.codes || !codes.every(validCodeMap) || new Set(codes.map(codeMapKey)).size !== codes.length) return undefined;
+	const units = b.units ?? [];
+	if (!Array.isArray(units) || units.length > STOCK_LIMITS.units || !units.every(validUnitMap) || new Set(units.map(unitMapKey)).size !== units.length) return undefined;
 	// Numbers never given again: every id below its counter, each once; one article on the list per name, code and voce.
 	const ids = new Set<string>();
 	const taken = new Set<string>();
@@ -326,5 +396,6 @@ function validBook(raw: unknown): Book | undefined {
 		}
 		seen.set(m.id, m);
 	}
-	return b;
+	if (codes.some((c) => !ids.has(c.i)) || units.some((u) => !ids.has(u.i))) return undefined;
+	return { ...b, received, codes, units };
 }

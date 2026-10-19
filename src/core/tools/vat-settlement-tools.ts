@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { euros } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -107,7 +107,7 @@ export function createVatSettlementTools(options: VatToolsOptions): AnnieTool[] 
 				if (!VAT_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${VAT_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: totals of a period and the calendar, nothing else.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !vatAgentReads(args)) return "Errore: in una richiesta di un altro agente dico solo i totali di un periodo e le scadenze dell'IVA: niente nomi, niente modifiche, niente file.";
+				if (isAgentTurn(ctx) && !vatAgentReads(args)) return "Errore: in una richiesta di un altro agente dico solo i totali di un periodo e le scadenze dell'IVA: niente nomi, niente modifiche, niente file.";
 				const day = todayIn(timeZone, now());
 				try {
 					if (op === "calendar" && args.compact === true) return await compact(ctx, day);

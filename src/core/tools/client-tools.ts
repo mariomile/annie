@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { agendaOf, briefFollowUps, type Client, clientsOf, dormantClients, figuresOf, invoicedEver, newConcentration, openFollowUps, ranked } from "../client-sums.ts";
 import { CLIENTS_BROKEN, type ClientState, type ClientStore } from "../client-store.ts";
 import {
@@ -37,7 +36,7 @@ import { agendaAnswer, briefAnswer, cardLines, clientsCsv, dormantAgentAnswer, d
 import { line, textOf } from "./field-input.ts";
 import { isProblem } from "../text-input.ts";
 import type { ReminderSeam } from "./schedule-tools.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 export { reminderInstruction } from "./client-follow-ups.ts";
 
@@ -173,7 +172,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 				if (!CLIENT_OPS.includes(args.op as Op)) return "Errore: non conosco questa operazione sui clienti.";
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: the figures only, nothing else.
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				if (agent && !clientAgentReads(args)) {
 					return "Errore: a un altro agente non mostro le schede dei clienti, non do elenchi di nomi o di ricontatti, non cambio niente e non esporto: posso dare solo totali, numeri e quote (i clienti migliori, quelli fermi da tempo). Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}

@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import { cashBook } from "../cash-book.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { CATEGORIES, type Category, DOC_TYPES, type Method, EXPENSE_LIMITS, type Expense, ExpenseError, expenseCallReads, expenseId, findExpenses, idOrder, lookalike, matchCategory, matchesSupplier, METHODS, newestFirst, parseExpenseId } from "../expenses.ts";
@@ -123,7 +123,7 @@ export function expensesOf(options: ExpenseToolsOptions): { readonly tools: Anni
 		});
 	/** The draft of a seam's expense, or why it cannot be recorded; a problem from the register is said as it is. */
 	const seamDraft = (input: ExpenseRecordInput, ctx: ToolContext): ExpenseDraft | string => {
-		if (ctx.thread?.channel === AGENT_CHANNEL) return "in una richiesta di un altro agente non registro spese";
+		if (isAgentTurn(ctx)) return "in una richiesta di un altro agente non registro spese";
 		if (input.date > today()) return "una spesa si registra quando è fatta: la data non può essere futura";
 		const applied = applyFields({ amount: input.amount, date: input.date, category: { category: input.category }, ...(input.supplier === undefined ? {} : { supplier: input.supplier }), ...(input.method === undefined ? {} : { method: input.method }), ...(input.note === undefined ? {} : { note: input.note }), ...(input.vatRate === undefined ? {} : { rate: input.vatRate }) });
 		return "problem" in applied ? applied.problem : applied.draft;
@@ -201,7 +201,7 @@ export function expensesOf(options: ExpenseToolsOptions): { readonly tools: Anni
 				if (!EXPENSE_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${EXPENSE_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads, it never records, changes or writes a file.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !expenseCallReads(args)) {
+				if (isAgentTurn(ctx) && !expenseCallReads(args)) {
 					return "Errore: in una richiesta di un altro agente non registro, non cambio e non esporto spese: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				try {

@@ -290,14 +290,14 @@ describe("listino: price_change, a preview then the yes", () => {
 describe("listino: week 68, the yes is a person's own message (ADR 0088)", () => {
 	it("price_change and import with the check are refused in a notice, a schedule or another agente's turn; the previews still come", async () => {
 		const s = await stocked();
-		const check = /check «([0-9a-f]{8})»/.exec(await s.run({ op: "price_change", all: true, percent: 5 }, { ...fresh(), origin: "agent" }))?.[1] as string;
+		const check = /check «([0-9a-f]{8})»/.exec(await s.run({ op: "price_change", all: true, percent: 5 }, { ...fresh(), origin: "scheduled" }))?.[1] as string;
 		expect(check).toMatch(/^[0-9a-f]{8}$/);
 		writeFileSync(join(s.root, "listino.csv"), "Nome;Prezzo;IVA\r\nLogo;300,00;22\r\n");
 		const importCheck = /check «([0-9a-f]{8})»/.exec(await s.run({ op: "import", path: "listino.csv" }, { ...fresh(), origin: "notice" }))?.[1] as string;
 		expect(importCheck).toMatch(/^[0-9a-f]{8}$/);
 		for (const origin of ["notice", "scheduled", "agent"] as const) {
-			expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
-			expect(await s.run({ op: "import", path: "listino.csv", confirm: true, check: importCheck }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive/);
+			expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive|altro agente/);
+			expect(await s.run({ op: "import", path: "listino.csv", confirm: true, check: importCheck }, { ...fresh(), origin })).toMatch(/serve il sì di chi ti scrive|lo conferma solo chi ti scrive|altro agente/);
 		}
 		expect(s.store.read().items.map((i) => i.price)).toEqual(["500", "1500", "4000", "60", "24.4"]);
 		expect(await s.run({ op: "price_change", all: true, percent: 5, confirm: true, check })).toContain("Fatto: nuovi prezzi per 5 voci.");

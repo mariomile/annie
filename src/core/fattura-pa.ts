@@ -33,6 +33,12 @@ const MAX_REFERENCES = 10;
 /** Summary rows (DatiRiepilogo) kept per document, one per rate and nature: a real invoice has a handful. Past this the document does not read for the IVA. */
 export const MAX_VAT_ROWS = 100;
 
+/** Lines (DettaglioLinee) kept structured per document, for the prices paid: the rest is counted in `linesCut`. */
+export const MAX_DOC_LINES = 2000;
+/** A structured line's description and code, at most: the description shown in the summary may be longer. */
+const MAX_LINE_TEXT = 300;
+const MAX_LINE_CODE = 60;
+
 /** The longest value shown: a line's description may be 1000 characters. */
 const MAX_VALUE = 1000;
 
@@ -94,6 +100,37 @@ export type FatturaDocument = {
 	readonly withholdings?: readonly FatturaWithholding[];
 	/** The casse previdenziali charged (DatiCassaPrevidenziale), each whose amount reads: TipoCassa and ImportoContributoCassa (canonical decimals). */
 	readonly funds?: readonly FatturaFund[];
+	/** An ordinary document's lines (DettaglioLinee) that read, at most MAX_DOC_LINES; a simplified one has none. */
+	readonly lines?: readonly FatturaLine[];
+	/** Lines that do not read (no description, a price, total, quantity or rate that is no number): left out, never guessed. */
+	readonly linesSkipped?: number;
+	/** Lines past MAX_DOC_LINES: left out. */
+	readonly linesCut?: number;
+	/** The discounts and surcharges on the whole document (DatiGeneraliDocumento ScontoMaggiorazione) that read: SC sconto, MG maggiorazione, a percentage or an amount (canonical decimals). */
+	readonly adjustments?: readonly FatturaAdjustment[];
+};
+
+/** A discount (SC) or surcharge (MG) on the whole document: its percentage, or else its amount. */
+export type FatturaAdjustment = { readonly kind: "SC" | "MG"; readonly percent?: string; readonly amount?: string };
+
+/**
+ * One line of a document (DettaglioLinee) as written, its numbers in canonical decimals (12.5,
+ * not 12.50000000): `total` is PrezzoTotale, discounts (ScontoMaggiorazione) already in it;
+ * `quantity` and `unit` only when written; `vat` the AliquotaIVA, with `natura` for a line without
+ * VAT; `code` the first CodiceArticolo; `kind` the TipoCessionePrestazione (SC sconto, PR premio,
+ * AB abbuono, AC spesa accessoria).
+ */
+export type FatturaLine = {
+	readonly n: number;
+	readonly description: string;
+	readonly quantity?: string;
+	readonly unit?: string;
+	readonly unitPrice: string;
+	readonly total: string;
+	readonly vat: string;
+	readonly natura?: string;
+	readonly code?: { readonly type?: string; readonly value: string };
+	readonly kind?: string;
 };
 
 /** One DatiCassaPrevidenziale as written: TC01 to TC21 a cassa's contributo integrativo, TC22 the rivalsa INPS. */
@@ -225,6 +262,8 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 	const vatRows = summaryRows(body);
 	const withholdings = withholdingsOf(general);
 	const funds = fundsOf(general);
+	const lines = linesOf(child(body, "DatiBeniServizi"));
+	const adjustments = adjustmentsOf(general);
 	const doc: FatturaDocument = {
 		...optional({ type, number: value(general, "Numero"), date: value(general, "Data"), total: value(general, "ImportoTotaleDocumento"), toPay: toPay === undefined ? undefined : fromUnits(toPay), splitVat: splitVat === undefined ? undefined : fromUnits(splitVat), taxable: taxable === undefined ? undefined : fromUnits(taxable) }),
 		credit: type !== undefined && CREDIT_NOTES.has(type),
@@ -234,8 +273,83 @@ function ordinaryDocument(body: XmlElement): ReadDocument {
 		...(vatRows === undefined ? {} : { vatRows }),
 		...(withholdings.length === 0 ? {} : { withholdings }),
 		...(funds.length === 0 ? {} : { funds }),
+		...(lines.lines.length === 0 ? {} : { lines: lines.lines }),
+		...(lines.skipped === 0 ? {} : { linesSkipped: lines.skipped }),
+		...(lines.cut === 0 ? {} : { linesCut: lines.cut }),
+		...(adjustments.length === 0 ? {} : { adjustments }),
 	};
 	return { doc, body, instalmentOf };
+}
+
+/** A decimal read the FatturaPA way, back in its shortest form (12.5, -3, 0.0125); undefined when it is no number. */
+function canonical(raw: string | undefined): string | undefined {
+	const units = raw === undefined ? undefined : toUnits(raw);
+	if (units === undefined) return undefined;
+	return fromUnits(units).replace(/\.?0+$/, "").replace(/^-0$/, "0");
+}
+
+const NATURE_CODE = /^N\d(?:\.\d{1,2})?$/;
+
+/** The discounts and surcharges on the whole document that read: a Tipo SC or MG with a positive percentage or amount. */
+function adjustmentsOf(general: XmlElement | undefined): FatturaAdjustment[] {
+	const out: FatturaAdjustment[] = [];
+	for (const el of children(general, "ScontoMaggiorazione").slice(0, MAX_VAT_ROWS)) {
+		const kind = value(el, "Tipo");
+		if (kind !== "SC" && kind !== "MG") continue;
+		const percent = canonical(value(el, "Percentuale"));
+		const amount = canonical(value(el, "Importo"));
+		if (percent !== undefined && Number(percent) > 0 && Number(percent) < 100) out.push({ kind, percent });
+		else if (amount !== undefined && Number(amount) > 0) out.push({ kind, amount: amount.replace(/^-/, "") });
+	}
+	return out;
+}
+
+/**
+ * The lines of a document that read, at most MAX_DOC_LINES: a description, PrezzoUnitario,
+ * PrezzoTotale and AliquotaIVA that are numbers, a Quantita that is one when written, a Natura
+ * that is a code when written. Any other is `skipped`, never guessed. A line's number is its
+ * NumeroLinea when every line has one (1 to 9999) and no two the same; otherwise every line is
+ * numbered by its place (1, 2, 3…): never two lines with one number.
+ */
+function linesOf(goods: XmlElement | undefined): { lines: FatturaLine[]; skipped: number; cut: number } {
+	const rows = children(goods, "DettaglioLinee");
+	const lines: FatturaLine[] = [];
+	let skipped = 0;
+	const kept = rows.slice(0, MAX_DOC_LINES);
+	const written = kept.map((row) => value(row, "NumeroLinea"));
+	const numbered = written.every((n) => n !== undefined && /^\d{1,4}$/.test(n) && Number(n) > 0) && new Set(written.map(Number)).size === written.length;
+	kept.forEach((row, i) => {
+		const description = value(row, "Descrizione");
+		const unitPrice = canonical(value(row, "PrezzoUnitario"));
+		const total = canonical(value(row, "PrezzoTotale"));
+		const vat = canonical(value(row, "AliquotaIVA"));
+		const quantityRaw = value(row, "Quantita");
+		const quantity = canonical(quantityRaw);
+		const natura = value(row, "Natura");
+		if (description === undefined || unitPrice === undefined || total === undefined || vat === undefined || (quantityRaw !== undefined && quantity === undefined) || (natura !== undefined && !NATURE_CODE.test(natura))) {
+			skipped++;
+			return;
+		}
+		const n = numbered ? Number(written[i]) : i + 1;
+		const codeEl = children(row, "CodiceArticolo").find((c) => value(c, "CodiceValore") !== undefined);
+		const codeValue = value(codeEl, "CodiceValore");
+		const codeType = value(codeEl, "CodiceTipo");
+		const unit = value(row, "UnitaMisura");
+		const kind = value(row, "TipoCessionePrestazione");
+		lines.push({
+			n,
+			description: description.slice(0, MAX_LINE_TEXT),
+			...(quantity === undefined ? {} : { quantity }),
+			...(unit === undefined ? {} : { unit: unit.slice(0, 35) }),
+			unitPrice,
+			total,
+			vat,
+			...(natura === undefined ? {} : { natura }),
+			...(codeValue === undefined ? {} : { code: { value: codeValue.slice(0, MAX_LINE_CODE), ...(codeType === undefined ? {} : { type: codeType.slice(0, 35) }) } }),
+			...(kind === undefined ? {} : { kind: kind.slice(0, 2) }),
+		});
+	});
+	return { lines, skipped, cut: Math.max(0, rows.length - MAX_DOC_LINES) };
 }
 
 /** The DatiCassaPrevidenziale of a document whose ImportoContributoCassa reads. */

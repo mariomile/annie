@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { BRIEF_DAYS, CASHFLOW_LIMITS, type CashItem, CashflowError, cashflowAgentReads, itemId, itemRecurrence, parseItemId, ROLL_NOTE_DAYS, signedCents, STALE_BALANCE_DAYS } from "../cashflow.ts";
 import { applyPatch, editPatch, findItem, type Found, lookalikes } from "../cashflow-items.ts";
 import { project, type Projection } from "../cashflow-projection.ts";
@@ -35,7 +34,7 @@ import { briefAnswer, briefHint, type ChangeLine, daysText, fenced, forecastAnsw
 import { type DayWords, readPastDay } from "./day-input.ts";
 import { expectedCanoni } from "./recurring-invoice-cash.ts";
 import { isProblem } from "../text-input.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 const CASHFLOW_OPS = ["set_balance", "set_alert", "add_item", "edit_item", "remove_item", "list_items", "forecast", "what_if", "export"] as const;
 type Op = (typeof CASHFLOW_OPS)[number];
@@ -166,7 +165,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 				if (!CASHFLOW_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${CASHFLOW_OPS.join(", ")}.`;
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: it reads (forecast, list_items, what_if), nothing else.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !cashflowAgentReads(args)) {
+				if (isAgentTurn(ctx) && !cashflowAgentReads(args)) {
 					return "Errore: in una richiesta di un altro agente non cambio il saldo o la soglia, non aggiungo, cambio o tolgo voci e non esporto la cassa: lo fa chi ti scrive, nella sua conversazione.";
 				}
 				const day = todayIn(timeZone, now());
@@ -388,7 +387,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 
 	function listItems(day: string, ctx: ToolContext): string {
 		const book = readable();
-		return listAnswer(latestBalance(book.balances), book.alertBelow === undefined ? undefined : signedCents(book.alertBelow), book.items, day, ctx.thread?.channel === AGENT_CHANNEL);
+		return listAnswer(latestBalance(book.balances), book.alertBelow === undefined ? undefined : signedCents(book.alertBelow), book.items, day, isAgentTurn(ctx));
 	}
 
 	type Gathered = { readonly movements: readonly Movement[]; readonly dailySpend: bigint; readonly view: View; readonly somethingToForecast: boolean };
@@ -470,7 +469,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 			...(vatOn ? { vat: true as const } : {}),
 			notes,
 			// Another agente reads the forecast with no name of anyone (ADR 0088).
-			...(ctx.thread?.channel === AGENT_CHANNEL ? { agent: true as const } : {}),
+			...(isAgentTurn(ctx) ? { agent: true as const } : {}),
 		};
 		const openInvoices = invoices.some((i) => !i.paid && i.side !== undefined && !i.doc.integration);
 		const activeRenewals = renewalBook.renewals.some((r) => r.status === "active");
@@ -548,7 +547,7 @@ export function createCashflowTools(options: CashflowToolsOptions): AnnieTool[] 
 		if (typeof drops === "string") return drops;
 		const all = [...delays, ...drops];
 		// Another agente moves or drops an invoice by its number only: a name, existing or not, gets the same answer, so nothing tells whether that customer is there (ADR 0088).
-		const agentAsks = ctx.thread?.channel === AGENT_CHANNEL;
+		const agentAsks = isAgentTurn(ctx);
 		if (agentAsks && all.some((c) => c.party !== undefined)) return "Un altro agente può spostare o togliere solo una fattura per numero, non un cliente.";
 		if (raw.length === 0 && all.length === 0) return "Errore: dimmi l'ipotesi: amount e date (e kind, frequency, name), o più ipotesi in items; oppure delay o drop per una fattura pagata in ritardo o non pagata.";
 		if (raw.length > CASHFLOW_LIMITS.whatIf) return `Errore: al massimo ${CASHFLOW_LIMITS.whatIf} ipotesi per volta.`;

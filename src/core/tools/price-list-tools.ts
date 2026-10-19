@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import type { AnnieTool, JsonValue, ToolContext } from "../engine.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import { todayIn } from "../italian-calendar.ts";
@@ -13,7 +12,7 @@ import { isProblem } from "../text-input.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
 import { changedItem, newItem, readChange, readFields, readVatSaid } from "./price-list-input.ts";
 import { askWhich, byUnitAnswer, importPreview, itemLine, listAnswer, NOT_LISTED, priceAnswer, priceListCsv, repricePreview } from "./price-list-render.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 /** What changed, for the audit: the op and how many voci (or rows), never names, codes, prices or paths. */
 export type PriceListEvent = { readonly type: "price_list.changed"; readonly op: "add" | "update" | "remove" | "price_change" | "import" | "export"; readonly count: number };
@@ -100,7 +99,7 @@ export function createPriceListTools(options: PriceListToolsOptions): AnnieTool[
 				if (!PRICE_LIST_OPS.includes(args.op as PriceListOp)) return `Errore: op è una di queste: ${PRICE_LIST_OPS.join(", ")}.`;
 				const op = args.op as PriceListOp;
 				// Another agente's request is not the person's word: it reads the listino (the business's own prices), it never changes it.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !priceListCallReads(args)) {
+				if (isAgentTurn(ctx) && !priceListCallReads(args)) {
 					return "Errore: a un altro agente faccio solo leggere il listino (elenco e prezzi): aggiungere, cambiare, importare o esportare voci lo fa chi ti scrive, nella sua conversazione.";
 				}
 				try {

@@ -1,4 +1,3 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
 import { BANK_LIMITS, type BankMatch, type BankMovement, BankError, bankAgentReads, type BankSettings, cappedList, importId, isLive, movementId, withSeen } from "../bank.ts";
 import { euros } from "../format-words.ts";
 import { holdsTarget, matchMovements, type TaxEstimate, targetKey } from "../bank-match.ts";
@@ -24,7 +23,7 @@ import { removeImportOp, sameOp } from "./bank-remove.ts";
 import { readColumns, readDirection, readSpan, readStatus } from "./bank-input.ts";
 import { anomaliesAnswer, askAnswer, briefAnswer, countLine, countsOf, importAnswer, liveOf, monthTotals, reconciledCsv, rowsBlock, totalsAnswer, twins } from "./bank-render.ts";
 import type { ExpenseSeam } from "./expense-tools.ts";
-import { requirePersonFor } from "../turn-origin.ts";
+import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 
 /** What changed, for the audit: the op and how many, never descriptions, amounts, dates or IBANs. */
 export type BankEvent = { readonly type: "bank.changed"; readonly op: "import" | "confirm" | "refuse" | "to_expense" | "set_balance" | "settings" | "export" | "same" | "remove_import"; readonly count: number };
@@ -142,7 +141,7 @@ export function createBankTools(options: BankToolsOptions): AnnieTool[] {
 			async execute(args, ctx) {
 				if (!BANK_OPS.includes(args.op as Op)) return `Errore: op è una di queste: ${BANK_OPS.join(", ")}.`;
 				// Another agente's request is not the person's word: the totals per month, nothing else.
-				if (ctx.thread?.channel === AGENT_CHANNEL && !bankAgentReads(args)) return "Errore: in una richiesta di un altro agente dico solo i totali delle entrate e delle uscite per mese: niente descrizioni, niente modifiche, niente file.";
+				if (isAgentTurn(ctx) && !bankAgentReads(args)) return "Errore: in una richiesta di un altro agente dico solo i totali delle entrate e delle uscite per mese: niente descrizioni, niente modifiche, niente file.";
 				const day = deps.today();
 				try {
 					switch (args.op as Op) {

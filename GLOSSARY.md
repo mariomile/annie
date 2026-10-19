@@ -325,6 +325,10 @@ _Avoid_: mittente (per l'origine)
 Una cosa che la persona tiene in magazzino (MG-NNNN), con la sua unità, il minimo sotto cui avvisare e i movimenti (carico, scarico, rettifica) da cui Annie ricava quanto ne resta e quanto vale al costo medio. Vedi ADR 0089.
 _Avoid_: prodotto (per l'articolo; il prezzo è la voce del listino)
 
+**Prezzo d'acquisto**:
+Quanto la persona paga un prodotto a un fornitore, letto dalle righe delle sue fatture: senza IVA, per unità, con gli sconti della fattura divisi sulle righe. Il prezzo a cui vende è la voce del listino. Vedi ADR 0090.
+_Avoid_: costo (per il prezzo d'acquisto; il costo medio è quello del magazzino)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento

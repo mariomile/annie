@@ -1,4 +1,4 @@
-import { AGENT_CHANNEL } from "../agent-messages.ts";
+import { isAgentTurn } from "../turn-origin.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { type AgendaItem, AGENDA_LIMITS, agendaAgentReads, agendaIn, briefItems, FISCAL_AGENDA_OPS, FiscalAgendaError, type FiscalAgendaOp } from "../fiscal-agenda.ts";
 import type { Applies } from "../fiscal-agenda-rules.ts";
@@ -79,7 +79,7 @@ export function createFiscalAgendaTools(options: FiscalAgendaToolsOptions): Anni
 			async execute(args, ctx) {
 				if (!FISCAL_AGENDA_OPS.includes(args.op as FiscalAgendaOp)) return `Errore: op è una di queste: ${FISCAL_AGENDA_OPS.join(", ")}.`;
 				const op = args.op as FiscalAgendaOp;
-				const agent = ctx.thread?.channel === AGENT_CHANNEL;
+				const agent = isAgentTurn(ctx);
 				// Another agente's request is not the person's word: the deadlines without names, never a file.
 				if (agent && !agendaAgentReads(args)) return "Errore: a un altro agente do solo le scadenze, senza nomi di fornitori o rinnovi e senza file. Il file per il calendario lo chiede chi ti scrive, nella sua conversazione.";
 				if (args.compact !== undefined && typeof args.compact !== "boolean") return "Errore: compact è true o false.";
