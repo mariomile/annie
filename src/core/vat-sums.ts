@@ -23,7 +23,7 @@
  *   (unless the person said its base or what they expect).
  * - every deadline moves to the next working day (dates.ts, Saturday included), and carries why.
  */
-import { addMonths, paymentSlip } from "./dates.ts";
+import { addMonths, dueSlip, type Slip } from "./dates.ts";
 import { addDays } from "./italian-calendar.ts";
 import { eurosToCents, halfUp, halfUpSigned, scaled } from "./quote-sums.ts";
 import { type PaidMark, paidKeyOf, periodOfDay, periodSpan, periodsOf, type YearFigures } from "./vat.ts";
@@ -123,13 +123,6 @@ export function figuresOf(docs: readonly VatDoc[], from: string, to: string): Fi
 	return { debito, credito, sales: sales.size, purchases: purchases.size, split, reverse, integration, undeducted, deferred, approx: approx.size };
 }
 
-/** The day a payment is made, and why it moved: the next working day for a weekend or a holiday. */
-export type Slip = { readonly to: string; readonly holiday?: string };
-
-function slipOf(due: string): { readonly date: string; readonly slip?: Slip } {
-	const slip = paymentSlip(due);
-	return slip === undefined ? { date: due } : { date: slip.to, slip };
-}
 
 export type Liquidation = {
 	readonly period: VatPeriod;
@@ -264,7 +257,7 @@ export function accontoOf(i: VatInputs, year: number, expected?: bigint): Accont
 	const said = cents(yearFigures(i, year - 1)?.base);
 	const paid = paidOf(i, `${year}-acconto`);
 	// Not for an acconto already past being said overdue when the periodicity was saved, nor from documents of a year with no period over that has any.
-	if ((i.since !== undefined && addDays(slipOf(`${year}-${ACCONTO_DUE}`).date, OVERDUE_DAYS) < i.since) || (said === undefined && expected === undefined && !anyPeriodOver(i, year))) return { year, belowMin: false, ...(paid === undefined ? {} : { paid }) };
+	if ((i.since !== undefined && addDays(dueSlip(`${year}-${ACCONTO_DUE}`).date, OVERDUE_DAYS) < i.since) || (said === undefined && expected === undefined && !anyPeriodOver(i, year))) return { year, belowMin: false, ...(paid === undefined ? {} : { paid }) };
 	const lastYear = i.docs.some((d) => d.date.startsWith(`${year - 1}-`));
 	const gross = (() => {
 		if (said !== undefined) return { base: said, from: "detto" as const };
@@ -340,7 +333,7 @@ export type Deadline = {
 /** The annual saldo by 30 June: 0,40% for each month or part of a month after 16 March. */
 function deferred(year: number, amount: bigint): Deadline["alternative"] {
 	const from = `${year + 1}-${ANNUAL_DUE}`;
-	const to = slipOf(`${year + 1}-${ANNUAL_DEFER_TO}`);
+	const to = dueSlip(`${year + 1}-${ANNUAL_DEFER_TO}`);
 	let months = 0;
 	while (addMonths(from, months).date < to.date) months++;
 	const percent = (Number(scaled(ANNUAL_DEFER_PERCENT_PER_MONTH, 2)) * months) / 100;
@@ -363,7 +356,7 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 		out.push({
 			kind: annual ? "annuale" : "periodo",
 			due,
-			...slipOf(due),
+			...dueSlip(due),
 			code: periodCode(period),
 			key,
 			year,
@@ -378,7 +371,7 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 	}
 	const a = accontoOf(i, year);
 	const accontoDue = `${year}-${ACCONTO_DUE}`;
-	out.push({ kind: "acconto", due: accontoDue, ...slipOf(accontoDue), code: CODE_ACCONTO[i.periodicity], key: `${year}-acconto`, year, ...(a.cents === undefined ? {} : { cents: a.cents }), ...(i.since !== undefined && `${year}-12-31` < i.since ? { beforeSetup: true as const } : {}), partial: a.analitico?.partial === true && a.storico === undefined, ...(a.paid === undefined ? {} : { paid: a.paid }) });
+	out.push({ kind: "acconto", due: accontoDue, ...dueSlip(accontoDue), code: CODE_ACCONTO[i.periodicity], key: `${year}-acconto`, year, ...(a.cents === undefined ? {} : { cents: a.cents }), ...(i.since !== undefined && `${year}-12-31` < i.since ? { beforeSetup: true as const } : {}), partial: a.analitico?.partial === true && a.storico === undefined, ...(a.paid === undefined ? {} : { paid: a.paid }) });
 	if (i.periodicity === "mensile") {
 		// Monthly: what December leaves under the minimum is the annual saldo, if over 10,33 €.
 		const december = periods.find((l) => l.period.n === 12);
@@ -386,7 +379,7 @@ export function deadlinesOf(i: VatInputs, year: number): Deadline[] {
 		const due = `${year + 1}-${ANNUAL_DUE}`;
 		const key = `${year}-annuale`;
 		const paid = paidOf(i, key);
-		out.push({ kind: "annuale", due, ...slipOf(due), code: CODE_ANNUAL, key, year, ...(left === undefined ? {} : { cents: left }), partial: december?.partial ?? false, ...(paid === undefined ? {} : { paid }), ...(left !== undefined && left > 0n ? { alternative: deferred(year, left) } : {}) });
+		out.push({ kind: "annuale", due, ...dueSlip(due), code: CODE_ANNUAL, key, year, ...(left === undefined ? {} : { cents: left }), partial: december?.partial ?? false, ...(paid === undefined ? {} : { paid }), ...(left !== undefined && left > 0n ? { alternative: deferred(year, left) } : {}) });
 	}
 	return out;
 }

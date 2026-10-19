@@ -27,7 +27,7 @@
  * - every deadline moves to the next working day (dates.ts, Saturday included), and carries why.
  */
 import { cashBook } from "./cash-book.ts";
-import { dayOfYear, paymentSlip } from "./dates.ts";
+import { dayOfYear, dueSlip, type Slip } from "./dates.ts";
 import type { Invoice } from "./invoices.ts";
 import { addDays, daysBetween, FERRAGOSTO, leapYear } from "./italian-calendar.ts";
 import { halfUp, scaled } from "./quote-sums.ts";
@@ -69,13 +69,6 @@ export function percentOf(cents: bigint, percent: string): bigint {
 const cents = (euros: string | undefined): bigint | undefined => (euros === undefined ? undefined : scaled(euros, 2));
 const yearOf = (day: string) => Number(day.slice(0, 4));
 
-/** The day a payment due on `due` is made, and why it moved: the next working day for a weekend or a holiday. */
-export type Slip = { readonly to: string; readonly holiday?: string };
-
-function slipOf(due: string): { readonly date: string; readonly slip?: Slip } {
-	const slip = paymentSlip(due);
-	return slip === undefined ? { date: due } : { date: slip.to, slip };
-}
 
 export type Incassi = {
 	readonly cents: bigint;
@@ -272,6 +265,20 @@ export type Deadline = {
 	readonly late?: { readonly due: string; readonly date: string; readonly cents: bigint; readonly extra: string };
 };
 
+/** What the deadlines are made of, in words: «saldo e primo acconto di imposta e contributi». */
+export function taxDeadlineWhat(d: Deadline): string {
+	if (d.kind === "fissi") return "contributi fissi INPS";
+	const contrib = d.parts.some((p) => p.kind === "saldo_contributi" || p.kind === "acconto_contributi");
+	const imposta = d.parts.some((p) => p.kind === "saldo_imposta" || p.kind === "acconto_imposta");
+	const of = imposta && contrib ? "di imposta e contributi" : imposta ? "dell'imposta" : "dei contributi";
+	if (d.kind === "giugno") {
+		const saldo = d.parts.some((p) => p.kind.startsWith("saldo"));
+		const acconto = d.parts.some((p) => p.kind.startsWith("acconto"));
+		return `${saldo && acconto ? "saldo e primo acconto" : saldo ? "saldo" : "primo acconto"} ${of}`;
+	}
+	return d.parts.some((p) => p.single === true) ? `acconto ${of}` : `secondo acconto ${of}`;
+}
+
 /** The known total of a deadline's parts. */
 export function deadlineCents(d: Deadline): bigint {
 	return d.parts.reduce((n, p) => n + (p.cents ?? 0n), 0n);
@@ -289,7 +296,7 @@ export function juneDays(year: number): { readonly due: string; readonly alterna
 	const t = JUNE_DEADLINES[year];
 	if (t !== undefined) return { ...t, proroga: true };
 	const due = `${year}-${JUNE_DUE}`;
-	let alternative = addDays(slipOf(due).date, JUNE_ALTERNATIVE_DAYS);
+	let alternative = addDays(dueSlip(due).date, JUNE_ALTERNATIVE_DAYS);
 	const md = alternative.slice(5);
 	if (md >= FERRAGOSTO.from && md <= FERRAGOSTO.to) alternative = `${yearOf(alternative)}-${FERRAGOSTO.to}`;
 	return { due, alternative, extra: JUNE_EXTRA_DEFAULT, proroga: false };
@@ -440,8 +447,8 @@ export function accontiOn(base: Pick<Base, "imposta" | "contributi">, pension: P
 const total = (a: Split | undefined) => (a === undefined || a.first === undefined ? undefined : a.first + a.second);
 
 /** The June deadline's working day of `year`, and November's. */
-const juneDate = (year: number) => slipOf(juneDays(year).due).date;
-const novemberDate = (year: number) => slipOf(`${year}-11-30`).date;
+const juneDate = (year: number) => dueSlip(juneDays(year).due).date;
+const novemberDate = (year: number) => dueSlip(`${year}-11-30`).date;
 
 /**
  * The acconti due during `year` for it: none in a first year (or before); else the rule on the
@@ -521,7 +528,7 @@ function deadlinesOfYear(i: CalendarInputs, year: number): Deadline[] {
 	const make = (due: string, kind: Deadline["kind"], parts: Part[], more: Partial<Deadline> = {}): void => {
 		const kept = parts.filter((x) => x.cents === undefined || x.cents > 0n);
 		if (kept.length === 0) return;
-		out.push({ due, ...slipOf(due), kind, parts: kept, ...more });
+		out.push({ due, ...dueSlip(due), kind, parts: kept, ...more });
 	};
 	// Artigiani and commercianti: the fixed part in four instalments, the fourth in February of the next year.
 	if (p.pension.kind === "artigiani" || p.pension.kind === "commercianti") {
@@ -548,7 +555,7 @@ function deadlinesOfYear(i: CalendarInputs, year: number): Deadline[] {
 	// Before the activity began nothing is due: «nessuna» gives zeros, which are dropped.
 	const days = juneDays(year);
 	const known = june.reduce((n, x) => n + (x.cents ?? 0n), 0n);
-	const alternative = { due: days.alternative, ...slipOf(days.alternative), cents: halfUp(known * (10_000n + scaled(days.extra, 2)), 10_000n), extra: days.extra };
+	const alternative = { due: days.alternative, ...dueSlip(days.alternative), cents: halfUp(known * (10_000n + scaled(days.extra, 2)), 10_000n), extra: days.extra };
 	make(days.due, "giugno", june, { ...(known > 0n ? { alternative } : {}), ...(days.proroga ? {} : { noProroga: true as const }) });
 	make(`${year}-11-30`, "novembre", november);
 	return out;
@@ -579,12 +586,20 @@ export function calendar(i: CalendarInputs, days = CALENDAR_DAYS, from = i.today
 /** The dates without amounts, for the regime ordinario or without a profile: IVA quarterly and annual (ordinario), imposte in June (the forfettari's proroga without a profile) and November. */
 export type PlainDeadline = { readonly due: string; readonly date: string; readonly slip?: Slip; readonly what: "iva_trimestrale" | "iva_annuale" | "imposte_giugno" | "imposte_novembre" };
 
+/** What a plain deadline is, in words. */
+export const PLAIN_WHAT: Readonly<Record<PlainDeadline["what"], string>> = {
+	iva_trimestrale: "IVA trimestrale",
+	iva_annuale: "IVA annuale",
+	imposte_giugno: "saldo e primo acconto delle imposte",
+	imposte_novembre: "secondo acconto delle imposte",
+};
+
 export function plainCalendar(today: string, ordinario: boolean, days = CALENDAR_DAYS): PlainDeadline[] {
 	const end = addDays(today, days - 1);
 	const year = yearOf(today);
 	const out: PlainDeadline[] = [];
 	for (const y of [year, year + 1]) {
-		const add = (due: string, what: PlainDeadline["what"]) => out.push({ due, ...slipOf(due), what });
+		const add = (due: string, what: PlainDeadline["what"]) => out.push({ due, ...dueSlip(due), what });
 		if (ordinario) {
 			add(`${y}-03-16`, "iva_annuale");
 			add(`${y}-05-16`, "iva_trimestrale");
