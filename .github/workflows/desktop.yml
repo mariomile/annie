@@ -13,8 +13,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The Mac app carries Annie's own server (docs/desktop.md, «Annie sul Mac»).
           - platform: macos-latest
-            args: --target universal-apple-darwin
+            args: --target universal-apple-darwin --config src-tauri/tauri.local.conf.json
           - platform: windows-latest
             args: ""
           - platform: ubuntu-22.04
@@ -37,6 +38,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: pnpm install --frozen-lockfile
         working-directory: desktop
+      - name: Annie's server for the Mac app
+        if: matrix.platform == 'macos-latest'
+        run: bash desktop/scripts/bundle-server.sh
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

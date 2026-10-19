@@ -80,6 +80,11 @@ button {
 	color: var(--bg);
 	cursor: pointer;
 }
+button.ghost {
+	background: transparent;
+	color: var(--fg);
+	border: 1px solid var(--line);
+}
 button:disabled {
 	opacity: 0.6;
 	cursor: progress;

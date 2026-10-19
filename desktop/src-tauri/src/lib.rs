@@ -1,7 +1,9 @@
 //! Annie on the desktop (docs/desktop.md): one window on the person's Annie server, an icon in
 //! the tray or menu bar, and a shortcut that brings it up from anywhere. The console is the
-//! server's own; the app adds only what a browser tab cannot do.
+//! server's own; the app adds only what a browser tab cannot do. The Mac app also carries a
+//! server of its own (local.rs), used until the person connects another one.
 
+mod local;
 mod server;
 mod settings;
 
@@ -21,6 +23,19 @@ const MAIN: &str = "main";
 /// The server the main window shows, once the person connected one.
 #[derive(Default)]
 struct Current(Mutex<Option<Url>>);
+
+/// Annie on this computer: what the app carries, and how far it got starting it.
+struct Local {
+    bundle: Option<local::Bundle>,
+    phase: Mutex<Phase>,
+}
+
+enum Phase {
+    Off,
+    Starting,
+    Ready(local::Running),
+    Failed(String),
+}
 
 /// What the main window shows: the bundled page that asks for the server, or a page of the server.
 enum Page {
@@ -42,18 +57,104 @@ async fn connect(app: AppHandle, input: String) -> Result<(), String> {
         },
     )?;
     *app.state::<Current>().0.lock().unwrap() = Some(server.origin.clone());
+    // Another server now: the one on this computer is not needed.
+    *app.state::<Local>().phase.lock().unwrap() = Phase::Off;
     open_main(&app, Page::Server(server.start)).map_err(|e| e.to_string())
 }
 
-/// The connected server, to fill in the form when the person changes it.
+/// Back to Annie on this computer, from the connect page.
 #[tauri::command]
-fn current(app: AppHandle) -> Option<String> {
-    app.state::<Current>()
-        .0
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|u| u.to_string())
+fn use_local(app: AppHandle) -> Result<(), String> {
+    settings::save(&settings_file(&app)?, &settings::Settings { server: None })?;
+    let ready = match &*app.state::<Local>().phase.lock().unwrap() {
+        Phase::Ready(running) => Some(running.origin.clone()),
+        _ => None,
+    };
+    match ready {
+        Some(origin) => {
+            *app.state::<Current>().0.lock().unwrap() = Some(origin.clone());
+            open_main(&app, Page::Server(origin)).map_err(|e| e.to_string())
+        }
+        None => {
+            start_local(&app);
+            Ok(())
+        }
+    }
+}
+
+/// What the connect page shows: the connected server, whether this computer can run Annie,
+/// and how starting it went.
+#[tauri::command]
+fn state(app: AppHandle) -> serde_json::Value {
+    let local = app.state::<Local>();
+    let phase = local.phase.lock().unwrap();
+    let remote = matches!(*phase, Phase::Off)
+        .then(|| app.state::<Current>().0.lock().unwrap().clone())
+        .flatten();
+    serde_json::json!({
+        "current": remote.map(|u| u.to_string()),
+        "local": local.bundle.is_some(),
+        "starting": matches!(*phase, Phase::Starting),
+        "error": match &*phase { Phase::Failed(message) => Some(message.clone()), _ => None },
+    })
+}
+
+/// Start the server the app carries, then sign in to it. The connect page says it is starting,
+/// or why it did not.
+fn start_local(app: &AppHandle) {
+    let local = app.state::<Local>();
+    let Some(bundle) = local.bundle.as_ref() else {
+        return;
+    };
+    {
+        let mut phase = local.phase.lock().unwrap();
+        if matches!(*phase, Phase::Starting) {
+            return;
+        }
+        // A server already running is stopped first: a single one owns the data folder.
+        *phase = Phase::Starting;
+    }
+    *app.state::<Current>().0.lock().unwrap() = None;
+    let _ = open_main(app, Page::Connect);
+    let paths = (|| -> tauri::Result<_> {
+        let path = app.path();
+        Ok((
+            path.app_data_dir()?.join("data"),
+            path.app_log_dir()?.join("server.log"),
+            path.app_config_dir()?.join("owner-token"),
+        ))
+    })();
+    let ((data, log, keep), bundle) = match paths {
+        Ok(paths) => (paths, bundle.clone()),
+        Err(error) => {
+            *local.phase.lock().unwrap() = Phase::Failed(error.to_string());
+            return;
+        }
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let started = local::start(&bundle, &data, &log);
+        let local = app.state::<Local>();
+        let mut phase = local.phase.lock().unwrap();
+        // The person connected another server meanwhile: this one is not needed.
+        if !matches!(*phase, Phase::Starting) {
+            return;
+        }
+        match started {
+            Ok(running) => {
+                let page = local::login(&data, &keep, &running.origin);
+                *app.state::<Current>().0.lock().unwrap() = Some(running.origin.clone());
+                *phase = Phase::Ready(running);
+                drop(phase);
+                let _ = open_main(&app, Page::Server(page));
+            }
+            Err(message) => {
+                *phase = Phase::Failed(message);
+                drop(phase);
+                let _ = open_main(&app, Page::Connect);
+            }
+        }
+    });
 }
 
 pub fn run() {
@@ -80,16 +181,31 @@ pub fn run() {
                 .build(),
         )
         .manage(Current::default())
-        .invoke_handler(tauri::generate_handler![connect, current])
+        .invoke_handler(tauri::generate_handler![connect, state, use_local])
         .setup(|app| {
             let handle = app.handle().clone();
+            let bundle = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf))
+                .zip(handle.path().resource_dir().ok())
+                .and_then(|(exe_dir, resources)| local::Bundle::find(&exe_dir, &resources));
+            handle.manage(Local {
+                bundle,
+                phase: Mutex::new(Phase::Off),
+            });
             // Checked again: a hand-edited file must not open a page the form would refuse.
             let saved = settings::load(&settings_file(&handle)?)
                 .server
                 .and_then(|s| server::parse(&s).ok())
                 .map(|s| s.origin);
+            let carried = handle.state::<Local>().bundle.is_some();
             *handle.state::<Current>().0.lock().unwrap() = saved.clone();
-            open_main(&handle, saved.map_or(Page::Connect, Page::Server))?;
+            match saved {
+                Some(origin) => open_main(&handle, Page::Server(origin))?,
+                // No server of the person's yet: the one the app carries, when it has one.
+                None if carried => start_local(&handle),
+                None => open_main(&handle, Page::Connect)?,
+            }
             tray(&handle)?;
             // Another app may hold the shortcut: Annie still works from the tray.
             if let Err(error) = handle.global_shortcut().register(summon()) {
@@ -114,8 +230,12 @@ pub fn run() {
             if let tauri::RunEvent::Reopen { .. } = event {
                 show(app);
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
+            // Esci stops the server on this computer too.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(local) = app.try_state::<Local>() {
+                    *local.phase.lock().unwrap() = Phase::Off;
+                }
+            }
         });
 }
 
