@@ -85,3 +85,32 @@ export function saysPhrase(tokens: readonly string[], key: string): boolean {
 	}
 	return false;
 }
+
+/** Words that only join a name's words: «rotoli di carta» is «rotoli carta». */
+const JOINERS = new Set(["di", "da", "del", "dello", "della", "dei", "degli", "delle", "per", "il", "lo", "la", "i", "gli", "le", "l", "un", "uno", "una"]);
+
+/**
+ * The words of a name each without its Italian ending (-a, -e, -i, -o, and a run of them: -ia,
+ * -io), the joining words out: «Cartuccia XL» and «cartucce xl» are both «cartucc xl», «rotoli di
+ * carta» is «rotol cart». A word that would be left with less than two letters stays whole.
+ */
+export function stemWords(text: string): string[] {
+	return words(text)
+		.filter((w) => !JOINERS.has(w))
+		.map((w) => {
+			const stem = w.replace(/[aeio]+$/, "");
+			return stem.length >= 2 ? stem : w;
+		});
+}
+
+/** Whether every stemmed word of `said` is among those of `name` («cartucce» in «Cartucce XL»); never an empty one. */
+export function stemsWithin(said: string, name: string): boolean {
+	const s = stemWords(said);
+	const n = new Set(stemWords(name));
+	return s.length > 0 && s.every((w) => n.has(w));
+}
+
+/** Two names the same once stemmed, as sets of words: «rotoli di carta» and «carta rotolo». */
+export function sameStems(a: string, b: string): boolean {
+	return stemsWithin(a, b) && stemsWithin(b, a);
+}

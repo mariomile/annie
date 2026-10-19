@@ -29,6 +29,7 @@ import { composeBuyer, findBuyer, type Known, quoteIds } from "./sales-invoice-b
 import { anyMissing, askFor, askGroups, dueOf, type FilesSay, filesSay, findIssued, type Missing, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { type BuyerFields, fitsLatin, type GivenLine, paymentTermsOf, quoteLine, readBuyerFields, readCassa, readLines, readNatura, readOrder, readPayment, readRitenuta, readVatRate, withRates } from "./sales-invoice-input.ts";
 import { draftAnswer, fenced } from "./sales-invoice-render.ts";
+import { draftStockLines } from "./sales-invoice-stock.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
 /** Where a draft's lines and customer come from, before the person's own fields. */
@@ -258,9 +259,11 @@ function fromHours(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 /** The lines that name a voce of the listino filled from it (price-list-lines.ts), in the regime known; the arguments as they are when none does. */
 function fromList(env: SalesEnv, args: Record<string, unknown>): { args: Record<string, unknown>; notes: readonly string[] } | string {
 	const filled = listLines({ ...(env.priceList === undefined ? {} : { priceList: env.priceList }), company: env.company, taxes: env.taxes }, args.lines, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: args.vat, natura: args.natura }, keepItem: true });
-	if (filled === undefined) return { args, notes: [] };
-	if ("ask" in filled) return filled.ask;
-	return { args: { ...args, lines: filled.lines }, notes: filled.notes };
+	if (filled !== undefined && "ask" in filled) return filled.ask;
+	// The magazzino: a line dictated with an article's name gets its voce; a voce that does not match its line is asked about.
+	const stock = draftStockLines(env, filled?.lines ?? args.lines);
+	if (filled === undefined && stock.notes.length === 0) return { args, notes: [] };
+	return { args: { ...args, lines: stock.lines }, notes: [...(filled?.notes ?? []), ...stock.notes] };
 }
 
 /** What a draft checked with `check` answers when it could be made: every datum is there. */

@@ -15,7 +15,7 @@ import { SalesInvoiceStore } from "../src/core/sales-invoice-store.ts";
 import { isIssued } from "../src/core/sales-invoices.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { stockAgentReads, stockCallReads } from "../src/core/stock.ts";
-import { STOCK_BROKEN, StockStore } from "../src/core/stock-store.ts";
+import { STOCK_BROKEN, STOCK_FULL, StockStore } from "../src/core/stock-store.ts";
 import { stateOf } from "../src/core/stock-sums.ts";
 import { TaxStore } from "../src/core/tax-store.ts";
 import { createSalesInvoiceTools } from "../src/core/tools/sales-invoice-tools.ts";
@@ -50,7 +50,7 @@ function temp(): string {
 	return dir;
 }
 
-function setup() {
+function setup(o: { stockStore?: (store: StockStore) => StockStore } = {}) {
 	const dir = temp();
 	const root = join(dir, "workspace");
 	mkdirSync(root, { recursive: true });
@@ -61,10 +61,11 @@ function setup() {
 	priceList.addMany("seed", 2, (id, n) => (n === 0 ? { id, name: "Cartucce XL", unit: "pezzo", price: "25", vat: 22, by: "test:u", at: NOW.toISOString() } : { id, name: "Consulenza", unit: "ora", price: "60", vat: 22, by: "test:u", at: NOW.toISOString() }));
 	const store = new StockStore(dir);
 	const events: StockEvent[] = [];
-	const [tool] = createStockTools({ workspace, store, priceList, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => NOW });
+	const clock = { now: NOW };
+	const [tool] = createStockTools({ workspace, store: o.stockStore?.(store) ?? store, priceList, timeZone: "Europe/Rome", whoIs: () => "test:u", record: async (e) => void events.push(e), now: () => clock.now });
 	if (tool === undefined) throw new Error("no tool");
 	const sales = new SalesInvoiceStore(dir);
-	sales.update("seed", (state) => ({ ...state, settings: { by: "test:u", at: NOW.toISOString(), lastBefore: { 2026: 0 } } }));
+	sales.update("seed", (state) => ({ ...state, settings: { by: "test:u", at: NOW.toISOString(), lastBefore: { 2026: 0, 2027: 0 } } }));
 	const [salesTool] = createSalesInvoiceTools({
 		workspace,
 		store: sales,
@@ -75,7 +76,7 @@ function setup() {
 		scanner: new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) }),
 		timeZone: "Europe/Rome",
 		whoIs: () => "test:u",
-		now: () => NOW,
+		now: () => clock.now,
 		make: async (input) => ({ data: Buffer.from(`%PDF-1.4 finta\n${input.text}`), notes: [] }),
 	});
 	if (salesTool === undefined) throw new Error("no sales tool");
@@ -87,17 +88,18 @@ function setup() {
 		if (item === undefined) throw new Error(`no ${id}`);
 		return stateOf(item, b.moves);
 	};
-	return { dir, root, store, events, run, sell, sales, onHand };
+	return { dir, root, store, events, run, sell, sales, onHand, clock, tool, priceList };
 }
 
 describe("il magazzino: carichi, scarichi e costo medio", () => {
 	it("recomputes the weighted average on every carico, and a scarico never changes it", async () => {
 		const s = setup();
 		const added = await s.run({ op: "add_item", item: "Toner nero", unit: "pezzi", min: 10 });
-		expect(added).toContain("nuovo articolo MG-0001");
+		expect(added).toContain("Fatto, ho aggiunto l'articolo (MG-0001): si conta a pezzi, ti avviso sotto i 10.");
 		expect(inside(added)).toContain("Toner nero");
 		const first = await s.run({ op: "receive", item: "toner nero", quantity: 10, cost: "12" });
-		expect(first).toContain("+10 pezzi a 12,00 €");
+		expect(first).toContain("Fatto, ho caricato 10 pezzi a 12,00 € per unità, senza IVA. Ora 10 pezzi, costo medio 12,00 €, valore 120,00 €.");
+		expect(first).not.toMatch(/MV-/);
 		const second = await s.run({ op: "receive", item: "MG-0001", quantity: 30, cost: "8", supplier: "Beta Forniture Srl", doc: "DDT 45" });
 		// (10 × 12 + 30 × 8) / 40 = 9.
 		expect(second).toContain("costo medio 9,00 € (era 12,00 €)");
@@ -105,11 +107,11 @@ describe("il magazzino: carichi, scarichi e costo medio", () => {
 		expect(inside(second)).toContain("Beta Forniture Srl");
 		expect(outside(second)).not.toContain("Beta");
 		const out = await s.run({ op: "unload", item: "toner nero", quantity: 5, reason: "uso_interno" });
-		expect(out).toContain("−5 pezzi, uso interno. Ora 35 pezzi.");
+		expect(out).toContain("Fatto, ho scaricato 5 pezzi (uso interno). Ora 35 pezzi.");
 		expect(s.onHand().average).toBe(90_000n);
 		expect(s.onHand().value).toBe(31_500n);
-		expect(await s.run({ op: "status", item: "toner nero" })).toContain("costo medio ponderato 9,00 € per unità, valore 315,00 €");
-		expect(await s.run({ op: "value" })).toContain("Il magazzino vale 315,00 €");
+		expect(await s.run({ op: "status", item: "toner nero" })).toContain("l'hai pagato in media 9,00 € l'uno, valore 315,00 €");
+		expect(await s.run({ op: "value" })).toContain("Il magazzino vale 315,00 €, a quanto hai pagato la merce che c'è (un articolo). Per ogni articolo conto il prezzo medio dei carichi, pesato sulle quantità");
 		// Each movement once: the call run again writes nothing twice.
 		const again = fresh("same-call");
 		await s.run({ op: "receive", item: "toner nero", quantity: 1, cost: 9 }, again);
@@ -125,7 +127,7 @@ describe("il magazzino: carichi, scarichi e costo medio", () => {
 		const s = setup();
 		await s.run({ op: "add_item", item: "Filo di rame", unit: "metri" });
 		expect(s.store.read().items[0]?.unit).toBe("m");
-		expect(await s.run({ op: "receive", item: "filo di rame", quantity: 2.125, cost: "3,2" })).toContain("+2,125 m a 3,20 €");
+		expect(await s.run({ op: "receive", item: "filo di rame", quantity: 2.125, cost: "3,2" })).toContain("ho caricato 2,125 m a 3,20 € per unità");
 		await s.run({ op: "unload", item: "filo di rame", quantity: "0,5", reason: "vendita" });
 		expect(s.onHand().onHand).toBe(1625n);
 		expect(await s.run({ op: "status", item: "filo di rame" })).toContain("1,625 m in magazzino");
@@ -140,7 +142,7 @@ describe("il magazzino: carichi, scarichi e costo medio", () => {
 		await s.run({ op: "add_item", item: "Cartucce XL" });
 		await s.run({ op: "receive", item: "cartucce xl", quantity: 5, cost: 12 });
 		const asked = await s.run({ op: "unload", item: "cartucce xl", quantity: 8, reason: "vendita" });
-		expect(asked).toContain("andrebbe in negativo di 3 pezzi");
+		expect(asked).toContain("Di questo articolo (nel riquadro) ne risultano 5 pezzi: togliendone 8 il magazzino andrebbe a −3. Chiedi a chi ti scrive se va bene lo stesso (di solito manca un carico)");
 		expect(asked).not.toMatch(/^Errore/);
 		expect(s.store.read().moves).toHaveLength(1);
 		// The yes from a scheduled turn or another agente is no person's yes.
@@ -148,7 +150,7 @@ describe("il magazzino: carichi, scarichi e costo medio", () => {
 		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 8, reason: "vendita", confirm: true }, fresh(undefined, "notice"))).toContain("serve il sì di chi ti scrive");
 		expect(s.store.read().moves).toHaveLength(1);
 		// A scarico within what there is stays open (bookkeeping).
-		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 1, reason: "scarto" }, fresh(undefined, "scheduled"))).toContain("Fatto, scarico");
+		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 1, reason: "scarto" }, fresh(undefined, "scheduled"))).toContain("Fatto, ho scaricato 1 pezzo (scarto)");
 		const done = await s.run({ op: "unload", item: "cartucce xl", quantity: 7, reason: "vendita", confirm: true });
 		expect(done).toContain("Ora −3 pezzi");
 		expect(done).toContain("in negativo");
@@ -171,7 +173,8 @@ describe("il magazzino: carichi, scarichi e costo medio", () => {
 		expect(await s.run({ op: "count", item: "cartucce xl", quantity: 37 }, fresh(undefined, "scheduled"))).toContain("serve il sì di chi ti scrive");
 		expect(await s.run({ op: "count", item: "cartucce xl", quantity: 37 }, agent())).toMatch(/^Errore: a un altro agente/);
 		const answer = await s.run({ op: "count", item: "cartucce xl", quantity: 37 });
-		expect(answer).toContain("contati 37 pezzi, ne risultavano 40 pezzi, quindi −3 pezzi");
+		expect(answer).toContain("Fatto, ho corretto il magazzino con il conteggio: contati 37 pezzi, ne mancano 3.");
+		expect(answer).not.toContain("I movimenti di prima");
 		const moves = s.store.read().moves;
 		expect(JSON.stringify(moves.slice(0, 2))).toBe(before);
 		expect(moves).toHaveLength(3);
@@ -180,7 +183,9 @@ describe("il magazzino: carichi, scarichi e costo medio", () => {
 		// The average stays: a rettifica goes at it.
 		expect(s.onHand().average).toBe(120_000n);
 		// The same count again matches, and is recorded as such.
-		expect(await s.run({ op: "count", item: "cartucce xl", quantity: 37 })).toContain("torna con quello che risultava");
+		expect(await s.run({ op: "count", item: "cartucce xl", quantity: 37 })).toContain("Fatto, ho segnato il conteggio: 37 pezzi, corrisponde a quello che risultava.");
+		await s.run({ op: "count", item: "cartucce xl", quantity: 40 });
+		expect(await s.run({ op: "count", item: "cartucce xl", quantity: 52 })).toContain("ce ne sono 12 in più");
 	});
 });
 
@@ -207,7 +212,7 @@ describe("il magazzino e le fatture emesse", () => {
 		expect(s.onHand().onHand).toBe(50_000n);
 		const call = fresh("issue-1");
 		const issued = await s.sell({ op: "issue", draft: id, confirm: true }, call);
-		expect(issued).toContain("Ho scaricato dal magazzino un articolo venduto");
+		expect(issued).toContain("Ho scaricato dal magazzino una riga venduta");
 		expect(inside(issued)).toContain("Cartucce XL (MG-0001): −5 pezzi");
 		expect(s.onHand().onHand).toBe(45_000n);
 		// Run again (a replay), and named again: nothing moves twice.
@@ -302,11 +307,11 @@ describe("il magazzino: sottoscorta, elenco, togliere, file", () => {
 		const s = setup();
 		await s.run({ op: "add_item", item: "Cartucce XL" });
 		await s.run({ op: "receive", item: "cartucce xl", quantity: 3, cost: 12 });
-		expect(await s.run({ op: "remove_item", item: "cartucce xl" })).toContain("Non lo tolgo: di MG-0001 risultano ancora 3 pezzi");
+		expect(await s.run({ op: "remove_item", item: "cartucce xl" })).toContain("Non lo tolgo: di questo articolo (MG-0001) risultano ancora 3 pezzi");
 		await s.run({ op: "count", item: "cartucce xl", quantity: 0 });
 		expect(await s.run({ op: "remove_item", item: "cartucce xl" }, fresh(undefined, "notice"))).toContain("serve il sì di chi ti scrive");
 		const removed = await s.run({ op: "remove_item", item: "cartucce xl" });
-		expect(removed).toContain("Fatto, ho tolto MG-0001");
+		expect(removed).toContain("Fatto, ho tolto l'articolo (MG-0001)");
 		expect(s.store.read().moves).toHaveLength(2);
 		expect(await s.run({ op: "list" })).toContain("Il magazzino è vuoto");
 		// The name is free again, with a new number.
@@ -393,5 +398,258 @@ describe("il magazzino: sottoscorta, elenco, togliere, file", () => {
 		expect(DEFAULT_INSTRUCTIONS).toContain("il listino sono i prezzi, il magazzino le quantità");
 		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il magazzino (stock:");
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
+	});
+});
+
+describe("week 69 review", () => {
+	const draftOf = async (s: ReturnType<typeof setup>, lines: unknown[]) => {
+		const answer = await s.sell({ op: "draft", ...DELTA, lines });
+		const id = s.sales.read().invoices.at(-1)?.id as string;
+		return { answer, id };
+	};
+	const issuedNumber = (s: ReturnType<typeof setup>, id: string) => {
+		const inv = s.sales.read().invoices.find((i) => i.id === id);
+		if (inv === undefined || !isIssued(inv)) throw new Error("not issued");
+		return inv.number;
+	};
+
+	it("1: finds an article from other words of its name, with its endings off, and says which it took", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Cartucce XL" });
+		await s.run({ op: "add_item", item: "Rotolo carta", unit: "rotoli" });
+		await s.run({ op: "receive", item: "Cartucce XL", quantity: 10, cost: 12 });
+		for (const said of ["cartuccia xl", "cartucce"]) {
+			const status = await s.run({ op: "status", item: said });
+			expect(status).toContain("MG-0001: 10 pezzi in magazzino");
+			expect(inside(status)).toContain("Ho preso Cartucce XL (MG-0001).");
+		}
+		const paper = await s.run({ op: "receive", item: "rotoli di carta", quantity: 4, cost: 2 });
+		expect(paper).toContain("Fatto, ho caricato 4 rotoli");
+		expect(inside(paper)).toContain("Ho preso Rotolo carta (MG-0002).");
+		// Two that hold the words: asked, never picked.
+		await s.run({ op: "add_item", item: "Cartucce S" });
+		expect(await s.run({ op: "status", item: "cartucce" })).toContain("Più articoli vanno bene con queste parole");
+	});
+
+	it("2: the first carico adds the article, from the voce of the listino of the same name; a close match is asked", async () => {
+		const s = setup();
+		const first = await s.run({ op: "receive", item: "Cartucce XL", quantity: 50, cost: 12, min: 10 });
+		expect(first).toContain("Fatto: ho aggiunto l'articolo (MG-0001, nel riquadro) al magazzino, a pezzi (è la voce LS-0001 del listino), con l'avviso sotto i 10, e caricato 50 pezzi a 12,00 € per unità, senza IVA. Ora 50 pezzi");
+		expect(first).toContain("valore 600,00 €");
+		expect(s.store.read().items[0]).toMatchObject({ name: "Cartucce XL", unit: "pezzo", listino: "LS-0001", min: "10" });
+		const tape = await s.run({ op: "receive", item: "Nastro adesivo", quantity: 6, cost: "1,5", unit: "rotoli" });
+		expect(tape).toContain("al magazzino, a rotoli, e caricato 6 rotoli");
+		expect(s.store.read().items[1]).toMatchObject({ unit: "rotolo" });
+		expect(s.store.read().items[1]?.listino).toBeUndefined();
+		// Run again: one article, one carico.
+		const c = fresh("first-carico");
+		await s.run({ op: "receive", item: "Graffette", quantity: 1, cost: 1 }, c);
+		await s.run({ op: "receive", item: "Graffette", quantity: 1, cost: 1 }, c);
+		expect(s.store.read().items.filter((i) => i.name === "Graffette")).toHaveLength(1);
+		await s.run({ op: "add_item", item: "Cartucce S" });
+		const moves = s.store.read().moves.length;
+		expect(await s.run({ op: "receive", item: "cartucce", quantity: 1, cost: 1 })).toContain("Più articoli vanno bene");
+		expect(s.store.read().moves).toHaveLength(moves);
+	});
+
+	it("3: packs turn into units exactly, the cost per pack is divided (rounded half up and said), and an invoice in packs unloads them", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Cartucce XL" });
+		const boxes = await s.run({ op: "receive", item: "cartucce xl", quantity: 3, unit: "scatole", per_pack: 12, pack_cost: 30 });
+		expect(boxes).toContain("Fatto, ho caricato 3 scatole da 12 = 36 pezzi a 2,50 € per unità, senza IVA.");
+		expect(boxes).toContain("Il costo: 30,00 € per scatola da 12: 2,50 € per pezzo.");
+		expect(s.onHand().onHand).toBe(36_000n);
+		expect(s.onHand().average).toBe(25_000n);
+		const odd = await s.run({ op: "receive", item: "cartucce xl", quantity: 1, unit: "scatole", per_pack: 12, pack_cost: 10 });
+		expect(odd).toContain("0,8333 € per pezzo (arrotondato al centesimo di centesimo)");
+		expect(await s.run({ op: "receive", item: "cartucce xl", quantity: 1, pack_cost: 10 })).toContain("dimmi quanti ne contiene ogni confezione");
+		expect(await s.run({ op: "receive", item: "cartucce xl", quantity: "0,5", per_pack: "0,001", cost: 1 })).toMatch(/^Errore: 0,5 per 0,001 non viene/);
+		// The article's own pack: an invoice line in scatole unloads twelve each.
+		await s.run({ op: "add_item", item: "LS-0001", pack_unit: "scatola", per_pack: 12 });
+		const before = s.onHand().onHand;
+		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: 2, unit: "scatole" }]);
+		const issued = await s.sell({ op: "issue", draft: id, confirm: true });
+		expect(inside(issued)).toContain("−24 pezzi");
+		expect(s.onHand().onHand).toBe(before - 24_000n);
+	});
+
+	it("4: a quantity in another unit is checked against the article's: turned by its pack, else asked", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Cartucce XL" });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 50, cost: 12 });
+		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 3, unit: "confezioni", reason: "uso_interno" })).toContain("Questo articolo si conta a pezzi: 3 confezioni quanti pezzi sono?");
+		expect(await s.run({ op: "receive", item: "cartucce xl", quantity: 3, unit: "confezioni", cost: 1 })).toContain("Questo articolo si conta a pezzi: 3 confezioni quanti pezzi sono?");
+		expect(s.onHand().onHand).toBe(50_000n);
+		await s.run({ op: "add_item", item: "cartucce xl", pack_unit: "confezione", per_pack: 10 });
+		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 3, unit: "confezioni", reason: "uso_interno" })).toContain("ho scaricato 3 confezioni da 10 = 30 pezzi");
+		expect(s.onHand().onHand).toBe(20_000n);
+		// The article's own unit said is no question.
+		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 2, unit: "pezzi", reason: "scarto" })).toContain("ho scaricato 2 pezzi");
+	});
+
+	it("5: a full magazzino says so apart, an issue left to complete says why; closing a year keeps on hand, averages and the credit notes' caps", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 50, cost: 12 });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 10, cost: 6 });
+		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: 5 }]);
+		await s.sell({ op: "issue", draft: id, confirm: true });
+		await s.run({ op: "unload", item: "cartucce xl", quantity: 70, reason: "scarto", confirm: true });
+		const before = s.onHand();
+		expect(before.negative).toBe(true);
+		// A new year: 2026 closed.
+		s.clock.now = new Date("2027-01-10T09:00:00Z");
+		const asked = await s.run({ op: "close_year", year: 2026 });
+		expect(asked).toContain("Chiudendo il 2026 riassumo 4 movimenti fino al 31/12/2026 in una riga di apertura");
+		expect(await s.run({ op: "close_year", year: 2026, confirm: true }, fresh(undefined, "scheduled"))).toContain("serve il sì di chi ti scrive");
+		expect(s.store.read().moves).toHaveLength(4);
+		expect(await s.run({ op: "close_year", year: 2026, confirm: true })).toContain("Fatto, ho chiuso il 2026: 4 movimenti fino al 31/12/2026 sono diventati una riga di apertura.");
+		const after = s.onHand();
+		expect(s.store.read().moves.map((m) => m.kind)).toEqual(["apertura"]);
+		expect([after.onHand, after.average, after.value, after.negative, after.negativeSince]).toEqual([before.onHand, before.average, before.value, before.negative, before.negativeSince]);
+		expect(s.store.read().archived).toEqual([{ k: `${id}#1`, i: "MG-0001", q: "5" }]);
+		expect(s.store.read().broken).toBe(false);
+		// The invoice issued again moves nothing; its credit note puts back at most the 5 it took out.
+		await s.sell({ op: "issue", draft: id, confirm: true });
+		expect(s.onHand().onHand).toBe(before.onHand);
+		await s.sell({ op: "credit_note", invoice: issuedNumber(s, id), lines: [{ description: "Cartucce XL", quantity: 9, price: 1, vat: 22, item: "LS-0001" }] });
+		const creditId = s.sales.read().invoices.at(-1)?.id as string;
+		expect(inside(await s.sell({ op: "issue", draft: creditId, confirm: true }))).toContain("+5 pezzi");
+		expect(s.onHand().onHand).toBe(before.onHand + 5_000n);
+		expect(s.onHand().average).toBe(before.average);
+	});
+
+	it("5: a magazzino full of movements: «pieno» on a change, and an issue that cannot move it stays to complete and says why", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		const raw = JSON.parse(readFileSync(join(s.dir, "stock.json"), "utf8"));
+		raw.moves = Array.from({ length: 20_000 }, (_, n) => ({ id: `MV-${String(n + 1).padStart(6, "0")}`, item: "MG-0001", kind: "carico", qty: "1", day: "2026-01-02", cost: "1", by: "test:u", at: NOW.toISOString() }));
+		raw.nextMove = 20_001;
+		writeFileSync(join(s.dir, "stock.json"), JSON.stringify(raw));
+		expect(s.store.read().broken).toBe(false);
+		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 1, reason: "scarto" })).toBe(`Errore: ${STOCK_FULL}.`);
+		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: 5 }]);
+		const issued = await s.sell({ op: "issue", draft: id, confirm: true });
+		expect(issued).toContain("il magazzino è pieno di movimenti, quindi gli articoli venduti non sono scaricati");
+		expect(issued).toContain("non è completa");
+		// A closed year makes room; the issue completes, once.
+		s.clock.now = new Date("2026-10-20T09:00:00Z");
+		expect(await s.run({ op: "close_year", year: 2026, confirm: true })).toContain("20000 movimenti");
+		expect(await s.sell({ op: "issue", draft: id, confirm: true })).toContain("Ho scaricato dal magazzino una riga venduta");
+		expect(s.onHand().onHand).toBe(19_995_000n);
+	});
+
+	it("6: the issue's question shows what the magazzino will do, and warns of going under zero; a voce that does not match its line is asked at the draft", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 37, cost: 12 });
+		const { id } = await draftOf(s, [{ item: "Cartucce XL", quantity: 40 }]);
+		const asked = await s.sell({ op: "issue", draft: id });
+		expect(inside(asked)).toContain("Scarica dal magazzino: Cartucce XL −40 pezzi");
+		expect(asked).toContain("In magazzino ci sono 37 pezzi di MG-0001: questa fattura ne scarica 40, quindi andrebbe a −3.");
+		expect(s.onHand().onHand).toBe(37_000n);
+		const odd = await draftOf(s, [{ item: "Cartucce XL", description: "Servizio di assistenza", quantity: 1 }]);
+		expect(odd.answer).toContain("una descrizione diversa dalla voce del listino");
+		expect(inside(odd.answer)).toContain("la riga «Servizio di assistenza» è legata alla voce Cartucce XL (LS-0001) del listino");
+	});
+
+	it("7: a scarico that goes under zero meanwhile is refused under the lock, unless the person said yes in a turn of theirs", async () => {
+		// Another scarico lands between the check and the write.
+		const racing = (store: StockStore): StockStore => {
+			let raced = false;
+			const proxy = Object.create(store) as StockStore;
+			proxy.update = (callId, change) => {
+				if (!raced) {
+					raced = true;
+					store.update("race", (st) => ({ ...st, nextMove: st.nextMove + 1, moves: [...st.moves, { id: `MV-${String(st.nextMove).padStart(6, "0")}`, item: "MG-0001", kind: "scarico", qty: "4", day: "2026-10-19", reason: "scarto", by: "test:u", at: NOW.toISOString() }] }));
+				}
+				return store.update(callId, change);
+			};
+			return proxy;
+		};
+		const s = setup({ stockStore: racing });
+		await s.store.update("seed-item", (st) => ({ ...st, nextItem: 2, items: [{ id: "MG-0001", name: "Cartucce XL", unit: "pezzo", by: "test:u", at: NOW.toISOString() }], nextMove: 2, moves: [{ id: "MV-000001", item: "MG-0001", kind: "carico", qty: "5", day: "2026-10-19", cost: "12", by: "test:u", at: NOW.toISOString() }] }));
+		expect(await s.run({ op: "unload", item: "cartucce xl", quantity: 3, reason: "scarto", confirm: true }, fresh(undefined, "scheduled"))).toContain("nel frattempo la quantità è cambiata");
+		expect(s.onHand().onHand).toBe(1_000n);
+	});
+
+	it("8: a carico needs the person; the last carico's cost is corrected as if it had always had it", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Cartucce XL" });
+		expect(await s.run({ op: "receive", item: "cartucce xl", quantity: 10, cost: 12 }, fresh(undefined, "notice"))).toContain("serve il sì di chi ti scrive");
+		expect(s.store.read().moves).toHaveLength(0);
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 10, cost: 12 });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 10, cost: 8 });
+		await s.run({ op: "unload", item: "cartucce xl", quantity: 5, reason: "scarto" });
+		expect(s.onHand().average).toBe(100_000n);
+		expect(await s.run({ op: "fix_cost", item: "cartucce xl", cost: 6 }, fresh(undefined, "scheduled"))).toContain("serve il sì di chi ti scrive");
+		const fixed = await s.run({ op: "fix_cost", item: "cartucce xl", cost: 6 });
+		expect(fixed).toContain("Fatto, ho corretto il costo dell'ultimo carico (10 pezzi 19/10/2026): 6,00 € per unità invece di 8,00 €. Ora il costo medio è 9,00 €, valore 135,00 €.");
+		// The carico itself is untouched: a costo movement records the correction.
+		expect(s.store.read().moves.find((m) => m.kind === "carico" && m.cost === "8")).toBeDefined();
+		expect(s.store.read().moves.at(-1)).toMatchObject({ kind: "costo", cost: "6", was: "8" });
+		expect(await s.run({ op: "fix_cost", item: "cartucce xl", cost: 6 })).toContain("era già a 6,00 €");
+	});
+
+	it("9: on hand is capped, with its own words; a count spans the whole range", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "Viti" });
+		await s.run({ op: "receive", item: "viti", quantity: 999_999_999, cost: "0,01" });
+		expect(await s.run({ op: "receive", item: "viti", quantity: 2, cost: "0,01" })).toContain("ne risulterebbero più di 1.000.000.000, il massimo che tengo per un articolo");
+		await s.run({ op: "add_item", item: "Bulloni" });
+		await s.run({ op: "unload", item: "bulloni", quantity: 1_000_000_000, reason: "scarto", confirm: true });
+		expect(await s.run({ op: "count", item: "bulloni", quantity: 1_000_000_000 })).toContain("ce ne sono 2.000.000.000 in più");
+		expect(s.onHand("MG-0002").onHand).toBe(1_000_000_000_000n);
+		expect(s.store.read().broken).toBe(false);
+	});
+
+	it("10: a dictated line with an article's name gets its voce; one like an article that is no voce is said at the issue", async () => {
+		const s = setup();
+		await s.run({ op: "add_item", item: "LS-0001" });
+		await s.run({ op: "receive", item: "cartucce xl", quantity: 20, cost: 12 });
+		await s.run({ op: "add_item", item: "Rotolo carta", unit: "rotoli" });
+		const { answer, id } = await draftOf(s, [{ description: "Cartucce XL", quantity: 3, price: 25, vat: 22 }, { description: "Rotolo carta", quantity: 2, price: 4, vat: 22 }]);
+		expect(answer).toContain("Ho legato la riga nel riquadro alla voce del listino che è un articolo del magazzino");
+		expect(s.sales.read().invoices.at(-1)?.lines.map((l) => l.item)).toEqual(["LS-0001", undefined]);
+		const issued = await s.sell({ op: "issue", draft: id, confirm: true });
+		expect(issued).toContain("La riga nel riquadro sembra un articolo del magazzino, ma non è legata a una voce del listino: non l'ho scaricata. Dimmi se va scaricata.");
+		expect(s.onHand().onHand).toBe(17_000n);
+		expect(s.onHand("MG-0002").onHand).toBe(0n);
+	});
+
+	it("11: the words: plural units, «per quello», skipped lines, no movement numbers outside the list", async () => {
+		const s = setup();
+		expect(await s.run({ op: "add_item", item: "Nastro", unit: "rotoli", min: 3 })).toContain("Fatto, ho aggiunto l'articolo (MG-0001): si conta a rotoli, ti avviso sotto i 3.");
+		await s.run({ op: "add_item", item: "Colla" });
+		await s.run({ op: "receive", item: "nastro", quantity: 5, cost: 2 });
+		expect(await s.run({ op: "low" })).toContain("Un articolo non ha un minimo: per quello non so dire quando avvisarti.");
+		const asked = await s.run({ op: "unload", item: "nastro", quantity: 9, reason: "scarto" });
+		expect(asked).toContain("Di questo articolo (nel riquadro) ne risultano 5 rotoli: togliendone 9 il magazzino andrebbe a −4.");
+		const list = await s.run({ op: "movements" });
+		expect(list).toContain("MV-000001");
+		for (const op of ["status", "unload"]) expect(await s.run({ op, item: "nastro", quantity: 1, reason: "scarto" })).not.toMatch(/MV-\d/);
+		const t = setup();
+		await t.run({ op: "add_item", item: "LS-0001" });
+		await t.run({ op: "receive", item: "cartucce xl", quantity: 5, cost: 1 });
+		const { id } = await draftOf(t, [{ item: "Cartucce XL", quantity: 2, unit: "scatole" }]);
+		expect(await t.sell({ op: "issue", draft: id, confirm: true })).toContain("Se va scaricata, dimmi quante unità sono e le scarico io.");
+	});
+
+	it("12: the description says a move only changes the place; 13: an article in negativo without a minimum is said in the brief once per episode", async () => {
+		const s = setup();
+		expect(s.tool.description).toContain("stock split across two places is not kept");
+		expect(s.tool.description).toContain("never take the VAT out yourself");
+		await s.run({ op: "add_item", item: "Colla" });
+		await s.run({ op: "receive", item: "colla", quantity: 2, cost: 1 });
+		await s.run({ op: "unload", item: "colla", quantity: 3, reason: "scarto", confirm: true });
+		const first = await s.run({ op: "low", compact: true });
+		expect(first).toContain("Magazzino: un articolo è in negativo, va ricontato.");
+		expect(await s.run({ op: "low", compact: true })).toContain("Niente da segnalare");
+		await s.run({ op: "unload", item: "colla", quantity: 1, reason: "scarto", confirm: true });
+		expect(await s.run({ op: "low", compact: true })).toContain("Niente da segnalare");
+		// A count ends the episode; a new one is said again.
+		await s.run({ op: "count", item: "colla", quantity: 0 });
+		await s.run({ op: "unload", item: "colla", quantity: 1, reason: "scarto", confirm: true });
+		expect(await s.run({ op: "low", compact: true })).toContain("in negativo, va ricontato");
 	});
 });

@@ -21,9 +21,7 @@ import type { ToolContext } from "../engine.ts";
 import { FatturaWriteError, fatturaFileName, fatturaXml } from "../fattura-pa-writer.ts";
 import { QUOTES_BROKEN } from "../quote-store.ts";
 import { QuoteError, STATUS_WORDS } from "../quotes.ts";
-import { n1 } from "../format-words.ts";
-import { CREDIT_NOTE_TYPE, ISSUED_FOLDER } from "../sales-invoice-rules.ts";
-import { qtyOf } from "../stock-sums.ts";
+import { ISSUED_FOLDER } from "../sales-invoice-rules.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { docWord, type IssuedInvoice, invoiceProblem, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, type Seller, sellerOf } from "../sales-invoices.ts";
 import type { Rounding } from "../timesheet.ts";
@@ -32,7 +30,7 @@ import { termsOf } from "../timesheet-sums.ts";
 import { WorkspaceError } from "../workspace.ts";
 import { askGroups, dueOf, filesSay, findIssued, namedDraft, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { courtesyMarkdown, fenced, invoiceLines, issuedAnswer } from "./sales-invoice-render.ts";
-import { fencedStock, qtyWords } from "./stock-render.ts";
+import { markStock, stockPreview } from "./sales-invoice-stock.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
 /** Tries at a free file name before giving up. */
@@ -62,6 +60,7 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 		return [
 			`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
 			fenced(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
+			...stockPreview(env, target, day, env.marker(ctx)),
 			"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
 		].join("\n");
 	}
@@ -288,40 +287,3 @@ async function markQuote(env: SalesEnv, inv: IssuedInvoice, ctx: ToolContext): P
 	return done ? { notes: [`Il preventivo ${quote} ora risulta fatturato.`], done } : { notes: [`Attenzione: non sono riuscita a segnare il preventivo ${quote} come fatturato.`], done };
 }
 
-type StockStep = { readonly broken: boolean; readonly moved: { readonly row: string; readonly negative: boolean }[]; readonly skipped: { readonly description: string; readonly why: string }[] };
-
-const SKIP_WHY: Readonly<Record<string, string>> = {
-	unit: "l'unità della riga non è quella dell'articolo in magazzino",
-	quantity: "la quantità della riga non è un numero",
-	nothing: "la fattura stornata non le aveva scaricate",
-};
-
-/**
- * The magazzino moved by the invoice: its lines that name a voce of the listino which is an
- * article there unload it (a credit note puts them back), once per invoice and line however many
- * times this runs. A magazzino that does not read leaves the issue to complete, like the hours.
- */
-async function markStock(env: SalesEnv, inv: IssuedInvoice, ctx: ToolContext): Promise<{ notes: string[]; done: boolean }> {
-	const stock = env.stock;
-	const lines = inv.lines.flatMap((l, n) => (l.item === undefined ? [] : [{ line: n + 1, listino: l.item, quantity: l.quantity, description: l.description, ...(l.unit === undefined ? {} : { unit: l.unit }) }]));
-	if (stock === undefined || lines.length === 0) return { notes: [], done: true };
-	const credit = inv.type === CREDIT_NOTE_TYPE;
-	if (credit && inv.related === undefined) return { notes: [], done: true };
-	const marker = env.marker(ctx);
-	const result: StockStep = await ctx.step("stock", async () => {
-		const r = stock.sale({ invoice: inv.id, number: inv.number, day: inv.date, ...(credit && inv.related !== undefined ? { of: inv.related.id } : {}), lines }, marker);
-		if (r.broken) return { broken: true, moved: [], skipped: [] };
-		return {
-			broken: false,
-			moved: r.moved.map((m) => ({ row: `• ${m.item.name} (${m.item.id}): ${credit ? "+" : "−"}${qtyWords(qtyOf(m.move.qty), m.item.unit)}`, negative: m.negative })),
-			skipped: r.skipped.map((s) => ({ description: s.description, why: s.why })),
-		};
-	});
-	if (result.broken) return { notes: ["Attenzione: il magazzino non si legge, quindi gli articoli venduti non sono scaricati. Quando il file è sistemato, si completa emettendo di nuovo questa fattura, con lo stesso numero."], done: false };
-	const notes: string[] = [];
-	if (result.moved.length > 0) notes.push([credit ? `Ho rimesso in magazzino ${n1(result.moved.length, "un articolo", "# righe")} della nota di credito:` : `Ho scaricato dal magazzino ${n1(result.moved.length, "un articolo venduto", "# righe vendute")}:`, fencedStock(result.moved.map((m) => m.row).join("\n"))].join("\n"));
-	const negative = result.moved.filter((m) => m.negative).length;
-	if (!credit && negative > 0) notes.push(`Attenzione: ${n1(negative, "un articolo è", "# articoli sono")} in negativo in magazzino (ne sono usciti più di quelli caricati): ${negative === 1 ? "va ricontato" : "vanno ricontati"}, o manca un carico.`);
-	if (result.skipped.length > 0) notes.push([`${credit ? n1(result.skipped.length, "Una riga non l'ho rimessa in magazzino", "# righe non le ho rimesse in magazzino") : n1(result.skipped.length, "Una riga non l'ho scaricata dal magazzino", "# righe non le ho scaricate dal magazzino")}:`, fenced(result.skipped.map((s) => `• ${s.description}: ${SKIP_WHY[s.why] ?? s.why}`).join("\n")), "Se va mossa, si fa a mano dal magazzino."].join("\n"));
-	return { notes, done: true };
-}
