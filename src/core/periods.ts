@@ -8,7 +8,7 @@
  */
 import { DateError, isoWeek, parseMonth } from "./dates.ts";
 import { addDays, daysBetween, daysInMonth, isoDate, MONTH_NAMES, realDate, weekdayOf } from "./italian-calendar.ts";
-import { italianDate, signOf } from "./italian-format.ts";
+import { italianDate, signOf, withDate } from "./italian-format.ts";
 import { halfUp } from "./quote-sums.ts";
 import { fold } from "./text-match.ts";
 
@@ -202,7 +202,27 @@ export function underWay(p: Period, today: string): boolean {
 /** A span of days: the period, or the part of it up to today. */
 export type Span = { readonly from: string; readonly to: string };
 
-/** «dal 01/10/2026 al 18/10/2026», elided before 8 and 11: «dall'08/10/2026 all'11/10/2026». */
+/** The last day of the month of `day`: «2028-02-01» → «2028-02-29». */
+export const lastDay = (day: string): string => `${day.slice(0, 8)}${String(daysInMonth(Number(day.slice(0, 4)), Number(day.slice(5, 7)))).padStart(2, "0")}`;
+
+/** The month of `day` in words: «ottobre 2026». */
+export const monthLabel = (day: string): string => `${MONTH_NAMES[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
+
+/** «ottobre 2026», «ottobre 2026 fino al 18», «3º trimestre 2026», «2026», «dal 1º gennaio al 18 ottobre 2026». */
+export function spanWords(span: Span): string {
+	const { from, to } = span;
+	const year = from.slice(0, 4);
+	const firstOfMonth = from.slice(8) === "01";
+	if (firstOfMonth && from.slice(0, 7) === to.slice(0, 7)) return to === lastDay(from) ? monthLabel(from) : `${monthLabel(from)} fino al ${Number(to.slice(8)) === 1 ? "1º" : Number(to.slice(8))}`;
+	if (from === `${year}-01-01` && to === `${year}-12-31`) return year;
+	const month = Number(from.slice(5, 7));
+	if (firstOfMonth && (month - 1) % 3 === 0 && to === lastDay(`${year}-${String(month + 2).padStart(2, "0")}-01`)) return `${(month + 2) / 3}º trimestre ${year}`;
+	const start = withDate("dal", from);
+	const short = from.slice(0, 7) === to.slice(0, 7) ? start.replace(/ \S+ \d{4}$/, "") : from.slice(0, 4) === to.slice(0, 4) ? start.replace(/ \d{4}$/, "") : start;
+	return `${short} ${withDate("al", to)}`;
+}
+
+/** «dal 01/10/2026 al 18/10/2026», elided before 8 and 11 («dall'08/10/2026 all'11/10/2026»): a span in a table or a short line. */
 export function spanText(from: string, to: string): string {
 	const elided = (day: string) => /^(?:08|11)\//.test(day);
 	const f = italianDate(from);

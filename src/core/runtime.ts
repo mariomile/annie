@@ -18,6 +18,7 @@ import { CashflowStore } from "./cashflow-store.ts";
 import { TaxStore } from "./tax-store.ts";
 import { VatStore } from "./vat-store.ts";
 import { BankStore } from "./bank-store.ts";
+import { WithholdingStore } from "./withholding-store.ts";
 import { ClientStore } from "./client-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
 import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
@@ -231,6 +232,11 @@ export class AnnieRuntime {
 	/** L'estratto conto of an instance: the bank movements loaded, the imports, the matches and the settings. */
 	bank(tenant: string, instance: string): BankStore {
 		return new BankStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Le ritenute of an instance: the CU received. */
+	withholding(tenant: string, instance: string): WithholdingStore {
+		return new WithholdingStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** I clienti of an instance: the cards with what the person said about each client. */

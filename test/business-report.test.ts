@@ -29,7 +29,8 @@ import { currentEstimate, yearEstimate, yearIncassi } from "../src/core/tax-sums
 import type { WorkEntry } from "../src/core/timesheet.ts";
 import { type BusinessReportEvent, createBusinessReportTools } from "../src/core/tools/business-report-tools.ts";
 import { readAsked } from "../src/core/tools/business-report-input.ts";
-import { BRIEF_NOTHING, compareAnswer, EMPTY, loadNotes, spanWords, TAX_NOTE } from "../src/core/tools/business-report-render.ts";
+import { spanWords } from "../src/core/periods.ts";
+import { BRIEF_NOTHING, compareAnswer, EMPTY, loadNotes, TAX_NOTE } from "../src/core/tools/business-report-render.ts";
 import { Workspace } from "../src/core/workspace.ts";
 
 // Synthetic identifiers only: checksum-valid fake partite IVA.

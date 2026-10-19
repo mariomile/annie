@@ -9,7 +9,7 @@
 import type { Expense } from "./expenses.ts";
 import { cents } from "./expense-sums.ts";
 import { inPeriod, type Span } from "./periods.ts";
-import { type Invoice, paidDay, partyKey } from "./invoices.ts";
+import { instalmentShares, type Invoice, paidDay, partyKey } from "./invoices.ts";
 import { unitsToCents } from "./quote-sums.ts";
 
 type CashKind = "in" | "out";
@@ -24,6 +24,8 @@ export type CashRow = {
 	readonly instalment?: { readonly n: number; readonly count: number };
 	/** The balance after this row, from zero at the period's start. */
 	readonly balance: bigint;
+	/** An incasso: the instalment's share of the contributions the customer withheld (RT03 to RT06), income though it never came in. */
+	readonly contributions?: bigint;
 };
 
 export type CashBook = {
@@ -40,6 +42,12 @@ export type CashBook = {
 	readonly unreadable: number;
 	/** Credit notes to customers marked used in the period: whether money went back is not known, not counted. */
 	readonly credits: number;
+	/**
+	 * The contributions the customers withheld on the incassi (an agent's ENASARCO, RT03 to RT06):
+	 * not in totalIn, which is what came in, but income all the same, which the forfettario's taxes
+	 * count (tax-sums.ts incassiOf, business-report-taxes.ts).
+	 */
+	readonly contributions: bigint;
 };
 
 /** Kept here for the registers that import it from the cash book: the one helper is quote-sums.ts'. */
@@ -77,7 +85,9 @@ function incassiOf(invoices: readonly Invoice[], span: Span, dayOf: (at: string)
 				foreign.add(invoice.key);
 				continue;
 			}
-			entries.push({ date, kind: "in", cents: unitsToCents(i.amount), invoice, instalment: { n: i.n, count: invoice.instalments.length } });
+			const withheld = invoice.withheld?.contributions ?? 0n;
+			const contributions = withheld === 0n ? 0n : (instalmentShares(invoice, withheld)[invoice.instalments.indexOf(i)] ?? 0n);
+			entries.push({ date, kind: "in", cents: unitsToCents(i.amount), invoice, instalment: { n: i.n, count: invoice.instalments.length }, ...(contributions === 0n ? {} : { contributions }) });
 		}
 	}
 	return { entries, otherCurrency: foreign.size, paidPassive: passive.size, unreadable, credits: credits.size };
@@ -102,11 +112,15 @@ export function cashBook(invoices: readonly Invoice[], expenses: readonly Expens
 	let balance = 0n;
 	let totalIn = 0n;
 	let totalOut = 0n;
+	let contributions = 0n;
 	const rows = entries.map((e): CashRow => {
-		if (e.kind === "in") totalIn += e.cents;
-		else totalOut += e.cents;
+		if (e.kind === "in") {
+			totalIn += e.cents;
+			contributions += e.contributions ?? 0n;
+		}
+		if (e.kind === "out") totalOut += e.cents;
 		balance += e.kind === "in" ? e.cents : -e.cents;
 		return { ...e, balance };
 	});
-	return { rows, totalIn, totalOut, net: totalIn - totalOut, otherCurrency: incassi.otherCurrency, paidPassive: incassi.paidPassive, unreadable: incassi.unreadable, credits: incassi.credits };
+	return { rows, totalIn, totalOut, net: totalIn - totalOut, otherCurrency: incassi.otherCurrency, paidPassive: incassi.paidPassive, unreadable: incassi.unreadable, credits: incassi.credits, contributions };
 }

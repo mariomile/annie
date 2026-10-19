@@ -75,8 +75,10 @@ export type Figures = {
 	readonly span: Span;
 	/** Imponibile of the invoices issued dated in the span, credit notes less. */
 	readonly fatturato?: { readonly cents: bigint; readonly count: number; readonly credits: number };
-	/** The money in: instalments paid in the span, IVA included, less the credit notes used. */
+	/** The money in: instalments paid in the span, IVA included, less the credit notes used; net of the ritenute the clients withheld. */
 	readonly incassato?: bigint;
+	/** The ordinario: the ritenute d'acconto the clients withheld on the invoices paid in the span (withholding-sums.ts, principio di cassa), a credit for the dichiarazione. */
+	readonly ritenute?: bigint;
 	/** The expenses dated in the span, and the supplier invoices paid in it that no expense stands for. */
 	readonly spese?: { readonly cents: bigint; readonly expenses: number; readonly suppliers: number; readonly supplierCents: bigint; readonly twins: number; readonly maybe?: readonly MaybeTwin[] };
 	/** Incassato less spese. */

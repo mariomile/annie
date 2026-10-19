@@ -289,6 +289,14 @@ _Avoid_: bank statement, movimenti bancari (per il file)
 Nell'andamento dell'attività, gli incassi meno le spese dello stesso periodo, per cassa. Per il forfettario, tolte le tasse stimate, è quanto «ti resta in tasca»; per l'ordinario Annie dice solo quanto resta dopo l'IVA, prima di IRPEF e contributi. Lo calcola `business_report`. Vedi ADR 0080.
 _Avoid_: profitto, utile (per il margine per cassa)
 
+**Ritenuta d'acconto**:
+La parte del compenso (di solito il 20% dell'imponibile; per gli agenti il 23% sul 50% o sul 20% delle provvigioni) che il cliente sostituto d'imposta trattiene e versa allo Stato con l'F24, codice 1040, entro il 16 del mese dopo il pagamento. Per chi è in regime ordinario è un credito nella dichiarazione dell'anno in cui il cliente paga; nel forfettario non c'è. Annie la segue con `withholding`, leggendo le fatture in uscita e gli XML del workspace.
+_Avoid_: withholding tax, trattenuta (per la ritenuta)
+
+**CU (Certificazione Unica)**:
+Il documento con cui il cliente certifica, entro il 16 marzo dell'anno dopo, i compensi pagati e le ritenute trattenute. La persona dice ad Annie i due importi, Annie li salva (CU-NNNN, da togliere con lo stesso codice se detta per sbaglio) e li confronta con le sue fatture, spiegando la differenza quando può. L'anno della CU è quello dei pagamenti: la CU 2026 certifica i compensi del 2025.
+_Avoid_: certificazione dei compensi, 770 (per la CU)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
