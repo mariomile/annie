@@ -297,6 +297,10 @@ _Avoid_: withholding tax, trattenuta (per la ritenuta)
 Il documento con cui il cliente certifica, entro il 16 marzo dell'anno dopo, i compensi pagati e le ritenute trattenute. La persona dice ad Annie i due importi, Annie li salva (CU-NNNN, da togliere con lo stesso codice se detta per sbaglio) e li confronta con le sue fatture, spiegando la differenza quando può. L'anno della CU è quello dei pagamenti: la CU 2026 certifica i compensi del 2025.
 _Avoid_: certificazione dei compensi, 770 (per la CU)
 
+**Agenda fiscale**:
+Tutte le scadenze di chi ha la partita IVA in una lista sola, in ordine di data: gli F24 di tasse e IVA, le CU, i rinnovi, le fatture da pagare e le scadenze di legge (dichiarazioni, LIPE, diritto camerale, bollo). Annie non la salva: la legge ogni volta dai registri e la può esportare in un file .ics. Vedi ADR 0083.
+_Avoid_: scadenziario fiscale, calendario delle tasse (per l'agenda fiscale)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
