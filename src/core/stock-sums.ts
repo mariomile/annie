@@ -7,7 +7,7 @@
  * always had it; an apertura (a closed year) starts the article where it was.
  */
 import { halfUp, scaled, scaledDecimal } from "./quote-sums.ts";
-import type { Movement, StockItem } from "./stock.ts";
+import { type Movement, type StockItem, stockUnit } from "./stock.ts";
 
 /** Thousandths of a unit. */
 export const qtyOf = (q: string): bigint => (q.startsWith("-") ? -scaled(q.slice(1), 3) : scaled(q, 3));
@@ -123,4 +123,20 @@ export function lowFirst(states: readonly ItemState[]): ItemState[] {
 export function packUnits(qty: string, size: string): bigint | undefined {
 	const n = scaled(qty, 3) * scaled(size, 3);
 	return n % 1000n === 0n ? n / 1000n : undefined;
+}
+
+/**
+ * A sale line's quantity in the article's units (thousandths): a line without a unit is in the
+ * article's own; in its pack, so many each; in another unit it is not counted («unit»), nor in
+ * packs that do not make a quantity to the thousandth («pack»), nor a quantity that does not
+ * read («quantity»). The one rule the magazzino unloads by (stock-store.ts planSale) and the
+ * margins count by.
+ */
+export function saleQuantity(item: Pick<StockItem, "unit" | "pack">, quantity: string, unit: string | undefined): { readonly qty: bigint } | { readonly why: "quantity" | "unit" | "pack" } {
+	if (!/^\d{1,10}(?:\.\d{1,3})?$/.test(quantity) || Number(quantity) <= 0) return { why: "quantity" };
+	const said = unit === undefined ? item.unit : stockUnit(unit);
+	if (said === item.unit) return { qty: qtyOf(quantity) };
+	if (item.pack === undefined || said !== item.pack.unit) return { why: "unit" };
+	const qty = packUnits(quantity, item.pack.size);
+	return qty === undefined ? { why: "pack" } : { qty };
 }

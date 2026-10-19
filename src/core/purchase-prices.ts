@@ -58,6 +58,8 @@ export type PurchaseRow = {
 	readonly supplierKey: string;
 	readonly supplier: string;
 	readonly vat?: string;
+	/** The invoice's own party key (invoices.ts partyKey), as the magazzino learns a supplier's codes and units by it. */
+	readonly party: string;
 	/** The register's key of the invoice, its number and date (a real day). */
 	readonly invoice: string;
 	readonly number?: string;
@@ -276,6 +278,7 @@ export function purchaseRows(invoices: readonly Invoice[], suppliers: readonly S
 				supplierKey,
 				supplier,
 				...(vat === undefined ? {} : { vat }),
+				party: partyKey(inv.supplier),
 				invoice: inv.key,
 				...number,
 				day,

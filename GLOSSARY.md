@@ -329,6 +329,10 @@ _Avoid_: prodotto (per l'articolo; il prezzo è la voce del listino)
 Quanto la persona paga un prodotto a un fornitore, letto dalle righe delle sue fatture: senza IVA, per unità, con gli sconti della fattura divisi sulle righe. Il prezzo a cui vende è la voce del listino. Vedi ADR 0090.
 _Avoid_: costo (per il prezzo d'acquisto; il costo medio è quello del magazzino)
 
+**Margini**:
+Quanto la persona guadagna davvero su un prodotto o un cliente: il ricavo senza IVA delle fatture emesse meno il costo della merce venduta, al costo medio del magazzino al momento di ogni vendita. Un costo trovato solo dal nome è una stima, mai una perdita. Annie li ricava ogni volta dai registri, senza salvarli. Vedi ADR 0091.
+_Avoid_: utile, guadagno netto (i margini non tolgono spese e tasse; quello è l'andamento dell'attività)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
