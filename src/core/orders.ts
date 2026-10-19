@@ -82,7 +82,7 @@ export type OrderLine = {
  * «person») from the person's word with the delivery note, loaded then by hand (`k` the call's
  * own key); the order line, how many (in the article's unit), the day.
  */
-export type Receipt = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string; readonly from?: "person" };
+export type Receipt = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string; readonly from?: "person" | "stock" };
 
 /** An invoice line that billed goods received with the delivery note: not loaded again, not received twice. */
 export type Billed = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string };
@@ -129,6 +129,8 @@ export const ORDER_ID = /^OR-(\d{4,6})$/;
 const LINE_KEY = /^[0-9a-f]{24}#\d{1,4}$/;
 /** The key of goods received by the person's word: «bolla:» and a digest of the call. */
 const HAND_KEY = /^bolla:[0-9a-f]{16}$/;
+/** A receipt of goods found in the magazzino already (a carico by hand, an invoice that matched no order): keyed by that carico. */
+const STOCK_KEY = /^carico:MV-\d{6,7}$/;
 
 /** How many of order line `n` came with the delivery note and no invoice billed yet (thousandths). */
 export function unbilledOf(order: Pick<Order, "receipts" | "billed">, n: number): bigint {
@@ -197,8 +199,8 @@ function validLine(v: unknown): v is OrderLine {
 function validReceipt(v: unknown): v is Receipt {
 	if (typeof v !== "object" || v === null) return false;
 	const r = v as Receipt;
-	if (!Object.keys(r).every((k) => ["k", "n", "qty", "day", "from"].includes(k)) || (r.from !== undefined && r.from !== "person")) return false;
-	return typeof r.k === "string" && (r.from === "person" ? HAND_KEY : LINE_KEY).test(r.k) && Number.isInteger(r.n) && r.n >= 1 && isQuantity(r.qty) && Number(r.qty) > 0 && typeof r.day === "string" && realDate(r.day);
+	if (!Object.keys(r).every((k) => ["k", "n", "qty", "day", "from"].includes(k)) || (r.from !== undefined && r.from !== "person" && r.from !== "stock")) return false;
+	return typeof r.k === "string" && (r.from === "person" ? HAND_KEY : r.from === "stock" ? STOCK_KEY : LINE_KEY).test(r.k) && Number.isInteger(r.n) && r.n >= 1 && isQuantity(r.qty) && Number(r.qty) > 0 && typeof r.day === "string" && realDate(r.day);
 }
 
 function validBilled(v: unknown): v is Billed {

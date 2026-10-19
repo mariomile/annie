@@ -19,6 +19,7 @@ import { moveId, type Movement, StockError, type StockItem } from "../stock.ts";
 import { STOCK_BROKEN, type StockStore } from "../stock-store.ts";
 import type { Supplier } from "../supplier-sums.ts";
 import type { SupplierStore } from "../supplier-store.ts";
+import { spellingKey } from "../name-keys.ts";
 import { cleanText, isProblem } from "../text-input.ts";
 import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
@@ -231,7 +232,8 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 		const built = drafts(args, loaded, day);
 		if (typeof built === "string") return { text: built, count: 0 };
 		// The person dictated both the supplier and the lines: nothing for Annie to work out, the draft is made at once (a draft sends nothing).
-		const dictated = args.supplier !== undefined && args.lines !== undefined && args.prefer !== "cheapest";
+		// A supplier taken from words close to its name is shown first, never written at once.
+		const dictated = args.supplier !== undefined && args.lines !== undefined && args.prefer !== "cheapest" && built.drafts.every((d) => d.supplier.close !== true);
 		if (!dictated && args.confirm !== true) return { text: proposalText(built.drafts, built.left, loaded, day, built.notes), count: 0 };
 		const refused = requirePersonFor(ctx, "preparo le bozze d'ordine");
 		if (refused !== undefined) return { text: refused, count: 0 };
@@ -247,7 +249,7 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 			store.update(ctx.callId, (state) => {
 				const made: Order[] = built.drafts.map((d, i) => ({
 					id: orderId(state.nextOrder + i),
-					supplier: d.supplier,
+					supplier: { key: d.supplier.key, name: d.supplier.name, ...(d.supplier.vat === undefined ? {} : { vat: d.supplier.vat }) },
 					status: "draft",
 					day,
 					lines: d.lines.map((l, n): OrderLine => ({ n: n + 1, item: l.item.id, name: l.item.name, qty: qtyText(l.qty), unit: l.item.unit, ...(l.price === undefined ? {} : { price: costText(l.price), priceFrom: l.priceFrom as "purchase" | "said", ...(l.priceDay === undefined ? {} : { priceDay: l.priceDay }) }) })),
@@ -347,7 +349,7 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 		// Goods of this order loaded from this supplier since it was made: maybe it came before it was marked sent.
 		const items = new Set(o.lines.map((l) => l.item));
 		const came = loaded.data.moves.filter((m) => m.kind === "carico" && items.has(m.item) && m.day >= o.day && m.supplier !== undefined && supplierKeyOf(m.supplier.name, m.supplier.vat) === o.supplier.key);
-		if (came.length > 0) out.push(`Dal fornitore ${n1(came.length, "è già stato caricato in magazzino un articolo", "sono già stati caricati in magazzino # carichi di articoli")} di questo ordine dopo che l'ho preparato: se era questa merce, dimmi «è arrivato» e lo segno nell'ordine.`);
+		if (came.length > 0) out.push(`Dal fornitore ${n1(came.length, "è già stato caricato in magazzino un articolo", "sono già stati caricati in magazzino # carichi di articoli")} di questo ordine dopo che l'ho preparato: se era questa merce, dimmi «è arrivato»: la segno nell'ordine senza caricarla di nuovo.`);
 		return { text: out.join(" "), count: 1 };
 	}
 
@@ -399,16 +401,53 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 		}
 	}
 
-	/** One line of what came with the delivery note: the order line, how many, the price it is loaded at. */
-	type Came = { readonly n: number; readonly item: StockItem; readonly qty: bigint; readonly price: bigint };
+	/** One line of what came: the order line, the article, how many, the price it is loaded at (needed only for what is loaded). */
+	type Came = { readonly n: number; readonly item: StockItem; readonly qty: bigint; readonly price?: bigint };
+	/** Goods of an order line found in the magazzino already: the carico, how many of it, its day. */
+	type Found = { readonly n: number; readonly move: string; readonly qty: bigint; readonly day: string };
 
-	const cameCheck = (o: Order, when: string, rows: readonly Came[]) => createHash("sha256").update(JSON.stringify([o.id, when, rows.map((r) => [r.n, r.item.id, r.qty.toString(), r.price.toString()])])).digest("hex").slice(0, 16);
+	const cameCheck = (o: Order, when: string, rows: readonly Came[], found: readonly Found[]) => createHash("sha256").update(JSON.stringify([o.id, when, rows.map((r) => [r.n, r.item.id, r.qty.toString(), r.price?.toString() ?? ""]), found.map((f) => [f.n, f.move, f.qty.toString()])])).digest("hex").slice(0, 16);
 
 	/**
-	 * received: the goods of an order sent came with the delivery note, before its invoice. Shown
-	 * first with a check; with the person's yes, loaded into the magazzino at the order's prices
-	 * (doc «bolla OR-0003») and marked on the order as the person's, so that the invoice, when it
-	 * comes, bills them instead of loading them again.
+	 * The goods of `o` in the magazzino already: the carichi of its supplier for its articles since
+	 * it was made (by hand, or an invoice that matched no order), never one a delivery note here
+	 * loaded, never one an order claimed already, and past what the invoices marked on the orders
+	 * of this supplier since then (those carichi are theirs). Oldest first, per line, up to `want`.
+	 */
+	function inStock(o: Order, loaded: Loaded, want: ReadonlyMap<number, bigint>): Found[] {
+		const claimed = new Set(loaded.orders.flatMap((x) => x.receipts.filter((r) => r.from === "stock").map((r) => r.k.slice("carico:".length))));
+		const same = (m: Movement) => m.supplier !== undefined && (supplierKeyOf(m.supplier.name, m.supplier.vat) === o.supplier.key || (o.supplier.vat === undefined && spellingKey(m.supplier.name) === spellingKey(o.supplier.name)));
+		const out: Found[] = [];
+		for (const l of o.lines) {
+			let need = want.get(l.n) ?? 0n;
+			if (need <= 0n) continue;
+			// What invoices brought of this article to this supplier's orders since: their own carichi.
+			let skip = loaded.orders
+				.filter((x) => x.supplier.key === o.supplier.key)
+				.flatMap((x) => x.receipts.filter((r) => r.from === undefined && r.day >= o.day && x.lines.some((y) => y.n === r.n && y.item === l.item)))
+				.reduce((t, r) => t + qtyOf(r.qty), 0n);
+			const moves = loaded.data.moves.filter((m) => m.kind === "carico" && m.item === l.item && m.day >= o.day && same(m) && !(m.doc ?? "").startsWith("bolla ") && !claimed.has(m.id));
+			for (const m of moves) {
+				let avail = qtyOf(m.qty);
+				const used = skip < avail ? skip : avail;
+				skip -= used;
+				avail -= used;
+				const take = avail < need ? avail : need;
+				if (take <= 0n) continue;
+				out.push({ n: l.n, move: m.id, qty: take, day: m.day });
+				need -= take;
+				if (need <= 0n) break;
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * received: the goods of an order sent came. What is in the magazzino already (a carico by hand,
+	 * an invoice that matched no order) is marked arrived without loading it again; the rest came
+	 * with the delivery note, before its invoice. Shown first with a check; with the person's yes,
+	 * the rest loaded at the order's prices (doc «bolla OR-0003») and marked as the person's, so
+	 * that the invoice, when it comes, bills them instead of loading them again.
 	 */
 	async function received(args: Record<string, unknown>, ctx: ToolContext, loaded: Loaded, day: string): Promise<{ text: string; count: number }> {
 		const refused = requirePersonFor(ctx, "segno arrivata la merce di un ordine");
@@ -425,16 +464,14 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 		if (typeof when === "object") return { text: `Errore: ${when.problem}.`, count: 0 };
 		if (o.sentDay !== undefined && when < o.sentDay) return { text: `${o.id} è partito il ${dayWords(o.sentDay, day)}: la merce non può essere arrivata prima. Dimmi il giorno giusto.`, count: 0 };
 		const items = loaded.data.items.filter((i) => i.removed === undefined);
-		const rows: Came[] = [];
-		const noPrice: string[] = [];
+		const came: Came[] = [];
 		if (args.lines === undefined) {
 			for (const l of o.lines) {
 				const left = remainingOf(o, l);
-				const item = items.find((i) => i.id === l.item);
 				if (left <= 0n) continue;
-				if (item === undefined) return { text: [`Un articolo dell'ordine ${o.id} non è più in magazzino: non lo posso caricare.`, fencedOrders(l.name)].join("\n"), count: 0 };
-				if (l.price === undefined) noPrice.push(l.name);
-				else rows.push({ n: l.n, item, qty: left, price: costOf(l.price) });
+				const item = items.find((i) => i.id === l.item);
+				if (item === undefined) return { text: [`Un articolo dell'ordine ${o.id} non è più in magazzino: non lo posso segnare.`, fencedOrders(l.name)].join("\n"), count: 0 };
+				came.push({ n: l.n, item, qty: left, ...(l.price === undefined ? {} : { price: costOf(l.price) }) });
 			}
 		} else {
 			const said = linesSaid(args.lines, items, false, false);
@@ -443,56 +480,71 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 				const l = o.lines.find((y) => y.item === x.item.id);
 				if (l === undefined) return { text: [`Questo articolo non è nell'ordine ${o.id}: se è arrivato lo stesso, caricalo in magazzino a parte.`, fencedOrders(x.item.name)].join("\n"), count: 0 };
 				const price = x.price ?? (l.price === undefined ? undefined : costOf(l.price));
-				if (price === undefined) noPrice.push(l.name);
-				else rows.push({ n: l.n, item: x.item, qty: x.qty, price });
+				came.push({ n: l.n, item: x.item, qty: x.qty, ...(price === undefined ? {} : { price }) });
 			}
 		}
+		if (came.length === 0) return { text: `Di ${o.id} non manca niente da segnare.`, count: 0 };
+		// What is in the magazzino already is not loaded again: only the rest.
+		const found = inStock(o, loaded, new Map(came.map((c) => [c.n, c.qty])));
+		const foundOf = (n: number) => found.filter((f) => f.n === n).reduce((t, f) => t + f.qty, 0n);
+		const rows: Came[] = came.map((c) => ({ ...c, qty: c.qty - foundOf(c.n) })).filter((c) => c.qty > 0n);
+		const noPrice = rows.filter((r) => r.price === undefined).map((r) => r.item.name);
 		if (noPrice.length > 0) return { text: [`Per caricarli in magazzino mi serve il prezzo per unità, senza IVA, ${noPrice.length === 1 ? "di un articolo" : `di ${noPrice.length} articoli`} che l'ordine non ha: dimmelo e li segno.`, fencedOrders(noPrice.map((n) => `• ${n}`).join("\n"))].join("\n"), count: 0 };
-		if (rows.length === 0) return { text: `Di ${o.id} non manca niente da segnare.`, count: 0 };
-		const fence = fencedOrders([`${o.id} a ${o.supplier.name}`, ...rows.map((r) => `• ${r.item.name}: ${qtyWords(r.qty, r.item.unit)} a ${costWords(r.price)}`)].join("\n"));
-		const check = cameCheck(o, when, rows);
+		const fence = fencedOrders(
+			[
+				`${o.id} a ${o.supplier.name}`,
+				...rows.map((r) => `• ${r.item.name}: ${qtyWords(r.qty, r.item.unit)} a ${costWords(r.price as bigint)}, da caricare`),
+				...came.filter((c) => foundOf(c.n) > 0n).map((c) => {
+					const days = [...new Set(found.filter((f) => f.n === c.n).map((f) => dayWords(f.day, day)))].join(", ");
+					return `• ${c.item.name}: ${qtyWords(foundOf(c.n), c.item.unit)} già in magazzino (${agree(c.item.unit, "caricati", "caricate")} il ${days}): non ${agree(c.item.unit, "li", "le")} carico di nuovo`;
+				}),
+			].join("\n"),
+		);
+		const check = cameCheck(o, when, rows, found);
 		if (args.confirm !== true) {
-			return {
-				text: [`Segno arrivata con la bolla, ${italianDayOf(when)}, la merce di ${o.id} e la carico in magazzino al prezzo dell'ordine, come nel riquadro (prezzi per unità, senza IVA).`, fence, `Quando arriva la fattura del fornitore, quella merce non la carico di nuovo. Va bene? Con il sì di chi ti scrive ripeti con la conferma e il controllo ${check}.`].join("\n"),
-				count: 0,
-			};
+			const head = rows.length === 0 ? `La merce di ${o.id} è già in magazzino, caricata prima che l'ordine fosse segnato (nel riquadro): la segno arrivata senza caricarla di nuovo.` : found.length === 0 ? `Segno arrivata con la bolla, ${italianDayOf(when)}, la merce di ${o.id} e la carico in magazzino al prezzo dell'ordine, come nel riquadro (prezzi per unità, senza IVA).` : `Segno arrivata la merce di ${o.id}, come nel riquadro: quella già in magazzino non la carico di nuovo, il resto lo carico con la bolla, ${italianDayOf(when)}, al prezzo dell'ordine (prezzi per unità, senza IVA).`;
+			return { text: [head, fence, `${rows.length === 0 ? "" : "Quando arriva la fattura del fornitore, la merce della bolla non la carico di nuovo. "}Va bene? Con il sì di chi ti scrive ripeti con la conferma e il controllo ${check}.`].join("\n"), count: 0 };
 		}
 		const said = typeof args.check === "string" ? args.check.trim().toLowerCase() : undefined;
 		if (said === undefined || !/^[0-9a-f]{16}$/.test(said)) return { text: "Errore: per segnare la merce serve il controllo della proposta: chiedi prima la proposta, mostrala a chi ti scrive e, con il suo sì, ripeti con il controllo che ti ho dato.", count: 0 };
-		if (said !== check) return { text: "L'ordine è cambiato da quando l'hai mostrato: non ho caricato niente. Chiedimi di nuovo e ti faccio vedere com'è ora.", count: 0 };
+		if (said !== check) return { text: "L'ordine o il magazzino sono cambiati da quando l'hai mostrato: non ho caricato niente. Chiedimi di nuovo e ti faccio vedere com'è ora.", count: 0 };
 		// Again just before loading: an order cancelled or arrived meanwhile loads nothing.
 		const now2 = store.read();
 		const cur = now2.broken ? undefined : now2.orders.find((x) => x.id === o.id);
 		if (cur === undefined || !isAwaited(cur)) return { text: `${o.id} nel frattempo è ${cur === undefined ? "sparito" : orderState(cur) === "cancelled" ? "stato annullato" : "arrivato"}: non ho caricato niente.`, count: 0 };
 		const by = marker(ctx);
 		const vendor = { name: o.supplier.name.slice(0, ORDER_LIMITS.name), ...(o.supplier.vat === undefined ? {} : { vat: o.supplier.vat }) };
-		await ctx.step("stock", async () => {
-			options.stock.update(ctx.callId, (st) => {
-				const added: Movement[] = rows.map((r, i) => {
-					if (!st.items.some((x) => x.id === r.item.id && x.removed === undefined)) throw new StockError("un articolo dell'ordine non è più in magazzino: non ho caricato niente");
-					return { id: moveId(st.nextMove + i), item: r.item.id, kind: "carico", qty: qtyText(r.qty), day: when, cost: costText(r.price), supplier: vendor, doc: `bolla ${o.id}`, callId: ctx.callId, ...by };
+		if (rows.length > 0) {
+			await ctx.step("stock", async () => {
+				options.stock.update(ctx.callId, (st) => {
+					const added: Movement[] = rows.map((r, i) => {
+						if (!st.items.some((x) => x.id === r.item.id && x.removed === undefined)) throw new StockError("un articolo dell'ordine non è più in magazzino: non ho caricato niente");
+						return { id: moveId(st.nextMove + i), item: r.item.id, kind: "carico", qty: qtyText(r.qty), day: when, cost: costText(r.price as bigint), supplier: vendor, doc: `bolla ${o.id}`, callId: ctx.callId, ...by };
+					});
+					return { ...st, nextMove: st.nextMove + added.length, moves: [...st.moves, ...added] };
 				});
-				return { ...st, nextMove: st.nextMove + added.length, moves: [...st.moves, ...added] };
+				return true;
 			});
-			return true;
-		});
+		}
 		const k = `bolla:${createHash("sha256").update(ctx.callId).digest("hex").slice(0, 16)}`;
 		const marked = await ctx.step("orders", async () => {
 			try {
-				store.receive((orders) => ({ receipts: rows.map((r) => ({ order: o.id, k, n: r.n, qty: qtyText(r.qty), day: when, from: "person" as const })), billed: [], found: orders.length }));
+				store.receive(() => ({
+					receipts: [...rows.map((r) => ({ order: o.id, k, n: r.n, qty: qtyText(r.qty), day: when, from: "person" as const })), ...found.map((f) => ({ order: o.id, k: `carico:${f.move}`, n: f.n, qty: qtyText(f.qty), day: f.day, from: "stock" as const }))],
+					billed: [],
+					found: true,
+				}));
 				return "";
 			} catch (error) {
-				if (error instanceof OrderError) return `La merce è caricata, ma non sono riuscita a segnarla nell'ordine: ${error.message}.`;
+				if (error instanceof OrderError) return `${rows.length === 0 ? "Non ho caricato niente" : "La merce è caricata"}, ma non sono riuscita a segnarla nell'ordine: ${error.message}.`;
 				throw error;
 			}
 		});
 		if (marked !== "") return { text: [marked, fence].join("\n"), count: rows.length };
 		const after = store.read();
 		const now3 = after.broken ? undefined : after.orders.find((x) => x.id === o.id);
-		return {
-			text: [`Fatto: ho caricato in magazzino la merce arrivata con la bolla e l'ho segnata in ${o.id}, come nel riquadro. Quando arriva la fattura, non la carico di nuovo.`, now3 === undefined ? fence : fencedOrders(orderBlock(now3, day, leadOf(loaded.leads)(o.supplier.key)))].join("\n"),
-			count: rows.length,
-		};
+		const done = rows.length === 0 ? `Fatto: ho segnato in ${o.id} la merce che era già in magazzino, senza caricarla di nuovo.` : `Fatto: ho caricato in magazzino la merce arrivata con la bolla e l'ho segnata in ${o.id}, come nel riquadro${found.length === 0 ? "" : "; quella che era già in magazzino l'ho solo segnata"}. Quando arriva la fattura, non la carico di nuovo.`;
+		return { text: [done, now3 === undefined ? fence : fencedOrders(orderBlock(now3, day, leadOf(loaded.leads)(o.supplier.key)))].join("\n"), count: rows.length + found.length };
 	}
 
 	async function brief(ctx: ToolContext, loaded: Loaded, day: string): Promise<string> {
@@ -578,6 +630,8 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 				if (supplier === undefined) return { text: "Errore: dimmi di quale fornitore è il tempo di consegna.", count: 0 };
 				const days = daysSaid(args.days, "il tempo di consegna", ORDER_LIMITS.maxLead);
 				if (days === undefined || typeof days === "string") return { text: days ?? "Errore: dimmi in quanti giorni consegna.", count: 0 };
+				const refused = requirePersonFor(ctx, "salvo il tempo di consegna del fornitore");
+				if (refused !== undefined) return { text: refused, count: 0 };
 				await ctx.step("lead", async () => {
 					store.update(ctx.callId, (state) => ({ ...state, leads: [...state.leads.filter((l) => l.s !== supplier.key), { s: supplier.key, days }] }));
 					return true;

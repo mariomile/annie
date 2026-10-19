@@ -20,7 +20,7 @@ import { qtyNumber, unitPlural } from "./stock-render.ts";
 export type LineSaid = { readonly item: StockItem; readonly qty: bigint; readonly price?: bigint };
 
 /** A supplier as the orders keep it. */
-export type SupplierSaid = { readonly key: string; readonly name: string; readonly vat?: string };
+export type SupplierSaid = { readonly key: string; readonly name: string; readonly vat?: string; /** Taken from words close to only one supplier, not its very name. */ readonly close?: true };
 
 export const asOrderSupplier = (s: Pick<Supplier, "name" | "vat">): SupplierSaid => ({ key: supplierKeyOf(s.name, s.vat), name: s.name.slice(0, ORDER_LIMITS.name), ...(s.vat === undefined ? {} : { vat: s.vat }) });
 
@@ -34,7 +34,7 @@ export function supplierSaid(raw: unknown, suppliers: readonly Supplier[], order
 	const only = orders.filter((o) => !known.has(o.supplier.key)).map((o): Supplier => ({ key: o.supplier.key, name: o.supplier.name, nameFrom: "person", ...(o.supplier.vat === undefined ? {} : { vat: o.supplier.vat }), names: [o.supplier.name], invoices: [], expenses: [], renewals: [] }));
 	const f = findSupplier([...suppliers, ...only], said);
 	if (f.kind === "exact") return asOrderSupplier(f.supplier);
-	if (f.kind === "close" && f.candidates.length === 1) return asOrderSupplier(f.candidates[0] as Supplier);
+	if (f.kind === "close" && f.candidates.length === 1) return { ...asOrderSupplier(f.candidates[0] as Supplier), close: true };
 	if (f.kind === "close") return meantSupplier(f.candidates, fencedOrders);
 	return supplierNotFound(said, fencedOrders);
 }

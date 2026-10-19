@@ -84,7 +84,7 @@ type Choice = { readonly item?: StockItem; readonly unit?: string; readonly each
 type Load = { readonly item: StockItem; readonly created: boolean; readonly qty: bigint; readonly cost: bigint; readonly flags: readonly string[]; readonly notes: readonly string[]; readonly learn: boolean; readonly unit?: UnitMap };
 
 /** One line as proposed: what it loads; or why it is left out (a reason of SKIPPED, or one said in full). */
-type Proposal = { readonly line: number; readonly description: string; readonly code?: string } & (Load | { readonly skip: string; readonly why?: string; readonly held?: LoadRow });
+type Proposal = { readonly line: number; readonly description: string; readonly code?: string } & (Load | { readonly skip: string; readonly why?: string; readonly held?: LoadRow; readonly differs?: true });
 
 const active = (items: readonly StockItem[]) => items.filter((i) => i.removed === undefined);
 const loads = (p: Proposal): p is Proposal & Load => !("skip" in p);
@@ -119,7 +119,7 @@ const related = (name: string, description: string) => wordsWithin(name, descrip
 function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "received" | "codes" | "units" | "nextItem">, choose: ReadonlyMap<number, Choice>, covered?: Covered): Proposal[] {
 	const supplier = partyKey(inv.supplier);
 	// The goods the person said came with the delivery note, loaded then: what of each is not billed yet.
-	const bolla = new Map([...(covered?.items ?? new Map<string, { day: string; qty: bigint }>()).entries()].map(([k, v]) => [k, { ...v }]));
+	const bolla = new Map([...(covered?.items ?? new Map<string, { day: string; qty: bigint; price?: bigint }>()).entries()].map(([k, v]) => [k, { ...v }]));
 	const done = new Set(book.received.map((r) => r.k));
 	const items = active(book.items);
 	const spread = spreadOf(inv.doc);
@@ -260,13 +260,18 @@ function propose(inv: Invoice, book: Pick<StockBook, "items" | "moves" | "receiv
 			const average = stateOf(item, book.moves).average;
 			if (average !== undefined && average > 0n && (cost >= COST_FACTOR * average || cost * COST_FACTOR <= average)) flags.push(`da confermare: il costo è molto diverso dal costo medio dell'articolo (${costWords(average)})`);
 		}
-		// Came with the delivery note and loaded then: the invoice bills it, it is not loaded again (unless the person chose the line's article).
-		const hand = isNew || picked?.item !== undefined ? undefined : bolla.get(item.id);
+		// Came with the delivery note and loaded then: the invoice bills it, it is not loaded again; only what the line has past it is (also when the person chose this article).
+		const hand = isNew ? undefined : bolla.get(item.id);
 		if (hand !== undefined && hand.qty > 0n) {
-			const more = thousandths > hand.qty ? `; la fattura ne dice ${qtyWords(thousandths, item.unit)}, con la bolla ne erano arrivati ${qtyWords(hand.qty, item.unit)}: se ne sono arrivati altri, dimmi il numero della riga e l'articolo e la carico` : "";
-			hand.qty = thousandths > hand.qty ? 0n : hand.qty - thousandths;
-			out.push({ ...base, skip: "bolla", why: `già caricata con la bolla il ${dayWords(hand.day, inv.doc.date)}: la fattura la paga, non la carico di nuovo${more}`, held: { line: l.n, item: item.id, qty: qtyText(thousandths), cost: costText(cost) } });
-			continue;
+			const held = thousandths < hand.qty ? thousandths : hand.qty;
+			hand.qty -= held;
+			const part = held < thousandths ? ` (${qtyWords(held, item.unit)} su ${qtyWords(thousandths, item.unit)}: il resto lo carico)` : "";
+			const differs = hand.price !== undefined && hand.price !== cost;
+			const dear = differs ? `; in fattura costa ${costWords(cost)}, con la bolla l'ho caricata a ${costWords(hand.price as bigint)}` : "";
+			out.push({ ...base, skip: "bolla", why: `già caricata con la bolla il ${dayWords(hand.day, inv.doc.date)}${part}: la fattura la paga, non la carico di nuovo${dear}`, held: { line: l.n, item: item.id, qty: qtyText(held), cost: costText(cost) }, ...(differs ? { differs: true as const } : {}) });
+			if (held === thousandths) continue;
+			thousandths -= held;
+			notes.push(`il resto della riga: ${qtyWords(held, item.unit)} erano già arrivati con la bolla`);
 		}
 		if (isNew) created++;
 		out.push({ ...base, item, created: isNew, qty: thousandths, cost, flags, notes, learn, ...(teach === undefined ? {} : { unit: teach }) });
@@ -447,6 +452,7 @@ function proposalText(inv: Invoice, plan: readonly Proposal[], took: string | un
 	const unsure = ok.filter((p) => p.flags.length > 0).length;
 	if (unsure > 0) out.push(`${n1(unsure, "Una riga è", "# righe sono")} da confermare (nel riquadro il perché): chiedi a chi ti scrive di guardarle.`);
 	if (held.length > 0) out.push(`${n1(held.length, "Una riga è merce già arrivata con la bolla", "# righe sono merce già arrivata con la bolla")}: non la carico di nuovo; con la conferma segno che questa fattura la paga, così un'altra fattura non la salta.`);
+	if (plan.some((p) => !loads(p) && p.differs === true)) out.push("Per la merce della bolla il costo in fattura è diverso da quello con cui l'ho caricata (nel riquadro): se vuoi, dopo il carico correggo il costo dell'articolo con quello della fattura.");
 	if (ok.length === 0 && held.length > 0) out.push(`Chiedi a chi ti scrive se va bene: con il suo sì ripeti con la conferma e il controllo ${checkOf(inv, plan)}.`);
 	else if (ok.length > 0) {
 		out.push(`Chiedi a chi ti scrive se va bene: con il suo sì ripeti con la conferma, le stesse righe e il controllo ${checkOf(inv, plan)}. Per una riga con l'articolo sbagliato, o senza articolo, dimmi il numero della riga e l'articolo giusto (MG-0001), o di aggiungerlo nuovo con la sua unità, e rifaccio la proposta. Niente si carica da solo.`);
@@ -540,13 +546,16 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 	const s = partyKey(inv.supplier).slice(0, STOCK_LIMITS.supplierKey);
 	const year = Number((inv.doc.date ?? day).slice(0, 4));
 	const doc = `fattura n. ${cut(inv.doc.number ?? "?", NUMBER)}`.slice(0, STOCK_LIMITS.doc);
+	// The orders unreadable: a line may have come with the delivery note, loaded already; nothing is loaded.
+	if (env.orders !== undefined && env.orders.orders() === "broken") return "Gli ordini ai fornitori non si leggono: non carico questa fattura, perché qualche riga potrebbe essere già arrivata con la bolla e la caricherei due volte. Va prima sistemato il file degli ordini.";
 	// What this call means to load and to bill, pinned by the check before anything is written: a run after a crash marks the orders with it.
 	const intended = await ctx.step("intended", async () => {
-		const plan = chosen(propose(inv, env.book(), picked.choose, covered));
-		return checkOf(inv, plan) === check ? { rows: rowsOf(plan), held: heldOf(plan) } : null;
+		// The delivery notes read again here: one marked since the proposal changes it.
+		const plan = chosen(propose(inv, env.book(), picked.choose, coveredOf(env.orders, inv)));
+		return checkOf(inv, plan) === check ? { rows: rowsOf(plan), held: heldOf(plan), differs: plan.some((p) => !loads(p) && p.differs === true) } : null;
 	});
 	if (intended === null) {
-		const plan = chosen(propose(inv, env.book(), picked.choose, covered));
+		const plan = chosen(propose(inv, env.book(), picked.choose, coveredOf(env.orders, inv)));
 		return proposalText(inv, plan, took, sameGoods(inv, reg.invoices, env.book()), "La proposta è cambiata da quando l'hai mostrata (una riga caricata nel frattempo, un articolo o un costo diverso): non ho caricato niente. Ecco quella nuova.\n", orderWords(env.orders, inv, plan, env.book().items, day));
 	}
 	const loaded = await ctx.step("apply", async () => {
@@ -555,7 +564,7 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 		const kept: string[] = [];
 		const outcome = env.store.receiveInvoice(ctx.callId, (book): InvoiceLoad => {
 			// Again under the lock: a line loaded meanwhile, an article removed or a cost changed are seen here.
-			plan = chosen(propose(inv, book, picked.choose, covered));
+			plan = chosen(propose(inv, book, picked.choose, coveredOf(env.orders, inv)));
 			if (checkOf(inv, plan) !== check) {
 				changed = true;
 				return { items: [], moves: [], keys: [], codes: [], units: [] };
@@ -602,7 +611,7 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 	if (loaded.rerun) return [`Fatto: ${n1(loaded.count, "una riga di questa fattura è caricata", "# righe di questa fattura sono caricate")} in magazzino.`, ...(await mark())].join("\n");
 	if (loaded.count === 0) return [loaded.text, ...(intended.held.length === 0 ? [] : await mark())].join("\n");
 	await env.audit(ctx, loaded.count);
-	const marked = await mark();
+	const marked = [...(await mark()), ...(intended.differs ? ["Per la merce della bolla il costo in fattura è diverso da quello con cui l'ho caricata (nel riquadro): se vuoi, correggo il costo dell'articolo con quello della fattura."] : [])];
 	// The increases of this invoice's prices, said here once (the brief does not say them again).
 	const said = await claimIncreases(env.purchases, ctx, day, increasesIn(reg.invoices, reg.suppliers, inv));
 	const rises = said.length === 0 ? [] : [`${n1(said.length, "Un prezzo di questa fattura è aumentato", "# prezzi di questa fattura sono aumentati")} rispetto all'acquisto precedente dallo stesso fornitore: dillo a chi ti scrive.`, fencedStock(said.map(increaseWords).join("\n"))];

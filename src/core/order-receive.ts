@@ -52,10 +52,10 @@ export function awaitedOf(orders: readonly Order[], supplier: InvoiceSupplier, r
 }
 
 /** What came with the delivery note and no invoice billed yet, per article: the order line, how many, the day. Or an invoice line that billed some already. */
-export type Covered = { readonly items: ReadonlyMap<string, { readonly day: string; readonly qty: bigint }>; readonly keys: ReadonlySet<string> };
+export type Covered = { readonly items: ReadonlyMap<string, { readonly day: string; readonly qty: bigint; readonly price?: bigint }>; readonly keys: ReadonlySet<string> };
 
 export function coveredOf(orders: readonly Order[], supplier: InvoiceSupplier): Covered {
-	const items = new Map<string, { day: string; qty: bigint }>();
+	const items = new Map<string, { day: string; qty: bigint; price?: bigint }>();
 	const keys = new Set<string>();
 	for (const o of orders) {
 		if (o.status === "cancelled" || !sameSupplier(o, supplier)) continue;
@@ -64,7 +64,8 @@ export function coveredOf(orders: readonly Order[], supplier: InvoiceSupplier): 
 			const left = unbilledOf(o, l.n);
 			if (left <= 0n) continue;
 			const was = items.get(l.item);
-			items.set(l.item, { day: [was?.day ?? "", handDayOf(o, l.n) ?? ""].sort().at(-1) as string, qty: (was?.qty ?? 0n) + left });
+			const price = was?.price ?? (l.price === undefined ? undefined : costOf(l.price));
+			items.set(l.item, { day: [was?.day ?? "", handDayOf(o, l.n) ?? ""].sort().at(-1) as string, qty: (was?.qty ?? 0n) + left, ...(price === undefined ? {} : { price }) });
 		}
 	}
 	return { items, keys };
