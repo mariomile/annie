@@ -124,6 +124,9 @@ export function netLine(gross: string, quantity: unknown, discount: unknown, rat
 	return { ...nearest, gross: grossTotal };
 }
 
+/** The most a line taken apart may miss its amount without VAT (cents): past it, the price is asked. */
+const MAX_OFF = 50n;
+
 /** The lines with every voce named filled in, or the question to ask. Pure: the listino is the caller's. */
 export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[], t: FillTarget): FilledLines {
 	const asks: string[] = [];
@@ -159,6 +162,7 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 	const asWritten: string[] = [];
 	const takenApart: string[] = [];
 	const otherRate: string[] = [];
+	const tooFar: string[] = [];
 	const lines = raw.map((line, n) => {
 		const item = found[n];
 		if (item === undefined) return line;
@@ -196,6 +200,7 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 				// The VAT comes off at the voce's own rate: its price without VAT is the same whatever the line's rate.
 				const taken = netLine(item.price, own.quantity, own.discount, item.vat);
 				if (taken === undefined) out.price = scaledDecimal(halfUp(cents * 10_000n, BigInt(100 + item.vat)), 4);
+				else if (taken.off > MAX_OFF || taken.off < -MAX_OFF) tooFar.push(`• ${itemShort(item)}: ${decimalText(decimalOf(own.quantity ?? "1", 3) ?? quantity)}`);
 				else {
 					out.price = taken.price;
 					const q = decimalOf(own.quantity ?? "1", 3) ?? quantity;
@@ -208,6 +213,7 @@ export function fillFromList(raw: readonly unknown[], items: readonly PriceItem[
 		}
 		return out;
 	});
+	if (tooFar.length > 0) return { ask: ["Non ho fatto il documento: queste voci nel listino sono IVA inclusa, e con questa quantità non riesco a togliere l'IVA senza sbagliare il totale della riga di più di 50 centesimi.", fencedList(tooFar.join("\n")), "Chiedi a chi ti scrive il prezzo senza IVA per unità e rifai con price sulla riga."].join("\n") };
 	if (slips.length > 0) notes.push(`Ho preso dal listino le voci più vicine a come sono state dette: ${fencedList(slips.join("\n"))}`);
 	if (takenApart.length > 0)
 		notes.push(

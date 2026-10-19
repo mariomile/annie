@@ -4,7 +4,7 @@ Aggiornato al 18 ottobre 2026.
 
 ## Dove siamo
 
-Su `main` ci sono le settimane da 1 a 63, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
+Su `main` ci sono le settimane da 1 a 64, e la CI controlla ogni PR con typecheck, test ed eval deterministiche. Le fasi del [piano cloud](piano-cloud.md) sono scritte tutte; dalla settimana 21 si aggiungono funzioni per chi usa Annie ogni giorno (sotto, «Funzioni»). I riassunti delle settimane dalla 6 in poi sono nei loro `weekN.md`.
 
 - Settimana 1: nucleo durevole su Pi Durable dietro un adapter, multi-tenant, canale Telegram ([week1.md](week1.md)).
 - Settimana 2: allowlist degli utenti per istanza, lock dell'istanza e outbox persistente delle risposte ([week2.md](week2.md)).
@@ -102,6 +102,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Andamento dell'attività: fatturato, incassato, spese, margine e quanto resta dopo le tasse stimate per mese, trimestre o anno, il confronto con il periodo prima o con l'anno scorso, il trend mese per mese, dove si spende e il report per il commercialista, leggendo soltanto i registri (settimana 61, [week61.md](week61.md), [ADR 0080](adr/0080-andamento-dell-attivita.md))
 - [x] Ritenute d'acconto e Certificazione Unica: per l'ordinario le ritenute trattenute dai clienti per cassa, i pagamenti al netto, le CU confrontate con le fatture, quelle che mancano e il credito per la dichiarazione; lo scadenzario aspetta il netto dalle fatture XML con ritenuta (settimana 62, [week62.md](week62.md), [ADR 0082](adr/0082-ritenute-d-acconto.md))
 - [x] Agenda fiscale: tutte le scadenze in un posto (F24 di tasse e IVA, CU, rinnovi, fatture da pagare, dichiarazioni, LIPE, diritto camerale e bollo), la prossima scadenza fiscale e il file .ics per il calendario con gli avvisi (settimana 63, [week63.md](week63.md), [ADR 0083](adr/0083-agenda-fiscale.md))
+- [x] Listino prezzi: servizi e prodotti con prezzo, unità e IVA, usati da preventivi, fatture in uscita e ore da fatturare; cambi di prezzo e import da Excel con anteprima, mai un prezzo inventato (settimana 64, [week64.md](week64.md), [ADR 0084](adr/0084-listino-prezzi.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))

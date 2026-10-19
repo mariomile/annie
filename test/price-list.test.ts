@@ -822,3 +822,18 @@ describe("listino: second-pass review", () => {
 		expect(s.sales.read().invoices).toHaveLength(0);
 	});
 });
+
+describe("listino: the nearest price, capped", () => {
+	it("a line that would miss its amount by more than 50 cents is asked; a small difference fills with its note", () => {
+		const items = [item({ id: "LS-0001", name: "Kit", price: "90.74", includesVat: true, unit: "pezzo" })];
+		expect((netLine("90.74", "100000", undefined, 22)?.off ?? 0n) > 50n || (netLine("90.74", "100000", undefined, 22)?.off ?? 0n) < -50n).toBe(true);
+		const big = fillFromList([{ item: "kit", quantity: 100000 }], items, { kind: "invoice", forfettario: false, descriptionMax: 300 });
+		if (!("ask" in big)) throw new Error("filled");
+		expect(big.ask).toMatch(/^Non ho fatto il documento: queste voci nel listino sono IVA inclusa, e con questa quantità non riesco a togliere l'IVA senza sbagliare il totale della riga di più di 50 centesimi\.\n<<<dati del listino/);
+		expect(inside(big.ask)).toBe("• Kit (LS-0001): 90,74 € al pezzo IVA inclusa: 100.000");
+		expect(big.ask).toMatch(/Chiedi a chi ti scrive il prezzo senza IVA per unità e rifai con price sulla riga\.$/);
+		const small = fillFromList([{ item: "kit", quantity: 3 }], items, { kind: "invoice", forfettario: false, descriptionMax: 300 });
+		if (!("lines" in small)) throw new Error(small.ask);
+		expect(inside(small.notes.join("\n"))).toContain("Kit (LS-0001): 90,74 € al pezzo IVA inclusa: 3 pezzi, ");
+	});
+});

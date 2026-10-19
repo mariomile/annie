@@ -301,6 +301,10 @@ _Avoid_: certificazione dei compensi, 770 (per la CU)
 Tutte le scadenze di chi ha la partita IVA in una lista sola, in ordine di data: gli F24 di tasse e IVA, le CU, i rinnovi, le fatture da pagare e le scadenze di legge (dichiarazioni, LIPE, diritto camerale, bollo). Annie non la salva: la legge ogni volta dai registri e la può esportare in un file .ics. Vedi ADR 0083.
 _Avoid_: scadenziario fiscale, calendario delle tasse (per l'agenda fiscale)
 
+**Listino**:
+L'elenco di quello che la persona vende, servizi e prodotti, ognuno una voce con prezzo, unità e IVA (LS-NNNN, con un codice suo se vuole). Preventivi, fatture in uscita e ore da fatturare prendono il prezzo da lì; un nome che può essere più voci si chiede. Vedi ADR 0084.
+_Avoid_: catalogo, tariffario (per il listino)
+
 **Download**:
 Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
