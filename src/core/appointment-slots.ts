@@ -55,23 +55,33 @@ export type FitInput = {
 	readonly needs?: readonly string[];
 	readonly except?: string;
 	readonly now?: { readonly day: string; readonly minutes: number };
+	/** The person said «fissalo lo stesso»: closed, out of hours and overlaps go; the past never. */
+	readonly force?: boolean;
 };
 
-export type Fit = { readonly ok: true; readonly resource?: string } | { readonly ok: false; readonly why: "closed" | "outside" | "overlap" | "past"; readonly with?: string; readonly open?: Open };
+/** `room`: the start is inside an opening but the end is not (until when there is room, and whether a pause follows or the closing). */
+export type Fit = { readonly ok: true; readonly resource?: string } | { readonly ok: false; readonly why: "closed" | "outside" | "overlap" | "past"; readonly with?: string; readonly open?: Open; readonly room?: { readonly until: number; readonly pause: boolean } };
 
 /** Whether the appointment fits: open, inside an opening, not in the past, free in a lane (the first free one taken). */
 export function fits(i: FitInput): Fit {
 	if (i.now !== undefined && (i.day < i.now.day || (i.day === i.now.day && i.start < i.now.minutes))) return { ok: false, why: "past" };
 	const open = openOn(i.settings, i.day);
-	if (open.spans.length === 0) return { ok: false, why: "closed", open };
 	const end = i.start + i.minutes;
-	if (!open.spans.some((s) => s.from <= i.start && end <= s.to)) return { ok: false, why: "outside", open };
+	if (i.force !== true) {
+		if (open.spans.length === 0) return { ok: false, why: "closed", open };
+		if (!open.spans.some((s) => s.from <= i.start && end <= s.to)) {
+			const at = open.spans.find((s) => s.from <= i.start && i.start < s.to);
+			return { ok: false, why: "outside", open, ...(at === undefined ? {} : { room: { until: at.to, pause: open.spans.some((s) => s.from >= at.to) } }) };
+		}
+	}
 	let first: string | undefined;
-	for (const lane of lanes(i.settings, i.resource, i.needs)) {
+	const all = lanes(i.settings, i.resource, i.needs);
+	for (const lane of all) {
 		const hit = busy(i.appointments, i.day, lane, i.settings, i.except).find((b) => b.span.from < end && i.start < b.span.to);
 		if (hit === undefined) return lane === undefined ? { ok: true } : { ok: true, resource: lane };
 		first ??= hit.id;
 	}
+	if (i.force === true) return all[0] === undefined ? { ok: true } : { ok: true, resource: all[0] };
 	return { ok: false, why: "overlap", ...(first === undefined ? {} : { with: first }) };
 }
 
@@ -82,10 +92,12 @@ export function freeSlots(i: SlotInput): { readonly start: number; readonly reso
 	const step = i.settings?.slot ?? DEFAULT_SLOT;
 	const open = openOn(i.settings, i.day);
 	const out: { start: number; resource?: string }[] = [];
+	// The day's appointments once, not the whole book for every step.
+	const day = i.appointments.filter((a) => a.day === i.day);
 	for (const s of open.spans) {
 		const lo = Math.max(s.from, i.from ?? 0);
 		for (let t = Math.ceil(lo / step) * step; t + i.minutes <= s.to && (i.to === undefined || t < i.to); t += step) {
-			const f = fits({ ...i, start: t });
+			const f = fits({ ...i, appointments: day, start: t, force: false });
 			if (f.ok) out.push(f.resource === undefined ? { start: t } : { start: t, resource: f.resource });
 		}
 	}
@@ -94,13 +106,14 @@ export function freeSlots(i: SlotInput): { readonly start: number; readonly reso
 
 /** The free slots nearest the one asked: that day by distance, then the next open days from the morning. */
 export function nearestFree(i: FitInput, count: number = APPOINTMENT_LIMITS.proposals): { readonly day: string; readonly start: number; readonly resource?: string }[] {
-	const same = freeSlots({ ...i, from: 0 })
+	const byDay = dayIndex(i.appointments);
+	const same = freeSlots({ ...i, appointments: byDay.get(i.day) ?? [], from: 0 })
 		.map((s) => ({ ...s, day: i.day }))
 		.sort((a, b) => Math.abs(a.start - i.start) - Math.abs(b.start - i.start) || a.start - b.start);
 	const out = same.slice(0, count);
 	for (let d = 1; out.length < count && d <= APPOINTMENT_LIMITS.ahead; d++) {
 		const day = addDays(i.day, d);
-		for (const s of freeSlots({ ...i, day, from: 0 })) {
+		for (const s of freeSlots({ ...i, appointments: byDay.get(day) ?? [], day, from: 0 })) {
 			if (out.length >= count) break;
 			out.push({ ...s, day });
 		}
@@ -108,10 +121,31 @@ export function nearestFree(i: FitInput, count: number = APPOINTMENT_LIMITS.prop
 	return out.map(({ day, start, resource }) => (resource === undefined ? { day, start } : { day, start, resource }));
 }
 
-/** The open time of the day no appointment takes (one lane: the business), longer than the slot step. */
-export function gapsOf(settings: AppointmentSettings | undefined, appointments: readonly Appointment[], day: string): Span[] {
+/** The appointments by day: built once, read per day. */
+export function dayIndex(appointments: readonly Appointment[]): Map<string, Appointment[]> {
+	const out = new Map<string, Appointment[]>();
+	for (const a of appointments) {
+		const list = out.get(a.day);
+		if (list === undefined) out.set(a.day, [a]);
+		else list.push(a);
+	}
+	return out;
+}
+
+/** The shortest service known (the slot step when none): a gap shorter than it is no use. */
+export function shortestService(settings: AppointmentSettings | undefined): number {
 	const step = settings?.slot ?? DEFAULT_SLOT;
-	const taken = appointments.filter((a) => a.day === day && takesTime(a)).map((a) => ({ from: minutesOf(a.start), to: minutesOf(a.start) + a.minutes }));
+	const known = (settings?.services ?? []).map((k) => k.minutes);
+	return known.length === 0 ? step : Math.max(step, Math.min(...known));
+}
+
+/**
+ * The open time of the day no appointment takes, at least as long as the shortest service. `lane`:
+ * one resource's (the appointments of the others do not take it); none: the business as one lane.
+ */
+export function gapsOf(settings: AppointmentSettings | undefined, appointments: readonly Appointment[], day: string, lane?: string): Span[] {
+	const least = shortestService(settings);
+	const taken = appointments.filter((a) => a.day === day && takesTime(a) && (lane === undefined || sameLane(a, lane, settings))).map((a) => ({ from: minutesOf(a.start), to: minutesOf(a.start) + a.minutes }));
 	const out: Span[] = [];
 	for (const s of openOn(settings, day).spans) {
 		let at = s.from;
@@ -122,7 +156,7 @@ export function gapsOf(settings: AppointmentSettings | undefined, appointments: 
 		}
 		if (at < s.to) out.push({ from: at, to: s.to });
 	}
-	return out.filter((g) => g.to - g.from >= step);
+	return out.filter((g) => g.to - g.from >= least);
 }
 
 /** The day and the minutes from midnight of an instant, in `timeZone`. */

@@ -30,18 +30,58 @@ import { fenced } from "./sales-invoice-render.ts";
 export type AppointmentSource = { readonly known: Known; readonly given: readonly GivenLine[]; readonly appointments: readonly AppointmentRef[]; readonly notes: readonly string[] };
 
 /** Where the appointments stand with the invoices: the draft that holds each, the invoice issued that billed it (but `except`, and an invoice a credit note for the wrong customer took back). */
-export function appointmentInvoicesOf(invoices: readonly SalesInvoice[], except?: string): { readonly draft: ReadonlyMap<string, string>; readonly issued: ReadonlyMap<string, string> } {
+export function appointmentInvoicesOf(invoices: readonly SalesInvoice[], except?: string): { readonly draft: ReadonlyMap<string, string>; readonly issued: ReadonlyMap<string, string>; readonly released: ReadonlySet<string> } {
 	const draft = new Map<string, string>();
 	const issued = new Map<string, string>();
+	const released = new Set<string>();
 	const gone = new Set(invoices.filter((i) => i.type === CREDIT_NOTE_TYPE && i.release === true && isIssued(i)).map((i) => i.related?.id));
 	for (const inv of invoices) {
+		if (gone.has(inv.id)) for (const a of inv.appointments ?? []) released.add(a.id);
 		if (inv.id === except || gone.has(inv.id)) continue;
 		for (const a of inv.appointments ?? []) {
 			if (isIssued(inv)) issued.set(a.id, inv.number);
 			else draft.set(a.id, inv.id);
 		}
 	}
-	return { draft, issued };
+	// Billed again since: no longer only released.
+	for (const id of [...draft.keys(), ...issued.keys()]) released.delete(id);
+	return { draft, issued, released };
+}
+
+/** The voce billed by the hour: «ora», «ore», «h». */
+const HOURLY = /^(?:or[ae]|h|hh)$/i;
+
+/** Minutes in hours, exact decimals: «1,5»; rounded half up to the hundredth when not exact, and said. */
+export function hoursOfMinutes(minutes: number): { readonly quantity: string; readonly exact: boolean } {
+	const exact = (minutes * 100) % 60 === 0;
+	const hundredths = Math.floor((minutes * 200 + 60) / 120);
+	const whole = Math.floor(hundredths / 100);
+	const cents = hundredths % 100;
+	const quantity = cents === 0 ? String(whole) : `${whole}.${String(cents).padStart(2, "0").replace(/0$/, "")}`;
+	return { quantity, exact };
+}
+
+/** The receipt question, asked once in the draft of an invoice of appointments (an open tax point: ADR 0094). */
+export const RECEIPT_NOTE = "Il cliente ha già pagato questi appuntamenti, con lo scontrino? Se sì, la fattura va fatta come differita o citando gli scontrini: chiedi al commercialista prima di emetterla.";
+
+/**
+ * Dictated lines that bill what an appointment fatto of the same customer, not billed, already
+ * is (its voce, or its words): asked, never billed twice (`args.appointments` false: apart).
+ */
+export function dictatedAppointments(env: SalesEnv, args: Record<string, unknown>, known: Known, given: readonly GivenLine[], book: SalesBook): string | undefined {
+	if (env.appointments === undefined || args.appointments === false) return undefined;
+	const appts = env.appointments.read();
+	if (appts.broken) return undefined;
+	const card = known.card?.id;
+	const name = spellingKey(known.name);
+	const links = appointmentInvoicesOf(book.invoices, typeof args.replace === "string" ? args.replace.trim().toUpperCase() : undefined);
+	const open = appts.appointments.filter((a) => a.status === "done" && a.billed === undefined && !links.issued.has(a.id) && !links.draft.has(a.id) && (card !== undefined && a.client.card !== undefined ? a.client.card === card : spellingKey(a.client.name) === name));
+	if (open.length === 0) return undefined;
+	const items = new Set(given.map((l) => l.item).filter((x) => x !== undefined));
+	const words = given.map((l) => spellingKey(l.description));
+	const same = open.filter((a) => a.services.some((sv) => (sv.item !== undefined && items.has(sv.item)) || words.some((w) => w === spellingKey(sv.name) || w.startsWith(`${spellingKey(sv.name)} `))));
+	if (same.length === 0) return undefined;
+	return `Attenzione: questo cliente ha ${n1(same.length, "un appuntamento fatto e non ancora fatturato", "# appuntamenti fatti e non ancora fatturati")} con un servizio come le voci dettate. Non ho fatto la bozza: se è lo stesso lavoro, conviene fatturare gli appuntamenti, così li segno come fatturati e non si fatturano due volte. Chiedilo a chi ti scrive: se sì, rifai la fattura con gli appuntamenti; se è un lavoro a parte, ripeti dicendo che è a parte.`;
 }
 
 /** The service a line bills: its voce, else its words. */
@@ -101,8 +141,11 @@ export function appointmentSource(env: SalesEnv, args: Record<string, unknown>, 
 	const replace = typeof args.replace === "string" ? args.replace.trim().toUpperCase() : undefined;
 	const links = appointmentInvoicesOf(book.invoices, replace);
 	const inPeriod = mine.filter((a) => a.day >= period.from && a.day <= period.to && a.day <= day);
-	const open = inPeriod.filter((a) => a.status === "done" && a.billed === undefined && !links.issued.has(a.id));
+	const billTo = typeof args.bill_to === "string" && args.bill_to.trim() !== "" ? args.bill_to.trim() : undefined;
+	if (args.bill_to !== undefined && billTo === undefined) return "Errore: dimmi a quale cliente intestare la fattura degli appuntamenti.";
+	const open = inPeriod.filter((a) => a.status === "done" && a.billed === undefined && !links.issued.has(a.id) && (billTo === undefined || links.released.has(a.id)));
 	const picked = open.filter((a) => !links.draft.has(a.id)).sort((a, b) => a.day.localeCompare(b.day) || a.start.localeCompare(b.start));
+	if (billTo !== undefined && picked.length === 0 && !open.some((a) => links.draft.has(a.id))) return "Errore: a un altro cliente intesto solo gli appuntamenti di una fattura corretta con una nota di credito per cliente sbagliato, già emessa. Per questo cliente non ce ne sono da rifatturare.";
 	const stillBooked = inPeriod.filter((a) => a.status === "booked").length;
 	const bookedNote = stillBooked === 0 ? [] : [`${n1(stillBooked, "Un appuntamento passato è", "# appuntamenti passati sono")} ancora «fissato»: non ${stillBooked === 1 ? "lo fatturo" : "li fatturo"}. Se ${stillBooked === 1 ? "è stato fatto" : "sono stati fatti"}, segnalo come fatto negli appuntamenti e rifai la fattura.`];
 	if (picked.length === 0) {
@@ -112,11 +155,12 @@ export function appointmentSource(env: SalesEnv, args: Record<string, unknown>, 
 	}
 	if (picked.length > SALES_LIMITS.hours) return "Errore: sono troppi appuntamenti per una fattura sola: fattura un periodo più corto.";
 	// One line per service, as many as the times it was done, in the order first done.
-	const groups = new Map<string, { name: string; item?: string; days: string[] }>();
+	const groups = new Map<string, { name: string; item?: string; days: string[]; minutes: number }>();
 	for (const a of picked) {
 		for (const s of a.services) {
-			const g = groups.get(serviceKey(s)) ?? { name: s.name, ...(s.item === undefined ? {} : { item: s.item }), days: [] };
+			const g = groups.get(serviceKey(s)) ?? { name: s.name, ...(s.item === undefined ? {} : { item: s.item }), days: [], minutes: 0 };
 			g.days.push(a.day);
+			g.minutes += s.minutes;
 			groups.set(serviceKey(s), g);
 		}
 	}
@@ -133,24 +177,45 @@ export function appointmentSource(env: SalesEnv, args: Record<string, unknown>, 
 		].join("\n");
 	}
 	const groupsList = [...groups.values()];
+	const hourly: string[] = [];
 	const raw = groupsList.map((g) => {
 		const own = prices.get(spellingKey(g.name));
+		const voce = g.item === undefined ? undefined : voci.find((v) => v.id === g.item);
+		// A voce priced by the hour bills the minutes, in hours (exact decimals); any other, the times.
+		let quantity = String(g.days.length);
+		if (voce?.unit !== undefined && HOURLY.test(voce.unit.trim())) {
+			const h = hoursOfMinutes(g.minutes);
+			quantity = h.quantity;
+			hourly.push(`${g.name}: ${g.minutes} minuti, cioè ${h.quantity.replace(".", ",")} ${h.quantity === "1" ? "ora" : "ore"}${h.exact ? "" : " (arrotondato al centesimo)"}`);
+		}
 		// The person's price wins over the voce's (price-list-lines.ts: what the line gives itself).
-		return { description: lineWords(g.name, g.days), quantity: String(g.days.length), ...(g.item === undefined || !voci.some((v) => v.id === g.item) ? {} : { item: g.item }), ...(own === undefined ? {} : { price: own }) };
+		return { description: lineWords(g.name, g.days), quantity, ...(voce === undefined ? {} : { item: voce.id }), ...(own === undefined ? {} : { price: own }) };
 	});
 	const filled = listLines({ ...(env.priceList === undefined ? {} : { priceList: env.priceList }), company: env.company, taxes: env.taxes }, raw, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: args.vat, natura: args.natura }, keepItem: true });
 	if (filled !== undefined && "ask" in filled) return filled.ask;
 	const given = readLines(filled?.lines ?? raw);
 	if (isProblem(given)) return `Errore: ${given.problem}.`;
-	const card = who.client.card === undefined ? undefined : cards.find((c) => c.id === who.client.card);
-	const found = findBuyer(card?.name ?? who.client.name, cards, book.invoices);
-	const known: Known = found.kind === "exact" ? { ...found.known, name: card?.name ?? who.client.name } : { name: who.client.name };
+	let known: Known;
+	if (billTo !== undefined) {
+		// The right customer of appointments a credit note for the wrong one gave back.
+		const found = findBuyer(billTo, cards, book.invoices);
+		if (found.kind === "close") return ["Intendi uno di questi clienti? Non si chiama esattamente così:", fenced(found.candidates.join("\n")), "Chiedi a chi ti scrive a chi va intestata, e ripeti con il nome scritto come qui."].join("\n");
+		if (found.kind === "conflict") return ["Errore: questo cliente non torna con i dati che ho:", fenced(found.known.name), "Chiedi a chi ti scrive."].join("\n");
+		known = found.kind === "exact" ? found.known : { name: billTo };
+	} else {
+		const card = who.client.card === undefined ? undefined : cards.find((c) => c.id === who.client.card);
+		const found = findBuyer(card?.name ?? who.client.name, cards, book.invoices);
+		known = found.kind === "exact" ? { ...found.known, name: card?.name ?? who.client.name } : { name: who.client.name };
+	}
 	return {
 		known,
 		given,
 		appointments: picked.map((a) => ({ id: a.id, day: a.day })),
 		notes: [
 			`Fatturo ${n1(picked.length, "un appuntamento fatto", "# appuntamenti fatti")}, ${period.label}: li segno come fatturati quando la fattura è emessa.`,
+			...(billTo === undefined ? [] : ["La intesto al cliente giusto, nel riquadro della bozza: gli appuntamenti sono quelli tornati da fatturare con la nota di credito."]),
+			...(hourly.length === 0 ? [] : ["Le voci a ore le conto dai minuti degli appuntamenti:", fenced(hourly.map((h) => `• ${h}`).join("\n"))]),
+			RECEIPT_NOTE,
 			...bookedNote,
 			...(filled?.notes ?? []),
 			...(prices.size > 0 ? ["Li metto nel listino, i prezzi che mi hai detto, così la prossima volta non te li chiedo? Se chi ti scrive dice di sì, aggiungili al listino: il listino chiede la sua conferma."] : []),
@@ -229,5 +294,5 @@ async function releaseAppointments(env: SalesEnv, inv: IssuedInvoice, ctx: ToolC
 		}
 	});
 	if (n < 0) return { notes: ["Attenzione: gli appuntamenti non si leggono, quindi non li ho rimessi da fatturare: la nota di credito è emessa, ma l'emissione resta da completare. Quando il file è sistemato, si completa emettendola di nuovo, con lo stesso numero."], done: false };
-	return { notes: [`Gli appuntamenti della fattura n. ${of.number} tornano da fatturare: correggi il cliente e rifai la fattura degli appuntamenti al cliente giusto.`], done: true };
+	return { notes: [`Gli appuntamenti della fattura n. ${of.number} tornano da fatturare. Ora si rifà la fattura degli stessi appuntamenti intestata al cliente giusto: dimmi a chi va fatta e la preparo.`], done: true };
 }

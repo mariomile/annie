@@ -2,30 +2,32 @@
  * The tool `appointments`: gli appuntamenti of a service business (parrucchiere, estetista,
  * studio, officina, consulente). Booked when the business is open, inside its hours, not over
  * another appointment of the same resource: on a clash the nearest free times are proposed and
- * nothing is booked; a client or a service only close to what was said, or a service whose
- * duration is not known (30 minutes taken), is proposed with a check first. Moved, disdetto, non
- * presentato and fatto only on the person's own word; nothing is deleted. The free times, the day
- * or the week, a client's history, the reminder texts for tomorrow (never sent by Annie), the
- * settings (hours, closures, resources, how long each service lasts), the CSV. The brief's line
- * once a day. Billing is sales_invoices' (sales-appointments.ts). Another agente gets counts
- * only; the audit only the op and a count. Clients, services, notes, contacts: in the fence.
+ * nothing is booked, unless the person says «fissalo lo stesso» (force); a client or a service only
+ * close to what was said, or a service whose duration is not known (30 minutes taken), is proposed
+ * with a check first. Moved, disdetto, non presentato and fatto only on the person's own word, with
+ * a check when the client is only close to the name said; nothing is deleted. The free times, the
+ * day or the week, a client's history, the messages for the clients (reminders and confirmations,
+ * with a WhatsApp link: never sent by Annie), the settings, the CSV. The brief's line once a day.
+ * Billing is sales_invoices' (sales-appointments.ts). Another agente gets counts only; the audit
+ * only the op and a count. Clients, services, notes, contacts, links: in the fence.
  */
 import { createHash } from "node:crypto";
-import { type Appointment, APPOINTMENT_LIMITS, AppointmentError, type AppointmentSettings, appointmentId, type BookedService, DEFAULT_MINUTES, endOf, minutesOf, timeOf } from "../appointments.ts";
-import { fits, type FitInput, freeSlots, gapsOf, localNow, nearestFree, openOn } from "../appointment-slots.ts";
+import { type Appointment, APPOINTMENT_LIMITS, AppointmentError, type AppointmentSettings, appointmentId, type BookedService, clockOf, DEFAULT_MINUTES, DEFAULT_SLOT, endOf, minutesOf, timeOf } from "../appointments.ts";
+import { fits, type Fit, type FitInput, freeSlots, gapsOf, localNow, nearestFree, openOn, type Span } from "../appointment-slots.ts";
 import { APPOINTMENTS_BROKEN, type AppointmentBook, type AppointmentStore } from "../appointment-store.ts";
 import type { ClientStore } from "../client-store.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { n1 } from "../format-words.ts";
 import { addDays, daysBetween } from "../italian-calendar.ts";
+import { italianLongDate, italianWeekday } from "../italian-format.ts";
 import type { Marker } from "../marker.ts";
 import { spellingKey } from "../name-keys.ts";
 import type { PriceListStore } from "../price-list-store.ts";
 import { cleanText, isProblem } from "../text-input.ts";
 import { isAgentTurn, requirePersonFor } from "../turn-origin.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
-import { appointmentNamed, clientSaid, daySaid, isAnswer, minutesSaid, resourceSaid, servicesSaid, timeSaid, windowSaid } from "./appointment-input.ts";
-import { appointmentRow, appointmentsCsv, closedWords, dayWords, fencedAppointments, reminderText, servicesWords, spanWords, whenWords } from "./appointment-render.ts";
+import { appointmentNamed, clientSaid, daySaid, isAnswer, isWeekdayWord, minutesSaid, type Named, resourceSaid, servicesSaid, timeOnDay, timeSaid, windowSaid } from "./appointment-input.ts";
+import { appointmentRow, appointmentsCsv, closedWords, dayWords, durationWords, fencedAppointments, mobileOf, reminderText, servicesWords, shortDay, spanWords, waLink, whenWords } from "./appointment-render.ts";
 import { settingsSaid, settingsWords } from "./appointment-settings.ts";
 
 export const APPOINTMENT_OPS = ["book", "move", "cancel", "no_show", "done", "free_slots", "agenda", "history", "reminders", "settings", "export"] as const;
@@ -41,6 +43,8 @@ export type AppointmentToolsOptions = {
 	readonly priceList?: Pick<PriceListStore, "read">;
 	/** The business's time zone (Europe/Rome): today, and the hour already gone. */
 	readonly timeZone: string;
+	/** Google Calendar can be written here (google_calendar_create): only then it is offered. */
+	readonly calendar?: boolean;
 	readonly whoIs: (thread: { channel: string; threadId: string }) => string | undefined;
 	readonly record?: (event: AppointmentEvent) => Promise<void>;
 	/** Tests: the clock. */
@@ -49,26 +53,35 @@ export type AppointmentToolsOptions = {
 
 const DESCRIPTION = [
 	"Gli appuntamenti dei clienti di un'attività di servizi (parrucchiere, estetista, studio, officina, consulente): chi viene, per cosa, quando, con quale risorsa (una persona, una poltrona, un ponte). Not the fiscal deadlines (fiscal_agenda), not the board's scadenze, not Annie's own reminders (schedule_create), not the person's Google calendar (google_calendar_events).",
-	"What the person says → op: «fissa la signora Rossi giovedì alle 15 per taglio e piega» → book with client, services [as said], date, time (resource, notes, minutes when said). When Annie is not sure of the client, of a service, or does not know how long a service lasts, book shows the proposal with a check: show it, and only after the person's yes repeat with confirm true and that check. On a clash or when closed, book books nothing and gives the nearest free times: offer those. After a booking, offer google_calendar_create with the start and end in the fence (it asks its own yes); never sync by yourself.",
-	"«sposta Rossi a venerdì stessa ora» → move with client and date (time only when said: otherwise the same); «Rossi ha disdetto» → cancel; «Rossi non si è presentata» → no_show; «Rossi è fatta», «segna fatti tutti quelli di oggi» → done (all true with date); these only on the person's own word. «quando ho un'ora libera giovedì pomeriggio?» → free_slots with date, window, minutes (or services); «cosa ho domani?», «la settimana» → agenda with date (week true); «com'è andata con Rossi?», «cosa fa di solito Bianchi?» → history with client.",
-	"«fammi il messaggio di promemoria per gli appuntamenti di domani» → reminders (date default tomorrow): the texts and the contacts from the cards are in the fence; Annie never sends them: offer google_mail_send as a draft (or sent after the person's yes) for who has an email; the others the person copies. «fattura gli appuntamenti fatti da Bianchi questo mese» is sales_invoices (draft with customer, appointments true, period), not this tool. «siamo aperti mar-sab 9-13 e 14:30-19», «chiusi dal 10 al 20 agosto», «il taglio dura 30 minuti», «le poltrone sono Marco e Giulia» → settings. «fammi il file degli appuntamenti» → export, then file_send. summary of the brief: agenda with compact true.",
-	"Never say an appointment's reference (AP-…) to the person: name it by its client and time. Times are as said: «alle 3» is read as 15:00 and said.",
+	"What the person says → op: «fissa la signora Rossi giovedì alle 15 per taglio e piega» → book with client as said (the title too), services [as said], date, time as said («15», «15:30», «alle 3 e mezza», «mezzogiorno»: Annie reads morning or afternoon from the opening hours, or asks); resource, notes, minutes when said. When Annie is not sure of the client, of a service, or does not know how long a service lasts, book shows the proposal with a check: show it, and only after the person's yes repeat with confirm true and that check. On a clash, out of hours or closed, book books nothing and gives the nearest free times: offer those; only when the person says «fissalo lo stesso» repeat with force true. After a booking, offer the confirmation message (reminders with client, date and confirmation true).",
+	"«sposta Rossi a venerdì stessa ora» → move with client and date (time only when said: otherwise the same); «Rossi ha disdetto» → cancel; «Rossi non si è presentata» → no_show; «Rossi è fatta», «tutti fatti» (yesterday's too, with date) → done (all true with date); these only on the person's own word, and with confirm and check when Annie asks «intendi questo appuntamento?». «quando ho un'ora libera giovedì pomeriggio?» → free_slots with date, window, minutes (or services); «cosa ho domani?», «la settimana» → agenda with date (week true); if the person also has Google Calendar, add their own events (google_calendar_events). «com'è andata con Rossi?», «cosa fa di solito Bianchi?» → history with client.",
+	"«fammi i promemoria per domani», «fammi il messaggio di promemoria per gli appuntamenti di domani» are the messages to the clients → reminders (date default tomorrow), not Annie's own reminders (schedule_create): the texts, the WhatsApp links for the mobiles and the emails from the cards are in the fence; Annie never sends them: the person taps the link and sends, or for an email offer google_mail_send (it asks its approval). «fattura gli appuntamenti fatti da Bianchi questo mese» is sales_invoices (draft with customer, appointments true, period), not this tool.",
+	"settings: «siamo aperti mar-sab 9-13 e 14:30-19, chiusi domenica e lunedì» → hours as that one line (or [{days, open}]); «chiusi dal 10 al 20 agosto per ferie» → closure_from, closure_to, closure_note; «il taglio dura 30 minuti, il colore un'ora e mezza» → services [{name, minutes}]; «le poltrone sono Marco e Giulia» → resources; «il salone si chiama Salone Anna» → business; «aperti anche nei festivi» → holidays_open; «gli appuntamenti ogni mezz'ora» → slot. «fammi il file degli appuntamenti» → export, then file_send. summary of the brief: agenda with compact true.",
+	"Never say an appointment's reference (AP-…) to the person: name it by its client and time.",
 ].join(" ");
 
 const AGENT_REFUSAL = "Gli appuntamenti dicono clienti, servizi e orari: a un altro agente do solo quanti sono. Li fissa e li cambia chi ti scrive, nella sua conversazione.";
 const BRIEF_NOTHING = "Appuntamenti: niente da segnalare.";
+const BRIEF_BROKEN = "Appuntamenti: il file non si legge, guarda il runbook.";
+const FORCE_OFFER = "Se vuoi fissarlo lo stesso, dimmi «fissalo lo stesso».";
+const HOURS_NOTE = "Non conosco ancora gli orari di apertura, quindi non ho controllato che tu sia aperto: dimmeli in una riga, come «mar-sab 9-13 e 14-19, chiuso domenica e lunedì».";
 const READ_OPS: readonly AppointmentOp[] = ["agenda", "free_slots", "history", "reminders"];
+const ORDINALS = ["prima", "seconda", "terza", "quarta", "quinta", "sesta", "settima", "ottava", "nona", "decima"];
 
 type Answer = { text: string; count: number };
 type Now = { readonly day: string; readonly minutes: number };
 
 /** A booking as proposed: what the check is given on. */
-type Proposed = { readonly client: Appointment["client"]; readonly services: readonly BookedService[]; readonly day: string; readonly start: string; readonly minutes: number; readonly resource?: string; readonly notes?: string };
+type Proposed = { readonly client: Appointment["client"]; readonly services: readonly BookedService[]; readonly day: string; readonly start: string; readonly minutes: number; readonly resource?: string; readonly notes?: string; readonly force?: true };
 
 const capital = (t: string) => `${t.charAt(0).toUpperCase()}${t.slice(1)}`;
 const clientKey = (c: Appointment["client"]) => c.card ?? `n:${spellingKey(c.name)}`;
 const byTime = (a: Appointment, b: Appointment) => a.day.localeCompare(b.day) || minutesOf(a.start) - minutesOf(b.start);
 const started = (a: Appointment, now: Now) => a.day < now.day || (a.day === now.day && minutesOf(a.start) <= now.minutes);
+const dateOnly = (day: string) => italianLongDate(day).replace(/ \d{4}$/, "");
+const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 16);
+const orList = (items: readonly string[]) => (items.length === 1 ? (items[0] as string) : `${items.slice(0, -1).join(", ")} o ${items.at(-1) as string}`);
+const andList = (items: readonly string[]) => (items.length === 1 ? (items[0] as string) : `${items.slice(0, -1).join(", ")} e ${items.at(-1) as string}`);
 
 /** The services with the duration said: one takes it all; with more, the last takes what the others leave. */
 function withMinutes(services: readonly BookedService[], total: number): BookedService[] | string {
@@ -78,22 +91,41 @@ function withMinutes(services: readonly BookedService[], total: number): BookedS
 	return [...services.slice(0, -1), { ...(services.at(-1) as BookedService), minutes: total - before }];
 }
 
-/** «giovedì 22 ottobre alle 14:30, …»: the free times proposed; with resources, each with its own (in the fence). */
+/** «Orari liberi vicini: giovedì 22 alle 14:45, alle 15:30 o alle 16; venerdì 23 alle 9. Quale preferisci?»; with resources, each one's in the fence. */
 function proposalsText(list: readonly { day: string; start: number; resource?: string }[], today: string): string[] {
 	if (list.length === 0) return ["Nei prossimi 14 giorni non trovo un orario libero così: dimmi un altro giorno."];
-	if (list.every((p) => p.resource === undefined)) return [`Gli orari liberi più vicini: ${list.map((p) => whenWords(p.day, timeOf(p.start), today)).join("; ")}. Chiedi a chi ti scrive quale preferisce.`];
-	return ["Gli orari liberi più vicini sono nel riquadro, ognuno con la sua risorsa. Chiedi a chi ti scrive quale preferisce.", fencedAppointments(list.map((p) => `• ${whenWords(p.day, timeOf(p.start), today)} (${p.resource ?? ""})`).join("\n"))];
+	const days = [...new Set(list.map((p) => p.day))].sort();
+	const parts = days.map((d) => `${shortDay(d, today)} ${orList(list.filter((p) => p.day === d).map((p) => p.start).sort((a, b) => a - b).map((t) => `alle ${clockOf(t)}`))}`);
+	const out = [`Orari liberi vicini: ${parts.join("; ")}. Quale preferisci?`];
+	if (list.some((p) => p.resource !== undefined)) out.push("Con chi, nel riquadro:", fencedAppointments(list.map((p) => `• ${shortDay(p.day, today)} alle ${clockOf(p.start)}: ${p.resource ?? ""}`).join("\n")));
+	return out;
 }
 
-/** Start times on the step, «alle 14:00, tra le 16:00 e le 18:00». */
-function startsWords(starts: readonly number[], step: number): string {
+/** «dalle 14 alle 17:30 (c'è posto per un'ora fino alle 16:30) e dalle 18 alle 19»: the free windows a run of start times makes. */
+function windowsWords(starts: readonly number[], step: number, minutes: number): string {
 	const runs: [number, number][] = [];
 	for (const s of [...starts].sort((a, b) => a - b)) {
 		const last = runs.at(-1);
 		if (last !== undefined && s - last[1] === step) last[1] = s;
 		else runs.push([s, s]);
 	}
-	return runs.map(([a, b]) => (a === b ? `alle ${timeOf(a)}` : `tra le ${timeOf(a)} e le ${timeOf(b)}`)).join(", ");
+	return andList(runs.map(([a, b]) => `dalle ${clockOf(a)} alle ${clockOf(b + minutes)}${b > a ? ` (c'è posto per ${durationWords(minutes)} fino alle ${clockOf(b)})` : ""}`));
+}
+
+/** «Libero: 9-10, 11-13»; with resources, each one's in the fence. */
+function gapsWords(settings: AppointmentSettings | undefined, appointments: readonly Appointment[], day: string, after: number): string[] {
+	const keep = (g: Span) => g.to > after;
+	const resources = settings?.resources ?? [];
+	const clip = (g: Span): Span => ({ from: Math.max(g.from, Math.ceil(after / (settings?.slot ?? DEFAULT_SLOT)) * (settings?.slot ?? DEFAULT_SLOT)), to: g.to });
+	if (resources.length === 0) {
+		const gaps = gapsOf(settings, appointments, day).filter(keep).map(clip).filter((g) => g.to > g.from);
+		return gaps.length === 0 ? [] : [`Libero: ${gaps.map(spanWords).join(", ")}.`];
+	}
+	const rows = resources.flatMap((r) => {
+		const gaps = gapsOf(settings, appointments, day, r).filter(keep).map(clip).filter((g) => g.to > g.from);
+		return gaps.length === 0 ? [] : [`${r} ${gaps.map(spanWords).join(", ")}`];
+	});
+	return rows.length === 0 ? [] : ["Libero per risorsa, nel riquadro.", fencedAppointments(`Libero: ${rows.join("; ")}`)];
 }
 
 export function createAppointmentTools(options: AppointmentToolsOptions): AnnieTool[] {
@@ -116,33 +148,98 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		const b = options.priceList?.read();
 		return b === undefined || b.broken ? [] : b.items;
 	};
+	const checkOf = (p: Proposed) => hash([p.client, p.services, p.day, p.start, p.minutes, p.resource ?? "", p.notes ?? "", p.force === true]);
 
-	const checkOf = (p: Proposed) => createHash("sha256").update(JSON.stringify([p.client, p.services, p.day, p.start, p.minutes, p.resource ?? "", p.notes ?? ""])).digest("hex").slice(0, 16);
+	/** The client's «non presentato», oldest first. */
+	const noShows = (b: AppointmentBook, c: Appointment["client"]) => b.appointments.filter((a) => clientKey(a.client) === clientKey(c) && a.status === "no_show").sort(byTime);
 
-	/** Why it does not fit, and the nearest free times: nothing is booked. */
-	function refusal(fit: Exclude<ReturnType<typeof fits>, { ok: true }>, input: FitInput, today: string): string {
-		if (fit.why === "past") return "Errore: quell'ora è già passata: dimmi un altro giorno o un'altra ora.";
-		const head =
-			fit.why === "closed"
-				? `${capital(closedWords(fit.open ?? openOn(input.settings, input.day), input.day))}: non ho fissato niente.`
-				: fit.why === "outside"
-					? `A quell'ora sei chiuso (${dayWords(input.day, today)} sei aperto ${(fit.open?.spans ?? []).map(spanWords).join(" e ")}): non ho fissato niente.`
-					: `A quell'ora c'è già un appuntamento${(input.settings?.resources ?? []).length > 0 ? " per ogni risorsa che può farlo" : ""}: non ho fissato niente.`;
-		return [head, ...proposalsText(nearestFree(input), today)].join("\n");
+	/** The day and time said, read on the day: a bare weekday that is today with the time gone means next week, said. */
+	function whenSaid(args: Record<string, unknown>, settings: AppointmentSettings | undefined, at: Now, fallbackDay?: string, fallbackStart?: number): { day: string; minutes: number; notes: string[] } | string {
+		const day0 = args.date === undefined ? fallbackDay : daySaid(args.date, at.day);
+		if (day0 === undefined) return "Errore: dimmi il giorno dell'appuntamento. Per vedere quando è libero, chiedimi gli orari liberi.";
+		if (isAnswer(day0)) return day0.answer;
+		if (args.time === undefined && fallbackStart === undefined) return "Errore: dimmi a che ora. Per vedere quando è libero, chiedimi gli orari liberi.";
+		const t = args.time === undefined ? undefined : timeSaid(args.time);
+		if (t !== undefined && isAnswer(t)) return t.answer;
+		const read = (day: string) => (t === undefined ? { minutes: fallbackStart as number } : timeOnDay(t, settings, day));
+		let day = day0;
+		let r = read(day);
+		if (isAnswer(r)) return r.answer;
+		const notes: string[] = [];
+		if (isWeekdayWord(args.date) && day === at.day && r.minutes < at.minutes) {
+			day = addDays(day, 7);
+			r = read(day);
+			if (isAnswer(r)) return r.answer;
+			const wd = italianWeekday(day);
+			notes.push(`${capital(wd)} l'ho inteso come ${wd} ${wd === "domenica" ? "prossima" : "prossimo"}, ${dateOnly(day)}: oggi alle ${clockOf(r.minutes)} è già passato.`);
+		}
+		if (r.note !== undefined) notes.push(r.note);
+		return { day, minutes: r.minutes, notes };
 	}
 
-	function bookedAnswer(a: Appointment, today: string, notes: readonly string[]): string {
+	/** Why it does not fit, and the nearest free times: nothing is booked (or moved). */
+	function refusal(fit: Exclude<Fit, { ok: true }>, input: FitInput, b: AppointmentBook, today: string, verb: string): string {
+		if (fit.why === "past") return "Quell'ora è già passata: dimmi un altro giorno o un'altra ora.";
+		const open = fit.open ?? openOn(input.settings, input.day);
+		const lines: string[] = [];
+		if (fit.why === "closed") lines.push(`${capital(closedWords(open, input.day))}: ${verb}.`);
+		else if (fit.why === "outside" && fit.room !== undefined) {
+			const end = input.start + input.minutes;
+			lines.push(`Alle ${clockOf(input.start)} c'è posto solo fino alle ${clockOf(fit.room.until)}: l'appuntamento dura ${durationWords(input.minutes)} e finirebbe alle ${clockOf(end)}, ${fit.room.pause ? "nella pausa" : "dopo la chiusura"}. ${capital(verb)}.`);
+		} else if (fit.why === "outside") lines.push(`A quell'ora sei chiuso (${shortDay(input.day, today)} sei aperto ${open.spans.map(spanWords).join(" e ")}): ${verb}.`);
+		else {
+			const other = b.appointments.find((a) => a.id === fit.with);
+			const many = (input.settings?.resources ?? []).length > 0;
+			lines.push(`A quell'ora c'è già un appuntamento${many ? " per ogni risorsa che può farlo" : ""}${other === undefined ? "" : `, dalle ${clockOf(minutesOf(other.start))} alle ${clockOf(minutesOf(other.start) + other.minutes)} (chi è nel riquadro)`}: ${verb}.`);
+			if (other !== undefined) lines.push(fencedAppointments(appointmentRow(other)));
+		}
+		return [...lines, ...proposalsText(nearestFree({ ...input, force: false }), today), fit.why === "overlap" ? "Se vuoi sovrapporlo, dimmi «fissalo lo stesso»." : FORCE_OFFER].join("\n");
+	}
+
+	/** The check on an appointment named by a name only close to the client's: «intendi questo appuntamento?». */
+	function closeCheck(op: string, named: Named, args: Record<string, unknown>, extra: unknown, today: string): string | undefined {
+		if (named.close !== true) return undefined;
+		const a = named.appointment;
+		const check = hash([op, a.id, a.day, a.start, a.status, extra]);
+		const ask = ["Intendi questo appuntamento? Il cliente non si chiama esattamente come è stato detto: è nel riquadro.", fencedAppointments(appointmentRow(a, true)), `${capital(whenWords(a.day, a.start, today))}. Se chi ti scrive dice di sì, ripeti con la conferma e il controllo ${check}.`].join("\n");
+		if (args.confirm !== true) return ask;
+		const given = typeof args.check === "string" ? args.check.trim().toLowerCase() : "";
+		if (given !== check) return `Errore: il controllo non torna: non ho cambiato niente.\n${ask}`;
+		return undefined;
+	}
+
+	function bookedAnswer(a: Appointment, b: AppointmentBook, today: string, notes: readonly string[]): string {
+		const missed = noShows(b, a.client);
+		const last = missed.at(-1);
 		return [
-			`Fatto: ho fissato l'appuntamento ${dayWords(a.day, today)} dalle ${a.start} alle ${endOf(a)}. Chi e per cosa è nel riquadro.`,
-			fencedAppointments([appointmentRow(a), `Per il calendario: inizio ${a.day}T${a.start}, fine ${a.day}T${endOf(a)} (${timeZone})`].join("\n")),
+			`Fatto: ho fissato l'appuntamento ${dayWords(a.day, today)} dalle ${clockOf(minutesOf(a.start))} alle ${clockOf(minutesOf(a.start) + a.minutes)}. Chi e per cosa è nel riquadro.`,
+			fencedAppointments([appointmentRow(a), ...(options.calendar === true ? [`Per il calendario: inizio ${a.day}T${a.start}, fine ${a.day}T${endOf(a)} (${timeZone})`] : [])].join("\n")),
 			...notes,
-			"Se chi ti scrive lo vuole anche nel suo calendario Google, posso aggiungerlo con google_calendar_create (inizio e fine del riquadro): lo chiede lui.",
+			...(missed.length >= 3 && last !== undefined ? [`Attenzione: questo cliente non si è presentato ${missed.length} volte (l'ultima il ${dateOnly(last.day)}).`] : []),
+			"Vuoi mandare al cliente un messaggio di conferma? Lo preparo io, con il link per WhatsApp se ha il cellulare nella scheda.",
+			...(options.calendar === true ? ["Se lo vuoi anche nel tuo calendario Google, lo aggiungo con google_calendar_create (inizio e fine nel riquadro)."] : []),
 		].join("\n");
+	}
+
+	/** The missing hours said once a day (claimed), on a call that books. */
+	async function hoursNote(ctx: ToolContext, settings: AppointmentSettings | undefined, today: string): Promise<string[]> {
+		if (settings?.week !== undefined) return [];
+		const said = await ctx.step("hours-note", async () => store.claim(ctx.callId, today, ["hours"]));
+		return said.includes("hours") ? [HOURS_NOTE] : [];
 	}
 
 	async function book(args: Record<string, unknown>, ctx: ToolContext, b: AppointmentBook, at: Now): Promise<Answer> {
 		const today = at.day;
+		// The same call again: the appointment it booked, before anything is checked again.
+		const mine = b.appointments.find((a) => a.callId === ctx.callId);
+		if (mine !== undefined) return { text: bookedAnswer(mine, b, today, []), count: 1 };
 		const settings = b.settings;
+		if (args.force !== undefined && typeof args.force !== "boolean") return { text: "Errore: fissalo lo stesso è sì o no.", count: 0 };
+		const force = args.force === true;
+		if (force) {
+			const refused = requirePersonFor(ctx, "fisso l'appuntamento sovrapposto o fuori orario");
+			if (refused !== undefined) return { text: refused, count: 0 };
+		}
 		const client = clientSaid(args.client, cards(), b.appointments);
 		if (isAnswer(client)) return { text: client.answer, count: 0 };
 		const sv = servicesSaid(args.services, settings, voci());
@@ -158,30 +255,26 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			assumed = [];
 		}
 		const minutes = services.reduce((n, s) => n + s.minutes, 0);
-		if (args.date === undefined) return { text: "Errore: dimmi il giorno dell'appuntamento. Per vedere quando è libero, chiedimi gli orari liberi.", count: 0 };
-		if (args.time === undefined) return { text: "Errore: dimmi a che ora. Per vedere quando è libero, chiedimi gli orari liberi.", count: 0 };
-		const day = daySaid(args.date, today);
-		if (isAnswer(day)) return { text: day.answer, count: 0 };
-		const time = timeSaid(args.time);
-		if (isAnswer(time)) return { text: time.answer, count: 0 };
+		const when = whenSaid(args, settings, at);
+		if (typeof when === "string") return { text: when, count: 0 };
+		const { day } = when;
 		const resource = resourceSaid(args.resource, settings);
 		if (isAnswer(resource)) return { text: resource.answer, count: 0 };
 		const notes = cleanText(args.notes, APPOINTMENT_LIMITS.notes, "le note", true);
 		if (isProblem(notes)) return { text: `Errore: ${notes.problem}.`, count: 0 };
-		if (time.minutes + minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
-		const input: FitInput = { settings, appointments: b.appointments, day, start: time.minutes, minutes, ...(resource === undefined ? {} : { resource }), ...(sv.needs === undefined ? {} : { needs: sv.needs }), now: at };
+		if (when.minutes + minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
+		const input: FitInput = { settings, appointments: b.appointments, day, start: when.minutes, minutes, ...(resource === undefined ? {} : { resource }), ...(sv.needs === undefined ? {} : { needs: sv.needs }), now: at, force };
 		const fit = fits(input);
-		if (!fit.ok) return { text: [refusal(fit, input, today), ...(time.note === undefined ? [] : [time.note])].join("\n"), count: 0 };
-		const p: Proposed = { client: client.client, services, day, start: timeOf(time.minutes), minutes, ...(fit.resource === undefined ? {} : { resource: fit.resource }), ...(notes === undefined ? {} : { notes }) };
+		if (!fit.ok) return { text: [refusal(fit, input, b, today, "non ho fissato niente"), ...when.notes].join("\n"), count: 0 };
+		const p: Proposed = { client: client.client, services, day, start: timeOf(when.minutes), minutes, ...(fit.resource === undefined ? {} : { resource: fit.resource }), ...(notes === undefined ? {} : { notes }), ...(force ? { force: true as const } : {}) };
 		const why: string[] = [];
 		if (client.close === true) why.push("il cliente l'ho preso dalla scheda con il nome più vicino a come è stato detto");
 		if (sv.guess.length > 0) why.push(n1(sv.guess.length, "un servizio l'ho preso dalla voce del listino più vicina a come è stato detto", "# servizi li ho presi dalle voci del listino più vicine a come sono stati detti"));
 		if (assumed.length > 0) why.push(`non so quanto ${n1(assumed.length, "dura un servizio: ho contato", "durano # servizi: ho contato")} ${DEFAULT_MINUTES} minuti (si può dire la durata, e la salvo per le prossime volte)`);
-		const extra = [...(time.note === undefined ? [] : [time.note]), ...(settings?.week === undefined ? ["Non so ancora gli orari di apertura: non ho potuto controllare che tu sia aperto. Dimmeli e li salvo."] : [])];
 		if (why.length > 0 && args.confirm !== true) {
 			const preview: Appointment = { id: "AP-0000", status: "booked", ...p, callId: "x", by: "x", at: "x" };
 			return {
-				text: [`Fisserei questo appuntamento, ${dayWords(day, today)} dalle ${p.start} alle ${endOf(p)}, come nel riquadro. Controlla con chi ti scrive: ${why.join("; ")}.`, fencedAppointments(appointmentRow(preview).replace(/ \(rif\. AP-0000\)$/, "")), ...extra, `Va bene così? Se chi ti scrive dice di sì, ripeti con la conferma e il controllo ${checkOf(p)}.`].join("\n"),
+				text: [`Fisserei questo appuntamento, ${dayWords(day, today)} dalle ${clockOf(when.minutes)} alle ${clockOf(when.minutes + minutes)}, come nel riquadro. Controlla con chi ti scrive: ${why.join("; ")}.`, fencedAppointments(appointmentRow(preview).replace(/ \(rif\. AP-0000\)$/, "")), ...when.notes, `Va bene così? Se chi ti scrive dice di sì, ripeti con la conferma e il controllo ${checkOf(p)}.`].join("\n"),
 				count: 0,
 			};
 		}
@@ -193,40 +286,62 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			if (checkOf(p) !== check) return { text: "Errore: la proposta è cambiata da quando l'hai mostrata: non ho fissato niente. Chiedi di nuovo la proposta.", count: 0 };
 		}
 		const by = marker(ctx);
+		const { force: _f, ...saved } = p;
 		const id = await ctx.step("book", async () => {
 			store.update(ctx.callId, (state) => {
 				if (state.appointments.length >= APPOINTMENT_LIMITS.appointments) throw new AppointmentError("gli appuntamenti sono troppi per salvarne altri");
 				// Under the lock: another booking in between takes the time first.
 				const again = fits({ ...input, appointments: state.appointments, ...(p.resource === undefined ? {} : { resource: p.resource }) });
 				if (!again.ok) throw new AppointmentError("intanto quell'ora è stata presa da un altro appuntamento: non ho fissato niente. Chiedimi di nuovo gli orari liberi");
-				const made: Appointment = { id: appointmentId(state.nextAppointment), status: "booked", ...p, callId: ctx.callId, ...by };
+				const made: Appointment = { id: appointmentId(state.nextAppointment), status: "booked", ...saved, callId: ctx.callId, ...by };
 				return { ...state, nextAppointment: state.nextAppointment + 1, appointments: [...state.appointments, made] };
 			});
 			return store.read().appointments.find((a) => a.callId === ctx.callId)?.id ?? "";
 		});
-		const made = store.read().appointments.find((a) => a.id === id);
+		const after = store.read();
+		const made = after.appointments.find((a) => a.id === id);
 		if (made === undefined) return { text: "Errore: l'appuntamento non risulta salvato.", count: 0 };
-		const notes_ = [...(client.fresh === true ? ["Il cliente non è tra le schede né tra gli appuntamenti: l'ho scritto come detto. Se vuoi, gli faccio la scheda con telefono ed email, per i promemoria."] : []), ...extra];
-		return { text: bookedAnswer(made, today, notes_), count: 1 };
+		const extra = [
+			...(client.fresh === true ? ["Il cliente non è tra le schede né tra gli appuntamenti: l'ho scritto come detto. Se vuoi, gli faccio la scheda con il cellulare, per i messaggi."] : []),
+			...(force ? ["L'ho fissato lo stesso, come mi hai detto, anche se si sovrappone o è fuori orario."] : []),
+			...when.notes,
+			...(await hoursNote(ctx, settings, today)),
+		];
+		return { text: bookedAnswer(made, after, today, extra), count: 1 };
+	}
+
+	function movedAnswer(after: Appointment, today: string, notes: readonly string[]): string {
+		const [fromDay, fromStart] = (after.moved?.from ?? `${after.day} ${after.start}`).split(" ") as [string, string];
+		return [
+			`Fatto: ho spostato l'appuntamento da ${whenWords(fromDay, fromStart, today)} a ${whenWords(after.day, after.start, today)} (fino alle ${clockOf(minutesOf(after.start) + after.minutes)}). Chi e per cosa è nel riquadro.`,
+			fencedAppointments(appointmentRow(after)),
+			...notes,
+			"Vuoi mandare al cliente il messaggio con il nuovo orario? Lo preparo io.",
+			...(options.calendar === true ? ["Se era anche nel calendario Google, va spostato anche lì."] : []),
+		].join("\n");
 	}
 
 	async function move(args: Record<string, unknown>, ctx: ToolContext, b: AppointmentBook, at: Now): Promise<Answer> {
 		const refused = requirePersonFor(ctx, "sposto l'appuntamento");
 		if (refused !== undefined) return { text: refused, count: 0 };
-		const a = appointmentNamed(args, b.appointments, cards(), at.day, (x) => x.status === "booked");
-		if (isAnswer(a)) return { text: a.answer, count: 0 };
+		const mine = b.appointments.find((a) => a.moved?.call === ctx.callId);
+		if (mine !== undefined) return { text: movedAnswer(mine, at.day, []), count: 1 };
+		const named = appointmentNamed(args, b.appointments, cards(), at.day, (x) => x.status === "booked");
+		if (isAnswer(named)) return { text: named.answer, count: 0 };
+		const a = named.appointment;
 		if (args.date === undefined && args.time === undefined && args.resource === undefined) return { text: "Errore: dimmi il giorno o l'ora nuovi.", count: 0 };
-		const day = args.date === undefined ? a.day : daySaid(args.date, at.day);
-		if (isAnswer(day)) return { text: day.answer, count: 0 };
-		const time = args.time === undefined ? { minutes: minutesOf(a.start) } : timeSaid(args.time);
-		if (isAnswer(time)) return { text: time.answer, count: 0 };
+		const force = args.force === true;
+		const when = whenSaid(args, b.settings, at, a.day, minutesOf(a.start));
+		if (typeof when === "string") return { text: when, count: 0 };
 		const resource = args.resource === undefined ? a.resource : resourceSaid(args.resource, b.settings);
 		if (isAnswer(resource)) return { text: resource.answer, count: 0 };
-		if (day === a.day && timeOf(time.minutes) === a.start && resource === a.resource) return { text: `L'appuntamento è già ${whenWords(a.day, a.start, at.day)}: non ho cambiato niente.`, count: 0 };
-		if (time.minutes + a.minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
-		const input: FitInput = { settings: b.settings, appointments: b.appointments, day, start: time.minutes, minutes: a.minutes, ...(resource === undefined ? {} : { resource }), except: a.id, now: at };
+		const ask = closeCheck("move", named, args, [when.day, when.minutes, resource ?? "", force], at.day);
+		if (ask !== undefined) return { text: ask, count: 0 };
+		if (when.day === a.day && timeOf(when.minutes) === a.start && resource === a.resource) return { text: `L'appuntamento è già ${whenWords(a.day, a.start, at.day)}: non ho cambiato niente.`, count: 0 };
+		if (when.minutes + a.minutes > 24 * 60) return { text: "Errore: l'appuntamento finirebbe dopo mezzanotte: dimmi un'ora prima.", count: 0 };
+		const input: FitInput = { settings: b.settings, appointments: b.appointments, day: when.day, start: when.minutes, minutes: a.minutes, ...(resource === undefined ? {} : { resource }), except: a.id, now: at, force };
 		const fit = fits(input);
-		if (!fit.ok) return { text: [refusal(fit, input, at.day).replace("non ho fissato niente", "non l'ho spostato"), ...("note" in time && time.note !== undefined ? [time.note] : [])].join("\n"), count: 0 };
+		if (!fit.ok) return { text: [refusal(fit, input, b, at.day, "non l'ho spostato"), ...when.notes].join("\n"), count: 0 };
 		const by = marker(ctx);
 		await ctx.step("move", async () => {
 			store.update(ctx.callId, (state) => {
@@ -235,21 +350,26 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 				const again = fits({ ...input, appointments: state.appointments, ...(fit.resource === undefined ? {} : { resource: fit.resource }) });
 				if (!again.ok) throw new AppointmentError("intanto quell'ora è stata presa da un altro appuntamento: non l'ho spostato");
 				const { resource: _r, ...rest } = now_;
-				const moved: Appointment = { ...rest, day, start: timeOf(time.minutes), ...(fit.resource === undefined ? {} : { resource: fit.resource }), moved: { ...by, from: `${now_.day} ${now_.start}` } };
+				const moved: Appointment = { ...rest, day: when.day, start: timeOf(when.minutes), ...(fit.resource === undefined ? {} : { resource: fit.resource }), moved: { ...by, from: `${now_.day} ${now_.start}`, call: ctx.callId } };
 				return { ...state, appointments: state.appointments.map((x) => (x.id === a.id ? moved : x)) };
 			});
 			return true;
 		});
 		const after = store.read().appointments.find((x) => x.id === a.id) as Appointment;
-		return {
-			text: [
-				`Fatto: ho spostato l'appuntamento da ${whenWords(a.day, a.start, at.day)} a ${whenWords(after.day, after.start, at.day)} (fino alle ${endOf(after)}). Chi e per cosa è nel riquadro.`,
-				fencedAppointments(appointmentRow(after)),
-				...("note" in time && time.note !== undefined ? [time.note] : []),
-				"Se era anche nel calendario Google, va spostato anche lì.",
-			].join("\n"),
-			count: 1,
-		};
+		return { text: movedAnswer(after, at.day, when.notes), count: 1 };
+	}
+
+	function closedAnswer(op: "cancel" | "no_show" | "done", after: readonly Appointment[], b: AppointmentBook, today: string): string {
+		const first = after[0] as Appointment;
+		if (after.length > 1) return [`Fatto: ho segnato come fatti ${after.length} appuntamenti ${dayWords(first.day, today)}. Sono nel riquadro.`, fencedAppointments(after.map((a) => appointmentRow(a)).join("\n"))].join("\n");
+		const when = whenWords(first.day, first.start, today);
+		if (op === "cancel") return [`Fatto: ho segnato come disdetto l'appuntamento di ${when}. Resta nello storico del cliente, e quell'ora è di nuovo libera.`, fencedAppointments(appointmentRow(first)), ...(options.calendar === true ? ["Se era anche nel calendario Google, va tolto anche lì."] : [])].join("\n");
+		if (op === "done") return [`Fatto: ho segnato come fatto l'appuntamento di ${when}.`, fencedAppointments(appointmentRow(first))].join("\n");
+		const missed = noShows(b, first.client);
+		const n = Math.max(1, missed.findIndex((a) => a.id === first.id) + 1 || missed.length);
+		const previous = missed.filter((a) => byTime(a, first) < 0).at(-1);
+		const which = n === 1 ? "È la prima volta che non si presenta." : `È la ${ORDINALS[n - 1] ?? `${n}ª`} volta che non si presenta${previous === undefined ? "" : ` (l'ultima il ${dateOnly(previous.day)})`}.`;
+		return [`Fatto: ho segnato che il cliente non si è presentato all'appuntamento di ${when}. Resta nello storico. ${which}${n >= 3 ? " Se vuoi, quando lo rifissi te lo ricordo." : ""}`, fencedAppointments(appointmentRow(first))].join("\n");
 	}
 
 	/** Disdetto, non presentato, fatto: the person's word, the record kept. */
@@ -257,6 +377,8 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		const status = op === "cancel" ? "cancelled" : op;
 		const refused = requirePersonFor(ctx, op === "cancel" ? "segno l'appuntamento come disdetto" : op === "no_show" ? "segno che il cliente non si è presentato" : "segno l'appuntamento come fatto");
 		if (refused !== undefined) return { text: refused, count: 0 };
+		const mine = b.appointments.filter((a) => a.closed?.call === ctx.callId).sort(byTime);
+		if (mine.length > 0) return { text: closedAnswer(op, mine, b, at.day), count: mine.length };
 		let targets: Appointment[];
 		if (op === "done" && args.all === true) {
 			const day = daySaid(args.date ?? "oggi", at.day);
@@ -265,9 +387,12 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			targets = b.appointments.filter((a) => a.day === day && a.status === "booked" && started(a, at));
 			if (targets.length === 0) return { text: `Nessun appuntamento ancora «fissato» ${day === at.day ? "di oggi già cominciato" : `del ${dayWords(day, at.day)}`}: non ho segnato niente.`, count: 0 };
 		} else {
-			const a = appointmentNamed(args, b.appointments, cards(), at.day, (x) => x.status === "booked" && (op === "cancel" || started(x, at)), op !== "cancel");
-			if (isAnswer(a)) return { text: op === "cancel" ? a.answer : `${a.answer}\nSi segna come fatto, o non presentato, solo un appuntamento ancora «fissato» e già cominciato.`, count: 0 };
-			targets = [a];
+			// Fatto and non presentato only once begun, by name or by reference alike.
+			const named = appointmentNamed(args, b.appointments, cards(), at.day, (x) => x.status === "booked" && (op === "cancel" || started(x, at)), op !== "cancel");
+			if (isAnswer(named)) return { text: op === "cancel" ? named.answer : `${named.answer}\nSi segna come fatto, o non presentato, solo un appuntamento ancora «fissato» e già cominciato.`, count: 0 };
+			const ask = closeCheck(op, named, args, null, at.day);
+			if (ask !== undefined) return { text: ask, count: 0 };
+			targets = [named.appointment];
 		}
 		const ids = targets.map((t) => t.id);
 		const by = marker(ctx);
@@ -275,21 +400,13 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			store.update(ctx.callId, (state) => {
 				const gone = ids.filter((id) => state.appointments.find((x) => x.id === id)?.status !== "booked");
 				if (gone.length > 0) throw new AppointmentError("intanto l'appuntamento è stato già segnato o disdetto: non ho cambiato niente");
-				return { ...state, appointments: state.appointments.map((x) => (ids.includes(x.id) ? { ...x, status, closed: by } : x)) };
+				return { ...state, appointments: state.appointments.map((x) => (ids.includes(x.id) ? { ...x, status, closed: { ...by, call: ctx.callId } } : x)) };
 			});
 			return true;
 		});
-		const after = store.read().appointments.filter((x) => ids.includes(x.id)).sort(byTime);
-		const first = after[0] as Appointment;
-		if (after.length > 1) return { text: [`Fatto: ho segnato come fatti ${after.length} appuntamenti ${dayWords(first.day, at.day)}. Sono nel riquadro.`, fencedAppointments(after.map((a) => appointmentRow(a)).join("\n"))].join("\n"), count: after.length };
-		const when = whenWords(first.day, first.start, at.day);
-		const head =
-			op === "cancel"
-				? `Fatto: ho segnato come disdetto l'appuntamento di ${when}. Resta nello storico del cliente, e quell'ora è di nuovo libera.`
-				: op === "no_show"
-					? `Fatto: ho segnato che il cliente non si è presentato all'appuntamento di ${when}. Resta nello storico: con questo, ${n1(b.appointments.filter((a) => clientKey(a.client) === clientKey(first.client) && a.status === "no_show").length + 1, "è la prima volta", "sono # volte")}.`
-					: `Fatto: ho segnato come fatto l'appuntamento di ${when}.`;
-		return { text: [head, fencedAppointments(appointmentRow(first)), ...(op === "cancel" ? ["Se era anche nel calendario Google, va tolto anche lì."] : [])].join("\n"), count: 1 };
+		const book_ = store.read();
+		const after = book_.appointments.filter((x) => ids.includes(x.id)).sort(byTime);
+		return { text: closedAnswer(op, after, book_, at.day), count: after.length };
 	}
 
 	/** The days from `date` (today) to `to_date`, at most 14. */
@@ -307,11 +424,12 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 
 	function freeTimes(args: Record<string, unknown>, b: AppointmentBook, at: Now): Answer {
 		const settings = b.settings;
-		if (settings?.week === undefined) return { text: "Non so ancora gli orari di apertura, quindi non so dire quando sei libero: dimmeli (per esempio «lun-ven 9-13 e 14:30-19») e li salvo.", count: 0 };
+		if (settings?.week === undefined) return { text: `Non so ancora gli orari di apertura, quindi non so dire quando sei libero. ${HOURS_NOTE.replace(/^.*?: /, "Dimmeli ")}`, count: 0 };
 		const days = daysSaid(args, at.day, "oggi", args.week === true);
 		if (typeof days === "string") return { text: days, count: 0 };
 		const window = windowSaid(args.window);
 		if (isAnswer(window)) return { text: window.answer, count: 0 };
+		const windowWord = typeof args.window === "string" && window !== undefined ? ` ${args.window.trim().toLowerCase().replace(/^(?:di |la |il )/, "")}` : "";
 		let minutes = minutesSaid(args.minutes);
 		if (isAnswer(minutes)) return { text: minutes.answer, count: 0 };
 		let needs: readonly string[] | undefined;
@@ -329,26 +447,28 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		}
 		const resource = resourceSaid(args.resource, settings);
 		if (isAnswer(resource)) return { text: resource.answer, count: 0 };
-		const step = settings.slot ?? 15;
+		const step = settings.slot ?? DEFAULT_SLOT;
 		const plain: string[] = [];
 		const byResource: string[] = [];
-		let found = 0;
 		for (const day of days) {
 			if (day < at.day) continue;
+			const label = `${capital(shortDay(day, at.day))}${windowWord}`;
 			const open = openOn(settings, day);
 			if (open.spans.length === 0) {
 				if (days.length === 1) plain.push(`${capital(closedWords(open, day))}.`);
 				continue;
 			}
 			const slots = freeSlots({ settings, appointments: b.appointments, day, minutes, ...(resource === undefined ? {} : { resource }), ...(needs === undefined ? {} : { needs }), now: at, ...(window === undefined ? {} : { from: window.from, to: window.to }) });
-			if (slots.length === 0) continue;
-			found += 1;
+			if (slots.length === 0) {
+				if (days.length === 1) plain.push(`${label} non c'è posto per ${durationWords(minutes)}.`);
+				continue;
+			}
 			const lanes = [...new Set(slots.map((s) => s.resource))];
-			if (lanes.length === 1 && lanes[0] === undefined) plain.push(`• ${dayWords(day, at.day)}: ${startsWords(slots.map((s) => s.start), step)}`);
-			else for (const lane of lanes) byResource.push(`• ${dayWords(day, at.day)}, ${lane ?? ""}: ${startsWords(slots.filter((s) => s.resource === lane).map((s) => s.start), step)}`);
+			if (lanes.length === 1 && lanes[0] === undefined) plain.push(`${label} sei libero ${windowsWords(slots.map((s) => s.start), step, minutes)}.`);
+			else for (const lane of lanes) byResource.push(`• ${label}, ${lane ?? ""}: ${windowsWords(slots.filter((s) => s.resource === lane).map((s) => s.start), step, minutes)}`);
 		}
-		const head = found === 0 ? `Nessun orario libero per ${minutes} minuti in ${days.length === 1 ? "quel giorno" : "quei giorni"}${window === undefined ? "" : " in quella parte del giorno"}.` : `Si può cominciare un appuntamento di ${minutes} minuti in questi orari:`;
-		return { text: [head, ...plain, ...(byResource.length === 0 ? [] : ["Per risorsa, nel riquadro:", fencedAppointments(byResource.join("\n"))]), ...notes].join("\n"), count: 0 };
+		if (plain.length === 0 && byResource.length === 0) plain.push(`Nessun posto per ${durationWords(minutes)} in quei giorni${windowWord === "" ? "" : ` (${windowWord.trim()})`}.`);
+		return { text: [...plain, ...(byResource.length === 0 ? [] : ["Dove c'è posto, per risorsa, è nel riquadro.", fencedAppointments(byResource.join("\n"))]), ...notes].join("\n"), count: 0 };
 	}
 
 	function agenda(args: Record<string, unknown>, b: AppointmentBook, at: Now): Answer {
@@ -363,11 +483,9 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			const open = openOn(b.settings, day);
 			count += list.length;
 			const closed = open.known && open.spans.length === 0 ? ` (${closedWords(open, day)})` : "";
-			out.push(`• ${capital(dayWords(day, at.day))}: ${list.length === 0 ? "nessun appuntamento" : n1(list.length, "un appuntamento", "# appuntamenti")}${list.length > 0 ? `, dalle ${(list[0] as Appointment).start} alle ${endOf(list.at(-1) as Appointment)}` : ""}${cancelled > 0 ? `; ${n1(cancelled, "uno disdetto o non presentato", "# disdetti o non presentati")}` : ""}${closed}`);
-			if (days.length === 1 && open.known && open.spans.length > 0) {
-				const gaps = gapsOf(b.settings, b.appointments, day).filter((g) => day > at.day || g.to > at.minutes);
-				if (gaps.length > 0) out.push(`  Libero: ${gaps.map(spanWords).join(", ")}.`);
-			}
+			const last = list.at(-1);
+			out.push(`• ${capital(dayWords(day, at.day))}: ${list.length === 0 ? "nessun appuntamento" : n1(list.length, "un appuntamento", "# appuntamenti")}${last !== undefined ? `, dalle ${clockOf(minutesOf((list[0] as Appointment).start))} alle ${clockOf(minutesOf(last.start) + last.minutes)}` : ""}${cancelled > 0 ? `; ${n1(cancelled, "uno disdetto o non presentato", "# disdetti o non presentati")}` : ""}${closed}`);
+			if (days.length === 1 && open.known && open.spans.length > 0) out.push(...gapsWords(b.settings, b.appointments, day, day > at.day ? 0 : at.minutes).map((l, i) => (i === 0 ? `  ${l}` : l)));
 			if (list.length > 0) rows.push(...(days.length > 1 ? [capital(dayWords(day, at.day))] : []), ...list.map((a) => appointmentRow(a)));
 		}
 		return { text: [...out, ...(rows.length === 0 ? [] : ["Chi e per cosa è nel riquadro.", fencedAppointments(rows.join("\n"))])].join("\n"), count };
@@ -384,10 +502,10 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		const out: string[] = [];
 		if (said.includes(`today:${at.day}`)) {
 			const first = today[0] as Appointment;
-			const gaps = gapsOf(b.settings, b.appointments, at.day);
-			out.push(`Appuntamenti di oggi: ${today.length}, il primo alle ${first.start} (chi e per cosa nel riquadro).${b.settings?.week !== undefined && gaps.length > 0 ? ` Libero: ${gaps.map(spanWords).join(", ")}.` : ""}`, fencedAppointments(appointmentRow(first)));
+			const gaps = b.settings?.week === undefined ? [] : gapsWords(b.settings, b.appointments, at.day, 0);
+			out.push(`Appuntamenti di oggi: ${today.length}, il primo alle ${clockOf(minutesOf(first.start))} (chi e per cosa nel riquadro).`, fencedAppointments(appointmentRow(first)), ...gaps);
 		}
-		if (said.includes(`open:${yesterday}`)) out.push(`Di ieri ${n1(open.length, "un appuntamento è", "# appuntamenti sono")} ancora «fissato»: segna com'è andata (fatto, disdetto o non presentato).`);
+		if (said.includes(`open:${yesterday}`)) out.push(open.length === 1 ? "Ieri un appuntamento è ancora da segnare: dimmi «fatto», oppure se non è venuto." : `Ieri ${open.length} appuntamenti sono ancora da segnare: dimmi «tutti fatti», oppure chi non è venuto.`);
 		return out.join("\n");
 	}
 
@@ -417,37 +535,50 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 	}
 
 	function reminders(args: Record<string, unknown>, b: AppointmentBook, at: Now): Answer {
-		const day = daySaid(args.date ?? "domani", at.day);
+		const confirm = args.confirmation === true;
+		const day = daySaid(args.date ?? (confirm ? "oggi" : "domani"), at.day);
 		if (isAnswer(day)) return { text: day.answer, count: 0 };
-		if (day < at.day) return { text: "Errore: i promemoria si fanno per oggi o per i prossimi giorni.", count: 0 };
-		const list = b.appointments.filter((a) => a.day === day && a.status === "booked" && !started(a, at)).sort(byTime);
-		if (list.length === 0) return { text: `Per ${dayWords(day, at.day)} non ci sono appuntamenti fissati: nessun promemoria da preparare.`, count: 0 };
+		if (day < at.day) return { text: "Errore: i messaggi si fanno per oggi o per i prossimi giorni.", count: 0 };
+		let list = b.appointments.filter((a) => a.status === "booked" && !started(a, at) && (confirm && args.date === undefined ? a.day >= day : a.day === day)).sort(byTime);
+		if (args.client !== undefined) {
+			const c = clientSaid(args.client, cards(), b.appointments);
+			if (isAnswer(c)) return { text: c.answer, count: 0 };
+			list = list.filter((a) => clientKey(a.client) === clientKey(c.client));
+			// A confirmation: the client's next appointment, whatever its day.
+			if (confirm && args.date === undefined) list = list.filter((a) => a.day === list[0]?.day);
+		}
+		if (list.length === 0) return { text: `${args.client === undefined ? `Per ${dayWords(day, at.day)} non ci sono appuntamenti fissati` : "Non trovo un appuntamento fissato così per questo cliente"}: nessun messaggio da preparare.`, count: 0 };
 		const groups = new Map<string, Appointment[]>();
-		for (const a of list) groups.set(clientKey(a.client), [...(groups.get(clientKey(a.client)) ?? []), a]);
+		for (const a of list) groups.set(`${a.day}|${clientKey(a.client)}`, [...(groups.get(`${a.day}|${clientKey(a.client)}`) ?? []), a]);
 		const all = cards();
-		let withMail = 0;
-		let withPhone = 0;
+		let links = 0;
+		let landlines = 0;
+		let mails = 0;
+		let nothing = 0;
 		const blocks: string[] = [];
 		for (const g of groups.values()) {
 			const first = g[0] as Appointment;
 			const card = first.client.card === undefined ? undefined : all.find((x) => x.id === first.client.card);
 			const email = card?.contacts.find((x) => x.email !== undefined)?.email;
-			const phone = card?.contacts.find((x) => x.phone !== undefined)?.phone;
-			if (email !== undefined) withMail += 1;
-			if (phone !== undefined) withPhone += 1;
-			const contact = [email === undefined ? undefined : `email ${email}`, phone === undefined ? undefined : `telefono ${phone}`].filter((x) => x !== undefined).join(", ");
-			blocks.push([`Per: ${first.client.name}${contact === "" ? " (nessun contatto nella scheda)" : ` (${contact})`}`, reminderText(first.client.name, g, at.day, b.settings?.business)].join("\n"));
+			const phone = card?.contacts.find((x) => x.phone !== undefined && mobileOf(x.phone) !== undefined)?.phone ?? card?.contacts.find((x) => x.phone !== undefined)?.phone;
+			const mobile = phone === undefined ? undefined : mobileOf(phone);
+			const message = reminderText(g, at.day, b.settings?.business, confirm);
+			if (mobile !== undefined) links += 1;
+			else if (phone !== undefined) landlines += 1;
+			if (email !== undefined) mails += 1;
+			if (phone === undefined && email === undefined) nothing += 1;
+			blocks.push([`Per: ${first.client.name}${phone === undefined ? "" : `, telefono ${phone}`}${email === undefined ? "" : `, email ${email}`}`, message, ...(mobile === undefined ? [] : [`WhatsApp: ${waLink(mobile, message)}`])].join("\n"));
 		}
 		const n = groups.size;
-		return {
-			text: [
-				`Ho preparato ${n1(n, "il messaggio", "i # messaggi")} di promemoria per gli appuntamenti di ${dayWords(day, at.day)}, uno per cliente, come nel riquadro. Non li mando da sola.`,
-				fencedAppointments(blocks.join("\n\n")),
-				`${withMail === 0 ? "Nessuno ha l'email nella scheda." : `${n1(withMail, "Un cliente ha", "# clienti hanno")} l'email nella scheda: posso prepararne la bozza con google_mail_send, o mandarla dopo il sì di chi ti scrive.`} ${withPhone === 0 ? "" : `${n1(withPhone, "Uno ha", "# hanno")} il telefono: chi ti scrive può copiare il testo su WhatsApp o in un SMS.`}`.trim(),
-				...(b.settings?.business === undefined ? ["Se mi dici il nome dell'attività, lo metto nei messaggi."] : []),
-			].join("\n"),
-			count: n,
-		};
+		const kind = confirm ? n1(n, "il messaggio di conferma", "# messaggi di conferma") : n1(n, "un promemoria", "# promemoria");
+		const when = confirm ? "" : ` per ${day === addDays(at.day, 1) ? "domani" : dayWords(day, at.day)}`;
+		const lines = [`Ho preparato ${kind}${when}, nel riquadro. Non mando niente da sola.`, fencedAppointments(blocks.join("\n\n"))];
+		if (links > 0) lines.push(`Per ${n1(links, "un cliente con il cellulare", "# clienti con il cellulare")} c'è il link: lo tocchi e WhatsApp apre il messaggio già scritto, poi lo mandi tu.`);
+		if (landlines > 0) lines.push(`${n1(landlines, "Un numero nella scheda non sembra un cellulare", "# numeri nelle schede non sembrano cellulari")}: niente link, si chiama o si manda il testo a mano.`);
+		if (mails > 0) lines.push(`${n1(mails, "Un cliente ha", "# clienti hanno")} l'email nella scheda: posso preparare la mail con google_mail_send, che parte solo dopo la tua approvazione.`);
+		if (nothing > 0) lines.push(`${n1(nothing, "Un cliente non ha", "# clienti non hanno")} né il numero né l'email nella scheda: vuoi che ${nothing === 1 ? "glielo aggiunga" : "li aggiunga"}? Intanto il testo si copia e si manda da WhatsApp, SMS o mail.`);
+		if (b.settings?.business === undefined) lines.push("Se mi dici il nome dell'attività, lo metto nei messaggi.");
+		return { text: lines.join("\n"), count: n };
 	}
 
 	async function settings(args: Record<string, unknown>, ctx: ToolContext, b: AppointmentBook, at: Now): Promise<Answer> {
@@ -458,7 +589,13 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 		const refused = requirePersonFor(ctx, "cambio gli orari e le impostazioni degli appuntamenti");
 		if (refused !== undefined) return { text: refused, count: 0 };
 		await ctx.step("settings", async () => {
-			store.update(ctx.callId, (state) => ({ ...state, settings: next as AppointmentSettings }));
+			store.update(ctx.callId, (state) => {
+				// Under the lock: what was said, over the settings as saved now.
+				const again = settingsSaid(args, state.settings, voci(), at.day, by);
+				if (again === undefined) return state;
+				if (isAnswer(again)) throw new AppointmentError(again.answer.replace(/^Errore: /, "").replace(/\.$/, ""));
+				return { ...state, settings: again };
+			});
 			return true;
 		});
 		const saved = store.read().settings;
@@ -468,13 +605,15 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 			text: [
 				"Fatto, ho salvato.",
 				settingsWords(saved, at.day),
-				...(clash.length === 0 ? [] : [`Attenzione: ${n1(clash.length, "un appuntamento fissato cade", "# appuntamenti fissati cadono")} quando ora sei chiuso (nel riquadro): ${clash.length === 1 ? "va spostato o disdetto" : "vanno spostati o disdetti"}, chiedilo a chi ti scrive.`, fencedAppointments(clash.map((a) => appointmentRow(a, true)).join("\n"))]),
+				...(clash.length === 0 ? [] : [`Attenzione: ${n1(clash.length, "un appuntamento fissato cade", "# appuntamenti fissati cadono")} quando ora sei chiuso (nel riquadro): ${clash.length === 1 ? "va spostato o disdetto" : "vanno spostati o disdetti"}. Vuoi che prepari un messaggio per avvisarli e proporre un'altra data?`, fencedAppointments(clash.map((a) => appointmentRow(a, true)).join("\n"))]),
 			].join("\n"),
 			count: 1,
 		};
 	}
 
 	async function exportCsv(ctx: ToolContext, b: AppointmentBook, day: string): Promise<Answer> {
+		const refused = requirePersonFor(ctx, "faccio il file degli appuntamenti");
+		if (refused !== undefined) return { text: refused, count: 0 };
 		const all = b.appointments;
 		if (all.length === 0) return { text: "Non c'è ancora nessun appuntamento da mettere nel file.", count: 0 };
 		const path = await ctx.step("path", async () => freePath(workspace, `appuntamenti/appuntamenti-al-${day}`, ".csv"));
@@ -527,28 +666,31 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 				type: "object",
 				properties: {
 					op: { type: "string", enum: [...APPOINTMENT_OPS] },
-					client: text(APPOINTMENT_LIMITS.name, "book, history: the client as said («la signora Rossi»), or card id CL-0001; move, cancel, no_show, done: whose appointment"),
+					client: text(APPOINTMENT_LIMITS.name, "book, history: the client as said, with the title («la signora Rossi»), or card id CL-0001; move, cancel, no_show, done: whose appointment; reminders: only this client's"),
 					services: { type: "array", maxItems: 50, items: { anyOf: [text(APPOINTMENT_LIMITS.service, "book, free_slots: a service as said («taglio»)"), durationSchema] }, description: "book, free_slots: the services as said, each a string; settings: how long each service lasts, each {name, minutes, needs}" },
-					date: text(40, "book: the day («giovedì», «domani», 22/10); move: the new day; agenda, free_slots: the first day (default today); reminders: default tomorrow; done with all: the day"),
-					time: text(10, "book: the time («15», «15:30»); move: the new time (default the same)"),
+					date: text(40, "book: the day («giovedì», «domani», 22/10); move: the new day; agenda, free_slots: the first day (default today); reminders: default tomorrow; done with all: the day («ieri»)"),
+					time: text(20, "book: the time as said («15», «15:30», «alle 3 e mezza», «mezzogiorno»); move: the new time (default the same)"),
 					minutes: { type: ["integer", "string"], description: "book: the duration when said (default the services'); free_slots: how long («un'ora», 45)" },
 					resource: text(APPOINTMENT_LIMITS.resource, "book, move, free_slots: the resource as said («Marco», «poltrona 2»)"),
 					notes: text(APPOINTMENT_LIMITS.notes, "book: notes as said"),
+					force: { type: "boolean", description: "book, move: true only when the person said «fissalo lo stesso» after the clash or the closed time was shown" },
 					appointment: text(10, "move, cancel, no_show, done: the reference AP-0001 (never said to the person)"),
 					from_date: text(40, "move, cancel, no_show, done: the day of the appointment, when the client has more than one"),
 					to_date: text(40, "agenda, free_slots: the last day (at most 14 days)"),
 					week: { type: "boolean", description: "agenda, free_slots: seven days from date" },
 					window: text(20, "free_slots: mattina, pomeriggio, sera"),
 					all: { type: "boolean", description: "done: every appointment of the day already begun" },
-					confirm: { type: "boolean", description: "book: true only after the person's yes to the proposal" },
-					check: text(20, "book with confirm: the check given with the proposal"),
+					confirm: { type: "boolean", description: "book: true only after the person's yes to the proposal; move, cancel, no_show, done: after the yes to «intendi questo appuntamento?»" },
+					check: text(20, "with confirm: the check given with the proposal"),
+					confirmation: { type: "boolean", description: "reminders: the confirmation message of a new appointment (with client) instead of the reminder" },
 					compact: { type: "boolean", description: "agenda: the brief's line only" },
-					business: text(APPOINTMENT_LIMITS.business, "settings: the business's name, for the reminders"),
+					business: text(APPOINTMENT_LIMITS.business, "settings: the business's name, for the messages"),
 					hours: {
-						type: "array",
-						maxItems: 7,
-						items: { type: "object", properties: { days: text(40, "«lun-ven», «sabato»"), open: text(60, "«9-13, 14:30-19» or «chiuso»") }, required: ["days", "open"], additionalProperties: false },
-						description: "settings: the opening hours by weekday, with breaks",
+						anyOf: [
+							text(200, "«mar-sab 9-13 e 14-19; chiuso domenica e lunedì»"),
+							{ type: "array", maxItems: 7, items: { type: "object", properties: { days: text(40, "«lun-ven», «sabato»"), open: text(60, "«9-13, 14:30-19» or «chiuso»") }, required: ["days", "open"], additionalProperties: false } },
+						],
+						description: "settings: the opening hours by weekday, with the pauses and the closed days",
 					},
 					closure_from: text(40, "settings: a closure's first day (ferie)"),
 					closure_to: text(40, "settings: a closure's last day"),
@@ -571,7 +713,7 @@ export function createAppointmentTools(options: AppointmentToolsOptions): AnnieT
 				const at = localNow(timeZone, now());
 				try {
 					const b = store.read();
-					if (b.broken) return `Errore: ${APPOINTMENTS_BROKEN}.`;
+					if (b.broken) return op === "agenda" && args.compact === true ? BRIEF_BROKEN : `Errore: ${APPOINTMENTS_BROKEN}.`;
 					if (isAgentTurn(ctx)) return agentCounts(b, at);
 					if (op === "agenda" && args.compact === true) return await brief(ctx, b, at);
 					const answer = await run(op, args, ctx, b, at);

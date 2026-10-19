@@ -48,8 +48,8 @@ export const STATUS_WORDS: Readonly<Record<AppointmentStatus, string>> = { booke
 
 export class AppointmentError extends Error {}
 
-/** The client: a card of the clients (card), or a name as said. */
-export type AppointmentClient = { readonly name: string; readonly card?: string };
+/** The client: a card of the clients (card), or a name as said; `greeting`, how the person named them with a title («signora Rossi»), for the messages. */
+export type AppointmentClient = { readonly name: string; readonly card?: string; readonly greeting?: string };
 
 /** A service of the appointment: its name, the voce of the listino that prices it, how long. */
 export type BookedService = { readonly name: string; readonly item?: string; readonly minutes: number };
@@ -72,10 +72,10 @@ export type Appointment = Marker & {
 	readonly notes?: string;
 	/** The call that booked it: a call run again finds it. */
 	readonly callId: string;
-	/** Moved: when, by whom, and from where. */
-	readonly moved?: Marker & { readonly from: string };
-	/** How it went (fatto, disdetto, non presentato): when and by whom. */
-	readonly closed?: Marker;
+	/** Moved: when, by whom, from where, and the call that moved it (a call run again finds it). */
+	readonly moved?: Marker & { readonly from: string; readonly call?: string };
+	/** How it went (fatto, disdetto, non presentato): when, by whom, and the call. */
+	readonly closed?: Marker & { readonly call?: string };
 	readonly billed?: AppointmentBilled;
 };
 
@@ -113,6 +113,9 @@ export const minutesOf = (t: string): number => Number(t.slice(0, 2)) * 60 + Num
 /** Minutes from midnight as «09:30». */
 export const timeOf = (m: number): string => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 /** The end, wall clock: «10:15». */
+/** A time as said to the person: «15», «9:30». */
+export const clockOf = (m: number): string => (m % 60 === 0 ? String(m / 60) : `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`);
+
 export const endOf = (a: Pick<Appointment, "start" | "minutes">): string => timeOf(minutesOf(a.start) + a.minutes);
 
 /** Booked or done: it takes its time. Disdetto and non presentato free it. */
@@ -143,15 +146,15 @@ export function validAppointment(v: unknown): v is Appointment {
 	if (!Object.keys(a).every((k) => keys.includes(k))) return false;
 	if (typeof a.id !== "string" || !APPOINTMENT_ID.test(a.id) || !STATUSES.includes(a.status)) return false;
 	const c = a.client as AppointmentClient | undefined;
-	if (typeof c !== "object" || c === null || !Object.keys(c).every((k) => k === "name" || k === "card") || !plain(c.name, APPOINTMENT_LIMITS.name) || (c.card !== undefined && (typeof c.card !== "string" || !/^CL-\d{4,6}$/.test(c.card)))) return false;
+	if (typeof c !== "object" || c === null || !Object.keys(c).every((k) => k === "name" || k === "card" || k === "greeting") || !plain(c.name, APPOINTMENT_LIMITS.name) || (c.greeting !== undefined && !plain(c.greeting, APPOINTMENT_LIMITS.name)) || (c.card !== undefined && (typeof c.card !== "string" || !/^CL-\d{4,6}$/.test(c.card)))) return false;
 	if (!Array.isArray(a.services) || a.services.length === 0 || a.services.length > APPOINTMENT_LIMITS.services || !a.services.every(validService)) return false;
 	if (!isDay(a.day) || typeof a.start !== "string" || !TIME.test(a.start) || !minutes(a.minutes)) return false;
 	// It never crosses midnight; its services make up its time.
 	if (minutesOf(a.start) + a.minutes > 24 * 60 || a.services.reduce((n, s) => n + s.minutes, 0) !== a.minutes) return false;
 	if (a.resource !== undefined && !plain(a.resource, APPOINTMENT_LIMITS.resource)) return false;
 	if (!optText(a.notes, APPOINTMENT_LIMITS.notes) || !isText(a.callId, 200)) return false;
-	if (a.moved !== undefined && (!isMarker(a.moved) || typeof a.moved.from !== "string" || !/^\d{4}-\d{2}-\d{2} ([01]\d|2[0-3]):[0-5]\d$/.test(a.moved.from))) return false;
-	if (a.closed !== undefined && !isMarker(a.closed)) return false;
+	if (a.moved !== undefined && (!isMarker(a.moved) || typeof a.moved.from !== "string" || !/^\d{4}-\d{2}-\d{2} ([01]\d|2[0-3]):[0-5]\d$/.test(a.moved.from) || !optText(a.moved.call, 200))) return false;
+	if (a.closed !== undefined && (!isMarker(a.closed) || !optText(a.closed.call, 200))) return false;
 	if ((a.status === "booked") !== (a.closed === undefined)) return false;
 	if (a.billed !== undefined && (a.status !== "done" || !validBilled(a.billed))) return false;
 	return true;

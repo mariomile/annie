@@ -99,3 +99,23 @@ describe("the summer-time changes", () => {
 		expect(fits({ settings: sunday, appointments: [], day: "2026-03-29", start: 9 * 60, minutes: 60, now: localNow("Europe/Rome", new Date("2026-03-29T06:30:00Z")) })).toEqual({ ok: true });
 	});
 });
+
+describe("week 74 review: days indexed, gaps per resource, the room left", () => {
+	it("L5: thousands of appointments on other days change nothing on this one; nearestFree reads them by day", () => {
+		const others = Array.from({ length: 2000 }, (_, n) => appt(`AP-${String(n + 10).padStart(4, "0")}`, `2026-11-${String((n % 28) + 1).padStart(2, "0")}`, "10:00", 30));
+		const booked = [appt("AP-0001", "2026-10-22", "15:00", 60)];
+		const alone = freeSlots({ settings: SETTINGS, appointments: booked, day: "2026-10-22", minutes: 60 });
+		expect(freeSlots({ settings: SETTINGS, appointments: [...others, ...booked], day: "2026-10-22", minutes: 60 })).toEqual(alone);
+		expect(nearestFree({ settings: SETTINGS, appointments: [...others, ...booked], day: "2026-10-22", start: 15 * 60, minutes: 60 })[0]).toEqual(nearestFree({ settings: SETTINGS, appointments: booked, day: "2026-10-22", start: 15 * 60, minutes: 60 })[0]);
+	});
+
+	it("UX5: gaps per lane, shorter than the shortest service dropped; UX1: the room until the break", () => {
+		const settings: AppointmentSettings = { ...SETTINGS, resources: ["Marco", "Giulia"], services: [{ name: "Taglio", minutes: 30 }] };
+		const booked = [appt("AP-0001", "2026-10-22", "09:15", 30, { resource: "Giulia" }), appt("AP-0002", "2026-10-22", "10:00", 60, { resource: "Marco" })];
+		expect(gapsOf(settings, booked, "2026-10-22", "Giulia")[0]).toEqual({ from: 585, to: 780 });
+		expect(gapsOf(settings, booked, "2026-10-22", "Marco").slice(0, 2)).toEqual([{ from: 540, to: 600 }, { from: 660, to: 780 }]);
+		const fit = fits({ settings: SETTINGS, appointments: [], day: "2026-10-22", start: 12 * 60 + 30, minutes: 60 });
+		expect(fit).toMatchObject({ ok: false, why: "outside", room: { until: 780, pause: true } });
+		expect(fits({ settings: SETTINGS, appointments: [], day: "2026-10-22", start: 12 * 60 + 30, minutes: 60, force: true })).toEqual({ ok: true });
+	});
+});

@@ -64,6 +64,22 @@ function openingsOf(raw: string): Opening[] | undefined {
 	return out.length === 0 || out.length > 4 ? undefined : out;
 }
 
+/** «mar-sab 9-13 e 14-19; chiuso domenica e lunedì» in one line: the same entries as the list. */
+function hoursLine(raw: string): { days: string; open: string }[] | undefined {
+	const out: { days: string; open: string }[] = [];
+	for (const part of raw.split(/\s*;\s*|\s*,\s*(?=chius)/i).map((p) => p.trim()).filter((p) => p !== "")) {
+		const shut = /^chius[oi]\s+(?:il |la |di )?(.+)$/i.exec(part);
+		if (shut !== null) {
+			out.push({ days: shut[1] as string, open: "chiuso" });
+			continue;
+		}
+		const m = /^([^\d]+?)\s+(?:dalle\s*)?(\d.*)$/i.exec(part);
+		if (m === null) return undefined;
+		out.push({ days: m[1] as string, open: m[2] as string });
+	}
+	return out.length === 0 || out.length > 7 ? undefined : out;
+}
+
 /** The settings with what was said put in: the same object when nothing was said. */
 export function settingsSaid(args: Record<string, unknown>, current: AppointmentSettings | undefined, voci: readonly PriceItem[], today: string, by: Marker): AppointmentSettings | undefined | Answer {
 	let s: Omit<AppointmentSettings, "by" | "at"> = current === undefined ? {} : (({ by: _b, at: _a, ...rest }) => rest)(current);
@@ -75,9 +91,10 @@ export function settingsSaid(args: Record<string, unknown>, current: Appointment
 		said = true;
 	}
 	if (args.hours !== undefined) {
-		if (!Array.isArray(args.hours) || args.hours.length === 0 || args.hours.length > 7) return { answer: "Errore: gli orari sono un elenco, ognuno con i giorni («mar-ven») e l'orario («9-13, 14:30-19» o «chiuso»)." };
+		const hours = typeof args.hours === "string" ? hoursLine(args.hours) : args.hours;
+		if (!Array.isArray(hours) || hours.length === 0 || hours.length > 7) return { answer: "Errore: gli orari sono un elenco, ognuno con i giorni («mar-ven») e l'orario («9-13, 14:30-19» o «chiuso»)." };
 		const week: Record<string, Opening[]> = { ...(s.week ?? {}) } as Record<string, Opening[]>;
-		for (const h of args.hours) {
+		for (const h of hours) {
 			const o = typeof h === "object" && h !== null ? (h as Record<string, unknown>) : {};
 			const days = typeof o.days === "string" ? daysOf(o.days) : undefined;
 			const open = typeof o.open === "string" ? openingsOf(o.open) : undefined;

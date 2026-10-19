@@ -7,11 +7,12 @@
  * the answer to give, the words said inside the fence.
  */
 import type { Appointment, AppointmentClient, AppointmentSettings, BookedService } from "../appointments.ts";
-import { APPOINTMENT_ID, APPOINTMENT_LIMITS, DEFAULT_MINUTES, minutesOf } from "../appointments.ts";
+import { APPOINTMENT_ID, APPOINTMENT_LIMITS, clockOf, DEFAULT_MINUTES, minutesOf, timeOf } from "../appointments.ts";
+import { openOn } from "../appointment-slots.ts";
 import type { ClientCard } from "../clients.ts";
 import { type Candidate, findNamed } from "../client-find.ts";
 import { DateError, readDate } from "../dates.ts";
-import { addDays, weekdayOf } from "../italian-calendar.ts";
+import { addDays, daysBetween, weekdayOf } from "../italian-calendar.ts";
 import { spellingKey } from "../name-keys.ts";
 import { findItems, type PriceItem } from "../price-list.ts";
 import { cleanText, isProblem } from "../text-input.ts";
@@ -23,8 +24,24 @@ export const isAnswer = (v: unknown): v is Answer => typeof v === "object" && v 
 const WEEKDAYS: Readonly<Record<string, number>> = { domenica: 0, lunedi: 1, martedi: 2, mercoledi: 3, giovedi: 4, venerdi: 5, sabato: 6 };
 const folded = (t: string) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim().replace(/\s+/g, " ");
 
-/** The day said: a weekday (this one, today included; «prossimo»: after today), oggi, domani, a date. */
+/** Whether the day said is a bare weekday («giovedì», not «giovedì prossimo»): today's, when today, may mean next week's. */
+export function isWeekdayWord(raw: unknown): boolean {
+	if (typeof raw !== "string") return false;
+	const t = folded(raw).replace(/^(?:il |per |di |a )/, "");
+	return WEEKDAYS[t] !== undefined;
+}
+
+/** About a year: a day said further ahead is asked again. */
+const AHEAD_DAYS = 366;
+
+/** The day said: a weekday (this one, today included; «prossimo»: after today), oggi, domani, a date; at most about a year ahead. */
 export function daySaid(raw: unknown, today: string): string | Answer {
+	const d = dayRead(raw, today);
+	if (typeof d === "string" && daysBetween(today, d) > AHEAD_DAYS) return { answer: "Errore: quel giorno è più di un anno avanti: dimmi una data entro un anno." };
+	return d;
+}
+
+function dayRead(raw: unknown, today: string): string | Answer {
 	if (typeof raw !== "string" || raw.trim() === "" || raw.length > 40) return { answer: "Errore: il giorno è come «giovedì», «domani» o 22/10/2026." };
 	const t = folded(raw).replace(/^(?:il |per |di |a )/, "");
 	const m = /^([a-z]+)(?: (prossimo|prossima))?$/.exec(t);
@@ -43,19 +60,49 @@ export function daySaid(raw: unknown, today: string): string | Answer {
 	}
 }
 
-/** The time said: «15», «alle 15», «15:30», «15.30»; «alle 3» read as 15:00 and said. */
-export function timeSaid(raw: unknown): { readonly minutes: number; readonly note?: string } | Answer {
-	const t = typeof raw === "string" ? folded(raw).replace(/^(?:alle|all'|ore|dalle|le) ?/, "") : typeof raw === "number" ? String(raw) : "";
-	const m = /^(\d{1,2})(?:[:.](\d{2}))?$/.exec(t);
-	if (m === null || Number(m[1]) > 23 || Number(m[2] ?? 0) > 59) return { answer: "Errore: l'ora è come 15 o 15:30." };
-	let h = Number(m[1]);
-	const min = Number(m[2] ?? 0);
-	let note: string | undefined;
-	if (h >= 1 && h <= 7) {
-		h += 12;
-		note = `Le ${m[1]}${m[2] === undefined ? "" : `:${m[2]}`} le ho intese come le ${h}${m[2] === undefined ? "" : `:${m[2]}`} del pomeriggio.`;
-	}
-	return { minutes: h * 60 + min, ...(note === undefined ? {} : { note }) };
+/**
+ * The time said: «15», «15:30», «15.30», «15 e 30», «mezzogiorno». A bare hour from 1 to 11 with
+ * no leading zero («alle 3», «3 e mezza», «3 e un quarto») may be morning or afternoon: `pm` is the
+ * afternoon reading, chosen by the opening hours (timeOnDay). «07:30» is always 7:30.
+ */
+export type TimeSaid = { readonly minutes: number; readonly pm?: number; readonly said: string };
+
+const QUARTERS: Readonly<Record<string, number>> = { mezza: 30, mezzo: 30, "un quarto": 15, "tre quarti": 45 };
+
+export function timeSaid(raw: unknown): TimeSaid | Answer {
+	const t = typeof raw === "string" ? folded(raw).replace(/^(?:per le |alle |all'|ore |dalle |le )/, "") : typeof raw === "number" ? String(raw) : "";
+	if (/^mezzogiorno$/.test(t)) return { minutes: 12 * 60, said: "mezzogiorno" };
+	const m = /^(\d{1,2})(?:[:.](\d{2})| e (mezza|mezzo|un quarto|tre quarti|\d{1,2}))?$/.exec(t);
+	if (m === null) return { answer: "Errore: l'ora è come 15, 15:30 o «alle 3 e mezza»." };
+	const hText = m[1] as string;
+	const h = Number(hText);
+	const spoken = m[3];
+	const min = m[2] !== undefined ? Number(m[2]) : spoken === undefined ? 0 : (QUARTERS[spoken] ?? Number(spoken));
+	if (h > 23 || min > 59) return { answer: "Errore: l'ora è come 15, 15:30 o «alle 3 e mezza»." };
+	const said = `${h}${spoken === undefined ? (m[2] === undefined ? "" : `:${m[2]}`) : ` e ${spoken}`}`;
+	// Only a bare or spoken hour, without a leading zero, may be the afternoon's.
+	const open = h >= 1 && h <= 11 && !hText.startsWith("0") && m[2] === undefined;
+	return { minutes: h * 60 + min, ...(open ? { pm: (h + 12) * 60 + min } : {}), said };
+}
+
+/**
+ * The time on the day: morning or afternoon by the opening hours (the afternoon only when the
+ * morning is closed and the afternoon open: said); both or neither, asked. Hours not known, or the
+ * day closed: 1 to 7 is the afternoon (said), 8 to 11 the morning.
+ */
+export function timeOnDay(t: TimeSaid, settings: AppointmentSettings | undefined, day: string): { readonly minutes: number; readonly note?: string } | Answer {
+	if (t.pm === undefined) return { minutes: t.minutes };
+	// «l'una», «le 3 e mezza».
+	const the = /^1(?!\d)/.test(t.said) ? `l'una${t.said.slice(1)}` : `le ${t.said}`;
+	const pmNote = `Ho messo alle ${clockOf(t.pm)} (${the} del pomeriggio).`;
+	const open = openOn(settings, day);
+	if (!open.known || open.spans.length === 0) return t.minutes < 8 * 60 ? { minutes: t.pm, note: pmNote } : { minutes: t.minutes };
+	const inside = (x: number) => open.spans.some((s) => s.from <= x && x < s.to);
+	const am = inside(t.minutes);
+	const pm = inside(t.pm);
+	if (pm && !am) return { minutes: t.pm, note: pmNote };
+	if (am && !pm) return { minutes: t.minutes };
+	return { answer: `${the.charAt(0).toUpperCase()}${the.slice(1)} del mattino o del pomeriggio? Chiedilo a chi ti scrive, poi ripeti con l'ora come ${timeOf(t.minutes)} o ${timeOf(t.pm)}.` };
 }
 
 /** «mattina», «pomeriggio», «sera»: the window of the day. */
@@ -89,7 +136,7 @@ export function minutesSaid(raw: unknown): number | undefined | Answer {
 /** The client found: `close` a card only near what was said (a check first), `fresh` known nowhere. */
 export type ClientFound = { readonly client: AppointmentClient; readonly close?: true; readonly fresh?: true };
 
-const HONORIFIC = /^(?:(?:la|il|lo) )?(?:signora|signorina|signor|signore|sig\.ra|sig\.na|sig\.?|dott\.ssa|dottoressa|dott\.?|dottor|avv\.?|ing\.?)\s+/i;
+const HONORIFIC = /^(?:(?:la|il|lo) )?(signora|signorina|signor|signore|sig\.ra|sig\.na|sig\.?|dott\.ssa|dottoressa|dott\.?|dottor|avv\.?|ing\.?)\s+/i;
 
 /** The client said: a card (by name, alias or id), a client of an earlier appointment, or new as said. */
 export function clientSaid(raw: unknown, cards: readonly ClientCard[], appointments: readonly Appointment[]): ClientFound | Answer {
@@ -97,6 +144,10 @@ export function clientSaid(raw: unknown, cards: readonly ClientCard[], appointme
 	if (isProblem(said)) return { answer: `Errore: ${said.problem}.` };
 	if (said === undefined) return { answer: "Errore: dimmi per chi è l'appuntamento." };
 	const bare = said.replace(HONORIFIC, "").trim() || said;
+	// «la signora Rossi»: the greeting keeps the title, for the messages.
+	const title = HONORIFIC.exec(said)?.[1];
+	const greeting = title === undefined || bare === said ? undefined : `${title.charAt(0).toLowerCase()}${title.slice(1)} ${bare}`.slice(0, APPOINTMENT_LIMITS.name);
+	const greeted = (c: AppointmentClient): AppointmentClient => (greeting === undefined ? c : { ...c, greeting });
 	const candidates: Candidate<AppointmentClient>[] = cards.map((c) => ({ item: { name: c.name, card: c.id }, names: [c.name, ...c.aliases], ids: [c.id] }));
 	const known = new Set(cards.flatMap((c) => [c.name, ...c.aliases].map(spellingKey)));
 	for (const a of [...appointments].reverse()) {
@@ -106,12 +157,12 @@ export function clientSaid(raw: unknown, cards: readonly ClientCard[], appointme
 		candidates.push({ item: { name: a.client.name }, names: [a.client.name] });
 	}
 	const r = findNamed(candidates, bare, APPOINTMENT_LIMITS.name);
-	if (r.kind === "exact") return r.form === true ? { client: r.item, close: true } : { client: r.item };
+	if (r.kind === "exact") return r.form === true ? { client: greeted(r.item), close: true } : { client: greeted(r.item) };
 	if (r.kind === "close") {
-		if (r.candidates.length === 1) return { client: r.candidates[0] as AppointmentClient, close: true };
+		if (r.candidates.length === 1) return { client: greeted(r.candidates[0] as AppointmentClient), close: true };
 		return { answer: ["Intendi uno di questi? Non so dire quale:", fencedAppointments(r.candidates.slice(0, 10).map((c) => `• ${c.name}`).join("\n")), "Chiedi a chi ti scrive quale, e ripeti con il nome scritto come qui."].join("\n") };
 	}
-	return { client: { name: bare }, fresh: true };
+	return { client: greeted({ name: bare }), fresh: true };
 }
 
 /** The services found: `guess` a voce only near what was said, `assumed` the names whose duration is not known (30 minutes taken). */
@@ -170,10 +221,14 @@ export function resourceSaid(raw: unknown, settings: AppointmentSettings | undef
  * keeps those that may be acted on; with several, the day said, else the next one (or, for the
  * past, the latest). The answer otherwise.
  */
-export function appointmentNamed(args: Record<string, unknown>, appointments: readonly Appointment[], cards: readonly ClientCard[], today: string, pick: (a: Appointment) => boolean, past = false): Appointment | Answer {
+export type Named = { readonly appointment: Appointment; readonly close?: true };
+
+export function appointmentNamed(args: Record<string, unknown>, appointments: readonly Appointment[], cards: readonly ClientCard[], today: string, pick: (a: Appointment) => boolean, past = false): Named | Answer {
 	if (typeof args.appointment === "string" && APPOINTMENT_ID.test(args.appointment.trim().toUpperCase())) {
 		const a = appointments.find((x) => x.id === (args.appointment as string).trim().toUpperCase());
-		return a === undefined ? { answer: "Errore: non trovo questo appuntamento." } : a;
+		if (a === undefined) return { answer: "Errore: non trovo questo appuntamento." };
+		// By its reference too, only one that may be acted on (fatto and non presentato: begun).
+		return pick(a) ? { appointment: a } : { answer: "Questo appuntamento non si può: è già segnato o disdetto, oppure non è ancora cominciato." };
 	}
 	if (args.client === undefined) return { answer: "Errore: dimmi di quale cliente è l'appuntamento." };
 	const who = clientSaid(args.client, cards, appointments);
@@ -187,6 +242,6 @@ export function appointmentNamed(args: Record<string, unknown>, appointments: re
 	}
 	if (pool.length === 0) return { answer: ["Non trovo un appuntamento così per questo cliente.", fencedAppointments(who.client.name)].join("\n") };
 	const sorted = [...pool].sort((a, b) => a.day.localeCompare(b.day) || minutesOf(a.start) - minutesOf(b.start));
-	if (past) return sorted.filter((a) => a.day <= today).at(-1) ?? (sorted[0] as Appointment);
-	return sorted.find((a) => a.day >= today) ?? (sorted.at(-1) as Appointment);
+	const a = past ? (sorted.filter((x) => x.day <= today).at(-1) ?? (sorted[0] as Appointment)) : (sorted.find((x) => x.day >= today) ?? (sorted.at(-1) as Appointment));
+	return who.close === true ? { appointment: a, close: true } : { appointment: a };
 }

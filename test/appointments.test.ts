@@ -27,10 +27,11 @@ async function doneOn(s: S, client: string, services: string[], date: string, ti
 }
 
 describe("booking", () => {
-	it("«fissa Maria Rossi giovedì alle 15 per taglio e piega»: dictated and free, booked at once for an hour; the name and the reference only in the fence; calendar offered; audit op and count", async () => {
-		const s = setup();
+	it("«fissa Maria Rossi giovedì alle 15 per taglio e piega»: dictated and free, booked at once for an hour; the name and the reference only in the fence; calendar offered when it is there; audit op and count", async () => {
+		const s = setup({ calendar: true });
 		const text = await s.run(rossi);
-		expect(outside(text)).toContain("Fatto: ho fissato l'appuntamento giovedì 22 ottobre dalle 15:00 alle 16:00.");
+		expect(outside(text)).toContain("Fatto: ho fissato l'appuntamento giovedì 22 ottobre dalle 15 alle 16.");
+		expect(outside(text)).toContain("Vuoi mandare al cliente un messaggio di conferma?");
 		expect(outside(text)).not.toContain("Rossi");
 		expect(outside(text)).not.toContain("AP-0001");
 		expect(inside(text)).toContain("15:00-16:00 Maria Rossi: Taglio, Piega (rif. AP-0001)");
@@ -52,7 +53,7 @@ describe("booking", () => {
 	it("«la signora Rossi»: a client only close to a card, or a service whose duration is not known, is proposed with a check; the yes with the check books", async () => {
 		const s = setup();
 		const text = await s.run({ ...rossi, client: "la signora Rossi", services: ["taglio", "colpi di sole"] });
-		expect(outside(text)).toContain("Fisserei questo appuntamento, giovedì 22 ottobre dalle 15:00 alle 16:00");
+		expect(outside(text)).toContain("Fisserei questo appuntamento, giovedì 22 ottobre dalle 15 alle 16");
 		expect(outside(text)).toContain("il cliente l'ho preso dalla scheda con il nome più vicino");
 		expect(outside(text)).toContain("non so quanto dura un servizio: ho contato 30 minuti");
 		expect(inside(text)).toContain("Maria Rossi: Taglio, colpi di sole");
@@ -60,16 +61,16 @@ describe("booking", () => {
 		expect(await s.run({ ...rossi, client: "la signora Rossi", services: ["taglio", "colpi di sole"], confirm: true, check: "0123456789abcdef" })).toContain("la proposta è cambiata");
 		expect(await s.run({ ...rossi, client: "la signora Rossi", services: ["taglio", "colpi di sole"], confirm: true, check: checkIn(text) }, fresh(undefined, "notice"))).toContain("Non fisso l'appuntamento");
 		const ok = await s.run({ ...rossi, client: "la signora Rossi", services: ["taglio", "colpi di sole"], confirm: true, check: checkIn(text) });
-		expect(outside(ok)).toContain("Fatto: ho fissato l'appuntamento giovedì 22 ottobre dalle 15:00 alle 16:00.");
-		expect(one(s).client).toEqual({ name: "Maria Rossi", card: "CL-0001" });
+		expect(outside(ok)).toContain("Fatto: ho fissato l'appuntamento giovedì 22 ottobre dalle 15 alle 16.");
+		expect(one(s).client).toEqual({ name: "Maria Rossi", card: "CL-0001", greeting: "signora Rossi" });
 	});
 
 	it("a new client is booked as said, and said; «alle 3» is 15:00 and said", async () => {
 		const s = setup();
 		const text = await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "giovedì", time: "3" });
-		expect(outside(text)).toContain("dalle 15:00 alle 15:30");
+		expect(outside(text)).toContain("dalle 15 alle 15:30");
 		expect(outside(text)).toContain("Il cliente non è tra le schede né tra gli appuntamenti: l'ho scritto come detto.");
-		expect(outside(text)).toContain("Le 3 le ho intese come le 15 del pomeriggio.");
+		expect(outside(text)).toContain("Ho messo alle 15 (le 3 del pomeriggio).");
 		expect(one(s).client).toEqual({ name: "Luca Neri" });
 	});
 
@@ -77,18 +78,23 @@ describe("booking", () => {
 		const s = setup();
 		await s.run(rossi);
 		const clash = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "giovedì", time: "15:30" });
-		expect(outside(clash)).toContain("A quell'ora c'è già un appuntamento: non ho fissato niente.");
-		expect(outside(clash)).toContain("Gli orari liberi più vicini: giovedì 22 ottobre alle 16:00; giovedì 22 ottobre alle 16:15; giovedì 22 ottobre alle 14:30.");
+		expect(outside(clash)).toContain("A quell'ora c'è già un appuntamento, dalle 15 alle 16 (chi è nel riquadro): non ho fissato niente.");
+		expect(inside(clash)).toContain("Maria Rossi");
+		expect(outside(clash)).toContain("Orari liberi vicini: giovedì 22 alle 14:30, alle 16 o alle 16:15. Quale preferisci?");
+		expect(outside(clash)).toContain("Se vuoi sovrapporlo, dimmi «fissalo lo stesso».");
 		expect(all(s)).toHaveLength(1);
 		const sunday = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "domenica", time: "10" });
 		expect(outside(sunday)).toContain("La domenica sei chiuso: non ho fissato niente.");
-		expect(outside(sunday)).toContain("lunedì 26 ottobre alle 09:00");
+		expect(outside(sunday)).toContain("lunedì 26 alle 9, alle 9:15 o alle 9:30");
 		const holiday = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "08/12/2026", time: "10" });
 		expect(outside(holiday)).toContain("8 dicembre 2026 è festivo (Immacolata Concezione) e sei chiuso");
 		const late = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "giovedì", time: "18:45" });
-		expect(outside(late)).toContain("A quell'ora sei chiuso (giovedì 22 ottobre sei aperto 09:00-13:00 e 14:00-19:00)");
+		expect(outside(late)).toContain("Alle 18:45 c'è posto solo fino alle 19: l'appuntamento dura mezz'ora e finirebbe alle 19:15, dopo la chiusura. Non ho fissato niente.");
 		expect(outside(late)).toContain("alle 18:30");
-		expect(await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "oggi", time: "9" })).toContain("quell'ora è già passata");
+		const night = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "giovedì", time: "20:30" });
+		expect(outside(night)).toContain("A quell'ora sei chiuso (giovedì 22 sei aperto 9-13 e 14-19): non ho fissato niente.");
+		const past = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "oggi", time: "9" });
+		expect(past).toBe("Quell'ora è già passata: dimmi un altro giorno o un'altra ora.");
 		expect(all(s)).toHaveLength(1);
 	});
 
@@ -110,11 +116,11 @@ describe("booking", () => {
 			const s = setup({ settings: sunday });
 			// 09:30 in Rome either way: CET after the October change, CEST after the March one.
 			s.clock.now = new Date(instant);
-			expect(await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "oggi", time: "9" })).toContain("quell'ora è già passata");
+			expect(await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "oggi", time: "9" })).toContain("Quell'ora è già passata");
 			const ok = await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "oggi", time: "10" });
-			expect(outside(ok)).toContain(`Fatto: ho fissato l'appuntamento oggi, domenica ${day} dalle 10:00 alle 10:30.`);
+			expect(outside(ok)).toContain(`Fatto: ho fissato l'appuntamento oggi, domenica ${day} dalle 10 alle 10:30.`);
 			const free = await s.run({ op: "free_slots", minutes: 30 });
-			expect(free).toContain(`• oggi, domenica ${day}: alle 09:30, tra le 10:30 e le 12:30`);
+			expect(free).toContain("Oggi sei libero dalle 9:30 alle 10 e dalle 10:30 alle 13 (c'è posto per mezz'ora fino alle 12:30).");
 		}
 	});
 });
@@ -125,7 +131,7 @@ describe("move, cancel, no-show, done", () => {
 		await s.run(rossi);
 		expect(await s.run({ op: "move", client: "Maria Rossi", date: "venerdì" }, fresh(undefined, "notice"))).toContain("Non sposto l'appuntamento");
 		const text = await s.run({ op: "move", client: "Maria Rossi", date: "venerdì" });
-		expect(outside(text)).toContain("Fatto: ho spostato l'appuntamento da giovedì 22 ottobre alle 15:00 a venerdì 23 ottobre alle 15:00 (fino alle 16:00).");
+		expect(outside(text)).toContain("Fatto: ho spostato l'appuntamento da giovedì 22 ottobre alle 15 a venerdì 23 ottobre alle 15 (fino alle 16).");
 		expect(one(s)).toMatchObject({ day: "2026-10-23", start: "15:00", moved: { from: "2026-10-22 15:00" } });
 		expect(validAppointment(one(s))).toBe(true);
 		await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "venerdì", time: "17" });
@@ -138,7 +144,7 @@ describe("move, cancel, no-show, done", () => {
 		const s = setup();
 		await s.run(rossi);
 		const cancel = await s.run({ op: "cancel", client: "Maria Rossi" });
-		expect(outside(cancel)).toContain("Fatto: ho segnato come disdetto l'appuntamento di giovedì 22 ottobre alle 15:00. Resta nello storico del cliente");
+		expect(outside(cancel)).toContain("Fatto: ho segnato come disdetto l'appuntamento di giovedì 22 ottobre alle 15. Resta nello storico del cliente");
 		expect(one(s).status).toBe("cancelled");
 		expect(one(s).closed).toBeDefined();
 		const again = await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "giovedì", time: "15" });
@@ -146,7 +152,7 @@ describe("move, cancel, no-show, done", () => {
 		expect(await s.run({ op: "no_show", client: "Bianchi" })).toContain("già cominciato");
 		s.clock.now = new Date("2026-10-22T14:00:00Z");
 		const noShow = await s.run({ op: "no_show", client: "Bianchi" });
-		expect(outside(noShow)).toContain("Fatto: ho segnato che il cliente non si è presentato all'appuntamento di oggi, giovedì 22 ottobre alle 15:00. Resta nello storico: con questo, è la prima volta.");
+		expect(outside(noShow)).toContain("Fatto: ho segnato che il cliente non si è presentato all'appuntamento di oggi, giovedì 22 ottobre alle 15. Resta nello storico. È la prima volta che non si presenta.");
 		await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "oggi", time: "16:30" });
 		await s.run({ op: "book", client: "Anna Verdi", services: ["piega"], date: "oggi", time: "17" });
 		expect(await s.run({ op: "done", all: true }, fresh(undefined, "scheduled"))).toContain("Non segno l'appuntamento come fatto");
@@ -163,8 +169,7 @@ describe("reading the agenda", () => {
 		const s = setup();
 		await s.run(rossi);
 		const text = await s.run({ op: "free_slots", date: "giovedì", window: "pomeriggio", minutes: "un'ora" });
-		expect(text).toContain("Si può cominciare un appuntamento di 60 minuti in questi orari:");
-		expect(text).toContain("• giovedì 22 ottobre: alle 14:00, tra le 16:00 e le 18:00");
+		expect(text).toBe("Giovedì 22 pomeriggio sei libero dalle 14 alle 15 e dalle 16 alle 19 (c'è posto per un'ora fino alle 18).");
 		const sunday = await s.run({ op: "free_slots", date: "domenica", minutes: 30 });
 		expect(sunday).toContain("La domenica sei chiuso.");
 		expect(await s.run({ op: "free_slots", date: "giovedì" }, fresh())).toContain("ho cercato 30 minuti");
@@ -177,8 +182,8 @@ describe("reading the agenda", () => {
 		await s.run({ ...rossi, date: "domani", time: "10" });
 		await s.run({ op: "book", client: "Bianchi", services: ["colore"], date: "domani", time: "15" });
 		const text = await s.run({ op: "agenda", date: "domani" });
-		expect(outside(text)).toContain("• Domani, martedì 20 ottobre: 2 appuntamenti, dalle 10:00 alle 16:30");
-		expect(outside(text)).toContain("Libero: 09:00-10:00, 11:00-13:00, 14:00-15:00, 16:30-19:00.");
+		expect(outside(text)).toContain("• Domani, martedì 20 ottobre: 2 appuntamenti, dalle 10 alle 16:30");
+		expect(outside(text)).toContain("Libero: 9-10, 11-13, 14-15, 16:30-19.");
 		expect(outside(text)).not.toContain("Rossi");
 		expect(inside(text)).toContain("10:00-11:00 Maria Rossi: Taglio, Piega (rif. AP-0001)");
 		expect(inside(text)).toContain("15:00-16:30 Officina Bianchi Prova Srl: Colore (rif. AP-0002)");
@@ -194,7 +199,7 @@ describe("reading the agenda", () => {
 		await doneOn(s, "Maria Rossi", ["colore"], "2026-10-16", "10");
 		await s.run(rossi);
 		const text = await s.run({ op: "history", client: "Maria Rossi" });
-		expect(outside(text)).toContain("3 visite fatte, 0 «non presentato», 0 disdette; il prossimo è giovedì 22 ottobre alle 15:00.");
+		expect(outside(text)).toContain("3 visite fatte, 0 «non presentato», 0 disdette; il prossimo è giovedì 22 ottobre alle 15.");
 		expect(inside(text)).toContain("Di solito fa: Taglio, Piega (2 volte su 3)");
 		expect(inside(text)).toContain("16/10/2026 10:00-11:30 Maria Rossi: Colore [fatto]");
 	});
@@ -203,17 +208,28 @@ describe("reading the agenda", () => {
 describe("reminders", () => {
 	it("«fammi il messaggio di promemoria per domani»: one per client, the business named, contacts only from the cards, all in the fence, never sent", async () => {
 		const s = setup();
-		await s.run({ ...rossi, date: "domani", time: "10" });
+		const asked = await s.run({ ...rossi, client: "la signora Rossi", date: "domani", time: "10" });
+		await s.run({ ...rossi, client: "la signora Rossi", date: "domani", time: "10", confirm: true, check: checkIn(asked) });
 		await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "domani", time: "11" });
+		await s.run({ op: "book", client: "Bianchi", services: ["taglio"], date: "domani", time: "12" });
 		const text = await s.run({ op: "reminders" });
-		expect(outside(text)).toContain("Ho preparato i 2 messaggi di promemoria per gli appuntamenti di domani, martedì 20 ottobre, uno per cliente, come nel riquadro. Non li mando da sola.");
-		expect(inside(text)).toContain("Per: Maria Rossi (email maria.rossi@example.invalid, telefono +39 000 0000001)");
-		expect(inside(text)).toContain("Buongiorno Maria Rossi, le ricordiamo l'appuntamento da Salone Prova domani, martedì 20 ottobre, alle 10:00 per taglio, piega.");
-		expect(inside(text)).toContain("Per: Luca Neri (nessun contatto nella scheda)");
-		expect(outside(text)).toContain("Un cliente ha l'email nella scheda: posso prepararne la bozza con google_mail_send");
+		expect(outside(text)).toContain("Ho preparato 3 promemoria per domani, nel riquadro. Non mando niente da sola.");
+		expect(outside(text)).toContain("Per un cliente con il cellulare c'è il link: lo tocchi e WhatsApp apre il messaggio già scritto, poi lo mandi tu.");
+		expect(outside(text)).toContain("Un numero nella scheda non sembra un cellulare: niente link");
+		expect(outside(text)).toContain("Un cliente non ha né il numero né l'email nella scheda: vuoi che glielo aggiunga? Intanto il testo si copia e si manda da WhatsApp, SMS o mail.");
+		const message = "Buongiorno signora Rossi, le ricordiamo l'appuntamento da Salone Prova martedì 20 ottobre alle 10, per taglio e piega. Se non riesce a venire, ci risponda a questo messaggio. Grazie, a presto!";
+		expect(inside(text)).toContain(message);
+		expect(inside(text)).toContain(`https://wa.me/393330000001?text=${encodeURIComponent(message)}`);
+		expect(inside(text)).toContain("maria.rossi@example.invalid");
+		expect(inside(text)).not.toContain("wa.me/39020000002");
+		expect(inside(text)).toContain("Buongiorno Luca Neri,");
+		expect(inside(text)).not.toContain("domani");
+		expect(outside(text)).toContain("google_mail_send");
 		expect(outside(text)).not.toContain("example.invalid");
+		expect(outside(text)).not.toContain("wa.me");
 		expect(outside(text)).not.toContain("Rossi");
 		expect(text).not.toMatch(EMDASH);
+		expect(s.store.read().appointments.every((a) => a.status === "booked")).toBe(true);
 	});
 });
 
@@ -226,9 +242,9 @@ describe("the brief, other agents, the CSV, the settings", () => {
 		await s.run({ op: "book", client: "Luca Neri", services: ["taglio"], date: "domani", time: "15" });
 		s.clock.now = new Date("2026-10-20T05:00:00Z");
 		const text = await s.run({ op: "agenda", compact: true });
-		expect(outside(text)).toContain("Appuntamenti di oggi: 2, il primo alle 09:00 (chi e per cosa nel riquadro).");
-		expect(outside(text)).toContain("Libero: 09:30-13:00, 14:00-15:00, 15:30-19:00.");
-		expect(outside(text)).toContain("Di ieri un appuntamento è ancora «fissato»: segna com'è andata");
+		expect(outside(text)).toContain("Appuntamenti di oggi: 2, il primo alle 9 (chi e per cosa nel riquadro).");
+		expect(outside(text)).toContain("Libero: 9:30-13, 14-15, 15:30-19.");
+		expect(outside(text)).toContain("Ieri un appuntamento è ancora da segnare: dimmi «fatto», oppure se non è venuto.");
 		expect(inside(text)).toContain("Officina Bianchi Prova Srl");
 		expect(await s.run({ op: "agenda", compact: true })).toBe("Appuntamenti: niente da segnalare.");
 		expect(s.events.filter((e) => e.op === "brief")).toEqual([{ type: "appointments.used", op: "brief", count: 2 }]);
@@ -262,12 +278,14 @@ describe("the brief, other agents, the CSV, the settings", () => {
 	it("settings: hours with breaks, a closure that warns of the appointments in it, durations linked to the listino; shown when nothing is said", async () => {
 		const s = setup({ settings: null });
 		const none = await s.run({ ...rossi, minutes: 60 });
-		expect(none).toContain("Non so ancora gli orari di apertura");
+		expect(outside(none)).toContain("Non conosco ancora gli orari di apertura, quindi non ho controllato che tu sia aperto: dimmeli in una riga, come «mar-sab 9-13 e 14-19, chiuso domenica e lunedì».");
+		// Said once a day.
+		expect(await s.run({ ...rossi, date: "venerdì", minutes: 60 })).not.toContain("orari di apertura");
 		const text = await s.run({ op: "settings", business: "Salone Prova", hours: [{ days: "mar-sab", open: "9-13, 14:30-19" }, { days: "lunedì", open: "chiuso" }], services: [{ name: "taglio", minutes: 45 }], closure_from: "22/10/2026", closure_to: "24/10/2026", closure_note: "ferie" });
 		expect(outside(text)).toContain("Fatto, ho salvato.");
-		expect(outside(text)).toContain("Orari: lun chiuso; mar 09:00-13:00, 14:30-19:00");
+		expect(outside(text)).toContain("Orari: mar-sab 9-13 e 14:30-19; chiuso domenica e lunedì.");
 		expect(outside(text)).toContain("Chiusure: dal 22/10/2026 al 24/10/2026.");
-		expect(outside(text)).toContain("Attenzione: un appuntamento fissato cade quando ora sei chiuso");
+		expect(outside(text)).toContain("Attenzione: 2 appuntamenti fissati cadono quando ora sei chiuso (nel riquadro): vanno spostati o disdetti. Vuoi che prepari un messaggio per avvisarli e proporre un'altra data?");
 		expect(inside(text)).toContain("• Taglio: 45 minuti");
 		expect(s.store.read().settings?.services).toEqual([{ name: "Taglio", item: "LS-0001", minutes: 45 }]);
 		expect(await s.run({ op: "settings", slot: 30 }, fresh(undefined, "notice"))).toContain("Non cambio gli orari");
