@@ -403,10 +403,13 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 
 	/** One line of what came: the order line, the article, how many, the price it is loaded at (needed only for what is loaded). */
 	type Came = { readonly n: number; readonly item: StockItem; readonly qty: bigint; readonly price?: bigint };
-	/** Goods of an order line found in the magazzino already: the carico, how many of it, its day. */
-	type Found = { readonly n: number; readonly move: string; readonly qty: bigint; readonly day: string };
+	/** The document of a carico loaded from an invoice received (stock-invoice.ts): paid by that invoice already. */
+	const INVOICE_DOC = "fattura n. ";
 
-	const cameCheck = (o: Order, when: string, rows: readonly Came[], found: readonly Found[]) => createHash("sha256").update(JSON.stringify([o.id, when, rows.map((r) => [r.n, r.item.id, r.qty.toString(), r.price?.toString() ?? ""]), found.map((f) => [f.n, f.move, f.qty.toString()])])).digest("hex").slice(0, 16);
+	/** Goods of an order line found in the magazzino already: the carico, how many of it, its day. */
+	type Found = { readonly n: number; readonly move: string; readonly qty: bigint; readonly day: string; /** Loaded by hand, not from an invoice: the invoice still bills it. */ readonly bill: boolean };
+
+	const cameCheck = (o: Order, when: string, rows: readonly Came[], found: readonly Found[]) => createHash("sha256").update(JSON.stringify([o.id, when, rows.map((r) => [r.n, r.item.id, r.qty.toString(), r.price?.toString() ?? ""]), found.map((f) => [f.n, f.move, f.qty.toString(), f.bill])])).digest("hex").slice(0, 16);
 
 	/**
 	 * The goods of `o` in the magazzino already: the carichi of its supplier for its articles since
@@ -434,7 +437,7 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 				avail -= used;
 				const take = avail < need ? avail : need;
 				if (take <= 0n) continue;
-				out.push({ n: l.n, move: m.id, qty: take, day: m.day });
+				out.push({ n: l.n, move: m.id, qty: take, day: m.day, bill: !(m.doc ?? "").startsWith(INVOICE_DOC) });
 				need -= take;
 				if (need <= 0n) break;
 			}
@@ -530,7 +533,7 @@ export function createOrderTools(options: OrderToolsOptions): AnnieTool[] {
 		const marked = await ctx.step("orders", async () => {
 			try {
 				store.receive(() => ({
-					receipts: [...rows.map((r) => ({ order: o.id, k, n: r.n, qty: qtyText(r.qty), day: when, from: "person" as const })), ...found.map((f) => ({ order: o.id, k: `carico:${f.move}`, n: f.n, qty: qtyText(f.qty), day: f.day, from: "stock" as const }))],
+					receipts: [...rows.map((r) => ({ order: o.id, k, n: r.n, qty: qtyText(r.qty), day: when, from: "person" as const })), ...found.map((f) => ({ order: o.id, k: `carico:${f.move}`, n: f.n, qty: qtyText(f.qty), day: f.day, from: "stock" as const, ...(f.bill ? { bill: true as const } : {}) }))],
 					billed: [],
 					found: true,
 				}));

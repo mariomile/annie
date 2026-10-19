@@ -82,7 +82,15 @@ export type OrderLine = {
  * «person») from the person's word with the delivery note, loaded then by hand (`k` the call's
  * own key); the order line, how many (in the article's unit), the day.
  */
-export type Receipt = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string; readonly from?: "person" | "stock" };
+/**
+ * Goods of an order line arrived: an invoice line loaded (no `from`), the delivery note the person
+ * said (`from` "person"), or a carico in the magazzino already (`from` "stock"): `bill` when that
+ * carico was loaded by hand, not from an invoice, so that its invoice still bills it when it comes.
+ */
+export type Receipt = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string; readonly from?: "person" | "stock"; readonly bill?: true };
+
+/** Goods an invoice still has to bill: the delivery note's, and a carico loaded by hand. */
+const billable = (r: Receipt) => r.from === "person" || (r.from === "stock" && r.bill === true);
 
 /** An invoice line that billed goods received with the delivery note: not loaded again, not received twice. */
 export type Billed = { readonly k: string; readonly n: number; readonly qty: string; readonly day: string };
@@ -134,7 +142,7 @@ const STOCK_KEY = /^carico:MV-\d{6,7}$/;
 
 /** How many of order line `n` came with the delivery note and no invoice billed yet (thousandths). */
 export function unbilledOf(order: Pick<Order, "receipts" | "billed">, n: number): bigint {
-	const hand = order.receipts.filter((r) => r.n === n && r.from === "person").reduce((s, r) => s + qtyOf(r.qty), 0n);
+	const hand = order.receipts.filter((r) => r.n === n && billable(r)).reduce((s, r) => s + qtyOf(r.qty), 0n);
 	const billed = (order.billed ?? []).filter((b) => b.n === n).reduce((s, b) => s + qtyOf(b.qty), 0n);
 	return hand > billed ? hand - billed : 0n;
 }
@@ -142,7 +150,7 @@ export function unbilledOf(order: Pick<Order, "receipts" | "billed">, n: number)
 /** The day the delivery note brought the goods of line `n` (the latest), when it did. */
 export const handDayOf = (order: Pick<Order, "receipts">, n: number): string | undefined =>
 	order.receipts
-		.filter((r) => r.n === n && r.from === "person")
+		.filter((r) => r.n === n && billable(r))
 		.map((r) => r.day)
 		.sort()
 		.at(-1);
@@ -199,7 +207,8 @@ function validLine(v: unknown): v is OrderLine {
 function validReceipt(v: unknown): v is Receipt {
 	if (typeof v !== "object" || v === null) return false;
 	const r = v as Receipt;
-	if (!Object.keys(r).every((k) => ["k", "n", "qty", "day", "from"].includes(k)) || (r.from !== undefined && r.from !== "person" && r.from !== "stock")) return false;
+	if (r.bill !== undefined && (r.bill !== true || r.from !== "stock")) return false;
+	if (!Object.keys(r).every((k) => ["k", "n", "qty", "day", "from", "bill"].includes(k)) || (r.from !== undefined && r.from !== "person" && r.from !== "stock")) return false;
 	return typeof r.k === "string" && (r.from === "person" ? HAND_KEY : r.from === "stock" ? STOCK_KEY : LINE_KEY).test(r.k) && Number.isInteger(r.n) && r.n >= 1 && isQuantity(r.qty) && Number(r.qty) > 0 && typeof r.day === "string" && realDate(r.day);
 }
 

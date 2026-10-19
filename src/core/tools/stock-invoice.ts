@@ -443,7 +443,7 @@ function proposalText(inv: Invoice, plan: readonly Proposal[], took: string | un
 	const held = heldOf(plan);
 	const head = `Fattura del ${inv.doc.date === undefined ? "giorno non indicato" : italianDate(inv.doc.date)} (fornitore e numero nel riquadro)`;
 	const out = [
-		`${first}${ok.length === 0 ? `${head}: nessuna riga da caricare in magazzino${held.length === 0 ? "" : ": la merce è già arrivata con la bolla ed è caricata da allora (nel riquadro)"}.` : `${head}: ${n1(ok.length, "una riga si può caricare", "# righe si possono caricare")} in magazzino, come nel riquadro (costi per unità, senza IVA)${ok.length === plan.length ? "" : `; ${n1(plan.length - ok.length, "una no", "# no")}, con il motivo`}.`}`,
+		`${first}${ok.length === 0 ? `${head}: nessuna riga da caricare in magazzino${held.length === 0 ? "" : ": la merce è già arrivata con la bolla ed è caricata da allora (nel riquadro)"}.` : `${head}: ${n1(ok.length, "una riga si può caricare", "# righe si possono caricare")} in magazzino, come nel riquadro (costi per unità, senza IVA)${leftOut(plan) === 0 ? "" : `; ${n1(leftOut(plan), "una no", "# no")}, con il motivo`}.`}`,
 		fenceOf(inv, plan, took, [...(twin === undefined ? [] : [`Sembra la stessa merce della fattura n. ${cut(twin.doc.number ?? "?", NUMBER)} del ${italianDate(twin.doc.date as string)}: è un'altra consegna?`]), ...orders.rows]),
 		...notesOf(inv, plan),
 		...orders.notes,
@@ -490,6 +490,12 @@ function orderWords(link: OrderLink | undefined, inv: Invoice, plan: readonly Pr
 		rows: matchRows(m, orders, items, day),
 		notes: [`${m.orders.length === 0 ? "Questa fattura paga merce di un ordine arrivata con la bolla" : `Questo fornitore ha ${n1(m.orders.length, "un ordine in arrivo", "# ordini in arrivo")}`}: con la conferma lo segno nell'ordine.${diff === 0 ? "" : " Ci sono differenze con l'ordine (nel riquadro): falle vedere a chi ti scrive."}`],
 	};
+}
+
+/** The invoice lines left out: none of the line loads (the part of a line held back for the delivery note, with its rest loaded, is not one). */
+function leftOut(plan: readonly Proposal[]): number {
+	const loading = new Set(plan.filter(loads).map((p) => p.line));
+	return new Set(plan.filter((p) => !loads(p) && !loading.has(p.line)).map((p) => p.line)).size;
 }
 
 /** The lines held back: goods of the delivery note the invoice bills. */
@@ -601,7 +607,7 @@ export async function receiveInvoice(env: StockInvoiceEnv, args: Record<string, 
 		if (changed) return { rerun: false, changed: true, text: proposalText(inv, plan, took, sameGoods(inv, reg.invoices, env.book()), "La proposta è cambiata da quando l'hai mostrata (una riga caricata nel frattempo, un articolo o un costo diverso): non ho caricato niente. Ecco quella nuova.\n", orderWords(env.orders, inv, plan, env.book().items, day)), count: 0, rows: none };
 		if (rows.length === 0 && heldOf(plan).length > 0) return { rerun: false, changed: false, text: ["Non c'era niente da caricare: la merce di questa fattura era già arrivata con la bolla, ed è caricata da allora.", fenceOf(inv, plan, took), ...notesOf(inv, plan)].join("\n"), count: 0, rows: none };
 		if (rows.length === 0) return { rerun: false, changed: false, text: [`Non ho caricato niente: nessuna riga di questa fattura si può caricare ora.`, fenceOf(inv, plan, took), ...notesOf(inv, plan), "Per caricare una riga dimmi il suo numero e l'articolo del magazzino («la riga 1 è la carta A4»); se è un articolo nuovo, lo aggiungo."].join("\n"), count: 0, rows: none };
-		const head = `Fatto, ho caricato in magazzino ${n1(rows.length, "una riga", "# righe")} della fattura del ${inv.doc.date === undefined ? "giorno non indicato" : italianDate(inv.doc.date)} (fornitore e numero nel riquadro)${rows.length === plan.length ? "" : `; ${n1(plan.length - rows.length, "una no", "# no")}, con il motivo`}. Ogni riga resta caricata una volta sola, anche se me lo chiedi di nuovo.`;
+		const head = `Fatto, ho caricato in magazzino ${n1(rows.length, "una riga", "# righe")} della fattura del ${inv.doc.date === undefined ? "giorno non indicato" : italianDate(inv.doc.date)} (fornitore e numero nel riquadro)${leftOut(plan) === 0 ? "" : `; ${n1(leftOut(plan), "una no", "# no")}, con il motivo`}. Ogni riga resta caricata una volta sola, anche se me lo chiedi di nuovo.`;
 		const added = rows.filter((p) => p.created).length;
 		return { rerun: false, changed: false, text: [head, fenceOf(inv, plan, took, kept), ...notesOf(inv, plan), ...(added === 0 ? [] : [`${n1(added, "Ho aggiunto un articolo nuovo", "Ho aggiunto # articoli nuovi")} al magazzino, con il nome della riga: se vuoi, dimmi sotto quanto avvisarti.`])].join("\n"), count: rows.length, rows: rowsOf(plan) };
 	});

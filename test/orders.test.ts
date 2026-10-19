@@ -712,6 +712,8 @@ describe("week 72 review: what is on its way, the delivery note, the status", ()
 		const inv = await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-40" });
 		expect(inside(inv)).toContain("• riga 1, Cartucce XL → MG-0001 Cartucce XL: 5 pezzi a 12,80 € (il resto della riga: 10 pezzi erano già arrivati con la bolla)");
 		expect(inside(inv)).toContain("• riga 1, Cartucce XL: già caricata con la bolla il 19 ottobre (10 pezzi su 15 pezzi: il resto lo carico): la fattura la paga, non la carico di nuovo; in fattura costa 12,80 €, con la bolla l'ho caricata a 12,50 €");
+		// The held half of the split line is no line left out.
+		expect(outside(inv)).toContain("una riga si può caricare in magazzino, come nel riquadro (costi per unità, senza IVA).");
 		expect(outside(inv)).toContain("Per la merce della bolla il costo in fattura è diverso da quello con cui l'ho caricata (nel riquadro): se vuoi, dopo il carico correggo il costo dell'articolo con quello della fattura.");
 		const done = await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-40", confirm: true, check: checkIn(inv) });
 		expect(done).toContain("se vuoi, correggo il costo dell'articolo con quello della fattura.");
@@ -738,5 +740,55 @@ describe("week 72 review: what is on its way, the delivery note, the status", ()
 		expect(s.store.read().orders).toEqual([]);
 		expect(await s.run({ op: "lead_time", supplier: "Beta", days: 10 }, fresh(undefined, "notice"))).toContain("serve il sì di chi ti scrive");
 		expect(s.store.read().leads).toEqual([]);
+	});
+
+	it("a carico by hand then marked arrived: the invoice that comes later bills it, never loads it again; a carico from an invoice stays paid by that invoice", async () => {
+		const s = setup();
+		shop(s);
+		const onHand = () => s.stock.read().moves.filter((m) => m.item === "MG-0003").reduce((t, m) => t + (m.kind === "carico" ? Number(m.qty) : m.kind === "scarico" ? -Number(m.qty) : 0), 0);
+		expect(onHand()).toBe(8);
+		await s.run({ op: "create", supplier: "Beta Forniture Srl", lines: [{ item: "Colla stick", quantity: 5, price: "1" }] });
+		await s.run({ op: "mark_sent", order: "OR-0001" });
+		// Loaded by hand with the delivery note, then «è arrivato».
+		await s.stockRun({ op: "receive", item: "Colla stick", quantity: 5, cost: 1, supplier: "Beta Forniture Srl", doc: "DDT 9" });
+		expect(onHand()).toBe(13);
+		const there = await s.run({ op: "received", order: "OR-0001" });
+		expect(inside(there)).toContain("5 pezzi già in magazzino");
+		await s.run({ op: "received", order: "OR-0001", confirm: true, check: checkIn(there) });
+		expect(s.store.read().orders[0]?.receipts).toEqual([{ k: expect.stringMatching(/^carico:MV-\d{6}$/), n: 1, qty: "5", day: "2026-10-19", from: "stock", bill: true }]);
+		// The invoice of those goods: held, nothing loaded.
+		s.file(xml(BETA, ME, { number: "B-50", date: "2026-10-19", lines: [{ desc: "Colla stick", qty: "5.00", unit: "PZ", price: "1.00" }] }));
+		const inv = await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-50" });
+		expect(inside(inv)).toContain("già caricata con la bolla il 19 ottobre: la fattura la paga, non la carico di nuovo");
+		await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-50", confirm: true, check: checkIn(inv) });
+		expect(onHand()).toBe(13);
+		expect(s.store.read().orders[0]?.billed?.map((b) => b.qty)).toEqual(["5"]);
+	});
+
+	it("goods past order A on A's invoice, marked arrived on order B: paid by A's invoice; B's invoice then loads as other goods", async () => {
+		const s = setup();
+		shop(s);
+		const onHand = () => s.stock.read().moves.filter((m) => m.item === "MG-0003").reduce((t, m) => t + (m.kind === "carico" ? Number(m.qty) : m.kind === "scarico" ? -Number(m.qty) : 0), 0);
+		await s.run({ op: "create", supplier: "Beta Forniture Srl", lines: [{ item: "Colla stick", quantity: 5, price: "1" }] });
+		await s.run({ op: "mark_sent", order: "OR-0001" });
+		s.file(xml(BETA, ME, { number: "B-60", date: "2026-10-19", lines: [{ desc: "Colla stick", qty: "10.00", unit: "PZ", price: "1.00" }] }));
+		const a = await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-60" });
+		expect(inside(a)).toContain("• Colla stick: ne sono arrivati 10 pezzi (ordine OR-0001), 5 pezzi più di quelli ordinati");
+		await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-60", confirm: true, check: checkIn(a) });
+		expect(onHand()).toBe(18);
+		await s.run({ op: "create", supplier: "Beta Forniture Srl", lines: [{ item: "Colla stick", quantity: 5, price: "1" }] });
+		await s.run({ op: "mark_sent", order: "OR-0002" });
+		const b = await s.run({ op: "received", order: "OR-0002" });
+		expect(inside(b)).toContain("5 pezzi già in magazzino");
+		await s.run({ op: "received", order: "OR-0002", confirm: true, check: checkIn(b) });
+		expect(onHand()).toBe(18);
+		// Not billable: A's invoice paid it.
+		expect(s.store.read().orders[1]?.receipts[0]).toMatchObject({ from: "stock", qty: "5" });
+		expect(s.store.read().orders[1]?.receipts[0]?.bill).toBeUndefined();
+		s.file(xml(BETA, ME, { number: "B-61", date: "2026-10-19", lines: [{ desc: "Colla stick", qty: "5.00", unit: "PZ", price: "1.00" }] }));
+		const next = await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-61" });
+		expect(inside(next)).not.toContain("già caricata con la bolla");
+		await s.stockRun({ op: "receive_invoice", supplier: "Beta", invoice: "B-61", confirm: true, check: checkIn(next) });
+		expect(onHand()).toBe(23);
 	});
 });
