@@ -7,6 +7,7 @@ import { expenseCallReads } from "./expenses.ts";
 import { invoiceCallReads } from "./invoices.ts";
 import { QUOTE_SOON_DAYS, quoteCallReads } from "./quotes.ts";
 import { renewalCallReads } from "./renewals.ts";
+import { priceListCallReads } from "./price-list.ts";
 import { salesCallReads } from "./sales-invoices.ts";
 import { taxCallReads } from "./taxes.ts";
 import { timesheetCallReads } from "./timesheet.ts";
@@ -84,7 +85,8 @@ const READ_ONLY_TOOLS = new Set(["google_mail_search", "google_mail_read", "goog
  * withholding (le ritenute) reads with summary, check_payment and cu_list (compact: the brief's
  * line); the CU said and the export write.
  * fiscal_agenda (l'agenda fiscale) reads with upcoming (compact: the brief's line); only the
- * export writes, a .ics file.
+ * export writes, a .ics file. price_list (il listino) reads with list and find; adding, changing,
+ * removing, price changes, imports and exports write. It has no brief line.
  */
 const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = new Map([
 	["invoices", invoiceCallReads],
@@ -101,6 +103,7 @@ const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = n
 	["business_report", businessCallReads],
 	["withholding", withholdingCallReads],
 	["fiscal_agenda", agendaCallReads],
+	["price_list", priceListCallReads],
 ]);
 
 /**

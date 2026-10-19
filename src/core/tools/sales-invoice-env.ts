@@ -12,6 +12,7 @@ import type { InvoiceScanner } from "../invoice-scan.ts";
 import type { InvoiceStore } from "../invoice-store.ts";
 import type { MadeDocument, MakeInput } from "../make-document.ts";
 import type { Marker } from "../marker.ts";
+import type { PriceListStore } from "../price-list-store.ts";
 import type { QuoteStore } from "../quote-store.ts";
 import { CREDIT_NOTE_TYPE, ISSUED_FOLDER } from "../sales-invoice-rules.ts";
 import type { SalesBook, SalesInvoiceStore } from "../sales-invoice-store.ts";
@@ -34,6 +35,8 @@ export type SalesStores = {
 	readonly clients?: Pick<ClientStore, "read">;
 	readonly quotes?: Pick<QuoteStore, "read" | "markInvoiced">;
 	readonly timesheet?: Pick<TimesheetStore, "read" | "setBilled">;
+	/** The listino, read only: a line naming a voce (item) takes its description, unit, price and VAT or nature. */
+	readonly priceList?: Pick<PriceListStore, "read">;
 	/** The workspace's invoices (the scadenzario's scanner): the numbers already used this year. */
 	readonly scanner: Pick<InvoiceScanner, "scan">;
 	readonly timeZone: string;
