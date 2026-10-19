@@ -8,7 +8,6 @@ import {
 	ClientError,
 	cardCf,
 	cardId,
-	cardKeys,
 	clientAgentReads,
 	DORMANT_DAYS,
 	FOLLOW_UP_ID,
@@ -17,6 +16,7 @@ import {
 } from "../clients.ts";
 import { FORM_NOTE, findNamed } from "../client-find.ts";
 import { lookalikeParties } from "../party-groups.ts";
+import { cardNameKeys } from "../party-cards.ts";
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { euros, n1 } from "../format-words.ts";
 import { InvoiceScanner } from "../invoice-scan.ts";
@@ -390,7 +390,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 	/** The card a call wrote, found again by the name it was given. */
 	function cardNamed(name: string, client: Client | undefined): ClientCard | undefined {
 		const all = cards();
-		return (client?.card === undefined ? undefined : all.find((c) => c.id === client.card?.id)) ?? all.find((c) => cardKeys(c).includes(spellingKey(name)));
+		return (client?.card === undefined ? undefined : all.find((c) => c.id === client.card?.id)) ?? all.find((c) => cardNameKeys(c).includes(spellingKey(name)));
 	}
 
 	async function upsert(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -480,7 +480,7 @@ export function createClientTools(options: ClientToolsOptions): AnnieTool[] {
 			return true;
 		});
 		await audit(ctx, "merge", 1);
-		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : cardKeys(c).includes(spellingKey(b.name))));
+		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : cardNameKeys(c).includes(spellingKey(b.name))));
 		const client = { ...b, ...(card === undefined ? {} : { card, name: card.name }) } as Client;
 		return [`Fatto, ho unito i due clienti${card === undefined ? "" : ` nella scheda ${card.id}`}. Fatture, preventivi e ore restano dove sono e ora si leggono insieme.`, fenced(cardLines(client, day).join("\n"))].join("\n");
 	}

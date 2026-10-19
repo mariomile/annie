@@ -30,15 +30,17 @@ export function withOptional<T extends object, K extends keyof T>(obj: T, key: K
 	return (value === null ? rest : { ...rest, [key]: value }) as T;
 }
 
-/** Every name a card answers to, compared the timesheet's way (legal form included). */
-const keysOf = (card: Pick<MergeCard, "name" | "aliases">) => [card.name, ...card.aliases].map(spellingKey).filter((k) => k !== "");
+/** Every name a card answers to (a client's or a supplier's), compared the timesheet's way (legal form included). */
+export function cardNameKeys(card: { readonly name: string; readonly aliases: readonly string[] }): string[] {
+	return [card.name, ...card.aliases].map(spellingKey).filter((k) => k !== "");
+}
 
 /** Why `card` cannot sit with `others`: a name, a partita IVA or a codice fiscale another card has. `word`: «cliente», «fornitore». */
 export function cardClash(card: MergeCard, others: readonly MergeCard[], word: string): string | undefined {
-	const keys = new Set(keysOf(card));
+	const keys = new Set(cardNameKeys(card));
 	for (const o of others) {
 		if (o.id === card.id) continue;
-		if (keysOf(o).some((k) => keys.has(k))) return `un nome di questa scheda è già della scheda ${o.id}: se sono lo stesso ${word}, uniscile`;
+		if (cardNameKeys(o).some((k) => keys.has(k))) return `un nome di questa scheda è già della scheda ${o.id}: se sono lo stesso ${word}, uniscile`;
 		if (card.vat !== undefined && o.vat === card.vat) return `la stessa partita IVA è già nella scheda ${o.id}: se sono lo stesso ${word}, uniscile`;
 		if (card.cf !== undefined && o.cf === card.cf) return `lo stesso codice fiscale è già nella scheda ${o.id}: se sono lo stesso ${word}, uniscile`;
 	}

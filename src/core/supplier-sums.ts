@@ -282,17 +282,21 @@ export function lastPayment(s: Pick<Supplier, "invoices" | "expenses">, ledger: 
 export type OpenIban = { readonly iban: string; readonly number?: string; readonly n: number; readonly of: number; readonly valid: boolean };
 
 /**
- * The IBAN of a supplier, checked against a reference that a file cannot forge by its dates: the
- * one the person dictated; else the IBAN of the invoice paid last (by the day it was paid); else
- * the one most invoices write, when one does. Every IBAN on every instalment still to pay is
- * compared with it: a backdated invoice, one without a date or a second instalment on a new
- * account all show. `history`: the reference of the files alone (paid, else most used), to tell
- * when an IBAN differs from both. `mixed`: no reference, and the instalments to pay write more
- * than one IBAN: all of them are to verify.
+ * The IBAN of a supplier, checked against a reference that a file cannot forge by its dates or by
+ * how many it is: the one the person dictated; else every IBAN already paid to (the invoice paid
+ * last, by the day it was paid, is the one shown); else the one most invoices no longer to pay
+ * write, at least two of them. Invoices still to pay never make a reference: three forged ones do
+ * not outvote a real one. Every IBAN on every instalment still to pay is compared with it: a
+ * backdated invoice, one without a date or a second instalment on a new account all show.
+ * `history`: the reference of the files alone, to tell when an IBAN differs from both. `mixed`:
+ * no reference, and the instalments to pay write more than one IBAN: all of them are to verify;
+ * with one only, it is shown as never paid so far.
  */
 export type IbanView = {
 	readonly pinned?: string;
 	readonly history?: { readonly iban: string; readonly from: "paid" | "common"; readonly number?: string };
+	/** Every IBAN the paid instalments went to, in the order last paid first: more than one is said. */
+	readonly paid: readonly string[];
 	/** The distinct IBAN of the instalments to pay, with the first invoice writing each. */
 	readonly open: readonly OpenIban[];
 	/** Those to verify before paying. */
@@ -300,6 +304,8 @@ export type IbanView = {
 	/** Some IBAN to pay differs from the one dictated; from the files' reference. */
 	readonly diffPinned: boolean;
 	readonly diffHistory: boolean;
+	/** Some IBAN to pay differs from the one dictated but is one already paid to: the one dictated may be wrong. */
+	readonly wrongPin: boolean;
 	readonly mixed: boolean;
 };
 
@@ -307,23 +313,28 @@ const ibanText = (text: string) => text.replace(/[\s-]+/g, "").toUpperCase();
 const ibansOf = (i: Invoice, only: (n: Instalment) => boolean = () => true): string[] => [...new Set(i.instalments.filter((n) => only(n) && n.iban !== undefined && ibanText(n.iban) !== "").map((n) => ibanText(n.iban as string)))];
 const toPay = (n: Instalment) => n.paid === undefined && n.extra !== true;
 
+/** Common: written by at least this many invoices no longer to pay, and by more than any other IBAN. */
+export const IBAN_COMMON_MIN = 2;
+
 export function ibanOf(s: Pick<Supplier, "invoices" | "card">, dayOf: (at: string) => string): IbanView {
 	const invoices = s.invoices.filter((i) => !i.credit && ibansOf(i).length > 0);
-	// The invoice paid last, by the day of its last payment: what the person already paid to.
-	const paid = invoices
+	// What the person already paid to, the invoice paid last first (by the day of its last payment).
+	const paidTo = invoices
 		.flatMap((i) => {
 			const days = i.instalments.flatMap((n) => (n.paid === undefined ? [] : [paidDay(n.paid, dayOf)]));
-			const ibans = ibansOf(i, (n) => n.paid !== undefined);
-			return days.length === 0 ? [] : [{ i, day: days.sort().at(-1) as string, iban: (ibans[0] ?? ibansOf(i)[0]) as string }];
+			const own = ibansOf(i, (n) => n.paid !== undefined);
+			return days.length === 0 ? [] : [{ i, day: days.sort().at(-1) as string, ibans: own.length > 0 ? own : ibansOf(i) }];
 		})
-		.sort((a, b) => b.day.localeCompare(a.day))[0];
+		.sort((a, b) => b.day.localeCompare(a.day));
+	const paid = [...new Set(paidTo.flatMap((p) => p.ibans))];
+	const last = paidTo[0];
 	let history: IbanView["history"];
-	if (paid !== undefined) history = { iban: paid.iban, from: "paid", ...(paid.i.doc.number === undefined ? {} : { number: paid.i.doc.number }) };
+	if (last !== undefined) history = { iban: last.ibans[0] as string, from: "paid", ...(last.i.doc.number === undefined ? {} : { number: last.i.doc.number }) };
 	else {
 		const counts = new Map<string, number>();
-		for (const i of invoices) for (const iban of ibansOf(i)) counts.set(iban, (counts.get(iban) ?? 0) + 1);
+		for (const i of invoices) if (!i.instalments.some(toPay)) for (const iban of ibansOf(i)) counts.set(iban, (counts.get(iban) ?? 0) + 1);
 		const ranked = [...counts].sort((a, b) => b[1] - a[1]);
-		if (ranked[0] !== undefined && (ranked[1] === undefined || ranked[1][1] < ranked[0][1])) history = { iban: ranked[0][0], from: "common" };
+		if (ranked[0] !== undefined && ranked[0][1] >= IBAN_COMMON_MIN && (ranked[1] === undefined || ranked[1][1] < ranked[0][1])) history = { iban: ranked[0][0], from: "common" };
 	}
 	const pinned = s.card?.iban;
 	const open: OpenIban[] = [];
@@ -336,37 +347,54 @@ export function ibanOf(s: Pick<Supplier, "invoices" | "card">, dayOf: (at: strin
 			open.push({ iban, ...(i.doc.number === undefined ? {} : { number: i.doc.number }), n: n.n, of: i.instalments.length, valid: validIban(iban) !== undefined });
 		}
 	}
-	const reference = pinned ?? history?.iban;
-	const mixed = reference === undefined && open.length > 1;
-	const differs = open.filter((o) => (reference === undefined ? mixed : o.iban !== reference));
+	// Known from the files: every IBAN already paid to, else the common one.
+	const known = fileIbans({ paid, ...(history === undefined ? {} : { history }) });
+	const mixed = pinned === undefined && known.length === 0 && open.length > 1;
+	const differs = open.filter((o) => (pinned !== undefined ? o.iban !== pinned : known.length > 0 ? !known.includes(o.iban) : mixed));
 	return {
 		...(pinned === undefined ? {} : { pinned }),
 		...(history === undefined ? {} : { history }),
+		paid,
 		open,
 		differs,
 		diffPinned: pinned !== undefined && open.some((o) => o.iban !== pinned),
-		diffHistory: history !== undefined && open.some((o) => o.iban !== history?.iban),
+		diffHistory: known.length > 0 && open.some((o) => !known.includes(o.iban)),
+		wrongPin: pinned !== undefined && open.some((o) => o.iban !== pinned && paid.includes(o.iban)),
 		mixed,
 	};
 }
 
-/** At most this many invoices, and a supplier may be someone using another's name. */
-export const IMPOSTOR_MAX_INVOICES = 2;
+/** The IBAN the files make known: every one already paid to, else the common one. */
+export function fileIbans(v: Pick<IbanView, "paid" | "history">): string[] {
+	return v.paid.length > 0 ? [...v.paid] : v.history === undefined ? [] : [v.history.iban];
+}
 
-/** Another supplier with the same name (another partita IVA, or another IBAN) when this one has few invoices and one to pay: to verify by phone before paying. */
+/** The IBAN a supplier is known by: the one dictated, and those the files make known. */
+function knownIbans(v: IbanView): string[] {
+	return [...(v.pinned === undefined ? [] : [v.pinned]), ...fileIbans(v)];
+}
+
+/**
+ * A supplier the person never confirmed: no instalment paid, no expense, no card (an IBAN or a
+ * partita IVA dictated makes one). Only such a supplier can be someone using another's name: once
+ * paid or confirmed, it is not flagged again, however many invoices it sends.
+ */
+export function unconfirmed(s: Pick<Supplier, "invoices" | "expenses" | "card">): boolean {
+	return s.card === undefined && s.expenses.length === 0 && !s.invoices.some((i) => i.instalments.some((n) => n.paid !== undefined));
+}
+
+/** Another supplier with the same name (another partita IVA, or another IBAN than the one known for it) when this one was never confirmed and has something to pay: to verify by phone before paying. */
 export type Impostor = { readonly other: Supplier; readonly vat: boolean; readonly iban: boolean };
 
 export function impostorOf(all: readonly Supplier[], s: Supplier, dayOf: (at: string) => string): Impostor | undefined {
-	const invoices = s.invoices.filter((i) => !i.credit);
-	if (invoices.length === 0 || invoices.length > IMPOSTOR_MAX_INVOICES) return undefined;
-	if (!invoices.some((i) => !i.paid && i.instalments.some(toPay))) return undefined;
+	if (!unconfirmed(s)) return undefined;
+	if (!s.invoices.some((i) => !i.credit && !i.paid && i.instalments.some(toPay))) return undefined;
 	const mine = ibanOf(s, dayOf).open.map((o) => o.iban);
 	for (const other of lookalikeParties(all, s, { anyTax: true })) {
-		if (other.invoices.filter((i) => !i.credit).length === 0 && other.card === undefined) continue;
+		if (other.invoices.filter((i) => !i.credit).length === 0 && other.card === undefined && other.expenses.length === 0) continue;
 		const vat = s.vat !== undefined && other.vat !== undefined && s.vat !== other.vat;
-		const theirs = ibanOf(other, dayOf);
-		const known = theirs.pinned ?? theirs.history?.iban;
-		const iban = known !== undefined && mine.some((m) => m !== known);
+		const known = knownIbans(ibanOf(other, dayOf));
+		const iban = known.length > 0 && mine.some((m) => !known.includes(m));
 		if (vat || iban) return { other, vat, iban };
 	}
 	return undefined;
@@ -458,7 +486,7 @@ export function lateSuppliers(suppliers: readonly Supplier[], from: string, to: 
 }
 
 /** Why a supplier is in the brief: an IBAN to pay that differs from the files' one, from the one dictated, or another supplier using its name. */
-export type IbanAlert = { readonly supplier: Supplier; readonly kind: "changed" | "pinned" | "impostor" };
+export type IbanAlert = { readonly supplier: Supplier; readonly kind: "changed" | "pinned" | "impostor"; readonly wrongPin?: true };
 
 /** The suppliers with an instalment to pay due within IBAN_BRIEF_DAYS (or already due) and an IBAN to verify, or a same-name impostor: the brief's line. */
 export function ibanAlerts(suppliers: readonly Supplier[], today: string, dayOf: (at: string) => string): IbanAlert[] {
@@ -471,7 +499,7 @@ export function ibanAlerts(suppliers: readonly Supplier[], today: string, dayOf:
 			continue;
 		}
 		const iban = ibanOf(s, dayOf);
-		if (iban.diffPinned) out.push({ supplier: s, kind: "pinned" });
+		if (iban.diffPinned) out.push({ supplier: s, kind: "pinned", ...(iban.wrongPin ? { wrongPin: true as const } : {}) });
 		else if (iban.differs.length > 0) out.push({ supplier: s, kind: "changed" });
 	}
 	return out;

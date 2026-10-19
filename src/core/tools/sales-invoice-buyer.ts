@@ -7,7 +7,8 @@
  * invented. A private person without either gets «0000000»; a foreign customer «XXXXXXX».
  */
 import { type Candidate, findNamed } from "../client-find.ts";
-import { type ClientCard, cardKeys } from "../clients.ts";
+import type { ClientCard } from "../clients.ts";
+import { cardNameKeys } from "../party-cards.ts";
 import { spellingKey } from "../name-keys.ts";
 import { latin1 } from "../plain-text.ts";
 import type { QuoteCustomer } from "../quotes.ts";
@@ -48,7 +49,7 @@ function lastBuyer(invoices: readonly SalesInvoice[], match: (b: Buyer) => boole
 /** The last buyer with the card's tax ids (never one with another); by name or card id only when the card has none. */
 function previousOf(card: ClientCard, invoices: readonly SalesInvoice[]): Buyer | undefined {
 	if (card.vat !== undefined || card.cf !== undefined) return lastBuyer(invoices, (b) => sameTaxIds(b, card.vat, card.cf));
-	const keys = cardKeys(card);
+	const keys = cardNameKeys(card);
 	return lastBuyer(invoices, (b) => b.card === card.id || keys.includes(spellingKey(b.name)));
 }
 

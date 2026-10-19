@@ -4,9 +4,9 @@
  * labels, one referente by name (a field cleared with ""), and whether the card so changed would
  * clash with another (a name or a partita IVA it has).
  */
-import { CLIENT_LIMITS, type ClientCard, type ClientContact, cardCf, cardKeys, cardVat, channelOf, emailProblem, phoneProblem, tagOf } from "../clients.ts";
+import { CLIENT_LIMITS, type ClientCard, type ClientContact, cardCf, cardVat, channelOf, emailProblem, phoneProblem, tagOf } from "../clients.ts";
 import type { Marker } from "../marker.ts";
-import { cardClash, withOptional } from "../party-cards.ts";
+import { cardClash, cardNameKeys, withOptional } from "../party-cards.ts";
 import { spellingKey } from "../name-keys.ts";
 import { line, strings } from "./field-input.ts";
 import { isProblem, type Problem } from "../text-input.ts";
@@ -157,7 +157,7 @@ export function edited(card: ClientCard, e: Edits, by: Marker): ClientCard | str
 	if (e.vat !== undefined) c = withOptional(c, "vat", e.vat);
 	if (e.cf !== undefined) c = withOptional(c, "cf", e.cf);
 	if (e.address !== undefined) c = withOptional(c, "address", e.address);
-	if (e.aliases !== undefined) for (const a of e.aliases) if (!cardKeys(c).includes(spellingKey(a)) && spellingKey(a) !== "") c = { ...c, aliases: [...c.aliases, a] };
+	if (e.aliases !== undefined) for (const a of e.aliases) if (!cardNameKeys(c).includes(spellingKey(a)) && spellingKey(a) !== "") c = { ...c, aliases: [...c.aliases, a] };
 	if (e.removeAliases !== undefined) c = { ...c, aliases: c.aliases.filter((a) => !e.removeAliases?.some((r) => spellingKey(r) === spellingKey(a))) };
 	if (c.aliases.length > CLIENT_LIMITS.aliases) return `una scheda tiene al più ${CLIENT_LIMITS.aliases} altri nomi`;
 	if (e.tags !== undefined) for (const t of e.tags.map(tagOf)) if (!c.tags.includes(t)) c = { ...c, tags: [...c.tags, t] };

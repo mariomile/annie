@@ -8,7 +8,8 @@
 import type { Client } from "../client-sums.ts";
 import { openFollowUps } from "../client-sums.ts";
 import { CLIENTS_BROKEN, type ClientState, type ClientStore } from "../client-store.ts";
-import { CLIENT_LIMITS, type ClientCard, ClientError, type ContactEntry, cardKeys, FOLLOW_UP_HOUR, FOLLOW_UP_ID, FOLLOW_UP_MAX_DAYS, type FollowUp, followUpId } from "../clients.ts";
+import { cardNameKeys } from "../party-cards.ts";
+import { CLIENT_LIMITS, type ClientCard, ClientError, type ContactEntry, FOLLOW_UP_HOUR, FOLLOW_UP_ID, FOLLOW_UP_MAX_DAYS, type FollowUp, followUpId } from "../clients.ts";
 import type { ToolContext } from "../engine.ts";
 import { addDays } from "../italian-calendar.ts";
 import { capitalized, monthName, withNearDate } from "../italian-format.ts";
@@ -103,7 +104,7 @@ export function followUpOps(env: ClientEnv) {
 			try {
 				const fresh = store.update(ctx.callId, (state) => {
 					if (plan !== undefined && state.nextFollowUp !== number) throw new Moved();
-					let card = (chosen.client?.card === undefined ? undefined : state.cards.find((c) => c.id === chosen.client?.card?.id)) ?? state.cards.find((c) => cardKeys(c).includes(spellingKey(chosen.name)));
+					let card = (chosen.client?.card === undefined ? undefined : state.cards.find((c) => c.id === chosen.client?.card?.id)) ?? state.cards.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)));
 					let next = state;
 					if (card === undefined) {
 						if (state.cards.length >= CLIENT_LIMITS.cards) throw new ClientError(`ci sono già ${CLIENT_LIMITS.cards} schede di clienti, il massimo`);

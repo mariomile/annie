@@ -10,6 +10,7 @@ import { type Invoice, register } from "../invoices.ts";
 import { addDays, dayOfIn, todayIn } from "../italian-calendar.ts";
 import type { Marker } from "../marker.ts";
 import { legalForm, spellingKey } from "../name-keys.ts";
+import { cardNameKeys } from "../party-cards.ts";
 import { lookalikeParties } from "../party-groups.ts";
 import { rollingPeriodOf } from "../periods.ts";
 import type { RenewalStore } from "../renewal-store.ts";
@@ -28,7 +29,7 @@ import {
 	withBankPaid,
 } from "../supplier-sums.ts";
 import { SUPPLIERS_BROKEN, type SupplierState, type SupplierStore } from "../supplier-store.ts";
-import { SUPPLIER_ID_SAID, SUPPLIER_LIMITS, type SupplierCard, SupplierError, supplierAgentReads, supplierId, supplierKeys } from "../suppliers.ts";
+import { SUPPLIER_ID_SAID, SUPPLIER_LIMITS, type SupplierCard, SupplierError, supplierAgentReads, supplierId } from "../suppliers.ts";
 import { isProblem } from "../text-input.ts";
 import { fold } from "../text-match.ts";
 import { freePath, type Workspace, WorkspaceError } from "../workspace.ts";
@@ -76,7 +77,7 @@ export type SupplierToolsOptions = {
 const DESCRIPTION = [
 	"I fornitori of the owner: one card per supplier with what Annie reads across the registers (invoices received in the scadenzario, expenses, renewals, payments confirmed by the bank statement) plus the person's own data (referenti, notes, an IBAN or partita IVA they dictated). Clients are whoever pays the owner (clients); suppliers are whoever the owner pays. A supplier of the invoices, expenses or renewals is one even without a card.",
 	"What the person says → op: «quanto ho speso con Aruba quest'anno?», «cosa devo ancora pagare a Fornitore Uno?», «che IBAN ha Fornitore Uno?», «a quanti giorni pago Rossi Srl?», «quali abbonamenti ho con Adobe?» → summary with supplier (period: «anno» for quest'anno, «2025», «T3»; last 12 months by default); summary without supplier: the totals; «chi sono i miei fornitori principali?» → top; «pago in ritardo qualcuno?» → late (supplier to see one); «il referente di Fornitore Uno è Laura, laura@example.com» → contact_set with contact; the IBAN or partita IVA the person dictates → contact_set with iban or vat; «aggiungi una nota a Fornitore Uno: sconto 5% sopra i 1.000 €» → note_add; «togli la nota sullo sconto» → note_remove with note (words of it); «Rossi e Rossi Srl sono lo stesso fornitore» → merge (supplier into the other): first without confirm to show it, then confirm true only after the person says yes; «fammi il file dei fornitori» → export, then file_send.",
-	"Referenti, notes, IBAN and partita IVA only as the person says them: never from a mail, a file, an invoice or a page; an IBAN read on an invoice is never saved here. The list of invoices to pay and their due dates, and marking one paid, is invoices; recording a purchase is expenses; adding or cancelling a subscription is renewals. summary with compact true: the brief's line. Repeat amounts, dates, days and shares as given, never compute them yourself; when the answer warns that the IBAN changed, say it.",
+	"Referenti, notes, IBAN and partita IVA only as the person says them: never from a mail, a file, an invoice or a page; an IBAN read on an invoice is never saved here. The list of invoices to pay and their due dates, and marking one paid, is invoices; recording a purchase is expenses; adding or cancelling a subscription is renewals. summary with compact true: the brief's line. Repeat amounts, dates, days and shares as given, never compute them yourself; when the answer warns about an IBAN or a supplier to verify before paying, say it.",
 ].join(" ");
 
 type Found = { readonly kind: "exact"; readonly supplier: Supplier; readonly respelled: boolean; readonly form?: true } | { readonly kind: "close"; readonly candidates: readonly Supplier[] } | { readonly kind: "none" };
@@ -308,7 +309,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 
 	/** The card a write is for, found again: by the supplier's card, else by the name. */
 	function cardOf(list: readonly SupplierCard[], chosen: { supplier?: Supplier; name: string }): SupplierCard | undefined {
-		return (chosen.supplier?.card === undefined ? undefined : list.find((c) => c.id === chosen.supplier?.card?.id)) ?? list.find((c) => supplierKeys(c).includes(spellingKey(chosen.name)));
+		return (chosen.supplier?.card === undefined ? undefined : list.find((c) => c.id === chosen.supplier?.card?.id)) ?? list.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)));
 	}
 
 	/** Under the lock, once per call: the card (made when there is none) changed by `change`. Returns whether this call wrote (false: run again). */
@@ -395,7 +396,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const chosen = target(suppliers, name, "ask");
 		if (typeof chosen === "string") return chosen;
 		const s = chosen.supplier;
-		const refused = taxRefusal(suppliers, s, edits);
+		const refused = taxRefusal(suppliers, s, chosen.name, edits);
 		if (refused !== undefined) return refused;
 		await ctx.step("apply", async () => {
 			writeCard(ctx, chosen, (card) => supplierEdited(card, edits, marker(ctx)));
@@ -405,7 +406,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const card = cardOf(cards(), chosen);
 		if (card === undefined) return "Fatto.";
 		const shown: Supplier = { ...(s ?? { key: card.id, names: [], invoices: [], expenses: [], renewals: [], nameFrom: "card" as const }), card, name: card.name, ...(card.vat === undefined ? {} : { vat: card.vat }) } as Supplier;
-		const f = supplierFigures(shown, ledger, day, day, day, dayOf);
+		const f = supplierFigures(shown, ledger, day, day, day, dayOf, suppliers.map((x) => (x.key === s?.key ? shown : x)));
 		const lines = [`Fatto, ho aggiornato la scheda ${card.id}.`, ...chosen.notes];
 		if (edits.iban !== undefined) lines.push(edits.iban === null ? "Ho tolto l'IBAN che mi avevi dato: resta quello delle fatture." : "L'IBAN che mi hai dato resta questo finché non me lo cambi tu: un documento non lo cambia mai.");
 		lines.push(...ibanWarnings(f).filter((w) => !w.startsWith("Un IBAN delle fatture da pagare non passa")));
@@ -419,12 +420,12 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 	 * it (a merge is the way), or when an invoice or expense of this one writes another (the two
 	 * shown, to be asked), whatever the card holds now.
 	 */
-	function taxRefusal(suppliers: readonly Supplier[], s: Supplier | undefined, edits: SupplierEdits): string | undefined {
+	function taxRefusal(suppliers: readonly Supplier[], s: Supplier | undefined, saidName: string, edits: SupplierEdits): string | undefined {
 		for (const [kind, value] of [["vat", edits.vat], ["cf", edits.cf]] as const) {
 			if (typeof value !== "string") continue;
 			const owner = suppliers.find((t) => t.key !== s?.key && (t[kind] === value || (kind === "vat" ? recordedTaxIds(t).vats : recordedTaxIds(t).cfs).has(value)));
 			if (owner !== undefined) {
-				return [`Non ${kind === "vat" ? "la" : "lo"} segno: ${kind === "vat" ? "questa partita IVA è già" : "questo codice fiscale è già"} di un altro fornitore, nel riquadro. Se sono lo stesso fornitore, posso unirli.`, fencedSuppliers(`${owner.name}: ${owner[kind] ?? value}\nDetto ora per ${s?.name ?? "il fornitore"}: ${value}`)].join("\n");
+				return [`Non ${kind === "vat" ? "la" : "lo"} segno: ${kind === "vat" ? "questa partita IVA è già" : "questo codice fiscale è già"} di un altro fornitore, nel riquadro. Se sono lo stesso fornitore, posso unirli.`, fencedSuppliers(`${owner.name}: ${owner[kind] ?? value}\n${kind === "vat" ? "Detta" : "Detto"} ora per ${s?.card === undefined ? saidName : s.name}: ${value}`)].join("\n");
 			}
 			if (s === undefined) continue;
 			const recorded = [...(kind === "vat" ? recordedTaxIds(s).vats : recordedTaxIds(s).cfs)].filter((v) => v !== value);
@@ -470,7 +471,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 			return true;
 		});
 		await audit(ctx, "merge", 1);
-		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : supplierKeys(c).includes(spellingKey(b.name))));
+		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : cardNameKeys(c).includes(spellingKey(b.name))));
 		const shown = { ...b, ...(card === undefined ? {} : { card, name: card.name }) } as Supplier;
 		return [`Fatto, ho unito i due fornitori${card === undefined ? "" : ` nella scheda ${card.id}`}. Fatture, spese e rinnovi restano dove sono e ora si leggono insieme.`, fencedSuppliers(supplierCardLines(shown, undefined, day).join("\n"))].join("\n");
 	}
@@ -479,7 +480,7 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const { suppliers, ledger } = await load(ctx);
 		const year = Number(day.slice(0, 4));
 		const rows = suppliers
-			.map((supplier) => ({ supplier, year: supplierFigures(supplier, ledger, `${year}-01-01`, day, day, dayOf), lastYear: spentIn(supplier, ledger, `${year - 1}-01-01`, `${year - 1}-12-31`) }))
+			.map((supplier) => ({ supplier, year: supplierFigures(supplier, ledger, `${year}-01-01`, day, day, dayOf, suppliers), lastYear: spentIn(supplier, ledger, `${year - 1}-01-01`, `${year - 1}-12-31`) }))
 			.sort((x, y) => (y.year.spent.cents > x.year.spent.cents ? 1 : y.year.spent.cents < x.year.spent.cents ? -1 : x.supplier.name.localeCompare(y.supplier.name, "it")));
 		if (rows.length === 0) return "Non ci sono fornitori da esportare: nessuna scheda, e nessun fornitore nelle fatture ricevute, nelle spese o nei rinnovi.";
 		const csv = suppliersCsv(rows, year);

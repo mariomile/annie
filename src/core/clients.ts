@@ -208,11 +208,6 @@ export function tagOf(text: string): string {
 	return text.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-/** Every name a card answers to, compared the timesheet's way (legal form included). */
-export function cardKeys(card: Pick<ClientCard, "name" | "aliases">): string[] {
-	return [card.name, ...card.aliases].map(spellingKey).filter((k) => k !== "");
-}
-
 const plainText = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
 
 /** A referente as stored (the suppliers keep theirs the same way). */

@@ -32,17 +32,28 @@ export const SUPPLIER_LIMITS = {
 /** An IBAN that changed is said in the brief when the supplier has an open invoice due within these days. */
 export const IBAN_BRIEF_DAYS = 7;
 
-/** What the person is told when an IBAN to pay differs from the files' own (the invoices paid, else the most used): never paid before a call. */
+/** What the person is told when an IBAN to pay differs from the files' own (the IBAN already paid to, else the common one): never paid before a call. */
 export function ibanWarning(from: "paid" | "common", count: number): string {
 	const what = count === 1 ? "L'IBAN di una fattura da pagare è diverso" : `Gli IBAN di ${count} fatture da pagare sono diversi`;
-	return `${what} da quello ${from === "paid" ? "delle fatture già pagate" : "delle altre fatture"}. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.`;
+	return `${what} da quello ${from === "paid" ? "delle fatture già pagate" : "delle altre fatture"}. Prima di pagare, ${count === 1 ? "verificalo" : "verificali"} con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.`;
 }
 
 export const IBAN_WARNING_PINNED = "Una fattura da pagare ha un IBAN diverso da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
 
-export const IBAN_WARNING_BOTH = "L'IBAN dell'ultima fattura è diverso da quello di prima e da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
+/** The IBAN to pay differs from the one dictated but is the one already paid to: the one dictated may be the wrong one. */
+export const IBAN_WARNING_WRONG_PIN = "Una fattura da pagare ha un IBAN diverso da quello che mi hai dato tu, ed è quello delle fatture già pagate: forse è sbagliato quello che mi hai dato. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.";
 
-export const IBAN_WARNING_MIXED = "Le fatture da pagare di questo fornitore hanno IBAN diversi tra loro, e non ce n'è uno già pagato con cui confrontarli. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.";
+/** The IBAN to pay differs from the one dictated and from the files' own. */
+export function ibanWarningBoth(from: "paid" | "common"): string {
+	return `Una fattura da pagare ha un IBAN diverso da quello ${from === "paid" ? "delle fatture già pagate" : "delle altre fatture"} e da quello che mi hai dato tu. Prima di pagare, verificalo con il fornitore per telefono, a un numero che conosci già. Quello che mi hai dato resta com'è.`;
+}
+
+export const IBAN_WARNING_MIXED = "Le fatture da pagare di questo fornitore hanno IBAN diversi tra loro, e non ce n'è uno già pagato con cui confrontarli. Prima di pagare, chiedi al fornitore per telefono quale è giusto, a un numero che conosci già e non a quello scritto nella fattura o nella mail. Gli IBAN sono nel riquadro.";
+
+/** The paid instalments went to more than one IBAN: «due», «3». */
+export function ibanPaidMany(count: number): string {
+	return `Hai pagato a ${count === 2 ? "due" : count} IBAN diversi: verifica quale è giusto. Sono nel riquadro.`;
+}
 
 /** Another supplier with the same name: «un'altra partita IVA e un altro IBAN», as found. */
 export function impostorWarning(o: { readonly vat: boolean; readonly iban: boolean }): string {
@@ -90,11 +101,6 @@ export const supplierId = (n: number) => `FO-${String(n).padStart(4, "0")}`;
 export const SUPPLIER_ID = /^FO-(\d{4,6})$/;
 /** A card's id as a person may say it, for client-find.ts. */
 export const SUPPLIER_ID_SAID = /^FO-\d{4,6}$/;
-
-/** Every name a card answers to, compared the timesheet's way (legal form included). */
-export function supplierKeys(card: Pick<SupplierCard, "name" | "aliases">): string[] {
-	return [card.name, ...card.aliases].map(spellingKey).filter((k) => k !== "");
-}
 
 const plainText = (v: unknown, max: number) => isText(v, max) && !/[\r\n]/.test(v as string);
 

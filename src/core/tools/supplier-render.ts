@@ -7,8 +7,8 @@
 import { type CsvCell, csvCents, csvFile } from "../csv.ts";
 import { euros, n1 } from "../format-words.ts";
 import { capitalized, italianDate, withDate, withPercent } from "../italian-format.ts";
-import type { IbanAlert, LateRow, RankedSupplier, Supplier, SupplierFigures, SupplierTotals } from "../supplier-sums.ts";
-import { IBAN_BRIEF_DAYS, IBAN_WARNING_BOTH, IBAN_WARNING_MIXED, IBAN_WARNING_PINNED, ibanWarning, impostorWarning, type SupplierCard } from "../suppliers.ts";
+import { fileIbans, type IbanAlert, type LateRow, type RankedSupplier, type Supplier, type SupplierFigures, type SupplierTotals } from "../supplier-sums.ts";
+import { IBAN_BRIEF_DAYS, IBAN_WARNING_MIXED, IBAN_WARNING_PINNED, IBAN_WARNING_WRONG_PIN, ibanPaidMany, ibanWarning, ibanWarningBoth, impostorWarning, type SupplierCard } from "../suppliers.ts";
 import { fence } from "../untrusted.ts";
 import { cents as renewalCents } from "../renewal-sums.ts";
 import { contactLine, counted } from "./client-render.ts";
@@ -48,10 +48,13 @@ export function supplierCardLines(s: Supplier, f: (Pick<SupplierFigures, "iban" 
 	if (s.cf !== undefined && s.cf !== s.vat?.slice(2)) out.push(`Codice fiscale: ${s.cf}`);
 	if (f !== undefined) {
 		const i = f.iban;
-		if (i.history !== undefined) out.push(`${i.history.from === "paid" ? `IBAN dell'ultima fattura pagata${i.history.number === undefined ? "" : ` (${i.history.number})`}` : "IBAN scritto sulla maggior parte delle fatture"}: ${i.history.iban}`);
+		if (i.history !== undefined) out.push(`${i.history.from === "paid" ? `IBAN dell'ultima fattura pagata${i.history.number === undefined ? "" : ` (${i.history.number})`}` : "IBAN scritto sulla maggior parte delle fatture già pagate"}: ${i.history.iban}`);
+		for (const p of i.paid) if (p !== i.history?.iban) out.push(`IBAN già pagato anche: ${p}`);
 		for (const d of i.differs) out.push(`IBAN da verificare sulla fattura ${d.number ?? "senza numero"}${d.of > 1 ? ` (rata ${d.n} di ${d.of})` : ""}: ${d.iban}${d.valid ? "" : " (non passa il controllo delle cifre)"}`);
+		// Nothing to compare with (nothing dictated, nothing paid): the one IBAN to pay is shown as such, neither good nor bad.
+		const never = i.pinned === undefined && fileIbans(i).length === 0;
 		const same = i.open.filter((o) => !i.differs.includes(o) && o.iban !== i.history?.iban);
-		for (const o of same) out.push(`IBAN della fattura da pagare ${o.number ?? "senza numero"}: ${o.iban}${o.valid ? "" : " (non passa il controllo delle cifre)"}`);
+		for (const o of same) out.push(`IBAN della fattura da pagare ${o.number ?? "senza numero"}${never ? ", mai pagato finora" : ""}: ${o.iban}${o.valid ? "" : " (non passa il controllo delle cifre)"}`);
 	}
 	if (card?.iban !== undefined) out.push(`IBAN che mi hai dato tu: ${card.iban}`);
 	if (card !== undefined && card.aliases.length > 0) out.push(`Altri nomi: ${card.aliases.join(", ")}`);
@@ -71,12 +74,14 @@ export function ibanWarnings(f: Pick<SupplierFigures, "iban" | "impostor">): str
 	const attention = (text: string) => `Attenzione: ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 	if (f.impostor !== undefined) out.push(attention(impostorWarning(f.impostor)));
 	if (i.differs.length > 0) {
-		const both = i.pinned !== undefined && i.history !== undefined && i.differs.some((d) => d.iban !== i.history?.iban);
-		if (both) out.push(attention(IBAN_WARNING_BOTH));
-		else if (i.pinned !== undefined) out.push(attention(IBAN_WARNING_PINNED));
+		const files = fileIbans(i);
+		const both = i.pinned !== undefined && i.history !== undefined && i.differs.some((d) => !files.includes(d.iban));
+		if (both) out.push(attention(ibanWarningBoth(i.history?.from === "paid" ? "paid" : "common")));
+		else if (i.pinned !== undefined) out.push(attention(i.wrongPin ? IBAN_WARNING_WRONG_PIN : IBAN_WARNING_PINNED));
 		else if (i.mixed) out.push(attention(IBAN_WARNING_MIXED));
 		else out.push(attention(ibanWarning(i.history?.from === "paid" ? "paid" : "common", i.differs.length)));
 	}
+	if (i.paid.length > 1) out.push(attention(ibanPaidMany(i.paid.length)));
 	if (i.open.some((o) => !o.valid)) out.push("Un IBAN delle fatture da pagare non passa il controllo delle cifre: non usarlo prima di averlo verificato.");
 	return out;
 }
@@ -143,7 +148,7 @@ export function topSuppliersAnswer(rows: readonly RankedSupplier[], total: bigin
 	const shown = rows.slice(0, MAX_SUPPLIER_ROWS);
 	const body = shown.map((r, i) => `${i + 1}. ${r.supplier.name}: ${euros(r.cents)} (${r.percent}%)`);
 	if (rows.length > shown.length) body.push(`e altri ${rows.length - shown.length}`);
-	const lines = [`${capitalized(span)} hai speso ${euros(total)}, IVA inclusa, con ${n1(rows.length, "1 fornitore", "# fornitori")}: spese registrate e fatture pagate${twins === 0 ? ", gli stessi soldi una volta sola" : ""}.`, fencedSuppliers(body.join("\n"))];
+	const lines = [`${capitalized(span)} hai speso ${euros(total)}, IVA inclusa, con ${n1(rows.length, "1 fornitore", "# fornitori")}, contando le spese registrate e le fatture pagate${twins === 0 ? ", gli stessi soldi una volta sola" : ""}.`, fencedSuppliers(body.join("\n"))];
 	if (twins > 0) lines.push(twinsLine(twins));
 	if (unnamed > 0) lines.push(`${n1(unnamed, "Una spesa", "# spese")} senza fornitore non ${unnamed === 1 ? "è contata" : "sono contate"}.`);
 	return lines.join("\n");
@@ -189,27 +194,42 @@ export function lateAnswer(rows: readonly LateRow[], span: string): string {
 }
 
 /**
- * The brief's line: a supplier with an invoice to pay within IBAN_BRIEF_DAYS whose IBAN changed,
- * differs from the one the person gave, or whose name another supplier uses. Never the IBAN, the
+ * The brief's line: a supplier with an invoice to pay within IBAN_BRIEF_DAYS on an IBAN that differs
+ * from the one known (already paid to, or given by the person), or whose name another supplier uses. Never the IBAN, the
  * name only in the fence; the due dates and amounts are the fiscal agenda's line, not repeated.
  */
 export function briefAnswer(alerts: readonly IbanAlert[]): string {
 	if (alerts.length === 0) return "Niente da segnalare sui fornitori: nel brief non scrivere niente sui fornitori.";
-	const lines: string[] = [];
+	const days = `entro ${IBAN_BRIEF_DAYS} giorni`;
+	// An IBAN that differs (from the files' or from the one dictated) is one kind for the person; a same-name supplier the other.
+	const iban = alerts.filter((a) => a.kind !== "impostor");
+	const impostor = alerts.filter((a) => a.kind === "impostor");
 	const names: string[] = [];
-	const kinds: readonly [IbanAlert["kind"], (n: number) => string, string][] = [
-		["changed", (n) => `${n === 1 ? "Un fornitore" : `${n} fornitori`} con una fattura da pagare entro ${IBAN_BRIEF_DAYS} giorni ${n === 1 ? "ha" : "hanno"} cambiato IBAN sull'ultima fattura. Prima di pagarla, verificalo con lui per telefono.`, "IBAN cambiato"],
-		["pinned", (n) => `${n === 1 ? "Un fornitore" : `${n} fornitori`} con una fattura da pagare entro ${IBAN_BRIEF_DAYS} giorni ${n === 1 ? "ha" : "hanno"} sulla fattura un IBAN diverso da quello che conosci. Prima di pagarla, verificalo con lui per telefono.`, "IBAN diverso da quello che conosci"],
-		["impostor", (n) => `${n === 1 ? "Un fornitore" : `${n} fornitori`} con una fattura da pagare entro ${IBAN_BRIEF_DAYS} giorni ${n === 1 ? "ha" : "hanno"} lo stesso nome di un altro fornitore ma un'altra partita IVA o un altro IBAN. Prima di pagare, verifica con il fornitore per telefono, a un numero che conosci già.`, "Stesso nome di un altro fornitore"],
-	];
-	for (const [kind, line, label] of kinds) {
-		const these = alerts.filter((a) => a.kind === kind);
-		if (these.length === 0) continue;
-		lines.push(line(these.length));
+	let cut = false;
+	for (const [these, label] of [
+		[iban, "IBAN diverso da quello che conosci"],
+		[impostor, "Stesso nome di un altro fornitore"],
+	] as const) {
 		for (const a of these.slice(0, 2)) names.push(`${label}: ${a.supplier.name}`);
+		if (these.length > 2) {
+			names.push(`e altri ${these.length - 2}`);
+			cut = true;
+		}
 	}
-	lines.push(names.length === 1 ? "Il nome è nel riquadro." : "I nomi sono nel riquadro.");
-	return [lines.join(" "), fencedSuppliers(names.join("\n")), "Nel brief riporta questo in una riga, con il nome come è scritto, senza l'IBAN; le scadenze e gli importi sono già nella riga dell'agenda fiscale, non ripeterli."].join("\n");
+	const who = (n: number) => (n === 1 ? "uno ha" : `${n} hanno`);
+	let text: string;
+	if (iban.length > 0 && impostor.length > 0) {
+		text = `${alerts.length} fornitori con una fattura da pagare ${days} sono da verificare per telefono prima di pagare, a un numero che conosci già: ${who(iban.length)} un IBAN diverso da quello che conosci, ${who(impostor.length)} lo stesso nome di un altro fornitore ma un'altra partita IVA o un altro IBAN.`;
+	} else if (iban.length > 0) {
+		const n = iban.length;
+		const wrongPin = n === 1 && iban[0]?.wrongPin === true ? ", ed è quello delle fatture già pagate: forse è sbagliato quello che mi hai dato" : "";
+		text = `${n === 1 ? "Un fornitore ha" : `${n} fornitori hanno`} una fattura da pagare con un IBAN diverso da quello che conosci, in scadenza ${days}${wrongPin}. ${n === 1 ? "Prima di pagarla, verificalo con lui" : "Prima di pagarle, verificalo con ciascuno"} per telefono, a un numero che conosci già.`;
+	} else {
+		const n = impostor.length;
+		text = `${n === 1 ? "Un fornitore" : `${n} fornitori`} con una fattura da pagare ${days} ${n === 1 ? "ha" : "hanno"} lo stesso nome di un altro fornitore ma un'altra partita IVA o un altro IBAN. Prima di pagare, verifica con il fornitore per telefono, a un numero che conosci già.`;
+	}
+	const where = cut ? (iban.length > 0 && impostor.length > 0 ? "I primi due di ciascun tipo sono nel riquadro." : "I primi due sono nel riquadro.") : alerts.length === 1 ? "Il nome è nel riquadro." : "I nomi sono nel riquadro.";
+	return [`${text} ${where}`, fencedSuppliers(names.join("\n")), "Nel brief riporta questo in una riga, con il nome come è scritto, senza l'IBAN; le scadenze e gli importi sono già nella riga dell'agenda fiscale, non ripeterli."].join("\n");
 }
 
 /** What a merge would join, to be fenced: each side's card, partita IVA and what was spent in all. */
@@ -221,6 +241,13 @@ export function supplierMergeLines(from: Supplier, into: Supplier, spent: (s: Su
 		return `${s.name} (${own}; ${s.vat === undefined ? "nessuna partita IVA" : `partita IVA ${s.vat}`}; ${counted(invoices, "nessuna fattura", "1 fattura", "# fatture")}, ${counted(s.expenses.length, "nessuna spesa", "1 spesa", "# spese")}, ${euros(spent(s))} spesi in tutto)`;
 	};
 	return [`Da unire: ${side(from)}`, `Dentro: ${side(into)}`];
+}
+
+/** The CSV's «Da verificare prima di pagare»: with nothing dictated nor paid, the IBAN to pay (never paid so far); else «sì» when an IBAN differs or the name is another's. */
+function toVerify(f: Pick<SupplierFigures, "iban" | "impostor">): string {
+	const i = f.iban;
+	if (i.pinned === undefined && i.paid.length === 0 && i.open.length > 0) return i.open.map((o) => o.iban).join(", ");
+	return i.differs.length > 0 || f.impostor !== undefined ? "sì" : "";
 }
 
 /** The CSV: one supplier per row, the figures (years in the headers) and the person's data (the notes counted, not copied). */
@@ -257,9 +284,9 @@ export function suppliersCsv(rows: readonly { readonly supplier: Supplier; reado
 			s.vat ?? "",
 			s.cf ?? "",
 			s.card?.iban ?? "",
-			f.iban.history?.iban ?? "",
+			f.iban.history?.from === "paid" ? f.iban.paid.join(", ") : "",
 			f.iban.differs.map((d) => d.iban).join(", "),
-			f.iban.differs.length > 0 || f.impostor !== undefined ? "sì" : "",
+			toVerify(f),
 			contacts.flatMap((c) => (c.name === undefined ? [] : [c.role === undefined ? c.name : `${c.name} (${c.role})`])).join(", "),
 			contacts.flatMap((c) => (c.phone === undefined ? [] : [c.phone])).join(", "),
 			contacts.flatMap((c) => (c.email === undefined ? [] : [c.email])).join(", "),
