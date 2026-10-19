@@ -487,6 +487,40 @@ describe("suppliers: IBAN checked against what was paid, not the dates a file wr
 		expect(s.store.read().broken).toBe(true);
 	});
 
+	it("a merge with a stray card never confirms someone using the name, either way", async () => {
+		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
+		const stray = { id: "FO-0001", name: "Fornitore Uno", aliases: [], contacts: [], notes: [{ date: "2026-10-01", text: "chiamare Laura", by: "test:u", at: NOW.toISOString() }], by: "test:u", at: NOW.toISOString() };
+		for (const [from, into] of [
+			["FO-0001", "IT00000050013"],
+			["IT00000050013", "FO-0001"],
+		]) {
+			const s = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES } });
+			s.store.update("seed", (st) => ({ ...st, nextCard: 2, cards: [stray] }));
+			expect(outside(await s.run({ op: "merge", supplier: from, into, confirm: true }))).toContain("Fatto, ho unito i due fornitori");
+			const merged = s.store.read().cards.find((c) => c.vat === "IT00000050013");
+			expect(merged?.taxFrom).toBe("registers");
+			expect(outside(await s.run({ op: "summary", supplier: "IT00000050013" }))).toContain("Attenzione: c'è un altro fornitore con lo stesso nome");
+			expect(inside(await s.run({ op: "summary", compact: true }))).toContain("Stesso nome di un altro fornitore: Fornitore Uno");
+			// An IBAN dictated still confirms it.
+			await s.run({ op: "contact_set", supplier: "IT00000050013", iban: IBAN_D });
+			expect(outside(await s.run({ op: "summary", supplier: "IT00000050013" }))).not.toContain("stesso nome");
+			clean(s.answers);
+		}
+	});
+
+	it("a note to the real supplier by partita IVA goes to its own card, never to a stray card of the same name", async () => {
+		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
+		const s = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES } });
+		s.store.update("seed", (st) => ({ ...st, nextCard: 2, cards: [{ id: "FO-0001", name: "Fornitore Uno S.r.l.", aliases: [], contacts: [], notes: [], by: "test:u", at: NOW.toISOString() }] }));
+		const done = await s.run({ op: "note_add", supplier: "IT00000010017", note: "sconto 5%" });
+		expect(outside(done)).toContain("Fatto, nota salvata nella scheda FO-0002.");
+		const [stray, own] = s.store.read().cards;
+		expect(stray?.notes).toEqual([]);
+		expect(own).toMatchObject({ id: "FO-0002", vat: "IT00000010017" });
+		expect(inside(await s.run({ op: "summary", supplier: "IT00000010017" }))).toContain("sconto 5%");
+		clean(s.answers);
+	});
+
 	it("a similar name with no partita IVA is asked about, not offered to merge", async () => {
 		const forged = (n: string, day: string) => rec({ name: "Fornitore Uno", vat: "00000050013" }, n, "2026-10-12", "900.00", day, IBAN_D);
 		const own = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES }, expenses: [expense("S-2026-0009", "2026-09-10", "30", { supplier: "Fornitore Uno S.r.l." })] });
@@ -497,7 +531,7 @@ describe("suppliers: IBAN checked against what was paid, not the dates a file wr
 		const bare = await setup({ files: { "f/x1.xml": forged("X-1", "2026-10-23"), ...FILES } });
 		bare.store.update("seed", (st) => ({ ...st, nextCard: 2, cards: [{ id: "FO-0001", name: "Fornitore Uno", aliases: [], contacts: [], notes: [], by: "test:u", at: NOW.toISOString() }] }));
 		const asked = await bare.run({ op: "summary", supplier: "IT00000010017" });
-		expect(outside(asked)).toContain("C'è anche una scheda con un nome simile e senza partita IVA, nel riquadro: chiedi a chi ti scrive di quale partita IVA è, e dimmela.");
+		expect(outside(asked)).toContain("C'è anche una scheda con un nome simile e senza partita IVA, nel riquadro: chiedi a chi ti scrive di quale dei fornitori è, e li unisco.");
 		expect(inside(asked)).toContain("Scheda senza partita IVA: Fornitore Uno (FO-0001)");
 		expect(outside(asked)).not.toContain("posso unirli");
 		clean([...own.answers, ...bare.answers]);

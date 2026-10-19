@@ -8,6 +8,7 @@
 import { join } from "node:path";
 import { type BookFile, readBook, updateBook } from "./json-book.ts";
 import { spellingKey } from "./name-keys.ts";
+import { homonymCards } from "./party-cards.ts";
 import { SUPPLIER_ID, SUPPLIER_LIMITS, type SupplierCard, SupplierError, validSupplierCall, validSupplierCard } from "./suppliers.ts";
 
 /** What a change works on: the cards and the next number to give. */
@@ -77,11 +78,11 @@ function validBook(raw: unknown): Book | undefined {
 		if (n >= b.nextCard || ids.has(c.id)) return undefined;
 		ids.add(c.id);
 	}
-	// Two cards never answer to the same partita IVA or codice fiscale, nor to the same name unless they hold two different ones (two suppliers sharing a name).
+	// Two cards never answer to the same partita IVA or codice fiscale, nor to the same name unless they are homonyms (party-cards.ts homonymCards).
 	const names = new Map<string, SupplierCard[]>();
 	const vats = new Set<string>();
 	const cfs = new Set<string>();
-	const twoIds = (x: SupplierCard, y: SupplierCard) => (x.vat !== undefined && y.vat !== undefined && x.vat !== y.vat) || (x.cf !== undefined && y.cf !== undefined && x.cf !== y.cf);
+	const twoIds = homonymCards;
 	for (const c of b.cards) {
 		for (const k of new Set([c.name, ...c.aliases].map(spellingKey))) {
 			const same = names.get(k) ?? [];

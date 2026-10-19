@@ -100,6 +100,12 @@ export function supplierMergeRefusal(a: Supplier, b: Supplier): "same" | "vat" |
 	return undefined;
 }
 
+/** Whether a merged card's partita IVA or codice fiscale came from a card the person confirmed (no taxFrom); a card with none has nothing to mark. */
+function confirmedTax(card: SupplierCard, base: SupplierCard, other: SupplierCard | undefined): boolean {
+	if (card.vat === undefined && card.cf === undefined) return true;
+	return (["vat", "cf"] as const).some((k) => card[k] !== undefined && ((base[k] === card[k] && base.taxFrom === undefined) || (base[k] === undefined && other !== undefined && other[k] === card[k] && other.taxFrom === undefined)));
+}
+
 /** The state with `a` merged into `b` (party-cards.ts mergeCards), the IBAN dictated kept: the second's, else the first's. */
 export function mergedSuppliers(state: SupplierState, a: Supplier, b: Supplier, fresh: (state: SupplierState, name: string, supplier: Supplier) => SupplierCard, by: Marker): SupplierState {
 	return mergeCards<SupplierCard, SupplierState>(state, a, b, {
@@ -112,5 +118,7 @@ export function mergedSuppliers(state: SupplierState, a: Supplier, b: Supplier, 
 			const iban = base.iban ?? other?.iban;
 			return iban === undefined ? {} : { iban };
 		},
+		// A merge never confirms: the tax ids stay confirmed only when they come from a card the person confirmed.
+		finish: (card, base, other) => withOptional(card, "taxFrom", confirmedTax(card, base, other) ? null : "registers"),
 	});
 }

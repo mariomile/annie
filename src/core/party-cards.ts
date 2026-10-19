@@ -37,12 +37,13 @@ export function cardNameKeys(card: { readonly name: string; readonly aliases: re
 
 /**
  * Why `card` cannot sit with `others`: a name, a partita IVA or a codice fiscale another card has.
- * `word`: «cliente», «fornitore». `homonyms`: two cards with the same name and two different tax
- * ids may sit together (two parties that share a name).
+ * `word`: «cliente», «fornitore». `homonyms`: two cards with the same name may sit together when
+ * they hold two different tax ids, or one holds a tax id and the other none (two parties that
+ * share a name; a card made by a note before the partita IVA was known stays apart until merged).
  */
 export function cardClash(card: MergeCard, others: readonly MergeCard[], word: string, o2: { readonly homonyms?: boolean } = {}): string | undefined {
 	const keys = new Set(cardNameKeys(card));
-	const twoIds = (o: MergeCard) => (card.vat !== undefined && o.vat !== undefined && card.vat !== o.vat) || (card.cf !== undefined && o.cf !== undefined && card.cf !== o.cf);
+	const twoIds = (o: MergeCard) => homonymCards(card, o);
 	for (const o of others) {
 		if (o.id === card.id) continue;
 		if (!(o2.homonyms === true && twoIds(o)) && cardNameKeys(o).some((k) => keys.has(k))) return `un nome di questa scheda è già della scheda ${o.id}: se sono lo stesso ${word}, uniscile`;
@@ -50,6 +51,12 @@ export function cardClash(card: MergeCard, others: readonly MergeCard[], word: s
 		if (card.cf !== undefined && o.cf === card.cf) return `lo stesso codice fiscale è già nella scheda ${o.id}: se sono lo stesso ${word}, uniscile`;
 	}
 	return undefined;
+}
+
+/** Two cards that may answer to the same name: two different partite IVA or codici fiscali, or a tax id on one and none on the other. */
+export function homonymCards(x: Pick<MergeCard, "vat" | "cf">, y: Pick<MergeCard, "vat" | "cf">): boolean {
+	const taxed = (c: Pick<MergeCard, "vat" | "cf">) => c.vat !== undefined || c.cf !== undefined;
+	return (x.vat !== undefined && y.vat !== undefined && x.vat !== y.vat) || (x.cf !== undefined && y.cf !== undefined && x.cf !== y.cf) || taxed(x) !== taxed(y);
 }
 
 /** Why `a` cannot be merged into `b`, or undefined: the same party, two partite IVA, two codici fiscali. */
@@ -70,6 +77,8 @@ export type MergeOptions<C extends MergeCard, S extends { readonly nextCard: num
 	readonly fail: (message: string) => Error;
 	/** The side's own fields of the merged card, from the card kept (`base`) and the other one. */
 	readonly extras?: (base: C, other: C | undefined) => Partial<C>;
+	/** The merged card once its tax ids are set, from the card kept (`base`) and the other one: the side's last word. */
+	readonly finish?: (card: C, base: C, other: C | undefined) => C;
 };
 
 /**
@@ -110,7 +119,7 @@ export function mergeCards<C extends MergeCard, S extends { readonly nextCard: n
 	const notes = [...base.notes, ...(other?.notes ?? [])].sort((x, y) => x.date.localeCompare(y.date) || x.at.localeCompare(y.at)).slice(-o.limits.notes);
 	const vat = base.vat ?? other?.vat ?? [b.vat, a.vat].find((v) => v !== undefined && goodVat(v));
 	const cf = base.cf ?? other?.cf ?? [b.cf, a.cf].find((v) => v !== undefined && "cf" in cardCf(v));
-	const card = {
+	const made = {
 		...base,
 		aliases,
 		contacts,
@@ -120,6 +129,7 @@ export function mergeCards<C extends MergeCard, S extends { readonly nextCard: n
 		...(cf === undefined ? {} : { cf }),
 		edited: o.by,
 	} as C;
+	const card = o.finish === undefined ? made : o.finish(made, base, other);
 	const rest = next.cards.filter((c) => c.id !== src?.id && c.id !== dst?.id && c.id !== base.id);
 	const problem = cardClash(card, rest, o.word);
 	if (problem !== undefined) throw o.fail(problem);

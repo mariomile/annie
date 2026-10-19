@@ -113,7 +113,7 @@ function alikeLines(suppliers: readonly Supplier[], supplier: Supplier, inside: 
 	const others = alike.filter((s) => !bare.includes(s) && !own.includes(s));
 	const lines: string[] = [];
 	if (bare.length > 0) {
-		lines.push(`${bare.length === 1 ? "C'è anche una scheda" : `Ci sono anche ${bare.length} schede`} con un nome simile e senza partita IVA, nel riquadro: chiedi a chi ti scrive di quale partita IVA ${bare.length === 1 ? "è" : "sono"}, e dimmela.`);
+		lines.push(`${bare.length === 1 ? "C'è anche una scheda" : `Ci sono anche ${bare.length} schede`} con un nome simile e senza partita IVA, nel riquadro: chiedi a chi ti scrive di quale dei fornitori ${bare.length === 1 ? "è" : "sono"}, e li unisco.`);
 		for (const s of bare.slice(0, 3)) inside.push(`Scheda senza partita IVA: ${s.name}${s.card === undefined ? "" : ` (${s.card.id})`}`);
 	}
 	if (own.length > 0) {
@@ -339,20 +339,22 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 	}
 
 	/**
-	 * The card a write is for, found again: by the supplier's card, else by the name, but never a
-	 * card holding another supplier's partita IVA or codice fiscale (a homonym's, or the real one's
-	 * when someone uses its name).
+	 * The card a write is for: a supplier of the registers writes only on its own card (none: a new
+	 * one linked to it is made), never on another card found by the name (a stray card without a
+	 * partita IVA, a homonym's, the real one's when someone uses its name). A name never seen: the
+	 * card of that name. `written`: the card this call wrote, when known.
 	 */
-	function cardOf(list: readonly SupplierCard[], chosen: { supplier?: Supplier; name: string }): SupplierCard | undefined {
+	function cardOf(list: readonly SupplierCard[], chosen: { supplier?: Supplier; name: string }, written?: string): SupplierCard | undefined {
+		if (written !== undefined) return list.find((c) => c.id === written);
 		const s = chosen.supplier;
-		if (s?.card !== undefined) return list.find((c) => c.id === s.card?.id);
-		const elsewhere = (c: SupplierCard) => s !== undefined && ((c.vat !== undefined && c.vat !== s.vat) || (c.cf !== undefined && c.cf !== s.cf));
-		return list.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)) && !elsewhere(c));
+		if (s !== undefined) return s.card === undefined ? undefined : list.find((c) => c.id === s.card?.id);
+		return list.find((c) => cardNameKeys(c).includes(spellingKey(chosen.name)));
 	}
 
-	/** Under the lock, once per call: the card (made when there is none) changed by `change`. Returns whether this call wrote (false: run again). */
-	function writeCard(ctx: ToolContext, chosen: { supplier?: Supplier; name: string }, change: (card: SupplierCard) => SupplierCard | string): boolean {
-		return store.update(ctx.callId, (state) => {
+	/** Under the lock, once per call: the card (made when there is none) changed by `change`. Returns the id of the card written, or undefined when the call wrote already (run again). */
+	function writeCard(ctx: ToolContext, chosen: { supplier?: Supplier; name: string }, change: (card: SupplierCard) => SupplierCard | string): string | undefined {
+		let id: string | undefined;
+		store.update(ctx.callId, (state) => {
 			let card = cardOf(state.cards, chosen);
 			let next = state;
 			if (card === undefined) {
@@ -365,8 +367,10 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 			const rest = next.cards.filter((c) => c.id !== changed.id);
 			const problem = supplierClash(changed, rest);
 			if (problem !== undefined) throw new SupplierError(problem);
+			id = changed.id;
 			return { ...next, cards: next.cards.map((c) => (c.id === changed.id ? changed : c)) };
 		});
+		return id;
 	}
 
 	async function noteAdd(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
@@ -377,17 +381,18 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const { suppliers } = await load(ctx);
 		const chosen = target(suppliers, name, "ask");
 		if (typeof chosen === "string") return chosen;
-		const dropped = await ctx.step("apply", async () => {
+		const applied = await ctx.step("apply", async () => {
 			let full = false;
-			writeCard(ctx, chosen, (card) => {
+			const id = writeCard(ctx, chosen, (card) => {
 				const notes = [...card.notes, { date: day, text: body, ...marker(ctx) }];
 				full = notes.length > SUPPLIER_LIMITS.notes;
 				return { ...card, notes: notes.slice(-SUPPLIER_LIMITS.notes), edited: marker(ctx) };
 			});
-			return full;
+			return { full, ...(id === undefined ? {} : { id }) };
 		});
+		const dropped = applied.full;
 		await audit(ctx, "note_add", 1);
-		const card = cardOf(cards(), chosen);
+		const card = cardOf(cards(), chosen, applied.id);
 		const lines = [`Fatto, nota salvata${card === undefined ? "" : ` nella scheda ${card.id}`}.`, ...chosen.notes];
 		if (dropped) lines.push(`La scheda teneva già ${SUPPLIER_LIMITS.notes} note: ho tolto la più vecchia.`);
 		lines.push(fencedSuppliers([`Fornitore: ${card?.name ?? chosen.name}`, `Nota: ${body}`].join("\n")));
@@ -436,17 +441,17 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 		const s = chosen.supplier;
 		const refused = taxRefusal(suppliers, s, chosen.name, edits);
 		if (refused !== undefined) return refused;
-		await ctx.step("apply", async () => {
+		const written = await ctx.step("apply", async () => {
 			// An IBAN, a partita IVA or a codice fiscale dictated confirms the card; a referente alone does not.
 			const dictated = typeof edits.iban === "string" || typeof edits.vat === "string" || typeof edits.cf === "string";
-			writeCard(ctx, chosen, (card) => {
+			const id = writeCard(ctx, chosen, (card) => {
 				const changed = supplierEdited(card, edits, marker(ctx));
 				return typeof changed === "string" || !dictated ? changed : withOptional(changed, "taxFrom", null);
 			});
-			return true;
+			return id ?? "";
 		});
 		await audit(ctx, "contact_set", 1);
-		const card = cardOf(cards(), chosen);
+		const card = cardOf(cards(), chosen, written === "" ? undefined : written);
 		if (card === undefined) return "Fatto.";
 		const shown: Supplier = { ...(s ?? { key: card.id, names: [], invoices: [], expenses: [], renewals: [], nameFrom: "card" as const }), card, name: card.name, ...(card.vat === undefined ? {} : { vat: card.vat }) } as Supplier;
 		const f = supplierFigures(shown, ledger, day, day, day, dayOf, suppliers.map((x) => (x.key === s?.key ? shown : x)));
@@ -514,7 +519,8 @@ export function createSupplierTools(options: SupplierToolsOptions): AnnieTool[] 
 			return true;
 		});
 		await audit(ctx, "merge", 1);
-		const card = cards().find((c) => (b.card !== undefined ? c.id === b.card.id : a.card !== undefined ? c.id === a.card.id : cardNameKeys(c).includes(spellingKey(b.name))));
+		const all = cards();
+		const card = b.card !== undefined ? all.find((c) => c.id === b.card?.id) : a.card !== undefined ? all.find((c) => c.id === a.card?.id) : (all.find((c) => b.vat !== undefined && c.vat === b.vat) ?? all.find((c) => cardNameKeys(c).includes(spellingKey(b.name))));
 		const shown = { ...b, ...(card === undefined ? {} : { card, name: card.name }) } as Supplier;
 		return [`Fatto, ho unito i due fornitori${card === undefined ? "" : ` nella scheda ${card.id}`}. Fatture, spese e rinnovi restano dove sono e ora si leggono insieme.`, fencedSuppliers(supplierCardLines(shown, undefined, day).join("\n"))].join("\n");
 	}
