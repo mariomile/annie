@@ -196,7 +196,8 @@ export const STOCK_ID = /^MG-(\d{4,6})$/;
 export const moveId = (n: number) => `MV-${String(n).padStart(6, "0")}`;
 export const MOVE_ID = /^MV-(\d{6,7})$/;
 const LISTINO_ID = /^LS-\d{4,7}$/;
-const DRAFT_ID = /^BZ-\d{4,6}$/;
+/** An invoice's draft id (BZ-0001), or a DDT's (DT-0001): what moves the magazzino as a sale. */
+const DRAFT_ID = /^(?:BZ|DT)-\d{4,6}$/;
 
 const QTY = /^\d{1,10}(?:\.\d{1,3})?$/;
 const SIGNED_QTY = /^-?\d{1,10}(?:\.\d{1,3})?$/;
@@ -333,7 +334,7 @@ export function validSaleKey(v: unknown): v is SaleKey {
 	if (typeof v !== "object" || v === null) return false;
 	const s = v as SaleKey;
 	if (s.c !== undefined && (!isCost(s.c) || s.of !== undefined)) return false;
-	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y", "c"].includes(k)) && typeof s.k === "string" && /^BZ-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
+	return Object.keys(s).every((k) => ["k", "i", "q", "of", "y", "c"].includes(k)) && typeof s.k === "string" && /^(?:BZ|DT)-\d{4,6}#\d{1,4}$/.test(s.k) && typeof s.i === "string" && STOCK_ID.test(s.i) && isQuantity(s.q) && (s.of === undefined || (typeof s.of === "string" && DRAFT_ID.test(s.of))) && (s.y === undefined || (Number.isInteger(s.y) && s.y >= 2000 && s.y <= 9999));
 }
 
 export function validLowClaim(v: unknown): v is LowClaim {

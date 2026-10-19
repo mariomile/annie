@@ -19,7 +19,7 @@ import { findQuotes, type Quote, type QuoteCustomer, STATUS_WORDS } from "../quo
 import { CREDIT_NOTE_TYPE, DEFAULT_METHOD, FIELD_LIMITS, INPS_CASSA, INVOICE_TYPE, naturaWords, REGIME_FORFETTARIO, REGIME_ORDINARIO } from "../sales-invoice-rules.ts";
 import { nextSeq, type SalesBook, type SalesSettings, type SalesState } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
-import { type Buyer, type Cassa, draftId, type HoursRef, type IssuedInvoice, invoiceNumber, isIssued, isPersonCf, regimeOf, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, type SalesLine, sellerOf, validInvoice } from "../sales-invoices.ts";
+import { type Buyer, type Cassa, type DdtRef, draftId, type HoursRef, type IssuedInvoice, invoiceNumber, isIssued, isPersonCf, regimeOf, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, type SalesLine, sellerOf, validInvoice } from "../sales-invoices.ts";
 import { resolveClient } from "../timesheet-clients.ts";
 import { activeReservation, oldestFirst, sameClient, type WorkEntry } from "../timesheet.ts";
 import { TIMESHEET_BROKEN } from "../timesheet-store.ts";
@@ -30,6 +30,7 @@ import { anyMissing, askFor, askGroups, dueOf, type FilesSay, filesSay, findIssu
 import { type BuyerFields, fitsLatin, type GivenLine, paymentTermsOf, quoteLine, readBuyerFields, readCassa, readLines, readNatura, readOrder, readPayment, readRitenuta, readVatRate, withRates } from "./sales-invoice-input.ts";
 import { draftAnswer, fenced } from "./sales-invoice-render.ts";
 import { draftStockLines } from "./sales-invoice-stock.ts";
+import { ddtHeld, ddtSource } from "./sales-ddt.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
 /** Where a draft's lines and customer come from, before the person's own fields. */
@@ -44,6 +45,8 @@ type Source = {
 	readonly terms?: { readonly days: number; readonly endOfMonth: boolean };
 	readonly quote?: string;
 	readonly hours?: readonly HoursRef[];
+	/** A fattura differita: the DDTs it bills. */
+	readonly ddt?: readonly DdtRef[];
 	readonly notes: readonly string[];
 };
 
@@ -256,6 +259,13 @@ function fromHours(env: SalesEnv, args: Record<string, unknown>, book: SalesBook
 	});
 }
 
+/** A fattura differita: the client's vendita DDTs of a month to bill (sales-ddt.ts). */
+function fromDdt(env: SalesEnv, args: Record<string, unknown>, book: SalesBook, day: string): Source | string {
+	const got = ddtSource(env, args, book, day);
+	if (typeof got === "string") return got;
+	return sourceOf(got.known, { given: got.given, ddt: got.ddt, notes: [...got.notes, ...openQuotesNote(env, got.known, book)] });
+}
+
 /** The lines that name a voce of the listino filled from it (price-list-lines.ts), in the regime known; the arguments as they are when none does. */
 function fromList(env: SalesEnv, args: Record<string, unknown>): { args: Record<string, unknown>; notes: readonly string[] } | string {
 	const filled = listLines({ ...(env.priceList === undefined ? {} : { priceList: env.priceList }), company: env.company, taxes: env.taxes }, args.lines, { kind: "invoice", descriptionMax: FIELD_LIMITS.descrizione, doc: { vat: args.vat, natura: args.natura }, keepItem: true });
@@ -285,12 +295,14 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 	if (typeof listed === "string") return listed;
 	const args = listed.args;
 	if (args.hours === true && (args.quote !== undefined || args.lines !== undefined)) return "Errore: la fattura delle ore parte solo dalle ore del cliente: per aggiungere altre voci, detta tutte le voci.";
-	if (args.quote === undefined && args.hours !== true && args.lines === undefined) return "Errore: la fattura parte da un preventivo accettato, dalle ore da fatturare di un cliente, oppure dalle voci dettate.";
+	if (args.ddt === true && (args.quote !== undefined || args.lines !== undefined || args.hours === true)) return "Errore: la fattura differita parte solo dai DDT del cliente: per aggiungere altre voci, falla a parte.";
+	if (args.ddt !== undefined && typeof args.ddt !== "boolean") return "Errore: la fattura differita è sì o no.";
+	if (args.quote === undefined && args.hours !== true && args.ddt !== true && args.lines === undefined) return "Errore: la fattura parte da un preventivo accettato, dalle ore da fatturare di un cliente, dai DDT da fatturare (la fattura differita), oppure dalle voci dettate.";
 	if (args.new_customer !== undefined && typeof args.new_customer !== "boolean") return "Errore: il cliente nuovo è sì o no.";
 	const fields = readBuyerFields(args);
 	if (isProblem(fields)) return `Errore: ${fields.problem}.`;
 	const notes: string[] = [...listed.notes];
-	const src = args.quote !== undefined ? fromQuote(env, args, book, notes, fields) : args.hours === true ? fromHours(env, args, book, day) : fromLines(env, args, book, notes, fields);
+	const src = args.quote !== undefined ? fromQuote(env, args, book, notes, fields) : args.hours === true ? fromHours(env, args, book, day) : args.ddt === true ? fromDdt(env, args, book, day) : fromLines(env, args, book, notes, fields);
 	if (typeof src === "string") return src;
 	notes.push(...src.notes);
 	// Everything missing is gathered and asked once, by whom it is about; what is wrong is said at once.
@@ -395,6 +407,7 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 		...(causale === undefined ? {} : { causale }),
 		...(src.quote === undefined ? {} : { quote: src.quote }),
 		...(src.hours === undefined ? {} : { hours: src.hours }),
+		...(src.ddt === undefined ? {} : { ddt: src.ddt }),
 		...(bolloToClient === undefined ? {} : { bolloToClient }),
 	} satisfies Omit<SalesInvoice, "id" | "callId" | "by" | "at">;
 	const patch: Partial<Pick<SalesSettings, "bolloToClient" | "ritenutaToBusiness">> & { lastBefore?: number } = {
@@ -403,7 +416,11 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 		...(first.save === undefined ? {} : { lastBefore: first.save }),
 	};
 	if (o.check === true) return DRAFT_CHECKED;
-	return save(env, args, ctx, day, fieldsOut, notes, "draft", (state) => settingsAfter(state, patch, year, env.marker(ctx)));
+	const replace = typeof args.replace === "string" ? args.replace.trim().toUpperCase() : undefined;
+	return save(env, args, ctx, day, fieldsOut, notes, "draft", (state) => {
+		ddtHeld(state, src.ddt, replace);
+		return settingsAfter(state, patch, year, env.marker(ctx));
+	});
 }
 
 /**
@@ -465,7 +482,8 @@ export async function creditNote(env: SalesEnv, args: Record<string, unknown>, c
 	if (found.length === 0) return "Errore: non trovo una fattura emessa con quel numero.";
 	if (new Set(found.map((f) => f.year)).size > 1) return `Errore: c'è una fattura con quel numero in più anni (${found.map((f) => f.year).join(", ")}): dimmi l'anno.`;
 	const original = found[0] as (typeof found)[number];
-	let given: readonly GivenLine[] = original.lines;
+	// The DDTs a fattura differita billed stay with it: the credit note corrects the invoice, never a DDT.
+	let given: readonly GivenLine[] = original.lines.map(({ ddt: _, ...l }) => l);
 	if (args.lines !== undefined) {
 		const read = readLines(args.lines);
 		if (isProblem(read)) return `Errore: ${read.problem}.`;

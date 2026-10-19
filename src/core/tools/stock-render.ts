@@ -101,11 +101,11 @@ export function moveRow(m: Movement, item: StockItem | undefined, withId: boolea
 			case "carico":
 				return `carico +${qtyWords(q, unit)} a ${costWords(costOf(m.cost as string))} l'uno${m.supplier === undefined ? "" : `, da ${m.supplier.name}`}${m.doc === undefined ? "" : `, documento ${m.doc}`}`;
 			case "scarico":
-				return `scarico −${qtyWords(q, unit)}, ${REASON_WORDS[m.reason ?? "vendita"]}${m.sale === undefined ? "" : `, fattura n. ${m.sale.number}`}`;
+				return `scarico −${qtyWords(q, unit)}, ${REASON_WORDS[m.reason ?? "vendita"]}${m.sale === undefined ? "" : m.sale.invoice.startsWith("DT-") ? `, DDT n. ${m.sale.number}` : `, fattura n. ${m.sale.number}`}`;
 			case "rettifica":
 				return `conteggio: ${qtyWords(qtyOf(m.counted as string), unit)}${q === 0n ? ", corrispondeva" : q < 0n ? `, ne mancavano ${qtyNumber(-q)}` : `, ce n'erano ${qtyNumber(q)} in più`}`;
 			case "storno":
-				return `rientro +${qtyWords(q, unit)} dalla nota di credito n. ${m.sale?.number ?? ""}`;
+				return m.sale?.invoice.startsWith("DT-") === true ? `rientro +${qtyWords(q, unit)} con il DDT di reso n. ${m.sale.number}` : `rientro +${qtyWords(q, unit)} dalla nota di credito n. ${m.sale?.number ?? ""}`;
 			case "costo":
 				return `costo corretto ${withId ? `del carico ${m.fixes}` : "dell'ultimo carico"}: ${costWords(costOf(m.cost as string))} l'uno invece di ${costWords(costOf(m.was as string))}`;
 			case "apertura":

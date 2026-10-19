@@ -10,7 +10,8 @@
  * 3. the courtesy PDF beside it, same name (a failure is said, the invoice stands);
  * 4. the hours marked «fatturate» with the invoice's number, the quote marked invoiced, the
  *    magazzino moved (an invoice unloads the articles its lines sell, a credit note puts them
- *    back: once per invoice and line, stock-store.ts sale);
+ *    back: once per invoice and line, stock-store.ts sale; a fattura differita's lines went out
+ *    with their DDTs), the DDTs of a fattura differita marked billed (sales-ddt.ts);
  * 5. the invoice marked finished; then the audit (op and count), and the invoice marked audited,
  *    so an audit a crash left out is written on the next run, and never twice.
  * The number comes after the store's counter, the last number said before Annie and the highest
@@ -31,6 +32,7 @@ import { WorkspaceError } from "../workspace.ts";
 import { askGroups, dueOf, filesSay, findIssued, namedDraft, noneMissing, type SalesEnv } from "./sales-invoice-env.ts";
 import { courtesyMarkdown, fenced, invoiceLines, issuedAnswer } from "./sales-invoice-render.ts";
 import { markStock, stockPreview } from "./sales-invoice-stock.ts";
+import { ddtPreview, ddtProblem, markDdt } from "./sales-ddt.ts";
 import { requirePersonFor } from "../turn-origin.ts";
 
 /** Tries at a free file name before giving up. */
@@ -61,6 +63,7 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 			`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
 			fenced(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
 			...stockPreview(env, target, day, env.marker(ctx)),
+			...ddtPreview(target, day),
 			"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
 		].join("\n");
 	}
@@ -130,8 +133,9 @@ async function complete(env: SalesEnv, start: IssuedInvoice, ctx: ToolContext, n
 	const hours = await markHours(env, inv, ctx);
 	const quote = await markQuote(env, inv, ctx);
 	const stock = await markStock(env, inv, ctx);
-	notes.push(...hours.notes, ...quote.notes, ...stock.notes);
-	if (inv.file !== undefined && hours.done && quote.done && stock.done) {
+	const ddt = await markDdt(env, inv, ctx);
+	notes.push(...hours.notes, ...quote.notes, ...stock.notes, ...ddt.notes);
+	if (inv.file !== undefined && hours.done && quote.done && stock.done && ddt.done) {
 		env.store.setFinished(inv.id);
 		// The audit once: on the run that finishes it, or the next one when a crash came in between.
 		const now = env.book().invoices.find((i) => i.id === inv.id);
@@ -154,6 +158,8 @@ async function ready(env: SalesEnv, draft: SalesInvoice, day: string): Promise<S
 	if (hours !== undefined) return hours;
 	const quote = quoteProblem(env, draft);
 	if (quote !== undefined) return quote;
+	const ddt = ddtProblem(env, draft);
+	if (ddt !== undefined) return ddt;
 	// A dry run with the longest number and progressive: a field that does not fit stops here, before a number is taken.
 	const year = Number(day.slice(0, 4));
 	const trial: IssuedInvoice = { ...draft, number: `${year}/99999`, year, seq: 99_999, date: day, seller: seller.seller, progressive: "ZZZZZ", issued: { by: draft.by, at: draft.at } };

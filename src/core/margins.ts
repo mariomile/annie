@@ -249,8 +249,10 @@ export function marginLines(data: MarginData, from: string, to: string): MarginL
 			// A spesa anticipata is the client's money back, not revenue.
 			if (l.notFee === true) return;
 			const base = { invoice: inv.id, number: inv.number, day: inv.date, credit, line: n + 1, client: clientKey(inv), clientName: inv.buyer.name, description: l.description, revenue: sign * (amounts[n] as bigint) };
-			const key = `${inv.id}#${n + 1}`;
-			const move = data.moves.find((m) => m.sale?.invoice === inv.id && m.sale.line === n + 1);
+			// A fattura differita's line: the goods went out with its DDT, whose scarico holds the cost.
+			const from = l.ddt === undefined ? { invoice: inv.id, line: n + 1 } : { invoice: l.ddt.id, line: l.ddt.line };
+			const key = `${from.invoice}#${from.line}`;
+			const move = data.moves.find((m) => m.sale?.invoice === from.invoice && m.sale.line === from.line);
 			const folded = move === undefined ? data.archived.find((a) => a.k === key) : undefined;
 			const moved = move?.item ?? folded?.i;
 			const article = l.item === undefined ? undefined : moved !== undefined ? data.items.find((i) => i.id === moved) : articleOf(data.items, l.item);

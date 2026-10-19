@@ -33,7 +33,7 @@ import {
 	SALES_VAT_RATES,
 	type SalesVatRate,
 } from "../sales-invoice-rules.ts";
-import { buyerCf, type BuyerKind, buyerVat, type Cassa, type Order, type Payment, type Ritenuta, ritenutaType, SALES_LIMITS, type SalesLine } from "../sales-invoices.ts";
+import { buyerCf, type BuyerKind, buyerVat, type Cassa, type LineDdt, type Order, type Payment, type Ritenuta, ritenutaType, SALES_LIMITS, type SalesLine } from "../sales-invoices.ts";
 import { latin1 } from "../plain-text.ts";
 import { fold } from "../text-match.ts";
 import { cleanText, isProblem, type Problem, readAmount as readNumber, readPercent as readShare } from "../text-input.ts";
@@ -46,7 +46,7 @@ const readPercent = (value: unknown, where: string) => readShare(value, where, f
 const LISTINO_ITEM = /^LS-\d{4,7}$/;
 
 /** A line as given, before the invoice-wide rate and nature. */
-export type GivenLine = { description: string; quantity: string; unit?: string; price: string; discount?: string; vat?: SalesVatRate; natura?: Natura; reference?: string; notFee?: true; item?: string };
+export type GivenLine = { description: string; quantity: string; unit?: string; price: string; discount?: string; vat?: SalesVatRate; natura?: Natura; reference?: string; notFee?: true; item?: string; ddt?: LineDdt };
 
 /** Whether text fits a field of `max` characters as the XML writes it (latin1 may lengthen «…» or «€»). */
 export function fitsLatin(text: string, max: number): boolean {

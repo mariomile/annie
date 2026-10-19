@@ -21,7 +21,8 @@ import { fencedStock, nameOf, qtyNumber, qtyWords } from "./stock-render.ts";
 
 /** The invoice as the magazzino takes it: its lines naming a voce, with the invoice it corrects for a credit note; undefined when no line names one. */
 export function saleOf(inv: SalesInvoice, number: string, day: string): Sale | undefined {
-	const lines = inv.lines.flatMap((l, n) => (l.item === undefined ? [] : [{ line: n + 1, listino: l.item, quantity: l.quantity, description: l.description, ...(l.unit === undefined ? {} : { unit: l.unit }) }]));
+	// A fattura differita's line: its DDT moved the magazzino already.
+	const lines = inv.lines.flatMap((l, n) => (l.item === undefined || l.ddt !== undefined ? [] : [{ line: n + 1, listino: l.item, quantity: l.quantity, description: l.description, ...(l.unit === undefined ? {} : { unit: l.unit }) }]));
 	if (lines.length === 0) return undefined;
 	const credit = inv.type === CREDIT_NOTE_TYPE;
 	if (credit && inv.related === undefined) return undefined;

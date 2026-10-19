@@ -126,7 +126,15 @@ export type SalesLine = {
 	readonly notFee?: true;
 	/** The voce of the listino it was filled from (LS-0001): issued, it moves the magazzino when the voce is an article there. */
 	readonly item?: string;
+	/** A fattura differita's line: the DDT (DT-0001) and its line it bills. The DDT moved the magazzino already: the invoice does not. */
+	readonly ddt?: LineDdt;
 };
+
+/** The DDT line an invoice line bills. */
+export type LineDdt = { readonly id: string; readonly line: number };
+
+/** A DDT a fattura differita bills (DatiDDT): its id, its number and its date. */
+export type DdtRef = { readonly id: string; readonly number: string; readonly date: string };
 
 export type Ritenuta = { readonly type: typeof RITENUTA_PERSON | typeof RITENUTA_COMPANY; readonly causale: string };
 
@@ -163,6 +171,8 @@ export type SalesInvoice = Marker & {
 	/** The quote it bills, and the hours. */
 	readonly quote?: string;
 	readonly hours?: readonly HoursRef[];
+	/** A fattura differita: the DDTs it bills, marked billed when it is issued. */
+	readonly ddt?: readonly DdtRef[];
 	/** The call that made the draft: a call run again finds it. */
 	readonly callId: string;
 	/** A draft made in place of another (replace): the call that made the first of them, so who made that one still finds it. */
@@ -399,6 +409,7 @@ function lineProblem(v: unknown, n: number): string | undefined {
 		// A spesa anticipata (N1) is never a fee, and only it is not.
 		[l.notFee !== undefined && l.notFee !== true, `la riga ${n}`],
 		[l.item !== undefined && (typeof l.item !== "string" || !/^LS-\d{4,7}$/.test(l.item)), `la voce del listino della riga ${n}`],
+		[l.ddt !== undefined && (!record(l.ddt) || Object.keys(l.ddt).some((k) => k !== "id" && k !== "line") || typeof l.ddt.id !== "string" || !DDT_REF.test(l.ddt.id) || !Number.isInteger(l.ddt.line) || l.ddt.line < 1 || l.ddt.line > 9999), `il DDT della riga ${n}`],
 		[(l.notFee === true) !== (l.natura === NOT_FEE_NATURA), `la riga ${n}: le spese anticipate sono senza IVA (N1), e solo loro`],
 	]);
 }
@@ -416,6 +427,8 @@ function paymentProblem(v: unknown): string | undefined {
 const validCassa = (c: Cassa) => record(c) && (c.type === INPS_CASSA || CASSA_TYPES.includes(c.type)) && percent(c.rate, MAX_CASSA_RATE) && typeof c.subject === "boolean";
 const validRitenuta = (r: Ritenuta) => record(r) && (r.type === RITENUTA_PERSON || r.type === RITENUTA_COMPANY) && RITENUTA_CAUSALI.some((c) => c === r.causale);
 const code = (v: unknown, max: number) => typeof v === "string" && /^[A-Za-z0-9/._-]+$/.test(v) && v.length <= max;
+const DDT_REF = /^DT-\d{4,6}$/;
+const validDdtRef = (d: DdtRef) => record(d) && Object.keys(d).every((k) => ["id", "number", "date"].includes(k)) && typeof d.id === "string" && DDT_REF.test(d.id) && isText(d.number, 20) && isDay(d.date);
 const validHours = (h: HoursRef) => record(h) && typeof h.id === "string" && /^O-\d{4}-\d{4,6}$/.test(h.id) && Number.isInteger(h.minutes) && h.minutes > 0 && typeof h.rate === "string" && PRICE.test(h.rate) && Number.isInteger(h.rounding);
 
 /** The field of a draft or an invoice that does not have its shape, in words; undefined when it all does. */
@@ -450,6 +463,8 @@ export function invoiceProblem(v: unknown): string | undefined {
 		[!optText(i.quote, 30), "il preventivo"],
 		[!optText(i.expected, FIELD_LIMITS.numero), "il numero che la bozza diceva"],
 		[i.hours !== undefined && (!Array.isArray(i.hours) || i.hours.length > SALES_LIMITS.hours || !i.hours.every(validHours)), "le ore fatturate"],
+		[i.ddt !== undefined && (i.type !== INVOICE_TYPE || !Array.isArray(i.ddt) || i.ddt.length === 0 || i.ddt.length > SALES_LIMITS.lines || !i.ddt.every(validDdtRef) || new Set(i.ddt.map((d) => d.id)).size !== i.ddt.length), "i DDT della fattura differita"],
+		[i.lines.some((l) => l.ddt !== undefined && !(i.ddt ?? []).some((d) => d.id === l.ddt?.id)) || (i.ddt ?? []).some((d) => !i.lines.some((l) => l.ddt?.id === d.id)), "i DDT della fattura differita"],
 	]);
 	if (body !== undefined) return body;
 	if (i.payment !== undefined) {

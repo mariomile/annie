@@ -108,6 +108,7 @@ export function invoiceLines(inv: SalesInvoice, t: SalesTotals, due: string | un
 	const ids = [b.vat === undefined ? undefined : `P.IVA ${b.vat}`, b.cf === undefined ? undefined : `C.F. ${b.cf}`].filter((x) => x !== undefined).join(", ");
 	const out = [`${head}${ids === "" ? "" : `, ${ids}`}`, `Sede: ${addressText(b.address)}`, `Recapito: ${channelText(b)}`];
 	if (inv.related !== undefined) out.push(`Storna la fattura n. ${inv.related.number} del ${italianDate(inv.related.date)}`);
+	if (inv.ddt !== undefined) out.push(`Fattura differita dei DDT ${inv.ddt.map((d) => `n. ${d.number} del ${italianDate(d.date)}`).join(", ")}`);
 	const several = inv.regime !== REGIME_FORFETTARIO && t.rows.filter((r) => r.natura !== NOT_FEE_NATURA).length > 1;
 	t.lines.forEach((l, i) => {
 		const amount = t.amounts[i] as bigint;
@@ -236,6 +237,7 @@ export function courtesyMarkdown(inv: IssuedInvoice, t: SalesTotals, xmlName: st
 	const ids = [b.vat === undefined ? undefined : `P.IVA ${b.vat}`, b.cf === undefined ? undefined : `C.F. ${b.cf}`].filter((x) => x !== undefined) as string[];
 	out.push("## Cliente", "", [`**${md(b.name)}**`, ...ids.map((x) => lead(md(x))), lead(md(addressText(b.address))), lead(md(b.code === NO_CHANNEL_CODE && b.pec === undefined ? `Codice destinatario ${NO_CHANNEL_CODE}` : channelText(b)))].join("\n"), "");
 	if (inv.related !== undefined) out.push(md(`Storna la fattura n. ${inv.related.number} del ${italianDate(inv.related.date)}.`), "");
+	if (inv.ddt !== undefined) out.push(md(`Fattura differita: merce consegnata con i DDT ${inv.ddt.map((d) => `n. ${d.number} del ${italianDate(d.date)}`).join(", ")}.`), "");
 	const discounted = t.lines.some((l) => l.discount !== undefined);
 	const columns = ["Descrizione", "Quantità", "Prezzo unitario", ...(discounted ? ["Sconto"] : []), "IVA", "Importo"];
 	out.push("## Dettaglio", "", `| ${columns.join(" | ")} |`, `|---|${columns.slice(1).map(() => "---:").join("|")}|`);
