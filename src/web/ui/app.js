@@ -66,6 +66,7 @@ const ICONS = {
 	menu: ["M4 7h16M4 12h16M4 17h16"],
 	plus: ["M12 5v14M5 12h14"],
 	down: ["m6 9 6 6 6-6"],
+	chevron: ["m9 6 6 6-6 6"],
 	check: ["m5 12.5 4.5 4.5L19 7"],
 	compose: ["M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6", "M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"],
 	sidebar: ["M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z", "M9.5 4v16"],
@@ -656,7 +657,7 @@ function googleSection() {
 		const what = services.length > 1 ? "la tua posta e il tuo calendario" : services[0] === "gmail" ? "la tua posta" : "il tuo calendario";
 		if (account) {
 			mount(box, 
-				h("div.kicker", "Google"),
+				h("h3.section-title", "Google"),
 				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
 				h("p.muted", write && account.canWrite ? `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Può preparare mail ed eventi, che partono solo quando li approvi tu.` : `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
 				write && !account.canWrite ? h("p", "Per far preparare ad Annie mail ed eventi (che approvi tu), ricollega Google lasciando spuntati tutti i permessi.") : null,
@@ -679,7 +680,7 @@ function googleSection() {
 			return;
 		}
 		mount(box, 
-			h("div.kicker", "Google"),
+			h("h3.section-title", "Google"),
 			h("p", write ? `Collega Google: Annie potrà leggere ${what} quando glielo chiedi dalla console, e preparare mail ed eventi che partono solo dopo la tua approvazione.` : `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
 			h("div.actions", h("button.btn.accent", { onclick: () => void connectGoogle() }, "Collega Google")),
 		);
@@ -1084,7 +1085,7 @@ function deleteCard(inst) {
 	};
 	return h(
 		"div.card.pad",
-		h("div.kicker", "Elimina agente"),
+		h("h3.section-title", "Elimina agente"),
 		h("p.muted", `Elimina ${inst.name} con tutto quello che sa e che ha: conversazioni, memoria, file e automazioni. Gli altri agenti restano come sono.`),
 		h("div.actions", h("button.btn.danger", { onclick: open }, `Elimina ${inst.name}`)),
 	);
@@ -1470,8 +1471,15 @@ function cycleTheme() {
 	toast(next === "auto" ? "Tema: come il sistema" : next === "dark" ? "Tema scuro" : "Tema chiaro");
 }
 
-function head(kicker, title, text, ...actions) {
-	return h("div.head", h("div", h("div.kicker", kicker), title instanceof Node ? title : h("h1", title), text ? h("p", text) : null), actions.length ? h("div.row-gap", actions) : null);
+function head(parent, title, text, ...actions) {
+	// An agent's pages get a path back to its chat; app-level pages pass no parent.
+	const here = (title instanceof Node ? title.textContent : title).trim();
+	return h(
+		"div.head",
+		parent ? h("nav.crumbs", { "aria-label": "Percorso" }, h("a", { href: "#/chat" }, parent), here ? [icon("chevron"), h("span.here", { "aria-current": "page" }, here)] : null) : null,
+		h("div.head-title", title instanceof Node ? title : h("h1", title), text ? h("p", text) : null),
+		actions.length ? h("div.row-gap.head-actions", actions) : null,
+	);
 }
 
 function initials(name) {
@@ -2522,7 +2530,7 @@ async function viewApprovals(main) {
 	const card = (p) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Strumento nuovo · ${fmt.time(p.proposedAt)}`), h("h2", toolTitle(p.name))), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("h2", toolTitle(p.name)), h("small.dossier-meta", `Strumento nuovo · ${fmt.time(p.proposedAt)}`)), p.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", p.description),
 			h("div.reach", h("span", "Si chiama"), h("span.chip.mono", `custom_${p.name}`), h("span", "e può raggiungere"), p.hosts.length ? p.hosts.map((x) => h("span.chip.mono", x)) : h("span.chip.ok", "Nessun sito: niente rete")),
 			h("details", { open: p.status === "pending" ? true : undefined }, h("summary", `Codice · ${p.code.split("\n").length} righe`), h("pre.code", p.code)),
@@ -2551,7 +2559,7 @@ async function viewApprovals(main) {
 	const actionCard = (a) => {
 		const el = h(
 			"article.card.pad.dossier",
-			h("header", h("div", h("div.kicker", `Modulo da inviare · ${fmt.time(a.proposedAt)}`), h("h2", `${inst.name} vuole inviare un modulo a `, h("span.mono", new URL(a.action).host))), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			h("header", h("div", h("h2", `${inst.name} vuole inviare un modulo a `, h("span.mono", new URL(a.action).host)), h("small.dossier-meta", `Modulo da inviare · ${fmt.time(a.proposedAt)}`)), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
@@ -2592,7 +2600,7 @@ async function viewApprovals(main) {
 			drafts.push(
 				h(
 					"article.card.pad.dossier",
-					h("header", h("div", h("div.kicker", s.name), h("h2", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`)), h("span.chip.accent", "Segreteria")),
+					h("header", h("div", h("h2", `${waiting.length} ${waiting.length === 1 ? "bozza aspetta" : "bozze aspettano"} Approva`), h("small.dossier-meta", s.name)), h("span.chip.accent", "Segreteria")),
 					h("ul", waiting.slice(0, 5).map((p) => h("li", `${p.lead.fullName ?? p.lead.company ?? p.lead.email ?? "Sconosciuto"} · ${p.lead.rawSubject}`))),
 					h(
 						"div.actions",
@@ -2621,7 +2629,7 @@ async function viewApprovals(main) {
 			pendingActions.map(actionCard),
 			pending.map(card),
 			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
-			decidedGoogle.length || decidedConnector.length || decidedActions.length || decided.length ? [h("div.kicker", "Decisi"), decidedGoogle, decidedConnector, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
+			decidedGoogle.length || decidedConnector.length || decidedActions.length || decided.length ? [h("h3.section-title", "Decisi"), decidedGoogle, decidedConnector, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
 }
@@ -2633,7 +2641,7 @@ const CONNECTOR_STAMP = { done: ["ok", "Fatto"], failed: ["bad", "Non riuscito"]
 function connectorActionCard(inst, a, after, compact = false) {
 	const el = h(
 		"article.card.pad.dossier",
-		h("header", h("div", h("div.kicker", `${a.connectorName} · ${fmt.time(a.proposedAt)}`), h("h2", a.reason)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
+		h("header", h("div", h("h2", a.reason), h("small.dossier-meta", `${a.connectorName} · ${fmt.time(a.proposedAt)}`)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
 		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
@@ -2750,7 +2758,7 @@ function googleActionCard(inst, a, after, compact = false) {
 	const expires = new Date(Date.parse(a.proposedAt) + 24 * 3600_000).toISOString();
 	const el = h(
 		`article.card.pad.dossier.google-ask${compact ? ".compact" : ""}`,
-		h("header", h("div", h("div.kicker", kicker), h("h2", googleTitle(a))), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
+		h("header", h("div", h("h2", googleTitle(a)), h("small.dossier-meta", kicker)), a.status === "pending" ? h("span.chip.accent", "Da approvare") : null),
 		a.reason ? h("p.muted", a.reason) : null,
 		h("table.ledger.fields", h("tbody", rows)),
 		a.mail ? (compact && a.mail.body.length > 600 ? h("details", h("summary", "Testo della mail"), h("pre.letter", a.mail.body)) : h("pre.letter", a.mail.body)) : null,
@@ -3549,7 +3557,7 @@ async function viewRooms(main) {
 	const names = (r) => r.agents.map((a) => `${a.emoji ? `${a.emoji} ` : ""}${a.name}`).join(", ");
 	mount(
 		main,
-		head("Lavoro", h("h1", "Stanze"), "Una conversazione con più agenti insieme. Scrivi @nome per chiamarne uno, @tutti per tutti; senza nome risponde l'ultimo che ha parlato. Un agente può chiamare in causa un altro. Le stanze sono solo tue.", chatty.length > 1 ? h("button.btn.accent", { onclick: create }, icon("plus"), "Nuova stanza") : null),
+		head(null, h("h1", "Stanze"), "Una conversazione con più agenti insieme. Scrivi @nome per chiamarne uno, @tutti per tutti; senza nome risponde l'ultimo che ha parlato. Un agente può chiamare in causa un altro. Le stanze sono solo tue.", chatty.length > 1 ? h("button.btn.accent", { onclick: create }, icon("plus"), "Nuova stanza") : null),
 		h(
 			"div.stack",
 			form,
@@ -3951,7 +3959,7 @@ function catalogGallery(inst, catalog, oauth, redirectUrl, added) {
 		oauth && !returnWorks(redirectUrl) ? h("p.chip.warn", "Questo server non ha un indirizzo https (ANNIE_PUBLIC_URL): molti servizi rifiutano di rimandarti qui dopo l'accesso.") : null,
 		CATALOG_GROUPS.map(([group, label]) => {
 			const items = left.filter((e) => e.category === group);
-			return items.length ? h("div.stack", h("div.kicker", label), h("div.gallery", items.map(card))) : null;
+			return items.length ? h("div.stack", h("h3.section-title", label), h("div.gallery", items.map(card))) : null;
 		}),
 	);
 }
@@ -4546,7 +4554,7 @@ async function viewBoard(main) {
 					h(
 						`li${item.done ? ".done" : ""}`,
 						h("label", h("input", { type: "checkbox", checked: item.done, onchange: (e) => void sendCheck({ item: item.id, done: e.currentTarget.checked }) }), h("span", item.text)),
-						h("button.icon-btn.small", { type: "button", title: "Togli dalla lista", "aria-label": `Togli «${item.text}»`, onclick: () => void sendCheck({ item: item.id, remove: true }) }, "×"),
+						h("button.icon-btn.small", { type: "button", title: "Togli dalla lista", "aria-label": `Togli «${item.text}»`, onclick: () => void sendCheck({ item: item.id, remove: true }) }, icon("close")),
 					),
 				),
 			);
@@ -4690,9 +4698,9 @@ async function viewBoard(main) {
 				"div.board-dialog-head",
 				h(`span.board-state.${c.status}`, h("span.board-dot"), BOARD_COLUMNS.find(([v]) => v === c.status)?.[1] ?? c.status),
 				c.priority === "normale" ? null : h(`span.tag${c.priority === "alta" ? ".alta" : ""}`, `priorità ${c.priority}`),
-				h("span.kicker", `#${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			),
 			h("h2", c.title),
+			h("small.dossier-meta", `#${c.n} · creata da ${c.createdBy.kind === "person" && c.createdBy.id === state.me.id ? "te" : who(c.createdBy)} il ${fmt.day(c.createdAt)}`),
 			c.description ? h("p.board-desc", c.description) : null,
 			resultOf(c) ? h("div.board-result", h("span.small", `Il risultato di ${who(resultOf(c).by)}, ${fmt.time(resultOf(c).at)}`), h("p", resultOf(c).text)) : null,
 			checksBox,
@@ -4837,7 +4845,7 @@ async function viewBoard(main) {
 		);
 		const dialog = h(
 			"dialog.board-dialog.board-new",
-			h("div.kicker", "Nuova scheda"),
+			h("h2", "Nuova scheda"),
 			title,
 			description,
 			h("div.board-fields", h("label.field", h("span", "Affida a"), assignee), h("label.field", h("span", "Priorità"), priority)),
@@ -4921,7 +4929,7 @@ async function viewBoard(main) {
 	const routines = data.routines?.length ? h("details.board-routines", { open: store("annie.board.routines") !== "0" ? "" : undefined, ontoggle: (e) => store("annie.board.routines", e.currentTarget.open ? "1" : "0") }, h("summary", `Si ripetono (${data.routines.length})`), h("ul", data.routines.map(routineRow))) : null;
 	mount(
 		main,
-		head("Annie", h("h1", "Board"), "Le cose da fare, affidate agli agenti. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la sposta in «Da rivedere»; poi una persona la chiude, o la rimanda indietro con un commento. Puoi anche chiedere in chat: «mettilo in board per Ricercatore», e avviarla da qui.", h("button.btn.accent", { onclick: newCard }, icon("plus"), "Nuova scheda")),
+		head(null, h("h1", "Board"), "Le cose da fare, affidate agli agenti. L'agente ci lavora in una conversazione con chi gliel'ha affidata e la sposta in «Da rivedere»; poi una persona la chiude, o la rimanda indietro con un commento. Puoi anche chiedere in chat: «mettilo in board per Ricercatore», e avviarla da qui.", h("button.btn.accent", { onclick: newCard }, icon("plus"), "Nuova scheda")),
 		routines,
 		filters,
 		columns,
@@ -4993,7 +5001,7 @@ async function viewAgents(main) {
 	};
 	mount(
 		main,
-		head("Annie", h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("div.row-gap", teamButton, h("button.btn.ghost", { title: "Più agenti già pronti a lavorare insieme", onclick: () => teamsForm() }, "Squadre pronte"), h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente")) : null),
+		head(null, h("h1", "Agenti"), "Ognuno ha la sua personalità, la sua memoria, i suoi task, file e connettori. Ognuno può avere il suo bot su Telegram e WhatsApp.", owner ? h("div.row-gap", teamButton, h("button.btn.ghost", { title: "Più agenti già pronti a lavorare insieme", onclick: () => teamsForm() }, "Squadre pronte"), h("button.btn.accent", { onclick: () => agentForm() }, icon("plus"), "Nuovo agente")) : null),
 		agents.length === 0 ? emptyNote("div.empty", "Nessun agente", owner ? "Crea il primo con Nuovo agente." : "Chiedi all'owner di aggiungerti a un agente.") : h("div.agents", agents.map(card)),
 	);
 }
@@ -5056,7 +5064,7 @@ async function viewSettings(main) {
 					"personalita",
 					h(
 						"div.card.pad",
-						h("div.kicker", "Personalità"),
+						h("h3.section-title", "Personalità"),
 						h("div.field", h("span", "Nome"), h("div.name-row", h("span.name-face", face(inst, 40)), emoji, name)),
 						h("label.field", h("span", "Cosa fa, in una riga"), tagline),
 						h("label.field", h("span", "Tono"), tone),
@@ -5083,7 +5091,7 @@ async function viewSettings(main) {
 				h("div.card", h("table.ledger", h("thead", h("tr", h("th", "Persona"), h("th", "Scrive"), h("th", "Approva"))), h("tbody", rows.map((r) => r.row)))),
 				h(
 					"div.card.pad",
-					h("div.kicker", "Cosa può raggiungere"),
+					h("h3.section-title", "Cosa può raggiungere"),
 					h(
 						"dl.lead",
 						h("dt", "Modello"),
@@ -5196,7 +5204,7 @@ function whatsappCard(inst, w) {
 		w.connected && w.webhookUrl !== null
 			? h(
 					"div.stack",
-					h("div.kicker", "Da incollare nell'app Meta (WhatsApp → Configurazione → Webhook)"),
+					h("h3.section-title", "Da incollare nell'app Meta (WhatsApp → Configurazione → Webhook)"),
 					copyBox(w.webhookUrl, "Indirizzo"),
 					copyBox(w.verifyToken ?? "", "Token di verifica"),
 					h("small.muted", "Poi iscriviti al campo «messages»."),
@@ -5207,7 +5215,7 @@ function whatsappCard(inst, w) {
 		w.connected
 			? h(
 					"div.stack",
-					h("div.kicker", "Oltre le 24 ore"),
+					h("h3.section-title", "Oltre le 24 ore"),
 					h("p.muted", "WhatsApp lascia scrivere liberamente solo entro 24 ore dall'ultimo messaggio della persona. Dopo, Annie tiene da parte i messaggi e li consegna appena la persona scrive. Con un template approvato da Meta (una variabile {{1}} nel testo) la avvisa subito, con un estratto."),
 					h("div.grid-2", h("label.field", h("span", "Nome del template"), templateName), h("label.field", h("span", "Lingua"), templateLanguage)),
 				)
@@ -5275,7 +5283,7 @@ async function viewPeople(main) {
 	const newName = h("input", { type: "text", placeholder: "Nome e cognome" });
 	const role = h("select", h("option", { value: "member" }, "Membro"), h("option", { value: "owner" }, "Owner"));
 	mount(main, 
-		head("Annie", h("h1", "Persone"), "Chi può entrare nella console. Ognuno ha un link personale; rigenerarlo chiude le sue sessioni."),
+		head(null, h("h1", "Persone"), "Chi può entrare nella console. Ognuno ha un link personale; rigenerarlo chiude le sue sessioni."),
 		h(
 			"div.grid-2",
 			h(
@@ -5593,12 +5601,12 @@ async function viewActivity(main) {
 		return Object.entries(rest).map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v) : String(v)]);
 	};
 	mount(main, 
-		head("Annie", h("h1", "Attività e spesa"), "Quanto hanno speso oggi gli agenti in modelli AI, e cosa è successo."),
+		head(null, h("h1", "Attività e spesa"), "Quanto hanno speso oggi gli agenti in modelli AI, e cosa è successo."),
 		h(
 			"div.stack",
 			h(
 				"div.card.pad",
-				h("div.kicker", "Oggi"),
+				h("h3.section-title", "Oggi"),
 				h("div.row-gap", h("span", h("b", fmt.usd(usage.todayUsd))), h("span.muted", `soglia di avviso ${fmt.usd(usage.softUsd)} · tetto ${fmt.usd(usage.hardUsd)}`)),
 				h("div.spend", h("div.bar", h(`i${share >= 1 ? ".bad" : usage.todayUsd >= usage.softUsd ? ".warn" : ""}`, { "data-w": share }))),
 				h("p.muted", "Oltre il tetto Annie smette di chiamare il modello fino a domani; l'invio di bozze già approvate continua."),
