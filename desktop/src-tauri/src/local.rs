@@ -20,13 +20,20 @@ const WAIT: Duration = Duration::from_secs(90);
 pub struct Bundle {
     node: PathBuf,
     server: PathBuf,
+    computer: Option<PathBuf>,
 }
 
 impl Bundle {
     pub fn find(exe_dir: &Path, resources: &Path) -> Option<Bundle> {
         let node = exe_dir.join(if cfg!(windows) { "node.exe" } else { "node" });
         let server = resources.join("server");
-        (node.is_file() && server.join(ENTRY).is_file()).then_some(Bundle { node, server })
+        let helper = exe_dir.join("annie-computer-use");
+        let computer = (cfg!(target_os = "macos") && helper.is_file()).then_some(helper);
+        (node.is_file() && server.join(ENTRY).is_file()).then_some(Bundle {
+            node,
+            server,
+            computer,
+        })
     }
 }
 
@@ -55,15 +62,7 @@ pub fn start(bundle: &Bundle, data: &Path, log: &Path) -> Result<Running, String
     let out = fs::File::create(log).map_err(|e| e.to_string())?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
     let port = free_port();
-    let child = Command::new(&bundle.node)
-        .arg(ENTRY)
-        .current_dir(&bundle.server)
-        .env("NODE_ENV", "production")
-        .env("ANNIE_DATA_DIR", data)
-        .env("ANNIE_WEB_HOST", "127.0.0.1")
-        .env("ANNIE_WEB_PORT", port.to_string())
-        .env("ANNIE_MODEL_PROVIDER", "faux")
-        .env_remove("ANNIE_PUBLIC_URL")
+    let child = command(bundle, data, port)
         // Kept open while the app runs: its end tells the server to stop (server-entry.mjs).
         .stdin(Stdio::piped())
         .stdout(out)
@@ -91,6 +90,34 @@ pub fn start(bundle: &Bundle, data: &Path, log: &Path) -> Result<Running, String
         }
         thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// No inherited server/desktop routing can turn the native helper into a remote control API.
+fn command(bundle: &Bundle, data: &Path, port: u16) -> Command {
+    let mut command = Command::new(&bundle.node);
+    command
+        .arg(ENTRY)
+        .current_dir(&bundle.server)
+        .env("NODE_ENV", "production")
+        .env("ANNIE_DATA_DIR", data)
+        .env("ANNIE_WEB_HOST", "127.0.0.1")
+        .env("ANNIE_WEB_PORT", port.to_string())
+        .env("ANNIE_MODEL_PROVIDER", "faux")
+        // Only the bundled, loopback server may use this computer's subscriptions and screen.
+        .env("ANNIE_LOCAL_PROVIDERS", "1")
+        .env_remove("ANNIE_LOCAL_DESKTOP_HELPER")
+        .env_remove("ANNIE_DESKTOP")
+        .env_remove("ANNIE_DESKTOP_NETWORK")
+        .env_remove("ANNIE_DESKTOP_URL")
+        .env_remove("ANNIE_DESKTOP_TOKEN")
+        .env_remove("ANNIE_CELL_SECRET")
+        .env_remove("ANNIE_PUBLIC_URL");
+    if let Some(helper) = &bundle.computer {
+        command
+            .env("ANNIE_DESKTOP", "local")
+            .env("ANNIE_LOCAL_DESKTOP_HELPER", helper);
+    }
+    command
 }
 
 /// The page that signs the owner in. The server writes the owner's link once, at its first
@@ -237,7 +264,48 @@ mod tests {
         assert!(Bundle::find(&base, &base).is_none());
         fs::create_dir_all(base.join("server")).unwrap();
         fs::write(base.join("server").join(ENTRY), "").unwrap();
-        assert!(Bundle::find(&base, &base).is_some());
+        let bundle = Bundle::find(&base, &base).unwrap();
+        assert!(bundle.computer.is_none());
+        fs::write(base.join("annie-computer-use"), "").unwrap();
+        let bundle = Bundle::find(&base, &base).unwrap();
+        assert_eq!(bundle.computer.is_some(), cfg!(target_os = "macos"));
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn only_the_carried_server_receives_the_local_helper_and_loopback_mode() {
+        use std::ffi::OsStr;
+        let helper = PathBuf::from("/Applications/Annie.app/Contents/MacOS/annie-computer-use");
+        let bundle = Bundle {
+            node: PathBuf::from("/node"),
+            server: PathBuf::from("/server"),
+            computer: Some(helper.clone()),
+        };
+        let process = command(&bundle, Path::new("/data"), 47821);
+        let env: std::collections::HashMap<_, _> = process.get_envs().collect();
+        assert_eq!(
+            env[OsStr::new("ANNIE_WEB_HOST")],
+            Some(OsStr::new("127.0.0.1"))
+        );
+        assert_eq!(
+            env[OsStr::new("ANNIE_LOCAL_PROVIDERS")],
+            Some(OsStr::new("1"))
+        );
+        assert_eq!(env[OsStr::new("ANNIE_DESKTOP")], Some(OsStr::new("local")));
+        assert_eq!(
+            env[OsStr::new("ANNIE_LOCAL_DESKTOP_HELPER")],
+            Some(helper.as_os_str())
+        );
+        assert_eq!(env[OsStr::new("ANNIE_PUBLIC_URL")], None);
+        assert_eq!(env[OsStr::new("ANNIE_CELL_SECRET")], None);
+        assert_eq!(env[OsStr::new("ANNIE_DESKTOP_URL")], None);
+        let without = Bundle {
+            computer: None,
+            ..bundle
+        };
+        let process = command(&without, Path::new("/data"), 47821);
+        let env: std::collections::HashMap<_, _> = process.get_envs().collect();
+        assert_eq!(env[OsStr::new("ANNIE_DESKTOP")], None);
+        assert_eq!(env[OsStr::new("ANNIE_LOCAL_DESKTOP_HELPER")], None);
     }
 }

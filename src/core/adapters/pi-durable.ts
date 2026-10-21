@@ -62,7 +62,7 @@ const ThreadModelsDoc = defineDoc<{ models: Record<string, ModelSelection> }>({
 
 export const piDurableEngine: DurableEngine = {
 	async open(options: EngineOpenOptions): Promise<EngineSession> {
-		const provider = createProvider(options.model.provider);
+		const provider = createProvider(options.model.provider, options.localProviders);
 		const models = createModels({
 			credentials: {
 				async read(providerId) {
@@ -286,7 +286,7 @@ class PiDurableSession implements EngineSession {
 	private register(provider: string): boolean {
 		if (this.models.getProvider(provider) !== undefined) return true;
 		try {
-			this.models.setProvider(createProvider(provider));
+			this.models.setProvider(createProvider(provider, this.options.localProviders));
 			return true;
 		} catch {
 			return false;

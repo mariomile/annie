@@ -1,4 +1,4 @@
-import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo } from "./model-providers.ts";
+import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, SUBSCRIPTION_PROVIDERS, subscriptionProvider, type ModelInfo } from "./model-providers.ts";
 import type { InstanceRecord, ModelSelection } from "./registry.ts";
 import type { AnnieRuntime } from "./runtime.ts";
 import { modelApiKeySecret } from "./secrets.ts";
@@ -34,7 +34,8 @@ export class ChatModels {
 		},
 	) {}
 
-	async keyOf(provider: string): Promise<"server" | "saved" | "missing"> {
+	async keyOf(provider: string): Promise<"server" | "saved" | "missing" | "local"> {
+		if (subscriptionProvider(provider) !== undefined) return this.runtime.localProviders(this.tenant)?.connected(provider) ? "local" : "missing";
 		if (this.catalog.serverModelKeys.includes(provider)) return "server";
 		return (await this.runtime.secrets(this.tenant).get(modelApiKeySecret(provider))) === undefined ? "missing" : "saved";
 	}
@@ -42,7 +43,7 @@ export class ChatModels {
 	async providers(record: InstanceRecord, owner: boolean): Promise<ChatProvider[]> {
 		const allowed = (id: string) => record.egress.modelProviders.includes(id);
 		const keyed: ChatProvider[] = [];
-		for (const p of MODEL_PROVIDERS) if ((allowed(p.id) || owner) && (await this.keyOf(p.id)) !== "missing") keyed.push({ id: p.id, label: p.label, defaultModel: p.defaultModel, allowed: allowed(p.id) });
+		for (const p of [...MODEL_PROVIDERS, ...SUBSCRIPTION_PROVIDERS]) if ((allowed(p.id) || owner) && (await this.keyOf(p.id)) !== "missing") keyed.push({ id: p.id, label: p.label, defaultModel: p.defaultModel, allowed: allowed(p.id) });
 		// The local model only while the instance itself runs on it (a development setup).
 		return record.model.provider === DEV_PROVIDER ? [...keyed, { id: DEV_PROVIDER, label: "Modello di prova", defaultModel: DEV_MODEL_ID, allowed: true }] : keyed;
 	}

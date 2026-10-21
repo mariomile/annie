@@ -7,7 +7,7 @@ import type { SpeakerConfig } from "../channels/speech.ts";
 import type { ImageGenerationConfig } from "../core/image-generation.ts";
 import { TIMESTAMP_STYLES, type TimestampStyle, type TranscriberConfig } from "../channels/voice.ts";
 import { GOOGLE_SERVICES, type GoogleService } from "../connectors/google.ts";
-import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, modelProvider as offeredProvider, providerIds } from "../core/model-providers.ts";
+import { DEV_MODEL_ID, DEV_PROVIDER, MODEL_PROVIDERS, modelProvider as offeredProvider, providerIds, subscriptionProvider } from "../core/model-providers.ts";
 export type TelegramConfig = {
 	readonly telegramBotToken: string;
 	readonly modelProvider: string;
@@ -25,7 +25,8 @@ export const DEFAULT_MODEL_PROVIDER = "anthropic";
 
 /** ANNIE_MODEL_PROVIDER and ANNIE_MODEL_ID, checked; `keyEnv` is undefined for the local model. */
 function modelChoice(env: Readonly<Record<string, string | undefined>>): { modelProvider: string; modelId: string; keyEnv: string | undefined } {
-	const modelProvider = nonEmpty(env.ANNIE_MODEL_PROVIDER) ?? DEFAULT_MODEL_PROVIDER;
+	const modelProvider = nonEmpty(env.ANNIE_MODEL_PROVIDER) ?? (env.ANNIE_LOCAL_PROVIDERS === "1" ? DEV_PROVIDER : DEFAULT_MODEL_PROVIDER);
+	if (subscriptionProvider(modelProvider) !== undefined && env.ANNIE_LOCAL_PROVIDERS !== "1") throw new ConfigError("Subscription providers require ANNIE_LOCAL_PROVIDERS=1 in the local app");
 	if (modelProvider === DEV_PROVIDER) return { modelProvider, modelId: nonEmpty(env.ANNIE_MODEL_ID) ?? DEV_MODEL_ID, keyEnv: undefined };
 	const offered = offeredProvider(modelProvider);
 	if (offered === undefined) {
@@ -133,6 +134,8 @@ export function loadSegreteriaConfig(env: Readonly<Record<string, string | undef
 }
 
 export type AnnieConfig = {
+	/** Opt-in access to official CLI subscriptions; only for a local single-tenant app. */
+	readonly localProviders?: boolean;
 	readonly dataDir: string;
 	readonly tenantId: string;
 	readonly instanceId: string;
@@ -353,7 +356,7 @@ export function loadComputerConfig(env: Readonly<Record<string, string | undefin
 	return { kind, image: nonEmpty(env.ANNIE_COMPUTER_IMAGE) ?? "annie-computer:latest", socketPath: nonEmpty(env.ANNIE_DOCKER_SOCKET) ?? "/var/run/docker.sock", memoryMb, cpus, diskMb, ...(runtime === undefined ? {} : { runtime }) };
 }
 
-export type DesktopConfig = { readonly kind: "docker"; readonly socketPath: string; readonly network: "none" | "internet" } | { readonly kind: "remote"; readonly url: string; readonly token: string };
+export type DesktopConfig = { readonly kind: "docker"; readonly socketPath: string; readonly network: "none" | "internet" } | { readonly kind: "remote"; readonly url: string; readonly token: string } | { readonly kind: "local"; readonly helperPath: string };
 
 /**
  * ANNIE_DESKTOP and its settings (ADR 0045): docker, a container of Cua's image per agente, with
@@ -364,11 +367,20 @@ export function loadDesktopConfig(env: Readonly<Record<string, string | undefine
 	const kind = nonEmpty(env.ANNIE_DESKTOP);
 	const network = nonEmpty(env.ANNIE_DESKTOP_NETWORK);
 	const remote = ["ANNIE_DESKTOP_URL", "ANNIE_DESKTOP_TOKEN"].filter((name) => nonEmpty(env[name]) !== undefined);
-	if (kind !== undefined && kind !== "docker" && kind !== "remote") throw new ConfigError("ANNIE_DESKTOP: docker or remote, or unset for no screen");
+	if (kind !== undefined && kind !== "docker" && kind !== "remote" && kind !== "local") throw new ConfigError("ANNIE_DESKTOP: docker, remote or local, or unset for no screen");
 	if (network !== undefined && kind !== "docker") throw new ConfigError("ANNIE_DESKTOP_NETWORK set without ANNIE_DESKTOP=docker");
 	if (remote.length > 0 && kind !== "remote") throw new ConfigError(`${remote.join(", ")} set without ANNIE_DESKTOP=remote`);
 	if (kind === undefined) return undefined;
 	if (nonEmpty(env.ANNIE_CELL_SECRET) !== undefined) throw new ConfigError("ANNIE_DESKTOP is not for a cell of Annie Cloud: a cell has no Docker socket, and a shared screen would mix tenants");
+	if (kind === "local") {
+		const host = nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1";
+		if (env.ANNIE_LOCAL_PROVIDERS !== "1" || !["127.0.0.1", "::1", "localhost"].includes(host) || nonEmpty(env.ANNIE_PUBLIC_URL) !== undefined) {
+			throw new ConfigError("ANNIE_DESKTOP=local needs ANNIE_LOCAL_PROVIDERS=1, a loopback ANNIE_WEB_HOST and no ANNIE_PUBLIC_URL");
+		}
+		const helperPath = nonEmpty(env.ANNIE_LOCAL_DESKTOP_HELPER);
+		if (helperPath === undefined || !helperPath.startsWith("/") || /[\r\n\0]/.test(helperPath)) throw new ConfigError("ANNIE_DESKTOP=local needs an absolute ANNIE_LOCAL_DESKTOP_HELPER path from the desktop app");
+		return { kind, helperPath };
+	}
 	if (kind === "docker") {
 		if (network !== undefined && network !== "none" && network !== "internet") throw new ConfigError("ANNIE_DESKTOP_NETWORK: none (default, no internet) or internet");
 		return { kind, socketPath: nonEmpty(env.ANNIE_DOCKER_SOCKET) ?? "/var/run/docker.sock", network: network === "internet" ? "internet" : "none" };
@@ -405,6 +417,8 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		if (publicUrl === undefined) throw new ConfigError("ANNIE_TELEGRAM_WEBHOOK_SECRET needs ANNIE_PUBLIC_URL: Telegram sends the updates there");
 	}
 	const cellSecret = nonEmpty(env.ANNIE_CELL_SECRET);
+	const localProviders = env.ANNIE_LOCAL_PROVIDERS === "1";
+	if (localProviders && (!["127.0.0.1", "localhost", "::1"].includes(nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1") || publicUrl !== undefined || cellSecret !== undefined)) throw new ConfigError("ANNIE_LOCAL_PROVIDERS requires a loopback server without ANNIE_PUBLIC_URL or ANNIE_CELL_SECRET");
 	if (cellSecret !== undefined && cellSecret.length < 16) throw new ConfigError("ANNIE_CELL_SECRET: at least 16 characters");
 	const googleId = nonEmpty(env.ANNIE_GOOGLE_CLIENT_ID);
 	const googleSecret = nonEmpty(env.ANNIE_GOOGLE_CLIENT_SECRET);
@@ -521,6 +535,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 	}
 	return {
 		dataDir: nonEmpty(env.ANNIE_DATA_DIR) ?? "data",
+		localProviders,
 		tenantId: nonEmpty(env.ANNIE_TENANT_ID) ?? "default",
 		instanceId: nonEmpty(env.ANNIE_INSTANCE_ID) ?? "annie",
 		instanceName: nonEmpty(env.ANNIE_INSTANCE_NAME) ?? "Annie",

@@ -17,6 +17,8 @@ export type DesktopResult = {
 };
 
 export type DesktopProvider = {
+	/** The user's computer, when explicitly enabled by the local desktop app. */
+	readonly kind?: "local" | "remote";
 	/** Whether the desktop reaches the internet: never, yes (its browser is not under the site allowlist), or not known here. */
 	readonly network: "none" | "internet" | "unknown";
 	/** One desktop for every agente that uses it (a desktop run elsewhere), rather than one each. */
@@ -29,6 +31,18 @@ export type DesktopProvider = {
 	check(): Promise<string | undefined>;
 	/** Stop every desktop of this process. */
 	close(): Promise<void>;
+	/** Actual operating-system permission checks; only the local computer offers these. */
+	permissions?(): Promise<DesktopPermissions>;
+	requestPermission?(permission: DesktopPermission): Promise<DesktopPermissions>;
+};
+
+export type DesktopPermission = "screenRecording" | "accessibility";
+export type DesktopPermissions = {
+	readonly kind: "local";
+	readonly supported: boolean;
+	readonly screenRecording: boolean;
+	readonly accessibility: boolean;
+	readonly problem?: string;
 };
 
 /** Something the person or Annie can understand (a tool the desktop lacks, an app not found): said as it is. */
@@ -37,6 +51,12 @@ export class DesktopError extends Error {
 }
 
 export const DESKTOP_CONNECTOR = "schermo";
+/** A remote-screen grant never grants access to the person's Mac. */
+export const LOCAL_DESKTOP_CONNECTOR = "computer-use";
+
+export function desktopConnector(desktop: { readonly kind?: "local" | "remote" }): string {
+	return desktop.kind === "local" ? LOCAL_DESKTOP_CONNECTOR : DESKTOP_CONNECTOR;
+}
 
 /**
  * Screenshots go to the model at most this long on their longer side (the Docker desktop is exactly

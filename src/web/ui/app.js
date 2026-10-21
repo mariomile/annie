@@ -764,7 +764,10 @@ function modelCard(inst, current, providers) {
 		"select",
 		// The local development model is not offered: the instance keeps it until the owner picks another.
 		offered ? null : h("option", { value: current.provider, selected: "selected" }, "Modello di prova"),
-		providers.map((p) => h("option", { value: p.id, selected: p.id === current.provider ? "selected" : undefined }, p.label)),
+		...[
+			["Abbonamenti", providers.filter((p) => p.kind === "subscription")],
+			["Provider con chiave API", providers.filter((p) => p.kind !== "subscription")],
+		].filter(([, rows]) => rows.length).map(([label, rows]) => h("optgroup", { label }, rows.map((p) => h("option", { value: p.id, selected: p.id === current.provider ? "selected" : undefined }, p.label)))),
 	);
 	const filter = h("input", { type: "search", placeholder: "Cerca un modello", autocomplete: "off" });
 	const model = h("select");
@@ -773,6 +776,8 @@ function modelCard(inst, current, providers) {
 	const keyRow = h("label.field", h("span", "Chiave API"), key, hint);
 	const filterRow = h("label.field", h("span", "Cerca"), filter);
 	const status = h("span.chip", { "aria-live": "polite" });
+	const subscriptionHint = h("p.muted.small", { hidden: true });
+	const problem = h("p.warn", { role: "alert", hidden: true });
 	const submit = h("button.btn.accent", "Usa questo modello");
 	const forget = h("button.btn.ghost", "Togli la chiave");
 	let models = [];
@@ -784,23 +789,28 @@ function modelCard(inst, current, providers) {
 		// Two models with the same name (one is a dated version) are told apart by their id.
 		const names = new Map();
 		for (const m of models) names.set(m.name, (names.get(m.name) ?? 0) + 1);
-		mount(model, shown.map((m) => h("option", { value: m.id, selected: m.id === wanted ? "selected" : undefined }, modelLabel(m, names.get(m.name) > 1))));
-		submit.disabled = shown.length === 0;
+		mount(model, shown.map((m) => h("option", { value: m.id, selected: m.id === wanted ? "selected" : undefined }, modelLabel(m, names.get(m.name) > 1, chosen()?.kind === "subscription"))));
+		submit.disabled = shown.length === 0 || (chosen()?.kind === "subscription" && !chosen()?.connected);
 	};
 	// The models are asked for when a provider is picked: some have hundreds. Only the last answer counts.
 	const showModels = async () => {
 		const p = chosen();
 		const ask = ++asked;
+		models = [];
 		submit.disabled = true;
-		const state = p?.key ?? "server";
-		status.textContent = p === undefined ? "Modello di prova" : KEY_STATE[state];
-		status.className = `chip${p === undefined || state === "missing" ? " warn" : " ok"}`;
-		key.disabled = state === "server";
+		problem.hidden = true;
+		const keyState = p?.key ?? "server";
+		const subscription = p?.kind === "subscription";
+		status.textContent = p === undefined ? "Modello di prova" : subscription ? (p.connected ? "Abbonamento connesso" : "Abbonamento da collegare") : KEY_STATE[keyState];
+		status.className = `chip${p === undefined || (subscription ? !p.connected : keyState === "missing") ? " warn" : " ok"}`;
+		key.disabled = subscription || keyState === "server";
 		key.value = "";
-		key.placeholder = state === "server" ? "La mette chi gestisce il server" : state === "saved" ? "Incollane una nuova per cambiarla" : `La tua chiave ${p.label}`;
-		hint.textContent = state === "server" ? "Il server ha già la chiave di questo provider." : `Resta sul server con le altre chiavi dell'account e non torna più su questa pagina. In alternativa chi gestisce il server la mette in ${p?.keyEnv}.`;
-		keyRow.hidden = p === undefined;
-		forget.hidden = state !== "saved";
+		key.placeholder = keyState === "server" ? "La mette chi gestisce il server" : keyState === "saved" ? "Incollane una nuova per cambiarla" : `La tua chiave ${p?.label ?? ""}`;
+		hint.textContent = keyState === "server" ? "Il server ha già la chiave di questo provider." : `Resta sul server con le altre chiavi dell'account e non torna più su questa pagina. In alternativa chi gestisce il server la mette in ${p?.keyEnv}.`;
+		keyRow.hidden = p === undefined || subscription;
+		forget.hidden = subscription || keyState !== "saved";
+		subscriptionHint.hidden = !subscription;
+		subscriptionHint.textContent = p?.connected ? `Usa l'accesso locale di ${p.label} e il tuo abbonamento. Non serve una chiave API.` : "Collega prima questo abbonamento nell'elenco dei provider qui sopra.";
 		filter.value = "";
 		if (p === undefined) {
 			models = [];
@@ -808,7 +818,17 @@ function modelCard(inst, current, providers) {
 			mount(model, h("option", { value: current.modelId }, current.modelId));
 			return;
 		}
-		const answer = await api(`/api/models/${encodeURIComponent(p.id)}`);
+		mount(model, h("option", { value: "" }, "Caricamento modelli…"));
+		let answer;
+		try {
+			answer = await api(`/api/models/${encodeURIComponent(p.id)}`);
+		} catch (error) {
+			if (ask !== asked) return;
+			mount(model, h("option", { value: "" }, "Modelli non disponibili"));
+			problem.textContent = error.message;
+			problem.hidden = false;
+			return;
+		}
 		if (ask !== asked) return;
 		models = [...answer.models].sort((a, b) => a.name.localeCompare(b.name));
 		filterRow.hidden = models.length <= 20;
@@ -817,6 +837,7 @@ function modelCard(inst, current, providers) {
 	provider.addEventListener("change", () => showModels().catch((error) => toast(error.message, true)));
 	filter.addEventListener("input", () => fill(model.value));
 	submit.addEventListener("click", async () => {
+		submit.disabled = true;
 		try {
 			const body = { provider: provider.value, modelId: model.value, ...(key.value.trim() ? { apiKey: key.value.trim() } : {}) };
 			const { model: saved } = await api(`/api/instances/${inst.id}/model`, { method: "PUT", body });
@@ -824,6 +845,7 @@ function modelCard(inst, current, providers) {
 			render();
 		} catch (error) {
 			toast(error.message, true);
+			fill(model.value);
 		}
 	});
 	forget.addEventListener("click", () =>
@@ -836,26 +858,153 @@ function modelCard(inst, current, providers) {
 	const card = h(
 		"div.card.pad",
 		h("div.row-gap", h("h2", "Modello AI"), status),
-		h("p.muted", "Il modello con cui Annie pensa e risponde: Claude, GPT, Gemini, Grok, Mistral, DeepSeek, Kimi, o uno dei tanti di OpenRouter. Cambiarlo non tocca chat, file e memoria: anche le chat vecchie continuano con il nuovo modello."),
+		h("p.muted", "Scegli il provider e il modello per questo agente. Puoi usare un abbonamento connesso oppure una chiave API. Chat, file e memoria restano: anche le chat vecchie continuano con il nuovo modello."),
 		h("label.field", h("span", "Provider"), provider),
 		filterRow,
 		h("label.field", h("span", "Modello"), model),
 		keyRow,
+		subscriptionHint,
+		problem,
 		h("div.actions", submit, forget),
 	);
+	card.chooseProvider = (id) => {
+		provider.value = id;
+		void showModels();
+		provider.focus();
+		card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+	};
 	showModels().catch((error) => toast(error.message, true));
 	return card;
 }
 
+/** Connection state comes from the local CLI, never from a saved UI preference. */
+function subscriptionState(provider) {
+	if (provider.connected) return { label: "Connesso", tone: "ok" };
+	return {
+		connecting: { label: "Accesso in corso", tone: "warn" },
+		"not-installed": { label: "Da installare", tone: "" },
+		"login-required": { label: "Accesso richiesto", tone: "warn" },
+		unavailable: { label: "Non disponibile", tone: "warn" },
+		disconnected: { label: "Scollegato", tone: "" },
+	}[provider.status] ?? { label: "Non verificato", tone: "warn" };
+}
+
+/** The account's subscriptions, with the existing per-agent model and API-key editor below. */
+function providersCard(inst, initial, initialModels) {
+	let catalog = initial;
+	let models = initialModels;
+	let modelForm;
+	let paintedModels;
+	let busy = false;
+	let pollAttempts = 0;
+	let pollTimer;
+	const rows = h("div.provider-list", { "aria-label": "Abbonamenti AI" });
+	const modelSlot = h("div.provider-model");
+	const problem = h("p.warn", { role: "alert", hidden: !initial.error }, initial.error ?? "");
+	const note = h("p.muted.small");
+	const detect = h("button.btn.ghost", { type: "button", onclick: () => run("/api/providers/detect", "POST") }, icon("search"), "Rileva di nuovo");
+	const draw = () => {
+		const subscriptions = (catalog.providers ?? []).filter((p) => p.kind === "subscription");
+		note.textContent = catalog.localEnabled
+			? "Gli accessi già presenti su questo computer vengono riconosciuti e collegati all'avvio. Un provider che scolleghi resta scollegato finché non lo ricolleghi."
+			: "Gli abbonamenti richiedono Annie in esecuzione su questo computer con i provider locali attivi. I provider con chiave API restano disponibili.";
+		detect.disabled = busy || (!catalog.localEnabled && !catalog.error);
+		detect.textContent = busy ? "Rilevamento…" : "Rileva di nuovo";
+		modelSlot.inert = busy;
+		mount(rows, subscriptions.map((p) => {
+			const status = subscriptionState(p);
+			const current = models?.model.provider === p.id;
+			const connecting = p.status === "connecting";
+			const action = h("button.btn.ghost", { type: "button", disabled: busy || connecting || p.status === "not-installed" || p.status === "unavailable", "aria-label": `${p.connected ? "Riconnetti" : "Collega"} ${p.label}`, onclick: () => run(`/api/providers/${encodeURIComponent(p.id)}/connect`, "POST") }, connecting ? "Connessione…" : p.connected ? "Riconnetti" : "Collega");
+			return h("div.provider-row", { role: "group", "aria-label": p.label },
+				h("span.provider-mark", { "aria-hidden": "true" }, p.id === "claude-code" ? "✳" : ">_"),
+				h("div.provider-info", h("div.row-gap", h("b", p.label), current ? h("span.provider-current", "In uso") : null), h("small.muted", p.connected ? "Accesso locale rilevato · Usa il tuo abbonamento" : connecting ? "Completa l'accesso nella pagina aperta nel browser. Questa schermata si aggiorna da sola." : p.status === "not-installed" ? `Installa ${p.label} su questo computer per collegarlo.` : p.status === "unavailable" ? "Non riesco a verificare l'accesso locale. Riprova il rilevamento." : "Collega il tuo abbonamento, senza chiave API."),
+					p.error ? h("small.warn", p.error) : null,
+					!p.connected && !connecting && p.installed && !p.authenticated && p.loginCommand ? h("div.provider-login", h("span.muted.small", "Premi Collega per accedere, oppure usa il terminale:"), h("code.mono", p.loginCommand), copyButton(p.loginCommand)) : null),
+				h("div.provider-controls", h(`span.chip${status.tone ? `.${status.tone}` : ""}`, status.label), h("div.actions", p.connected ? h("button.btn.ghost", { type: "button", disabled: busy, onclick: () => modelForm?.chooseProvider(p.id) }, "Scegli modello") : null, action, p.connected ? h("button.btn.ghost.small", { type: "button", disabled: busy, "aria-label": `Scollega ${p.label}`, onclick: () => confirmDialog(`Scollegare ${p.label}?`, "Annie non userà più questo abbonamento. L'accesso nel terminale resta disponibile. Sposta prima gli agenti che lo usano su un altro provider.", "Scollega", () => run(`/api/providers/${encodeURIComponent(p.id)}`, "DELETE")) }, "Scollega") : null)),
+			);
+		}));
+		if (models && models !== paintedModels) {
+			modelForm = modelCard(inst, models.model, models.providers);
+			modelForm.classList.remove("card", "pad");
+			mount(modelSlot, anchor("modello", modelForm));
+			paintedModels = models;
+		} else if (!models) mount(modelSlot, h("p.warn", "Non riesco a caricare il modello di questo agente. Rileva di nuovo i provider per riprovare."));
+	};
+	const run = async (path, method) => {
+		if (busy) return;
+		clearTimeout(pollTimer);
+		busy = true;
+		problem.hidden = true;
+		draw();
+		try {
+			await api(path, { method, ...(method === "POST" ? { body: {} } : {}) });
+			[catalog, models] = await Promise.all([api("/api/providers"), api(`/api/instances/${inst.id}/model`)]);
+			chatModelCache.clear();
+		} catch (error) {
+			problem.textContent = error.message;
+			problem.hidden = false;
+		} finally {
+			busy = false;
+			draw();
+			pollAttempts = 0;
+			schedulePoll();
+		}
+	};
+	const card = h("section.card.pad.provider-settings",
+		h("div.settings-heading", h("div", h("h2", "Provider"), h("p.muted", "Il tuo abbonamento, connesso ad Annie.")), detect),
+		rows, note, problem, modelSlot,
+	);
+	const schedulePoll = () => {
+		clearTimeout(pollTimer);
+		if (!(catalog.providers ?? []).some((p) => p.status === "connecting")) return;
+		if (pollAttempts >= 180) {
+			problem.textContent = "L'accesso è ancora in attesa. Completa la pagina nel browser, poi premi Rileva di nuovo.";
+			problem.hidden = false;
+			return;
+		}
+		pollTimer = setTimeout(async () => {
+			if (!card.isConnected) return;
+			pollAttempts++;
+			try {
+				const previous = JSON.stringify(catalog.providers);
+				catalog = await api("/api/providers");
+				if (previous !== JSON.stringify(catalog.providers)) models = await api(`/api/instances/${inst.id}/model`);
+				draw();
+			} catch (error) {
+				problem.textContent = error.message;
+				problem.hidden = false;
+			}
+			schedulePoll();
+		}, 2000);
+	};
+	// Initialization only reads the access detected by the server; reconnecting is an explicit action.
+	draw();
+	requestAnimationFrame(schedulePoll);
+	return card;
+}
+
+/** First steps make the automatic detection visible, with management in Settings. */
+function providerOverview(catalog) {
+	const subscriptions = (catalog.providers ?? []).filter((p) => p.kind === "subscription");
+	if (!catalog.localEnabled || subscriptions.length === 0) return null;
+	return h("section.card.pad.provider-overview", h("div.settings-heading", h("div", h("h2", "I tuoi provider AI"), h("p.muted", "Annie riconosce gli accessi già presenti su questo computer e usa il tuo abbonamento.")), h("a.btn.ghost", { href: "#/impostazioni/providers" }, "Gestisci provider")),
+		h("div.provider-overview-list", subscriptions.map((p) => {
+			const status = subscriptionState(p);
+			return h("div.row-gap", h("b", p.label), h(`span.chip${status.tone ? `.${status.tone}` : ""}`, status.label));
+		})),
+	);
+}
+
 /** «Claude Sonnet 5.5 · foto · ragiona · entrata $3 · uscita $15 per M token»: what tells two models apart. */
-function modelLabel(m, withId) {
-	return `${withId ? `${m.name} (${m.id})` : m.name} · ${modelFacts(m)}`;
+function modelLabel(m, withId, subscription = false) {
+	return `${withId ? `${m.name} (${m.id})` : m.name} · ${modelFacts(m, subscription)}`;
 }
 
 /** What a model does and costs: «foto · ragiona · entrata $3 · uscita $15 per M token». */
-function modelFacts(m) {
+function modelFacts(m, subscription = false) {
 	const usd = (n) => `$${n < 1 ? Number(n.toFixed(2)) : Math.round(n * 10) / 10}`;
-	const price = m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
+	const price = subscription ? "nel tuo abbonamento" : m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
 	return [m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
 }
 
@@ -1017,7 +1166,7 @@ function computerCard(inst, allowed, problem) {
 
 /** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
 function desktopCard(inst, allowed, desktop) {
-	if (!desktop.available) return h("div.card.pad", h("h2", "Schermo"), h("p.muted", "Lo schermo non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
+	if (!desktop.available) return h("div.card.pad", h("h2", "Schermo remoto"), h("p.muted", "Lo schermo remoto non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {
 		try {
@@ -1042,13 +1191,89 @@ function desktopCard(inst, allowed, desktop) {
 	const many = desktop.shared ? "" : " Se più agenti usano lo schermo insieme, quello usato meno di recente si chiude per fare posto.";
 	return h(
 		"div.card.pad",
-		h("h2", "Schermo"),
+		h("h2", "Schermo remoto"),
 		h("p.muted", `${inst.name} ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
 		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
 		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
 		h("label.row-gap", toggle, h("span", "Consenti lo schermo a questo agente")),
 		desktop.shared ? null : h("div.actions", h("button.btn.ghost", { onclick: reset }, "Riavvia lo schermo")),
 	);
+}
+
+/** macOS permissions describe the host running Annie; the per-agent grant stays separate. */
+function computerUseCard(inst, initialAllowed, initialDesktop) {
+	let desktop = initialDesktop;
+	let allowed = initialAllowed;
+	let busy = false;
+	const content = h("div");
+	const message = h("p.muted.small", { role: "status", hidden: true });
+	const problem = h("p.warn", { role: "alert", hidden: true });
+	const check = h("button.btn.ghost", { type: "button", onclick: () => run() }, "Controlla di nuovo");
+	const card = h("section.card.pad.computer-use-settings", h("div.settings-heading", h("div", h("h2", "Computer Use"), h("p.muted", "Lascia che Annie veda lo schermo, clicchi e scriva su questo Mac.")), check), content, message, problem);
+	const draw = () => {
+		check.disabled = busy;
+		check.textContent = busy ? "Controllo…" : "Controlla di nuovo";
+		if (desktop.kind !== "local") {
+			mount(content, h("p.muted", "Il controllo di questo computer richiede l'app Annie per Mac con il servizio locale attivo. Lo schermo remoto, se disponibile, si gestisce separatamente qui sotto."));
+			return;
+		}
+		const permissions = desktop.permissions;
+		const supported = permissions?.supported === true;
+		const ready = supported && permissions.screenRecording && permissions.accessibility;
+		const toggle = h("input", { type: "checkbox", checked: allowed, disabled: busy || (!allowed && (!ready || !desktop.available)), "aria-describedby": "computer-use-consent" });
+		toggle.addEventListener("change", async () => {
+			const wanted = toggle.checked;
+			toggle.disabled = true;
+			problem.hidden = true;
+			try {
+				await api(`/api/instances/${inst.id}/desktop-allowed`, { method: "PUT", body: { allowed: wanted } });
+				allowed = wanted;
+				toast(allowed ? `${inst.name} può usare questo Mac` : `Computer Use disattivato per ${inst.name}`);
+			} catch (error) {
+				problem.textContent = error.message;
+				problem.hidden = false;
+			}
+			draw();
+		});
+		const permissionRows = [
+			["screenRecording", "Registrazione schermo", "Permette ad Annie di vedere le finestre delle app.", "screen"],
+			["accessibility", "Accessibilità", "Permette ad Annie di cliccare e scrivere.", "compose"],
+		].map(([id, title, text, glyph]) => {
+			const granted = supported && permissions[id] === true;
+			return h("div.permission-row", h("span.permission-glyph", icon(glyph)), h("div.provider-info", h("b", title), h("small.muted", text)), h("div.permission-controls", h(`span.chip${granted ? ".ok" : supported ? ".warn" : ""}`, granted ? "Consentito" : supported ? "Da consentire" : "Non disponibile"), granted ? null : h("button.btn.ghost", { type: "button", disabled: busy || !supported, "aria-label": `Consenti ${title.toLowerCase()}`, onclick: () => run(id) }, "Consenti")));
+		});
+		mount(content,
+			h("div.computer-use-intro", h("span.computer-use-glyph", icon("screen")), h("div", h("b", "Questo Mac"), h("p.muted.small", "Annie interagisce con le app e i file di questo computer. Il computer è condiviso dagli agenti a cui dai il permesso.")), h(`span.chip${ready ? ".ok" : ".warn"}`, ready ? "Pronto" : "Da configurare")),
+			!supported ? h("p.warn", permissions?.problem ?? desktop.problem ?? "Non riesco a leggere i permessi di macOS. Apri Annie sul Mac e controlla che il servizio locale sia attivo.") : null,
+			h("div.permission-list", permissionRows),
+			supported && permissions.problem ? h("p.warn", permissions.problem) : null,
+			h("label.row-gap.computer-use-toggle", toggle, h("span", `Consenti l'uso di questo Mac a ${inst.name}`)),
+			h("p.muted.small", { id: "computer-use-consent" }, ready ? "Questo consenso vale per l'agente selezionato. Puoi disattivarlo qui in qualsiasi momento." : "Consenti entrambi i permessi in Impostazioni di Sistema, poi controlla di nuovo e abilita l'agente."),
+		);
+	};
+	const run = async (permission) => {
+		if (busy) return;
+		busy = true;
+		problem.hidden = true;
+		message.hidden = true;
+		draw();
+		try {
+			if (permission) {
+				await api("/api/desktop/permissions", { method: "POST", body: { permission } });
+				message.textContent = "Completa il consenso in Impostazioni di Sistema, poi premi Controlla di nuovo. Se macOS lo richiede, riapri Annie.";
+				message.hidden = false;
+			}
+			desktop = await api("/api/desktop");
+		} catch (error) {
+			problem.textContent = error.message;
+			problem.hidden = false;
+		} finally {
+			busy = false;
+			draw();
+		}
+	};
+	draw();
+	return card;
 }
 
 /** Deleting an agente (ADR 0046): what goes is said plainly, and the owner types the name to confirm. */
@@ -1182,8 +1407,8 @@ function accountDialog() {
 // ---------- shell ----------
 /** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
 const SIDEBAR = new Set(["inizia", "agenti", "stanze", "board", "segreteria", "approvazioni", "task", "automazioni", "file", "memoria", "skill"]);
-/** Sections folded under «Altro», so that the chats get the room: shown anyway when open or with something waiting. */
-const SIDEBAR_MORE = new Set(["automazioni", "file", "memoria", "skill"]);
+const railPhone = matchMedia("(max-width: 860px)");
+railPhone.addEventListener("change", syncRailControls);
 
 function render() {
 	if (!state.me) return renderLogin();
@@ -1197,19 +1422,19 @@ function render() {
 		`div.shell${store("annie.rail") === "closed" ? ".collapsed" : ""}`,
 		h(
 			"header.topbar",
-			h("button.icon-btn", { "aria-label": "Menu", onclick: () => shell.classList.toggle("open") }, icon("menu")),
+			h("button.icon-btn.rail-menu", {
+				"aria-label": "Apri la barra laterale", "aria-controls": "rail", "aria-expanded": "false",
+				onclick: () => {
+					shell.classList.toggle("open");
+					syncRailControls();
+				},
+			}, icon("menu")),
 			// With more agenti, the open one: who a new chat goes to.
 			state.instances.length > 1 && state.instance ? h("b.topbar-who", face(state.instance, 22), state.instance.name) : h("b", "Annie"),
 			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
 		),
-		h("div.scrim", { onclick: () => shell.classList.remove("open") }),
+		h("div.scrim", { onclick: closeRailOnPhone }),
 		h("aside.rail", { id: "rail" }),
-		// With the sidebar closed on a computer: the two things still needed, in the corner.
-		h(
-			"div.peek",
-			h("button.icon-btn", { "aria-label": "Apri la barra laterale", title: "Apri la barra laterale", onclick: toggleRail }, icon("sidebar")),
-			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
-		),
 		main,
 	);
 	mount($app, shell);
@@ -1229,6 +1454,29 @@ function toggleRail() {
 	if (!shell) return;
 	shell.classList.toggle("collapsed");
 	store("annie.rail", shell.classList.contains("collapsed") ? "closed" : "open");
+	syncRailControls();
+}
+
+/** The same desktop control expands the icon rail; the phone keeps its full overlay. */
+function syncRailControls() {
+	const shell = document.querySelector(".shell");
+	if (!shell) return;
+	const expanded = !shell.classList.contains("collapsed");
+	const toggle = shell.querySelector(".rail .collapse");
+	if (toggle) {
+		const label = expanded ? "Chiudi la barra laterale" : "Apri la barra laterale";
+		toggle.setAttribute("aria-expanded", String(expanded));
+		toggle.setAttribute("aria-label", label);
+		toggle.setAttribute("title", label);
+	}
+	const menu = shell.querySelector(".rail-menu");
+	const open = shell.classList.contains("open");
+	if (menu) {
+		menu.setAttribute("aria-expanded", String(open));
+		menu.setAttribute("aria-label", open ? "Chiudi la barra laterale" : "Apri la barra laterale");
+	}
+	const rail = shell.querySelector(".rail");
+	if (rail) rail.inert = railPhone.matches && !open;
 }
 
 /** The current instance's conversations, for the sidebar; none for someone who cannot chat there. */
@@ -1255,41 +1503,23 @@ function threadGroup(at, now = new Date()) {
 
 function closeRailOnPhone() {
 	document.querySelector(".shell")?.classList.remove("open");
+	syncRailControls();
 }
 
 function renderRail() {
 	const rail = document.getElementById("rail");
 	if (!rail) return;
+	const scrollTop = rail.querySelector(".rail-scroll")?.scrollTop ?? 0;
 	const { view, rest } = route();
 	const items = PALETTE.filter((p) => SIDEBAR.has(p.id) && (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
 	const nav = h("nav.sections", { "aria-label": "Sezioni" });
-	const more = h("div.more-items", { id: "rail-more" });
 	for (const item of items) {
 		const count = item.count?.() ?? 0;
-		const link = h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, onclick: closeRailOnPhone }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", String(count)) : null);
-		(SIDEBAR_MORE.has(item.id) && view !== item.id && count === 0 ? more : nav).append(link);
-	}
-	if (more.childElementCount) {
-		const open = store("annie.rail.more") === "1";
-		more.hidden = !open;
-		const toggle = h(
-			"button.rail-more",
-			{
-				"aria-expanded": String(open),
-				"aria-controls": "rail-more",
-				onclick: () => {
-					more.hidden = !more.hidden;
-					toggle.setAttribute("aria-expanded", String(!more.hidden));
-					store("annie.rail.more", more.hidden ? null : "1");
-				},
-			},
-			icon("more"),
-			h("span.label", "Altro"),
-			h("span.fold-chevron", icon("down")),
-		);
-		nav.append(toggle, more);
+		const label = count > 0 ? `${item.label} (${count})` : item.label;
+		nav.append(h("a", { href: `#/${item.id}`, "aria-current": view === item.id ? "page" : undefined, "aria-label": label, title: label, onclick: closeRailOnPhone }, icon(item.id), h("span.label", item.label), count > 0 ? h("span.count", { "aria-hidden": "true" }, String(count)) : null));
 	}
 	const past = h("nav.history", { "aria-label": "Conversazioni" });
+	const agent = state.instance;
 	let group;
 	for (const t of state.threads ?? []) {
 		const g = threadGroup(t.updatedAt);
@@ -1298,12 +1528,15 @@ function renderRail() {
 			past.append(h("div.group", g));
 		}
 		const current = view === "chat" && rest[0] === t.id;
+		const label = `${agent?.name ?? "Agente"} · ${t.title}`;
+		const unread = state.unread.has(t.id);
 		past.append(
 			h(
 				"a",
-				{ href: `#/chat/${encodeURIComponent(t.id)}`, "aria-current": current ? "page" : undefined, title: t.title, onclick: closeRailOnPhone },
-				h("span.label", t.title),
-				state.unread.has(t.id) ? [h("span.dot", { "aria-hidden": "true" }), h("span.sr", "non letto")] : null,
+				{ href: `#/chat/${encodeURIComponent(t.id)}`, "aria-current": current ? "page" : undefined, "aria-label": `${label}${unread ? ", non letto" : ""}`, title: label, onclick: closeRailOnPhone },
+				face(agent, 24),
+				h("span.thread-text", h("span.name", agent?.name ?? "Agente"), h("span.title", t.title)),
+				unread ? h("span.dot", { "aria-hidden": "true" }) : null,
 			),
 		);
 	}
@@ -1311,54 +1544,61 @@ function renderRail() {
 		rail,
 		h(
 			"div.rail-top",
-			h("a.brand", { href: "#/chat", onclick: closeRailOnPhone }, h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
-			h("button.icon-btn.collapse", { "aria-label": "Chiudi la barra laterale", title: "Chiudi la barra laterale", onclick: toggleRail }, icon("sidebar")),
+			h("a.brand", { href: "#/chat", "aria-label": "Annie", title: "Annie", onclick: closeRailOnPhone }, h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
+			h("button.icon-btn.collapse", { "aria-label": "Chiudi la barra laterale", "aria-controls": "rail", "aria-expanded": "true", title: "Chiudi la barra laterale", onclick: toggleRail }, icon("sidebar")),
 		),
 		h(
 			"div.rail-actions",
-			h("a.rail-btn", { href: "#/chat", "aria-current": view === "chat" && !rest[0] ? "page" : undefined, onclick: closeRailOnPhone }, icon("compose"), h("span.label", "Nuova chat")),
-			h("button.rail-btn", { onclick: openPalette, "aria-label": "Vai a una sezione" }, icon("search"), h("span.label", "Cerca"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
+			h("a.rail-btn", { href: "#/chat", "aria-current": view === "chat" && !rest[0] ? "page" : undefined, "aria-label": "Nuova chat", title: "Nuova chat", onclick: closeRailOnPhone }, icon("compose"), h("span.label", "Nuova chat")),
+			h("button.rail-btn", { onclick: openPalette, "aria-label": "Vai a una sezione", title: "Cerca" }, icon("search"), h("span.label", "Cerca"), h("kbd", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K")),
 		),
-		state.instances.length > 1
-			? h(
-					"nav.roster",
-					{ "aria-label": "Agenti" },
-					state.instances.map((i) =>
-						h(
-							"button.roster-item",
-							{
-								"aria-current": i.id === state.instance?.id ? "true" : undefined,
-								title: i.tagline ? `${i.name}: ${i.tagline}` : i.name,
-								onclick: () => {
-									if (i.id === state.instance?.id) return go("chat");
-									state.instance = i;
-									store("annie.instance", i.id);
-									state.threads = [];
-									// A conversation of the other instance does not exist here.
-									if (route().rest[0] && route().view === "chat") go("chat");
-									void refreshSetup().then(render);
-									render();
+		h(
+			"div.rail-scroll",
+			state.instances.length
+				? h(
+						"nav.roster",
+						{ "aria-label": "Agenti" },
+						state.instances.map((i) =>
+							h(
+								"button.roster-item",
+								{
+									"aria-current": i.id === state.instance?.id ? "true" : undefined,
+									"aria-label": i.name,
+									title: i.tagline ? `${i.name}: ${i.tagline}` : i.name,
+									onclick: () => {
+										closeRailOnPhone();
+										if (i.id === state.instance?.id) return go("chat");
+										state.instance = i;
+										store("annie.instance", i.id);
+										state.threads = [];
+										// A conversation of the other instance does not exist here.
+										if (route().rest[0] && route().view === "chat") go("chat");
+										void refreshSetup().then(render);
+										render();
+									},
 								},
-							},
-							face(i, 24),
-							h("span.roster-text", h("span.name", agentLabel(i)), i.tagline ? h("span.line", i.tagline) : null),
+								face(i, 24),
+								h("span.roster-text", h("span.name", i.name), i.tagline ? h("span.line", i.tagline) : null),
+							),
 						),
-					),
-				)
-			: null,
-		nav,
-		h("div.rail-scroll", past.childElementCount ? past : null),
+					)
+				: null,
+			nav,
+			past.childElementCount ? past : null,
+		),
 		h(
 			"div.rail-foot",
 			h(
 				"button.who-id",
-				{ onclick: openMenu, "aria-haspopup": "menu", "aria-expanded": document.querySelector(".menu") ? "true" : "false", title: "Account e gestione" },
+				{ onclick: openMenu, "aria-haspopup": "menu", "aria-expanded": document.querySelector(".menu") ? "true" : "false", "aria-label": `Account e gestione, ${state.me.name}`, title: "Account e gestione" },
 				h("span.avatar", { "aria-hidden": "true" }, initials(state.me.name)),
 				h("span.who-text", h("span.name", state.me.name), h("span.role", state.instance?.name ?? (state.me.role === "owner" ? "Owner" : "Membro"))),
 				icon("more"),
 			),
 		),
 	);
+	rail.querySelector(".rail-scroll").scrollTop = scrollTop;
+	syncRailControls();
 }
 
 /** The account menu: spend, management sections, account, theme, exit. */
@@ -2087,7 +2327,7 @@ async function openModelMenu(inst, pill, chosen, pick) {
 				{ role: "group", "aria-labelledby": head },
 				h("div.model-group", { id: head }, provider.label, provider.allowed ? null : h("small", " · sceglierlo lo permette all'agente")),
 				error === undefined
-					? ordered.map((m) => option(names.get(m.name) > 1 ? `${m.name} (${m.id})` : m.name, modelFacts(m), chosen?.provider === provider.id && chosen?.modelId === m.id, () => pick({ provider: provider.id, modelId: m.id, name: m.name })))
+					? ordered.map((m) => option(names.get(m.name) > 1 ? `${m.name} (${m.id})` : m.name, modelFacts(m, provider.id === "claude-code" || provider.id === "codex"), chosen?.provider === provider.id && chosen?.modelId === m.id, () => pick({ provider: provider.id, modelId: m.id, name: m.name })))
 					: h("small.model-error", "Elenco non disponibile ora"),
 			);
 		});
@@ -2919,7 +3159,8 @@ const canInstall = () => installOffer !== undefined || appleTouch;
 function setupSteps(setup) {
 	const can = setup.can ?? {};
 	return [
-		{ id: "model", own: true, done: setup.model, title: "Scegli il modello AI", text: setup.model ? "Annie usa un modello AI vero: puoi cambiarlo quando vuoi." : "Ora risponde il modello di prova, che ripete quello che scrivi. Scegli Claude, GPT, Gemini, Grok o un altro, e incolla la tua chiave.", go: ["impostazioni", "modello"] },
+		{ id: "model", own: true, done: setup.model, title: "Collega il tuo provider AI", text: setup.model ? "Annie usa un modello AI vero: puoi cambiarlo quando vuoi." : "Annie riconosce Claude Code e Codex già connessi su questo computer e usa il tuo abbonamento. Puoi anche scegliere un altro provider e aggiungere la sua chiave API.", go: ["impostazioni", "providers"] },
+		...(can.computerUse ? [{ id: "computerUse", own: true, done: setup.computerUse, title: "Abilita Computer Use", text: "Consenti Registrazione schermo e Accessibilità in macOS, poi scegli se questo agente può vedere lo schermo, cliccare e scrivere su questo Mac.", go: ["impostazioni", "computer-use"] }] : []),
 		{ id: "instructions", own: true, done: setup.instructions, title: "Dille chi è e cosa fa", text: "Due righe su di te o sulla tua azienda, il tono e cosa deve fare. Puoi partire da un esempio: vengono aggiunte a quello che Annie sa già fare, e le cambi quando vuoi in Impostazioni." },
 		{ id: "tried", own: true, done: setup.tried, title: "Scrivile qualcosa", text: `Una domanda, una foto, un file da riassumere: vedi subito come risponde.${setup.model ? "" : " Con il modello di prova la risposta ripete quello che scrivi."}` },
 		{ id: "channel", own: true, done: setup.channel, title: "Usala dal telefono", text: `Collega Telegram o WhatsApp e mettiti tra chi può scriverle: le scrivi, le mandi ${can.transcription ? "vocali e " : ""}foto${can.transcription && can.speech ? ", ti risponde anche a voce" : ""}, e ti avvisa lei.`, go: ["impostazioni", "telegram"] },
@@ -2943,7 +3184,10 @@ function stepsLeftText(n) {
 async function viewStart(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const { setup } = await api(`/api/instances/${inst.id}/setup`);
+	const [{ setup }, providers] = await Promise.all([
+		api(`/api/instances/${inst.id}/setup`),
+		api("/api/providers").catch(() => ({ localEnabled: false, providers: [] })),
+	]);
 	if (inst !== state.instance) return;
 	state.setup = setup;
 	const steps = setupSteps(setup);
@@ -3032,6 +3276,7 @@ async function viewStart(main) {
 				"Nascondi",
 			),
 		),
+		providerOverview(providers),
 		progress,
 		h(
 			"ol.steps",
@@ -5010,7 +5255,7 @@ async function viewAgents(main) {
 async function viewSettings(main) {
 	if (needInstance(main)) return;
 	const inst = state.instance;
-	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images, models, desktop] = await Promise.all([
+	const [{ settings }, { people }, tg, wa, google, voice, search, tel, computer, speech, images, models, desktop, providers] = await Promise.all([
 		api(`/api/instances/${inst.id}/settings`),
 		api("/api/people"),
 		api(`/api/instances/${inst.id}/telegram`).catch(() => undefined),
@@ -5024,6 +5269,7 @@ async function viewSettings(main) {
 		api("/api/images").catch(() => ({ available: false })),
 		api(`/api/instances/${inst.id}/model`).catch(() => undefined),
 		api("/api/desktop").catch(() => ({ available: false })),
+		api("/api/providers").catch((error) => ({ localEnabled: false, providers: [], error: error.message })),
 	]);
 	const name = h("input", { type: "text", value: settings.name, maxlength: "80", "aria-label": "Nome" });
 	const emoji = h("input.emoji-input", { type: "text", value: settings.persona.emoji ?? "", placeholder: "🙂", maxlength: "16", "aria-label": "Emoji" });
@@ -5056,6 +5302,13 @@ async function viewSettings(main) {
 			h("button.btn.ghost", { onclick: () => (setupHidden(inst.id, false), go("inizia")) }, "Primi passi"),
 			h("button.btn.accent", { onclick: save }, "Salva"),
 		),
+		h("nav.settings-nav", { "aria-label": "Sezioni delle impostazioni" },
+			h("a", { href: "#/impostazioni/providers" }, icon("spark"), "Provider"),
+			h("a", { href: "#/impostazioni/computer-use" }, icon("screen"), "Computer Use"),
+			h("a", { href: "#/impostazioni/personalita" }, icon("impostazioni"), "Personalità e accessi"),
+		),
+		anchor("providers", providersCard(inst, providers, models)),
+		anchor("computer-use", computerUseCard(inst, (settings.egress.connectors ?? []).includes(desktop.connector ?? "schermo"), desktop)),
 		h(
 			"div.grid-2",
 			h(
@@ -5071,7 +5324,6 @@ async function viewSettings(main) {
 						h("label.field", h("span", "Istruzioni"), instructions, h("small", "Cosa sa fare e le sue regole. Nome, ruolo e tono gli arrivano dopo queste.")),
 					),
 				),
-				models === undefined ? null : anchor("modello", modelCard(inst, models.model, models.providers)),
 				tg === undefined ? null : anchor("telegram", telegramCard(inst, tg.telegram)),
 				wa === undefined ? null : whatsappCard(inst, wa.whatsapp),
 				tel === undefined ? null : phoneCard(inst, tel.phone),
@@ -5084,7 +5336,7 @@ async function viewSettings(main) {
 				webActionsCard(inst, (settings.egress.connectors ?? []).includes("web-actions")),
 				anchor("agenti", agentsCard(inst, settings)),
 				computer.available ? computerCard(inst, (settings.egress.connectors ?? []).includes("computer"), computer.problem) : null,
-				anchor("schermo", desktopCard(inst, (settings.egress.connectors ?? []).includes("schermo"), desktop)),
+				desktop.kind === "local" ? null : anchor("schermo", desktopCard(inst, (settings.egress.connectors ?? []).includes("schermo"), desktop)),
 			),
 			h(
 				"div.stack",

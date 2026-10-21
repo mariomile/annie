@@ -28,6 +28,25 @@ export type ModelInfo = {
 export const DEV_PROVIDER = "faux";
 export const DEV_MODEL_ID = "annie-dev";
 
+export type SubscriptionProvider = {
+	readonly id: "claude-code" | "codex";
+	readonly label: string;
+	readonly kind: "subscription";
+	readonly keyEnv?: never;
+	readonly defaultModel: string;
+	readonly loginCommand: string;
+};
+
+/** Available only in the explicitly enabled, single-tenant local app. */
+export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
+	{ id: "claude-code", label: "Claude Code", kind: "subscription", defaultModel: "sonnet", loginCommand: "claude auth login" },
+	{ id: "codex", label: "Codex", kind: "subscription", defaultModel: "default", loginCommand: "codex login" },
+];
+
+export function subscriptionProvider(id: string): SubscriptionProvider | undefined {
+	return SUBSCRIPTION_PROVIDERS.find((p) => p.id === id);
+}
+
 export const MODEL_PROVIDERS: readonly ModelProvider[] = [
 	{ id: "anthropic", label: "Anthropic (Claude)", keyEnv: "ANTHROPIC_API_KEY", defaultModel: "claude-sonnet-5-5" },
 	{ id: "openai", label: "OpenAI (GPT)", keyEnv: "OPENAI_API_KEY", defaultModel: "gpt-5.5" },
@@ -49,11 +68,11 @@ export const MODEL_PROVIDERS: readonly ModelProvider[] = [
 	{ id: "nvidia", label: "NVIDIA", keyEnv: "NVIDIA_API_KEY", defaultModel: "nvidia/nemotron-3-ultra-550b-a55b" },
 ];
 
-export function modelProvider(id: string): ModelProvider | undefined {
-	return MODEL_PROVIDERS.find((p) => p.id === id);
+export function modelProvider(id: string): ModelProvider | SubscriptionProvider | undefined {
+	return MODEL_PROVIDERS.find((p) => p.id === id) ?? subscriptionProvider(id);
 }
 
 /** Every value ANNIE_MODEL_PROVIDER takes: the offered providers, then the local model. */
 export function providerIds(): string[] {
-	return [...MODEL_PROVIDERS.map((p) => p.id), DEV_PROVIDER];
+	return [...MODEL_PROVIDERS.map((p) => p.id), ...SUBSCRIPTION_PROVIDERS.map((p) => p.id), DEV_PROVIDER];
 }
