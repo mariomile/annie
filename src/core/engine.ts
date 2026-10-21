@@ -1,5 +1,6 @@
 import type { ModelSelection } from "./registry.ts";
 import type { TurnOrigin } from "./turn-origin.ts";
+import type { LocalProviders } from "./local-providers.ts";
 
 /**
  * The durable execution engine behind an instance. Annie code depends on this
@@ -29,6 +30,8 @@ export type EngineOpenOptions = {
 	 * not, the instance's model answers, also for work resumed after a restart. Missing: always.
 	 */
 	readonly modelUsable?: (provider: string) => Promise<boolean>;
+	/** Explicit local, tenant-scoped CLI subscription capability. Never inferred from the host. */
+	readonly localProviders?: LocalProviders;
 };
 
 export interface EngineSession {

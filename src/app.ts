@@ -27,7 +27,7 @@ import { type ComputerProvider, computerKey } from "./core/computer.ts";
 import { createComputerTools } from "./core/tools/computer-tools.ts";
 import { computerLabel, createComputerProvider } from "./computer/create.ts";
 import { DockerComputerProvider } from "./computer/docker-computer.ts";
-import { DESKTOP_CONNECTOR, type DesktopProvider } from "./core/desktop.ts";
+import { desktopConnector, type DesktopProvider } from "./core/desktop.ts";
 import { createDesktopTools } from "./core/tools/desktop-tools.ts";
 import { ScreenViews } from "./core/screen-views.ts";
 import { createDesktopProvider, desktopLabel } from "./desktop/create.ts";
@@ -49,6 +49,7 @@ import { type Browser, BrowseError, BrowseSessions, type BrowserState, type Guar
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
+import { LocalProviders, type CliRunner } from "./core/local-providers.ts";
 import { MODEL_COMMAND } from "./model-command.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
@@ -139,6 +140,8 @@ Se agent_list ti dà qualcuno, chiedi agli altri agenti dell'azienda (agent_list
 Non inventare dati: se non sai, dillo o usa un tool. Non compiere azioni irreversibili verso l'esterno senza che una persona lo chieda esplicitamente.`;
 
 export type AnnieOptions = {
+	/** Tests: official CLI process runner. Only used with config.localProviders explicitly on. */
+	readonly localProviderRunner?: CliRunner;
 	readonly engine?: DurableEngine;
 	/** Telegram Bot API fetch (tests). */
 	readonly telegramFetch?: typeof fetch;
@@ -197,6 +200,9 @@ export type RunningAnnie = {
 export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}): Promise<RunningAnnie> {
 	const log = options.log ?? ((message: string) => console.error(message));
 	const tenant = config.tenantId;
+	if (config.localProviders && (!["127.0.0.1", "localhost", "::1"].includes(config.web.host) || config.web.publicUrl !== undefined || config.cell.secret !== undefined)) throw new Error("Local subscriptions require a loopback, single-tenant app");
+	const localProviders = config.localProviders ? new LocalProviders(tenant, join(tenantDir(config.dataDir, toTenantId(tenant)), "local-providers"), options.localProviderRunner) : undefined;
+	await localProviders?.detect();
 	const connections = new Map<string, McpConnections>();
 	// One scanner of each instance's invoices, shared by its tools and the recurring invoices' sweep: one cache.
 	const scanners = new Map<string, InvoiceScanner>();
@@ -567,6 +573,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const runtime: AnnieRuntime = new AnnieRuntime({
 		dataDir: config.dataDir,
 		engine: options.engine ?? piDurableEngine,
+		localProviders,
 		tools: async (record): Promise<ToolSet> => {
 			const mcp = new McpConnections({
 				instanceId: record.id,
@@ -1050,7 +1057,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				}),
 				...googleTools(record),
 				...createWebTools({
-					desktop: desktop !== undefined && (record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR),
+					desktop: desktop !== undefined && (record.egress.connectors ?? []).includes(desktopConnector(desktop)),
 					policy: policyOf(record),
 					workspace: runtime.workspace(record.tenantId, record.id),
 					chromium,
@@ -1122,7 +1129,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 							log,
 						})),
 				// Offered only where the owner turned the screen on (the switch reopens the agente).
-				...(desktop === undefined || !(record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR)
+				...(desktop === undefined || !(record.egress.connectors ?? []).includes(desktopConnector(desktop))
 					? []
 					: createDesktopTools({
 							desktop,
@@ -1173,6 +1180,17 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			instructions: DEFAULT_INSTRUCTIONS,
 		});
 	}
+	const initialModel = localProviders?.initialModel();
+	if (initialModel !== undefined && (await runtime.registry.getInstance(tenant, config.instanceId)).model.provider === "faux") await runtime.registry.setModel(tenant, config.instanceId, initialModel);
+	// A first login may happen in Settings after startup. Complete the same one-time
+	// setup immediately; later connections preserve the person's chosen default model.
+	localProviders?.onConnectionReady(async () => {
+		if ((await runtime.registry.getInstance(tenant, config.instanceId)).model.provider !== "faux") return;
+		const model = localProviders.initialModel();
+		if (model === undefined) return;
+		await runtime.registry.setModel(tenant, config.instanceId, model);
+		await runtime.reopen(tenant, config.instanceId);
+	});
 	if (config.telegram !== undefined) {
 		const record = await runtime.registry.getInstance(tenant, config.instanceId);
 		if (!record.egress.channels.includes("telegram")) log(`annie: instance ${config.instanceId} does not allow the telegram channel; add it to its egress policy to use the bot.`);
@@ -1890,6 +1908,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						check: () => desktop.check(),
 						network: desktop.network,
 						shared: desktop.shared,
+						kind: desktop.kind ?? "remote",
+						...(desktop.permissions === undefined ? {} : { permissions: () => desktop.permissions!() }),
+						...(desktop.requestPermission === undefined ? {} : { requestPermission: (permission: import("./core/desktop.ts").DesktopPermission) => desktop.requestPermission!(permission) }),
 					},
 				}),
 		...(config.google === undefined || googleAccounts === undefined
@@ -2031,6 +2052,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		segreteria,
 		ownerLink,
 		async stop() {
+			await localProviders?.close();
 			server.closeAllConnections();
 			await new Promise((resolve) => server.close(resolve));
 			await scheduler.stop();

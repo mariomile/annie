@@ -10,7 +10,7 @@ import { type WebAction, type WebActionResult, WebActionError, WEB_ACTIONS_CONNE
 import { cardView, decideGoogleAction, type GoogleAction, GoogleActionError, type GoogleActionResult } from "../core/google-actions.ts";
 import { COMPUTER_CONNECTOR } from "../core/computer.ts";
 import { describeCron } from "../core/cron.ts";
-import { DESKTOP_CONNECTOR } from "../core/desktop.ts";
+import { desktopConnector, type DesktopPermission, type DesktopPermissions } from "../core/desktop.ts";
 import { WEB_SEARCH_CONNECTOR } from "../core/web-search.ts";
 import { MissingPhoneField, PHONE_NUMBER, PHONE_PIN, type PhoneAdapter } from "../channels/phone.ts";
 import { MissingWhatsAppField, TEMPLATE_LANGUAGE, TEMPLATE_NAME, type WhatsAppAdapter, type WhatsAppTemplate, type WhatsAppWebhook } from "../channels/whatsapp.ts";
@@ -33,7 +33,8 @@ import { type BoardStore, dueText } from "../core/board.ts";
 import type { ScreenViews } from "../core/screen-views.ts";
 import type { RoutineStore } from "../core/board-routines.ts";
 import type { BoardReview, BoardWork } from "../core/board-work.ts";
-import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider } from "../core/model-providers.ts";
+import { DEV_PROVIDER, MODEL_PROVIDERS, type ModelInfo, modelProvider, subscriptionProvider } from "../core/model-providers.ts";
+import { LocalProviderError } from "../core/local-providers.ts";
 import { WEB_HOST_PATTERN, webHostAllowed } from "../core/policy.ts";
 import { BRIEF_INSTRUCTION, BRIEF_THREAD_TITLE, briefCron, briefWhen } from "../core/brief.ts";
 import { GOOGLE_CONNECTOR, type GoogleAccounts, GoogleConsentError, type GoogleOAuth, type GoogleService, googleReturnQuery } from "../connectors/google.ts";
@@ -172,7 +173,7 @@ export type WebAppOptions = {
 	/** What each agente last saw on its screen, per conversation (ADR 0067). */
 	readonly screens?: ScreenViews;
 	/** The agenti's screens through Cua (ADR 0045), when this server has them: whether they reach the internet, and whether one screen is shared. */
-	readonly desktop?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined>; readonly network: "none" | "internet" | "unknown"; readonly shared: boolean };
+	readonly desktop?: { reset(instanceId: string): Promise<void>; check(): Promise<string | undefined>; readonly network: "none" | "internet" | "unknown"; readonly shared: boolean; readonly kind?: "local" | "remote"; permissions?(): Promise<DesktopPermissions>; requestPermission?(permission: DesktopPermission): Promise<DesktopPermissions> };
 	/** Sends a form a person approved (ADR 0011), for an instance. */
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** Runs an approved connector call on the instance's live connection (ADR 0025). */
@@ -534,7 +535,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		screens: options.screens,
 		thread: async (person, instanceId, threadId) => {
 			const record = await ownThread(person, instanceId, threadId);
-			return options.desktop !== undefined && (record.egress.connectors ?? []).includes(DESKTOP_CONNECTOR);
+			return options.desktop !== undefined && (record.egress.connectors ?? []).includes(desktopConnector(options.desktop));
 		},
 	});
 	route("POST", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params, req }) => {
@@ -1016,9 +1017,22 @@ export function createWebApp(options: WebAppOptions): Server {
 	route("GET", "/api/desktop", "owner", async () => {
 		if (options.desktop === undefined) return { available: false };
 		const desktop = options.desktop;
+		if (desktop.kind === "local" && desktop.permissions !== undefined) {
+			const permissions = await desktop.permissions();
+			return { available: true, kind: "local", connector: desktopConnector(desktop), network: desktop.network, shared: desktop.shared, permissions, ...(permissions.problem === undefined ? {} : { problem: permissions.problem }) };
+		}
 		if (desktopCheck === undefined || Date.now() - desktopCheck.at > 30_000) desktopCheck = { at: Date.now(), problem: desktop.check() };
 		const problem = await desktopCheck.problem;
 		return { available: true, network: options.desktop.network, shared: options.desktop.shared, ...(problem === undefined ? {} : { problem }) };
+	});
+	route("POST", "/api/desktop/permissions", "owner", async ({ req }) => {
+		const desktop = options.desktop;
+		if (desktop?.kind !== "local" || desktop.requestPermission === undefined) throw new HttpError(501, "I permessi Computer Use si gestiscono nell'app Annie su questo Mac");
+		const body = (await readJson(req)) as { permission?: unknown };
+		if (body.permission !== "screenRecording" && body.permission !== "accessibility") throw new HttpError(400, "permission: screenRecording o accessibility");
+		const permissions = await desktop.requestPermission(body.permission);
+		await runtime.audit(tenantId).append({ type: "desktop.permission.requested", permission: body.permission });
+		return { permissions };
 	});
 	route("PUT", "/api/instances/:id/desktop-allowed", "owner", async ({ params, req }) => {
 		if (options.desktop === undefined) throw new HttpError(501, "Lo schermo non è disponibile su questo server");
@@ -1028,8 +1042,13 @@ export function createWebApp(options: WebAppOptions): Server {
 		});
 		const body = (await readJson(req)) as { allowed?: unknown };
 		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
-		const others = (record.egress.connectors ?? []).filter((c) => c !== DESKTOP_CONNECTOR);
-		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, DESKTOP_CONNECTOR] : others });
+		if (body.allowed && options.desktop.kind === "local") {
+			const permissions = await options.desktop.permissions?.();
+			if (permissions?.supported !== true || !permissions.screenRecording || !permissions.accessibility) throw new HttpError(409, "Concedi Registrazione schermo e Accessibilità a Annie prima di abilitare Computer Use");
+		}
+		const connector = desktopConnector(options.desktop);
+		const others = (record.egress.connectors ?? []).filter((c) => c !== connector);
+		await runtime.registry.setEgress(tenantId, id, { ...record.egress, connectors: body.allowed ? [...others, connector] : others });
 		await runtime.audit(tenantId).append({ type: "desktop.allowed", instanceId: id, allowed: body.allowed });
 		// The screen's tools are offered only while it is on: the agente opens again with or without them.
 		await runtime.reopen(tenantId, id);
@@ -1292,8 +1311,32 @@ export function createWebApp(options: WebAppOptions): Server {
 	// --- the model (ADR 0032): any provider Annie offers, with the server's key or the owner's ---
 	const chats = new ChatModels(runtime, tenantId, { models: (provider) => options.models?.(provider) ?? [], serverModelKeys: options.serverModelKeys ?? [] });
 	const keyOf = (provider: string) => chats.keyOf(provider);
+	const localProviders = runtime.localProviders(tenantId);
+	const providerStatus = async () => ({
+		localEnabled: localProviders !== undefined,
+		providers: [...(localProviders?.list() ?? []), ...(await Promise.all(MODEL_PROVIDERS.map(async (p) => ({ ...p, kind: "api-key", key: await keyOf(p.id) }))))],
+	});
+	route("GET", "/api/providers", "owner", providerStatus);
+	route("POST", "/api/providers/detect", "owner", async () => {
+		if (localProviders !== undefined) await localProviders.detect();
+		return providerStatus();
+	});
+	route("POST", "/api/providers/:provider/connect", "owner", async ({ params }) => {
+		const id = params[0] as string;
+		if (localProviders === undefined || subscriptionProvider(id) === undefined) throw new HttpError(404, "Provider locale non disponibile");
+		try { return { provider: await localProviders.connect(id) }; }
+		catch (error) { if (error instanceof LocalProviderError) throw new HttpError(409, error.message); throw error; }
+	});
+	route("DELETE", "/api/providers/:provider", "owner", async ({ params }) => {
+		const id = params[0] as string;
+		if (localProviders === undefined || subscriptionProvider(id) === undefined) throw new HttpError(404, "Provider locale non disponibile");
+		const users = (await runtime.registry.listInstances(tenantId)).filter((r) => r.model.provider === id);
+		if (users.length > 0) throw new HttpError(409, `Lo usa ${users.map((r) => r.name).join(", ")}: prima scegli un altro modello`);
+		localProviders.disconnect(id);
+		return { removed: true };
+	});
 	const offeredModels = (provider: string) => {
-		if (modelProvider(provider) === undefined || options.models === undefined) throw new HttpError(404, "Provider non disponibile");
+		if (modelProvider(provider) === undefined || options.models === undefined || (subscriptionProvider(provider) !== undefined && localProviders === undefined)) throw new HttpError(404, "Provider non disponibile");
 		return options.models(provider);
 	};
 	// A chat's own model (ADR 0036): the same choices as from Telegram and WhatsApp.
@@ -1319,7 +1362,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const record = await runtime.registry.getInstance(tenantId, params[0] as string).catch(() => {
 			throw new HttpError(404, "Agente inesistente");
 		});
-		return { model: record.model, providers: await Promise.all(MODEL_PROVIDERS.map(async (p) => ({ ...p, key: await keyOf(p.id) }))) };
+		return { model: record.model, providers: [...(localProviders?.list() ?? []), ...(await Promise.all(MODEL_PROVIDERS.map(async (p) => ({ ...p, key: await keyOf(p.id) }))))] };
 	});
 	route("GET", "/api/models/:provider", "owner", async ({ params }) => ({ models: offeredModels(params[0] as string) }));
 	route("PUT", "/api/instances/:id/model", "owner", async ({ params, req }) => {
@@ -1329,12 +1372,15 @@ export function createWebApp(options: WebAppOptions): Server {
 		});
 		const body = (await readJson(req)) as { provider?: unknown; modelId?: unknown; apiKey?: unknown };
 		const provider = typeof body.provider === "string" ? modelProvider(body.provider) : undefined;
-		if (provider === undefined) throw new HttpError(400, "Scegli un provider dall'elenco");
+		if (provider === undefined || (subscriptionProvider(provider.id) !== undefined && localProviders === undefined)) throw new HttpError(400, "Scegli un provider dall'elenco");
 		const modelId = typeof body.modelId === "string" ? body.modelId : "";
 		if (!offeredModels(provider.id).some((m) => m.id === modelId)) throw new HttpError(400, `${provider.label} non ha il modello «${modelId}»`);
 		const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
 		const key = await keyOf(provider.id);
-		if (apiKey !== "") {
+		if (subscriptionProvider(provider.id) !== undefined) {
+			if (apiKey !== "") throw new HttpError(400, "Questo provider usa il tuo abbonamento, senza chiave API");
+			if (key !== "local") throw new HttpError(409, "Collega prima il tuo abbonamento nelle impostazioni Provider");
+		} else if (apiKey !== "") {
 			if (key === "server") throw new HttpError(400, `La chiave di ${provider.label} la mette il server: non serve la tua`);
 			if (!/^\S{8,500}$/.test(apiKey)) throw new HttpError(400, "La chiave non sembra giusta: incollala intera, senza spazi");
 			await runtime.secrets(tenantId).set(modelApiKeySecret(provider.id), apiKey);
@@ -1387,8 +1433,9 @@ export function createWebApp(options: WebAppOptions): Server {
 				images: (record.egress.connectors ?? []).includes(IMAGE_CONNECTOR),
 				connectors: (await options.connectors(record.id).list()).some((c) => c.enabled && (record.egress.connectors ?? []).includes(connectorEgressName(c.id))),
 				people: others.length > 0,
+				...(options.desktop?.kind === "local" ? { computerUse: (record.egress.connectors ?? []).includes(desktopConnector(options.desktop)) } : {}),
 				// What this server offers, so the console does not count a step nobody can take here.
-				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined, images: options.images !== undefined },
+				can: { search: options.search !== undefined, transcription: options.voice !== undefined, speech: options.speech !== undefined, images: options.images !== undefined, ...(options.desktop?.kind === "local" ? { computerUse: true } : {}) },
 			},
 		};
 	});

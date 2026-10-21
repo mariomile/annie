@@ -25,6 +25,9 @@ import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { zaiProvider } from "@earendil-works/pi-ai/providers/zai";
 import { MEMORY_NOTE_MARKER } from "../memory.ts";
 import { DEV_MODEL_ID, DEV_PROVIDER, type ModelInfo, providerIds } from "../model-providers.ts";
+import { subscriptionProvider } from "../model-providers.ts";
+import type { LocalProviders } from "../local-providers.ts";
+import { localCliProvider } from "./pi-durable-local-cli.ts";
 
 /** pi-ai's factory for each provider Annie offers (MODEL_PROVIDERS), and the local model. */
 const FACTORIES: Readonly<Record<string, () => Provider>> = {
@@ -49,7 +52,8 @@ const FACTORIES: Readonly<Record<string, () => Provider>> = {
 	[DEV_PROVIDER]: createDevModel,
 };
 
-export function createProvider(id: string): Provider {
+export function createProvider(id: string, localProviders?: LocalProviders): Provider {
+	if (subscriptionProvider(id) !== undefined) return localCliProvider(id, localProviders);
 	const factory = Object.hasOwn(FACTORIES, id) ? FACTORIES[id] : undefined;
 	if (factory === undefined) throw new Error(`Unsupported model provider "${id}". Supported: ${providerIds().join(", ")}`);
 	return factory();

@@ -43,6 +43,8 @@ import { WatchStore } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { assertChannelAllowed, assertModelProviderAllowed, assertUserAllowed, CHANNEL_PATTERN } from "./policy.ts";
 import { DEV_PROVIDER } from "./model-providers.ts";
+import { subscriptionProvider } from "./model-providers.ts";
+import type { LocalProviders } from "./local-providers.ts";
 import { AGENT_CHANNEL } from "./agent-messages.ts";
 import { withPersona } from "./persona.ts";
 import { activateCommand, SkillError, SkillStore, skillCatalog, skillCommand, withSkill } from "./skills.ts";
@@ -107,6 +109,7 @@ export type ToolSet = readonly AnnieTool[] | { readonly tools: readonly AnnieToo
 export type RuntimeOptions = {
 	readonly dataDir: string;
 	readonly engine: DurableEngine;
+	readonly localProviders?: LocalProviders;
 	/**
 	 * Tools of an instance: the same list for all, or computed from the instance's record
 	 * when it is opened (connectors, approved tools). A changed list applies on `reopen`.
@@ -146,6 +149,11 @@ export class AnnieRuntime {
 
 	constructor(private readonly options: RuntimeOptions) {
 		this.registry = new TenantRegistry(options.dataDir);
+	}
+
+	/** Only the configured local tenant may reach the machine owner's subscriptions. */
+	localProviders(tenant: string): LocalProviders | undefined {
+		return this.options.localProviders?.tenantId === tenant ? this.options.localProviders : undefined;
 	}
 
 	secrets(tenant: string): TenantSecrets {
@@ -533,7 +541,7 @@ export class AnnieRuntime {
 		// A model can answer: its provider allowed by the policy now, and a key for it (none for the local one).
 		const reachable = async (provider: string) => {
 			try {
-				return (await fresh()).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (await secrets.get(modelApiKeySecret(provider))) !== undefined);
+				return (await fresh()).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? this.localProviders(record.tenantId)?.connected(provider) === true : (await secrets.get(modelApiKeySecret(provider))) !== undefined));
 			} catch {
 				return false;
 			}
@@ -554,7 +562,12 @@ export class AnnieRuntime {
 				storageDir,
 				model: record.model,
 				// Only this tenant's secrets, and only for providers the policy allows now.
-				apiKey: async (provider) => ((await fresh()).egress.modelProviders.includes(provider) ? secrets.get(modelApiKeySecret(provider)) : undefined),
+				apiKey: async (provider) => {
+					if (!(await fresh()).egress.modelProviders.includes(provider)) return undefined;
+					if (subscriptionProvider(provider) !== undefined) return this.localProviders(record.tenantId)?.connected(provider) ? "annie-local-subscription" : undefined;
+					return secrets.get(modelApiKeySecret(provider));
+				},
+				localProviders: this.localProviders(record.tenantId),
 				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
 				instructions,

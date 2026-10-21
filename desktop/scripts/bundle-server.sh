@@ -15,6 +15,9 @@ trap 'rm -rf "$work"' EXIT
 rm -rf "$out" "$bin"
 mkdir -p "$out" "$bin"
 
+# Native Computer Use is part of the same app identity; no separate installation or daemon.
+bash "$root/desktop/scripts/build-computer-helper.sh"
+
 # The server, compiled: tsx is not needed at run time.
 cd "$root"
 pnpm install --frozen-lockfile

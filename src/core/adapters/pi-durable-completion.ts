@@ -7,6 +7,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import type { CompletionRequest, CompletionResult, ModelClient } from "../completion.ts";
 import { createProvider } from "./pi-durable-models.ts";
+import type { LocalProviders } from "../local-providers.ts";
+import { subscriptionProvider } from "../model-providers.ts";
 
 export type PiCompletionOptions = {
 	/** The only source of model credentials (the tenant's secret store). */
@@ -15,6 +17,7 @@ export type PiCompletionOptions = {
 	readonly assertAllowed: (provider: string) => void | Promise<void>;
 	/** For tests: build the provider (default: the adapter's own providers). */
 	readonly createProvider?: typeof createProvider;
+	readonly localProviders?: LocalProviders;
 };
 
 export function createPiCompletionClient(options: PiCompletionOptions): ModelClient {
@@ -25,6 +28,7 @@ export function createPiCompletionClient(options: PiCompletionOptions): ModelCli
 			models = createModels({
 				credentials: {
 					async read(id) {
+						if (subscriptionProvider(id) !== undefined) return options.localProviders?.connected(id) ? { type: "api_key", key: "annie-local-subscription" } : undefined;
 						const key = await options.apiKey(id);
 						return key === undefined ? undefined : { type: "api_key", key };
 					},
@@ -40,7 +44,7 @@ export function createPiCompletionClient(options: PiCompletionOptions): ModelCli
 				},
 				authContext: { env: async () => undefined, fileExists: async () => false },
 			});
-			models.setProvider((options.createProvider ?? createProvider)(providerId));
+			models.setProvider((options.createProvider ?? createProvider)(providerId, options.localProviders));
 			byProvider.set(providerId, models);
 		}
 		return models;
