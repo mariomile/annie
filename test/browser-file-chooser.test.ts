@@ -4,7 +4,9 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { publicAddress } from "../src/core/web-fetch.ts";
-import { type Browser, BrowseSessions } from "../src/core/web-session.ts";
+import { createWebTools } from "../src/core/tools/web-tools.ts";
+import { type Browser, BrowseSessions, sessionKey } from "../src/core/web-session.ts";
+import { type Workspace, WorkspaceError } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
 
@@ -51,16 +53,17 @@ async function serve(): Promise<string> {
 	return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-async function start() {
+async function start(limits?: { max: number; idleMs: number }) {
 	const base = await serve();
 	const { chromium } = await import("playwright-core");
 	const browser = (await chromium.launch({ executablePath: chrome, args: ["--no-sandbox"] })) as unknown as Browser;
-	const sessions = new BrowseSessions();
+	const refused: string[] = [];
+	const sessions = new BrowseSessions(limits, (key, host) => refused.push(`${key} ${host}`));
 	closers.push(async () => {
 		await sessions.closeAll();
 		await browser.close();
 	});
-	return { base, sessions, browser };
+	return { base, sessions, browser, refused };
 }
 const guard = { hostAllowed: () => true, addressAllowed: () => true };
 
@@ -90,6 +93,60 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 
 	const LATE = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
 	const at = { top: [150 / 1280, 150 / 800], below: [150 / 1280, 350 / 800], lowest: [150 / 1280, 550 / 800] } as const;
+
+	it("every refused chooser is reported as it opens, own or late, with the page's host", async () => {
+		const { base, sessions, browser, refused } = await start();
+		await sessions.open("k", browser, `${base}/late`, guard);
+		await expect(sessions.clickAt("k", ...at.lowest, guard, { person: true })).rejects.toMatchObject({ kind: "no-files" });
+		expect(refused).toEqual(["k 127.0.0.1"]);
+		// The late one is reported with no view read, whoever reads next.
+		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		await new Promise((r) => setTimeout(r, 2000));
+		expect(refused).toEqual(["k 127.0.0.1", "k 127.0.0.1"]);
+	}, 60_000);
+
+	it("a late chooser is still told when the screenshot cannot be saved", async () => {
+		const { base, sessions, browser } = await start();
+		const full = { write: async () => { throw new WorkspaceError("Workspace full: over 10 bytes"); } } as unknown as Workspace;
+		const tools = createWebTools({ policy: async () => ({ modelProviders: [], channels: [], web: ["127.0.0.1"] }), workspace: full, chromium: async () => browser, sessions, addressAllowed: () => true });
+		const browse = tools.find((t) => t.name === "web_browse");
+		const thread = { channel: "web", threadId: "t" };
+		const ctx = { thread, step: (_: string, work: () => Promise<string>) => work() } as any;
+		await browse?.execute({ url: `${base}/late` }, ctx);
+		await sessions.clickAt(sessionKey("default", thread), ...at.top, guard, { person: true });
+		await new Promise((r) => setTimeout(r, 2000));
+		const shown = String(await browse?.execute({ screenshot: true }, ctx));
+		expect(shown).toContain("Screenshot non salvato: Workspace full: over 10 bytes.");
+		expect(shown).toContain(LATE);
+		expect(shown).toContain("Carica dopo");
+		expect(String(await browse?.execute({}, ctx))).not.toContain(LATE);
+	}, 60_000);
+
+	it("a late chooser outlives the browser closing after a while idle: the agent hears it in the closure, once", async () => {
+		const { base, sessions, browser } = await start({ max: 4, idleMs: 2500 });
+		await sessions.open("k", browser, `${base}/late`, guard);
+		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		await new Promise((r) => setTimeout(r, 3000));
+		expect(sessions.has("k")).toBe(false);
+		// A person's action on the closed page does not use it up.
+		await expect(sessions.view("k", guard, { person: true })).rejects.not.toThrow(LATE);
+		await expect(sessions.view("k", guard)).rejects.toThrow(`la pagina di questa conversazione è stata chiusa dopo qualche minuto senza azioni: riaprila con web_browse. ${LATE}`);
+		await expect(sessions.view("k", guard)).rejects.not.toThrow(LATE);
+		expect((await sessions.open("k", browser, `${base}/plain`, guard)).notes).not.toContain(LATE);
+	}, 60_000);
+
+	it("a late chooser outlives the browser closed to make room: the next browser of the conversation tells it", async () => {
+		const { base, sessions, browser } = await start({ max: 1, idleMs: 60_000 });
+		await sessions.open("k", browser, `${base}/late`, guard);
+		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		await new Promise((r) => setTimeout(r, 2000));
+		await sessions.open("j", browser, `${base}/plain`, guard);
+		expect(sessions.has("k")).toBe(false);
+		// Opened again, by the person first (the panel shows the page, not the notes): still the agent's to hear.
+		await sessions.open("k", browser, `${base}/plain`, guard, { person: true });
+		expect((await sessions.view("k", guard)).notes).toContain(LATE);
+		expect((await sessions.view("k", guard)).notes).not.toContain(LATE);
+	}, 60_000);
 
 	it("a chooser the page opens later, between actions, is told in the next view, once", async () => {
 		const { base, sessions, browser } = await start();
@@ -177,5 +234,7 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		// The agent still learns of the refusal, once.
 		expect(await say("/tool web_browse {}")).toContain(LATE);
 		expect(await say("/tool web_browse {}")).not.toContain(LATE);
+		// And the person can read it on the activity page, whatever the agent reads.
+		expect((await annie.runtime.audit("default").read()).filter((e) => e.type === "web.browser.file_refused").map((e) => [e.instanceId, e.host])).toEqual([["annie", "127.0.0.1"]]);
 	}, 90_000);
 });

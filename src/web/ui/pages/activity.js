@@ -20,6 +20,7 @@ const AUDIT_SAY = {
 	"web.download": "File scaricato",
 	"web.browser.opened": "Browser aperto",
 	"web.browser.clicked": "Clic nel browser",
+	"web.browser.file_refused": "Caricamento di un file rifiutato nel browser",
 	"web.hosts_changed": "Siti consentiti cambiati",
 	"web.instance_created": "Agente creato",
 	"web.instance_deleted": "Agente eliminato",

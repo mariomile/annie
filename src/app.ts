@@ -343,7 +343,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	/** The last try to start Chromium failed: the console says so instead of offering a browser. */
 	let chromiumFailed = false;
 	// Browsers open per conversation (web_browse, ADR 0014), in the same Chromium.
-	const browseSessions = new BrowseSessions();
+	// Every file chooser refused is in the audit as it happens (ADR 0103): the key starts with "tenant/instance|".
+	const browseSessions = new BrowseSessions(undefined, (key, host) => {
+		const [tenantId, instanceId] = (key.split("|")[0] as string).split("/") as [string, string];
+		runtime.audit(tenantId).append({ type: "web.browser.file_refused", instanceId, host }).catch((error: unknown) => log(`web: file chooser not audited: ${error instanceof Error ? error.message : String(error)}`));
+	});
 	const chromium = (): Promise<Browser | undefined> => {
 		browser ??= import("playwright-core")
 			.then(async ({ chromium: launcher }) => {

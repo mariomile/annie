@@ -361,10 +361,14 @@ export type BrowserState = { readonly open: true; readonly url: string; readonly
 export class BrowseSessions {
 	private readonly sessions = new Map<string, Session>();
 	private readonly starting = new Map<string, Promise<void>>();
-	/** Why a conversation's browser is gone, so Annie can say it. */
-	private readonly closed = new Map<string, string>();
+	/** Why a conversation's browser is gone, so Annie can say it, and the late file choosers the agente has not heard of yet. */
+	private readonly closed = new Map<string, { readonly why: string; choosers: number[] }>();
 
-	constructor(private readonly limits: { readonly max: number; readonly idleMs: number } = { max: 4, idleMs: 5 * 60_000 }) {}
+	constructor(
+		private readonly limits: { readonly max: number; readonly idleMs: number } = { max: 4, idleMs: 5 * 60_000 },
+		/** Every file chooser refused, as Chromium reports it (the audit, ADR 0103): the conversation's key and the page's host. */
+		private readonly refused: (key: string, host: string) => void = () => {},
+	) {}
 
 	/** Opens `url` in the conversation's browser, starting one if needed. */
 	async open(key: string, browser: Browser, url: string, guard: Guard, options: ViewOptions = {}): Promise<View> {
@@ -435,7 +439,7 @@ export class BrowseSessions {
 	state(key: string): BrowserState {
 		const s = this.sessions.get(key);
 		if (s === undefined) {
-			const closed = this.closed.get(key);
+			const closed = this.closed.get(key)?.why;
 			return closed === undefined ? { open: false } : { open: false, closed };
 		}
 		return { open: true, ...s.shown, version: s.version, busy: s.busy };
@@ -487,7 +491,8 @@ export class BrowseSessions {
 	private async end(s: Session, reason: string): Promise<void> {
 		if (this.sessions.get(s.key) === s) {
 			this.sessions.delete(s.key);
-			this.closed.set(s.key, reason);
+			// The late choosers not yet told go with the closure: the agente hears them in its next answer.
+			this.closed.set(s.key, { why: reason, choosers: s.choosers });
 			if (this.closed.size > 500) this.closed.delete(this.closed.keys().next().value as string);
 		}
 		clearTimeout(s.timer);
@@ -531,10 +536,11 @@ export class BrowseSessions {
 			context.on("page", (other) => {
 				if (other !== page) void other.close().catch(() => {});
 			});
-			const session: Session = { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, choosers: [] };
-			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused.
+			const session: Session = { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, choosers: this.closed.get(key)?.choosers ?? [] };
+			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused, and the audit hears of each one.
 			page.on("filechooser", () => {
 				session.choosers.push(Date.now());
+				this.refused(key, new URL(page.url()).hostname);
 			});
 			this.sessions.set(key, session);
 			this.closed.delete(key);
@@ -551,13 +557,13 @@ export class BrowseSessions {
 	private act(key: string, guard: Guard, options: ViewOptions, gesture: boolean, action: (s: Session) => Promise<unknown>): Promise<View> {
 		const s = this.sessions.get(key);
 		if (s === undefined) {
-			const why = this.closed.get(key);
-			return Promise.reject(new BrowseError(why === undefined ? "nessuna pagina aperta in questa conversazione: aprila con web_browse" : `la pagina di questa conversazione è stata ${why}: riaprila con web_browse`, why === undefined ? "no-page" : undefined));
+			const why = this.closed.get(key)?.why;
+			return Promise.reject(new BrowseError(why === undefined ? "nessuna pagina aperta in questa conversazione: aprila con web_browse" : `la pagina di questa conversazione è stata ${why}: riaprila con web_browse${this.unheard(key, options)}`, why === undefined ? "no-page" : undefined));
 		}
 		const run = s.queue
 			.catch(() => {})
 			.then(async () => {
-				if (this.sessions.get(key) !== s) throw new BrowseError("la pagina di questa conversazione è stata chiusa: riaprila con web_browse");
+				if (this.sessions.get(key) !== s) throw new BrowseError(`la pagina di questa conversazione è stata chiusa: riaprila con web_browse${this.unheard(key, options)}`);
 				s.guard.current = guard;
 				s.busy = true;
 				// A person drives the page: the agente's numbers point elsewhere from now, however the action ends.
@@ -575,7 +581,7 @@ export class BrowseSessions {
 						// A browser that went away (a restart of Chromium) leaves nothing to look at.
 						if (/closed|disconnected|Target page/i.test(failure)) {
 							await this.end(s, "chiusa perché il browser si è fermato");
-							throw new BrowseError("il browser si è chiuso: riapri la pagina con web_browse");
+							throw new BrowseError(`il browser si è chiuso: riapri la pagina con web_browse${this.unheard(key, options)}`);
 						}
 					}
 					const own = Date.now() + OWN_CHOOSER_MS;
@@ -599,7 +605,7 @@ export class BrowseSessions {
 				} catch (error) {
 					if (!(error instanceof Hung)) throw error;
 					await this.end(s, "chiusa perché non rispondeva");
-					throw new BrowseError("la pagina non risponde ed è stata chiusa: riaprila con web_browse, o leggila con web_read");
+					throw new BrowseError(`la pagina non risponde ed è stata chiusa: riaprila con web_browse, o leggila con web_read${this.unheard(key, options)}`);
 				} finally {
 					s.busy = false;
 					s.version += 1;
@@ -612,6 +618,14 @@ export class BrowseSessions {
 			});
 		s.queue = run;
 		return run;
+	}
+
+	/** The late choosers of a conversation whose browser closed, told once, in an answer to the agente. */
+	private unheard(key: string, options: ViewOptions): string {
+		const closed = this.closed.get(key);
+		if (options.person === true || closed === undefined || closed.choosers.length === 0) return "";
+		closed.choosers = [];
+		return `. ${LATE_CHOOSER}`;
 	}
 
 	/** The page loaded, and its requests ended (content that arrives after the load). */
