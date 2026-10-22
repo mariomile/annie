@@ -10,6 +10,7 @@ import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
 import { ListStore, listsLine } from "./lists.ts";
+import { nowLine } from "./turn-context.ts";
 import { InvoiceStore } from "./invoice-store.ts";
 import { QuoteStore } from "./quote-store.ts";
 import { ExpenseStore } from "./expense-store.ts";
@@ -556,6 +557,9 @@ export class AnnieRuntime {
 		const own = withPersona(record.instructions, record.name, record.persona);
 		const skills = this.skills(record.tenantId, record.id);
 		const instructions = () => `${own === undefined || own === "" ? "" : `${own}\n\n`}${skillCatalog(skills.list())}`;
+		const memory = this.memory(record.tenantId, record.id);
+		const participants = this.participants(record.tenantId, record.id);
+		const lists = this.lists(record.tenantId, record.id);
 		try {
 			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
@@ -571,6 +575,11 @@ export class AnnieRuntime {
 				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
 				instructions,
+				// The time, and the memories of whom the thread is with (only the shared ones in a group), as they are at each request.
+				turnContext: (key) => {
+					const subject = participants.get(key);
+					return `${nowLine(new Date())}${memoryNote(memory.forSubject(subject ?? SHARED), listsLine(lists.visible(subject)), memory.archivedFor(subject ?? SHARED))}`;
+				},
 			});
 		} catch (error) {
 			if ("close" in toolSet) await toolSet.close().catch(() => {});
@@ -588,7 +597,7 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id), skills }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: memory, participants, lists, skills }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -672,25 +681,18 @@ export class AnnieInstance {
 			chars: request.text.length,
 			...(images.length === 0 ? {} : { images: images.length }),
 		});
-		// In a private thread the instance learns whom it is with and gets what it remembers about
-		// them; in a group, only the shared memories, so one person's never reach the others.
+		// In a private thread the instance learns whom it is with, and each request gets what it
+		// remembers about them; in a group, only the shared memories, so one person's never reach the others.
 		const key = threadKey(request.channel, request.threadId);
 		const { privateThread, images: _given, command: _command, ...message } = request;
-		let note: string;
-		if (privateThread === true) {
-			const subject = subjectOf(request.channel, request.userId);
-			this.memory.participants.set(key, subject);
-			note = memoryNote(this.memory.store.forSubject(subject), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject));
-		} else {
-			this.memory.participants.clear(key);
-			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)), this.memory.store.archivedFor(SHARED));
-		}
+		if (privateThread === true) this.memory.participants.set(key, subjectOf(request.channel, request.userId));
+		else this.memory.participants.clear(key);
 		const { origin: given, ...said } = message;
 		// Another agente's words are never the person's, whatever the request says.
 		const origin: TurnOrigin = request.channel === AGENT_CHANNEL ? "agent" : (given ?? "person");
 		// Only a person's own words run a skill or turn a draft on (ADR 0059, 0088): never the board's, a stanza's agente's.
 		const text = origin === "person" ? await this.withSkills(request, privateThread === true) : request.text;
-		return this.admit({ ...said, text: `${text}${skipped}${note}` }, origin, images);
+		return this.admit({ ...said, text: `${text}${skipped}` }, origin, images);
 	}
 
 	/**
@@ -771,8 +773,7 @@ export class AnnieInstance {
 		const subject = alone ? subjectOf(person.channel, person.userId) : undefined;
 		// So the tools know whom the thread is with even before the person writes in it (a brief's).
 		if (subject !== undefined) this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
-		const note = memoryNote(this.memory.store.forSubject(subject ?? SHARED), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject ?? SHARED));
-		return this.admit({ ...request, text: `${request.text}${note}` }, "scheduled");
+		return this.admit(request, "scheduled");
 	}
 
 	/**

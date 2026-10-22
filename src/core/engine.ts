@@ -26,6 +26,12 @@ export type EngineOpenOptions = {
 	 */
 	readonly instructions?: string | (() => string | undefined);
 	/**
+	 * Read before every request to the model (ADR 0097): what the turn should know now, the time
+	 * and what the agente remembers of whom it is talking with in the thread. It goes after the
+	 * newest message of the person for that request only; the history keeps their words.
+	 */
+	readonly turnContext?: (threadKey: string) => string;
+	/**
 	 * Whether a chat's own model may answer now (ADR 0036): its provider allowed, with a key. When
 	 * not, the instance's model answers, also for work resumed after a restart. Missing: always.
 	 */

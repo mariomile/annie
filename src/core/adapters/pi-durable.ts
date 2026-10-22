@@ -13,6 +13,7 @@ import {
 	configure,
 	type ConversationId,
 	type Cursor,
+	type DocumentReader,
 	createRegistry,
 	type EntryRecord,
 	type Page,
@@ -91,8 +92,16 @@ export const piDurableEngine: DurableEngine = {
 			defineExtension({
 				name: "annie",
 				tools: options.tools.map(toPiTool),
-				// Old pictures leave the request, not the history: a long thread does not resend every photo.
-				hooks: [hook(GenerationTask, { beforeRequest: ({ messages }) => ({ messages: withRecentImages(messages, RECENT_IMAGE_MESSAGES) }) })],
+				hooks: [
+					hook(GenerationTask, {
+						beforeRequest: async ({ messages }, api, hookContext) => {
+							// Old pictures leave the request, not the history: a long thread does not resend every photo.
+							const recent = withRecentImages(messages, RECENT_IMAGE_MESSAGES);
+							const threadKey = options.turnContext === undefined ? undefined : await threadKeyOf(api, api.conversationId, hookContext);
+							return { messages: threadKey === undefined ? recent : withTurnContext(recent, options.turnContext?.(threadKey) ?? "") };
+						},
+					}),
+				],
 			}),
 		);
 
@@ -342,8 +351,7 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 		parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters as never),
 		replay: tool.replaySafe ? "safe" : "unsafe",
 		execute: async (args, api, callContext) => {
-			const threads = (await api.snapshot(ThreadsDoc, callContext))?.threads ?? {};
-			const threadKey = Object.entries(threads).find(([, id]) => id === Number(api.conversationId))?.[0];
+			const threadKey = await threadKeyOf(api, api.conversationId, callContext);
 			const at = threadKey?.indexOf(":") ?? -1;
 			const origin = await turnOrigin(api, callContext);
 			const result = await tool.execute(args, {
@@ -364,6 +372,12 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 			return { output: [{ type: "text", text: result.text }, ...(await Promise.all(result.images.map(toPiImage)))] };
 		},
 	});
+}
+
+/** The thread a conversation belongs to, as the threads document maps it. */
+async function threadKeyOf(reader: DocumentReader, conversationId: ConversationId, readContext: OriginContext): Promise<string | undefined> {
+	const threads = (await reader.snapshot(ThreadsDoc, readContext))?.threads ?? {};
+	return Object.entries(threads).find(([, id]) => id === Number(conversationId))?.[0];
 }
 
 type OriginApi = Pick<Parameters<ToolRegistration["execute"]>[1], "memo" | "commit" | "conversationId">;
@@ -466,5 +480,19 @@ export function withRecentImages(messages: readonly Message[], keep: number): re
 		const content = message.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[Immagine vista prima: non più allegata, riaprila con image_view se serve]" } : c));
 		out[i] = { ...message, content } as Message;
 	}
+	return out;
+}
+
+/**
+ * The messages of one request with `note` after the newest message of the person (ADR 0097): the
+ * history is left as it is, and the older messages go as they were said.
+ */
+export function withTurnContext(messages: readonly Message[], note: string): readonly Message[] {
+	if (note === "") return messages;
+	const at = messages.findLastIndex((m) => m.role === "user");
+	if (at < 0) return messages;
+	const out = [...messages];
+	const message = out[at] as Message & { role: "user" };
+	out[at] = { ...message, content: typeof message.content === "string" ? `${message.content}${note}` : [...message.content, { type: "text", text: note }] };
 	return out;
 }

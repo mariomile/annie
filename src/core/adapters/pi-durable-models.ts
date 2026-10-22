@@ -24,6 +24,7 @@ import { vercelAIGatewayProvider } from "@earendil-works/pi-ai/providers/vercel-
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { zaiProvider } from "@earendil-works/pi-ai/providers/zai";
 import { MEMORY_NOTE_MARKER } from "../memory.ts";
+import { NOW_MARKER } from "../turn-context.ts";
 import { DEV_MODEL_ID, DEV_PROVIDER, type ModelInfo, providerIds } from "../model-providers.ts";
 import { subscriptionProvider } from "../model-providers.ts";
 import type { LocalProviders } from "../local-providers.ts";
@@ -101,7 +102,8 @@ function respond(messages: readonly Message[]): AssistantMessage {
 		const shown = last.content.filter((block) => block.type === "image").length;
 		return fauxAssistantMessage(`Fatto. ${output}${shown === 0 ? "" : ` [${shown} ${shown === 1 ? "immagine" : "immagini"}]`}`);
 	}
-	const text = last?.role === "user" ? userText(last.content) : "";
+	// The time the core adds to each request (ADR 0097) is not what the person wrote, and changes every minute.
+	const text = last?.role === "user" ? withoutNow(userText(last.content)) : "";
 	// The memoria note the core appends after the person's words is not part of a command.
 	// Notes the gateway adds after the person's words (a spoken reply, ADR 0020) are not part of the call.
 	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split(MEMORY_NOTE_MARKER)[0] ?? "").replace(/\n\n\[[^\]]*\]\s*$/, "").trim());
@@ -134,4 +136,12 @@ function imagesSeen(content: string | readonly { type: string; data?: string; mi
 
 function userText(content: string | readonly { type: string; text?: string }[]): string {
 	return typeof content === "string" ? content : content.map((block) => block.text ?? "").join("");
+}
+
+/** The text without the time line, which ends at the next line or at the end. */
+function withoutNow(text: string): string {
+	const at = text.indexOf(NOW_MARKER);
+	if (at < 0) return text;
+	const end = text.indexOf("\n", at + NOW_MARKER.length);
+	return `${text.slice(0, at)}${end < 0 ? "" : text.slice(end)}`;
 }
