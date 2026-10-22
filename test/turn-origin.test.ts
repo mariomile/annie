@@ -143,6 +143,12 @@ describe("the inputs a run answers (ADR 0088)", () => {
 		expect(await origin([answer, input("agent"), calling, result, input("person")])).toBe("agent");
 	});
 
+	it("a request that failed and was retried, or was cut short, is no answer: the run stays the person's", async () => {
+		const failed = (stopReason: "error" | "aborted"): E => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason, errorMessage: "529 overloaded" }] });
+		expect(await origin([input("notice"), answer, input("person"), failed("error"), calling, result])).toBe("person");
+		expect(await origin([input("notice"), answer, input("person"), failed("aborted"), failed("error")])).toBe("person");
+	});
+
 	it("past the scan's bound the run is not a person's, and that is logged once, with no value", async () => {
 		const long = [answer, input("notice"), ...Array.from({ length: 60 }, () => input("person"))];
 		const said: string[] = [];

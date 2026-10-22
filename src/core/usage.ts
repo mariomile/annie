@@ -1,4 +1,4 @@
-import { mkdir, readFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, appendFile, truncate } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 import type { AuditLog } from "./audit.ts";
@@ -89,21 +89,39 @@ export class UsageLedger {
 		return recording.run(this.totalsPath(), () => this.write(rec, audit));
 	}
 
-	/** Every record written, oldest first. */
-	async records(): Promise<UsageRecord[]> {
+	/** Every record written, oldest first: only whole lines, read between two records being written. */
+	records(): Promise<UsageRecord[]> {
+		return recording.run(this.totalsPath(), async () => parseRecords(await this.readLog(), this.usagePath()));
+	}
+
+	private async readLog(): Promise<string> {
 		try {
-			return (await readFile(this.usagePath(), "utf8")).split("\n").filter((line) => line !== "").map((line) => JSON.parse(line) as UsageRecord);
+			return await readFile(this.usagePath(), "utf8");
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return "";
 			throw err;
 		}
 	}
 
 	private async write(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
 		await this.ensure();
-		await appendFile(this.usagePath(), `${JSON.stringify(rec)}\n`, { mode: 0o600 });
+		const log = await this.readLog();
+		const whole = log.lastIndexOf("\n") + 1;
+		// A line cut short by a crash would glue itself to this record: drop it first.
+		if (whole < log.length) await truncate(this.usagePath(), Buffer.byteLength(log.slice(0, whole)));
 		const day = romeDayKey(new Date(rec.at));
 		const totals = await this.readTotals();
+		// A turn is billed once: a recovery that delivers it again finds it already on record (ADR 0098).
+		const billed =
+			rec.role === "agent" &&
+			rec.instanceId !== undefined &&
+			rec.submissionId !== undefined &&
+			parseRecords(log, this.usagePath()).some((r) => r.role === "agent" && r.instanceId === rec.instanceId && r.submissionId === rec.submissionId);
+		if (billed) {
+			const spent = totals[day] ?? 0;
+			return { softExceeded: spent >= this.caps.softUsdPerDay, hardExceeded: spent >= this.caps.hardUsdPerDay };
+		}
+		await appendFile(this.usagePath(), `${JSON.stringify(rec)}\n`, { mode: 0o600 });
 		totals[day] = (totals[day] ?? 0) + rec.estimatedUsd;
 		await writeFileAtomic(this.totalsPath(), `${JSON.stringify(totals, null, "\t")}\n`);
 		const spent = totals[day]!;
@@ -149,6 +167,20 @@ export class UsageLedger {
 			throw err;
 		}
 	}
+}
+
+/** The whole lines of the ledger; a whole line that is not a record is an error, never skipped. */
+function parseRecords(log: string, path: string): UsageRecord[] {
+	const lines = log.slice(0, log.lastIndexOf("\n") + 1).split("\n");
+	lines.pop();
+	return lines.flatMap((line, i) => {
+		if (line === "") return [];
+		try {
+			return [JSON.parse(line) as UsageRecord];
+		} catch {
+			throw new Error(`${path}: line ${i + 1} is not a usage record`);
+		}
+	});
 }
 
 export const TELEGRAM_SOFT_CAP = `Limite soft di spesa · oggi

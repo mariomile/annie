@@ -9,7 +9,9 @@ import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import {
 	AgentDoc,
 	AssistantEntry,
+	CompactionEntry,
 	UserEntry,
+	UsageDoc,
 	configure,
 	type ConversationId,
 	type Cursor,
@@ -55,6 +57,21 @@ const ThreadsDoc = defineDoc<{ threads: Record<string, number> }>({
 const INPUT_KIND = "annie.input";
 
 /** Thread key → the model that conversation answers with instead of the instance's (ADR 0036). */
+/**
+ * The answer last billed in this conversation (ADR 0098): `spent` is how much of Pi's `pi.usage`
+ * had been billed then, `turn` what that answer was billed, given again if it is answered again.
+ */
+type Spent = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+type Bill = { modelCalls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd: number; tools: string[] };
+const BilledDoc = defineDoc<{ answer?: number; spent?: Spent; turn?: Bill }>({
+	kind: "annie.billed",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: () => ({}),
+});
+
 const ThreadModelsDoc = defineDoc<{ models: Record<string, ModelSelection> }>({
 	kind: "annie.thread-models",
 	version: 1,
@@ -339,7 +356,7 @@ class PiDurableSession implements EngineSession {
 
 	private async answer(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<{ text: string; model?: ModelSelection; usage?: TurnUsage }> {
 		const conversation = await this.harness.conversation(settled.conversationId, context);
-		// A read-only commit, as in the pi-durable README.
+		// Writes only what the turn was billed (BilledDoc), in the commit that reads it.
 		const read = await conversation?.commit(async (tx) => ({ entry: await tx.entry(AssistantEntry, settled.answer), usage: await turnUsage(tx, settled.conversationId, settled.answer) }), context);
 		const message = read?.entry?.model?.[0] as Message | undefined;
 		if (message?.role !== "assistant") return { text: "" };
@@ -425,8 +442,11 @@ function warnBoundOnce(message: string): void {
 
 /**
  * The entries of the run that ends at `from` (the latest entry when absent), newest first: back
- * to, and not including, the previous entry that ended a run. `bounded` when the scan reached its
- * cap (20 pages of 50) before finding the start of the run.
+ * to, and not including, the previous answer. A request that failed and was retried, overflowed
+ * into a compaction, or was cut short is no answer: Pi writes it down and the run goes on. A run
+ * that ended unanswered (a failure not retried, an abort) is taken in with the next one, so its
+ * inputs count against that run's origin. `bounded` when the scan reached its cap (20 pages of 50)
+ * before finding the start of the run.
  */
 async function runEntries(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, from?: EntryId): Promise<{ entries: EntryRecord[]; bounded: boolean }> {
 	const entries: EntryRecord[] = [];
@@ -434,7 +454,7 @@ async function runEntries(tx: Pick<Tx, "scanEntries">, conversationId: Conversat
 	for (let page = 0; page < 20; page++) {
 		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending", ...(from === undefined ? {} : { maxEntryId: from }) }, 50, cursor);
 		for (const entry of items) {
-			if (entries.length > 0 && endsRun(entry)) return { entries, bounded: false };
+			if (entries.length > 0 && answered(entry)) return { entries, bounded: false };
 			entries.push(entry);
 		}
 		if (next === undefined) return { entries, bounded: false };
@@ -443,37 +463,86 @@ async function runEntries(tx: Pick<Tx, "scanEntries">, conversationId: Conversat
 	return { entries, bounded: true };
 }
 
+/** An answer: an assistant message that completed without calling a tool. Failed and cut-short requests are not. */
+function answered(entry: EntryRecord): boolean {
+	return ((entry.model ?? []) as Message[]).some((m) => m.role === "assistant" && m.stopReason !== "error" && m.stopReason !== "aborted" && !m.content.some((c) => c.type === "toolCall"));
+}
+
+/** The assistant messages of `entries`: every model call Pi wrote down, answered, failed, retried or cut short. */
+function assistants(entries: readonly EntryRecord[]): (Message & { role: "assistant" })[] {
+	return entries.flatMap((entry) => ((entry.model ?? []) as Message[]).filter((m): m is Message & { role: "assistant" } => m.role === "assistant"));
+}
+
+function spentBy(messages: readonly (Message & { role: "assistant" })[]): Spent {
+	const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	for (const m of messages) {
+		spent.input += m.usage?.input ?? 0;
+		spent.output += m.usage?.output ?? 0;
+		spent.cacheRead += m.usage?.cacheRead ?? 0;
+		spent.cacheWrite += m.usage?.cacheWrite ?? 0;
+		spent.cost += m.usage?.cost?.total ?? 0;
+	}
+	return spent;
+}
+
 /**
- * What the run that ended with `answer` took (ADR 0098): every assistant message of the run, as
- * `runEntries` reckons it. Past the scan's bound, what was found, said once; undefined when the
- * answer is not there.
+ * What the run that ended with `answer` took (ADR 0098), billed once. The cost is Pi's own ledger of
+ * the conversation (`pi.usage`, every provider call, summaries of a compaction included) less what
+ * was billed before and what the next run has already called; the first answer billed in a
+ * conversation takes its run's assistant messages. The tools are those the run called, in order;
+ * the model calls, its assistant messages and compactions. Past the scan's bound, what was found,
+ * said once; undefined when the answer is not there.
  */
-export async function turnUsage(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, answer: EntryId, warn: (message: string) => void = warnBoundOnce): Promise<TurnUsage | undefined> {
+export async function turnUsage(tx: Pick<Tx, "scanEntries" | "doc">, conversationId: ConversationId, answer: EntryId, warn: (message: string) => void = warnBoundOnce): Promise<TurnUsage | undefined> {
 	const { entries, bounded } = await runEntries(tx, conversationId, answer);
 	if (entries[0]?.id !== answer) return undefined;
 	if (bounded) warn(SCAN_BOUND);
-	const usage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
-	const tools: string[] = [];
-	for (const entry of entries) {
-		const called: string[] = [];
-		for (const m of (entry.model ?? []) as Message[]) {
-			if (m.role !== "assistant") continue;
-			usage.modelCalls++;
-			usage.inputTokens += m.usage?.input ?? 0;
-			usage.outputTokens += m.usage?.output ?? 0;
-			usage.cacheReadTokens += m.usage?.cacheRead ?? 0;
-			usage.cacheWriteTokens += m.usage?.cacheWrite ?? 0;
-			usage.costUsd += m.usage?.cost?.total ?? 0;
-			called.push(...m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])));
-		}
-		tools.unshift(...called);
+	const billed = await tx.doc(BilledDoc, conversationId);
+	if (billed.answer === answer && billed.turn !== undefined) return { ...billed.turn, tools: [...billed.turn.tools] };
+	const run = assistants(entries);
+	const tools = run.reverse().flatMap((m) => (m.stopReason === "toolUse" ? m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])) : []));
+	const modelCalls = run.length + entries.filter((entry) => entry.kind === CompactionEntry.kind).length;
+	const ownRun = spentBy(run);
+	const now = since(await ledgerSpent(tx, conversationId), spentBy(assistants(await entriesAfter(tx, conversationId, answer))));
+	// An answer older than the one billed last: that one's bill already took everything until then.
+	const spent = billed.answer !== undefined && billed.answer > answer ? spentBy([]) : billed.spent === undefined ? ownRun : since(now, billed.spent);
+	const turn: Bill = { modelCalls, inputTokens: spent.input, outputTokens: spent.output, cacheReadTokens: spent.cacheRead, cacheWriteTokens: spent.cacheWrite, costUsd: spent.cost, tools };
+	if (billed.answer === undefined || billed.answer < answer) {
+		billed.answer = answer;
+		billed.spent = now;
+		billed.turn = turn;
 	}
-	return { ...usage, tools };
+	return turn;
 }
 
-/** An assistant message that answered without calling a tool: the run it belongs to ended there. */
-function endsRun(entry: EntryRecord): boolean {
-	return entry.model?.some((m) => m.role === "assistant" && !(Array.isArray(m.content) && m.content.some((c) => (c as { type?: string }).type === "toolCall"))) === true;
+/** Every model call of the conversation in Pi's ledger, summed across models. */
+async function ledgerSpent(tx: Pick<Tx, "doc">, conversationId: ConversationId): Promise<Spent> {
+	const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	for (const usage of Object.values((await tx.doc(UsageDoc, conversationId)).models)) {
+		spent.input += usage.input;
+		spent.output += usage.output;
+		spent.cacheRead += usage.cacheRead;
+		spent.cacheWrite += usage.cacheWrite;
+		spent.cost += usage.cost.total;
+	}
+	return spent;
+}
+
+function since(now: Spent, before: Spent): Spent {
+	return { input: now.input - before.input, output: now.output - before.output, cacheRead: now.cacheRead - before.cacheRead, cacheWrite: now.cacheWrite - before.cacheWrite, cost: now.cost - before.cost };
+}
+
+/** The entries after `answer`, oldest first, as far as the scan goes: what the next run has written already. */
+async function entriesAfter(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, answer: EntryId): Promise<EntryRecord[]> {
+	const entries: EntryRecord[] = [];
+	let cursor: Cursor | undefined;
+	for (let page = 0; page < 20; page++) {
+		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "ascending", minEntryId: (answer + 1) as EntryId }, 50, cursor);
+		entries.push(...items);
+		if (next === undefined) break;
+		cursor = next;
+	}
+	return entries;
 }
 
 /** The least trusted of the inputs: another agente, then a notice, then something scheduled (or not known). */
