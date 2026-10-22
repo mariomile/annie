@@ -347,7 +347,7 @@ type Session = {
 	shown: { readonly url: string; readonly title: string };
 	/** A person moved the page since the agente's last view: its numbers point elsewhere now. */
 	movedByPerson: boolean;
-	/** When the page opened a file chooser (refused, whatever the way: label, shadow DOM, frame, input.click()), not yet told to anyone. */
+	/** When the page opened a file chooser (refused, whatever the way: label, shadow DOM, frame, input.click()), not yet told to the agente. */
 	choosers: number[];
 };
 
@@ -582,16 +582,19 @@ export class BrowseSessions {
 					await this.settle(s);
 					// A gesture's own chooser is known only once its time has passed.
 					if (gesture && Date.now() < own) await new Promise((resolve) => setTimeout(resolve, own - Date.now()));
-					if (gesture && s.choosers.some((t) => t >= started && t <= own)) {
-						s.choosers = [];
+					const mine = (t: number) => t >= started && t <= own;
+					if (gesture && s.choosers.some(mine)) {
+						// Only its own: one the page opened earlier is still the agente's to hear.
+						s.choosers = s.choosers.filter((t) => !mine(t));
 						// The agente's numbers stay those of its last view; what someone watching reads is the page now.
 						await this.remember(s);
 						throw new BrowseError(NO_FILES, "no-files");
 					}
 					const view = await this.snapshot(s, failure, options);
 					// Read after the whole view, screenshot included: one opened meanwhile is told now, not lost.
+					// Only the agente's view uses it up: the panel shows a person the page, not the notes.
 					const late = s.choosers.length > 0;
-					s.choosers = [];
+					if (options.person !== true) s.choosers = [];
 					return late ? { ...view, notes: [...view.notes, LATE_CHOOSER] } : view;
 				} catch (error) {
 					if (!(error instanceof Hung)) throw error;

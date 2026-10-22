@@ -2,7 +2,11 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { publicAddress } from "../src/core/web-fetch.ts";
 import { type Browser, BrowseSessions } from "../src/core/web-session.ts";
+import { loadAnnieConfig } from "../src/main/config.ts";
+import { tempDataDir } from "./helpers.ts";
 
 // Real Chromium: the file chooser is refused where it opens, whatever way the page reaches it (ADR 0103).
 const chrome = process.env.ANNIE_CHROMIUM_PATH ?? (existsSync("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome") ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : undefined);
@@ -17,6 +21,8 @@ afterEach(async () => {
 const BOX = "position:fixed;left:100px;top:100px;width:200px;height:100px;margin:0;border:0";
 /** A second target, at 100,300 to 300,400. */
 const BELOW = "position:fixed;left:100px;top:300px;width:200px;height:100px;margin:0;border:0";
+/** A third, at 100,500 to 300,600. */
+const LOWEST = "position:fixed;left:100px;top:500px;width:200px;height:100px;margin:0;border:0";
 const CHOOSE = "const i = document.createElement('input'); i.type = 'file'; i.click()";
 const pages: Record<string, string> = {
 	"/direct": `<input type="file" style="${BOX}">`,
@@ -27,14 +33,14 @@ const pages: Record<string, string> = {
 	"/button": `<button style="${BOX}" onclick="const i = document.createElement('input'); i.type = 'file'; i.click()">Carica</button>`,
 	"/plain": `<button style="${BOX}" onclick="document.title = 'cliccato'">Vai</button>`,
 	// The chooser opens 1.6 s after the click, on the page's own timer; the other button waits for a slow request.
-	"/late": `<button style="${BOX}" onclick="setTimeout(() => { ${CHOOSE} }, 1600)">Carica dopo</button><button style="${BELOW}" onclick="fetch('/slow').then(() => { document.title = 'fatto' })">Altro</button>`,
+	"/late": `<button style="${BOX}" onclick="setTimeout(() => { ${CHOOSE} }, 1600)">Carica dopo</button><button style="${BELOW}" onclick="fetch('/slow').then(() => { document.title = 'fatto' })">Altro</button><input type="file" style="${LOWEST}">`,
 	// The page is busy while the view is read, and opens the chooser at the end of it.
 	"/busy": `<button style="${BOX}" onclick="setTimeout(() => { const end = Date.now() + 1000; while (Date.now() < end); ${CHOOSE} }, 200)">Carica</button>`,
 	// The refused click also changes the page: the title, and what the other button does.
 	"/swap": `<title>prima</title><button style="${BOX}" onclick="document.title = 'cambiata'; document.getElementById('x').onclick = () => { document.title = 'altro gestore' }; ${CHOOSE}">Carica</button><button id="x" style="${BELOW}" onclick="document.title = 'gestore di prima'">Pulsante X</button>`,
 };
 
-async function start() {
+async function serve(): Promise<string> {
 	const server = createServer(async (req, res) => {
 		if (req.url === "/slow") await new Promise((r) => setTimeout(r, 2000));
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -42,6 +48,11 @@ async function start() {
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	closers.push(() => new Promise((r) => server.close(() => r())));
+	return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+async function start() {
+	const base = await serve();
 	const { chromium } = await import("playwright-core");
 	const browser = (await chromium.launch({ executablePath: chrome, args: ["--no-sandbox"] })) as unknown as Browser;
 	const sessions = new BrowseSessions();
@@ -49,7 +60,7 @@ async function start() {
 		await sessions.closeAll();
 		await browser.close();
 	});
-	return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, sessions, browser };
+	return { base, sessions, browser };
 }
 const guard = { hostAllowed: () => true, addressAllowed: () => true };
 
@@ -78,7 +89,7 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 	}, 60_000);
 
 	const LATE = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
-	const at = { top: [150 / 1280, 150 / 800], below: [150 / 1280, 350 / 800] } as const;
+	const at = { top: [150 / 1280, 150 / 800], below: [150 / 1280, 350 / 800], lowest: [150 / 1280, 550 / 800] } as const;
 
 	it("a chooser the page opens later, between actions, is told in the next view, once", async () => {
 		const { base, sessions, browser } = await start();
@@ -101,6 +112,15 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		expect(other.notes).toContain(LATE);
 	}, 60_000);
 
+	it("a person's own refused chooser does not use up one the page opened earlier", async () => {
+		const { base, sessions, browser } = await start();
+		await sessions.open("k", browser, `${base}/late`, guard);
+		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		await new Promise((r) => setTimeout(r, 2000));
+		await expect(sessions.clickAt("k", ...at.lowest, guard, { person: true })).rejects.toMatchObject({ kind: "no-files" });
+		expect((await sessions.view("k", guard)).notes).toContain(LATE);
+	}, 60_000);
+
 	it("a chooser that opens while the view is read is told in that view", async () => {
 		const { base, sessions, browser } = await start();
 		await sessions.open("k", browser, `${base}/busy`, guard);
@@ -117,4 +137,45 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		expect(sessions.state("k")).toMatchObject({ title: "cambiata" });
 		await expect(sessions.click("k", x?.ref as number, guard)).rejects.toThrow(/chi ti scrive ha aperto un'altra pagina/);
 	}, 60_000);
+
+	it("a person's click through the panel leaves a late chooser for the agent's next view", async () => {
+		const site = await serve();
+		const config = loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", ANNIE_SCREENSHOTS_WITHOUT_SANDBOX: "1", ANNIE_CHROMIUM_PATH: chrome as string });
+		const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { webAddressAllowed: (address) => address === "127.0.0.1" || publicAddress(address), schedulerIntervalMs: 60_000, log: () => {} });
+		closers.push(() => annie.stop());
+		const policy = (await annie.runtime.registry.getInstance("default", "annie")).egress;
+		await annie.runtime.registry.setEgress("default", "annie", { ...policy, web: ["127.0.0.1"] });
+		const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
+		const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: (annie.ownerLink as string).split("#")[1] }) });
+		const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
+		const api = async (path: string, body?: unknown) => {
+			const res = await fetch(`${base}${path}`, { method: body === undefined ? "GET" : "POST", headers: { cookie, "x-annie": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+			return { status: res.status, ...((await res.json()) as any) };
+		};
+		const thread = (await api("/api/instances/annie/threads", {})).thread.id as string;
+		const answers = async () => ((await api(`/api/instances/annie/threads/${thread}`)).entries as { from: string; text?: string }[]).filter((e) => e.from === "annie");
+		const say = async (text: string): Promise<string> => {
+			const before = (await answers()).length;
+			await api(`/api/instances/annie/threads/${thread}/messages`, { text });
+			for (const begun = Date.now(); Date.now() - begun < 30_000; ) {
+				const now = await answers();
+				if (now.length > before) return now.at(-1)?.text ?? "";
+				await new Promise((r) => setTimeout(r, 30));
+			}
+			throw new Error("no reply");
+		};
+		const click = (x: number, y: number) => api(`/api/instances/annie/threads/${thread}/browser/click`, { x, y });
+
+		expect(await say(`/tool web_browse {"url":"${site}/late"}`)).toContain("Carica dopo");
+		// The person clicks the button whose page opens the chooser 1.6 s later, on its own.
+		expect((await click(...at.top)).status).toBe(200);
+		await new Promise((r) => setTimeout(r, 2000));
+		// Then another button in the panel, which works: the panel answers with the page only.
+		const other = await click(...at.below);
+		expect(other.status).toBe(200);
+		expect(other.browser).toMatchObject({ open: true, title: "fatto" });
+		// The agent still learns of the refusal, once.
+		expect(await say("/tool web_browse {}")).toContain(LATE);
+		expect(await say("/tool web_browse {}")).not.toContain(LATE);
+	}, 90_000);
 });
