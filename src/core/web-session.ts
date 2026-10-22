@@ -145,9 +145,8 @@ export type ViewOptions = {
 /** The size of every page's window: the picture of the panel is this big, and a click on it is placed in it. */
 const VIEWPORT = { width: 1280, height: 800 };
 
-/** A point of the picture, as fractions of its width and height (0 to 1), in the page's own pixels; undefined when it is not on the picture. */
-export function viewportPoint(fx: number, fy: number): { x: number; y: number } | undefined {
-	if (!Number.isFinite(fx) || !Number.isFinite(fy) || fx < 0 || fx > 1 || fy < 0 || fy > 1) return undefined;
+/** A point of the picture, as fractions of its width and height (already checked to be 0 to 1 by the caller), in the page's own pixels. */
+export function viewportPoint(fx: number, fy: number): { x: number; y: number } {
 	return { x: Math.min(Math.floor(fx * VIEWPORT.width), VIEWPORT.width - 1), y: Math.min(Math.floor(fy * VIEWPORT.height), VIEWPORT.height - 1) };
 }
 
@@ -296,7 +295,16 @@ function kindOf(tag: string, type: string, role: string, checked: boolean): stri
 
 export class BrowseError extends Error {
 	override readonly name = "BrowseError";
+	/** Why, for the callers that word it themselves; the message stays for the agente. */
+	constructor(message: string, readonly kind?: "no-files" | "no-page" | "busy" | "unavailable") {
+		super(message);
+	}
 }
+
+const NO_FILES = "Annie non carica file sui siti";
+
+/** In-page: is `e` (or the control its label points to) a file input. */
+const FILE_INPUT = `(e) => { const t = (n) => n?.tagName === "INPUT" && (n.getAttribute("type") || "").toLowerCase() === "file"; return t(e) || t(e?.closest("label")?.control); }`;
 
 /** A page that stopped answering a read: its session is closed. */
 class Hung extends Error {}
@@ -378,8 +386,8 @@ export class BrowseSessions {
 
 	click(key: string, ref: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		return this.act(key, guard, options, async (s) => {
-			const { selector, live } = await this.target(s, ref);
-			if (live.type === "file") throw new BrowseError("Annie non carica file sui siti");
+			const { selector } = await this.target(s, ref);
+			await this.refuseFileInput(s, `document.querySelector(${JSON.stringify(selector)})`);
 			await s.page.click(selector, { timeout: ACTION_TIMEOUT_MS });
 		});
 	}
@@ -390,22 +398,22 @@ export class BrowseSessions {
 	 */
 	clickAt(key: string, fx: number, fy: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		const point = viewportPoint(fx, fy);
-		if (point === undefined) return Promise.reject(new BrowseError("il punto non è sulla pagina"));
 		return this.act(key, guard, options, async (s) => {
-			const kind = await within(
-				s.page.evaluate<unknown>(`(() => { const e = document.elementFromPoint(${point.x}, ${point.y}); if (!e) return null; const c = e.closest("label") && e.closest("label").control; const t = (n) => n && n.tagName === "INPUT" ? String(n.getAttribute("type") || "").toLowerCase() : ""; return t(e) || t(c); })()`),
-				READ_TIMEOUT_MS,
-			);
-			if (kind === "file") throw new BrowseError("Annie non carica file sui siti");
+			await this.refuseFileInput(s, `document.elementFromPoint(${point.x}, ${point.y})`);
 			await s.page.mouse.click(point.x, point.y);
 		});
+	}
+
+	/** One rule for every click and every typing: never a file input, nor the label of one. `locate` is an in-page expression for the element. */
+	private async refuseFileInput(s: Session, locate: string): Promise<void> {
+		if (await within(s.page.evaluate<boolean>(`(${FILE_INPUT})(${locate})`), READ_TIMEOUT_MS)) throw new BrowseError(NO_FILES, "no-files");
 	}
 
 	type(key: string, ref: number, text: string, submit: boolean, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		return this.act(key, guard, options, async (s) => {
 			const { selector, live } = await this.target(s, ref);
 			if (live.type === "password") throw new BrowseError("Annie non scrive password: non entra negli account");
-			if (live.type === "file") throw new BrowseError("Annie non carica file sui siti");
+			await this.refuseFileInput(s, `document.querySelector(${JSON.stringify(selector)})`);
 			if (live.type === "checkbox" || live.type === "radio") throw new BrowseError(`l'elemento ${ref} è una casella: si seleziona con web_click`);
 			if (live.tag === "select") {
 				const choices = await within(s.page.evaluate<unknown>(`Array.from(document.querySelector(${JSON.stringify(selector)}).options).slice(0, 200).map((o) => [String(o.value).slice(0, 80), String(o.text).replace(/\\s+/g, " ").trim().slice(0, 80)])`), READ_TIMEOUT_MS);
@@ -506,7 +514,7 @@ export class BrowseSessions {
 		const others = () => [...this.starting.keys()].filter((k) => k !== key).length;
 		while (this.sessions.size + others() >= this.limits.max) {
 			const oldest = [...this.sessions.values()].filter((s) => !s.busy).sort((a, b) => a.used - b.used)[0];
-			if (oldest === undefined) throw new BrowseError("su questo server ci sono già troppi browser al lavoro: riprova tra poco");
+			if (oldest === undefined) throw new BrowseError("su questo server ci sono già troppi browser al lavoro: riprova tra poco", "busy");
 			await this.end(oldest, "chiusa per fare posto a un'altra conversazione");
 		}
 		const context = await browser.newContext({ viewport: VIEWPORT, userAgent: USER_AGENT, acceptDownloads: false, serviceWorkers: "block" });
@@ -535,7 +543,7 @@ export class BrowseSessions {
 		const s = this.sessions.get(key);
 		if (s === undefined) {
 			const why = this.closed.get(key);
-			return Promise.reject(new BrowseError(why === undefined ? "nessuna pagina aperta in questa conversazione: aprila con web_browse" : `la pagina di questa conversazione è stata ${why}: riaprila con web_browse`));
+			return Promise.reject(new BrowseError(why === undefined ? "nessuna pagina aperta in questa conversazione: aprila con web_browse" : `la pagina di questa conversazione è stata ${why}: riaprila con web_browse`, why === undefined ? "no-page" : undefined));
 		}
 		const run = s.queue
 			.catch(() => {})

@@ -7,7 +7,7 @@ import { instanceId, tenantId } from "../src/core/ids.ts";
 import { AnnieRuntime } from "../src/core/index.ts";
 import { instanceDir } from "../src/core/paths.ts";
 import { UsageLedger } from "../src/core/usage.ts";
-import { type Browser, BrowseError, BrowseSessions, viewportPoint } from "../src/core/web-session.ts";
+import { type Browser, BrowseSessions, viewportPoint } from "../src/core/web-session.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { PeopleStore, SessionStore } from "../src/web/auth.ts";
 import { WebChannel } from "../src/web/channel.ts";
@@ -20,23 +20,30 @@ afterEach(async () => {
 });
 
 describe("a click on the browser panel's picture (ADR 0103)", () => {
-	it("places the point of the picture in the 1280x800 page, and refuses what is not on it", () => {
+	it("places the point of the picture in the 1280x800 page", () => {
 		expect(viewportPoint(0, 0)).toEqual({ x: 0, y: 0 });
 		expect(viewportPoint(0.5, 0.25)).toEqual({ x: 640, y: 200 });
 		expect(viewportPoint(1, 1)).toEqual({ x: 1279, y: 799 });
-		for (const [x, y] of [[-0.01, 0.5], [0.5, 1.01], [Number.NaN, 0.5], [0.5, Number.POSITIVE_INFINITY]] as const) expect(viewportPoint(x, y)).toBeUndefined();
 	});
 
-	/** A browser with one page that records the mouse and says what is under it. */
-	function fakeBrowser(under: string) {
+	/** A browser with one page of one text field, that records the mouse and says whether a file input (or its label) is where the rule looks. */
+	function fakeBrowser(file: boolean) {
 		const clicks: [number, number][] = [];
+		const looked: string[] = [];
 		const page = {
 			goto: async () => {},
 			goBack: async () => {},
 			screenshot: async () => new Uint8Array(),
 			title: async () => "Prova",
 			url: () => "https://example.test/",
-			evaluate: async (expression: string) => (expression.includes("elementFromPoint") ? under : null),
+			evaluate: async (expression: string) => {
+				if (expression.includes('closest("label")')) {
+					looked.push(expression.slice(expression.lastIndexOf("})(") + 3));
+					return file;
+				}
+				if (expression.includes("all.length !== 1")) return { tag: "input", type: "text" };
+				return { elements: [{ tag: "input", type: "text", label: "Campo" }], text: "Prova", textLength: 5 };
+			},
 			click: async () => {},
 			mouse: { click: async (x: number, y: number) => void clicks.push([x, y]) },
 			fill: async () => {},
@@ -47,28 +54,38 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		};
 		const context = { route: async () => {}, routeWebSocket: async () => {}, addInitScript: async () => {}, on: () => {}, newPage: async () => page, close: async () => {} };
 		const browser = { newContext: async () => context, close: async () => {}, on: () => {} } as unknown as Browser;
-		return { browser, clicks };
+		return { browser, clicks, looked };
 	}
 	const guard = { hostAllowed: () => true, addressAllowed: () => true };
 
-	it("clicks the mapped point with the page's own rules: not on a file upload, and nothing without an open page", async () => {
+	it("clicks the mapped point: nothing without an open page", async () => {
 		const sessions = new BrowseSessions();
 		closers.push(() => sessions.closeAll());
-		await expect(sessions.clickAt("k", 0.5, 0.5, guard)).rejects.toThrow("nessuna pagina aperta");
-		const ok = fakeBrowser("");
+		await expect(sessions.clickAt("k", 0.5, 0.5, guard)).rejects.toMatchObject({ kind: "no-page" });
+		const ok = fakeBrowser(false);
 		await sessions.open("k", ok.browser, "https://example.test/", guard);
 		const before = sessions.state("k");
 		await sessions.clickAt("k", 0.5, 0.25, guard, { person: true });
 		expect(ok.clicks).toEqual([[640, 200]]);
 		// The click is an action: the picture is taken again.
 		expect(sessions.state("k")).toMatchObject({ open: true, version: (before as { version: number }).version + 1 });
-		await expect(sessions.clickAt("k", 1.5, 0.5, guard)).rejects.toThrow(BrowseError);
-		expect(ok.clicks).toHaveLength(1);
+	});
 
-		const file = fakeBrowser("file");
+	it("one rule for file inputs: the person's click, the agent's click and the agent's typing all refuse them", async () => {
+		const sessions = new BrowseSessions();
+		closers.push(() => sessions.closeAll());
+		const file = fakeBrowser(true);
 		await sessions.open("f", file.browser, "https://example.test/", guard);
-		await expect(sessions.clickAt("f", 0.1, 0.1, guard)).rejects.toThrow("Annie non carica file sui siti");
+		await expect(sessions.clickAt("f", 0.1, 0.1, guard)).rejects.toMatchObject({ kind: "no-files", message: "Annie non carica file sui siti" });
+		await expect(sessions.click("f", 1, guard)).rejects.toMatchObject({ kind: "no-files" });
+		await expect(sessions.type("f", 1, "x", false, guard)).rejects.toMatchObject({ kind: "no-files" });
 		expect(file.clicks).toEqual([]);
+		expect(file.looked.map((l) => l.startsWith("document.elementFromPoint(128, 80)") || l.startsWith("document.querySelector("))).toEqual([true, true, true]);
+
+		const plain = fakeBrowser(false);
+		await sessions.open("p", plain.browser, "https://example.test/", guard);
+		await sessions.click("p", 1, guard);
+		await sessions.type("p", 1, "x", false, guard);
 	});
 
 	async function setup() {
@@ -131,28 +148,30 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		const h = await setup();
 		const anna = await h.as(h.anna.token);
 		const thread = (await anna("/api/instances/ops/threads", {})).body.thread;
-		const path = `/api/instances/ops/threads/${thread.id}/browser`;
-		const done = await anna(path, { click: { x: 0.5, y: 0.25 } });
+		const path = `/api/instances/ops/threads/${thread.id}/browser/click`;
+		const done = await anna(path, { x: 0.5, y: 0.25 });
 		expect(done.status).toBe(200);
 		expect(done.body.browser.version).toBe(4);
 		expect(h.clicks).toEqual([[0.5, 0.25]]);
 		// The edges of the picture are on it.
-		expect((await anna(path, { click: { x: 0, y: 1 } })).status).toBe(200);
+		expect((await anna(path, { x: 0, y: 1 })).status).toBe(200);
 		// Out of range or not numbers: refused before the browser hears about it.
-		for (const click of [{ x: -0.1, y: 0.5 }, { x: 0.5, y: 1.1 }, { x: "0.5", y: 0.5 }, { x: 0.5 }, { x: null, y: null }, 7, null]) {
-			const refused = await anna(path, { click });
+		for (const click of [{ x: -0.1, y: 0.5 }, { x: 0.5, y: 1.1 }, { x: "0.5", y: 0.5 }, { x: 0.5 }, { x: null, y: null }]) {
+			const refused = await anna(path, click);
 			expect(refused.status).toBe(400);
 			expect(refused.body.error).toBe("Il clic non è sulla pagina");
 		}
 		expect(h.clicks).toHaveLength(2);
+		// Each click of the person is in the audit, who and whether it worked; a refused point never reached the browser.
+		expect((await h.runtime.audit("acme").read()).filter((e) => e.type === "web.browser.clicked").map((e) => [e.instanceId, e.personId, e.ok])).toEqual([["ops", h.anna.person.id, true], ["ops", h.anna.person.id, true]]);
 		// Another person: it is not their conversation. Nobody logged in: nothing.
 		const luca = await h.as(h.luca.token);
-		expect((await luca(path, { click: { x: 0.5, y: 0.5 } })).status).toBe(404);
-		const anonymous = await fetch(`${h.base}${path}`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ click: { x: 0.5, y: 0.5 } }) });
+		expect((await luca(path, { x: 0.5, y: 0.5 })).status).toBe(404);
+		const anonymous = await fetch(`${h.base}${path}`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ x: 0.5, y: 0.5 }) });
 		expect(anonymous.status).toBe(401);
 		// A person no longer allowed to write to the agente does not drive its browser.
 		await h.runtime.registry.setAllowedUsers("acme", "ops", "web", [h.luca.person.id]);
-		expect((await anna(path, { click: { x: 0.5, y: 0.5 } })).status).toBe(404);
+		expect((await anna(path, { x: 0.5, y: 0.5 })).status).toBe(404);
 		expect(h.clicks).toHaveLength(2);
 	});
 });

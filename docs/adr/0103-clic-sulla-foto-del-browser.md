@@ -4,9 +4,9 @@ L'[ADR 0044](0044-browser-interno.md) ha messo il browser della conversazione in
 
 ## Decisione
 
-- **Il clic sulla foto è un clic nella pagina.** Il pannello manda il punto cliccato come frazioni della foto mostrata (`POST …/browser {click: {x, y}}`, tra 0 e 1), così non conta quanto è grande la foto sullo schermo. Il server lo porta nella finestra della pagina (1280 per 800) e lo clicca nel browser di quella conversazione; poi il pannello si aggiorna da solo con la foto nuova.
-- **Le stesse regole del clic dell'agente.** Passa dalla stessa coda delle azioni, dallo stesso fetch controllato (solo i siti consentiti, mai un indirizzo interno, solo GET) e dagli stessi blocchi: i moduli che inviano restano fermi e un clic su un caricamento di file è rifiutato. Chi guarda non ha più permessi dell'agente: nessuna approvazione aggirata, perché il browser non invia niente da solo.
-- **Stessi controlli del pannello.** Sessione della persona, conversazione sua, e solo chi può scrivere all'agente in chat. Un punto fuori dalla foto (non un numero, o fuori da 0-1) è rifiutato prima di toccare il browser.
+- **Il clic sulla foto è un clic nella pagina.** Il pannello manda il punto cliccato come frazioni della foto mostrata (`POST …/browser/click {x, y}`, tra 0 e 1, una rotta sua), così non conta quanto è grande la foto sullo schermo. Il server lo porta nella finestra della pagina (1280 per 800) e lo clicca nel browser di quella conversazione; poi il pannello si aggiorna da solo con la foto nuova.
+- **Le stesse regole del clic dell'agente.** Passa dalla stessa coda delle azioni, dallo stesso fetch controllato (solo i siti consentiti, mai un indirizzo interno, solo GET) e dagli stessi blocchi: i moduli che inviano restano fermi. Il rifiuto dei caricamenti di file è una regola sola, usata dal clic della persona e dal clic e dalla scrittura dell'agente: vale per il campo file e per l'etichetta che lo apre. Chi guarda non ha più permessi dell'agente: nessuna approvazione aggirata, perché il browser non invia niente da solo.
+- **Stessi controlli del pannello.** Sessione della persona, conversazione sua, e solo chi può scrivere all'agente in chat. Un punto fuori dalla foto (non un numero, o fuori da 0-1) è rifiutato dalla rotta, che è l'unico posto dove si controlla, prima di toccare il browser.
 - **Come per la barra dell'indirizzo,** dopo un clic della persona i numeri dell'ultima vista dell'agente puntano altrove: `web_click` e `web_type` li rifiutano finché l'agente non riguarda la pagina.
 
 ## Alternative scartate
@@ -16,6 +16,7 @@ L'[ADR 0044](0044-browser-interno.md) ha messo il browser della conversazione in
 
 ## Conseguenze
 
-- Il clic sulla foto non è registrato nell'audit, come Indietro; l'apertura di una pagina da indirizzo sì.
+- L'audit tiene ogni clic della persona (`web.browser.clicked`, con agente, persona ed esito) e l'apertura di una pagina da indirizzo; Indietro no.
+- Il pannello distingue i motivi di un rifiuto dal tipo dell'errore del browser (`BrowseError.kind`), non dal suo testo.
 - Un clic a coordinate non vede cosa c'è sotto come l'agente, che sceglie elementi numerati: può cliccare un pulsante che la pagina disegna in modo ingannevole. Il danno resta quello di un clic in un browser che legge soltanto.
-- Il pannello non si prova senza Chromium: i test coprono il calcolo del punto, le regole e l'endpoint con un browser finto.
+- Il pannello non si prova senza Chromium: i test coprono il calcolo del punto, la regola sui file nei tre percorsi (clic della persona, clic e scrittura dell'agente), la rotta e l'audit con un browser finto.

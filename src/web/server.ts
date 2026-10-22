@@ -532,14 +532,9 @@ export function createWebApp(options: WebAppOptions): Server {
 	route("POST", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params, req }) => {
 		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
 		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
-		const body = (await readJson(req)) as { url?: unknown; back?: unknown; click?: unknown };
+		const body = (await readJson(req)) as { url?: unknown; back?: unknown };
 		const [instanceId, threadId] = [params[0] as string, params[1] as string];
 		if (body.back === true) return { browser: await browserCall(() => browser.back(instanceId, threadId)) };
-		if (body.click !== undefined) {
-			const { x, y } = (typeof body.click === "object" && body.click !== null ? body.click : {}) as { x?: unknown; y?: unknown };
-			if (typeof x !== "number" || typeof y !== "number" || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new HttpError(400, "Il clic non è sulla pagina");
-			return { browser: await browserCall(() => browser.click(instanceId, threadId, x, y)) };
-		}
 		if (typeof body.url !== "string" || body.url.trim() === "" || body.url.length > 2000) throw new HttpError(400, "Scrivi l'indirizzo di una pagina");
 		const raw = body.url.trim();
 		const url = /^[a-z][\w+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
@@ -548,6 +543,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const record = (ok: boolean) => runtime.audit(tenantId).append({ type: "web.browser.opened", instanceId, personId: (person as Person).id, host, ok });
 		try {
 			const state = await browserCall(() => browser.open(instanceId, threadId, url));
+			await record(true);
+			return { browser: state };
+		} catch (error) {
+			await record(false);
+			throw error;
+		}
+	});
+	route("POST", "/api/instances/:id/threads/:thread/browser/click", "person", async ({ person, params, req }) => {
+		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
+		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
+		const { x, y } = (await readJson(req)) as { x?: unknown; y?: unknown };
+		if (typeof x !== "number" || typeof y !== "number" || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new HttpError(400, "Il clic non è sulla pagina");
+		const instanceId = params[0] as string;
+		const record = (ok: boolean) => runtime.audit(tenantId).append({ type: "web.browser.clicked", instanceId, personId: (person as Person).id, ok });
+		try {
+			const state = await browserCall(() => browser.click(instanceId, params[1] as string, x, y));
 			await record(true);
 			return { browser: state };
 		} catch (error) {
