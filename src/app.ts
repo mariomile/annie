@@ -51,6 +51,7 @@ import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
 import { LocalProviders, type CliRunner } from "./core/local-providers.ts";
 import { MODEL_COMMAND } from "./model-command.ts";
+import { skillMenu } from "./skill-commands.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
@@ -1283,7 +1284,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...voiceFor(instance),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
-			commands: [MODEL_COMMAND],
+			// The skills as they are now: the menu is set once, when the bot starts (ADR 0104).
+			commands: skillMenu(runtime.skills(tenant, instance).list(), [MODEL_COMMAND], log),
 		});
 		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, { onAction: (action) => onApprovalTap(instance, bot, action), voice: voiceOf(instance), models: chatModels }));
 		telegrams.set(instance, bot);
