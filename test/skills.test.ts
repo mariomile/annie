@@ -227,4 +227,10 @@ describe("a skill in Telegram's menu", () => {
 		expect(entry.description).toHaveLength(256);
 		expect(entry.description.endsWith("…")).toBe(true);
 	});
+
+	it("does not cut an emoji in half at the 256th character", () => {
+		const entry = skillMenuEntry(make("emoji", `${"a".repeat(254)}😀x`));
+		expect(entry.description).toBe(`${"a".repeat(254)}…`);
+		expect(entry.description).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+	});
 });
