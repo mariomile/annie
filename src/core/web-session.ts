@@ -541,7 +541,9 @@ export class BrowseSessions {
 			// The audit hears of the first one per site of this browser: a page that retries in a loop is one line, not thousands.
 			const told = new Set<string>();
 			page.on("filechooser", () => {
-				session.choosers.push(Date.now());
+				// Three at most, the last always the newest: with the one an action starts from (below) that is enough to tell its own from a late one.
+				if (session.choosers.length < 3) session.choosers.push(Date.now());
+				else session.choosers[2] = Date.now();
 				const host = new URL(page.url()).hostname;
 				if (told.has(host)) return;
 				told.add(host);
@@ -577,6 +579,8 @@ export class BrowseSessions {
 				clearTimeout(s.timer);
 				try {
 					let failure: string | undefined;
+					// The ones before the action are all late: one says it.
+					s.choosers = s.choosers.slice(0, 1);
 					const started = Date.now();
 					try {
 						await action(s);

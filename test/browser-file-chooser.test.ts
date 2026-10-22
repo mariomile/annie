@@ -108,12 +108,13 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		expect(refused).toEqual(["k 127.0.0.1", "j 127.0.0.1"]);
 	}, 60_000);
 
-	it("a page that opens the chooser in a loop is one report, and the agent still hears of it", async () => {
+	it("a page that opens the chooser in a loop is one report and a few remembered, and the agent still hears of it", async () => {
 		const { base, sessions, browser, refused } = await start();
 		await sessions.open("k", browser, `${base}/spam`, guard);
 		await sessions.clickAt("k", ...at.top, guard, { person: true });
 		await new Promise((r) => setTimeout(r, 3000));
 		expect(refused).toEqual(["k 127.0.0.1"]);
+		expect(sessions["sessions"].get("k")?.choosers.length).toBeLessThanOrEqual(3);
 		expect((await sessions.view("k", guard)).notes).toContain(LATE);
 	}, 60_000);
 
