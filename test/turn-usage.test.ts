@@ -57,7 +57,7 @@ describe("quanto costa un turno (ADR 0098)", () => {
 		await runtime.close();
 		const turns = (await new AuditLog(dataDir, tenantId("acme")).read()).filter((r) => r.type === "turn.usage");
 		expect(turns).toHaveLength(2);
-		expect(turns[0]).toMatchObject({ instanceId: "ops", channel: "test", provider: "faux", model: "annie-dev", modelCalls: 2, toolCalls: 1, tools: "slow_counter" });
+		expect(turns[0]).toMatchObject({ instanceId: "ops", channel: "test", threadId: "t1", provider: "faux", model: "annie-dev", modelCalls: 2, toolCalls: 1, tools: "slow_counter" });
 		expect(turns[1]).toMatchObject({ modelCalls: 1, toolCalls: 0, tools: "" });
 		const ledger = (await readFile(join(tenantDir(dataDir, tenantId("acme")), "usage.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { role: string; submissionId: string });
 		expect(ledger.map((r) => r.role)).toEqual(["agent", "agent"]);

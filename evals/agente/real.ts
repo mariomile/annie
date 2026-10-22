@@ -36,25 +36,35 @@ const api = async (path: string, body?: unknown) => {
 	return (await res.json()) as Record<string, any>;
 };
 const audit = new AuditLog(dataDir, tenantId("default"));
-const turns = async () => (await audit.read()).filter((r) => r.type === "turn.usage" && r.instanceId === "annie");
+// How the case's turn ended: its usage when answered, its reason when not. Matched by thread, so a late answer never lands on another case.
+const outcome = async (threadId: string) => {
+	for (const r of await audit.read()) {
+		if (r.instanceId !== "annie" || r.threadId !== threadId) continue;
+		if (r.type === "turn.usage") return { turn: r };
+		// turn.usage is written before the reply: a reply alone is a turn that failed, or one the engine could not measure.
+		if (r.type === "reply.emitted") return { error: r.status === "unanswered" ? String(r.reason ?? "unanswered") : "answered without usage" };
+	}
+	return undefined;
+};
 
 type Row = { id: string; expect: string[]; tools: string[]; firstTool: string | null; ok: boolean; costUsd: number; modelCalls: number; error?: string };
 const rows: Row[] = [];
 for (const c of cases) {
-	const before = (await turns()).length;
 	const thread = (await api("/api/instances/annie/threads", {})).thread as { id: string };
 	await api(`/api/instances/annie/threads/${thread.id}/messages`, { text: c.text });
 	const start = Date.now();
-	let turn: Record<string, unknown> | undefined;
-	while (turn === undefined && Date.now() - start < TURN_TIMEOUT_MS) {
+	let found: Awaited<ReturnType<typeof outcome>>;
+	while (found === undefined && Date.now() - start < TURN_TIMEOUT_MS) {
 		await new Promise((r) => setTimeout(r, 500));
-		turn = (await turns())[before];
+		found = await outcome(thread.id);
 	}
-	if (turn === undefined) {
-		rows.push({ id: c.id, expect: c.expect, tools: [], firstTool: null, ok: false, costUsd: 0, modelCalls: 0, error: "no answer in time" });
-		console.log(`✗ ${c.id}: no answer in ${TURN_TIMEOUT_MS / 1000}s`);
+	const error = found === undefined ? `no answer in ${TURN_TIMEOUT_MS / 1000}s` : found.error;
+	if (found?.turn === undefined) {
+		rows.push({ id: c.id, expect: c.expect, tools: [], firstTool: null, ok: false, costUsd: 0, modelCalls: 0, error });
+		console.log(`✗ ${c.id}: ${error}`);
 		continue;
 	}
+	const turn = found.turn;
 	const tools = String(turn.tools ?? "").split(",").filter((t) => t !== "");
 	const firstTool = tools[0] ?? null;
 	const ok = c.expect.length === 0 ? firstTool === null : firstTool !== null && c.expect.includes(firstTool);

@@ -775,7 +775,9 @@ export class AnnieInstance {
 		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);
 		const subject = alone ? subjectOf(person.channel, person.userId) : undefined;
 		// So the tools know whom the thread is with even before the person writes in it (a brief's).
+		// Not alone: the shared memories, never whom the thread was last with.
 		if (subject !== undefined) this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
+		else this.memory.participants.clear(threadKey(request.channel, request.threadId));
 		return this.admit(request, "scheduled");
 	}
 
@@ -984,7 +986,7 @@ export class AnnieInstance {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;
 			// Counted once: a reply the outbox already holds was counted when it first came.
-			if (existing?.reply === undefined && engineReply.status === "answered" && engineReply.usage !== undefined) await this.count(engineReply.submissionId, channel, engineReply.usage, engineReply.model).catch((error: unknown) => console.error(`annie: usage of ${this.record.tenantId}/${this.record.id} not recorded: ${String(error)}`));
+			if (existing?.reply === undefined && engineReply.status === "answered" && engineReply.usage !== undefined) await this.count(engineReply.submissionId, channel, threadId, engineReply.usage, engineReply.model).catch((error: unknown) => console.error(`annie: usage of ${this.record.tenantId}/${this.record.id} not recorded: ${String(error)}`));
 			await this.handOff(
 				existing === undefined
 					? { key, submissionId: engineReply.submissionId, channel, threadId, reply, createdAt: new Date().toISOString(), attempts: 0 }
@@ -994,11 +996,12 @@ export class AnnieInstance {
 	}
 
 	/** What a turn took, in the audit and in the tenant's spend (ADR 0098). Never the text. */
-	private async count(submissionId: string, channel: string, usage: TurnUsage, model: ModelSelection | undefined): Promise<void> {
+	private async count(submissionId: string, channel: string, threadId: string, usage: TurnUsage, model: ModelSelection | undefined): Promise<void> {
 		await this.audit.append({
 			type: "turn.usage",
 			instanceId: this.record.id,
 			channel,
+			threadId,
 			submissionId,
 			...(model === undefined ? {} : { provider: model.provider, model: model.modelId }),
 			modelCalls: usage.modelCalls,
