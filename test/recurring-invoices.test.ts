@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { CashflowStore } from "../src/core/cashflow-store.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
@@ -856,18 +855,9 @@ describe("the tool", () => {
 		expect(JSON.stringify(s.events)).not.toMatch(/Delta|310|300/);
 	});
 
-	it("routing: next to sales_invoices in Annie's instructions, and not schedule_create or renewals", () => {
-		const sales = DEFAULT_INSTRUCTIONS.indexOf("fatture elettroniche in uscita (sales_invoices)");
-		const recurring = DEFAULT_INSTRUCTIONS.indexOf("ricorrenti (recurring_invoices)");
-		const next = DEFAULT_INSTRUCTIONS.indexOf("listino (price_list)");
-		expect(sales).toBeGreaterThan(0);
-		expect(recurring).toBeGreaterThan(sales);
-		expect(recurring).toBeLessThan(next);
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+	it("routing: recurring_invoices, not schedule_create or renewals", () => {
 		const description = setup().tool.description;
 		expect(description).toContain("an invoice that repeats every month, two months, quarter, six months or year to the same customer is recurring_invoices (not schedule_create, not renewals: renewals are what the person pays)");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(EM_DASH);
-		expect(description).not.toMatch(EM_DASH);
 	});
 
 	it("routing in the tools' own descriptions, and what the person says read as said", () => {

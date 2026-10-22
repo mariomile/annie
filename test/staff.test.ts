@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { staffCallReads, validAbsence } from "../src/core/staff.ts";
 import { agent, cleanup, EMDASH, fresh, inside, outside, type S, setup } from "./staff-fixtures.ts";
@@ -232,8 +231,6 @@ describe("the brief, the file, routing", () => {
 	it("routing: the instructions and the description keep staff apart from appointments, agents and Annie's users", () => {
 		const s = setup();
 		// Kept short: the instructions only route, the examples live in the description.
-		expect(DEFAULT_INSTRUCTIONS).toContain("personale (staff)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(s.tool.description).toContain("protocol only the certificate's number: never a diagnosis, never ask for one");
 		expect(s.tool.description).toContain("«assumo Luca");
 		expect(s.tool.description).toContain("«chiudo per ferie dal 10 al 20 agosto» is the business closing: appointments settings, not staff.");
@@ -241,7 +238,5 @@ describe("the brief, the file, routing", () => {
 		expect(s.tool.description).toContain("«Giulia è in ferie dal 3 al 14 agosto»");
 		expect(s.tool.description).toContain("«malattia del figlio» (reason congedo malattia figlio)");
 		expect(s.tool.description).toContain("not the people who use Annie");
-		expect(s.tool.description).not.toMatch(EMDASH);
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(EMDASH);
 	});
 });

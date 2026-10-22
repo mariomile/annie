@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { GOOGLE_SCOPE, GOOGLE_WRITE_SCOPE } from "../src/connectors/google.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { readOnlyInBriefs } from "../src/core/brief.ts";
@@ -418,8 +418,6 @@ function fakeGoogle() {
 
 describe("solleciti in the app", () => {
 	it("from the chat to the card: sent only after the approval, then recorded; the instructions point to it; the audit has no data", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("fatture da pagare e da incassare e solleciti (invoices, non file_search)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(setup(FILES).tool.description).toContain("reminder: a payment reminder (sollecito) to customers late on invoices to collect");
 		const dataDir = temp();
 		const google = fakeGoogle();

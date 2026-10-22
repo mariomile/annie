@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { CLIENTS_BROKEN, ClientStore } from "../src/core/client-store.ts";
@@ -1215,8 +1215,6 @@ describe("clients: third-pass review", () => {
 
 describe("clients in the app", () => {
 	it("is offered to every instance, the reminder goes to the person, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("schede dei clienti (clients)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { readDocumentText } from "../src/core/document-reader.ts";
 import type { ToolContext } from "../src/core/engine.ts";
@@ -783,8 +783,6 @@ describe("quotes: calls run again, documents in preparation, revisions", () => {
 
 describe("quotes in the app", () => {
 	it("is offered to every instance, the instructions point to it, and a quote is made from the company set in invoices", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("preventivi (quotes)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(setup().tool.description).toContain("Preventivi (quotes) for customers");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });

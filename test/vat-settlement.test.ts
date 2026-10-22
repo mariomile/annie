@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { averageSpend, isProfileTaxName, isTaxName, type Movement, taxDuplicates, taxFlows, taxKindOf } from "../src/core/cashflow-sources.ts";
 import { CashflowStore } from "../src/core/cashflow-store.ts";
@@ -777,8 +776,6 @@ describe("vat: the tool", () => {
 		expect(s.store.read().paid).toEqual([]);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bvat_settlement \(calendar\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("liquidazione IVA (vat_settlement)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 	});
 
 	it("exports the CSV under iva/, formula-safe, never over a file; audits op and count only; a call run again writes once", async () => {

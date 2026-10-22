@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
@@ -962,8 +962,6 @@ describe("renewals: fence, audit, CSV", () => {
 
 describe("renewals in the app", () => {
 	it("is offered to every instance, records a payment as an expense, the instructions point to it, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("rinnovi e abbonamenti (renewals)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(setup().tool.description).toContain("For a reminder at an exact time use schedule_create");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });

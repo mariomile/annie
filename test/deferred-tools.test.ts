@@ -2,9 +2,14 @@
  * Deferred tools (ADR 0100): a tool marked deferred is not offered to the model until it loads it
  * with tool_search; once loaded it stays for the conversation.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { toolSearch } from "../src/core/adapters/pi-durable.ts";
-import type { AnnieTool } from "../src/core/index.ts";
+import { startAnnie } from "../src/app.ts";
+import { piDurableEngine, toolSearch } from "../src/core/adapters/pi-durable.ts";
+import type { AnnieTool, DurableEngine } from "../src/core/index.ts";
+import { loadAnnieConfig } from "../src/main/config.ts";
 import { runtimeWithInstance, waitFor } from "./helpers.ts";
 
 function tool(name: string, calls: string[], deferred?: true): AnnieTool {
@@ -86,6 +91,26 @@ describe("deferred tools (ADR 0100)", () => {
 			const result = await run("magazzino unità articolo");
 			expect(result.control).toEqual({ addTools: ["magazzino_giacenze"] });
 			expect((await run("zzzz")).control).toBeUndefined();
+		});
+	});
+
+	describe("the tools Annie really gets", () => {
+		it("every deferred tool is listed by name in the tool_search description, and no description has an em-dash", async () => {
+			const tools = new Map<string, AnnieTool>();
+			const engine: DurableEngine = {
+				open: (options) => {
+					for (const t of options.tools) tools.set(t.name, t);
+					return piDurableEngine.open(options);
+				},
+			};
+			const config = loadAnnieConfig({ ANNIE_DATA_DIR: mkdtempSync(join(tmpdir(), "annie-deferred-")), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
+			const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { engine, schedulerIntervalMs: 3_600_000, log: () => {} });
+			await annie.stop();
+			const deferred = [...tools.values()].filter((t) => t.deferred === true);
+			expect(deferred.length).toBeGreaterThan(20);
+			const listing = toolSearch(deferred).description;
+			for (const t of deferred) expect(listing, t.name).toContain(`- ${t.name}: `);
+			for (const t of [...tools.values(), { name: "tool_search", description: listing }]) expect(t.description, t.name).not.toContain("\u2014");
 		});
 	});
 });

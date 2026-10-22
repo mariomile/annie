@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { cashBook, unitsToCents } from "../src/core/cash-book.ts";
 import { csvCents, csvFile, csvLine, csvText } from "../src/core/csv.ts";
@@ -817,8 +817,6 @@ describe("expenses: fence and audit", () => {
 
 describe("expenses in the app", () => {
 	it("is offered to every instance, the instructions point to it, and the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("spese (expenses)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

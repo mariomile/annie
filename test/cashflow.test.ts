@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { CASHFLOW_LIMITS, type CashItem, cashflowAgentReads, cashflowCallReads, isSignedAmount, parseItemId, signedCents, validBalance } from "../src/core/cashflow.ts";
 import { buckets, firstBelow, project } from "../src/core/cashflow-projection.ts";
@@ -1396,13 +1396,10 @@ describe("cashflow, week 55 third pass", () => {
 
 describe("cashflow in the app", () => {
 	it("is offered to every instance with the quotes, the instructions say where fixed costs go (12), the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("previsione di cassa (cashflow)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		const described = setup().tool.description;
 		expect(described).toContain("fixed recurring costs (rent, software, insurance, utilities, subscriptions) belong to renewals, not here");
 		expect(described).toContain("Voci (add_item) are only for F24 not estimated by taxes or vat_settlement");
 		expect(described).toContain("the owner's withdrawals, loan instalments and money expected without an invoice");
-		expect(described).not.toMatch(/\u2014/);
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

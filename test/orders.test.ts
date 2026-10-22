@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -384,11 +383,7 @@ describe("the brief, the agents, the file", () => {
 
 	it("the routing names the tool with Italian examples", () => {
 		const described = setup().tool.description;
-		expect(DEFAULT_INSTRUCTIONS).toContain("ordini ai fornitori (orders)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		for (const said of ["cosa sta per finire?» → suggest", "ho mandato l'ordine», «l'ho mandato venerdì» → mark_sent", "annulla l'ordine OR-0002» → cancel", "fammi il PDF dell'ordine per Beta» → document", "è arrivata la merce di Beta», «è arrivato l'ordine OR-0003» → received", "stock low says only what is already under the minimum"]) expect(described).toContain(said);
-		expect(described).not.toMatch(/\u2014/);
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
 	});
 });
 

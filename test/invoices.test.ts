@@ -810,9 +810,9 @@ describe("the scadenzario: reading the workspace", () => {
 
 describe("the scadenzario in the app", () => {
 	it("is offered to every instance, the instructions point to it, and a tool call in a thread reads the workspace's invoices", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("fatture da pagare e da incassare e solleciti (invoices, non file_search)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(DEFAULT_INSTRUCTIONS).toContain("Fatture da pagare o incassare: invoices, non file_search");
 		expect(setup().tool.description).toContain("use it, not file_search, for invoices to pay or collect, their due dates");
+		expect(setup().tool.description).toContain("the collections and payments it shows are confirmed through bank_statement");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

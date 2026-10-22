@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -723,11 +722,7 @@ describe("agenda: the brief", () => {
 		expect(filesUnder(s.root).some((f) => f.startsWith("agenda/"))).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bfiscal_agenda \(upcoming\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("agenda fiscale (fiscal_agenda)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Annie to write) → schedule_create");
-		expect(s.tool.description).not.toMatch(NO_EM_DASH);
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
 	});
 });
 

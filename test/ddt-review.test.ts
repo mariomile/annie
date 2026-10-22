@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import type { Ddt } from "../src/core/ddt.ts";
 import { dayOfIn } from "../src/core/italian-calendar.ts";
 import { marginLines } from "../src/core/margins.ts";
@@ -12,7 +11,7 @@ import { stateOf } from "../src/core/stock-sums.ts";
 import { unstock } from "../src/core/tools/ddt-stock.ts";
 import { vatDocs } from "../src/core/vat-docs.ts";
 import { figuresOf } from "../src/core/vat-sums.ts";
-import { checkIn, cleanup, durable, EMDASH, fresh, inside, LISTINO, MARK, onHand, outside, PAPER_AND_TONER, type S, setup, shipped } from "./ddt-fixtures.ts";
+import { checkIn, cleanup, durable, fresh, inside, LISTINO, MARK, onHand, outside, PAPER_AND_TONER, type S, setup, shipped } from "./ddt-fixtures.ts";
 
 afterEach(cleanup);
 
@@ -319,13 +318,9 @@ describe("the brief, the prices, the reso's own DDT, the date (UX 6-12)", () => 
 
 	it("the routing names the reso, the credit note and the carrier; no em dash", async () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("DDT (ddt)");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(s.tool.description).toContain("«Rossi mi ha reso 2 toner»");
 		expect(s.tool.description).toContain("«lo porta il corriere BRT» → change with transport vettore and carrier");
 		expect(s.tool.description).toContain("Never say a draft's reference (DT-…) to the person");
-		expect(s.tool.description).not.toMatch(EMDASH);
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(EMDASH);
 	});
 });
 
