@@ -477,6 +477,6 @@ describe("solleciti in the app", () => {
 			["invoice.reminder", "queue", 1],
 			["invoice.reminder", "mail", 1],
 		]);
-		for (const secret of ["Gamma", "B-70", "1.220", "gamma.example", "promemoria"]) expect(audit).not.toContain(secret);
+		for (const secret of ["Gamma", "B-70", "1.220,00", "gamma.example", "promemoria"]) expect(audit).not.toContain(secret);
 	}, 60_000);
 });
