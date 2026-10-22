@@ -1,0 +1,61 @@
+import { readdirSync, readFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
+import { join, sep } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { loadAnnieConfig } from "../src/main/config.ts";
+import { tempDataDir } from "./helpers.ts";
+
+const ui = join(import.meta.dirname, "..", "src", "web", "ui");
+const scripts = readdirSync(ui, { recursive: true, encoding: "utf8" })
+	.map((f) => f.split(sep).join("/"))
+	.filter((f) => f.endsWith(".js"));
+
+describe("console modules", () => {
+	it("the service worker's shell lists every script of the console (a forgotten one would never work offline)", () => {
+		const sw = readFileSync(join(ui, "sw.js"), "utf8");
+		const shell = JSON.parse((/const SHELL = (\[.*\]);/.exec(sw) as RegExpExecArray)[1] as string) as string[];
+		const missing = scripts.filter((f) => f !== "sw.js" && !shell.includes(`/${f}`));
+		expect(missing).toEqual([]);
+	});
+
+	it("pages never import each other, and only shell.js imports from pages/", () => {
+		const offenders: string[] = [];
+		for (const file of scripts) {
+			const source = readFileSync(join(ui, file), "utf8");
+			for (const [, from] of source.matchAll(/^import .* from "([^"]+)";$/gm)) {
+				const inPages = file.startsWith("pages/");
+				if (inPages && (from as string).startsWith("./")) offenders.push(`${file} imports ${from}`);
+				if (!inPages && file !== "shell.js" && (from as string).includes("pages/")) offenders.push(`${file} imports ${from}`);
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	it("common.js imports nothing", () => {
+		expect(readFileSync(join(ui, "common.js"), "utf8")).not.toMatch(/^import /m);
+	});
+});
+
+describe("console served from the UI directory", () => {
+	const running: RunningAnnie[] = [];
+	afterEach(async () => {
+		for (const a of running.splice(0)) await a.stop();
+	});
+
+	it("serves every script with no-cache, so the modules of one deploy load together", async () => {
+		const config = loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
+		const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 3_600_000, log: () => {} });
+		running.push(annie);
+		const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
+		for (const file of scripts) {
+			const res = await fetch(`${base}/${file}`);
+			expect(res.status, file).toBe(200);
+			expect(res.headers.get("cache-control"), file).toBe("no-cache");
+			expect(res.headers.get("content-type"), file).toContain("text/javascript");
+		}
+		expect((await fetch(`${base}/app.css`)).headers.get("cache-control")).toBe("public, max-age=300");
+		expect((await fetch(`${base}/fonts/archivo-latin.woff2`)).status).toBe(200);
+		expect((await fetch(`${base}/login`)).headers.get("content-type")).toContain("text/html");
+	});
+});

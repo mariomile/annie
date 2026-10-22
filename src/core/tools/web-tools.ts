@@ -235,10 +235,14 @@ function browseTools(options: WebToolsOptions, sessions: BrowseSessions, guard: 
 			const seen = await view();
 			const shown = describeView(seen, untrusted);
 			if (seen.screenshot === undefined) return shown;
-			const file = await options.workspace.write(`screenshot/browser-${new Date().toISOString().replace(/[:.]/g, "-")}.png`, seen.screenshot);
-			return `Screenshot salvato in ${file.path} (si manda con file_send).\n${shown}`;
+			// The view is read already, its notes used up: a screenshot that cannot be saved does not take them away.
+			const saved = await options.workspace.write(`screenshot/browser-${new Date().toISOString().replace(/[:.]/g, "-")}.png`, seen.screenshot).then(
+				(file) => `Screenshot salvato in ${file.path} (si manda con file_send).`,
+				(error: unknown) => `Screenshot non salvato: ${error instanceof WorkspaceError ? error.message : plainError(error)}.`,
+			);
+			return `${saved}\n${shown}`;
 		} catch (error) {
-			if (error instanceof BrowseError) return `Errore: ${error.message}.`;
+			if (error instanceof BrowseError) return `Errore: ${error.message.replace(/\.$/, "")}.`;
 			return `Errore: ${refusal(error)}`;
 		}
 	};

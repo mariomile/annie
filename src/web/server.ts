@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { extname, join } from "node:path";
+import { extname, join, sep } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { SPEECH_CONNECTOR } from "../channels/speech.ts";
 import { IMAGE_CONNECTOR } from "../core/image-generation.ts";
@@ -115,6 +116,8 @@ export type BrowserPanel = {
 	/** Rejects with BrowserPanelError when the site is not allowed or the page does not open. */
 	open(instanceId: string, threadId: string, url: string): Promise<BrowserState>;
 	back(instanceId: string, threadId: string): Promise<BrowserState>;
+	/** A click on the picture, at `x`, `y` as fractions of its width and height (ADR 0103). */
+	click(instanceId: string, threadId: string, x: number, y: number): Promise<BrowserState>;
 };
 
 /** What the person can read: a site not allowed, a page that does not open, no browser on this server. */
@@ -226,29 +229,17 @@ const MAX_CODE_ATTEMPTS = 5;
 const CODE_LOCK_MS = 10 * 60 * 1000;
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
-const STATIC: Record<string, string> = {
-	"/": "index.html",
-	"/index.html": "index.html",
-	"/login": "index.html",
-	"/app.js": "app.js",
-	"/app.css": "app.css",
-	"/icon.svg": "icon.svg",
-	"/icon-192.png": "icon-192.png",
-	"/icon-512.png": "icon-512.png",
-	"/icon-maskable-512.png": "icon-maskable-512.png",
-	"/apple-touch-icon.png": "apple-touch-icon.png",
-	"/manifest.webmanifest": "manifest.webmanifest",
-	"/sw.js": "sw.js",
-	"/fonts/archivo-latin.woff2": "fonts/archivo-latin.woff2",
-	"/fonts/archivo-latin-ext.woff2": "fonts/archivo-latin-ext.woff2",
-	"/fonts/monaspace-neon-latin-400.woff2": "fonts/monaspace-neon-latin-400.woff2",
-	"/fonts/monaspace-neon-latin-500.woff2": "fonts/monaspace-neon-latin-500.woff2",
-};
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 /** The web console and web channel of one tenant. */
 export function createWebApp(options: WebAppOptions): Server {
 	const { runtime, tenantId } = options;
+	// Every file of a type in TYPES under the UI directory is served at its own path: a new page needs no entry here.
+	const STATIC: Record<string, string> = { "/": "index.html", "/login": "index.html" };
+	for (const file of readdirSync(options.uiDir, { recursive: true, encoding: "utf8" })) {
+		const name = file.split(sep).join("/");
+		if (extname(name) in TYPES) STATIC[`/${name}`] = name;
+	}
 	const routes: Route[] = [];
 	const automationRate = new AutomationRate();
 	const route = (method: string, path: string, auth: Route["auth"], handler: Handler) =>
@@ -552,6 +543,22 @@ export function createWebApp(options: WebAppOptions): Server {
 		const record = (ok: boolean) => runtime.audit(tenantId).append({ type: "web.browser.opened", instanceId, personId: (person as Person).id, host, ok });
 		try {
 			const state = await browserCall(() => browser.open(instanceId, threadId, url));
+			await record(true);
+			return { browser: state };
+		} catch (error) {
+			await record(false);
+			throw error;
+		}
+	});
+	route("POST", "/api/instances/:id/threads/:thread/browser/click", "person", async ({ person, params, req }) => {
+		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
+		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
+		const { x, y } = (await readJson(req)) as { x?: unknown; y?: unknown };
+		if (typeof x !== "number" || typeof y !== "number" || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new HttpError(400, "Il clic non è sulla pagina");
+		const instanceId = params[0] as string;
+		const record = (ok: boolean) => runtime.audit(tenantId).append({ type: "web.browser.clicked", instanceId, personId: (person as Person).id, ok });
+		try {
+			const state = await browserCall(() => browser.click(instanceId, params[1] as string, x, y));
 			await record(true);
 			return { browser: state };
 		} catch (error) {
@@ -2184,8 +2191,8 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
 		const data = await readFile(join(options.uiDir, name));
-		// The service worker is checked for a new version at every visit.
-		const cache = name === "index.html" ? "no-store" : name === "sw.js" ? "no-cache" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
+		// Scripts are checked at every visit (and the service worker with them): the modules of one deploy must load together, never a mix with an older cached one.
+		const cache = name === "index.html" ? "no-store" : extname(name) === ".js" ? "no-cache" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
 		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": cache });
 		res.end(data);
 	}

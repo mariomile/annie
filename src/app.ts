@@ -45,7 +45,7 @@ import { feedNews } from "./core/news.ts";
 import { viesClient } from "./core/vies.ts";
 import { openMeteo } from "./core/weather.ts";
 import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
-import { type Browser, BrowseError, BrowseSessions, type BrowserState, type Guard, sessionKey } from "./core/web-session.ts";
+import { type Browser, BrowseError, BrowseSessions, type BrowserState, type Guard, sessionKey, type View } from "./core/web-session.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
@@ -344,7 +344,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	/** The last try to start Chromium failed: the console says so instead of offering a browser. */
 	let chromiumFailed = false;
 	// Browsers open per conversation (web_browse, ADR 0014), in the same Chromium.
-	const browseSessions = new BrowseSessions();
+	// Every file chooser refused is in the audit as it happens (ADR 0103): the key starts with "tenant/instance|".
+	const browseSessions = new BrowseSessions(undefined, (key, host) => {
+		const [tenantId, instanceId] = (key.split("|")[0] as string).split("/") as [string, string];
+		runtime.audit(tenantId).append({ type: "web.browser.file_refused", instanceId, host }).catch((error: unknown) => log(`web: file chooser not audited: ${error instanceof Error ? error.message : String(error)}`));
+	});
 	const chromium = (): Promise<Browser | undefined> => {
 		browser ??= import("playwright-core")
 			.then(async ({ chromium: launcher }) => {
@@ -1391,15 +1395,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const panelSentence = (error: unknown): string => {
 		// Often starts with the site's name, which keeps its own spelling.
 		if (error instanceof WebFetchRefused) return error.message;
-		if (error instanceof BrowseError && /troppi browser|non è disponibile/.test(error.message)) return error.message.charAt(0).toUpperCase() + error.message.slice(1);
-		if (error instanceof BrowseError && error.message.startsWith("nessuna pagina")) return "Non c'è una pagina aperta: scrivi un indirizzo qui sopra.";
+		if (error instanceof BrowseError && (error.kind === "busy" || error.kind === "unavailable")) return error.message.charAt(0).toUpperCase() + error.message.slice(1);
+		if (error instanceof BrowseError && error.kind === "no-files") return "Qui non si caricano file.";
+		if (error instanceof BrowseError && error.kind === "failed") return "Non è andata a buon fine: guarda la pagina e riprova.";
+		if (error instanceof BrowseError && error.kind === "no-page") return "Non c'è una pagina aperta: scrivi un indirizzo qui sopra.";
 		if (error instanceof BrowseError) return "La pagina si è chiusa: riaprila scrivendo l'indirizzo qui sopra.";
 		return "La pagina non si apre: riprova tra poco.";
 	};
-	const panelAct = async (instanceId: string, threadId: string, work: (key: string, guard: Guard) => Promise<unknown>): Promise<BrowserState> => {
+	const panelAct = async (instanceId: string, threadId: string, work: (key: string, guard: Guard) => Promise<View>): Promise<BrowserState> => {
 		const key = panelKey(instanceId, threadId);
 		try {
-			await work(key, await panelGuard(instanceId));
+			// The agente is told a failed action in the view's notes; the person's panel gets it as an error.
+			if ((await work(key, await panelGuard(instanceId))).failed === true) throw new BrowseError("l'azione non è riuscita", "failed");
 		} catch (error) {
 			if (!(error instanceof WebFetchRefused || error instanceof BrowseError)) log(`web: browser panel: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
 			throw new BrowserPanelError(panelSentence(error));
@@ -1414,10 +1421,11 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			panelAct(instanceId, threadId, async (key, guard) => {
 				checkedUrl(url, guard);
 				const browser = await chromium();
-				if (browser === undefined) throw new BrowseError("il browser non è disponibile su questo server");
-				await browseSessions.open(key, browser, url, guard, { person: true });
+				if (browser === undefined) throw new BrowseError("il browser non è disponibile su questo server", "unavailable");
+				return browseSessions.open(key, browser, url, guard, { person: true });
 			}),
 		back: (instanceId, threadId) => panelAct(instanceId, threadId, (key, guard) => browseSessions.view(key, guard, { back: true, person: true })),
+		click: (instanceId, threadId, x, y) => panelAct(instanceId, threadId, (key, guard) => browseSessions.clickAt(key, x, y, guard, { person: true })),
 	};
 	/**
 	 * Delete an agente for good (ADR 0046). First everything that reaches it from outside stops
