@@ -133,6 +133,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Stanze: una conversazione della console fra una persona e da 2 a 5 agenti, che chiama chi le serve con @nome (o @tutti); ogni agente riceve quello che si è perso, e può chiamarne un altro, al più 3 volte di fila ([ADR 0063](adr/0063-stanze.md))
 - [x] Squadre pronte: dalla pagina Agenti, tre agenti con un compito ciascuno (Contenuti, Vendite, Amministrazione) che si scrivono fra loro, con una stanza; chi coordina divide il lavoro anche in sotto-schede ([ADR 0068](adr/0068-squadre-pronte.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
+- [ ] Chiedere a Pi un'API pubblica per ripreparare un checkpoint `request`: oggi una richiesta già preparata (turno fermo durante l'inferenza, o crash dopo la preparazione ma prima dell'invio al provider) riprende con il modello e le istruzioni fissati alla preparazione, non con quelli allineati alla ripartenza ([ADR 0036](adr/0036-modello-per-chat.md))
 
 ### Prima di rendere pubblico il repo
 
