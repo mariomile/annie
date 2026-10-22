@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AuditLog } from "./audit.ts";
+import { configChanged } from "./config-revision.ts";
 import { NotFound } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { instanceDir, instanceFile, removedDir, tenantDir, tenantFile } from "./paths.ts";
@@ -137,6 +138,7 @@ export class TenantRegistry {
 		const current = await this.getInstance(tenant, id);
 		const record: InstanceRecord = { ...current, allowedUsers: { ...current.allowedUsers, [channel]: [...new Set(userIds)] } };
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		configChanged();
 		await new AuditLog(this.dataDir, record.tenantId).append({
 			type: "instance.allowlist.updated",
 			instanceId: record.id,
@@ -160,6 +162,7 @@ export class TenantRegistry {
 			...(persona === undefined ? {} : { persona }),
 		};
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		configChanged();
 		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.updated", instanceId: record.id, fields: Object.keys(change).join(",") });
 		return record;
 	}
@@ -173,6 +176,7 @@ export class TenantRegistry {
 		const current = await this.getInstance(tenant, id);
 		const record: InstanceRecord = { ...current, model: { provider: model.provider, modelId: model.modelId }, egress: withModelProvider(current.egress, model.provider) };
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		configChanged();
 		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.model.updated", instanceId: record.id, modelProvider: model.provider, modelId: model.modelId });
 		return record;
 	}
@@ -186,6 +190,7 @@ export class TenantRegistry {
 		if (current.egress.modelProviders.includes(provider)) return current;
 		const record: InstanceRecord = { ...current, egress: withModelProvider(current.egress, provider) };
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		configChanged();
 		await new AuditLog(this.dataDir, record.tenantId).append({ type: "instance.model_provider.allowed", instanceId: record.id, modelProvider: provider });
 		return record;
 	}
@@ -198,6 +203,7 @@ export class TenantRegistry {
 		const current = await this.getInstance(tenant, id);
 		const record: InstanceRecord = { ...current, egress };
 		await writeFileAtomic(instanceFile(this.dataDir, record.tenantId, record.id), `${JSON.stringify(record, null, 2)}\n`);
+		configChanged();
 		await new AuditLog(this.dataDir, record.tenantId).append({
 			type: "instance.egress.updated",
 			instanceId: record.id,

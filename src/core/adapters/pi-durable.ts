@@ -32,6 +32,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
 import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
+import { configChanged, configRevision } from "../config-revision.ts";
 import type { ModelSelection } from "../registry.ts";
 import { isTurnOrigin, type TurnOrigin } from "../turn-origin.ts";
 import { createProvider } from "./pi-durable-models.ts";
@@ -108,9 +109,9 @@ class PiDurableSession implements EngineSession {
 	private readonly creating = new Map<string, Promise<ConversationId>>();
 	private closing = false;
 	private recovery: Promise<number> | undefined;
-	/** Bumped by every chat model write; the pending work is aligned to the latest one. */
-	private configVersion = 0;
-	private alignedVersion = -1;
+	/** What the pending work was last aligned to: the configuration revision and the instructions. */
+	private alignedRevision: number | undefined;
+	private alignedInstructions: string | undefined;
 	private aligning: Promise<void> | undefined;
 	private started = false;
 
@@ -125,7 +126,7 @@ class PiDurableSession implements EngineSession {
 		await this.recover();
 		const conversationId = await this.conversationFor(threadKey);
 		// Each message: the owner may have changed the instance's model, or the person the chat's.
-		await this.alignAgent(conversationId, threadKey);
+		await this.alignAgent(conversationId, threadKey, this.instructionsNow());
 		const conversation = await this.harness.conversation(conversationId, context);
 		if (conversation === undefined) throw new Error(`Conversation ${conversationId} of ${threadKey} is missing`);
 		if (requestId !== undefined) {
@@ -191,12 +192,13 @@ class PiDurableSession implements EngineSession {
 	/**
 	 * Every call that starts Pi's scheduler (reattach, resume, submit, idle) does it through
 	 * here. Until the first start (Harness.open leaves it paused), work left half done is first
-	 * aligned with the model and instructions of that moment, again if a chat model changed
-	 * meanwhile, and the scheduler starts in the same step as the last check, so no change
-	 * falls in between. A failed alignment is not kept: the next call tries again.
+	 * aligned with the model and instructions of that moment, and again while something they
+	 * depend on changed meanwhile (the configuration revision moved, or the instructions, skills
+	 * included, are not the same): the scheduler starts in the same step as the last check, so no
+	 * change falls in between. A failed alignment is not kept: the next call tries again.
 	 */
 	private async activate<T>(start: () => T): Promise<T> {
-		while (!this.started && this.alignedVersion !== this.configVersion) {
+		while (!this.started && (this.alignedRevision !== configRevision() || this.alignedInstructions !== this.instructionsNow())) {
 			this.aligning ??= this.alignPending().finally(() => {
 				this.aligning = undefined;
 			});
@@ -207,14 +209,16 @@ class PiDurableSession implements EngineSession {
 	}
 
 	private async alignPending(): Promise<void> {
-		const version = this.configVersion;
+		const revision = configRevision();
+		const instructions = this.instructionsNow();
 		const aligned = new Set<number>();
 		for (const { conversationId, threadKey } of await this.pendingInputs()) {
 			if (aligned.has(conversationId)) continue;
 			aligned.add(conversationId);
-			await this.alignAgent(conversationId, threadKey);
+			await this.alignAgent(conversationId, threadKey, instructions);
 		}
-		this.alignedVersion = version;
+		this.alignedRevision = revision;
+		this.alignedInstructions = instructions;
 	}
 
 	/** The unsettled inputs of the conversations Annie knows, with their thread key. */
@@ -236,7 +240,7 @@ class PiDurableSession implements EngineSession {
 			if (model === undefined) delete models[threadKey];
 			else models[threadKey] = { provider: model.provider, modelId: model.modelId };
 		}, context);
-		this.configVersion++;
+		configChanged();
 	}
 
 	async threadModel(threadKey: string): Promise<ModelSelection | undefined> {
@@ -297,11 +301,10 @@ class PiDurableSession implements EngineSession {
 	 * are the instance's, or the chat's own model: after either changes, an old thread answers
 	 * with the new ones (its history stays). Written only when they differ.
 	 */
-	private async alignAgent(id: ConversationId, threadKey: string): Promise<void> {
+	private async alignAgent(id: ConversationId, threadKey: string, instructions: string | undefined): Promise<void> {
 		const conversation = await this.harness.conversation(id, context);
 		if (conversation === undefined) return;
 		const model = await this.modelOf(threadKey);
-		const instructions = this.instructionsNow();
 		await conversation.commit(async (tx) => {
 			const agent = await tx.doc(AgentDoc, id);
 			const sameModel = agent.model?.provider === model.provider && agent.model?.modelId === model.modelId;

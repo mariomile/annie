@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { configChanged } from "./config-revision.ts";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 import { SUBSCRIPTION_PROVIDERS, subscriptionProvider, type SubscriptionProvider } from "./model-providers.ts";
 
@@ -113,6 +114,12 @@ export class LocalProviders {
 	private saved(): Saved { return readJsonFile(this.file, { providers: {} }); }
 	private remember(id: string, connected: boolean) {
 		updateJsonFile<Saved>(this.file, { providers: {} }, (saved) => ({ ...saved, providers: { ...saved.providers, [id]: connected } }));
+		configChanged();
+	}
+	/** Whether a subscription can answer depends on its status: a change counts for the sessions. */
+	private setStatus(id: string, status: LocalProviderStatus) {
+		this.statuses.set(id, status);
+		configChanged();
 	}
 	/** A one-time bootstrap choice; later detections never replace a person's selection. */
 	initialModel(): { provider: string; modelId: string } | undefined {
@@ -148,16 +155,16 @@ export class LocalProviders {
 	}
 	private async finishConnection(status: LocalProviderStatus): Promise<LocalProviderStatus> {
 		this.remember(status.id, true);
-		this.statuses.set(status.id, { ...status, connected: false, key: "missing", status: "connecting" });
+		this.setStatus(status.id, { ...status, connected: false, key: "missing", status: "connecting" });
 		try { await this.notifyReady(); }
 		catch {
 			const message = "Accesso riuscito, ma il modello iniziale non è pronto. Premi Rileva di nuovo.";
-			this.statuses.set(status.id, { ...status, connected: false, key: "missing", status: "unavailable", error: message });
+			this.setStatus(status.id, { ...status, connected: false, key: "missing", status: "unavailable", error: message });
 			throw new LocalProviderError(message);
 		}
 		if (this.closed || !this.connected(status.id)) return this.statuses.get(status.id) ?? status;
 		const connected = { ...status, connected: true, key: "local" as const, status: "connected" as const };
-		this.statuses.set(status.id, connected);
+		this.setStatus(status.id, connected);
 		return connected;
 	}
 	private async probe(id: string, automatic: boolean): Promise<LocalProviderStatus> {
@@ -181,7 +188,7 @@ export class LocalProviders {
 		if (automatic && authenticated && preference === undefined) this.remember(id, true);
 		const connected = authenticated && this.saved().providers[id] === true;
 		const status: LocalProviderStatus = { ...p, installed, authenticated, connected, key: connected ? "local" : "missing", status: !installed ? "not-installed" : error !== undefined ? "unavailable" : connected ? "connected" : authenticated ? "disconnected" : "login-required", ...(error === undefined ? {} : { error }) };
-		this.statuses.set(id, status);
+		this.setStatus(id, status);
 		return status;
 	}
 	connect(id: string): Promise<LocalProviderStatus> {
@@ -202,7 +209,7 @@ export class LocalProviders {
 		}
 		const abort = new AbortController();
 		const connecting = { ...status, status: "connecting" as const };
-		this.statuses.set(id, connecting);
+		this.setStatus(id, connecting);
 		const done = this.execute({ provider: id, args: id === "claude-code" ? ["auth", "login", "--claudeai"] : ["login"], cwd: this.cwd, signal: abort.signal, timeoutMs: 300_000 })
 			.then(async (result) => {
 				if (abort.signal.aborted || this.closed) return;
@@ -213,8 +220,8 @@ export class LocalProviders {
 			})
 			.catch(() => {
 				if (abort.signal.aborted || this.closed) return;
-				if (this.connected(id)) this.statuses.set(id, { ...(this.statuses.get(id) ?? status), status: "unavailable", error: "Accesso riuscito, ma il modello iniziale non è pronto. Premi Rileva di nuovo." });
-				else this.statuses.set(id, { ...status, status: "login-required", error: "Accesso non completato. Riprova oppure accedi dalla CLI ufficiale." });
+				if (this.connected(id)) this.setStatus(id, { ...(this.statuses.get(id) ?? status), status: "unavailable", error: "Accesso riuscito, ma il modello iniziale non è pronto. Premi Rileva di nuovo." });
+				else this.setStatus(id, { ...status, status: "login-required", error: "Accesso non completato. Riprova oppure accedi dalla CLI ufficiale." });
 			})
 			.finally(() => { if (this.jobs.get(id)?.abort === abort) this.jobs.delete(id); });
 		this.jobs.set(id, { abort, done });
@@ -226,7 +233,7 @@ export class LocalProviders {
 		this.jobs.get(id)?.abort.abort();
 		this.remember(id, false);
 		const status = this.statuses.get(id);
-		if (status !== undefined) this.statuses.set(id, { ...status, connected: false, key: "missing", status: status.installed ? "disconnected" : "not-installed", error: undefined });
+		if (status !== undefined) this.setStatus(id, { ...status, connected: false, key: "missing", status: status.installed ? "disconnected" : "not-installed", error: undefined });
 	}
 	async inference(request: CliRequest): Promise<CliResult> {
 		if (!this.connected(request.provider)) throw new LocalProviderError("Collega prima il tuo abbonamento nelle impostazioni Provider");
@@ -243,6 +250,7 @@ export class LocalProviders {
 	}
 	async close(): Promise<void> {
 		this.closed = true;
+		configChanged();
 		for (const abort of this.inFlight) abort.abort();
 		await Promise.allSettled([...this.jobs.values()].map((job) => job.done).concat([...this.connections.values()].map((connection) => connection.then(() => {})), this.readyTask === undefined ? [] : [this.readyTask]));
 	}

@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { TenantId } from "./ids.ts";
+import { configChanged } from "./config-revision.ts";
 import { updateJsonFile } from "./locked-json.ts";
 import { secretsFile } from "./paths.ts";
 
@@ -38,6 +39,7 @@ export class TenantSecrets {
 		mkdirSync(dirname(this.file), { recursive: true });
 		updateJsonFile<Record<string, string>>(this.file, {}, change);
 		chmodSync(this.file, 0o600);
+		configChanged();
 	}
 
 	/** Secret names only, never values. */

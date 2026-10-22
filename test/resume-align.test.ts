@@ -1,6 +1,13 @@
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { AgentDoc, type ConversationId, createRegistry, defineDoc, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { describe, expect, it } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import type { AnnieTool, EngineOpenOptions, EngineReply } from "../src/core/engine.ts";
+import { tenantId } from "../src/core/ids.ts";
+import { modelApiKeySecret, TenantSecrets } from "../src/core/secrets.ts";
 import { tempDataDir, waitFor } from "./helpers.ts";
 
 const DEV = { provider: "faux", modelId: "annie-dev" };
@@ -53,6 +60,38 @@ async function leftOnOwnModel(threadKeys: readonly string[] = ["web:t1"]): Promi
 	await waitFor(() => holding === threadKeys.length);
 	await first.close();
 	return { storageDir, ids };
+}
+
+/**
+ * Chats left mid-turn on the local model, each then given its own model, xAI's: whether they
+ * answer after the restart depends on xAI being usable while they are aligned.
+ */
+async function leftForGrok(threadKeys: readonly string[]): Promise<{ storageDir: string; ids: string[] }> {
+	const storageDir = tempDataDir();
+	let holding = 0;
+	const first = await piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [hold(true, () => holding++)] });
+	const ids: string[] = [];
+	for (const threadKey of threadKeys) ids.push((await first.submit(threadKey, "/tool hold {}")).submissionId);
+	await waitFor(() => holding === threadKeys.length);
+	for (const threadKey of threadKeys) await first.setThreadModel(threadKey, GROK);
+	await first.close();
+	return { storageDir, ids };
+}
+
+/** The instructions each chat's conversation holds, read from a closed session's storage. */
+async function storedInstructions(storageDir: string): Promise<Record<string, string | undefined>> {
+	const ThreadsDoc = defineDoc<{ threads: Record<string, number> }>({ kind: "annie.threads", version: 1, scope: "session", initial: () => ({ threads: {} }) });
+	const models = createModels({
+		credentials: { read: async () => undefined, list: async () => [], modify: async () => {}, delete: async () => {} },
+		authContext: { env: async () => undefined, fileExists: async () => false },
+	});
+	const storage = await openNodeSqliteStorage(join(storageDir, "pi-durable.sqlite"));
+	const harness = await Harness.open(storage, { models, registry: createRegistry() }, BACKGROUND_CONTEXT);
+	const threads = (await harness.snapshot(ThreadsDoc, BACKGROUND_CONTEXT))?.threads ?? {};
+	const result: Record<string, string | undefined> = {};
+	for (const [threadKey, id] of Object.entries(threads)) result[threadKey] = (await harness.snapshot(AgentDoc, id as ConversationId, BACKGROUND_CONTEXT))?.instructions;
+	await harness.close(BACKGROUND_CONTEXT);
+	return result;
 }
 
 const reopenOnGrok = (storageDir: string, modelUsable?: EngineOpenOptions["modelUsable"]) =>
@@ -164,5 +203,62 @@ describe("restart after the configuration changed", () => {
 		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "unanswered" });
 		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
 		await session.close();
+	});
+
+	it("a provider key removed while the others are still being aligned counts too", async () => {
+		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
+		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
+		await secrets.set(modelApiKeySecret("xai"), "xai-key");
+		let checks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		// The runtime's check, on a real secret store; t2's first check waits for the test.
+		const session = await reopen(storageDir, async (provider) => {
+			if (++checks === 2) await held;
+			return provider === "faux" || (await secrets.get(modelApiKeySecret(provider))) !== undefined;
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => checks === 2);
+		await secrets.delete(modelApiKeySecret("xai"));
+		release();
+		expect(await reattached).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
+		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		await session.close();
+	});
+
+	it("instructions changed while the others are still being aligned count too", async () => {
+		const { storageDir, ids } = await leftOnOwnModel(["web:t1", "web:t2"]);
+		let instructions = "Skills: none";
+		let checks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		// t1 is aligned first; t2's check waits for the test.
+		const session = await piDurableEngine.open({
+			storageDir,
+			model: GROK,
+			apiKey: async () => undefined,
+			tools: [hold(false)],
+			instructions: () => instructions,
+			modelUsable: async () => {
+				if (++checks === 2) await held;
+				return true;
+			},
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => checks === 2);
+		instructions = "Skills: invoices";
+		release();
+		expect(await reattached).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		await session.close();
+		expect(await storedInstructions(storageDir)).toEqual({ "web:t1": "Skills: invoices", "web:t2": "Skills: invoices" });
 	});
 });
