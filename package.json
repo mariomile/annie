@@ -29,6 +29,8 @@
     "test": "vitest --run",
     "dev:telegram": "tsx src/main/telegram.ts",
     "dev:segreteria": "tsx src/main/segreteria.ts",
+    "eval:agente": "tsx evals/agente/run.ts",
+    "eval:agente:real": "tsx evals/agente/real.ts",
     "eval:segreteria": "tsx evals/segreteria/run.ts",
     "eval:segreteria:judge": "tsx evals/segreteria/judge.ts",
     "eval:segreteria:validate": "python3 evals/segreteria/scripts/validate_and_build.py",

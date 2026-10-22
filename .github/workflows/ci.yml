@@ -34,3 +34,5 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
       - name: Deterministic segreteria evals (incl. PII checks)
         run: pnpm eval:segreteria
+      - name: General agent eval cases (every expected tool exists)
+        run: pnpm eval:agente

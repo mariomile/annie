@@ -1,0 +1,72 @@
+/**
+ * Nightly eval of the general agent with the real model (ADR 0099). Annie starts as `pnpm start`
+ * starts her, in a temp dir; each case is a new web chat with one message. What the turn called
+ * comes from its `turn.usage` audit event (ADR 0098). Measured: whether the first tool is one the
+ * case accepts (no tool, for the cases that need none), and what the run cost.
+ * Writes last-report/agente.json and exits 1 when the accuracy is under the gate.
+ *
+ * PR CI never runs this. Without ANNIE_JUDGE_MODEL_KEY (an Anthropic key) it skips.
+ */
+import { mkdir, writeFile } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
+import { join } from "node:path";
+import { AuditLog } from "../../src/core/audit.ts";
+import { tenantId } from "../../src/core/ids.ts";
+import { bootAnnie, loadCases, root } from "./annie.ts";
+
+const key = process.env.ANNIE_JUDGE_MODEL_KEY;
+if (!key) {
+	console.log("eval:agente:real skipped (no ANNIE_JUDGE_MODEL_KEY)");
+	process.exit(0);
+}
+
+const GATE = { firstToolAccuracy: 0.8 };
+const TURN_TIMEOUT_MS = 180_000;
+const only = process.argv.slice(2).filter((a) => !a.startsWith("-"));
+const cases = (await loadCases()).filter((c) => only.length === 0 || only.includes(c.id));
+
+const { annie, dataDir } = await bootAnnie({ ANNIE_MODEL_PROVIDER: "anthropic", ANTHROPIC_API_KEY: key, ...(process.env.ANNIE_MODEL_ID ? { ANNIE_MODEL_ID: process.env.ANNIE_MODEL_ID } : {}) });
+const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
+const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: annie.ownerLink?.split("#")[1] }) });
+if (login.status !== 200) throw new Error(`login: ${login.status}`);
+const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
+const api = async (path: string, body?: unknown) => {
+	const res = await fetch(`${base}${path}`, { method: body === undefined ? "GET" : "POST", headers: { cookie, "x-annie": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+	if (!res.ok) throw new Error(`${path}: ${res.status}`);
+	return (await res.json()) as Record<string, any>;
+};
+const audit = new AuditLog(dataDir, tenantId("default"));
+const turns = async () => (await audit.read()).filter((r) => r.type === "turn.usage" && r.instanceId === "annie");
+
+type Row = { id: string; expect: string[]; tools: string[]; firstTool: string | null; ok: boolean; costUsd: number; modelCalls: number; error?: string };
+const rows: Row[] = [];
+for (const c of cases) {
+	const before = (await turns()).length;
+	const thread = (await api("/api/instances/annie/threads", {})).thread as { id: string };
+	await api(`/api/instances/annie/threads/${thread.id}/messages`, { text: c.text });
+	const start = Date.now();
+	let turn: Record<string, unknown> | undefined;
+	while (turn === undefined && Date.now() - start < TURN_TIMEOUT_MS) {
+		await new Promise((r) => setTimeout(r, 500));
+		turn = (await turns())[before];
+	}
+	if (turn === undefined) {
+		rows.push({ id: c.id, expect: c.expect, tools: [], firstTool: null, ok: false, costUsd: 0, modelCalls: 0, error: "no answer in time" });
+		console.log(`✗ ${c.id}: no answer in ${TURN_TIMEOUT_MS / 1000}s`);
+		continue;
+	}
+	const tools = String(turn.tools ?? "").split(",").filter((t) => t !== "");
+	const firstTool = tools[0] ?? null;
+	const ok = c.expect.length === 0 ? firstTool === null : firstTool !== null && c.expect.includes(firstTool);
+	rows.push({ id: c.id, expect: c.expect, tools, firstTool, ok, costUsd: Number(turn.costUsd ?? 0), modelCalls: Number(turn.modelCalls ?? 0) });
+	console.log(`${ok ? "✓" : "✗"} ${c.id}: ${firstTool ?? "(nessuno)"}${ok ? "" : `, atteso ${c.expect.length === 0 ? "nessuno" : c.expect.join(" o ")}`}`);
+}
+await annie.stop();
+
+const accuracy = rows.length === 0 ? 0 : rows.filter((r) => r.ok).length / rows.length;
+const costUsd = rows.reduce((sum, r) => sum + r.costUsd, 0);
+const report = { at: new Date().toISOString(), model: process.env.ANNIE_MODEL_ID ?? "default", cases: rows.length, firstToolAccuracy: accuracy, costUsd, gate: GATE, pass: accuracy >= GATE.firstToolAccuracy, rows };
+await mkdir(join(root, "last-report"), { recursive: true });
+await writeFile(join(root, "last-report", "agente.json"), `${JSON.stringify(report, null, 2)}\n`);
+console.log(`eval:agente:real: primo strumento giusto ${(accuracy * 100).toFixed(0)}% (soglia ${GATE.firstToolAccuracy * 100}%), ${rows.length} casi, $${costUsd.toFixed(4)}`);
+process.exit(report.pass ? 0 : 1);

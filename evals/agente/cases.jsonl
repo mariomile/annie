@@ -1,0 +1,29 @@
+{"id":"ricorda-commercialista","text":"Ricordati che il mio commercialista si chiama Paolo Verdi","expect":["memory_remember"]}
+{"id":"cosa-ricordi","text":"Cosa ti ricordi di me?","expect":["memory_list","memory_search"]}
+{"id":"dimentica","text":"Dimentica quello che sai sul mio commercialista","expect":["memory_search","memory_list","memory_forget"]}
+{"id":"lista-aggiungi","text":"Aggiungi latte e pane alla lista della spesa","expect":["list_add"]}
+{"id":"lista-mostra","text":"Cosa c'è nella lista della spesa?","expect":["list_show"]}
+{"id":"calcolo-iva","text":"Quanto fa il 22% di 1.350,40 euro? Dammi il numero esatto","expect":["calculate"]}
+{"id":"giorni-lavorativi","text":"Quanti giorni lavorativi ci sono tra il 3 novembre e il 19 dicembre di quest'anno?","expect":["date_calc"]}
+{"id":"promemoria","text":"Ricordami domani alle 9 di chiamare il fornitore","expect":["schedule_create"]}
+{"id":"automazione-settimanale","text":"Ogni lunedì alle 8 mandami un riepilogo delle fatture non ancora incassate","expect":["automation_create","schedule_create"]}
+{"id":"promemoria-lista","text":"Quali promemoria e automazioni ho attivi?","expect":["schedule_list","automation_list"]}
+{"id":"partita-iva","text":"Controlla se la partita IVA IT01234567890 è valida","expect":["vat_check"]}
+{"id":"leggi-pagina","text":"Leggi https://example.com e dimmi in una riga di cosa parla","expect":["web_read","web_browse"]}
+{"id":"screenshot","text":"Fammi uno screenshot della pagina https://example.com","expect":["web_screenshot"]}
+{"id":"controlla-pagina","text":"Avvisami quando cambia la pagina https://example.com","expect":["watch_create"]}
+{"id":"saluto","text":"Ciao! Come va?","expect":[]}
+{"id":"scrivi-mail","text":"Scrivimi due righe di ringraziamento per un cliente che ha pagato puntuale","expect":[]}
+{"id":"spesa","text":"Registra una spesa di 48 euro di carburante fatta oggi","expect":["expenses"]}
+{"id":"spese-mese","text":"Quanto ho speso questo mese?","expect":["expenses","business_report"]}
+{"id":"nuovo-cliente","text":"Aggiungi il cliente Rossi Srl, via Roma 1, Milano","expect":["clients"]}
+{"id":"fatture-da-incassare","text":"Quali fatture devo ancora incassare?","expect":["invoices","sales_invoices","cashflow"]}
+{"id":"preventivo","text":"Prepara un preventivo per Bianchi Snc: 10 ore di consulenza a 80 euro l'ora","expect":["quotes","clients"]}
+{"id":"ore","text":"Segna 3 ore di lavoro oggi sul progetto Alfa","expect":["timesheet"]}
+{"id":"scadenze-fiscali","text":"Quali sono le prossime scadenze fiscali?","expect":["fiscal_agenda"]}
+{"id":"documento","text":"Creami un documento Word con l'ordine del giorno della riunione di lunedì: budget, assunzioni, varie","expect":["document_create"]}
+{"id":"grafico","text":"Fammi un grafico a barre delle vendite: gennaio 10, febbraio 14, marzo 9","expect":["chart_create"]}
+{"id":"file","text":"Quali file ho salvato?","expect":["file_list","file_search"]}
+{"id":"competenze","text":"Quali competenze hai salvato?","expect":["skill_list"]}
+{"id":"agenti","text":"Quali altri agenti ci sono?","expect":["agent_list"]}
+{"id":"bacheca","text":"Fammi vedere a che punto sono i lavori sulla bacheca","expect":["board_list","board_summary","board_show"]}
