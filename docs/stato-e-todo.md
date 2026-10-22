@@ -15,6 +15,10 @@ Su `main` ci sono le settimane da 1 a 75, e la CI controlla ogni PR con typechec
 
 Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](architettura.md).
 
+### Affidabilità e prestazioni: Integrazione locale del 22 ottobre
+
+Il ramo `feat/agent-performance` integra i PR #162–#170 e aggiunge cache del contesto di memoria, contatori della console con una sola richiesta, recupero dei provider locali, verifiche degli esiti e correzioni della sandbox su macOS. Il [rapporto con misure e verifiche](performance-2026-10-22.md) distingue questa integrazione locale da merge, pubblicazione e app installata, e descrive le differenze ancora aperte rispetto a Grok Bot.
+
 ## Cose da fare
 
 ### Per la prova reale (servono i segreti di Mario)
