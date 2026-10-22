@@ -153,8 +153,9 @@ class PiDurableSession implements EngineSession {
 	}
 
 	/**
-	 * Once per session: attach a waiter to every unsettled submission while the scheduler is
-	 * still paused (Harness.open leaves it paused), then start it. Starting first would let a
+	 * Once per session: align every conversation with unsettled work while the scheduler is
+	 * still paused (Harness.open leaves it paused), then attach a waiter to each submission
+	 * (the first one starts the scheduler) and make sure it runs. Starting first would let a
 	 * fast run settle before it is tracked, and its reply would be lost.
 	 */
 	private recover(): Promise<number> {
@@ -169,22 +170,23 @@ class PiDurableSession implements EngineSession {
 		const inspection = await this.harness.inspect(context);
 		const threads = await this.threads();
 		const byConversation = new Map<number, string>(Object.entries(threads).map(([key, id]) => [id, key]));
-		let pending = 0;
+		const found: { submission: Submission; threadKey: string }[] = [];
 		const aligned = new Set<number>();
 		for (const record of inspection.submissions) {
 			if (record.type !== "input") continue;
 			const threadKey = byConversation.get(record.conversationId);
 			const submission = await this.harness.submission(record.id, context);
 			if (threadKey === undefined || submission === undefined) continue;
-			// Work left half done goes on with the instance's model, before the scheduler starts.
+			// Work left half done goes on with the instance's model: every conversation is aligned
+			// before the first waiter, which starts the scheduler.
 			if (!aligned.has(record.conversationId)) {
 				aligned.add(record.conversationId);
 				await this.alignAgent(record.conversationId, threadKey);
 			}
-			pending++;
-			this.track(submission, threadKey);
+			found.push({ submission, threadKey });
 		}
-		return pending;
+		for (const { submission, threadKey } of found) this.track(submission, threadKey);
+		return found.length;
 	}
 
 	async setThreadModel(threadKey: string, model: ModelSelection | undefined): Promise<void> {
