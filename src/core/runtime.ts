@@ -580,7 +580,8 @@ export class AnnieRuntime {
 				// The time, and the memories of whom the thread is with (only the shared ones in a group), as they are at each request.
 				turnContext: (key) => {
 					const subject = participants.get(key);
-					return `${nowLine(new Date())}${memoryNote(memory.forSubject(subject ?? SHARED), listsLine(lists.visible(subject)), memory.archivedFor(subject ?? SHARED))}`;
+					const remembered = memory.contextFor(subject ?? SHARED);
+					return `${nowLine(new Date())}${memoryNote(remembered.memories, listsLine(lists.visible(subject)), remembered.archived)}`;
 				},
 			});
 		} catch (error) {
