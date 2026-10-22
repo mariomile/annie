@@ -32,8 +32,8 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
 import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
-import { configChanged, configRevision } from "../config-revision.ts";
 import type { ModelSelection } from "../registry.ts";
+import { configChanged, configRevision } from "../config-revision.ts";
 import { isTurnOrigin, type TurnOrigin } from "../turn-origin.ts";
 import { createProvider } from "./pi-durable-models.ts";
 
