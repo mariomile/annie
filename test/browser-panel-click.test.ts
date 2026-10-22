@@ -11,7 +11,7 @@ import { type Browser, BrowseSessions, viewportPoint } from "../src/core/web-ses
 import { connectChannel } from "../src/gateway.ts";
 import { PeopleStore, SessionStore } from "../src/web/auth.ts";
 import { WebChannel } from "../src/web/channel.ts";
-import { type BrowserPanel, createWebApp } from "../src/web/server.ts";
+import { type BrowserPanel, BrowserPanelError, createWebApp } from "../src/web/server.ts";
 import { FAUX_MODEL, tempDataDir } from "./helpers.ts";
 
 const closers: (() => Promise<void>)[] = [];
@@ -27,9 +27,8 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 	});
 
 	/** A browser with one page of one text field, that records the mouse and says whether a file input (or its label) is where the rule looks. */
-	function fakeBrowser(file: boolean) {
+	function fakeBrowser() {
 		const clicks: [number, number][] = [];
-		const looked: string[] = [];
 		const page = {
 			goto: async () => {},
 			goBack: async () => {},
@@ -37,10 +36,6 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 			title: async () => "Prova",
 			url: () => "https://example.test/",
 			evaluate: async (expression: string) => {
-				if (expression.includes('closest("label")')) {
-					looked.push(expression.slice(expression.lastIndexOf("})(") + 3));
-					return file;
-				}
 				if (expression.includes("all.length !== 1")) return { tag: "input", type: "text" };
 				return { elements: [{ tag: "input", type: "text", label: "Campo" }], text: "Prova", textLength: 5 };
 			},
@@ -50,11 +45,12 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 			selectOption: async () => {},
 			press: async () => {},
 			waitForLoadState: async () => {},
+			on: () => {},
 			close: async () => {},
 		};
 		const context = { route: async () => {}, routeWebSocket: async () => {}, addInitScript: async () => {}, on: () => {}, newPage: async () => page, close: async () => {} };
 		const browser = { newContext: async () => context, close: async () => {}, on: () => {} } as unknown as Browser;
-		return { browser, clicks, looked };
+		return { browser, clicks, page };
 	}
 	const guard = { hostAllowed: () => true, addressAllowed: () => true };
 
@@ -62,7 +58,7 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		const sessions = new BrowseSessions();
 		closers.push(() => sessions.closeAll());
 		await expect(sessions.clickAt("k", 0.5, 0.5, guard)).rejects.toMatchObject({ kind: "no-page" });
-		const ok = fakeBrowser(false);
+		const ok = fakeBrowser();
 		await sessions.open("k", ok.browser, "https://example.test/", guard);
 		const before = sessions.state("k");
 		await sessions.clickAt("k", 0.5, 0.25, guard, { person: true });
@@ -71,21 +67,17 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		expect(sessions.state("k")).toMatchObject({ open: true, version: (before as { version: number }).version + 1 });
 	});
 
-	it("one rule for file inputs: the person's click, the agent's click and the agent's typing all refuse them", async () => {
+	it("a click the browser could not do comes back as a failed view: the agent reads why, the panel gets an error", async () => {
 		const sessions = new BrowseSessions();
 		closers.push(() => sessions.closeAll());
-		const file = fakeBrowser(true);
-		await sessions.open("f", file.browser, "https://example.test/", guard);
-		await expect(sessions.clickAt("f", 0.1, 0.1, guard)).rejects.toMatchObject({ kind: "no-files", message: "Annie non carica file sui siti" });
-		await expect(sessions.click("f", 1, guard)).rejects.toMatchObject({ kind: "no-files" });
-		await expect(sessions.type("f", 1, "x", false, guard)).rejects.toMatchObject({ kind: "no-files" });
-		expect(file.clicks).toEqual([]);
-		expect(file.looked.map((l) => l.startsWith("document.elementFromPoint(128, 80)") || l.startsWith("document.querySelector("))).toEqual([true, true, true]);
-
-		const plain = fakeBrowser(false);
-		await sessions.open("p", plain.browser, "https://example.test/", guard);
-		await sessions.click("p", 1, guard);
-		await sessions.type("p", 1, "x", false, guard);
+		const broken = fakeBrowser();
+		broken.page.mouse.click = async () => {
+			throw new Error("Timeout 10000ms exceeded");
+		};
+		await sessions.open("b", broken.browser, "https://example.test/", guard);
+		const view = await sessions.clickAt("b", 0.5, 0.5, guard, { person: true });
+		expect(view.failed).toBe(true);
+		expect(view.notes).toContain("L'azione non è riuscita.");
 	});
 
 	async function setup() {
@@ -100,6 +92,7 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		const channel = new WebChannel({ tenantId: "acme", instanceId: "ops" }, instanceDir(dataDir, tenantId("acme"), instanceId("ops")));
 		connectChannel(runtime, channel, { tenantId: "acme", instanceId: "ops" });
 		const clicks: [number, number][] = [];
+		let failing = false;
 		const state = { open: true as const, url: "https://example.test/", title: "Prova", version: 3, busy: false };
 		const browser: BrowserPanel = {
 			available: () => true,
@@ -109,6 +102,7 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 			back: async () => state,
 			click: async (_i, _t, x, y) => {
 				clicks.push([x, y]);
+				if (failing) throw new BrowserPanelError("Non è andata a buon fine: guarda la pagina e riprova.");
 				return { ...state, version: 4 };
 			},
 		};
@@ -141,7 +135,7 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 				return { status: res.status, body: (await res.json()) as any };
 			};
 		};
-		return { base, anna, luca, runtime, channel, as, clicks };
+		return { base, anna, luca, runtime, channel, as, clicks, fail: () => void (failing = true) };
 	}
 
 	it("the endpoint takes a click from the person who owns the conversation, and from nobody else", async () => {
@@ -164,6 +158,11 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		expect(h.clicks).toHaveLength(2);
 		// Each click of the person is in the audit, who and whether it worked; a refused point never reached the browser.
 		expect((await h.runtime.audit("acme").read()).filter((e) => e.type === "web.browser.clicked").map((e) => [e.instanceId, e.personId, e.ok])).toEqual([["ops", h.anna.person.id, true], ["ops", h.anna.person.id, true]]);
+		// A click the browser could not do: refused, and the audit says it did not work.
+		h.fail();
+		const failed = await anna(path, { x: 0.5, y: 0.5 });
+		expect(failed.status).toBe(400);
+		expect((await h.runtime.audit("acme").read()).filter((e) => e.type === "web.browser.clicked").map((e) => e.ok)).toEqual([true, true, false]);
 		// Another person: it is not their conversation. Nobody logged in: nothing.
 		const luca = await h.as(h.luca.token);
 		expect((await luca(path, { x: 0.5, y: 0.5 })).status).toBe(404);
@@ -172,6 +171,6 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		// A person no longer allowed to write to the agente does not drive its browser.
 		await h.runtime.registry.setAllowedUsers("acme", "ops", "web", [h.luca.person.id]);
 		expect((await anna(path, { x: 0.5, y: 0.5 })).status).toBe(404);
-		expect(h.clicks).toHaveLength(2);
+		expect(h.clicks).toHaveLength(3);
 	});
 });

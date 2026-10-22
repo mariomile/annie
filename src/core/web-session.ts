@@ -33,6 +33,8 @@ export type Page = {
 	selectOption(selector: string, value: string, options: { timeout: number }): Promise<unknown>;
 	press(selector: string, key: string, options: { timeout: number }): Promise<void>;
 	waitForLoadState(state: "load", options: { timeout: number }): Promise<void>;
+	/** Listening to this makes Chromium hold back its file chooser: the page never gets to open one. */
+	on(event: "filechooser", listener: () => void): void;
 	close(): Promise<void>;
 };
 
@@ -132,6 +134,8 @@ export type View = {
 	/** Names and addresses the page chose: shown inside the fence. */
 	readonly details: readonly string[];
 	readonly screenshot?: Uint8Array;
+	/** The action itself failed (the browser raised): the agente reads why in the notes, a person's panel treats it as an error. */
+	readonly failed?: true;
 };
 
 export type ViewOptions = {
@@ -296,15 +300,12 @@ function kindOf(tag: string, type: string, role: string, checked: boolean): stri
 export class BrowseError extends Error {
 	override readonly name = "BrowseError";
 	/** Why, for the callers that word it themselves; the message stays for the agente. */
-	constructor(message: string, readonly kind?: "no-files" | "no-page" | "busy" | "unavailable") {
+	constructor(message: string, readonly kind?: "no-files" | "no-page" | "busy" | "unavailable" | "failed") {
 		super(message);
 	}
 }
 
 const NO_FILES = "Annie non carica file sui siti";
-
-/** In-page: is `e` (or the control its label points to) a file input. */
-const FILE_INPUT = `(e) => { const t = (n) => n?.tagName === "INPUT" && (n.getAttribute("type") || "").toLowerCase() === "file"; return t(e) || t(e?.closest("label")?.control); }`;
 
 /** A page that stopped answering a read: its session is closed. */
 class Hung extends Error {}
@@ -340,6 +341,8 @@ type Session = {
 	shown: { readonly url: string; readonly title: string };
 	/** A person moved the page since the agente's last view: its numbers point elsewhere now. */
 	movedByPerson: boolean;
+	/** The page tried to open a file chooser during the action: refused, whatever the way (label, shadow DOM, frame, input.click()). */
+	fileRefused: boolean;
 };
 
 /** A conversation's browser as someone watching it sees it (the console's browser panel). */
@@ -387,33 +390,25 @@ export class BrowseSessions {
 	click(key: string, ref: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		return this.act(key, guard, options, async (s) => {
 			const { selector } = await this.target(s, ref);
-			await this.refuseFileInput(s, `document.querySelector(${JSON.stringify(selector)})`);
 			await s.page.click(selector, { timeout: ACTION_TIMEOUT_MS });
 		});
 	}
 
 	/**
 	 * A click on the picture the panel shows (ADR 0103): the point `fx`, `fy` (fractions of the picture)
-	 * of the page. Same limits as web_click: no file uploads, and the page still only reads.
+	 * of the page. Same limits as web_click: no file uploads (the file chooser is refused when it opens), and the page still only reads.
 	 */
 	clickAt(key: string, fx: number, fy: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		const point = viewportPoint(fx, fy);
 		return this.act(key, guard, options, async (s) => {
-			await this.refuseFileInput(s, `document.elementFromPoint(${point.x}, ${point.y})`);
 			await s.page.mouse.click(point.x, point.y);
 		});
-	}
-
-	/** One rule for every click and every typing: never a file input, nor the label of one. `locate` is an in-page expression for the element. */
-	private async refuseFileInput(s: Session, locate: string): Promise<void> {
-		if (await within(s.page.evaluate<boolean>(`(${FILE_INPUT})(${locate})`), READ_TIMEOUT_MS)) throw new BrowseError(NO_FILES, "no-files");
 	}
 
 	type(key: string, ref: number, text: string, submit: boolean, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		return this.act(key, guard, options, async (s) => {
 			const { selector, live } = await this.target(s, ref);
 			if (live.type === "password") throw new BrowseError("Annie non scrive password: non entra negli account");
-			await this.refuseFileInput(s, `document.querySelector(${JSON.stringify(selector)})`);
 			if (live.type === "checkbox" || live.type === "radio") throw new BrowseError(`l'elemento ${ref} è una casella: si seleziona con web_click`);
 			if (live.tag === "select") {
 				const choices = await within(s.page.evaluate<unknown>(`Array.from(document.querySelector(${JSON.stringify(selector)}).options).slice(0, 200).map((o) => [String(o.value).slice(0, 80), String(o.text).replace(/\\s+/g, " ").trim().slice(0, 80)])`), READ_TIMEOUT_MS);
@@ -530,7 +525,12 @@ export class BrowseSessions {
 			context.on("page", (other) => {
 				if (other !== page) void other.close().catch(() => {});
 			});
-			this.sessions.set(key, { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false });
+			const session: Session = { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, fileRefused: false };
+			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused.
+			page.on("filechooser", () => {
+				session.fileRefused = true;
+			});
+			this.sessions.set(key, session);
 			this.closed.delete(key);
 		} catch (error) {
 			await context.close().catch(() => {});
@@ -551,6 +551,7 @@ export class BrowseSessions {
 				if (this.sessions.get(key) !== s) throw new BrowseError("la pagina di questa conversazione è stata chiusa: riaprila con web_browse");
 				s.guard.current = guard;
 				s.busy = true;
+				s.fileRefused = false;
 				// Idle counts from the end of the last action, never during one.
 				clearTimeout(s.timer);
 				try {
@@ -567,6 +568,7 @@ export class BrowseSessions {
 						}
 					}
 					await this.settle(s);
+					if (s.fileRefused) throw new BrowseError(NO_FILES, "no-files");
 					return await this.snapshot(s, failure, options);
 				} catch (error) {
 					if (!(error instanceof Hung)) throw error;
@@ -651,7 +653,7 @@ export class BrowseSessions {
 		s.shown = { url, title: String(title).slice(0, 200) };
 		// The agente reads this view; a person driving leaves its last one behind.
 		s.movedByPerson = options.person === true;
-		return { url, title: s.shown.title, text, elements, notes, details, ...(screenshot === undefined ? {} : { screenshot }) };
+		return { url, title: s.shown.title, text, elements, notes, details, ...(screenshot === undefined ? {} : { screenshot }), ...(failure === undefined ? {} : { failed: true as const }) };
 	}
 }
 
