@@ -166,7 +166,11 @@ function browserPanel(inst, threadId, onShow) {
 	const back = h("button.icon-btn", { type: "button", title: "Indietro", "aria-label": "Indietro", disabled: true }, icon("back"));
 	const title = h("span.page-title", "Browser");
 	// A picture gone between the question and the download (the page closed): the last one stays.
-	const screen = h("img.screen", { alt: "", hidden: true, onerror: () => { version = -1; } });
+	const screen = h("img.screen", { alt: "", hidden: true, onerror: () => { version = -1; }, onclick: (event) => {
+		// Where on the picture, as fractions of what is shown: the server places it in the page.
+		const box = screen.getBoundingClientRect();
+		if (box.width > 0 && box.height > 0) void go({ x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height }, `${base}/click`);
+	} });
 	const emptyLead = h("p");
 	const empty = h("div.browser-empty", emptyLead, h("p.muted", "Apri una pagina qui sopra e chiedigli di leggerla, oppure chiedigli di cercare qualcosa sul web."));
 	const busyNote = h("span.busy-note", { hidden: true }, `${inst.name} sta usando il browser…`);
@@ -176,7 +180,7 @@ function browserPanel(inst, threadId, onShow) {
 		h("div.browser-head", icon("browser"), title, busyNote, h("button.icon-btn", { type: "button", title: "Chiudi", "aria-label": "Chiudi il browser", onclick: () => show(false) }, icon("close"))),
 		h("form.browser-bar", { onsubmit: (event) => { event.preventDefault(); void go({ url: address.value }); } }, back, address),
 		h("div.browser-view", screen, empty),
-		h("p.browser-note", "Solo i siti che l'owner ha consentito. Il browser legge soltanto: un modulo si invia solo con un'approvazione."),
+		h("p.browser-note", "Solo i siti che l'owner ha consentito. Clicca sulla pagina per usarla. Il browser legge soltanto: un modulo si invia solo con un'approvazione."),
 	);
 	const toggle = h("button.browser-toggle", { type: "button", title: "Browser della conversazione", "aria-pressed": "false", onclick: () => show(el.hidden) }, icon("browser"), h("span", "Browser"));
 	const show = (on) => {
@@ -230,11 +234,11 @@ function browserPanel(inst, threadId, onShow) {
 		wasOpen = browser.open;
 		draw(browser, available);
 	};
-	const go = async (body) => {
+	const go = async (body, path = base) => {
 		if (body.url !== undefined && !body.url.trim()) return;
 		el.classList.add("loading");
 		try {
-			const { browser } = await api(base, { method: "POST", body });
+			const { browser } = await api(path, { method: "POST", body });
 			draw(browser);
 			address.blur();
 		} catch (error) {
