@@ -46,8 +46,8 @@ describe("deferred tools (ADR 0100)", () => {
 			{ ...tool("magazzino_giacenze", []), description: "Il magazzino, quante unità restano di un articolo.\nSeconda riga.", deferred: true as const },
 		];
 		const search = toolSearch(registers);
-		const run = async (query: string, limit?: number) => {
-			const api = { agent: async () => ({ deferred: registers }) };
+		const run = async (query: string, limit?: number, live: readonly AnnieTool[] = registers) => {
+			const api = { agent: async () => ({ deferred: live }) };
 			return search.execute({ query, ...(limit === undefined ? {} : { limit }) }, api as never, {} as never);
 		};
 
@@ -61,6 +61,25 @@ describe("deferred tools (ADR 0100)", () => {
 		it("loads only the tools named, once each", async () => {
 			const result = await run("fatture_registro, fatture_registro");
 			expect(result.control).toEqual({ addTools: ["fatture_registro"] });
+		});
+
+		it("a name already loaded is reported, not searched again", async () => {
+			const result = await run("fatture_registro", undefined, [registers[1]!]);
+			expect(result.control).toBeUndefined();
+			expect(JSON.stringify(result.output)).toContain("Già caricati: fatture_registro");
+		});
+
+		it("a mix of loaded and unloaded names loads only the unloaded, without BM25", async () => {
+			const result = await run("fatture_registro magazzino_giacenze", undefined, [registers[1]!]);
+			expect(result.control).toEqual({ addTools: ["magazzino_giacenze"] });
+			expect(JSON.stringify(result.output)).toContain("Già caricati: fatture_registro");
+		});
+
+		it("loads more than three exact names, limit ignored", async () => {
+			const many = ["a", "b", "c", "d", "e"].map((name) => ({ ...tool(name, []), description: `Registro ${name}.`, deferred: true as const }));
+			const manySearch = toolSearch(many);
+			const result = await manySearch.execute({ query: "a b c d e" }, { agent: async () => ({ deferred: many }) } as never, {} as never);
+			expect(result.control).toEqual({ addTools: ["a", "b", "c", "d", "e"] });
 		});
 
 		it("falls back to the free-text search for anything else", async () => {

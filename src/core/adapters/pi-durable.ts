@@ -401,10 +401,15 @@ export function toolSearch(deferred: readonly AnnieTool[]): ReturnType<typeof cr
 		...base,
 		description: `Carica gli strumenti che non ti sono dati all'inizio: li hai dalla chiamata dopo e restano per tutta la conversazione. Cerca col nome esatto, uno o più separati da spazi: carica solo quelli. Sono:\n${deferred.map((tool) => `- ${tool.name}: ${what(tool.description)}`).join("\n")}`,
 		async execute(args, api, context) {
-			const live = new Set((await api.agent(context)).deferred.map((tool) => tool.name));
+			const known = new Set(deferred.map((tool) => tool.name));
 			const words = [...new Set(args.query.split(/[\s,]+/).filter((word) => word !== ""))];
-			if (words.length === 0 || !words.every((word) => live.has(word))) return base.execute({ ...args, limit: args.limit ?? 3 }, api, context);
-			return { output: [{ type: "text", text: `Caricati: ${words.join(", ")}. Li hai dalla prossima chiamata.` }], details: { loaded: words }, control: { addTools: words } };
+			if (words.length === 0 || !words.every((word) => known.has(word))) return base.execute({ ...args, limit: args.limit ?? 3 }, api, context);
+			// Exact names: load those still deferred, report the others as already loaded. No BM25.
+			const live = new Set((await api.agent(context)).deferred.map((tool) => tool.name));
+			const load = words.filter((word) => live.has(word));
+			const loaded = words.filter((word) => !live.has(word));
+			const text = [load.length > 0 ? `Caricati: ${load.join(", ")}. Li hai dalla prossima chiamata.` : "", loaded.length > 0 ? `Già caricati: ${loaded.join(", ")}.` : ""].filter(Boolean).join(" ");
+			return { output: [{ type: "text", text }], details: { loaded: load }, ...(load.length > 0 ? { control: { addTools: load } } : {}) };
 		},
 	};
 }
