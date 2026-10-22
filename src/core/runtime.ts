@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
+import { UsageLedger } from "./usage.ts";
 import { ConnectorActionStore } from "./connector-actions.ts";
-import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession } from "./engine.ts";
+import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession, TurnUsage } from "./engine.ts";
 import type { TurnOrigin } from "./turn-origin.ts";
 import { IMAGE_LIMITS, imageProblem, imageType } from "./images.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
@@ -34,7 +35,7 @@ import { OrderStore } from "./order-store.ts";
 import { StockStore } from "./stock-store.ts";
 import { RecurringStore } from "./recurring-invoice-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
-import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, tenantDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
@@ -597,7 +598,7 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: memory, participants, lists, skills }, (reply) => {
+		return new AnnieInstance(record, session, lock, outbox, audit, new UsageLedger(tenantDir(this.options.dataDir, record.tenantId)), releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: memory, participants, lists, skills }, (reply) => {
 			for (const listener of this.listeners) {
 				try {
 					listener(reply);
@@ -627,6 +628,8 @@ export class AnnieInstance {
 		private readonly lock: InstanceLock,
 		private readonly outbox: Outbox,
 		private readonly audit: AuditLog,
+		/** The tenant's spend (usage.ts): each answered turn adds what it cost. */
+		private readonly usage: UsageLedger,
 		private readonly releaseTools: () => Promise<void>,
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
@@ -980,12 +983,37 @@ export class AnnieInstance {
 		await this.serial(key, async () => {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;
+			// Counted once: a reply the outbox already holds was counted when it first came.
+			if (existing?.reply === undefined && engineReply.status === "answered" && engineReply.usage !== undefined) await this.count(engineReply.submissionId, channel, engineReply.usage, engineReply.model).catch((error: unknown) => console.error(`annie: usage of ${this.record.tenantId}/${this.record.id} not recorded: ${String(error)}`));
 			await this.handOff(
 				existing === undefined
 					? { key, submissionId: engineReply.submissionId, channel, threadId, reply, createdAt: new Date().toISOString(), attempts: 0 }
 					: { ...existing, reply: existing.reply ?? reply },
 			);
 		});
+	}
+
+	/** What a turn took, in the audit and in the tenant's spend (ADR 0098). Never the text. */
+	private async count(submissionId: string, channel: string, usage: TurnUsage, model: ModelSelection | undefined): Promise<void> {
+		await this.audit.append({
+			type: "turn.usage",
+			instanceId: this.record.id,
+			channel,
+			submissionId,
+			...(model === undefined ? {} : { provider: model.provider, model: model.modelId }),
+			modelCalls: usage.modelCalls,
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens,
+			cacheWriteTokens: usage.cacheWriteTokens,
+			costUsd: usage.costUsd,
+			toolCalls: usage.tools.length,
+			tools: usage.tools.join(","),
+		});
+		await this.usage.record(
+			{ at: new Date().toISOString(), provider: model?.provider ?? "", model: model?.modelId ?? "", role: "agent", inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens, outputTokens: usage.outputTokens, estimatedUsd: usage.costUsd, submissionId },
+			this.audit,
+		);
 	}
 
 	/**

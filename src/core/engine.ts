@@ -77,8 +77,24 @@ export type EngineReply =
 			readonly text: string;
 			/** The model that wrote the answer: the chat's, or the instance's when the chat's could not answer. */
 			readonly model?: ModelSelection;
+			/** What the turn took, when the engine can tell (ADR 0098). */
+			readonly usage?: TurnUsage;
 	  }
 	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string };
+
+/**
+ * Every model call of one answered turn, from the inputs to the answer (ADR 0098): tokens, the
+ * cost as the provider's list prices give it, and the tools called, in order, by name.
+ */
+export type TurnUsage = {
+	readonly modelCalls: number;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheReadTokens: number;
+	readonly cacheWriteTokens: number;
+	readonly costUsd: number;
+	readonly tools: readonly string[];
+};
 
 /** A picture for the model, already checked (src/core/images.ts). */
 export type EngineImage = { readonly mimeType: string; readonly data: Uint8Array };

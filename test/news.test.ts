@@ -673,7 +673,8 @@ describe("news_headlines in an instance", () => {
 		expect(answer).toContain("https://www.ilpost.it/adesso/");
 		expect(fake.asked.map((a) => a.url)).toEqual(["https://www.ilpost.it/feed/"]);
 		const audit = readFileSync(`${dataDir}/tenants/default/audit.jsonl`, "utf8");
-		expect(audit).not.toContain("news");
+		// The turn's own usage line names the tool it called (ADR 0098); the tool itself writes none.
+		expect(audit.split("\n").filter((line) => !line.includes('"turn.usage"')).join("\n")).not.toContain("news");
 		expect(audit).not.toContain("notizia");
 	});
 

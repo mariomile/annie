@@ -8,6 +8,7 @@
  *   person reset-2fa <id>                               turn off two-factor login (lost phone)
  *   check                                               do the keys in .env work, are the services reachable?
  *   brief                                               who gets the brief del mattino, and who uses it (last 7 days)
+ *   usage                                               what the agenti's turns took: tokens, cost, tools (last 7 days)
  *
  * Works on the data directory; Annie can be running.
  */
@@ -17,6 +18,7 @@ import { briefStats } from "../core/brief.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "../core/ids.ts";
 import { schedulesDir, tenantDir } from "../core/paths.ts";
 import { ScheduleStore } from "../core/schedules.ts";
+import { turnStats } from "../core/usage.ts";
 import { TenantRegistry } from "../core/registry.ts";
 import { PeopleStore, SessionStore } from "../web/auth.ts";
 import { runChecks } from "./check.ts";
@@ -34,7 +36,7 @@ const registry = new TenantRegistry(dataDir);
 const [group, command, ...rest] = process.argv.slice(2);
 
 function usage(): never {
-	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id> | check | brief");
+	console.error("usage: pnpm annie person add <name> [--owner] [--instance <id>]... | person list | person link <id> | person remove <id> | person reset-2fa <id> | check | brief | usage");
 	process.exit(2);
 }
 
@@ -63,6 +65,15 @@ if (group === "brief") {
 	const stats = briefStats(await new AuditLog(dataDir, toTenantId(tenant)).read(), threads, new Date());
 	console.log(`Brief attivi: ${stats.active}`);
 	console.log(`Ultimi 7 giorni: ${stats.deliveries} brief consegnati a ${stats.peopleDelivered} persone; ${stats.peopleWhoWrote} hanno poi scritto nella chat del brief.`);
+	process.exit(0);
+}
+
+if (group === "usage") {
+	const stats = turnStats(await new AuditLog(dataDir, toTenantId(tenant)).read(), new Date());
+	const usd = (n: number) => `$${n.toFixed(4)}`;
+	console.log(`Ultimi 7 giorni: ${stats.turns} turni, ${stats.inputTokens} token in entrata, ${stats.outputTokens} in uscita, ${usd(stats.costUsd)}.`);
+	for (const i of stats.instances) console.log(`  ${i.instanceId}: ${i.turns} turni, ${usd(i.costUsd)}`);
+	if (stats.tools.length > 0) console.log(`Strumenti più usati: ${stats.tools.map((t) => `${t.name} (${t.calls})`).join(", ")}`);
 	process.exit(0);
 }
 

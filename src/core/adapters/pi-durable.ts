@@ -15,6 +15,7 @@ import {
 	type Cursor,
 	type DocumentReader,
 	createRegistry,
+	type EntryId,
 	type EntryRecord,
 	type Page,
 	defineDoc,
@@ -32,7 +33,7 @@ import {
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
-import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue } from "../engine.ts";
+import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue, TurnUsage } from "../engine.ts";
 import type { ModelSelection } from "../registry.ts";
 import { isTurnOrigin, type TurnOrigin } from "../turn-origin.ts";
 import { createProvider } from "./pi-durable-models.ts";
@@ -334,13 +335,13 @@ class PiDurableSession implements EngineSession {
 		}
 	}
 
-	private async answer(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<{ text: string; model?: ModelSelection }> {
+	private async answer(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<{ text: string; model?: ModelSelection; usage?: TurnUsage }> {
 		const conversation = await this.harness.conversation(settled.conversationId, context);
 		// A read-only commit, as in the pi-durable README.
-		const entry = await conversation?.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-		const message = entry?.model?.[0] as Message | undefined;
+		const read = await conversation?.commit(async (tx) => ({ entry: await tx.entry(AssistantEntry, settled.answer), usage: await turnUsage(tx, settled.conversationId, settled.answer) }), context);
+		const message = read?.entry?.model?.[0] as Message | undefined;
 		if (message?.role !== "assistant") return { text: "" };
-		return { text: message.content.map((block) => (block.type === "text" ? block.text : "")).join(""), model: { provider: message.provider, modelId: message.model } };
+		return { text: message.content.map((block) => (block.type === "text" ? block.text : "")).join(""), model: { provider: message.provider, modelId: message.model }, ...(read?.usage === undefined ? {} : { usage: read.usage }) };
 	}
 }
 
@@ -433,6 +434,41 @@ function warnBoundOnce(message: string): void {
 	if (boundWarned) return;
 	boundWarned = true;
 	console.error(message);
+}
+
+/**
+ * What the run that ended with `answer` took (ADR 0098): every assistant message from the answer
+ * back to the previous one that ended a run, as `inputsOrigin` reckons a run. Past the scan's
+ * bound, what was found; undefined when the answer is not there.
+ */
+export async function turnUsage(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, answer: EntryId): Promise<TurnUsage | undefined> {
+	const usage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+	const tools: string[] = [];
+	let cursor: Cursor | undefined;
+	let first = true;
+	for (let page = 0; page < 20; page++) {
+		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending", maxEntryId: answer }, 50, cursor);
+		for (const entry of items) {
+			if (first && entry.id !== answer) return undefined;
+			if (!first && endsRun(entry)) return { ...usage, tools };
+			first = false;
+			const called: string[] = [];
+			for (const m of (entry.model ?? []) as Message[]) {
+				if (m.role !== "assistant") continue;
+				usage.modelCalls++;
+				usage.inputTokens += m.usage?.input ?? 0;
+				usage.outputTokens += m.usage?.output ?? 0;
+				usage.cacheReadTokens += m.usage?.cacheRead ?? 0;
+				usage.cacheWriteTokens += m.usage?.cacheWrite ?? 0;
+				usage.costUsd += m.usage?.cost?.total ?? 0;
+				called.push(...m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])));
+			}
+			tools.unshift(...called);
+		}
+		if (next === undefined) break;
+		cursor = next;
+	}
+	return first ? undefined : { ...usage, tools };
 }
 
 /** An assistant message that answered without calling a tool: the run it belongs to ended there. */

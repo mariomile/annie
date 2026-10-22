@@ -717,7 +717,8 @@ describe("vat_check in an instance", () => {
 		expect(fake.asked.map((a) => a.url)).toEqual([url("IT", "00000500157")]);
 		const audit = readFileSync(`${dataDir}/tenants/default/audit.jsonl`, "utf8");
 		expect(audit).not.toContain("00000500157");
-		expect(audit).not.toContain("vat");
+		// The turn's own usage line names the tool it called (ADR 0098); the tool itself writes none.
+		expect(audit.split("\n").filter((line) => !line.includes('"turn.usage"')).join("\n")).not.toContain("vat");
 	});
 
 	it("in the brief's thread it checks on paper only: the VIES is never asked", async () => {

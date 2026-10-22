@@ -1,13 +1,14 @@
 import { mkdir, readFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
-import type { AuditLog } from "./audit.ts";
+import type { AuditLog, AuditRecord } from "./audit.ts";
 
 export type UsageRecord = {
 	readonly at: string;
 	readonly provider: string;
 	readonly model: string;
-	readonly role: "extract" | "draft" | "classify" | "other";
+	/** "agent": a turn of an agente (ADR 0098); the others are the segreteria's steps. */
+	readonly role: "extract" | "draft" | "classify" | "agent" | "other";
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly estimatedUsd: number;
@@ -45,6 +46,9 @@ export function romeDayKey(date = new Date()): string {
 	}).format(date);
 }
 
+/** The record being written for each totals file: a ledger of the same tenant waits for it. */
+const recording = new Map<string, Promise<void>>();
+
 /**
  * Per-tenant daily usage ledger (append-only JSONL + day totals JSON).
  * Soft cap: warn; hard cap: reject new model calls (send-only Approva still allowed).
@@ -72,7 +76,22 @@ export class UsageLedger {
 		return totals[romeDayKey()] ?? 0;
 	}
 
+	/** One record at a time per tenant in this process: the day totals are read, added to and written back. */
 	async record(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
+		const path = this.totalsPath();
+		const done = (recording.get(path) ?? Promise.resolve()).then(() => this.write(rec, audit));
+		const settled = done.then(
+			() => {},
+			() => {},
+		);
+		recording.set(path, settled);
+		void settled.then(() => {
+			if (recording.get(path) === settled) recording.delete(path);
+		});
+		return done;
+	}
+
+	private async write(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
 		await this.ensure();
 		await appendFile(this.usagePath(), `${JSON.stringify(rec)}\n`, { mode: 0o600 });
 		const day = romeDayKey(new Date(rec.at));
@@ -139,3 +158,42 @@ Pratiche già in approvazione: puoi ancora Approvare una bozza già pronta (part
 
 export const TELEGRAM_HARD_CAP_REGEN = `Non posso rigenerare la bozza: tetto di spesa giornaliero raggiunto.
 Puoi Scartare, oppure Approvare la bozza già mostrata (v{n}) senza rigenerarla.`;
+
+export type TurnStats = {
+	readonly turns: number;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly costUsd: number;
+	/** Per agente: its turns and what they cost. */
+	readonly instances: readonly { readonly instanceId: string; readonly turns: number; readonly costUsd: number }[];
+	/** The tools called most, with how many times. */
+	readonly tools: readonly { readonly name: string; readonly calls: number }[];
+};
+
+/** The turns of the agenti over the last `days`, from their `turn.usage` events (ADR 0098). */
+export function turnStats(events: readonly AuditRecord[], now: Date, days = 7): TurnStats {
+	const since = now.getTime() - days * 24 * 3600_000;
+	const turns = events.filter((e) => e.type === "turn.usage" && Date.parse(e.ts) >= since);
+	const instances = new Map<string, { turns: number; costUsd: number }>();
+	const tools = new Map<string, number>();
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let costUsd = 0;
+	for (const e of turns) {
+		const cost = Number(e.costUsd ?? 0);
+		inputTokens += Number(e.inputTokens ?? 0) + Number(e.cacheReadTokens ?? 0) + Number(e.cacheWriteTokens ?? 0);
+		outputTokens += Number(e.outputTokens ?? 0);
+		costUsd += cost;
+		const instance = instances.get(String(e.instanceId)) ?? { turns: 0, costUsd: 0 };
+		instances.set(String(e.instanceId), { turns: instance.turns + 1, costUsd: instance.costUsd + cost });
+		for (const name of String(e.tools ?? "").split(",").filter((n) => n !== "")) tools.set(name, (tools.get(name) ?? 0) + 1);
+	}
+	return {
+		turns: turns.length,
+		inputTokens,
+		outputTokens,
+		costUsd,
+		instances: [...instances].map(([instanceId, v]) => ({ instanceId, ...v })).sort((a, b) => b.costUsd - a.costUsd),
+		tools: [...tools].map(([name, calls]) => ({ name, calls })).sort((a, b) => b.calls - a.calls).slice(0, 10),
+	};
+}
