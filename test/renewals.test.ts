@@ -962,8 +962,9 @@ describe("renewals: fence, audit, CSV", () => {
 
 describe("renewals in the app", () => {
 	it("is offered to every instance, records a payment as an expense, the instructions point to it, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere i rinnovi e gli abbonamenti (renewals:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("per un promemoria a un'ora precisa schedule_create");
+		expect(DEFAULT_INSTRUCTIONS).toContain("rinnovi e abbonamenti (renewals)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(setup().tool.description).toContain("For a reminder at an exact time use schedule_create");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

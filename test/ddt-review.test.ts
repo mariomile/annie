@@ -319,11 +319,13 @@ describe("the brief, the prices, the reso's own DDT, the date (UX 6-12)", () => 
 
 	it("the routing names the reso, the credit note and the carrier; no em dash", async () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("«Rossi mi ha reso 2 toner»");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«lo porta il corriere BRT»");
+		expect(DEFAULT_INSTRUCTIONS).toContain("DDT (ddt)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("«Rossi mi ha reso 2 toner»");
 		expect(s.tool.description).toContain("«lo porta il corriere BRT» → change with transport vettore and carrier");
 		expect(s.tool.description).toContain("Never say a draft's reference (DT-…) to the person");
 		expect(s.tool.description).not.toMatch(EMDASH);
+		expect(DEFAULT_INSTRUCTIONS).not.toMatch(EMDASH);
 	});
 });
 

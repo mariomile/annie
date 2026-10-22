@@ -360,8 +360,10 @@ describe("billing the appointments done", () => {
 describe("routing", () => {
 	it("the instructions and the description send appointments here, the fiscal agenda and Annie's own reminders elsewhere", () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("appointments");
-		expect(DEFAULT_INSTRUCTIONS).toMatch(/fissa la signora Rossi/);
+		expect(DEFAULT_INSTRUCTIONS).toContain("appuntamenti dei clienti (appointments)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("«fissa la signora Rossi giovedì alle 15 per taglio e piega» → book");
+		expect(s.tool.description).toContain("into their Google calendar only when they ask, with google_calendar_create");
 		expect(s.tool.description).toContain("fiscal_agenda");
 		expect(s.tool.description).toContain("schedule_create");
 		expect(s.tool.description).toContain("«fattura gli appuntamenti fatti da Bianchi questo mese» is sales_invoices");

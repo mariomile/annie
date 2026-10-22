@@ -383,8 +383,11 @@ describe("the brief, the agents, the file", () => {
 	});
 
 	it("the routing names the tool with Italian examples", () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("fare gli ordini ai fornitori (orders: «cosa sta per finire?» o «cosa devo riordinare?» con op suggest");
-		for (const said of ["«ho mandato l'ordine» con op mark_sent", "«annulla l'ordine» con op cancel", "«fammi il PDF dell'ordine» con op document", "«è arrivata la merce di Beta» con op received", "stock dice solo cosa è già sotto il minimo"]) expect(DEFAULT_INSTRUCTIONS).toContain(said);
+		const described = setup().tool.description;
+		expect(DEFAULT_INSTRUCTIONS).toContain("ordini ai fornitori (orders)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		for (const said of ["cosa sta per finire?» → suggest", "ho mandato l'ordine», «l'ho mandato venerdì» → mark_sent", "annulla l'ordine OR-0002» → cancel", "fammi il PDF dell'ordine per Beta» → document", "è arrivata la merce di Beta», «è arrivato l'ordine OR-0003» → received", "stock low says only what is already under the minimum"]) expect(described).toContain(said);
+		expect(described).not.toMatch(/\u2014/);
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
 	});
 });

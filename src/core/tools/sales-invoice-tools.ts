@@ -40,7 +40,7 @@ const DESCRIPTION = [
 	"draft: vat (22, 10, 5, 4, or 0 with natura) and natura for every line unless a line has its own; in the forfettario nothing (no VAT, N2.2 and the dicitura by themselves); a spesa anticipata in nome e per conto del cliente → a line with advance true; ritenuta true or false only as the person answers; cassa {kind rivalsa_inps or contributo_integrativo, type TC01…TC21 for a cassa, rate}; bollo_to_client as answered; payment_days, end_of_month, method, iban; the customer's vat_number, cf, address («Via Roma 1, 20121 Milano MI»), recipient_code, pec, country only as the person says them; new_customer true only when the person says it is a customer different from the ones proposed; order {id, cig, cup} for a public office; notes; last_number: the last number the person confirms or says (to «l'ultima è la 41: questa sarà la 42, va bene?», a yes is last_number 41).",
 	"An invoice that repeats every month, quarter or year to the same customer is set once with recurring_invoices, which prepares each period's draft; this tool issues it.",
 	"A line may name a voce of the listino with item instead of description and price; a voce not in the listino or not clear is asked, never priced by you.",
-	"When the tool asks for data, ask the person everything it lists in one message and never fill it in yourself. Repeat numbers and amounts as given, never compute them yourself.",
+	"When the tool asks for data, ask the person everything it lists in one message and never fill it in yourself. A fattura differita is issued by the 15th of the month after the DDTs. Repeat numbers and amounts as given, never compute them yourself.",
 ].join(" ");
 
 export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[] {

@@ -783,7 +783,9 @@ describe("quotes: calls run again, documents in preparation, revisions", () => {
 
 describe("quotes in the app", () => {
 	it("is offered to every instance, the instructions point to it, and a quote is made from the company set in invoices", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("fare, rifare e seguire i preventivi ai clienti (quotes:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("preventivi (quotes)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(setup().tool.description).toContain("Preventivi (quotes) for customers");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

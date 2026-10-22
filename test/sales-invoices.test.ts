@@ -855,6 +855,7 @@ describe("review fixes", () => {
 		expect(s.last()).toMatchObject({ quote: "2026-004", lines: [{ description: "Sito web" }], buyer: { name: "Omega Srl", vat: "IT00000030015" } });
 		expect(s.store.read().invoices).toHaveLength(1);
 		expect(s.tool.description).toContain("draft again with the whole request and the change, and replace with the draft's id");
+		expect(s.tool.description).toContain("A fattura differita is issued by the 15th of the month after the DDTs.");
 	});
 
 	it("U4: says a customer's accepted quote not invoiced, and where the hours already are", async () => {

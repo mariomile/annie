@@ -857,16 +857,17 @@ describe("the tool", () => {
 	});
 
 	it("routing: next to sales_invoices in Annie's instructions, and not schedule_create or renewals", () => {
-		const sales = DEFAULT_INSTRUCTIONS.indexOf("preparare le fatture elettroniche in uscita");
-		const recurring = DEFAULT_INSTRUCTIONS.indexOf("preparare ogni periodo le fatture ricorrenti (recurring_invoices:");
-		const next = DEFAULT_INSTRUCTIONS.indexOf("tenere il listino prezzi");
+		const sales = DEFAULT_INSTRUCTIONS.indexOf("fatture elettroniche in uscita (sales_invoices)");
+		const recurring = DEFAULT_INSTRUCTIONS.indexOf("ricorrenti (recurring_invoices)");
+		const next = DEFAULT_INSTRUCTIONS.indexOf("listino (price_list)");
 		expect(sales).toBeGreaterThan(0);
 		expect(recurring).toBeGreaterThan(sales);
 		expect(recurring).toBeLessThan(next);
-		expect(DEFAULT_INSTRUCTIONS).toContain("una fattura che si ripete ogni mese, trimestre o anno allo stesso cliente è recurring_invoices");
-		expect(DEFAULT_INSTRUCTIONS).toContain("per una fattura che si ripete usa recurring_invoices, non schedule_create");
-		expect(DEFAULT_INSTRUCTIONS).toContain("i canoni che fattura lui sono recurring_invoices");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		const description = setup().tool.description;
+		expect(description).toContain("an invoice that repeats every month, two months, quarter, six months or year to the same customer is recurring_invoices (not schedule_create, not renewals: renewals are what the person pays)");
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(EM_DASH);
+		expect(description).not.toMatch(EM_DASH);
 	});
 
 	it("routing in the tools' own descriptions, and what the person says read as said", () => {

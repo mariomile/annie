@@ -28,6 +28,7 @@ import { unitsToCents } from "../src/core/quote-sums.ts";
 import type { Renewal } from "../src/core/renewals.ts";
 import { SCHEDULE_LIMITS } from "../src/core/schedules.ts";
 import { incassiOf } from "../src/core/tax-sums.ts";
+import { createInvoiceTools } from "../src/core/tools/invoice-tools.ts";
 import { createBankTools, type BankEvent } from "../src/core/tools/bank-tools.ts";
 import { readIds } from "../src/core/tools/bank-input.ts";
 import { askAnswer, BRIEF_NOTHING, briefAnswer, stateWords } from "../src/core/tools/bank-render.ts";
@@ -615,7 +616,8 @@ describe("the tool", () => {
 		expect(bankCallReads({ op: "summary" }) && !bankCallReads({ op: "confirm" })).toBe(true);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bbank_statement \(summary\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("leggere l'estratto conto della banca (bank_statement:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("estratto conto (bank_statement)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 	});
 
 	it("audits only the op and how many: no description, amount, date or IBAN", async () => {
@@ -946,7 +948,10 @@ describe("week 60 review", () => {
 		const s = await setup();
 		expect(s.tool.description).toContain("«quanto è entrato a ottobre sul conto?»");
 		expect(s.tool.description).toContain("a bare «quanto ho incassato a ottobre?» is the invoices' or the clients'");
-		expect(DEFAULT_INSTRUCTIONS).toContain("le conferme degli incassi e dei pagamenti passano da bank_statement");
+		const [invoiceTool] = createInvoiceTools({ workspace: new Workspace(s.root), store: s.invoices, timeZone: ROME, whoIs: () => "test:u" });
+		expect(invoiceTool?.description).toContain("the collections and payments it shows are confirmed through bank_statement");
+		expect(DEFAULT_INSTRUCTIONS).toContain("fatture da pagare e da incassare e solleciti (invoices, non file_search)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("estratto conto (bank_statement)");
 		s.put("banca/o.csv", SIGNED_CSV);
 		await s.run({ op: "import", path: "banca/o.csv" });
 		expect(await s.run({ op: "confirm", ids: ["4"] })).toContain("un abbinamento confermato");

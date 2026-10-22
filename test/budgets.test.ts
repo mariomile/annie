@@ -469,8 +469,11 @@ describe("budgets: the brief and another agente", () => {
 		expect(budgetCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool [^\n]*\bbudgets \(status\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("seguire budget e obiettivi (budgets:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("l'andamento è business_report");
+		expect(DEFAULT_INSTRUCTIONS).toContain("budget e obiettivi (budgets)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("andamento dell'attività (business_report)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("How the business is doing (fatturato, margine, a period against another) is business_report: budgets is only for the limits and ta");
+		expect(s.tool.description).not.toMatch(NO_EM_DASH);
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
 	});
 

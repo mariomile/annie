@@ -1061,8 +1061,11 @@ describe("taxes: the second review", () => {
 
 describe("taxes in the app", () => {
 	it("is offered to every instance, the instructions say when to use it and the cashflow voci, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("stimare le tasse (taxes, nel forfettario; nell'ordinario per l'IVA usa vat_settlement:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("un F24 che la persona vuole fissare con il suo importo va in cashflow con op add_item");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tasse del forfettario (taxes)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		const description = (await setup()).tool.description;
+		expect(description).toContain("for the ordinario the IVA F24s with amounts come from vat_settlement");
+		expect(description).toContain("Fixed F24 voci the person adds in the cashflow are kept there; this tool estimates.");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

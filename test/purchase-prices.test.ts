@@ -527,9 +527,11 @@ describe("purchase_prices", () => {
 	});
 
 	it("the instructions route selling prices, prices paid and quantities", () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("il listino sono i prezzi a cui vende, purchase_prices quello che paga lui, il magazzino le quantità");
-		expect(DEFAULT_INSTRUCTIONS).toContain("sapere quanto paga quello che compra (purchase_prices:");
+		const s = setup();
+		for (const entry of ["listino (price_list)", "prezzi d'acquisto (purchase_prices)", "magazzino (stock)", "tool_search"]) expect(DEFAULT_INSTRUCTIONS).toContain(entry);
+		expect(s.tool.description).toContain("listino is what the person sells at, purchase_prices what they pay, stock the quantities");
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
+		expect(s.tool.description).not.toMatch(/\u2014/);
 	});
 });
 

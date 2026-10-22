@@ -664,7 +664,8 @@ describe("ritenute: the brief", () => {
 		expect(withholdingCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bwithholding \(cu_list\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("seguire le ritenute d'acconto nel regime ordinario (withholding:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("ritenute d'acconto (withholding)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 	});
 
 	it("quiet when the store or the scadenzario does not read, or for a forfettario", async () => {

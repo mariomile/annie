@@ -358,8 +358,12 @@ describe("the brief and the routing", () => {
 
 	it("the instructions, the brief and its read-only thread", async () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("fare i DDT per la merce che spedisce ai clienti (ddt:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«fai la fattura differita di ottobre per Rossi», è sales_invoices con ddt e il mese");
+		expect(DEFAULT_INSTRUCTIONS).toContain("DDT (ddt)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("fatture elettroniche in uscita (sales_invoices)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("unloads the magazzino: those goods are not unloaded again by hand");
+		expect(s.tool.description).toContain("the number stays used");
+		expect(s.tool.description).toContain("fattura differita di ottobre per Rossi» is sales_invoices (draft with ddt true and the month), not this tool");
 		expect(BRIEF_INSTRUCTION).toContain("ddt (list)");
 		expect(ddtCallReads({ op: "list" })).toBe(true);
 		expect(ddtCallReads({ op: "issue" })).toBe(false);

@@ -839,10 +839,12 @@ describe("suppliers: store, audit, reruns", () => {
 
 describe("suppliers: wiring", () => {
 	it("is in the system prompt next to the clients, and its text has no em dash", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere le schede dei fornitori (suppliers: clients è per chi lo paga, suppliers per chi paga lui;");
+		expect(DEFAULT_INSTRUCTIONS).toContain("e dei fornitori (suppliers)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
 		const s = await setup();
 		expect(s.tool.description).not.toMatch(NO_EM_DASH);
 		expect(s.tool.description).toContain("The list of invoices to pay and their due dates, and marking one paid, is invoices");
+		expect(s.tool.description).toContain("a changed IBAN is checked by phone before paying");
 	});
 });

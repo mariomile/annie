@@ -418,7 +418,9 @@ function fakeGoogle() {
 
 describe("solleciti in the app", () => {
 	it("from the chat to the card: sent only after the approval, then recorded; the instructions point to it; the audit has no data", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("per i solleciti di pagamento ai clienti in ritardo invoices con op reminder");
+		expect(DEFAULT_INSTRUCTIONS).toContain("fatture da pagare e da incassare e solleciti (invoices, non file_search)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(setup(FILES).tool.description).toContain("reminder: a payment reminder (sollecito) to customers late on invoices to collect");
 		const dataDir = temp();
 		const google = fakeGoogle();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", ANNIE_GOOGLE_CLIENT_ID: "c", ANNIE_GOOGLE_CLIENT_SECRET: "s", ANNIE_GOOGLE_WRITE: "1" });

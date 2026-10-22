@@ -723,7 +723,10 @@ describe("agenda: the brief", () => {
 		expect(filesUnder(s.root).some((f) => f.startsWith("agenda/"))).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bfiscal_agenda \(upcoming\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere l'agenda fiscale (fiscal_agenda:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("agenda fiscale (fiscal_agenda)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Annie to write) → schedule_create");
+		expect(s.tool.description).not.toMatch(NO_EM_DASH);
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
 	});
 });

@@ -1296,7 +1296,8 @@ describe("timesheet: hours, amounts and words", () => {
 
 describe("timesheet in the app", () => {
 	it("is offered to every instance, the instructions point to it, and the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere le ore di lavoro per cliente (timesheet:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("ore di lavoro (timesheet)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);

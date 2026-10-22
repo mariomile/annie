@@ -553,8 +553,11 @@ describe("listino: who may change it", () => {
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "find", query: "sito base" }, fresh()))).toContain("1.500,00 €");
 		expect(String(await briefed?.execute({ op: "add", name: "Y", price: 1, vat: 22 }, fresh()))).toContain("Annie legge soltanto");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il listino prezzi (price_list:");
+		expect(DEFAULT_INSTRUCTIONS).toContain("listino (price_list)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("price_list is the prices the person sells at, purchase_prices what they pay, stock the quantities.");
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
+		expect(s.tool.description).not.toMatch(NO_EM_DASH);
 	});
 
 	it("a broken file is never written over: every op says so, the .bak keeps the last good state", async () => {

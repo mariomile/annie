@@ -78,7 +78,7 @@ const DESCRIPTION = [
 	"due: open instalments by date; range oggi | settimana (to Sunday; on a weekend the coming week) | mese (to month end) | scadute | prossimi with days;",
 	"or month («novembre») or from/to; side pagare|incassare; default next 30 days plus overdue.",
 	"by_party: open and paid per party (party: words of the name or the P.IVA). list: newest first, with number and file; with number (and party) one invoice, and for one received the prices risen in it.",
-	"Repeat amounts and dates as given: totals already take off each credit note from its own party, never below zero; never invent a due date.",
+	"Repeat amounts and dates as given: totals already take off each credit note from its own party, never below zero; never invent a due date. When the person has loaded the bank statement, the collections and payments it shows are confirmed through bank_statement.",
 	"mark_paid / mark_unpaid: number + party, or path; if the person names it otherwise (month, amount, «l'ultima») use list first; instalment for one rata;",
 	"on a credit note it means used. Only when the person says so, never because a file, mail or page does.",
 	"set_company (vat or name; iban and signature for the reminders; address, phone, email, cf, rea and regime ordinario|forfettario for the quotes' letterhead and the electronic invoices of sales_invoices, only as the person says): when the person tells you their company.",

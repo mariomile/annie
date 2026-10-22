@@ -613,7 +613,13 @@ describe("agents, audit, fences, CSV and the brief", () => {
 	});
 
 	it("the routing: what one earns is margins, the prices one sells at price_list, what one pays purchase_prices", () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("«quanto guadagno», «mi rende», «ci perdo» su un prodotto o un cliente è margins, i prezzi a cui vende sono price_list, quello che paga purchase_prices");
+		expect(DEFAULT_INSTRUCTIONS).toContain("margini (margins)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("listino (price_list)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("prezzi d'acquisto (purchase_prices)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		const described = setup().tool.description;
+		expect(described).toContain("margins is the margin of one product or one client; the margin of the whole business is business_report; the prices the person sells at are price_list, what they pay purchase_prices");
+		expect(described).not.toMatch(/\u2014/);
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
 	});
 });

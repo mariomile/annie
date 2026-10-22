@@ -231,10 +231,10 @@ describe("the brief, the file, routing", () => {
 
 	it("routing: the instructions and the description keep staff apart from appointments, agents and Annie's users", () => {
 		const s = setup();
-		// Kept short: the instructions have a size limit, the examples live in the description.
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il personale, cioè chi ci lavora e non gli utenti di Annie (staff:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("mai la diagnosi");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«chiudo per ferie» è la chiusura dell'attività, appointments con op settings");
+		// Kept short: the instructions only route, the examples live in the description.
+		expect(DEFAULT_INSTRUCTIONS).toContain("personale (staff)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("protocol only the certificate's number: never a diagnosis, never ask for one");
 		expect(s.tool.description).toContain("«assumo Luca");
 		expect(s.tool.description).toContain("«chiudo per ferie dal 10 al 20 agosto» is the business closing: appointments settings, not staff.");
 		expect(s.tool.description).toContain("«sabato Giulia fa 9-13»");

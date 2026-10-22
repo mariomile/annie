@@ -388,11 +388,14 @@ describe("UX: the messages to the clients", () => {
 describe("UX11: routing", () => {
 	it("the instructions and the description say the reminders are the clients', the agenda with the calendar, the settings phrases, the hours example", () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("«fammi i promemoria per domani» o «fammi il messaggio di promemoria per gli appuntamenti di domani» vuol dire i messaggi ai clienti");
-		expect(DEFAULT_INSTRUCTIONS).toContain("se ha anche il calendario Google collegato aggiungi i suoi impegni");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«il taglio dura 45 minuti»");
+		expect(DEFAULT_INSTRUCTIONS).toContain("appuntamenti dei clienti (appointments)");
+		expect(DEFAULT_INSTRUCTIONS).toContain("tool_search");
+		expect(s.tool.description).toContain("«fammi i promemoria per domani», «fammi il messaggio di promemoria per gli appuntamenti di domani» are the messages to the clients");
+		expect(s.tool.description).toContain("if the person also has Google Calendar, add their own events (google_calendar_events)");
+		expect(s.tool.description).toContain("«il taglio dura 30 minuti, il colore un'ora e mezza» → services");
 		expect(s.tool.description).toContain("«siamo aperti mar-sab 9-13 e 14:30-19, chiusi domenica e lunedì»");
 		expect(s.tool.description).toContain("«fissalo lo stesso»");
+		expect(s.tool.description).not.toMatch(EMDASH);
 		expect(DEFAULT_INSTRUCTIONS).not.toMatch(EMDASH);
 	});
 });
