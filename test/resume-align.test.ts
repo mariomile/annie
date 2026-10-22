@@ -1,14 +1,40 @@
-import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import type { AnnieTool, EngineOpenOptions, EngineReply } from "../src/core/engine.ts";
-import { tenantId } from "../src/core/ids.ts";
+import { instanceId, tenantId } from "../src/core/ids.ts";
+import { instanceFile } from "../src/core/paths.ts";
+import { TenantRegistry } from "../src/core/registry.ts";
 import { modelApiKeySecret, TenantSecrets } from "../src/core/secrets.ts";
 import { tempDataDir, waitFor } from "./helpers.ts";
+
+/** A folder's fsync the test can hold: a file renamed into it is visible, its write not finished. */
+const fsync = vi.hoisted(() => ({ dir: undefined as string | undefined, reached: () => {}, held: Promise.resolve() }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		open: async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			if (fsync.dir !== undefined && args[0] === fsync.dir) {
+				const sync = handle.sync.bind(handle);
+				handle.sync = async () => {
+					fsync.reached();
+					await fsync.held;
+					return sync();
+				};
+			}
+			return handle;
+		},
+	};
+});
 
 const DEV = { provider: "faux", modelId: "annie-dev" };
 const GROK = { provider: "xai", modelId: "grok-4.7" };
@@ -177,7 +203,8 @@ describe("restart after the configuration changed", () => {
 		expect(await session.resume()).toEqual({ pending: 1 });
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "answered" });
-		expect(checks).toBe(3);
+		// Two that failed, the one that aligned, the one that found nothing changed since.
+		expect(checks).toBe(4);
 		await session.close();
 	});
 
@@ -260,5 +287,72 @@ describe("restart after the configuration changed", () => {
 		await waitFor(() => replies.length === 2);
 		await session.close();
 		expect(await storedInstructions(storageDir)).toEqual({ "web:t1": "Skills: invoices", "web:t2": "Skills: invoices" });
+	});
+
+	it("an instance policy already on disk while its write is still being flushed counts too", async () => {
+		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
+		const registry = new TenantRegistry(tempDataDir());
+		await registry.createTenant({ id: "acme", name: "Acme" });
+		await registry.createInstance("acme", { id: "ops", name: "Ops", model: DEV, egress: { modelProviders: ["faux", "xai"], channels: ["web"] } });
+		let checks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		// The runtime's policy check, on a real registry; t2's first check waits for the test.
+		const session = await reopen(storageDir, async (provider) => {
+			if (++checks === 2) await held;
+			return (await registry.getInstance("acme", "ops")).egress.modelProviders.includes(provider);
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => checks === 2);
+		let flush = () => {};
+		fsync.held = new Promise<void>((resolve) => (flush = resolve));
+		const renamed = new Promise<void>((resolve) => (fsync.reached = resolve));
+		fsync.dir = dirname(instanceFile(registry.dataDir, tenantId("acme"), instanceId("ops")));
+		const written = registry.setEgress("acme", "ops", { modelProviders: ["faux"], channels: ["web"] });
+		await renamed;
+		release();
+		expect(await reattached).toBe(true);
+		fsync.dir = undefined;
+		flush();
+		await written;
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
+		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		await session.close();
+	});
+
+	it("a provider key removed by another process counts too", async () => {
+		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
+		const dataDir = tempDataDir();
+		const secrets = new TenantSecrets(dataDir, tenantId("acme"));
+		await secrets.set(modelApiKeySecret("xai"), "xai-key");
+		let checks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const session = await reopen(storageDir, async (provider) => {
+			if (++checks === 2) await held;
+			return provider === "faux" || (await secrets.get(modelApiKeySecret(provider))) !== undefined;
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => checks === 2);
+		const url = (file: string) => pathToFileURL(join(process.cwd(), file)).href;
+		const script = [
+			`import { TenantSecrets, modelApiKeySecret } from ${JSON.stringify(url("src/core/secrets.ts"))};`,
+			`import { tenantId } from ${JSON.stringify(url("src/core/ids.ts"))};`,
+			`await new TenantSecrets(${JSON.stringify(dataDir)}, tenantId("acme")).delete(modelApiKeySecret("xai"));`,
+		].join("\n");
+		await promisify(execFile)(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script]);
+		release();
+		expect(await reattached).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
+		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		await session.close();
 	});
 });
