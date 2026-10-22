@@ -1,12 +1,15 @@
 // Starting the app: who is signed in, the agents, the counters, the live events.
 import { $app, api, ApiError, emptyNote, h, mount, route, state, store, toast } from "./common.js";
 import { renderCode, renderLogin } from "./login.js";
-import { finishConnector } from "./pages/connectors.js";
-import { finishGoogle } from "./pages/settings.js";
-import { setupLeft } from "./pages/start.js";
+import { finishGoogle } from "./google.js";
+import { setupLeft } from "./setup.js";
+import { finishConnector } from "./signin.js";
 import { refreshThreads, render, renderRail } from "./shell.js";
 
 // ---------- boot ----------
+// api() says a session is gone with this event (common.js imports nothing): show the login.
+window.addEventListener("annie:unauthorized", () => renderLogin());
+
 export async function boot() {
 	applyTheme();
 	if (location.pathname === "/login") {

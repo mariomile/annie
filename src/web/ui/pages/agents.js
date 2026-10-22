@@ -1,17 +1,10 @@
 // Agenti page.
 import { agentLabel, api, emptyNote, face, faceColor, go, h, head, icon, mount, state, store, toast } from "../common.js";
+import { TONES } from "../tones.js";
 import { refreshInstances, refreshSetup } from "../session.js";
 import { render } from "../shell.js";
 
 // ---------- agenti (ADR 0041) ----------
-export const TONES = [
-	["naturale", "Naturale"],
-	["formale", "Formale, dà del Lei"],
-	["amichevole", "Amichevole"],
-	["conciso", "Conciso"],
-	["scherzoso", "Spiritoso"],
-];
-
 /** Starting points for a new agente: they only fill the form. */
 const AGENT_TEMPLATES = [
 	{ label: "Da zero", name: "", emoji: "", tagline: "", tone: "naturale", about: "" },

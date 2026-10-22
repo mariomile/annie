@@ -1,5 +1,4 @@
 // Helpers, API client, state and routing shared by every page of the console.
-import { renderLogin } from "./login.js";
 
 export const $app = document.getElementById("app");
 
@@ -189,43 +188,11 @@ export function emptyNote(tag, title, ...text) {
 	return h(tag, face(state.instance ?? { id: "annie" }, 40), h("b", title), ...text);
 }
 
-/**
- * An approval card, finished the same way for every kind: the face of the agente asking,
- * and, while it waits, an edge in that agente's colour.
- */
-export function decisionCard(el, inst, pending) {
-	el.querySelector("header")?.prepend(h("span.dossier-face", face(inst, 32)));
-	el.classList.toggle("pending", pending);
-	el.style.setProperty("--glow", faceColor(inst));
-	return el;
-}
-
 /** A tile with a service's first letter, in a colour of its own: the catalog has no logos. */
 export function monogram(name) {
 	const tile = h("span.monogram", { "aria-hidden": "true" }, name.slice(0, 1).toUpperCase());
 	tile.style.setProperty("--tile", FACE_COLORS[faceSeed(name) % FACE_COLORS.length]);
 	return tile;
-}
-
-/** A chip that follows a checkbox: on or off, without reloading the page. */
-export function onOff(box, on, off) {
-	const chip = h("span.chip");
-	const show = () => ((chip.className = box.checked ? "chip ok" : "chip"), (chip.textContent = box.checked ? on : off));
-	box.addEventListener("change", show);
-	show();
-	return chip;
-}
-
-/**
- * A settings card that folds to one line until it is opened: what it is, whether it is on,
- * and a sentence on what it does. The page stays short; the form is one click away.
- */
-export function fold({ title, glyph, chip, lead }, ...body) {
-	return h(
-		"details.card.fold",
-		h("summary", h("span.fold-glyph", icon(glyph)), h("span.fold-text", h("b", title), lead ? h("small", lead) : null), chip, h("span.fold-chevron", icon("down"))),
-		h("div.fold-body", ...body),
-	);
 }
 
 export function toast(text, bad = false) {
@@ -253,7 +220,8 @@ export async function api(path, { method = "GET", body, raw } = {}) {
 	const data = (res.headers.get("content-type") ?? "").includes("json") ? await res.json() : {};
 	if (res.status === 401 && !path.startsWith("/api/login")) {
 		state.me = undefined;
-		renderLogin();
+		// The session shows the login: this module imports nothing.
+		window.dispatchEvent(new Event("annie:unauthorized"));
 		throw new ApiError(401, data.error ?? "Accesso richiesto");
 	}
 	if (!res.ok) throw new ApiError(res.status, data.error ?? `Errore ${res.status}`, data);
@@ -308,25 +276,6 @@ export const state = {
 	events: undefined,
 	onEntry: undefined,
 };
-
-export const PALETTE = [
-	{ id: "inizia", label: "Primi passi", group: "Lavoro", owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft },
-	{ id: "chat", label: "Chat", group: "Lavoro" },
-	{ id: "agenti", label: "Agenti", group: "Lavoro", count: () => (state.instances.length > 1 ? state.instances.length : 0) },
-	{ id: "stanze", label: "Stanze", group: "Lavoro", when: () => state.instances.filter((i) => i.canChat).length > 1 },
-	{ id: "board", label: "Board", group: "Lavoro", count: () => state.boardReview },
-	{ id: "segreteria", label: "Segreteria", group: "Lavoro", when: (i) => i?.hasSegreteria },
-	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", count: () => state.pendingApprovals },
-	{ id: "task", label: "Task e sentinelle", group: "Lavoro" },
-	{ id: "automazioni", label: "Automazioni", group: "Lavoro" },
-	{ id: "file", label: "File", group: "Lavoro" },
-	{ id: "memoria", label: "Memoria", group: "Lavoro" },
-	{ id: "skill", label: "Skill", group: "Lavoro" },
-	{ id: "connettori", label: "Connettori", group: "Gestione", owner: true },
-	{ id: "impostazioni", label: "Impostazioni", group: "Gestione", owner: true },
-	{ id: "persone", label: "Persone", group: "Gestione", owner: true },
-	{ id: "attivita", label: "Attività e spesa", group: "Gestione" },
-];
 
 export function route() {
 	const [view, ...rest] = location.hash.replace(/^#\/?/, "").split("/");

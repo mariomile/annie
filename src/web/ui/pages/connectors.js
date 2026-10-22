@@ -3,27 +3,6 @@ import { agentLabel, api, confirmDialog, emptyNote, h, head, icon, monogram, mou
 import { render } from "../shell.js";
 
 // ---------- connettori ----------
-/** Back from a service's sign-in (ADR 0024): like Google's, the code is in the fragment. */
-export async function finishConnector() {
-	const params = new URLSearchParams(location.hash.slice("#/connettore?".length));
-	history.replaceState(null, "", "/#/connettori");
-	const error = params.get("error");
-	try {
-		const done = await api("/api/connectors/oauth/finish", { method: "POST", body: { state: params.get("state") ?? "", ...(error ? { error } : { code: params.get("code") ?? "" }) } });
-		// The connector's own instance, whatever was selected when the sign-in started.
-		const inst = state.instances.find((i) => i.id === done.instanceId);
-		if (inst) {
-			state.instance = inst;
-			store("annie.instance", inst.id);
-		}
-		if (done.cancelled) return toast(error === "access_denied" ? "Accesso annullato: il connettore resta da collegare" : "Il servizio non ha completato l'accesso: riprova con «Collega»", true);
-		const st = done.status;
-		toast(st?.connected ? `Collegato: Annie ha ${st.tools.length} nuovi strumenti` : `Accesso riuscito, ma il servizio non risponde${st?.error ? `: ${st.error}` : ""}`, !st?.connected);
-	} catch (e) {
-		toast(e.message, true);
-	}
-}
-
 /** Opens the service's sign-in page, or says the connector works already. */
 async function signInConnector(path, name) {
 	const result = await api(path, { method: "POST", body: {} });

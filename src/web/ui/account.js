@@ -1,7 +1,7 @@
 // Account (two-factor).
 import { api, h, mount, state, toast } from "./common.js";
 import { codeInput } from "./login.js";
-import { googleSection } from "./pages/settings.js";
+import { googleSection } from "./google.js";
 import { renderRail } from "./shell.js";
 
 // ---------- account (two-factor) ----------

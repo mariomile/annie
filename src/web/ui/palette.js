@@ -1,14 +1,15 @@
 // Command palette.
-import { api, go, h, icon, mount, PALETTE, state } from "./common.js";
+import { api, go, h, icon, mount, state } from "./common.js";
+import { PAGES } from "./shell.js";
 
 // ---------- command palette (⌘K) ----------
 export function openPalette() {
 	if (!state.me || document.querySelector("dialog.palette")) return;
-	const items = PALETTE.filter((p) => (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance))).map((p) => ({ ...p, icon: p.id, to: [p.id] }));
+	const items = PAGES.filter((p) => (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance))).map((p) => ({ ...p, icon: p.id, to: [p.id] }));
 	// Conversations by title, once something is typed: this agente's chats, and the stanze (loaded now).
 	const chats = state.threads.map((t) => ({ label: t.title, group: "Chat", icon: "chat", to: ["chat", t.id] }));
 	let rooms = [];
-	if (PALETTE.find((p) => p.id === "stanze")?.when()) {
+	if (PAGES.find((p) => p.id === "stanze")?.when()) {
 		void api("/api/rooms")
 			.then(({ rooms: list }) => {
 				rooms = list.map((r) => ({ label: r.title, group: "Stanza", icon: "stanze", to: ["stanze", r.id] }));

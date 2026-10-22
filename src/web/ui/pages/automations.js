@@ -1,6 +1,6 @@
 // Automazioni page.
 import { agentLabel, api, confirmDialog, emptyNote, fmt, h, head, icon, mount, needInstance, state, toast } from "../common.js";
-import { copyBox } from "./settings.js";
+import { copyBox } from "../listen.js";
 import { refreshThreads } from "../shell.js";
 
 // ---------- automazioni (ADR 0060) ----------

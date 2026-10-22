@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { extname, join } from "node:path";
+import { extname, join, sep } from "node:path";
 import { ChannelRefused } from "../channels/types.ts";
 import { SPEECH_CONNECTOR } from "../channels/speech.ts";
 import { IMAGE_CONNECTOR } from "../core/image-generation.ts";
@@ -226,53 +227,17 @@ const MAX_CODE_ATTEMPTS = 5;
 const CODE_LOCK_MS = 10 * 60 * 1000;
 const MAX_UPLOAD = 20 * 1024 * 1024;
 
-const STATIC: Record<string, string> = {
-	"/": "index.html",
-	"/index.html": "index.html",
-	"/login": "index.html",
-	"/app.js": "app.js",
-	"/common.js": "common.js",
-	"/session.js": "session.js",
-	"/login.js": "login.js",
-	"/account.js": "account.js",
-	"/shell.js": "shell.js",
-	"/palette.js": "palette.js",
-	"/listen.js": "listen.js",
-	"/pwa.js": "pwa.js",
-	"/pages/activity.js": "pages/activity.js",
-	"/pages/agents.js": "pages/agents.js",
-	"/pages/approvals.js": "pages/approvals.js",
-	"/pages/automations.js": "pages/automations.js",
-	"/pages/board.js": "pages/board.js",
-	"/pages/chat.js": "pages/chat.js",
-	"/pages/connectors.js": "pages/connectors.js",
-	"/pages/files.js": "pages/files.js",
-	"/pages/memory.js": "pages/memory.js",
-	"/pages/people.js": "pages/people.js",
-	"/pages/rooms.js": "pages/rooms.js",
-	"/pages/segreteria.js": "pages/segreteria.js",
-	"/pages/settings.js": "pages/settings.js",
-	"/pages/skills.js": "pages/skills.js",
-	"/pages/start.js": "pages/start.js",
-	"/pages/tasks.js": "pages/tasks.js",
-	"/app.css": "app.css",
-	"/icon.svg": "icon.svg",
-	"/icon-192.png": "icon-192.png",
-	"/icon-512.png": "icon-512.png",
-	"/icon-maskable-512.png": "icon-maskable-512.png",
-	"/apple-touch-icon.png": "apple-touch-icon.png",
-	"/manifest.webmanifest": "manifest.webmanifest",
-	"/sw.js": "sw.js",
-	"/fonts/archivo-latin.woff2": "fonts/archivo-latin.woff2",
-	"/fonts/archivo-latin-ext.woff2": "fonts/archivo-latin-ext.woff2",
-	"/fonts/monaspace-neon-latin-400.woff2": "fonts/monaspace-neon-latin-400.woff2",
-	"/fonts/monaspace-neon-latin-500.woff2": "fonts/monaspace-neon-latin-500.woff2",
-};
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 /** The web console and web channel of one tenant. */
 export function createWebApp(options: WebAppOptions): Server {
 	const { runtime, tenantId } = options;
+	// Every file of a type in TYPES under the UI directory is served at its own path: a new page needs no entry here.
+	const STATIC: Record<string, string> = { "/": "index.html", "/login": "index.html" };
+	for (const file of readdirSync(options.uiDir, { recursive: true, encoding: "utf8" })) {
+		const name = file.split(sep).join("/");
+		if (extname(name) in TYPES) STATIC[`/${name}`] = name;
+	}
 	const routes: Route[] = [];
 	const automationRate = new AutomationRate();
 	const route = (method: string, path: string, auth: Route["auth"], handler: Handler) =>
@@ -2208,8 +2173,8 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	async function serveStatic(res: ServerResponse, name: string): Promise<void> {
 		const data = await readFile(join(options.uiDir, name));
-		// The service worker is checked for a new version at every visit.
-		const cache = name === "index.html" ? "no-store" : name === "sw.js" ? "no-cache" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
+		// Scripts are checked at every visit (and the service worker with them): the modules of one deploy must load together, never a mix with an older cached one.
+		const cache = name === "index.html" ? "no-store" : extname(name) === ".js" ? "no-cache" : name.startsWith("fonts/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
 		res.writeHead(200, { "content-type": TYPES[extname(name)] ?? "application/octet-stream", "cache-control": cache });
 		res.end(data);
 	}

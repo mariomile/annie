@@ -116,3 +116,8 @@ export function listenButton(text) {
 	return button;
 }
 
+/** A value to copy into another service's dashboard. */
+export function copyBox(value, what) {
+	const input = h("input", { type: "text", class: "mono", readonly: true, value });
+	return h("div.link-box", input, h("button.btn.ghost", { onclick: async () => (await navigator.clipboard.writeText(value).catch(() => input.select()), toast(`${what} copiato`)) }, "Copia"));
+}

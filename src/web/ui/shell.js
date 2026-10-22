@@ -1,6 +1,6 @@
 // Shell: sidebar, account menu, theme.
 import { accountDialog } from "./account.js";
-import { $app, api, ApiError, emptyNote, face, fmt, go, h, icon, initials, mount, PALETTE, route, state, store, toast } from "./common.js";
+import { $app, api, ApiError, emptyNote, face, fmt, go, h, icon, initials, mount, route, state, store, toast } from "./common.js";
 import { renderLogin } from "./login.js";
 import { viewActivity } from "./pages/activity.js";
 import { agentForm, viewAgents } from "./pages/agents.js";
@@ -23,15 +23,37 @@ import { install, installed, installOffer } from "./pwa.js";
 import { applyTheme, refreshSetup } from "./session.js";
 
 // ---------- shell ----------
-/** Sections reached from the sidebar; the rest (management, account) sits in the account menu. */
-const SIDEBAR = new Set(["inizia", "agenti", "stanze", "board", "segreteria", "approvazioni", "task", "automazioni", "file", "memoria", "skill"]);
+/**
+ * Every page of the console, in the order of the sidebar and of the command palette. `sidebar`: reached
+ * from the sidebar (the rest sits in the account menu). `owner`: only for the owner. `when(instance)`:
+ * shown only then. `count()`: the number beside it. A new page is its file in pages/, one row here and
+ * one line in sw.js.
+ */
+export const PAGES = [
+	{ id: "inizia", label: "Primi passi", group: "Lavoro", sidebar: true, owner: true, when: () => state.setupLeft > 0, count: () => state.setupLeft, view: viewStart },
+	{ id: "chat", label: "Chat", group: "Lavoro", view: viewChat },
+	{ id: "agenti", label: "Agenti", group: "Lavoro", sidebar: true, count: () => (state.instances.length > 1 ? state.instances.length : 0), view: viewAgents },
+	{ id: "stanze", label: "Stanze", group: "Lavoro", sidebar: true, when: () => state.instances.filter((i) => i.canChat).length > 1, view: viewRooms },
+	{ id: "board", label: "Board", group: "Lavoro", sidebar: true, count: () => state.boardReview, view: viewBoard },
+	{ id: "segreteria", label: "Segreteria", group: "Lavoro", sidebar: true, when: (i) => i?.hasSegreteria, view: viewSegreteria },
+	{ id: "approvazioni", label: "Approvazioni", group: "Lavoro", sidebar: true, count: () => state.pendingApprovals, view: viewApprovals },
+	{ id: "task", label: "Task e sentinelle", group: "Lavoro", sidebar: true, view: viewTasks },
+	{ id: "automazioni", label: "Automazioni", group: "Lavoro", sidebar: true, view: viewAutomations },
+	{ id: "file", label: "File", group: "Lavoro", sidebar: true, view: viewFiles },
+	{ id: "memoria", label: "Memoria", group: "Lavoro", sidebar: true, view: viewMemory },
+	{ id: "skill", label: "Skill", group: "Lavoro", sidebar: true, view: viewSkills },
+	{ id: "connettori", label: "Connettori", group: "Gestione", owner: true, view: viewConnectors },
+	{ id: "impostazioni", label: "Impostazioni", group: "Gestione", owner: true, view: viewSettings },
+	{ id: "persone", label: "Persone", group: "Gestione", owner: true, view: viewPeople },
+	{ id: "attivita", label: "Attività e spesa", group: "Gestione", view: viewActivity },
+];
 const railPhone = matchMedia("(max-width: 860px)");
 railPhone.addEventListener("change", syncRailControls);
 
 export function render() {
 	if (!state.me) return renderLogin();
 	const { view } = route();
-	const item = PALETTE.find((p) => p.id === view) ?? PALETTE.find((p) => p.id === "chat");
+	const item = PAGES.find((p) => p.id === view) ?? PAGES.find((p) => p.id === "chat");
 	if (item.owner && state.me.role !== "owner") return go("chat");
 	closeMenu();
 	closeModelMenu();
@@ -60,8 +82,7 @@ export function render() {
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
 	state.onRoom = undefined;
-	const views = { inizia: viewStart, chat: viewChat, stanze: viewRooms, segreteria: viewSegreteria, approvazioni: viewApprovals, task: viewTasks, automazioni: viewAutomations, file: viewFiles, memoria: viewMemory, skill: viewSkills, agenti: viewAgents, board: viewBoard, connettori: viewConnectors, impostazioni: viewSettings, persone: viewPeople, attivita: viewActivity };
-	(views[item.id] ?? viewChat)(main).catch((error) => {
+	item.view(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, emptyNote("div.empty", "Qualcosa non va", error.message));
 	});
@@ -129,7 +150,7 @@ export function renderRail() {
 	if (!rail) return;
 	const scrollTop = rail.querySelector(".rail-scroll")?.scrollTop ?? 0;
 	const { view, rest } = route();
-	const items = PALETTE.filter((p) => SIDEBAR.has(p.id) && (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
+	const items = PAGES.filter((p) => p.sidebar && (!p.owner || state.me.role === "owner") && (!p.when || p.when(state.instance)));
 	const nav = h("nav.sections", { "aria-label": "Sezioni" });
 	for (const item of items) {
 		const count = item.count?.() ?? 0;
@@ -244,7 +265,7 @@ function openMenu() {
 			h("span", label),
 		);
 	const section = (id) => {
-		const item = PALETTE.find((p) => p.id === id);
+		const item = PAGES.find((p) => p.id === id);
 		return !item.owner || owner ? entry(id, item.label, () => go(id), view === id) : null;
 	};
 	const menu = h(

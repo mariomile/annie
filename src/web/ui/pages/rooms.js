@@ -1,6 +1,6 @@
 // Stanze pages.
 import { api, confirmDialog, emptyNote, face, faceColor, fmt, go, h, head, icon, mount, route, state, store, thinking, toast } from "../common.js";
-import { agentCommands, commandMenu } from "./chat.js";
+import { agentCommands, commandMenu } from "../commands.js";
 
 // ---------- stanze (ADR 0063) ----------
 export async function viewRooms(main) {

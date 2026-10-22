@@ -1,73 +1,33 @@
 // Impostazioni page, with the cards for each capability and channel.
-import { agentLabel, api, confirmDialog, face, fold, go, h, head, icon, mount, needInstance, onOff, route, state, store, toast } from "../common.js";
-import { copyButton } from "../listen.js";
-import { TONES } from "./agents.js";
-import { chatModelCache } from "./chat.js";
+import { agentLabel, api, confirmDialog, face, go, h, head, icon, mount, needInstance, route, state, store, toast } from "../common.js";
+import { copyBox, copyButton } from "../listen.js";
+import { chatModelCache, modelFacts, subscriptionState } from "../models.js";
+import { TONES } from "../tones.js";
 import { refreshInstances, setupHidden } from "../session.js";
 import { render } from "../shell.js";
 
-// ---------- Google ----------
-/** Back from Google's consent: the code is in the fragment, the session in our cookie. */
-export async function finishGoogle() {
-	const params = new URLSearchParams(location.hash.slice("#/google?".length));
-	history.replaceState(null, "", "/#/chat");
-	if (params.get("error")) return toast(params.get("error") === "access_denied" ? "Collegamento a Google annullato" : "Google non ha completato il collegamento: riprova", true);
-	try {
-		const { account } = await api("/api/google/finish", { method: "POST", body: { state: params.get("state") ?? "", code: params.get("code") ?? "" } });
-		toast(`Google collegato: ${account.email}`);
-	} catch (error) {
-		toast(error.message, true);
-	}
+/** A chip that follows a checkbox: on or off, without reloading the page. */
+function onOff(box, on, off) {
+	const chip = h("span.chip");
+	const show = () => ((chip.className = box.checked ? "chip ok" : "chip"), (chip.textContent = box.checked ? on : off));
+	box.addEventListener("change", show);
+	show();
+	return chip;
 }
 
-async function connectGoogle() {
-	try {
-		location.assign((await api("/api/google/start", { method: "POST", body: {} })).url);
-	} catch (error) {
-		toast(error.message, true);
-	}
+/**
+ * A settings card that folds to one line until it is opened: what it is, whether it is on,
+ * and a sentence on what it does. The page stays short; the form is one click away.
+ */
+function fold({ title, glyph, chip, lead }, ...body) {
+	return h(
+		"details.card.fold",
+		h("summary", h("span.fold-glyph", icon(glyph)), h("span.fold-text", h("b", title), lead ? h("small", lead) : null), chip, h("span.fold-chevron", icon("down"))),
+		h("div.fold-body", ...body),
+	);
 }
 
-/** The person's own Google account, in the account dialog. */
-export function googleSection() {
-	const box = h("div.card.pad.stack");
-	const draw = async () => {
-		const { available, account, services, write } = await api("/api/google");
-		if (!available) return box.remove();
-		const what = services.length > 1 ? "la tua posta e il tuo calendario" : services[0] === "gmail" ? "la tua posta" : "il tuo calendario";
-		if (account) {
-			mount(box, 
-				h("h3.section-title", "Google"),
-				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
-				h("p.muted", write && account.canWrite ? `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Può preparare mail ed eventi, che partono solo quando li approvi tu.` : `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
-				write && !account.canWrite ? h("p", "Per far preparare ad Annie mail ed eventi (che approvi tu), ricollega Google lasciando spuntati tutti i permessi.") : null,
-				h(
-					"div.actions",
-					write && !account.canWrite ? h("button.btn.accent", { onclick: () => void connectGoogle() }, "Ricollega Google") : null,
-					h(
-						"button.btn.danger",
-						{
-							onclick: async () => {
-								await api("/api/google", { method: "DELETE" }).catch((e) => toast(e.message, true));
-								toast("Google scollegato");
-								await draw();
-							},
-						},
-						"Scollega",
-					),
-				),
-			);
-			return;
-		}
-		mount(box, 
-			h("h3.section-title", "Google"),
-			h("p", write ? `Collega Google: Annie potrà leggere ${what} quando glielo chiedi dalla console, e preparare mail ed eventi che partono solo dopo la tua approvazione.` : `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
-			h("div.actions", h("button.btn.accent", { onclick: () => void connectGoogle() }, "Collega Google")),
-		);
-	};
-	void draw().catch(() => box.remove());
-	return box;
-}
+
 
 /** Owner: whether this instance may use people's Google accounts (its egress policy). */
 function googleCard(inst, allowed) {
@@ -257,18 +217,6 @@ function modelCard(inst, current, providers) {
 	return card;
 }
 
-/** Connection state comes from the local CLI, never from a saved UI preference. */
-function subscriptionState(provider) {
-	if (provider.connected) return { label: "Connesso", tone: "ok" };
-	return {
-		connecting: { label: "Accesso in corso", tone: "warn" },
-		"not-installed": { label: "Da installare", tone: "" },
-		"login-required": { label: "Accesso richiesto", tone: "warn" },
-		unavailable: { label: "Non disponibile", tone: "warn" },
-		disconnected: { label: "Scollegato", tone: "" },
-	}[provider.status] ?? { label: "Non verificato", tone: "warn" };
-}
-
 /** The account's subscriptions, with the existing per-agent model and API-key editor below. */
 function providersCard(inst, initial, initialModels) {
 	let catalog = initial;
@@ -364,28 +312,9 @@ function providersCard(inst, initial, initialModels) {
 	return card;
 }
 
-/** First steps make the automatic detection visible, with management in Settings. */
-export function providerOverview(catalog) {
-	const subscriptions = (catalog.providers ?? []).filter((p) => p.kind === "subscription");
-	if (!catalog.localEnabled || subscriptions.length === 0) return null;
-	return h("section.card.pad.provider-overview", h("div.settings-heading", h("div", h("h2", "I tuoi provider AI"), h("p.muted", "Annie riconosce gli accessi già presenti su questo computer e usa il tuo abbonamento.")), h("a.btn.ghost", { href: "#/impostazioni/providers" }, "Gestisci provider")),
-		h("div.provider-overview-list", subscriptions.map((p) => {
-			const status = subscriptionState(p);
-			return h("div.row-gap", h("b", p.label), h(`span.chip${status.tone ? `.${status.tone}` : ""}`, status.label));
-		})),
-	);
-}
-
 /** «Claude Sonnet 5.5 · foto · ragiona · entrata $3 · uscita $15 per M token»: what tells two models apart. */
 function modelLabel(m, withId, subscription = false) {
 	return `${withId ? `${m.name} (${m.id})` : m.name} · ${modelFacts(m, subscription)}`;
-}
-
-/** What a model does and costs: «foto · ragiona · entrata $3 · uscita $15 per M token». */
-export function modelFacts(m, subscription = false) {
-	const usd = (n) => `$${n < 1 ? Number(n.toFixed(2)) : Math.round(n * 10) / 10}`;
-	const price = subscription ? "nel tuo abbonamento" : m.inputUsd > 0 || m.outputUsd > 0 ? `entrata ${usd(m.inputUsd)} · uscita ${usd(m.outputUsd)} per M token` : "gratis";
-	return [m.images ? "foto" : null, m.reasoning ? "ragiona" : null, price].filter(Boolean).join(" · ");
 }
 
 /** Owner: voice messages of this instance transcribed by the server's service. */
@@ -852,12 +781,6 @@ function telegramCard(inst, t) {
 		h("label.field", h("span", "Chi approva"), approvers, h("small", "Ricevono su Telegram le schede dei tool da approvare.")),
 		h("div.actions", h("button.btn.accent", { onclick: save }, t.connected ? "Salva" : "Collega"), t.connected ? h("button.btn.danger", { onclick: disconnect }, "Scollega") : null),
 	);
-}
-
-/** A value to copy into another service's dashboard. */
-export function copyBox(value, what) {
-	const input = h("input", { type: "text", class: "mono", readonly: true, value });
-	return h("div.link-box", input, h("button.btn.ghost", { onclick: async () => (await navigator.clipboard.writeText(value).catch(() => input.select()), toast(`${what} copiato`)) }, "Copia"));
 }
 
 /** The instance's WhatsApp number (Meta Cloud API): token and app secret go in once and never come back. */

@@ -387,7 +387,7 @@ p.chip { display: flex; white-space: normal; line-height: 1.4; border-radius: 7p
 .empty:not(.card) { max-width: 520px; margin-inline: auto; }
 .card.empty { padding-inline: max(24px, calc((100% - 620px) / 2)); border-style: dashed; border-color: var(--border-2); background: transparent; }
 .card .empty { padding-block: 36px; }
-/* Settings that fold to one line (fold() in app.js). */
+/* Settings that fold to one line (fold() in pages/settings.js). */
 details.fold > summary { list-style: none; margin: 0; color: var(--fg); font-size: inherit; display: flex; align-items: center; gap: 14px; padding: 14px 18px; cursor: pointer; border-radius: 10px; transition: background 0.15s var(--ease); }
 details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > summary:hover { background: var(--hover); }
