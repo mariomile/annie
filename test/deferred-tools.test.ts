@@ -103,7 +103,7 @@ describe("deferred tools (ADR 0100)", () => {
 					return piDurableEngine.open(options);
 				},
 			};
-			const config = loadAnnieConfig({ ANNIE_DATA_DIR: mkdtempSync(join(tmpdir(), "annie-deferred-")), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
+			const config = loadAnnieConfig({ ANNIE_DATA_DIR: mkdtempSync(join(tmpdir(), "annie-deferred-")), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", ANNIE_GOOGLE_CLIENT_ID: "id", ANNIE_GOOGLE_CLIENT_SECRET: "secret", ANNIE_GOOGLE_WRITE: "1" });
 			const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { engine, schedulerIntervalMs: 3_600_000, log: () => {} });
 			await annie.stop();
 			return tools;
@@ -121,9 +121,13 @@ describe("deferred tools (ADR 0100)", () => {
 				[eager("schedule_create"), "schedule_create", ["recurring_invoices", "clients follow_up", "appointments reminders", "renewals"]],
 				[eager("file_search"), "file_search", ["invoices, not this"]],
 				[eager("image_view"), "image_view", ["expenses add"]],
+				// The Google tools, present when Google is connected, send to the registers.
+				[eager("google_mail_send"), "google_mail_send", ["quotes op send", "invoices op reminder"]],
+				[eager("google_calendar_events"), "google_calendar_events", ["appointments agenda"]],
+				[eager("google_calendar_create"), "google_calendar_create", ["fiscal_agenda export_ics"]],
 				// A register sends to another register or to an eager tool.
 				[entry("invoices"), "invoices", ["non file_search", "reminder", "bank_statement"]],
-				[entry("quotes"), "quotes", ["price_list", "sales_invoices"]],
+				[entry("quotes"), "quotes", ["price_list", "sales_invoices", "quotes con op send", "google_mail_send"]],
 				[entry("expenses"), "expenses", ["renewals"]],
 				[entry("timesheet"), "timesheet", ["to_quote", "sales_invoices"]],
 				[entry("price_list"), "price_list", ["purchase_prices", "stock", "price_change"]],
@@ -140,10 +144,10 @@ describe("deferred tools (ADR 0100)", () => {
 				[entry("margins"), "margins", ["price_list", "purchase_prices", "business_report", "price_change"]],
 				[entry("stock"), "stock", ["receive_invoice", "orders suggest"]],
 				[entry("orders"), "orders", ["stock", "received", "file_send"]],
-				[entry("fiscal_agenda"), "fiscal_agenda", ["appointments", "schedule_create", "google_calendar_create"]],
+				[entry("fiscal_agenda"), "fiscal_agenda", ["appointments", "schedule_create", "google_calendar_create", "fiscal_agenda export_ics"]],
 				[entry("sales_invoices"), "sales_invoices", ["preventivo", "ore", "DDT", "appuntamenti", "recurring_invoices"]],
 				[entry("ddt"), "ddt", ["magazzino", "credit_note", "sales_invoices"]],
-				[entry("appointments"), "appointments", ["appointments reminders, non schedule_create", "fiscal_agenda", "settings", "sales_invoices"]],
+				[entry("appointments"), "appointments", ["appointments reminders, non schedule_create", "fiscal_agenda", "settings", "sales_invoices", "appointments agenda", "google_calendar_events"]],
 				[entry("staff"), "staff", ["appointments settings"]],
 				[entry("recurring_invoices"), "recurring_invoices", ["schedule_create", "renewals", "sales_invoices"]],
 			];
