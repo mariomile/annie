@@ -966,6 +966,8 @@ describe("renewals in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		// The registers are deferred (ADR 0100): loaded first, as the model does.
+		await reply('/tool tool_search {"query":"renewals expenses"}');
 		expect(await reply('/tool renewals {"op":"add","name":"Assicurazione Zeta","amount":"480","frequency":"annuale","due":"fine mese"}')).toContain("Aggiunto il rinnovo R-0001");
 		expect(await reply('/tool renewals {"op":"renewed","id":"l\'assicurazione zeta","record_expense":true}')).toContain("Registrata anche la spesa S-");
 		expect(await reply('/tool expenses {"op":"list"}')).toContain("Spese: 1 spesa");

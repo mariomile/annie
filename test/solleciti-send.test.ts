@@ -449,6 +449,8 @@ describe("solleciti in the app", () => {
 			}
 			throw new Error("no reply");
 		};
+		// The registers are deferred (ADR 0100): loaded first, as the model does.
+		await reply('/tool tool_search {"query":"invoices"}');
 		await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		const asked = await reply('/tool invoices {"op":"reminder","party":"gamma","send":true}');
 		expect(asked).toContain("Ho preparato una richiesta di invio");

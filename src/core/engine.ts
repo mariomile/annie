@@ -114,6 +114,8 @@ export type AnnieTool = {
 	 * stored result instead of running again. false: the model gets an "interrupted" result.
 	 */
 	readonly replaySafe: boolean;
+	/** true: not offered to the model until it finds it with tool_search (ADR 0100). */
+	readonly deferred?: true;
 	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 };
 

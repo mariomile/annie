@@ -1400,6 +1400,8 @@ describe("cashflow in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		// The registers are deferred (ADR 0100): loaded first, as the model does.
+		await reply('/tool tool_search {"query":"renewals cashflow"}');
 		expect(await reply('/tool renewals {"op":"add","name":"Assicurazione Zeta","amount":"480","frequency":"annuale","due":"10/11/2026"}')).toContain("Aggiunto il rinnovo R-0001");
 		expect(await reply('/tool cashflow {"op":"set_balance","amount":"7654,32"}')).toContain("Fatto, saldo");
 		expect(await reply('/tool cashflow {"op":"forecast"}')).toContain("rinnovi e abbonamenti 480,00 €");

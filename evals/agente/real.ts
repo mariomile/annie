@@ -69,7 +69,8 @@ for (const c of cases) {
 	}
 	const turn = found.turn;
 	const tools = [...(turn.tools ?? [])];
-	const firstTool = tools[0] ?? null;
+	// tool_search only loads a deferred tool (ADR 0100): the first tool is the first one it then uses.
+	const firstTool = tools.find((t) => t !== "tool_search") ?? tools[0] ?? null;
 	const ok = c.expect.length === 0 ? firstTool === null : firstTool !== null && c.expect.includes(firstTool);
 	rows.push({ id: c.id, expect: c.expect, tools, firstTool, ok, costUsd: turn.estimatedUsd, modelCalls: turn.modelCalls ?? 0 });
 	console.log(`${ok ? "✓" : "✗"} ${c.id}: ${firstTool ?? "(nessuno)"}${ok ? "" : `, atteso ${c.expect.length === 0 ? "nessuno" : c.expect.join(" o ")}`}`);

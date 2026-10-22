@@ -1218,6 +1218,8 @@ describe("clients in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		// The registers are deferred (ADR 0100): loaded first, as the model does.
+		await reply('/tool tool_search {"query":"clients"}');
 		expect(await reply('/tool clients {"op":"upsert","client":"Rossi Srl","contact":{"name":"Marco","phone":"333 7654321"}}')).toContain("Fatto, ho creato la scheda CL-0001.");
 		expect(await reply('/tool clients {"op":"follow_up","client":"Rossi Srl","when":"il 3 novembre 2027"}')).toContain("Te lo ricordo quel giorno alle 9");
 		expect(await reply('/tool clients {"op":"export"}')).toContain("Salvato clienti/clienti-al-");

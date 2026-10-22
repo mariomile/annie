@@ -133,6 +133,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Stanze: una conversazione della console fra una persona e da 2 a 5 agenti, che chiama chi le serve con @nome (o @tutti); ogni agente riceve quello che si è perso, e può chiamarne un altro, al più 3 volte di fila ([ADR 0063](adr/0063-stanze.md))
 - [x] Squadre pronte: dalla pagina Agenti, tre agenti con un compito ciascuno (Contenuti, Vendite, Amministrazione) che si scrivono fra loro, con una stanza; chi coordina divide il lavoro anche in sotto-schede ([ADR 0068](adr/0068-squadre-pronte.md))
 - [x] Agente misurabile: l'ora e la memoria a ogni richiesta al modello, non nel testo salvato ([ADR 0097](adr/0097-contesto-del-turno.md)); per ogni turno token, costo e strumenti nel registro dei costi, con `pnpm annie usage` per gli ultimi 7 giorni ([ADR 0098](adr/0098-quanto-costa-un-turno.md)); eval dell'agente generale, che ogni notte misura col modello vero se sceglie lo strumento giusto ([ADR 0099](adr/0099-eval-dell-agente.md)). Serve `ANNIE_JUDGE_MODEL_KEY` tra i secret del repo
+- [x] I 25 registri dell'attività non sono più offerti al modello a ogni richiesta: li carica con `tool_search` quando un turno li usa, circa 35 mila token in meno per tutti gli altri ([ADR 0100](adr/0100-strumenti-caricati-su-richiesta.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo

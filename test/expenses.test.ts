@@ -820,6 +820,8 @@ describe("expenses in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		// The registers are deferred (ADR 0100): loaded first, as the model does.
+		await reply('/tool tool_search {"query":"expenses"}');
 		const answer = await reply('/tool expenses {"op":"add","amount":"42,50","vat_rate":22,"supplier":"Distributore Zeta","category":"benzina"}');
 		expect(answer).toContain("Registrata la spesa S-");
 		expect(await reply('/tool expenses {"op":"summary"}')).toContain("Totale: 42,50 €");

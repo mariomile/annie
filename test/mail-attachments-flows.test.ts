@@ -494,6 +494,8 @@ describe("attachments in the app, through the approval card", () => {
 			}
 			throw new Error("no outcome");
 		};
+		// The registers are deferred (ADR 0100): loaded first, as the model does.
+		await reply('/tool tool_search {"query":"invoices quotes"}');
 		await reply('/tool invoices {"op":"set_company","vat":"00000520031","name":"Beta Ristorazione Srl","address":"Via Roma 1, Milano"}');
 		const year = todayIn(config.timeZone).slice(0, 4);
 		const decide = async (id: string, decision: string) => (await api(`/api/instances/${config.instanceId}/google-actions/${id}/decision`, { decision })).action;

@@ -35,6 +35,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { createToolSearchTool } from "@earendil-works/pi-durable/tool-search";
 import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
 import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue, TurnUsage } from "../engine.ts";
 import type { ModelSelection } from "../registry.ts";
@@ -137,6 +138,9 @@ export const piDurableEngine: DurableEngine = {
 				],
 			}),
 		);
+		// Deferred tools are found and loaded by the model with tool_search (ADR 0100).
+		const deferred = options.tools.filter((tool) => tool.deferred === true);
+		if (deferred.length > 0) registry.install(defineExtension({ name: "tool-search", tools: [toolSearch(deferred)] }));
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		const harness = await Harness.open(storage, { models, registry }, context);
@@ -384,12 +388,33 @@ class PiDurableSession implements EngineSession {
 	}
 }
 
+/**
+ * Pi Durable's tool_search (ADR 0100), with two changes. Its description lists the deferred tools,
+ * so the model knows them whatever an instance's stored instructions say. A query made only of
+ * their exact names loads those alone; BM25 ranks a name below its neighbours and would load eight.
+ */
+function toolSearch(deferred: readonly AnnieTool[]): ReturnType<typeof createToolSearchTool> {
+	const base = createToolSearchTool();
+	const names = new Set(deferred.map((tool) => tool.name));
+	const what = (description: string) => (description.split(/(?<=\.)\s|\n/)[0] ?? "").slice(0, 140);
+	return {
+		...base,
+		description: `Carica gli strumenti che non ti sono dati all'inizio: li hai dalla chiamata dopo e restano per tutta la conversazione. Cerca col nome esatto, uno o più separati da spazi: carica solo quelli. Sono:\n${deferred.map((tool) => `- ${tool.name}: ${what(tool.description)}`).join("\n")}`,
+		async execute(args, api, context) {
+			const words = args.query.split(/[\s,]+/).filter((word) => word !== "");
+			if (words.length === 0 || !words.every((word) => names.has(word))) return base.execute({ ...args, limit: args.limit ?? 3 }, api, context);
+			return { output: [{ type: "text", text: `Caricati: ${words.join(", ")}. Li hai dalla prossima chiamata.` }], details: { loaded: words }, control: { addTools: words } };
+		},
+	};
+}
+
 function toPiTool(tool: AnnieTool): ToolRegistration {
 	return defineTool({
 		name: tool.name,
 		description: tool.description,
 		parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters as never),
 		replay: tool.replaySafe ? "safe" : "unsafe",
+		...(tool.deferred === true ? { deferred: true as const } : {}),
 		execute: async (args, api, callContext) => {
 			const threadKey = await threadKeyOf(api, api.conversationId, callContext);
 			const at = threadKey?.indexOf(":") ?? -1;
