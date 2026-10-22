@@ -164,6 +164,12 @@ const reopenOnGrok = (storageDir: string, modelUsable?: EngineOpenOptions["model
 const reopen = (storageDir: string, modelUsable?: EngineOpenOptions["modelUsable"]) =>
 	piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [hold(false)], ...(modelUsable === undefined ? {} : { modelUsable }) });
 
+/** The runtime's check on a real secret store: the keys read once, the local model needs none. */
+const keysIn = (secrets: TenantSecrets) => () => {
+	const keys = secrets.namesNow();
+	return (provider: string) => provider === "faux" || keys.has(modelApiKeySecret(provider));
+};
+
 describe("restart after the configuration changed", () => {
 	it("resume(): every pending conversation is aligned before any of them runs again", async () => {
 		const { storageDir } = await leftMidTurn();
@@ -219,7 +225,7 @@ describe("restart after the configuration changed", () => {
 			ids: [s1],
 		} = await leftOnOwnModel();
 		let usable = true;
-		const session = await reopenOnGrok(storageDir, () => usable);
+		const session = await reopenOnGrok(storageDir, () => () => usable);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		usable = false;
@@ -234,7 +240,7 @@ describe("restart after the configuration changed", () => {
 		let checks = 0;
 		const session = await reopenOnGrok(storageDir, () => {
 			if (++checks <= 2) throw new Error("provider check down");
-			return true;
+			return () => true;
 		});
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
@@ -272,7 +278,7 @@ describe("restart after the configuration changed", () => {
 		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
 		await secrets.set(modelApiKeySecret("xai"), "xai-key");
 		// The runtime's check, on a real secret store; reading t2's model waits for the test.
-		const session = await reopen(storageDir, (provider) => provider === "faux" || secrets.has(modelApiKeySecret(provider)));
+		const session = await reopen(storageDir, keysIn(secrets));
 		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
@@ -313,7 +319,10 @@ describe("restart after the configuration changed", () => {
 		await registry.createTenant({ id: "acme", name: "Acme" });
 		await registry.createInstance("acme", { id: "ops", name: "Ops", model: DEV, egress: { modelProviders: ["faux", "xai"], channels: ["web"] } });
 		// The runtime's policy check, on a real registry; reading t2's model waits for the test.
-		const session = await reopen(storageDir, (provider) => registry.getInstanceSync("acme", "ops").egress.modelProviders.includes(provider));
+		const session = await reopen(storageDir, () => {
+			const allowed = registry.getInstanceSync("acme", "ops").egress.modelProviders;
+			return (provider) => allowed.includes(provider);
+		});
 		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
@@ -342,7 +351,7 @@ describe("restart after the configuration changed", () => {
 		const dataDir = tempDataDir();
 		const secrets = new TenantSecrets(dataDir, tenantId("acme"));
 		await secrets.set(modelApiKeySecret("xai"), "xai-key");
-		const session = await reopen(storageDir, (provider) => provider === "faux" || secrets.has(modelApiKeySecret(provider)));
+		const session = await reopen(storageDir, keysIn(secrets));
 		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
@@ -387,7 +396,7 @@ describe("restart after the configuration changed", () => {
 		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
 		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
 		await secrets.set(modelApiKeySecret("xai"), "xai-key");
-		const session = await reopen(storageDir, (provider) => provider === "faux" || secrets.has(modelApiKeySecret(provider)));
+		const session = await reopen(storageDir, keysIn(secrets));
 		// t2 on the local model, which needs no key: only t1 depends on xAI's.
 		await session.setThreadModel("web:t2", DEV);
 		const { release } = holdChatModelRead(4);
@@ -402,6 +411,43 @@ describe("restart after the configuration changed", () => {
 		await waitFor(() => replies.length === 2);
 		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
 		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		await session.close();
+	});
+
+	it("the chats resolved in one step all see the same policy, even with one published at every read", async () => {
+		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
+		// Each read of the policy sees a newer one, as if a rename landed right before it. A step is
+		// what runs before the next microtask: chats resolved in it must have read one version.
+		let version = 0;
+		let step = 0;
+		let open = false;
+		const seen: { step: number; version: number }[] = [];
+		const session = await reopen(storageDir, () => {
+			if (!open) {
+				open = true;
+				step++;
+				queueMicrotask(() => (open = false));
+			}
+			const read = ++version;
+			return () => {
+				seen.push({ step, version: read });
+				return true;
+			};
+		});
+		// t2 on the local model, t1 on xAI: the two of Sol's repro.
+		await session.setThreadModel("web:t2", DEV);
+		seen.length = 0;
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		expect(await session.reattach(ids[0]!, "web:t1")).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		const steps = new Map<number, Set<number>>();
+		for (const { step, version } of seen) steps.set(step, (steps.get(step) ?? new Set()).add(version));
+		// The pass that aligned, the pass that found nothing to align, the check right before the start.
+		expect(steps.size).toBe(3);
+		for (const versions of steps.values()) expect(versions.size).toBe(1);
+		expect(seen).toHaveLength(6);
 		await session.close();
 	});
 });

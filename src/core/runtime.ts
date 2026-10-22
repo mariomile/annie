@@ -538,13 +538,19 @@ export class AnnieRuntime {
 		}
 		const secrets = this.secrets(record.tenantId);
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
-		// A model can answer: its provider allowed by the policy now, and a key for it (none for the local one).
-		const reachable = (provider: string) => {
+		// Which models can answer: provider allowed by the policy, and a key for it (none for the local
+		// one). Policy and keys are read once, so every chat checked with it sees the same moment.
+		const reachable = (): ((provider: string) => boolean) => {
+			let allowed: readonly string[];
+			let keys: Set<string>;
 			try {
-				return this.registry.getInstanceSync(record.tenantId, record.id).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? this.localProviders(record.tenantId)?.connected(provider) === true : secrets.has(modelApiKeySecret(provider))));
+				allowed = this.registry.getInstanceSync(record.tenantId, record.id).egress.modelProviders;
+				keys = secrets.namesNow();
 			} catch {
-				return false;
+				return () => false;
 			}
+			const local = this.localProviders(record.tenantId);
+			return (provider) => allowed.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? local?.connected(provider) === true : keys.has(modelApiKeySecret(provider))));
 		};
 		const storageDir = engineDir(this.options.dataDir, record.tenantId, record.id);
 		await mkdir(storageDir, { recursive: true });
@@ -622,7 +628,7 @@ export class AnnieInstance {
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
 		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
-		private readonly reachable: (provider: string) => boolean,
+		private readonly reachable: () => (provider: string) => boolean,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
 		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore },
 		private readonly emit: (reply: Reply) => void,
@@ -802,12 +808,12 @@ export class AnnieInstance {
 	 */
 	async chatModel(channel: string, threadId: string): Promise<ModelSelection | undefined> {
 		const own = await this.session.threadModel(threadKey(channel, threadId));
-		return own !== undefined && this.reachable(own.provider) ? own : undefined;
+		return own !== undefined && this.reachable()(own.provider) ? own : undefined;
 	}
 
 	/** Give a chat its own model, from its next message; undefined: the instance's again. */
 	async setChatModel(channel: string, threadId: string, model: ModelSelection | undefined, by: string): Promise<void> {
-		if (model !== undefined && !this.reachable(model.provider)) throw new EgressDenied("model_provider", model.provider);
+		if (model !== undefined && !this.reachable()(model.provider)) throw new EgressDenied("model_provider", model.provider);
 		await this.session.setThreadModel(threadKey(channel, threadId), model);
 		await this.audit.append({ type: "chat.model.updated", instanceId: this.record.id, channel, threadId, by, ...(model === undefined ? {} : { modelProvider: model.provider, modelId: model.modelId }) });
 	}

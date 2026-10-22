@@ -221,8 +221,9 @@ class PiDurableSession implements EngineSession {
 		const own = await Promise.all([...threadKeys].map(async ([id, threadKey]) => ({ id, selection: await this.threadModel(threadKey) })));
 		const targets = () => {
 			const instructions = this.instructionsNow();
+			const usable = this.usableNow();
 			return own.map(({ id, selection }) => {
-				const model = this.modelFor(selection);
+				const model = this.modelFor(selection, usable);
 				return { id, model, instructions, key: JSON.stringify([model.provider, model.modelId, instructions ?? null]) };
 			});
 		};
@@ -342,11 +343,17 @@ class PiDurableSession implements EngineSession {
 	 * A provider this version no longer offers counts as one that cannot answer.
 	 */
 	private async modelOf(threadKey: string): Promise<ModelSelection> {
-		return this.modelFor(await this.threadModel(threadKey));
+		const own = await this.threadModel(threadKey);
+		return this.modelFor(own, this.usableNow());
 	}
 
-	private modelFor(own: ModelSelection | undefined): ModelSelection {
-		if (own !== undefined && this.register(own.provider) && (this.options.modelUsable?.(own.provider) ?? true)) return own;
+	/** Which providers can answer, as they are at this one moment. */
+	private usableNow(): (provider: string) => boolean {
+		return this.options.modelUsable?.() ?? (() => true);
+	}
+
+	private modelFor(own: ModelSelection | undefined, usable: (provider: string) => boolean): ModelSelection {
+		if (own !== undefined && this.register(own.provider) && usable(own.provider)) return own;
 		this.register(this.options.model.provider);
 		return this.options.model;
 	}

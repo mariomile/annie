@@ -24,9 +24,9 @@ export class TenantSecrets {
 		return this.readAll()[name];
 	}
 
-	/** Whether a secret is there now, read synchronously; never its value. */
-	has(name: string): boolean {
-		return this.readAll()[name] !== undefined;
+	/** The names there now, in one synchronous read; never the values. */
+	namesNow(): Set<string> {
+		return new Set(Object.keys(this.readAll()));
 	}
 
 	async set(name: string, value: string): Promise<void> {
