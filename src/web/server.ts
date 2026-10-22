@@ -1942,7 +1942,38 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.audit(tenantId).append({ type: "person.removed", personId: params[0] });
 		return { removed };
 	});
-	route("GET", "/api/usage", "person", async () => ({ usage: { todayUsd: await options.usage.todaySpent(), softUsd: DEFAULT_COST_CAPS.softUsdPerDay, hardUsd: DEFAULT_COST_CAPS.hardUsdPerDay } }));
+	const usageSummary = async () => ({ todayUsd: await options.usage.todaySpent(), softUsd: DEFAULT_COST_CAPS.softUsdPerDay, hardUsd: DEFAULT_COST_CAPS.hardUsdPerDay });
+	route("GET", "/api/usage", "person", async () => ({ usage: await usageSummary() }));
+	// The rail needs counts, not every private form, proposed tool and board event. One request
+	// replaces the per-instance HTTP waterfall, using the same visibility rules as those pages.
+	route("GET", "/api/console-summary", "person", async ({ person }) => {
+		const p = person as Person;
+		const visible = (await runtime.registry.listInstances(tenantId)).filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
+		let pendingApprovals = 0;
+		for (const r of visible) {
+			const approver = await mayDecideAll(p, r.id);
+			const [web, connectors, google, proposals, practices] = await Promise.all([
+				runtime.webActions(tenantId, r.id).list(),
+				runtime.connectorActions(tenantId, r.id).list(),
+				runtime.googleActions(tenantId, r.id).list(),
+				approver ? runtime.proposals(tenantId, r.id).list() : [],
+				approver ? (options.segreterie?.get(r.id)?.practices.list() ?? []) : [],
+			]);
+			pendingApprovals += [...web, ...connectors].filter((a) => a.status === "pending" && (approver || a.requester === `web:${p.id}`)).length;
+			pendingApprovals += google.filter((a) => a.status === "pending" && a.personId === p.id).length;
+			pendingApprovals += proposals.filter((a) => a.status === "pending").length;
+			pendingApprovals += practices.filter((a) => a.status === "draft_ready").length;
+		}
+		let boardReview = 0;
+		if (options.board !== undefined) {
+			for (const card of options.board.store.list()) {
+				if (card.status !== "da_rivedere") continue;
+				const mine = card.work !== undefined && card.work.agent === card.assignee ? card.work.personId === p.id : p.role === "owner";
+				if (mine && await options.board.work.visibleTo(card, p.id)) boardReview++;
+			}
+		}
+		return { usage: await usageSummary(), pendingApprovals, boardReview };
+	});
 	route("GET", "/api/audit", "owner", async ({ url }) => {
 		const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 100)));
 		const all = await runtime.audit(tenantId).read();

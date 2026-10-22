@@ -8,7 +8,12 @@ import { refreshThreads, render, renderRail } from "./shell.js";
 
 // ---------- boot ----------
 // api() says a session is gone with this event (common.js imports nothing): show the login.
-window.addEventListener("annie:unauthorized", () => renderLogin());
+let counterTimer;
+window.addEventListener("annie:unauthorized", () => {
+	state.me = undefined;
+	clearInterval(counterTimer);
+	renderLogin();
+});
 
 export async function boot() {
 	applyTheme();
@@ -43,7 +48,10 @@ export async function enter() {
 	const landing = location.hash === "" || location.hash === "#/";
 	window.addEventListener("hashchange", render);
 	render();
-	setInterval(refreshCounters, 30_000);
+	clearInterval(counterTimer);
+	counterTimer = setInterval(() => {
+		if (state.me && document.visibilityState === "visible") void refreshCounters();
+	}, 30_000);
 	// After the first paint: the steps never hold the console up.
 	await refreshSetup();
 	// An owner who has not tried Annie yet lands on the steps when opening the console without a page in mind.
@@ -107,37 +115,36 @@ export function setupHidden(instanceId, hide) {
 	store("annie.setup.hidden", JSON.stringify(hide ? [...new Set([...ids, instanceId])] : ids.filter((id) => id !== instanceId)));
 }
 
-export async function refreshCounters() {
-	try {
-		state.usage = (await api("/api/usage")).usage;
-		let pending = 0;
-		for (const inst of state.instances.filter((i) => i.isApprover)) {
-			const { proposals } = await api(`/api/instances/${inst.id}/proposals`);
-			pending += proposals.filter((p) => p.status === "pending").length;
-			if (inst.hasSegreteria) pending += (await api(`/api/instances/${inst.id}/pratiche`)).pratiche.filter((p) => p.status === "draft_ready").length;
-		}
-		// Forms to send: a person sees and decides their own, an approver everyone's.
-		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/web-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
-		// Connector calls that change something: the person who asked, or an approver.
-		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/connector-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
-		// Writes to the person's own Google account: theirs alone.
-		for (const inst of state.instances) pending += (await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }))).actions.filter((a) => a.status === "pending").length;
-		state.pendingApprovals = pending;
-		state.boardReview = await boardReviewCount();
-		renderRail();
-	} catch {
-		/* shown on next render */
-	}
-}
+let counterRefresh;
+let countersChanged = false;
 
-/** Schede an agente finished that this person reviews: those worked with them, or with nobody for the owner. */
-async function boardReviewCount() {
-	try {
-		const { cards } = await api("/api/board");
-		return cards.filter((c) => c.status === "da_rivedere" && (c.work?.agent === c.assignee ? c.work.personId === state.me.id : state.me.role === "owner")).length;
-	} catch {
-		return 0;
-	}
+/** Coalesce simultaneous live events, but read again if something changed during the request. */
+export function refreshCounters() {
+	countersChanged = true;
+	if (counterRefresh) return counterRefresh;
+	counterRefresh = (async () => {
+		do {
+			countersChanged = false;
+			const person = state.me;
+			if (!person) break;
+			try {
+				const summary = await api("/api/console-summary");
+				// A late response from a previous login must not overwrite this person's counters.
+				if (state.me !== person) continue;
+				state.usage = summary.usage;
+				state.pendingApprovals = summary.pendingApprovals;
+				state.boardReview = summary.boardReview;
+				renderRail();
+			} catch {
+				// Keep the last known counts: an unavailable source does not mean zero decisions.
+			}
+		} while (countersChanged);
+	})().finally(() => {
+		counterRefresh = undefined;
+		// An event can arrive after the loop finishes but before this cleanup runs.
+		if (countersChanged) return refreshCounters();
+	});
+	return counterRefresh;
 }
 
 function connectEvents() {
