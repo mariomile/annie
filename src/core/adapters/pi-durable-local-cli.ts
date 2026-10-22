@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { Api, AssistantMessage, JsonObject, Model, StreamOptions, Tool, TranscriptContext } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { getSystemMessageText } from "@earendil-works/pi-ai/utils/text";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { LocalProviderError, type LocalProviders } from "../local-providers.ts";
@@ -35,8 +37,15 @@ export function localCliProvider(id: string, local?: LocalProviders): Provider {
 				events.push({ type: "start", partial: message });
 				dir = await mkdtemp(join(tmpdir(), "annie-model-"));
 				const request = await cliRequest(id, model.id, context, dir);
-				const result = await local.inference({ provider: id, ...request, cwd: dir, signal: options?.signal });
-				if (result.code !== 0) throw new LocalProviderError("Il provider ha rifiutato la richiesta. Controlla l'accesso e i limiti del tuo piano nelle impostazioni Provider.");
+				const result = await local.inference({ provider: id, ...request, cwd: dir, signal: options?.signal }).catch((error: unknown) => {
+					throw inferenceFailure(failureDetails(error));
+				});
+				if (options?.signal?.aborted) throw new LocalProviderError("Operazione annullata");
+				if (result.code !== 0) {
+					const failure = failureEvents(result.stdout);
+					failure.messages.push(result.stderr);
+					throw inferenceFailure(failure);
+				}
 				const parsed = parseResponse(id, result.stdout, request.tools);
 				if (parsed.text !== "") {
 					message.content.push({ type: "text", text: "" });
@@ -57,8 +66,8 @@ export function localCliProvider(id: string, local?: LocalProviders): Provider {
 				message.usage.totalTokens = parsed.inputTokens + parsed.outputTokens;
 				message.stopReason = parsed.toolCalls.length === 0 ? "stop" : "toolUse";
 			} catch (error) {
-				message.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				message.errorMessage = error instanceof LocalProviderError ? error.message : "Risposta del provider non valida. Riprova o aggiorna la CLI ufficiale.";
+				message.stopReason = options?.signal?.aborted || (error instanceof InferenceFailure && error.aborted) ? "aborted" : "error";
+				message.errorMessage = message.stopReason === "aborted" ? "Operazione annullata" : error instanceof LocalProviderError ? error.message : "Risposta del provider non valida. Riprova o aggiorna la CLI ufficiale.";
 			} finally {
 				if (dir !== undefined) await rm(dir, { recursive: true, force: true }).catch(() => {});
 				if (message.stopReason === "error" || message.stopReason === "aborted") events.push({ type: "error", reason: message.stopReason, error: message });
@@ -72,6 +81,67 @@ export function localCliProvider(id: string, local?: LocalProviders): Provider {
 		auth: { apiKey: { name: "Abbonamento locale", async resolve({ credential }) { return credential?.key === "annie-local-subscription" && local?.connected(id) ? { auth: { apiKey: "annie-local-subscription" }, source: "Abbonamento locale" } : undefined; } } },
 		getModels: () => models, stream, streamSimple: stream,
 	};
+}
+
+class InferenceFailure extends LocalProviderError {
+	constructor(message: string, readonly aborted = false) { super(message); }
+}
+
+type FailureDetails = { messages: string[]; statuses: number[] };
+
+/** Traverse only error fields: usage, timings, session IDs and other envelope metadata are not evidence. */
+function failureDetails(value: unknown): FailureDetails {
+	const details: FailureDetails = { messages: [], statuses: [] };
+	const collect = (part: unknown, depth: number): void => {
+		if (depth > 8) return;
+		if (typeof part === "string") { details.messages.push(part); return; }
+		if (Array.isArray(part)) { for (const entry of part) collect(entry, depth + 1); return; }
+		if (typeof part !== "object" || part === null) return;
+		const error = part as Record<string, unknown>;
+		for (const key of ["status", "status_code", "statusCode", "http_status", "http_status_code", "httpStatus", "httpStatusCode"]) {
+			const status = error[key];
+			if ((typeof status === "number" || typeof status === "string") && /^[45]\d{2}$/.test(String(status))) details.statuses.push(Number(status));
+		}
+		for (const key of ["message", "type", "code", "name", "error", "errors", "result"]) collect(error[key], depth + 1);
+	};
+	collect(value, 0);
+	return details;
+}
+
+/** Classify privately, then emit only fixed text and an allowlisted HTTP status, never CLI logs. */
+function inferenceFailure(failure: FailureDetails): InferenceFailure {
+	const details = failure.messages.join("\n");
+	const statuses = [...failure.statuses, ...Array.from(details.matchAll(/\b(?:HTTP(?:\/\d(?:\.\d)?)?(?:\s+(?:status(?:\s+code)?|error))?|(?:response\s+)?status(?:\s+code)?)\s*[:=]?\s*([45]\d{2})\b/gi), (match) => Number(match[1]))];
+	// A cancelled transport stream is retryable in Pi; only explicit abort/caller/operation cancellation is terminal.
+	if (/\b(?:AbortError|aborted)\b|operazione annullata|\b(?:operation|request|user|caller)(?: (?:was|has been))? cancel(?:led|ed)\b|\bcancel(?:led|ed) by (?:the )?(?:user|caller)\b/i.test(details)) return new InferenceFailure("Operazione annullata", true);
+	if (statuses.some((status) => status === 401 || status === 403) || /authentication[_ -]?(?:error|failed|required)|unauthori[sz]ed|forbidden|not logged in|login required|invalid[_ -](?:api[_ -])?(?:key|token)|permission[_ ]denied/i.test(details)) return new InferenceFailure("Autenticazione del provider non valida. Controlla l'accesso nelle impostazioni Provider.");
+	if (/quota|billing|out of budget|available balance|usage[_ ]limit|usage_not_included|GoUsageLimitError|FreeUsageLimitError|hit (?:your|the) (?:usage )?limit/i.test(details)) return new InferenceFailure("Provider quota exceeded. Controlla i limiti del tuo piano nelle impostazioni Provider.");
+	const candidate: AssistantMessage = { role: "assistant", content: [], api: API, provider: "local", model: "local", usage: ZERO_USAGE(), timestamp: 0, stopReason: "error", errorMessage: details };
+	// Pi checks overflow before retries; use the installed matchers so the bridge agrees with the engine.
+	if (isContextOverflow(candidate)) return new InferenceFailure("Context length exceeded. La conversazione supera il contesto del modello.");
+	// Pi's retry matcher accepts bare numeric substrings. Supply only actual HTTP statuses, not request IDs or counts.
+	candidate.errorMessage = `${details.replace(/\d{3,}/g, "[number]")}\n${statuses.map((status) => `HTTP ${status}`).join("\n")}`;
+	if (isRetryableAssistantError(candidate) || /ECONNRESET|connection reset|non ha risposto in tempo/i.test(details)) {
+		const status = statuses.find((value) => [429, 500, 502, 503, 504, 520, 524].includes(value));
+		return new InferenceFailure(`Errore temporaneo del provider (server error${status === undefined ? "" : `, HTTP ${status}`}). Riprova.`);
+	}
+	return new InferenceFailure("Il provider ha rifiutato la richiesta. Controlla l'accesso e i limiti del tuo piano nelle impostazioni Provider.");
+}
+
+/** Nonzero exits may also contain a JSON failure; successful assistant text is never error evidence. */
+function failureEvents(stdout: string): FailureDetails {
+	const failures: FailureDetails = { messages: [], statuses: [] };
+	for (const line of stdout.split("\n")) {
+		try {
+			const event = JSON.parse(line) as Record<string, unknown> | null;
+			if (event !== null && (event.type === "error" || event.type === "turn.failed" || (event.type === "result" && (event.is_error === true || event.subtype !== "success")))) {
+				const details = failureDetails(event);
+				failures.messages.push(...details.messages);
+				failures.statuses.push(...details.statuses);
+			}
+		} catch { /* A CLI can exit before emitting JSON; stderr remains available for classification. */ }
+	}
+	return failures;
 }
 
 const BRIDGE = "You are Annie's inference engine. The transcript below is the complete conversation, including system instructions, tool declarations, prior assistant tool calls and tool results. Continue it faithfully. Return only the requested JSON object. To use an Annie tool, return its name and JSON-encoded arguments in toolCalls; Annie executes it after its own authorization checks and sends its result in the next request. Never execute native CLI tools, commands, file operations, browser operations, or MCP tools. Use only the Annie tools declared in the transcript. A final user-facing answer goes in text with an empty toolCalls array. When requesting tools text may be empty. Images are attached in transcript order.";
@@ -144,19 +214,21 @@ function parseResponse(id: string, stdout: string, tools: ReadonlyMap<string, To
 	if (id === "claude-code") {
 		const result = stdout.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line) as Record<string, unknown>).findLast((entry) => entry.type === "result" || entry.subtype === "success");
 		if (result === undefined) throw new Error("Missing Claude result");
-		if (result.is_error === true || result.subtype !== "success") throw new LocalProviderError("Il provider non ha completato la risposta. Controlla i limiti del piano e riprova.");
+		if (result.is_error === true || result.subtype !== "success") throw inferenceFailure(failureDetails(result));
 		response = result.structured_output ?? (typeof result.result === "string" ? JSON.parse(result.result) : undefined);
 		const usage = result.usage as Record<string, number> | undefined;
 		inputTokens = (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
 		outputTokens = usage?.output_tokens ?? 0;
 	} else {
+		let finalText: string | undefined;
 		for (const line of stdout.split("\n").filter((s) => s.trim() !== "")) {
 			const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: string }; usage?: { input_tokens?: number; output_tokens?: number } };
-			if (event.type === "error" || event.type === "turn.failed") throw new LocalProviderError("Codex non ha completato la risposta. Controlla accesso e limiti del piano.");
+			if (event.type === "error" || event.type === "turn.failed") throw inferenceFailure(failureDetails(event));
 			if (event.item !== undefined && ["command_execution", "mcp_tool_call", "web_search", "file_change"].includes(event.item.type ?? "")) throw new LocalProviderError("La CLI ha tentato uno strumento esterno ad Annie. Aggiorna la CLI e riprova.");
-			if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") response = JSON.parse(event.item.text);
+			if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") finalText = event.item.text;
 			if (event.usage !== undefined) { inputTokens = event.usage.input_tokens ?? 0; outputTokens = event.usage.output_tokens ?? 0; }
 		}
+		if (finalText !== undefined) response = JSON.parse(finalText);
 	}
 	if (typeof response !== "object" || response === null) throw new Error("Missing structured result");
 	const result = response as { text?: unknown; toolCalls?: unknown };
