@@ -38,7 +38,7 @@ export type ExpenseToolsOptions = {
 };
 
 const DESCRIPTION = [
-	"Register of the owner's spese (business costs): use it when they send a receipt (scontrino, ricevuta, fattura d'acquisto) or say what they spent («ho speso 42 euro di benzina»).",
+	"Register of the owner's spese (business costs), anche da una foto di scontrino; abbonamenti e costi fissi sono renewals: use it when they send a receipt (scontrino, ricevuta, fattura d'acquisto) or say what they spent («ho speso 42 euro di benzina»).",
 	"add: amount is required: the total paid VAT included, as a JSON number or as written (42.5, «1.234,56»); a tip is part of the total paid (a tip apart: say it in note).",
 	"Also date (default today; 12/10, 12/10/2026, ieri, l'altro ieri, sabato, lunedì scorso), supplier, supplier_vat, doc_type scontrino | ricevuta | fattura, doc_number, category, method contanti | carta | bonifico | altro, note, receipt.",
 	"From a receipt photo you see: read date, total, VAT and supplier yourself and pass them; receipt = the photo's workspace path (uploads/…). Ask the person only if the total does not read; never guess it.",

@@ -95,7 +95,7 @@ describe("deferred tools (ADR 0100)", () => {
 	});
 
 	describe("the tools Annie really gets", () => {
-		it("every deferred tool is listed by name in the tool_search description, and no description has an em-dash", async () => {
+		const realTools = async () => {
 			const tools = new Map<string, AnnieTool>();
 			const engine: DurableEngine = {
 				open: (options) => {
@@ -106,6 +106,55 @@ describe("deferred tools (ADR 0100)", () => {
 			const config = loadAnnieConfig({ ANNIE_DATA_DIR: mkdtempSync(join(tmpdir(), "annie-deferred-")), ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 			const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { engine, schedulerIntervalMs: 3_600_000, log: () => {} });
 			await annie.stop();
+			return tools;
+		};
+
+		// What the model sees at the first request, before loading anything: the descriptions of the
+		// eager tools and the tool_search listing. A rule that routes between tools must be there.
+		it("the first request already carries the rules that route between tools", async () => {
+			const tools = await realTools();
+			const listing = toolSearch([...tools.values()].filter((t) => t.deferred === true)).description;
+			const entry = (name: string) => listing.split("\n").find((line) => line.startsWith(`- ${name}: `)) ?? "";
+			const eager = (name: string) => tools.get(name)?.description ?? "";
+			const rules: [string, string, string[]][] = [
+				// An always-visible tool sends to a register.
+				[eager("schedule_create"), "schedule_create", ["recurring_invoices", "clients follow_up", "appointments reminders", "renewals"]],
+				[eager("file_search"), "file_search", ["invoices, not this"]],
+				[eager("image_view"), "image_view", ["expenses add"]],
+				// A register sends to another register or to an eager tool.
+				[entry("invoices"), "invoices", ["non file_search", "reminder", "bank_statement"]],
+				[entry("quotes"), "quotes", ["price_list", "sales_invoices"]],
+				[entry("expenses"), "expenses", ["renewals"]],
+				[entry("timesheet"), "timesheet", ["to_quote", "sales_invoices"]],
+				[entry("price_list"), "price_list", ["purchase_prices", "stock", "price_change"]],
+				[entry("renewals"), "renewals", ["recurring_invoices", "schedule_create"]],
+				[entry("cashflow"), "cashflow", ["renewals", "add_item"]],
+				[entry("taxes"), "taxes", ["vat_settlement", "cashflow"]],
+				[entry("vat_settlement"), "vat_settlement", ["taxes"]],
+				[entry("bank_statement"), "bank_statement", ["invoices", "expenses", "renewals"]],
+				[entry("clients"), "clients", ["clients follow_up, non schedule_create", "clients top", "suppliers"]],
+				[entry("suppliers"), "suppliers", ["clients", "invoices"]],
+				[entry("business_report"), "business_report", ["margins", "clients top", "budgets"]],
+				[entry("budgets"), "budgets", ["business_report"]],
+				[entry("purchase_prices"), "purchase_prices", ["price_list", "stock", "receive_invoice"]],
+				[entry("margins"), "margins", ["price_list", "purchase_prices", "business_report", "price_change"]],
+				[entry("stock"), "stock", ["receive_invoice", "orders suggest"]],
+				[entry("orders"), "orders", ["stock", "received", "file_send"]],
+				[entry("fiscal_agenda"), "fiscal_agenda", ["appointments", "schedule_create", "google_calendar_create"]],
+				[entry("sales_invoices"), "sales_invoices", ["preventivo", "ore", "DDT", "appuntamenti", "recurring_invoices"]],
+				[entry("ddt"), "ddt", ["magazzino", "credit_note", "sales_invoices"]],
+				[entry("appointments"), "appointments", ["appointments reminders, non schedule_create", "fiscal_agenda", "settings", "sales_invoices"]],
+				[entry("staff"), "staff", ["appointments settings"]],
+				[entry("recurring_invoices"), "recurring_invoices", ["schedule_create", "renewals", "sales_invoices"]],
+			];
+			for (const [text, name, needles] of rules) {
+				expect(text, `${name} is offered`).not.toBe("");
+				for (const needle of needles) expect(text, `${name} says ${needle}`).toContain(needle);
+			}
+		});
+
+		it("every deferred tool is listed by name in the tool_search description, and no description has an em-dash", async () => {
+			const tools = await realTools();
 			const deferred = [...tools.values()].filter((t) => t.deferred === true);
 			expect(deferred.length).toBeGreaterThan(20);
 			const listing = toolSearch(deferred).description;

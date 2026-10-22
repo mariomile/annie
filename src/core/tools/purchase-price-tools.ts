@@ -64,7 +64,7 @@ export type PurchaseToolsOptions = {
 };
 
 const DESCRIPTION = [
-	"I prezzi d'acquisto: what the person pays for each product, read from the lines of the electronic invoices received (only reads them).",
+	"I prezzi d'acquisto, quello che paga lui (il listino è price_list, le quantità stock; per caricare la merce di una fattura ricevuta stock con receive_invoice): what the person pays for each product, read from the lines of the electronic invoices received (only reads them).",
 	"What the person says → op: «quanto pago la carta A4?» → item (item «carta A4»); «quanto pago la carta A4 da Beta?» → item with supplier; «cosa compro da Beta e a che prezzo?» → supplier; «chi mi vende meno cara la carta A4?» or «da chi conviene comprare?» → compare (item optional, period); «quali prezzi sono aumentati quest'anno?» → increases (period, threshold in percent, default 5); «fammi il file dei prezzi d'acquisto» → export, then file_send.",
 	"Prices are per unit, without IVA, with the line's discounts already in; a line without a quantity is a price per line, said so; different units are never compared. listino is what the person sells at, purchase_prices what they pay, stock the quantities: to load an invoice's goods into the magazzino use stock with op receive_invoice.",
 	"summary of the brief: increases with compact true. Repeat prices and percentages as given, never compute them yourself.",

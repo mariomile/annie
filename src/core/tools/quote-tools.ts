@@ -54,7 +54,7 @@ const NO_COMPANY = "Errore: per il preventivo mi servono i dati della tua aziend
 const notSaved = (number: string) => `Errore: il preventivo ${number} non è stato salvato, perché il suo file non si è potuto creare; il numero non sarà riusato. Rifallo.`;
 
 const DESCRIPTION = [
-	"Preventivi (quotes) for customers: numbered per year (2026-012), totals computed exactly here, a PDF in the workspace with the letterhead saved by invoices set_company.",
+	"Preventivi (quotes) for customers; le voci del listino si prendono da price_list con item, la fattura dal preventivo accettato è sales_invoices: numbered per year (2026-012), totals computed exactly here, a PDF in the workspace with the letterhead saved by invoices set_company.",
 	"create: customer (+ tax_id, address, email; reused from the customer's last quote when not given), items [{description, quantity, unit, price, discount, vat, vat_note}].",
 	"A line may name a voce of the listino with item (its name as said, or LS-0001) instead of description and price: description, unit, price and VAT come from the listino, what the line gives itself wins; a voce not in the listino or not clear is asked, never priced by you.",
 	"Pass amounts as JSON numbers (1250, 12.5); a string like «1.250» is refused as ambiguous. unit: ore, giornate, pezzi, mq; a corpo: quantity 1 and no unit, with «a corpo» in the description.",
