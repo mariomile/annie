@@ -366,7 +366,7 @@ export class BrowseSessions {
 
 	constructor(
 		private readonly limits: { readonly max: number; readonly idleMs: number } = { max: 4, idleMs: 5 * 60_000 },
-		/** Every file chooser refused, as Chromium reports it (the audit, ADR 0103): the conversation's key and the page's host. */
+		/** A site's first file chooser refused in this browser, as Chromium reports it (the audit, ADR 0103): the conversation's key and the page's host. */
 		private readonly refused: (key: string, host: string) => void = () => {},
 	) {}
 
@@ -537,10 +537,15 @@ export class BrowseSessions {
 				if (other !== page) void other.close().catch(() => {});
 			});
 			const session: Session = { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, choosers: this.closed.get(key)?.choosers ?? [] };
-			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused, and the audit hears of each one.
+			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused.
+			// The audit hears of the first one per site of this browser: a page that retries in a loop is one line, not thousands.
+			const told = new Set<string>();
 			page.on("filechooser", () => {
 				session.choosers.push(Date.now());
-				this.refused(key, new URL(page.url()).hostname);
+				const host = new URL(page.url()).hostname;
+				if (told.has(host)) return;
+				told.add(host);
+				this.refused(key, host);
 			});
 			this.sessions.set(key, session);
 			this.closed.delete(key);

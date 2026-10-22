@@ -38,6 +38,8 @@ const pages: Record<string, string> = {
 	"/late": `<button style="${BOX}" onclick="setTimeout(() => { ${CHOOSE} }, 1600)">Carica dopo</button><button style="${BELOW}" onclick="fetch('/slow').then(() => { document.title = 'fatto' })">Altro</button><input type="file" style="${LOWEST}">`,
 	// The page is busy while the view is read, and opens the chooser at the end of it.
 	"/busy": `<button style="${BOX}" onclick="setTimeout(() => { const end = Date.now() + 1000; while (Date.now() < end); ${CHOOSE} }, 200)">Carica</button>`,
+	// The chooser again and again, every millisecond, from a timer the click starts.
+	"/spam": `<button style="${BOX}" onclick="setTimeout(() => setInterval(() => { ${CHOOSE} }, 1), 600)">Carica</button>`,
 	// The refused click also changes the page: the title, and what the other button does.
 	"/swap": `<title>prima</title><button style="${BOX}" onclick="document.title = 'cambiata'; document.getElementById('x').onclick = () => { document.title = 'altro gestore' }; ${CHOOSE}">Carica</button><button id="x" style="${BELOW}" onclick="document.title = 'gestore di prima'">Pulsante X</button>`,
 };
@@ -94,15 +96,25 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 	const LATE = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
 	const at = { top: [150 / 1280, 150 / 800], below: [150 / 1280, 350 / 800], lowest: [150 / 1280, 550 / 800] } as const;
 
-	it("every refused chooser is reported as it opens, own or late, with the page's host", async () => {
+	it("a site's first refused chooser is reported as it opens, own or late, with the page's host", async () => {
 		const { base, sessions, browser, refused } = await start();
 		await sessions.open("k", browser, `${base}/late`, guard);
-		await expect(sessions.clickAt("k", ...at.lowest, guard, { person: true })).rejects.toMatchObject({ kind: "no-files" });
-		expect(refused).toEqual(["k 127.0.0.1"]);
-		// The late one is reported with no view read, whoever reads next.
 		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		// The late one is reported with no view read, whoever reads next.
 		await new Promise((r) => setTimeout(r, 2000));
-		expect(refused).toEqual(["k 127.0.0.1", "k 127.0.0.1"]);
+		expect(refused).toEqual(["k 127.0.0.1"]);
+		await sessions.open("j", browser, `${base}/late`, guard);
+		await expect(sessions.clickAt("j", ...at.lowest, guard, { person: true })).rejects.toMatchObject({ kind: "no-files" });
+		expect(refused).toEqual(["k 127.0.0.1", "j 127.0.0.1"]);
+	}, 60_000);
+
+	it("a page that opens the chooser in a loop is one report, and the agent still hears of it", async () => {
+		const { base, sessions, browser, refused } = await start();
+		await sessions.open("k", browser, `${base}/spam`, guard);
+		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		await new Promise((r) => setTimeout(r, 3000));
+		expect(refused).toEqual(["k 127.0.0.1"]);
+		expect((await sessions.view("k", guard)).notes).toContain(LATE);
 	}, 60_000);
 
 	it("a late chooser is still told when the screenshot cannot be saved", async () => {
