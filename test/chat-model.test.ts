@@ -46,7 +46,7 @@ describe("a chat with its own model (engine)", () => {
 	it("leaves a chat's model the policy no longer allows, or this version no longer offers, to the instance's", async () => {
 		const storageDir = tempDataDir();
 		let usable = true;
-		const open = () => piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [], modelUsable: async () => usable });
+		const open = () => piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [], modelUsable: () => usable });
 		let session = await open();
 		await session.setThreadModel("web:t1", GROK);
 		usable = false;

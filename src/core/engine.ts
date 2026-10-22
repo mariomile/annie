@@ -28,8 +28,9 @@ export type EngineOpenOptions = {
 	/**
 	 * Whether a chat's own model may answer now (ADR 0036): its provider allowed, with a key. When
 	 * not, the instance's model answers, also for work resumed after a restart. Missing: always.
+	 * Synchronous: a restart checks it in the same step that starts the work again.
 	 */
-	readonly modelUsable?: (provider: string) => Promise<boolean>;
+	readonly modelUsable?: (provider: string) => boolean;
 	/** Explicit local, tenant-scoped CLI subscription capability. Never inferred from the host. */
 	readonly localProviders?: LocalProviders;
 };

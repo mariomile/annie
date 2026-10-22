@@ -6,7 +6,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import type { AnnieTool, EngineOpenOptions, EngineReply } from "../src/core/engine.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
@@ -34,6 +34,44 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 			return handle;
 		},
 	};
+});
+
+/** Reads of the chats' models the test can hold: `held(n)` is awaited before the n-th; `done` counts the finished ones. */
+const chatModels = vi.hoisted(() => ({ reads: 0, done: 0, held: (_read: number): Promise<void> | undefined => undefined }));
+vi.mock("@earendil-works/pi-durable", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-durable")>();
+	return {
+		...actual,
+		Harness: {
+			...actual.Harness,
+			open: async (...args: Parameters<typeof actual.Harness.open>) => {
+				const harness = await actual.Harness.open(...args);
+				const snapshot = harness.snapshot.bind(harness) as (...rest: unknown[]) => Promise<unknown>;
+				harness.snapshot = (async (token: { definition: { kind: string } }, ...rest: unknown[]) => {
+					if (token.definition.kind !== "annie.thread-models") return snapshot(token, ...rest);
+					await chatModels.held(++chatModels.reads);
+					const read = await snapshot(token, ...rest);
+					chatModels.done++;
+					return read;
+				}) as typeof harness.snapshot;
+				return harness;
+			},
+		},
+	};
+});
+
+/** From now on, the n-th read of the chats' models waits for `release()`. */
+function holdChatModelRead(n: number): { release: () => void } {
+	let release = () => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	chatModels.reads = 0;
+	chatModels.done = 0;
+	chatModels.held = (read) => (read === n ? held : undefined);
+	return { release };
+}
+
+afterEach(() => {
+	chatModels.held = () => undefined;
 });
 
 const DEV = { provider: "faux", modelId: "annie-dev" };
@@ -131,13 +169,15 @@ describe("restart after the configuration changed", () => {
 		const { storageDir } = await leftMidTurn();
 		const replies: EngineReply[] = [];
 		let resuming = false;
-		// Checking t2's model during resume() is held until t1 has answered (or a second, when
-		// nothing runs yet): had the scheduler started before t2 was aligned, t2 would answer on
-		// the old model meanwhile.
-		const session = await reopen(storageDir, async () => {
-			if (resuming) await waitFor(() => replies.length > 0, 1_000).catch(() => {});
-			return true;
-		});
+		// The first read of a chat's model during resume() is held until t1 has answered (or a
+		// second, when nothing runs yet): had the scheduler started before t2 was aligned, t2
+		// would answer on the old model meanwhile.
+		const session = await reopen(storageDir);
+		chatModels.held = () => {
+			if (!resuming) return undefined;
+			resuming = false;
+			return waitFor(() => replies.length > 0, 1_000).catch(() => {});
+		};
 		session.onReply((reply) => replies.push(reply));
 		resuming = true;
 		expect(await session.resume()).toEqual({ pending: 2 });
@@ -179,7 +219,7 @@ describe("restart after the configuration changed", () => {
 			ids: [s1],
 		} = await leftOnOwnModel();
 		let usable = true;
-		const session = await reopenOnGrok(storageDir, async () => usable);
+		const session = await reopenOnGrok(storageDir, () => usable);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		usable = false;
@@ -192,7 +232,7 @@ describe("restart after the configuration changed", () => {
 	it("a preparation that fails is tried again by the next call, and the work goes on", async () => {
 		const { storageDir, ids } = await leftOnOwnModel();
 		let checks = 0;
-		const session = await reopenOnGrok(storageDir, async () => {
+		const session = await reopenOnGrok(storageDir, () => {
 			if (++checks <= 2) throw new Error("provider check down");
 			return true;
 		});
@@ -203,25 +243,20 @@ describe("restart after the configuration changed", () => {
 		expect(await session.resume()).toEqual({ pending: 1 });
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "answered" });
-		// Two that failed, the one that aligned, the one that found nothing changed since.
-		expect(checks).toBe(4);
+		// Two that failed, the pass that aligned, the pass that found nothing to align, the check right before the start.
+		expect(checks).toBe(5);
 		await session.close();
 	});
 
 	it("a chat model cleared while the others are still being aligned counts too", async () => {
 		const { storageDir, ids } = await leftOnOwnModel(["web:t1", "web:t2"]);
-		let checks = 0;
-		let release = () => {};
-		const held = new Promise<void>((resolve) => (release = resolve));
-		// t1 is checked and aligned first; t2's check waits for the test.
-		const session = await reopenOnGrok(storageDir, async () => {
-			if (++checks === 2) await held;
-			return true;
-		});
+		const session = await reopenOnGrok(storageDir);
+		// t1's model is read first; reading t2's waits for the test.
+		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		const reattached = session.reattach(ids[0]!, "web:t1");
-		await waitFor(() => checks === 2);
+		await waitFor(() => chatModels.reads === 2);
 		await session.setThreadModel("web:t1", undefined);
 		release();
 		expect(await reattached).toBe(true);
@@ -236,18 +271,13 @@ describe("restart after the configuration changed", () => {
 		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
 		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
 		await secrets.set(modelApiKeySecret("xai"), "xai-key");
-		let checks = 0;
-		let release = () => {};
-		const held = new Promise<void>((resolve) => (release = resolve));
-		// The runtime's check, on a real secret store; t2's first check waits for the test.
-		const session = await reopen(storageDir, async (provider) => {
-			if (++checks === 2) await held;
-			return provider === "faux" || (await secrets.get(modelApiKeySecret(provider))) !== undefined;
-		});
+		// The runtime's check, on a real secret store; reading t2's model waits for the test.
+		const session = await reopen(storageDir, (provider) => provider === "faux" || secrets.has(modelApiKeySecret(provider)));
+		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		const reattached = session.reattach(ids[0]!, "web:t1");
-		await waitFor(() => checks === 2);
+		await waitFor(() => chatModels.reads === 2);
 		await secrets.delete(modelApiKeySecret("xai"));
 		release();
 		expect(await reattached).toBe(true);
@@ -261,25 +291,13 @@ describe("restart after the configuration changed", () => {
 	it("instructions changed while the others are still being aligned count too", async () => {
 		const { storageDir, ids } = await leftOnOwnModel(["web:t1", "web:t2"]);
 		let instructions = "Skills: none";
-		let checks = 0;
-		let release = () => {};
-		const held = new Promise<void>((resolve) => (release = resolve));
-		// t1 is aligned first; t2's check waits for the test.
-		const session = await piDurableEngine.open({
-			storageDir,
-			model: GROK,
-			apiKey: async () => undefined,
-			tools: [hold(false)],
-			instructions: () => instructions,
-			modelUsable: async () => {
-				if (++checks === 2) await held;
-				return true;
-			},
-		});
+		const session = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(false)], instructions: () => instructions });
+		// t1's model is read first; reading t2's waits for the test.
+		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		const reattached = session.reattach(ids[0]!, "web:t1");
-		await waitFor(() => checks === 2);
+		await waitFor(() => chatModels.reads === 2);
 		instructions = "Skills: invoices";
 		release();
 		expect(await reattached).toBe(true);
@@ -294,18 +312,13 @@ describe("restart after the configuration changed", () => {
 		const registry = new TenantRegistry(tempDataDir());
 		await registry.createTenant({ id: "acme", name: "Acme" });
 		await registry.createInstance("acme", { id: "ops", name: "Ops", model: DEV, egress: { modelProviders: ["faux", "xai"], channels: ["web"] } });
-		let checks = 0;
-		let release = () => {};
-		const held = new Promise<void>((resolve) => (release = resolve));
-		// The runtime's policy check, on a real registry; t2's first check waits for the test.
-		const session = await reopen(storageDir, async (provider) => {
-			if (++checks === 2) await held;
-			return (await registry.getInstance("acme", "ops")).egress.modelProviders.includes(provider);
-		});
+		// The runtime's policy check, on a real registry; reading t2's model waits for the test.
+		const session = await reopen(storageDir, (provider) => registry.getInstanceSync("acme", "ops").egress.modelProviders.includes(provider));
+		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		const reattached = session.reattach(ids[0]!, "web:t1");
-		await waitFor(() => checks === 2);
+		await waitFor(() => chatModels.reads === 2);
 		let flush = () => {};
 		fsync.held = new Promise<void>((resolve) => (flush = resolve));
 		const renamed = new Promise<void>((resolve) => (fsync.reached = resolve));
@@ -329,17 +342,12 @@ describe("restart after the configuration changed", () => {
 		const dataDir = tempDataDir();
 		const secrets = new TenantSecrets(dataDir, tenantId("acme"));
 		await secrets.set(modelApiKeySecret("xai"), "xai-key");
-		let checks = 0;
-		let release = () => {};
-		const held = new Promise<void>((resolve) => (release = resolve));
-		const session = await reopen(storageDir, async (provider) => {
-			if (++checks === 2) await held;
-			return provider === "faux" || (await secrets.get(modelApiKeySecret(provider))) !== undefined;
-		});
+		const session = await reopen(storageDir, (provider) => provider === "faux" || secrets.has(modelApiKeySecret(provider)));
+		const { release } = holdChatModelRead(2);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		const reattached = session.reattach(ids[0]!, "web:t1");
-		await waitFor(() => checks === 2);
+		await waitFor(() => chatModels.reads === 2);
 		const url = (file: string) => pathToFileURL(join(process.cwd(), file)).href;
 		const script = [
 			`import { TenantSecrets, modelApiKeySecret } from ${JSON.stringify(url("src/core/secrets.ts"))};`,
@@ -347,6 +355,47 @@ describe("restart after the configuration changed", () => {
 			`await new TenantSecrets(${JSON.stringify(dataDir)}, tenantId("acme")).delete(modelApiKeySecret("xai"));`,
 		].join("\n");
 		await promisify(execFile)(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script]);
+		release();
+		expect(await reattached).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
+		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		await session.close();
+	});
+
+	it("a chat model cleared after the others were read again, before the start, counts too", async () => {
+		const { storageDir, ids } = await leftOnOwnModel(["web:t1", "web:t2"]);
+		const session = await reopenOnGrok(storageDir);
+		// The first pass aligns both; in the next, t1's model is read again, reading t2's waits.
+		const { release } = holdChatModelRead(4);
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => chatModels.reads === 4 && chatModels.done === 3);
+		await session.setThreadModel("web:t1", undefined);
+		release();
+		expect(await reattached).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "unanswered" });
+		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		await session.close();
+	});
+
+	it("a provider key removed after the others were read again, before the start, counts too", async () => {
+		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
+		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
+		await secrets.set(modelApiKeySecret("xai"), "xai-key");
+		const session = await reopen(storageDir, (provider) => provider === "faux" || secrets.has(modelApiKeySecret(provider)));
+		// t2 on the local model, which needs no key: only t1 depends on xAI's.
+		await session.setThreadModel("web:t2", DEV);
+		const { release } = holdChatModelRead(4);
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => chatModels.reads === 4 && chatModels.done === 3);
+		await secrets.delete(modelApiKeySecret("xai"));
 		release();
 		expect(await reattached).toBe(true);
 		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);

@@ -1,8 +1,7 @@
 import { chmodSync, mkdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { TenantId } from "./ids.ts";
-import { updateJsonFile } from "./locked-json.ts";
+import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 import { secretsFile } from "./paths.ts";
 
 /**
@@ -22,7 +21,12 @@ export class TenantSecrets {
 	}
 
 	async get(name: string): Promise<string | undefined> {
-		return (await this.readAll())[name];
+		return this.readAll()[name];
+	}
+
+	/** Whether a secret is there now, read synchronously; never its value. */
+	has(name: string): boolean {
+		return this.readAll()[name] !== undefined;
 	}
 
 	async set(name: string, value: string): Promise<void> {
@@ -42,16 +46,11 @@ export class TenantSecrets {
 
 	/** Secret names only, never values. */
 	async names(): Promise<string[]> {
-		return Object.keys(await this.readAll());
+		return Object.keys(this.readAll());
 	}
 
-	private async readAll(): Promise<Record<string, string>> {
-		try {
-			return JSON.parse(await readFile(this.file, "utf8")) as Record<string, string>;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-			throw error;
-		}
+	private readAll(): Record<string, string> {
+		return readJsonFile<Record<string, string>>(this.file, {});
 	}
 }
 

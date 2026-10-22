@@ -110,8 +110,10 @@ class PiDurableSession implements EngineSession {
 	private recovery: Promise<number> | undefined;
 	/** What each pending conversation was last aligned to, before the first start: its model and instructions. */
 	private readonly aligned = new Map<number, string>();
-	private aligning: Promise<boolean> | undefined;
+	private aligning: Promise<() => boolean> | undefined;
 	private started = false;
+	/** Chat models written so far: only this session writes them, one process per instance. */
+	private threadModelWrites = 0;
 
 	constructor(
 		private readonly harness: Harness,
@@ -190,38 +192,48 @@ class PiDurableSession implements EngineSession {
 	/**
 	 * Every call that starts Pi's scheduler (reattach, resume, submit, idle) does it through
 	 * here. Until the first start (Harness.open leaves it paused), work left half done is first
-	 * aligned with the model and instructions of that moment, then read again: the scheduler
-	 * starts only after a read that finds every one of them as it was aligned. Whoever changed
-	 * the configuration meanwhile, and however (another process, a write still being flushed),
-	 * the read sees it. A failed alignment is not kept: the next call tries again.
+	 * aligned with the model and instructions of that moment, then read again. The last check
+	 * and the start are one synchronous step, so nothing of this process changes anything in
+	 * between: the chats' models as read, unless this session wrote one since; whether their
+	 * providers can answer, and the instructions, read right then. A failed alignment is not
+	 * kept: the next call tries again.
 	 */
 	private async activate<T>(start: () => T): Promise<T> {
 		while (!this.started) {
 			this.aligning ??= this.alignPending().finally(() => {
 				this.aligning = undefined;
 			});
-			if (await this.aligning) break;
+			const unchanged = await this.aligning;
+			if (this.started || unchanged()) break;
 		}
 		this.started = true;
 		return start();
 	}
 
-	/** One pass over the pending conversations: true when every one already had what it should. */
-	private async alignPending(): Promise<boolean> {
+	/**
+	 * One pass over the pending conversations: what differs is aligned. Returns the check that
+	 * may start the scheduler: true when this pass found nothing to align and nothing differs now.
+	 */
+	private async alignPending(): Promise<() => boolean> {
+		const writes = this.threadModelWrites;
 		const threadKeys = new Map<ConversationId, string>();
 		for (const { conversationId, threadKey } of await this.pendingInputs()) threadKeys.set(conversationId, threadKey);
-		// Read all at once: whatever changes after these reads counts as changed after the start.
-		const targets = await Promise.all([...threadKeys].map(async ([id, threadKey]) => ({ id, model: await this.modelOf(threadKey) })));
-		const instructions = this.instructionsNow();
+		const own = await Promise.all([...threadKeys].map(async ([id, threadKey]) => ({ id, selection: await this.threadModel(threadKey) })));
+		const targets = () => {
+			const instructions = this.instructionsNow();
+			return own.map(({ id, selection }) => {
+				const model = this.modelFor(selection);
+				return { id, model, instructions, key: JSON.stringify([model.provider, model.modelId, instructions ?? null]) };
+			});
+		};
 		let unchanged = true;
-		for (const { id, model } of targets) {
-			const target = JSON.stringify([model.provider, model.modelId, instructions ?? null]);
-			if (this.aligned.get(id) === target) continue;
+		for (const { id, model, instructions, key } of targets()) {
+			if (this.aligned.get(id) === key) continue;
 			unchanged = false;
 			await this.configureAgent(id, model, instructions);
-			this.aligned.set(id, target);
+			this.aligned.set(id, key);
 		}
-		return unchanged;
+		return () => unchanged && writes === this.threadModelWrites && targets().every(({ id, key }) => this.aligned.get(id) === key);
 	}
 
 	/** The unsettled inputs of the conversations Annie knows, with their thread key. */
@@ -243,6 +255,7 @@ class PiDurableSession implements EngineSession {
 			if (model === undefined) delete models[threadKey];
 			else models[threadKey] = { provider: model.provider, modelId: model.modelId };
 		}, context);
+		this.threadModelWrites++;
 	}
 
 	async threadModel(threadKey: string): Promise<ModelSelection | undefined> {
@@ -329,8 +342,11 @@ class PiDurableSession implements EngineSession {
 	 * A provider this version no longer offers counts as one that cannot answer.
 	 */
 	private async modelOf(threadKey: string): Promise<ModelSelection> {
-		const own = await this.threadModel(threadKey);
-		if (own !== undefined && this.register(own.provider) && ((await this.options.modelUsable?.(own.provider)) ?? true)) return own;
+		return this.modelFor(await this.threadModel(threadKey));
+	}
+
+	private modelFor(own: ModelSelection | undefined): ModelSelection {
+		if (own !== undefined && this.register(own.provider) && (this.options.modelUsable?.(own.provider) ?? true)) return own;
 		this.register(this.options.model.provider);
 		return this.options.model;
 	}

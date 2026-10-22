@@ -6,6 +6,7 @@ import { NotFound } from "./errors.ts";
 import { type InstanceId, instanceId, type TenantId, tenantId } from "./ids.ts";
 import { instanceDir, instanceFile, removedDir, tenantDir, tenantFile } from "./paths.ts";
 import { writeFileAtomic } from "./atomic-file.ts";
+import { readJsonFile } from "./locked-json.ts";
 import type { Persona } from "./persona.ts";
 import { type AllowedUsers, CHANNEL_PATTERN, DENY_ALL, type EgressPolicy } from "./policy.ts";
 
@@ -127,6 +128,15 @@ export class TenantRegistry {
 		const t = tenantId(tenant);
 		const i = instanceId(id);
 		const record = await readJson<InstanceRecord>(instanceFile(this.dataDir, t, i));
+		if (record === undefined) throw new NotFound(`Instance "${i}" not found in tenant "${t}"`);
+		return record;
+	}
+
+	/** The instance as it is on disk now, read synchronously: for a check that must not wait. */
+	getInstanceSync(tenant: string, id: string): InstanceRecord {
+		const t = tenantId(tenant);
+		const i = instanceId(id);
+		const record = readJsonFile<InstanceRecord | undefined>(instanceFile(this.dataDir, t, i), undefined);
 		if (record === undefined) throw new NotFound(`Instance "${i}" not found in tenant "${t}"`);
 		return record;
 	}

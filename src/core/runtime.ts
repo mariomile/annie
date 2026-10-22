@@ -539,9 +539,9 @@ export class AnnieRuntime {
 		const secrets = this.secrets(record.tenantId);
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
 		// A model can answer: its provider allowed by the policy now, and a key for it (none for the local one).
-		const reachable = async (provider: string) => {
+		const reachable = (provider: string) => {
 			try {
-				return (await fresh()).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? this.localProviders(record.tenantId)?.connected(provider) === true : (await secrets.get(modelApiKeySecret(provider))) !== undefined));
+				return this.registry.getInstanceSync(record.tenantId, record.id).egress.modelProviders.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? this.localProviders(record.tenantId)?.connected(provider) === true : secrets.has(modelApiKeySecret(provider))));
 			} catch {
 				return false;
 			}
@@ -622,7 +622,7 @@ export class AnnieInstance {
 		/** The record as stored now: allowlist and channel changes apply without a reopen. */
 		private readonly fresh: () => Promise<InstanceRecord>,
 		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
-		private readonly reachable: (provider: string) => Promise<boolean>,
+		private readonly reachable: (provider: string) => boolean,
 		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
 		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore },
 		private readonly emit: (reply: Reply) => void,
@@ -802,12 +802,12 @@ export class AnnieInstance {
 	 */
 	async chatModel(channel: string, threadId: string): Promise<ModelSelection | undefined> {
 		const own = await this.session.threadModel(threadKey(channel, threadId));
-		return own !== undefined && (await this.reachable(own.provider)) ? own : undefined;
+		return own !== undefined && this.reachable(own.provider) ? own : undefined;
 	}
 
 	/** Give a chat its own model, from its next message; undefined: the instance's again. */
 	async setChatModel(channel: string, threadId: string, model: ModelSelection | undefined, by: string): Promise<void> {
-		if (model !== undefined && !(await this.reachable(model.provider))) throw new EgressDenied("model_provider", model.provider);
+		if (model !== undefined && !this.reachable(model.provider)) throw new EgressDenied("model_provider", model.provider);
 		await this.session.setThreadModel(threadKey(channel, threadId), model);
 		await this.audit.append({ type: "chat.model.updated", instanceId: this.record.id, channel, threadId, by, ...(model === undefined ? {} : { modelProvider: model.provider, modelId: model.modelId }) });
 	}
