@@ -4,10 +4,11 @@
  * or removed turns this red before the nightly run measures the wrong thing.
  */
 import { bootAnnie, loadCases } from "./annie.ts";
+import { selectCases } from "./report.ts";
 
-const cases = await loadCases();
-const { annie, tools } = await bootAnnie({ ANNIE_MODEL_PROVIDER: "faux" });
-await annie.stop();
+const cases = selectCases(await loadCases(), process.argv.slice(2));
+const { close, tools } = await bootAnnie({ ANNIE_MODEL_PROVIDER: "faux" });
+await close();
 
 const known = new Set(tools);
 const errors: string[] = [];
@@ -22,5 +23,5 @@ for (const c of cases) {
 if (tools.length === 0) errors.push("the general agent got no tools");
 
 for (const e of errors) console.error(`✗ ${e}`);
-console.log(`eval:agente: ${cases.length} cases, ${tools.length} tools, ${errors.length} errors`);
+console.log(`eval:agente:catalog: ${cases.length} cases, ${tools.length} tools, ${errors.length} errors (catalog membership only)`);
 process.exit(errors.length === 0 ? 0 : 1);

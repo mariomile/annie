@@ -27,6 +27,20 @@ jobs:
         run: pnpm eval:agente:real
         env:
           ANNIE_JUDGE_MODEL_KEY: ${{ secrets.ANNIE_JUDGE_MODEL_KEY }}
+      - name: Agent routing and outcome summary (passed, failed, skipped, error)
+        if: always()
+        run: |
+          missing=0
+          for report in agente outcomes; do
+            if [ -f "evals/agente/last-report/$report.md" ] && [ -f "evals/agente/last-report/$report.json" ]; then
+              cat "evals/agente/last-report/$report.md" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Missing agent eval report: $report"
+              echo "Agent eval $report: error (missing report, not skipped)." >> "$GITHUB_STEP_SUMMARY"
+              missing=1
+            fi
+          done
+          exit "$missing"
       - name: Upload judge report
         if: always()
         # A full artifact quota must not turn the evals red: the report is a convenience.
@@ -39,10 +53,9 @@ jobs:
           retention-days: 14
       - name: Upload agent report
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@v5
         with:
           name: agente-report
           path: evals/agente/last-report/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14

@@ -2,7 +2,7 @@
  * Shared by run.ts and real.ts: the cases, and Annie started in a temp dir as `pnpm start`
  * starts her, with the tools the general agent gets captured as the engine receives them.
  */
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,8 +35,14 @@ export async function bootAnnie(env: Record<string, string>) {
 			return piDurableEngine.open(options);
 		},
 	};
-	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ...env });
-	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { engine, schedulerIntervalMs: 3_600_000, log: () => {} });
-	const general = tools.get(engineDir(dataDir, tenantId("default"), instanceId("annie"))) ?? [];
-	return { annie, dataDir, tools: general };
+	try {
+		const config = loadAnnieConfig({ ...env, ANNIE_DATA_DIR: dataDir });
+		const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { engine, schedulerIntervalMs: 3_600_000, log: () => {} });
+		const general = tools.get(engineDir(dataDir, tenantId("default"), instanceId("annie"))) ?? [];
+		const close = async () => { await annie.stop(); await rm(dataDir, { recursive: true, force: true }); };
+		return { annie, dataDir, tools: general, close };
+	} catch (error) {
+		await rm(dataDir, { recursive: true, force: true });
+		throw error;
+	}
 }
