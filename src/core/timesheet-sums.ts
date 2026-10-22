@@ -13,6 +13,7 @@ import { italianDate } from "./italian-format.ts";
 import { spellingKey } from "./name-keys.ts";
 import { inPeriod, type Period, type Span } from "./periods.ts";
 import { centsDecimal, halfUp, scaled } from "./quote-sums.ts";
+import { clip } from "./text-match.ts";
 import { billingState, newestFirst, type RateRule, type Rounding, sameClient, type Timer, type WorkEntry } from "./timesheet.ts";
 
 /** A canonical decimal rate («45.5») in cents. */
@@ -198,15 +199,14 @@ export function hoursLines(items: readonly Priced[], group: QuoteGroup, words: L
 		const seen = groups.get(key) ?? { ...(project === undefined ? {} : { project }), entries: [], rate, billed: 0, amount: 0n };
 		groups.set(key, { ...seen, entries: [...seen.entries, p.entry], billed: seen.billed + p.billed, amount: seen.amount + (p.amount ?? 0n) });
 	}
-	const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 	return [...groups.values()].map((g) => {
 		const activities = [...new Map(g.entries.flatMap((e) => (e.description === undefined ? [] : [[spellingKey(e.description), e.description.replace(/\n/g, " ")] as const]))).values()];
 		const description = group === "entry" ? words.entry(g.entries[0] as WorkEntry) : words.group(g.project, activities);
 		if (g.billed % 3 === 0 && entryAmount(rateCents(g.rate), g.billed) === g.amount) {
-			return { description: cut(description, maxLength), quantity: g.billed / 60, unit: g.billed === 60 ? "ora" : "ore", price: Number(g.rate) };
+			return { description: clip(description, maxLength), quantity: g.billed / 60, unit: g.billed === 60 ? "ora" : "ore", price: Number(g.rate) };
 		}
 		const tail = words.lump(g.billed, g.rate);
-		return { description: `${cut(description, maxLength - tail.length)}${tail}`, quantity: 1, price: Number(centsDecimal(g.amount)) };
+		return { description: `${clip(description, maxLength - tail.length)}${tail}`, quantity: 1, price: Number(centsDecimal(g.amount)) };
 	});
 }
 
@@ -216,7 +216,7 @@ const ACTIVITY_LENGTH = 40;
 
 /** The words of the quote's lines: a project's hours with a few of its activities, an entry's day and description, a lump sum's hours and rate. */
 export function lineWords(period: Period): LineWords {
-	const short = (t: string) => (t.length > ACTIVITY_LENGTH ? `${t.slice(0, ACTIVITY_LENGTH - 1)}…` : t);
+	const short = (t: string) => clip(t, ACTIVITY_LENGTH);
 	return {
 		group: (project, activities) => {
 			const named = activities.slice(0, MAX_ACTIVITIES).map(short).join("; ");

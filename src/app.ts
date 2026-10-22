@@ -51,7 +51,6 @@ import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
 import { LocalProviders, type CliRunner } from "./core/local-providers.ts";
 import { MODEL_COMMAND } from "./model-command.ts";
-import { skillMenu } from "./skill-commands.ts";
 import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
@@ -62,6 +61,7 @@ import { attachmentSlots } from "./core/attachment-slots.ts";
 import type { MailRequests } from "./core/mail-requests.ts";
 import { checkedUrl, publicAddress, WebFetchRefused } from "./core/web-fetch.ts";
 import { readPage } from "./core/watches.ts";
+import { skillMenuEntry } from "./core/skills.ts";
 import { webHostAllowed } from "./core/policy.ts";
 import type { DurableEngine } from "./core/engine.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./core/errors.ts";
@@ -1284,8 +1284,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...voiceFor(instance),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
-			// The skills as they are now: the menu is set once, when the bot starts (ADR 0104).
-			commands: skillMenu(runtime.skills(tenant, instance).list(), [MODEL_COMMAND], log),
+			// The skills as they are now: the menu is set once, when the bot is connected (ADR 0104).
+			commands: [MODEL_COMMAND, ...runtime.skills(tenant, instance).list().map(skillMenuEntry)],
 		});
 		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, { onAction: (action) => onApprovalTap(instance, bot, action), voice: voiceOf(instance), models: chatModels }));
 		telegrams.set(instance, bot);

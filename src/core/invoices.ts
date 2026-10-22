@@ -13,7 +13,7 @@ import { bookKey, type ReminderEntry, type ReminderMark } from "./reminder-book.
 import { checkVatNumber } from "./tax-ids.ts";
 import { absCents, shareOut, unitsCents } from "./quote-sums.ts";
 import { TAX_WITHHOLDINGS } from "./withholding-rules.ts";
-import { fold } from "./text-match.ts";
+import { clip, fold } from "./text-match.ts";
 
 export const INVOICE_LIMITS = {
 	/** Invoices with a paid mark: past it, no new one (the others' marks are never dropped). */
@@ -139,7 +139,7 @@ const MAX_NAME = 60;
 
 /** A name cut to MAX_NAME characters, with «…». */
 export function short(text: string): string {
-	return text.length > MAX_NAME ? `${text.slice(0, MAX_NAME - 1)}…` : text;
+	return clip(text, MAX_NAME);
 }
 
 /** How a party is named in an answer: its name, else its partita IVA or codice fiscale. */

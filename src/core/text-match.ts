@@ -91,6 +91,11 @@ export function fold(text: string): string {
 	return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)).replace(/[^\x00-\x7f]/gu, foldChar);
 }
 
+/** At most `max` characters: a longer text is cut to `max - 1` and ends with «…». */
+export function clip(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 export type Hit = { readonly at: number; readonly term: number };
 
 /**

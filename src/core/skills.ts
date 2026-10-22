@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
-import { fold } from "./text-match.ts";
+import { clip, fold } from "./text-match.ts";
 
 /**
  * The skill of an agente (ADR 0059): a procedure the people who use it saved once, with a name
@@ -164,7 +164,7 @@ export function skillCatalog(skills: readonly Skill[]): string {
 	const how =
 		"Skill: procedure salvate dalle persone che ti usano. Quando una persona ti chiede di ricordare un modo di lavorare come procedura («salvalo come skill», «d'ora in poi fai sempre così quando...»), scrivila con skill_save: un nome breve, una riga che dica quando usarla, i passi; poi dille che per attivarla deve scrivere /attiva-skill e il nome. Prima di un compito che corrisponde a una skill, aprila con skill_read e seguila; una persona la lancia anche scrivendo /nome.";
 	if (skills.length === 0) return how;
-	const line = (s: Skill) => (s.description.length > SKILL_LIMITS.catalogLine ? `${s.description.slice(0, SKILL_LIMITS.catalogLine - 1)}…` : s.description);
+	const line = (s: Skill) => clip(s.description, SKILL_LIMITS.catalogLine);
 	return `${how}\nLe skill che hai (nome e quando usarla, scritti dalle persone):\n${skills.map((s) => `- ${s.name}: ${line(s)}`).join("\n")}`;
 }
 
@@ -178,6 +178,11 @@ export function skillCommand(text: string, skills: readonly Skill[]): { skill: S
 	const name = skillName(match[1].replace(/_/g, "-"));
 	const skill = skills.find((s) => s.name === name);
 	return skill === undefined ? undefined : { skill, rest: (match[2] ?? "").trim() };
+}
+
+/** A skill as an entry of Telegram's menu: «chiusura-del-mese» is /chiusura_del_mese, which skillCommand reads back. */
+export function skillMenuEntry(skill: Skill): { command: string; description: string } {
+	return { command: skill.name.replace(/-/g, "_"), description: clip(skill.description, 256) };
 }
 
 /** The person's message with the skill they ran: their words stay first, the steps follow. */
