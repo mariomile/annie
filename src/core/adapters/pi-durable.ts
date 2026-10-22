@@ -4,18 +4,21 @@
  */
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type Message, Type } from "@earendil-works/pi-ai";
+import { type Message, retryDelayMs, Type } from "@earendil-works/pi-ai";
+import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import {
 	AgentDoc,
 	AssistantEntry,
 	CompactionEntry,
+	CompactionTask,
 	UserEntry,
 	UsageDoc,
 	configure,
 	type ConversationId,
 	type Cursor,
 	type DocumentReader,
+	type DocumentState,
 	createRegistry,
 	type EntryId,
 	type EntryRecord,
@@ -23,10 +26,13 @@ import {
 	defineDoc,
 	defineDocFamily,
 	defineExtension,
+	defineTask,
 	defineTool,
+	type GenerationCheckpoint,
 	GenerationTask,
 	Harness,
 	hook,
+	type RegistryReader,
 	type Submission,
 	type SubmissionId,
 	type SettledSubmissionRecord,
@@ -92,6 +98,8 @@ const ThreadModelsDoc = defineDoc<{ models: Record<string, ModelSelection> }>({
 	scope: "session",
 	initial: () => ({ models: {} }),
 });
+type ThreadModelState = DocumentState<{ models: Record<string, ModelSelection> }>;
+type OwnModel = (threadKey: string) => ModelSelection | undefined;
 
 export const piDurableEngine: DurableEngine = {
 	async open(options: EngineOpenOptions): Promise<EngineSession> {
@@ -143,14 +151,18 @@ export const piDurableEngine: DurableEngine = {
 		if (deferred.length > 0) registry.install(defineExtension({ name: "tool-search", tools: [toolSearch(deferred)] }));
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
-		const harness = await Harness.open(storage, { models, registry }, context);
+		let threadModels: ThreadModelState | undefined;
+		const ownModel: OwnModel = (key) => threadModels?.value?.models[key];
+		const harness = await Harness.open(storage, { models, registry: currentRequestRegistry(registry, models, options, ownModel) }, context);
 		// The scheduler is still paused and nothing can start it yet (a reattachment's wait would):
 		// a conversation created before billing existed starts it here, before any of its work moves.
 		const threads = (await harness.snapshot(ThreadsDoc, context))?.threads ?? {};
 		await harness.commit(async (tx) => {
+			await tx.doc(ThreadModelsDoc);
 			for (const id of Object.values(threads)) await startBilling(tx, id as ConversationId);
 		}, context);
-		return new PiDurableSession(harness, models, options);
+		threadModels = await harness.documentState(ThreadModelsDoc, context);
+		return new PiDurableSession(harness, models, options, threadModels!);
 	},
 };
 
@@ -169,6 +181,7 @@ class PiDurableSession implements EngineSession {
 		private readonly harness: Harness,
 		private readonly models: MutableModels,
 		private readonly options: EngineOpenOptions,
+		private readonly threadModels: ThreadModelState,
 	) {}
 
 	async submit(threadKey: string, text: string, requestId?: string, images: readonly EngineImage[] = [], origin: TurnOrigin = "scheduled"): Promise<{ submissionId: string }> {
@@ -242,10 +255,9 @@ class PiDurableSession implements EngineSession {
 	/**
 	 * Every call that starts Pi's scheduler (reattach, resume, submit, idle) does it through
 	 * here. Until the first start (Harness.open leaves it paused), work left half done is first
-	 * aligned with the model and instructions of that moment, then read again: the scheduler
-	 * starts only after a read that finds every one of them as it was aligned. Whoever changed
-	 * the configuration meanwhile, and however (another process, a write still being flushed),
-	 * the read sees it. A failed alignment is not kept: the next call tries again.
+	 * aligned with the model and instructions of that moment. These reads are preparation,
+	 * not an atomic snapshot: the generation adapter checks each actual request again. A failed
+	 * preparation is not kept, so the next call tries again without starting pending work.
 	 */
 	private async activate<T>(start: () => T): Promise<T> {
 		while (!this.started) {
@@ -262,7 +274,7 @@ class PiDurableSession implements EngineSession {
 	private async alignPending(): Promise<boolean> {
 		const threadKeys = new Map<ConversationId, string>();
 		for (const { conversationId, threadKey } of await this.pendingInputs()) threadKeys.set(conversationId, threadKey);
-		// Read all at once: whatever changes after these reads counts as changed after the start.
+		// This batch cannot authorize requests: an earlier result may age while another awaits I/O.
 		const targets = await Promise.all([...threadKeys].map(async ([id, threadKey]) => ({ id, model: await this.modelOf(threadKey) })));
 		const instructions = this.instructionsNow();
 		let unchanged = true;
@@ -312,7 +324,8 @@ class PiDurableSession implements EngineSession {
 
 	async close(): Promise<void> {
 		this.closing = true;
-		await this.harness.close(context);
+		try { await this.harness.close(context); }
+		finally { this.threadModels.dispose(); }
 	}
 
 	private async threads(): Promise<Readonly<Record<string, number>>> {
@@ -382,20 +395,8 @@ class PiDurableSession implements EngineSession {
 	 * A provider this version no longer offers counts as one that cannot answer.
 	 */
 	private async modelOf(threadKey: string): Promise<ModelSelection> {
-		const own = await this.threadModel(threadKey);
-		if (own !== undefined && this.register(own.provider) && ((await this.options.modelUsable?.(own.provider)) ?? true)) return own;
-		this.register(this.options.model.provider);
-		return this.options.model;
-	}
-
-	private register(provider: string): boolean {
-		if (this.models.getProvider(provider) !== undefined) return true;
-		try {
-			this.models.setProvider(createProvider(provider, this.options.localProviders));
-			return true;
-		} catch {
-			return false;
-		}
+		try { return await modelFor(this.models, this.options, (key) => this.threadModels.value?.models[key], threadKey, (model) => model); }
+		catch (error) { throw error instanceof AlignmentFailed ? error.cause : error; }
 	}
 
 	/** Each submission is tracked, and so replied to, at most once per session. */
@@ -437,6 +438,215 @@ class PiDurableSession implements EngineSession {
 		const message = read?.entry?.model?.[0] as Message | undefined;
 		if (message?.role !== "assistant") return { text: "" };
 		return { text: message.content.map((block) => (block.type === "text" ? block.text : "")).join(""), model: { provider: message.provider, modelId: message.model }, ...(read?.usage === undefined ? {} : { usage: read.usage }) };
+	}
+}
+
+type RequestTarget = { model: ModelSelection; instructions: string | undefined };
+type GenerationRuntime = Parameters<typeof GenerationTask.definition.phases.request>[1];
+type RequestCheckpoint = Extract<GenerationCheckpoint, { phase: "request" | "poll" }>;
+
+/** A request that has not reached a provider yet must go back through Pi's prompt preparation. */
+class PrepareRequest extends Error {
+	constructor(readonly target: RequestTarget) { super("The request configuration changed"); }
+}
+
+class AlignmentFailed extends Error {
+	constructor(cause: unknown) { super("Request alignment failed", { cause }); }
+}
+
+/** Unlike pi-ai's lazyStream, a failed gate must escape to the task, not become a model response. */
+class GatedRequest extends AssistantMessageEventStream {
+	private ready: Promise<AssistantMessageEventStream> | undefined;
+	constructor(private readonly start: () => Promise<AssistantMessageEventStream>) { super(); }
+	private open(): Promise<AssistantMessageEventStream> { return this.ready ??= this.start(); }
+	override async *[Symbol.asyncIterator]() { yield* await this.open(); }
+	override async result() { return (await this.open()).result(); }
+}
+
+/**
+ * Pi 1.3's message hook cannot select a model (and its errors are skipped). Its request checkpoint
+ * pins the model AND transcript cutoff. Decorate the exported task through the public registry
+ * reader, without mutating Pi's singleton or replacing tool/retry/classification behavior.
+ *
+ * Check at streamSimple, after Pi's asynchronous transcript/hooks/session preparation, separately
+ * for each outgoing request. A mismatch resets only this generation to prepare: completed tools,
+ * their memos, loaded deferred tools and billing stay intact. Polls check after their sleep; a
+ * stale remote response is never applied to the conversation.
+ */
+function currentRequestRegistry(registry: RegistryReader, models: MutableModels, options: EngineOpenOptions, ownModel: OwnModel): RegistryReader {
+	const phases = GenerationTask.definition.phases;
+	const useTarget = async <T>(runtime: DocumentReader & { conversationId: ConversationId }, ctx: OriginContext, use: (target: RequestTarget | undefined) => T): Promise<Awaited<T>> => {
+		let key: string | undefined;
+		try { key = await threadKeyOf(runtime, runtime.conversationId, ctx); }
+		catch (error) { throw new AlignmentFailed(error); }
+		if (key === undefined) return await use(undefined);
+		return modelFor(models, options, ownModel, key, (model) => {
+			let instructions: string | undefined;
+			try { instructions = typeof options.instructions === "function" ? options.instructions() : options.instructions; }
+			catch (error) { throw new AlignmentFailed(error); }
+			return use({ model, instructions });
+		});
+	};
+	const targetFor = (runtime: DocumentReader & { conversationId: ConversationId }, ctx: OriginContext) => useTarget(runtime, ctx, (target) => target);
+	const check = <T>(runtime: GenerationRuntime, checkpoint: RequestCheckpoint, messages: readonly Message[], ctx: OriginContext, send: () => T): Promise<Awaited<T>> => useTarget(runtime, ctx, (target) => {
+		if (target !== undefined) {
+			let shown: string | null | undefined;
+			for (const message of messages) if (message.role === "system" && message.sections?.instructions !== undefined) shown = message.sections.instructions;
+			const desired = target.instructions === undefined ? undefined : `<instructions>\n${target.instructions}\n</instructions>`;
+			if (!sameModel(checkpoint.model, target.model) || (shown ?? undefined) !== desired) throw new PrepareRequest(target);
+		}
+		runtime.signal.throwIfAborted();
+		return send();
+	});
+	const recover = async (error: unknown, runtime: GenerationRuntime, checkpoint: Exclude<GenerationCheckpoint, { phase: "tools" }>, ctx: OriginContext) => {
+		runtime.signal.throwIfAborted();
+		if (error instanceof PrepareRequest) {
+			await runtime.commit(async (tx) => {
+				await configure(tx, runtime.conversationId, { model: error.target.model, instructions: error.target.instructions ?? null });
+				return { status: "running", checkpoint: { phase: "prepare", attempt: checkpoint.attempt, ...(checkpoint.compacted === undefined ? {} : { compacted: checkpoint.compacted }) } };
+			}, ctx);
+		} else if (error instanceof AlignmentFailed) {
+			const retry = runtime.settings.retry;
+			if (!retry.enabled || checkpoint.attempt > retry.maxRetries) throw error.cause;
+			runtime.report(error);
+			// A lookup failure did not send a request. Retry this exact phase: in particular keep
+			// deferred handles and prepare's compaction guards, which Pi's model retry discards.
+			await runtime.sleep(runtime.now() + retryDelayMs(retry, checkpoint.attempt), ctx);
+			await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, attempt: checkpoint.attempt + 1 } }), ctx);
+		} else throw error;
+	};
+	const generation: typeof GenerationTask = defineTask({
+		...GenerationTask.definition,
+		phases: {
+			...phases,
+			prepare: async (task, runtime, ctx) => {
+				try {
+					const target = await targetFor(runtime, ctx);
+					if (target !== undefined) await runtime.commit(async (tx) => { await configure(tx, runtime.conversationId, { model: target.model, instructions: target.instructions ?? null }); }, ctx);
+					await phases.prepare(task, runtime, ctx);
+				} catch (error) { await recover(error, runtime, task.state.checkpoint, ctx); }
+			},
+			request: async (task, runtime, ctx) => {
+				const checkpoint = task.state.checkpoint;
+				try {
+					// A checkpoint can refer to a provider absent from this process's catalog. Registration
+					// grants no credentials; the gate still chooses the currently usable model before sending.
+					registerModelProvider(models, options, checkpoint.model.provider);
+					if (models.getModel(checkpoint.model.provider, checkpoint.model.modelId) === undefined) {
+						const target = await targetFor(runtime, ctx);
+						if (target !== undefined && !sameModel(target.model, checkpoint.model)) throw new PrepareRequest(target);
+					}
+					const requestModels = Object.create(models) as MutableModels;
+					requestModels.streamSimple = (model, transcript, streamOptions) => new GatedRequest(() => check(runtime, checkpoint, transcript.messages, ctx, () => models.streamSimple(model, transcript, streamOptions)));
+					// Keep live getters (settings/registry), rather than freezing them with an object spread.
+					await phases.request(task, Object.assign(Object.create(runtime), { models: requestModels }), ctx);
+				} catch (error) { await recover(error, runtime, checkpoint, ctx); }
+			},
+			poll: async (task, runtime, ctx) => {
+				const checkpoint = task.state.checkpoint;
+				try {
+					const view = await runtime.context(runtime.conversationId, ctx, { at: checkpoint.cutoff });
+					registerModelProvider(models, options, checkpoint.model.provider);
+					if (models.getModel(checkpoint.model.provider, checkpoint.model.modelId) === undefined) {
+						const target = await targetFor(runtime, ctx);
+						if (target !== undefined && !sameModel(target.model, checkpoint.model)) throw new PrepareRequest(target);
+					}
+					const requestModels = Object.create(models) as MutableModels;
+					requestModels.fetchDeferred = (model, handle, fetchOptions) => check(runtime, checkpoint, view.messages, ctx, () => models.fetchDeferred(model, handle, fetchOptions));
+					await phases.poll(task, Object.assign(Object.create(runtime), { models: requestModels }), ctx);
+				} catch (error) {
+					if (error instanceof PrepareRequest) {
+						runtime.signal.throwIfAborted();
+						try {
+							// Revocation forbids even cancellation. The old provider may finish the remote job,
+							// but its result cannot enter this conversation or start any of its tools.
+							if (((await options.modelUsable?.(checkpoint.model.provider)) ?? true) && registerModelProvider(models, options, checkpoint.model.provider)) {
+								const model = models.getModel(checkpoint.model.provider, checkpoint.model.modelId);
+								if (model !== undefined) await models.cancelDeferred(model, checkpoint.handle, { signal: runtime.signal });
+							}
+						} catch (cancelError) { runtime.report(cancelError); }
+					}
+					await recover(error, runtime, checkpoint, ctx);
+				}
+			},
+		},
+	});
+	// Summaries have their own pinned model and dedicated prompt. Keep their range, prompt and
+	// placement protocol; choose the current usable model at completeSimple just like generation.
+	const compaction: typeof CompactionTask = defineTask({
+		...CompactionTask.definition,
+		phases: {
+			...CompactionTask.definition.phases,
+			summarize: async (task, runtime, ctx) => {
+				const checkpoint = task.state.checkpoint;
+				try {
+					registerModelProvider(models, options, checkpoint.model.provider);
+					if (models.getModel(checkpoint.model.provider, checkpoint.model.modelId) === undefined) {
+						const target = await targetFor(runtime, ctx);
+						if (target !== undefined && !sameModel(target.model, checkpoint.model)) {
+							await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, model: target.model } }), ctx);
+							return;
+						}
+					}
+					const requestModels = Object.create(models) as MutableModels;
+					requestModels.completeSimple = (model, transcript, streamOptions) => useTarget(runtime, ctx, (target) => {
+						const selected = target === undefined ? model : models.getModel(target.model.provider, target.model.modelId);
+						if (selected === undefined) throw new Error(`Model ${target!.model.provider}/${target!.model.modelId} is not available`);
+						runtime.signal.throwIfAborted();
+						return models.completeSimple(selected, transcript, { ...streamOptions, maxTokens: Math.min(streamOptions?.maxTokens ?? Infinity, selected.maxTokens > 0 ? selected.maxTokens : Infinity) });
+					});
+					await CompactionTask.definition.phases.summarize(task, Object.assign(Object.create(runtime), { models: requestModels }), ctx);
+				} catch (error) {
+					runtime.signal.throwIfAborted();
+					const retry = runtime.settings.retry;
+					if (!(error instanceof AlignmentFailed)) throw error;
+					if (!retry.enabled || checkpoint.attempt > retry.maxRetries) throw error.cause;
+					runtime.report(error);
+					await runtime.sleep(runtime.now() + retryDelayMs(retry, checkpoint.attempt), ctx);
+					await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, attempt: checkpoint.attempt + 1 } }), ctx);
+				}
+			},
+		},
+	});
+	const tasks = new Map([generation, compaction].map((task) => [task.definition.name, task]));
+	return {
+		subscribe: (listener) => registry.subscribe(listener),
+		snapshot: () => {
+			const snapshot = registry.snapshot();
+			return {
+				installed: () => snapshot.installed(), extension: (name) => snapshot.extension(name),
+				tools: () => snapshot.tools(), sections: () => snapshot.sections(),
+				tasks: () => snapshot.tasks().map((task) => tasks.get(task.definition.name) ?? task),
+				task: (name) => tasks.get(name) ?? snapshot.task(name),
+			};
+		},
+	};
+}
+
+function sameModel(a: ModelSelection | undefined, b: ModelSelection | undefined): boolean {
+	return a?.provider === b?.provider && a?.modelId === b?.modelId;
+}
+
+function registerModelProvider(models: MutableModels, options: EngineOpenOptions, provider: string): boolean {
+	if (models.getProvider(provider) !== undefined) return true;
+	try { models.setProvider(createProvider(provider, options.localProviders)); return true; }
+	catch { return false; }
+}
+
+async function modelFor<T>(models: MutableModels, options: EngineOpenOptions, ownModel: OwnModel, threadKey: string, use: (model: ModelSelection) => T): Promise<Awaited<T>> {
+	for (;;) {
+		const own = ownModel(threadKey);
+		if (own !== undefined && registerModelProvider(models, options, own.provider)) {
+			let usable: boolean;
+			try { usable = (await options.modelUsable?.(own.provider)) ?? true; }
+			catch (error) { throw new AlignmentFailed(error); }
+			// Pi publishes this observed document synchronously with each committed choice. No queued
+			// document read after the live provider check: consume it and dispatch in this continuation.
+			if (!sameModel(own, ownModel(threadKey))) continue;
+			if (usable) return await use(own);
+		}
+		registerModelProvider(models, options, options.model.provider);
+		return await use(options.model);
 	}
 }
 

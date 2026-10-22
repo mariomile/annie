@@ -3,10 +3,12 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import type { Provider } from "@earendil-works/pi-ai/models";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { AgentDoc, type ConversationId, createRegistry, defineDoc, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import type { AnnieTool, EngineOpenOptions, EngineReply } from "../src/core/engine.ts";
 import { instanceId, tenantId } from "../src/core/ids.ts";
@@ -38,6 +40,19 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const DEV = { provider: "faux", modelId: "annie-dev" };
 const GROK = { provider: "xai", modelId: "grok-4.7" };
+
+const providers = vi.hoisted(() => new Map<string, Provider>());
+vi.mock("../src/core/adapters/pi-durable-models.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/adapters/pi-durable-models.ts")>();
+	return { ...actual, createProvider: (...args: Parameters<typeof actual.createProvider>) => providers.get(args[0]) ?? actual.createProvider(...args) };
+});
+afterEach(() => { providers.clear(); vi.restoreAllMocks(); });
+
+function shownInstructions(messages: readonly Message[]): string | null | undefined {
+	let instructions: string | null | undefined;
+	for (const message of messages) if (message.role === "system" && message.sections?.instructions !== undefined) instructions = message.sections.instructions;
+	return instructions;
+}
 
 /** A tool that holds the turn until the session closes, or answers at once. */
 function hold(blocking: boolean, started: () => void = () => {}): AnnieTool {
@@ -127,6 +142,289 @@ const reopen = (storageDir: string, modelUsable?: EngineOpenOptions["modelUsable
 	piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [hold(false)], ...(modelUsable === undefined ? {} : { modelUsable }) });
 
 describe("restart after the configuration changed", () => {
+	it("round 6: a chat model cleared during the final verification cannot start stale", async () => {
+		const { storageDir } = await leftOnOwnModel(["web:t1", "web:t2"]);
+		let checks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const session = await reopenOnGrok(storageDir, async () => {
+			if (++checks === 4) await held;
+			return true;
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			const resumed = session.resume();
+			await waitFor(() => checks === 4);
+			await session.setThreadModel("web:t1", undefined);
+			release();
+			await resumed;
+			await waitFor(() => replies.length === 2);
+			expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "unanswered" });
+			expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
+		} finally {
+			release();
+			await session.close();
+		}
+	});
+
+	it("round 6: an interrupted request takes the current model and instructions on recovery", async () => {
+		const storageDir = tempDataDir();
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(DEV.provider, faux.provider);
+		providers.set(GROK.provider, grok.provider);
+		const sent: { provider: string; instructions: string | null | undefined }[] = [];
+		faux.setResponses([async ({ messages }, options) => {
+			sent.push({ provider: DEV.provider, instructions: shownInstructions(messages) });
+			await new Promise<void>((resolve) => options!.signal!.addEventListener("abort", () => resolve(), { once: true }));
+			return fauxAssistantMessage("interrupted", { stopReason: "aborted" });
+		}, ({ messages }) => {
+			sent.push({ provider: DEV.provider, instructions: shownInstructions(messages) });
+			return fauxAssistantMessage("stale");
+		}]);
+		grok.setResponses([({ messages }) => {
+			sent.push({ provider: GROK.provider, instructions: shownInstructions(messages) });
+			return fauxAssistantMessage("current");
+		}]);
+		const first = await piDurableEngine.open({ storageDir, model: DEV, instructions: "OLD", apiKey: async () => undefined, tools: [] });
+		await first.submit("web:t1", "hello");
+		await waitFor(() => sent.length === 1);
+		await first.setThreadModel("web:t1", GROK);
+		await first.close();
+		const session = await piDurableEngine.open({ storageDir, model: DEV, instructions: "NEW", apiKey: async () => undefined, tools: [] });
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			expect(await session.resume()).toEqual({ pending: 1 });
+			await waitFor(() => replies.length === 1);
+			expect(sent).toEqual([{ provider: "faux", instructions: "<instructions>\nOLD\n</instructions>" }, { provider: "xai", instructions: "<instructions>\nNEW\n</instructions>" }]);
+			expect(replies[0]).toMatchObject({ status: "answered", text: "current", model: GROK });
+		} finally {
+			await session.close();
+		}
+	});
+
+	it("a fresh request rereads a choice changed during its own outgoing usability check", async () => {
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(DEV.provider, faux.provider);
+		providers.set(GROK.provider, grok.provider);
+		const sent: (string | null | undefined)[] = [];
+		grok.setResponses([({ messages }) => { sent.push(shownInstructions(messages)); return fauxAssistantMessage("current"); }]);
+		let instructions = "OLD";
+		let atRequest = false;
+		let checking = false;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const session = await piDurableEngine.open({
+			storageDir: tempDataDir(), model: GROK, apiKey: async () => undefined, tools: [],
+			instructions: () => instructions,
+			turnContext: () => { atRequest = true; return "context"; },
+			modelUsable: async () => {
+				if (atRequest) { checking = true; await held; }
+				return true;
+			},
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			await session.setThreadModel("web:t1", DEV);
+			await session.submit("web:t1", "hello");
+			await waitFor(() => checking);
+			await session.setThreadModel("web:t1", undefined);
+			instructions = "NEW";
+			release();
+			await waitFor(() => replies.length === 1);
+			expect(replies[0]).toMatchObject({ status: "answered", model: GROK });
+			expect(sent).toEqual(["<instructions>\nNEW\n</instructions>"]);
+			expect(faux.state.callCount).toBe(0);
+		} finally { release(); await session.close(); }
+	});
+
+	it("an outgoing alignment failure retries without sending a stale request", async () => {
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
+		providers.set(DEV.provider, faux.provider);
+		faux.setResponses([fauxAssistantMessage("ok")]);
+		let injectFailure = true;
+		let fail = false;
+		let failures = 0;
+		const session = await piDurableEngine.open({
+			storageDir: tempDataDir(), model: DEV, apiKey: async () => undefined, tools: [],
+			turnContext: () => { if (injectFailure) { injectFailure = false; fail = true; } return "context"; },
+			modelUsable: async () => { if (fail) { fail = false; failures++; throw new Error("temporary provider lookup failure"); } return true; },
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			await session.setThreadModel("web:t1", DEV);
+			await session.submit("web:t1", "hello");
+			await waitFor(() => failures === 1);
+			expect(faux.state.callCount).toBe(0);
+			await waitFor(() => replies.length === 1);
+			expect(replies[0]).toMatchObject({ status: "answered", text: "ok" });
+			expect(faux.state.callCount).toBe(1);
+		} finally { await session.close(); }
+	});
+
+	it("dispatch does not hold a usable-provider result across a queued document read", async () => {
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(DEV.provider, faux.provider);
+		providers.set(GROK.provider, grok.provider);
+		faux.setResponses([fauxAssistantMessage("started before revocation")]);
+		grok.setResponses([fauxAssistantMessage("fallback after revocation"), fauxAssistantMessage("still on fallback")]);
+		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
+		await secrets.set(modelApiKeySecret("faux"), "test-only-key");
+		let harness: Harness;
+		const open = Harness.open;
+		vi.spyOn(Harness, "open").mockImplementation(async (...args) => { harness = await open(...args); return harness; });
+		let outgoing = false;
+		let blockOnce = true;
+		let entered = () => {};
+		const blocked = new Promise<void>((resolve) => (entered = resolve));
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		let transaction: Promise<void> | undefined;
+		const session = await piDurableEngine.open({
+			storageDir: tempDataDir(), model: GROK, apiKey: async () => undefined, tools: [],
+			turnContext: () => { outgoing = true; return "context"; },
+			modelUsable: async (provider) => {
+				const usable = await secrets.get(modelApiKeySecret(provider)) !== undefined;
+				if (outgoing && blockOnce) {
+					blockOnce = false;
+					transaction = harness.commit(async () => { entered(); await held; }, BACKGROUND_CONTEXT);
+					await blocked;
+				}
+				return usable;
+			},
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			await session.setThreadModel("web:t1", DEV);
+			await session.submit("web:t1", "first");
+			await blocked;
+			// A snapshot queued after the usability result would now block dispatch. The live document
+			// value lets the request start before the subsequent credential publication instead.
+			await waitFor(() => faux.state.callCount === 1, 500).catch(() => {});
+			const startedBeforePublication = faux.state.callCount === 1;
+			await secrets.delete(modelApiKeySecret("faux"));
+			release();
+			await transaction;
+			await waitFor(() => replies.length === 1);
+			await session.submit("web:t1", "second");
+			await waitFor(() => replies.length === 2);
+			// If a late read held the request, the completed revocation must force the fallback.
+			// Only a request demonstrably dispatched BEFORE publication may retain the old model.
+			expect(replies[0]).toMatchObject({ status: "answered", model: startedBeforePublication ? DEV : GROK });
+			expect(replies[1]).toMatchObject({ status: "answered", model: GROK });
+		} finally { release(); await transaction; await session.close(); }
+	});
+
+	it("an interrupted compaction uses the current model while retaining Pi's summary prompt and range", async () => {
+		const storageDir = tempDataDir();
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(DEV.provider, faux.provider);
+		providers.set(GROK.provider, grok.provider);
+		const sent: { provider: string; content: Message["content"][] }[] = [];
+		faux.setResponses([fauxAssistantMessage("old answer"), async ({ messages }, options) => {
+			sent.push({ provider: "faux", content: messages.map((m) => m.content) });
+			await new Promise<void>((resolve) => options!.signal!.addEventListener("abort", () => resolve(), { once: true }));
+			return fauxAssistantMessage("interrupted", { stopReason: "aborted" });
+		}, fauxAssistantMessage("stale summary")]);
+		grok.setResponses([({ messages }) => { sent.push({ provider: "xai", content: messages.map((m) => m.content) }); return fauxAssistantMessage("current summary"); }]);
+		const first = await piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [] });
+		await first.submit("web:t1", "summarize this history");
+		await first.idle();
+		await first.close();
+		const models = createModels({ credentials: { read: async () => undefined, list: async () => [], modify: async () => {}, delete: async () => {} }, authContext: { env: async () => undefined, fileExists: async () => false } });
+		models.setProvider(faux.provider);
+		const storage = await openNodeSqliteStorage(join(storageDir, "pi-durable.sqlite"));
+		const harness = await Harness.open(storage, { models, registry: createRegistry(), settings: { compaction: { keepRecentTokens: 1 } } }, BACKGROUND_CONTEXT);
+		const threads = defineDoc<{ threads: Record<string, number> }>({ kind: "annie.threads", version: 1, scope: "session", initial: () => ({ threads: {} }) });
+		const choices = defineDoc<{ models: Record<string, typeof DEV> }>({ kind: "annie.thread-models", version: 1, scope: "session", initial: () => ({ models: {} }) });
+		const id = (await harness.snapshot(threads, BACKGROUND_CONTEXT))!.threads["web:t1"] as ConversationId;
+		await (await harness.conversation(id, BACKGROUND_CONTEXT))!.compact(undefined, BACKGROUND_CONTEXT);
+		await waitFor(() => sent.length === 1);
+		await harness.commit(async (tx) => { (await tx.doc(choices)).models["web:t1"] = GROK; }, BACKGROUND_CONTEXT);
+		await harness.close(BACKGROUND_CONTEXT);
+		const session = await piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [] });
+		try {
+			await session.resume();
+			await session.idle();
+			expect(sent.map((s) => s.provider)).toEqual(["faux", "xai"]);
+			expect(sent[1]!.content).toEqual(sent[0]!.content);
+			expect(faux.state.callCount).toBe(2);
+		} finally { await session.close(); }
+	});
+
+	it("queued inputs use the new choice without repeating the tool already completed", async () => {
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(GROK.provider, grok.provider);
+		grok.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		let calls = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const session = await piDurableEngine.open({
+			storageDir: tempDataDir(), model: DEV, apiKey: async () => undefined,
+			tools: [{ ...hold(false), execute: async () => { calls++; await held; return "ok"; } }],
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			await session.submit("web:t1", "/tool hold {}");
+			await waitFor(() => calls === 1);
+			await session.submit("web:t1", "next input");
+			await session.setThreadModel("web:t1", GROK);
+			release();
+			await waitFor(() => replies.length === 2);
+			expect(replies.every((reply) => reply.status === "answered" && reply.model?.provider === "xai")).toBe(true);
+			expect(calls).toBe(1);
+		} finally { release(); await session.close(); }
+	});
+
+	it.each(["unchanged", "lookup fails", "model changed", "instructions changed", "instructions cleared", "provider revoked"] as const)("a deferred poll on recovery: %s", async (change) => {
+		const storageDir = tempDataDir();
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }], deferred: { pendingFetches: 1, pollAfterMs: 150 } });
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(DEV.provider, { ...faux.provider, streamSimple: (model, transcript, options) => faux.provider.streamSimple(model, transcript, { ...options, deferred: true }) });
+		providers.set(GROK.provider, grok.provider);
+		const staleTool = vi.fn(async () => "must not run");
+		const tools = [{ ...hold(false), name: "stale_tool", replaySafe: false, execute: staleTool }];
+		const sent: (string | null | undefined)[] = [];
+		const answer = ({ messages }: { messages: Message[] }) => { sent.push(shownInstructions(messages)); return fauxAssistantMessage("current"); };
+		const unchanged = change === "unchanged" || change === "lookup fails";
+		faux.setResponses([unchanged ? answer : fauxAssistantMessage(fauxToolCall("stale_tool", {}), { stopReason: "toolUse" }), answer]);
+		grok.setResponses([answer]);
+		const first = await piDurableEngine.open({ storageDir, model: GROK, instructions: "OLD", apiKey: async () => undefined, tools });
+		await first.setThreadModel("web:t1", DEV);
+		await first.submit("web:t1", "hello");
+		// The first deferred fetch reports pending: the request is durably in the poll phase.
+		await waitFor(() => faux.state.deferredFetchCount === 1);
+		if (change === "model changed") await first.setThreadModel("web:t1", GROK);
+		await first.close();
+		const instructions = change === "instructions cleared" ? undefined : unchanged ? "OLD" : "NEW";
+		let checks = 0;
+		const session = await piDurableEngine.open({ storageDir, model: GROK, instructions, apiKey: async () => undefined, tools, modelUsable: async (provider) => {
+			if (++checks === 3 && change === "lookup fails") throw new Error("temporary poll alignment failure");
+			return change !== "provider revoked" || provider !== "faux";
+		} });
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			expect(await session.resume()).toEqual({ pending: 1 });
+			await waitFor(() => replies.length === 1);
+			expect(replies[0]).toMatchObject({ status: "answered", text: "current", model: change === "model changed" || change === "provider revoked" ? GROK : DEV });
+			expect(staleTool).not.toHaveBeenCalled();
+			expect(sent).toEqual([instructions === undefined ? null : `<instructions>\n${instructions}\n</instructions>`]);
+			expect(faux.state.cancelledDeferred).toHaveLength(unchanged || change === "provider revoked" ? 0 : 1);
+			if (unchanged) expect(faux.state.callCount).toBe(1);
+			if (change === "model changed" || change === "provider revoked") expect(faux.state.deferredFetchCount).toBe(1);
+		} finally { await session.close(); }
+	});
+
 	it("resume(): every pending conversation is aligned before any of them runs again", async () => {
 		const { storageDir } = await leftMidTurn();
 		const replies: EngineReply[] = [];
@@ -203,8 +501,8 @@ describe("restart after the configuration changed", () => {
 		expect(await session.resume()).toEqual({ pending: 1 });
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "answered" });
-		// Two that failed, the one that aligned, the one that found nothing changed since.
-		expect(checks).toBe(4);
+		// Failed preparation did not start the scheduler; later checks include the actual request.
+		expect(checks).toBeGreaterThanOrEqual(4);
 		await session.close();
 	});
 
