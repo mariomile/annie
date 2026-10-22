@@ -538,19 +538,22 @@ export class AnnieRuntime {
 		}
 		const secrets = this.secrets(record.tenantId);
 		const fresh = () => this.registry.getInstance(record.tenantId, record.id);
-		// Which models can answer: provider allowed by the policy, and a key for it (none for the local
-		// one). Policy and keys are read once, so every chat checked with it sees the same moment.
+		// Which models can answer: provider allowed by the policy, and a key or a connected subscription
+		// for it (none for the local one). Policy, keys and subscriptions are read once, so every chat
+		// checked with it sees the same moment.
+		const local = this.localProviders(record.tenantId);
 		const reachable = (): ((provider: string) => boolean) => {
 			let allowed: readonly string[];
 			let keys: Set<string>;
+			let subscriptions: Set<string>;
 			try {
 				allowed = this.registry.getInstanceSync(record.tenantId, record.id).egress.modelProviders;
 				keys = secrets.namesNow();
+				subscriptions = local?.connectedNow() ?? new Set();
 			} catch {
 				return () => false;
 			}
-			const local = this.localProviders(record.tenantId);
-			return (provider) => allowed.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? local?.connected(provider) === true : keys.has(modelApiKeySecret(provider))));
+			return (provider) => allowed.includes(provider) && (provider === DEV_PROVIDER || (subscriptionProvider(provider) !== undefined ? subscriptions.has(provider) : keys.has(modelApiKeySecret(provider))));
 		};
 		const storageDir = engineDir(this.options.dataDir, record.tenantId, record.id);
 		await mkdir(storageDir, { recursive: true });

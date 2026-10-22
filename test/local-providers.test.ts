@@ -126,6 +126,23 @@ describe("subscription capability", () => {
 		expect(runtime.localProviders("default")).toBe(providers);
 		expect(runtime.localProviders("another-tenant")).toBeUndefined();
 	});
+	it("a chat on a subscription falls back to the instance model when the saved connections cannot be read", async () => {
+		const dir = tempDataDir();
+		writeFileSync(join(dir, "connections.json"), JSON.stringify({ providers: { codex: true } }));
+		const providers = await local(undefined, dir);
+		const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine: piDurableEngine, localProviders: providers });
+		closers.push(() => runtime.close());
+		await runtime.registry.createTenant({ id: "default", name: "Default" });
+		await runtime.registry.createInstance("default", { id: "agent", name: "Agent", model: { provider: "faux", modelId: "faux-1" }, egress: { modelProviders: ["faux", "codex"], channels: ["test"] }, allowedUsers: { test: ["u"] } });
+		const chat = { channel: "test", threadId: "t" };
+		await runtime.setChatModel("default", "agent", chat, { provider: "codex", modelId: "default" }, "u");
+		expect(await runtime.chatModel("default", "agent", "test", "t")).toEqual({ provider: "codex", modelId: "default" });
+		writeFileSync(join(dir, "connections.json"), "{ not json");
+		expect(await runtime.chatModel("default", "agent", "test", "t")).toBeUndefined();
+		await expect(runtime.setChatModel("default", "agent", chat, { provider: "codex", modelId: "default" }, "u")).rejects.toThrow(/model_provider|codex/);
+		writeFileSync(join(dir, "connections.json"), JSON.stringify({ providers: { codex: true } }));
+		expect(await runtime.chatModel("default", "agent", "test", "t")).toEqual({ provider: "codex", modelId: "default" });
+	});
 });
 
 describe("official CLI inference bridge", () => {

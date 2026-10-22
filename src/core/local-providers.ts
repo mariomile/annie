@@ -129,6 +129,12 @@ export class LocalProviders {
 	connected(id: string): boolean {
 		return !this.closed && this.saved().providers[id] === true && this.statuses.get(id)?.authenticated === true;
 	}
+	/** The subscriptions connected now, from one read of the saved choices. */
+	connectedNow(): Set<string> {
+		if (this.closed) return new Set();
+		const saved = this.saved();
+		return new Set(SUBSCRIPTION_PROVIDERS.map((p) => p.id).filter((id) => saved.providers[id] === true && this.statuses.get(id)?.authenticated === true));
+	}
 	list(): LocalProviderStatus[] {
 		return SUBSCRIPTION_PROVIDERS.map((p) => this.statuses.get(p.id) ?? { ...p, key: "missing", installed: false, authenticated: false, connected: false, status: "unavailable" });
 	}
