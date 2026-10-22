@@ -98,9 +98,7 @@ export const piDurableEngine: DurableEngine = {
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		const harness = await Harness.open(storage, { models, registry }, context);
-		const session = new PiDurableSession(harness, models, options);
-		await session.alignPending();
-		return session;
+		return new PiDurableSession(harness, models, options);
 	},
 };
 
@@ -110,6 +108,7 @@ class PiDurableSession implements EngineSession {
 	private readonly creating = new Map<string, Promise<ConversationId>>();
 	private closing = false;
 	private recovery: Promise<number> | undefined;
+	private prepared: Promise<void> | undefined;
 
 	constructor(
 		private readonly harness: Harness,
@@ -150,6 +149,7 @@ class PiDurableSession implements EngineSession {
 	async reattach(submissionId: string, threadKey: string): Promise<boolean> {
 		const submission = await this.harness.submission(Number(submissionId) as SubmissionId, context);
 		if (submission === undefined) return false;
+		await this.prepare();
 		this.track(submission, threadKey);
 		return true;
 	}
@@ -160,7 +160,7 @@ class PiDurableSession implements EngineSession {
 	 * reply would be lost.
 	 */
 	private recover(): Promise<number> {
-		this.recovery ??= this.attachPending().then((pending) => {
+		this.recovery ??= this.prepare().then(() => this.attachPending()).then((pending) => {
 			this.harness.resume();
 			return pending;
 		});
@@ -179,11 +179,17 @@ class PiDurableSession implements EngineSession {
 	}
 
 	/**
-	 * Called by open(), while the scheduler is still paused (Harness.open leaves it paused) and
-	 * nothing can start it yet: work left half done goes on with the instance's model and
-	 * instructions of now, whichever call (reattach, resume, submit, idle) then starts it.
+	 * Once per session, awaited by every call that starts Pi's scheduler (reattach, resume,
+	 * submit, idle) before it does, while it is still paused (Harness.open leaves it paused):
+	 * work left half done goes on with the model and instructions of that moment, so a change
+	 * made after open() counts too.
 	 */
-	async alignPending(): Promise<void> {
+	private prepare(): Promise<void> {
+		this.prepared ??= this.alignPending();
+		return this.prepared;
+	}
+
+	private async alignPending(): Promise<void> {
 		const aligned = new Set<number>();
 		for (const { conversationId, threadKey } of await this.pendingInputs()) {
 			if (aligned.has(conversationId)) continue;
@@ -222,7 +228,8 @@ class PiDurableSession implements EngineSession {
 		return () => this.listeners.delete(listener);
 	}
 
-	idle(): Promise<void> {
+	async idle(): Promise<void> {
+		await this.prepare();
 		return this.harness.waitForIdle(context);
 	}
 

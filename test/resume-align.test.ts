@@ -37,6 +37,21 @@ async function leftMidTurn(): Promise<{ storageDir: string; s1: string; s2: stri
 	return { storageDir, s1, s2 };
 }
 
+/**
+ * One chat left mid-turn on its own model, the local one, while the instance runs on a model
+ * with no key here: back on the instance model, the chat cannot answer.
+ */
+async function leftOnOwnModel(): Promise<{ storageDir: string; s1: string }> {
+	const storageDir = tempDataDir();
+	let holding = 0;
+	const first = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(true, () => holding++)] });
+	await first.setThreadModel("web:t1", DEV);
+	const { submissionId: s1 } = await first.submit("web:t1", "/tool hold {}");
+	await waitFor(() => holding === 1);
+	await first.close();
+	return { storageDir, s1 };
+}
+
 const reopen = (storageDir: string, modelUsable?: EngineOpenOptions["modelUsable"]) =>
 	piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [hold(false)], ...(modelUsable === undefined ? {} : { modelUsable }) });
 
@@ -72,6 +87,31 @@ describe("restart after the configuration changed", () => {
 		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
 		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "unanswered" });
 		expect(await session.resume()).toEqual({ pending: 0 });
+		await session.close();
+	});
+
+	it("a chat model cleared after open() and before resume() still counts", async () => {
+		const { storageDir } = await leftOnOwnModel();
+		const session = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(false)] });
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		await session.setThreadModel("web:t1", undefined);
+		expect(await session.resume()).toEqual({ pending: 1 });
+		await waitFor(() => replies.length === 1);
+		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "unanswered" });
+		await session.close();
+	});
+
+	it("a chat model that stops being usable after open() and before reattach() still counts", async () => {
+		const { storageDir, s1 } = await leftOnOwnModel();
+		let usable = true;
+		const session = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(false)], modelUsable: async () => usable });
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		usable = false;
+		expect(await session.reattach(s1, "web:t1")).toBe(true);
+		await waitFor(() => replies.length === 1);
+		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "unanswered" });
 		await session.close();
 	});
 });
