@@ -15,6 +15,7 @@ import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { createInvoiceTools, type InvoiceEvent } from "../src/core/tools/invoice-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
+import { loadTools } from "./helpers.ts";
 
 const NS = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2";
 
@@ -817,8 +818,7 @@ describe("the scadenzario in the app", () => {
 		const workspace = workspaceDir(dataDir, tenantId(config.tenantId), instanceId(config.instanceId));
 		mkdirSync(join(workspace, "fatture"), { recursive: true });
 		writeFileSync(join(workspace, "fatture", "IT00000510016_00042.xml.p7m"), p7m(Buffer.from(RICEVUTA)));
-		// The registers are deferred (ADR 0100): loaded first, as the model does.
-		await reply('/tool tool_search {"query":"invoices"}');
+		await loadTools(reply, "invoices");
 		const answer = await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		expect(answer).toContain("Delle fatture trovate (1): una ricevuta (da pagare), nessuna emessa (da incassare)");
 		const due = await reply('/tool invoices {"op":"by_party","party":"alfa"}');

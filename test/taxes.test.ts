@@ -31,6 +31,7 @@ import { createTaxTools, type TaxEvent } from "../src/core/tools/tax-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { BETA, fattura, GAMMA } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -1065,8 +1066,7 @@ describe("taxes in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
-		// The registers are deferred (ADR 0100): loaded first, as the model does.
-		await reply('/tool tool_search {"query":"taxes"}');
+		await loadTools(reply, "taxes");
 		expect(await reply('/tool taxes {"op":"set_profile","coefficient":78,"pension":"gestione separata","last_year_imposta":"6543,21"}')).toContain("Fatto, profilo delle tasse salvato:");
 		expect(await reply('/tool taxes {"op":"calendar"}')).toContain("Il prossimo F24");
 		expect(await reply('/tool taxes {"op":"export"}')).toContain("Salvato tasse/tasse-");

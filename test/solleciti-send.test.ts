@@ -15,6 +15,7 @@ import type { AnnieRuntime } from "../src/core/runtime.ts";
 import type { MailProposal as ReminderProposal } from "../src/core/mail-requests.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { B70, BETA, COMUNE, cleanTemp, ctx, DELTA, FILES, fakeMail, fattura, G1, GAMMA, GNC, IBAN, IBAN_2, IBAN_SAVED, inside, NOW, outside, setup, TUESDAY, temp } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -449,8 +450,7 @@ describe("solleciti in the app", () => {
 			}
 			throw new Error("no reply");
 		};
-		// The registers are deferred (ADR 0100): loaded first, as the model does.
-		await reply('/tool tool_search {"query":"invoices"}');
+		await loadTools(reply, "invoices");
 		await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		const asked = await reply('/tool invoices {"op":"reminder","party":"gamma","send":true}');
 		expect(asked).toContain("Ho preparato una richiesta di invio");

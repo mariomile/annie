@@ -24,6 +24,7 @@ import { euros } from "../src/core/tools/quote-render.ts";
 import { createQuoteTools, type QuoteEvent } from "../src/core/tools/quote-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z");
 const IBAN = "IT74X0000000000000000123456";
@@ -786,8 +787,7 @@ describe("quotes in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
-		// The registers are deferred (ADR 0100): loaded first, as the model does.
-		await reply('/tool tool_search {"query":"invoices quotes"}');
+		await loadTools(reply, "invoices", "quotes");
 		expect(await reply('/tool invoices {"op":"set_company","vat":"00000520031","name":"Bianchi Consulenze Srl","address":"Via Roma 1, Milano"}')).toContain("Ora so che l'azienda è");
 		const quote = { op: "create", customer: "Rossi Srl", items: [{ description: "Consulenza", quantity: 3, unit: "giornate", price: 500 }, { description: "Trasferta", price: 120 }], vat: 22 };
 		const answer = await reply(`/tool quotes ${JSON.stringify(quote)}`);

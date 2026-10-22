@@ -22,6 +22,7 @@ import { EXPENSE_CATEGORY } from "../src/core/renewals.ts";
 import { createRenewalTools, type RenewalEvent } from "../src/core/tools/renewal-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -966,8 +967,7 @@ describe("renewals in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
-		// The registers are deferred (ADR 0100): loaded first, as the model does.
-		await reply('/tool tool_search {"query":"renewals expenses"}');
+		await loadTools(reply, "renewals", "expenses");
 		expect(await reply('/tool renewals {"op":"add","name":"Assicurazione Zeta","amount":"480","frequency":"annuale","due":"fine mese"}')).toContain("Aggiunto il rinnovo R-0001");
 		expect(await reply('/tool renewals {"op":"renewed","id":"l\'assicurazione zeta","record_expense":true}')).toContain("Registrata anche la spesa S-");
 		expect(await reply('/tool expenses {"op":"list"}')).toContain("Spese: 1 spesa");

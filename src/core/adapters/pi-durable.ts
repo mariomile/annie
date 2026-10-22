@@ -393,16 +393,17 @@ class PiDurableSession implements EngineSession {
  * so the model knows them whatever an instance's stored instructions say. A query made only of
  * their exact names loads those alone; BM25 ranks a name below its neighbours and would load eight.
  */
-function toolSearch(deferred: readonly AnnieTool[]): ReturnType<typeof createToolSearchTool> {
+export function toolSearch(deferred: readonly AnnieTool[]): ReturnType<typeof createToolSearchTool> {
 	const base = createToolSearchTool();
-	const names = new Set(deferred.map((tool) => tool.name));
-	const what = (description: string) => (description.split(/(?<=\.)\s|\n/)[0] ?? "").slice(0, 140);
+	// The first sentence: up to the first full stop or colon followed by a space or the end.
+	const what = (description: string) => (description.trim().split(/[.:](?:\s|$)/)[0] ?? "");
 	return {
 		...base,
 		description: `Carica gli strumenti che non ti sono dati all'inizio: li hai dalla chiamata dopo e restano per tutta la conversazione. Cerca col nome esatto, uno o più separati da spazi: carica solo quelli. Sono:\n${deferred.map((tool) => `- ${tool.name}: ${what(tool.description)}`).join("\n")}`,
 		async execute(args, api, context) {
-			const words = args.query.split(/[\s,]+/).filter((word) => word !== "");
-			if (words.length === 0 || !words.every((word) => names.has(word))) return base.execute({ ...args, limit: args.limit ?? 3 }, api, context);
+			const live = new Set((await api.agent(context)).deferred.map((tool) => tool.name));
+			const words = [...new Set(args.query.split(/[\s,]+/).filter((word) => word !== ""))];
+			if (words.length === 0 || !words.every((word) => live.has(word))) return base.execute({ ...args, limit: args.limit ?? 3 }, api, context);
 			return { output: [{ type: "text", text: `Caricati: ${words.join(", ")}. Li hai dalla prossima chiamata.` }], details: { loaded: words }, control: { addTools: words } };
 		},
 	};
@@ -414,7 +415,7 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 		description: tool.description,
 		parameters: Type.Unsafe<Record<string, unknown>>(tool.parameters as never),
 		replay: tool.replaySafe ? "safe" : "unsafe",
-		...(tool.deferred === true ? { deferred: true as const } : {}),
+		deferred: tool.deferred,
 		execute: async (args, api, callContext) => {
 			const threadKey = await threadKeyOf(api, api.conversationId, callContext);
 			const at = threadKey?.indexOf(":") ?? -1;

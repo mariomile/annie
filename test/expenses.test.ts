@@ -24,6 +24,7 @@ import { createExpenseTools, type ExpenseEvent } from "../src/core/tools/expense
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { BETA, fattura, G1, G2, GAMMA, GNC, RICEVUTA } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -820,8 +821,7 @@ describe("expenses in the app", () => {
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
-		// The registers are deferred (ADR 0100): loaded first, as the model does.
-		await reply('/tool tool_search {"query":"expenses"}');
+		await loadTools(reply, "expenses");
 		const answer = await reply('/tool expenses {"op":"add","amount":"42,50","vat_rate":22,"supplier":"Distributore Zeta","category":"benzina"}');
 		expect(answer).toContain("Registrata la spesa S-");
 		expect(await reply('/tool expenses {"op":"summary"}')).toContain("Totale: 42,50 €");
