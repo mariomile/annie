@@ -1,4 +1,4 @@
-import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -64,7 +64,7 @@ describe("the computer on a Fly machine", () => {
 		const c = computer();
 		const run = await c.run("aaaa1111", "id -u; pwd; echo errore >&2; exit 3", { timeoutS: 10 });
 		expect(run).toMatchObject({ exitCode: 3, stderr: "errore\n", timedOut: false, killed: false, truncated: false, diskFull: false });
-		expect(run.stdout).toBe(`${UID}\n${dirs(appOf("aaaa1111")).work}\n`);
+		expect(run.stdout).toBe(`${UID}\n${realpathSync(dirs(appOf("aaaa1111")).work)}\n`);
 		const app = fly.apps.get(appOf("aaaa1111"));
 		expect(app).toMatchObject({ network: appOf("aaaa1111"), org: "annie" });
 		expect(app?.volumes).toEqual([{ id: expect.any(String), name: "work", size_gb: 1, region: "fra", encrypted: true, attached_machine_id: app?.machines[0]?.id, state: "created" }]);
@@ -123,7 +123,8 @@ describe("the computer on a Fly machine", () => {
 			{ path: "vuoto.txt", data: new Uint8Array() },
 		]);
 		const run = await c.run("eeee5555", "wc -c < dati/vendite.csv; wc -c < vuoto.txt; ln -s /etc/passwd link; mkdir -p cartella", { timeoutS: 10 });
-		expect(run.stdout).toBe(`${data.length}\n0\n`);
+		// BSD wc pads its counts; GNU wc does not. The byte counts are the contract.
+		expect(run.stdout.trim().split(/\s+/).map(Number)).toEqual([data.length, 0]);
 		expect(Buffer.from(await c.get("eeee5555", "dati/vendite.csv", 1024))).toEqual(data);
 		expect((await c.get("eeee5555", "vuoto.txt", 10)).length).toBe(0);
 		await expect(c.get("eeee5555", "dati/vendite.csv", 20)).rejects.toThrow("più grande");
