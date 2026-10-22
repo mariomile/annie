@@ -153,7 +153,7 @@ describe("the inputs a run answers (ADR 0088)", () => {
 		const long = [answer, input("notice"), ...Array.from({ length: 60 }, () => input("person"))];
 		const said: string[] = [];
 		expect(await inputsOrigin(of(long), 1 as never, (m) => said.push(m))).toBe("scheduled");
-		expect(said).toEqual(["annie: the scan for a turn's run reached its bound before the start of the run; the turn is not taken for a person's, and its cost is a partial sum"]);
+		expect(said).toEqual(["annie: the scan for a turn's run reached its bound before the start of the run; the turn is not taken for a person's"]);
 		// The default logger says it once per process.
 		const errors: unknown[] = [];
 		const original = console.error;

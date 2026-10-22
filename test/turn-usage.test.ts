@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { turnUsage } from "../src/core/adapters/pi-durable.ts";
+import { startBilling, turnUsage } from "../src/core/adapters/pi-durable.ts";
 import { tenantId } from "../src/core/ids.ts";
 import { tenantDir } from "../src/core/paths.ts";
 import { turnStats, type UsageRecord } from "../src/core/usage.ts";
@@ -21,20 +21,24 @@ const input = (id: number): FakeEntry => ({ id, kind: "annie.input", model: [ask
 const assistant = (id: number, message: unknown): FakeEntry => ({ id, kind: "pi.assistant", model: [message] });
 const ledger = (cost: number, input = 0) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: input, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } });
 
+/** A conversation billed from its start, as one created now. */
+const fresh = (): Record<string, unknown> => ({ "annie.billed-to": { spent: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } } });
+
 /**
  * Entries newest first, read in pages of `size` in either order; `models` is the conversation's
- * `pi.usage`, and the docs Annie writes live in `docs`.
+ * `pi.usage`, and the docs Annie writes live in `docs` (a family's members under `kind/key`).
  */
-function fakeTx(entries: FakeEntry[], size = 2, models?: Record<string, ReturnType<typeof ledger>>, docs: Record<string, unknown> = {}) {
+function fakeTx(entries: FakeEntry[], size = 2, models?: Record<string, ReturnType<typeof ledger>>, docs: Record<string, unknown> = fresh()) {
 	return {
 		async scanEntries(query: { order?: string; maxEntryId?: number; minEntryId?: number }, _limit: number, cursor?: unknown) {
 			const list = query.order === "ascending" ? [...entries].reverse().filter((e) => e.id >= (query.minEntryId ?? 0)) : entries.filter((e) => query.maxEntryId === undefined || e.id <= query.maxEntryId);
 			const start = (cursor as number | undefined) ?? 0;
 			return { items: list.slice(start, start + size), next: start + size < list.length ? start + size : undefined };
 		},
-		async doc(token: { definition: { kind: string; initial: () => unknown } }) {
+		async doc(token: { definition: { kind: string; family?: true; initial: (seed?: unknown) => unknown } }, _conversation: unknown, key?: string, seed?: unknown) {
 			if (token.definition.kind === "pi.usage") return { models: models ?? {}, tools: {} };
-			return (docs[token.definition.kind] ??= token.definition.initial());
+			const name = token.definition.family ? `${token.definition.kind}/${key}` : token.definition.kind;
+			return (docs[name] ??= structuredClone(token.definition.initial(seed)));
 		},
 	} as never;
 }
@@ -58,12 +62,19 @@ describe("quanto costa un turno (ADR 0098)", () => {
 		expect(await turnUsage(fakeTx([assistant(1, said(1))]), 1 as never, 9 as never)).toBeUndefined();
 	});
 
-	it("says it when the run is longer than the scan, and still gives what it found", async () => {
-		const entries: FakeEntry[] = Array.from({ length: 1100 }, (_, i) => assistant(1100 - i, said(0.001, "web_search")));
-		const said_: string[] = [];
-		const usage = await turnUsage(fakeTx(entries, 50), 1 as never, 1100 as never, (m) => said_.push(m));
-		expect(said_).toHaveLength(1);
-		expect(usage?.modelCalls).toBe(1000);
+	it("a next run longer than any page bound is taken out whole: the older answer is billed its own, the next one never below zero", async () => {
+		const docs = fresh();
+		const first: FakeEntry[] = [assistant(2, said(0.5)), input(1)];
+		expect((await turnUsage(fakeTx(first, 50, { "p/m": ledger(0.5) }, docs), 1 as never, 2 as never))?.costUsd).toBeCloseTo(0.5, 9);
+		// A answered at 4; the next run has already called 1500 tools when A is read.
+		const calls = Array.from({ length: 1500 }, (_, i) => assistant(1506 - i, said(0.001, "web_search")));
+		const running: FakeEntry[] = [...calls, input(5), assistant(4, said(1)), input(3), ...first];
+		expect((await turnUsage(fakeTx(running, 50, { "p/m": ledger(0.5 + 1 + 1.5) }, docs), 1 as never, 4 as never))?.costUsd).toBeCloseTo(1, 9);
+		// Its answer, B, takes its own run: 1500 calls and the answer.
+		const done: FakeEntry[] = [assistant(1507, said(0.001)), ...running];
+		const b = await turnUsage(fakeTx(done, 50, { "p/m": ledger(0.5 + 1 + 1.5 + 0.001) }, docs), 1 as never, 1507 as never);
+		expect(b?.costUsd).toBeCloseTo(1.501, 9);
+		expect(b?.modelCalls).toBe(1501);
 	});
 
 	it("a request that failed and was retried, or was cut short, does not end the run: the run's every call is counted", async () => {
@@ -81,7 +92,7 @@ describe("quanto costa un turno (ADR 0098)", () => {
 	});
 
 	it("a compaction's summary is billed to the run it happened in, from Pi's own ledger, and a turn is billed once", async () => {
-		const docs: Record<string, unknown> = {};
+		const docs = fresh();
 		// The previous turn: billed by what its run called.
 		const first: FakeEntry[] = [assistant(2, said(0.1)), input(1)];
 		expect(await turnUsage(fakeTx(first, 2, { "p/m": ledger(0.1, 100) }, docs), 1 as never, 2 as never)).toMatchObject({ modelCalls: 1, costUsd: expect.closeTo(0.1, 9) });
@@ -97,6 +108,56 @@ describe("quanto costa un turno (ADR 0098)", () => {
 		const later: FakeEntry[] = [assistant(8, said(0.4, "web_search")), input(7), ...entries];
 		const next = await turnUsage(fakeTx(later, 2, { "p/m": ledger(0.7 + 0.4, 1100) }, billedBefore), 1 as never, 6 as never);
 		expect(next?.costUsd).toBeCloseTo(0.6, 9);
+	});
+
+	it("the first turn of a conversation pays its compaction's summary too: nothing Pi spent is left out", async () => {
+		const docs = fresh();
+		// The first turn overflowed: a summary costing 0.25 (in pi.usage only), then the answer at 0.30.
+		const first: FakeEntry[] = [assistant(4, said(0.3)), { id: 3, kind: "pi.compaction", model: [asked] }, assistant(2, failed(0)), input(1)];
+		expect((await turnUsage(fakeTx(first, 2, { "p/m": ledger(0.55) }, docs), 1 as never, 4 as never))?.costUsd).toBeCloseTo(0.55, 9);
+		const second: FakeEntry[] = [assistant(6, said(0.1)), input(5), ...first];
+		expect((await turnUsage(fakeTx(second, 2, { "p/m": ledger(0.65) }, docs), 1 as never, 6 as never))?.costUsd).toBeCloseTo(0.1, 9);
+	});
+
+	it("a conversation from before billing starts at its last answer, and its next turn pays its compaction's summary", async () => {
+		const docs: Record<string, unknown> = {};
+		// Before: two answers, 7 spent in all, never billed.
+		const before: FakeEntry[] = [assistant(4, said(5)), input(3), assistant(2, said(2)), input(1)];
+		await startBilling(fakeTx(before, 2, { "p/m": ledger(7) }, docs), 1 as never);
+		// An answer from before has no bill; the next turn compacts (0.25) and answers (0.3).
+		expect(await turnUsage(fakeTx(before, 2, { "p/m": ledger(7) }, docs), 1 as never, 4 as never)).toBeUndefined();
+		const after: FakeEntry[] = [assistant(7, said(0.3)), { id: 6, kind: "pi.compaction", model: [asked] }, input(5), ...before];
+		expect((await turnUsage(fakeTx(after, 2, { "p/m": ledger(7.55) }, docs), 1 as never, 7 as never))?.costUsd).toBeCloseTo(0.55, 9);
+	});
+
+	it("a conversation from before, opened in the middle of a run, bills that run's calls made before the restart", async () => {
+		const docs: Record<string, unknown> = {};
+		const before: FakeEntry[] = [assistant(4, said(0.2, "web_search")), input(3), assistant(2, said(2)), input(1)];
+		await startBilling(fakeTx(before, 2, { "p/m": ledger(2.2) }, docs), 1 as never);
+		const after: FakeEntry[] = [assistant(6, said(0.1)), { id: 5, model: [{ role: "toolResult" }] }, ...before];
+		expect(await turnUsage(fakeTx(after, 2, { "p/m": ledger(2.3) }, docs), 1 as never, 6 as never)).toMatchObject({ modelCalls: 2, costUsd: expect.closeTo(0.3, 9), tools: ["web_search"] });
+	});
+
+	it("answers read again after a crash get their own bills back, the older one included", async () => {
+		const docs = fresh();
+		// A (0.10) and B (0.20) answered and read; the process dies before A reaches usage.jsonl.
+		const entries: FakeEntry[] = [assistant(4, said(0.2)), input(3), assistant(2, said(0.1)), input(1)];
+		const models = { "p/m": ledger(0.3) };
+		const a = await turnUsage(fakeTx(entries.slice(2), 2, { "p/m": ledger(0.1) }, docs), 1 as never, 2 as never);
+		const b = await turnUsage(fakeTx(entries, 2, models, docs), 1 as never, 4 as never);
+		expect(a?.costUsd).toBeCloseTo(0.1, 9);
+		expect(b?.costUsd).toBeCloseTo(0.2, 9);
+		// Recovery reads both again, in either order.
+		expect(await turnUsage(fakeTx(entries, 2, models, docs), 1 as never, 4 as never)).toEqual(b);
+		expect(await turnUsage(fakeTx(entries, 2, models, docs), 1 as never, 2 as never)).toEqual(a);
+	});
+
+	it("answers read out of order are billed in order: the newer one does not take the older one's run", async () => {
+		const docs = fresh();
+		const entries: FakeEntry[] = [assistant(4, said(0.2)), input(3), assistant(2, said(0.1)), input(1)];
+		const models = { "p/m": ledger(0.3) };
+		expect((await turnUsage(fakeTx(entries, 2, models, docs), 1 as never, 4 as never))?.costUsd).toBeCloseTo(0.2, 9);
+		expect((await turnUsage(fakeTx(entries, 2, models, docs), 1 as never, 2 as never))?.costUsd).toBeCloseTo(0.1, 9);
 	});
 
 	it("a turn with a tool writes its usage in the tenant's spend, once, and nothing in the audit", async () => {

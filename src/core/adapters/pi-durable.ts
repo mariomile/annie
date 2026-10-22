@@ -21,6 +21,7 @@ import {
 	type EntryRecord,
 	type Page,
 	defineDoc,
+	defineDocFamily,
 	defineExtension,
 	defineTool,
 	GenerationTask,
@@ -56,15 +57,14 @@ const ThreadsDoc = defineDoc<{ threads: Record<string, number> }>({
  */
 const INPUT_KIND = "annie.input";
 
-/** Thread key → the model that conversation answers with instead of the instance's (ADR 0036). */
 /**
- * The answer last billed in this conversation (ADR 0098): `spent` is how much of Pi's `pi.usage`
- * had been billed then, `turn` what that answer was billed, given again if it is answered again.
+ * How far this conversation is billed (ADR 0098): `answer` is the last answer billed, `spent` how
+ * much of Pi's `pi.usage` had been spent at it. No `spent` until billing starts: when the
+ * conversation is created, or for one created before, when this version first opens it.
  */
 type Spent = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-type Bill = { modelCalls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd: number; tools: string[] };
-const BilledDoc = defineDoc<{ answer?: number; spent?: Spent; turn?: Bill }>({
-	kind: "annie.billed",
+const BilledDoc = defineDoc<{ answer?: number; spent?: Spent }>({
+	kind: "annie.billed-to",
 	version: 1,
 	scope: "conversation",
 	history: "latest",
@@ -72,6 +72,19 @@ const BilledDoc = defineDoc<{ answer?: number; spent?: Spent; turn?: Bill }>({
 	initial: () => ({}),
 });
 
+/** What one answer was billed (ADR 0098), keyed by its entry: written once, given again whenever it is read again. */
+type Bill = { modelCalls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUsd: number; tools: string[] };
+const BillDoc = defineDocFamily<{ bill?: Bill }, Bill | null>({
+	kind: "annie.bill",
+	version: 1,
+	family: true,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: (bill) => (bill === null ? {} : { bill }),
+});
+
+/** Thread key → the model that conversation answers with instead of the instance's (ADR 0036). */
 const ThreadModelsDoc = defineDoc<{ models: Record<string, ModelSelection> }>({
 	kind: "annie.thread-models",
 	version: 1,
@@ -197,6 +210,10 @@ class PiDurableSession implements EngineSession {
 	private async attachPending(): Promise<number> {
 		const inspection = await this.harness.inspect(context);
 		const threads = await this.threads();
+		// Before the scheduler starts, nothing moves: a conversation created before billing existed starts it here.
+		await this.harness.commit(async (tx) => {
+			for (const id of Object.values(threads)) await startBilling(tx, id as ConversationId);
+		}, context);
 		const byConversation = new Map<number, string>(Object.entries(threads).map(([key, id]) => [id, key]));
 		let pending = 0;
 		const aligned = new Set<number>();
@@ -270,6 +287,7 @@ class PiDurableSession implements EngineSession {
 				// Same commit as the conversation: the mapping can never point to nothing.
 				init: async (tx, id) => {
 					(await tx.doc(ThreadsDoc)).threads[threadKey] = id;
+					(await tx.doc(BilledDoc, id)).spent = noSpend();
 				},
 			},
 			context,
@@ -356,7 +374,7 @@ class PiDurableSession implements EngineSession {
 
 	private async answer(settled: SettledSubmissionRecord & { status: "done"; type: "input" }): Promise<{ text: string; model?: ModelSelection; usage?: TurnUsage }> {
 		const conversation = await this.harness.conversation(settled.conversationId, context);
-		// Writes only what the turn was billed (BilledDoc), in the commit that reads it.
+		// Writes only the bills of the answers read (BillDoc, BilledDoc), in the commit that reads them.
 		const read = await conversation?.commit(async (tx) => ({ entry: await tx.entry(AssistantEntry, settled.answer), usage: await turnUsage(tx, settled.conversationId, settled.answer) }), context);
 		const message = read?.entry?.model?.[0] as Message | undefined;
 		if (message?.role !== "assistant") return { text: "" };
@@ -430,7 +448,7 @@ export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: 
 	return found.length === 0 ? "scheduled" : worst(found);
 }
 
-const SCAN_BOUND = "annie: the scan for a turn's run reached its bound before the start of the run; the turn is not taken for a person's, and its cost is a partial sum";
+const SCAN_BOUND = "annie: the scan for a turn's run reached its bound before the start of the run; the turn is not taken for a person's";
 let boundWarned = false;
 
 /** Said once per process, with no value of the conversation: a run that long is rare, and the line is enough to look into it. */
@@ -441,18 +459,18 @@ function warnBoundOnce(message: string): void {
 }
 
 /**
- * The entries of the run that ends at `from` (the latest entry when absent), newest first: back
- * to, and not including, the previous answer. A request that failed and was retried, overflowed
+ * The entries of the run that ends at the latest entry, newest first: back to, and not including,
+ * the previous answer. A request that failed and was retried, overflowed
  * into a compaction, or was cut short is no answer: Pi writes it down and the run goes on. A run
  * that ended unanswered (a failure not retried, an abort) is taken in with the next one, so its
  * inputs count against that run's origin. `bounded` when the scan reached its cap (20 pages of 50)
  * before finding the start of the run.
  */
-async function runEntries(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, from?: EntryId): Promise<{ entries: EntryRecord[]; bounded: boolean }> {
+async function runEntries(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId): Promise<{ entries: EntryRecord[]; bounded: boolean }> {
 	const entries: EntryRecord[] = [];
 	let cursor: Cursor | undefined;
 	for (let page = 0; page < 20; page++) {
-		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending", ...(from === undefined ? {} : { maxEntryId: from }) }, 50, cursor);
+		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending" }, 50, cursor);
 		for (const entry of items) {
 			if (entries.length > 0 && answered(entry)) return { entries, bounded: false };
 			entries.push(entry);
@@ -474,7 +492,7 @@ function assistants(entries: readonly EntryRecord[]): (Message & { role: "assist
 }
 
 function spentBy(messages: readonly (Message & { role: "assistant" })[]): Spent {
-	const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	const spent = noSpend();
 	for (const m of messages) {
 		spent.input += m.usage?.input ?? 0;
 		spent.output += m.usage?.output ?? 0;
@@ -485,39 +503,86 @@ function spentBy(messages: readonly (Message & { role: "assistant" })[]): Spent 
 	return spent;
 }
 
+function noSpend(): Spent {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+}
+
 /**
- * What the run that ended with `answer` took (ADR 0098), billed once. The cost is Pi's own ledger of
- * the conversation (`pi.usage`, every provider call, summaries of a compaction included) less what
- * was billed before and what the next run has already called; the first answer billed in a
- * conversation takes its run's assistant messages. The tools are those the run called, in order;
- * the model calls, its assistant messages and compactions. Past the scan's bound, what was found,
- * said once; undefined when the answer is not there.
+ * What the run that ended with `answer` took (ADR 0098), billed once. The answers not billed yet,
+ * up to the newest, are billed in order in this commit, each in its own document, and an answer
+ * read again gets its own bill back. Token and cost are Pi's own ledger of the conversation
+ * (`pi.usage`, every provider call, summaries of a compaction included): at each answer the ledger
+ * stood at today's total less the assistant messages written after it, and the bill is the growth
+ * since the answer billed before. A call that left no message (a summary) goes to the first answer
+ * billed after it was made. The tools are those the run called, in order; the model calls, its
+ * assistant messages and compactions. Undefined for an answer from before billing started, and for
+ * one that is not there.
  */
-export async function turnUsage(tx: Pick<Tx, "scanEntries" | "doc">, conversationId: ConversationId, answer: EntryId, warn: (message: string) => void = warnBoundOnce): Promise<TurnUsage | undefined> {
-	const { entries, bounded } = await runEntries(tx, conversationId, answer);
-	if (entries[0]?.id !== answer) return undefined;
-	if (bounded) warn(SCAN_BOUND);
+export async function turnUsage(tx: Pick<Tx, "scanEntries" | "doc">, conversationId: ConversationId, answer: EntryId): Promise<TurnUsage | undefined> {
 	const billed = await tx.doc(BilledDoc, conversationId);
-	if (billed.answer === answer && billed.turn !== undefined) return { ...billed.turn, tools: [...billed.turn.tools] };
-	const run = assistants(entries);
-	const tools = run.reverse().flatMap((m) => (m.stopReason === "toolUse" ? m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])) : []));
-	const modelCalls = run.length + entries.filter((entry) => entry.kind === CompactionEntry.kind).length;
-	const ownRun = spentBy(run);
-	const now = since(await ledgerSpent(tx, conversationId), spentBy(assistants(await entriesAfter(tx, conversationId, answer))));
-	// An answer older than the one billed last: that one's bill already took everything until then.
-	const spent = billed.answer !== undefined && billed.answer > answer ? spentBy([]) : billed.spent === undefined ? ownRun : since(now, billed.spent);
-	const turn: Bill = { modelCalls, inputTokens: spent.input, outputTokens: spent.output, cacheReadTokens: spent.cacheRead, cacheWriteTokens: spent.cacheWrite, costUsd: spent.cost, tools };
-	if (billed.answer === undefined || billed.answer < answer) {
-		billed.answer = answer;
-		billed.spent = now;
-		billed.turn = turn;
+	if (billed.spent === undefined) return undefined;
+	if (billed.answer === undefined || billed.answer < answer) await billAnswers(tx, conversationId, billed as { answer?: number; spent: Spent });
+	if (billed.answer === undefined || billed.answer < answer) return undefined;
+	const { bill } = await tx.doc(BillDoc, conversationId, String(answer), null);
+	return bill === undefined ? undefined : { ...bill, tools: [...bill.tools] };
+}
+
+/** Bill every answer after the last one billed, oldest first, from one complete scan of what came after it. */
+async function billAnswers(tx: Pick<Tx, "scanEntries" | "doc">, conversationId: ConversationId, billed: { answer?: number; spent: Spent }): Promise<void> {
+	const entries: EntryRecord[] = [];
+	let cursor: Cursor | undefined;
+	do {
+		const page: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "ascending", ...(billed.answer === undefined ? {} : { minEntryId: (billed.answer + 1) as EntryId }) }, 50, cursor);
+		entries.push(...page.items);
+		cursor = page.next;
+	} while (cursor !== undefined);
+	const now = await ledgerSpent(tx, conversationId);
+	let later = spentBy(assistants(entries));
+	let run: EntryRecord[] = [];
+	for (const entry of entries) {
+		run.push(entry);
+		if (!answered(entry)) continue;
+		const calls = assistants(run);
+		later = since(later, spentBy(calls));
+		const at = since(now, later);
+		const spent = since(at, billed.spent);
+		const tools = calls.flatMap((m) => (m.stopReason === "toolUse" ? m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])) : []));
+		const modelCalls = calls.length + run.filter((e) => e.kind === CompactionEntry.kind).length;
+		// Never below zero: each difference is a sum of calls, only floating point can take it under.
+		const bill: Bill = { modelCalls, inputTokens: Math.max(0, spent.input), outputTokens: Math.max(0, spent.output), cacheReadTokens: Math.max(0, spent.cacheRead), cacheWriteTokens: Math.max(0, spent.cacheWrite), costUsd: Math.max(0, spent.cost), tools };
+		await tx.doc(BillDoc, conversationId, String(entry.id), bill);
+		billed.answer = entry.id;
+		billed.spent = at;
+		run = [];
 	}
-	return turn;
+}
+
+/**
+ * Billing starts for a conversation created before it existed: from its last answer, with the
+ * ledger as it stood then (today's total less the assistant messages written after it).
+ */
+export async function startBilling(tx: Pick<Tx, "scanEntries" | "doc">, conversationId: ConversationId): Promise<void> {
+	const billed = await tx.doc(BilledDoc, conversationId);
+	if (billed.spent !== undefined) return;
+	const after: EntryRecord[] = [];
+	let cursor: Cursor | undefined;
+	scan: do {
+		const page: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending" }, 50, cursor);
+		for (const entry of page.items) {
+			if (answered(entry)) {
+				billed.answer = entry.id;
+				break scan;
+			}
+			after.push(entry);
+		}
+		cursor = page.next;
+	} while (cursor !== undefined);
+	billed.spent = since(await ledgerSpent(tx, conversationId), spentBy(assistants(after)));
 }
 
 /** Every model call of the conversation in Pi's ledger, summed across models. */
 async function ledgerSpent(tx: Pick<Tx, "doc">, conversationId: ConversationId): Promise<Spent> {
-	const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+	const spent = noSpend();
 	for (const usage of Object.values((await tx.doc(UsageDoc, conversationId)).models)) {
 		spent.input += usage.input;
 		spent.output += usage.output;
@@ -530,19 +595,6 @@ async function ledgerSpent(tx: Pick<Tx, "doc">, conversationId: ConversationId):
 
 function since(now: Spent, before: Spent): Spent {
 	return { input: now.input - before.input, output: now.output - before.output, cacheRead: now.cacheRead - before.cacheRead, cacheWrite: now.cacheWrite - before.cacheWrite, cost: now.cost - before.cost };
-}
-
-/** The entries after `answer`, oldest first, as far as the scan goes: what the next run has written already. */
-async function entriesAfter(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, answer: EntryId): Promise<EntryRecord[]> {
-	const entries: EntryRecord[] = [];
-	let cursor: Cursor | undefined;
-	for (let page = 0; page < 20; page++) {
-		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "ascending", minEntryId: (answer + 1) as EntryId }, 50, cursor);
-		entries.push(...items);
-		if (next === undefined) break;
-		cursor = next;
-	}
-	return entries;
 }
 
 /** The least trusted of the inputs: another agente, then a notice, then something scheduled (or not known). */
