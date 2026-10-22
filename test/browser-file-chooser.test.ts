@@ -15,6 +15,9 @@ afterEach(async () => {
 
 /** A target at 100,100 to 300,200 in every page, so one click point (150, 150) reaches it. */
 const BOX = "position:fixed;left:100px;top:100px;width:200px;height:100px;margin:0;border:0";
+/** A second target, at 100,300 to 300,400. */
+const BELOW = "position:fixed;left:100px;top:300px;width:200px;height:100px;margin:0;border:0";
+const CHOOSE = "const i = document.createElement('input'); i.type = 'file'; i.click()";
 const pages: Record<string, string> = {
 	"/direct": `<input type="file" style="${BOX}">`,
 	"/label": `<label for="f" style="${BOX};background:#ccc">Scegli</label><input id="f" type="file" style="display:none">`,
@@ -23,10 +26,17 @@ const pages: Record<string, string> = {
 	"/inside": `<body style="margin:0"><input type="file" style="width:200px;height:100px"></body>`,
 	"/button": `<button style="${BOX}" onclick="const i = document.createElement('input'); i.type = 'file'; i.click()">Carica</button>`,
 	"/plain": `<button style="${BOX}" onclick="document.title = 'cliccato'">Vai</button>`,
+	// The chooser opens 1.6 s after the click, on the page's own timer; the other button waits for a slow request.
+	"/late": `<button style="${BOX}" onclick="setTimeout(() => { ${CHOOSE} }, 1600)">Carica dopo</button><button style="${BELOW}" onclick="fetch('/slow').then(() => { document.title = 'fatto' })">Altro</button>`,
+	// The page is busy while the view is read, and opens the chooser at the end of it.
+	"/busy": `<button style="${BOX}" onclick="setTimeout(() => { const end = Date.now() + 1000; while (Date.now() < end); ${CHOOSE} }, 200)">Carica</button>`,
+	// The refused click also changes the page: the title, and what the other button does.
+	"/swap": `<title>prima</title><button style="${BOX}" onclick="document.title = 'cambiata'; document.getElementById('x').onclick = () => { document.title = 'altro gestore' }; ${CHOOSE}">Carica</button><button id="x" style="${BELOW}" onclick="document.title = 'gestore di prima'">Pulsante X</button>`,
 };
 
 async function start() {
-	const server = createServer((req, res) => {
+	const server = createServer(async (req, res) => {
+		if (req.url === "/slow") await new Promise((r) => setTimeout(r, 2000));
 		res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 		res.end(pages[req.url ?? ""] ?? "no");
 	});
@@ -65,5 +75,46 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		}
 		const view = await sessions.open("a", browser, `${base}/direct`, guard);
 		expect(await sessions.type("a", view.elements[0]?.ref as number, "x", false, guard)).toMatchObject({ failed: true });
+	}, 60_000);
+
+	const LATE = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
+	const at = { top: [150 / 1280, 150 / 800], below: [150 / 1280, 350 / 800] } as const;
+
+	it("a chooser the page opens later, between actions, is told in the next view, once", async () => {
+		const { base, sessions, browser } = await start();
+		await sessions.open("k", browser, `${base}/late`, guard);
+		const clicked = await sessions.clickAt("k", ...at.top, guard, { person: true });
+		expect(clicked.notes).not.toContain(LATE);
+		await new Promise((r) => setTimeout(r, 2000));
+		expect((await sessions.view("k", guard)).notes).toContain(LATE);
+		expect((await sessions.view("k", guard)).notes).not.toContain(LATE);
+	}, 60_000);
+
+	it("a chooser the page opens later, during another click, is not that click's refusal", async () => {
+		const { base, sessions, browser } = await start();
+		await sessions.open("k", browser, `${base}/late`, guard);
+		await sessions.clickAt("k", ...at.top, guard, { person: true });
+		// This click waits 2 s for its request: the earlier click's chooser opens meanwhile.
+		const other = await sessions.clickAt("k", ...at.below, guard, { person: true });
+		expect(other.title).toBe("fatto");
+		expect(other.failed).toBeUndefined();
+		expect(other.notes).toContain(LATE);
+	}, 60_000);
+
+	it("a chooser that opens while the view is read is told in that view", async () => {
+		const { base, sessions, browser } = await start();
+		await sessions.open("k", browser, `${base}/busy`, guard);
+		const view = await sessions.clickAt("k", ...at.top, guard, { person: true, screenshot: true });
+		expect(view.notes).toContain(LATE);
+	}, 60_000);
+
+	it("a refused person's click still leaves the agent's numbers behind and updates what the panel shows", async () => {
+		const { base, sessions, browser } = await start();
+		const view = await sessions.open("k", browser, `${base}/swap`, guard);
+		const x = view.elements.find((e) => e.label === "Pulsante X");
+		expect(x).toBeDefined();
+		await expect(sessions.clickAt("k", ...at.top, guard, { person: true })).rejects.toMatchObject({ kind: "no-files" });
+		expect(sessions.state("k")).toMatchObject({ title: "cambiata" });
+		await expect(sessions.click("k", x?.ref as number, guard)).rejects.toThrow(/chi ti scrive ha aperto un'altra pagina/);
 	}, 60_000);
 });

@@ -163,6 +163,11 @@ const ACTION_TIMEOUT_MS = 10_000;
 const READ_TIMEOUT_MS = 5_000;
 /** After an action, how long to wait at most for the page's requests to end. */
 const SETTLE_MS = 5_000;
+/**
+ * A file chooser Chromium reports within this long after a click or a typing returned is that action's
+ * own (measured: a few tens of ms). Any later one comes from the page on its own (a timer): told in the next view.
+ */
+const OWN_CHOOSER_MS = 500;
 
 /**
  * Before the page's own scripts: popups open in the same page, a form that would send stays
@@ -306,6 +311,7 @@ export class BrowseError extends Error {
 }
 
 const NO_FILES = "Annie non carica file sui siti";
+const LATE_CHOOSER = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
 
 /** A page that stopped answering a read: its session is closed. */
 class Hung extends Error {}
@@ -341,8 +347,8 @@ type Session = {
 	shown: { readonly url: string; readonly title: string };
 	/** A person moved the page since the agente's last view: its numbers point elsewhere now. */
 	movedByPerson: boolean;
-	/** The page tried to open a file chooser during the action: refused, whatever the way (label, shadow DOM, frame, input.click()). */
-	fileRefused: boolean;
+	/** When the page opened a file chooser (refused, whatever the way: label, shadow DOM, frame, input.click()), not yet told to anyone. */
+	choosers: number[];
 };
 
 /** A conversation's browser as someone watching it sees it (the console's browser panel). */
@@ -371,7 +377,7 @@ export class BrowseSessions {
 			}
 			await starting;
 		}
-		return this.act(key, guard, options, async (s) => {
+		return this.act(key, guard, options, false, async (s) => {
 			// Each page opened gets its own budget.
 			Object.assign(s.budget, PAGE_BUDGET);
 			await s.page.goto(url, { waitUntil: "load", timeout: 20_000 });
@@ -380,7 +386,7 @@ export class BrowseSessions {
 
 	/** The page as it is now, or the one before it. */
 	view(key: string, guard: Guard, options: ViewOptions & { readonly back?: boolean } = {}): Promise<View> {
-		return this.act(key, guard, options, async (s) => {
+		return this.act(key, guard, options, false, async (s) => {
 			if (options.back !== true) return;
 			Object.assign(s.budget, PAGE_BUDGET);
 			await s.page.goBack({ waitUntil: "load", timeout: 20_000 });
@@ -388,7 +394,7 @@ export class BrowseSessions {
 	}
 
 	click(key: string, ref: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
-		return this.act(key, guard, options, async (s) => {
+		return this.act(key, guard, options, true, async (s) => {
 			const { selector } = await this.target(s, ref);
 			await s.page.click(selector, { timeout: ACTION_TIMEOUT_MS });
 		});
@@ -400,13 +406,13 @@ export class BrowseSessions {
 	 */
 	clickAt(key: string, fx: number, fy: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		const point = viewportPoint(fx, fy);
-		return this.act(key, guard, options, async (s) => {
+		return this.act(key, guard, options, true, async (s) => {
 			await s.page.mouse.click(point.x, point.y);
 		});
 	}
 
 	type(key: string, ref: number, text: string, submit: boolean, guard: Guard, options: ViewOptions = {}): Promise<View> {
-		return this.act(key, guard, options, async (s) => {
+		return this.act(key, guard, options, true, async (s) => {
 			const { selector, live } = await this.target(s, ref);
 			if (live.type === "password") throw new BrowseError("Annie non scrive password: non entra negli account");
 			if (live.type === "checkbox" || live.type === "radio") throw new BrowseError(`l'elemento ${ref} è una casella: si seleziona con web_click`);
@@ -525,10 +531,10 @@ export class BrowseSessions {
 			context.on("page", (other) => {
 				if (other !== page) void other.close().catch(() => {});
 			});
-			const session: Session = { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, fileRefused: false };
+			const session: Session = { key, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, choosers: [] };
 			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused.
 			page.on("filechooser", () => {
-				session.fileRefused = true;
+				session.choosers.push(Date.now());
 			});
 			this.sessions.set(key, session);
 			this.closed.delete(key);
@@ -538,8 +544,11 @@ export class BrowseSessions {
 		}
 	}
 
-	/** One action at a time per session; then the page as it is after it. */
-	private act(key: string, guard: Guard, options: ViewOptions, action: (s: Session) => Promise<unknown>): Promise<View> {
+	/**
+	 * One action at a time per session; then the page as it is after it. A `gesture` (a click, a typing)
+	 * that opens a file chooser is refused as a whole; a chooser the page opens on its own is a note.
+	 */
+	private act(key: string, guard: Guard, options: ViewOptions, gesture: boolean, action: (s: Session) => Promise<unknown>): Promise<View> {
 		const s = this.sessions.get(key);
 		if (s === undefined) {
 			const why = this.closed.get(key);
@@ -551,11 +560,13 @@ export class BrowseSessions {
 				if (this.sessions.get(key) !== s) throw new BrowseError("la pagina di questa conversazione è stata chiusa: riaprila con web_browse");
 				s.guard.current = guard;
 				s.busy = true;
-				s.fileRefused = false;
+				// A person drives the page: the agente's numbers point elsewhere from now, however the action ends.
+				if (options.person === true) s.movedByPerson = true;
 				// Idle counts from the end of the last action, never during one.
 				clearTimeout(s.timer);
 				try {
 					let failure: string | undefined;
+					const started = Date.now();
 					try {
 						await action(s);
 					} catch (error) {
@@ -567,9 +578,21 @@ export class BrowseSessions {
 							throw new BrowseError("il browser si è chiuso: riapri la pagina con web_browse");
 						}
 					}
+					const own = Date.now() + OWN_CHOOSER_MS;
 					await this.settle(s);
-					if (s.fileRefused) throw new BrowseError(NO_FILES, "no-files");
-					return await this.snapshot(s, failure, options);
+					// A gesture's own chooser is known only once its time has passed.
+					if (gesture && Date.now() < own) await new Promise((resolve) => setTimeout(resolve, own - Date.now()));
+					if (gesture && s.choosers.some((t) => t >= started && t <= own)) {
+						s.choosers = [];
+						// The agente's numbers stay those of its last view; what someone watching reads is the page now.
+						await this.remember(s);
+						throw new BrowseError(NO_FILES, "no-files");
+					}
+					const view = await this.snapshot(s, failure, options);
+					// Read after the whole view, screenshot included: one opened meanwhile is told now, not lost.
+					const late = s.choosers.length > 0;
+					s.choosers = [];
+					return late ? { ...view, notes: [...view.notes, LATE_CHOOSER] } : view;
 				} catch (error) {
 					if (!(error instanceof Hung)) throw error;
 					await this.end(s, "chiusa perché non rispondeva");
@@ -596,6 +619,16 @@ export class BrowseSessions {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			quiet = s.traffic.inflight === 0 ? quiet + 1 : 0;
 		}
+	}
+
+	/** Where the page is now, for someone watching (`state`). */
+	private async remember(s: Session): Promise<{ readonly url: string; readonly title: string }> {
+		const title = await within(s.page.title(), READ_TIMEOUT_MS).catch((error: unknown) => {
+			if (error instanceof Hung) throw error;
+			return "";
+		});
+		s.shown = { url: s.page.url().slice(0, 500), title: String(title).slice(0, 200) };
+		return s.shown;
 	}
 
 	private async snapshot(s: Session, failure: string | undefined, options: ViewOptions): Promise<View> {
@@ -645,15 +678,10 @@ export class BrowseSessions {
 		t.files.clear();
 		t.overBudget = false;
 		const screenshot = options.screenshot === true ? await within(s.page.screenshot({ fullPage: false, type: "png", timeout: READ_TIMEOUT_MS }), READ_TIMEOUT_MS + 1_000) : undefined;
-		const title = await within(s.page.title(), READ_TIMEOUT_MS).catch((error: unknown) => {
-			if (error instanceof Hung) throw error;
-			return "";
-		});
-		const url = s.page.url().slice(0, 500);
-		s.shown = { url, title: String(title).slice(0, 200) };
-		// The agente reads this view; a person driving leaves its last one behind.
-		s.movedByPerson = options.person === true;
-		return { url, title: s.shown.title, text, elements, notes, details, ...(screenshot === undefined ? {} : { screenshot }), ...(failure === undefined ? {} : { failed: true as const }) };
+		const { url, title } = await this.remember(s);
+		// The agente reads this view: its numbers are these now.
+		if (options.person !== true) s.movedByPerson = false;
+		return { url, title, text, elements, notes, details, ...(screenshot === undefined ? {} : { screenshot }), ...(failure === undefined ? {} : { failed: true as const }) };
 	}
 }
 
