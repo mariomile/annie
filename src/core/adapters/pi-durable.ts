@@ -140,6 +140,12 @@ export const piDurableEngine: DurableEngine = {
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		const harness = await Harness.open(storage, { models, registry }, context);
+		// The scheduler is still paused and nothing can start it yet (a reattachment's wait would):
+		// a conversation created before billing existed starts it here, before any of its work moves.
+		const threads = (await harness.snapshot(ThreadsDoc, context))?.threads ?? {};
+		await harness.commit(async (tx) => {
+			for (const id of Object.values(threads)) await startBilling(tx, id as ConversationId);
+		}, context);
 		return new PiDurableSession(harness, models, options);
 	},
 };
@@ -210,10 +216,6 @@ class PiDurableSession implements EngineSession {
 	private async attachPending(): Promise<number> {
 		const inspection = await this.harness.inspect(context);
 		const threads = await this.threads();
-		// Before the scheduler starts, nothing moves: a conversation created before billing existed starts it here.
-		await this.harness.commit(async (tx) => {
-			for (const id of Object.values(threads)) await startBilling(tx, id as ConversationId);
-		}, context);
 		const byConversation = new Map<number, string>(Object.entries(threads).map(([key, id]) => [id, key]));
 		let pending = 0;
 		const aligned = new Set<number>();

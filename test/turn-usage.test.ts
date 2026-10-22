@@ -1,11 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { startBilling, turnUsage } from "../src/core/adapters/pi-durable.ts";
+import { piDurableEngine, startBilling, turnUsage } from "../src/core/adapters/pi-durable.ts";
+import type { EngineReply } from "../src/core/engine.ts";
 import { tenantId } from "../src/core/ids.ts";
 import { tenantDir } from "../src/core/paths.ts";
 import { turnStats, type UsageRecord } from "../src/core/usage.ts";
-import { runtimeWithInstance, waitFor } from "./helpers.ts";
+import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 
 type FakeEntry = { id: number; kind?: string; model?: unknown[] };
 const said = (cost: number, ...tools: string[]) => ({
@@ -174,6 +176,32 @@ describe("quanto costa un turno (ADR 0098)", () => {
 		expect(ledger[1]).toMatchObject({ modelCalls: 1, tools: [] });
 		expect(new Set(ledger.map((r) => r.submissionId)).size).toBe(2);
 		expect(await readFile(join(tenantDir(dataDir, tenantId("acme")), "audit.jsonl"), "utf8").catch(() => "")).not.toContain("turn.usage");
+	});
+
+	it("a conversation from before billing, with work left pending, bills that work even when it is reattached and answered before resume", async () => {
+		const storageDir = tempDataDir();
+		const open = () => piDurableEngine.open({ storageDir, model: { provider: "faux", modelId: "annie-dev" }, apiKey: async () => undefined, tools: [] });
+		const replies: EngineReply[] = [];
+		let session = await open();
+		session.onReply((reply) => replies.push(reply));
+		await session.submit("web:t1", "ciao");
+		await waitFor(() => replies.length === 1);
+		// Admitted, never run: the process stops right after.
+		const { submissionId } = await session.submit("web:t1", "ancora");
+		await session.close();
+		// The conversation from before billing existed: no starting point.
+		const db = new DatabaseSync(join(storageDir, "pi-durable.sqlite"));
+		db.exec(`DELETE FROM document_revisions WHERE document_id IN (SELECT id FROM documents WHERE kind = '"annie.billed-to"'); DELETE FROM documents WHERE kind = '"annie.billed-to"'`);
+		db.close();
+
+		// The runtime reattaches the outbox's entries before resume(): the scheduler starts there.
+		session = await open();
+		session.onReply((reply) => replies.push(reply));
+		await session.reattach(submissionId, "web:t1");
+		await waitFor(() => replies.length === 2);
+		await session.resume();
+		await session.close();
+		expect(replies[1]).toMatchObject({ status: "answered", submissionId, usage: { modelCalls: 1 } });
 	});
 
 	it("sums the last 7 days per agente, with the tools called most", () => {
