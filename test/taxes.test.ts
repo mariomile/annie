@@ -1062,7 +1062,7 @@ describe("taxes: the second review", () => {
 describe("taxes in the app", () => {
 	it("is offered to every instance, the instructions say when to use it and the cashflow voci, the audit holds no values", async () => {
 		const description = (await setup()).tool.description;
-		expect(description).toContain("for the ordinario the IVA F24s with amounts come from vat_settlement");
+		expect(description).toContain("nell'ordinario l'IVA è vat_settlement");
 		expect(description).toContain("Fixed F24 voci the person adds in the cashflow are kept there; this tool estimates.");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
