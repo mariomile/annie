@@ -1731,6 +1731,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		// Often starts with the site's name, which keeps its own spelling.
 		if (error instanceof WebFetchRefused) return error.message;
 		if (error instanceof BrowseError && /troppi browser|non è disponibile/.test(error.message)) return error.message.charAt(0).toUpperCase() + error.message.slice(1);
+		if (error instanceof BrowseError && error.message.startsWith("Annie non carica file")) return "Qui non si caricano file.";
 		if (error instanceof BrowseError && error.message.startsWith("nessuna pagina")) return "Non c'è una pagina aperta: scrivi un indirizzo qui sopra.";
 		if (error instanceof BrowseError) return "La pagina si è chiusa: riaprila scrivendo l'indirizzo qui sopra.";
 		return "La pagina non si apre: riprova tra poco.";
@@ -1757,6 +1758,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				await browseSessions.open(key, browser, url, guard, { person: true });
 			}),
 		back: (instanceId, threadId) => panelAct(instanceId, threadId, (key, guard) => browseSessions.view(key, guard, { back: true, person: true })),
+		click: (instanceId, threadId, x, y) => panelAct(instanceId, threadId, (key, guard) => browseSessions.clickAt(key, x, y, guard, { person: true })),
 	};
 	/**
 	 * Delete an agente for good (ADR 0046). First everything that reaches it from outside stops

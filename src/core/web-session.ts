@@ -28,6 +28,7 @@ export type Page = {
 	url(): string;
 	evaluate<T>(expression: string): Promise<T>;
 	click(selector: string, options: { timeout: number }): Promise<void>;
+	mouse: { click(x: number, y: number): Promise<void> };
 	fill(selector: string, value: string, options: { timeout: number }): Promise<void>;
 	selectOption(selector: string, value: string, options: { timeout: number }): Promise<unknown>;
 	press(selector: string, key: string, options: { timeout: number }): Promise<void>;
@@ -140,6 +141,15 @@ export type ViewOptions = {
 	/** A person drove the page from the console's panel: the agente's last view no longer matches it. */
 	readonly person?: true;
 };
+
+/** The size of every page's window: the picture of the panel is this big, and a click on it is placed in it. */
+const VIEWPORT = { width: 1280, height: 800 };
+
+/** A point of the picture, as fractions of its width and height (0 to 1), in the page's own pixels; undefined when it is not on the picture. */
+export function viewportPoint(fx: number, fy: number): { x: number; y: number } | undefined {
+	if (!Number.isFinite(fx) || !Number.isFinite(fy) || fx < 0 || fx > 1 || fy < 0 || fy > 1) return undefined;
+	return { x: Math.min(Math.floor(fx * VIEWPORT.width), VIEWPORT.width - 1), y: Math.min(Math.floor(fy * VIEWPORT.height), VIEWPORT.height - 1) };
+}
 
 const PAGE_BUDGET: Budget = { requests: 400, bytes: 40 * 1024 * 1024 };
 export const MAX_ELEMENTS = 80;
@@ -374,6 +384,23 @@ export class BrowseSessions {
 		});
 	}
 
+	/**
+	 * A click on the picture the panel shows (ADR 0103): the point `fx`, `fy` (fractions of the picture)
+	 * of the page. Same limits as web_click: no file uploads, and the page still only reads.
+	 */
+	clickAt(key: string, fx: number, fy: number, guard: Guard, options: ViewOptions = {}): Promise<View> {
+		const point = viewportPoint(fx, fy);
+		if (point === undefined) return Promise.reject(new BrowseError("il punto non è sulla pagina"));
+		return this.act(key, guard, options, async (s) => {
+			const kind = await within(
+				s.page.evaluate<unknown>(`(() => { const e = document.elementFromPoint(${point.x}, ${point.y}); if (!e) return null; const c = e.closest("label") && e.closest("label").control; const t = (n) => n && n.tagName === "INPUT" ? String(n.getAttribute("type") || "").toLowerCase() : ""; return t(e) || t(c); })()`),
+				READ_TIMEOUT_MS,
+			);
+			if (kind === "file") throw new BrowseError("Annie non carica file sui siti");
+			await s.page.mouse.click(point.x, point.y);
+		});
+	}
+
 	type(key: string, ref: number, text: string, submit: boolean, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		return this.act(key, guard, options, async (s) => {
 			const { selector, live } = await this.target(s, ref);
@@ -482,7 +509,7 @@ export class BrowseSessions {
 			if (oldest === undefined) throw new BrowseError("su questo server ci sono già troppi browser al lavoro: riprova tra poco");
 			await this.end(oldest, "chiusa per fare posto a un'altra conversazione");
 		}
-		const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, userAgent: USER_AGENT, acceptDownloads: false, serviceWorkers: "block" });
+		const context = await browser.newContext({ viewport: VIEWPORT, userAgent: USER_AGENT, acceptDownloads: false, serviceWorkers: "block" });
 		const traffic: Traffic = { sends: new Set(), hosts: new Set(), files: new Set(), overBudget: false, inflight: 0 };
 		const budget = { ...PAGE_BUDGET };
 		const current = { current: guard };

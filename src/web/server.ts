@@ -116,6 +116,8 @@ export type BrowserPanel = {
 	/** Rejects with BrowserPanelError when the site is not allowed or the page does not open. */
 	open(instanceId: string, threadId: string, url: string): Promise<BrowserState>;
 	back(instanceId: string, threadId: string): Promise<BrowserState>;
+	/** A click on the picture, at `x`, `y` as fractions of its width and height (ADR 0103). */
+	click(instanceId: string, threadId: string, x: number, y: number): Promise<BrowserState>;
 };
 
 /** What the person can read: a site not allowed, a page that does not open, no browser on this server. */
@@ -530,9 +532,14 @@ export function createWebApp(options: WebAppOptions): Server {
 	route("POST", "/api/instances/:id/threads/:thread/browser", "person", async ({ person, params, req }) => {
 		const { browser, canChat } = await browserThread(person as Person, params[0] as string, params[1] as string);
 		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
-		const body = (await readJson(req)) as { url?: unknown; back?: unknown };
+		const body = (await readJson(req)) as { url?: unknown; back?: unknown; click?: unknown };
 		const [instanceId, threadId] = [params[0] as string, params[1] as string];
 		if (body.back === true) return { browser: await browserCall(() => browser.back(instanceId, threadId)) };
+		if (body.click !== undefined) {
+			const { x, y } = (typeof body.click === "object" && body.click !== null ? body.click : {}) as { x?: unknown; y?: unknown };
+			if (typeof x !== "number" || typeof y !== "number" || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) throw new HttpError(400, "Il clic non è sulla pagina");
+			return { browser: await browserCall(() => browser.click(instanceId, threadId, x, y)) };
+		}
 		if (typeof body.url !== "string" || body.url.trim() === "" || body.url.length > 2000) throw new HttpError(400, "Scrivi l'indirizzo di una pagina");
 		const raw = body.url.trim();
 		const url = /^[a-z][\w+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
