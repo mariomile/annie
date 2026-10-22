@@ -61,6 +61,7 @@ import { attachmentSlots } from "./core/attachment-slots.ts";
 import type { MailRequests } from "./core/mail-requests.ts";
 import { checkedUrl, publicAddress, WebFetchRefused } from "./core/web-fetch.ts";
 import { readPage } from "./core/watches.ts";
+import { skillMenuEntry } from "./core/skills.ts";
 import { webHostAllowed } from "./core/policy.ts";
 import type { DurableEngine } from "./core/engine.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./core/errors.ts";
@@ -948,7 +949,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			...voiceFor(instance),
 			...(options.telegramFetch === undefined ? {} : { fetch: options.telegramFetch }),
 			...(webhookSecret === undefined ? {} : { webhook: { url: `${config.web.publicUrl}/hooks/telegram/${instance}`, secretToken: webhookSecret } }),
-			commands: [MODEL_COMMAND],
+			// The skills as they are now: the menu is set once, when the bot is connected (ADR 0104).
+			commands: [MODEL_COMMAND, ...runtime.skills(tenant, instance).list().map(skillMenuEntry)],
 		});
 		telegramUnsubscribes.set(instance, connectChannel(runtime, bot, { tenantId: tenant, instanceId: instance }, log, { onAction: (action) => onApprovalTap(instance, bot, action), voice: voiceOf(instance), models: chatModels }));
 		telegrams.set(instance, bot);
