@@ -4,12 +4,11 @@ Della spesa si sapeva solo quella della segreteria (ADR del registro dei costi, 
 
 ## Decisione
 
-- **A ogni risposta l'adapter di Pi Durable somma il turno.** Dalla risposta torna indietro nella conversazione fino alla fine del turno prima (l'ultima risposta senza strumenti) e somma ogni chiamata al modello: token in entrata, in uscita, letti e scritti nella cache, costo secondo i prezzi di listino del provider, e i nomi degli strumenti chiamati, in ordine (`turnUsage` in `src/core/adapters/pi-durable.ts`). Arriva al runtime con la risposta (`EngineReply.usage`).
-- **Il runtime lo scrive due volte, una volta sola per risposta.**
-  - Nell'audit, come evento `turn.usage`: agente, canale, modello, chiamate, token, costo, quanti strumenti e quali. Mai il testo.
-  - Nel registro dei costi del tenant, con il ruolo `agent`: così la spesa del giorno e del mese comprende anche l'agente.
+- **A ogni risposta l'adapter di Pi Durable somma il turno.** Dalla risposta torna indietro nella conversazione fino alla fine del turno prima (l'ultima risposta senza strumenti, la stessa regola con cui `inputsOrigin` trova l'origine del turno: una sola scansione, `runEntries`) e somma ogni chiamata al modello: token in entrata, in uscita, letti e scritti nella cache, costo secondo i prezzi di listino del provider, e i nomi degli strumenti chiamati, in ordine (`turnUsage` in `src/core/adapters/pi-durable.ts`). Arriva al runtime con la risposta (`EngineReply.usage`).
+- **Il runtime lo scrive una volta sola, nel registro dei costi del tenant** (`usage.jsonl`, ruolo `agent`): agente, chat, modello, chiamate, token, costo e strumenti chiamati, in ordine. Mai il testo. Così la spesa del giorno e del mese comprende anche l'agente, e il registro è l'unica traccia di quanto è costato un turno: l'audit non ne tiene una copia, che potrebbe divergere.
   Si conta solo quando la risposta entra nell'outbox per la prima volta: una risposta consegnata di nuovo dopo un riavvio non si conta due volte. Un errore nello scrivere il conto non ferma mai la risposta.
-- **`pnpm annie usage`** mostra gli ultimi 7 giorni: turni, token, costo, per agente, e gli strumenti più usati.
+- Se la scansione arriva al limite (20 pagine da 50) prima dell'inizio del turno, lo dice una volta nel log, e la somma è parziale: non resta un conto parziale senza segnale.
+- **`pnpm annie usage`** legge il registro dei costi e mostra gli ultimi 7 giorni: turni, token, costo, per agente, e gli strumenti più usati.
 - Il registro dei costi scrive un record alla volta per tenant nello stesso processo: due turni che finiscono insieme non si perdono a vicenda il totale del giorno.
 
 ## Conseguenze

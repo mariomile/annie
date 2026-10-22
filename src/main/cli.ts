@@ -18,7 +18,7 @@ import { briefStats } from "../core/brief.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "../core/ids.ts";
 import { schedulesDir, tenantDir } from "../core/paths.ts";
 import { ScheduleStore } from "../core/schedules.ts";
-import { turnStats } from "../core/usage.ts";
+import { turnStats, UsageLedger } from "../core/usage.ts";
 import { TenantRegistry } from "../core/registry.ts";
 import { PeopleStore, SessionStore } from "../web/auth.ts";
 import { runChecks } from "./check.ts";
@@ -69,7 +69,7 @@ if (group === "brief") {
 }
 
 if (group === "usage") {
-	const stats = turnStats(await new AuditLog(dataDir, toTenantId(tenant)).read(), new Date());
+	const stats = turnStats(await new UsageLedger(tenantDir(dataDir, toTenantId(tenant))).records(), new Date());
 	const usd = (n: number) => `$${n.toFixed(4)}`;
 	console.log(`Ultimi 7 giorni: ${stats.turns} turni, ${stats.inputTokens} token in entrata, ${stats.outputTokens} in uscita, ${usd(stats.costUsd)}.`);
 	for (const i of stats.instances) console.log(`  ${i.instanceId}: ${i.turns} turni, ${usd(i.costUsd)}`);

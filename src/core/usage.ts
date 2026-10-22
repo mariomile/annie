@@ -1,7 +1,9 @@
 import { mkdir, readFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
-import type { AuditLog, AuditRecord } from "./audit.ts";
+import type { AuditLog } from "./audit.ts";
+import type { TurnUsage } from "./engine.ts";
+import { SerialQueue } from "./serial-queue.ts";
 
 export type UsageRecord = {
 	readonly at: string;
@@ -13,6 +15,12 @@ export type UsageRecord = {
 	readonly outputTokens: number;
 	readonly estimatedUsd: number;
 	readonly submissionId?: string;
+	/** The agente and the chat of a turn (role "agent"). */
+	readonly instanceId?: string;
+	readonly threadId?: string;
+	/** Of a turn: the tools it called, in order, and how many times it called the model. */
+	readonly tools?: readonly string[];
+	readonly modelCalls?: number;
 };
 
 export type CostCaps = {
@@ -47,7 +55,7 @@ export function romeDayKey(date = new Date()): string {
 }
 
 /** The record being written for each totals file: a ledger of the same tenant waits for it. */
-const recording = new Map<string, Promise<void>>();
+const recording = new SerialQueue();
 
 /**
  * Per-tenant daily usage ledger (append-only JSONL + day totals JSON).
@@ -77,18 +85,18 @@ export class UsageLedger {
 	}
 
 	/** One record at a time per tenant in this process: the day totals are read, added to and written back. */
-	async record(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
-		const path = this.totalsPath();
-		const done = (recording.get(path) ?? Promise.resolve()).then(() => this.write(rec, audit));
-		const settled = done.then(
-			() => {},
-			() => {},
-		);
-		recording.set(path, settled);
-		void settled.then(() => {
-			if (recording.get(path) === settled) recording.delete(path);
-		});
-		return done;
+	record(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
+		return recording.run(this.totalsPath(), () => this.write(rec, audit));
+	}
+
+	/** Every record written, oldest first. */
+	async records(): Promise<UsageRecord[]> {
+		try {
+			return (await readFile(this.usagePath(), "utf8")).split("\n").filter((line) => line !== "").map((line) => JSON.parse(line) as UsageRecord);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+			throw err;
+		}
 	}
 
 	private async write(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
@@ -170,23 +178,48 @@ export type TurnStats = {
 	readonly tools: readonly { readonly name: string; readonly calls: number }[];
 };
 
-/** The turns of the agenti over the last `days`, from their `turn.usage` events (ADR 0098). */
-export function turnStats(events: readonly AuditRecord[], now: Date, days = 7): TurnStats {
+/** What a turn took, in the tenant's ledger and its spend (ADR 0098). Never the text. */
+export async function recordTurn(
+	ledger: UsageLedger,
+	audit: AuditLog,
+	turn: { readonly instanceId: string; readonly threadId: string; readonly submissionId: string; readonly model: { readonly provider: string; readonly modelId: string } | undefined; readonly usage: TurnUsage },
+): Promise<void> {
+	const { usage } = turn;
+	await ledger.record(
+		{
+			at: new Date().toISOString(),
+			provider: turn.model?.provider ?? "",
+			model: turn.model?.modelId ?? "",
+			role: "agent",
+			inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+			outputTokens: usage.outputTokens,
+			estimatedUsd: usage.costUsd,
+			submissionId: turn.submissionId,
+			instanceId: turn.instanceId,
+			threadId: turn.threadId,
+			tools: usage.tools,
+			modelCalls: usage.modelCalls,
+		},
+		audit,
+	);
+}
+
+/** The turns of the agenti over the last `days`, from the ledger's records of role "agent" (ADR 0098). */
+export function turnStats(records: readonly UsageRecord[], now: Date, days = 7): TurnStats {
 	const since = now.getTime() - days * 24 * 3600_000;
-	const turns = events.filter((e) => e.type === "turn.usage" && Date.parse(e.ts) >= since);
+	const turns = records.filter((r) => r.role === "agent" && Date.parse(r.at) >= since);
 	const instances = new Map<string, { turns: number; costUsd: number }>();
 	const tools = new Map<string, number>();
 	let inputTokens = 0;
 	let outputTokens = 0;
 	let costUsd = 0;
-	for (const e of turns) {
-		const cost = Number(e.costUsd ?? 0);
-		inputTokens += Number(e.inputTokens ?? 0) + Number(e.cacheReadTokens ?? 0) + Number(e.cacheWriteTokens ?? 0);
-		outputTokens += Number(e.outputTokens ?? 0);
-		costUsd += cost;
-		const instance = instances.get(String(e.instanceId)) ?? { turns: 0, costUsd: 0 };
-		instances.set(String(e.instanceId), { turns: instance.turns + 1, costUsd: instance.costUsd + cost });
-		for (const name of String(e.tools ?? "").split(",").filter((n) => n !== "")) tools.set(name, (tools.get(name) ?? 0) + 1);
+	for (const r of turns) {
+		inputTokens += r.inputTokens;
+		outputTokens += r.outputTokens;
+		costUsd += r.estimatedUsd;
+		const instance = instances.get(r.instanceId ?? "") ?? { turns: 0, costUsd: 0 };
+		instances.set(r.instanceId ?? "", { turns: instance.turns + 1, costUsd: instance.costUsd + r.estimatedUsd });
+		for (const name of r.tools ?? []) tools.set(name, (tools.get(name) ?? 0) + 1);
 	}
 	return {
 		turns: turns.length,

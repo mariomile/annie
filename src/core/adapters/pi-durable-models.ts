@@ -102,11 +102,10 @@ function respond(messages: readonly Message[]): AssistantMessage {
 		const shown = last.content.filter((block) => block.type === "image").length;
 		return fauxAssistantMessage(`Fatto. ${output}${shown === 0 ? "" : ` [${shown} ${shown === 1 ? "immagine" : "immagini"}]`}`);
 	}
-	// The time the core adds to each request (ADR 0097) is not what the person wrote, and changes every minute.
-	const text = last?.role === "user" ? withoutNow(userText(last.content)) : "";
-	// The memoria note the core appends after the person's words is not part of a command.
-	// Notes the gateway adds after the person's words (a spoken reply, ADR 0020) are not part of the call.
-	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((text.split(MEMORY_NOTE_MARKER)[0] ?? "").replace(/\n\n\[[^\]]*\]\s*$/, "").trim());
+	const said = last?.role === "user" ? userText(last.content) : "";
+	const text = personText(said);
+	// A note the gateway adds after the person's words (a spoken reply, ADR 0020) is not part of a command.
+	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec(text.replace(/\n\n\[[^\]]*\]\s*$/, "").trim());
 	if (direct?.[1] !== undefined) {
 		let args: Record<string, unknown> = {};
 		try {
@@ -122,7 +121,7 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	}
 	// Pictures of earlier messages still in the request: old ones should have left it.
 	const earlier = messages.filter((m) => m !== last && m.role !== "assistant" && typeof m.content !== "string" && m.content.some((c) => c.type === "image")).length;
-	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}»${last?.role === "user" ? imagesSeen(last.content) : ""}${earlier === 0 ? "" : ` [${earlier} ${earlier === 1 ? "messaggio precedente" : "messaggi precedenti"} con immagini]`}`);
+	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}${said.includes(MEMORY_NOTE_MARKER) ? said.slice(said.indexOf(MEMORY_NOTE_MARKER)) : ""}»${last?.role === "user" ? imagesSeen(last.content) : ""}${earlier === 0 ? "" : ` [${earlier} ${earlier === 1 ? "messaggio precedente" : "messaggi precedenti"} con immagini]`}`);
 }
 
 /** The pictures of a message as the model received them: how many, of which type and size. */
@@ -138,10 +137,8 @@ function userText(content: string | readonly { type: string; text?: string }[]):
 	return typeof content === "string" ? content : content.map((block) => block.text ?? "").join("");
 }
 
-/** The text without the time line, which ends at the next line or at the end. */
-function withoutNow(text: string): string {
-	const at = text.indexOf(NOW_MARKER);
-	if (at < 0) return text;
-	const end = text.indexOf("\n", at + NOW_MARKER.length);
-	return `${text.slice(0, at)}${end < 0 ? "" : text.slice(end)}`;
+/** The person's words and the gateway's notes: the text up to the first note the core adds, the time and the memories (ADR 0097). */
+function personText(text: string): string {
+	const cuts = [NOW_MARKER, MEMORY_NOTE_MARKER].map((marker) => text.indexOf(marker)).filter((at) => at >= 0);
+	return text.slice(0, Math.min(text.length, ...cuts));
 }

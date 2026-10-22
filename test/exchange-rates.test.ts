@@ -590,8 +590,7 @@ describe("exchange_rate in an instance", () => {
 		expect(answer).toContain("Cambio BCE del 17/05/2024: 1 EUR = 1,0844 USD (1 USD = 0,9222 EUR).");
 		expect(fake.asked.map((a) => a.file)).toEqual(["eurofxref-hist.xml"]);
 		const audit = readFileSync(`${dataDir}/tenants/default/audit.jsonl`, "utf8");
-		// The turn's own usage line names the tool it called (ADR 0098); the tool itself writes none.
-		expect(audit.split("\n").filter((line) => !line.includes('"turn.usage"')).join("\n")).not.toContain("exchange");
+		expect(audit).not.toContain("exchange");
 	});
 
 	it("is not offered by default", async () => {

@@ -1,7 +1,7 @@
 /**
  * Nightly eval of the general agent with the real model (ADR 0099). Annie starts as `pnpm start`
  * starts her, in a temp dir; each case is a new web chat with one message. What the turn called
- * comes from its `turn.usage` audit event (ADR 0098). Measured: whether the first tool is one the
+ * comes from its record in the usage ledger (ADR 0098). Measured: whether the first tool is one the
  * case accepts (no tool, for the cases that need none), and what the run cost.
  * Writes last-report/agente.json and exits 1 when the accuracy is under the gate.
  *
@@ -12,6 +12,8 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { AuditLog } from "../../src/core/audit.ts";
 import { tenantId } from "../../src/core/ids.ts";
+import { tenantDir } from "../../src/core/paths.ts";
+import { UsageLedger } from "../../src/core/usage.ts";
 import { bootAnnie, loadCases, root } from "./annie.ts";
 
 const key = process.env.ANNIE_JUDGE_MODEL_KEY;
@@ -36,13 +38,14 @@ const api = async (path: string, body?: unknown) => {
 	return (await res.json()) as Record<string, any>;
 };
 const audit = new AuditLog(dataDir, tenantId("default"));
-// How the case's turn ended: its usage when answered, its reason when not. Matched by thread, so a late answer never lands on another case.
+const ledger = new UsageLedger(tenantDir(dataDir, tenantId("default")));
+// How the case's turn ended: its ledger record when answered, its reason when not. Matched by thread, so a late answer never lands on another case.
 const outcome = async (threadId: string) => {
+	const turn = (await ledger.records()).find((r) => r.role === "agent" && r.instanceId === "annie" && r.threadId === threadId);
+	if (turn !== undefined) return { turn };
+	// The ledger is written before the reply: a reply alone is a turn that failed, or one the engine could not measure.
 	for (const r of await audit.read()) {
-		if (r.instanceId !== "annie" || r.threadId !== threadId) continue;
-		if (r.type === "turn.usage") return { turn: r };
-		// turn.usage is written before the reply: a reply alone is a turn that failed, or one the engine could not measure.
-		if (r.type === "reply.emitted") return { error: r.status === "unanswered" ? String(r.reason ?? "unanswered") : "answered without usage" };
+		if (r.instanceId === "annie" && r.threadId === threadId && r.type === "reply.emitted") return { error: r.status === "unanswered" ? String(r.reason ?? "unanswered") : "answered without usage" };
 	}
 	return undefined;
 };
@@ -65,10 +68,10 @@ for (const c of cases) {
 		continue;
 	}
 	const turn = found.turn;
-	const tools = String(turn.tools ?? "").split(",").filter((t) => t !== "");
+	const tools = [...(turn.tools ?? [])];
 	const firstTool = tools[0] ?? null;
 	const ok = c.expect.length === 0 ? firstTool === null : firstTool !== null && c.expect.includes(firstTool);
-	rows.push({ id: c.id, expect: c.expect, tools, firstTool, ok, costUsd: Number(turn.costUsd ?? 0), modelCalls: Number(turn.modelCalls ?? 0) });
+	rows.push({ id: c.id, expect: c.expect, tools, firstTool, ok, costUsd: turn.estimatedUsd, modelCalls: turn.modelCalls ?? 0 });
 	console.log(`${ok ? "✓" : "✗"} ${c.id}: ${firstTool ?? "(nessuno)"}${ok ? "" : `, atteso ${c.expect.length === 0 ? "nessuno" : c.expect.join(" o ")}`}`);
 }
 await annie.stop();

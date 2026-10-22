@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { startAnnie } from "../../src/app.ts";
 import { piDurableEngine } from "../../src/core/adapters/pi-durable.ts";
 import type { DurableEngine } from "../../src/core/engine.ts";
+import { instanceId, tenantId } from "../../src/core/ids.ts";
+import { engineDir } from "../../src/core/paths.ts";
 import { loadAnnieConfig } from "../../src/main/config.ts";
 
 export const root = dirname(fileURLToPath(import.meta.url));
@@ -33,8 +35,8 @@ export async function bootAnnie(env: Record<string, string>) {
 			return piDurableEngine.open(options);
 		},
 	};
-	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_WEB_PORT: "1", ...env });
+	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ...env });
 	const annie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { engine, schedulerIntervalMs: 3_600_000, log: () => {} });
-	const general = [...tools].find(([dir]) => dir.endsWith(join("instances", "annie", "engine")))?.[1] ?? [];
+	const general = tools.get(engineDir(dataDir, tenantId("default"), instanceId("annie"))) ?? [];
 	return { annie, dataDir, tools: general };
 }

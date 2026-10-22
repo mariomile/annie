@@ -24,7 +24,10 @@ describe("contesto del turno (ADR 0097)", () => {
 			{ type: "text", text: "\n\n[Ora] adesso" },
 		]);
 		expect(messages[2]?.content).toEqual([{ type: "text", text: "poi" }]);
-		expect(withTurnContext([user("solo")], "\n\nnota")[0]?.content).toBe("solo\n\nnota");
+		expect(withTurnContext([user("solo")], "\n\nnota")[0]?.content).toEqual([
+			{ type: "text", text: "solo" },
+			{ type: "text", text: "\n\nnota" },
+		]);
 		expect(withTurnContext(messages, "")).toBe(messages);
 	});
 

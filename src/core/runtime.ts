@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
-import { UsageLedger } from "./usage.ts";
+import { recordTurn, UsageLedger } from "./usage.ts";
+import { SerialQueue } from "./serial-queue.ts";
 import { ConnectorActionStore } from "./connector-actions.ts";
 import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession, TurnUsage } from "./engine.ts";
 import type { TurnOrigin } from "./turn-origin.ts";
@@ -617,7 +618,7 @@ export class AnnieInstance {
 	/** Outbox keys this process has handed to the channels. Each at most once per process. */
 	private readonly handedOff = new Set<string>();
 	/** Outbox operations on the same key run one after the other. */
-	private readonly chains = new Map<string, Promise<void>>();
+	private readonly chains = new SerialQueue();
 	/** Pending in-process retries, cleared on close. */
 	private readonly retries = new Map<string, NodeJS.Timeout>();
 	private closed = false;
@@ -967,7 +968,7 @@ export class AnnieInstance {
 		this.retries.clear();
 		try {
 			await this.session.close();
-			await Promise.allSettled(this.chains.values());
+			await this.chains.idle();
 			await this.releaseTools().catch((error: unknown) => console.error(`annie: releasing tools of ${this.record.tenantId}/${this.record.id} failed: ${String(error)}`));
 		} finally {
 			this.lock.release();
@@ -986,37 +987,13 @@ export class AnnieInstance {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;
 			// Counted once: a reply the outbox already holds was counted when it first came.
-			if (existing?.reply === undefined && engineReply.status === "answered" && engineReply.usage !== undefined) await this.count(engineReply.submissionId, channel, threadId, engineReply.usage, engineReply.model).catch((error: unknown) => console.error(`annie: usage of ${this.record.tenantId}/${this.record.id} not recorded: ${String(error)}`));
+			if (existing?.reply === undefined && engineReply.status === "answered" && engineReply.usage !== undefined) await recordTurn(this.usage, this.audit, { instanceId: this.record.id, threadId, submissionId: engineReply.submissionId, model: engineReply.model, usage: engineReply.usage }).catch((error: unknown) => console.error(`annie: usage of ${this.record.tenantId}/${this.record.id} not recorded: ${String(error)}`));
 			await this.handOff(
 				existing === undefined
 					? { key, submissionId: engineReply.submissionId, channel, threadId, reply, createdAt: new Date().toISOString(), attempts: 0 }
 					: { ...existing, reply: existing.reply ?? reply },
 			);
 		});
-	}
-
-	/** What a turn took, in the audit and in the tenant's spend (ADR 0098). Never the text. */
-	private async count(submissionId: string, channel: string, threadId: string, usage: TurnUsage, model: ModelSelection | undefined): Promise<void> {
-		await this.audit.append({
-			type: "turn.usage",
-			instanceId: this.record.id,
-			channel,
-			threadId,
-			submissionId,
-			...(model === undefined ? {} : { provider: model.provider, model: model.modelId }),
-			modelCalls: usage.modelCalls,
-			inputTokens: usage.inputTokens,
-			outputTokens: usage.outputTokens,
-			cacheReadTokens: usage.cacheReadTokens,
-			cacheWriteTokens: usage.cacheWriteTokens,
-			costUsd: usage.costUsd,
-			toolCalls: usage.tools.length,
-			tools: usage.tools.join(","),
-		});
-		await this.usage.record(
-			{ at: new Date().toISOString(), provider: model?.provider ?? "", model: model?.modelId ?? "", role: "agent", inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens, outputTokens: usage.outputTokens, estimatedUsd: usage.costUsd, submissionId },
-			this.audit,
-		);
 	}
 
 	/**
@@ -1060,13 +1037,7 @@ export class AnnieInstance {
 	}
 
 	private serial(key: string, work: () => Promise<void>): Promise<void> {
-		const run = (this.chains.get(key) ?? Promise.resolve()).then(work);
-		const tail = run.catch(() => {});
-		this.chains.set(key, tail);
-		void tail.then(() => {
-			if (this.chains.get(key) === tail) this.chains.delete(key);
-		});
-		return run;
+		return this.chains.run(key, work);
 	}
 }
 

@@ -98,8 +98,10 @@ export const piDurableEngine: DurableEngine = {
 						beforeRequest: async ({ messages }, api, hookContext) => {
 							// Old pictures leave the request, not the history: a long thread does not resend every photo.
 							const recent = withRecentImages(messages, RECENT_IMAGE_MESSAGES);
-							const threadKey = options.turnContext === undefined ? undefined : await threadKeyOf(api, api.conversationId, hookContext);
-							return { messages: threadKey === undefined ? recent : withTurnContext(recent, options.turnContext?.(threadKey) ?? "") };
+							const turnContext = options.turnContext;
+							if (turnContext === undefined) return { messages: recent };
+							const threadKey = await threadKeyOf(api, api.conversationId, hookContext);
+							return { messages: threadKey === undefined ? recent : withTurnContext(recent, turnContext(threadKey)) };
 						},
 					}),
 				],
@@ -396,37 +398,22 @@ async function turnOrigin(api: OriginApi, callContext: OriginContext): Promise<T
 	return isTurnOrigin(kept.origin) ? kept.origin : "scheduled";
 }
 
-/**
- * The origin of the inputs the model is answering: every input since the run began, back to the
- * last answer that ended a run (an assistant message without tool calls). A person's only when
- * every one of them is; an input without an origin (written before origins were kept) is not.
- *
- * Robust to steering: inputs are admitted as follow-ups today (submit leaves `whenBusy` at its
- * default, so a new message waits for the run to end), but a message steered into a running turn
- * lands after an assistant message with tool calls; scanning past those to the run's start keeps
- * a notice that began the run in the reckoning even when a person's message is steered in later.
- * Past the scan's bound, the turn is not taken for a person's.
- */
 export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, warn: (message: string) => void = warnBoundOnce): Promise<TurnOrigin> {
-	const found: (TurnOrigin | undefined)[] = [];
-	let cursor: Cursor | undefined;
-	for (let page = 0; page < 20; page++) {
-		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending" }, 50, cursor);
-		for (const entry of items) {
-			const input = entry.kind === INPUT_KIND || entry.kind === UserEntry.kind;
-			if (input) {
-				const data = entry.data as { origin?: unknown } | undefined;
-				found.push(entry.kind === INPUT_KIND && isTurnOrigin(data?.origin) ? data.origin : undefined);
-			} else if (found.length > 0 && endsRun(entry)) return worst(found);
-		}
-		if (next === undefined) return found.length === 0 ? "scheduled" : worst(found);
-		cursor = next;
+	const { entries, bounded } = await runEntries(tx, conversationId);
+	const found = entries
+		.filter((entry) => entry.kind === INPUT_KIND || entry.kind === UserEntry.kind)
+		.map((entry) => {
+			const origin = (entry.data as { origin?: unknown } | undefined)?.origin;
+			return entry.kind === INPUT_KIND && isTurnOrigin(origin) ? origin : undefined;
+		});
+	if (bounded) {
+		warn(SCAN_BOUND);
+		return worst([...found, undefined]);
 	}
-	warn(SCAN_BOUND);
-	return worst([...found, undefined]);
+	return found.length === 0 ? "scheduled" : worst(found);
 }
 
-const SCAN_BOUND = "annie: the scan for a turn's origin reached its bound before the start of the run; the turn is not taken for a person's";
+const SCAN_BOUND = "annie: the scan for a turn's run reached its bound before the start of the run; the turn is not taken for a person's, and its cost is a partial sum";
 let boundWarned = false;
 
 /** Said once per process, with no value of the conversation: a run that long is rare, and the line is enough to look into it. */
@@ -437,38 +424,51 @@ function warnBoundOnce(message: string): void {
 }
 
 /**
- * What the run that ended with `answer` took (ADR 0098): every assistant message from the answer
- * back to the previous one that ended a run, as `inputsOrigin` reckons a run. Past the scan's
- * bound, what was found; undefined when the answer is not there.
+ * The entries of the run that ends at `from` (the latest entry when absent), newest first: back
+ * to, and not including, the previous entry that ended a run. `bounded` when the scan reached its
+ * cap (20 pages of 50) before finding the start of the run.
  */
-export async function turnUsage(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, answer: EntryId): Promise<TurnUsage | undefined> {
-	const usage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
-	const tools: string[] = [];
+async function runEntries(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, from?: EntryId): Promise<{ entries: EntryRecord[]; bounded: boolean }> {
+	const entries: EntryRecord[] = [];
 	let cursor: Cursor | undefined;
-	let first = true;
 	for (let page = 0; page < 20; page++) {
-		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending", maxEntryId: answer }, 50, cursor);
+		const { items, next }: Page<EntryRecord, Cursor> = await tx.scanEntries({ conversationId, order: "descending", ...(from === undefined ? {} : { maxEntryId: from }) }, 50, cursor);
 		for (const entry of items) {
-			if (first && entry.id !== answer) return undefined;
-			if (!first && endsRun(entry)) return { ...usage, tools };
-			first = false;
-			const called: string[] = [];
-			for (const m of (entry.model ?? []) as Message[]) {
-				if (m.role !== "assistant") continue;
-				usage.modelCalls++;
-				usage.inputTokens += m.usage?.input ?? 0;
-				usage.outputTokens += m.usage?.output ?? 0;
-				usage.cacheReadTokens += m.usage?.cacheRead ?? 0;
-				usage.cacheWriteTokens += m.usage?.cacheWrite ?? 0;
-				usage.costUsd += m.usage?.cost?.total ?? 0;
-				called.push(...m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])));
-			}
-			tools.unshift(...called);
+			if (entries.length > 0 && endsRun(entry)) return { entries, bounded: false };
+			entries.push(entry);
 		}
-		if (next === undefined) break;
+		if (next === undefined) return { entries, bounded: false };
 		cursor = next;
 	}
-	return first ? undefined : { ...usage, tools };
+	return { entries, bounded: true };
+}
+
+/**
+ * What the run that ended with `answer` took (ADR 0098): every assistant message of the run, as
+ * `runEntries` reckons it. Past the scan's bound, what was found, said once; undefined when the
+ * answer is not there.
+ */
+export async function turnUsage(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, answer: EntryId, warn: (message: string) => void = warnBoundOnce): Promise<TurnUsage | undefined> {
+	const { entries, bounded } = await runEntries(tx, conversationId, answer);
+	if (entries[0]?.id !== answer) return undefined;
+	if (bounded) warn(SCAN_BOUND);
+	const usage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+	const tools: string[] = [];
+	for (const entry of entries) {
+		const called: string[] = [];
+		for (const m of (entry.model ?? []) as Message[]) {
+			if (m.role !== "assistant") continue;
+			usage.modelCalls++;
+			usage.inputTokens += m.usage?.input ?? 0;
+			usage.outputTokens += m.usage?.output ?? 0;
+			usage.cacheReadTokens += m.usage?.cacheRead ?? 0;
+			usage.cacheWriteTokens += m.usage?.cacheWrite ?? 0;
+			usage.costUsd += m.usage?.cost?.total ?? 0;
+			called.push(...m.content.flatMap((c) => (c.type === "toolCall" ? [c.name] : [])));
+		}
+		tools.unshift(...called);
+	}
+	return { ...usage, tools };
 }
 
 /** An assistant message that answered without calling a tool: the run it belongs to ended there. */
@@ -529,6 +529,7 @@ export function withTurnContext(messages: readonly Message[], note: string): rea
 	if (at < 0) return messages;
 	const out = [...messages];
 	const message = out[at] as Message & { role: "user" };
-	out[at] = { ...message, content: typeof message.content === "string" ? `${message.content}${note}` : [...message.content, { type: "text", text: note }] };
+	const blocks = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
+	out[at] = { ...message, content: [...blocks, { type: "text", text: note }] };
 	return out;
 }
