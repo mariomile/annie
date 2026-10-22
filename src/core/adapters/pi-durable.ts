@@ -98,7 +98,9 @@ export const piDurableEngine: DurableEngine = {
 
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		const harness = await Harness.open(storage, { models, registry }, context);
-		return new PiDurableSession(harness, models, options);
+		const session = new PiDurableSession(harness, models, options);
+		await session.alignPending();
+		return session;
 	},
 };
 
@@ -153,10 +155,9 @@ class PiDurableSession implements EngineSession {
 	}
 
 	/**
-	 * Once per session: align every conversation with unsettled work while the scheduler is
-	 * still paused (Harness.open leaves it paused), then attach a waiter to each submission
-	 * (the first one starts the scheduler) and make sure it runs. Starting first would let a
-	 * fast run settle before it is tracked, and its reply would be lost.
+	 * Once per session: attach a waiter to every unsettled submission, then start the
+	 * scheduler. Starting first would let a fast run settle before it is tracked, and its
+	 * reply would be lost.
 	 */
 	private recover(): Promise<number> {
 		this.recovery ??= this.attachPending().then((pending) => {
@@ -167,26 +168,41 @@ class PiDurableSession implements EngineSession {
 	}
 
 	private async attachPending(): Promise<number> {
-		const inspection = await this.harness.inspect(context);
-		const threads = await this.threads();
-		const byConversation = new Map<number, string>(Object.entries(threads).map(([key, id]) => [id, key]));
-		const found: { submission: Submission; threadKey: string }[] = [];
+		let pending = 0;
+		for (const { id, threadKey } of await this.pendingInputs()) {
+			const submission = await this.harness.submission(id, context);
+			if (submission === undefined) continue;
+			pending++;
+			this.track(submission, threadKey);
+		}
+		return pending;
+	}
+
+	/**
+	 * Called by open(), while the scheduler is still paused (Harness.open leaves it paused) and
+	 * nothing can start it yet: work left half done goes on with the instance's model and
+	 * instructions of now, whichever call (reattach, resume, submit, idle) then starts it.
+	 */
+	async alignPending(): Promise<void> {
 		const aligned = new Set<number>();
+		for (const { conversationId, threadKey } of await this.pendingInputs()) {
+			if (aligned.has(conversationId)) continue;
+			aligned.add(conversationId);
+			await this.alignAgent(conversationId, threadKey);
+		}
+	}
+
+	/** The unsettled inputs of the conversations Annie knows, with their thread key. */
+	private async pendingInputs(): Promise<{ id: SubmissionId; conversationId: ConversationId; threadKey: string }[]> {
+		const inspection = await this.harness.inspect(context);
+		const byConversation = new Map<number, string>(Object.entries(await this.threads()).map(([key, id]) => [id, key]));
+		const found: { id: SubmissionId; conversationId: ConversationId; threadKey: string }[] = [];
 		for (const record of inspection.submissions) {
 			if (record.type !== "input") continue;
 			const threadKey = byConversation.get(record.conversationId);
-			const submission = await this.harness.submission(record.id, context);
-			if (threadKey === undefined || submission === undefined) continue;
-			// Work left half done goes on with the instance's model: every conversation is aligned
-			// before the first waiter, which starts the scheduler.
-			if (!aligned.has(record.conversationId)) {
-				aligned.add(record.conversationId);
-				await this.alignAgent(record.conversationId, threadKey);
-			}
-			found.push({ submission, threadKey });
+			if (threadKey !== undefined) found.push({ id: record.id, conversationId: record.conversationId, threadKey });
 		}
-		for (const { submission, threadKey } of found) this.track(submission, threadKey);
-		return found.length;
+		return found;
 	}
 
 	async setThreadModel(threadKey: string, model: ModelSelection | undefined): Promise<void> {
