@@ -599,20 +599,51 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, new UsageLedger(tenantDir(this.options.dataDir, record.tenantId)), releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: memory, participants, lists, skills }, (reply) => {
-			for (const listener of this.listeners) {
-				try {
-					listener(reply);
-				} catch (error) {
-					console.error(`annie: reply listener failed: ${String(error)}`);
+		return new AnnieInstance({
+			record,
+			session,
+			lock,
+			outbox,
+			audit,
+			usage: new UsageLedger(tenantDir(this.options.dataDir, record.tenantId)),
+			releaseTools,
+			fresh,
+			reachable,
+			retry: { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES },
+			memory: { store: memory, participants, lists, skills },
+			emit: (reply) => {
+				for (const listener of this.listeners) {
+					try {
+						listener(reply);
+					} catch (error) {
+						console.error(`annie: reply listener failed: ${String(error)}`);
+					}
 				}
-			}
+			},
 		});
 	}
 }
 
 /** Outbox keys of messages whose text goes once delivered. */
 const SECRET_KEY = "secret:";
+
+export interface AnnieInstanceOptions {
+	readonly record: InstanceRecord;
+	readonly session: EngineSession;
+	readonly lock: InstanceLock;
+	readonly outbox: Outbox;
+	readonly audit: AuditLog;
+	/** The tenant's spend (usage.ts): each answered turn adds what it cost. */
+	readonly usage: UsageLedger;
+	readonly releaseTools: () => Promise<void>;
+	/** The record as stored now: allowlist and channel changes apply without a reopen. */
+	readonly fresh: () => Promise<InstanceRecord>;
+	/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
+	readonly reachable: (provider: string) => Promise<boolean>;
+	readonly retry: { readonly delaysMs: readonly number[]; readonly max: number };
+	readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore };
+	readonly emit: (reply: Reply) => void;
+}
 
 export class AnnieInstance {
 	/** Outbox keys this process has handed to the channels. Each at most once per process. */
@@ -623,23 +654,33 @@ export class AnnieInstance {
 	private readonly retries = new Map<string, NodeJS.Timeout>();
 	private closed = false;
 
-	constructor(
-		readonly record: InstanceRecord,
-		private readonly session: EngineSession,
-		private readonly lock: InstanceLock,
-		private readonly outbox: Outbox,
-		private readonly audit: AuditLog,
-		/** The tenant's spend (usage.ts): each answered turn adds what it cost. */
-		private readonly usage: UsageLedger,
-		private readonly releaseTools: () => Promise<void>,
-		/** The record as stored now: allowlist and channel changes apply without a reopen. */
-		private readonly fresh: () => Promise<InstanceRecord>,
-		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
-		private readonly reachable: (provider: string) => Promise<boolean>,
-		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
-		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore },
-		private readonly emit: (reply: Reply) => void,
-	) {
+	readonly record: InstanceRecord;
+	private readonly session: EngineSession;
+	private readonly lock: InstanceLock;
+	private readonly outbox: Outbox;
+	private readonly audit: AuditLog;
+	private readonly usage: UsageLedger;
+	private readonly releaseTools: () => Promise<void>;
+	private readonly fresh: () => Promise<InstanceRecord>;
+	private readonly reachable: (provider: string) => Promise<boolean>;
+	private readonly retry: AnnieInstanceOptions["retry"];
+	private readonly memory: AnnieInstanceOptions["memory"];
+	private readonly emit: (reply: Reply) => void;
+
+	constructor(options: AnnieInstanceOptions) {
+		const { record, session } = options;
+		this.record = record;
+		this.session = session;
+		this.lock = options.lock;
+		this.outbox = options.outbox;
+		this.audit = options.audit;
+		this.usage = options.usage;
+		this.releaseTools = options.releaseTools;
+		this.fresh = options.fresh;
+		this.reachable = options.reachable;
+		this.retry = options.retry;
+		this.memory = options.memory;
+		this.emit = options.emit;
 		session.onReply((engineReply) => {
 			this.deliver(engineReply).catch((error: unknown) => {
 				console.error(`annie: delivering a reply of ${record.tenantId}/${record.id} failed: ${String(error)}`);
