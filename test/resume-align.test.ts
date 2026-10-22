@@ -38,19 +38,25 @@ async function leftMidTurn(): Promise<{ storageDir: string; s1: string; s2: stri
 }
 
 /**
- * One chat left mid-turn on its own model, the local one, while the instance runs on a model
- * with no key here: back on the instance model, the chat cannot answer.
+ * Chats left mid-turn on their own model, the local one, while the instance runs on a model
+ * with no key here: back on the instance model, a chat cannot answer.
  */
-async function leftOnOwnModel(): Promise<{ storageDir: string; s1: string }> {
+async function leftOnOwnModel(threadKeys: readonly string[] = ["web:t1"]): Promise<{ storageDir: string; ids: string[] }> {
 	const storageDir = tempDataDir();
 	let holding = 0;
 	const first = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(true, () => holding++)] });
-	await first.setThreadModel("web:t1", DEV);
-	const { submissionId: s1 } = await first.submit("web:t1", "/tool hold {}");
-	await waitFor(() => holding === 1);
+	const ids: string[] = [];
+	for (const threadKey of threadKeys) {
+		await first.setThreadModel(threadKey, DEV);
+		ids.push((await first.submit(threadKey, "/tool hold {}")).submissionId);
+	}
+	await waitFor(() => holding === threadKeys.length);
 	await first.close();
-	return { storageDir, s1 };
+	return { storageDir, ids };
 }
+
+const reopenOnGrok = (storageDir: string, modelUsable?: EngineOpenOptions["modelUsable"]) =>
+	piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(false)], ...(modelUsable === undefined ? {} : { modelUsable }) });
 
 const reopen = (storageDir: string, modelUsable?: EngineOpenOptions["modelUsable"]) =>
 	piDurableEngine.open({ storageDir, model: DEV, apiKey: async () => undefined, tools: [hold(false)], ...(modelUsable === undefined ? {} : { modelUsable }) });
@@ -92,7 +98,7 @@ describe("restart after the configuration changed", () => {
 
 	it("a chat model cleared after open() and before resume() still counts", async () => {
 		const { storageDir } = await leftOnOwnModel();
-		const session = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(false)] });
+		const session = await reopenOnGrok(storageDir);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		await session.setThreadModel("web:t1", undefined);
@@ -103,15 +109,60 @@ describe("restart after the configuration changed", () => {
 	});
 
 	it("a chat model that stops being usable after open() and before reattach() still counts", async () => {
-		const { storageDir, s1 } = await leftOnOwnModel();
+		const {
+			storageDir,
+			ids: [s1],
+		} = await leftOnOwnModel();
 		let usable = true;
-		const session = await piDurableEngine.open({ storageDir, model: GROK, apiKey: async () => undefined, tools: [hold(false)], modelUsable: async () => usable });
+		const session = await reopenOnGrok(storageDir, async () => usable);
 		const replies: EngineReply[] = [];
 		session.onReply((reply) => replies.push(reply));
 		usable = false;
-		expect(await session.reattach(s1, "web:t1")).toBe(true);
+		expect(await session.reattach(s1!, "web:t1")).toBe(true);
 		await waitFor(() => replies.length === 1);
 		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "unanswered" });
+		await session.close();
+	});
+
+	it("a preparation that fails is tried again by the next call, and the work goes on", async () => {
+		const { storageDir, ids } = await leftOnOwnModel();
+		let checks = 0;
+		const session = await reopenOnGrok(storageDir, async () => {
+			if (++checks <= 2) throw new Error("provider check down");
+			return true;
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		await expect(session.reattach(ids[0]!, "web:t1")).rejects.toThrow("provider check down");
+		await expect(session.resume()).rejects.toThrow("provider check down");
+		expect(await session.resume()).toEqual({ pending: 1 });
+		await waitFor(() => replies.length === 1);
+		expect(replies[0]).toMatchObject({ threadKey: "web:t1", status: "answered" });
+		expect(checks).toBe(3);
+		await session.close();
+	});
+
+	it("a chat model cleared while the others are still being aligned counts too", async () => {
+		const { storageDir, ids } = await leftOnOwnModel(["web:t1", "web:t2"]);
+		let checks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		// t1 is checked and aligned first; t2's check waits for the test.
+		const session = await reopenOnGrok(storageDir, async () => {
+			if (++checks === 2) await held;
+			return true;
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		const reattached = session.reattach(ids[0]!, "web:t1");
+		await waitFor(() => checks === 2);
+		await session.setThreadModel("web:t1", undefined);
+		release();
+		expect(await reattached).toBe(true);
+		expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+		await waitFor(() => replies.length === 2);
+		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "unanswered" });
+		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
 		await session.close();
 	});
 });

@@ -108,7 +108,11 @@ class PiDurableSession implements EngineSession {
 	private readonly creating = new Map<string, Promise<ConversationId>>();
 	private closing = false;
 	private recovery: Promise<number> | undefined;
-	private prepared: Promise<void> | undefined;
+	/** Bumped by every chat model write; the pending work is aligned to the latest one. */
+	private configVersion = 0;
+	private alignedVersion = -1;
+	private aligning: Promise<void> | undefined;
+	private started = false;
 
 	constructor(
 		private readonly harness: Harness,
@@ -149,53 +153,68 @@ class PiDurableSession implements EngineSession {
 	async reattach(submissionId: string, threadKey: string): Promise<boolean> {
 		const submission = await this.harness.submission(Number(submissionId) as SubmissionId, context);
 		if (submission === undefined) return false;
-		await this.prepare();
-		this.track(submission, threadKey);
+		await this.activate(() => this.track(submission, threadKey));
 		return true;
 	}
 
 	/**
 	 * Once per session: attach a waiter to every unsettled submission, then start the
 	 * scheduler. Starting first would let a fast run settle before it is tracked, and its
-	 * reply would be lost.
+	 * reply would be lost. A failed attempt is forgotten, so the next call tries again.
 	 */
 	private recover(): Promise<number> {
-		this.recovery ??= this.prepare().then(() => this.attachPending()).then((pending) => {
-			this.harness.resume();
-			return pending;
-		});
+		if (this.recovery === undefined) {
+			const recovery = this.pendingSubmissions().then((pending) =>
+				this.activate(() => {
+					for (const { submission, threadKey } of pending) this.track(submission, threadKey);
+					this.harness.resume();
+					return pending.length;
+				}),
+			);
+			this.recovery = recovery;
+			recovery.catch(() => {
+				if (this.recovery === recovery) this.recovery = undefined;
+			});
+		}
 		return this.recovery;
 	}
 
-	private async attachPending(): Promise<number> {
-		let pending = 0;
+	private async pendingSubmissions(): Promise<{ submission: Submission; threadKey: string }[]> {
+		const found: { submission: Submission; threadKey: string }[] = [];
 		for (const { id, threadKey } of await this.pendingInputs()) {
 			const submission = await this.harness.submission(id, context);
-			if (submission === undefined) continue;
-			pending++;
-			this.track(submission, threadKey);
+			if (submission !== undefined) found.push({ submission, threadKey });
 		}
-		return pending;
+		return found;
 	}
 
 	/**
-	 * Once per session, awaited by every call that starts Pi's scheduler (reattach, resume,
-	 * submit, idle) before it does, while it is still paused (Harness.open leaves it paused):
-	 * work left half done goes on with the model and instructions of that moment, so a change
-	 * made after open() counts too.
+	 * Every call that starts Pi's scheduler (reattach, resume, submit, idle) does it through
+	 * here. Until the first start (Harness.open leaves it paused), work left half done is first
+	 * aligned with the model and instructions of that moment, again if a chat model changed
+	 * meanwhile, and the scheduler starts in the same step as the last check, so no change
+	 * falls in between. A failed alignment is not kept: the next call tries again.
 	 */
-	private prepare(): Promise<void> {
-		this.prepared ??= this.alignPending();
-		return this.prepared;
+	private async activate<T>(start: () => T): Promise<T> {
+		while (!this.started && this.alignedVersion !== this.configVersion) {
+			this.aligning ??= this.alignPending().finally(() => {
+				this.aligning = undefined;
+			});
+			await this.aligning;
+		}
+		this.started = true;
+		return start();
 	}
 
 	private async alignPending(): Promise<void> {
+		const version = this.configVersion;
 		const aligned = new Set<number>();
 		for (const { conversationId, threadKey } of await this.pendingInputs()) {
 			if (aligned.has(conversationId)) continue;
 			aligned.add(conversationId);
 			await this.alignAgent(conversationId, threadKey);
 		}
+		this.alignedVersion = version;
 	}
 
 	/** The unsettled inputs of the conversations Annie knows, with their thread key. */
@@ -217,6 +236,7 @@ class PiDurableSession implements EngineSession {
 			if (model === undefined) delete models[threadKey];
 			else models[threadKey] = { provider: model.provider, modelId: model.modelId };
 		}, context);
+		this.configVersion++;
 	}
 
 	async threadModel(threadKey: string): Promise<ModelSelection | undefined> {
@@ -229,8 +249,7 @@ class PiDurableSession implements EngineSession {
 	}
 
 	async idle(): Promise<void> {
-		await this.prepare();
-		return this.harness.waitForIdle(context);
+		return this.activate(() => this.harness.waitForIdle(context));
 	}
 
 	async close(): Promise<void> {
