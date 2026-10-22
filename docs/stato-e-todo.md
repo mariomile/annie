@@ -132,6 +132,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Memoria con archivio: le memorie essenziali con ogni messaggio, i dettagli in un archivio di 1000 per persona che Annie cerca quando servono; con le essenziali piene la più vecchia va in archivio invece di un rifiuto ([ADR 0062](adr/0062-memoria-con-archivio.md))
 - [x] Stanze: una conversazione della console fra una persona e da 2 a 5 agenti, che chiama chi le serve con @nome (o @tutti); ogni agente riceve quello che si è perso, e può chiamarne un altro, al più 3 volte di fila ([ADR 0063](adr/0063-stanze.md))
 - [x] Squadre pronte: dalla pagina Agenti, tre agenti con un compito ciascuno (Contenuti, Vendite, Amministrazione) che si scrivono fra loro, con una stanza; chi coordina divide il lavoro anche in sotto-schede ([ADR 0068](adr/0068-squadre-pronte.md))
+- [x] Console divisa per pagina: `src/web/ui/app.js` (circa 5.900 righe) è ora un modulo ES per pagina più `common.js` per quello che serve a tutte, senza cambiare il comportamento ([ADR 0102](adr/0102-console-un-modulo-per-pagina.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo
