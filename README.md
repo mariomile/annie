@@ -8,6 +8,8 @@ Cosa fa:
 - **Usa i vostri sistemi** tramite connettori MCP, ognuno limitato al suo host.
 - **Lavora con i file**: li crea, li legge, li invia e riceve quelli caricati.
 - **È proattiva**: esegue task programmati, una volta o a ripetizione.
+- **Mostra il lavoro in corso**: progressi e Stop nella chat, con storico persistente di conversazioni, task e automazioni. Stop non annulla azioni già completate.
+- **Riprende il browser dopo il tuo accesso**: nelle chat private puoi prendere il controllo, compilare un modulo semplice e restituirlo ad Annie. I cookie restano separati per persona e agente, e puoi cancellarli dal pannello ([limiti](docs/adr/0106-browser-personale-e-controllo-umano.md)).
 - **Si estende da sola**: scrive nuovi tool, che girano isolati in sandbox e solo dopo l'approvazione di una persona.
 - **Segreteria commerciale**: legge le richieste di preventivo da Gmail, aggiorna HubSpot, prepara la bozza e la invia solo dopo Approva.
 

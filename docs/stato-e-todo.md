@@ -1,6 +1,6 @@
 # Stato del progetto e cose da fare
 
-Aggiornato al 22 ottobre 2026.
+Aggiornato al 23 ottobre 2026.
 
 ## Dove siamo
 
@@ -18,6 +18,10 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 ### Affidabilità e prestazioni: Integrazione locale del 22 ottobre
 
 Il ramo `feat/agent-performance` integra i PR #162–#170 e aggiunge cache del contesto di memoria, contatori della console con una sola richiesta, recupero dei provider locali, verifiche degli esiti e correzioni della sandbox su macOS. Il [rapporto con misure e verifiche](performance-2026-10-22.md) distingue questa integrazione locale da merge, pubblicazione e app installata, e descrive le differenze ancora aperte rispetto a Grok Bot.
+
+### Controllo del lavoro e browser: Sviluppo locale del 23 ottobre
+
+Lo stesso ramo aggiunge progressi live, Stop persistente per conversazione, storico di task e automazioni e browser personale con controllo umano e cookie salvati. Il [rapporto di verifica](next-level-2026-10-23.md) descrive risultati, revisioni e limiti. Le decisioni sono negli ADR [0105](adr/0105-stato-stop-e-storico-del-lavoro.md) e [0106](adr/0106-browser-personale-e-controllo-umano.md). Queste modifiche locali non attestano pubblicazione o aggiornamento dell'app installata.
 
 ## Cose da fare
 
