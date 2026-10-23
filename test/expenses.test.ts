@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { cashBook, unitsToCents } from "../src/core/cash-book.ts";
 import { csvCents, csvFile, csvLine, csvText } from "../src/core/csv.ts";
@@ -24,6 +24,7 @@ import { createExpenseTools, type ExpenseEvent } from "../src/core/tools/expense
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { BETA, fattura, G1, G2, GAMMA, GNC, RICEVUTA } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -816,10 +817,10 @@ describe("expenses: fence and audit", () => {
 
 describe("expenses in the app", () => {
 	it("is offered to every instance, the instructions point to it, and the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il registro delle spese (expenses:");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		await loadTools(reply, "expenses");
 		const answer = await reply('/tool expenses {"op":"add","amount":"42,50","vat_rate":22,"supplier":"Distributore Zeta","category":"benzina"}');
 		expect(answer).toContain("Registrata la spesa S-");
 		expect(await reply('/tool expenses {"op":"summary"}')).toContain("Totale: 42,50 €");

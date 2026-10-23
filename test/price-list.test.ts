@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -553,8 +552,7 @@ describe("listino: who may change it", () => {
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "find", query: "sito base" }, fresh()))).toContain("1.500,00 €");
 		expect(String(await briefed?.execute({ op: "add", name: "Y", price: 1, vat: 22 }, fresh()))).toContain("Annie legge soltanto");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il listino prezzi (price_list:");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
+		expect(s.tool.description).toContain("price_list is the prices the person sells at, purchase_prices what they pay, stock the quantities.");
 	});
 
 	it("a broken file is never written over: every op says so, the .bak keeps the last good state", async () => {

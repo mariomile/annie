@@ -31,6 +31,4 @@ Le persone che usano un agente gli spiegano spesso lo stesso modo di lavorare (�
 
 La pagina «Skill» (nella barra, sotto Memoria) elenca le skill dell'agente e le bozze della persona: si crea, si modifica, si importa un `SKILL.md` incollato o caricato, si scarica come `SKILL.md`, si attiva una bozza o la si scarta. Il nome non si cambia dopo il salvataggio, perché è il comando.
 
-## Da fare
-
-- I comandi delle skill nel menu di Telegram accanto a `/modello`.
+I comandi delle skill stanno nel menu di Telegram accanto a `/modello` ([ADR 0104](0104-skill-nel-menu-di-telegram.md)).

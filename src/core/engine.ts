@@ -26,12 +26,20 @@ export type EngineOpenOptions = {
 	 */
 	readonly instructions?: string | (() => string | undefined);
 	/**
+	 * Read before every request to the model (ADR 0097): what the turn should know now, the time
+	 * and what the agente remembers of whom it is talking with in the thread. It goes after the
+	 * newest message of the person for that request only; the history keeps their words.
+	 */
+	readonly turnContext?: (threadKey: string) => string;
+	/**
 	 * Whether a chat's own model may answer now (ADR 0036): its provider allowed, with a key. When
 	 * not, the instance's model answers, also for work resumed after a restart. Missing: always.
 	 */
 	readonly modelUsable?: (provider: string) => Promise<boolean>;
 	/** Explicit local, tenant-scoped CLI subscription capability. Never inferred from the host. */
 	readonly localProviders?: LocalProviders;
+	/** Durable Stop intents restored before any recovered provider or tool work may start. */
+	readonly stoppedThreads?: readonly string[];
 };
 
 export interface EngineSession {
@@ -58,6 +66,12 @@ export interface EngineSession {
 	/** The conversation's own model as stored, when it has one (usable or not). */
 	threadModel(threadKey: string): Promise<ModelSelection | undefined>;
 	onReply(listener: (reply: EngineReply) => void): () => void;
+	/** Optional for alternate engines. Reads do not start the scheduler. */
+	lookupRun?(threadKey: string, requestId: string): Promise<EngineRunState | undefined>;
+	/** Abort this conversation's running AND queued inputs; resolves after durable settlement. */
+	stop?(threadKey: string): Promise<void>;
+	/** Metadata only: never prompt text, tool arguments, results, or thinking. */
+	onRunEvent?(listener: (event: EngineRunEvent) => void): () => void;
 	/** Resolves when no work is running or pending. */
 	idle(): Promise<void>;
 	close(): Promise<void>;
@@ -71,8 +85,34 @@ export type EngineReply =
 			readonly text: string;
 			/** The model that wrote the answer: the chat's, or the instance's when the chat's could not answer. */
 			readonly model?: ModelSelection;
+			/** What the turn took, when the engine can tell (ADR 0098). */
+			readonly usage?: TurnUsage;
 	  }
-	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string };
+	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string; readonly cancelled?: boolean };
+
+export type EngineRunState = {
+	readonly threadKey: string;
+	readonly submissionId: string;
+	readonly requestId?: string;
+	readonly status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+};
+export type EngineRunEvent = EngineRunState & {
+	readonly progress?: { readonly kind: "model" | "tool_start" | "tool_progress" | "tool_end" | "retry"; readonly toolName?: string };
+};
+
+/**
+ * Every model call of one answered turn, from the inputs to the answer (ADR 0098): tokens, the
+ * cost as the provider's list prices give it, and the tools called, in order, by name.
+ */
+export type TurnUsage = {
+	readonly modelCalls: number;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheReadTokens: number;
+	readonly cacheWriteTokens: number;
+	readonly costUsd: number;
+	readonly tools: readonly string[];
+};
 
 /** A picture for the model, already checked (src/core/images.ts). */
 export type EngineImage = { readonly mimeType: string; readonly data: Uint8Array };
@@ -92,6 +132,8 @@ export type AnnieTool = {
 	 * stored result instead of running again. false: the model gets an "interrupted" result.
 	 */
 	readonly replaySafe: boolean;
+	/** true: not offered to the model until it finds it with tool_search (ADR 0100). */
+	readonly deferred?: true;
 	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 };
 

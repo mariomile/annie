@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 import { findHits, fold, parseQuery, termPatterns } from "./text-match.ts";
@@ -24,6 +25,8 @@ export type Memory = {
 
 export const SHARED = "*";
 const MAX_TEXT = 500;
+// One snapshot per store, bounded by the source size; larger archives are read without retention.
+const MAX_CACHED_BYTES = 8 * 1024 * 1024;
 export const MEMORY_LIMITS = {
 	/** The essential ones reach the instance with each message, so the cap is also what it reads each time. */
 	essential: 50,
@@ -39,6 +42,7 @@ export function subjectOf(channel: string, userId: string): string {
 
 export class MemoryStore {
 	private readonly file: string;
+	private snapshot: { identity: string; memories: Memory[] } | undefined;
 	constructor(instanceDir: string) {
 		this.file = join(instanceDir, "memory.json");
 	}
@@ -47,15 +51,41 @@ export class MemoryStore {
 		return readJsonFile<Memory[]>(this.file, []);
 	}
 
+	/** Essential memories and archive count from one snapshot, refreshed even after another process writes. */
+	contextFor(subject: string): { memories: Memory[]; archived: number } {
+		const own: Memory[] = [];
+		const shared: Memory[] = [];
+		let archived = 0;
+		for (const memory of this.contextSnapshot()) {
+			if (memory.about !== subject && memory.about !== SHARED) continue;
+			if (memory.archived === true) archived++;
+			// Copies keep callers from changing the cached snapshot.
+			else (memory.about === subject ? own : shared).push({ ...memory });
+		}
+		return { memories: [...own, ...shared], archived };
+	}
+
+	private contextSnapshot(): Memory[] {
+		const before = memoryIdentity(this.file);
+		if (before !== undefined && this.snapshot?.identity === before.key) return this.snapshot.memories;
+		this.snapshot = undefined;
+		if (before === undefined) return [];
+		const memories = this.list();
+		// Do not tag a read with a replacement's identity if a writer published during the read.
+		if (before.cacheable && memoryIdentity(this.file)?.key === before.key) this.snapshot = { identity: before.key, memories };
+		return memories;
+	}
+
 	/** What applies to this person: their own memories, then the shared ones; the archivio too with `archived`. */
 	forSubject(subject: string, archived = false): Memory[] {
-		const all = this.list().filter((m) => archived || m.archived !== true);
+		if (!archived) return this.contextFor(subject).memories;
+		const all = this.list();
 		return [...all.filter((m) => m.about === subject), ...all.filter((m) => m.about === SHARED && subject !== SHARED)];
 	}
 
 	/** How many of this person's memories, and of the shared ones, are in the archivio. */
 	archivedFor(subject: string): number {
-		return this.list().filter((m) => m.archived === true && (m.about === subject || m.about === SHARED)).length;
+		return this.contextFor(subject).archived;
 	}
 
 	/**
@@ -103,6 +133,16 @@ export class MemoryStore {
 			return all.filter((m) => m !== found);
 		});
 		return removed;
+	}
+}
+
+function memoryIdentity(file: string): { key: string; cacheable: boolean } | undefined {
+	try {
+		const stat = statSync(file, { bigint: true });
+		return { key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`, cacheable: stat.size <= BigInt(MAX_CACHED_BYTES) };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
 	}
 }
 

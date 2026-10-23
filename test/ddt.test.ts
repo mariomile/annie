@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { type Ddt, ddtCallReads, dueDayOf, validDdt } from "../src/core/ddt.ts";
 import { marginLines } from "../src/core/margins.ts";
@@ -358,8 +357,9 @@ describe("the brief and the routing", () => {
 
 	it("the instructions, the brief and its read-only thread", async () => {
 		const s = setup();
-		expect(DEFAULT_INSTRUCTIONS).toContain("fare i DDT per la merce che spedisce ai clienti (ddt:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("«fai la fattura differita di ottobre per Rossi», è sales_invoices con ddt e il mese");
+		expect(s.tool.description).toContain("unloads the magazzino: those goods are not unloaded again by hand");
+		expect(s.tool.description).toContain("the number stays used");
+		expect(s.tool.description).toContain("fattura differita di ottobre per Rossi» is sales_invoices (draft with ddt true and the month), not this tool");
 		expect(BRIEF_INSTRUCTION).toContain("ddt (list)");
 		expect(ddtCallReads({ op: "list" })).toBe(true);
 		expect(ddtCallReads({ op: "issue" })).toBe(false);

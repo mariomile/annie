@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { briefSpeaks, businessAgentReads, businessCallReads, type Figures, REPORT_LIMITS } from "../src/core/business-report.ts";
@@ -575,7 +574,6 @@ describe("business report: the brief, another agente, the export, the audit", ()
 		expect(businessCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bbusiness_report \(summary\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("vedere l'andamento dell'attività (business_report:");
 	});
 
 	it("another agente: summary and trend as numbers, never names, compare, top or files", async () => {
@@ -720,8 +718,6 @@ describe("business report: week 61 review fixes", () => {
 		expect(s.tool.description).toContain("«chi mi paga di più?», «chi sono i miei clienti migliori?» → not this tool: the clients tool, op top");
 		expect(s.tool.description).not.toContain("«chi sono i clienti che mi pagano di più?», «dove spendo di più?» → top");
 		expect(s.tool.description).toContain("«dove spendo di più?» → top");
-		expect(DEFAULT_INSTRUCTIONS).toContain("dove spende di più, il report per il commercialista; chi lo paga di più è clients con op top;");
-		expect(DEFAULT_INSTRUCTIONS).not.toContain("i clienti che pagano di più e dove spende");
 		expect(await s.run({ op: "top" })).toContain("Gli incassi vengono da 2 clienti");
 	});
 

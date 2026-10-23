@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { type BankImport, type BankMovement, bankAgentReads, bankCallReads, BANK_LIMITS, delDay, statementOf, validMovement } from "../src/core/bank.ts";
 import { longWords, rowFates } from "../src/core/bank-dedup.ts";
 import { matchMovements, type MatchInputs, nameWords, saysName, saysNumber } from "../src/core/bank-match.ts";
@@ -615,7 +614,6 @@ describe("the tool", () => {
 		expect(bankCallReads({ op: "summary" }) && !bankCallReads({ op: "confirm" })).toBe(true);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bbank_statement \(summary\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("leggere l'estratto conto della banca (bank_statement:");
 	});
 
 	it("audits only the op and how many: no description, amount, date or IBAN", async () => {
@@ -946,7 +944,6 @@ describe("week 60 review", () => {
 		const s = await setup();
 		expect(s.tool.description).toContain("«quanto è entrato a ottobre sul conto?»");
 		expect(s.tool.description).toContain("a bare «quanto ho incassato a ottobre?» is the invoices' or the clients'");
-		expect(DEFAULT_INSTRUCTIONS).toContain("le conferme degli incassi e dei pagamenti passano da bank_statement");
 		s.put("banca/o.csv", SIGNED_CSV);
 		await s.run({ op: "import", path: "banca/o.csv" });
 		expect(await s.run({ op: "confirm", ids: ["4"] })).toContain("un abbinamento confermato");

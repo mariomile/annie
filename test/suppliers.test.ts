@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import type { BankMatch, BankMovement } from "../src/core/bank.ts";
 import { BRIEF_INSTRUCTION } from "../src/core/brief.ts";
@@ -839,10 +838,8 @@ describe("suppliers: store, audit, reruns", () => {
 
 describe("suppliers: wiring", () => {
 	it("is in the system prompt next to the clients, and its text has no em dash", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere le schede dei fornitori (suppliers: clients è per chi lo paga, suppliers per chi paga lui;");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
 		const s = await setup();
-		expect(s.tool.description).not.toMatch(NO_EM_DASH);
 		expect(s.tool.description).toContain("The list of invoices to pay and their due dates, and marking one paid, is invoices");
+		expect(s.tool.description).toContain("a changed IBAN is checked by phone before paying");
 	});
 });

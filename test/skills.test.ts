@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { DurableEngine } from "../src/core/engine.ts";
 import { AnnieRuntime } from "../src/core/index.ts";
-import { parseSkillMd, SKILL_LIMITS, skillCatalog, skillCommand, SkillError, skillName, SkillStore, toSkillMd, withSkill } from "../src/core/skills.ts";
+import { parseSkillMd, SKILL_LIMITS, skillCatalog, skillCommand, SkillError, skillMenuEntry, skillName, SkillStore, toSkillMd, withSkill } from "../src/core/skills.ts";
 import { createSkillTools } from "../src/core/tools/skill-tools.ts";
 import { FAUX_MODEL, runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 
@@ -208,5 +208,29 @@ describe("skill: only a person's own words (ADR 0088)", () => {
 		// Active now: /nome from the board's turn still brings no steps.
 		expect(await send({ ...from("anna", "t1", "/chiusura-mese ottobre", "5"), origin: "scheduled" })).not.toContain("Fatture scadute");
 		expect(await send(from("anna", "t1", "/chiusura-mese ottobre", "6"))).toContain("Fatture scadute");
+	});
+});
+
+describe("a skill in Telegram's menu", () => {
+	const at = "2026-10-22T00:00:00.000Z";
+	const make = (name: string, description: string) => ({ name, description, body: "passi", createdBy: "web:1", createdAt: at, updatedAt: at });
+
+	it("is the command skillCommand reads back: dashes become underscores", () => {
+		const skill = make("chiusura-del-mese", "Quando chiedono di chiudere il mese");
+		expect(skillMenuEntry(skill)).toEqual({ command: "chiusura_del_mese", description: "Quando chiedono di chiudere il mese" });
+		expect(skillCommand("/chiusura_del_mese ottobre", [skill])?.skill).toBe(skill);
+	});
+
+	it("cuts a long line to 256 characters", () => {
+		const entry = skillMenuEntry(make("a".repeat(32), "x".repeat(1024)));
+		expect(entry.command).toBe("a".repeat(32));
+		expect(entry.description).toHaveLength(256);
+		expect(entry.description.endsWith("…")).toBe(true);
+	});
+
+	it("does not cut an emoji in half at the 256th character", () => {
+		const entry = skillMenuEntry(make("emoji", `${"a".repeat(254)}😀x`));
+		expect(entry.description).toBe(`${"a".repeat(254)}…`);
+		expect(entry.description).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
 	});
 });

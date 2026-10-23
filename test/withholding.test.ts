@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import type { BankMatch, BankMovement } from "../src/core/bank.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
@@ -33,7 +32,7 @@ import { type CuRecord, cuId, WITHHOLDING_LIMITS, withholdingAgentReads, withhol
 import { withheldDocs } from "../src/core/withholding-docs.ts";
 import { AGENT_RATE, briefYear, CU_DUE, cuDeadline, cuLate, F24_CODE, PROFESSIONAL_RATE, ritenutaOf, ruleOf } from "../src/core/withholding-rules.ts";
 import { WithholdingStore } from "../src/core/withholding-store.ts";
-import { bankReceipts, checkPayment, compareCu, cuList, verdictOf, yearSummary } from "../src/core/withholding-sums.ts";
+import { bankReceipts, compareCu, cuList, verdictOf, yearSummary } from "../src/core/withholding-sums.ts";
 
 // Synthetic identifiers only: checksum-valid fake partite IVA and a fake codice fiscale.
 const COMPANY = { name: "Studio Prova", vat: "00000010017", cf: "XQZKWJ80A41H501T" };
@@ -664,7 +663,6 @@ describe("ritenute: the brief", () => {
 		expect(withholdingCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bwithholding \(cu_list\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("seguire le ritenute d'acconto nel regime ordinario (withholding:");
 	});
 
 	it("quiet when the store or the scadenzario does not read, or for a forfettario", async () => {

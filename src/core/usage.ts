@@ -1,17 +1,26 @@
-import { mkdir, readFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, appendFile, truncate } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 import type { AuditLog } from "./audit.ts";
+import type { TurnUsage } from "./engine.ts";
+import { SerialQueue } from "./serial-queue.ts";
 
 export type UsageRecord = {
 	readonly at: string;
 	readonly provider: string;
 	readonly model: string;
-	readonly role: "extract" | "draft" | "classify" | "other";
+	/** "agent": a turn of an agente (ADR 0098); the others are the segreteria's steps. */
+	readonly role: "extract" | "draft" | "classify" | "agent" | "other";
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly estimatedUsd: number;
 	readonly submissionId?: string;
+	/** The agente and the chat of a turn (role "agent"). */
+	readonly instanceId?: string;
+	readonly threadId?: string;
+	/** Of a turn: the tools it called, in order, and how many times it called the model. */
+	readonly tools?: readonly string[];
+	readonly modelCalls?: number;
 };
 
 export type CostCaps = {
@@ -45,6 +54,9 @@ export function romeDayKey(date = new Date()): string {
 	}).format(date);
 }
 
+/** The record being written for each totals file: a ledger of the same tenant waits for it. */
+const recording = new SerialQueue();
+
 /**
  * Per-tenant daily usage ledger (append-only JSONL + day totals JSON).
  * Soft cap: warn; hard cap: reject new model calls (send-only Approva still allowed).
@@ -72,11 +84,44 @@ export class UsageLedger {
 		return totals[romeDayKey()] ?? 0;
 	}
 
-	async record(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
+	/** One record at a time per tenant in this process: the day totals are read, added to and written back. */
+	record(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
+		return recording.run(this.totalsPath(), () => this.write(rec, audit));
+	}
+
+	/** Every record written, oldest first: only whole lines, read between two records being written. */
+	records(): Promise<UsageRecord[]> {
+		return recording.run(this.totalsPath(), async () => parseRecords(await this.readLog(), this.usagePath()));
+	}
+
+	private async readLog(): Promise<string> {
+		try {
+			return await readFile(this.usagePath(), "utf8");
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return "";
+			throw err;
+		}
+	}
+
+	private async write(rec: UsageRecord, audit?: AuditLog): Promise<{ softExceeded: boolean; hardExceeded: boolean }> {
 		await this.ensure();
-		await appendFile(this.usagePath(), `${JSON.stringify(rec)}\n`, { mode: 0o600 });
+		const log = await this.readLog();
+		const whole = log.lastIndexOf("\n") + 1;
+		// A line cut short by a crash would glue itself to this record: drop it first.
+		if (whole < log.length) await truncate(this.usagePath(), Buffer.byteLength(log.slice(0, whole)));
 		const day = romeDayKey(new Date(rec.at));
 		const totals = await this.readTotals();
+		// A turn is billed once: a recovery that delivers it again finds it already on record (ADR 0098).
+		const billed =
+			rec.role === "agent" &&
+			rec.instanceId !== undefined &&
+			rec.submissionId !== undefined &&
+			parseRecords(log, this.usagePath()).some((r) => r.role === "agent" && r.instanceId === rec.instanceId && r.submissionId === rec.submissionId);
+		if (billed) {
+			const spent = totals[day] ?? 0;
+			return { softExceeded: spent >= this.caps.softUsdPerDay, hardExceeded: spent >= this.caps.hardUsdPerDay };
+		}
+		await appendFile(this.usagePath(), `${JSON.stringify(rec)}\n`, { mode: 0o600 });
 		totals[day] = (totals[day] ?? 0) + rec.estimatedUsd;
 		await writeFileAtomic(this.totalsPath(), `${JSON.stringify(totals, null, "\t")}\n`);
 		const spent = totals[day]!;
@@ -124,6 +169,20 @@ export class UsageLedger {
 	}
 }
 
+/** The whole lines of the ledger; a whole line that is not a record is an error, never skipped. */
+function parseRecords(log: string, path: string): UsageRecord[] {
+	const lines = log.slice(0, log.lastIndexOf("\n") + 1).split("\n");
+	lines.pop();
+	return lines.flatMap((line, i) => {
+		if (line === "") return [];
+		try {
+			return [JSON.parse(line) as UsageRecord];
+		} catch {
+			throw new Error(`${path}: line ${i + 1} is not a usage record`);
+		}
+	});
+}
+
 export const TELEGRAM_SOFT_CAP = `Limite soft di spesa · oggi
 
 Questo tenant ha superato circa 5 USD di modelli nel giorno civile.
@@ -139,3 +198,67 @@ Pratiche già in approvazione: puoi ancora Approvare una bozza già pronta (part
 
 export const TELEGRAM_HARD_CAP_REGEN = `Non posso rigenerare la bozza: tetto di spesa giornaliero raggiunto.
 Puoi Scartare, oppure Approvare la bozza già mostrata (v{n}) senza rigenerarla.`;
+
+export type TurnStats = {
+	readonly turns: number;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly costUsd: number;
+	/** Per agente: its turns and what they cost. */
+	readonly instances: readonly { readonly instanceId: string; readonly turns: number; readonly costUsd: number }[];
+	/** The tools called most, with how many times. */
+	readonly tools: readonly { readonly name: string; readonly calls: number }[];
+};
+
+/** What a turn took, in the tenant's ledger and its spend (ADR 0098). Never the text. */
+export async function recordTurn(
+	ledger: UsageLedger,
+	audit: AuditLog,
+	turn: { readonly instanceId: string; readonly threadId: string; readonly submissionId: string; readonly model: { readonly provider: string; readonly modelId: string } | undefined; readonly usage: TurnUsage },
+): Promise<void> {
+	const { usage } = turn;
+	await ledger.record(
+		{
+			at: new Date().toISOString(),
+			provider: turn.model?.provider ?? "",
+			model: turn.model?.modelId ?? "",
+			role: "agent",
+			inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+			outputTokens: usage.outputTokens,
+			estimatedUsd: usage.costUsd,
+			submissionId: turn.submissionId,
+			instanceId: turn.instanceId,
+			threadId: turn.threadId,
+			tools: usage.tools,
+			modelCalls: usage.modelCalls,
+		},
+		audit,
+	);
+}
+
+/** The turns of the agenti over the last `days`, from the ledger's records of role "agent" (ADR 0098). */
+export function turnStats(records: readonly UsageRecord[], now: Date, days = 7): TurnStats {
+	const since = now.getTime() - days * 24 * 3600_000;
+	const turns = records.filter((r) => r.role === "agent" && Date.parse(r.at) >= since);
+	const instances = new Map<string, { turns: number; costUsd: number }>();
+	const tools = new Map<string, number>();
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let costUsd = 0;
+	for (const r of turns) {
+		inputTokens += r.inputTokens;
+		outputTokens += r.outputTokens;
+		costUsd += r.estimatedUsd;
+		const instance = instances.get(r.instanceId ?? "") ?? { turns: 0, costUsd: 0 };
+		instances.set(r.instanceId ?? "", { turns: instance.turns + 1, costUsd: instance.costUsd + r.estimatedUsd });
+		for (const name of r.tools ?? []) tools.set(name, (tools.get(name) ?? 0) + 1);
+	}
+	return {
+		turns: turns.length,
+		inputTokens,
+		outputTokens,
+		costUsd,
+		instances: [...instances].map(([instanceId, v]) => ({ instanceId, ...v })).sort((a, b) => b.costUsd - a.costUsd),
+		tools: [...tools].map(([name, calls]) => ({ name, calls })).sort((a, b) => b.calls - a.calls).slice(0, 10),
+	};
+}

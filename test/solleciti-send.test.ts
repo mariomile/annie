@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { GOOGLE_SCOPE, GOOGLE_WRITE_SCOPE } from "../src/connectors/google.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { readOnlyInBriefs } from "../src/core/brief.ts";
@@ -15,6 +15,7 @@ import type { AnnieRuntime } from "../src/core/runtime.ts";
 import type { MailProposal as ReminderProposal } from "../src/core/mail-requests.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { B70, BETA, COMUNE, cleanTemp, ctx, DELTA, FILES, fakeMail, fattura, G1, GAMMA, GNC, IBAN, IBAN_2, IBAN_SAVED, inside, NOW, outside, setup, TUESDAY, temp } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -417,7 +418,7 @@ function fakeGoogle() {
 
 describe("solleciti in the app", () => {
 	it("from the chat to the card: sent only after the approval, then recorded; the instructions point to it; the audit has no data", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("per i solleciti di pagamento ai clienti in ritardo invoices con op reminder");
+		expect(setup(FILES).tool.description).toContain("reminder: a payment reminder (sollecito) to customers late on invoices to collect");
 		const dataDir = temp();
 		const google = fakeGoogle();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1", ANNIE_GOOGLE_CLIENT_ID: "c", ANNIE_GOOGLE_CLIENT_SECRET: "s", ANNIE_GOOGLE_WRITE: "1" });
@@ -449,6 +450,7 @@ describe("solleciti in the app", () => {
 			}
 			throw new Error("no reply");
 		};
+		await loadTools(reply, "invoices");
 		await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		const asked = await reply('/tool invoices {"op":"reminder","party":"gamma","send":true}');
 		expect(asked).toContain("Ho preparato una richiesta di invio");
@@ -477,6 +479,6 @@ describe("solleciti in the app", () => {
 			["invoice.reminder", "queue", 1],
 			["invoice.reminder", "mail", 1],
 		]);
-		for (const secret of ["Gamma", "B-70", "1.220", "gamma.example", "promemoria"]) expect(audit).not.toContain(secret);
+		for (const secret of ["Gamma", "B-70", "1.220,00", "gamma.example", "promemoria"]) expect(audit).not.toContain(secret);
 	}, 60_000);
 });

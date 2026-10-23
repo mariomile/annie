@@ -7,6 +7,7 @@ import { auth, type OAuthClientProvider, type OAuthDiscoveryState } from "@model
 import { OAuthError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { TenantSecrets } from "../core/secrets.ts";
+import { SerialQueue } from "../core/serial-queue.ts";
 import { publicAddress } from "../core/web-fetch.ts";
 
 /**
@@ -44,15 +45,7 @@ export class McpOAuthError extends Error {
  * Writes to one secret, one at a time across every provider of the process: a background refresh
  * and a sign-in started meanwhile never lose each other's change.
  */
-const queues = new Map<string, Promise<unknown>>();
-function serialized<T>(key: string, work: () => Promise<T>): Promise<T> {
-	const before = queues.get(key) ?? Promise.resolve();
-	const run = before.then(work, work);
-	const tail = run.catch(() => undefined);
-	queues.set(key, tail);
-	void tail.then(() => queues.get(key) === tail && queues.delete(key));
-	return run;
-}
+const writes = new SerialQueue();
 
 type ProviderOptions = {
 	readonly state?: string;
@@ -157,7 +150,7 @@ export class StoredOAuthProvider implements OAuthClientProvider {
 	}
 
 	private change(next: (saved: Saved) => Saved): Promise<void> {
-		return serialized(`${this.secrets.tenantId}/${this.secret}`, async () => {
+		return writes.run(`${this.secrets.tenantId}/${this.secret}`, async () => {
 			const value = next(await this.load());
 			if (Object.keys(value).length === 0) await this.secrets.delete(this.secret);
 			else await this.secrets.set(this.secret, JSON.stringify(value));
@@ -321,7 +314,7 @@ export class McpOAuth {
 
 	async forget(instanceId: string, connectorId: string): Promise<void> {
 		const secret = mcpOAuthSecret(instanceId, connectorId);
-		await serialized(`${this.options.secrets.tenantId}/${secret}`, () => this.options.secrets.delete(secret));
+		await writes.run(`${this.options.secrets.tenantId}/${secret}`, () => this.options.secrets.delete(secret));
 		for (const [state, p] of this.pending) if (p.instanceId === instanceId && p.connectorId === connectorId) this.pending.delete(state);
 	}
 

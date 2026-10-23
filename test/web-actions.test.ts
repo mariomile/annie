@@ -301,12 +301,12 @@ describe("review fixes: what is sent is what was approved", () => {
 		expect(Date.now() - started).toBeLessThan(500);
 	});
 
-	it("cookies follow Domain and Secure", () => {
+	it("cookies stay with the host that set them and follow Secure", () => {
 		const jar = new CookieJar();
 		jar.take(new URL("https://www.x.it/c"), ["sid=1; Domain=x.it; Secure", "own=2", "bad=3; Domain=other.it"]);
-		expect(jar.header(new URL("https://forms.x.it/s"))).toBe("sid=1");
-		expect(jar.header(new URL("http://forms.x.it/s"))).toBeUndefined();
-		expect(jar.header(new URL("https://www.x.it/s"))).toBe("sid=1; own=2; bad=3");
+		expect(jar.header(new URL("https://forms.x.it/s"))).toBeUndefined();
+		expect(jar.header(new URL("http://www.x.it/s"))).toBe("own=2");
+		expect(jar.header(new URL("https://www.x.it/s"))).toBe("sid=1; own=2");
 	});
 
 	it("a 307 to another origin never carries the form; a failure after the POST is uncertain, not 'not sent'; a changed form is not sent", async () => {

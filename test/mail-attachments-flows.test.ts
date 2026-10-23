@@ -22,6 +22,7 @@ import { createQuoteTools, type QuoteEvent } from "../src/core/tools/quote-tools
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { B70, BETA, cleanTemp, FILES, fakeMail, fattura, G1, G2, GAMMA, inside, outside, type Party, setup, TUESDAY } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const dirs: string[] = [];
 const closers: (() => Promise<void>)[] = [];
@@ -494,6 +495,7 @@ describe("attachments in the app, through the approval card", () => {
 			}
 			throw new Error("no outcome");
 		};
+		await loadTools(reply, "invoices", "quotes");
 		await reply('/tool invoices {"op":"set_company","vat":"00000520031","name":"Beta Ristorazione Srl","address":"Via Roma 1, Milano"}');
 		const year = todayIn(config.timeZone).slice(0, 4);
 		const decide = async (id: string, decision: string) => (await api(`/api/instances/${config.instanceId}/google-actions/${id}/decision`, { decision })).action;

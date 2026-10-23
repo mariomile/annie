@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { averageSpend, isTaxName, type Movement, TAX_PAID_PERCENT, TAX_TWIN_DAYS, TAX_VOCI_PERCENT, taxDuplicates, taxFlows } from "../src/core/cashflow-sources.ts";
 import { CashflowStore } from "../src/core/cashflow-store.ts";
@@ -31,6 +31,7 @@ import { createTaxTools, type TaxEvent } from "../src/core/tools/tax-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { BETA, fattura, GAMMA } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -1060,11 +1061,13 @@ describe("taxes: the second review", () => {
 
 describe("taxes in the app", () => {
 	it("is offered to every instance, the instructions say when to use it and the cashflow voci, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("stimare le tasse (taxes, nel forfettario; nell'ordinario per l'IVA usa vat_settlement:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("un F24 che la persona vuole fissare con il suo importo va in cashflow con op add_item");
+		const description = (await setup()).tool.description;
+		expect(description).toContain("nell'ordinario l'IVA è vat_settlement");
+		expect(description).toContain("Fixed F24 voci the person adds in the cashflow are kept there; this tool estimates.");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		await loadTools(reply, "taxes");
 		expect(await reply('/tool taxes {"op":"set_profile","coefficient":78,"pension":"gestione separata","last_year_imposta":"6543,21"}')).toContain("Fatto, profilo delle tasse salvato:");
 		expect(await reply('/tool taxes {"op":"calendar"}')).toContain("Il prossimo F24");
 		expect(await reply('/tool taxes {"op":"export"}')).toContain("Salvato tasse/tasse-");

@@ -1,6 +1,6 @@
 # Stato del progetto e cose da fare
 
-Aggiornato al 19 ottobre 2026.
+Aggiornato al 23 ottobre 2026.
 
 ## Dove siamo
 
@@ -14,6 +14,14 @@ Su `main` ci sono le settimane da 1 a 75, e la CI controlla ogni PR con typechec
 - Settimana 4 (branch `week-4`): segreteria funzionante end-to-end. `pnpm dev:segreteria` con Gmail e HubSpot live, pulsanti su Telegram, estrazione con Haiku e bozza con Sonnet sotto i controlli della CI, avviso doppioni, giudice notturno sulla pipeline vera ([week4.md](week4.md)).
 
 Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](architettura.md).
+
+### Affidabilità e prestazioni: Integrazione locale del 22 ottobre
+
+Il ramo `feat/agent-performance` integra i PR #162–#170 e aggiunge cache del contesto di memoria, contatori della console con una sola richiesta, recupero dei provider locali, verifiche degli esiti e correzioni della sandbox su macOS. Il [rapporto con misure e verifiche](performance-2026-10-22.md) distingue questa integrazione locale da merge, pubblicazione e app installata, e descrive le differenze ancora aperte rispetto a Grok Bot.
+
+### Controllo del lavoro e browser: Sviluppo locale del 23 ottobre
+
+Lo stesso ramo aggiunge progressi live, Stop persistente per conversazione, storico di task e automazioni e browser personale con controllo umano e cookie salvati. Il [rapporto di verifica](next-level-2026-10-23.md) descrive risultati, revisioni e limiti. Le decisioni sono negli ADR [0105](adr/0105-stato-stop-e-storico-del-lavoro.md) e [0106](adr/0106-browser-personale-e-controllo-umano.md). Queste modifiche locali non attestano pubblicazione o aggiornamento dell'app installata.
 
 ## Cose da fare
 
@@ -80,7 +88,7 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Agenti: più agenti per tenant, ognuno con nome, emoji, compito e tono, oltre a memoria, task, file e bot suoi; pagina Agenti e nuovo agente da un modello ([ADR 0041](adr/0041-agenti.md))
 - [x] Agenti che si scrivono: un agente chiede a un altro con `agent_message`, se l'owner lo permette, e la risposta torna nella chat di partenza ([ADR 0042](adr/0042-agenti-che-si-scrivono.md))
 - [x] Notizie: i titoli recenti dai feed dei giornali, per argomento, giornale o sezione, di oggi o di ieri, con fonte, ora e link (settimana 43, [week43.md](week43.md), [ADR 0043](adr/0043-notizie.md))
-- [x] Browser interno: il browser della conversazione si vede e si guida da un pannello accanto alla chat della console ([ADR 0044](adr/0044-browser-interno.md)); TODO: clic sulla foto
+- [x] Browser interno: il browser della conversazione si vede e si guida da un pannello accanto alla chat della console ([ADR 0044](adr/0044-browser-interno.md)), e si clicca sulla foto della pagina, con ogni clic e ogni caricamento di file rifiutato nell'audit ([ADR 0103](adr/0103-clic-sulla-foto-del-browser.md))
 - [x] Schermo: un desktop Linux con Firefox per agente, guidato con Cua (guarda, clicca, scrive, tasti, scorre, apre programmi e indirizzi); senza internet di default, l'owner lo accende in Impostazioni ([ADR 0045](adr/0045-schermo-cua.md)). Serve `ANNIE_DESKTOP` e l'immagine di Cua ([chiavi](chiavi.md) §19)
 - [x] Partita IVA e codice fiscale: controllo formale sempre, e con il VIES attiva o no con nome, indirizzo e ora del controllo (settimana 44, [week44.md](week44.md), [ADR 0047](adr/0047-partita-iva.md))
 - [x] Date e scadenze: giorni e giorni lavorativi, scadenze delle fatture anche fine mese, festivi con il 4 ottobre, età (settimana 45, [week45.md](week45.md), [ADR 0048](adr/0048-date-e-scadenze.md))
@@ -128,10 +136,15 @@ Documenti di riferimento: [piano iniziale](piano-iniziale.md), [architettura](ar
 - [x] Board: schede che vengono dopo altre e partono da sole quando quelle sono fatte, con com'è finita ciascuna ([ADR 0076](adr/0076-schede-che-vengono-dopo.md))
 - [x] Board: l'avviso di una scheda da rivedere su Telegram e WhatsApp ha «Approva», che la chiude dal telefono ([ADR 0079](adr/0079-approvare-dal-telefono.md))
 - [x] Board: il lunedì mattina l'owner riceve su Telegram o WhatsApp la settimana della board in poche righe: chiuse, aperte, in ritardo, da rivedere, e lo stesso riepilogo a richiesta in chat con `board_summary` ([ADR 0081](adr/0081-riepilogo-settimanale.md))
-- [x] Skill: procedure salvate di un agente, con un nome che è anche il comando (`/chiusura-del-mese`), scritte dalla chat come bozze che la persona attiva con `/attiva-skill`, o salvate dalla console, aperte da sole quando servono, importate ed esportate come SKILL.md ([ADR 0059](adr/0059-skill.md)), con la pagina «Skill» nella console; da fare il menu di Telegram
+- [x] Skill: procedure salvate di un agente, con un nome che è anche il comando (`/chiusura-del-mese`), scritte dalla chat come bozze che la persona attiva con `/attiva-skill`, o salvate dalla console, aperte da sole quando servono, importate ed esportate come SKILL.md ([ADR 0059](adr/0059-skill.md)), con la pagina «Skill» nella console
+- [x] Skill nel menu di Telegram: una voce per skill accanto a `/modello` (`/chiusura_del_mese`), impostata quando il bot è collegato ([ADR 0104](adr/0104-skill-nel-menu-di-telegram.md))
 - [x] Memoria con archivio: le memorie essenziali con ogni messaggio, i dettagli in un archivio di 1000 per persona che Annie cerca quando servono; con le essenziali piene la più vecchia va in archivio invece di un rifiuto ([ADR 0062](adr/0062-memoria-con-archivio.md))
 - [x] Stanze: una conversazione della console fra una persona e da 2 a 5 agenti, che chiama chi le serve con @nome (o @tutti); ogni agente riceve quello che si è perso, e può chiamarne un altro, al più 3 volte di fila ([ADR 0063](adr/0063-stanze.md))
 - [x] Squadre pronte: dalla pagina Agenti, tre agenti con un compito ciascuno (Contenuti, Vendite, Amministrazione) che si scrivono fra loro, con una stanza; chi coordina divide il lavoro anche in sotto-schede ([ADR 0068](adr/0068-squadre-pronte.md))
+- [x] Agente misurabile: l'ora e la memoria a ogni richiesta al modello, non nel testo salvato ([ADR 0097](adr/0097-contesto-del-turno.md)); per ogni turno token, costo e strumenti nel registro dei costi, con `pnpm annie usage` per gli ultimi 7 giorni ([ADR 0098](adr/0098-quanto-costa-un-turno.md)); eval dell'agente generale, che ogni notte misura col modello vero se sceglie lo strumento giusto ([ADR 0099](adr/0099-eval-dell-agente.md)). Serve `ANNIE_JUDGE_MODEL_KEY` tra i secret del repo
+- [x] I 25 registri dell'attività non sono più offerti al modello a ogni richiesta: li carica con `tool_search` quando un turno li usa, circa 35 mila token in meno per tutti gli altri ([ADR 0100](adr/0100-strumenti-caricati-su-richiesta.md))
+- [x] Le istruzioni dei registri stanno nelle descrizioni dei loro strumenti: nelle istruzioni resta una riga sola che rimanda a `tool_search`, da 19.775 a 7.331 caratteri ([ADR 0101](adr/0101-istruzioni-dei-registri-nei-loro-strumenti.md))
+- [x] Console divisa per pagina: `src/web/ui/app.js` (circa 5.900 righe) è ora un modulo ES per pagina (le pagine non si importano a vicenda), una tabella delle pagine in `shell.js` e un `common.js` che non importa nulla; il server serve i file elencando la cartella. Una pagina nuova: file, riga in `PAGES`, riga in `SHELL` ([ADR 0102](adr/0102-console-un-modulo-per-pagina.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo

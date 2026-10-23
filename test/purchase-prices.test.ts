@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -16,7 +15,6 @@ import { agentThreshold, increasesOf, priceWords, purchaseCallReads, purchaseRow
 import { PurchaseStore } from "../src/core/purchase-store.ts";
 import { findStockItem, stockUnit } from "../src/core/stock.ts";
 import { StockStore } from "../src/core/stock-store.ts";
-import { stateOf } from "../src/core/stock-sums.ts";
 import { createPurchasePriceTools, type PurchaseEvent } from "../src/core/tools/purchase-price-tools.ts";
 import { createInvoiceTools } from "../src/core/tools/invoice-tools.ts";
 import { createStockTools, type StockEvent } from "../src/core/tools/stock-tools.ts";
@@ -527,9 +525,8 @@ describe("purchase_prices", () => {
 	});
 
 	it("the instructions route selling prices, prices paid and quantities", () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("il listino sono i prezzi a cui vende, purchase_prices quello che paga lui, il magazzino le quantità");
-		expect(DEFAULT_INSTRUCTIONS).toContain("sapere quanto paga quello che compra (purchase_prices:");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
+		const s = setup();
+		expect(s.tool.description).toContain("listino is what the person sells at, purchase_prices what they pay, stock the quantities");
 	});
 });
 

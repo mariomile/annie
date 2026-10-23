@@ -30,38 +30,173 @@ export type WebFetchOptions = {
 	readonly cookies?: CookieJar;
 };
 
+/** One cookie as a jar keeps it and a saved profile stores it (plain JSON). */
+export type CookieEntry = {
+	readonly name: string;
+	readonly value: string;
+	/** Always the host that set it. */
+	readonly domain: string;
+	/** false: also its subdomains (it named its own host as Domain). */
+	readonly hostOnly: boolean;
+	readonly path: string;
+	readonly secure: boolean;
+	/** Epoch milliseconds. */
+	readonly expires: number;
+};
+
+const MAX_COOKIES = 50;
+const MAX_COOKIE_SIZE = 4096;
+const DAY_MS = 86_400_000;
+/** Without Max-Age or Expires a cookie would last as long as the browser: here at most 30 days. */
+const SESSION_MS = 30 * DAY_MS;
+const MAX_LIFE_MS = 400 * DAY_MS;
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+const CONTROL = /[\u0000-\u001f\u007f;]/;
+
 /**
- * Cookies of one visit (web_submit), nothing kept after it. A cookie goes back to the host that
- * set it, or to the domain it names when that host is under it; a Secure one only over https.
+ * Cookies of one visit (web_submit) or of one browser, or a person's saved sign-ins (a profile).
+ * A cookie goes back only to the host that set it (to its subdomains too when it named that very
+ * host as Domain), on its path, a Secure one only over https. Without a public suffix list a parent
+ * domain cannot be told from a suffix like "co.uk", so a Domain above the host is not trusted: the
+ * cookie stays the host's own, never its siblings'. Bounded: 50 cookies of 4 KB, none past 400 days.
  */
 export class CookieJar {
-	private readonly cookies = new Map<string, { value: string; domain: string; hostOnly: boolean; secure: boolean }>();
+	private readonly cookies = new Map<string, CookieEntry>();
+
+	/** From `snapshot()` (a saved profile). Anything malformed throws: a damaged file gives no cookies, never wrong ones. */
+	constructor(snapshot?: unknown) {
+		if (snapshot === undefined) return;
+		if (!Array.isArray(snapshot) || snapshot.length > MAX_COOKIES) throw new Error("cookie salvati non validi");
+		const now = Date.now();
+		for (const raw of snapshot) {
+			const cookie = cookieEntry(raw);
+			if (cookie === undefined) throw new Error("cookie salvati non validi");
+			// A clock moved back does not stretch a cookie past the limit.
+			if (cookie.expires > now) this.cookies.set(cookieKey(cookie), { ...cookie, expires: Math.min(cookie.expires, now + MAX_LIFE_MS) });
+		}
+	}
 
 	header(url: URL): string | undefined {
 		const host = url.hostname.toLowerCase();
-		const out = [...this.cookies]
-			.filter(([, c]) => (c.hostOnly ? host === c.domain : host === c.domain || host.endsWith(`.${c.domain}`)) && (!c.secure || url.protocol === "https:"))
-			.map(([key, c]) => `${key.slice(key.indexOf(" ") + 1)}=${c.value}`);
+		const now = Date.now();
+		const out = [...this.cookies.values()]
+			.filter((c) => c.expires > now && reaches(c, host) && pathMatches(url.pathname, c.path) && (!c.secure || url.protocol === "https:"))
+			// Longer paths first, as browsers send them.
+			.sort((a, b) => b.path.length - a.path.length)
+			.map((c) => `${c.name}=${c.value}`);
 		return out.length === 0 ? undefined : out.join("; ");
 	}
 
+	/** The answer's Set-Cookie lines (headers only, never the body). A malformed or refused cookie is skipped. */
 	take(url: URL, setCookies: readonly string[]): void {
 		const host = url.hostname.toLowerCase();
+		const https = url.protocol === "https:";
+		const now = Date.now();
 		for (const line of setCookies) {
-			const [pair = "", ...attrs] = line.split(";");
+			const [pair = "", ...parts] = line.split(";");
 			const eq = pair.indexOf("=");
 			if (eq <= 0) continue;
 			const name = pair.slice(0, eq).trim();
 			const value = pair.slice(eq + 1).trim();
-			const attr = (key: string) => attrs.map((a) => a.trim()).find((a) => a.toLowerCase().startsWith(key));
-			const named = attr("domain=")?.slice(7).trim().toLowerCase().replace(/^\./, "");
-			// A domain the host is not under (or a bare suffix like "it") is ignored: host-only.
-			const domain = named !== undefined && named.includes(".") && (host === named || host.endsWith(`.${named}`)) ? named : host;
-			const key = `${domain} ${name}`;
-			if (/max-age=0\b|expires=thu, 01 jan 1970/i.test(line) || value === "") this.cookies.delete(key);
-			else if (this.cookies.size < 50 && name.length + value.length < 4096) this.cookies.set(key, { value, domain, hostOnly: named === undefined || domain === host && named !== host, secure: attr("secure") !== undefined });
+			// The last of each attribute counts.
+			const attrs = new Map<string, string>();
+			for (const part of parts) {
+				const at = part.indexOf("=");
+				attrs.set((at < 0 ? part : part.slice(0, at)).trim().toLowerCase(), at < 0 ? "" : part.slice(at + 1).trim());
+			}
+			const named = attrs.get("domain")?.toLowerCase().replace(/^\./, "");
+			let hostOnly = true;
+			if (named !== undefined && named !== "" && named !== host) {
+				// A domain the host is not under is not its to set; a parent one is kept for this host only.
+				if (!host.endsWith(`.${named}`)) continue;
+			} else if (named === host && isIP(host.replace(/^\[|\]$/g, "")) === 0) hostOnly = false;
+			const given = attrs.get("path");
+			const path = given?.startsWith("/") ? given : defaultPath(url.pathname);
+			const secure = attrs.has("secure");
+			// Only https sets a Secure cookie; the prefixes promise what browsers check (RFC 6265bis).
+			if (secure && !https) continue;
+			const lower = name.toLowerCase();
+			if (lower.startsWith("__secure-") && !secure) continue;
+			if (lower.startsWith("__host-") && (!secure || attrs.has("domain") || given !== "/")) continue;
+			// Plain http neither replaces nor shadows a live Secure cookie of that name: refused wherever a
+			// request would carry both (RFC 6265bis 5.7, a host-only cookie kept to its own host).
+			const scope = { domain: host, hostOnly, path };
+			if (!https && [...this.cookies.values()].some((c) => c.secure && c.expires > now && c.name === name && overlaps(c, scope))) continue;
+			const key = `${host};${path};${name}`;
+			const maxAge = attrs.get("max-age");
+			const expiresAt = Date.parse(attrs.get("expires") ?? "");
+			const expires = Math.min(maxAge !== undefined && /^-?\d+$/.test(maxAge) ? now + Number(maxAge) * 1000 : Number.isNaN(expiresAt) ? now + SESSION_MS : expiresAt, now + MAX_LIFE_MS);
+			if (expires <= now || value === "") {
+				this.cookies.delete(key);
+				continue;
+			}
+			const cookie = cookieEntry({ name, value, domain: host, hostOnly, path, secure, expires });
+			if (cookie === undefined) continue;
+			// A renewed cookie goes to the end: when the jar is full the oldest goes first.
+			this.cookies.delete(key);
+			if (this.cookies.size >= MAX_COOKIES) for (const [old, c] of this.cookies) if (c.expires <= now) this.cookies.delete(old);
+			if (this.cookies.size >= MAX_COOKIES) this.cookies.delete(this.cookies.keys().next().value as string);
+			this.cookies.set(key, cookie);
 		}
 	}
+
+	/** The live cookies, as plain JSON, for saving. */
+	snapshot(): readonly CookieEntry[] {
+		const now = Date.now();
+		return [...this.cookies.values()].filter((c) => c.expires > now);
+	}
+
+	/** Sites that have live cookies here. */
+	hosts(): readonly string[] {
+		return [...new Set(this.snapshot().map((c) => c.domain))].sort();
+	}
+}
+
+function cookieKey(c: CookieEntry): string {
+	return `${c.domain};${c.path};${c.name}`;
+}
+
+/** A well-formed cookie, or undefined: the same rules for an answer's cookie and a saved one. */
+function cookieEntry(raw: unknown): CookieEntry | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const { name, value, domain, hostOnly, path, secure, expires } = raw as Record<string, unknown>;
+	if (typeof name !== "string" || !COOKIE_NAME.test(name)) return undefined;
+	if (typeof value !== "string" || value === "" || CONTROL.test(value) || name.length + value.length > MAX_COOKIE_SIZE) return undefined;
+	if (typeof domain !== "string" || domain.length > 253 || !canonicalHost(domain)) return undefined;
+	if (typeof path !== "string" || !path.startsWith("/") || path.length > 1024 || CONTROL.test(path)) return undefined;
+	if (typeof hostOnly !== "boolean" || typeof secure !== "boolean" || typeof expires !== "number" || !Number.isFinite(expires)) return undefined;
+	return { name, value, domain, hostOnly, path, secure, expires };
+}
+
+function canonicalHost(host: string): boolean {
+	try {
+		return new URL(`http://${host}/`).hostname === host;
+	} catch {
+		return false;
+	}
+}
+
+/** RFC 6265 5.1.4: the request path up to its last "/", "/" when there is none past the first. */
+function defaultPath(path: string): string {
+	const last = path.lastIndexOf("/");
+	return !path.startsWith("/") || last <= 0 ? "/" : path.slice(0, last);
+}
+
+function pathMatches(requested: string, path: string): boolean {
+	return requested === path || (requested.startsWith(path) && (path.endsWith("/") || requested[path.length] === "/"));
+}
+
+type CookieScope = Pick<CookieEntry, "domain" | "hostOnly" | "path">;
+
+/** The cookie goes to this host: its own, or one under it when it named its host as Domain. */
+function reaches(c: CookieScope, host: string): boolean {
+	return host === c.domain || (!c.hostOnly && host.endsWith(`.${c.domain}`));
+}
+
+/** Some request would carry both cookies: a host both go to and a path both match. */
+function overlaps(a: CookieScope, b: CookieScope): boolean {
+	return (reaches(a, b.domain) || reaches(b, a.domain)) && (pathMatches(a.path, b.path) || pathMatches(b.path, a.path));
 }
 
 export type WebPage = {

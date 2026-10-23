@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import type { BankMatch, BankMovement } from "../src/core/bank.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
@@ -469,9 +468,7 @@ describe("budgets: the brief and another agente", () => {
 		expect(budgetCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool [^\n]*\bbudgets \(status\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(DEFAULT_INSTRUCTIONS).toContain("seguire budget e obiettivi (budgets:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("l'andamento è business_report");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
+		expect(s.tool.description).toContain("How the business is doing (fatturato, margine, a period against another) is business_report: budgets is only for the limits and ta");
 	});
 
 	it("another agente: totals and percents, never a supplier's name; nothing else", async () => {

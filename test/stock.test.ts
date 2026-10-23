@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -396,9 +395,8 @@ describe("il magazzino: sottoscorta, elenco, togliere, file", () => {
 		const [guarded] = readOnlyInBriefs([tool], async () => true);
 		expect(await guarded?.execute({ op: "add_item", item: "Viti" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
 		expect(await guarded?.execute({ op: "list" }, fresh())).toContain("Il magazzino è vuoto");
-		expect(DEFAULT_INSTRUCTIONS).toContain("il listino sono i prezzi a cui vende, purchase_prices quello che paga lui, il magazzino le quantità");
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere il magazzino (stock:");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(NO_EM_DASH);
+		expect(tool.description).toContain("price_list is the prices, stock the quantities.");
+		expect(tool.description).toContain("an adjustment, the history stays as it was");
 	});
 });
 

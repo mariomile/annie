@@ -1,7 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
+import { recordTurn, UsageLedger } from "./usage.ts";
+import { SerialQueue } from "./serial-queue.ts";
 import { ConnectorActionStore } from "./connector-actions.ts";
-import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession } from "./engine.ts";
+import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession, EngineRunEvent, EngineRunState, TurnUsage } from "./engine.ts";
+import { RunStore, isActiveRun, runId, runRequestId, type RunRecord, type RunEvent, type RunFilter } from "./run-store.ts";
+export type { RunRecord, RunEvent, RunFilter, RunStatus } from "./run-store.ts";
 import type { TurnOrigin } from "./turn-origin.ts";
 import { IMAGE_LIMITS, imageProblem, imageType } from "./images.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./errors.ts";
@@ -10,6 +14,7 @@ import { InstanceLock } from "./lock.ts";
 import { Outbox, type OutboxEntry } from "./outbox.ts";
 import { MemoryStore, memoryNote, Participants, SHARED, subjectOf } from "./memory.ts";
 import { ListStore, listsLine } from "./lists.ts";
+import { nowLine } from "./turn-context.ts";
 import { InvoiceStore } from "./invoice-store.ts";
 import { QuoteStore } from "./quote-store.ts";
 import { ExpenseStore } from "./expense-store.ts";
@@ -33,7 +38,7 @@ import { OrderStore } from "./order-store.ts";
 import { StockStore } from "./stock-store.ts";
 import { RecurringStore } from "./recurring-invoice-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
-import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, tenantDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
@@ -98,7 +103,7 @@ export type Reply = {
 } & (
 	/** `model`: the one that wrote the answer, when the engine says. */
 	| { readonly status: "answered"; readonly text: string; readonly model?: ModelSelection }
-	| { readonly status: "unanswered"; readonly reason: string }
+	| { readonly status: "unanswered"; readonly reason: string; readonly cancelled?: true }
 	/** A file of the instance's workspace to send to the thread. */
 	| { readonly status: "file"; readonly path: string; readonly caption?: string }
 );
@@ -143,6 +148,7 @@ export class AnnieRuntime {
 	readonly registry: TenantRegistry;
 	private readonly instances = new Map<string, Promise<AnnieInstance>>();
 	private readonly listeners = new Set<(reply: Reply) => void>();
+	private readonly runListeners = new Set<(event: RunEvent) => void>();
 	private readonly participantStores = new Map<string, Participants>();
 	/** Instances being deleted: nothing opens them meanwhile. */
 	private readonly removing = new Set<string>();
@@ -387,8 +393,40 @@ export class AnnieRuntime {
 		return opening;
 	}
 
-	async submit(request: SubmitRequest): Promise<{ submissionId: string }> {
+	async submit(request: SubmitRequest): Promise<{ submissionId: string; runId: string }> {
 		return (await this.openInstance(request.tenantId, request.instanceId)).submit(request);
+	}
+
+	/** Read persisted history without starting an engine. Scope filters precede the limit. */
+	async listRuns(tenant: string, instance: string, filter: RunFilter = {}): Promise<RunRecord[]> {
+		await this.registry.getInstance(tenant, instance);
+		return this.runStore(tenant, instance).list(filter);
+	}
+
+	currentRuns(tenant: string, instance: string, thread: { channel: string; threadId: string }): Promise<RunRecord[]> {
+		return this.listRuns(tenant, instance, { ...thread, statuses: ["queued", "running"], limit: 200 });
+	}
+
+	async idle(tenant: string, instance: string): Promise<void> {
+		await (await this.openInstance(tenant, instance)).idle();
+	}
+
+	/** Caller must authorize the exact conversation, as for reading its messages. */
+	async stopConversation(tenant: string, instance: string, thread: { channel: string; threadId: string }): Promise<{ cancelled: number; runs: RunRecord[] }> {
+		return (await this.openInstance(tenant, instance)).stopConversation(thread);
+	}
+
+	onRunEvent(listener: (event: RunEvent) => void): () => void {
+		this.runListeners.add(listener);
+		return () => this.runListeners.delete(listener);
+	}
+
+	private runStore(tenant: string, instance: string): RunStore {
+		return new RunStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)), (event) => {
+			for (const listener of this.runListeners) {
+				try { listener(event); } catch (error) { console.error(`annie: run listener failed: ${String(error)}`); }
+			}
+		});
 	}
 
 	async chatModel(tenant: string, instance: string, channel: string, threadId: string): Promise<ModelSelection | undefined> {
@@ -403,13 +441,13 @@ export class AnnieRuntime {
 		tenant: string,
 		instance: string,
 		request: { channel: string; threadId: string; text: string; messageId: string; scheduleId: string; onBehalfOf: { channel: string; userId: string } | undefined; kind?: "brief" | "watch" | "automation" },
-	): Promise<{ submissionId: string }> {
+	): Promise<{ submissionId: string; runId: string }> {
 		return (await this.openInstance(tenant, instance)).submitScheduled(request);
 	}
 
 	/** Something that happened for a conversation (the outcome of an approved action), for the instance to report there. */
 	/** `origin`: a notice from the instance's own work (default), or another agente's answer (`agent`). */
-	async submitNotice(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean>; origin?: "notice" | "agent" }): Promise<{ submissionId: string }> {
+	async submitNotice(tenant: string, instance: string, request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean>; origin?: "notice" | "agent" }): Promise<{ submissionId: string; runId: string }> {
 		return (await this.openInstance(tenant, instance)).submitNotice(request);
 	}
 
@@ -552,14 +590,19 @@ export class AnnieRuntime {
 		const lock = InstanceLock.acquire(lockFile(this.options.dataDir, record.tenantId, record.id), `${record.tenantId}/${record.id}`);
 		let session: EngineSession;
 		let toolSet: ToolSet = [];
+		const runs = this.runStore(record.tenantId, record.id);
 		// Its own instructions, then who it is (ADR 0041), then its skills as they are now (ADR 0059).
 		const own = withPersona(record.instructions, record.name, record.persona);
 		const skills = this.skills(record.tenantId, record.id);
 		const instructions = () => `${own === undefined || own === "" ? "" : `${own}\n\n`}${skillCatalog(skills.list())}`;
+		const memory = this.memory(record.tenantId, record.id);
+		const participants = this.participants(record.tenantId, record.id);
+		const lists = this.lists(record.tenantId, record.id);
 		try {
 			toolSet = typeof this.options.tools === "function" ? await this.options.tools(record) : (this.options.tools ?? []);
 			session = await this.options.engine.open({
 				storageDir,
+				stoppedThreads: (await runs.all()).filter((run) => isActiveRun(run) && run.cancelRequestedAt !== undefined).map((run) => threadKey(run.channel, run.threadId)),
 				model: record.model,
 				// Only this tenant's secrets, and only for providers the policy allows now.
 				apiKey: async (provider) => {
@@ -571,6 +614,12 @@ export class AnnieRuntime {
 				modelUsable: reachable,
 				tools: "tools" in toolSet ? toolSet.tools : toolSet,
 				instructions,
+				// The time, and the memories of whom the thread is with (only the shared ones in a group), as they are at each request.
+				turnContext: (key) => {
+					const subject = participants.get(key);
+					const remembered = memory.contextFor(subject ?? SHARED);
+					return `${nowLine(new Date())}${memoryNote(remembered.memories, listsLine(lists.visible(subject)), remembered.archived)}`;
+				},
 			});
 		} catch (error) {
 			if ("close" in toolSet) await toolSet.close().catch(() => {});
@@ -588,14 +637,28 @@ export class AnnieRuntime {
 		}
 		const outbox = new Outbox(outboxDir(this.options.dataDir, record.tenantId, record.id));
 		const releaseTools = "close" in toolSet ? toolSet.close : async () => {};
-		return new AnnieInstance(record, session, lock, outbox, audit, releaseTools, fresh, reachable, { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES }, { store: this.memory(record.tenantId, record.id), participants: this.participants(record.tenantId, record.id), lists: this.lists(record.tenantId, record.id), skills }, (reply) => {
-			for (const listener of this.listeners) {
-				try {
-					listener(reply);
-				} catch (error) {
-					console.error(`annie: reply listener failed: ${String(error)}`);
+		return new AnnieInstance({
+			record,
+			runs,
+			session,
+			lock,
+			outbox,
+			audit,
+			usage: new UsageLedger(tenantDir(this.options.dataDir, record.tenantId)),
+			releaseTools,
+			fresh,
+			reachable,
+			retry: { delaysMs: this.options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS, max: this.options.maxRetries ?? DEFAULT_MAX_RETRIES },
+			memory: { store: memory, participants, lists, skills },
+			emit: (reply) => {
+				for (const listener of this.listeners) {
+					try {
+						listener(reply);
+					} catch (error) {
+						console.error(`annie: reply listener failed: ${String(error)}`);
+					}
 				}
-			}
+			},
 		});
 	}
 }
@@ -603,30 +666,74 @@ export class AnnieRuntime {
 /** Outbox keys of messages whose text goes once delivered. */
 const SECRET_KEY = "secret:";
 
+export interface AnnieInstanceOptions {
+	readonly record: InstanceRecord;
+	readonly runs: RunStore;
+	readonly session: EngineSession;
+	readonly lock: InstanceLock;
+	readonly outbox: Outbox;
+	readonly audit: AuditLog;
+	/** The tenant's spend (usage.ts): each answered turn adds what it cost. */
+	readonly usage: UsageLedger;
+	readonly releaseTools: () => Promise<void>;
+	/** The record as stored now: allowlist and channel changes apply without a reopen. */
+	readonly fresh: () => Promise<InstanceRecord>;
+	/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
+	readonly reachable: (provider: string) => Promise<boolean>;
+	readonly retry: { readonly delaysMs: readonly number[]; readonly max: number };
+	readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore };
+	readonly emit: (reply: Reply) => void;
+}
+
 export class AnnieInstance {
 	/** Outbox keys this process has handed to the channels. Each at most once per process. */
 	private readonly handedOff = new Set<string>();
 	/** Outbox operations on the same key run one after the other. */
-	private readonly chains = new Map<string, Promise<void>>();
+	private readonly chains = new SerialQueue();
 	/** Pending in-process retries, cleared on close. */
 	private readonly retries = new Map<string, NodeJS.Timeout>();
 	private closed = false;
+	private readonly submissions = new SerialQueue();
+	private readonly events = new SerialQueue();
+	private recovery: Promise<void> | undefined;
+	/** Failed in-process Stop attempts; durable intent remains in runs.json for restart. */
+	private readonly pendingStops = new Set<string>();
+	/** A failed acknowledgement whose durable admission could not yet be read. */
+	private readonly pendingAdmissions = new Set<string>();
+	private readonly runs: RunStore;
 
-	constructor(
-		readonly record: InstanceRecord,
-		private readonly session: EngineSession,
-		private readonly lock: InstanceLock,
-		private readonly outbox: Outbox,
-		private readonly audit: AuditLog,
-		private readonly releaseTools: () => Promise<void>,
-		/** The record as stored now: allowlist and channel changes apply without a reopen. */
-		private readonly fresh: () => Promise<InstanceRecord>,
-		/** The provider is allowed now and has a key: a chat's own model on it can answer. Never throws. */
-		private readonly reachable: (provider: string) => Promise<boolean>,
-		private readonly retry: { readonly delaysMs: readonly number[]; readonly max: number },
-		private readonly memory: { readonly store: MemoryStore; readonly participants: Participants; readonly lists: ListStore; readonly skills: SkillStore },
-		private readonly emit: (reply: Reply) => void,
-	) {
+	readonly record: InstanceRecord;
+	private readonly session: EngineSession;
+	private readonly lock: InstanceLock;
+	private readonly outbox: Outbox;
+	private readonly audit: AuditLog;
+	private readonly usage: UsageLedger;
+	private readonly releaseTools: () => Promise<void>;
+	private readonly fresh: () => Promise<InstanceRecord>;
+	private readonly reachable: (provider: string) => Promise<boolean>;
+	private readonly retry: AnnieInstanceOptions["retry"];
+	private readonly memory: AnnieInstanceOptions["memory"];
+	private readonly emit: (reply: Reply) => void;
+
+	constructor(options: AnnieInstanceOptions) {
+		const { record, session } = options;
+		this.record = record;
+		this.runs = options.runs;
+		this.session = session;
+		this.lock = options.lock;
+		this.outbox = options.outbox;
+		this.audit = options.audit;
+		this.usage = options.usage;
+		this.releaseTools = options.releaseTools;
+		this.fresh = options.fresh;
+		this.reachable = options.reachable;
+		this.retry = options.retry;
+		this.memory = options.memory;
+		this.emit = options.emit;
+		session.onRunEvent?.((event) => {
+			if (this.closed) return;
+			this.events.run("events", () => this.applyRunEvent(event)).catch((error: unknown) => console.error(`annie: recording run progress failed: ${String(error)}`));
+		});
 		session.onReply((engineReply) => {
 			this.deliver(engineReply).catch((error: unknown) => {
 				console.error(`annie: delivering a reply of ${record.tenantId}/${record.id} failed: ${String(error)}`);
@@ -634,7 +741,7 @@ export class AnnieInstance {
 		});
 	}
 
-	async submit(request: Omit<SubmitRequest, "tenantId" | "instanceId">): Promise<{ submissionId: string }> {
+	async submit(request: Omit<SubmitRequest, "tenantId" | "instanceId">): Promise<{ submissionId: string; runId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
 		try {
@@ -672,25 +779,18 @@ export class AnnieInstance {
 			chars: request.text.length,
 			...(images.length === 0 ? {} : { images: images.length }),
 		});
-		// In a private thread the instance learns whom it is with and gets what it remembers about
-		// them; in a group, only the shared memories, so one person's never reach the others.
+		// In a private thread the instance learns whom it is with, and each request gets what it
+		// remembers about them; in a group, only the shared memories, so one person's never reach the others.
 		const key = threadKey(request.channel, request.threadId);
 		const { privateThread, images: _given, command: _command, ...message } = request;
-		let note: string;
-		if (privateThread === true) {
-			const subject = subjectOf(request.channel, request.userId);
-			this.memory.participants.set(key, subject);
-			note = memoryNote(this.memory.store.forSubject(subject), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject));
-		} else {
-			this.memory.participants.clear(key);
-			note = memoryNote(this.memory.store.forSubject(SHARED), listsLine(this.memory.lists.visible(undefined)), this.memory.store.archivedFor(SHARED));
-		}
+		if (privateThread === true) this.memory.participants.set(key, subjectOf(request.channel, request.userId));
+		else this.memory.participants.clear(key);
 		const { origin: given, ...said } = message;
 		// Another agente's words are never the person's, whatever the request says.
 		const origin: TurnOrigin = request.channel === AGENT_CHANNEL ? "agent" : (given ?? "person");
 		// Only a person's own words run a skill or turn a draft on (ADR 0059, 0088): never the board's, a stanza's agente's.
 		const text = origin === "person" ? await this.withSkills(request, privateThread === true) : request.text;
-		return this.admit({ ...said, text: `${text}${skipped}${note}` }, origin, images);
+		return this.admit({ ...said, text: `${text}${skipped}` }, origin, images);
 	}
 
 	/**
@@ -745,7 +845,7 @@ export class AnnieInstance {
 		onBehalfOf: { channel: string; userId: string } | undefined;
 		/** brief: a brief del mattino; watch: a sentinella that saw a change, scheduleId is its ID; automation: an automazione called (ADR 0060), likewise. */
 		kind?: "brief" | "watch" | "automation";
-	}): Promise<{ submissionId: string }> {
+	}): Promise<{ submissionId: string; runId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
 		const person = request.onBehalfOf;
@@ -770,9 +870,10 @@ export class AnnieInstance {
 		const alone = person !== undefined && person.channel === request.channel && (request.channel === "web" || request.threadId === person.userId);
 		const subject = alone ? subjectOf(person.channel, person.userId) : undefined;
 		// So the tools know whom the thread is with even before the person writes in it (a brief's).
+		// Not alone: the shared memories, never whom the thread was last with.
 		if (subject !== undefined) this.memory.participants.set(threadKey(request.channel, request.threadId), subject);
-		const note = memoryNote(this.memory.store.forSubject(subject ?? SHARED), listsLine(this.memory.lists.visible(subject)), this.memory.store.archivedFor(subject ?? SHARED));
-		return this.admit({ ...request, text: `${request.text}${note}` }, "scheduled");
+		else this.memory.participants.clear(threadKey(request.channel, request.threadId));
+		return this.admit(request, "scheduled");
 	}
 
 	/**
@@ -780,7 +881,7 @@ export class AnnieInstance {
 	 * approved): not from a person, so no allowlist, but the channel must still be allowed.
 	 * `messageId` makes it idempotent.
 	 */
-	async submitNotice(request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean>; origin?: "notice" | "agent" }): Promise<{ submissionId: string }> {
+	async submitNotice(request: { channel: string; threadId: string; text: string; messageId: string; event: Record<string, string | number | boolean>; origin?: "notice" | "agent" }): Promise<{ submissionId: string; runId: string }> {
 		if (!CHANNEL_PATTERN.test(request.channel)) throw new Error(`Invalid channel name "${request.channel}"`);
 		const record = await this.fresh();
 		try {
@@ -813,17 +914,178 @@ export class AnnieInstance {
 	}
 
 	/** Into the engine, with where the turn comes from (ADR 0088): its tools read it as ctx.origin, also after a restart. */
-	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string }, origin: TurnOrigin, images: readonly EngineImage[] = []): Promise<{ submissionId: string }> {
-		const requestId = request.messageId === undefined ? undefined : `${request.channel}:${request.messageId}`;
-		const { submissionId } = await this.session.submit(threadKey(request.channel, request.threadId), request.text, requestId, images, origin);
-		// Record the admitted submission in the outbox: if the process dies after the engine
-		// has answered and before the reply is in the outbox, resume() reattaches it by ID.
+	private async admit(request: { channel: string; threadId: string; text: string; messageId?: string; userId?: string; onBehalfOf?: { channel: string; userId: string }; scheduleId?: string; kind?: "brief" | "watch" | "automation" }, origin: TurnOrigin, images: readonly EngineImage[] = []): Promise<{ submissionId: string; runId: string }> {
+		await this.recoverRuns();
+		const thread = threadKey(request.channel, request.threadId);
+		return this.submissions.run(thread, async () => {
+			if (this.closed) throw new Error("Instance is closed");
+			// Retry only this conversation. A different thread can be mid-admission and must
+			// not be mistaken for interrupted work by another whole-instance recovery pass.
+			if (this.pendingStops.has(thread)) {
+				const stopped = (await this.runs.all()).filter((run) => threadKey(run.channel, run.threadId) === thread && isActiveRun(run) && run.cancelRequestedAt !== undefined);
+				await this.abortRuns(thread, stopped);
+			}
+			await this.retryAdmissions(thread);
+			const id = runId(request.channel, request.threadId, request.messageId);
+			const now = new Date().toISOString();
+			const run = (await this.runs.change(id, (existing) => existing ?? {
+				id, tenantId: this.record.tenantId, instanceId: this.record.id,
+				channel: request.channel, threadId: request.threadId, messageId: request.messageId,
+				userId: request.userId, onBehalfOf: request.onBehalfOf, origin,
+				source: request.scheduleId !== undefined ? request.kind ?? "schedule" : origin === "scheduled" ? "schedule" : origin === "person" ? "message" : origin,
+				sourceId: request.scheduleId, scheduleId: request.scheduleId,
+				status: "queued", createdAt: now, updatedAt: now, progress: [], delivery: "pending",
+			}))!;
+			if (run.submissionId !== undefined) {
+				if (run.delivery !== "delivered") {
+					await this.rememberAdmission(run, run.submissionId);
+					await this.session.reattach(run.submissionId, thread);
+				}
+				return { submissionId: run.submissionId, runId: id };
+			}
+			if (run.cancelRequestedAt !== undefined || run.status === "cancelled") throw new Error("Submission was cancelled before admission");
+			if (run.status === "failed") await this.runs.change(id, (current) => current === undefined ? undefined : { ...current, status: "queued", error: undefined, finishedAt: undefined, updatedAt: now, delivery: "pending" }, true);
+			let submissionId: string;
+			try {
+				({ submissionId } = await this.session.submit(thread, request.text, runRequestId(run), images, origin));
+			} catch (error) {
+				// A failed acknowledgement can still have committed. Keep the engine's actual result.
+				try {
+					const admitted = await this.reconcileRun(run);
+					if (admitted !== undefined) await this.session.reattach(admitted.submissionId, thread);
+				} catch (lookupError) {
+					this.pendingAdmissions.add(id);
+					await this.runs.change(id, (current) => current === undefined || !isActiveRun(current) ? current : { ...current, error: "Submission acknowledgement could not be verified; retry safely." });
+					console.error(`annie: admission reconciliation failed: ${String(lookupError)}`);
+				}
+				throw error;
+			}
+			await this.rememberAdmission(run, submissionId);
+			return { submissionId, runId: id };
+		});
+	}
+
+	/** A retry also repairs an acknowledgement/outbox failure without admitting the input again. */
+	private async rememberAdmission(run: RunRecord, submissionId: string): Promise<void> {
+		await this.runs.change(run.id, (current) => current === undefined ? undefined : { ...current, submissionId, delivery: current.delivery === "not_applicable" ? "pending" : current.delivery });
 		const key = this.replyKey(submissionId);
 		await this.serial(key, async () => {
-			if ((await this.outbox.get(key)) !== undefined) return;
-			await this.outbox.put({ key, submissionId, channel: request.channel, threadId: request.threadId, createdAt: new Date().toISOString(), attempts: 0 });
+			const entry = await this.outbox.get(key);
+			if (entry !== undefined) {
+				if (entry.deliveredAt !== undefined) await this.updateDelivery(submissionId, "delivered");
+				return;
+			}
+			await this.outbox.put({ key, submissionId, channel: run.channel, threadId: run.threadId, createdAt: run.createdAt, attempts: 0 });
 		});
-		return { submissionId };
+	}
+
+	private async applyRunEvent(event: EngineRunEvent): Promise<void> {
+		await this.runs.changeMatching((run) => threadKey(run.channel, run.threadId) === event.threadKey && (run.submissionId === event.submissionId || (event.requestId !== undefined && runRequestId(run) === event.requestId)), (current) => {
+			if (current === undefined || !isActiveRun(current)) return current;
+			// Watch snapshots can arrive late; queued never rolls running back.
+			const outcome = event.status === "cancelled" || event.status === "failed"
+				? current.cancelRequestedAt === undefined ? "failed" : "cancelled"
+				: event.status;
+			const status = current.status === "running" && outcome === "queued" ? "running" : outcome;
+			const at = new Date().toISOString();
+			const progress = event.progress;
+			const toolName = progress?.toolName !== undefined && /^[a-zA-Z0-9_.-]{1,80}$/.test(progress.toolName) ? progress.toolName : undefined;
+			const messages = { model: "Preparing a response", tool_start: "Tool started", tool_progress: "Tool progress updated", tool_end: "Tool finished", retry: "Retrying model request" };
+			const last = current.progress.at(-1);
+			const append = progress !== undefined && (last?.kind !== progress.kind || last.toolName !== toolName);
+			if (status === current.status && current.submissionId === event.submissionId && !append) return current;
+			return { ...current, submissionId: event.submissionId, status, updatedAt: at,
+				...(status === "running" && current.startedAt === undefined ? { startedAt: at } : {}),
+				...(!isActiveRun({ status }) ? { finishedAt: at } : {}),
+				error: status === "failed" ? "The agent did not complete this run." : undefined,
+				progress: append ? [...current.progress, { at, kind: progress.kind, message: messages[progress.kind], ...(toolName === undefined ? {} : { toolName }) }].slice(-32) : current.progress,
+			};
+		});
+	}
+
+	/** Restore Stop intents before any operation that starts Pi's scheduler. No prompts are journalled. */
+	private recoverRuns(): Promise<void> {
+		if (this.recovery !== undefined) return this.recovery;
+		const recovery = (async () => {
+			// A result can be durable before its reply reaches the outbox. Reconcile those
+			// terminal rows too; otherwise a crash in that window would lose the delivery.
+			const recoverable = (await this.runs.all()).filter((run) => isActiveRun(run) || (run.delivery !== "delivered" && run.delivery !== "not_applicable"));
+			const stops = [...new Set(recoverable.filter((run) => isActiveRun(run) && run.cancelRequestedAt !== undefined).map((run) => threadKey(run.channel, run.threadId)))];
+			if (stops.length > 0 && this.session.stop === undefined) throw new Error("This engine cannot restore pending Stop requests");
+			await Promise.all(stops.map(async (key) => {
+				this.pendingStops.add(key);
+				try { await this.session.stop!(key); this.pendingStops.delete(key); }
+				catch (error) {
+					// The adapter retains its restored guard. Healthy conversations may resume;
+					// this one retries the abort before accepting any new submission.
+					console.error(`annie: restoring Stop failed: ${String(error)}`);
+				}
+			}));
+			for (const run of recoverable) {
+				try { await this.reconcileRun(run); }
+				catch (error) { console.error(`annie: restoring admission failed: ${String(error)}`); }
+			}
+		})();
+		this.recovery = recovery;
+		recovery.catch(() => { if (this.recovery === recovery) this.recovery = undefined; });
+		return recovery;
+	}
+
+	/** Only a successful lookup can establish that an admission did not commit. */
+	private async reconcileRun(run: RunRecord): Promise<EngineRunState | undefined> {
+		this.pendingAdmissions.add(run.id);
+		const state = await this.session.lookupRun?.(threadKey(run.channel, run.threadId), runRequestId(run));
+		if (state !== undefined) {
+			await this.applyRunEvent(state);
+			await this.rememberAdmission(run, state.submissionId);
+		} else if (run.submissionId === undefined) {
+			await this.runs.change(run.id, (current) => current === undefined || current.submissionId !== undefined ? current : {
+				...current, delivery: "not_applicable",
+				...(isActiveRun(current) ? { status: current.cancelRequestedAt === undefined ? "failed" as const : "cancelled" as const, finishedAt: new Date().toISOString(), error: current.cancelRequestedAt === undefined ? "Interrupted before durable admission; retry the submission." : undefined } : {}),
+			});
+		}
+		this.pendingAdmissions.delete(run.id);
+		return state;
+	}
+
+	/** A supplied thread is already serialized by admit; resume acquires each thread's queue. */
+	private async retryAdmissions(thread?: string): Promise<void> {
+		if (this.pendingAdmissions.size === 0) return;
+		const uncertain = (await this.runs.all()).filter((run) => this.pendingAdmissions.has(run.id) && (thread === undefined || threadKey(run.channel, run.threadId) === thread));
+		for (const run of uncertain) {
+			if (thread !== undefined) await this.reconcileRun(run);
+			else {
+				try { await this.submissions.run(threadKey(run.channel, run.threadId), () => this.reconcileRun(run)); }
+				catch (error) { console.error(`annie: admission reconciliation retry failed: ${String(error)}`); }
+			}
+		}
+	}
+
+	/** Called under the conversation's submission queue. Clear the retry marker only after reconciliation. */
+	private async abortRuns(thread: string, runs: readonly RunRecord[]): Promise<void> {
+		this.pendingStops.add(thread);
+		await this.session.stop!(thread);
+		for (const run of runs) await this.reconcileRun(run);
+		await this.events.idle();
+		this.pendingStops.delete(thread);
+	}
+
+	async stopConversation(thread: { channel: string; threadId: string }): Promise<{ cancelled: number; runs: RunRecord[] }> {
+		if (!CHANNEL_PATTERN.test(thread.channel)) throw new Error("Invalid channel name");
+		if (this.session.stop === undefined) throw new Error("This engine does not support stopping conversations");
+		await this.recoverRuns();
+		return this.submissions.run(threadKey(thread.channel, thread.threadId), async () => {
+			const active = (await this.runs.all()).filter((run) => run.channel === thread.channel && run.threadId === thread.threadId && isActiveRun(run));
+			for (const run of active) await this.runs.change(run.id, (current) => current === undefined || !isActiveRun(current) ? current : { ...current, cancelRequestedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+			await this.abortRuns(threadKey(thread.channel, thread.threadId), active);
+			const ids = new Set(active.map((run) => run.id));
+			const runs = (await this.runs.all()).filter((run) => ids.has(run.id));
+			return { cancelled: runs.filter((run) => run.status === "cancelled").length, runs };
+		});
+	}
+
+	private async updateDelivery(submissionId: string, delivery: RunRecord["delivery"]): Promise<void> {
+		await this.runs.changeMatching((run) => run.submissionId === submissionId, (current) => current === undefined || current.delivery === delivery ? current : { ...current, delivery });
 	}
 
 	/**
@@ -831,6 +1093,8 @@ export class AnnieInstance {
 	 * no reply in the outbox yet, then continue unfinished engine work.
 	 */
 	async resume(): Promise<{ pending: number; undelivered: number; reattached: number }> {
+		await this.recoverRuns();
+		await this.retryAdmissions();
 		// Delivered replies are kept a while (idempotency, audit by key), then dropped: each
 		// resume reads the whole outbox.
 		// Only replies to people: the keys of the instance's own messages (approval notices)
@@ -866,6 +1130,7 @@ export class AnnieInstance {
 			// A message with a secret (an automazione's token) keeps its key, not its text, once delivered.
 			const scrubbed = entry.key.includes(`/${SECRET_KEY}`) && entry.reply?.status === "answered" ? { reply: { status: "answered" as const, text: "[tolto dopo la consegna: conteneva un segreto]" } } : {};
 			await this.outbox.put({ ...entry, ...scrubbed, deliveredAt: new Date().toISOString() });
+			await this.updateDelivery(entry.submissionId, "delivered");
 			await this.audit.append({
 				type: "reply.delivered",
 				instanceId: this.record.id,
@@ -887,6 +1152,7 @@ export class AnnieInstance {
 			if (this.closed || this.retries.has(deliveryId)) return;
 			const entry = await this.outbox.get(deliveryId);
 			if (entry === undefined || entry.deliveredAt !== undefined || entry.attempts !== attempt) return;
+			await this.updateDelivery(entry.submissionId, "failed");
 			const event = { instanceId: this.record.id, channel: entry.channel, threadId: entry.threadId, deliveryId, attempts: entry.attempts, reason: failure.reason.slice(0, 200) };
 			if (failure.refused) return void (await this.audit.append({ type: "reply.refused", ...event }));
 			if (entry.attempts - 1 >= this.retry.max) return void (await this.audit.append({ type: "reply.retries_exhausted", ...event }));
@@ -950,8 +1216,12 @@ export class AnnieInstance {
 		return (await this.outbox.list()).filter((entry) => entry.reply !== undefined && entry.deliveredAt === undefined);
 	}
 
-	idle(): Promise<void> {
-		return this.session.idle();
+	async idle(): Promise<void> {
+		await this.recoverRuns();
+		await this.session.idle();
+		await this.events.idle();
+		await this.chains.idle();
+		await this.runs.idle();
 	}
 
 	async close(): Promise<void> {
@@ -961,7 +1231,9 @@ export class AnnieInstance {
 		this.retries.clear();
 		try {
 			await this.session.close();
-			await Promise.allSettled(this.chains.values());
+			await this.events.idle();
+			await this.chains.idle();
+			await this.runs.idle();
 			await this.releaseTools().catch((error: unknown) => console.error(`annie: releasing tools of ${this.record.tenantId}/${this.record.id} failed: ${String(error)}`));
 		} finally {
 			this.lock.release();
@@ -970,15 +1242,20 @@ export class AnnieInstance {
 
 	private async deliver(engineReply: EngineReply): Promise<void> {
 		if (this.closed) return;
+		await this.applyRunEvent({ threadKey: engineReply.threadKey, submissionId: engineReply.submissionId, status: engineReply.status === "answered" ? "succeeded" : engineReply.cancelled === true ? "cancelled" : "failed" });
+		// An engine/provider abort alone is not evidence that the person pressed Stop.
+		const requestedStop = engineReply.status === "unanswered" && (await this.runs.all()).some((run) => run.submissionId === engineReply.submissionId && run.status === "cancelled" && run.cancelRequestedAt !== undefined);
 		const { channel, threadId } = parseThreadKey(engineReply.threadKey);
 		const key = this.replyKey(engineReply.submissionId);
 		const reply: OutboxEntry["reply"] =
 			engineReply.status === "answered"
 				? { status: "answered", text: engineReply.text, ...(engineReply.model === undefined ? {} : { model: engineReply.model }) }
-				: { status: "unanswered", reason: engineReply.reason };
+				: { status: "unanswered", reason: engineReply.reason, ...(requestedStop ? { cancelled: true } : {}) };
 		await this.serial(key, async () => {
 			const existing = await this.outbox.get(key);
 			if (existing?.deliveredAt !== undefined) return;
+			// Counted once: a reply the outbox already holds was counted when it first came.
+			if (existing?.reply === undefined && engineReply.status === "answered" && engineReply.usage !== undefined) await recordTurn(this.usage, this.audit, { instanceId: this.record.id, threadId, submissionId: engineReply.submissionId, model: engineReply.model, usage: engineReply.usage }).catch((error: unknown) => console.error(`annie: usage of ${this.record.tenantId}/${this.record.id} not recorded: ${String(error)}`));
 			await this.handOff(
 				existing === undefined
 					? { key, submissionId: engineReply.submissionId, channel, threadId, reply, createdAt: new Date().toISOString(), attempts: 0 }
@@ -1028,13 +1305,7 @@ export class AnnieInstance {
 	}
 
 	private serial(key: string, work: () => Promise<void>): Promise<void> {
-		const run = (this.chains.get(key) ?? Promise.resolve()).then(work);
-		const tail = run.catch(() => {});
-		this.chains.set(key, tail);
-		void tail.then(() => {
-			if (this.chains.get(key) === tail) this.chains.delete(key);
-		});
-		return run;
+		return this.chains.run(key, work);
 	}
 }
 

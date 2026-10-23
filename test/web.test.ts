@@ -8,6 +8,8 @@ import { AnnieRuntime } from "../src/core/index.ts";
 import { instanceDir } from "../src/core/paths.ts";
 import { tenantId, instanceId } from "../src/core/ids.ts";
 import { UsageLedger } from "../src/core/usage.ts";
+import { BoardStore } from "../src/core/board.ts";
+import { BoardWork } from "../src/core/board-work.ts";
 import { connectChannel } from "../src/gateway.ts";
 import { PeopleStore, SessionStore } from "../src/web/auth.ts";
 import { WebChannel } from "../src/web/channel.ts";
@@ -20,7 +22,7 @@ afterEach(async () => {
 	for (const close of closers.splice(0)) await close();
 });
 
-async function setup() {
+async function setup(withBoard = false) {
 	const dataDir = tempDataDir();
 	const runtime = new AnnieRuntime({ dataDir, engine: piDurableEngine });
 	await runtime.registry.createTenant({ id: "acme", name: "acme" });
@@ -29,6 +31,17 @@ async function setup() {
 	const owner = await people.add("Mario", "owner");
 	const anna = await people.add("Anna", "member");
 	const luca = await people.add("Luca", "member");
+	const board = new BoardStore(tenantDir);
+	const work = new BoardWork({
+		store: board,
+		agentName: async () => "Ops",
+		canChat: async (_agent, id) => id === anna.person.id || id === luca.person.id,
+		isOwner: async (id) => id === owner.person.id,
+		owners: async () => [owner.person.id],
+		personName: async (id) => (await people.get(id))?.name,
+		openThread: async () => "unused",
+		post: async () => {},
+	});
 	await runtime.registry.createInstance("acme", {
 		id: "ops",
 		name: "Ops",
@@ -52,6 +65,7 @@ async function setup() {
 		uiDir: join(import.meta.dirname, "..", "src", "web", "ui"),
 		secureCookies: false,
 		defaultTimeZone: "Europe/Rome",
+		...(withBoard ? { board: { store: board, work } } : {}),
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -72,10 +86,63 @@ async function setup() {
 			return { status: res.status, body, headers: res.headers };
 		};
 	};
-	return { runtime, base, people, owner, anna, luca, as, channel, dataDir };
+	return { runtime, base, people, owner, anna, luca, as, channel, dataDir, board };
 }
 
 describe("web console", () => {
+	it("counts board reviews for the person who worked with the agent, and unassigned reviews for the owner", async () => {
+		const h = await setup(true);
+		const by = { kind: "person" as const, id: h.owner.person.id };
+		for (const person of [h.anna.person, h.luca.person]) {
+			const card = h.board.create({ title: `Review for ${person.name}`, assignee: "ops" }, by);
+			h.board.update(card.id, { status: "da_rivedere", work: { agent: "ops", personId: person.id, threadId: "unused" } }, by);
+		}
+		const unassigned = h.board.create({ title: "Unassigned review" }, by);
+		h.board.update(unassigned.id, { status: "da_rivedere" }, by);
+		for (const person of [h.anna, h.luca, h.owner]) {
+			const client = await h.as(person.token);
+			expect((await client("/api/console-summary")).body.boardReview).toBe(1);
+		}
+	});
+
+	it("summarizes only the current person's pending decisions without returning private contents", async () => {
+		const h = await setup();
+		for (const id of ["ops", "secret"]) {
+			await h.runtime.proposals("acme", id).propose({ name: "private_tool", description: "Private proposal", parameters: { type: "object" }, code: "export default () => 'private code'", hosts: [] });
+			for (const person of [h.anna.person, h.luca.person]) {
+				await h.runtime.webActions("acme", id).propose({ pageUrl: "https://example.test", form: 0, action: "https://example.test/send", values: { secret: "private form" }, button: 0, shown: [], fingerprint: "form", reason: "Private reason", requester: `web:${person.id}` });
+				await h.runtime.connectorActions("acme", id).propose({ connectorId: "crm", connectorName: "CRM", server: "https://example.test", tool: "write", toolTitle: "Write", args: { secret: "private args" }, reason: "Private reason", destructive: false, requester: `web:${person.id}` });
+				await h.runtime.googleActions("acme", id).propose({ kind: "mail.send", personId: person.id, account: "private@example.test", reason: "Private reason", mail: { to: ["other@example.test"], cc: [], subject: "Private subject", body: "Private body" } });
+			}
+		}
+		expect((await fetch(`${h.base}/api/console-summary`)).status).toBe(401);
+		const anna = await h.as(h.anna.token);
+		const luca = await h.as(h.luca.token);
+		const owner = await h.as(h.owner.token);
+		// Anna approves all web/connector requests in ops, but only her own Google writes.
+		const summary = await anna("/api/console-summary");
+		expect(summary.status).toBe(200);
+		expect(summary.body).toEqual({ usage: (await anna("/api/usage")).body.usage, pendingApprovals: 6, boardReview: 0 });
+		expect((await luca("/api/console-summary")).body.pendingApprovals).toBe(3);
+		// Owners see both instances, but never count other people's Google requests.
+		expect((await owner("/api/console-summary")).body.pendingApprovals).toBe(10);
+		expect(JSON.stringify(summary.body)).not.toMatch(/private|example\.test|personId|requester/i);
+		await h.runtime.registry.setAllowedUsers("acme", "ops", "web", [h.anna.person.id]);
+		expect((await luca("/api/console-summary")).body.pendingApprovals).toBe(0);
+	});
+
+	it("does not count rejected or expired requests in the console summary", async () => {
+		const h = await setup();
+		const store = h.runtime.googleActions("acme", "ops");
+		const input = { kind: "mail.send" as const, personId: h.anna.person.id, account: "anna@example.test", reason: "Reply" };
+		await store.propose(input, new Date(Date.now() - 25 * 3600_000));
+		const rejected = await store.propose(input);
+		await store.decide(rejected.id, "rejected", h.anna.person.id, async () => ({ done: "must not run" }));
+		await store.propose(input);
+		const anna = await h.as(h.anna.token);
+		expect((await anna("/api/console-summary")).body.pendingApprovals).toBe(1);
+	});
+
 	it("needs a valid link to log in, and a session for everything else", async () => {
 		const h = await setup();
 		expect((await fetch(`${h.base}/api/me`)).status).toBe(401);

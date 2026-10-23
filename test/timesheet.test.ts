@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { hm, hoursText, parseDuration, parseRange } from "../src/core/durations.ts";
 import { DocumentError, documentFattura } from "../src/core/documents.ts";
@@ -27,6 +27,7 @@ import { createTimesheetTools, type TimesheetEvent } from "../src/core/tools/tim
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { BETA, fattura, GAMMA } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, 10:00 in Rome
 let calls = 0;
@@ -1295,10 +1296,10 @@ describe("timesheet: hours, amounts and words", () => {
 
 describe("timesheet in the app", () => {
 	it("is offered to every instance, the instructions point to it, and the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere le ore di lavoro per cliente (timesheet:");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		await loadTools(reply, "timesheet");
 		const answer = await reply('/tool timesheet {"op":"log","client":"Studio Zeta","duration":"3 ore","rate":50}');
 		expect(answer).toContain("Registrata la voce O-2026-");
 		expect(await reply('/tool timesheet {"op":"summary","period":"anno"}')).toContain("fatturabili 3 ore, 150,00 €");

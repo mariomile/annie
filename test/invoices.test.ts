@@ -15,6 +15,7 @@ import { auditFile, workspaceDir } from "../src/core/paths.ts";
 import { createInvoiceTools, type InvoiceEvent } from "../src/core/tools/invoice-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
+import { loadTools } from "./helpers.ts";
 
 const NS = "http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2";
 
@@ -809,7 +810,9 @@ describe("the scadenzario: reading the workspace", () => {
 
 describe("the scadenzario in the app", () => {
 	it("is offered to every instance, the instructions point to it, and a tool call in a thread reads the workspace's invoices", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("per le fatture da pagare o da incassare, le loro scadenze e l'elenco delle fatture aperte con un fornitore o un cliente usa invoices, non file_search");
+		expect(DEFAULT_INSTRUCTIONS).toContain("Fatture da pagare o incassare: invoices, non file_search");
+		expect(setup().tool.description).toContain("use it, not file_search, for invoices to pay or collect, their due dates");
+		expect(setup().tool.description).toContain("the collections and payments it shows are confirmed through bank_statement");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
@@ -817,6 +820,7 @@ describe("the scadenzario in the app", () => {
 		const workspace = workspaceDir(dataDir, tenantId(config.tenantId), instanceId(config.instanceId));
 		mkdirSync(join(workspace, "fatture"), { recursive: true });
 		writeFileSync(join(workspace, "fatture", "IT00000510016_00042.xml.p7m"), p7m(Buffer.from(RICEVUTA)));
+		await loadTools(reply, "invoices");
 		const answer = await reply('/tool invoices {"op":"set_company","vat":"00000520031"}');
 		expect(answer).toContain("Delle fatture trovate (1): una ricevuta (da pagare), nessuna emessa (da incassare)");
 		const due = await reply('/tool invoices {"op":"by_party","party":"alfa"}');

@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import type { ToolContext } from "../src/core/engine.ts";
 import { ExpenseStore } from "../src/core/expense-store.ts";
@@ -22,6 +22,7 @@ import { EXPENSE_CATEGORY } from "../src/core/renewals.ts";
 import { createRenewalTools, type RenewalEvent } from "../src/core/tools/renewal-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -961,11 +962,11 @@ describe("renewals: fence, audit, CSV", () => {
 
 describe("renewals in the app", () => {
 	it("is offered to every instance, records a payment as an expense, the instructions point to it, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere i rinnovi e gli abbonamenti (renewals:");
-		expect(DEFAULT_INSTRUCTIONS).toContain("per un promemoria a un'ora precisa schedule_create");
+		expect(setup().tool.description).toContain("For a reminder at an exact time use schedule_create");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		await loadTools(reply, "renewals", "expenses");
 		expect(await reply('/tool renewals {"op":"add","name":"Assicurazione Zeta","amount":"480","frequency":"annuale","due":"fine mese"}')).toContain("Aggiunto il rinnovo R-0001");
 		expect(await reply('/tool renewals {"op":"renewed","id":"l\'assicurazione zeta","record_expense":true}')).toContain("Registrata anche la spesa S-");
 		expect(await reply('/tool expenses {"op":"list"}')).toContain("Spese: 1 spesa");

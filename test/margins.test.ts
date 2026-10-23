@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -613,7 +612,7 @@ describe("agents, audit, fences, CSV and the brief", () => {
 	});
 
 	it("the routing: what one earns is margins, the prices one sells at price_list, what one pays purchase_prices", () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("«quanto guadagno», «mi rende», «ci perdo» su un prodotto o un cliente è margins, i prezzi a cui vende sono price_list, quello che paga purchase_prices");
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
+		const described = setup().tool.description;
+		expect(described).toContain("margins is the margin of one product or one client; the margin of the whole business is business_report; the prices the person sells at are price_list, what they pay purchase_prices");
 	});
 });

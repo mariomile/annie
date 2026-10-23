@@ -1,5 +1,5 @@
 import { fork } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-file.ts";
 
@@ -40,6 +40,8 @@ const MAX_CONCURRENT_FETCHES = 4;
 
 const RUNNER = `// Annie sandbox runner. Written by Annie; do not edit.
 import { registerHooks } from "node:module";
+// Some OS runtimes add their own variables even with env: {}. Tools see no ambient values.
+for (const name of Object.keys(process.env)) delete process.env[name];
 // Only the standard library without network, processes or native access. Anything else,
 // including internal modules (_http_agent, _tls_wrap), sqlite and file: URLs, is refused.
 const ALLOW = new Set(["fs", "fs/promises", "path", "path/posix", "path/win32", "url", "buffer", "crypto", "util", "util/types", "stream", "stream/promises", "stream/web", "events", "string_decoder", "zlib", "timers", "timers/promises", "querystring", "assert", "assert/strict"]);
@@ -92,11 +94,14 @@ async function runnerFile(dir: string): Promise<string> {
 
 export async function runSandboxed(run: SandboxRun): Promise<string> {
 	await mkdir(run.workDir, { recursive: true });
-	const runner = await runnerFile(run.runnerDir);
+	// Node resolves the entry point and cwd before loading it. Permission grants must name
+	// those same paths, including on macOS where /var and /tmp are symlink aliases.
+	const runner = await realpath(await runnerFile(run.runnerDir));
+	const workDir = await realpath(run.workDir);
 	const child = fork(runner, [], {
-		execArgv: ["--permission", `--allow-fs-read=${runner}`, `--allow-fs-read=${run.workDir}`, `--allow-fs-write=${run.workDir}`, `--max-old-space-size=${run.memoryMb ?? 128}`],
+		execArgv: ["--permission", `--allow-fs-read=${runner}`, `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, `--max-old-space-size=${run.memoryMb ?? 128}`],
 		env: {},
-		cwd: run.workDir,
+		cwd: workDir,
 		stdio: ["ignore", "ignore", "pipe", "ipc"],
 		serialization: "json",
 	});
@@ -158,6 +163,6 @@ export async function runSandboxed(run: SandboxRun): Promise<string> {
 				})();
 			}
 		});
-		child.send({ type: "run", code: run.code, args: run.args, workDir: run.workDir });
+		child.send({ type: "run", code: run.code, args: run.args, workDir });
 	});
 }

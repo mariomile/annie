@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { CLIENTS_BROKEN, ClientStore } from "../src/core/client-store.ts";
@@ -32,6 +32,7 @@ import { type ReminderSeam, reminderKey, scheduleRefusal, schedulesOf } from "..
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { BETA, D1, DELTA, fattura, G1, G2, GAMMA, type Party, R1, RICEVUTA } from "./solleciti-fixtures.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z"); // Sunday 18 October 2026, in Rome
 const TODAY = "2026-10-18";
@@ -1214,10 +1215,10 @@ describe("clients: third-pass review", () => {
 
 describe("clients in the app", () => {
 	it("is offered to every instance, the reminder goes to the person, the audit holds no values", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("tenere le schede dei clienti (clients:");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		await loadTools(reply, "clients");
 		expect(await reply('/tool clients {"op":"upsert","client":"Rossi Srl","contact":{"name":"Marco","phone":"333 7654321"}}')).toContain("Fatto, ho creato la scheda CL-0001.");
 		expect(await reply('/tool clients {"op":"follow_up","client":"Rossi Srl","when":"il 3 novembre 2027"}')).toContain("Te lo ricordo quel giorno alle 9");
 		expect(await reply('/tool clients {"op":"export"}')).toContain("Salvato clienti/clienti-al-");

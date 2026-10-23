@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS } from "../src/app.ts";
 import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { documentFattura } from "../src/core/documents.ts";
@@ -383,9 +382,8 @@ describe("the brief, the agents, the file", () => {
 	});
 
 	it("the routing names the tool with Italian examples", () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("fare gli ordini ai fornitori (orders: «cosa sta per finire?» o «cosa devo riordinare?» con op suggest");
-		for (const said of ["«ho mandato l'ordine» con op mark_sent", "«annulla l'ordine» con op cancel", "«fammi il PDF dell'ordine» con op document", "«è arrivata la merce di Beta» con op received", "stock dice solo cosa è già sotto il minimo"]) expect(DEFAULT_INSTRUCTIONS).toContain(said);
-		expect(DEFAULT_INSTRUCTIONS).not.toMatch(/\u2014/);
+		const described = setup().tool.description;
+		for (const said of ["cosa sta per finire?» → suggest", "ho mandato l'ordine», «l'ho mandato venerdì» → mark_sent", "annulla l'ordine OR-0002» → cancel", "fammi il PDF dell'ordine per Beta» → document", "è arrivata la merce di Beta», «è arrivato l'ordine OR-0003» → received", "stock low says only what is already under the minimum"]) expect(described).toContain(said);
 	});
 });
 

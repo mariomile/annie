@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_INSTRUCTIONS, type RunningAnnie, startAnnie } from "../src/app.ts";
+import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import { readDocumentText } from "../src/core/document-reader.ts";
 import type { ToolContext } from "../src/core/engine.ts";
@@ -24,6 +24,7 @@ import { euros } from "../src/core/tools/quote-render.ts";
 import { createQuoteTools, type QuoteEvent } from "../src/core/tools/quote-tools.ts";
 import { Workspace } from "../src/core/workspace.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
+import { loadTools } from "./helpers.ts";
 
 const NOW = new Date("2026-10-18T08:00:00Z");
 const IBAN = "IT74X0000000000000000123456";
@@ -782,10 +783,11 @@ describe("quotes: calls run again, documents in preparation, revisions", () => {
 
 describe("quotes in the app", () => {
 	it("is offered to every instance, the instructions point to it, and a quote is made from the company set in invoices", async () => {
-		expect(DEFAULT_INSTRUCTIONS).toContain("fare, rifare e seguire i preventivi ai clienti (quotes:");
+		expect(setup().tool.description).toContain("Preventivi (quotes) for customers");
 		const dataDir = temp();
 		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 		const reply = await boot(config);
+		await loadTools(reply, "invoices", "quotes");
 		expect(await reply('/tool invoices {"op":"set_company","vat":"00000520031","name":"Bianchi Consulenze Srl","address":"Via Roma 1, Milano"}')).toContain("Ora so che l'azienda è");
 		const quote = { op: "create", customer: "Rossi Srl", items: [{ description: "Consulenza", quantity: 3, unit: "giornate", price: 500 }, { description: "Trasferta", price: 120 }], vat: 22 };
 		const answer = await reply(`/tool quotes ${JSON.stringify(quote)}`);
