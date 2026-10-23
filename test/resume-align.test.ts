@@ -322,6 +322,62 @@ describe("restart after the configuration changed", () => {
 		} finally { release(); await transaction; await session.close(); }
 	});
 
+	it("fails closed when credentials are revoked after the outgoing gate, and uses fallback on the next submission", async () => {
+		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
+		const grok = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		// Faux transport with a real credential requirement: missing auth must prevent
+		// provider dispatch, independently of what the preceding usability check saw.
+		const keyed = new Proxy(grok.provider, { get: (target, property, receiver) => property === "auth"
+			? { apiKey: { name: "xAI", resolve: async ({ credential }: { credential?: { type: string; key?: string } }) => credential?.type === "api_key" && credential.key ? { auth: { apiKey: credential.key } } : undefined } }
+			: Reflect.get(target, property, receiver) });
+		providers.set(DEV.provider, faux.provider);
+		providers.set(GROK.provider, keyed);
+		faux.setResponses([fauxAssistantMessage("next submission on fallback")]);
+		grok.setResponses([fauxAssistantMessage("must not dispatch")]);
+		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
+		await secrets.set(modelApiKeySecret(GROK.provider), "test-only-key");
+		let outgoing = false;
+		let revokeOnce = true;
+		const credentialReads: (string | undefined)[] = [];
+		const session = await piDurableEngine.open({
+			storageDir: tempDataDir(), model: DEV, tools: [],
+			apiKey: async (provider) => {
+				if (provider === DEV.provider) return undefined;
+				const credential = await secrets.get(modelApiKeySecret(provider));
+				credentialReads.push(credential);
+				return credential;
+			},
+			turnContext: () => { outgoing = true; return "context"; },
+			modelUsable: async (provider) => {
+				const usable = provider === DEV.provider || (await secrets.get(modelApiKeySecret(provider))) !== undefined;
+				if (outgoing && provider === GROK.provider && revokeOnce) {
+					revokeOnce = false;
+					await secrets.delete(modelApiKeySecret(GROK.provider));
+				}
+				return usable;
+			},
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			await session.setThreadModel("web:t1", GROK);
+			await session.submit("web:t1", "first", "first");
+			await waitFor(() => replies.length === 1);
+			expect(revokeOnce).toBe(false);
+			// This narrow gate/auth boundary is deliberately fail-closed, not a promise
+			// to transparently retarget an already-prepared request or cache revoked keys.
+			expect(replies[0]).toMatchObject({ status: "unanswered", reason: "model_error" });
+			expect(credentialReads).toContain(undefined);
+			expect(grok.state.callCount).toBe(0);
+			expect(faux.state.callCount).toBe(0);
+			await session.submit("web:t1", "next", "next");
+			await waitFor(() => replies.length === 2);
+			expect(replies[1]).toMatchObject({ status: "answered", text: "next submission on fallback", model: DEV });
+			expect(grok.state.callCount).toBe(0);
+			expect(faux.state.callCount).toBe(1);
+		} finally { await session.close(); }
+	});
+
 	it("an interrupted compaction uses the current model while retaining Pi's summary prompt and range", async () => {
 		const storageDir = tempDataDir();
 		const faux = fauxProvider({ provider: DEV.provider, models: [{ id: DEV.modelId }] });
@@ -554,6 +610,45 @@ describe("restart after the configuration changed", () => {
 		expect(replies.find((r) => r.threadKey === "web:t1")).toMatchObject({ status: "answered" });
 		expect(replies.find((r) => r.threadKey === "web:t2")).toMatchObject({ status: "answered" });
 		await session.close();
+	});
+
+	it("a provider key removed during the fourth usability check makes both recovered chats use the fallback", async () => {
+		const { storageDir, ids } = await leftForGrok(["web:t1", "web:t2"]);
+		const revoked = fauxProvider({ provider: GROK.provider, models: [{ id: GROK.modelId }] });
+		providers.set(GROK.provider, revoked.provider);
+		revoked.setResponses([fauxAssistantMessage("must not dispatch")]);
+		const secrets = new TenantSecrets(tempDataDir(), tenantId("acme"));
+		await secrets.set(modelApiKeySecret(GROK.provider), "test-only-key");
+		let armed = false;
+		let checks = 0;
+		let completedChecks = 0;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		const session = await reopen(storageDir, async (provider) => {
+			const check = armed ? ++checks : 0;
+			if (check === 4) await held;
+			const usable = provider === DEV.provider || (await secrets.get(modelApiKeySecret(provider))) !== undefined;
+			if (armed) completedChecks++;
+			return usable;
+		});
+		const replies: EngineReply[] = [];
+		session.onReply((reply) => replies.push(reply));
+		try {
+			await session.setThreadModel("web:t2", DEV);
+			armed = true;
+			const reattached = session.reattach(ids[0]!, "web:t1");
+			// t1's second check still saw its key. Hold t2's fourth check while the
+			// revocation is published; t1 must revalidate again at actual dispatch.
+			await waitFor(() => checks === 4 && completedChecks === 3);
+			expect(replies).toHaveLength(0);
+			await secrets.delete(modelApiKeySecret(GROK.provider));
+			release();
+			expect(await reattached).toBe(true);
+			expect(await session.reattach(ids[1]!, "web:t2")).toBe(true);
+			await waitFor(() => replies.length === 2);
+			for (const threadKey of ["web:t1", "web:t2"]) expect(replies.find((reply) => reply.threadKey === threadKey)).toMatchObject({ status: "answered", model: DEV });
+			expect(revoked.state.callCount).toBe(0);
+		} finally { release(); await session.close(); }
 	});
 
 	it("instructions changed while the others are still being aligned count too", async () => {

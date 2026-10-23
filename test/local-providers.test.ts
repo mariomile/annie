@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -9,10 +9,10 @@ import { codexInferenceCatalog, localCliProvider } from "../src/core/adapters/pi
 import { piDurableEngine } from "../src/core/adapters/pi-durable.ts";
 import { createPiCompletionClient } from "../src/core/adapters/pi-durable-completion.ts";
 import type { EngineReply } from "../src/core/engine.ts";
-import { AnnieRuntime } from "../src/core/runtime.ts";
+import { AnnieRuntime, type Reply } from "../src/core/runtime.ts";
 import { type CliResult, type CliRunner, LocalProviderError, LocalProviders, localCliExecutable, runLocalCli } from "../src/core/local-providers.ts";
 import { ConfigError, loadAnnieConfig } from "../src/main/config.ts";
-import { tempDataDir, waitFor } from "./helpers.ts";
+import { FAUX_MODEL, tempDataDir, waitFor } from "./helpers.ts";
 
 const ok = (stdout: string, stderr = ""): CliResult => ({ code: 0, stdout, stderr });
 const auth = (provider: string) => provider === "claude-code" ? ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", subscriptionType: "max", email: "private@example.invalid", accessToken: "never-show-this" })) : ok("", "Logged in using ChatGPT\n");
@@ -120,6 +120,43 @@ describe("subscription capability", () => {
 		finish?.(); await providers.detect();
 		expect(providers.connected("codex")).toBe(false);
 	});
+	it.each(["corrupted", "unreadable"] as const)("falls back from a chat subscription when saved connections are %s", async (failure) => {
+		const dir = tempDataDir();
+		const file = join(dir, "connections.json");
+		const connected = JSON.stringify({ providers: { codex: true } });
+		writeFileSync(file, connected);
+		let inferenceCalls = 0;
+		const providers = await local(async ({ provider, args }) => {
+			if (isStatus(args)) return auth(provider);
+			inferenceCalls++;
+			return completed(provider, "must not infer through a disconnected subscription");
+		}, dir);
+		const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine: piDurableEngine, localProviders: providers });
+		closers.push(() => runtime.close());
+		await runtime.registry.createTenant({ id: "default", name: "Default" });
+		await runtime.registry.createInstance("default", { id: "agent", name: "Agent", model: FAUX_MODEL, egress: { modelProviders: [FAUX_MODEL.provider, "codex"], channels: ["test"] }, allowedUsers: { test: ["u"] } });
+		const chat = { channel: "test", threadId: "t" };
+		const subscription = { provider: "codex", modelId: "default" };
+		await runtime.setChatModel("default", "agent", chat, subscription, "u");
+		expect(await runtime.chatModel("default", "agent", chat.channel, chat.threadId)).toEqual(subscription);
+		if (failure === "corrupted") writeFileSync(file, "{ not json");
+		else {
+			// A directory at the file path produces a read error reliably, including
+			// privileged test runners where chmod(000) would still permit reads.
+			rmSync(file);
+			mkdirSync(file);
+		}
+		expect(await runtime.chatModel("default", "agent", chat.channel, chat.threadId)).toBeUndefined();
+		await expect(runtime.setChatModel("default", "agent", chat, subscription, "u")).rejects.toThrow(/model_provider|codex/);
+		const reply = new Promise<Reply>((resolve) => runtime.onReply(resolve));
+		await runtime.submit({ tenantId: "default", instanceId: "agent", ...chat, userId: "u", text: "hello", messageId: "fallback" });
+		expect(await reply).toMatchObject({ status: "answered", model: FAUX_MODEL });
+		expect(inferenceCalls).toBe(0);
+		rmSync(file, { recursive: true, force: true });
+		writeFileSync(file, connected);
+		expect(await runtime.chatModel("default", "agent", chat.channel, chat.threadId)).toEqual(subscription);
+	});
+
 	it("scopes host access to the configured tenant", async () => {
 		const providers = await local();
 		const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine: piDurableEngine, localProviders: providers });
