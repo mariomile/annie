@@ -38,12 +38,16 @@ import {
 	type SettledSubmissionRecord,
 	type ToolRegistration,
 	type Tx,
+	watchEvents,
+	type AgentEvent,
+	type AgentEventStream,
+	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createToolSearchTool } from "@earendil-works/pi-durable/tool-search";
 import { DEFAULT_IMAGE_LIMITS, type ImageProcessor } from "@earendil-works/pi-durable/tools";
-import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, JsonValue, TurnUsage } from "../engine.ts";
+import type { AnnieTool, DurableEngine, EngineImage, EngineOpenOptions, EngineReply, EngineSession, EngineRunEvent, EngineRunState, JsonValue, TurnUsage } from "../engine.ts";
 import type { ModelSelection } from "../registry.ts";
 import { isTurnOrigin, type TurnOrigin } from "../turn-origin.ts";
 import { createProvider } from "./pi-durable-models.ts";
@@ -103,6 +107,7 @@ type OwnModel = (threadKey: string) => ModelSelection | undefined;
 
 export const piDurableEngine: DurableEngine = {
 	async open(options: EngineOpenOptions): Promise<EngineSession> {
+		const stopped = new Set(options.stoppedThreads);
 		const provider = createProvider(options.model.provider, options.localProviders);
 		const models = createModels({
 			credentials: {
@@ -131,7 +136,7 @@ export const piDurableEngine: DurableEngine = {
 		registry.install(
 			defineExtension({
 				name: "annie",
-				tools: options.tools.map(toPiTool),
+				tools: options.tools.map((tool) => toPiTool(tool, stopped)),
 				hooks: [
 					hook(GenerationTask, {
 						beforeRequest: async ({ messages }, api, hookContext) => {
@@ -153,7 +158,7 @@ export const piDurableEngine: DurableEngine = {
 		const storage = await openNodeSqliteStorage(join(options.storageDir, "pi-durable.sqlite"));
 		let threadModels: ThreadModelState | undefined;
 		const ownModel: OwnModel = (key) => threadModels?.value?.models[key];
-		const harness = await Harness.open(storage, { models, registry: currentRequestRegistry(registry, models, options, ownModel) }, context);
+		const harness = await Harness.open(storage, { models, registry: currentRequestRegistry(registry, models, options, ownModel, stopped) }, context);
 		// The scheduler is still paused and nothing can start it yet (a reattachment's wait would):
 		// a conversation created before billing existed starts it here, before any of its work moves.
 		const threads = (await harness.snapshot(ThreadsDoc, context))?.threads ?? {};
@@ -162,12 +167,14 @@ export const piDurableEngine: DurableEngine = {
 			for (const id of Object.values(threads)) await startBilling(tx, id as ConversationId);
 		}, context);
 		threadModels = await harness.documentState(ThreadModelsDoc, context);
-		return new PiDurableSession(harness, models, options, threadModels!);
+		return new PiDurableSession(harness, models, options, threadModels!, stopped);
 	},
 };
 
 class PiDurableSession implements EngineSession {
 	private readonly listeners = new Set<(reply: EngineReply) => void>();
+	private readonly runListeners = new Set<(event: EngineRunEvent) => void>();
+	private readonly watches = new Map<string, Promise<AgentEventStream>>();
 	private readonly tracked = new Set<SubmissionId>();
 	private readonly creating = new Map<string, Promise<ConversationId>>();
 	private closing = false;
@@ -182,12 +189,17 @@ class PiDurableSession implements EngineSession {
 		private readonly models: MutableModels,
 		private readonly options: EngineOpenOptions,
 		private readonly threadModels: ThreadModelState,
+		private readonly stopped: Set<string>,
 	) {}
 
 	async submit(threadKey: string, text: string, requestId?: string, images: readonly EngineImage[] = [], origin: TurnOrigin = "scheduled"): Promise<{ submissionId: string }> {
+		// An earlier failed abort may already have started the scheduler. Clear its guard
+		// only by successfully retrying Stop, before this conversation accepts new work.
+		if (this.stopped.has(threadKey)) await this.stop(threadKey);
 		// Submitting starts Pi's scheduler: reattach the previous process's open work first.
 		await this.recover();
 		const conversationId = await this.conversationFor(threadKey);
+		await this.watch(threadKey, conversationId);
 		// Each message: the owner may have changed the instance's model, or the person the chat's.
 		await this.alignAgent(conversationId, threadKey);
 		const conversation = await this.harness.conversation(conversationId, context);
@@ -195,7 +207,10 @@ class PiDurableSession implements EngineSession {
 		if (requestId !== undefined) {
 			// A redelivered message: already admitted, so it is answered (or being answered) once.
 			const existing = await conversation.commit((tx) => tx.submissionByRequest(conversationId, requestId), context);
-			if (existing !== undefined) return { submissionId: String(existing.id) };
+			if (existing !== undefined) {
+				this.emitRun(runState(existing, threadKey));
+				return { submissionId: String(existing.id) };
+			}
 		}
 		const submission = await conversation.submit(
 			{
@@ -217,6 +232,9 @@ class PiDurableSession implements EngineSession {
 	async reattach(submissionId: string, threadKey: string): Promise<boolean> {
 		const submission = await this.harness.submission(Number(submissionId) as SubmissionId, context);
 		if (submission === undefined) return false;
+		const id = (await this.threads())[threadKey];
+		if (id === undefined || (await submission.status(context)).conversationId !== id) return false;
+		await this.watch(threadKey, id as ConversationId);
 		await this.activate(() => this.track(submission, threadKey));
 		return true;
 	}
@@ -245,7 +263,8 @@ class PiDurableSession implements EngineSession {
 
 	private async pendingSubmissions(): Promise<{ submission: Submission; threadKey: string }[]> {
 		const found: { submission: Submission; threadKey: string }[] = [];
-		for (const { id, threadKey } of await this.pendingInputs()) {
+		for (const { id, threadKey, conversationId } of await this.pendingInputs()) {
+			await this.watch(threadKey, conversationId);
 			const submission = await this.harness.submission(id, context);
 			if (submission !== undefined) found.push({ submission, threadKey });
 		}
@@ -318,13 +337,110 @@ class PiDurableSession implements EngineSession {
 		return () => this.listeners.delete(listener);
 	}
 
+	onRunEvent(listener: (event: EngineRunEvent) => void): () => void {
+		this.runListeners.add(listener);
+		return () => this.runListeners.delete(listener);
+	}
+
+	async lookupRun(threadKey: string, requestId: string): Promise<EngineRunState | undefined> {
+		const id = (await this.threads())[threadKey];
+		if (id === undefined) return undefined;
+		const record = await this.harness.commit((tx) => tx.submissionByRequest(id as ConversationId, requestId), context);
+		return record === undefined ? undefined : runState(record, threadKey);
+	}
+
+	async stop(threadKey: string): Promise<void> {
+		this.stopped.add(threadKey);
+		const id = (await this.threads())[threadKey];
+		if (id !== undefined) {
+			const conversation = await this.harness.conversation(id as ConversationId, context);
+			// Pi starts its scheduler before the abort commit. A rejected abort must leave
+			// this guard in place, including guards restored from persisted Stop intents.
+			await conversation?.abort(context);
+		}
+		this.stopped.delete(threadKey);
+		if (id !== undefined) {
+			// Observation must never prevent the actual abort or report a successful abort as failed.
+			try { await this.watch(threadKey, id as ConversationId); }
+			catch (error) { console.error(`annie: Stop progress watch failed: ${String(error)}`); }
+		}
+	}
+
+	private emitRun(event: EngineRunEvent): void {
+		if (this.closing) return;
+		for (const listener of this.runListeners) {
+			try { listener(event); }
+			catch (error) { console.error(`annie: engine run listener failed: ${String(error)}`); }
+		}
+	}
+
+	private watch(threadKey: string, id: ConversationId): Promise<AgentEventStream> {
+		let pending = this.watches.get(threadKey);
+		if (pending !== undefined) return pending;
+		pending = watchEvents(this.harness, id, context).then(async (stream) => {
+			// A closed stream cannot observe future runs. The next access will attach a fresh watch.
+			void stream.closed.then(() => { if (this.watches.get(threadKey) === pending) this.watches.delete(threadKey); });
+			let inputs: readonly SubmissionId[] = [];
+			const states = new Map<SubmissionId, EngineRunState>();
+			const lastProgress = new Map<SubmissionId, string>();
+			const process = async (events: readonly AgentEvent[]) => {
+				for (const event of events) {
+					try {
+						if (event.type === "snapshot" || event.type === "run_start") {
+							inputs = event.type === "snapshot" ? event.run?.inputs ?? [] : event.inputs;
+							const ids = event.type === "snapshot" ? [...inputs, ...event.inbox.map((item) => item.id)] : inputs;
+							for (const submissionId of ids) {
+								const submission = await this.harness.submission(submissionId, context);
+								if (submission === undefined) continue;
+								const state = runState(await submission.status(context), threadKey);
+								states.set(submissionId, state);
+								this.emitRun(state);
+							}
+						} else if (event.type === "submission") {
+							const state = runState(event.record, threadKey);
+							if (state.status === "queued" || state.status === "running") states.set(event.record.id, state);
+							else { states.delete(event.record.id); lastProgress.delete(event.record.id); }
+							this.emitRun(state);
+						} else if (event.type === "run_end") inputs = [];
+						const kind = event.type === "tool_execution_start" ? "tool_start" : event.type === "tool_execution_update" ? "tool_progress" : event.type === "tool_execution_end" ? "tool_end" : event.type === "turn_start" ? "model" : event.type === "auto_retry_start" ? "retry" : undefined;
+						if (kind !== undefined) {
+							for (const submissionId of inputs) {
+								const state = states.get(submissionId);
+								if (state === undefined || (state.status !== "queued" && state.status !== "running")) continue;
+								// Output chunks often repeat the same public metadata. Drop them before
+								// the runtime reads its history; no arbitrary output is exposed anyway.
+								const signature = JSON.stringify([kind, "toolName" in event ? event.toolName : null]);
+								if (lastProgress.get(submissionId) === signature) continue;
+								lastProgress.set(submissionId, signature);
+								this.emitRun({ ...state, status: "running", progress: { kind, ...("toolName" in event ? { toolName: event.toolName } : {}) } });
+							}
+						}
+					} catch (error) {
+						// Pi closes watchers whose listener rejects. Keep later events observable after
+						// a transient read error, including the remaining events in this batch.
+						if (!this.closing) console.error(`annie: engine progress read failed: ${String(error)}`);
+					}
+				}
+			};
+			await process([stream.snapshot]);
+			stream.start(process);
+			return stream;
+		});
+		this.watches.set(threadKey, pending);
+		pending.catch(() => { if (this.watches.get(threadKey) === pending) this.watches.delete(threadKey); });
+		return pending;
+	}
+
 	async idle(): Promise<void> {
 		return this.activate(() => this.harness.waitForIdle(context));
 	}
 
 	async close(): Promise<void> {
 		this.closing = true;
-		try { await this.harness.close(context); }
+		try {
+			await Promise.allSettled([...this.watches.values()].map(async (watch) => (await watch).stop()));
+			await this.harness.close(context);
+		}
 		finally { this.threadModels.dispose(); }
 	}
 
@@ -413,10 +529,11 @@ class PiDurableSession implements EngineSession {
 		let reply: EngineReply;
 		try {
 			const settled = await submission.wait(context);
+			this.emitRun(runState(settled, threadKey));
 			if (settled.status === "done" && settled.type === "input") {
 				reply = { status: "answered", threadKey, submissionId, ...(await this.answer(settled)) };
 			} else {
-				reply = { status: "unanswered", threadKey, submissionId, reason: settled.reason ?? settled.status };
+				reply = { status: "unanswered", threadKey, submissionId, reason: settled.reason ?? settled.status, cancelled: settled.reason === "aborted" };
 			}
 		} catch (error) {
 			if (this.closing) return; // the next process resumes it
@@ -439,6 +556,10 @@ class PiDurableSession implements EngineSession {
 		if (message?.role !== "assistant") return { text: "" };
 		return { text: message.content.map((block) => (block.type === "text" ? block.text : "")).join(""), model: { provider: message.provider, modelId: message.model }, ...(read?.usage === undefined ? {} : { usage: read.usage }) };
 	}
+}
+
+function runState(record: SubmissionRecord, threadKey: string): EngineRunState {
+	return { threadKey, submissionId: String(record.id), ...(record.requestId === undefined ? {} : { requestId: record.requestId }), status: record.status === "placed" ? "running" : record.status === "done" ? "succeeded" : record.status === "unanswered" ? record.reason === "aborted" ? "cancelled" : "failed" : "queued" };
 }
 
 type RequestTarget = { model: ModelSelection; instructions: string | undefined };
@@ -473,14 +594,16 @@ class GatedRequest extends AssistantMessageEventStream {
  * their memos, loaded deferred tools and billing stay intact. Polls check after their sleep; a
  * stale remote response is never applied to the conversation.
  */
-function currentRequestRegistry(registry: RegistryReader, models: MutableModels, options: EngineOpenOptions, ownModel: OwnModel): RegistryReader {
+function currentRequestRegistry(registry: RegistryReader, models: MutableModels, options: EngineOpenOptions, ownModel: OwnModel, stopped: ReadonlySet<string>): RegistryReader {
 	const phases = GenerationTask.definition.phases;
 	const useTarget = async <T>(runtime: DocumentReader & { conversationId: ConversationId }, ctx: OriginContext, use: (target: RequestTarget | undefined) => T): Promise<Awaited<T>> => {
 		let key: string | undefined;
 		try { key = await threadKeyOf(runtime, runtime.conversationId, ctx); }
 		catch (error) { throw new AlignmentFailed(error); }
 		if (key === undefined) return await use(undefined);
+		if (stopped.has(key)) throw new Error("Conversation stopped");
 		return modelFor(models, options, ownModel, key, (model) => {
+			if (stopped.has(key)) throw new Error("Conversation stopped");
 			let instructions: string | undefined;
 			try { instructions = typeof options.instructions === "function" ? options.instructions() : options.instructions; }
 			catch (error) { throw new AlignmentFailed(error); }
@@ -676,7 +799,7 @@ export function toolSearch(deferred: readonly AnnieTool[]): ReturnType<typeof cr
 	};
 }
 
-function toPiTool(tool: AnnieTool): ToolRegistration {
+function toPiTool(tool: AnnieTool, stopped: ReadonlySet<string>): ToolRegistration {
 	return defineTool({
 		name: tool.name,
 		description: tool.description,
@@ -687,17 +810,23 @@ function toPiTool(tool: AnnieTool): ToolRegistration {
 			const threadKey = await threadKeyOf(api, api.conversationId, callContext);
 			const at = threadKey?.indexOf(":") ?? -1;
 			const origin = await turnOrigin(api, callContext);
+			const signal = callContext.abortSignal ?? new AbortController().signal;
+			const check = () => { signal.throwIfAborted(); if (threadKey !== undefined && stopped.has(threadKey)) throw new Error("Conversation stopped"); };
+			check();
 			const result = await tool.execute(args, {
 				callId: `${api.conversationId}/${api.callId}`,
 				origin,
 				...(threadKey === undefined || at < 0 ? {} : { thread: { channel: threadKey.slice(0, at), threadId: threadKey.slice(at + 1) } }),
-				signal: callContext.abortSignal ?? new AbortController().signal,
+				signal,
 				progress: (chunk) => api.output(chunk),
 				step: async <T extends JsonValue>(key: string, work: () => Promise<T>): Promise<T> => {
+					check();
 					const name = `step:${key}`;
 					const stored = await api.memo<{ value: T }>(name, callContext);
 					if (stored !== undefined) return stored.value;
+					check();
 					const value = await work();
+					check();
 					return (await api.memo<{ value: T }>(name, { value } as never, callContext)).value;
 				},
 			});

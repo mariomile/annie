@@ -38,6 +38,8 @@ export type EngineOpenOptions = {
 	readonly modelUsable?: (provider: string) => Promise<boolean>;
 	/** Explicit local, tenant-scoped CLI subscription capability. Never inferred from the host. */
 	readonly localProviders?: LocalProviders;
+	/** Durable Stop intents restored before any recovered provider or tool work may start. */
+	readonly stoppedThreads?: readonly string[];
 };
 
 export interface EngineSession {
@@ -64,6 +66,12 @@ export interface EngineSession {
 	/** The conversation's own model as stored, when it has one (usable or not). */
 	threadModel(threadKey: string): Promise<ModelSelection | undefined>;
 	onReply(listener: (reply: EngineReply) => void): () => void;
+	/** Optional for alternate engines. Reads do not start the scheduler. */
+	lookupRun?(threadKey: string, requestId: string): Promise<EngineRunState | undefined>;
+	/** Abort this conversation's running AND queued inputs; resolves after durable settlement. */
+	stop?(threadKey: string): Promise<void>;
+	/** Metadata only: never prompt text, tool arguments, results, or thinking. */
+	onRunEvent?(listener: (event: EngineRunEvent) => void): () => void;
 	/** Resolves when no work is running or pending. */
 	idle(): Promise<void>;
 	close(): Promise<void>;
@@ -80,7 +88,17 @@ export type EngineReply =
 			/** What the turn took, when the engine can tell (ADR 0098). */
 			readonly usage?: TurnUsage;
 	  }
-	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string };
+	| { readonly status: "unanswered"; readonly threadKey: string; readonly submissionId: string; readonly reason: string; readonly cancelled?: boolean };
+
+export type EngineRunState = {
+	readonly threadKey: string;
+	readonly submissionId: string;
+	readonly requestId?: string;
+	readonly status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+};
+export type EngineRunEvent = EngineRunState & {
+	readonly progress?: { readonly kind: "model" | "tool_start" | "tool_progress" | "tool_end" | "retry"; readonly toolName?: string };
+};
 
 /**
  * Every model call of one answered turn, from the inputs to the answer (ADR 0098): tokens, the

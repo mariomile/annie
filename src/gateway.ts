@@ -9,6 +9,7 @@ import { answerModelCommand, modelCommandArgument } from "./model-command.ts";
 
 /** What a person reads when the model gave no answer; «Primi passi» does not count it as a reply. */
 export const REPLY_FAILED = "Non sono riuscita a rispondere. Riprova tra poco.";
+export const REPLY_CANCELLED = "Lavoro interrotto su tua richiesta. Le azioni già completate restano.";
 
 /**
  * Connects a channel adapter, bound to one instance, to the core: inbound messages become
@@ -83,7 +84,7 @@ export function connectChannel(
 				return adapter.sendFile({ ...base, name, data, path: reply.path, ...(reply.caption === undefined ? {} : { caption: reply.caption }) });
 			}
 			if (reply.status === "unanswered") log(`${adapter.name}: unanswered in thread ${reply.threadId}: ${reply.reason}`);
-			const text = reply.status === "answered" ? reply.text : REPLY_FAILED;
+			const text = reply.status === "answered" ? reply.text : reply.cancelled === true ? REPLY_CANCELLED : REPLY_FAILED;
 			// Only the reply to the message that asked for it, and only the first time: a retry sends the text alone.
 			if (reply.status === "answered" && speaks && reply.attempt === 1 && spoken.delete(reply.submissionId)) {
 				void adapter.recording?.(reply.threadId);
