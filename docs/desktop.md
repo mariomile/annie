@@ -71,11 +71,11 @@ Le icone vengono da `src/web/ui/icon-512.png`: `pnpm icons` le rigenera.
 
 ## Installer
 
-Il workflow **Desktop app** (a mano da GitHub Actions, o con un tag `desktop-v0.3.0`) costruisce gli installer per Mac (universale), Windows e Linux e li mette in una bozza di release. Per il Mac prima `desktop/scripts/bundle-server.sh` prepara Node e il server compilato, e controlla che partano; `--config src-tauri/tauri.local.conf.json` li mette nell'app.
+Il workflow **Desktop app** (a mano da GitHub Actions, o con un tag `desktop-v0.4.0`) costruisce gli installer per Mac (universale), Windows e Linux e li mette in una bozza di release. Per il Mac prima `desktop/scripts/bundle-server.sh` prepara Node e il server compilato, e controlla che partano; `--config src-tauri/tauri.local.conf.json` li mette nell'app.
 
 ### Firma
 
-Per ora gli installer non sono firmati. Per firmarli si mettono nei segreti del repository e si passano come env al passo `tauri-action` del workflow: per il Mac `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` (account Apple Developer, 99 dollari l'anno); per Windows un certificato di firma del codice. Con la firma si accendono gli aggiornamenti automatici.
+Per ora gli installer non sono firmati. Per firmarli si mettono nei segreti del repository e si passano come env al passo `tauri-action` del workflow: per il Mac `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` (account Apple Developer, 99 dollari l'anno); per Windows un certificato di firma del codice. Gli aggiornamenti automatici non sono implementati: La firma da sola non li abilita. Per aggiornare l'app si scarica e installa una nuova release.
 
 Per collaudare sul Mac una build locale creata con `--no-sign`, chiudi Annie e firma il bundle completo dopo l'ultima copia delle risorse:
 
