@@ -88,18 +88,28 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		const people = new PeopleStore(tenantDir);
 		const anna = await people.add("Anna", "member");
 		const luca = await people.add("Luca", "member");
+		const owner = await people.add("Owner", "owner");
 		await runtime.registry.createInstance("acme", { id: "ops", name: "Ops", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["web"] }, allowedUsers: { web: [anna.person.id, luca.person.id] } });
 		const channel = new WebChannel({ tenantId: "acme", instanceId: "ops" }, instanceDir(dataDir, tenantId("acme"), instanceId("ops")));
 		connectChannel(runtime, channel, { tenantId: "acme", instanceId: "ops" });
 		const clicks: [number, number][] = [];
+		const controls: string[] = [];
+		const cleared: [string, string][] = [];
+		let clearFailure: string | undefined;
 		let failing = false;
-		const state = { open: true as const, url: "https://example.test/", title: "Prova", version: 3, busy: false };
+		const state = { open: true as const, url: "https://example.test/", title: "Prova", version: 3, busy: false, control: "agent" as const, profile: false };
 		const browser: BrowserPanel = {
 			available: () => true,
 			state: async () => state,
 			picture: async () => undefined,
 			open: async () => state,
 			back: async () => state,
+			takeover: async () => { controls.push("takeover"); return { ...state, control: "person" }; },
+			release: async () => { controls.push("release"); return state; },
+			typeText: async () => { controls.push("type"); return state; },
+			press: async () => { controls.push("press"); return state; },
+			profile: async () => ({ hosts: ["example.test"] }),
+			clearProfile: async (instance, person) => { cleared.push([instance, person]); if (person === clearFailure) { clearFailure = undefined; throw new Error("temporary disk failure"); } },
 			click: async (_i, _t, x, y) => {
 				clicks.push([x, y]);
 				if (failing) throw new BrowserPanelError("Non è andata a buon fine: guarda la pagina e riprova.");
@@ -130,13 +140,64 @@ describe("a click on the browser panel's picture (ADR 0103)", () => {
 		const as = async (token: string) => {
 			const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1", "content-type": "application/json" }, body: JSON.stringify({ token }) });
 			const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] as string;
-			return async (path: string, body?: unknown) => {
-				const res = await fetch(`${base}${path}`, { method: "POST", headers: { cookie, "x-annie": "1", "content-type": "application/json" }, body: JSON.stringify(body) });
+			return async (path: string, body?: unknown, method = "POST") => {
+				const res = await fetch(`${base}${path}`, { method, headers: { cookie, "x-annie": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 				return { status: res.status, body: (await res.json()) as any };
 			};
 		};
-		return { base, anna, luca, runtime, channel, as, clicks, fail: () => void (failing = true) };
+		return { base, anna, luca, owner, runtime, channel, as, clicks, controls, cleared, failClear: (person: string) => { clearFailure = person; }, fail: () => void (failing = true) };
 	}
+
+	it("keeps takeover, private input and saved logins inside the person's private conversation", async () => {
+		const h = await setup();
+		const anna = await h.as(h.anna.token);
+		const luca = await h.as(h.luca.token);
+		const owner = await h.as(h.owner.token);
+		const thread = await h.channel.createThread(h.anna.person.id);
+		const base = `/api/instances/ops/threads/${thread.id}/browser`;
+		const secret = "synthetic-login-value";
+		for (const other of [luca, owner]) {
+			for (const [suffix, body, method] of [["takeover", {}, "POST"], ["release", {}, "POST"], ["type", { text: secret }, "POST"], ["press", { key: "Enter" }, "POST"], ["profile", undefined, "GET"], ["profile", undefined, "DELETE"]] as const) {
+				expect((await other(`${base}/${suffix}`, body, method)).status).toBe(404);
+			}
+		}
+		expect(h.controls).toEqual([]);
+		expect((await anna(`${base}/takeover`, {})).body.browser.control).toBe("person");
+		expect((await anna(`${base}/type`, { text: secret })).status).toBe(200);
+		expect((await anna(`${base}/press`, { key: "Enter" })).status).toBe(200);
+		expect((await anna(`${base}/press`, { key: "Control+L" })).status).toBe(400);
+		expect((await anna(`${base}/type`, { text: "x".repeat(1001) })).status).toBe(400);
+		expect((await anna(`${base}/release`, {})).status).toBe(200);
+		expect(h.controls).toEqual(["takeover", "type", "press", "release"]);
+		expect(JSON.stringify(await h.runtime.audit("acme").read())).not.toContain(secret);
+		expect(await h.channel.transcript(thread.id)).toEqual([]);
+		expect((await anna(`${base}/profile`, undefined, "GET")).body).toEqual({ hosts: ["example.test"] });
+		expect((await anna(`${base}/profile`, undefined, "DELETE")).status).toBe(200);
+		expect(h.cleared).toEqual([["ops", h.anna.person.id]]);
+		const room = await h.channel.createThread(h.anna.person.id, "Room", "shared-room");
+		expect((await anna(`/api/instances/ops/threads/${room.id}/browser/takeover`, {})).status).toBe(404);
+		await h.runtime.registry.setAllowedUsers("acme", "ops", "web", [h.luca.person.id]);
+		expect((await anna(base, undefined, "GET")).status).toBe(404);
+	});
+
+	it("clears saved logins when membership or the person is removed", async () => {
+		const h = await setup();
+		const owner = await h.as(h.owner.token);
+		expect((await owner("/api/instances/ops/settings", { webPeople: [h.luca.person.id] }, "PUT")).status).toBe(200);
+		expect(h.cleared).toEqual(expect.arrayContaining([["ops", h.anna.person.id]]));
+		expect((await owner(`/api/people/${h.luca.person.id}`, undefined, "DELETE")).status).toBe(200);
+		expect(h.cleared).toEqual(expect.arrayContaining([["ops", h.anna.person.id], ["ops", h.luca.person.id]]));
+	});
+
+	it("retries failed profile cleanup after membership was already persisted", async () => {
+		const h = await setup();
+		const owner = await h.as(h.owner.token);
+		h.failClear(h.anna.person.id);
+		expect((await owner("/api/instances/ops/settings", { webPeople: [h.luca.person.id] }, "PUT")).status).toBe(500);
+		expect((await h.runtime.registry.getInstance("acme", "ops")).allowedUsers.web).not.toContain(h.anna.person.id);
+		expect((await owner("/api/instances/ops/settings", { webPeople: [h.luca.person.id] }, "PUT")).status).toBe(200);
+		expect(h.cleared.filter(([, person]) => person === h.anna.person.id)).toHaveLength(2);
+	});
 
 	it("the endpoint takes a click from the person who owns the conversation, and from nobody else", async () => {
 		const h = await setup();

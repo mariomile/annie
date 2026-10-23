@@ -275,6 +275,8 @@ export const state = {
 	setupLeft: 0,
 	events: undefined,
 	onEntry: undefined,
+	onRun: undefined,
+	onRunsReconnect: undefined,
 };
 
 export function route() {

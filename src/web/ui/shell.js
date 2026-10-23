@@ -82,6 +82,8 @@ export function render() {
 	void refreshThreads().then(renderRail);
 	state.onEntry = undefined;
 	state.onRoom = undefined;
+	state.onRun = undefined;
+	state.onRunsReconnect = undefined;
 	item.view(main).catch((error) => {
 		if (error instanceof ApiError && error.status === 401) return;
 		mount(main, emptyNote("div.empty", "Qualcosa non va", error.message));

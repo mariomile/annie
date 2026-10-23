@@ -2,6 +2,7 @@
 import { agentLabel, api, confirmDialog, emptyNote, fmt, h, head, icon, mount, needInstance, state, toast } from "../common.js";
 import { copyBox } from "../listen.js";
 import { refreshThreads } from "../shell.js";
+import { runHistory } from "../runs.js";
 
 // ---------- automazioni (ADR 0060) ----------
 const CHANNEL_NAME = { web: "console", telegram: "Telegram", whatsapp: "WhatsApp" };
@@ -11,6 +12,7 @@ export async function viewAutomations(main) {
 	const inst = state.instance;
 	const listBox = h("div.card");
 	const panel = h("div.card.pad.stack", { hidden: true });
+	const names = new Map();
 	const remove = (a) =>
 		confirmDialog(`Cancellare «${a.name}»?`, "L'indirizzo smette di funzionare: il servizio che lo chiama riceverà un errore.", "Cancella", async () => {
 			await api(`/api/instances/${inst.id}/automations/${a.id}`, { method: "DELETE" }).catch((e) => toast(e.message, true));
@@ -24,6 +26,7 @@ export async function viewAutomations(main) {
 	const runs = (a) => `${a.runs === 1 ? "1 chiamata" : `${a.runs} chiamate`}, l'ultima ${fmt.time(a.lastRunAt)}`;
 	async function refresh() {
 		const { automations } = await api(`/api/instances/${inst.id}/automations`);
+		for (const automation of automations) names.set(automation.id, automation.name);
 		mount(
 			listBox,
 			automations.length
@@ -91,7 +94,7 @@ export async function viewAutomations(main) {
 	mount(
 		main,
 		head(agentLabel(inst), h("h1", "Automazioni"), `Indirizzi segreti che fanno lavorare ${inst.name} quando un altro servizio li chiama: un modulo compilato, un ordine dal sito, un pagamento su Stripe, uno Zap. Al più 30 chiamate l'ora per automazione. Ognuno vede le sue, l'owner tutte.`, h("button.btn.accent", { onclick: create }, icon("plus"), "Nuova automazione")),
-		h("div.stack", panel, listBox),
+		h("div.stack", panel, listBox, runHistory([inst], { sources: ["automation"], names, title: "Esiti delle tue automazioni" })),
 	);
 }
 

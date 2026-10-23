@@ -1,6 +1,7 @@
 // Task page, with sentinelle and the morning brief.
 import { agentLabel, api, emptyNote, fmt, go, h, head, icon, mount, needInstance, state, toast } from "../common.js";
 import { refreshThreads, render } from "../shell.js";
+import { runHistory } from "../runs.js";
 
 // ---------- task ----------
 export async function viewTasks(main) {
@@ -131,6 +132,7 @@ export async function viewTasks(main) {
 			),
 		),
 		...watchSection(inst, watches, threads),
+		runHistory([inst], { sources: ["schedule", "brief", "watch"], names: new Map([...schedules.map((s) => [s.id, s.kind === "brief" ? "Brief del mattino" : s.instruction.slice(0, 100)]), ...watches.map((w) => [w.id, w.name ?? "Sentinella"])]), title: "Esiti dei tuoi task" }),
 	);
 }
 

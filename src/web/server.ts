@@ -52,16 +52,18 @@ import { DEFAULT_COST_CAPS, type UsageLedger } from "../core/usage.ts";
 import { WorkspaceError } from "../core/workspace.ts";
 import { IMAGE_LIMITS, IMAGE_TOO_BIG, imageProblem, imageType } from "../core/images.ts";
 import type { SegreteriaService } from "../segreteria/service.ts";
-import type { BrowserState } from "../core/web-session.ts";
+import { type BrowserState, MAX_TYPED, PRESS_KEYS, type PressKey } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
 import { boardRoutes } from "./board-routes.ts";
 import { teamRoutes } from "./team-routes.ts";
 import { type Ctx, type Handler, HttpError, MAX_JSON, type Route, readBody, readJson, STREAMED } from "./http.ts";
 import { screenRoutes } from "./screen-routes.ts";
+import { publicRun, runRoutes } from "./run-routes.ts";
+import type { RunRecord } from "../core/run-store.ts";
 import { handles, type Room, type RoomEntry, RoomError, type RoomEvent, type Rooms } from "./rooms.ts";
 import { ABOUT_MAX, INSTRUCTIONS_MAX, ownInstructions, withAbout } from "./setup.ts";
-import { REPLY_FAILED } from "../gateway.ts";
+import { REPLY_CANCELLED, REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
 
@@ -118,11 +120,18 @@ export type BrowserPanel = {
 	back(instanceId: string, threadId: string): Promise<BrowserState>;
 	/** A click on the picture, at `x`, `y` as fractions of its width and height (ADR 0103). */
 	click(instanceId: string, threadId: string, x: number, y: number): Promise<BrowserState>;
+	takeover(instanceId: string, threadId: string, personId: string): Promise<BrowserState>;
+	release(instanceId: string, threadId: string, personId: string): Promise<BrowserState>;
+	typeText(instanceId: string, threadId: string, personId: string, text: string): Promise<BrowserState>;
+	press(instanceId: string, threadId: string, personId: string, key: PressKey): Promise<BrowserState>;
+	profile(instanceId: string, personId: string): Promise<{ readonly hosts: readonly string[] }>;
+	clearProfile(instanceId: string, personId: string): Promise<void>;
 };
 
 /** What the person can read: a site not allowed, a page that does not open, no browser on this server. */
 export class BrowserPanelError extends Error {
 	override readonly name = "BrowserPanelError";
+	constructor(message: string, readonly status = 400) { super(message); }
 }
 
 export type WebAppOptions = {
@@ -462,6 +471,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 
 	// --- chat ---
+	runRoutes(route, { runtime, tenantId, access: instanceAccess, channel: channelOf });
 	route("GET", "/api/instances/:id/threads", "person", async ({ person, params }) => {
 		await instanceAccess(person as Person, params[0] as string);
 		return { threads: await channelOf(params[0] as string).threads((person as Person).id) };
@@ -498,15 +508,17 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw new HttpError(404, "Il browser non è disponibile su questo server");
 		}
 		const record = await ownThread(person, instanceId, threadId);
+		if ((await channelOf(instanceId).thread(threadId))?.room !== undefined) throw new HttpError(404, "No such thread");
 		// Who may drive it: who may chat here now, the same rule as the console's chat.
 		const canChat = (record.allowedUsers.web ?? []).includes(person.id) && record.egress.channels.includes("web");
+		if (!canChat) throw new HttpError(403, "Non sei tra le persone che possono scrivere a questo agente");
 		return { browser: options.browser, canChat };
 	};
-	const browserCall = async (work: () => Promise<BrowserState>) => {
+	const browserCall = async <T>(work: () => Promise<T>): Promise<T> => {
 		try {
 			return await work();
 		} catch (error) {
-			if (error instanceof BrowserPanelError) throw new HttpError(400, error.message);
+			if (error instanceof BrowserPanelError) throw new HttpError(error.status, error.message);
 			throw error;
 		}
 	};
@@ -566,6 +578,46 @@ export function createWebApp(options: WebAppOptions): Server {
 			throw error;
 		}
 	});
+	for (const action of ["takeover", "release"] as const) {
+		route("POST", `/api/instances/:id/threads/:thread/browser/${action}`, "person", async ({ person, params }) => {
+			const p = person as Person;
+			const [instanceId, threadId] = params as [string, string];
+			const { browser } = await browserThread(p, instanceId, threadId);
+			const state = await browserCall(() => browser[action](instanceId, threadId, p.id));
+			await runtime.audit(tenantId).append({ type: action === "takeover" ? "web.browser.takeover" : "web.browser.released", instanceId, personId: p.id });
+			return { browser: state };
+		});
+	}
+	route("POST", "/api/instances/:id/threads/:thread/browser/type", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const [instanceId, threadId] = params as [string, string];
+		const { browser } = await browserThread(p, instanceId, threadId);
+		const body = (await readJson(req)) as { text?: unknown };
+		if (typeof body.text !== "string" || body.text.length === 0 || body.text.length > MAX_TYPED) throw new HttpError(400, `Scrivi da 1 a ${MAX_TYPED} caratteri`);
+		// Private input goes only to the focused field: never to a transcript or audit event.
+		return { browser: await browserCall(() => browser.typeText(instanceId, threadId, p.id, body.text as string)) };
+	});
+	route("POST", "/api/instances/:id/threads/:thread/browser/press", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		const [instanceId, threadId] = params as [string, string];
+		const { browser } = await browserThread(p, instanceId, threadId);
+		const body = (await readJson(req)) as { key?: unknown };
+		if (typeof body.key !== "string" || !(PRESS_KEYS as readonly string[]).includes(body.key)) throw new HttpError(400, "Tasto non disponibile");
+		return { browser: await browserCall(() => browser.press(instanceId, threadId, p.id, body.key as PressKey)) };
+	});
+	route("GET", "/api/instances/:id/threads/:thread/browser/profile", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const { browser } = await browserThread(p, params[0] as string, params[1] as string);
+		return browserCall(() => browser.profile(params[0] as string, p.id));
+	});
+	route("DELETE", "/api/instances/:id/threads/:thread/browser/profile", "person", async ({ person, params }) => {
+		const p = person as Person;
+		const instanceId = params[0] as string;
+		const { browser } = await browserThread(p, instanceId, params[1] as string);
+		await browserCall(() => browser.clearProfile(instanceId, p.id));
+		await runtime.audit(tenantId).append({ type: "web.browser.profile_cleared", instanceId, personId: p.id });
+		return { ok: true };
+	});
 	// --- a chat's own model (ADR 0036): among the providers with a key that the owner allowed ---
 	route("GET", "/api/instances/:id/chat-models", "person", async ({ person, params }) => {
 		const { record } = await instanceAccess(person as Person, params[0] as string);
@@ -622,6 +674,37 @@ export function createWebApp(options: WebAppOptions): Server {
 		const p = person as Person;
 		res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
 		res.write(": connected\n\n");
+		let disconnected = false;
+		let drainingRuns = false;
+		const pendingRuns = new Map<string, RunRecord>();
+		const drainRuns = async () => {
+			if (drainingRuns || disconnected) return;
+			drainingRuns = true;
+			try {
+				while (pendingRuns.size > 0 && !disconnected) {
+					const [id, run] = pendingRuns.entries().next().value as [string, RunRecord];
+					pendingRuns.delete(id);
+					// Recheck session, membership and thread ownership on each delivered event.
+					if (await options.sessions.personOf(cookie(req, COOKIE)) !== p.id) { res.end(); break; }
+					const currentPerson = await options.people.get(p.id);
+					if (currentPerson === undefined) { res.end(); break; }
+					try { await ownThread(currentPerson, run.instanceId, run.threadId); }
+					catch { continue; }
+					if (disconnected || res.writableEnded) break;
+					res.write(`event: run\ndata: ${JSON.stringify({ run: publicRun(run) })}\n\n`);
+					// A slow client reconnects and reads persisted state instead of retaining unbounded output.
+					if (res.writableLength > 512 * 1024) { res.end(); break; }
+				}
+			} catch { res.end(); }
+			finally { drainingRuns = false; }
+		};
+		const offRuns = runtime.onRunEvent(({ run }) => {
+			if (run.tenantId !== tenantId || run.channel !== "web" || WebChannel.ownerOf(run.threadId) !== p.id || disconnected) return;
+			pendingRuns.set(run.id, run);
+			if (pendingRuns.size > 200) { res.end(); return; }
+			void drainRuns();
+		});
+		req.once("close", () => { disconnected = true; pendingRuns.clear(); offRuns(); });
 		const listeners: [WebChannel, (e: WebEvent) => void][] = [];
 		const attach = (channel: WebChannel) => {
 			const listener = (event: WebEvent) => res.write(`event: entry\ndata: ${JSON.stringify({ ...event, entry: shown(event.entry) })}\n\n`);
@@ -1303,6 +1386,9 @@ export function createWebApp(options: WebAppOptions): Server {
 		const webApprovers = pick(body.webApprovers);
 		if (webPeople !== undefined) {
 			await runtime.registry.setAllowedUsers(tenantId, id, "web", webPeople);
+			// Reconcile against all current people, not only the old allowlist: if cleanup
+			// fails after membership was saved, repeating this request must retry it.
+			for (const personId of people) if (!webPeople.includes(personId)) await options.browser?.clearProfile(id, personId);
 			if (!record.egress.channels.includes("web")) await runtime.registry.setEgress(tenantId, id, { ...record.egress, channels: [...record.egress.channels, "web"] });
 		}
 		await runtime.registry.updateInstance(tenantId, id, {
@@ -1420,7 +1506,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (record.egress.channels.includes("web")) {
 			const channel = channelOf(record.id);
 			for (const thread of (await channel.threads(me.id)).slice(0, 5)) {
-				if ((await channel.transcript(thread.id)).some((e) => e.from === "annie" && e.text !== REPLY_FAILED)) {
+				if ((await channel.transcript(thread.id)).some((e) => e.from === "annie" && e.text !== REPLY_FAILED && e.text !== REPLY_CANCELLED)) {
 					tried = true;
 					break;
 				}
@@ -1937,6 +2023,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (params[0] === (person as Person).id) throw new HttpError(400, "Non puoi eliminare te stesso");
 		const removed = await options.people.remove(params[0] as string);
 		await options.sessions.endAllOf(params[0] as string);
+		for (const record of await runtime.registry.listInstances(tenantId)) await options.browser?.clearProfile(record.id, params[0] as string);
 		// What they set to come back on the board stops: nobody would work it with them (ADR 0069).
 		options.board?.routines?.pausePerson(params[0] as string);
 		await runtime.audit(tenantId).append({ type: "person.removed", personId: params[0] });

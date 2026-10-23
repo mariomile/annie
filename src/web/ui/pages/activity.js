@@ -1,5 +1,6 @@
 // Attività e spesa page.
 import { api, emptyNote, fmt, h, head, icon, mount, state } from "../common.js";
+import { runHistory } from "../runs.js";
 
 // ---------- attività ----------
 /** Where an audit event comes from, by the first part of its type: a label, an icon, the prefixes it covers. */
@@ -14,6 +15,7 @@ const AUDIT_GROUPS = [
 const auditGroup = (type) => AUDIT_GROUPS.find(([, , prefixes]) => prefixes.includes(type.split(".")[0])) ?? AUDIT_GROUPS.at(-1);
 /** What an audit event means, in words. A type missing here keeps its technical name. */
 const AUDIT_SAY = {
+	"agent.run.stopped": "Lavoro interrotto",
 	"web.login": "Accesso alla console",
 	"web.login_denied": "Accesso rifiutato",
 	"web.upload": "File caricato",
@@ -21,6 +23,10 @@ const AUDIT_SAY = {
 	"web.browser.opened": "Browser aperto",
 	"web.browser.clicked": "Clic nel browser",
 	"web.browser.file_refused": "Caricamento di un file rifiutato nel browser",
+	"web.browser.takeover": "Controllo del browser alla persona",
+	"web.browser.released": "Controllo del browser restituito ad Annie",
+	"web.browser.form_sent": "Modulo inviato dalla persona",
+	"web.browser.profile_cleared": "Accessi ai siti rimossi",
 	"web.hosts_changed": "Siti consentiti cambiati",
 	"web.instance_created": "Agente creato",
 	"web.instance_deleted": "Agente eliminato",
@@ -237,6 +243,7 @@ export async function viewActivity(main) {
 		head(null, h("h1", "Attività e spesa"), "Quanto hanno speso oggi gli agenti in modelli AI, e cosa è successo."),
 		h(
 			"div.stack",
+			runHistory(state.instances),
 			h(
 				"div.card.pad",
 				h("h3.section-title", "Oggi"),

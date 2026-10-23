@@ -581,19 +581,33 @@ main.is-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: col
 .browser-toggle:hover { color: var(--fg); border-color: var(--border-2); }
 .browser-toggle[aria-pressed="true"] { color: var(--fg); background: var(--hover); }
 main.is-chat { position: relative; }
-.browser-panel { flex: 0 0 min(46%, 640px); display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--bg); padding: 52px 14px 14px; gap: 10px; }
+.browser-panel { flex: 0 0 min(46%, 640px); display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 52px 14px 14px; gap: 10px; }
 .browser-panel[hidden] { display: none; }
 .browser-head { display: flex; align-items: center; gap: 8px; color: var(--fg-2); font-size: 13px; }
 .browser-head .page-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: 500; }
 .browser-bar { display: flex; gap: 6px; }
 .browser-bar .address { flex: 1; min-width: 0; padding: 7px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg); font: 13px var(--mono); }
+.browser-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.browser-control .browser-note { flex: 1 1 160px; color: var(--fg-2); }
+.browser-control .btn { flex: 0 0 auto; max-width: 100%; height: auto; min-height: 30px; padding-block: 5px; white-space: normal; }
+.browser-human { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border-2); border-radius: var(--r-card); background: var(--surface); }
+.browser-private { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.browser-private-label { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--fg-2); }
+.browser-private .btn, .browser-keys .btn { min-height: 34px; }
+.browser-keys { display: flex; align-items: center; gap: 8px; }
+.browser-keys select { flex: 1; min-width: 0; width: auto; }
+.browser-profile { flex: 0 0 auto; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; }
+.browser-profile summary { cursor: pointer; color: var(--fg-2); }
+.browser-profile-hosts { margin: 9px 0; overflow-wrap: anywhere; font-family: var(--mono); }
+.browser-profile .btn { margin-top: 9px; }
+.browser-panel > .browser-head, .browser-panel > .browser-bar, .browser-panel > .browser-control, .browser-panel > .browser-human, .browser-panel > .browser-note { flex-shrink: 0; }
 .icon-btn { flex: 0 0 auto; }
-.browser-view { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface); }
+.browser-view { flex: 1 0 140px; min-height: 140px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface); }
 .browser-view .screen { display: block; width: 100%; height: auto; }
 .browser-panel.loading .browser-view { opacity: 0.6; }
 .browser-empty { padding: 28px 22px; color: var(--fg-2); line-height: 1.6; }
 .browser-empty p { margin: 0 0 8px; }
-.browser-note { margin: 0; font-size: 12px; color: var(--fg-3); }
+.browser-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--fg-3); }
 .busy-note { font-size: 12px; color: var(--fg-3); white-space: nowrap; }
 .browser-toggle.news::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--fg); }
 /* The toggles float over the conversation: frosted, so what scrolls under them stays readable around them. */
@@ -609,11 +623,27 @@ main.is-chat { position: relative; }
 @media (max-width: 860px) {
 	.browser-panel { position: absolute; inset: 0; z-index: 4; flex-basis: auto; border-left: 0; }
 	.browser-bar .address { font-size: 16px; }
+	.browser-human input.browser-private-text, .browser-keys select { font-size: 16px; }
+	.browser-control .btn, .browser-human .btn, .browser-profile .btn { min-height: 36px; }
 }
 .transcript { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 26px; padding: 48px max(20px, calc((100% - var(--column)) / 2)) 28px; scroll-behavior: smooth; }
 /* On a phone, room for the round toggle above the first message. */
 @media (max-width: 560px) { .transcript { padding-top: 56px; } }
 .dock { padding: 0 max(16px, calc((100% - var(--column)) / 2)) 16px; background: linear-gradient(to bottom, transparent, var(--bg) 20px); }
+.run-control { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: var(--surface); font-size: 13px; }
+.run-control[hidden] { display: none; }
+.run-control-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.run-control-head > :first-child { min-width: 0; overflow-wrap: anywhere; }
+.run-control-head .btn { flex: none; }
+.run-control-head h2 { margin: 0; }
+.run-details { margin-top: 7px; font-size: 12px; color: var(--fg-2); }
+.run-details summary { cursor: pointer; }
+.run-steps { list-style: none; padding: 0; max-height: 180px; overflow: auto; }
+.run-steps li { display: flex; gap: 10px; margin: 6px 0; overflow-wrap: anywhere; }
+.run-steps time { flex: none; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.run-row { align-items: flex-start; flex-wrap: wrap; }
+.run-row .task-text { min-width: min(180px, 100%); }
+.run-history { margin-top: 20px; }
 .msg { max-width: 100%; animation: rise 0.25s var(--ease) both; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .msg .meta { font-size: 12px; color: var(--fg-3); margin-bottom: 4px; }

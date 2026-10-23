@@ -46,6 +46,7 @@ import { viesClient } from "./core/vies.ts";
 import { openMeteo } from "./core/weather.ts";
 import { braveSearch, dailyCounter, dailyLimit } from "./core/web-search.ts";
 import { type Browser, BrowseError, BrowseSessions, type BrowserState, type Guard, sessionKey, type View } from "./core/web-session.ts";
+import { BrowserProfiles } from "./core/web-profiles.ts";
 import { piDurableEngine } from "./core/adapters/pi-durable.ts";
 import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
@@ -349,6 +350,21 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const browseSessions = new BrowseSessions(undefined, (key, host) => {
 		const [tenantId, instanceId] = (key.split("|")[0] as string).split("/") as [string, string];
 		runtime.audit(tenantId).append({ type: "web.browser.file_refused", instanceId, host }).catch((error: unknown) => log(`web: file chooser not audited: ${error instanceof Error ? error.message : String(error)}`));
+	}, {
+		owner: async (scope, thread) => {
+			const [tenantId, instanceId] = scope.split("/");
+			if (tenantId !== tenant || instanceId === undefined || thread.channel !== "web") return undefined;
+			const conversation = await webChannels.get(instanceId)?.thread(thread.threadId);
+			if (conversation === undefined || conversation.room !== undefined) return undefined;
+			const record = await runtime.registry.getInstance(tenant, instanceId);
+			if (!record.egress.channels.includes("web") || !(record.allowedUsers.web ?? []).includes(conversation.personId)) return undefined;
+			return (await people.get(conversation.personId))?.id;
+		},
+		profiles: new BrowserProfiles(config.dataDir),
+		submitted: (key, personId, host) => {
+			const [tenantId, instanceId] = (key.split("|")[0] as string).split("/") as [string, string];
+			void runtime.audit(tenantId).append({ type: "web.browser.form_sent", instanceId, personId, host }).catch(() => log("web: form submission not audited"));
+		},
 	});
 	const chromium = (): Promise<Browser | undefined> => {
 		browser ??= import("playwright-core")
@@ -1399,6 +1415,9 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		if (error instanceof WebFetchRefused) return error.message;
 		if (error instanceof BrowseError && (error.kind === "busy" || error.kind === "unavailable")) return error.message.charAt(0).toUpperCase() + error.message.slice(1);
 		if (error instanceof BrowseError && error.kind === "no-files") return "Qui non si caricano file.";
+		if (error instanceof BrowseError && error.kind === "denied") return "Non puoi controllare questo browser.";
+		if (error instanceof BrowseError && error.kind === "held") return "Il browser è sotto il tuo controllo.";
+		if (error instanceof BrowseError && error.kind === "no-field") return "Clicca prima sul campo in cui scrivere.";
 		if (error instanceof BrowseError && error.kind === "failed") return "Non è andata a buon fine: guarda la pagina e riprova.";
 		if (error instanceof BrowseError && error.kind === "no-page") return "Non c'è una pagina aperta: scrivi un indirizzo qui sopra.";
 		if (error instanceof BrowseError) return "La pagina si è chiusa: riaprila scrivendo l'indirizzo qui sopra.";
@@ -1410,10 +1429,14 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			// The agente is told a failed action in the view's notes; the person's panel gets it as an error.
 			if ((await work(key, await panelGuard(instanceId))).failed === true) throw new BrowseError("l'azione non è riuscita", "failed");
 		} catch (error) {
-			if (!(error instanceof WebFetchRefused || error instanceof BrowseError)) log(`web: browser panel: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
-			throw new BrowserPanelError(panelSentence(error));
+			if (!(error instanceof WebFetchRefused || error instanceof BrowseError)) log("web: browser panel action failed");
+			throw new BrowserPanelError(panelSentence(error), error instanceof BrowseError && error.kind === "denied" ? 403 : 400);
 		}
 		return browseSessions.state(key);
+	};
+	const panelControl = async (work: () => Promise<BrowserState>): Promise<BrowserState> => {
+		try { return await work(); }
+		catch (error) { throw new BrowserPanelError(panelSentence(error), error instanceof BrowseError && error.kind === "denied" ? 403 : 400); }
 	};
 	const browserPanel: BrowserPanel = {
 		available: () => !chromiumFailed,
@@ -1428,6 +1451,12 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			}),
 		back: (instanceId, threadId) => panelAct(instanceId, threadId, (key, guard) => browseSessions.view(key, guard, { back: true, person: true })),
 		click: (instanceId, threadId, x, y) => panelAct(instanceId, threadId, (key, guard) => browseSessions.clickAt(key, x, y, guard, { person: true })),
+		takeover: (instanceId, threadId, person) => panelControl(async () => browseSessions.takeover(panelKey(instanceId, threadId), person, await panelGuard(instanceId))),
+		release: (instanceId, threadId, person) => panelControl(() => browseSessions.release(panelKey(instanceId, threadId), person)),
+		typeText: (instanceId, threadId, person, text) => panelAct(instanceId, threadId, (key, guard) => browseSessions.typeText(key, person, text, guard)),
+		press: (instanceId, threadId, person, keyName) => panelAct(instanceId, threadId, (key, guard) => browseSessions.press(key, person, keyName, guard)),
+		profile: (instanceId, person) => browseSessions.profile(`${tenant}/${instanceId}`, person),
+		clearProfile: (instanceId, person) => browseSessions.clearProfile(`${tenant}/${instanceId}`, person),
 	};
 	/**
 	 * Delete an agente for good (ADR 0046). First everything that reaches it from outside stops

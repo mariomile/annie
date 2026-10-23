@@ -150,6 +150,8 @@ export function refreshCounters() {
 function connectEvents() {
 	state.events?.close();
 	const es = new EventSource("/api/events");
+	es.addEventListener("run", (e) => state.onRun?.(JSON.parse(e.data).run));
+	es.addEventListener("open", () => state.onRunsReconnect?.());
 	es.addEventListener("entry", (e) => {
 		const event = JSON.parse(e.data);
 		// A reply can carry news for the counters (a tool proposed, a task created).
