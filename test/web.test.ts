@@ -66,7 +66,7 @@ async function setup(withBoard = false) {
 		uiDir: join(import.meta.dirname, "..", "src", "web", "ui"),
 		secureCookies: false,
 		defaultTimeZone: "Europe/Rome",
-		...(withBoard ? { board: { store: board, work, subjects: { ledger: new SubjectLedger(tenantDir), agentName: async (id: string) => id } } } : {}),
+		...(withBoard ? { board: { store: board, work, subjects: { ledger: new SubjectLedger(tenantDir, "test-key"), agentName: async (id: string) => id } } } : {}),
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

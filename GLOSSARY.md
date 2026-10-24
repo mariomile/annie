@@ -45,7 +45,7 @@ Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o
 _Avoid_: deadline, due date (nel testo per le persone)
 
 **Registro di chi segue cosa**:
-Il registro del tenant che dice quale agente ha quale record (cliente, fornitore, preventivo, ordine, appuntamento, fattura, DDT), con ID, tipo, scheda collegata e ultima modifica, senza nomi né contenuti. Serve ad avvisare quando due agenti seguono lo stesso cliente o fornitore. Non è un'anagrafica comune: i record restano nei registri di ogni agente. Vedi ADR 0110.
+Il registro del tenant che dice quale agente ha quale record (cliente, fornitore, preventivo, ordine, appuntamento, fattura, DDT), con ID, tipo, scheda collegata e ultima modifica. Partita IVA, codice fiscale e nome sono pseudonimizzati (HMAC con una chiave del tenant): nessun nome né contenuto in chiaro. Serve ad avvisare quando due agenti seguono lo stesso cliente o fornitore. Non è un'anagrafica comune: i record restano nei registri di ogni agente. Vedi ADR 0110.
 _Avoid_: anagrafica unica, CRM condiviso, subject ledger (nel testo per le persone)
 
 **Messaggio tra agenti**:

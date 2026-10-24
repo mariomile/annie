@@ -3,11 +3,11 @@ import { describeWhen, nextTime, type Routine, routineWhen, type RoutineStore } 
 import type { BoardWork } from "../core/board-work.ts";
 import type { AnnieRuntime } from "../core/runtime.ts";
 import type { SubjectLedger } from "../core/subjects.ts";
+import type { Person, PeopleStore } from "./auth.ts";
+import { type AddRoute, HttpError, readJson } from "./http.ts";
 
 /** Il registro di chi segue cosa (ADR 0110), with the agenti's names. */
 export type BoardSubjects = { readonly ledger: SubjectLedger; readonly agentName: (id: string) => Promise<string> };
-import type { Person, PeopleStore } from "./auth.ts";
-import { type AddRoute, HttpError, readJson } from "./http.ts";
 
 export type BoardRoutesDeps = {
 	readonly runtime: AnnieRuntime;
@@ -211,7 +211,11 @@ export function boardRoutes(route: AddRoute, { runtime, tenantId, people, board,
 			boardError(error);
 		}
 		// No record is linked to a scheda that is gone (ADR 0110).
-		subjects.ledger.unlinkCard(card.id);
+		try {
+			subjects.ledger.unlinkCard(card.id);
+		} catch {
+			// The scheda is gone already; a record still pointing at it is not shown (cardShown).
+		}
 		await runtime.audit(tenantId).append({ type: "board.card_deleted", cardId: card.id, personId: p.id });
 		// Who waited only for it starts now (ADR 0076).
 		await work.release().catch(() => 0);

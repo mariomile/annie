@@ -4,10 +4,10 @@ import { digestText, digestWeek } from "../src/core/board-digest.ts";
 import { type BoardDigest, BoardWork, type BoardWorkDeps } from "../src/core/board-work.ts";
 import { createBoardTools } from "../src/core/tools/board-tools.ts";
 import { approveFromChat } from "../src/app/board.ts";
+import { tempDataDir } from "./helpers.ts";
 
 /** Board tools with no registers behind them. */
 const noSubjects = { missing: () => [], link: async () => "" };
-import { tempDataDir } from "./helpers.ts";
 
 const anna = { kind: "person", id: "p_anna" } as const;
 const ricerca = { kind: "agent", id: "ricerca" } as const;

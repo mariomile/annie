@@ -15,7 +15,8 @@ const SUBJECTS_PARAM = {
 	description: "The ids of your own records this scheda is about (CL-0012, OR-0003, 2026-004, AP-0007, BZ-0002, DT-0004): someone who opens it sees which ones, and you are told if another agente has the same client or supplier",
 } as const;
 
-const subjectIds = (value: unknown): string[] | undefined => (Array.isArray(value) ? value.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter((x) => x !== "") : undefined);
+/** The ids given, each once and at most SUBJECTS_MAX: the schema is not enforced on every model. */
+const subjectIds = (value: unknown): string[] | undefined => (Array.isArray(value) ? [...new Set(value.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter((x) => x !== ""))].slice(0, SUBJECTS_MAX) : undefined);
 
 type Thread = { readonly channel: string; readonly threadId: string };
 
@@ -210,7 +211,8 @@ export function createBoardTools(options: {
 				});
 				// Linking again after a rerun changes nothing.
 				if (made.card === null || subjects.length === 0) return made.text;
-				const warning = await options.subjects.link(made.card, subjects);
+				const warning = await options.subjects.link(made.card, subjects, ctx.thread);
+				if (warning === undefined) return made.text;
 				return [made.text, `Collegata a ${subjects.join(", ")}.`, warning].filter(Boolean).join(" ");
 			},
 		},
@@ -250,11 +252,12 @@ export function createBoardTools(options: {
 				}
 				const linked = async () => {
 					if (subjects === undefined) return "";
-					const warning = await options.subjects.link(card, subjects);
+					const warning = await options.subjects.link(card, subjects, ctx.thread);
+					if (warning === undefined) return "";
 					return [subjects.length === 0 ? `Scheda #${card.n}: non più collegata ai tuoi record.` : `Scheda #${card.n} collegata a ${subjects.join(", ")}.`, warning].filter(Boolean).join(" ");
 				};
 				const nothing = status === undefined && checks.length === 0 && (comment === undefined || comment.trim() === "");
-				if (nothing && subjects !== undefined) return linked();
+				if (nothing && subjects !== undefined) return (await linked()) || `Errore: non sono riuscita a collegare la scheda #${card.n} ai tuoi record, riprova più tardi.`;
 				if (nothing) return "Errore: indica una colonna, una voce della lista, un commento o i record collegati.";
 				if ((status !== undefined || checks.length > 0) && card.assignee !== options.self) return `Errore: la scheda #${card.n} non è assegnata a te: puoi solo commentarla.`;
 				const text = await ctx.step("update", async () => {

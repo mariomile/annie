@@ -32,7 +32,7 @@ import type { expensesOf } from "../core/tools/expense-tools.ts";
 import type { quotesOf } from "../core/tools/quote-tools.ts";
 import type { schedulesOf } from "../core/tools/schedule-tools.ts";
 import type { AnnieConfig } from "../main/config.ts";
-import { type SubjectLedger, type SubjectStores, withSubjects } from "../core/subjects.ts";
+import { type SubjectSeam, type SubjectStores, withSubjects } from "../core/subjects.ts";
 
 /** The registers of an agente that il registro di chi segue cosa reads (ADR 0110). */
 export function subjectStoresOf(runtime: AnnieRuntime, tenant: string, agent: string): SubjectStores {
@@ -59,8 +59,8 @@ export type RegisterToolsDeps = {
 	readonly invoiceScanner: InvoiceScanner;
 	readonly isBriefThread: (thread: { channel: string; threadId: string }) => Promise<boolean>;
 	readonly recurringEnv: (tenantId: string, instanceId: string) => RecurringEnv;
-	/** Il registro di chi segue cosa (ADR 0110), with the agenti's names and whether a scheda is still there. */
-	readonly subjects: { readonly ledger: SubjectLedger; readonly agentName: (id: string) => Promise<string>; readonly cardShown: (id: string) => boolean; readonly log: (message: string) => void };
+	/** Il registro di chi segue cosa (ADR 0110), as this agente's write hook sees it. */
+	readonly subjects: { readonly seam: SubjectSeam; readonly log: (message: string) => void };
 };
 
 /**
@@ -413,6 +413,5 @@ export function registerTools(deps: RegisterToolsDeps): AnnieTool[] {
 		}),
 	];
 	// After a write, the agente's records go into the tenant's ledger, and the result says who else has the same client or supplier.
-	const seam = { ledger: subjects.ledger, agent: record.id, stores: subjectStoresOf(runtime, record.tenantId, record.id), agentName: subjects.agentName, cardShown: subjects.cardShown };
-	return withSubjects(tools, seam, subjects.log).map((tool) => ({ ...tool, deferred: true }));
+	return withSubjects(tools, subjects.seam, subjects.log).map((tool) => ({ ...tool, deferred: true }));
 }
