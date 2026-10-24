@@ -248,12 +248,28 @@ function initScript(flag: string, humanFlag: string, privateAttr: string, privat
 }
 
 /**
+ * Page-script helper, put in front of every script that looks elements up: the elements matching
+ * `selector` in the document and in open shadow roots (web components), in order, at most `max`.
+ * Closed roots cannot be reached and iframes are not entered. Playwright's own selectors pierce
+ * open shadow roots, so a numbered element is found again by the same marker.
+ */
+const DEEP = `const deep = (selector, max = Infinity, root = document, out = []) => {
+		for (const e of root.querySelectorAll("*")) {
+			if (out.length >= max) break;
+			if (e.matches(selector)) out.push(e);
+			if (e.shadowRoot) deep(selector, max, e.shadowRoot, out);
+		}
+		return out;
+	};`;
+
+/**
  * Numbers the visible elements one can act on, under a fresh random attribute, fields and
  * buttons first, then the page's main part, then the rest; and reads the text. Extraction is
  * bounded, with enough overlap for host-side redaction before the final view limits.
  */
 function snapshotScript(attr: string, old: string | undefined, flag: string, options: ViewOptions, padding: number): string {
 	return `(() => {
+	${DEEP}
 	const attr = ${JSON.stringify(attr)};
 	const old = ${JSON.stringify(old ?? "")};
 	const flag = ${JSON.stringify(flag)};
@@ -263,22 +279,24 @@ function snapshotScript(attr: string, old: string | undefined, flag: string, opt
 	// Only its maximum length enters the page; old private values never do.
 	const padding = ${padding};
 	const cut = (s, n) => String(s == null ? "" : s).replace(/\\s+/g, " ").trim().slice(0, n + padding);
-	if (old) for (const e of document.querySelectorAll("[" + old + "]")) e.removeAttribute(old);
+	if (old) for (const e of deep("[" + old + "]")) e.removeAttribute(old);
 	const selector = "a[href], button, input:not([type=hidden]), select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], [role=radio], [role=switch], [role=option], [role=combobox], [onclick]";
-	const textOf = (id) => { const e = document.getElementById(id); return e ? cut(e.innerText, 80) : ""; };
+	const textOf = (root, id) => { const e = root.getElementById(id); return e ? cut(e.innerText, 80) : ""; };
 	const labelOf = (e, tag, type, field) => {
 		const by = e.getAttribute("aria-labelledby");
-		const named = by ? by.split(/\\s+/).slice(0, 5).map(textOf).join(" ") : "";
+		const named = by ? by.split(/\\s+/).slice(0, 5).map((id) => textOf(e.getRootNode(), id)).join(" ") : "";
 		const own = e.labels && e.labels.length ? Array.from(e.labels).slice(0, 3).map((l) => cut(l.innerText, 80)).join(" ") : "";
 		const img = e.querySelector ? e.querySelector("img[alt]") : null;
 		const svg = e.querySelector ? e.querySelector("svg title") : null;
 		const button = tag === "input" && /^(submit|button|reset)$/.test(type) ? e.value : "";
 		return cut(e.getAttribute("aria-label") || named || own || (field ? "" : cut(e.innerText, 200)) || button || e.getAttribute("placeholder") || e.getAttribute("title") || (img && img.getAttribute("alt")) || (svg && svg.textContent) || e.getAttribute("name"), 80);
 	};
+	// closest() stops at a shadow root: go on from its host.
+	const inMain = (e) => { for (let n = e; n; n = n.parentElement || n.getRootNode().host) if (n.matches("main, article, [role=main]")) return true; return false; };
 	const found = [];
 	const seen = new Set();
 	let scanned = 0;
-	for (const e of document.querySelectorAll(selector)) {
+	for (const e of deep(selector, 3001)) {
 		if (++scanned > 3000) break;
 		const box = e.getBoundingClientRect();
 		if (box.width === 0 || box.height === 0 || e.disabled) continue;
@@ -299,12 +317,14 @@ function snapshotScript(attr: string, old: string | undefined, flag: string, opt
 		const optionCount = tag === "select" ? e.options.length : 0;
 		const value = field && type !== "password" && type !== "file" ? cut(tag === "select" && e.selectedOptions[0] ? e.selectedOptions[0].text : e.value, 80) : "";
 		const checked = type === "checkbox" || type === "radio" ? !!e.checked : e.getAttribute("aria-checked") === "true";
-		const priority = field || tag === "button" || role === "button" ? 0 : e.closest("main, article, [role=main]") ? 1 : 2;
+		const priority = field || tag === "button" || role === "button" ? 0 : inMain(e) ? 1 : 2;
 		found.push({ e, index: scanned, priority, info: { tag, type, role, label, href, options, optionCount, value, checked } });
 	}
 	const shown = found.slice().sort((a, b) => a.priority - b.priority || a.index - b.index).slice(0, ${MAX_ELEMENTS}).sort((a, b) => a.index - b.index);
 	shown.forEach((f, i) => f.e.setAttribute(attr, String(i + 1)));
-	const all = document.body ? String(document.body.innerText) : "";
+	// body.innerText stops at shadow roots: what they show is appended.
+	const shadow = deep("*").filter((h) => h.shadowRoot).flatMap((h) => Array.from(h.shadowRoot.children).filter((c) => c.getClientRects().length).map((c) => String(c.innerText)));
+	const all = document.body ? [String(document.body.innerText), ...shadow].join("\\n") : "";
 	const blocked = Number(window[flag]) || 0;
 	window[flag] = 0;
 	return {
@@ -313,7 +333,7 @@ function snapshotScript(attr: string, old: string | undefined, flag: string, opt
 		scannedAll: scanned <= 3000,
 		text: all.slice(Math.max(0, from - padding), from + ${VIEW_TEXT} + padding),
 		textLength: all.length,
-		frames: Array.from(document.querySelectorAll("iframe[src]")).slice(0, 5).map((f) => cut(f.src, 200)),
+		frames: deep("iframe[src]", 5).map((f) => cut(f.src, 200)),
 		postForms: Array.from(document.forms).slice(0, 50).filter((f) => cut(f.getAttribute("method"), 10).toLowerCase() === "post").length,
 		blockedForms: blocked,
 	};
@@ -538,7 +558,7 @@ export class BrowseSessions {
 			if (live.tag === "select") {
 				const forms = this.privateForms(s);
 				const limit = 80 + Math.max(0, ...forms.map((form) => form.length));
-				const choices = await within(s.page.evaluate<unknown>(`Array.from(document.querySelector(${JSON.stringify(selector)}).options).slice(0, 200).map((o) => [String(o.value).slice(0, ${limit}), String(o.text).replace(/\\s+/g, " ").trim().slice(0, ${limit})])`), READ_TIMEOUT_MS);
+				const choices = await within(s.page.evaluate<unknown>(`(() => { ${DEEP} return Array.from(deep(${JSON.stringify(selector)})[0].options).slice(0, 200).map((o) => [String(o.value).slice(0, ${limit}), String(o.text).replace(/\\s+/g, " ").trim().slice(0, ${limit})]); })()`), READ_TIMEOUT_MS);
 				const pairs = (Array.isArray(choices) ? choices : []).filter((c): c is [string, string] => Array.isArray(c) && typeof c[0] === "string" && typeof c[1] === "string");
 				if (!pairs.some(([value, label]) => value.slice(0, 80) === text || label.slice(0, 80) === text)) throw new BrowseError(`«${this.redact(s, text).slice(0, 40)}» non è tra i valori di questa scelta: ${pairs.slice(0, 15).map(([, label]) => privateSlice(label, forms, 0, 80).slice(0, 80)).join(", ")}`);
 				await s.page.selectOption(selector, text, { timeout: ACTION_TIMEOUT_MS });
@@ -561,7 +581,7 @@ export class BrowseSessions {
 		if (s === undefined) return this.state(key);
 		await this.act(key, s.guard.current, { person: true }, false, async (s) => {
 			if (s.owner !== person) throw new BrowseError("questo browser non ti appartiene", "denied");
-			await within(s.page.evaluate(`(() => { for (const e of document.querySelectorAll('[${s.privateAttr}]')) { e.value = ''; e.removeAttribute('${s.privateAttr}'); } })()`), READ_TIMEOUT_MS);
+			await within(s.page.evaluate(`(() => { ${DEEP} for (const e of deep('[${s.privateAttr}]')) { e.value = ''; e.removeAttribute('${s.privateAttr}'); } })()`), READ_TIMEOUT_MS);
 			s.control = "agent";
 			s.humanAction = false;
 		});
@@ -714,8 +734,9 @@ export class BrowseSessions {
 		if (s.privateValues.size === 0) return;
 		try {
 			const read = () => within(s.page.evaluate<unknown>(`(() => {
+				${DEEP}
 				const values = [];
-				for (const e of document.querySelectorAll('[${s.privateAttr}]')) {
+				for (const e of deep('[${s.privateAttr}]')) {
 					if (!(e instanceof HTMLInputElement) && !(e instanceof HTMLTextAreaElement)) continue;
 					values.push(String(e.value).slice(0, ${MAX_TYPED + 1}));
 					if (values.length > ${MAX_PRIVATE_VALUES}) break;
@@ -850,7 +871,7 @@ export class BrowseSessions {
 		if (known === undefined || s.attr === undefined) throw new BrowseError(`nella pagina non c'è l'elemento ${ref}: usa i numeri dell'ultima vista`);
 		const selector = `[${s.attr}="${ref}"]`;
 		const live = await within(
-			s.page.evaluate<unknown>(`(() => { const all = document.querySelectorAll(${JSON.stringify(selector)}); if (all.length !== 1) return null; return { tag: all[0].tagName.toLowerCase(), type: String(all[0].getAttribute("type") || "").toLowerCase().slice(0, 20) }; })()`),
+			s.page.evaluate<unknown>(`(() => { ${DEEP} const all = deep(${JSON.stringify(selector)}); if (all.length !== 1) return null; return { tag: all[0].tagName.toLowerCase(), type: String(all[0].getAttribute("type") || "").toLowerCase().slice(0, 20) }; })()`),
 			READ_TIMEOUT_MS,
 		);
 		const found = live !== null && typeof live === "object" ? (live as { tag?: unknown; type?: unknown }) : undefined;
