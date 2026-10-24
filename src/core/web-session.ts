@@ -214,6 +214,7 @@ const OWN_CHOOSER_MS = 500;
  */
 function initScript(flag: string, humanFlag: string, privateAttr: string, privateBinding: string): string {
 	return `(() => {
+	${DEEP}
 	const flag = ${JSON.stringify(flag)};
 	const humanFlag = ${JSON.stringify(humanFlag)};
 	const privateAttr = ${JSON.stringify(privateAttr)};
@@ -233,32 +234,52 @@ function initScript(flag: string, humanFlag: string, privateAttr: string, privat
 		try { Object.defineProperty(window, name, { value: undefined, configurable: false, writable: false }); } catch {}
 	}
 	window.open = (url) => { if (url) location.href = String(url); return null; };
+	// The event target is the shadow host from outside a shadow root: the path has the anchor itself.
 	document.addEventListener("click", (e) => {
-		const a = e.target instanceof Element ? e.target.closest("a[target], form[target]") : null;
+		const a = e.composedPath().find((n) => n instanceof Element && n.matches("a[target], form[target]"));
 		if (a) a.removeAttribute("target");
 	}, true);
-	document.addEventListener("submit", (e) => {
+	const onSubmit = (e) => {
 		const form = e.target;
 		if (!(form instanceof HTMLFormElement)) return;
 		form.removeAttribute("target");
 		const method = ((e.submitter && e.submitter.getAttribute("formmethod")) || form.getAttribute("method") || "get").toLowerCase();
 		if (method !== "get" && !window[humanFlag]) { e.preventDefault(); e.stopImmediatePropagation(); window[flag] = (window[flag] || 0) + 1; }
-	}, true);
+	};
+	document.addEventListener("submit", onSubmit, true);
+	// A submit does not leave its shadow root: every root, open or closed, listens for itself.
+	const watched = new WeakSet();
+	const watch = (root) => { if (!watched.has(root)) { watched.add(root); root.addEventListener("submit", onSubmit, true); } };
+	const attach = Element.prototype.attachShadow;
+	Element.prototype.attachShadow = function (init) { const root = attach.call(this, init); watch(root); return root; };
+	// Roots the parser made (declarative shadow DOM) never went through attachShadow.
+	document.addEventListener("DOMContentLoaded", () => { for (const h of deep("*")) if (h.shadowRoot) watch(h.shadowRoot); });
 })();`;
 }
+
+/** Most nodes one lookup visits: a bigger page is cut short, and a lookup that needs the whole page to decide fails closed. */
+const MAX_NODES = 100_000;
 
 /**
  * Page-script helper, put in front of every script that looks elements up: the elements matching
  * `selector` in the document and in open shadow roots (web components), in order, at most `max`.
- * Closed roots cannot be reached and iframes are not entered. Playwright's own selectors pierce
- * open shadow roots, so a numbered element is found again by the same marker.
+ * The walk itself stops after MAX_NODES nodes, and says so (`over` on the result). Closed roots
+ * cannot be reached and iframes are not entered. Playwright's own selectors pierce open shadow
+ * roots, so a numbered element is found again by the same marker.
  */
-const DEEP = `const deep = (selector, max = Infinity, root = document, out = []) => {
-		for (const e of root.querySelectorAll("*")) {
-			if (out.length >= max) break;
-			if (e.matches(selector)) out.push(e);
-			if (e.shadowRoot) deep(selector, max, e.shadowRoot, out);
-		}
+const DEEP = `const deep = (selector, max = Infinity) => {
+		const out = [];
+		let left = ${MAX_NODES};
+		const walk = (root) => {
+			const tree = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+			for (let e = tree.nextNode(); e; e = tree.nextNode()) {
+				if (out.length >= max) return;
+				if (--left < 0) { out.over = true; return; }
+				if (e.matches(selector)) out.push(e);
+				if (e.shadowRoot) walk(e.shadowRoot);
+			}
+		};
+		walk(document);
 		return out;
 	};`;
 
@@ -296,7 +317,8 @@ function snapshotScript(attr: string, old: string | undefined, flag: string, opt
 	const found = [];
 	const seen = new Set();
 	let scanned = 0;
-	for (const e of deep(selector, 3001)) {
+	const list = deep(selector, 3001);
+	for (const e of list) {
 		if (++scanned > 3000) break;
 		const box = e.getBoundingClientRect();
 		if (box.width === 0 || box.height === 0 || e.disabled) continue;
@@ -330,11 +352,11 @@ function snapshotScript(attr: string, old: string | undefined, flag: string, opt
 	return {
 		elements: shown.map((f) => f.info),
 		more: found.length - shown.length,
-		scannedAll: scanned <= 3000,
+		scannedAll: scanned <= 3000 && !list.over,
 		text: all.slice(Math.max(0, from - padding), from + ${VIEW_TEXT} + padding),
 		textLength: all.length,
 		frames: deep("iframe[src]", 5).map((f) => cut(f.src, 200)),
-		postForms: Array.from(document.forms).slice(0, 50).filter((f) => cut(f.getAttribute("method"), 10).toLowerCase() === "post").length,
+		postForms: deep("form", 50).filter((f) => cut(f.getAttribute("method"), 10).toLowerCase() === "post").length,
 		blockedForms: blocked,
 	};
 })()`;
@@ -871,7 +893,7 @@ export class BrowseSessions {
 		if (known === undefined || s.attr === undefined) throw new BrowseError(`nella pagina non c'è l'elemento ${ref}: usa i numeri dell'ultima vista`);
 		const selector = `[${s.attr}="${ref}"]`;
 		const live = await within(
-			s.page.evaluate<unknown>(`(() => { ${DEEP} const all = deep(${JSON.stringify(selector)}); if (all.length !== 1) return null; return { tag: all[0].tagName.toLowerCase(), type: String(all[0].getAttribute("type") || "").toLowerCase().slice(0, 20) }; })()`),
+			s.page.evaluate<unknown>(`(() => { ${DEEP} const all = deep(${JSON.stringify(selector)}); if (all.length !== 1 || all.over) return null; return { tag: all[0].tagName.toLowerCase(), type: String(all[0].getAttribute("type") || "").toLowerCase().slice(0, 20) }; })()`),
 			READ_TIMEOUT_MS,
 		);
 		const found = live !== null && typeof live === "object" ? (live as { tag?: unknown; type?: unknown }) : undefined;
