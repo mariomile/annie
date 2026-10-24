@@ -640,7 +640,7 @@ describe("news configuration", () => {
 		expect(load(";;")).toThrow("ANNIE_NEWS_FEEDS: 1 to 30 feeds");
 	});
 
-	it("reaches the cells of Annie Cloud", () => {
+	it("reaches the cells of Owni Cloud", () => {
 		const passed = /const passed = \[([^\]]*)\]/.exec(readFileSync("src/main/cloud.ts", "utf8"))?.[1] ?? "";
 		for (const name of ["ANNIE_NEWS", "ANNIE_NEWS_FEEDS"]) expect(passed).toContain(`"${name}"`);
 	});

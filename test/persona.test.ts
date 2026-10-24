@@ -27,12 +27,12 @@ describe("persona (ADR 0041)", () => {
 	});
 
 	it("adds nothing to an instance never given a personality, so old conversations keep their instructions", () => {
-		expect(withPersona("Sei Annie.", "Annie", undefined)).toBe("Sei Annie.");
-		expect(withPersona("Sei Annie.", " annie ", { named: true })).toBe("Sei Annie.");
-		expect(withPersona(undefined, "Annie", { emoji: "🙂", named: true })).toBeUndefined();
+		expect(withPersona("Sei Owni.", "Owni", undefined)).toBe("Sei Owni.");
+		expect(withPersona("Sei Owni.", " owni ", { named: true })).toBe("Sei Owni.");
+		expect(withPersona(undefined, "Owni", { emoji: "🙂", named: true })).toBeUndefined();
 		// Named by a script, before agenti had names: it keeps presenting itself as before.
-		expect(withPersona("Sei Annie.", "Telegram (default)", undefined)).toBe("Sei Annie.");
-		expect(withPersona("Sei Annie.", "Segreteria (acme)", { emoji: "📮" })).toBe("Sei Annie.");
+		expect(withPersona("Sei Owni.", "Telegram (default)", undefined)).toBe("Sei Owni.");
+		expect(withPersona("Sei Owni.", "Segreteria (acme)", { emoji: "📮" })).toBe("Sei Owni.");
 	});
 
 	it("keeps a name on one line, without our quote marks", () => {
@@ -41,12 +41,12 @@ describe("persona (ADR 0041)", () => {
 	});
 
 	it("tells another agente its name, its job and its tone after its instructions", () => {
-		const text = withPersona("Sei Annie.", "Ricercatore", { tagline: "Cerca e confronta fornitori", tone: "conciso", named: true }) as string;
-		expect(text.startsWith("Sei Annie.\n\nChi sei:\n")).toBe(true);
+		const text = withPersona("Sei Owni.", "Ricercatore", { tagline: "Cerca e confronta fornitori", tone: "conciso", named: true }) as string;
+		expect(text.startsWith("Sei Owni.\n\nChi sei:\n")).toBe(true);
 		expect(text).toContain("Il tuo nome è «Ricercatore»");
 		expect(text).toContain("Il tuo compito: Cerca e confronta fornitori");
 		expect(text).toContain("Sii conciso");
-		expect(withPersona(undefined, "Annie", { tone: "formale" })).toBe("Chi sei:\nUsa un registro formale: dai del Lei, frasi complete, niente battute.");
+		expect(withPersona(undefined, "Owni", { tone: "formale" })).toBe("Chi sei:\nUsa un registro formale: dai del Lei, frasi complete, niente battute.");
 	});
 });
 
@@ -61,14 +61,14 @@ describe("an agente opens with its persona", () => {
 		};
 		const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine });
 		await runtime.registry.createTenant({ id: "acme", name: "acme" });
-		await runtime.registry.createInstance("acme", { id: "ricerca", name: "Ricercatore", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: [] }, instructions: "Sei Annie.", persona: { emoji: "🔎", tone: "formale", named: true } });
+		await runtime.registry.createInstance("acme", { id: "ricerca", name: "Ricercatore", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: [] }, instructions: "Sei Owni.", persona: { emoji: "🔎", tone: "formale", named: true } });
 		await runtime.openInstance("acme", "ricerca");
 		expect(seen[0]).toContain("Il tuo nome è «Ricercatore»");
 		expect(seen[0]).toContain("dai del Lei");
-		await runtime.registry.updateInstance("acme", "ricerca", { persona: null, name: "Annie" });
+		await runtime.registry.updateInstance("acme", "ricerca", { persona: null, name: "Owni" });
 		expect((await runtime.registry.getInstance("acme", "ricerca")).persona).toBeUndefined();
 		await runtime.reopen("acme", "ricerca");
-		expect(seen[1]?.startsWith("Sei Annie.\n\nSkill:")).toBe(true);
+		expect(seen[1]?.startsWith("Sei Owni.\n\nSkill:")).toBe(true);
 		expect(seen[1]).not.toContain("Chi sei");
 		await runtime.close();
 	});

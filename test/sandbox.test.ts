@@ -61,7 +61,7 @@ describe("sandbox for tools proposti", () => {
 		expect(await run('import { createHash } from "node:crypto"; import { join } from "path"; export default async () => createHash("sha256").update(join("a","b")).digest("hex").slice(0, 8)')).toBe("c14cddc0");
 	});
 
-	it("cannot signal other processes, Annie included", async () => {
+	it("cannot signal other processes, Owni included", async () => {
 		const { spawn } = await import("node:child_process");
 		const victim = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"]);
 		try {

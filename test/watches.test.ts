@@ -248,7 +248,7 @@ describe("sentinelle", () => {
 		await h.say(`/tool watch_create {"url":"${s.base}/menu","everyMinutes":30}`);
 		await h.say(`/tool watch_create {"url":"${s.base}/menu","everyMinutes":30,"what":"Caff"}`);
 		const replies = h.replies.length;
-		// Snapshots as an older Annie stored them: no version, the entity left as written.
+		// Snapshots as an older Owni stored them: no version, the entity left as written.
 		for (const w of await h.store.list()) {
 			const { v: _v, ...old } = w.last as WatchSnapshot;
 			const oldText = "Caff&egrave; 1,20 € Cornetto 1,50 €";
@@ -356,7 +356,7 @@ describe("sentinelle", () => {
 		h.control.refuse = undefined;
 		await h.runtime.registry.setAllowedUsers("acme", "ops", "telegram", []);
 		expect(await h.scheduler.tick(later(61))).toBe(0);
-		expect(await byEvery(60)).toMatchObject({ nextCheckAt: null, disabledReason: "la persona per cui lavora non può più scrivere ad Annie" });
+		expect(await byEvery(60)).toMatchObject({ nextCheckAt: null, disabledReason: "la persona per cui lavora non può più scrivere a Owni" });
 		expect(h.replies.length).toBe(replies);
 	});
 

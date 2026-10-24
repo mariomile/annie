@@ -455,7 +455,7 @@ describe("agenda: each source through its own functions", () => {
 		expect(invoiceItems(await s.registerNow(), TODAY, "2026-10-29").map((i) => i.due)).toEqual(["2026-10-05"]);
 	});
 
-	it("the bollo from the fatture in uscita issued with Annie, by quarter, under way said «finora»", () => {
+	it("the bollo from the fatture in uscita issued with Owni, by quarter, under way said «finora»", () => {
 		const sales = [sale(1, "2026-02-10"), sale(2, "2026-05-10"), sale(3, "2026-07-10"), sale(4, "2026-10-12"), { ...sale(5, "2026-10-13"), number: undefined } as unknown as SalesInvoice];
 		const items = bolloItems(sales, TODAY, TODAY, "2027-03-31");
 		expect(items.map((i) => [i.key, i.date, i.cents, i.partial === true])).toEqual([
@@ -619,9 +619,9 @@ describe("agenda: upcoming", () => {
 		const nov = await (await setup({ regime: "forfettario", files: {}, renewals: [renewal({ id: "R-0002", name: "Hosting Prova", due: "2026-11-01" })] })).run({ op: "upcoming", period: "novembre" });
 		expect(nov).toMatch(/^La prossima scadenza fiscale: lunedì 2 novembre, dichiarazione dei redditi 2025\.\nScadenze a novembre 2026: 3\.\nLe scadenze, in ordine/);
 		expect(inside(nov).split("\n").map((l) => l.slice(0, 22))).toEqual(["• Domenica 1º novembre", "• Lunedì 2 novembre (i", "• Lunedì 30 novembre: "]);
-		// When to write the calendar's reminder, when Annie writes.
+		// When to write the calendar's reminder, when Owni writes.
 		expect(s.tool.description).toContain("remind_days");
-		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Annie to write) → schedule_create");
+		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Owni to write) → schedule_create");
 	});
 
 	it("the window: days up to 366, a period not all gone and within a year, never both", async () => {
@@ -718,11 +718,11 @@ describe("agenda: the brief", () => {
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "upcoming", compact: true }, fresh()))).toContain("dichiarazione dei redditi");
 		expect(String(await briefed?.execute({ op: "upcoming" }, fresh()))).toContain("Scadenze nei prossimi 30 giorni");
-		expect(String(await briefed?.execute({ op: "export_ics" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "export_ics" }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(filesUnder(s.root).some((f) => f.startsWith("agenda/"))).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bfiscal_agenda \(upcoming\)[,.]/);
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
-		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Annie to write) → schedule_create");
+		expect(s.tool.description).toContain("«scrivimelo tu tre giorni prima» (Owni to write) → schedule_create");
 	});
 });
 
@@ -750,7 +750,7 @@ describe("agenda: the .ics", () => {
 		expect(remindTrigger(7)).toBe("-PT159H");
 		expect(remindTrigger(0)).toBe("PT9H");
 		expect(icsStamp(NOW)).toBe("20261019T080000Z");
-		const text = icsFile({ prodId: "-//Annie//Prova//IT", stamp: "20261019T080000Z", events: [{ uid: "u1@annie", date: "2026-12-31", summary: "Fine, anno; prova", description: "riga 1\nriga 2" }] });
+		const text = icsFile({ prodId: "-//Owni//Prova//IT", stamp: "20261019T080000Z", events: [{ uid: "u1@annie", date: "2026-12-31", summary: "Fine, anno; prova", description: "riga 1\nriga 2" }] });
 		expect(text.endsWith("\r\n")).toBe(true);
 		expect(text.split("\r\n").every((l) => !l.includes("\n"))).toBe(true);
 		const back = parseIcs(text);
@@ -782,16 +782,16 @@ describe("agenda: the .ics", () => {
 		// Gone by: said in the chat, never put in a calendar.
 		expect(events.some((e) => e.SUMMARY?.includes("A2"))).toBe(false);
 		const redditi = events.find((e) => e.SUMMARY === "Dichiarazione dei redditi 2025: invio");
-		expect(redditi?.DESCRIPTION?.split("\n").slice(0, 2)).toEqual(["Dichiarazione dei redditi 2025, invio online del modello Redditi.", "Dal calendario fiscale di Annie."]);
+		expect(redditi?.DESCRIPTION?.split("\n").slice(0, 2)).toEqual(["Dichiarazione dei redditi 2025, invio online del modello Redditi.", "Dal calendario fiscale di Owni."]);
 		expect(redditi).toMatchObject({ "DTSTART;VALUE=DATE": "20261102", "DTEND;VALUE=DATE": "20261103", "VALARM.TRIGGER": "-PT63H", "VALARM.ACTION": "DISPLAY" });
 		expect(redditi?.DESCRIPTION).toContain("La scadenza scritta è il 31 ottobre 2026: cade di sabato, slitta al giorno lavorativo dopo.");
 		const hosting = events.find((e) => e.SUMMARY?.includes("Hosting"));
 		expect(hosting?.SUMMARY).toBe("Hosting; Prova, Srl: rinnovo da pagare (120,00 €)");
-		expect(hosting?.DESCRIPTION).toBe("Dai rinnovi di Annie.");
+		expect(hosting?.DESCRIPTION).toBe("Dai rinnovi di Owni.");
 		expect(text).toContain("SUMMARY:Hosting\\; Prova\\, Srl: rinnovo da pagare (120\\,00 €)");
 		expect(events.find((e) => e.SUMMARY?.includes("A1"))?.SUMMARY).toBe(`${SUPPLIER.name} n. A1: fattura da pagare (1.220,00 €)`);
 		expect(events.find((e) => e.SUMMARY?.startsWith("Arrivo delle CU"))?.SUMMARY).toBe("Arrivo delle CU dei clienti (compensi del 2026)");
-		expect(events.find((e) => e.SUMMARY?.startsWith("F24 IVA del 3º"))?.DESCRIPTION).toContain("Dalla liquidazione IVA di Annie.\nCodice tributo 6033.");
+		expect(events.find((e) => e.SUMMARY?.startsWith("F24 IVA del 3º"))?.DESCRIPTION).toContain("Dalla liquidazione IVA di Owni.\nCodice tributo 6033.");
 		expect(events.find((e) => e.SUMMARY?.startsWith("LIPE 3º trim. 2026"))?.SUMMARY).toBe("LIPE 3º trim. 2026: invio");
 		expect(events.every((e) => e.SEQUENCE === events[0]?.SEQUENCE && e["LAST-MODIFIED"] === e.DTSTAMP)).toBe(true);
 		for (const line of text.split("\r\n")) expect(Buffer.byteLength(line, "utf8")).toBeLessThanOrEqual(LINE_OCTETS);
@@ -818,10 +818,10 @@ describe("agenda: the .ics", () => {
 		const { events } = parseIcs(readFileSync(join(s.root, "agenda", "scadenze-2026-10-19_2027-10-19.ics"), "utf8"));
 		const rate = events.filter((e) => e.SUMMARY?.includes("R1"));
 		expect(rate.map((e) => [e.SUMMARY, e.DESCRIPTION])).toEqual([
-			[`${SUPPLIER.name} n. R1: fattura da pagare (610,00 €)`, "Dallo scadenzario di Annie.\nRata 1 di 2."],
-			[`${SUPPLIER.name} n. R1: fattura da pagare (610,00 €)`, "Dallo scadenzario di Annie.\nRata 2 di 2."],
+			[`${SUPPLIER.name} n. R1: fattura da pagare (610,00 €)`, "Dallo scadenzario di Owni.\nRata 1 di 2."],
+			[`${SUPPLIER.name} n. R1: fattura da pagare (610,00 €)`, "Dallo scadenzario di Owni.\nRata 2 di 2."],
 		]);
-		expect(events.find((e) => e.SUMMARY === "F24 secondo acconto delle imposte")?.DESCRIPTION).toBe("Dal calcolo di tasse e contributi di Annie.");
+		expect(events.find((e) => e.SUMMARY === "F24 secondo acconto delle imposte")?.DESCRIPTION).toBe("Dal calcolo di tasse e contributi di Owni.");
 		const lipe = events.find((e) => e.SUMMARY === "LIPE 3º trim. 2026: invio");
 		expect(lipe?.DESCRIPTION?.split("\n")[0]).toBe("LIPE, la comunicazione delle liquidazioni IVA del 3º trimestre 2026.");
 	});

@@ -1,10 +1,10 @@
 # Settimana 56: tasse del forfettario
 
-Branch `week-56`. Per chi è nel regime forfettario Annie stima imposta sostitutiva e contributi dagli incassi, dice quanto mettere da parte, quando scadono gli F24 e di quanto, e li mette nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0070](adr/0070-tasse-del-forfettario.md).
+Branch `week-56`. Per chi è nel regime forfettario Owni stima imposta sostitutiva e contributi dagli incassi, dice quanto mettere da parte, quando scadono gli F24 e di quanto, e li mette nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0070](adr/0070-tasse-del-forfettario.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Sono un consulente, ho aperto la partita IVA nel 2024, gestione separata»**: il profilo. Se l'attività è generica, Annie chiede il codice ATECO invece di indovinare il coefficiente.
+- **«Sono un consulente, ho aperto la partita IVA nel 2024, gestione separata»**: il profilo. Se l'attività è generica, Owni chiede il codice ATECO invece di indovinare il coefficiente.
 - **«Quanto devo mettere da parte per le tasse?»**: ricavi incassati, reddito, contributi, imposta e la percentuale da accantonare di ogni incasso, con quanto hai già messo da parte.
 - **«Quando scade il prossimo F24 e quanto?»**: saldo e acconti di giugno (con la proroga dei forfettari) e novembre, le rate fisse per artigiani e commercianti, spostati al giorno lavorativo.
 - **«Se incasso altri 10.000 €?»**: quanto in più di tasse e quanto ti resta ogni 100 € incassati, e se passi una soglia del limite.

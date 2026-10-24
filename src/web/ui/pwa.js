@@ -43,7 +43,7 @@ export async function install() {
 	installOffer = undefined;
 	if (outcome === "accepted") {
 		store("annie.app", "installed");
-		toast(phone ? "Annie è sulla schermata Home" : "Annie è installata come app");
+		toast(phone ? "Owni è sulla schermata Home" : "Owni è installata come app");
 	}
 	render();
 }

@@ -18,14 +18,14 @@ export const ESTIMATE_NOTE = "Gli importi con «stima» sono stime: verificale c
 const REPEAT = "Ripeti cifre e date come sono scritte, non rifare i conti a mente.";
 export const BRIEF_NOTHING = "Niente da segnalare sulle scadenze: nel brief non scrivere niente sull'agenda fiscale.";
 
-/** Where a deadline comes from, for a calendar's description: «Dai rinnovi di Annie.». The chat does not say it. */
+/** Where a deadline comes from, for a calendar's description: «Dai rinnovi di Owni.». The chat does not say it. */
 export const SOURCE_FROM: Readonly<Record<AgendaSource, string>> = {
-	tasse: "Dal calcolo di tasse e contributi di Annie.",
-	iva: "Dalla liquidazione IVA di Annie.",
-	ritenute: "Dalle ritenute di Annie.",
-	rinnovi: "Dai rinnovi di Annie.",
-	fatture: "Dallo scadenzario di Annie.",
-	regole: "Dal calendario fiscale di Annie.",
+	tasse: "Dal calcolo di tasse e contributi di Owni.",
+	iva: "Dalla liquidazione IVA di Owni.",
+	ritenute: "Dalle ritenute di Owni.",
+	rinnovi: "Dai rinnovi di Owni.",
+	fatture: "Dallo scadenzario di Owni.",
+	regole: "Dal calendario fiscale di Owni.",
 };
 
 /** The sources of the fiscal deadlines proper, for «La prossima scadenza fiscale»: not a supplier's invoice nor a renewal. */

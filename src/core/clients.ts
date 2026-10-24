@@ -1,7 +1,7 @@
 /**
  * I clienti: one card per client with only what the person said (how they write the name, the
  * partita IVA or codice fiscale, other names, the referenti with role, phone, email and preferred
- * channel, the address, labels, dated notes, the ricontatti to do and the contacts had). Everything else Annie knows
+ * channel, the address, labels, dated notes, the ricontatti to do and the contacts had). Everything else Owni knows
  * about a client (invoices, solleciti, quotes, hours) stays in its own register and is read, never
  * copied here: a client seen in those registers is a client even without a card. Kept per
  * instance in `clients.json` (client-store.ts); the reading of the registers in client-sums.ts.

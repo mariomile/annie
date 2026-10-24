@@ -1,6 +1,6 @@
 /**
  * Le fatture ricorrenti (canoni): what the person says once («canone mensile di manutenzione 300 €
- * a Rossi srl») and Annie prepares as a sales invoice DRAFT every period, never issued, numbered
+ * a Rossi srl») and Owni prepares as a sales invoice DRAFT every period, never issued, numbered
  * or sent: the owner issues it with sales_invoices as any other draft. A schedule has a customer
  * (a card or a customer already invoiced), the lines as said (a voce of the listino by `item`, or
  * description and price), the draft's own terms (IVA, ritenuta, cassa, bollo, payment), a cadence

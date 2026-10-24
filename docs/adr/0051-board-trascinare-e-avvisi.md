@@ -12,7 +12,7 @@ La board ([ADR 0050](0050-board.md)) cambiava colonna solo dalla scheda aperta, 
   Sul telefono resta la scheda aperta, che funziona uguale.
 - **Quando un agente sposta una scheda in Da rivedere, lo sa chi deve rivederla**: la persona con cui l'agente ci ha lavorato, o gli owner se nessuno l'aveva avviata. Una persona che la sposta lì da sola non manda avvisi, e non li manda nemmeno un commento mentre la scheda aspetta.
   - **Nella console**: un messaggio («Scheda #12 da rivedere: …») e il numero accanto a **Board** nella barra laterale, che conta le schede da rivedere per quella persona. Se la board è aperta si aggiorna da sola.
-  - **Nella chat dell'owner**: se chi deve rivederla è un owner, arriva anche un messaggio agli approvatori dell'agente principale su Telegram e WhatsApp, con il titolo, l'agente e il suo riassunto (al più 300 caratteri). Non ha pulsanti: si approva o si rimanda dalla console, dove si legge il lavoro. I membri hanno solo la console, perché non hanno una chat collegata ad Annie.
+  - **Nella chat dell'owner**: se chi deve rivederla è un owner, arriva anche un messaggio agli approvatori dell'agente principale su Telegram e WhatsApp, con il titolo, l'agente e il suo riassunto (al più 300 caratteri). Non ha pulsanti: si approva o si rimanda dalla console, dove si legge il lavoro. I membri hanno solo la console, perché non hanno una chat collegata a Owni.
 
 ## Alternative scartate
 

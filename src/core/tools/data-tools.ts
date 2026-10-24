@@ -173,7 +173,7 @@ function queryOf(args: Record<string, unknown>): TableQuery {
 }
 
 /**
- * The answer for the model: Annie's counts outside the fence; inside it everything the file wrote
+ * The answer for the model: Owni's counts outside the fence; inside it everything the file wrote
  * or named (the sheet, the columns, the values, the notes that quote them).
  */
 function render(source: string, r: TableResult): string {

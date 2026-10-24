@@ -2,7 +2,7 @@
 
 Branch `week-46`. La segreteria ora controlla la partita IVA che trova nelle mail dei clienti, senza rete: se è sbagliata non la salva e nella bozza chiede al cliente di ricontrollarla. Le scelte sono nell'[ADR 0049](adr/0049-partita-iva-nella-segreteria.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **Un cliente scrive «P.IVA: IT 012 345 609 01» con una cifra sbagliata**: la bozza aggiunge «Le segnaliamo che la partita IVA indicata non risulta corretta: può cortesemente ricontrollarla e inviarcela di nuovo?», e la scheda su Telegram dice «P.IVA sbagliata: non l'ho salvata, nella bozza chiedo al cliente di ricontrollarla.».
 - **Una partita IVA giusta scritta con spazi, punti o «IT»**: salvata pulita.

@@ -1,4 +1,4 @@
-// Annie Cloud: sign up and sign in by email link; with billing, the trial and the subscription.
+// Owni Cloud: sign up and sign in by email link; with billing, the trial and the subscription.
 // Text is set with textContent only; Stripe's pages are reached only through links the server made.
 
 const $status = document.getElementById("status");
@@ -10,7 +10,7 @@ const $forBillingRow = document.getElementById("for-billing-row");
 const params = new URLSearchParams(location.search);
 let purpose = "signin";
 let billingOn = false;
-// The subscription link only where Annie Cloud has billing.
+// The subscription link only where Owni Cloud has billing.
 fetch("/api/info")
 	.then((res) => res.json())
 	.then((info) => {
@@ -33,15 +33,15 @@ function link(id, url) {
 	if (url) a.href = url;
 }
 
-/** Where the tenant stands, and the ways on: subscribe, manage, or go to Annie. */
+/** Where the tenant stands, and the ways on: subscribe, manage, or go to Owni. */
 function showBilling(loginUrl, billing) {
 	$form.hidden = true;
 	$forBillingRow.hidden = true;
 	const text = {
 		trial: ["Sei in prova", `La prova gratuita dura fino al ${rome(billing.trialEndsAt)}. Puoi attivare l'abbonamento quando vuoi.`],
 		active: ["Abbonamento attivo", "Da qui trovi fatture, carta e disdetta."],
-		past_due: ["Pagamento non riuscito", "Annie continua a lavorare, ma il rinnovo non è andato a buon fine: aggiorna la carta."],
-		ended: ["La prova è finita", "Annie è in pausa e i tuoi dati sono al sicuro. Attiva l'abbonamento per riprendere da dove avevi lasciato."],
+		past_due: ["Pagamento non riuscito", "Owni continua a lavorare, ma il rinnovo non è andato a buon fine: aggiorna la carta."],
+		ended: ["La prova è finita", "Owni è in pausa e i tuoi dati sono al sicuro. Attiva l'abbonamento per riprendere da dove avevi lasciato."],
 	}[billing.state];
 	$title.textContent = text[0];
 	$lead.textContent = text[1];
@@ -59,7 +59,7 @@ if (location.pathname === "/verify") {
 	$form.hidden = true;
 	$forBillingRow.hidden = true;
 	$title.textContent = "Un momento";
-	$lead.textContent = "Sto preparando la tua Annie. La prima volta può volerci qualche secondo.";
+	$lead.textContent = "Sto preparando la tua Owni. La prima volta può volerci qualche secondo.";
 	post("/api/verify", { token, purpose: forBilling ? "billing" : "signin" })
 		.then(({ loginUrl, billing }) => {
 			if (loginUrl && (!billing || (!forBilling && !billing.checkoutUrl && !billing.portalUrl))) return location.replace(loginUrl);
@@ -72,12 +72,12 @@ if (location.pathname === "/verify") {
 			$forBillingRow.hidden = !billingOn;
 		});
 } else if (params.get("sospesa") === "1") {
-	$title.textContent = "Annie è in pausa";
-	$lead.textContent = "La prova gratuita è finita. Scrivi la tua email: ti mando il link per attivare l'abbonamento, e Annie riprende da dove si era fermata.";
+	$title.textContent = "Owni è in pausa";
+	$lead.textContent = "La prova gratuita è finita. Scrivi la tua email: ti mando il link per attivare l'abbonamento, e Owni riprende da dove si era fermata.";
 	purpose = "billing";
 } else if (params.get("abbonamento") === "attivo") {
 	$title.textContent = "Grazie, l'abbonamento è attivo";
-	$lead.textContent = "Torna ad Annie dal tuo link, oppure chiedine uno nuovo qui sotto.";
+	$lead.textContent = "Torna a Owni dal tuo link, oppure chiedine uno nuovo qui sotto.";
 }
 
 $forBilling.addEventListener("click", (event) => {

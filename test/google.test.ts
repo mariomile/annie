@@ -148,7 +148,7 @@ describe("Google per persona", () => {
 		expect((await luca("/api/google")).account).toBeNull();
 	});
 
-	it("Annie reads the person's mail and calendar only in their own console threads, and only where the owner allows Google", async () => {
+	it("Owni reads the person's mail and calendar only in their own console threads, and only where the owner allows Google", async () => {
 		const { annie, base, google } = await boot(tempDataDir());
 		const owner = await client(base, annie.ownerLink as string);
 		await (await consent(base, owner, "good")).finish();
@@ -174,7 +174,7 @@ describe("Google per persona", () => {
 		expect(await reply(luca, lucaThread.id, '/tool google_mail_search {"query":"is:unread"}')).toContain("non ha collegato Google");
 	});
 
-	it("with ANNIE_GOOGLE_SERVICES=calendar Annie asks only for the calendar, and has no mail tools", async () => {
+	it("with ANNIE_GOOGLE_SERVICES=calendar Owni asks only for the calendar, and has no mail tools", async () => {
 		const { annie, base, google } = await boot(tempDataDir(), fakeGoogle(), { ...GOOGLE_ENV, ANNIE_GOOGLE_SERVICES: "calendar" });
 		const owner = await client(base, annie.ownerLink as string);
 		const flow = await consent(base, owner, "calendar");
@@ -232,7 +232,7 @@ describe("Google per persona", () => {
 			await new Promise((r) => setTimeout(r, 30));
 		}
 		expect(entries.find((e) => e.from === "annie")?.text).toContain("brief del mattino");
-		// In the brief's thread Annie only reads: nothing a mail says can make her act.
+		// In the brief's thread Owni only reads: nothing a mail says can make her act.
 		await (await consent(base, owner, "good")).finish();
 		await owner("/api/instances/annie/google", { allowed: true }, "PUT");
 		expect(await reply(owner, on.brief.threadId, '/tool memory_remember {"text":"x"}')).toContain("legge soltanto");

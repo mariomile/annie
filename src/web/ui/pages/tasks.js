@@ -136,7 +136,7 @@ export async function viewTasks(main) {
 	);
 }
 
-/** Sentinelle: pages Annie checks by itself, writing to a chat when they change or a price crosses a threshold. */
+/** Sentinelle: pages Owni checks by itself, writing to a chat when they change or a price crosses a threshold. */
 function watchSection(inst, watches, threads) {
 	const num = (n) => Number(n).toLocaleString("it-IT", { maximumFractionDigits: 2 });
 	const condition = (w) => {
@@ -226,14 +226,14 @@ function watchSection(inst, watches, threads) {
 		h("h2.subhead", "Sentinelle"),
 		h(
 			"div.grid-2",
-			h("div.card", watches.length ? table : emptyNote("div.empty", "Nessuna sentinella", "Annie controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
+			h("div.card", watches.length ? table : emptyNote("div.empty", "Nessuna sentinella", "Owni controlla una pagina da sola e ti scrive quando cambia o quando un prezzo scende. Creane una qui accanto, oppure chiedi in chat: «avvisami quando questo scende sotto 50 €».")),
 			h(
 				"div.card.pad",
 				h("h2", "Nuova sentinella"),
 				inst.canChat
 					? [
 							h("label.field", h("span", "Pagina da controllare"), url),
-							h("label.field", h("span", "Cosa guardare"), what, h("small", "La frase subito prima di quello che ti interessa. Senza frase Annie guarda tutta la pagina.")),
+							h("label.field", h("span", "Cosa guardare"), what, h("small", "La frase subito prima di quello che ti interessa. Senza frase Owni guarda tutta la pagina.")),
 							h("div.grid-2", h("label.field", h("span", "Avvisami se il prezzo è sotto"), below), h("label.field", h("span", "o sopra"), above)),
 							h("label.field", h("span", "Quanto spesso"), every),
 							h("label.field", h("span", "Avvisi nella chat"), thread),
@@ -264,12 +264,12 @@ function briefCard(inst, { brief, google }) {
 		render();
 	};
 	const hint = !google.available
-		? "Google non è configurato su questo server: il brief userà solo quello che Annie ricorda di te."
+		? "Google non è configurato su questo server: il brief userà solo quello che Owni ricorda di te."
 		: !google.connected
 			? "Collega Google dal menu del tuo account per avere calendario e mail nel brief."
 			: !google.allowed
 				? "Hai collegato Google, ma questo agente non lo può usare: l'owner lo attiva in Impostazioni."
-				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Annie ricorda di te. Solo lettura.";
+				: "Calendario di oggi, mail non lette che chiedono una risposta, e quello che Owni ricorda di te. Solo lettura.";
 	return h(
 		"div.card.pad.brief",
 		h("div.row-gap", h("h2", "Brief del mattino"), brief ? h("span.chip.ok", "Attivo") : null),

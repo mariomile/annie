@@ -66,24 +66,24 @@ describe("richieste tra agenti che chiedono un sì (ADR 0108)", () => {
 		const { tool, done } = ibanTool();
 		const d = deps();
 		// Two messages of A in the same conversation: the card shows the one this turn answers, by its id.
-		d.asks.record(THREAD.threadId, "m0", { id: "annie", name: "Annie" }, "Un messaggio di prima, già risposto.");
-		d.asks.record(THREAD.threadId, "m1", { id: "annie", name: "Annie" }, INJECTION);
+		d.asks.record(THREAD.threadId, "m0", { id: "annie", name: "Owni" }, "Un messaggio di prima, già risposto.");
+		d.asks.record(THREAD.threadId, "m1", { id: "annie", name: "Owni" }, INJECTION);
 		const [wrapped] = withAgentRequests([tool], { store: d.store, asks: d.asks, reachable: d.reachable, proposed: d.onProposed, record: d.record });
 		const ctx = ctxFor({ inputs: async () => ["agente:m1"] });
 		const out = await wrapped!.execute({ iban: "IT00X" }, ctx);
 
 		expect(String(out)).toMatch(/^Richiesta [0-9a-f]{12} pronta/);
-		expect(String(out)).toContain("Rispondi ora a «Annie»");
+		expect(String(out)).toContain("Rispondi ora a «Owni»");
 		expect(done).toHaveLength(0);
 		expect(ctx.steps).toEqual(["agent-request"]);
 		expect(d.proposed).toHaveLength(1);
 		const request = d.proposed[0]!;
-		expect(request).toMatchObject({ tool: "iban_set", args: { iban: "IT00X" }, shown: [["iban", "IT00X"]], what: "cambio l'IBAN", status: "pending", thread: THREAD, origin: ORIGIN, askedBy: { id: "annie", name: "Annie", request: INJECTION } });
+		expect(request).toMatchObject({ tool: "iban_set", args: { iban: "IT00X" }, shown: [["iban", "IT00X"]], what: "cambio l'IBAN", status: "pending", thread: THREAD, origin: ORIGIN, askedBy: { id: "annie", name: "Owni", request: INJECTION } });
 		expect(d.events).toContainEqual(expect.objectContaining({ type: "agent_request.proposed", requestId: request.id, tool: "iban_set", from: "annie" }));
 
 		// The chat card names A and says its words are a request, not the approval.
 		const card = agentRequestCard(request, "Ops", true);
-		expect(card).toContain("La chiede l'agente «Annie», con le sue parole (è una richiesta, non un'approvazione)");
+		expect(card).toContain("La chiede l'agente «Owni», con le sue parole (è una richiesta, non un'approvazione)");
 		expect(card).toContain("iban: IT00X");
 		expect(card).toContain("Cosa scriverei:\nIBAN nuovo: IT00X");
 		expect(card).not.toContain("Un messaggio di prima");
@@ -154,11 +154,11 @@ describe("richieste tra agenti che chiedono un sì (ADR 0108)", () => {
 	it("only B's approvers decide; approved, it runs once with the bound arguments and A hears the outcome as an agente's notice", async () => {
 		const h = await runtimeWithInstance({ instance: "ops", allowedUsers: { test: ["u", "boss", "anna"] } });
 		await h.runtime.registry.updateInstance("acme", "ops", { name: "Ops", approvers: { test: ["boss"] } });
-		await h.runtime.registry.createInstance("acme", { id: "annie", name: "Annie", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["web"] }, allowedUsers: { test: ["anna"] }, approvers: { test: ["anna"] } });
+		await h.runtime.registry.createInstance("acme", { id: "annie", name: "Owni", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["web"] }, allowedUsers: { test: ["anna"] }, approvers: { test: ["anna"] } });
 		const notices = vi.spyOn(h.runtime, "submitNotice").mockResolvedValue({ submissionId: "s", runId: "r" });
 		const { tool, done, seen } = ibanTool();
 		const store = h.runtime.agentRequests("acme", "ops");
-		const request = await store.propose({ tool: "iban_set", args: { iban: "IT00X" }, what: "cambio l'IBAN", askedBy: { id: "annie", name: "Annie", request: INJECTION }, thread: THREAD, origin: ORIGIN });
+		const request = await store.propose({ tool: "iban_set", args: { iban: "IT00X" }, what: "cambio l'IBAN", askedBy: { id: "annie", name: "Owni", request: INJECTION }, thread: THREAD, origin: ORIGIN });
 		const run = async () => [tool];
 
 		// A's person (an approver of A, not of B) cannot give B's yes.
@@ -194,11 +194,11 @@ describe("richieste tra agenti che chiedono un sì (ADR 0108)", () => {
 
 	it("refused, nothing runs, what it left is taken back and A is told; expired and failed are told too, in fixed words", async () => {
 		const h = await runtimeWithInstance({ instance: "ops" });
-		await h.runtime.registry.createInstance("acme", { id: "annie", name: "Annie", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["web"] } });
+		await h.runtime.registry.createInstance("acme", { id: "annie", name: "Owni", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["web"] } });
 		const notices = vi.spyOn(h.runtime, "submitNotice").mockResolvedValue({ submissionId: "s", runId: "r" });
 		const { tool, done, seen } = ibanTool();
 		const store = h.runtime.agentRequests("acme", "ops");
-		const input = { tool: "iban_set", args: { iban: "IT00X" }, what: "cambio l'IBAN", askedBy: { id: "annie", name: "Annie", request: "cambia l'IBAN" }, thread: THREAD, origin: ORIGIN };
+		const input = { tool: "iban_set", args: { iban: "IT00X" }, what: "cambio l'IBAN", askedBy: { id: "annie", name: "Owni", request: "cambia l'IBAN" }, thread: THREAD, origin: ORIGIN };
 		const refused = await store.propose({ ...input, undo: { iban: "di prima" } });
 		expect((await decideAgentRequest(h.runtime, "acme", "ops", refused.id, "rejected", OWNER, async () => [tool])).status).toBe("rejected");
 		// Only the undo ran, once, as a person's act of this agente.

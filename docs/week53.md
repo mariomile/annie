@@ -1,11 +1,11 @@
 # Settimana 53: ore di lavoro
 
-Branch `week-53`. Annie tiene il conto delle ore lavorate per cliente, con il timer, le tariffe, il report da mandare al cliente e il preventivo fatto dalle ore. Le scelte sono nell'[ADR 0058](adr/0058-ore-di-lavoro.md).
+Branch `week-53`. Owni tiene il conto delle ore lavorate per cliente, con il timer, le tariffe, il report da mandare al cliente e il preventivo fatto dalle ore. Le scelte sono nell'[ADR 0058](adr/0058-ore-di-lavoro.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Ho lavorato 3 ore per Rossi sul sito»**, **«ieri dalle 9 alle 13 con un'ora di pausa»**: la voce è registrata, con l'avviso se sembra un doppione.
-- **«Avvia il timer per Beta»** e poi **«ferma il timer»**: le ore si registrano da sole; se il timer è rimasto acceso tutta la notte Annie chiede quante ore erano davvero.
+- **«Avvia il timer per Beta»** e poi **«ferma il timer»**: le ore si registrano da sole; se il timer è rimasto acceso tutta la notte Owni chiede quante ore erano davvero.
 - **«La mia tariffa per Rossi è 50 euro più IVA, arrotonda al quarto d'ora»**.
 - **«Quante ore ho fatto questa settimana?»**, **«quanto devo fatturare a Rossi?»**: ore e importi per cliente e progetto, da fatturare, nel preventivo e fatturate.
 - **«Manda a Rossi il riepilogo ore di ottobre»**: un PDF con la carta intestata, che parte allegato alla mail dopo l'approvazione.

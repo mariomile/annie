@@ -66,8 +66,8 @@ function speechCard(inst, host, allowed, understood) {
 	return h(
 		"div.card.pad",
 		h("h2", "Risposte a voce"),
-		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Annie risponde con un vocale e con il testo. Ognuno può chiederle «rispondimi sempre a voce» o «niente vocali». La voce la fa ${host}: riceve solo il testo delle risposte da leggere, mai i vocali di chi le scrive.`),
-		understood ? null : h("p.chip.warn", "Per rispondere ai vocali Annie deve prima capirli: accendi anche Messaggi vocali."),
+		h("p.muted", `A chi le manda un vocale su Telegram o WhatsApp, Owni risponde con un vocale e con il testo. Ognuno può chiederle «rispondimi sempre a voce» o «niente vocali». La voce la fa ${host}: riceve solo il testo delle risposte da leggere, mai i vocali di chi le scrive.`),
+		understood ? null : h("p.chip.warn", "Per rispondere ai vocali Owni deve prima capirli: accendi anche Messaggi vocali."),
 		h("label.row-gap", toggle, h("span", "Rispondi a voce ai vocali")),
 	);
 }
@@ -88,13 +88,13 @@ function imagesCard(inst, host, maxPerDay, allowed) {
 	return h(
 		"div.card.pad",
 		h("h2", "Immagini"),
-		h("p.muted", `Annie crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e ritocca le foto che le mandano. Le genera il servizio ${host}, che riceve la descrizione e, per un ritocco, la foto. L'immagine arriva in chat e resta tra i file. Al massimo ${maxPerDay} immagini al giorno per tutto l'account.`),
+		h("p.muted", `Owni crea immagini quando gliele chiedono (un'illustrazione, un logo, un volantino) e ritocca le foto che le mandano. Le genera il servizio ${host}, che riceve la descrizione e, per un ritocco, la foto. L'immagine arriva in chat e resta tra i file. Al massimo ${maxPerDay} immagini al giorno per tutto l'account.`),
 		h("label.row-gap", toggle, h("span", "Consenti le immagini a questo agente")),
 	);
 }
 
 /**
- * Owner: the AI model this instance runs on (ADR 0032). Any provider Annie offers, with the
+ * Owner: the AI model this instance runs on (ADR 0032). Any provider Owni offers, with the
  * server's key or one the owner pastes here; a saved key never comes back to the page.
  */
 function modelCard(inst, current, providers) {
@@ -181,7 +181,7 @@ function modelCard(inst, current, providers) {
 		try {
 			const body = { provider: provider.value, modelId: model.value, ...(key.value.trim() ? { apiKey: key.value.trim() } : {}) };
 			const { model: saved } = await api(`/api/instances/${inst.id}/model`, { method: "PUT", body });
-			toast(`Annie ora usa ${models.find((m) => m.id === saved.modelId)?.name ?? saved.modelId}`);
+			toast(`Owni ora usa ${models.find((m) => m.id === saved.modelId)?.name ?? saved.modelId}`);
 			render();
 		} catch (error) {
 			toast(error.message, true);
@@ -235,7 +235,7 @@ function providersCard(inst, initial, initialModels) {
 		const subscriptions = (catalog.providers ?? []).filter((p) => p.kind === "subscription");
 		note.textContent = catalog.localEnabled
 			? "Gli accessi già presenti su questo computer vengono riconosciuti e collegati all'avvio. Un provider che scolleghi resta scollegato finché non lo ricolleghi."
-			: "Gli abbonamenti richiedono Annie in esecuzione su questo computer con i provider locali attivi. I provider con chiave API restano disponibili.";
+			: "Gli abbonamenti richiedono Owni in esecuzione su questo computer con i provider locali attivi. I provider con chiave API restano disponibili.";
 		detect.disabled = busy || (!catalog.localEnabled && !catalog.error);
 		detect.textContent = busy ? "Rilevamento…" : "Rileva di nuovo";
 		modelSlot.inert = busy;
@@ -249,7 +249,7 @@ function providersCard(inst, initial, initialModels) {
 				h("div.provider-info", h("div.row-gap", h("b", p.label), current ? h("span.provider-current", "In uso") : null), h("small.muted", p.connected ? "Accesso locale rilevato · Usa il tuo abbonamento" : connecting ? "Completa l'accesso nella pagina aperta nel browser. Questa schermata si aggiorna da sola." : p.status === "not-installed" ? `Installa ${p.label} su questo computer per collegarlo.` : p.status === "unavailable" ? "Non riesco a verificare l'accesso locale. Riprova il rilevamento." : "Collega il tuo abbonamento, senza chiave API."),
 					p.error ? h("small.warn", p.error) : null,
 					!p.connected && !connecting && p.installed && !p.authenticated && p.loginCommand ? h("div.provider-login", h("span.muted.small", "Premi Collega per accedere, oppure usa il terminale:"), h("code.mono", p.loginCommand), copyButton(p.loginCommand)) : null),
-				h("div.provider-controls", h(`span.chip${status.tone ? `.${status.tone}` : ""}`, status.label), h("div.actions", p.connected ? h("button.btn.ghost", { type: "button", disabled: busy, onclick: () => modelForm?.chooseProvider(p.id) }, "Scegli modello") : null, action, p.connected ? h("button.btn.ghost.small", { type: "button", disabled: busy, "aria-label": `Scollega ${p.label}`, onclick: () => confirmDialog(`Scollegare ${p.label}?`, "Annie non userà più questo abbonamento. L'accesso nel terminale resta disponibile. Sposta prima gli agenti che lo usano su un altro provider.", "Scollega", () => run(`/api/providers/${encodeURIComponent(p.id)}`, "DELETE")) }, "Scollega") : null)),
+				h("div.provider-controls", h(`span.chip${status.tone ? `.${status.tone}` : ""}`, status.label), h("div.actions", p.connected ? h("button.btn.ghost", { type: "button", disabled: busy, onclick: () => modelForm?.chooseProvider(p.id) }, "Scegli modello") : null, action, p.connected ? h("button.btn.ghost.small", { type: "button", disabled: busy, "aria-label": `Scollega ${p.label}`, onclick: () => confirmDialog(`Scollegare ${p.label}?`, "Owni non userà più questo abbonamento. L'accesso nel terminale resta disponibile. Sposta prima gli agenti che lo usano su un altro provider.", "Scollega", () => run(`/api/providers/${encodeURIComponent(p.id)}`, "DELETE")) }, "Scollega") : null)),
 			);
 		}));
 		if (models && models !== paintedModels) {
@@ -280,7 +280,7 @@ function providersCard(inst, initial, initialModels) {
 		}
 	};
 	const card = h("section.card.pad.provider-settings",
-		h("div.settings-heading", h("div", h("h2", "Provider"), h("p.muted", "Il tuo abbonamento, connesso ad Annie.")), detect),
+		h("div.settings-heading", h("div", h("h2", "Provider"), h("p.muted", "Il tuo abbonamento, connesso a Owni.")), detect),
 		rows, note, problem, modelSlot,
 	);
 	const schedulePoll = () => {
@@ -333,7 +333,7 @@ function voiceCard(inst, host, allowed) {
 	return h(
 		"div.card.pad",
 		h("h2", "Messaggi vocali"),
-		h("p.muted", `I vocali di Telegram e WhatsApp vengono trascritti da ${host} e arrivano ad Annie come testo. Solo quelli delle persone che possono scrivere; l'audio va solo a quel servizio.`),
+		h("p.muted", `I vocali di Telegram e WhatsApp vengono trascritti da ${host} e arrivano a Owni come testo. Solo quelli delle persone che possono scrivere; l'audio va solo a quel servizio.`),
 		h("label.row-gap", toggle, h("span", "Trascrivi i vocali di questo agente")),
 	);
 }
@@ -353,10 +353,10 @@ function searchCard(inst, host, allowed, hosts) {
 	});
 	const everything = hosts.includes("*");
 	const openAll = async () => {
-		if (!confirm("Annie potrà leggere, fotografare e usare con il browser tutti i siti pubblici, non solo quelli trovati cercando. Una pagina con istruzioni nascoste potrebbe spingerla a cercare qualcosa che non deve. Continuare?")) return;
+		if (!confirm("Owni potrà leggere, fotografare e usare con il browser tutti i siti pubblici, non solo quelli trovati cercando. Una pagina con istruzioni nascoste potrebbe spingerla a cercare qualcosa che non deve. Continuare?")) return;
 		try {
 			await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: ["*"] } });
-			toast("Annie può aprire tutti i siti pubblici");
+			toast("Owni può aprire tutti i siti pubblici");
 			render();
 		} catch (error) {
 			toast(error.message, true);
@@ -365,7 +365,7 @@ function searchCard(inst, host, allowed, hosts) {
 	return h(
 		"div.card.pad",
 		h("h2", "Ricerca sul web"),
-		h("p.muted", `Annie cerca notizie, prezzi, orari e tutto quello che cambia, e se glielo chiedi prepara un report di ricerca con le fonti numerate. Le ricerche vanno a ${host}, solo le parole cercate. Le pagine trovate le apre solo dai siti consentiti qui sotto.`),
+		h("p.muted", `Owni cerca notizie, prezzi, orari e tutto quello che cambia, e se glielo chiedi prepara un report di ricerca con le fonti numerate. Le ricerche vanno a ${host}, solo le parole cercate. Le pagine trovate le apre solo dai siti consentiti qui sotto.`),
 		h("label.row-gap", toggle, h("span", "Consenti la ricerca a questo agente")),
 		allowed && !everything
 			? h("p.muted", h("span", hosts.length === 0 ? "Per ora vede solo titoli ed estratti dei risultati. " : "Delle pagine trovate apre solo quelle dei siti consentiti. "), h("button.btn.small.ghost", { onclick: openAll }, "Fai aprire tutti i siti pubblici"))
@@ -379,7 +379,7 @@ function webCard(inst, hosts) {
 	const save = async () => {
 		try {
 			const { hosts: saved } = await api(`/api/instances/${inst.id}/web`, { method: "PUT", body: { hosts: list.value.split(/[\s,]+/) } });
-			toast(saved.length === 0 ? "Navigazione web spenta per questo agente" : saved.includes("*") ? "Annie può leggere tutti i siti pubblici" : `Annie può leggere ${saved.length} siti`);
+			toast(saved.length === 0 ? "Navigazione web spenta per questo agente" : saved.includes("*") ? "Owni può leggere tutti i siti pubblici" : `Owni può leggere ${saved.length} siti`);
 			render();
 		} catch (error) {
 			toast(error.message, true);
@@ -388,7 +388,7 @@ function webCard(inst, hosts) {
 	const chip = hosts.length === 0 ? h("span.chip", "Spenta") : hosts.includes("*") ? h("span.chip.warn", "Tutti i siti pubblici") : h("span.chip.ok", hosts.length === 1 ? "1 sito" : `${hosts.length} siti`);
 	return fold(
 		{ title: "Navigazione web", glyph: "browser", lead: `I siti che ${inst.name} può aprire con il suo browser.`, chip },
-		h("p.muted", "I siti che Annie può leggere, fotografare e usare con il suo browser: apre le pagine, clicca, scrive nelle ricerche e nei filtri, ma non invia moduli (per quello servono le azioni sul web, con approvazione). Quello che scrive in una ricerca arriva al sito. Un dominio per riga, i sottodomini sono compresi. Meglio elencarli uno per uno: * vuol dire tutti i siti pubblici, anche quelli dove una pagina potrebbe spingere Annie a cercare qualcosa che non deve. Vuoto: nessuno."),
+		h("p.muted", "I siti che Owni può leggere, fotografare e usare con il suo browser: apre le pagine, clicca, scrive nelle ricerche e nei filtri, ma non invia moduli (per quello servono le azioni sul web, con approvazione). Quello che scrive in una ricerca arriva al sito. Un dominio per riga, i sottodomini sono compresi. Meglio elencarli uno per uno: * vuol dire tutti i siti pubblici, anche quelli dove una pagina potrebbe spingere Owni a cercare qualcosa che non deve. Vuoto: nessuno."),
 		h("label.field", h("span", "Siti consentiti"), list),
 		h("button.btn", { onclick: save }, "Salva i siti"),
 	);
@@ -400,7 +400,7 @@ function webActionsCard(inst, allowed) {
 	toggle.onchange = async () => {
 		try {
 			await api(`/api/instances/${inst.id}/web-actions-allowed`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può chiedere di inviare moduli" : "Azioni sul web spente");
+			toast(toggle.checked ? "Owni può chiedere di inviare moduli" : "Azioni sul web spente");
 		} catch (error) {
 			toggle.checked = !toggle.checked;
 			toast(error.message, true);
@@ -408,7 +408,7 @@ function webActionsCard(inst, allowed) {
 	};
 	return fold(
 		{ title: "Azioni sul web", glyph: "approvazioni", lead: "Moduli inviati solo dopo un'approvazione.", chip: onOff(toggle, "Attive", "Spente") },
-		h("p.muted", "Annie può chiedere di inviare un modulo di un sito consentito (un contatto, una prenotazione). Ogni invio aspetta l'approvazione di chi l'ha chiesto o di un approvatore, che vede destinazione e valori esatti; niente parte da solo."),
+		h("p.muted", "Owni può chiedere di inviare un modulo di un sito consentito (un contatto, una prenotazione). Ogni invio aspetta l'approvazione di chi l'ha chiesto o di un approvatore, che vede destinazione e valori esatti; niente parte da solo."),
 		h("label.row-gap", toggle, h("span", "Consenti le azioni sul web con approvazione")),
 	);
 }
@@ -452,30 +452,30 @@ function computerCard(inst, allowed, problem) {
 	toggle.onchange = async () => {
 		try {
 			await api(`/api/instances/${inst.id}/computer-allowed`, { method: "PUT", body: { allowed: toggle.checked } });
-			toast(toggle.checked ? "Annie può usare il suo computer" : "Computer spento");
+			toast(toggle.checked ? "Owni può usare il suo computer" : "Computer spento");
 		} catch (error) {
 			toggle.checked = !toggle.checked;
 			toast(error.message, true);
 		}
 	};
 	const reset = () =>
-		confirmDialog("Azzerare il computer?", "Annie perde i file che ha nel suo computer (/work). Quelli copiati nel workspace restano.", "Azzera", async () => {
+		confirmDialog("Azzerare il computer?", "Owni perde i file che ha nel suo computer (/work). Quelli copiati nel workspace restano.", "Azzera", async () => {
 			await api(`/api/instances/${inst.id}/computer`, { method: "DELETE" });
 			toast("Computer azzerato");
 		});
 	return h(
 		"div.card.pad",
 		h("h2", "Computer"),
-		h("p.muted", "Annie esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
+		h("p.muted", "Owni esegue comandi in un computer suo, senza rete e senza segreti: elabora fogli e documenti, converte file, fa grafici. Usa copie dei file del workspace e rimette lì quelli che produce. Niente può uscire da quel computer, quindi i comandi non chiedono approvazione."),
 		problem ? h("p.warn", `Il computer non è disponibile: ${problem}.`) : null,
-		h("label.row-gap", toggle, h("span", "Consenti ad Annie di usare il suo computer")),
+		h("label.row-gap", toggle, h("span", "Consenti a Owni di usare il suo computer")),
 		h("div.actions", h("button.btn.ghost", { onclick: reset }, "Azzera i file del computer")),
 	);
 }
 
 /** The agente's screen through Cua (ADR 0045): a desktop of its own where it clicks and types. */
 function desktopCard(inst, allowed, desktop) {
-	if (!desktop.available) return h("div.card.pad", h("h2", "Schermo remoto"), h("p.muted", "Lo schermo remoto non è attivo su questo server: chiedi a chi gestisce Annie di attivarlo."));
+	if (!desktop.available) return h("div.card.pad", h("h2", "Schermo remoto"), h("p.muted", "Lo schermo remoto non è attivo su questo server: chiedi a chi gestisce Owni di attivarlo."));
 	const toggle = h("input", { type: "checkbox", checked: allowed || undefined });
 	toggle.onchange = async () => {
 		try {
@@ -502,14 +502,14 @@ function desktopCard(inst, allowed, desktop) {
 		"div.card.pad",
 		h("h2", "Schermo remoto"),
 		h("p.muted", `${inst.name} ha un computer tutto suo, con un browser, dove guarda lo schermo, clicca e scrive. ${network} Quello che fa sullo schermo non chiede approvazione: prima di inviare, pagare o accedere a un account si ferma e chiede in chat.${many}`),
-		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Annie deve sistemarlo.") : null,
-		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Annie"), h("p.mono", desktop.problem)) : null,
+		desktop.problem ? h("p.warn", "Lo schermo per ora non funziona: chi gestisce Owni deve sistemarlo.") : null,
+		desktop.problem ? h("details", h("summary", "Dettagli per chi gestisce Owni"), h("p.mono", desktop.problem)) : null,
 		h("label.row-gap", toggle, h("span", "Consenti lo schermo a questo agente")),
 		desktop.shared ? null : h("div.actions", h("button.btn.ghost", { onclick: reset }, "Riavvia lo schermo")),
 	);
 }
 
-/** macOS permissions describe the host running Annie; the per-agent grant stays separate. */
+/** macOS permissions describe the host running Owni; the per-agent grant stays separate. */
 function computerUseCard(inst, initialAllowed, initialDesktop) {
 	let desktop = initialDesktop;
 	let allowed = initialAllowed;
@@ -518,12 +518,12 @@ function computerUseCard(inst, initialAllowed, initialDesktop) {
 	const message = h("p.muted.small", { role: "status", hidden: true });
 	const problem = h("p.warn", { role: "alert", hidden: true });
 	const check = h("button.btn.ghost", { type: "button", onclick: () => run() }, "Controlla di nuovo");
-	const card = h("section.card.pad.computer-use-settings", h("div.settings-heading", h("div", h("h2", "Computer Use"), h("p.muted", "Lascia che Annie veda lo schermo, clicchi e scriva su questo Mac.")), check), content, message, problem);
+	const card = h("section.card.pad.computer-use-settings", h("div.settings-heading", h("div", h("h2", "Computer Use"), h("p.muted", "Lascia che Owni veda lo schermo, clicchi e scriva su questo Mac.")), check), content, message, problem);
 	const draw = () => {
 		check.disabled = busy;
 		check.textContent = busy ? "Controllo…" : "Controlla di nuovo";
 		if (desktop.kind !== "local") {
-			mount(content, h("p.muted", "Il controllo di questo computer richiede l'app Annie per Mac con il servizio locale attivo. Lo schermo remoto, se disponibile, si gestisce separatamente qui sotto."));
+			mount(content, h("p.muted", "Il controllo di questo computer richiede l'app Owni per Mac con il servizio locale attivo. Lo schermo remoto, se disponibile, si gestisce separatamente qui sotto."));
 			return;
 		}
 		const permissions = desktop.permissions;
@@ -545,15 +545,15 @@ function computerUseCard(inst, initialAllowed, initialDesktop) {
 			draw();
 		});
 		const permissionRows = [
-			["screenRecording", "Registrazione schermo", "Permette ad Annie di vedere le finestre delle app.", "screen"],
-			["accessibility", "Accessibilità", "Permette ad Annie di cliccare e scrivere.", "compose"],
+			["screenRecording", "Registrazione schermo", "Permette a Owni di vedere le finestre delle app.", "screen"],
+			["accessibility", "Accessibilità", "Permette a Owni di cliccare e scrivere.", "compose"],
 		].map(([id, title, text, glyph]) => {
 			const granted = supported && permissions[id] === true;
 			return h("div.permission-row", h("span.permission-glyph", icon(glyph)), h("div.provider-info", h("b", title), h("small.muted", text)), h("div.permission-controls", h(`span.chip${granted ? ".ok" : supported ? ".warn" : ""}`, granted ? "Consentito" : supported ? "Da consentire" : "Non disponibile"), granted ? null : h("button.btn.ghost", { type: "button", disabled: busy || !supported, "aria-label": `Consenti ${title.toLowerCase()}`, onclick: () => run(id) }, "Consenti")));
 		});
 		mount(content,
-			h("div.computer-use-intro", h("span.computer-use-glyph", icon("screen")), h("div", h("b", "Questo Mac"), h("p.muted.small", "Annie interagisce con le app e i file di questo computer. Il computer è condiviso dagli agenti a cui dai il permesso.")), h(`span.chip${ready ? ".ok" : ".warn"}`, ready ? "Pronto" : "Da configurare")),
-			!supported ? h("p.warn", permissions?.problem ?? desktop.problem ?? "Non riesco a leggere i permessi di macOS. Apri Annie sul Mac e controlla che il servizio locale sia attivo.") : null,
+			h("div.computer-use-intro", h("span.computer-use-glyph", icon("screen")), h("div", h("b", "Questo Mac"), h("p.muted.small", "Owni interagisce con le app e i file di questo computer. Il computer è condiviso dagli agenti a cui dai il permesso.")), h(`span.chip${ready ? ".ok" : ".warn"}`, ready ? "Pronto" : "Da configurare")),
+			!supported ? h("p.warn", permissions?.problem ?? desktop.problem ?? "Non riesco a leggere i permessi di macOS. Apri Owni sul Mac e controlla che il servizio locale sia attivo.") : null,
 			h("div.permission-list", permissionRows),
 			supported && permissions.problem ? h("p.warn", permissions.problem) : null,
 			h("label.row-gap.computer-use-toggle", toggle, h("span", `Consenti l'uso di questo Mac a ${inst.name}`)),
@@ -569,7 +569,7 @@ function computerUseCard(inst, initialAllowed, initialDesktop) {
 		try {
 			if (permission) {
 				await api("/api/desktop/permissions", { method: "POST", body: { permission } });
-				message.textContent = "Completa il consenso in Impostazioni di Sistema, poi premi Controlla di nuovo. Se macOS lo richiede, riapri Annie.";
+				message.textContent = "Completa il consenso in Impostazioni di Sistema, poi premi Controlla di nuovo. Se macOS lo richiede, riapri Owni.";
 				message.hidden = false;
 			}
 			desktop = await api("/api/desktop");
@@ -837,7 +837,7 @@ function whatsappCard(inst, w) {
 			? h(
 					"div.stack",
 					h("h3.section-title", "Oltre le 24 ore"),
-					h("p.muted", "WhatsApp lascia scrivere liberamente solo entro 24 ore dall'ultimo messaggio della persona. Dopo, Annie tiene da parte i messaggi e li consegna appena la persona scrive. Con un template approvato da Meta (una variabile {{1}} nel testo) la avvisa subito, con un estratto."),
+					h("p.muted", "WhatsApp lascia scrivere liberamente solo entro 24 ore dall'ultimo messaggio della persona. Dopo, Owni tiene da parte i messaggi e li consegna appena la persona scrive. Con un template approvato da Meta (una variabile {{1}} nel testo) la avvisa subito, con un estratto."),
 					h("div.grid-2", h("label.field", h("span", "Nome del template"), templateName), h("label.field", h("span", "Lingua"), templateLanguage)),
 				)
 			: null,
@@ -845,7 +845,7 @@ function whatsappCard(inst, w) {
 	);
 }
 
-/** The instance's phone number (Twilio, ADR 0012): Annie answers calls, one turn at a time. */
+/** The instance's phone number (Twilio, ADR 0012): Owni answers calls, one turn at a time. */
 function phoneCard(inst, p) {
 	const accountSid = h("input", { type: "text", class: "mono", autocomplete: "off", placeholder: p.connected ? (p.accountSid ?? "Invariato") : "AC…" });
 	const authToken = h("input", { type: "password", class: "mono", autocomplete: "off", placeholder: p.connected ? "Nuovo auth token (facoltativo)" : "32 caratteri esadecimali" });
@@ -872,7 +872,7 @@ function phoneCard(inst, p) {
 		});
 	return fold(
 		{ title: "Telefono", glyph: "phone", lead: `${inst.name} risponde a voce alle chiamate.`, chip: p.connected ? h("span.chip.ok", p.number ?? "Collegato") : h("span.chip", "Non collegato") },
-		p.connected ? null : h("p.muted", "Annie risponde alle chiamate su un numero Twilio, a voce, un turno alla volta. Da console.twilio.com prendi Account SID, auth token e il numero (guida in docs/chiavi.md): l'indirizzo delle chiamate lo imposta Annie."),
+		p.connected ? null : h("p.muted", "Owni risponde alle chiamate su un numero Twilio, a voce, un turno alla volta. Da console.twilio.com prendi Account SID, auth token e il numero (guida in docs/chiavi.md): l'indirizzo delle chiamate lo imposta Owni."),
 		p.https ? null : h("p.muted", "Questo server non ha un indirizzo https pubblico: Twilio non può chiamarlo."),
 		h("label.field", h("span", "Account SID"), accountSid),
 		h("label.field", h("span", "Auth token"), authToken, h("small", "Serve anche a controllare che le chiamate arrivino davvero da Twilio.")),

@@ -6,7 +6,7 @@ import { type Workspace, WorkspaceError } from "./workspace.ts";
 export { ATTACHMENT_TYPES };
 
 /**
- * Files of the workspace attached to a mail Annie asks to send (google-actions.ts). A request keeps
+ * Files of the workspace attached to a mail Owni asks to send (google-actions.ts). A request keeps
  * only each file's path, name, size and hash: the file is read again when the person approves,
  * and goes only if it is still exactly the one shown on the card. Contents never reach the model,
  * the request or the logs.
@@ -78,7 +78,7 @@ const LOOKALIKES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Text written by Annie, with every word that reads as «alleg…» (Allegato, Allegati, also spelt
+ * Text written by Owni, with every word that reads as «alleg…» (Allegato, Allegati, also spelt
  * with lookalike letters or spaces) broken by a dot: on the card only the line the server writes
  * may name the attachments.
  */
@@ -96,7 +96,7 @@ export function withoutAttachmentWords(text: string): string {
 
 /** Why a request was not sent: one of its files is not the one the card showed. */
 export function changedFile(name: string): string {
-	return `Non inviata: il file ${name} è cambiato dopo la richiesta. Chiedi ad Annie di prepararla di nuovo.`;
+	return `Non inviata: il file ${name} è cambiato dopo la richiesta. Chiedi a Owni di prepararla di nuovo.`;
 }
 
 function sha256(data: Buffer): string {

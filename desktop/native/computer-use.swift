@@ -1,5 +1,5 @@
 // The local server's private, one-request helper. No socket, shell, clipboard or dependencies.
-// Built into Annie.app/Contents/MacOS; the app stays the responsible process for macOS TCC.
+// Built into Owni.app/Contents/MacOS; the app stays the responsible process for macOS TCC.
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -27,7 +27,7 @@ private func dimensions() -> (Int, Int) {
     return (Int(bounds.width), Int(bounds.height))
 }
 
-// Apps Annie never controls, whoever asks: a terminal would bypass the sandboxed computer_run and its
+// Apps Owni never controls, whoever asks: a terminal would bypass the sandboxed computer_run and its
 // approvals; a password manager or a system sign-in prompt holds secrets the model must not see or type.
 // Bundle identifiers verified against each app's Info.plist, lowercased for a case-insensitive match.
 private let blockedApps: [String: String] = [

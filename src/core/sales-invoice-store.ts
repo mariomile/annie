@@ -17,7 +17,7 @@ import { isMarker } from "./stored-fields.ts";
 /**
  * The person's choices, said once: how the number is written, whether the bollo is charged to the
  * customer, whether a professional's invoice to a company has the ritenuta, and, per year, the last
- * number issued before Annie (0: none), so Annie goes on from there.
+ * number issued before Owni (0: none), so Owni goes on from there.
  */
 export type SalesSettings = Marker & {
 	readonly numbering?: Numbering;
@@ -86,7 +86,7 @@ export class SalesInvoiceStore {
 
 	/**
 	 * Issue the draft `id` dated `date`: under the lock it takes the next number of that year, the
-	 * only rule: past the counter and the last number said before Annie (nothing else moves it),
+	 * only rule: past the counter and the last number said before Owni (nothing else moves it),
 	 * and the next file progressive; `make` gives the invoice issued. The invoice `callId` issued
 	 * already, when there is one (a call run again). SalesInvoiceError when the draft is gone,
 	 * issued already, the year is full, or the date comes before the latest of the year (the
@@ -174,7 +174,7 @@ export class SalesInvoiceStore {
 	}
 }
 
-/** The number the next invoice of `year` takes: past the counter and the last number said before Annie. */
+/** The number the next invoice of `year` takes: past the counter and the last number said before Owni. */
 export function nextSeq(book: Pick<SalesState, "next" | "settings">, year: number): number {
 	return Math.max(book.next[String(year)] ?? 1, (book.settings?.lastBefore?.[String(year)] ?? 0) + 1);
 }

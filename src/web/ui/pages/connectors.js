@@ -51,7 +51,7 @@ function catalogGallery(inst, catalog, oauth, redirectUrl, added) {
 	return h(
 		"section.catalog",
 		h("h2", "Aggiungi in un clic"),
-		h("p.muted", "Servizi noti con un collegamento ufficiale per gli assistenti. Premi «Accedi e aggiungi»: entri con il tuo account sulla pagina del servizio e torni qui. L'accesso resta sul server di Annie, mai nel browser."),
+		h("p.muted", "Servizi noti con un collegamento ufficiale per gli assistenti. Premi «Accedi e aggiungi»: entri con il tuo account sulla pagina del servizio e torni qui. L'accesso resta sul server di Owni, mai nel browser."),
 		oauth && !returnWorks(redirectUrl) ? h("p.chip.warn", "Questo server non ha un indirizzo https (ANNIE_PUBLIC_URL): molti servizi rifiutano di rimandarti qui dopo l'accesso.") : null,
 		CATALOG_GROUPS.map(([group, label]) => {
 			const items = left.filter((e) => e.category === group);
@@ -78,7 +78,7 @@ function tokenDialog(inst, e, replace) {
 		"dialog",
 		h("h2", replace ? `Nuovo token per ${e.name}` : `Collega ${e.name}`),
 		h("p.muted", e.tokenHelp ?? ""),
-		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Annie e non si vede più. Si usa solo per questo agente.")),
+		h("label.field", h("span", "Token"), token, h("small", "Resta sul server di Owni e non si vede più. Si usa solo per questo agente.")),
 		h("div.actions", h("button.btn.accent", { onclick: () => void save() }, "Salva e collega"), h("button.btn.ghost", { onclick: () => dialog.close() }, "Annulla")),
 	);
 	dialog.addEventListener("close", () => dialog.remove());
@@ -113,13 +113,13 @@ export async function viewConnectors(main) {
 			!st?.connected
 				? null
 				: c.approval === "none"
-					? h("p.muted", "Approvazione spenta: Annie usa tutti gli strumenti senza chiedere.")
+					? h("p.muted", "Approvazione spenta: Owni usa tutti gli strumenti senza chiedere.")
 					: !st.approval?.length
-						? h("p.muted", "Tutti gli strumenti leggono soltanto: Annie li usa senza chiedere.")
+						? h("p.muted", "Tutti gli strumenti leggono soltanto: Owni li usa senza chiedere.")
 						: st.approval.length === st.tools.length
 							? h("p.muted", "Tutti gli strumenti chiedono l'approvazione prima di agire.")
 							: h("p.muted", `Chiedono l'approvazione prima di agire: ${st.approval.map((t) => t.replace(`${c.id}__`, "")).join(", ")}.`),
-			st?.left ? h("p.muted", `Il servizio ha altri ${st.left} strumenti: Annie usa i primi ${st.tools.length}, per non confondere il modello.`) : null,
+			st?.left ? h("p.muted", `Il servizio ha altri ${st.left} strumenti: Owni usa i primi ${st.tools.length}, per non confondere il modello.`) : null,
 			h(
 				"div.row-gap",
 				oauthConnector && oauth && !st?.connected && c.enabled && c.allowed
@@ -133,7 +133,7 @@ export async function viewConnectors(main) {
 						onclick: () =>
 							confirmDialog(
 								`Rimuovere ${c.name}?`,
-								oauthConnector ? "Annie perde i suoi strumenti e il suo accesso al servizio viene cancellato." : tokenEntry ? "Annie perde i suoi strumenti e il token viene cancellato." : "Annie perde i suoi strumenti. I valori segreti restano salvati sul server.",
+								oauthConnector ? "Owni perde i suoi strumenti e il suo accesso al servizio viene cancellato." : tokenEntry ? "Owni perde i suoi strumenti e il token viene cancellato." : "Owni perde i suoi strumenti. I valori segreti restano salvati sul server.",
 								"Rimuovi",
 								async () => {
 									await api(`/api/instances/${inst.id}/connectors/${c.id}`, { method: "DELETE" });
@@ -172,7 +172,7 @@ function connectorForm(inst, existing) {
 			box,
 			type.value === "http"
 				? h("div.stack", h("label.field", h("span", "URL"), url), h("label.row-gap", oauthBox, h("span", "Accesso con l'account del servizio (OAuth)")))
-				: h("label.field", h("span", "Comando"), command, h("small", "Gira sul server di Annie: solo comandi di cui ti fidi.")),
+				: h("label.field", h("span", "Comando"), command, h("small", "Gira sul server di Owni: solo comandi di cui ti fidi.")),
 		);
 	type.addEventListener("change", draw);
 	draw();
@@ -187,7 +187,7 @@ function connectorForm(inst, existing) {
 		h("label.row-gap", allowed, h("span", "Consenti nella egress policy")),
 		h("label.row-gap", enabled, h("span", "Acceso")),
 		h("label.row-gap", askBox, h("span", "Chiedi l'approvazione prima delle azioni che cambiano qualcosa")),
-		h("small.muted", "Consigliato. Per creare, modificare o cancellare, Annie chiede il via libera a chi ha fatto la richiesta o a un approvatore; gli strumenti che il servizio indica come di sola lettura li usa da sola. Se il servizio non lo indica, chiede per tutti. Spegnilo solo per un servizio di cui ti fidi del tutto."),
+		h("small.muted", "Consigliato. Per creare, modificare o cancellare, Owni chiede il via libera a chi ha fatto la richiesta o a un approvatore; gli strumenti che il servizio indica come di sola lettura li usa da sola. Se il servizio non lo indica, chiede per tutti. Spegnilo solo per un servizio di cui ti fidi del tutto."),
 		h(
 			"div.actions",
 			h(

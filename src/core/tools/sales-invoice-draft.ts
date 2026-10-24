@@ -5,7 +5,7 @@
  * minutes and terms to be checked again at issue), or from the lines the person dictates; and the
  * credit note of an invoice issued. A draft takes no number. What FatturaPA needs and nobody said
  * (the seller's data, the customer's tax id, address and channel, the VAT rate or nature, which
- * cassa, who pays the bollo, the IBAN, the last number before Annie) is asked in one go, never
+ * cassa, who pays the bollo, the IBAN, the last number before Owni) is asked in one go, never
  * invented.
  */
 import type { ToolContext } from "../engine.ts";
@@ -70,14 +70,14 @@ const proposeNumber = (year: number, h: number) => `Nei tuoi file l'ultima fattu
 const proposedFrom = (file: string) => ["Il numero proposto viene da questo file:", fenced(file)].join("\n");
 const NEW_CUSTOMER = "Se è un cliente diverso da questi, dimmelo e lo fatturo come cliente nuovo.";
 
-/** The last number said before Annie, lower than the files' highest: said, never refused. */
+/** The last number said before Owni, lower than the files' highest: said, never refused. */
 export function lowNumberNote(last: number, files: FilesSay, year: number): string | undefined {
 	const h = files.highest;
 	if (h === undefined || last >= h.seq) return undefined;
 	return [`Attenzione: tra i tuoi file del ${year} c'è già la fattura n. ${h.seq}, più alta dell'ultima che mi hai detto (${last}): partendo dalla ${last + 1} i numeri si ripeterebbero. Controlla con chi ti scrive; il file è questo:`, fenced(h.file)].join("\n");
 }
 
-/** The last number issued before Annie, as said: a whole number from 0; a string to answer when it does not read. */
+/** The last number issued before Owni, as said: a whole number from 0; a string to answer when it does not read. */
 export function readLastNumber(value: unknown): number | undefined | string {
 	if (value === undefined) return undefined;
 	if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value >= SALES_LIMITS.perYear) return "Errore: il numero dell'ultima fattura è un numero intero, 0 se non ce n'è nessuna.";
@@ -406,7 +406,7 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 		if (bolloToClient === undefined) missing.invoice.push(BOLLO_ASK);
 		else if (args.bollo_to_client !== undefined && settings?.bolloToClient === undefined) saveBollo = bolloToClient;
 	}
-	// The first invoice of the year with Annie: the number reached before, from the files or asked.
+	// The first invoice of the year with Owni: the number reached before, from the files or asked.
 	const year = Number(day.slice(0, 4));
 	const last = readLastNumber(args.last_number);
 	if (typeof last === "string") return last;
@@ -456,7 +456,7 @@ export async function draft(env: SalesEnv, given: Record<string, unknown>, ctx: 
 }
 
 /**
- * The last number before Annie, while she has issued nothing this year: as said (corrected, and
+ * The last number before Owni, while she has issued nothing this year: as said (corrected, and
  * warned when lower than the files' highest); proposed from the files in `fatture/emesse/`; not
  * asked in January when she issued every invoice of last year and the files have none of this
  * year; asked otherwise. The files never move the number by themselves.
@@ -479,7 +479,7 @@ async function firstOfYear(env: SalesEnv, book: SalesBook, ctx: ToolContext, day
 	return { ask: firstNumberAsk(year) };
 }
 
-/** The settings with what this draft's answers say: a choice made stays; the last number before Annie is corrected while she has issued nothing that year. */
+/** The settings with what this draft's answers say: a choice made stays; the last number before Owni is corrected while she has issued nothing that year. */
 function settingsAfter(state: SalesState, patch: { bolloToClient?: boolean; ritenutaToBusiness?: boolean; lastBefore?: number }, year: number, marker: { by: string; at: string }): SalesState {
 	const s = state.settings;
 	const bollo = patch.bolloToClient !== undefined && s?.bolloToClient === undefined;

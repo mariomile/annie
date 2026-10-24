@@ -119,10 +119,10 @@ export const piDurableEngine: DurableEngine = {
 					return [];
 				},
 				async modify() {
-					throw new Error("Annie credentials are read-only; manage them in the tenant secret store");
+					throw new Error("Owni credentials are read-only; manage them in the tenant secret store");
 				},
 				async delete() {
-					throw new Error("Annie credentials are read-only; manage them in the tenant secret store");
+					throw new Error("Owni credentials are read-only; manage them in the tenant secret store");
 				},
 			},
 			// No ambient credentials: no env vars, no credential files.
@@ -307,7 +307,7 @@ class PiDurableSession implements EngineSession {
 		return unchanged;
 	}
 
-	/** The unsettled inputs of the conversations Annie knows, with their thread key. */
+	/** The unsettled inputs of the conversations Owni knows, with their thread key. */
 	private async pendingInputs(): Promise<{ id: SubmissionId; conversationId: ConversationId; threadKey: string }[]> {
 		const inspection = await this.harness.inspect(context);
 		const byConversation = new Map<number, string>(Object.entries(await this.threads()).map(([key, id]) => [id, key]));

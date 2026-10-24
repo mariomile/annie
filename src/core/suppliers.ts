@@ -1,7 +1,7 @@
 /**
  * I fornitori: one card per supplier with only what the person said (how they write the name,
  * the referenti, dated notes, other names from a merge, and an IBAN or a partita IVA they
- * dictated). Everything else Annie knows about a supplier (invoices received and paid in the
+ * dictated). Everything else Owni knows about a supplier (invoices received and paid in the
  * scadenzario, expenses, renewals, the bank's confirmed payments) stays in its own register and is
  * read, never copied here: a supplier seen in those registers is a supplier even without a card.
  * An IBAN read on an invoice is never written on a card. Kept per instance in `suppliers.json`

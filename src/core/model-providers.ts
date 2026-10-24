@@ -1,5 +1,5 @@
 /**
- * The model providers Annie offers: any of them can run an instance (ADR 0032). An entry is
+ * The model providers Owni offers: any of them can run an instance (ADR 0032). An entry is
  * a product choice; the adapter supplies the models each provider has. The IDs are pi-ai's.
  */
 export type ModelProvider = {

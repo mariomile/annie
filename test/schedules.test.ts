@@ -34,7 +34,7 @@ describe("tasks programmati", () => {
 		expect(await h.scheduler.tick(new Date("2026-10-15T09:00:10Z"))).toBe(1);
 		await waitFor(() => h.replies.length === 1);
 		expect(h.replies[0]).toMatchObject({ channel: "test", threadId: "t1" });
-		expect(text(h.replies[0]!)).toBe(`Annie (modello locale di sviluppo): hai scritto «[Task programmato ${s.id}] Ricordami la riunione»`);
+		expect(text(h.replies[0]!)).toBe(`Owni (modello locale di sviluppo): hai scritto «[Task programmato ${s.id}] Ricordami la riunione»`);
 		expect(await h.scheduler.tick(new Date("2026-10-15T10:00:00Z"))).toBe(0);
 		expect((await h.store.get(s.id))?.nextRunAt).toBeNull();
 		const audit = await h.runtime.audit("acme").read();

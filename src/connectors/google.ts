@@ -6,7 +6,7 @@ import { EgressDenied } from "../core/errors.ts";
 import { ConnectorHttpError, requestJson } from "./http.ts";
 
 /**
- * What Annie can read of a person's Google account. Google rates gmail.readonly "restricted" (a
+ * What Owni can read of a person's Google account. Google rates gmail.readonly "restricted" (a
  * public app needs a yearly third-party security assessment) and calendar.readonly "sensitive" (a
  * verification of days), so the operator chooses which to ask. Writing (ADR 0021) is asked only
  * when the operator turns it on, and every write waits for the person's approval.
@@ -40,7 +40,7 @@ export const GOOGLE_CONNECTOR = "google";
 export type GoogleClientConfig = {
 	readonly clientId: string;
 	readonly clientSecret: string;
-	/** Where Google sends the person back: this server's, or the control plane's in Annie Cloud. */
+	/** Where Google sends the person back: this server's, or the control plane's in Owni Cloud. */
 	readonly redirectUrl: string;
 	readonly services: readonly GoogleService[];
 	/** Ask to write too (ANNIE_GOOGLE_WRITE): every write still waits for the person's approval. */
@@ -108,7 +108,7 @@ export function googleReturnQuery(url: URL): string {
 /**
  * The OAuth authorization code flow with PKCE. Its calls go to Google's fixed sign-in hosts with
  * the plain fetch: connecting is the person's act from the console, not an instance's tool, so no
- * instance's egress policy applies (the tools that read mail and calendar go through it). The state names the tenant (so Annie Cloud's
+ * instance's egress policy applies (the tools that read mail and calendar go through it). The state names the tenant (so Owni Cloud's
  * control plane knows which cell to send the person back to) and is single use, bound to the
  * person who started it, and valid for ten minutes. Pending consents live in memory: a restart
  * in the middle only means starting again.
@@ -158,11 +158,11 @@ export class GoogleOAuth {
 		const body = (await response.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string; scope?: string; error?: string };
 		if (!response.ok || body.access_token === undefined || body.refresh_token === undefined) throw new GoogleConsentError(`Google non ha accettato il collegamento${body.error === undefined ? "" : ` (${body.error})`}: riprova.`);
 		const scopes = (body.scope ?? "").split(" ").filter((s) => s !== "");
-		// Reading is needed; writing is not: without it the account only reads (Annie says so when asked to write).
+		// Reading is needed; writing is not: without it the account only reads (Owni says so when asked to write).
 		if (googleScopes(this.config.services, false).some((scope) => !scopes.includes(scope))) {
 			await this.revoke(body.refresh_token);
 			const what = this.config.services.length > 1 ? "ha bisogno di tutti i permessi richiesti (posta e calendario)" : `ha bisogno del permesso di leggere ${this.config.services[0] === "gmail" ? "la posta" : "il calendario"}`;
-			throw new GoogleConsentError(`Per usare Google, Annie ${what}: riprova lasciando spuntati i permessi.`);
+			throw new GoogleConsentError(`Per usare Google, Owni ${what}: riprova lasciando spuntati i permessi.`);
 		}
 		const profile = await requestJson<{ email?: string }>(this.fetchImpl, "https://openidconnect.googleapis.com/v1/userinfo", { connector: "google", operation: "userinfo", headers: { authorization: `Bearer ${body.access_token}` } });
 		return { account: { email: profile.email ?? "", scopes, connectedAt: new Date(this.now()).toISOString() }, refreshToken: body.refresh_token };

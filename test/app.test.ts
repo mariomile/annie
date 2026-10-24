@@ -79,7 +79,7 @@ describe("pnpm start (startAnnie)", () => {
 		expect(annie.ownerLink).toMatch(/^http:\/\/127\.0\.0\.1:0\/login#[\w-]{40,}$/);
 		const api = await client(base, annie.ownerLink as string);
 		const instances = (await api("/api/instances")).instances;
-		expect(instances).toEqual([{ id: "annie", name: "Annie", canChat: true, isApprover: true, hasSegreteria: false }]);
+		expect(instances).toEqual([{ id: "annie", name: "Owni", canChat: true, isApprover: true, hasSegreteria: false }]);
 		const thread = (await api("/api/instances/annie/threads", {})).thread;
 		const proposal = { name: "double", description: "Raddoppia", parameters: { type: "object", properties: { x: { type: "number" } } }, code: "export default async (a) => String(a.x * 2)", hosts: [] };
 		await api(`/api/instances/annie/threads/${thread.id}/messages`, { text: `/tool tool_propose ${JSON.stringify(proposal)}` });
@@ -219,8 +219,8 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await api("/api/instances", { id: "../x", name: "X" })).error).toMatch(/ID/);
 		expect((await api("/api/instances", { id: "vuota", name: "  " })).error).toMatch(/nome/);
 		const settings = (await api("/api/instances/vendite/settings")).settings;
-		// The owner's words go after what Annie can do (ADR 0019), not in its place.
-		expect(settings.instructions.startsWith("Sei Annie")).toBe(true);
+		// The owner's words go after what Owni can do (ADR 0019), not in its place.
+		expect(settings.instructions.startsWith("Sei Owni")).toBe(true);
 		expect(settings.instructions.endsWith("Informazioni su chi ti usa:\nRispondi sulle offerte.")).toBe(true);
 		expect(settings.egress).toEqual({ modelProviders: ["faux"], channels: ["web"] });
 		const thread = (await api("/api/instances/vendite/threads", {})).thread;
@@ -246,7 +246,7 @@ describe("pnpm start (startAnnie)", () => {
 		const send = (method: string, path: string, body?: unknown, cookie = api.cookie) =>
 			fetch(`${base}${path}`, { method, headers: { "x-annie": "1", "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(async (r) => ({ status: r.status, ...((await r.json()) as { error?: string; deletable?: boolean }) }));
 		expect((await send("PUT", "/api/instances/vendite/telegram", { token: "2:V", allowedUsers: ["8"] })).status).toBe(200);
-		// Annie accepts messages from Vendite: that permission must not outlive Vendite.
+		// Owni accepts messages from Vendite: that permission must not outlive Vendite.
 		await send("PUT", "/api/instances/annie/agents", { from: ["vendite"] });
 		const thread = (await api("/api/instances/vendite/threads", {})).thread;
 		await api("/api/instances/vendite/schedules", { instruction: "Controlla le offerte", at: new Date(Date.now() + 60_000).toISOString(), threadId: thread.id });
@@ -260,7 +260,7 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await send("DELETE", "/api/instances/vendite", { confirm: "Vendite" }, member.cookie)).status).toBe(403);
 		expect((await send("DELETE", "/api/instances/vendite", { confirm: "vendite" })).error).toMatch(/scrivi il nome/);
 		expect((await send("DELETE", "/api/instances/vendite", {})).status).toBe(400);
-		expect((await send("DELETE", "/api/instances/annie", { confirm: "Annie" })).error).toMatch(/non si elimina/);
+		expect((await send("DELETE", "/api/instances/annie", { confirm: "Owni" })).error).toMatch(/non si elimina/);
 		expect((await send("DELETE", "/api/instances/nessuno", { confirm: "Nessuno" })).status).toBe(404);
 
 		const deleted = await send("DELETE", "/api/instances/vendite", { confirm: "Vendite" });
@@ -513,7 +513,7 @@ describe("pnpm start (startAnnie)", () => {
 
 		expect((await send("PUT", `/api/board/${card.id}`, { status: "chiusa" })).status).toBe(400);
 
-		// From a chat with Annie: a scheda for Ricercatore, waiting for a person to start it.
+		// From a chat with Owni: a scheda for Ricercatore, waiting for a person to start it.
 		const chat = (await api("/api/instances/annie/threads", {})).thread;
 		await api(`/api/instances/annie/threads/${chat.id}/messages`, { text: '/tool board_create {"title":"Bozza newsletter","assignee":"Ricercatore"}' });
 		await until(async () => (await api("/api/board")).cards.length === 2);
@@ -764,7 +764,7 @@ describe("richieste di un altro agente nelle chat e al riavvio (ADR 0108)", () =
 
 		tap(9, `agent:${long.id}:approved`);
 		await said("9", `Richiesta ${long.id}: è lunga, si legge intera e si approva dalla console web (Approvazioni).`);
-		// Chat 7 may write to Annie, but does not approve for her.
+		// Chat 7 may write to Owni, but does not approve for her.
 		tap(7, `agent:${short.id}:approved`);
 		await said("7", `Richiesta ${short.id}: non approvi per questo agente, la decide solo chi approva per lui.`);
 		expect((await store.get(short.id))?.status).toBe("pending");
@@ -786,7 +786,7 @@ describe("richieste di un altro agente nelle chat e al riavvio (ADR 0108)", () =
 		const first = await boot(dataDir);
 		await first.annie.runtime.registry.createInstance("default", helper);
 		const store = first.annie.runtime.agentRequests("default", "annie");
-		// Done, with Annie stopping before the notice went out.
+		// Done, with Owni stopping before the notice went out.
 		const untold = await store.propose(input, new Date(), "k1");
 		expect((await store.decide(untold.id, "approved", OWNER, async () => ({ text: "42" }))).action.status).toBe("done");
 		// Running when the process died.

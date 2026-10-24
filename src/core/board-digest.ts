@@ -6,7 +6,7 @@ export const DIGEST_HOUR = 9;
 
 /**
  * The week of the board summary (ADR 0081): the Monday it is sent on, in Rome, when it is Monday
- * from 9 on; undefined at any other time. Missed on Monday (Annie off), it waits for the next one.
+ * from 9 on; undefined at any other time. Missed on Monday (Owni off), it waits for the next one.
  */
 export function digestWeek(now: Date): string | undefined {
 	const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Rome", weekday: "short", hour: "2-digit", hourCycle: "h23" }).formatToParts(now);

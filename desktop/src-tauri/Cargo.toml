@@ -1,7 +1,7 @@
 [package]
 name = "annie-desktop"
 version = "0.4.0"
-description = "Annie as a desktop app: a window on an Annie server"
+description = "Owni as a desktop app: a window on an Owni server"
 license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.80"

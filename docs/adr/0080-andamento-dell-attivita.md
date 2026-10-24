@@ -1,16 +1,16 @@
 # Andamento dell'attività
 
-Con fatture (ADR 0053, 0072), spese (ADR 0057), ore, preventivi (ADR 0055), clienti (ADR 0071), tasse del forfettario (ADR 0070), liquidazione IVA (ADR 0077) ed estratto conto (ADR 0078) Annie aveva tutti i numeri di chi ha una partita IVA, ma sparsi in registri diversi. La domanda che li tiene insieme è una: «come sta andando l'attività?». Ora «quanto ho guadagnato quest'anno?», «ottobre rispetto a settembre?», «rispetto all'anno scorso?», «qual è il mio margine?», «quanto mi resta in tasca dopo le tasse?» e «mandami il report del mese per il commercialista» hanno una risposta.
+Con fatture (ADR 0053, 0072), spese (ADR 0057), ore, preventivi (ADR 0055), clienti (ADR 0071), tasse del forfettario (ADR 0070), liquidazione IVA (ADR 0077) ed estratto conto (ADR 0078) Owni aveva tutti i numeri di chi ha una partita IVA, ma sparsi in registri diversi. La domanda che li tiene insieme è una: «come sta andando l'attività?». Ora «quanto ho guadagnato quest'anno?», «ottobre rispetto a settembre?», «rispetto all'anno scorso?», «qual è il mio margine?», «quanto mi resta in tasca dopo le tasse?» e «mandami il report del mese per il commercialista» hanno una risposta.
 
 ## Decisione
 
 - **Strumento `business_report`** con `summary`, `compare`, `trend`, `top` ed `export`. Non ha un registro suo e non scrive in nessun registro: legge quelli che ci sono attraverso le loro funzioni.
 - **Le cifre**, ognuna da un solo posto:
-  - fatturato: le fatture emesse per data della fattura, contate una volta fra quelle fatte con Annie e quelle in XML, note di credito tolte (le stesse regole della liquidazione IVA);
+  - fatturato: le fatture emesse per data della fattura, contate una volta fra quelle fatte con Owni e quelle in XML, note di credito tolte (le stesse regole della liquidazione IVA);
   - incassato: per giorno del pagamento, quello della banca se viene dall'estratto conto;
   - spese: le spese registrate più le fatture dei fornitori pagate che nessuna spesa rappresenta già. Ogni spesa vale al più il suo importo: con partita IVA e numero, o sul totale della fattura, copre tutte le rate di quella fattura; sul solo importo ne copre una, e solo se il fornitore non dice un nome diverso. Gli stessi abbinamenti valgono nella previsione di cassa. I rinnovi contano attraverso la spesa che li registra;
   - margine: incassato meno spese, per cassa;
-  - tasse: per il forfettario la percentuale della stima dell'anno, portata a fine anno come fa `taxes`, applicata agli incassi del periodo, e allora «ti resta in tasca»; per l'ordinario l'IVA da versare e «dopo l'IVA, prima di IRPEF e contributi», che Annie non stima. Senza profilo lo dice e spiega come darlo;
+  - tasse: per il forfettario la percentuale della stima dell'anno, portata a fine anno come fa `taxes`, applicata agli incassi del periodo, e allora «ti resta in tasca»; per l'ordinario l'IVA da versare e «dopo l'IVA, prima di IRPEF e contributi», che Owni non stima. Senza profilo lo dice e spiega come darlo;
   - ore e preventivi del periodo, e il fatturato diviso le ore registrate solo da 10 ore in su, come rapporto grezzo;
   - ancora da incassare e scaduto.
 - **Periodi** che finiscono oggi: un mese in corso si confronta con gli stessi giorni del mese prima, un periodo detto con altrettanti giorni subito prima, l'anno scorso con lo stesso periodo (il 29 febbraio diventa il 28). Nessuna percentuale se prima era zero, negativo o meno di un decimo di adesso: «da X a Y». Prima le tre differenze più grandi fra fatturato, incassato e spese.
@@ -28,6 +28,6 @@ Con fatture (ADR 0053, 0072), spese (ADR 0057), ore, preventivi (ADR 0055), clie
 ## Alternative scartate
 
 - **Un registro del report con cifre salvate**: si sarebbe disallineato dai registri veri alla prima fattura corretta.
-- **Stimare IRPEF e contributi dell'ordinario**: servono deduzioni, detrazioni e redditi che Annie non conosce; meglio dire cosa manca.
+- **Stimare IRPEF e contributi dell'ordinario**: servono deduzioni, detrazioni e redditi che Owni non conosce; meglio dire cosa manca.
 - **La stima delle tasse dagli incassi dell'anno finora**: i contributi fissi di un anno intero finivano su un mese, e a gennaio le tasse superavano gli incassi.
 - **Una spesa che rappresenta più pagamenti**: una spesa da 500 € faceva sparire due fatture da 500 € di fornitori diversi.

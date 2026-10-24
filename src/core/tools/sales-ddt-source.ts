@@ -152,7 +152,7 @@ export function ddtSource(env: SalesEnv, args: Record<string, unknown>, book: Sa
 	if (rows.length > SALES_LIMITS.lines) return `Errore: verrebbero più di ${SALES_LIMITS.lines} righe: sono troppi DDT per una fattura sola.`;
 	const list = env.priceList?.read();
 	const voci = list === undefined || list.broken ? [] : list.items;
-	// A row priced from the listino: its voce, in the voce's own unit; any other is asked, never priced by Annie.
+	// A row priced from the listino: its voce, in the voce's own unit; any other is asked, never priced by Owni.
 	const fromList = (l: Ddt["lines"][number]) => {
 		const voce = l.item === undefined ? undefined : voci.find((v) => v.id === l.item);
 		if (voce === undefined) return false;

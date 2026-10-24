@@ -12,7 +12,7 @@ Mario (17 ottobre 2026): «aggiungiamo anche un browser interno che gli agenti p
 
 ## Alternative scartate
 
-- **Uno streaming video dello schermo** (CDP screencast o VNC): più vivo, ma un flusso continuo per ogni chat aperta, e il browser di Annie non ha uno schermo da trasmettere tra un'azione e l'altra. Le foto dopo ogni azione mostrano tutto quello che cambia.
+- **Uno streaming video dello schermo** (CDP screencast o VNC): più vivo, ma un flusso continuo per ogni chat aperta, e il browser di Owni non ha uno schermo da trasmettere tra un'azione e l'altra. Le foto dopo ogni azione mostrano tutto quello che cambia.
 - **Clic sulla foto per cliccare nella pagina.** Utile, ma porta clic a coordinate in un browser pensato per elementi numerati e controllati (password, file, invii). Rimandato: per ora la persona guida con l'indirizzo e chiede all'agente il resto.
 
 ## Conseguenze

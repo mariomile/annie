@@ -35,7 +35,7 @@ export function connectorActionCard(inst, a, after, compact = false) {
 				toast(error.message, true);
 			}
 		};
-		el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), compact ? null : h("span.muted", `Se la approvi, Annie la fa una volta sola, con questi valori, su ${a.connectorName}.`)));
+		el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), compact ? null : h("span.muted", `Se la approvi, Owni la fa una volta sola, con questi valori, su ${a.connectorName}.`)));
 	}
 	return compact ? el : decisionCard(el, inst, a.status === "pending");
 }

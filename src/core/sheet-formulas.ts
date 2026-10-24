@@ -1,5 +1,5 @@
 /**
- * Excel formulas as Annie writes them (ADR 0029): the Italian way (SOMMA, `;` between arguments,
+ * Excel formulas as Owni writes them (ADR 0029): the Italian way (SOMMA, `;` between arguments,
  * decimal commas) turned into the English form the file stores, and the value of the simple
  * ones worked out, so a preview that does not calculate (a phone) still shows the totals.
  */

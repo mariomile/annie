@@ -11,7 +11,7 @@ import { SerialQueue } from "../core/serial-queue.ts";
 import { publicAddress } from "../core/web-fetch.ts";
 
 /**
- * Signing in to an MCP server with OAuth (ADR 0024): the MCP authorization flow, with Annie as
+ * Signing in to an MCP server with OAuth (ADR 0024): the MCP authorization flow, with Owni as
  * the client. The owner presses «Collega», signs in on the service's page, and comes back to the
  * console; the tokens stay on the server, in the tenant's secret store, and refresh by themselves.
  */
@@ -71,7 +71,7 @@ export class StoredOAuthProvider implements OAuthClientProvider {
 
 	get clientMetadata(): OAuthClientMetadata {
 		return {
-			client_name: "Annie",
+			client_name: "Owni",
 			redirect_uris: [this.redirectUrl],
 			grant_types: ["authorization_code", "refresh_token"],
 			response_types: ["code"],
@@ -335,7 +335,7 @@ export class McpOAuth {
 export function oauthWords(error: unknown): McpOAuthError {
 	if (error instanceof McpOAuthError) return error;
 	const name = error instanceof Error ? error.name : "";
-	if (/InvalidClient|UnauthorizedClient/.test(name)) return new McpOAuthError("il servizio non riconosce Annie come applicazione: riprova più tardi");
+	if (/InvalidClient|UnauthorizedClient/.test(name)) return new McpOAuthError("il servizio non riconosce Owni come applicazione: riprova più tardi");
 	if (/InvalidGrant/.test(name)) return new McpOAuthError("il servizio ha rifiutato il codice di accesso: premi di nuovo «Collega»");
 	if (/AccessDenied/.test(name)) return new McpOAuthError("accesso negato dal servizio");
 	if (error instanceof Error && /does not support dynamic client registration/i.test(error.message))

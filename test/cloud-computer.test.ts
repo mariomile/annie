@@ -12,7 +12,7 @@ import { ComputerError, type ComputerProvider, type ComputerRun, computerKey } f
 import { ConfigError, loadAnnieConfig, loadComputerConfig } from "../src/main/config.ts";
 import { tempDataDir } from "./helpers.ts";
 
-/** The computers of Annie Cloud (ADR 0015): cells ask the control plane, which holds Fly's token. */
+/** The computers of Owni Cloud (ADR 0015): cells ask the control plane, which holds Fly's token. */
 const running: ControlPlane[] = [];
 afterEach(async () => {
 	for (const cp of running.splice(0)) await cp.stop();
@@ -177,13 +177,13 @@ describe("computers through the control plane", () => {
 		expect(cloudComputers({ dataDir }).map((c) => c.tenant)).toEqual(["bbbb"]);
 	});
 
-	it("tells a cell when Annie Cloud offers no computer", async () => {
+	it("tells a cell when Owni Cloud offers no computer", async () => {
 		const dataDir = tempDataDir();
 		writeFileSync(join(dataDir, "control-plane.json"), JSON.stringify({ accounts: [{ email: "a@x.example", tenant: "aaaa", createdAt: new Date().toISOString() }], cells: [{ tenant: "aaaa", secret: SECRET_A, nextWakeAt: null }], links: [] }));
 		const cp = await startControlPlane({ dataDir, domain: "annie.test", publicScheme: "http", provider: idle, mailer: new MemoryMailer(), cellEnv: {}, idleMs: 60_000, web: { host: "127.0.0.1", port: 0 }, tickMs: 0, log: () => {} });
 		running.push(cp);
 		const a = new RemoteComputerProvider({ url: `http://127.0.0.1:${(cp.server.address() as AddressInfo).port}`, tenant: "aaaa", cellSecret: SECRET_A });
-		expect(await a.check()).toBe("Annie Cloud non offre il computer");
+		expect(await a.check()).toBe("Owni Cloud non offre il computer");
 		await expect(a.run(KEY, "x", { timeoutS: 5 })).rejects.toThrow("HTTP 404");
 	});
 

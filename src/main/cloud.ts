@@ -1,5 +1,5 @@
 /**
- * `pnpm cloud`: the control plane of Annie Cloud (ADR 0007, ADR 0008).
+ * `pnpm cloud`: the control plane of Owni Cloud (ADR 0007, ADR 0008).
  * Cells as local processes (development), containers on one server (ANNIE_CLOUD_PROVIDER=docker)
  * or Railway services (ANNIE_CLOUD_PROVIDER=railway); see docs/runbook.md 6c and 6d.
  */

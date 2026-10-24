@@ -105,7 +105,7 @@ async function allow(annie: RunningAnnie, personId: string): Promise<void> {
 	await annie.runtime.registry.setAllowedUsers("default", "annie", "web", [...(record.allowedUsers.web ?? []), personId]);
 }
 
-/** Write in a console chat and wait for Annie's answer. */
+/** Write in a console chat and wait for Owni's answer. */
 // biome-ignore lint: test
 async function ask(api: (path: string, method?: string, body?: unknown) => Promise<any>, thread: string, text: string): Promise<string> {
 	const path = `/api/instances/annie/threads/${thread}`;

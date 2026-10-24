@@ -1,10 +1,10 @@
 # Settimana 52: spese e prima nota
 
-Branch `week-52`. Annie tiene il registro delle spese: basta la foto dello scontrino o una frase, poi riepiloghi, prima nota con incassi e uscite ed export per il commercialista. Le scelte sono nell'[ADR 0057](adr/0057-spese-e-prima-nota.md).
+Branch `week-52`. Owni tiene il registro delle spese: basta la foto dello scontrino o una frase, poi riepiloghi, prima nota con incassi e uscite ed export per il commercialista. Le scelte sono nell'[ADR 0057](adr/0057-spese-e-prima-nota.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **Foto dello scontrino** o «ho speso 42 euro di benzina ieri»: Annie registra la spesa con data, totale, IVA, fornitore e categoria, e avvisa se sembra un doppione.
+- **Foto dello scontrino** o «ho speso 42 euro di benzina ieri»: Owni registra la spesa con data, totale, IVA, fornitore e categoria, e avvisa se sembra un doppione.
 - **«Quanto ho speso a ottobre?»**, **«quanto ho speso di benzina quest'anno?»**: totale, IVA, categorie e confronto con il periodo prima. Nel forfettario niente IVA, una nota semplice.
 - **«Fammi la prima nota del trimestre»**: entrate dalle fatture pagate e uscite dalle spese, giorno per giorno, con il saldo.
 - **«Mandami le spese del trimestre scorso per il commercialista»**: un CSV in `spese/` che Excel apre bene, con tipo di documento, partita IVA del fornitore e totali; si può mandare per mail con gli allegati della settimana 51.

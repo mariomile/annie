@@ -62,7 +62,7 @@ const ASK_FIRST =
 const UNSEEN = "Non riesco a vedere lo schermo adesso: guarda con desktop_look prima di rifare l'azione.";
 
 /**
- * The agente's screen (ADR 0045): a Linux desktop of its own, through Cua. Annie looks at it,
+ * The agente's screen (ADR 0045): a Linux desktop of its own, through Cua. Owni looks at it,
  * clicks, types, presses keys, scrolls, drags, opens apps; after each action she gets the screen again.
  */
 export function createDesktopTools(options: DesktopToolsOptions): AnnieTool[] {

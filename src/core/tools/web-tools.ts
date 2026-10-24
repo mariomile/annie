@@ -232,7 +232,7 @@ export function createWebTools(options: WebToolsOptions): AnnieTool[] {
 /** A browser that stays open for the conversation: open, click, type (ADR 0014). It reads and never sends. */
 function browseTools(options: WebToolsOptions, sessions: BrowseSessions, guard: (policy: EgressPolicy) => Guard): AnnieTool[] {
 	const scope = options.scope ?? "default";
-	/** The view for Annie, with the screenshot saved when asked; the browser's own refusals said plainly. */
+	/** The view for Owni, with the screenshot saved when asked; the browser's own refusals said plainly. */
 	const respond = async (view: () => Promise<View>): Promise<string> => {
 		try {
 			const seen = await view();

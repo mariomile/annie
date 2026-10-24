@@ -156,7 +156,7 @@ export type AnnieConfig = {
 		  }
 		| undefined;
 	readonly segreteria: SegreteriaConfig | undefined;
-	/** Running as a cell of Annie Cloud: set by the control plane. */
+	/** Running as a cell of Owni Cloud: set by the control plane. */
 	readonly cell: { readonly secret: string | undefined };
 	/** The OAuth client people connect their Google account with (Gmail and Calendar, read only). */
 	readonly google: { readonly clientId: string; readonly clientSecret: string; readonly redirectUrl: string; readonly services: readonly GoogleService[]; readonly write: boolean } | undefined;
@@ -182,7 +182,7 @@ export type AnnieConfig = {
 	readonly vatCheck: ViesConfig | undefined;
 	/** Phone calls (ADR 0012): Twilio's REST API (the Ireland region for data in the EU) and the language spoken. */
 	readonly phone: { readonly apiBase: string; readonly voice: string };
-	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Annie Cloud, through the control plane (ADR 0015). */
+	/** The instances' computers: a container each on this Docker host (ADR 0013), a Fly machine each, or, in a cell of Owni Cloud, through the control plane (ADR 0015). */
 	readonly computer: ComputerConfig | undefined;
 	/** The agenti's screens through Cua (ADR 0045): a container each on this Docker host, or one desktop run elsewhere; off if unset. */
 	readonly desktop: DesktopConfig | undefined;
@@ -233,7 +233,7 @@ function loadWeatherConfig(env: Readonly<Record<string, string | undefined>>): W
 
 /**
  * ANNIE_EXCHANGE_RATES=1 and its address: off unless the operator says so, like every service
- * Annie reaches. Only the ECB's public files are fetched; nothing about the person leaves.
+ * Owni reaches. Only the ECB's public files are fetched; nothing about the person leaves.
  */
 function loadExchangeRatesConfig(env: Readonly<Record<string, string | undefined>>): ExchangeRatesConfig | undefined {
 	const on = nonEmpty(env.ANNIE_EXCHANGE_RATES);
@@ -318,14 +318,14 @@ export type ComputerConfig =
 
 /**
  * ANNIE_COMPUTER and its settings: docker (ADR 0013), fly (ADR 0015) or, in a cell, cloud. The
- * control plane of Annie Cloud reads the same settings with `kind` from ANNIE_CLOUD_COMPUTER.
+ * control plane of Owni Cloud reads the same settings with `kind` from ANNIE_CLOUD_COMPUTER.
  */
 export function loadComputerConfig(env: Readonly<Record<string, string | undefined>>, kind = nonEmpty(env.ANNIE_COMPUTER), variable = "ANNIE_COMPUTER"): ComputerConfig | undefined {
 	if (kind === undefined) return undefined;
 	if (kind === "cloud") {
 		const url = nonEmpty(env.ANNIE_COMPUTER_URL);
 		if (url === undefined || !/^https?:\/\/[^\s/]+\/?$/.test(url)) throw new ConfigError("ANNIE_COMPUTER=cloud needs ANNIE_COMPUTER_URL, the control plane's address (http(s)://host[:port])");
-		if (nonEmpty(env.ANNIE_CELL_SECRET) === undefined) throw new ConfigError("ANNIE_COMPUTER=cloud is for a cell of Annie Cloud: it needs ANNIE_CELL_SECRET");
+		if (nonEmpty(env.ANNIE_CELL_SECRET) === undefined) throw new ConfigError("ANNIE_COMPUTER=cloud is for a cell of Owni Cloud: it needs ANNIE_CELL_SECRET");
 		return { kind, url: url.replace(/\/$/, "") };
 	}
 	if (kind !== "docker" && kind !== "fly") throw new ConfigError(`${variable}: docker or fly, or unset for no computer`);
@@ -371,7 +371,7 @@ export function loadDesktopConfig(env: Readonly<Record<string, string | undefine
 	if (network !== undefined && kind !== "docker") throw new ConfigError("ANNIE_DESKTOP_NETWORK set without ANNIE_DESKTOP=docker");
 	if (remote.length > 0 && kind !== "remote") throw new ConfigError(`${remote.join(", ")} set without ANNIE_DESKTOP=remote`);
 	if (kind === undefined) return undefined;
-	if (nonEmpty(env.ANNIE_CELL_SECRET) !== undefined) throw new ConfigError("ANNIE_DESKTOP is not for a cell of Annie Cloud: a cell has no Docker socket, and a shared screen would mix tenants");
+	if (nonEmpty(env.ANNIE_CELL_SECRET) !== undefined) throw new ConfigError("ANNIE_DESKTOP is not for a cell of Owni Cloud: a cell has no Docker socket, and a shared screen would mix tenants");
 	if (kind === "local") {
 		const host = nonEmpty(env.ANNIE_WEB_HOST) ?? "127.0.0.1";
 		if (env.ANNIE_LOCAL_PROVIDERS !== "1" || !["127.0.0.1", "::1", "localhost"].includes(host) || nonEmpty(env.ANNIE_PUBLIC_URL) !== undefined) {
@@ -431,7 +431,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		const unknown = services.filter((x) => !(GOOGLE_SERVICES as readonly string[]).includes(x));
 		if (services.length === 0 || unknown.length > 0) throw new ConfigError(`ANNIE_GOOGLE_SERVICES: a comma-separated list of ${GOOGLE_SERVICES.join(", ")}${unknown.length > 0 ? `; unknown: ${unknown.join(", ")}` : ""}`);
 		const write = nonEmpty(env.ANNIE_GOOGLE_WRITE) ?? "0";
-		if (!["0", "1", "true", "false"].includes(write)) throw new ConfigError("ANNIE_GOOGLE_WRITE: 1 to let people approve mail and events Annie writes for them, 0 (default) to only read");
+		if (!["0", "1", "true", "false"].includes(write)) throw new ConfigError("ANNIE_GOOGLE_WRITE: 1 to let people approve mail and events Owni writes for them, 0 (default) to only read");
 		google = { clientId: googleId, clientSecret: googleSecret, redirectUrl, services: [...new Set(services)] as GoogleService[], write: write === "1" || write === "true" };
 	}
 	const transcribeUrl = nonEmpty(env.ANNIE_TRANSCRIBE_URL);
@@ -538,7 +538,7 @@ export function loadAnnieConfig(env: Readonly<Record<string, string | undefined>
 		localProviders,
 		tenantId: nonEmpty(env.ANNIE_TENANT_ID) ?? "default",
 		instanceId: nonEmpty(env.ANNIE_INSTANCE_ID) ?? "annie",
-		instanceName: nonEmpty(env.ANNIE_INSTANCE_NAME) ?? "Annie",
+		instanceName: nonEmpty(env.ANNIE_INSTANCE_NAME) ?? "Owni",
 		modelProvider,
 		modelId,
 		modelApiKeys,

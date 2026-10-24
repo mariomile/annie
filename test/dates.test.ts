@@ -222,7 +222,7 @@ describe("date arithmetic", () => {
 	});
 
 	it("keeps holidays and working days to 2001–2200, calendar days and months to 1900", () => {
-		const reason = "il calendario dei festivi di Annie vale dal 2001: per gli anni prima i festivi erano diversi";
+		const reason = "il calendario dei festivi di Owni vale dal 2001: per gli anni prima i festivi erano diversi";
 		expect(dateError(() => workingDaysIn("1990-12-01", "1990-12-31"))).toBe(reason);
 		expect(dateError(() => addTo("1990-03-15", 5, "working_days"))).toBe(reason);
 		expect(dateError(() => addTo("2001-01-03", -5, "working_days"))).toBe(reason);
@@ -376,7 +376,7 @@ describe("date_calc", () => {
 		const { run } = dateTool();
 		expect(await run({ op: "between", to: "oggi" })).toBe("È oggi: sabato 17/10/2026.");
 		expect(await run({ op: "between", to: "2 giugno" })).toContain("lunedì–venerdì meno i festivi, tolti 6 festivi.");
-		expect(await run({ op: "between", date: "01/01/1990", to: "10/01/1990" })).toContain("9 giorni (1 settimana e 2 giorni).\nGiorni lavorativi: il calendario dei festivi di Annie vale dal 2001: per gli anni prima i festivi erano diversi.\nRispetto a oggi, 10/01/1990 è 13.429 giorni fa.");
+		expect(await run({ op: "between", date: "01/01/1990", to: "10/01/1990" })).toContain("9 giorni (1 settimana e 2 giorni).\nGiorni lavorativi: il calendario dei festivi di Owni vale dal 2001: per gli anni prima i festivi erano diversi.\nRispetto a oggi, 10/01/1990 è 13.429 giorni fa.");
 	});
 
 	it("a range without years that would run into next year is refused, not stretched", async () => {
@@ -454,7 +454,7 @@ describe("date_calc", () => {
 		const milan = await run({ op: "working_days", month: "dicembre 2026", patrono: "Milano" });
 		expect(milan).toContain("(lunedì–venerdì meno i festivi e il patrono di Milano)");
 		expect(milan).toContain("lunedì 07/12/2026 Santo patrono di Milano");
-		expect(await run({ op: "working_days", month: "dicembre 1990" })).toBe("Errore: il calendario dei festivi di Annie vale dal 2001: per gli anni prima i festivi erano diversi.");
+		expect(await run({ op: "working_days", month: "dicembre 1990" })).toBe("Errore: il calendario dei festivi di Owni vale dal 2001: per gli anni prima i festivi erano diversi.");
 	});
 
 	it("add: skipped holidays capped and in order; a patrono that is already a national holiday is not named twice", async () => {
@@ -477,7 +477,7 @@ describe("date_calc", () => {
 		expect(list).toContain("• lunedì 29/03/2027 Lunedì dell'Angelo (Pasquetta)");
 		expect(list).toContain("• lunedì 04/10/2027 San Francesco d'Assisi, patrono d'Italia (di nuovo festivo dal 2026, legge 151/2025)");
 		expect(await run({ op: "holidays", year: 2030 })).not.toContain("legge 151/2025");
-		expect(await run({ op: "holidays", year: 1990 })).toBe("Errore: il calendario dei festivi di Annie vale dal 2001: per gli anni prima i festivi erano diversi.");
+		expect(await run({ op: "holidays", year: 1990 })).toBe("Errore: il calendario dei festivi di Owni vale dal 2001: per gli anni prima i festivi erano diversi.");
 		expect(await run({ op: "holidays", year: 2027, patrono: "Roma" })).toContain("• martedì 29/06/2027 Santo patrono di Roma");
 		const leap = await run({ op: "holidays", year: 2027, patrono: "29/02" });
 		expect(leap).toContain("Festività nazionali del 2027 con il patrono (13):");
@@ -488,7 +488,7 @@ describe("date_calc", () => {
 	it("info: a written weekday that does not match is warned about; before 2001 no festivo or lavorativo", async () => {
 		const { run } = dateTool();
 		expect(await run({ op: "info", date: "lunedì 2 giugno" })).toBe("Mercoledì 02/06/2027 (fra 228 giorni): festivo (Festa della Repubblica). Settimana ISO 22, 153º giorno dell'anno su 365.\nAttenzione: il 02/06/2027 è mercoledì, non lunedì.");
-		expect(await run({ op: "info", date: "15/03/1990" })).toBe("Giovedì 15/03/1990 (13.365 giorni fa). Settimana ISO 11, 74º giorno dell'anno su 365.\nFestivo o lavorativo: il calendario dei festivi di Annie vale dal 2001: per gli anni prima i festivi erano diversi.");
+		expect(await run({ op: "info", date: "15/03/1990" })).toBe("Giovedì 15/03/1990 (13.365 giorni fa). Settimana ISO 11, 74º giorno dell'anno su 365.\nFestivo o lavorativo: il calendario dei festivi di Owni vale dal 2001: per gli anni prima i festivi erano diversi.");
 	});
 
 	it("age: years, the next birthday and the days left; a birth needs its year", async () => {
@@ -538,14 +538,14 @@ describe("date_calc", () => {
 		expect(await guarded?.execute({ op: "info", date: "25/12/2026" }, briefCtx)).toContain("festivo (Natale)");
 	});
 
-	it("is offered to every instance, and the instructions tell Annie to use it", async () => {
+	it("is offered to every instance, and the instructions tell Owni to use it", async () => {
 		expect(DEFAULT_INSTRUCTIONS).toContain("per date, giorni, scadenze e giorni lavorativi usa date_calc, non a mente, e dai le date con il giorno della settimana");
 		const reply = await boot(tempDataDir());
 		expect(await reply('/tool date_calc {"op":"info","date":"2027-03-15"}')).toContain("Lunedì 15/03/2027");
 	});
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(dataDir: string) {
 	const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });

@@ -12,7 +12,7 @@ export type ScheduleRefusal = "no_thread" | "agent" | "phone";
 
 /**
  * Whether a task programmato can be made here, one rule for schedule_create and the reminders of
- * other tools. Annie never calls first, so a reminder set on a call would only be heard at the next
+ * other tools. Owni never calls first, so a reminder set on a call would only be heard at the next
  * one; a colleague's question gets an answer, not a task: nobody in that conversation could receive it.
  */
 export function scheduleRefusal(thread: { readonly channel: string } | undefined): ScheduleRefusal | undefined {

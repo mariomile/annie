@@ -83,7 +83,7 @@ export class SkillStore {
 		const name = skillName(input.name);
 		if (name === "") throw new SkillError("Serve un nome, con lettere o numeri");
 		if (name.length > SKILL_LIMITS.name) throw new SkillError(`Il nome è troppo lungo: al massimo ${SKILL_LIMITS.name} caratteri («${name}»)`);
-		if (RESERVED.has(name)) throw new SkillError(`«${name}» è un comando di Annie: scegli un altro nome`);
+		if (RESERVED.has(name)) throw new SkillError(`«${name}» è un comando di Owni: scegli un altro nome`);
 		const description = input.description.replace(/\s+/g, " ").trim();
 		if (description === "") throw new SkillError("Serve una riga che dica quando usarla");
 		if (description.length > SKILL_LIMITS.description) throw new SkillError(`La descrizione è troppo lunga: al massimo ${SKILL_LIMITS.description} caratteri`);

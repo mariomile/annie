@@ -1,6 +1,6 @@
 # Squadre pronte
 
-Annie ha già tutti i pezzi per far lavorare più agenti insieme: agenti con un compito ciascuno ([ADR 0041](0041-agenti.md)), che si chiedono aiuto ([ADR 0042](0042-agenti-che-si-scrivono.md)), stanze dove la persona li chiama tutti ([ADR 0063](0063-stanze.md)) e sotto-schede per dividere il lavoro sulla board ([ADR 0066](0066-sotto-schede.md)). Montarli a mano però vuol dire creare tre agenti, scrivere tre istruzioni che si citano a vicenda, spuntare chi scrive a chi e aprire una stanza. Le alternative a Grok Bot che abbiamo guardato partono da squadre già fatte; da noi chi non conosce questi pezzi non li trova.
+Owni ha già tutti i pezzi per far lavorare più agenti insieme: agenti con un compito ciascuno ([ADR 0041](0041-agenti.md)), che si chiedono aiuto ([ADR 0042](0042-agenti-che-si-scrivono.md)), stanze dove la persona li chiama tutti ([ADR 0063](0063-stanze.md)) e sotto-schede per dividere il lavoro sulla board ([ADR 0066](0066-sotto-schede.md)). Montarli a mano però vuol dire creare tre agenti, scrivere tre istruzioni che si citano a vicenda, spuntare chi scrive a chi e aprire una stanza. Le alternative a Grok Bot che abbiamo guardato partono da squadre già fatte; da noi chi non conosce questi pezzi non li trova.
 
 ## Decisione
 
@@ -9,7 +9,7 @@ Annie ha già tutti i pezzi per far lavorare più agenti insieme: agenti con un 
 - **Il primo coordina**: riceve le richieste, chiede agli altri con agent_message o con @nome nella stanza, e per una scheda della board affidata a lui la divide in sotto-schede per gli altri, che partono subito, e lavorano da sole se lo fa la scheda. Gli altri fanno la loro parte e mettono la scheda in «Da rivedere» con un riassunto.
 - **Si scrivono solo fra loro**: ognuno accetta i messaggi degli altri della squadra, non dell'agente principale né di altri agenti. L'owner allarga in Impostazioni o con «Fate squadra».
 - **ID liberi**: se «ricercatore» c'è già, il nuovo è «ricercatore-2» (fino a -9), e le istruzioni degli altri citano quello. La stessa squadra si può creare più volte.
-- **Il catalogo sta nel codice** (`src/core/teams.ts`): istruzioni scritte e provate da noi, uguali per tutti; le cambia solo un aggiornamento di Annie. Le squadre già create non cambiano.
+- **Il catalogo sta nel codice** (`src/core/teams.ts`): istruzioni scritte e provate da noi, uguali per tutti; le cambia solo un aggiornamento di Owni. Le squadre già create non cambiano.
 - **Se qualcosa va storto a metà**, gli agenti già creati restano e il messaggio li elenca per nome; due squadre chieste insieme si creano una dopo l'altra; se la stanza non si può aprire (già 50 stanze), la squadra c'è lo stesso e la console lo dice. Audit `team.created` con la squadra, gli agenti e se la stanza c'è, più `room.created` come per ogni stanza.
 
 ## Alternative scartate

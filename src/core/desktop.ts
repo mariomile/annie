@@ -3,7 +3,7 @@ import type { EngineImage } from "./engine.ts";
 
 /**
  * The screen of an agente (ADR 0045): a Linux desktop with its own Firefox, driven through Cua
- * (trycua/cua), where Annie looks at the screen and clicks, types, presses keys, scrolls and
+ * (trycua/cua), where Owni looks at the screen and clicks, types, presses keys, scrolls and
  * opens apps. Providers: a container of Cua's image per agente on the Docker host
  * (src/desktop/docker-desktop.ts), or one desktop someone runs elsewhere
  * (src/desktop/remote-desktop.ts). Both speak MCP to Cua's daemon (src/desktop/mcp-client.ts).
@@ -45,7 +45,7 @@ export type DesktopPermissions = {
 	readonly problem?: string;
 };
 
-/** Something the person or Annie can understand (a tool the desktop lacks, an app not found): said as it is. */
+/** Something the person or Owni can understand (a tool the desktop lacks, an app not found): said as it is. */
 export class DesktopError extends Error {
 	override readonly name = "DesktopError";
 }
@@ -64,7 +64,7 @@ export function desktopConnector(desktop: { readonly kind?: "local" | "remote" }
  */
 export const DESKTOP_LIMITS = { maxImageDimension: 1280, maxImageBytes: 5 * 1024 * 1024, maxTextChars: 4000, maxTypeChars: 2000, maxScroll: 50 } as const;
 
-/** Cua's tools Annie calls; a desktop without one of them says so before the call. */
+/** Cua's tools Owni calls; a desktop without one of them says so before the call. */
 export const DESKTOP_TOOLS = ["get_desktop_state", "click", "type_text", "press_key", "hotkey", "scroll", "drag", "get_screen_size", "launch_app"] as const;
 
 /** Cua's tools that only read: asking them twice changes nothing. */

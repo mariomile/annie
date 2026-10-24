@@ -1,6 +1,6 @@
-# Fase 3, quinto passo: il computer su micro-VM, anche in Annie Cloud
+# Fase 3, quinto passo: il computer su micro-VM, anche in Owni Cloud
 
-Il computer della settimana 18 (ADR 0013) gira come container sul server dove Annie è installata, e in Annie Cloud resta spento: dare a una cella il socket di Docker equivale a darle il server. Ora il computer può essere una **Fly.io Machine**, una micro-VM con un kernel suo, e così si accende anche per le celle di Annie Cloud.
+Il computer della settimana 18 (ADR 0013) gira come container sul server dove Owni è installata, e in Owni Cloud resta spento: dare a una cella il socket di Docker equivale a darle il server. Ora il computer può essere una **Fly.io Machine**, una micro-VM con un kernel suo, e così si accende anche per le celle di Owni Cloud.
 
 ## Come funziona
 
@@ -12,13 +12,13 @@ Il computer della settimana 18 (ADR 0013) gira come container sul server dove An
 - **Si spegne da sola**: senza chiamate per 10 minuti il primo processo termina e la macchina si ferma, anche se chi l'ha accesa non c'è più. Al comando dopo riparte con i suoi file. Una macchina ferma costa solo il volume.
 - **Azzerare** cancella la app con macchina e volume.
 
-## In Annie Cloud
+## In Owni Cloud
 
 Il token di Fly sta solo nel control plane (`ANNIE_CLOUD_COMPUTER=fly`). Le celle ricevono `ANNIE_COMPUTER=cloud` e l'indirizzo del control plane, e chiedono lì i comandi e i file per il proprio tenant, con un token derivato dal loro segreto. Il control plane rinomina ogni computer con il tenant e la chiave mandata dalla cella, quindi una cella non può raggiungere il computer di un altro tenant qualunque chiave mandi.
 
 Un comando parte con una richiesta e si aspetta con altre di al più 25 secondi, così nessun proxy fra cella e control plane taglia un comando di 5 minuti; una cella che smette di chiedere (spenta, riavviata) fa chiudere il suo comando dopo 90 secondi. Tetti per tenant: 2 comandi alla volta, 10 computer, una copia di file alla volta (e 256 MB in transito sul control plane in tutto). Un tenant sospeso (prova finita) non esegue niente. Alla cella arrivano solo gli errori che la persona può risolvere; il resto finisce nel log del control plane. L'owner accende il computer istanza per istanza come prima. `pnpm cloud computers` li elenca, `pnpm cloud computers delete <tenant>` li cancella per un account che se ne va.
 
-Installando Annie su un proprio server si può usare Fly direttamente (`ANNIE_COMPUTER=fly`): il token sta nel server dell'operatore.
+Installando Owni su un proprio server si può usare Fly direttamente (`ANNIE_COMPUTER=fly`): il token sta nel server dell'operatore.
 
 ## Alternative scartate
 
@@ -33,4 +33,4 @@ Installando Annie su un proprio server si può usare Fly direttamente (`ANNIE_CO
 - Le risposte alle connessioni entrate restano permesse: se Fly un giorno inoltrasse traffico a una macchina senza servizi, la macchina potrebbe rispondere. Nessun processo in ascolto la rende comunque inutile.
 - Il sigillo si prova nella CI su un container dell'immagine vera (con le capability che root ha in una VM di Fly), con il controllo opposto: lo stesso container senza sigillo raggiunge internet, e senza capability non parte nessun comando. Non è il kernel di Fly: per quello serve la prova dal vivo.
 - Copiare 100 MB dentro richiede circa 200 chiamate all'API di Fly.
-- I file del computer stanno nei volumi di Fly, fuori dal backup di Annie, come in ADR 0013.
+- I file del computer stanno nei volumi di Fly, fuori dal backup di Owni, come in ADR 0013.

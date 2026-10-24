@@ -73,7 +73,7 @@ describe("ready-made squadre", () => {
 		const settings = (await api("/api/instances/caporedattore/settings")).settings;
 		expect(settings.persona).toMatchObject({ emoji: "🗂️", named: true });
 		expect(settings.instructions).toContain("Fai parte della squadra «Contenuti»");
-		// After the default instructions, like the form's: what Annie can do stays said.
+		// After the default instructions, like the form's: what Owni can do stays said.
 		expect(settings.instructions.indexOf("Fai parte")).toBeGreaterThan(100);
 		const room = await api(`/api/rooms/${made.room}`);
 		expect(room.room.title).toBe("Squadra Contenuti");

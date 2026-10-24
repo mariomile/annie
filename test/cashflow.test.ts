@@ -999,7 +999,7 @@ describe("cashflow: the brief, another agente, audit, fence, CSV", () => {
 		for (const op of ["set_balance", "set_alert", "add_item", "edit_item", "remove_item", "export", "boh"]) expect(cashflowAgentReads({ op })).toBe(false);
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		for (const args of [{ op: "set_balance", amount: 1 }, STIPENDIO, { op: "list_items" }, { op: "export" }, { op: "what_if", amount: 1, date: "01/11/2026" }]) {
-			expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+			expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		}
 		expect(String(await briefed?.execute({ op: "forecast", compact: true }, fresh()))).toContain("Niente da segnalare sulla cassa");
 		expect(cashflowCallReads({ op: "forecast" })).toBe(true);
@@ -1423,7 +1423,7 @@ describe("cashflow in the app", () => {
 		expect(audit).not.toContain("Zeta");
 	}, 60_000);
 });
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

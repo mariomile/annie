@@ -114,7 +114,7 @@ describe("Phone adapter", () => {
 		expect(pending.all.get(CALLER)).toHaveLength(1);
 	});
 
-	it("with the code: the reply kept for the caller, then a phrase goes to Annie and her reply is spoken", async () => {
+	it("with the code: the reply kept for the caller, then a phrase goes to Owni and her reply is spoken", async () => {
 		const pending = memoryPending();
 		pending.put(CALLER, "Ecco il riassunto.", "p");
 		const phone = adapter({ pending, waitMs: 2_000 });
@@ -191,7 +191,7 @@ describe("Phone adapter", () => {
 			throw new Error("channel not allowed");
 		});
 		await answered(phone);
-		const xml = await phone.handle(q("step=heard&turn=1"), call({ SpeechResult: "ciao Annie, una cosa" }));
+		const xml = await phone.handle(q("step=heard&turn=1"), call({ SpeechResult: "ciao Owni, una cosa" }));
 		expect(xml).toContain("Ora non posso risponderti");
 		expect(xml).toContain("<Hangup/>");
 	});
@@ -291,7 +291,7 @@ describe("Phone in an instance", () => {
 	}
 	const start = (sid = SID) => ({ CallSid: sid, AccountSid: ACCOUNT, From: CALLER, To: NUMBER });
 
-	it("the owner connects a number; allowed callers talk to Annie after the code, strangers are rejected, forged webhooks refused", async () => {
+	it("the owner connects a number; allowed callers talk to Owni after the code, strangers are rejected, forged webhooks refused", async () => {
 		const { api, hook, twilio, dataDir, stop, cookie } = await boot();
 		expect((await api("/api/instances/annie/phone")).phone).toMatchObject({ connected: false, https: true, allowedUsers: [] });
 		expect((await api("/api/instances/annie/phone", { accountSid: ACCOUNT, authToken: AUTH, number: NUMBER }, "PUT")).status).toBe(400);
@@ -318,7 +318,7 @@ describe("Phone in an instance", () => {
 		expect(heard.status).toBe(200);
 		expect(heard.text).toContain("ciao dal telefono");
 		expect(heard.text).toContain("<Gather");
-		// The same phrase sent again by Twilio reaches Annie once: no second answer comes.
+		// The same phrase sent again by Twilio reaches Owni once: no second answer comes.
 		const twice = await hook("?step=heard&turn=1", { ...start(), SpeechResult: "ciao dal telefono" });
 		expect(twice.text).toContain("Un momento.");
 
@@ -339,7 +339,7 @@ describe("Phone in an instance", () => {
 		expect((await again.hook("", start(`CA${"5".repeat(32)}`))).text).toContain("<Reject/>");
 	}, 30_000);
 
-	it("a reminder cannot be set on a call: Annie never calls first", async () => {
+	it("a reminder cannot be set on a call: Owni never calls first", async () => {
 		const store = { create: async () => expect.unreachable("no schedule on the phone") } as unknown as ScheduleStore;
 		const create = createScheduleTools({ store, defaultTimeZone: "Europe/Rome" }).find((t) => t.name === "schedule_create");
 		const ctx = { thread: { channel: "phone", threadId: CALLER }, step: (_: string, run: () => Promise<unknown>) => run() } as unknown as Parameters<NonNullable<typeof create>["execute"]>[1];

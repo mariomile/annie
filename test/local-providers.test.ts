@@ -181,7 +181,7 @@ describe("official CLI inference bridge", () => {
 		await runtime.submit({ tenantId: "default", instanceId: "agent", channel: "test", threadId: "t", userId: "u", text: "Revoca il provider" });
 		expect((await reply).status).toBe("unanswered"); expect(calls).toBe(1);
 	});
-	it.each(["claude-code", "codex"])("%s keeps the durable transcript and Annie tool continuation", async (provider) => {
+	it.each(["claude-code", "codex"])("%s keeps the durable transcript and Owni tool continuation", async (provider) => {
 		let calls = 0; let executed = 0; const prompts: string[] = [];
 		const providers = await local(async (request) => {
 			if (isStatus(request.args)) return auth(request.provider);
@@ -231,7 +231,7 @@ describe("official CLI inference bridge", () => {
 		expect(selected).toMatchObject({ slug: "gpt-future", shell_type: "disabled", apply_patch_tool_type: null, experimental_supported_tools: [], node_repl_disabled: true, tool_mode: "direct" });
 		expect(JSON.stringify(selected)).not.toContain("not-catalog-data");
 	});
-	it("rejects malformed structured replies and tool names not offered by Annie without exposing raw output", async () => {
+	it("rejects malformed structured replies and tool names not offered by Owni without exposing raw output", async () => {
 		const providers = await local(async ({ provider, args }) => isStatus(args) ? auth(provider) : completed(provider, "", [{ name: "exec", arguments: '{"key":"never-show-this"}' }]));
 		const client = createPiCompletionClient({ apiKey: async () => undefined, localProviders: providers, assertAllowed: async () => {} });
 		await expect(client.complete({ model: { provider: "claude-code", modelId: "sonnet" }, system: "", user: "Ciao", maxTokens: 10 })).rejects.toThrow(/non valida/);

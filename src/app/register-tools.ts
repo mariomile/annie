@@ -395,7 +395,7 @@ export function registerTools(deps: RegisterToolsDeps): AnnieTool[] {
 				await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 			},
 		}),
-		// Il personale: its own store (HR data, not Annie's users); it reads the appointments' hours and bookings, never writing them.
+		// Il personale: its own store (HR data, not Owni's users); it reads the appointments' hours and bookings, never writing them.
 		...createStaffTools({
 			workspace: runtime.workspace(record.tenantId, record.id),
 			store: runtime.staff(record.tenantId, record.id),
@@ -406,7 +406,7 @@ export function registerTools(deps: RegisterToolsDeps): AnnieTool[] {
 				await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id, source: "annie" });
 			},
 		}),
-		// Le fatture ricorrenti: each period's draft by sales_invoices' own builder; never issued by Annie.
+		// Le fatture ricorrenti: each period's draft by sales_invoices' own builder; never issued by Owni.
 		...createRecurringInvoiceTools({
 			...recurringEnv(record.tenantId, record.id),
 			whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),

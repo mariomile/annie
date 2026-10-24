@@ -170,7 +170,7 @@ export type RoutineRunDeps = {
 /**
  * Make the schede that are due: each routine at most once per tick, its next time set before the
  * scheda is made and the scheda recorded as its last before it starts, so neither a crash nor an
- * agente out of reach makes two. A time missed while Annie was off makes one scheda, not one per
+ * agente out of reach makes two. A time missed while Owni was off makes one scheda, not one per
  * time missed. While the last scheda is still open, no new one: a comment on it says so. A routine
  * whose person is gone, or can no longer hand schede to its agente, pauses with why.
  */

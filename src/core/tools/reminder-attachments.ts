@@ -197,7 +197,7 @@ export async function letterAttachments(workspace: Workspace, invoices: readonly
 }
 
 /**
- * The files to send by hand when Annie cannot send mail: each invoice's XML, and the PDF beside it
+ * The files to send by hand when Owni cannot send mail: each invoice's XML, and the PDF beside it
  * with the same name when there is one, labelled «da controllare»: found by name only, not read.
  */
 export async function filesToForward(workspace: Workspace, invoices: readonly Invoice[]): Promise<string[]> {

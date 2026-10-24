@@ -151,7 +151,7 @@ async function transcribeWithRetry(transcribe: TranscribePiece, piece: Parameter
 
 const RETRY_AFTER_MS = 2000;
 
-/** What the model gets: Annie's facts outside the fence, the transcript's passages (or their start) inside it. */
+/** What the model gets: Owni's facts outside the fence, the transcript's passages (or their start) inside it. */
 function answer(r: { source: string; saved: string; label: string; seconds: number | undefined; pieces: number; passages: readonly Passage[]; timed: boolean; markdown: string }): string {
 	// The passages start after the heading and the lines that say what was transcribed.
 	const from = r.markdown.indexOf("\n\n", r.markdown.indexOf("\n\n") + 2) + 2;

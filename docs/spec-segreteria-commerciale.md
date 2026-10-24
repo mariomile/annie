@@ -10,7 +10,7 @@ Architettura: [`architettura.md`](architettura.md). Settimana 2: [`week2.md`](we
 
 **Cliente tipo.** PMI italiana da 5 a 50 milioni di fatturato (ICP Buildrs): studio professionale, distributore, e-commerce B2B o produttore con ufficio commerciale di 1-5 persone. Il commerciale (o il titolare) vive già su Telegram; la mail aziendale è Gmail Workspace o Microsoft 365; il CRM è spesso assente o poco usato. Il dolore è la coda di richieste di preventivo che restano senza risposta o ricevono risposte lente e disomogenee.
 
-**Cosa vende Annie qui.** Un'istanza dedicata che legge la casella delle richieste, crea o aggiorna il lead nel CRM, prepara una bozza in italiano e chiede al commerciale di approvare su Telegram prima di qualsiasi invio. Tempo risparmiato misurabile, rischio basso (human-in-the-loop), privacy rispettata (tenant isolato, egress default deny).
+**Cosa vende Owni qui.** Un'istanza dedicata che legge la casella delle richieste, crea o aggiorna il lead nel CRM, prepara una bozza in italiano e chiede al commerciale di approvare su Telegram prima di qualsiasi invio. Tempo risparmiato misurabile, rischio basso (human-in-the-loop), privacy rispettata (tenant isolato, egress default deny).
 
 **Policy di prodotto (SLA pilota).** «Bozze, non invii autonomi.» Qualsiasi percorso che chiama l'invio mail senza un tap esplicito su **Approva** da un utente in allowlist è un bug bloccante. Il commerciale resta responsabile del testo inviato al cliente finale.
 
@@ -21,7 +21,7 @@ Architettura: [`architettura.md`](architettura.md). Settimana 2: [`week2.md`](we
 | Cliente finale | Chi ha scritto la mail di richiesta | Solo mail (riceve la risposta approvata) |
 | Commerciale | Utente in allowlist Telegram dell'istanza | Telegram |
 | Owner | Mario / IT del cliente | Config (oggi env e file; poi dashboard) |
-| Annie | Istanza `segreteria-commerciale` del tenant | Motore + adapter mail, CRM, Telegram |
+| Owni | Istanza `segreteria-commerciale` del tenant | Motore + adapter mail, CRM, Telegram |
 
 **Registro linguistico e prompt di istanza.**
 
@@ -187,7 +187,7 @@ Per annullare senza cambiare nulla, scrivi: annulla modifica
 
 Esempio commerciale: `Togli la domanda sul budget. Aggiungi che il sopralluogo in sede è gratuito nel Lazio.`
 
-Annie risponde con bozza v2 e di nuovo i tre bottoni. Se scrive `annulla modifica` in `awaiting_edit`, ripristina i bottoni sulla bozza precedente senza incrementare la versione.
+Owni risponde con bozza v2 e di nuovo i tre bottoni. Se scrive `annulla modifica` in `awaiting_edit`, ripristina i bottoni sulla bozza precedente senza incrementare la versione.
 
 ### 3.5 Scarta
 
@@ -358,10 +358,10 @@ interface MailAdapter {
 | Ruolo | Modello | Note |
 |---|---|---|
 | Classificazione + estrazione JSON | Claude **Haiku 5.5** | Schema stretto, costo basso |
-| Bozza email (lei) e judge eval | Claude **Sonnet 5.5** | Qualità copy; default bozza Annie |
+| Bozza email (lei) e judge eval | Claude **Sonnet 5.5** | Qualità copy; default bozza Owni |
 | Fallback se Anthropic down | OpenAI GPT-5 (bozza) / GPT-5 mini (extract) | Solo se in egress policy |
 
-**Costo per pratica.** Stima **non misurata** su traffico Annie: circa **0,01-0,02 USD** a pratica con Haiku+Sonnet e cache sul system prompt (tutto-Sonnet ~0,03). Da ricalcolare quando esisterà `usage.jsonl` / audit usage per tenant. Log per submission: provider, model, token in/out, `estimatedUsd`, senza testo.
+**Costo per pratica.** Stima **non misurata** su traffico Owni: circa **0,01-0,02 USD** a pratica con Haiku+Sonnet e cache sul system prompt (tutto-Sonnet ~0,03). Da ricalcolare quando esisterà `usage.jsonl` / audit usage per tenant. Log per submission: provider, model, token in/out, `estimatedUsd`, senza testo.
 
 **Tetti per tenant** (giorno civile Europe/Rome):
 

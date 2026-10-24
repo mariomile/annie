@@ -281,7 +281,7 @@ async function readDocument(texts: DocumentTexts, path: string, data: Buffer, of
 	const note = doc.note === undefined ? "" : `\n[${doc.note}]`;
 	if (doc.text === "") return `${header}${note === "" ? "\nNessun testo da leggere nel documento." : note}`;
 	// Documents often come from outside (a forwarded invoice): their text is fenced like a web page,
-	// with what Annie says about it (header, note, where to go on) outside the fence.
+	// with what Owni says about it (header, note, where to go on) outside the fence.
 	const { body, tail, start } = slice(doc.text, offset);
 	if (body === "") return `${header}\n${tail}`;
 	const where = offset > 0 ? documentSectionAt(doc.text, start) : undefined;

@@ -99,7 +99,7 @@ export type Reply = {
 	readonly possibleDuplicate: boolean;
 	/** Which hand-off of this reply this is (1 the first time). A failure report names it. */
 	readonly attempt: number;
-	/** The submission this reply answers; messages Annie sends by herself carry "message" or "file". */
+	/** The submission this reply answers; messages Owni sends by herself carry "message" or "file". */
 	readonly submissionId: string;
 } & (
 	/** `model`: the one that wrote the answer, when the engine says. */
@@ -141,7 +141,7 @@ export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_00
 export const DEFAULT_MAX_RETRIES = 14;
 
 /**
- * Annie's core. Knows tenants, instances, secrets, audit and egress policy; runs each
+ * Owni's core. Knows tenants, instances, secrets, audit and egress policy; runs each
  * instance on its own durable engine session and storage. Knows nothing about channels
  * beyond their names.
  */
@@ -322,7 +322,7 @@ export class AnnieRuntime {
 		return new AppointmentStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
-	/** Il personale of an instance (staff.json), outside the workspace: HR data, not Annie's users. */
+	/** Il personale of an instance (staff.json), outside the workspace: HR data, not Owni's users. */
 	staff(tenant: string, instance: string): StaffStore {
 		return new StaffStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
@@ -337,7 +337,7 @@ export class AnnieRuntime {
 		return new StockStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
-	/** Le fatture ricorrenti of an instance: the canoni whose drafts Annie prepares every period. */
+	/** Le fatture ricorrenti of an instance: the canoni whose drafts Owni prepares every period. */
 	recurringInvoices(tenant: string, instance: string): RecurringStore {
 		return new RecurringStore(instanceDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}

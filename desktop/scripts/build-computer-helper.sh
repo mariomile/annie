@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apple's frameworks only: a universal helper next to Annie's executable, signed by Tauri.
+# Apple's frameworks only: a universal helper next to Owni's executable, signed by Tauri.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 bin="$root/desktop/src-tauri/binaries"

@@ -724,7 +724,7 @@ describe("FatturaPA: hostile files", () => {
 	});
 });
 
-describe("FatturaPA through Annie's own paths", () => {
+describe("FatturaPA through Owni's own paths", () => {
 	it("sent on Telegram as a .p7m: noted as an electronic invoice, read whole by file_read inside the fence, found by file_search", async () => {
 		const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine: piDurableEngine });
 		await runtime.registry.createTenant({ id: "acme", name: "acme" });

@@ -2,7 +2,7 @@
 
 Branch `week-45`. Ora `date_calc` fa i conti sulle date al posto del modello: giorni e giorni lavorativi, scadenze delle fatture a 30/60/90 giorni anche fine mese o a giorno fisso, festivi, età e settimane. Sempre attivo, senza rete né chiavi. Come funziona e le alternative scartate sono nell'[ADR 0048](adr/0048-date-e-scadenze.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Quanti giorni lavorativi ci sono fino al 31 dicembre?»**: il conto senza sabati, domeniche e festivi, con il 4 ottobre dal 2026.
 - **«Fattura del 31 gennaio a 60 giorni fine mese, quando scade?»**: la data, e quella contata a mesi se un gestionale la conta diversa.

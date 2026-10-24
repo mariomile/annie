@@ -13,7 +13,7 @@
  *   said, else what the scadenzario counts, which is the invoice's own figure and proves nothing)
  *   against the net (total less what is withheld) and the gross. Paid gross: the client withheld
  *   nothing, and that ritenuta is no credit; only the bank's word takes it off the credit.
- * - the CU: Annie's figures of the client and the year against the CU's; a difference is explained,
+ * - the CU: Owni's figures of the client and the year against the CU's; a difference is explained,
  *   when it can be, by the invoices that would make it (paid in another year, not marked paid,
  *   credit notes, paid gross), else it may be invoices that are not in the workspace.
  */
@@ -146,7 +146,7 @@ export function yearSummary(docs: readonly WithheldDoc[], year: number, bank: Re
 
 // --- The CU -------------------------------------------------------------------------------------
 
-/** Why an invoice may make Annie's figure differ from the CU's, and by how much (added to Annie's to get the CU's). */
+/** Why an invoice may make Owni's figure differ from the CU's, and by how much (added to Owni's to get the CU's). */
 export type Reason = "paid_next_year" | "paid_this_year" | "not_marked" | "credit_counted" | "credit_unused" | "paid_gross";
 
 /** `year`: the year the share in question was paid, for «pagata nel 2026». */
@@ -154,11 +154,11 @@ export type Explaining = { readonly doc: WithheldDoc; readonly reason: Reason; r
 
 export type CuComparison = {
 	readonly cu: CuRecord;
-	/** Annie's figures of the client and the year. */
+	/** Owni's figures of the client and the year. */
 	readonly compensi: bigint;
 	readonly ritenuta: bigint;
 	readonly count: number;
-	/** The CU's less Annie's. */
+	/** The CU's less Owni's. */
 	readonly diffRitenuta: bigint;
 	readonly diffCompensi: bigint;
 	readonly matches: boolean;
@@ -212,7 +212,7 @@ function exactSet(list: readonly Explaining[], diff: bigint, tolerance: bigint):
 	return best === undefined ? undefined : list.filter((_, i) => ((best as number) & (1 << i)) !== 0);
 }
 
-/** A CU against Annie's figures of its client and year (see above). */
+/** A CU against Owni's figures of its client and year (see above). */
 export function compareCu(cu: CuRecord, docs: readonly WithheldDoc[], bank: ReadonlyMap<string, bigint>): CuComparison {
 	const own = docs.filter((d) => d.clientKey === cu.client.key);
 	const counted = own.map((d) => sharesIn(d, cu.year)).filter((x) => x !== undefined);
@@ -243,7 +243,7 @@ export type CuList = {
 	readonly missing: readonly ClientYear[];
 	/** Those received, compared. */
 	readonly received: readonly CuComparison[];
-	/** CU said for clients without ritenute in the year by Annie's figures. */
+	/** CU said for clients without ritenute in the year by Owni's figures. */
 	readonly unexpected: readonly CuComparison[];
 };
 

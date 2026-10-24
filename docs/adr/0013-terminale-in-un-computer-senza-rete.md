@@ -1,8 +1,8 @@
 # Fase 3, terzo passo: il terminale, in un computer per istanza senza rete
 
-> Aggiornata dall'[ADR 0015](0015-computer-su-micro-vm.md): il computer può girare su micro-VM Fly.io, e così anche in Annie Cloud.
+> Aggiornata dall'[ADR 0015](0015-computer-su-micro-vm.md): il computer può girare su micro-VM Fly.io, e così anche in Owni Cloud.
 
-Annie esegue comandi (`computer_run`) in un computer suo, separato dalla cella: un container per istanza, con i suoi file in `/work`, **senza rete** e senza segreti. Ci copia i file del workspace che servono, lancia i comandi (Python, `jq`, `sqlite3`, `pandoc`, `pdftotext` e gli altri strumenti dell'immagine) e riporta nel workspace i file che produce. Il browser con clic resta per il passo dopo, sullo stesso computer.
+Owni esegue comandi (`computer_run`) in un computer suo, separato dalla cella: un container per istanza, con i suoi file in `/work`, **senza rete** e senza segreti. Ci copia i file del workspace che servono, lancia i comandi (Python, `jq`, `sqlite3`, `pandoc`, `pdftotext` e gli altri strumenti dell'immagine) e riporta nel workspace i file che produce. Il browser con clic resta per il passo dopo, sullo stesso computer.
 
 Perché adesso e perché così: le persone chiedono di unire due fogli, convertire un documento, fare un grafico da un CSV, controllare un PDF. Sono lavori da terminale che non devono uscire. «Leggere è libero, scrivere o inviare si approva»: un computer senza rete non può inviare niente a nessuno, e non ha niente da rubare. I comandi girano quindi senza approvazione: il rischio di un comando sbagliato resta dentro il computer dell'istanza.
 
@@ -12,14 +12,14 @@ Perché adesso e perché così: le persone chiedono di unire due fogli, converti
 - Il computer è un container dall'immagine `ANNIE_COMPUTER_IMAGE` (`docker/computer.Dockerfile`), creato al primo comando: rete `none`, comandi come utente 1000 (mai root) e container come nobody, file system in sola lettura tranne `/work` (un volume dell'istanza) e `/tmp`, nessuna capability, niente escalation di privilegi, limiti di memoria, CPU, processi e dimensione dei file, una quota per `/work`. Con `ANNIE_COMPUTER_RUNTIME=runsc` gira sotto gVisor, con un kernel suo. Il nome del computer è un hash di tenant e istanza.
 - Un comando alla volta per computer; alla fine di ognuno, tutto quello che ha lasciato acceso viene chiuso (`kill -9 -1` come utente 1000, che non può toccare il container). Al massimo 8 computer accesi e 4 comandi alla volta per server.
 - Un comando ha un tempo massimo (fino a 5 minuti) e un tetto di output: al modello arrivano al più 16.000 caratteri di uscita, recintati come dati, perché possono contenere il testo dei file.
-- I file entrano dal workspace (`copy_in`) ed escono nel workspace sotto `computer/` (`copy_out`), al massimo 20 MB l'uno: lì Annie li può mandare con `file_send`.
+- I file entrano dal workspace (`copy_in`) ed escono nel workspace sotto `computer/` (`copy_out`), al massimo 20 MB l'uno: lì Owni li può mandare con `file_send`.
 - Il computer si ferma dopo 10 minuti senza comandi e riparte al primo; i file in `/work` restano.
 - Audit: un comando eseguito, con durata, codice di uscita e dimensioni; mai il testo del comando né l'output.
 
 ## Limiti voluti
 
 - Niente rete: niente `pip install`, niente `curl`. Gli strumenti sono quelli dell'immagine; l'operatore può costruirne una sua.
-- In Annie Cloud il computer resta spento finché le celle non girano su micro-VM: una cella non ha il socket di Docker, e darglielo equivarrebbe a darle il server.
+- In Owni Cloud il computer resta spento finché le celle non girano su micro-VM: una cella non ha il socket di Docker, e darglielo equivarrebbe a darle il server.
 - Nella chat del brief del mattino `computer_run` non gira, come tutti i tool che non sono di sola lettura.
 
 ## Alternative scartate
@@ -31,6 +31,6 @@ Perché adesso e perché così: le persone chiedono di unire due fogli, converti
 
 ## Conseguenze
 
-- Il processo di Annie che usa il socket di Docker equivale a root sul server, come il control plane dell'ADR 0008. Va acceso solo dove Annie è l'unico servizio del server, e il runbook lo dice.
+- Il processo di Owni che usa il socket di Docker equivale a root sul server, come il control plane dell'ADR 0008. Va acceso solo dove Owni è l'unico servizio del server, e il runbook lo dice.
 - L'isolamento è quello di un container (kernel condiviso) o, con gVisor, di un kernel in user space. Per le micro-VM (Fly.io Machines in UE il candidato) basta un altro `ComputerProvider`, con un token e una prova dal vivo.
 - I file in `/work` sono dati delle persone, come il workspace: li cancella l'owner dalla console (Impostazioni, Computer, «Azzera i file del computer»). Restano fuori dal backup della cartella dei dati: quello che conta va copiato nel workspace.

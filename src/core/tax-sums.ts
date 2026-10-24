@@ -407,7 +407,7 @@ export function baseOf(i: CalendarInputs, year: number): Base {
 	return { ...(imposta === undefined ? {} : { imposta }), ...(contributi === undefined ? {} : { contributi }), source };
 }
 
-/** An acconto in two instalments; `first` undefined when it is not known (paid in June on a base Annie does not know). */
+/** An acconto in two instalments; `first` undefined when it is not known (paid in June on a base Owni does not know). */
 export type Split = { readonly first?: bigint; readonly second: bigint };
 
 export type Acconti = {

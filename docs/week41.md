@@ -1,14 +1,14 @@
 # Settimana 41: meteo
 
-Branch `week-41`. «Che tempo fa?» è una delle domande più fatte a un assistente, e Annie non sapeva rispondere senza cercare sul web. Ora ha `weather`: condizioni di adesso, le fasce di oggi e domani («stasera», «domani mattina») e le previsioni fino a 16 giorni, su Open-Meteo. Come funziona, i limiti, le condizioni d'uso e le alternative scartate sono nell'[ADR 0039](adr/0039-meteo.md).
+Branch `week-41`. «Che tempo fa?» è una delle domande più fatte a un assistente, e Owni non sapeva rispondere senza cercare sul web. Ora ha `weather`: condizioni di adesso, le fasce di oggi e domani («stasera», «domani mattina») e le previsioni fino a 16 giorni, su Open-Meteo. Come funziona, i limiti, le condizioni d'uso e le alternative scartate sono nell'[ADR 0039](adr/0039-meteo.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Piove stasera a Milano?»**: la fascia della sera con la probabilità di precipitazioni e i millimetri.
 - **«Che tempo fa nel weekend a Torino?»**: sabato e domenica, non tutta la settimana.
-- **«Che tempo fa a Paris, Texas?»**: il posto giusto; «Roma» è la Roma italiana, senza alternative inutili; per «Springfield» Annie dice quale ha preso e quali altre ci sono.
-- **«Fra venti giorni?»**: Annie dice che le previsioni arrivano a quindici giorni da oggi, e oltre la settimana sono una tendenza.
-- **Il brief del mattino**, se Annie sa in che città vive la persona, dice il meteo di oggi.
+- **«Che tempo fa a Paris, Texas?»**: il posto giusto; «Roma» è la Roma italiana, senza alternative inutili; per «Springfield» Owni dice quale ha preso e quali altre ci sono.
+- **«Fra venti giorni?»**: Owni dice che le previsioni arrivano a quindici giorni da oggi, e oltre la settimana sono una tendenza.
+- **Il brief del mattino**, se Owni sa in che città vive la persona, dice il meteo di oggi.
 
 ## Cosa funziona (verificato dai test)
 

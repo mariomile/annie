@@ -59,16 +59,16 @@ export type DdtToolsOptions = {
 };
 
 const DESCRIPTION = [
-	"I DDT in uscita (documenti di trasporto), emesso scarica il magazzino da solo (un reso già fatturato è sales_invoices credit_note, la fattura differita sales_invoices con ddt): the goods the person ships to a client, with no prices. Annie never sends a DDT: the person prints it or sends it.",
-	"What the person says → op: «fammi il DDT per Rossi: 10 risme e 2 toner» → create with client and lines [{item (a voce of the listino as said) or description (free text), quantity, unit}]; causale vendita unless said (conto visione, reso, riparazione, omaggio, comodato, lavorazione); transport mittente (the person), destinatario (the client) or vettore with carrier; destination when not the client's address; aspect, packages, weight when said. When Annie is not sure of the client, of a voce or of the DDT a reso comes from, create first shows the draft with a check: show it, and only after the person's yes repeat with confirm true and that check.",
-	"«Rossi mi ha reso 2 toner»: if that goods is not billed yet, create with causale reso (of: the DDT it comes back from, else Annie finds the latest with that goods); when the client brought their own DDT, their_number and their_date (recorded, no number of ours); if it is billed already, after the reso sales_invoices credit_note with reso. «lo porta il corriere BRT» → change with transport vettore and carrier.",
+	"I DDT in uscita (documenti di trasporto), emesso scarica il magazzino da solo (un reso già fatturato è sales_invoices credit_note, la fattura differita sales_invoices con ddt): the goods the person ships to a client, with no prices. Owni never sends a DDT: the person prints it or sends it.",
+	"What the person says → op: «fammi il DDT per Rossi: 10 risme e 2 toner» → create with client and lines [{item (a voce of the listino as said) or description (free text), quantity, unit}]; causale vendita unless said (conto visione, reso, riparazione, omaggio, comodato, lavorazione); transport mittente (the person), destinatario (the client) or vettore with carrier; destination when not the client's address; aspect, packages, weight when said. When Owni is not sure of the client, of a voce or of the DDT a reso comes from, create first shows the draft with a check: show it, and only after the person's yes repeat with confirm true and that check.",
+	"«Rossi mi ha reso 2 toner»: if that goods is not billed yet, create with causale reso (of: the DDT it comes back from, else Owni finds the latest with that goods); when the client brought their own DDT, their_number and their_date (recorded, no number of ours); if it is billed already, after the reso sales_invoices credit_note with reso. «lo porta il corriere BRT» → change with transport vettore and carrier.",
 	"«aggiungi 2 toner al DDT» → change (ddt or client; lines quantity 0 takes one off) while it is a draft; «emettilo», «sì» after the draft → issue with confirm true, only after the person said yes to what issue showed (it takes the number and unloads the magazzino: those goods are not unloaded again by hand); «con la data di domani» → issue with date; «annulla il DDT 12» → cancel: it shows the DDT first with a check; with the person's yes repeat with confirm true, the check and left (whether the goods left anyway: false puts them back in the magazzino; the number stays used); «stampa il DDT», «fammi il PDF del DDT 12» → document (format pdf or docx), then offer file_send; «quali DDT non ho ancora fatturato?» → list with unbilled true (client, month when said); «a che punto è il DDT 12?» → status; «fammi il file dei DDT» → export, then file_send; «numera i DDT come 12», «l'ultimo DDT che ho fatto era il 40» → settings (numbering, last_number).",
 	"«fai la fattura differita di ottobre per Rossi» is sales_invoices (draft with ddt true and the month), not this tool. summary of the brief: list with compact true. Never say a draft's reference (DT-…) to the person: name a draft by its client and day. Repeat quantities as given, never compute them yourself.",
 ].join(" ");
 
 const AGENT_REFUSAL = "I DDT dicono clienti, merce e indirizzi: a un altro agente do solo quanti sono. Li prepara e li emette chi ti scrive, nella sua conversazione.";
 
-/** A draft as proposed: its client, lines and fields, with the check the person's yes is given on; `source`: the DDT a reso was tied to by Annie. */
+/** A draft as proposed: its client, lines and fields, with the check the person's yes is given on; `source`: the DDT a reso was tied to by Owni. */
 type Proposed = { readonly said: ClientSaid; readonly lines: readonly LineSaid[]; readonly fields: Omit<Ddt, "id" | "status" | "day" | "client" | "lines" | "callId" | "by" | "at">; readonly source?: IssuedDdt };
 
 type Answer = { text: string; count: number };
@@ -311,7 +311,7 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 		const ahead = when > day;
 		const waiting = loaded.book.ddts.filter((x) => x.status === "draft" && x.id !== d.id).length;
 		if (when > addDays(day, 1) && waiting > 0) return { text: `Con una data dopo domani, fino al ${italianLongDate(when)} non potresti emettere ${n1(waiting, "l'altra bozza di DDT", "le altre # bozze di DDT")} con la data di oggi. Emetti prima ${waiting === 1 ? "quella" : "quelle"}, oppure usa al più la data di domani.`, count: 0 };
-		// The first DDT of the year with Annie: the last number the person reached before, asked as the invoices ask it; written only with the yes.
+		// The first DDT of the year with Owni: the last number the person reached before, asked as the invoices ask it; written only with the yes.
 		const last = args.last_number;
 		if (last !== undefined && (typeof last !== "number" || !Number.isInteger(last) || last < 0 || last >= DDT_LIMITS.perYear)) return { text: "Errore: il numero dell'ultimo DDT è un numero intero, 0 se non ce n'è nessuno.", count: 0 };
 		const issuedIn = (y: number) => loaded.book.ddts.some((x) => isIssuedDdt(x) && x.year === y);
@@ -604,7 +604,7 @@ export function createDdtTools(options: DdtToolsOptions): AnnieTool[] {
 					all: { type: "boolean", description: "list: every DDT, the annulled ones and the past years too" },
 					compact: { type: "boolean", description: "list: the brief's line only" },
 					numbering: { type: "string", enum: ["plain", "year"], description: "settings: «12» or «12/2026» (default)" },
-					last_number: { type: "integer", minimum: 0, maximum: DDT_LIMITS.perYear - 1, description: "settings, issue: the number of the last DDT the person made this year before Annie (0: none), as the person says it; with issue, again with the confirm" },
+					last_number: { type: "integer", minimum: 0, maximum: DDT_LIMITS.perYear - 1, description: "settings, issue: the number of the last DDT the person made this year before Owni (0: none), as the person says it; with issue, again with the confirm" },
 					year: { type: "integer", minimum: 2000, maximum: 2100, description: "settings: the year of last_number" },
 				},
 				required: ["op"],

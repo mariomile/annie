@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Annie's server inside the Mac app (docs/desktop.md, «Annie sul Mac»): Node, the compiled
+# Owni's server inside the Mac app (docs/desktop.md, «Owni sul Mac»): Node, the compiled
 # server and its production packages, where tauri.local.conf.json picks them up. Run on a Mac
 # from the repository root, before `pnpm tauri build --config src-tauri/tauri.local.conf.json`.
 set -euo pipefail

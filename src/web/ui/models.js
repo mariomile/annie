@@ -31,7 +31,7 @@ export function subscriptionState(provider) {
 export function providerOverview(catalog) {
 	const subscriptions = (catalog.providers ?? []).filter((p) => p.kind === "subscription");
 	if (!catalog.localEnabled || subscriptions.length === 0) return null;
-	return h("section.card.pad.provider-overview", h("div.settings-heading", h("div", h("h2", "I tuoi provider AI"), h("p.muted", "Annie riconosce gli accessi già presenti su questo computer e usa il tuo abbonamento.")), h("a.btn.ghost", { href: "#/impostazioni/providers" }, "Gestisci provider")),
+	return h("section.card.pad.provider-overview", h("div.settings-heading", h("div", h("h2", "I tuoi provider AI"), h("p.muted", "Owni riconosce gli accessi già presenti su questo computer e usa il tuo abbonamento.")), h("a.btn.ghost", { href: "#/impostazioni/providers" }, "Gestisci provider")),
 		h("div.provider-overview-list", subscriptions.map((p) => {
 			const status = subscriptionState(p);
 			return h("div.row-gap", h("b", p.label), h(`span.chip${status.tone ? `.${status.tone}` : ""}`, status.label));

@@ -81,7 +81,7 @@ export async function viewStart(main) {
 							? "Su iPhone e iPad: apri questa pagina in Safari, tocca Condividi e poi «Aggiungi alla schermata Home». Nell'app entri di nuovo con il tuo link: incollalo nella schermata di accesso."
 							: window.isSecureContext
 								? "Dal menu del browser scegli «Installa app» o «Aggiungi a schermata Home». Alcuni browser, come Firefox sul computer, non lo permettono."
-								: "Si installa solo dall'indirizzo https della console: chiedilo a chi gestisce Annie.",
+								: "Si installa solo dall'indirizzo https della console: chiedilo a chi gestisce Owni.",
 					),
 	};
 	const done = steps.filter((s) => s.done).length;

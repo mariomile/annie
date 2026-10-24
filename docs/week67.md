@@ -1,8 +1,8 @@
 # Settimana 67: fatture ricorrenti
 
-Branch `week-67`. Per i canoni e gli abbonamenti dei clienti, Annie prepara da sola la bozza della fattura ogni mese, trimestre o anno e avvisa nella chat; l'emissione resta della persona. Le scelte sono nell'[ADR 0087](adr/0087-fatture-ricorrenti.md).
+Branch `week-67`. Per i canoni e gli abbonamenti dei clienti, Owni prepara da sola la bozza della fattura ogni mese, trimestre o anno e avvisa nella chat; l'emissione resta della persona. Le scelte sono nell'[ADR 0087](adr/0087-fatture-ricorrenti.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Canone mensile di manutenzione 300 € a Rossi srl dal 1° novembre»**: salvato, con la prossima bozza e quello che manca chiesto subito (l'aliquota IVA, il codice destinatario).
 - **Ogni periodo**: «È pronta la bozza del canone di novembre 2026 per Rossi srl», da guardare ed emettere quando la persona lo dice.

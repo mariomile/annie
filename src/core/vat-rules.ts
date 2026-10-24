@@ -66,7 +66,7 @@ export const quarterCode = (quarter: 1 | 2 | 3): string => String(6030 + quarter
 /**
  * Received invoices: the IVA is deductible in the period the invoice is received (art. 1 DPR
  * 100/1998 as amended by DL 50/2017) and at the latest in the dichiarazione of the year of
- * receipt, due by 30 April of the next year (art. 19 DPR 633/1972; art. 8 DPR 322/1998). Annie
+ * receipt, due by 30 April of the next year (art. 19 DPR 633/1972; art. 8 DPR 322/1998). Owni
  * takes the period of receipt, and the invoice's date when the receipt is not known.
  */
 export const DEDUCTION_LAST_DAY = "04-30";
@@ -74,7 +74,7 @@ export const DEDUCTION_LAST_DAY = "04-30";
 /** Partial deductibility the person may set, as examples to say: cars 40% (art. 19-bis1, lett. c, DPR 633/1972); phones 50% (prassi; da verificare). */
 export const PARTIAL_EXAMPLES = "auto al 40%, telefono al 50% (da verificare con il commercialista)";
 
-/** Past this yearly credit, the compensazione with other taxes needs the visto di conformità (art. 10 DL 78/2009, as amended by DL 50/2017): Annie says to talk to the commercialista. */
+/** Past this yearly credit, the compensazione with other taxes needs the visto di conformità (art. 10 DL 78/2009, as amended by DL 50/2017): Owni says to talk to the commercialista. */
 export const CREDIT_VISTO_CENTS = 500_000n;
 
 /** Days before an F24 of the IVA the morning brief says it. */

@@ -547,7 +547,7 @@ describe("quotes: status, validity and list", () => {
 		expect(quoteCallReads({ op: "show" })).toBe(true);
 		expect(quoteCallReads({ op: "revise" })).toBe(false);
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		expect(String(await briefed?.execute({ op: "set_status", number: "1", status: "declined" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "set_status", number: "1", status: "declined" }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await briefed?.execute({ op: "list", filter: "in_scadenza" }, fresh()))).toContain("Nessun preventivo in scadenza");
 		expect(BRIEF_INSTRUCTION).toContain("7. I preventivi aperti che scadono nei prossimi 3 giorni (quotes con op list e filter in_scadenza)");
 		expect(s.store.read().quotes[0]?.status).toBe("open");
@@ -812,7 +812,7 @@ describe("quotes in the app", () => {
 	}, 60_000);
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

@@ -768,7 +768,7 @@ describe("clients in the brief", () => {
 		expect(BRIEF_INSTRUCTION.length).toBeLessThanOrEqual(SCHEDULE_LIMITS.maxInstructionChars);
 		const [wrapped] = readOnlyInBriefs([s.tool], async () => true);
 		if (wrapped === undefined) throw new Error("no tool");
-		expect(await wrapped.execute({ op: "note", client: "Rossi Srl", note: "x" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await wrapped.execute({ op: "note", client: "Rossi Srl", note: "x" }, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(await wrapped.execute({ op: "list", compact: true }, fresh())).toContain("Clienti:");
 		expect(await wrapped.execute({ op: "agenda" }, fresh())).toContain("ricontatti da fare entro");
 		expect([clientCallReads({ op: "dormant" }), clientCallReads({ op: "agenda" }), clientCallReads({ op: "upsert" }), clientCallReads({ op: "postpone" })]).toEqual([true, true, false, false]);
@@ -1239,7 +1239,7 @@ describe("clients in the app", () => {
 	}, 60_000);
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

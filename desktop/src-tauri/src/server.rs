@@ -1,4 +1,4 @@
-//! The Annie server the app shows: what the person typed, checked and reduced to an origin.
+//! The Owni server the app shows: what the person typed, checked and reduced to an origin.
 
 use std::time::Duration;
 use url::Url;
@@ -17,7 +17,7 @@ pub struct Server {
 pub fn parse(input: &str) -> Result<Server, String> {
     let text = input.trim();
     if text.is_empty() {
-        return Err("Scrivi l'indirizzo del tuo Annie".into());
+        return Err("Scrivi l'indirizzo del tuo Owni".into());
     }
     let with_scheme = if text.contains("://") {
         text.to_string()
@@ -93,7 +93,7 @@ pub fn same_origin(origin: &Url, page: &Url) -> bool {
     origin.origin() == page.origin()
 }
 
-/// Annie answers at /healthz: the address is right and the server is up.
+/// Owni answers at /healthz: the address is right and the server is up.
 pub fn check(origin: &Url) -> Result<(), String> {
     let health = origin.join("/healthz").map_err(|e| e.to_string())?;
     let agent = ureq::Agent::config_builder()
@@ -118,7 +118,7 @@ pub fn check(origin: &Url) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "{} risponde, ma non è un server Annie",
+            "{} risponde, ma non è un server Owni",
             origin.host_str().unwrap_or("")
         ))
     }

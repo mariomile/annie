@@ -1,5 +1,5 @@
 /**
- * Who the clients are and what Annie knows of each, read from the registers and never written:
+ * Who the clients are and what Owni knows of each, read from the registers and never written:
  * the cards the person made, the customers of the invoices issued (scadenzario), of the quotes
  * and of the timesheet. One client is one card, or else one partita IVA, codice fiscale or name
  * (the timesheet's rule: no case, accents nor punctuation, the legal form counts). A name with no
@@ -148,7 +148,7 @@ function collected(c: Pick<Client, "invoices">, from: string, to: string, dayOf:
 
 export type QuoteCount = { readonly count: number; readonly taxable: bigint };
 
-/** What Annie knows of a client today, from every register and its card. */
+/** What Owni knows of a client today, from every register and its card. */
 export type ClientFigures = {
 	readonly year: number;
 	readonly thisYear: Invoiced;

@@ -28,7 +28,7 @@ const fresh = (): Record<string, unknown> => ({ "annie.billed-to": { spent: { in
 
 /**
  * Entries newest first, read in pages of `size` in either order; `models` is the conversation's
- * `pi.usage`, and the docs Annie writes live in `docs` (a family's members under `kind/key`).
+ * `pi.usage`, and the docs Owni writes live in `docs` (a family's members under `kind/key`).
  */
 function fakeTx(entries: FakeEntry[], size = 2, models?: Record<string, ReturnType<typeof ledger>>, docs: Record<string, unknown> = fresh()) {
 	return {

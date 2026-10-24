@@ -256,7 +256,7 @@ export type Acconto = {
 	readonly paid?: PaidMark;
 };
 
-/** The acconto of `year` by each method Annie can compute (see above); `expected`: the previsionale's base. */
+/** The acconto of `year` by each method Owni can compute (see above); `expected`: the previsionale's base. */
 export function accontoOf(i: VatInputs, year: number, expected?: bigint): Acconto {
 	const said = cents(yearFigures(i, year - 1)?.base);
 	const paid = paidOf(i, `${year}-acconto`);
@@ -326,7 +326,7 @@ export type Deadline = {
 	readonly partial: boolean;
 	readonly interest?: bigint;
 	readonly paid?: PaidMark;
-	/** An acconto of a year over before the periodicity was saved: Annie never saw it, «se non l'hai già versato». */
+	/** An acconto of a year over before the periodicity was saved: Owni never saw it, «se non l'hai già versato». */
 	readonly beforeSetup?: true;
 	/** The first period of a year: the credit the person said or confirmed, taken off it. */
 	readonly opening?: bigint;

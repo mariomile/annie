@@ -577,7 +577,7 @@ describe("the scadenzario: mark_paid and mark_unpaid", () => {
 		expect(due).not.toContain("compare in tutte le fatture");
 		expect(String(await guarded?.execute({ op: "list" }, brief))).toContain("Fatture: 4");
 		expect(String(await guarded?.execute({ op: "set_company" }, brief))).toContain("L'azienda non è impostata");
-		expect(String(await guarded?.execute({ op: "mark_paid", number: "B-77" }, brief))).toContain("Errore: nella chat del brief del mattino Annie legge soltanto.");
+		expect(String(await guarded?.execute({ op: "mark_paid", number: "B-77" }, brief))).toContain("Errore: nella chat del brief del mattino Owni legge soltanto.");
 		expect(String(await guarded?.execute({ op: "set_company", vat: "00000520031" }, brief))).toContain("legge soltanto");
 		expect(String(await guarded?.execute({ op: "set_company", clear: true }, brief))).toContain("legge soltanto");
 		expect(store.read()).toEqual({ paid: [], broken: false });
@@ -851,7 +851,7 @@ function setupReal(files: Record<string, string | Uint8Array>) {
 	return { run: async (args: Record<string, unknown>) => String(await tool.execute(args, ctx)) };
 }
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

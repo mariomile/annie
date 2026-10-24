@@ -1,14 +1,14 @@
 # Settimana 63: agenda fiscale
 
-Branch `week-63`. Annie mette insieme in un'agenda sola tutte le scadenze di chi ha la partita IVA: gli F24 di tasse e IVA, le CU, i rinnovi, le fatture da pagare e le scadenze di legge che prima non diceva nessuno (dichiarazioni, LIPE, diritto camerale, bollo). Le può esportare in un file .ics per il calendario. Le scelte sono nell'[ADR 0083](adr/0083-agenda-fiscale.md).
+Branch `week-63`. Owni mette insieme in un'agenda sola tutte le scadenze di chi ha la partita IVA: gli F24 di tasse e IVA, le CU, i rinnovi, le fatture da pagare e le scadenze di legge che prima non diceva nessuno (dichiarazioni, LIPE, diritto camerale, bollo). Le può esportare in un file .ics per il calendario. Le scelte sono nell'[ADR 0083](adr/0083-agenda-fiscale.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Cosa devo pagare a novembre?»**: le scadenze del mese in ordine, con gli importi stimati dove ci sono.
 - **«Qual è la prossima scadenza fiscale?»**: la prima scadenza fiscale in apertura, poi il resto dei prossimi 30 giorni.
 - **«Mettimi le scadenze nel calendario»**: un file .ics in `agenda/` da aprire sull'iPhone o importare in Google Calendar dal computer; con «avvisami tre giorni prima» ogni evento ha il suo avviso.
 - **Nel brief**: una riga per le scadenze dei prossimi 7 giorni che nessun altro strumento dice già.
-- **Per un'agenda più completa**: Annie dice cosa le manca (il regime, il numero REA per il diritto camerale).
+- **Per un'agenda più completa**: Owni dice cosa le manca (il regime, il numero REA per il diritto camerale).
 
 ## Cosa funziona (verificato dai test)
 

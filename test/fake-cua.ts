@@ -27,7 +27,7 @@ export const CUA_TOOLS = ["get_desktop_state", "click", "type_text", "press_key"
 export type FakeSpacesCall = { readonly method: string; readonly params?: any; readonly session?: string; readonly auth?: string; readonly protocol?: string };
 
 /**
- * cua-spacesd as Annie uses it: GET /health, and MCP over plain HTTP POST at /mcp with a bearer
+ * cua-spacesd as Owni uses it: GET /health, and MCP over plain HTTP POST at /mcp with a bearer
  * token and a session id it mints at `initialize`. Desktop tools answer with a screenshot.
  */
 export async function fakeSpaces(options: { token?: () => string | undefined; tools?: readonly string[]; screen?: { width: number; height: number }; sse?: boolean; slowMs?: number; healthyAfter?: number } = {}) {

@@ -2,12 +2,12 @@
 
 Branch `week-44`. Chi fattura controlla partite IVA e codici fiscali di continuo. Ora `vat_check` fa il controllo formale (cifra di controllo, ufficio IVA, codice fiscale con omocodia, forma dei numeri IVA europei) sempre, senza rete, e con `ANNIE_VAT_CHECK=1` chiede al VIES della Commissione europea se un numero è attivo, con nome, indirizzo e ora del controllo. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0047](adr/0047-partita-iva.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«La partita IVA 01234567890 è valida?»**: «la cifra di controllo non torna», senza chiamare nessuno.
 - **«Di chi è la P.IVA IT00000500157?»**: attiva nel VIES, con nome, indirizzo e ora del controllo.
-- **«Controlla questa partita IVA tedesca»**: la forma tedesca e il VIES; la Germania non dà nome e indirizzo, e Annie lo dice.
-- **Una partita IVA non attiva nel VIES**: Annie spiega che non vuol dire inesistente e rimanda a «Verifica partita IVA» dell'Agenzia delle Entrate.
+- **«Controlla questa partita IVA tedesca»**: la forma tedesca e il VIES; la Germania non dà nome e indirizzo, e Owni lo dice.
+- **Una partita IVA non attiva nel VIES**: Owni spiega che non vuol dire inesistente e rimanda a «Verifica partita IVA» dell'Agenzia delle Entrate.
 - **«Questo codice fiscale è giusto?»**: il controllo formale, con sesso e data di nascita, e il limite detto chiaro (all'Agenzia non può chiedere).
 - **Il codice fiscale di un'associazione** (comincia con 8 o 9): scritto giusto, ma non è una partita IVA e non è nel VIES.
 

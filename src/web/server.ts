@@ -70,7 +70,7 @@ import { REPLY_CANCELLED, REPLY_FAILED } from "../gateway.ts";
 import { proxyToken, sameSecret } from "./compare.ts";
 import { otpauthUri } from "./totp.ts";
 
-/** What a cell tells the control plane of Annie Cloud before being stopped. */
+/** What a cell tells the control plane of Owni Cloud before being stopped. */
 export type CellState = {
 	/** Work under way: stopping now would delay it until the next start. */
 	readonly busy: boolean;
@@ -213,7 +213,7 @@ export type WebAppOptions = {
 		connect(instanceId: string, credentials: { accessToken?: string; phoneNumberId?: string; appSecret?: string; template?: WhatsAppTemplate | null }): Promise<{ number: string | undefined; name: string | undefined }>;
 		disconnect(instanceId: string): Promise<void>;
 	};
-	/** Running as a cell of Annie Cloud: the control plane asks, with this secret, whether it may stop it. */
+	/** Running as a cell of Owni Cloud: the control plane asks, with this secret, whether it may stop it. */
 	readonly cell?: { readonly secret: string; readonly state: () => Promise<CellState> };
 	/** People connect their own Google account (Gmail and Calendar): read, and write with their approval when `write` (ADR 0021). */
 	readonly google?: {
@@ -225,7 +225,7 @@ export type WebAppOptions = {
 		readonly canWrite?: (personId: string) => boolean;
 		readonly runAction?: (instanceId: string) => (action: GoogleAction) => Promise<GoogleActionResult>;
 	};
-	/** The models of a provider Annie offers (ADR 0032); without it, the model cannot be changed here. */
+	/** The models of a provider Owni offers (ADR 0032); without it, the model cannot be changed here. */
 	readonly models?: (provider: string) => readonly ModelInfo[];
 	/** Providers whose key the operator gave the server: the owner uses it and cannot replace it. */
 	readonly serverModelKeys?: readonly string[];
@@ -318,7 +318,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const p = person as Person;
 		if (p.totp !== undefined) throw new HttpError(409, "La verifica in due passaggi è già attiva");
 		const secret = await options.people.startTotp(p.id);
-		return { secret, uri: otpauthUri(secret, p.name, "Annie") };
+		return { secret, uri: otpauthUri(secret, p.name, "Owni") };
 	});
 	route("POST", "/api/me/2fa/enable", "person", async ({ person, req }) => {
 		const body = (await readJson(req)) as { code?: string };
@@ -406,7 +406,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const name = cleanName(input.name);
 		const given = input.instructions !== undefined && input.instructions.trim() !== "" ? input.instructions : undefined;
 		if (given !== undefined && options.defaultInstructions !== undefined && given.length > ABOUT_MAX) throw new HttpError(400, `Istruzioni troppo lunghe: al massimo ${ABOUT_MAX} caratteri`);
-		// Like «Primi passi»: the owner's words go after the defaults, so what Annie can do stays said.
+		// Like «Primi passi»: the owner's words go after the defaults, so what Owni can do stays said.
 		const instructions = given === undefined ? undefined : options.defaultInstructions === undefined ? given.slice(0, INSTRUCTIONS_MAX) : withAbout(options.defaultInstructions, given);
 		try {
 			instanceId(id);
@@ -1021,7 +1021,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		}
 	});
 
-	// --- forms Annie asked to send (web_submit): the person who asked, or an approver, decides ---
+	// --- forms Owni asked to send (web_submit): the person who asked, or an approver, decides ---
 	const mayDecideAll = async (p: Person, instanceId: string) => isApprover(runtime, tenantId, instanceId, approverOf(p));
 	route("GET", "/api/instances/:id/web-actions", "person", async ({ person, params }) => {
 		const p = person as Person;
@@ -1148,7 +1148,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	});
 	route("POST", "/api/desktop/permissions", "owner", async ({ req }) => {
 		const desktop = options.desktop;
-		if (desktop?.kind !== "local" || desktop.requestPermission === undefined) throw new HttpError(501, "I permessi Computer Use si gestiscono nell'app Annie su questo Mac");
+		if (desktop?.kind !== "local" || desktop.requestPermission === undefined) throw new HttpError(501, "I permessi Computer Use si gestiscono nell'app Owni su questo Mac");
 		const body = (await readJson(req)) as { permission?: unknown };
 		if (body.permission !== "screenRecording" && body.permission !== "accessibility") throw new HttpError(400, "permission: screenRecording o accessibility");
 		const permissions = await desktop.requestPermission(body.permission);
@@ -1165,7 +1165,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		if (typeof body.allowed !== "boolean") throw new HttpError(400, "allowed: true o false");
 		if (body.allowed && options.desktop.kind === "local") {
 			const permissions = await options.desktop.permissions?.();
-			if (permissions?.supported !== true || !permissions.screenRecording || !permissions.accessibility) throw new HttpError(409, "Concedi Registrazione schermo e Accessibilità a Annie prima di abilitare Computer Use");
+			if (permissions?.supported !== true || !permissions.screenRecording || !permissions.accessibility) throw new HttpError(409, "Concedi Registrazione schermo e Accessibilità a Owni prima di abilitare Computer Use");
 		}
 		const connector = desktopConnector(options.desktop);
 		const others = (record.egress.connectors ?? []).filter((c) => c !== connector);
@@ -1432,7 +1432,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		await runtime.reopen(tenantId, id);
 		return { ok: true };
 	});
-	// --- the model (ADR 0032): any provider Annie offers, with the server's key or the owner's ---
+	// --- the model (ADR 0032): any provider Owni offers, with the server's key or the owner's ---
 	const chats = new ChatModels(runtime, tenantId, { models: (provider) => options.models?.(provider) ?? [], serverModelKeys: options.serverModelKeys ?? [] });
 	const keyOf = (provider: string) => chats.keyOf(provider);
 	const localProviders = runtime.localProviders(tenantId);
@@ -2132,7 +2132,7 @@ export function createWebApp(options: WebAppOptions): Server {
 		const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
 		if (match === undefined) return send(res, 404, { error: "Not found" });
 		// A header a cross-site form or image cannot send: every change needs it.
-		if (req.method !== "GET" && req.headers["x-annie"] !== "1") return send(res, 403, { error: "Missing X-Annie header" });
+		if (req.method !== "GET" && req.headers["x-annie"] !== "1") return send(res, 403, { error: "Missing X-Owni header" });
 		let person: Person | undefined;
 		if (match.auth !== "none") {
 			const personId = await options.sessions.personOf(cookie(req, COOKIE));
@@ -2221,7 +2221,7 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	/**
 	 * An automazione called by another service (ADR 0060). The token in `Authorization: Bearer`,
-	 * `X-Annie-Token` or `?token=`; anything wrong answers 404, so the address reveals nothing.
+	 * `X-Owni-Token` or `?token=`; anything wrong answers 404, so the address reveals nothing.
 	 */
 	async function automationHook(req: IncomingMessage, res: ServerResponse, url: URL, instance: string, id: string): Promise<void> {
 		let raw: Buffer;
@@ -2310,7 +2310,7 @@ export function createWebApp(options: WebAppOptions): Server {
 
 	const cellProxyToken = options.cell === undefined ? "" : proxyToken(options.cell.secret);
 
-	/** The control plane of Annie Cloud, with the cell's secret. */
+	/** The control plane of Owni Cloud, with the cell's secret. */
 	function fromControlPlane(req: IncomingMessage, res: ServerResponse): boolean {
 		if (options.cell === undefined) {
 			send(res, 404, { error: "Not found" });
@@ -2328,7 +2328,7 @@ export function createWebApp(options: WebAppOptions): Server {
 	}
 
 	/**
-	 * A new login link for the first owner, each time they sign in to Annie Cloud. The old link
+	 * A new login link for the first owner, each time they sign in to Owni Cloud. The old link
 	 * stops working; open sessions stay. With two-factor on, the link alone still does not log in.
 	 */
 	async function ownerLink(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -2401,7 +2401,7 @@ async function workspaceCall<T>(work: () => Promise<T>): Promise<T> {
 	}
 }
 
-/** Relative: the console prefixes its own origin (Annie may sit behind a proxy). */
+/** Relative: the console prefixes its own origin (Owni may sit behind a proxy). */
 function loginLink(_url: URL, token: string): string {
 	return `/login#${token}`;
 }

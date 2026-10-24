@@ -10,7 +10,7 @@
  *   brief                                               who gets the brief del mattino, and who uses it (last 7 days)
  *   usage                                               what the agenti's turns took: tokens, cost, tools (last 7 days)
  *
- * Works on the data directory; Annie can be running.
+ * Works on the data directory; Owni can be running.
  */
 import { existsSync } from "node:fs";
 import { AuditLog } from "../core/audit.ts";

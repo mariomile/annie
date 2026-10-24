@@ -2,7 +2,7 @@
 
 Branch `week-69`. Carichi e scarichi a parole, quanto resta, cosa sta finendo, quanto vale il magazzino, l'inventario, e le fatture emesse che scaricano da sole gli articoli venduti. Le scelte sono nell'[ADR 0089](adr/0089-magazzino.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Ho ricevuto 50 cartucce XL dal fornitore Beta a 12 € l'una»**: caricate, e l'articolo creato se non c'era.
 - **«3 scatole da 12 a 30 € la scatola»**: 36 pezzi a 2,50 €.

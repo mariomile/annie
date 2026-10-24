@@ -4,7 +4,7 @@
  * splitting a character (§3.1), CRLF line ends, a UID stable per event (a hash of what identifies
  * it), a DTSTAMP the caller gives (so the same call writes the same file), with LAST-MODIFIED the
  * same instant and a SEQUENCE that grows with it (§3.8.7.4): a calendar that imports a newer file
- * takes the newer event over the older one with the same UID. Any calendar imports it: Annie writes
+ * takes the newer event over the older one with the same UID. Any calendar imports it: Owni writes
  * no calendar of anyone.
  */
 import { createHash } from "node:crypto";
@@ -21,7 +21,7 @@ export type IcsEvent = {
 };
 
 export type IcsCalendar = {
-	/** «-//Annie//Agenda fiscale//IT». */
+	/** «-//Owni//Agenda fiscale//IT». */
 	readonly prodId: string;
 	/** The calendar's name, for the calendars that read X-WR-CALNAME. */
 	readonly name?: string;

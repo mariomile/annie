@@ -2,9 +2,9 @@
 
 Branch `week-68`. Le azioni che non si annullano si confermano solo da un messaggio della persona, mai da un avviso, da un'attività programmata o da un altro agente; e i canoni delle fatture ricorrenti entrano nella previsione di cassa. Le scelte sono nell'[ADR 0088](adr/0088-conferme-solo-dalla-persona.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«È pronta la bozza del canone di novembre»**: Annie chiede se emetterla, e la emette solo dopo il «sì» della persona. Lo stesso per abbinamenti della banca, unioni di clienti e fornitori, prezzi del listino, numerazione e disdette.
+- **«È pronta la bozza del canone di novembre»**: Owni chiede se emetterla, e la emette solo dopo il «sì» della persona. Lo stesso per abbinamenti della banca, unioni di clienti e fornitori, prezzi del listino, numerazione e disdette.
 - **Un'attività programmata o un altro agente** possono preparare e mostrare, ma non confermare.
 - **«Quanto avrò sul conto a fine dicembre?»**: contano anche i canoni, prima come «da preparare», poi come «bozza da emettere», poi fra le fatture da incassare, una volta sola.
 

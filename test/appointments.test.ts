@@ -252,7 +252,7 @@ describe("the brief, other agents, the CSV, the settings", () => {
 		expect(appointmentCallReads({ op: "book" })).toBe(false);
 		expect(appointmentCallReads({ op: "export" })).toBe(false);
 		const [gated] = readOnlyInBriefs([s.tool], async () => true);
-		expect(await gated?.execute(rossi, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await gated?.execute(rossi, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 	});
 
 	it("another agente gets counts only; it books nothing", async () => {
@@ -357,7 +357,7 @@ describe("billing the appointments done", () => {
 });
 
 describe("routing", () => {
-	it("the instructions and the description send appointments here, the fiscal agenda and Annie's own reminders elsewhere", () => {
+	it("the instructions and the description send appointments here, the fiscal agenda and Owni's own reminders elsewhere", () => {
 		const s = setup();
 		expect(s.tool.description).toContain("«fissa la signora Rossi giovedì alle 15 per taglio e piega» → book");
 		expect(s.tool.description).toContain("into their Google calendar only when they ask, with google_calendar_create");

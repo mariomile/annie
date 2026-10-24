@@ -17,7 +17,7 @@ Con [ADR 0036](0036-modello-per-chat.md) ogni chat della console ha il suo model
 
 ## Alternative scartate
 
-- **Un tool per il modello.** Annie avrebbe cambiato modello da sola, su richiesta in linguaggio naturale. Ma la scelta costa soldi e passa da un permesso dell'owner: deve farla la persona, in modo prevedibile, senza che un modello la interpreti.
+- **Un tool per il modello.** Owni avrebbe cambiato modello da sola, su richiesta in linguaggio naturale. Ma la scelta costa soldi e passa da un permesso dell'owner: deve farla la persona, in modo prevedibile, senza che un modello la interpreti.
 - **I bottoni di Telegram.** Un bottone per modello non ci sta (una riga sola, 64 byte di dati) e WhatsApp ne ammette al massimo tre. Il testo funziona ovunque: la risposta dà il comando esatto da copiare.
 
 ## Conseguenze

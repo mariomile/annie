@@ -14,7 +14,7 @@ import { conversationRuns } from "../runs.js";
 /** A workspace picture shown in the page (not downloaded). */
 const pictureUrl = (inst, path) => `/api/instances/${inst.id}/files/raw?path=${encodeURIComponent(path)}&inline=1`;
 
-/** The empty chat's starters, as on Grok: what Annie can do, each one the start of a message to finish. */
+/** The empty chat's starters, as on Grok: what Owni can do, each one the start of a message to finish. */
 const HINTS = [
 	{ icon: "search", label: "Cerca sul web", text: "Cerca sul web le ultime notizie su " },
 	{ icon: "spark", label: "Ricerca approfondita", text: "Fai una ricerca approfondita su " },
@@ -215,7 +215,7 @@ function browserPanel(inst, threadId, onShow) {
 			if (pending || current.control !== "person" || !text) return;
 			void go({ text }, `${base}/type`);
 		} }, h("label.browser-private-label", h("span", "Testo privato · massimo 1.000 caratteri"), privateText), write),
-		h("p.browser-note", "Il testo va al campo scelto, senza passare dalla chat o dai log di Annie. Qui si cancella subito; sulla pagina può essere visibile."),
+		h("p.browser-note", "Il testo va al campo scelto, senza passare dalla chat o dai log di Owni. Qui si cancella subito; sulla pagina può essere visibile."),
 		h("div.browser-keys", key, press),
 		h("p.browser-note", "Per inviare il modulo, clicca il suo pulsante nella pagina o premi Invio."),
 	);
@@ -461,7 +461,7 @@ function screenPanel(inst, threadId, onShow) {
 		if (answer === undefined) return;
 		const { screen, on } = answer;
 		off = !on && screen === null;
-		// Nothing seen (yet, or any more: the screen reset, Annie restarted): no button, no panel.
+		// Nothing seen (yet, or any more: the screen reset, Owni restarted): no button, no panel.
 		if (screen === null) {
 			show(false);
 			toggle.hidden = true;
@@ -552,7 +552,7 @@ function landing(inst, conversation) {
 				),
 			),
 			state.setupLeft > 0 ? h("p.aside", h("a", { href: "#/inizia" }, stepsLeftText(state.setupLeft))) : null,
-			state.me.role !== "owner" && installOffer && !installed() ? h("p.aside", h("button.btn.small.ghost", { onclick: install }, icon("install"), "Installa Annie come app")) : null,
+			state.me.role !== "owner" && installOffer && !installed() ? h("p.aside", h("button.btn.small.ghost", { onclick: install }, icon("install"), "Installa Owni come app")) : null,
 		),
 	);
 	box.input.focus();
@@ -739,7 +739,7 @@ export function closeModelMenu() {
 function chatBox(inst, key, dropZone, onSend, extra = null) {
 	const picture = (path) => pictureUrl(inst, path);
 	const draftKey = `annie.draft.${key}`;
-	const input = h("textarea", { rows: 1, placeholder: inst.name.toLowerCase() === "annie" ? "Scrivi ad Annie…" : `Scrivi a ${inst.name}…`, title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
+	const input = h("textarea", { rows: 1, placeholder: `Scrivi a ${inst.name}…`, title: "Invio per inviare, Maiusc+Invio per andare a capo", "aria-label": "Messaggio", value: store(draftKey) ?? "" });
 	// Photos uploaded for the next message: shown above the box until it is sent, kept with the draft.
 	const pendingKey = `annie.pending.${key}`;
 	const pending = (() => {

@@ -1,5 +1,5 @@
 /**
- * `pnpm start`: Annie for one tenant in one process. Reads .env (see .env.example), creates
+ * `pnpm start`: Owni for one tenant in one process. Reads .env (see .env.example), creates
  * what is missing on first start and prints the owner's login link once.
  */
 import { existsSync } from "node:fs";

@@ -23,7 +23,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    # The instances' computers (ADR 0013, docs/runbook.md 6j): uncomment on a server where Annie is
+    # The instances' computers (ADR 0013, docs/runbook.md 6j): uncomment on a server where Owni is
     # the only service. The socket is root on this machine. ANNIE_COMPUTER=docker goes in .env, and
     # DOCKER_GID is the socket's group: stat -c %g /var/run/docker.sock
     # volumes:

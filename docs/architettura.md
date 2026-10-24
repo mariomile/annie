@@ -1,6 +1,6 @@
-# Architettura di Annie
+# Architettura di Owni
 
-Annie è un agente sempre attivo, sul modello di Hermes Agent, pensato per aziende attente a privacy e controllo dei processi: self-host o on-prem, multi-tenant, nessun dato in uscita senza una configurazione esplicita. Il runtime durevole è Pi Durable (`@earendil-works/pi-durable`, MIT, sperimentale), nascosto dietro un'interfaccia nostra.
+Owni è un agente sempre attivo, sul modello di Hermes Agent, pensato per aziende attente a privacy e controllo dei processi: self-host o on-prem, multi-tenant, nessun dato in uscita senza una configurazione esplicita. Il runtime durevole è Pi Durable (`@earendil-works/pi-durable`, MIT, sperimentale), nascosto dietro un'interfaccia nostra.
 
 Stato: settimana 2 (allowlist utenti, lock per istanza, outbox delle risposte). Questo documento descrive cosa c'è nel codice oggi e cosa è solo progettato. Dove una cosa non è ancora implementata è scritto esplicitamente.
 
@@ -42,7 +42,7 @@ Regole verificate da `test/boundaries.test.ts`:
 
 ## 2. Modello: Owner, Tenant, Instance
 
-- **Owner**: chi installa e gestisce Annie (Buildrs o il reparto IT del cliente on-prem). Oggi agisce via codice sul `TenantRegistry`; in futuro tramite una dashboard owner che userà la stessa API.
+- **Owner**: chi installa e gestisce Owni (Buildrs o il reparto IT del cliente on-prem). Oggi agisce via codice sul `TenantRegistry`; in futuro tramite una dashboard owner che userà la stessa API.
 - **Tenant**: un cliente. Confine di isolamento per dati, segreti, memoria e audit.
 - **Instance**: un agente di un tenant. Ha il suo modello, la sua egress policy, le sue istruzioni e il suo storage durevole. Un tenant può avere più istanze (es. "segreteria commerciale" e "assistente interno").
 
@@ -213,7 +213,7 @@ Limiti:
 - **Messaggi lunghi**: una risposta oltre 4096 caratteri sono più `sendMessage`; un crash a metà rimanda tutti i pezzi.
 - **Pulizia**: a ogni `resume()` le risposte alle persone (chiavi `reply:`) consegnate da più di 30 giorni vengono tolte (audit `outbox.pruned`). I messaggi che l'istanza manda da sé (chiavi `msg:`, per esempio gli avvisi di un tool da approvare) restano: sono loro a impedire un secondo avviso.
 - **Canale tolto dalla policy**: una voce verso un canale non più consentito resta non consegnata e a ogni avvio produce di nuovo `egress.denied`.
-- **File illeggibile**: un file dell'outbox corrotto da fuori (le scritture di Annie sono atomiche) fa fallire `resume()` con l'errore di parsing invece di saltarlo.
+- **File illeggibile**: un file dell'outbox corrotto da fuori (le scritture di Owni sono atomiche) fa fallire `resume()` con l'errore di parsing invece di saltarlo.
 - **Reset parziale**: cancellare `engine/` e tenere `outbox/` fa ripartire gli ID di Pi; voci vecchie con lo stesso ID verrebbero prese per già consegnate. Si cancellano insieme.
 - **macOS**: `fsync` non forza la cache del disco (serve `F_FULLFSYNC`); su Linux sì. Un crash del processo è coperto, un'interruzione di corrente su macOS no.
 
@@ -272,7 +272,7 @@ type EgressPolicy = { modelProviders: string[]; channels: string[] };   // vuoto
 
 Limiti attuali, da sapere:
 
-- La policy controlla chi Annie contatta tramite i suoi moduli. Non è un firewall: un tool scritto male potrebbe aprire connessioni proprie. Per garanzie forti serve anche un controllo di rete a livello di deployment (egress firewall del container).
+- La policy controlla chi Owni contatta tramite i suoi moduli. Non è un firewall: un tool scritto male potrebbe aprire connessioni proprie. Per garanzie forti serve anche un controllo di rete a livello di deployment (egress firewall del container).
 - La policy è letta all'apertura dell'istanza: una modifica a `instance.json` vale dal riavvio successivo.
 - pi-ai rispetta `HTTPS_PROXY`/`HTTP_PROXY` dell'ambiente: in un deployment con proxy, il proxy vede le richieste verso il provider consentito.
 - Il canale Telegram usa un token di processo (`TELEGRAM_BOT_TOKEN`), non un segreto per tenant: un bot per processo.
@@ -300,7 +300,7 @@ Due estensioni previste dell'interfaccia, da fare quando arriva il primo canale 
 | Un solo processo per storage, nessun lock tra processi (README Pi) | lock nostro per istanza, preso prima di aprire Pi e rilasciato dal kernel se il processo muore (sezione 5) |
 | `node:sqlite` è sperimentale in Node 22 (warning a runtime) | Node 22.19+ richiesto dal pacchetto; valutare Node 24 LTS |
 | Replay dei tool: at-least-once, non exactly-once | `replaySafe` esplicito per tool; i tool con effetti esterni devono essere idempotenti; i tool non ripetibili (invio email) restano `replaySafe: false` e il modello riceve un risultato "interrupted" |
-| Comportamento di `resume()`: lo scheduler riparte anche al primo `submit` | `resume()` di Annie va chiamato all'avvio prima di accettare messaggi, per riagganciare le risposte in sospeso ai canali |
+| Comportamento di `resume()`: lo scheduler riparte anche al primo `submit` | `resume()` di Owni va chiamato all'avvio prima di accettare messaggi, per riagganciare le risposte in sospeso ai canali |
 | Progetto giovane, numeri GitHub anomali (vedi piano iniziale) | dipendiamo da poche primitive (Harness, conversation, submit/wait, tool con memo, SQLite storage); sostituibili dietro `DurableEngine` se necessario |
 
 ## 8. Decisioni e alternative scartate

@@ -1,11 +1,11 @@
 # Settimana 60: estratto conto
 
-Branch `week-60`. Annie legge l'estratto conto che la persona le manda (CSV, Excel o CAMT.053), spiega ogni movimento con le fatture, le spese, i rinnovi, gli F24 e i giroconti, e dopo un sì segna le fatture incassate o pagate nel giorno della banca, registra le spese e aggiorna il saldo della previsione di cassa. Le scelte sono nell'[ADR 0078](adr/0078-estratto-conto.md).
+Branch `week-60`. Owni legge l'estratto conto che la persona le manda (CSV, Excel o CAMT.053), spiega ogni movimento con le fatture, le spese, i rinnovi, gli F24 e i giroconti, e dopo un sì segna le fatture incassate o pagate nel giorno della banca, registra le spese e aggiorna il saldo della previsione di cassa. Le scelte sono nell'[ADR 0078](adr/0078-estratto-conto.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Ti mando l'estratto conto di ottobre»**: i movimenti caricati, quanti sono abbinati, quanti aspettano un sì e quanti non hanno una spiegazione. Se le colonne non sono chiare Annie le mostra e chiede.
-- **«Sì, quelle di Rossi»**: le fatture segnate incassate nel giorno del bonifico, elencate. Quelle dove coincide solo l'importo Annie le chiede una per una.
+- **«Ti mando l'estratto conto di ottobre»**: i movimenti caricati, quanti sono abbinati, quanti aspettano un sì e quanti non hanno una spiegazione. Se le colonne non sono chiare Owni le mostra e chiede.
+- **«Sì, quelle di Rossi»**: le fatture segnate incassate nel giorno del bonifico, elencate. Quelle dove coincide solo l'importo Owni le chiede una per una.
 - **«Quali movimenti non hanno una spiegazione?»** e **«ci sono addebiti strani?»**: movimenti senza spiegazione, addebiti doppi, commissioni.
 - **«Quanto è entrato a ottobre sul conto?»**: entrate e uscite per mese secondo la banca, senza i giroconti fra i tuoi conti.
 - **«Registra le commissioni fra le spese»**: le spese dai movimenti, chiedendo prima se una uguale c'è già.

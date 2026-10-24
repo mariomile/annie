@@ -1,5 +1,5 @@
 /**
- * Il personale of a small business: the people who work there (not Annie's users: HR data only),
+ * Il personale of a small business: the people who work there (not Owni's users: HR data only),
  * their usual week, what they are entitled to (ferie in days, permessi/ROL in hours) with the
  * balance the owner said, their absences (ferie, permesso, malattia, altro), the changes to the
  * usual shifts and the extra hours the owner recorded. Days are the business's own («2026-08-03»,

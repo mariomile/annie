@@ -103,7 +103,7 @@ describe("image generation service", () => {
 		await expect(imageGenerator(config(service.url))("x y", { signal: stopped.signal })).rejects.toThrow(ImageGenerationError);
 	});
 
-	it("is configured with a key and an address; gpt-image-1 for OpenAI; cells of Annie Cloud get it", () => {
+	it("is configured with a key and an address; gpt-image-1 for OpenAI; cells of Owni Cloud get it", () => {
 		const base = { ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux" };
 		expect(loadAnnieConfig(base).images).toBeUndefined();
 		expect(loadAnnieConfig({ ...base, ANNIE_IMAGE_URL: "https://api.openai.com/v1", ANNIE_IMAGE_API_KEY: KEY }).images).toEqual({ url: "https://api.openai.com/v1", apiKey: KEY, model: "gpt-image-1", maxPerDay: 100 });

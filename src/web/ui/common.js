@@ -117,7 +117,7 @@ function faceSeed(id) {
 	return (n ^ (n >>> 16)) >>> 0;
 }
 
-/** The look of an agente: the same id always gives the same face. Annie, the first, stays in the console's own black and white (--face-mono). */
+/** The look of an agente: the same id always gives the same face. Owni, the first, stays in the console's own black and white (--face-mono). */
 function faceLook(agent) {
 	const id = agent?.id ?? agent?.instanceId ?? agent?.name ?? "annie";
 	// One hash per trait, so that the traits do not move together.
@@ -141,7 +141,7 @@ export function faceColor(agent) {
 /** face(agent, 28) or face(agent, 72, "thinking"): an inline SVG, decorative (the name is always written next to it). */
 export function face(agent, size = 28, mood = "idle") {
 	const NS = "http://www.w3.org/2000/svg";
-	// paint: colours set through CSSOM (the page's CSP refuses style attributes), so Annie's CSS variable works too.
+	// paint: colours set through CSSOM (the page's CSP refuses style attributes), so Owni's CSS variable works too.
 	const el = (tag, attrs = {}, paint = {}) => {
 		const node = document.createElementNS(NS, tag);
 		for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));

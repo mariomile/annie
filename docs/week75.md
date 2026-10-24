@@ -1,8 +1,8 @@
 # Settimana 75: turni, ferie e permessi del personale
 
-Branch `week-75`. Annie tiene il personale di una piccola attività: chi lavora quando, ferie, permessi, malattie e altre assenze, quanto resta di ferie e permessi (una stima), i turni della settimana con le ore scoperte, il riepilogo del mese per la consulente del lavoro. Le assenze di chi è anche una risorsa degli appuntamenti bloccano quella risorsa. Le scelte sono nell'[ADR 0095](adr/0095-turni-ferie-e-permessi.md).
+Branch `week-75`. Owni tiene il personale di una piccola attività: chi lavora quando, ferie, permessi, malattie e altre assenze, quanto resta di ferie e permessi (una stima), i turni della settimana con le ore scoperte, il riepilogo del mese per la consulente del lavoro. Le assenze di chi è anche una risorsa degli appuntamenti bloccano quella risorsa. Le scelte sono nell'[ADR 0095](adr/0095-turni-ferie-e-permessi.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Giulia è in ferie dal 3 al 14 agosto»**: salvato, con i giorni di ferie contati (non i giorni di riposo né le feste nazionali) e quanto le resta, come stima.
 - **«Marco domani ha un permesso dalle 15»**: fino a fine turno, con le ore; se Marco ha appuntamenti in quell'orario, li elenca e offre di spostarli, e non se ne fissano altri.
@@ -28,8 +28,8 @@ Branch `week-75`. Annie tiene il personale di una piccola attività: chi lavora 
 ## Dopo la verifica di chiusura
 
 - Un ruolo, o la nota di un turno o delle ore in più, che sembra un dato sanitario non si salva, e lo dice; il controllo è sulle parole dette, non sul file, e i mestieri come farmacista o fisioterapista vanno bene. Le note delle assenze non ci sono più: basta il tipo, e per le altre assenze il motivo dalla lista. Le note restano corte.
-- Il brief chiede «è assente da giovedì 15 ottobre, fine non detta: sai fino a quando?», senza dire malattia; il protocollo lo chiede Annie quando rispondi, nella tua chat.
-- Dire solo un nome non aggiunge nessuno: Annie cerca la persona, e la aggiunge quando dici che è nuova o dici qualcosa di lei. Se il nome va bene per più persone, chiede quale.
+- Il brief chiede «è assente da giovedì 15 ottobre, fine non detta: sai fino a quando?», senza dire malattia; il protocollo lo chiede Owni quando rispondi, nella tua chat.
+- Dire solo un nome non aggiunge nessuno: Owni cerca la persona, e la aggiunge quando dici che è nuova o dici qualcosa di lei. Se il nome va bene per più persone, chiede quale.
 - «Assumo Luca da lunedì» è il lunedì che viene; «dal 3 novembre» il più vicino, e dice l'anno quando non è questo.
 - Ferie o un permesso detti senza l'anno e già passati da più di una settimana: «Il 2-5 giugno è già passato: le segno come ferie già fatte, o intendi giugno 2027?». Per la malattia, un inizio di più di 60 giorni fa chiede l'anno.
 - «Luca non lavora più da venerdì»: l'ultimo giorno è giovedì.

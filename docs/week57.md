@@ -1,8 +1,8 @@
 # Settimana 57: clienti
 
-Branch `week-57`. Una scheda per ogni cliente con quello che dice la persona (referenti, telefono, canale preferito, note) e tutto quello che Annie sa già dai registri (fatturato, incassato, solleciti, preventivi, ore), più i ricontatti con il loro promemoria. Le scelte sono nell'[ADR 0071](adr/0071-clienti.md).
+Branch `week-57`. Una scheda per ogni cliente con quello che dice la persona (referenti, telefono, canale preferito, note) e tutto quello che Owni sa già dai registri (fatturato, incassato, solleciti, preventivi, ore), più i ricontatti con il loro promemoria. Le scelte sono nell'[ADR 0071](adr/0071-clienti.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Cosa so di Rossi?»**: referenti, ultime note, ricontatti, fatturato e incassato dell'anno, fatture aperte, solleciti, preventivi e ore da fatturare.
 - **«Rossi: il referente è Marco, 333…, preferisce WhatsApp»**, **«aggiungi una nota a Rossi»**: la scheda si riempie parlando.
@@ -10,7 +10,7 @@ Branch `week-57`. Una scheda per ogni cliente con quello che dice la persona (re
 - **«Chi non sento da tre mesi?»**: i clienti fermi, con quanto hanno fatturato negli ultimi due anni.
 - **«Ricordami di ricontattare Beta tra due settimane»**: il ricontatto e un promemoria alle 9 di quel giorno; **«spostalo a lunedì»**, **«non serve più»**, **«ho sentito Beta»**.
 - **«Chi devo richiamare questa settimana?»**: l'agenda dei ricontatti.
-- **«Rossi e Rossi Mario sono lo stesso cliente»**: Annie mostra cosa unisce e lo fa dopo il sì.
+- **«Rossi e Rossi Mario sono lo stesso cliente»**: Owni mostra cosa unisce e lo fa dopo il sì.
 - **«Fammi il file dei clienti»**: un CSV in `clienti/`.
 - **Nel brief**: i ricontatti in ritardo e un cliente che è appena diventato troppo importante.
 

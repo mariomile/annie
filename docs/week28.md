@@ -1,6 +1,6 @@
 # Settimana 28: immagini su richiesta
 
-Branch `week-28`. Decisione: [ADR 0023](adr/0023-immagini-su-richiesta.md). Annie crea immagini quando gliele chiedono (illustrazioni, loghi, volantini) e ritocca le foto che le mandano; le immagini arrivano in chat con la didascalia e restano tra i file. Serve un servizio di immagini ([chiavi](chiavi.md) §15); i test usano un servizio finto.
+Branch `week-28`. Decisione: [ADR 0023](adr/0023-immagini-su-richiesta.md). Owni crea immagini quando gliele chiedono (illustrazioni, loghi, volantini) e ritocca le foto che le mandano; le immagini arrivano in chat con la didascalia e restano tra i file. Serve un servizio di immagini ([chiavi](chiavi.md) §15); i test usano un servizio finto.
 
 ## Cosa funziona (verificato dai test)
 

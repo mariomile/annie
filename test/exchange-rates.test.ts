@@ -557,7 +557,7 @@ describe("exchange rates configuration", () => {
 		expect(() => loadAnnieConfig({ ...on, ANNIE_EXCHANGE_RATES_URL: "https://mirror.example/ecb?x=1" })).toThrow("ANNIE_EXCHANGE_RATES_URL: an address without a query or a fragment");
 	});
 
-	it("reaches the cells of Annie Cloud", () => {
+	it("reaches the cells of Owni Cloud", () => {
 		const passed = /const passed = \[([^\]]*)\]/.exec(readFileSync("src/main/cloud.ts", "utf8"))?.[1] ?? "";
 		for (const name of ["ANNIE_EXCHANGE_RATES", "ANNIE_EXCHANGE_RATES_URL"]) expect(passed).toContain(`"${name}"`);
 	});

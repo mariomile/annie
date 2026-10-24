@@ -1,8 +1,8 @@
 # Settimana 74: appuntamenti e prenotazioni
 
-Branch `week-74`. Annie tiene gli appuntamenti di un'attività di servizi (parrucchiere, estetista, studio, officina, consulente): li fissa controllando orari, chiusure e sovrapposizioni, trova gli orari liberi, segna com'è andata, prepara i promemoria per i clienti senza mandarli, e fattura gli appuntamenti fatti. Le scelte sono nell'[ADR 0094](adr/0094-appuntamenti-e-prenotazioni.md).
+Branch `week-74`. Owni tiene gli appuntamenti di un'attività di servizi (parrucchiere, estetista, studio, officina, consulente): li fissa controllando orari, chiusure e sovrapposizioni, trova gli orari liberi, segna com'è andata, prepara i promemoria per i clienti senza mandarli, e fattura gli appuntamenti fatti. Le scelte sono nell'[ADR 0094](adr/0094-appuntamenti-e-prenotazioni.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Fissa la signora Rossi giovedì alle 15 per taglio e piega»**: fissato se tutto è chiaro e l'ora è libera; se l'ora è presa o il negozio è chiuso, i tre orari liberi più vicini; se il cliente o un servizio sono solo simili a come sono stati detti, o non sa quanto dura un servizio (conta 30 minuti), prima la proposta.
 - **«Quando ho un'ora libera giovedì pomeriggio?»**: gli orari in cui si può cominciare, per risorsa se ci sono.

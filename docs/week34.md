@@ -1,13 +1,13 @@
-# Settimana 34: Annie guarda le pagine scansionate
+# Settimana 34: Owni guarda le pagine scansionate
 
-Branch `week-34`. Una ricevuta passata allo scanner, un contratto firmato e scansionato, un bando pubblicato come immagine: PDF senza testo, che Annie finora non poteva leggere senza il computer. Ora `image_view` con il percorso del PDF e `page` le mostra la pagina e Annie legge da sola quello che c'è scritto, tabelle e scrittura a mano comprese. Niente OCR, chiavi o dipendenze nuove. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0028](adr/0028-pagine-scansionate.md).
+Branch `week-34`. Una ricevuta passata allo scanner, un contratto firmato e scansionato, un bando pubblicato come immagine: PDF senza testo, che Owni finora non poteva leggere senza il computer. Ora `image_view` con il percorso del PDF e `page` le mostra la pagina e Owni legge da sola quello che c'è scritto, tabelle e scrittura a mano comprese. Niente OCR, chiavi o dipendenze nuove. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0028](adr/0028-pagine-scansionate.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **Manda una scansione e chiedi**: «quanto è il totale di questa ricevuta?». Annie prova a leggerla, vede che non ha testo e guarda la pagina.
-- **Più pagine**: Annie le guarda una alla volta, annotando quello che serve.
+- **Manda una scansione e chiedi**: «quanto è il totale di questa ricevuta?». Owni prova a leggerla, vede che non ha testo e guarda la pagina.
+- **Più pagine**: Owni le guarda una alla volta, annotando quello che serve.
 - **Scansioni dal web**: un bando scansionato trovato con `web_read` si salva con `web_download` e si guarda allo stesso modo.
-- **Quando non si può** (formati JBIG2 e JPEG 2000, pagine disegnate come figure): Annie usa il computer se c'è, altrimenti chiede una foto della pagina.
+- **Quando non si può** (formati JBIG2 e JPEG 2000, pagine disegnate come figure): Owni usa il computer se c'è, altrimenti chiede una foto della pagina.
 
 ## Cosa funziona (verificato dai test)
 

@@ -33,7 +33,7 @@ describe("images reach the model", () => {
 			runtime.submit({ tenantId: "acme", instanceId: "ops", channel: "test", threadId: "t", userId: "u", text, messageId: id, images });
 		await say("Cosa vedi?", [{ path: "uploads/a.png", data: PNG }], "1");
 		await waitFor(() => replies.length === 1);
-		expect(replies[0]).toMatchObject({ status: "answered", text: "Annie (modello locale di sviluppo): hai scritto «Cosa vedi?» e mandato 1 immagine (image/png, 20 byte)" });
+		expect(replies[0]).toMatchObject({ status: "answered", text: "Owni (modello locale di sviluppo): hai scritto «Cosa vedi?» e mandato 1 immagine (image/png, 20 byte)" });
 		const many = Array.from({ length: 6 }, (_, i) => ({ path: `uploads/${i}.jpg`, data: JPEG }));
 		await say("Tante", [...many, { path: "uploads/finta.png", data: new TextEncoder().encode("non sono un png") }], "2");
 		await waitFor(() => replies.length === 2);
@@ -75,7 +75,7 @@ describe("images reach the model", () => {
 		await bot.pollOnce();
 		await waitFor(() => texts.length === 1);
 		expect(asked).toEqual(["big"]);
-		expect(texts[0]).toBe("Annie (modello locale di sviluppo): hai scritto «Che pianta è?\n\n[Immagine nel workspace: uploads/7_1-foto.png]» e mandato 1 immagine (image/png, 20 byte)");
+		expect(texts[0]).toBe("Owni (modello locale di sviluppo): hai scritto «Che pianta è?\n\n[Immagine nel workspace: uploads/7_1-foto.png]» e mandato 1 immagine (image/png, 20 byte)");
 		expect((await runtime.workspace("acme", "ops").list()).map((f) => f.path)).toEqual(["uploads/7_1-foto.png"]);
 		await runtime.close();
 	});
@@ -109,7 +109,7 @@ describe("images reach the model", () => {
 		expect(texts[1]).toContain("e mandato 1 immagine");
 		await bot.handleUpdate(message(5, { caption: "E questa?", photo: [{ file_id: "enorme", file_size: 30_000_000, width: 9000, height: 9000 }] }));
 		await waitFor(() => texts.length === 3);
-		expect(texts[2]).toBe("Annie (modello locale di sviluppo): hai scritto «E questa?\n\n[Foto troppo grande o non disponibile.]» [2 messaggi precedenti con immagini]");
+		expect(texts[2]).toBe("Owni (modello locale di sviluppo): hai scritto «E questa?\n\n[Foto troppo grande o non disponibile.]» [2 messaggi precedenti con immagini]");
 		// Polling: the album's updates come in one batch and go as one message.
 		polled.push([message(6, { media_group_id: "B2", caption: "Due", photo: [{ file_id: "q6", file_size: 20, width: 8, height: 8 }] }), message(7, { media_group_id: "B2", photo: [{ file_id: "q7", file_size: 20, width: 8, height: 8 }] })]);
 		await bot.pollOnce();
@@ -133,7 +133,7 @@ describe("images reach the model", () => {
 		expect(texts[1]).toContain("[1 messaggio precedente con immagini]");
 		// Third photo: the first has left the request.
 		expect(texts[2]).toContain("[1 messaggio precedente con immagini]");
-		expect(texts[3]).toBe("Annie (modello locale di sviluppo): hai scritto «e adesso?» [2 messaggi precedenti con immagini]");
+		expect(texts[3]).toBe("Owni (modello locale di sviluppo): hai scritto «e adesso?» [2 messaggi precedenti con immagini]");
 		await runtime.close();
 	});
 

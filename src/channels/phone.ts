@@ -32,7 +32,7 @@ export type PhoneOptions = {
 	readonly pending: PendingReplies;
 	/** May this number call? (the instance's allowlist for "phone"). */
 	readonly mayCall: (number: string) => Promise<boolean>;
-	/** Twilio's voice for the replies, e.g. Polly.Bianca. Everything Annie says on the phone is Italian. */
+	/** Twilio's voice for the replies, e.g. Polly.Bianca. Everything Owni says on the phone is Italian. */
 	readonly voice?: string;
 	readonly log?: (message: string) => void;
 	/** Tests: how long one webhook waits for a reply, and how many waits before giving up. */
@@ -133,7 +133,7 @@ export class PhoneAdapter implements ChannelAdapter {
 			// A start Twilio sends again (or someone replays) never opens a call twice.
 			if (seen !== undefined) return twiml("<Reject/>");
 			this.remember(call);
-			return this.askCode("Ciao, sono Annie. Digita il tuo codice e poi cancelletto.");
+			return this.askCode("Ciao, sono Owni. Digita il tuo codice e poi cancelletto.");
 		}
 		if (seen === undefined) return twiml(`${this.say(["La chiamata è scaduta. Richiamami."])}<Hangup/>`);
 		if (step === "code") {

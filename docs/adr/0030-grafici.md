@@ -1,10 +1,10 @@
 # Grafici: barre, linee e torta come immagini
 
-Annie leggeva e scriveva tabelle (ADR 0026, 0029) ma, davanti a «fammi vedere l'andamento del fatturato», poteva solo elencare numeri. Un grafico è la risposta che una persona si aspetta in chat, e in un report o in un preventivo. Il computer di Annie poteva disegnarlo con Python, ma non tutte le istanze hanno il computer, e un grafico non deve costare una macchina virtuale.
+Owni leggeva e scriveva tabelle (ADR 0026, 0029) ma, davanti a «fammi vedere l'andamento del fatturato», poteva solo elencare numeri. Un grafico è la risposta che una persona si aspetta in chat, e in un report o in un preventivo. Il computer di Owni poteva disegnarlo con Python, ma non tutte le istanze hanno il computer, e un grafico non deve costare una macchina virtuale.
 
 ## Decisione
 
-Un tool, `chart_create`: Annie passa le etichette e le serie di numeri (o un CSV del workspace) e ottiene un PNG in `grafici/`, mandato nella conversazione come una foto, oppure salvato per metterlo in un documento con `document_create` (`![grafico](grafici/…png)`). Tre forme: barre (anche impilate, in orizzontale, in ordine di valore), linee, torta ad anello. Tutto scritto qui, senza dipendenze e senza font installati sul server: un rasterizzatore che riempie forme con l'antialiasing esatto (l'area di ogni pixel coperta dalla forma, come font-rs) e i contorni delle lettere latine di DejaVu Sans copiati nel codice da uno script.
+Un tool, `chart_create`: Owni passa le etichette e le serie di numeri (o un CSV del workspace) e ottiene un PNG in `grafici/`, mandato nella conversazione come una foto, oppure salvato per metterlo in un documento con `document_create` (`![grafico](grafici/…png)`). Tre forme: barre (anche impilate, in orizzontale, in ordine di valore), linee, torta ad anello. Tutto scritto qui, senza dipendenze e senza font installati sul server: un rasterizzatore che riempie forme con l'antialiasing esatto (l'area di ogni pixel coperta dalla forma, come font-rs) e i contorni delle lettere latine di DejaVu Sans copiati nel codice da uno script.
 
 ## Come appare
 
@@ -29,7 +29,7 @@ I numeri possono venire da un CSV scaricato dal web o da un messaggio. Per quest
 
 ## Alternative scartate
 
-- **Il computer di Annie con Python e matplotlib.** Va bene per analisi lunghe, ma non tutte le istanze lo hanno e accenderlo per un grafico è lento.
+- **Il computer di Owni con Python e matplotlib.** Va bene per analisi lunghe, ma non tutte le istanze lo hanno e accenderlo per un grafico è lento.
 - **Il browser della cella con una libreria JavaScript.** Non c'è in tutte le istanze, e servirebbe una pagina per ogni grafico.
 - **SVG.** Telegram e WhatsApp non lo mostrano come foto, e Word lo vuole con un PNG accanto.
 - **Una libreria (node-canvas, sharp).** Moduli nativi da compilare e un'altra superficie da tenere aggiornata, per disegnare rettangoli e testo.
@@ -37,6 +37,6 @@ I numeri possono venire da un CSV scaricato dal web o da un messaggio. Per quest
 
 ## Conseguenze
 
-- Le lettere sono latine (latino base, Latin-1, Latin Extended-A e ș ț): un nome in greco o in cirillico esce con «?», e Annie lo dice.
+- Le lettere sono latine (latino base, Latin-1, Latin Extended-A e ș ț): un nome in greco o in cirillico esce con «?», e Owni lo dice.
 - I contorni di DejaVu Sans sono nel codice (circa 140 KB), con la licenza Bitstream Vera per intero in testa al file e in `NOTICE`.
 - Un grafico non si modifica: si rifà, con i dati cambiati.

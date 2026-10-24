@@ -13,7 +13,7 @@ Un tool, `vat_check`, con due livelli.
   - numeri IVA europei: la forma di ciascun paese del VIES (EL per la Grecia, XI per l'Irlanda del Nord); Regno Unito, Svizzera, Norvegia e San Marino fuori dal VIES, detto in chiaro;
   - etichette e separatori tolti («P.IVA:», «CF», spazi, punti, trattini).
 - **Controllo nel VIES della Commissione europea, acceso dall'operatore** con `ANNIE_VAT_CHECK=1` (`src/core/vies.ts`): attiva o no, con nome e indirizzo quando il paese li dà, e l'ora del controllo, utile come prova per una fattura intra-UE.
-- **«Non attiva nel VIES» non vuol dire inesistente.** Molte partite IVA italiane valide non sono abilitate agli scambi intra-UE: Annie lo dice e rimanda a «Verifica partita IVA» sul sito dell'Agenzia delle Entrate. Un errore del VIES non diventa mai un «valida» o un «non valida».
+- **«Non attiva nel VIES» non vuol dire inesistente.** Molte partite IVA italiane valide non sono abilitate agli scambi intra-UE: Owni lo dice e rimanda a «Verifica partita IVA» sul sito dell'Agenzia delle Entrate. Un errore del VIES non diventa mai un «valida» o un «non valida».
 - **Il tool c'è sempre**, anche senza VIES: un numero sbagliato merita una risposta precisa, e il controllo formale non manda niente fuori. Le istruzioni dicono di usare `vat_check` e non `web_search`, e di non cercare il titolare sul web.
 - **Nel brief** il tool fa solo il controllo formale: un numero letto in una mail non va al VIES e non consuma la quota.
 
@@ -34,5 +34,5 @@ Un tool, `vat_check`, con due livelli.
 ## Alternative scartate
 
 - **Registro delle imprese o servizi commerciali** (nome, PEC, stato): a pagamento o con accesso riservato.
-- **Il servizio dell'Agenzia delle Entrate**: non ha un'API pubblica senza credenziali; Annie ci rimanda la persona.
+- **Il servizio dell'Agenzia delle Entrate**: non ha un'API pubblica senza credenziali; Owni ci rimanda la persona.
 - **Il VIES nel brief e nella segreteria**: i numeri arrivano da mail di terzi; il controllo formale basta e non spende la quota.

@@ -1,6 +1,6 @@
 # Settimana 23: le sentinelle
 
-Branch `week-23`. Decisione: [ADR 0018](adr/0018-sentinelle.md). Annie tiene d'occhio una pagina da sola e scrive nella conversazione quando cambia, quando un prezzo passa una soglia o quando un prodotto non si vede più. Si chiede in chat («avvisami quando scende sotto 50 €») o si crea dalla console, in «Task e sentinelle». Non servono chiavi: legge dai siti che l'owner consente.
+Branch `week-23`. Decisione: [ADR 0018](adr/0018-sentinelle.md). Owni tiene d'occhio una pagina da sola e scrive nella conversazione quando cambia, quando un prezzo passa una soglia o quando un prodotto non si vede più. Si chiede in chat («avvisami quando scende sotto 50 €») o si crea dalla console, in «Task e sentinelle». Non servono chiavi: legge dai siti che l'owner consente.
 
 ## Cosa funziona (verificato dai test)
 

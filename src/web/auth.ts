@@ -5,7 +5,7 @@ import { readJsonFile, updateJsonFile } from "../core/locked-json.ts";
 import { generateTotpSecret, verifyTotp } from "./totp.ts";
 
 /**
- * A person who uses the web interface. The owner manages Annie; a member uses the
+ * A person who uses the web interface. The owner manages Owni; a member uses the
  * instances whose web allowlist names them. Only token hashes are stored.
  */
 export type Person = {

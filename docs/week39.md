@@ -1,14 +1,14 @@
 # Settimana 39: cerca nei file
 
-Branch `week-39`. Il workspace si riempie di fatture, contratti, trascrizioni e report, ma Annie poteva solo elencare i nomi o aprire un file alla volta. Ora `file_search` cerca le parole dentro tutti i file e nei loro nomi, e risponde con il passaggio trovato, la pagina, il foglio o il minuto, e il punto da cui `file_read` legge il seguito. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0035](adr/0035-cerca-nei-file.md).
+Branch `week-39`. Il workspace si riempie di fatture, contratti, trascrizioni e report, ma Owni poteva solo elencare i nomi o aprire un file alla volta. Ora `file_search` cerca le parole dentro tutti i file e nei loro nomi, e risponde con il passaggio trovato, la pagina, il foglio o il minuto, e il punto da cui `file_read` legge il seguito. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0035](adr/0035-cerca-nei-file.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Trovami la fattura di Rossi»**: Annie cerca «fattura» e «rossi» nei PDF, nei Word e nelle note, e indica il file e la pagina.
-- **«Cosa diceva il contratto sul recesso?»**: il passaggio con le parole, e Annie legge il seguito dal punto giusto invece di tutto il contratto.
+- **«Trovami la fattura di Rossi»**: Owni cerca «fattura» e «rossi» nei PDF, nei Word e nelle note, e indica il file e la pagina.
+- **«Cosa diceva il contratto sul recesso?»**: il passaggio con le parole, e Owni legge il seguito dal punto giusto invece di tutto il contratto.
 - **«In quale riunione abbiamo parlato dello sconto?»**: la trascrizione e il minuto («al minuto 04:10»).
 - **«Dov'è il file del preventivo?»**: anche se il nome del file è solo in parte quello detto, e anche per foto, audio e video, che si cercano per nome.
-- **Fatture scansionate**: se la fattura è una scansione senza testo, Annie la vede nell'elenco e la guarda con `image_view` invece di dire che non c'è.
+- **Fatture scansionate**: se la fattura è una scansione senza testo, Owni la vede nell'elenco e la guarda con `image_view` invece di dire che non c'è.
 - **Plurali, accenti, apostrofi**: «fatture» trova «Fattura», «perche» trova «perché», «l'IVA» trova «dell’IVA».
 
 ## Cosa funziona (verificato dai test)

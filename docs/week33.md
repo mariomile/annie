@@ -1,14 +1,14 @@
-# Settimana 33: Annie legge PDF e documenti dal web
+# Settimana 33: Owni legge PDF e documenti dal web
 
-Branch `week-33`. Con la settimana 32 Annie leggeva i documenti che le mandano; un link a un PDF sul web però restava muto: `web_read` rispondeva «non è una pagina di testo», la ricerca approfondita teneva solo l'estratto del motore di ricerca. Ora un bando, una circolare, un listino o un rapporto annuale in PDF si leggono come una pagina, si salvano nel workspace e finiscono nei report. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0027](adr/0027-documenti-dal-web.md).
+Branch `week-33`. Con la settimana 32 Owni leggeva i documenti che le mandano; un link a un PDF sul web però restava muto: `web_read` rispondeva «non è una pagina di testo», la ricerca approfondita teneva solo l'estratto del motore di ricerca. Ora un bando, una circolare, un listino o un rapporto annuale in PDF si leggono come una pagina, si salvano nel workspace e finiscono nei report. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0027](adr/0027-documenti-dal-web.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Cosa dice questo PDF?»** con un link: Annie ne legge il testo, a pezzi se è lungo, anche quando il sito lo manda con il tipo sbagliato.
-- **Una pagina elenca i documenti collegati**: chiedi «c'è un bando su questa pagina?» e Annie vede il link al PDF e lo apre.
-- **«Scaricami il listino e mandamelo»**: `web_download` salva il file in `download/` (nome dal sito, accenti compresi, estensione giusta) e Annie lo manda con `file_send`. Un altro file con lo stesso nome non cancella quello di prima.
+- **«Cosa dice questo PDF?»** con un link: Owni ne legge il testo, a pezzi se è lungo, anche quando il sito lo manda con il tipo sbagliato.
+- **Una pagina elenca i documenti collegati**: chiedi «c'è un bando su questa pagina?» e Owni vede il link al PDF e lo apre.
+- **«Scaricami il listino e mandamelo»**: `web_download` salva il file in `download/` (nome dal sito, accenti compresi, estensione giusta) e Owni lo manda con `file_send`. Un altro file con lo stesso nome non cancella quello di prima.
 - **Report con i PDF**: la ricerca approfondita usa il testo dei documenti che trova, con la pagina o il foglio da cui viene ogni passaggio.
-- **Quando non si può**, Annie dice perché: PDF con password, scansione senza testo, file oltre 20 MB (offre il link), vecchi formati Office, una pagina di login al posto del file.
+- **Quando non si può**, Owni dice perché: PDF con password, scansione senza testo, file oltre 20 MB (offre il link), vecchi formati Office, una pagina di login al posto del file.
 
 ## Cosa funziona (verificato dai test)
 

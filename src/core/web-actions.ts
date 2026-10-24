@@ -4,7 +4,7 @@ import { CookieJar, checkedUrl, pageText, WebFetchRefused, type WebFetchOptions,
 import { FormRefused, formBody, formFingerprint, pageForms, type WebForm } from "./web-forms.ts";
 
 /**
- * A form Annie asked to send (web_submit), waiting for (or past) a person's decision. Sent at
+ * A form Owni asked to send (web_submit), waiting for (or past) a person's decision. Sent at
  * most once: the status is "running" on disk before the request leaves, so a crash in between
  * leaves it "uncertain", never sent twice (ADR 0011).
  */
@@ -23,7 +23,7 @@ export type WebAction = {
 	readonly shown: readonly (readonly [string, string])[];
 	/** The form as it was when asked (formFingerprint): a changed form is not sent. */
 	readonly fingerprint: string;
-	/** Why, in Annie's words: shown on the card. */
+	/** Why, in Owni's words: shown on the card. */
 	readonly reason: string;
 	readonly status: QueuedStatus;
 	readonly thread?: { readonly channel: string; readonly threadId: string };
@@ -121,8 +121,8 @@ export async function readForm(pageUrl: string, index: number, guard: WebFetchOp
 	const form = pageForms(page.body, page.url)[index];
 	if (form === undefined) throw new FormRefused(`la pagina non ha il modulo ${index}`);
 	if (form.method !== "POST") throw new FormRefused(`il modulo ${index} è di ricerca (GET): leggi direttamente ${form.action} con i parametri nell'indirizzo`);
-	if (form.enctype === "other") throw new FormRefused(`il modulo ${index} usa un formato che Annie non invia`);
-	if (page.url.startsWith("https:") && form.action.startsWith("http:")) throw new FormRefused(`il modulo ${index} manda i dati in chiaro (http): Annie non lo invia`);
+	if (form.enctype === "other") throw new FormRefused(`il modulo ${index} usa un formato che Owni non invia`);
+	if (page.url.startsWith("https:") && form.action.startsWith("http:")) throw new FormRefused(`il modulo ${index} manda i dati in chiaro (http): Owni non lo invia`);
 	return { form, page: page.url };
 }
 

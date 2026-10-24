@@ -1,6 +1,6 @@
 # Notizie: i titoli dai feed dei giornali
 
-Il vantaggio di Grok è sapere cosa succede adesso. Annie rispondeva a «che notizie ci sono oggi?» solo con la ricerca sul web, quando c'era una chiave Brave, e senza un ordine per ora né una fonte chiara.
+Il vantaggio di Grok è sapere cosa succede adesso. Owni rispondeva a «che notizie ci sono oggi?» solo con la ricerca sul web, quando c'era una chiave Brave, e senza un ordine per ora né una fonte chiara.
 
 ## Decisione
 
@@ -15,14 +15,14 @@ Un tool, `news_headlines`, che legge i feed RSS e Atom pubblici di giornali scel
 - **Il topic resta sul server.** I feed si scaricano interi e si filtrano in memoria: nessuna parola di chi scrive arriva a un giornale. Le parole si confrontano senza accenti né maiuscole, con una radice per singolari e plurali (banca e banche, treno e treni) che non allarga troppo (governo non trova governatore). «Oggi», «notizie», «ultime» e simili non sono un topic.
 - **Fonti.** Una lista di partenza (ANSA per sezione, Rai News, Sky TG24, Corriere della Sera, la Repubblica, Il Post, Il Sole 24 Ore, BBC per mondo e tecnologia) che l'operatore sostituisce con `ANNIE_NEWS_FEEDS` (fino a 30 feed, nome, indirizzo https e sezione).
 - **Prima dei feed, non la ricerca.** Le istruzioni dicono di usare `news_headlines` per le notizie e `web_search` solo per ciò che i feed non coprono (un giornale che non c'è, un fatto più vecchio di 72 ore); per aprire un articolo c'è `web_read`.
-- **Brief.** Se la persona ha chiesto le notizie nel brief (Annie lo salva in memoria), il brief del mattino aggiunge tre titoli delle ultime 12 ore. Il tool è consentito nella chat del brief perché scarica solo indirizzi fissati dall'operatore.
+- **Brief.** Se la persona ha chiesto le notizie nel brief (Owni lo salva in memoria), il brief del mattino aggiunge tre titoli delle ultime 12 ore. Il tool è consentito nella chat del brief perché scarica solo indirizzi fissati dall'operatore.
 - **Acceso dall'operatore** con `ANNIE_NEWS=1`, come meteo e cambi (ADR 0039, 0040). `pnpm annie check` prova ogni feed e avvisa per nome di quelli che non vanno; fallisce solo se non risponde nessuno.
 
 ## Limiti
 
-- 2 MB e 100 titoli per feed, 6 secondi per feed, 8 secondi in tutto per una risposta: i feed in ritardo continuano a scaricarsi e Annie dice che arriveranno fra poco.
+- 2 MB e 100 titoli per feed, 6 secondi per feed, 8 secondi in tutto per una risposta: i feed in ritardo continuano a scaricarsi e Owni dice che arriveranno fra poco.
 - Ogni feed resta in memoria 10 minuti, un errore 2 minuti; 4 download alla volta.
-- Si mostrano solo titoli con una data valida (RFC 822 o ISO 8601, anche con mesi e giorni in italiano); una data nel futuro vale come il momento in cui Annie ha visto la notizia la prima volta (oltre un giorno avanti non vale), così un feed non resta in cima per sempre; una data senza ora vale per quel giorno.
+- Si mostrano solo titoli con una data valida (RFC 822 o ISO 8601, anche con mesi e giorni in italiano); una data nel futuro vale come il momento in cui Owni ha visto la notizia la prima volta (oltre un giorno avanti non vale), così un feed non resta in cima per sempre; una data senza ora vale per quel giorno.
 
 ## Sicurezza
 

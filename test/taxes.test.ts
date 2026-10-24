@@ -525,7 +525,7 @@ describe("taxes: the brief, another agente, audit, fence, CSV, a broken file", (
 		expect(taxCallReads({ op: "calendar" })).toBe(true);
 		for (const op of ["estimate", "what_if", "set_profile", "set_aside", "export"]) expect(taxCallReads({ op })).toBe(false);
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		for (const args of [CONSULENTE, { op: "set_aside", amount: 1 }, { op: "export" }, { op: "estimate" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		for (const args of [CONSULENTE, { op: "set_aside", amount: 1 }, { op: "export" }, { op: "estimate" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await briefed?.execute({ op: "calendar", compact: true }, fresh()))).toContain("Niente da segnalare sulle tasse");
 		expect(s.store.read().years).toEqual([]);
 		expect(existsSync(join(s.root, "tasse"))).toBe(false);
@@ -800,7 +800,7 @@ describe("taxes: the review fixes", () => {
 		expect(contributiOf({ kind: "artigiani", fixed: "0", rate: "25", minimale: "100", reduction: true }, 10_002n, 2026).variable).toBe(0n);
 	});
 
-	it("14. without the start year Annie asks it first, never last year's figures", async () => {
+	it("14. without the start year Owni asks it first, never last year's figures", async () => {
 		const s = await setup(ONLY_2026);
 		const saved = await s.run({ op: "set_profile", activity: "consulente", rate: 15, pension: "gestione separata" });
 		expect(saved).toContain("Chiedi a chi ti scrive in che anno ha aperto la partita IVA");
@@ -1086,7 +1086,7 @@ describe("taxes in the app", () => {
 	}, 60_000);
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

@@ -1,8 +1,8 @@
 # Settimana 64: listino prezzi
 
-Branch `week-64`. Annie tiene il listino di chi vende servizi e prodotti, con prezzo, unità e IVA, e lo usa per i preventivi, le fatture in uscita e le ore da fatturare invece di chiedere ogni volta il prezzo. Le scelte sono nell'[ADR 0084](adr/0084-listino-prezzi.md).
+Branch `week-64`. Owni tiene il listino di chi vende servizi e prodotti, con prezzo, unità e IVA, e lo usa per i preventivi, le fatture in uscita e le ore da fatturare invece di chiedere ogni volta il prezzo. Le scelte sono nell'[ADR 0084](adr/0084-listino-prezzi.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Aggiungi consulenza 600 euro a giornata, sito base 1.500 a corpo»**: le voci nel listino, con l'IVA chiesta se manca.
 - **«Quanto faccio pagare una giornata?»**, **«Qual è il mio prezzo per il sito base?»**: il prezzo senza e con IVA.
@@ -22,4 +22,4 @@ Prima revisione, corretta: un codice uguale al nome di un'altra voce che faceva 
 
 Seconda revisione, corretta: una voce IVA inclusa scorporata all'aliquota della riga invece che alla sua; una nota che prometteva un totale esatto; documenti rifiutati per le quantità grandi; voci che cominciano con parole come «una»; «1.250» letto come mille duecentocinquanta nei cambi di prezzo; la natura detta per tutta la fattura ignorata; i prezzi oltre il massimo detti come prezzi a zero; un prezzo uguale scritto IVA inclusa preso per diverso; i prezzi con più di quattro decimali in fattura, che davano un errore non gestito.
 
-Terza revisione, corretta: oltre circa diecimila pezzi il prezzo a unità vicino poteva sbagliare la riga di decine di euro; sopra 50 centesimi Annie chiede il prezzo netto.
+Terza revisione, corretta: oltre circa diecimila pezzi il prezzo a unità vicino poteva sbagliare la riga di decine di euro; sopra 50 centesimi Owni chiede il prezzo netto.

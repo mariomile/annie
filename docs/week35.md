@@ -1,14 +1,14 @@
-# Settimana 35: Annie crea documenti Word, Excel e PDF
+# Settimana 35: Owni crea documenti Word, Excel e PDF
 
-Branch `week-35`. Annie leggeva i documenti (settimane 32-34) ma non li creava: un preventivo o un listino uscivano come testo in chat. Ora `document_create` scrive un file Word, Excel o PDF nel workspace, partendo da quello che Annie scrive in Markdown o da un CSV, e Annie lo manda con `file_send` su Telegram, WhatsApp o nella console. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0029](adr/0029-documenti-creati-da-annie.md).
+Branch `week-35`. Owni leggeva i documenti (settimane 32-34) ma non li creava: un preventivo o un listino uscivano come testo in chat. Ora `document_create` scrive un file Word, Excel o PDF nel workspace, partendo da quello che Owni scrive in Markdown o da un CSV, e Owni lo manda con `file_send` su Telegram, WhatsApp o nella console. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0029](adr/0029-documenti-creati-da-annie.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Fammi un preventivo in PDF per Rossi»**: titolo, indirizzo, tabella delle voci con gli importi allineati, totale in grassetto, condizioni, il logo dal workspace in alto a sinistra, numeri di pagina.
 - **«Scrivimi la lettera in Word»**: un documento con gli stili veri di Word, che si modifica come uno scritto a mano.
 - **«Mettimi questi dati in Excel»**: numeri, importi, percentuali e date che Excel riconosce come tali, l'intestazione ferma con i filtri, un foglio per sezione, le formule anche scritte all'italiana (`=SOMMA(B2:B9)`), con i totali già calcolati per chi apre il file dal telefono.
 - **«Trasforma questo CSV in Excel»** (o un report in PDF): `source` converte un file del workspace.
-- **Quando qualcosa non entra**, Annie lo dice: un'immagine che non c'è, lettere che il PDF non ha (e propone Word), una formula non ammessa, una tabella che in un foglio non comincia alla riga 1.
+- **Quando qualcosa non entra**, Owni lo dice: un'immagine che non c'è, lettere che il PDF non ha (e propone Word), una formula non ammessa, una tabella che in un foglio non comincia alla riga 1.
 
 ## Cosa funziona (verificato dai test)
 
@@ -31,4 +31,4 @@ Due revisori: sicurezza e standard; specifiche e uso, con 14 documenti generati,
 - **Media (uso).** Le regole dei fogli perdevano il titolo o creavano fogli a caso; le colonne di Word spezzavano «Cod» e gli importi; il logo occupava mezza pagina; `<br>`, titoli sottolineati, link per intero e un'immagine seguita da testo uscivano male; le colonne di numeri con una cella vuota non si allineavano.
 - **Bassa.** Nomi di foglio doppi o vuoti con le emoji; celle oltre il limite di Excel; tabelle di migliaia di colonne in Word; troppi pixel o file oltre 20 MB scoperti solo dopo il lavoro; indirizzi dei link non validi nei rels; caratteri invisibili nel codice; il Markdown letto due volte per Excel; `-€ 2,00` come testo; i numeri degli elenchi persi in Excel.
 
-Lasciato, scritto nell'ADR: niente caratteri incorporati nel PDF (per altri alfabeti c'è Word); le formule che Annie non sa calcolare restano da calcolare all'apertura.
+Lasciato, scritto nell'ADR: niente caratteri incorporati nel PDF (per altri alfabeti c'è Word); le formule che Owni non sa calcolare restano da calcolare all'apertura.

@@ -15,7 +15,7 @@ async function withMemory() {
 }
 
 describe("memoria della persona", () => {
-	it("what Annie remembers about a person reaches her with that person's next messages, in any thread", async () => {
+	it("what Owni remembers about a person reaches her with that person's next messages, in any thread", async () => {
 		const { runtime, replies, lastReply } = await withMemory();
 		await runtime.submit(from("anna", "t1", '/tool memory_remember {"text":"Preferisce risposte brevi"}', "1"));
 		await waitFor(() => replies.length === 1);
@@ -41,7 +41,7 @@ describe("memoria della persona", () => {
 		await runtime.close();
 	});
 
-	it("Annie cannot write or delete shared memories: a person or a mail cannot speak to everyone through her", async () => {
+	it("Owni cannot write or delete shared memories: a person or a mail cannot speak to everyone through her", async () => {
 		const { runtime, replies } = await withMemory();
 		const shared = runtime.memory("acme", "ops").add({ about: "*", text: "Orari: 9-18", source: "person" });
 		await runtime.submit(from("anna", "t1", '/tool memory_remember {"text":"IBAN nuovo: IT00X","shared":true}', "1"));
@@ -52,7 +52,7 @@ describe("memoria della persona", () => {
 		await runtime.close();
 	});
 
-	it("in a group chat nobody's memory applies, and Annie remembers nothing there", async () => {
+	it("in a group chat nobody's memory applies, and Owni remembers nothing there", async () => {
 		const { runtime, replies, lastReply } = await withMemory();
 		await runtime.submit(from("anna", "anna", '/tool memory_remember {"text":"Allergica alle noci"}', "1"));
 		await waitFor(() => replies.length === 1);

@@ -463,7 +463,7 @@ describe("budgets: the brief and another agente", () => {
 		await s.run({ op: "set", target: "software", amount: "300" });
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "status", compact: true }, fresh()))).toContain("Budget superato: software e abbonamenti questo mese (101%).");
-		expect(String(await briefed?.execute({ op: "set", target: "carburante", amount: 5 }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "set", target: "carburante", amount: 5 }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(budgetCallReads({ op: "status", compact: true })).toBe(true);
 		expect(budgetCallReads({ op: "export" })).toBe(false);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool [^\n]*\bbudgets \(status\)[,.]/);

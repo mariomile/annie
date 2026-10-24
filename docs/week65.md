@@ -2,7 +2,7 @@
 
 Branch `week-65`. Quello che la settimana 57 ha fatto per i clienti, ora per i fornitori: quanto si spende con ognuno, cosa resta da pagare, in quanti giorni si paga, gli abbonamenti, i referenti e le note. E un controllo sugli IBAN contro le truffe sui pagamenti. Le scelte sono nell'[ADR 0085](adr/0085-schede-dei-fornitori.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Quanto ho speso con Aruba quest'anno?»**: fatture pagate e spese insieme, contate una volta.
 - **«Chi sono i miei fornitori principali?»**: la classifica per spesa nel periodo.

@@ -1,5 +1,5 @@
 /**
- * Shared by run.ts and real.ts: the cases, and Annie started in a temp dir as `pnpm start`
+ * Shared by run.ts and real.ts: the cases, and Owni started in a temp dir as `pnpm start`
  * starts her, with the tools the general agent gets captured as the engine receives them.
  */
 import { mkdtemp, readFile, rm } from "node:fs/promises";

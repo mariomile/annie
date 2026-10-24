@@ -366,7 +366,7 @@ function sheetNames(sheets: readonly Sheet[]): string[] {
 
 /**
  * An Excel workbook (.xlsx) (ADR 0029). Formulas are recalculated when the file is opened; the
- * simple ones also carry their value, for previews that do not calculate. `notes`: what Annie
+ * simple ones also carry their value, for previews that do not calculate. `notes`: what Owni
  * should say (cells cut short, tables that do not start at row 1 in a sheet with formulas).
  */
 export function makeXlsx(sheets: readonly Sheet[], options: { readonly title?: string; readonly now: Date }): { data: Buffer; notes: string[] } {

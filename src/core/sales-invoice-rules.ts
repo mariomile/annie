@@ -49,7 +49,7 @@ export const FOREIGN_CAP = "00000";
 /** IdCodice of a foreign customer without a VAT number (common practice for non-EU private customers; da verificare). */
 export const FOREIGN_NO_VAT_ID = "99999999999";
 
-/** RegimeFiscale: ordinario and forfettario, the two Annie knows (tabella RegimeFiscale). */
+/** RegimeFiscale: ordinario and forfettario, the two Owni knows (tabella RegimeFiscale). */
 export const REGIME_ORDINARIO = "RF01";
 export const REGIME_FORFETTARIO = "RF19";
 export type RegimeCode = typeof REGIME_ORDINARIO | typeof REGIME_FORFETTARIO;
@@ -170,7 +170,7 @@ export const SELLER_PHONE = /^\+?\d{5,12}$/;
 
 /**
  * Transmission to the SdI needs an accredited channel (an intermediary or the person's own
- * software): Annie only writes the file, the person uploads it.
+ * software): Owni only writes the file, the person uploads it.
  * The upload on the Agenzia's portal, as the person finds it (da verificare: the menu changes).
  */
 export const UPLOAD_PATH = "portale Fatture e Corrispettivi → Fatturazione elettronica → Trasmissione → Carica il file";

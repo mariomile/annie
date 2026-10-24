@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { sameSecret } from "../web/compare.ts";
 
 /**
- * Annie Cloud's subscription (ADR 0010): a flat monthly price, and optionally a price on what a
+ * Owni Cloud's subscription (ADR 0010): a flat monthly price, and optionally a price on what a
  * tenant's model costs, both set in Stripe, so the price is configuration, not code. Sign-up
  * starts a trial; after it a tenant needs an active subscription, or its cell stays asleep.
  * Payment details only ever reach Stripe's own pages.
@@ -35,7 +35,7 @@ export type AccountBilling = {
 /** A subscription as Stripe has it now. */
 export type Subscription = { readonly id: string; readonly customerId: string; readonly status: string; readonly tenant?: string };
 
-/** Statuses that mean a subscription is alive: Annie works and its cost is sent. */
+/** Statuses that mean a subscription is alive: Owni works and its cost is sent. */
 const LIVE = new Set(["active", "trialing", "past_due"]);
 export const live = (status: string | undefined) => status !== undefined && LIVE.has(status);
 /** Statuses after which only a new subscription helps: Checkout again. Others (unpaid, incomplete) are settled in the portal. */

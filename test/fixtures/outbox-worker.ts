@@ -1,5 +1,5 @@
 /**
- * Child process for test/outbox.test.ts: Annie with a Telegram bot whose Bot API is a fake
+ * Child process for test/outbox.test.ts: Owni with a Telegram bot whose Bot API is a fake
  * fetch. Every sendMessage that "reaches Telegram" is appended to callsFile, so the parent
  * can count them across processes.
  *

@@ -6,7 +6,7 @@ Sviluppo locale su `feat/agent-performance`, successivo al [rapporto del 22 otto
 
 - **Chat:** Stato del lavoro e passaggi degli strumenti, con Stop per quella conversazione. Reload e riconnessione rileggono lo stato persistente.
 - **Attività, Task e Automazioni:** Storico delle esecuzioni con origine, esito del motore e collegamento alla chat del risultato. Una chiamata webhook ammessa non viene presentata come lavoro già riuscito.
-- **Browser:** Nella propria chat privata, anche un membro può prendere il controllo, scrivere direttamente in un campo e inviare un modulo semplice. Può poi restituire il browser ad Annie o cancellare gli accessi salvati. Ogni persona e agente hanno un profilo di cookie separato.
+- **Browser:** Nella propria chat privata, anche un membro può prendere il controllo, scrivere direttamente in un campo e inviare un modulo semplice. Può poi restituire il browser a Owni o cancellare gli accessi salvati. Ogni persona e agente hanno un profilo di cookie separato.
 
 ## Affidabilità e prestazioni
 
@@ -37,7 +37,7 @@ La revisione finale del recupero di Stop è approvata: Otto test mirati e il rip
 
 Anche la revisione finale del browser è approvata nel perimetro dichiarato. Il riproduttore originale dell'invio automatico non espone più il valore privato in URL, testo o risultato dello strumento. Sono passati 11 test indipendenti e cinque prove aggiuntive su limiti, conferme fuori contesto, revoca durante l'attesa e cancellazione del profilo durante l'ultima lettura di autorizzazione; nessun cookie è uscito nei casi rifiutati.
 
-La preview T3 ha restituito due volte `Preview snapshot failed: Preview automation snapshot timed out after 15000ms.`. La verifica visiva ha quindi usato Playwright installato e Google Chrome, contro Annie locale. Non è una verifica dell'app desktop Tauri.
+La preview T3 ha restituito due volte `Preview snapshot failed: Preview automation snapshot timed out after 15000ms.`. La verifica visiva ha quindi usato Playwright installato e Google Chrome, contro Owni locale. Non è una verifica dell'app desktop Tauri.
 
 ## Limiti e lavoro successivo
 

@@ -1,6 +1,6 @@
 # Memoria con archivio
 
-La memoria di una persona (fase 2 del [piano cloud](../piano-cloud.md)) arrivava tutta con ogni suo messaggio, con un tetto di 50: al cinquantunesimo fatto Annie rifiutava, e ogni dettaglio salvato (il compleanno di un cliente, i termini di un fornitore) costava in ogni richiesta. Le alternative open source a Grok Bot che abbiamo guardato dividono la memoria in due: OpenBot una memoria essenziale con un budget nel prompt e una memoria salvata che si cerca, Rakazo e Codync memorie per agente con ricerca a testo (confronto del 18 ottobre 2026).
+La memoria di una persona (fase 2 del [piano cloud](../piano-cloud.md)) arrivava tutta con ogni suo messaggio, con un tetto di 50: al cinquantunesimo fatto Owni rifiutava, e ogni dettaglio salvato (il compleanno di un cliente, i termini di un fornitore) costava in ogni richiesta. Le alternative open source a Grok Bot che abbiamo guardato dividono la memoria in due: OpenBot una memoria essenziale con un budget nel prompt e una memoria salvata che si cerca, Rakazo e Codync memorie per agente con ricerca a testo (confronto del 18 ottobre 2026).
 
 ## Decisione
 

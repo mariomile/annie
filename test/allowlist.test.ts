@@ -110,7 +110,7 @@ describe("user allowlist", () => {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
 		expect(submits).toEqual(["telegram:42"]);
-		expect(sent).toEqual([{ chat_id: "42", text: "Annie (modello locale di sviluppo): hai scritto «ciao»" }]);
+		expect(sent).toEqual([{ chat_id: "42", text: "Owni (modello locale di sviluppo): hai scritto «ciao»" }]);
 		expect(logs.some((line) => line.includes('User "666" is not allowed'))).toBe(true);
 		expect(await runtime.audit("acme").read()).toContainEqual(
 			expect.objectContaining({ type: "user.denied", channel: "telegram", userId: "666", threadId: "666", reason: "user_not_in_allowlist" }),

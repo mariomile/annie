@@ -1,4 +1,4 @@
-# Annie
+# Owni
 
 Piattaforma agenti open source di Buildrs: un agente sempre attivo per aziende attente a privacy e controllo dei processi. Self-host/on-prem, un tenant per installazione, egress default deny, nessuna azione irreversibile senza approvazione. Nucleo durevole: Pi Durable (`@earendil-works/pi-durable` 1.3.0, sperimentale), dietro un'interfaccia nostra.
 
@@ -9,7 +9,7 @@ Cosa fa:
 - **Lavora con i file**: li crea, li legge, li invia e riceve quelli caricati.
 - **È proattiva**: esegue task programmati, una volta o a ripetizione.
 - **Mostra il lavoro in corso**: progressi e Stop nella chat, con storico persistente di conversazioni, task e automazioni. Stop non annulla azioni già completate.
-- **Riprende il browser dopo il tuo accesso**: nelle chat private puoi prendere il controllo, compilare un modulo semplice e restituirlo ad Annie. I cookie restano separati per persona e agente, e puoi cancellarli dal pannello ([limiti](docs/adr/0106-browser-personale-e-controllo-umano.md)).
+- **Riprende il browser dopo il tuo accesso**: nelle chat private puoi prendere il controllo, compilare un modulo semplice e restituirlo a Owni. I cookie restano separati per persona e agente, e puoi cancellarli dal pannello ([limiti](docs/adr/0106-browser-personale-e-controllo-umano.md)).
 - **Si estende da sola**: scrive nuovi tool, che girano isolati in sandbox e solo dopo l'approvazione di una persona.
 - **Segreteria commerciale**: legge le richieste di preventivo da Gmail, aggiorna HubSpot, prepara la bozza e la invia solo dopo Approva.
 
@@ -91,7 +91,7 @@ Legge la casella Gmail ogni minuto, prepara per ogni richiesta di preventivo una
 
 ## App desktop
 
-Annie per Mac, Windows e Linux, con l'icona nella barra e una scorciatoia da qualsiasi app: [docs/desktop.md](docs/desktop.md).
+Owni per Mac, Windows e Linux, con l'icona nella barra e una scorciatoia da qualsiasi app: [docs/desktop.md](docs/desktop.md).
 
 ## Struttura
 

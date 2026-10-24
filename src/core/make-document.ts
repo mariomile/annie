@@ -7,7 +7,7 @@ import { jpegSize } from "./pdf-text.ts";
 import { pngSize } from "./png-read.ts";
 
 /**
- * Word, Excel and PDF files from what Annie writes (ADR 0029): Markdown for a letter, a quote or a
+ * Word, Excel and PDF files from what Owni writes (ADR 0029): Markdown for a letter, a quote or a
  * report; tables, or a CSV, for a sheet. Runs in the document worker (document-reader.ts), so its
  * files use only erasable TypeScript.
  */
@@ -32,7 +32,7 @@ export type MakeInput = {
 	readonly now: number;
 };
 
-/** `notes`: what did not go in as asked, for Annie to tell (a missing picture, characters the PDF fonts lack). */
+/** `notes`: what did not go in as asked, for Owni to tell (a missing picture, characters the PDF fonts lack). */
 export type MadeDocument = { readonly data: Uint8Array; readonly pages?: number; readonly sheets?: number; readonly notes: readonly string[] };
 
 /**

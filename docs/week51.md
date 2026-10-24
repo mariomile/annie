@@ -1,13 +1,13 @@
 # Settimana 51: allegati nelle mail
 
-Branch `week-51`. Le mail che Annie prepara possono portare file del workspace: il preventivo, le fatture di un sollecito, un report o un contratto. Partono sempre dopo la card di approvazione. Le scelte sono nell'[ADR 0056](adr/0056-allegati-nelle-mail.md).
+Branch `week-51`. Le mail che Owni prepara possono portare file del workspace: il preventivo, le fatture di un sollecito, un report o un contratto. Partono sempre dopo la card di approvazione. Le scelte sono nell'[ADR 0056](adr/0056-allegati-nelle-mail.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Manda il preventivo 12 a Rossi»**: la card con il PDF allegato e una lettera pronta; dopo l'invio il preventivo risulta «inviato per mail».
 - **«Manda il sollecito a Gamma con la fattura allegata»**: il sollecito con l'XML e, se c'è, il PDF della fattura.
 - **«Mandami per mail il report»**: va al tuo indirizzo Gmail.
-- **«Rispondi a Marco allegando il contratto»**: Annie trova il file, chiede se ce n'è più d'uno, e risponde nella stessa conversazione.
+- **«Rispondi a Marco allegando il contratto»**: Owni trova il file, chiede se ce n'è più d'uno, e risponde nella stessa conversazione.
 - **Dal telefono**: il file arriva in chat con il testo da copiare e un link che apre la posta.
 
 ## Cosa funziona (verificato dai test)

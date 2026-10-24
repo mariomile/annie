@@ -280,7 +280,7 @@ export function createListTools(options: {
 							const actions: ListAction[] = [...(newName === list.name ? [] : ["renamed" as const]), ...(owner === list.owner ? [] : [owner === SHARED ? ("shared" as const) : ("unshared" as const)])];
 							const parts = [
 								newName === list.name ? "" : `ora si chiama «${newName}»`,
-								owner === list.owner ? "" : owner === SHARED ? `${newName === list.name ? "ora " : ""}è condivisa: la vedono e la cambiano tutti quelli che scrivono ad Annie, anche nei gruppi` : `${newName === list.name ? "ora " : ""}è solo tua: gli altri non la vedono più`,
+								owner === list.owner ? "" : owner === SHARED ? `${newName === list.name ? "ora " : ""}è condivisa: la vedono e la cambiano tutti quelli che scrivono a Owni, anche nei gruppi` : `${newName === list.name ? "ora " : ""}è solo tua: gli altri non la vedono più`,
 							];
 							const text = actions.length === 0 ? `La lista ${title(list)} è già così.` : `La lista «${list.name}» ${joined(parts)}.`;
 							return { list: next, result: { list: next, text, actions } };
@@ -300,7 +300,7 @@ function whichOf(args: Record<string, unknown>): Which {
 }
 
 /**
- * Not a conversation with one person (a group, or a thread Annie does not know): only the shared
+ * Not a conversation with one person (a group, or a thread Owni does not know): only the shared
  * lists, and the model must say so, so a list nobody asked to share is never made shared by default.
  */
 function groupOnly(who: string | undefined, which: Which): string | undefined {

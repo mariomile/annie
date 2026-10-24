@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 
 /**
  * Read a JSON file, change it, write it back, under a lock every process shares (the CLI
- * writes while Annie runs). The lock is an exclusive SQLite transaction on `<file>.lock`, a
+ * writes while Owni runs). The lock is an exclusive SQLite transaction on `<file>.lock`, a
  * kernel advisory lock released even if the process dies, as for instances. Read and write
  * are synchronous inside it, so no other code of this process runs while it is held.
  */

@@ -544,7 +544,7 @@ describe("expenses: another agente, the brief, the store", () => {
 		expect(s.store.read().expenses).toHaveLength(1);
 		expect(existsSync(join(s.root, "spese"))).toBe(false);
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		expect(String(await briefed?.execute(BENZINA, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute(BENZINA, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await briefed?.execute({ op: "summary" }, fresh()))).toContain("Spese di ottobre 2026 fino a oggi");
 		expect(BRIEF_INSTRUCTION).toContain("8. Le spese del mese (expenses con op summary e compact true)");
 		expect(s.events).toEqual([{ type: "expense.changed", op: "add", count: 1 }]);
@@ -841,7 +841,7 @@ describe("expenses in the app", () => {
 	}, 60_000);
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

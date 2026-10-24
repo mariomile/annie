@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { writeFileAtomic } from "../core/atomic-file.ts";
 
 /**
- * Annie's replies as voice notes (ADR 0020), through any service that speaks OpenAI's speech API
+ * Owni's replies as voice notes (ADR 0020), through any service that speaks OpenAI's speech API
  * (`POST <base>/audio/speech`, JSON `model`, `input`, `voice`, `response_format`): OpenAI's TTS, or
  * a model of one's own behind the same API. The operator chooses the service; the owner allows it
  * instance by instance (connector "speech" in the egress policy). Only the text of a reply to a
@@ -123,7 +123,7 @@ export function spokenPart(said: string, max: number): string {
 	return head === "" ? "" : `${head} ${REST_WRITTEN}`;
 }
 
-/** How a person wants Annie's replies: as a voice note when they send one (the default), always, or never. */
+/** How a person wants Owni's replies: as a voice note when they send one (the default), always, or never. */
 export type VoiceMode = "auto" | "always" | "never";
 export const VOICE_MODES: readonly VoiceMode[] = ["auto", "always", "never"];
 

@@ -9,7 +9,7 @@ import { runtimeWithInstance, waitFor } from "./helpers.ts";
 
 const model = (id: string, name: string): ModelInfo => ({ id, name, images: true, reasoning: false, contextWindow: 1_000_000, inputUsd: 0.3, outputUsd: 2.5 });
 const CATALOG: Record<string, readonly ModelInfo[]> = {
-	faux: [model("annie-dev", "Annie di prova")],
+	faux: [model("annie-dev", "Owni di prova")],
 	google: [model("gemini-3.5-pro", "Gemini 3.5 Pro"), model("gemini-3.5-flash", "Gemini 3.5 Flash")],
 	openai: [model("gpt-5.5", "GPT-5.5")],
 };
@@ -64,7 +64,7 @@ describe("the /modello command", () => {
 		const { channel, last } = await setup();
 		await channel.say("/modello");
 		const text = await last();
-		expect(text).toContain("modello dell'istanza, Annie di prova");
+		expect(text).toContain("modello dell'istanza, Owni di prova");
 		expect(text).toContain("Google (Gemini)");
 		expect(text).not.toContain("OpenAI");
 	});

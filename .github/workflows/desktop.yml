@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The Mac app carries Annie's own server (docs/desktop.md, «Annie sul Mac»).
+          # The Mac app carries Owni's own server (docs/desktop.md, «Owni sul Mac»).
           - platform: macos-latest
             args: --target universal-apple-darwin --config src-tauri/tauri.local.conf.json
           - platform: windows-latest
@@ -38,7 +38,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: pnpm install --frozen-lockfile
         working-directory: desktop
-      - name: Annie's server for the Mac app
+      - name: Owni's server for the Mac app
         if: matrix.platform == 'macos-latest'
         run: bash desktop/scripts/bundle-server.sh
       - uses: tauri-apps/tauri-action@v0
@@ -49,5 +49,5 @@ jobs:
           tauriScript: pnpm tauri
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'desktop-v__VERSION__' }}
-          releaseName: Annie desktop __VERSION__
+          releaseName: Owni desktop __VERSION__
           releaseDraft: true

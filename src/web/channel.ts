@@ -24,7 +24,7 @@ export type WebEntry = {
 	readonly file?: { readonly path: string; readonly caption?: string };
 	/** Pictures the person sent with the message, by workspace path. */
 	readonly images?: readonly string[];
-	/** The model that wrote Annie's reply; `name` is added for the console, never stored. */
+	/** The model that wrote Owni's reply; `name` is added for the console, never stored. */
 	readonly model?: { readonly provider: string; readonly modelId: string; readonly name?: string };
 };
 
@@ -139,7 +139,7 @@ export class WebChannel implements ChannelAdapter {
 		const entry: WebEntry = { id: `m_${randomBytes(8).toString("hex")}`, at: new Date().toISOString(), from: "person", text, ...(images.length === 0 ? {} : { images: images.map((i) => i.path) }) };
 		// The instance is told where each picture is, so it can come back to it later (image_view).
 		const said = [text, ...images.map((i) => `[Immagine nel workspace: ${i.path}]`)].filter(Boolean).join("\n\n");
-		// Annie's answer can be ready before this message is written down: the thread's writes go
+		// Owni's answer can be ready before this message is written down: the thread's writes go
 		// one at a time, so the answer always lands after the question.
 		return this.serial(threadId, async () => {
 			await handler({

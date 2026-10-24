@@ -6,9 +6,9 @@ WhatsApp lascia scrivere liberamente solo entro 24 ore dall'ultimo messaggio del
 
 ## Cosa funziona (verificato dai test, con un finto Graph API)
 
-- **Annie sa quando la finestra è aperta** (`test/whatsapp.test.ts`): ricorda quando ogni persona ammessa ha scritto l'ultima volta, su disco, così vale anche dopo un riavvio. Conta l'ora del messaggio: uno vecchio che Meta riconsegna non riapre niente. Gli estranei non vengono registrati.
+- **Owni sa quando la finestra è aperta** (`test/whatsapp.test.ts`): ricorda quando ogni persona ammessa ha scritto l'ultima volta, su disco, così vale anche dopo un riavvio. Conta l'ora del messaggio: uno vecchio che Meta riconsegna non riapre niente. Gli estranei non vengono registrati.
 - **Fuori finestra il messaggio aspetta**: viene tenuto da parte una volta sola (anche se l'invio viene ritentato), al massimo 20 per persona, e consegnato appena la persona scrive, prima della risposta al suo nuovo messaggio, con i suoi pulsanti. Esce dall'attesa solo dopo essere partito; se la consegna fallisce a metà, resta e riparte con l'avviso di possibile doppione.
-- **Avviso con template**: se l'owner ha fatto approvare un template da Meta e lo indica nella console (nome e lingua), Annie lo manda con un estratto del messaggio nella variabile `{{1}}`, su una riga sola come Meta chiede. Uno solo per finestra chiusa, anche con più messaggi in attesa. Se Meta rifiuta il template, il messaggio aspetta comunque e il log lo dice.
+- **Avviso con template**: se l'owner ha fatto approvare un template da Meta e lo indica nella console (nome e lingua), Owni lo manda con un estratto del messaggio nella variabile `{{1}}`, su una riga sola come Meta chiede. Uno solo per finestra chiusa, anche con più messaggi in attesa. Se Meta rifiuta il template, il messaggio aspetta comunque e il log lo dice.
 - **Senza template**: il messaggio aspetta in silenzio e il log lo dice.
 - **I file non aspettano**: fuori finestra vengono rifiutati, e l'errore lo dice.
 - **Console**: nome e lingua del template nella scheda WhatsApp, controllati; vuoti lo tolgono.

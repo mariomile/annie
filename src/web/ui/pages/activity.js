@@ -24,7 +24,7 @@ const AUDIT_SAY = {
 	"web.browser.clicked": "Clic nel browser",
 	"web.browser.file_refused": "Caricamento di un file rifiutato nel browser",
 	"web.browser.takeover": "Controllo del browser alla persona",
-	"web.browser.released": "Controllo del browser restituito ad Annie",
+	"web.browser.released": "Controllo del browser restituito a Owni",
 	"web.browser.form_sent": "Modulo inviato dalla persona",
 	"web.browser.profile_cleared": "Accessi ai siti rimossi",
 	"web.hosts_changed": "Siti consentiti cambiati",
@@ -137,7 +137,7 @@ const AUDIT_SAY = {
 	"agents.allowed": "Agenti consentiti",
 };
 /** Detail keys in words; ids of people and agents become their names, empty counters drop out. */
-const AUDIT_KEYS = { personId: "chi", instanceId: "agente", modelProvider: "modello", provider: "modello", model: "modello", cron: "orario", reason: "motivo", host: "sito", tool: "strumento", name: "nome", title: "titolo", channel: "canale", error: "errore", count: "quanti", card: "scheda" };
+const AUDIT_KEYS = { personId: "chi", instanceId: "agente", modelProvider: "modello", provider: "modello", model: "modello", cron: "orario", reason: "motivo", host: "sito", tool: "strumento", name: "nome", title: "titolo", channel: "canale", error: "errore", count: "quanti", card: "scheda", allowedModelProviders: "provider consentiti", allowedChannels: "canali consentiti", modelProviders: "provider", channels: "canali", instanceName: "agente", role: "ruolo", from: "da", to: "a" };
 
 /** An event that went wrong or was stopped reads in red. */
 const AUDIT_BAD = /\.(failed|denied|refused|uncertain|rejected|retries_exhausted|invalid_sender|update_failed|login_denied)$/;
@@ -249,7 +249,7 @@ export async function viewActivity(main) {
 				h("h3.section-title", "Oggi"),
 				h("div.row-gap", h("span", h("b", fmt.usd(usage.todayUsd))), h("span.muted", `soglia di avviso ${fmt.usd(usage.softUsd)} · tetto ${fmt.usd(usage.hardUsd)}`)),
 				h("div.spend", h("div.bar", h(`i${share >= 1 ? ".bad" : usage.todayUsd >= usage.softUsd ? ".warn" : ""}`, { "data-w": share }))),
-				h("p.muted", "Oltre il tetto Annie smette di chiamare il modello fino a domani; l'invio di bozze già approvate continua."),
+				h("p.muted", "Oltre il tetto Owni smette di chiamare il modello fino a domani; l'invio di bozze già approvate continua."),
 			),
 			owner
 				? h(
