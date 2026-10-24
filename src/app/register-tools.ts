@@ -32,6 +32,20 @@ import type { expensesOf } from "../core/tools/expense-tools.ts";
 import type { quotesOf } from "../core/tools/quote-tools.ts";
 import type { schedulesOf } from "../core/tools/schedule-tools.ts";
 import type { AnnieConfig } from "../main/config.ts";
+import { type SubjectSeam, type SubjectStores, withSubjects } from "../core/subjects.ts";
+
+/** The registers of an agente that il registro di chi segue cosa reads (ADR 0110). */
+export function subjectStoresOf(runtime: AnnieRuntime, tenant: string, agent: string): SubjectStores {
+	return {
+		clients: runtime.clients(tenant, agent),
+		suppliers: runtime.suppliers(tenant, agent),
+		quotes: runtime.quotes(tenant, agent),
+		orders: runtime.orders(tenant, agent),
+		appointments: runtime.appointments(tenant, agent),
+		sales: runtime.salesInvoices(tenant, agent),
+		ddt: runtime.ddt(tenant, agent),
+	};
+}
 
 export type RegisterToolsDeps = {
 	readonly runtime: AnnieRuntime;
@@ -45,6 +59,8 @@ export type RegisterToolsDeps = {
 	readonly invoiceScanner: InvoiceScanner;
 	readonly isBriefThread: (thread: { channel: string; threadId: string }) => Promise<boolean>;
 	readonly recurringEnv: (tenantId: string, instanceId: string) => RecurringEnv;
+	/** Il registro di chi segue cosa (ADR 0110), as this agente's write hook sees it. */
+	readonly subjects: { readonly seam: SubjectSeam; readonly log: (message: string) => void };
 };
 
 /**
@@ -52,8 +68,8 @@ export type RegisterToolsDeps = {
  * with tool_search, which saves ~140k characters of schema (~35k tokens) on every other request.
  */
 export function registerTools(deps: RegisterToolsDeps): AnnieTool[] {
-	const { runtime, record, config, mail, quotes, expenses, schedules, invoiceScanner, isBriefThread, recurringEnv } = deps;
-	return [
+	const { runtime, record, config, mail, quotes, expenses, schedules, invoiceScanner, isBriefThread, recurringEnv, subjects } = deps;
+	const tools: AnnieTool[] = [
 		...createInvoiceTools({
 			workspace: runtime.workspace(record.tenantId, record.id),
 			store: runtime.invoices(record.tenantId, record.id),
@@ -395,5 +411,7 @@ export function registerTools(deps: RegisterToolsDeps): AnnieTool[] {
 			...recurringEnv(record.tenantId, record.id),
 			whoIs: (thread) => runtime.participant(record.tenantId, record.id, thread),
 		}),
-	].map((tool) => ({ ...tool, deferred: true }));
+	];
+	// After a write, the agente's records go into the tenant's ledger, and the result says who else has the same client or supplier.
+	return withSubjects(tools, subjects.seam, subjects.log).map((tool) => ({ ...tool, deferred: true }));
 }

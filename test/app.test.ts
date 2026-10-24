@@ -6,10 +6,11 @@ import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BoardStore } from "../src/core/board.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "../src/core/ids.ts";
 import { instanceDir, tenantDir } from "../src/core/paths.ts";
+import { SUBJECT_TOOLS, SubjectLedger, SUBJECTS_KEY_SECRET } from "../src/core/subjects.ts";
 import { romeDayKey } from "../src/core/usage.ts";
 import { proxyToken } from "../src/web/compare.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
-import { tempDataDir, waitFor } from "./helpers.ts";
+import { loadTools, tempDataDir, waitFor } from "./helpers.ts";
 
 const running: RunningAnnie[] = [];
 afterEach(async () => {
@@ -282,6 +283,122 @@ describe("pnpm start (startAnnie)", () => {
 		expect((await api("/api/instances/vendite/schedules")).schedules).toEqual([]);
 		expect((await api("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
 	});
+
+	it("chi segue cosa (ADR 0110): the owner sees it on the scheda, a scheda or an agente deleted takes its part away", async () => {
+		const dataDir = tempDataDir();
+		const { annie, base } = await boot(dataDir);
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		await api("/api/instances", { id: "acquisti", name: "Acquisti" });
+		const send = (method: string, path: string, body?: unknown, cookie = api.cookie) =>
+			// biome-ignore lint: test
+			fetch(`${base}${path}`, { method, headers: { "x-annie": "1", "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(async (r) => ({ status: r.status, ...((await r.json()) as any) }));
+		const ledger = new SubjectLedger(join(dataDir, "tenants", "default"), (await annie.runtime.secrets("default").get(SUBJECTS_KEY_SECRET)) as string);
+		const party = ledger.party({ name: "Alfa srl" });
+		ledger.sync("vendite", { quotes: [{ id: "2026-004", party, f: "a" }] });
+		ledger.sync("acquisti", { orders: [{ id: "OR-0003", party, f: "b" }] });
+		const { card } = await api("/api/board", { title: "Offerta Alfa" });
+		ledger.link("vendite", card, ["2026-004"]);
+
+		const seen = await api(`/api/board/${card.id}/subjects`);
+		expect(seen.linked).toMatchObject([{ agent: "Vendite", kind: "preventivo", id: "2026-004", card: card.n }]);
+		expect(seen.others).toMatchObject([{ agent: "Acquisti", kind: "ordine", id: "OR-0003" }]);
+		const { link } = await api("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		expect((await send("GET", `/api/board/${card.id}/subjects`, undefined, member.cookie)).status).toBe(403);
+
+		expect((await send("DELETE", `/api/board/${card.id}`)).ok).toBe(true);
+		expect(ledger.list().some((e) => e.card !== undefined)).toBe(false);
+		expect((await send("DELETE", "/api/instances/acquisti", { confirm: "Acquisti" })).status).toBe(200);
+		expect(ledger.list().map((e) => `${e.agent} ${e.id}`)).toEqual(["vendite 2026-004"]);
+	});
+
+	it("chi segue cosa (ADR 0110) through the real tools: the owner hears who, at most five; a member only that someone has it", async () => {
+		const dataDir = tempDataDir();
+		const { annie, base } = await boot(dataDir);
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		await api("/api/instances", { id: "acquisti", name: "Acquisti" });
+		const { person: anna, link } = await api("/api/people", { name: "Anna", role: "member" });
+		const owner = (await api("/api/people")).people.find((p: { role: string }) => p.role === "owner");
+		for (const id of ["vendite", "acquisti"]) {
+			const res = await fetch(`${base}/api/instances/${id}/settings`, { method: "PUT", headers: { cookie: api.cookie, "x-annie": "1" }, body: JSON.stringify({ webPeople: [owner.id, anna.id] }) });
+			expect(res.status).toBe(200);
+		}
+		const memberApi = await client(base, link);
+		const chat = async (call: typeof api, instance: string) => {
+			const thread = (await call(`/api/instances/${instance}/threads`, {})).thread;
+			return async (text: string): Promise<string> => {
+				const answers = async () => ((await call(`/api/instances/${instance}/threads/${thread.id}`)).entries as { from: string; text?: string }[]).filter((e) => e.from === "annie");
+				const before = (await answers()).length;
+				await call(`/api/instances/${instance}/threads/${thread.id}/messages`, { text });
+				for (const start = Date.now(); Date.now() - start < 30_000; ) {
+					const now = await answers();
+					if (now.length > before) return now.at(-1)?.text ?? "";
+					await new Promise((r) => setTimeout(r, 30));
+				}
+				throw new Error("no reply");
+			};
+		};
+		const vendite = await chat(api, "vendite");
+		const acquisti = await chat(api, "acquisti");
+		// The hook's tools are the app's: every one is there to load.
+		const found = await loadTools(vendite, ...Object.keys(SUBJECT_TOOLS));
+		for (const name of Object.keys(SUBJECT_TOOLS)) expect(found, name).toContain(name);
+		await loadTools(acquisti, "clients");
+
+		const quote = JSON.stringify({ op: "create", customer: "Rossi Srl", items: [{ description: "Consulenza", quantity: 2, unit: "giornate", price: 500 }], vat: 22 });
+		annie.runtime.invoices("default", "vendite").setCompany({ vat: "IT00000010017", name: "Beta Studio Srl", cf: "00000010017", address: "Via Roma 1, 20121 Milano MI", regime: "ordinario", ibans: ["IT51X0000000000000000000001"], by: "test:u", at: new Date().toISOString() });
+		for (let i = 0; i < 6; i++) {
+			const made = await vendite(`/tool quotes ${quote}`);
+			expect(made).not.toMatch(/Errore|Attenzione/);
+		}
+		const said = await acquisti('/tool clients {"op":"upsert","client":"Rossi Srl"}');
+		expect(said).toContain("Fatto, ho creato la scheda CL-0001.");
+		expect(said).toMatch(/Attenzione, lo stesso cliente o fornitore lo segue anche un altro agente: Vendite ha già preventivo [^;]+(; Vendite ha già preventivo [^;]+){4}, e altri 1\. Dillo alla persona/);
+		// Saved again about the same client: not news.
+		expect(await acquisti('/tool clients {"op":"upsert","client":"Rossi Srl","contact":{"name":"Marco"}}')).not.toContain("Attenzione");
+
+		// A member, on a new quote for the same client: no agente, no record.
+		const memberVendite = await chat(memberApi, "vendite");
+		await loadTools(memberVendite, "quotes");
+		const told = await memberVendite(`/tool quotes ${quote}`);
+		expect(told).toContain("Attenzione, un altro agente segue già lo stesso cliente o fornitore.");
+		expect(told).not.toMatch(/Acquisti|CL-0001/);
+	}, 60_000);
+
+	it("chi segue cosa (ADR 0110): the drafts the recurring sweep makes go into the ledger", async () => {
+		const dataDir = tempDataDir();
+		const { annie, base } = await boot(dataDir);
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		const at = new Date().toISOString();
+		annie.runtime.invoices("default", "vendite").setCompany({ vat: "IT00000010017", name: "Beta Studio Srl", cf: "00000010017", address: "Via Roma 1, 20121 Milano MI", regime: "ordinario", ibans: ["IT51X0000000000000000000001"], by: "test:u", at });
+		const year = String(new Date().getFullYear());
+		annie.runtime.salesInvoices("default", "vendite").update("seed", (state) => ({ ...state, settings: { by: "test:u", at, lastBefore: { [year]: 0 } } }));
+		const thread = (await api("/api/instances/vendite/threads", {})).thread;
+		const reply = async (text: string): Promise<string> => {
+			const answers = async () => ((await api(`/api/instances/vendite/threads/${thread.id}`)).entries as { from: string; text?: string }[]).filter((e) => e.from === "annie");
+			const before = (await answers()).length;
+			await api(`/api/instances/vendite/threads/${thread.id}/messages`, { text });
+			for (const start = Date.now(); Date.now() - start < 30_000; ) {
+				const now = await answers();
+				if (now.length > before) return now.at(-1)?.text ?? "";
+				await new Promise((r) => setTimeout(r, 30));
+			}
+			throw new Error("no reply");
+		};
+		await loadTools(reply, "sales_invoices recurring_invoices");
+		const delta = { customer: "Delta Servizi Srl", vat_number: "00000020016", address: "Via Verdi 2, 00184 Roma RM", recipient_code: "ZZZ0001" };
+		expect(await reply(`/tool sales_invoices ${JSON.stringify({ op: "draft", ...delta, lines: [{ description: "Primo lavoro", price: 100 }], vat: 22 })}`)).toContain("BZ-0001");
+		const month = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"][new Date().getMonth()];
+		expect(await reply(`/tool recurring_invoices ${JSON.stringify({ op: "add", customer: "Delta Servizi Srl", lines: [{ description: "Canone", price: 300 }], vat: 22, cadence: "monthly", day: 1, start: month })}`)).toContain("RI-0001");
+		const ledger = new SubjectLedger(join(dataDir, "tenants", "default"), (await annie.runtime.secrets("default").get(SUBJECTS_KEY_SECRET)) as string);
+		expect(ledger.list().filter((e) => e.register === "sales").map((e) => e.id)).toEqual(["BZ-0001"]);
+		// Past the sweep's five minutes.
+		await annie.scheduler.tick(new Date(Date.now() + 10 * 60_000));
+		expect(ledger.list().filter((e) => e.register === "sales").map((e) => e.id)).toEqual(["BZ-0001", "BZ-0002"]);
+	}, 60_000);
 
 	it("schede that come back (ADR 0069): set from the board, made at their time and started with who set them", async () => {
 		const { annie, base } = await boot(tempDataDir());
