@@ -45,7 +45,7 @@ Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o
 _Avoid_: deadline, due date (nel testo per le persone)
 
 **Messaggio tra agenti**:
-Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Vedi ADR 0042.
+Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Se il collega è occupato, il risultato lo dice e la risposta può metterci di più. Vedi ADR 0042 e 0109.
 _Avoid_: chat tra bot, handoff, delega
 
 **Automazione**:

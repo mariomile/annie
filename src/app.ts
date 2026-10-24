@@ -114,6 +114,7 @@ import { createTimesheetTools } from "./core/tools/timesheet-tools.ts";
 import { createAgentTools } from "./core/tools/agent-tools.ts";
 import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core/agent-messages.ts";
 import { AgentChannel } from "./channels/agents.ts";
+import { runtimeActivity, viewerOf } from "./core/agent-activity.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
 import { createAutomationTools } from "./core/tools/automation-tools.ts";
 import { createSkillTools } from "./core/tools/skill-tools.ts";
@@ -705,6 +706,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				...createAgentTools({
 					self: record.id,
 					...agentRatesOf(record.id),
+					activity: (agent, thread) => liveActivity(record.tenantId)(agent, viewerOf(record.id, thread, WebChannel.ownerOf)),
 					colleagues: async () =>
 						(await runtime.registry.listInstances(record.tenantId))
 							.filter((r) => r.id !== record.id && r.id !== segreteriaId && r.egress.channels.includes(AGENT_CHANNEL) && (r.allowedUsers[AGENT_CHANNEL] ?? []).includes(record.id))
@@ -937,6 +939,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		ownerChats: () => [telegrams.get(config.instanceId), whatsapps.get(config.instanceId)],
 		log,
 	});
+	// Who is doing what (ADR 0109), for agent_list and the page Agenti.
+	const liveActivity = (tenantId: string) => runtimeActivity({ runtime, tenant: tenantId, board: { store: board, work: boardWork }, channel: (agent) => webChannels.get(agent) });
 	// --- Telegram: at most one bot per instance ---
 	const telegramHooks = new Map<string, { secret: string; handle: (update: unknown) => Promise<void> }>();
 	const telegramUnsubscribes = new Map<string, () => void>();

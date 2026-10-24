@@ -30,6 +30,7 @@ import { AUTOMATION_LIMITS, type Automation, AutomationError, AutomationRate } f
 import { parseSkillMd, type Skill, SkillError, toSkillMd } from "../core/skills.ts";
 import { checkPersona, cleanName, type Persona, PersonaError } from "../core/persona.ts";
 import { AGENT_CHANNEL } from "../core/agent-messages.ts";
+import { runtimeActivity } from "../core/agent-activity.ts";
 import { type BoardStore, dueText } from "../core/board.ts";
 import type { ScreenViews } from "../core/screen-views.ts";
 import type { RoutineStore } from "../core/board-routines.ts";
@@ -369,9 +370,10 @@ export function createWebApp(options: WebAppOptions): Server {
 		const p = person as Person;
 		const all = await runtime.registry.listInstances(tenantId);
 		const visible = all.filter((r) => p.role === "owner" || (r.allowedUsers.web ?? []).includes(p.id));
+		const activity = runtimeActivity({ runtime, tenant: tenantId, board: options.board, channel: (id) => options.channels.get(id) });
 		const agents = await Promise.all(
 			visible.map(async (r) => {
-				const [schedules, watches] = await Promise.all([runtime.schedules(tenantId, r.id).list(), runtime.watches(tenantId, r.id).list()]);
+				const [schedules, watches, now] = await Promise.all([runtime.schedules(tenantId, r.id).list(), runtime.watches(tenantId, r.id).list(), activity(r.id, { person: p.id })]);
 				// Like their pages: a member counts only what acts for them.
 				const owner = p.role === "owner";
 				return {
@@ -379,6 +381,10 @@ export function createWebApp(options: WebAppOptions): Server {
 					model: named(r.model),
 					tone: r.persona?.tone ?? "naturale",
 					channels: r.egress.channels,
+					// Who is doing what (ADR 0109): the schede and chats this person already sees.
+					busy: now.busy,
+					...(now.busyFor === undefined ? {} : { busyFor: now.busyFor }),
+					doing: now.doing,
 					schedules: owner ? schedules.length : schedules.filter((s) => mine(s, p)).length,
 					watches: owner ? watches.length : watches.filter((w) => mineWatch(w, p)).length,
 					memories: runtime.memory(tenantId, r.id).list().filter((m) => m.about === SHARED || m.about === subjectOf("web", p.id)).length,
