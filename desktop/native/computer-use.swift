@@ -27,6 +27,49 @@ private func dimensions() -> (Int, Int) {
     return (Int(bounds.width), Int(bounds.height))
 }
 
+// Apps Annie never controls, whoever asks: a terminal would bypass the sandboxed computer_run and its
+// approvals; a password manager or a system sign-in prompt holds secrets the model must not see or type.
+// Bundle identifiers verified against each app's Info.plist, lowercased for a case-insensitive match.
+private let blockedApps: [String: String] = [
+    "com.apple.terminal": "un terminale",
+    "com.googlecode.iterm2": "un terminale",
+    "dev.warp.warp-stable": "un terminale",
+    "com.mitchellh.ghostty": "un terminale",
+    "net.kovidgoyal.kitty": "un terminale",
+    "org.alacritty": "un terminale",
+    "com.github.wez.wezterm": "un terminale",
+    "com.1password.1password": "un gestore di password",
+    "com.agilebits.onepassword7": "un gestore di password",
+    "com.bitwarden.desktop": "un gestore di password",
+    "com.dashlane.dashlane": "un gestore di password",
+    "com.apple.passwords": "un gestore di password",
+    "com.apple.keychainaccess": "un gestore di password",
+    "com.apple.securityagent": "una richiesta di password di macOS",
+    "com.apple.localauthentication.uiagent": "una richiesta di password di macOS",
+]
+
+private func blockedKind(_ bundleIdentifier: String?) -> String? {
+    guard let id = bundleIdentifier?.lowercased() else { return nil }
+    return blockedApps[id]
+}
+
+private func refusal(_ name: String, _ kind: String) -> Failure {
+    Failure(message: "Computer Use non controlla «\(name)», che è \(kind): non ho fatto nulla. Se serve, deve usarla la persona")
+}
+
+/// Runs before any screenshot or event: nothing is captured or posted while a blocked app is in front,
+/// and a blocked app cannot be opened. Opening an allowed app stays possible, so the agent can move away.
+private func checkBlockedApp(_ tool: String, _ args: [String: Any]) throws {
+    if tool == "launch_app" {
+        guard args["urls"] == nil, let name = args["name"] as? String,
+              let path = NSWorkspace.shared.fullPath(forApplication: name),
+              let kind = blockedKind(Bundle(path: path)?.bundleIdentifier) else { return }
+        throw refusal(name, kind)
+    }
+    guard let app = NSWorkspace.shared.frontmostApplication, let kind = blockedKind(app.bundleIdentifier) else { return }
+    throw refusal(app.localizedName ?? app.bundleIdentifier ?? "app", kind)
+}
+
 private func point(_ args: [String: Any], _ x: String = "x", _ y: String = "y") throws -> CGPoint {
     let (width, height) = dimensions()
     guard width > 0, height > 0 else { throw Failure(message: "Nessuno schermo principale disponibile") }
@@ -115,6 +158,7 @@ private func combo(_ keys: [String]) throws -> (CGKeyCode, CGEventFlags) {
         guard #available(macOS 14.0, *) else { throw Failure(message: "Computer Use richiede macOS 14 o successivo") }
         let (width, height) = dimensions()
         if tool == "get_screen_size" { return ["structured": ["width": width, "height": height, "scale_factor": 1, "display": "main"]] }
+        try checkBlockedApp(tool, args)
         guard CGPreflightScreenCaptureAccess() else { throw Failure(message: "Consenti Registrazione schermo nelle impostazioni Computer Use; poi premi Controlla di nuovo") }
         if tool == "get_desktop_state" {
             let requested = args["max_image_dimension"] == nil ? 1280 : try integer(args, "max_image_dimension", 1...1280)
@@ -182,6 +226,7 @@ private func combo(_ keys: [String]) throws -> (CGKeyCode, CGEventFlags) {
             var units: [UniChar] = []
             func send() throws {
                 try checkCancellation()
+                try checkBlockedApp(tool, args)
                 try keyEvent(0, down: true, flags: [], unicode: units)
                 try keyEvent(0, down: false, flags: [], unicode: units)
                 units.removeAll(keepingCapacity: true)
@@ -234,6 +279,9 @@ private func combo(_ keys: [String]) throws -> (CGKeyCode, CGEventFlags) {
                 do { _ = try combo(["invalid", "a"]); throw Failure(message: "modifier accepted") }
                 catch let e as Failure where e.message == "modifier accepted" { throw e }
                 catch {}
+                guard blockedKind("com.apple.Terminal") != nil, blockedKind("COM.GOOGLECODE.ITERM2") != nil,
+                      blockedKind("com.apple.SecurityAgent") != nil, blockedKind("com.apple.Safari") == nil,
+                      blockedKind(nil) == nil else { throw Failure(message: "self-test failed") }
                 response = ["ok": true, "selfTest": true]
             } else {
                 let data = FileHandle.standardInput.readDataToEndOfFile()

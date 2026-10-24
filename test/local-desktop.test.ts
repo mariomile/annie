@@ -63,6 +63,14 @@ describe("the native local Mac desktop bridge", () => {
 		await expect(desktop.call("a", "arbitrary-command", {})).rejects.toThrow("non disponibile");
 	});
 
+	it("passes the native refusal of a blocked app through whole, for every tool that looks or acts", async () => {
+		const message = "Computer Use non controlla «1Password», che è un gestore di password: non ho fatto nulla. Se serve, deve usarla la persona";
+		const { desktop } = await helper(`console.log(JSON.stringify({ok:false,error:${JSON.stringify(message)}}));`);
+		for (const tool of ["get_desktop_state", "click", "drag", "scroll", "type_text", "press_key", "hotkey", "launch_app"]) {
+			await expect(desktop.call("a", tool, {}), tool).rejects.toThrow(message);
+		}
+	});
+
 	it("times out and aborts native work, and does not dispatch already-aborted work", async () => {
 		const { desktop } = await helper(`setTimeout(()=>console.log(JSON.stringify({ok:true,text:'late'})),5000);`, 100);
 		await expect(desktop.call("a", "click", {})).rejects.toThrow("in tempo");

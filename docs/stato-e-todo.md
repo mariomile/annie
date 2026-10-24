@@ -1,6 +1,6 @@
 # Stato del progetto e cose da fare
 
-Aggiornato al 23 ottobre 2026.
+Aggiornato al 24 ottobre 2026.
 
 ## Dove siamo
 
@@ -123,6 +123,7 @@ Lo stesso ramo aggiunge progressi live, Stop persistente per conversazione, stor
 - [x] Appuntamenti e prenotazioni: fissare controllando orari, chiusure, festivi e sovrapposizioni per risorsa, gli orari liberi più vicini su un conflitto, spostare, disdire e non presentato solo dalla persona, la giornata con i buchi, lo storico del cliente, i promemoria ai clienti preparati e mai mandati, la fattura degli appuntamenti fatti segnati all'emissione, il brief (settimana 74, [week74.md](week74.md), [ADR 0094](adr/0094-appuntamenti-e-prenotazioni.md))
 - [x] Turni, ferie e permessi del personale: le persone con la settimana solita, ferie, permessi, malattie (solo il protocollo) e altre assenze senza sovrapposizioni, saldi come stima, i turni della settimana con le ore scoperte, le assenze che bloccano le risorse degli appuntamenti, il riepilogo del mese per la consulente giorno per giorno e mai mandato, assunzioni e uscite, il brief che non dice mai il perché, i dati sanitari controllati quando si dicono (settimana 75, [week75.md](week75.md), [ADR 0095](adr/0095-turni-ferie-e-permessi.md))
 - [ ] Schermo: prova dal vivo con Docker vero su un server amd64 (avvio dell'immagine con le sole capability previste e un init, tempo di avvio, indirizzo del container su una rete interna con il traffico fra container spento, strumenti di `cua-spacesd` 0.3.0 e `scope: "desktop"`, nomi dei tasti e combinazioni)
+- [x] Computer Use sul Mac: terminali, gestori di password e richieste di password di macOS non vengono né guardati né controllati né aperti, e l'agente riceve il nome dell'app ([ADR 0107](adr/0107-app-che-computer-use-non-controlla.md)). Da provare dal vivo con un'app bloccata in primo piano; gli identificatori di Dashlane e 1Password 7 vengono da fonti di terzi, LastPass non è nell'elenco perché non verificato
 - [x] Schermo dal vivo: accanto alla chat l'ultima schermata dell'agente in quella conversazione, con cosa ha appena fatto; solo da guardare ([ADR 0067](adr/0067-schermo-dal-vivo.md))
 - [x] Eliminare un agente dalla console: il nome da scrivere per conferma, poi via bot, numeri, automazioni, chiavi, file, computer e schermo, e il permesso degli altri agenti di sentirlo ([ADR 0046](adr/0046-eliminare-un-agente.md))
 - [x] Board: le cose da fare in quattro colonne, affidate agli agenti; l'agente ci lavora in una conversazione con chi gliel'ha affidata, la manda in «Da rivedere», e la chiude una persona; si crea anche dalla chat ([ADR 0050](adr/0050-board.md))
