@@ -147,6 +147,7 @@ Lo stesso ramo aggiunge progressi live, Stop persistente per conversazione, stor
 - [x] Le istruzioni dei registri stanno nelle descrizioni dei loro strumenti: nelle istruzioni resta una riga sola che rimanda a `tool_search`, da 19.775 a 7.331 caratteri ([ADR 0101](adr/0101-istruzioni-dei-registri-nei-loro-strumenti.md))
 - [x] Console divisa per pagina: `src/web/ui/app.js` (circa 5.900 righe) è ora un modulo ES per pagina (le pagine non si importano a vicenda), una tabella delle pagine in `shell.js` e un `common.js` che non importa nulla; il server serve i file elencando la cartella. Una pagina nuova: file, riga in `PAGES`, riga in `SHELL` ([ADR 0102](adr/0102-console-un-modulo-per-pagina.md))
 - [x] Eval della segreteria: prima di dare un punteggio, `pnpm eval:segreteria` prova i controlli su due bozze senza contenuto, una vuota e una generica, che devono fallire i controlli che pretendono qualcosa (domande, voci da citare, elenco e priorità del multi, saluto, registro); se un caso li viola, l'eval si ferma dicendo caso e controllo ([README](../evals/segreteria/README.md))
+- [x] Chi sta facendo cosa: `agent_list` e la pagina Agenti dicono se un agente è occupato, da quanto e su quale scheda «In corso» o chat, solo dentro quello che chi guarda già vede; `agent_message` avvisa che un collega occupato può metterci di più ([ADR 0109](adr/0109-chi-sta-facendo-cosa.md))
 - [ ] Scansioni JBIG2 e JPEG 2000: oggi solo dal computer di Annie o con una foto
 
 ### Prima di rendere pubblico il repo

@@ -139,6 +139,9 @@ describe("pnpm start (startAnnie)", () => {
 		expect(agents.map((a) => a.id)).toEqual(["annie", "ricerca"]);
 		expect(agents[1]).toMatchObject({ emoji: "🔎", tone: "conciso", channels: ["web"], schedules: 0, watches: 0, memories: 0 });
 		expect(agents[1].model).toMatchObject({ provider: "faux" });
+		// Who is doing what (ADR 0109): nobody is working here.
+		expect(agents.map((a) => [a.busy, a.doing])).toEqual([[false, ""], [false, ""]]);
+		expect(agents[1]).not.toHaveProperty("busyFor");
 		const put = (body: unknown) => fetch(`${base}/api/instances/ricerca/settings`, { method: "PUT", headers: { "x-annie": "1", "content-type": "application/json", cookie: api.cookie }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<{ ok?: boolean; error?: string }>);
 		expect((await put({ persona: { tone: "arrogante" } })).error).toMatch(/Tono/);
 		expect((await put({ name: "  ", persona: { emoji: "🧭", tone: "formale" } })).ok).toBe(true);
