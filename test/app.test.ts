@@ -3,14 +3,16 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { agentThreadId } from "../src/core/agent-messages.ts";
+import { OWNER } from "../src/core/approvals.ts";
 import { BoardStore } from "../src/core/board.ts";
-import { instanceId as toInstanceId, tenantId as toTenantId } from "../src/core/ids.ts";
-import { instanceDir, tenantDir } from "../src/core/paths.ts";
+import { instanceId, instanceId as toInstanceId, tenantId, tenantId as toTenantId } from "../src/core/ids.ts";
+import { agentRequestsDir, instanceDir, tenantDir } from "../src/core/paths.ts";
 import { SUBJECT_TOOLS, SubjectLedger, SUBJECTS_KEY_SECRET } from "../src/core/subjects.ts";
 import { romeDayKey } from "../src/core/usage.ts";
 import { proxyToken } from "../src/web/compare.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
-import { loadTools, tempDataDir, waitFor } from "./helpers.ts";
+import { FAUX_MODEL, loadTools, tempDataDir, waitFor } from "./helpers.ts";
 
 const running: RunningAnnie[] = [];
 afterEach(async () => {
@@ -742,5 +744,63 @@ describe("pnpm start (startAnnie)", () => {
 		const member = await client(base, link);
 		expect((await member("/api/instances", { id: "mia", name: "Mia" })).error).toBeDefined();
 		expect((await owner("/api/instances")).instances.map((i: { id: string }) => i.id)).toEqual(["annie"]);
+	});
+});
+
+describe("richieste di un altro agente nelle chat e al riavvio (ADR 0108)", () => {
+	const origin = { channel: "web", threadId: "t1" } as const;
+	const input = { tool: "calculate", args: { expression: "6 * 7" }, what: "calcolo", askedBy: { id: "helper", name: "Helper", request: "quanto fa 6 per 7?" }, thread: { channel: "agente", threadId: agentThreadId("helper", origin) }, origin };
+	const helper = { id: "helper", name: "Helper", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: ["web"] } };
+
+	it("a Telegram tap: a long one is approved only in the console, a chat that does not approve is told so, an approver's yes runs it once", async () => {
+		const { annie, telegram } = await boot(tempDataDir());
+		await annie.runtime.registry.createInstance("default", helper);
+		const store = annie.runtime.agentRequests("default", "annie");
+		const short = await store.propose(input, new Date(), "k1");
+		const long = await store.propose({ ...input, preview: "x".repeat(2_000) }, new Date(), "k2");
+		let n = 0;
+		const tap = (from: number, data: string) => telegram.updates.push([{ update_id: 500 + ++n, callback_query: { id: `cqa${n}`, from: { id: from }, message: { message_id: 50 + n, chat: { id: from } }, data } }]);
+		const said = (chat: string, text: string) => waitFor(() => telegram.sent.some((m) => m.chat_id === chat && m.text === text));
+
+		tap(9, `agent:${long.id}:approved`);
+		await said("9", `Richiesta ${long.id}: è lunga, si legge intera e si approva dalla console web (Approvazioni).`);
+		// Chat 7 may write to Annie, but does not approve for her.
+		tap(7, `agent:${short.id}:approved`);
+		await said("7", `Richiesta ${short.id}: non approvi per questo agente, la decide solo chi approva per lui.`);
+		expect((await store.get(short.id))?.status).toBe("pending");
+		expect((await store.get(long.id))?.status).toBe("pending");
+		expect(await annie.runtime.audit("default").read()).toContainEqual(expect.objectContaining({ type: "user.denied", userId: "7", action: "agent_request.approved", actionId: short.id }));
+
+		tap(9, `agent:${short.id}:approved`);
+		await said("9", `Richiesta ${short.id}: approvata e fatta.`);
+		expect((await store.get(short.id))?.result).toEqual({ text: expect.stringContaining("42") });
+		// A second tap, even the other way, changes nothing: it is told the decision that stands.
+		const decided = await store.get(short.id);
+		tap(9, `agent:${short.id}:rejected`);
+		await waitFor(() => telegram.sent.filter((m) => m.chat_id === "9" && m.text === `Richiesta ${short.id}: approvata e fatta.`).length === 2);
+		expect(await store.get(short.id)).toEqual(decided);
+	});
+
+	it("at start: a request left running is settled as uncertain, and every outcome not passed on to the asking agente is told", async () => {
+		const dataDir = tempDataDir();
+		const first = await boot(dataDir);
+		await first.annie.runtime.registry.createInstance("default", helper);
+		const store = first.annie.runtime.agentRequests("default", "annie");
+		// Done, with Annie stopping before the notice went out.
+		const untold = await store.propose(input, new Date(), "k1");
+		expect((await store.decide(untold.id, "approved", OWNER, async () => ({ text: "42" }))).action.status).toBe("done");
+		// Running when the process died.
+		const left = await store.propose(input, new Date(), "k2");
+		writeFileSync(join(agentRequestsDir(dataDir, tenantId("default"), instanceId("annie")), `${left.id}.json`), JSON.stringify({ ...left, status: "running", decidedAt: new Date().toISOString(), decidedBy: OWNER }));
+		running.splice(running.indexOf(first.annie), 1);
+		await first.annie.stop();
+
+		const { annie } = await boot(dataDir);
+		const again = annie.runtime.agentRequests("default", "annie");
+		await until(async () => (await again.get(untold.id))?.outcomeTold === true && (await again.get(left.id))?.outcomeTold === true);
+		expect(await again.get(left.id)).toMatchObject({ status: "uncertain", result: { uncertain: true } });
+		expect(await again.outcomeUntold()).toEqual([]);
+		const audit = await annie.runtime.audit("default").read();
+		expect(audit).toContainEqual(expect.objectContaining({ type: "agent_request.uncertain", actionId: left.id }));
 	});
 });

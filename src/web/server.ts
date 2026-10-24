@@ -20,7 +20,8 @@ import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgres
 import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
 import { attachmentNote } from "../core/attachment-note.ts";
 import { decideAgentRequest, decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
-import { type AgentRequest, AgentRequestError, type AgentRequestResult } from "../core/agent-requests.ts";
+import { AgentRequestError } from "../core/agent-requests.ts";
+import type { AnnieTool } from "../core/engine.ts";
 import { type ConnectorAction, ConnectorActionError, type ConnectorActionResult } from "../core/connector-actions.ts";
 import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
@@ -192,8 +193,8 @@ export type WebAppOptions = {
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** Runs an approved connector call on the instance's live connection (ADR 0025). */
 	readonly runConnectorAction?: (instanceId: string) => (action: ConnectorAction) => Promise<ConnectorActionResult>;
-	/** Runs another agente's request an approver approved, with the instance's own tools (ADR 0108). */
-	readonly runAgentRequest?: (instanceId: string) => (request: AgentRequest) => Promise<AgentRequestResult>;
+	/** The instance's own tools, opening it when needed: another agente's request an approver approved runs with them (ADR 0108). */
+	readonly agentRequestTools?: (instanceId: string) => () => Promise<readonly AnnieTool[] | undefined>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
 	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
 	/** The phone number of each instance that has one: its webhook (ADR 0012). */
@@ -1079,9 +1080,9 @@ export function createWebApp(options: WebAppOptions): Server {
 		await instanceAccess(p, params[0] as string);
 		const body = (await readJson(req)) as { decision?: string };
 		if (body.decision !== "approved" && body.decision !== "rejected") throw new HttpError(400, "decision: approved | rejected");
-		if (options.runAgentRequest === undefined) throw new HttpError(501, "Le richieste tra agenti non sono disponibili su questo server");
+		if (options.agentRequestTools === undefined) throw new HttpError(501, "Le richieste tra agenti non sono disponibili su questo server");
 		try {
-			return { request: await decideAgentRequest(runtime, tenantId, params[0] as string, params[1] as string, body.decision, approverOf(p), options.runAgentRequest(params[0] as string)) };
+			return { request: await decideAgentRequest(runtime, tenantId, params[0] as string, params[1] as string, body.decision, approverOf(p), options.agentRequestTools(params[0] as string)) };
 		} catch (error) {
 			if (error instanceof NotAnApprover) throw new HttpError(403, "Questa richiesta la decide solo chi approva per questo agente");
 			if (error instanceof AgentRequestError) throw new HttpError(404, "Richiesta inesistente");

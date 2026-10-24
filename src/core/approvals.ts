@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { type AgentRequest, type AgentRequestResult, agentRequestReport } from "./agent-requests.ts";
+import { type AgentRequest, agentRequestReport, runAgentRequest, undoAgentRequest } from "./agent-requests.ts";
+import type { AnnieTool } from "./engine.ts";
 import { type ConnectorAction, type ConnectorActionResult, connectorActionReport } from "./connector-actions.ts";
 import { customToolName, type ToolProposal, toolEgressName } from "./proposals.ts";
 import type { AnnieRuntime } from "./runtime.ts";
@@ -170,7 +171,7 @@ export async function decideAgentRequest(
 	id: string,
 	decision: "approved" | "rejected",
 	by: Approver,
-	run: (request: AgentRequest) => Promise<AgentRequestResult>,
+	tools: () => Promise<readonly AnnieTool[] | undefined>,
 	log: (message: string) => void = console.error,
 ): Promise<AgentRequest> {
 	const audit = runtime.audit(tenant);
@@ -180,10 +181,14 @@ export async function decideAgentRequest(
 	}
 	const { action, changed } = await runtime.agentRequests(tenant, instance).decide(id, decision, by, async (running) => {
 		await audit.append({ type: "agent_request.approved", instanceId: instance, actionId: id, tool: running.tool, from: running.askedBy.id, by: `${by.channel}:${by.userId}` });
-		return run(running);
+		return runAgentRequest(await tools(), running);
 	});
 	if (!changed) return action;
-	// What happened is settled: telling the asker may fail, the decision stands.
+	// What the request left (its draft) goes away with a no; a failure leaves it to the person.
+	if (action.status === "rejected" && action.undo !== undefined) {
+		await undoAgentRequest(await tools(), action).catch((error: unknown) => log(`agenti: what ${action.id} left was not taken back: ${error instanceof Error ? error.message : String(error)}`));
+	}
+	// What happened is settled: telling the asker may fail (told again at start), the decision stands.
 	try {
 		await audit.append({ type: `agent_request.${action.status}`, instanceId: instance, actionId: id, tool: action.tool, from: action.askedBy.id, by: `${by.channel}:${by.userId}` });
 		await tellAgentRequestOutcome(runtime, tenant, instance, action);
@@ -193,8 +198,8 @@ export async function decideAgentRequest(
 	return action;
 }
 
-/** The outcome, as a notice in the asking agente's conversation: another agente's turn, never a person's. */
-export async function tellAgentRequestOutcome(runtime: Pick<AnnieRuntime, "registry" | "submitNotice">, tenant: string, instance: string, request: AgentRequest): Promise<void> {
+/** The outcome, as a notice in the asking agente's conversation: another agente's turn, never a person's. Told, a decision is marked so. */
+export async function tellAgentRequestOutcome(runtime: Pick<AnnieRuntime, "registry" | "submitNotice" | "agentRequests">, tenant: string, instance: string, request: AgentRequest): Promise<void> {
 	const self = await runtime.registry.getInstance(tenant, instance);
 	// An asker deleted meanwhile: NotFound, nothing to tell.
 	await runtime.registry.getInstance(tenant, request.askedBy.id);
@@ -205,4 +210,5 @@ export async function tellAgentRequestOutcome(runtime: Pick<AnnieRuntime, "regis
 		event: { source: "agent_request", from: instance, actionId: request.id },
 		origin: "agent",
 	});
+	if (request.status !== "expired") await runtime.agentRequests(tenant, instance).markOutcomeTold(request.id);
 }

@@ -216,7 +216,7 @@ class PiDurableSession implements EngineSession {
 			{
 				type: "input",
 				content: images.length === 0 ? text : [{ type: "text", text }, ...(await Promise.all(images.map(toPiImage)))],
-				entry: { kind: INPUT_KIND, data: { origin } },
+				entry: { kind: INPUT_KIND, data: { origin, ...(requestId === undefined ? {} : { requestId }) } },
 				...(requestId === undefined ? {} : { requestId }),
 			},
 			context,
@@ -816,6 +816,7 @@ function toPiTool(tool: AnnieTool, stopped: ReadonlySet<string>): ToolRegistrati
 			const result = await tool.execute(args, {
 				callId: `${api.conversationId}/${api.callId}`,
 				origin,
+				inputs: () => turnInputs(api, callContext),
 				...(threadKey === undefined || at < 0 ? {} : { thread: { channel: threadKey.slice(0, at), threadId: threadKey.slice(at + 1) } }),
 				signal,
 				progress: (chunk) => api.output(chunk),
@@ -855,6 +856,24 @@ async function turnOrigin(api: OriginApi, callContext: OriginContext): Promise<T
 	const found = await api.commit((tx) => inputsOrigin(tx, api.conversationId), callContext);
 	const kept = await api.memo<{ origin: string }>("annie:origin", { origin: found }, callContext);
 	return isTurnOrigin(kept.origin) ? kept.origin : "scheduled";
+}
+
+/** The request ids of the messages the turn of a tool call answers, kept in the call's memo like its origin. */
+async function turnInputs(api: OriginApi, callContext: OriginContext): Promise<readonly string[]> {
+	const stored = await api.memo<{ ids: string[] }>("annie:inputs", callContext);
+	if (stored !== undefined) return stored.ids;
+	const found = await api.commit((tx) => inputsRequests(tx, api.conversationId), callContext);
+	return (await api.memo<{ ids: string[] }>("annie:inputs", { ids: found }, callContext)).ids;
+}
+
+/** The request ids of the run's inputs, oldest first ("channel:messageId", ADR 0108). */
+export async function inputsRequests(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId): Promise<string[]> {
+	const { entries } = await runEntries(tx, conversationId);
+	return entries
+		.filter((entry) => entry.kind === INPUT_KIND)
+		.map((entry) => (entry.data as { requestId?: unknown } | undefined)?.requestId)
+		.filter((id): id is string => typeof id === "string")
+		.reverse();
 }
 
 export async function inputsOrigin(tx: Pick<Tx, "scanEntries">, conversationId: ConversationId, warn: (message: string) => void = warnBoundOnce): Promise<TurnOrigin> {

@@ -105,8 +105,10 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	}
 	const said = last?.role === "user" ? userText(last.content) : "";
 	const text = personText(said);
+	// Another agente's fenced request run as a /tool command: tests only (vitest sets NODE_ENV=test), never
+	// on a server where the faux model is the default provider (ANNIE_LOCAL_PROVIDERS=1).
+	const asked = process.env.NODE_ENV === "test" ? /^\[Messaggio dall'agente [^\n]*\n<<<richiesta di \S+ ([0-9a-f]+)>>>\n([\s\S]*?)\n<<<fine richiesta di \S+ \1>>>/.exec(text)?.[2] : undefined;
 	// A note the gateway adds after the person's words (a spoken reply, ADR 0020) is not part of a command.
-	const asked = /^\[Messaggio dall'agente [^\n]*\n<<<richiesta di \S+ ([0-9a-f]+)>>>\n([\s\S]*?)\n<<<fine richiesta di \S+ \1>>>/.exec(text)?.[2];
 	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((asked ?? text.replace(/\n\n\[[^\]]*\]\s*$/, "")).trim());
 	if (direct?.[1] !== undefined) {
 		let args: Record<string, unknown> = {};

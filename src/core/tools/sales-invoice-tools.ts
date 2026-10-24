@@ -15,8 +15,12 @@ import { todayIn } from "../italian-calendar.ts";
 import { CREDIT_NOTE_TYPE, FIELD_LIMITS, RITENUTA_CAUSALI, STALE_DRAFT_DAYS } from "../sales-invoice-rules.ts";
 import { nextSeq, type SalesBook } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
-import { type IssuedInvoice, invoiceNumber, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, salesAgentReads } from "../sales-invoices.ts";
+import { type Address, type IssuedInvoice, invoiceNumber, isIssued, italianAddress, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, salesAgentReads } from "../sales-invoices.ts";
+import { isProblem } from "../text-input.ts";
 import { WorkspaceError } from "../workspace.ts";
+import { findQuotes, type QuoteCustomer } from "../quotes.ts";
+import { findBuyer, quoteIds } from "./sales-invoice-buyer.ts";
+import { readBuyerFields } from "./sales-invoice-input.ts";
 import { creditNote, DRAFT_CHECKED, draft, lowNumberNote, readLastNumber } from "./sales-invoice-draft.ts";
 import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEnvOptions, type SalesStores, salesEnvOf } from "./sales-invoice-env.ts";
 import { finish, issue } from "./sales-invoice-issue.ts";
@@ -28,8 +32,11 @@ export type { SalesEvent } from "./sales-invoice-env.ts";
 const SALES_OPS = ["draft", "credit_note", "show", "list", "issue", "finish", "remove", "settings"] as const;
 type Op = (typeof SALES_OPS)[number];
 
-/** A draft's data only a person's word sets (they are saved for the next invoices too, or replace a draft). */
-const PERSON_ONLY = ["last_number", "bollo_to_client", "ritenuta", "replace", "new_customer"] as const;
+/**
+ * A draft's data only a person's word sets (they are saved for the next invoices too, or replace a
+ * draft), and the IBAN: another agente never says where the money goes (ADR 0108).
+ */
+const PERSON_ONLY = ["last_number", "bollo_to_client", "ritenuta", "replace", "new_customer", "iban"] as const;
 
 /** The stores, who is who, the audit, and (tests) the clock and the PDF maker: what builds the env (sales-invoice-env.ts salesEnvOf). */
 export type SalesToolsOptions = SalesStores & {
@@ -183,19 +190,87 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 		const cannot = "Errore: questa fattura non la posso preparare su richiesta di un altro agente: mancano dati o qualcosa va controllato. La prepara una persona che ti segue, nella sua conversazione con te. Rispondi all'agente che te l'ha chiesta solo questo, senza dettagli della fattura.";
 		if (PERSON_ONLY.some((k) => args[k] !== undefined)) return cannot;
 		try {
+			// A draft this call made and took back (an IBAN not the company's): not made again.
+			const takenBack = `${ctx.callId}:taken-back`;
+			if (env.book().calls.includes(takenBack)) return cannot;
+			const flags = customerFlags(args);
+			if (flags === undefined) return cannot;
 			if (env.book().invoices.find((i) => i.callId === ctx.callId) === undefined) {
 				if ((await draft(env, args, ctx, day, { check: true })) !== DRAFT_CHECKED) return cannot;
 				await draft(env, args, ctx, day);
 			}
 			const made = env.book().invoices.find((i) => i.callId === ctx.callId);
 			if (made === undefined || isIssued(made)) return cannot;
+			// The money goes only to an IBAN saved with the company: never one from the last invoice, nor another agente's.
+			const ibans = (env.company.read().company?.ibans ?? []).map(ibanKey);
+			if (made.payment?.iban !== undefined && !ibans.includes(ibanKey(made.payment.iban))) {
+				store.removeDraft(made.id, takenBack);
+				return cannot;
+			}
+			if (args.method !== undefined || args.payment_days !== undefined || args.end_of_month !== undefined) flags.push("il pagamento (modo e giorni) come detto dall'altro agente");
+			const warn = flags.length === 0 ? [] : [`Attenzione: non vengono dai dati salvati, li ha dati l'altro agente: ${flags.join("; ")}. Controllali prima di approvare.`];
 			let asked = false;
-			const answer = await issue(env, { op: "issue", draft: made.id, confirm: true }, { ...ctx, needsPerson: (what, call) => ((asked = true), ctx.needsPerson?.(what, call)) }, day);
+			const answer = await issue(env, { op: "issue", draft: made.id, confirm: true }, { ...ctx, needsPerson: (what, call) => ((asked = true), ctx.needsPerson?.(what, call === undefined ? undefined : { ...call, preview: [...warn, call.preview].join("\n") })) }, day);
 			return asked ? answer : cannot;
 		} catch (error) {
 			if (error instanceof SalesInvoiceError || error instanceof WorkspaceError) return cannot;
 			throw error;
 		}
+	}
+
+	/**
+	 * The customer's data another agente gave, against what is saved (the client's card, the last
+	 * invoice to them): one that differs from a saved one is refused (undefined); one with nothing
+	 * saved, or a customer not known, is flagged for the approver.
+	 */
+	function customerFlags(args: Record<string, unknown>): string[] | undefined {
+		const fields = readBuyerFields(args);
+		if (isProblem(fields)) return undefined;
+		const given: [string, string][] = (
+			[
+				["partita IVA", fields.vat],
+				["codice fiscale", fields.cf],
+				["indirizzo", fields.address],
+				["codice destinatario", fields.code],
+				["PEC", fields.pec],
+				["paese", fields.country],
+			] as const
+		).flatMap(([k, v]) => (v === undefined ? [] : [[k, v] as [string, string]]));
+		if (given.length === 0) return [];
+		// The customer named, or the one of the quote named (its own data are saved data too).
+		const quoted = typeof args.customer === "string" || args.quote === undefined ? undefined : quoteCustomerOf(String(args.quote));
+		const name = typeof args.customer === "string" ? args.customer : quoted?.name;
+		if (name === undefined) return undefined;
+		const book = env.book();
+		const clients = env.clients?.read();
+		const ids = quoted === undefined ? { ...(fields.vat === undefined ? {} : { vat: fields.vat }), ...(fields.cf === undefined ? {} : { cf: fields.cf }) } : quoteIds(quoted);
+		const found = findBuyer(name, clients === undefined || clients.broken ? [] : clients.cards, book.invoices, ids);
+		if (found.kind === "none" && quoted === undefined) return [`un cliente nuovo, con ${given.map(([k, v]) => `${k} «${v}»`).join(", ")}`];
+		if (found.kind !== "exact" && found.kind !== "none") return undefined;
+		const { card, previous } = found.kind === "exact" ? found.known : {};
+		const saved: Record<string, string | Address | undefined> = {
+			"partita IVA": card?.vat ?? previous?.vat ?? quoted?.vat,
+			"codice fiscale": card?.cf ?? previous?.cf ?? quoted?.fiscal,
+			indirizzo: card?.address ?? previous?.address ?? quoted?.address,
+			"codice destinatario": previous?.code,
+			PEC: previous?.pec ?? card?.contacts.find((c) => c.channel === "pec" && c.email !== undefined)?.email,
+			paese: previous?.address.country,
+		};
+		const flags: string[] = [];
+		for (const [k, v] of given) {
+			const had = saved[k];
+			if (had === undefined) flags.push(`${k} «${v}», che non avevo`);
+			else if (!sameValue(k, v, had)) return undefined;
+		}
+		return flags;
+	}
+
+	/** The customer of the quote `number`, when it is one: undefined otherwise (the draft says why). */
+	function quoteCustomerOf(number: string): QuoteCustomer | undefined {
+		const quotes = env.quotes?.read();
+		if (quotes === undefined || quotes.broken) return undefined;
+		const found = findQuotes(quotes.quotes, number);
+		return found.length === 1 ? found[0]?.customer : undefined;
 	}
 
 	function show(args: Record<string, unknown>, day: string): string {
@@ -306,4 +381,17 @@ function shown(book: SalesBook, year: number): string {
 	out.push(`Bollo virtuale: ${s?.bolloToClient === undefined ? "lo chiedo la prima volta che serve" : s.bolloToClient ? "lo paga il cliente, come riga in fattura" : "lo paghi tu, solo dichiarato"}.`);
 	out.push(`Ritenuta d'acconto alle aziende: ${s?.ritenutaToBusiness === undefined ? "da chiedere" : s.ritenutaToBusiness ? "sì" : "no"}.`);
 	return out.join("\n");
+}
+
+const ibanKey = (iban: string) => iban.replace(/\s+/g, "").toUpperCase();
+
+/** A customer's datum given, the same as the one saved: tax ids without «IT», letters in any case, an address as its parts. */
+function sameValue(kind: string, given: string, saved: string | Address): boolean {
+	const flat = (v: string) => v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+	if (kind === "partita IVA") return flat(given.replace(/^IT/i, "")) === flat(String(saved).replace(/^IT/i, ""));
+	if (kind !== "indirizzo") return flat(given) === flat(String(saved));
+	const parts = (a: Address | undefined) => (a === undefined ? undefined : flat([a.street, a.cap, a.town, a.province ?? "", a.country].join(" ")));
+	const mine = parts(italianAddress(given)) ?? flat(given);
+	const theirs = typeof saved === "string" ? (parts(italianAddress(saved)) ?? flat(saved)) : parts(saved);
+	return mine === theirs;
 }

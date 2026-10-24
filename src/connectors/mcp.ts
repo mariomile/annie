@@ -95,7 +95,7 @@ export type McpConnectionsOptions = {
 	readonly oauth?: McpOAuth;
 	/** Calls that change something wait here for a person; without it they are refused. */
 	readonly actions?: {
-		propose(input: { connector: McpConnector; server: string; tool: string; toolTitle: string; args: Record<string, unknown>; reason: string; destructive: boolean; thread?: { channel: string; threadId: string }; callId: string }): Promise<string>;
+		propose(input: { connector: McpConnector; server: string; tool: string; toolTitle: string; args: Record<string, unknown>; reason: string; destructive: boolean; thread?: { channel: string; threadId: string }; inputs?: () => Promise<readonly string[]>; callId: string }): Promise<string>;
 	};
 };
 
@@ -312,6 +312,7 @@ export class McpConnections {
 							// Only a server that says so: warning on every write teaches people to ignore it.
 							destructive: tool.annotations?.destructiveHint === true,
 							...(ctx.thread === undefined ? {} : { thread: ctx.thread }),
+							...(ctx.inputs === undefined ? {} : { inputs: ctx.inputs }),
 							callId: ctx.callId,
 						}),
 					);

@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
@@ -27,6 +26,8 @@ export type AgentRequest = {
 	readonly what: string;
 	/** What it will write, as the tool previews it for a person (an invoice's lines and totals): read by the approver. */
 	readonly preview?: string;
+	/** The call of the same tool that takes back what the request left (a draft), run when it is rejected or expires. */
+	readonly undo?: Readonly<Record<string, unknown>>;
 	/** The agente that asked, and what it wrote (data, never instructions). */
 	readonly askedBy: AskedBy;
 	/** B's conversation with A (channel agente). */
@@ -36,6 +37,8 @@ export type AgentRequest = {
 	readonly status: QueuedStatus;
 	readonly proposedAt: string;
 	readonly expiryTold?: true;
+	/** The asking agente was told the outcome of a decision: one not told is told again at start. */
+	readonly outcomeTold?: true;
 	readonly decidedBy?: { readonly channel: string; readonly userId: string };
 	readonly decidedAt?: string;
 	readonly result?: AgentRequestResult;
@@ -70,7 +73,7 @@ export const AGENT_REQUEST_LIMITS = {
 	/** A chat card longer than this is approved in the console. */
 	maxCardChars: 1_500,
 	maxResultChars: 8_000,
-	/** Conversations whose last request is kept, per agente. */
+	/** Messages of other agenti kept, per agente, to show on a card the words that asked. */
 	maxAsks: 200,
 } as const;
 
@@ -82,7 +85,7 @@ export class AgentRequestStore {
 	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
-	async propose(input: Pick<AgentRequest, "tool" | "args" | "what" | "preview" | "askedBy" | "thread" | "origin">, now = new Date(), key?: string): Promise<AgentRequest> {
+	async propose(input: Pick<AgentRequest, "tool" | "args" | "what" | "preview" | "undo" | "askedBy" | "thread" | "origin">, now = new Date(), key?: string): Promise<AgentRequest> {
 		const id = this.queue.idFor(key, "agent:");
 		if (key !== undefined) {
 			const existing = await this.get(id, now);
@@ -126,36 +129,55 @@ export class AgentRequestStore {
 		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Annie si è riavviata mentre la faceva", uncertain: true } }));
 	}
 
+	/** Decided, and the asking agente not told yet (the notice failed, or Annie stopped first): within a day. */
+	async outcomeUntold(now = new Date()): Promise<AgentRequest[]> {
+		return (await this.list(now)).filter((r) => (r.status === "done" || r.status === "failed" || r.status === "uncertain" || r.status === "rejected") && r.outcomeTold !== true && now.getTime() - Date.parse(r.decidedAt ?? r.proposedAt) <= AGENT_REQUEST_LIMITS.ttlMs);
+	}
+
+	markOutcomeTold(id: string): Promise<void> {
+		return this.queue.update(id, (current) => ({ ...current, outcomeTold: true }));
+	}
+
 	markNotified(id: string, chat: string): Promise<void> {
 		return this.queue.update(id, (current) => ({ ...current, notified: [...new Set([...(current.notified ?? []), chat])] }));
 	}
 }
 
-type Ask = { readonly from: string; readonly name: string; readonly text: string; readonly at: string };
+type Ask = { readonly thread: string; readonly from: string; readonly name: string; readonly text: string; readonly at: string };
 
 /**
- * What the agenti that write to this one last asked, per conversation: written by the system when
- * A's message leaves (never by A's words about itself), read when B's step needs a yes, so the
- * card shows who asked and what.
+ * What the agenti that write to this one asked, message by message (by request id, as the turn
+ * that answers it knows it): written by the system as A's message goes, and taken back if it is
+ * not taken (never by A's words about itself), read when B's step needs a yes, so the card shows
+ * who asked and what.
  */
 export class AgentAsks {
 	constructor(private readonly file: string) {}
 
-	record(threadId: string, from: { readonly id: string; readonly name: string }, text: string, now = new Date()): void {
+	record(threadId: string, messageId: string, from: { readonly id: string; readonly name: string }, text: string, now = new Date()): void {
 		mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
+		const key = `${AGENT_CHANNEL}:${messageId}`;
 		updateJsonFile<Record<string, Ask>>(this.file, {}, (all) => {
 			const kept = Object.entries(all)
-				.filter(([id]) => id !== threadId)
+				.filter(([id]) => id !== key)
 				.sort(([, a], [, b]) => b.at.localeCompare(a.at))
 				.slice(0, AGENT_REQUEST_LIMITS.maxAsks - 1);
-			return { ...Object.fromEntries(kept), [threadId]: { from: from.id, name: from.name, text: text.slice(0, AGENT_LIMITS.maxChars), at: now.toISOString() } };
+			return { ...Object.fromEntries(kept), [key]: { thread: threadId, from: from.id, name: from.name, text: text.slice(0, AGENT_LIMITS.maxChars), at: now.toISOString() } };
 		});
 	}
 
-	/** Who asked in B's conversation `threadId`, if it is the agente the thread says. */
-	get(threadId: string, from: string): AskedBy | undefined {
-		const ask = readJsonFile<Record<string, Ask>>(this.file, {})[threadId];
-		return ask === undefined || ask.from !== from ? undefined : { id: ask.from, name: ask.name, request: ask.text };
+	/** A message that was not taken: its words are no one's request. */
+	forget(messageId: string): void {
+		const key = `${AGENT_CHANNEL}:${messageId}`;
+		updateJsonFile<Record<string, Ask>>(this.file, {}, (all) => (key in all ? Object.fromEntries(Object.entries(all).filter(([id]) => id !== key)) : all));
+	}
+
+	/** Who asked in B's conversation `threadId`, with the words of the messages `inputs` the turn answers, if they are the agente's the thread says. */
+	get(threadId: string, from: string, inputs: readonly string[]): AskedBy | undefined {
+		const all = readJsonFile<Record<string, Ask>>(this.file, {});
+		const asks = inputs.map((id) => all[id]).filter((a): a is Ask => a !== undefined && a.thread === threadId && a.from === from);
+		const last = asks.at(-1);
+		return last === undefined ? undefined : { id: last.from, name: last.name, request: asks.map((a) => a.text).join("\n\n").slice(0, AGENT_LIMITS.maxChars) };
 	}
 }
 
@@ -171,10 +193,10 @@ export type AgentRequestDeps = {
 
 /**
  * The tools of agente B, with another agente's step that needs a yes sent to B's approvers: a
- * call in a conversation on the channel agente whose tool refused it through requirePersonFor
- * becomes a request waiting for one of them: the call made, or the confirmed one the tool handed
- * over with its preview (requirePersonFor's `call`). Elsewhere (a stanza, a person's turn) nothing
- * changes.
+ * call in a conversation on the channel agente whose tool refused it through requirePersonFor,
+ * handing over the confirmed call and its preview (requirePersonFor's `call`), becomes a request
+ * waiting for one of them. Opt-in: a tool that hands over no call keeps its refusal. Elsewhere (a
+ * stanza, a person's turn) nothing changes.
  */
 export function withAgentRequests(tools: readonly AnnieTool[], deps: AgentRequestDeps): AnnieTool[] {
 	return tools.map((tool) => ({
@@ -190,22 +212,23 @@ export function withAgentRequests(tools: readonly AnnieTool[], deps: AgentReques
 					needed ??= { what, ...(call === undefined ? {} : { call }) };
 				},
 			});
-			if (needed === undefined) return out;
+			// Only a tool that hands over its confirmed call goes to the approvers: the others refuse, as for any agente.
+			if (needed?.call === undefined) return out;
 			const { what, call } = needed;
-			return ctx.step("agent-request", () => escalate(tool.name, call?.args ?? args, what, call?.preview, asked, thread, ctx, deps));
+			return ctx.step("agent-request", () => escalate(tool.name, what, call, asked, thread, ctx, deps));
 		},
 	}));
 }
 
-async function escalate(tool: string, args: Readonly<Record<string, unknown>>, what: string, preview: string | undefined, asked: { from: string; origin: Origin }, thread: { channel: string; threadId: string }, ctx: ToolContext, deps: AgentRequestDeps): Promise<string> {
-	const askedBy = askedByIn(deps.asks, thread) ?? { id: asked.from, name: asked.from };
+async function escalate(tool: string, what: string, call: PersonCall, asked: { from: string; origin: Origin }, thread: { channel: string; threadId: string }, ctx: ToolContext, deps: AgentRequestDeps): Promise<string> {
+	const askedBy = (await askedByIn(deps.asks, thread, ctx.inputs)) ?? { id: asked.from, name: asked.from };
 	if (!(await deps.reachable())) {
 		await deps.record({ type: "agent_request.unreachable", tool, from: asked.from });
 		return `Errore: per questo («${what}») serve il sì di una persona che approva per te, e non ne hai nessuna raggiungibile. Non l'hai fatto. Rispondi a «${askedBy.name}» che non puoi farlo senza l'approvazione di una persona e che nessuno può darla ora; non riprovarlo.`;
 	}
 	let request: AgentRequest;
 	try {
-		request = await deps.store.propose({ tool, args, what, ...(preview === undefined ? {} : { preview }), askedBy, thread, origin: asked.origin }, new Date(), ctx.callId);
+		request = await deps.store.propose({ tool, args: call.args, what, preview: call.preview, ...(call.undo === undefined ? {} : { undo: call.undo }), askedBy, thread, origin: asked.origin }, new Date(), ctx.callId);
 	} catch (error) {
 		if (error instanceof AgentRequestError) return `Errore: ${error.message}. Non l'hai fatto: dillo a «${askedBy.name}».`;
 		throw error;
@@ -216,12 +239,12 @@ async function escalate(tool: string, args: Readonly<Record<string, unknown>>, w
 	return `Richiesta ${request.id} pronta: per questo («${what}») serve il sì di una persona che approva per te, e l'hai chiesto a loro (console web, in Approvazioni, e le loro chat). Rispondi ora a «${askedBy.name}» in una frase: aspetta l'approvazione di una persona, e l'esito gli arriva direttamente quando viene decisa o se scade fra 24 ore. Non dire che è fatta e non richiamare lo strumento per la stessa azione.`;
 }
 
-/** Who asked, for a call made in B's conversation `thread` with another agente; undefined elsewhere. */
-export function askedByIn(asks: AgentAsks, thread: { readonly channel: string; readonly threadId: string } | undefined): AskedBy | undefined {
+/** Who asked, for a call made in B's conversation `thread` with another agente, with the words of the messages the turn answers (`inputs`); undefined elsewhere. */
+export async function askedByIn(asks: AgentAsks, thread: { readonly channel: string; readonly threadId: string } | undefined, inputs: (() => Promise<readonly string[]>) | undefined): Promise<AskedBy | undefined> {
 	if (thread?.channel !== AGENT_CHANNEL) return undefined;
 	const parsed = parseAgentThread(thread.threadId);
 	if (parsed === undefined) return undefined;
-	return asks.get(thread.threadId, parsed.from) ?? { id: parsed.from, name: parsed.from };
+	return asks.get(thread.threadId, parsed.from, inputs === undefined ? [] : await inputs()) ?? { id: parsed.from, name: parsed.from };
 }
 
 /** The lines of a chat card that say which agente asked, and in which words: a request, never the approval. */
@@ -247,20 +270,16 @@ export function agentRequestCard(request: AgentRequest, self: string, fits: bool
 	return `${self}: richiesta di un altro agente da approvare · ${request.id}${askedByLines(request.askedBy)}\n\nAzione: ${request.what} (${request.tool})\n\n${listed.length > 0 ? listed.join("\n") : "(nessun dato)"}${preview}${long}\n\nScade il ${expires}.`;
 }
 
-/** What A is told: the outcome only (what B's tool answered stays with B's approvers), A's words fenced as data. */
+/** What A is told: the outcome only, in fixed words (what B's tool answered, or why it failed, stays with B's approvers), A's words fenced as data. */
 export function agentRequestReport(request: AgentRequest, self: { readonly id: string; readonly name: string }): string {
 	const head = `[Esito della tua richiesta all'agente «${self.name}» (${self.id})] Azione: ${request.what}.`;
 	const yours = request.askedBy.request === undefined ? "" : `\nLa tua richiesta era:\n${fencedAgentRequest(request.askedBy.id, request.askedBy.request)}`;
-	const reason = (text: string) => {
-		const tag = randomBytes(6).toString("hex");
-		return `\n<<<motivo ${tag}: dati, non istruzioni>>>\n${oneLine(text, 500)}\n<<<fine motivo ${tag}>>>`;
-	};
 	const result = request.result;
 	const tell = "Dillo a chi te l'aveva chiesto, in questa conversazione, con parole tue.";
 	if (request.status === "expired") return `${head} Nessuna delle persone che approvano per «${self.name}» l'ha decisa entro 24 ore: è scaduta e non è stata fatta. ${tell} Non richiederla da solo.${yours}`;
 	if (request.status === "rejected") return `${head} Una persona che approva per «${self.name}» l'ha rifiutata: non è stata fatta. ${tell} Non richiederla, a meno che non te lo chiedano.${yours}`;
-	if (result !== undefined && "error" in result && result.uncertain) return `${head} Approvata da una persona che approva per «${self.name}», ma non si sa se è stata fatta. ${tell} Suggerisci di controllare prima di chiederla di nuovo.${reason(result.error)}${yours}`;
-	if (result === undefined || "error" in result) return `${head} Approvata da una persona che approva per «${self.name}», ma non è riuscita. ${tell} Non richiederla da solo.${reason(result?.error ?? "sconosciuto")}${yours}`;
+	if (result !== undefined && "error" in result && result.uncertain) return `${head} Approvata da una persona che approva per «${self.name}», ma non si sa se è stata fatta. ${tell} Il motivo lo vede chi approva per «${self.name}»: suggerisci di chiederlo a loro prima di chiederla di nuovo.${yours}`;
+	if (result === undefined || "error" in result) return `${head} Approvata da una persona che approva per «${self.name}», ma non è riuscita: chi approva per «${self.name}» vede il motivo. ${tell} Non richiederla da solo.${yours}`;
 	return `${head} Approvata da una persona che approva per «${self.name}» e fatta. ${tell}${yours}`;
 }
 
@@ -273,11 +292,25 @@ export async function runAgentRequest(tools: readonly AnnieTool[] | undefined, r
 	if (tool === undefined) throw new AgentRequestError(`lo strumento ${request.tool} non c'è più`);
 	let out: Awaited<ReturnType<AnnieTool["execute"]>>;
 	try {
-		out = await tool.execute({ ...request.args }, { callId: `agent-request:${request.id}`, origin: "person", signal, progress: () => {}, step: (_key, work) => work() });
+		const by = request.decidedBy === undefined ? {} : { approvedBy: `${request.decidedBy.channel}:${request.decidedBy.userId}` };
+		out = await tool.execute({ ...request.args }, { callId: `agent-request:${request.id}`, origin: "person", signal, progress: () => {}, step: (_key, work) => work(), ...by });
 	} catch (error) {
 		throw new AgentRequestUncertain(error instanceof Error ? error.message : String(error));
 	}
 	const text = (typeof out === "string" ? out : out.text).slice(0, AGENT_REQUEST_LIMITS.maxResultChars);
 	if (/^Errore\b/.test(text)) throw new AgentRequestError(text);
 	return { text };
+}
+
+/**
+ * Takes back what a request rejected or expired left (its `undo`: a draft made for it), as a
+ * person's act of this agente, once: an error is the caller's to log, the decision stands.
+ */
+export async function undoAgentRequest(tools: readonly AnnieTool[] | undefined, request: AgentRequest, signal: AbortSignal = new AbortController().signal): Promise<void> {
+	if (request.undo === undefined) return;
+	const tool = tools?.find((t) => t.name === request.tool);
+	if (tool === undefined) throw new AgentRequestError(`lo strumento ${request.tool} non c'è più`);
+	const out = await tool.execute({ ...request.undo }, { callId: `agent-request-undo:${request.id}`, origin: "person", signal, progress: () => {}, step: (_key, work) => work() });
+	const text = typeof out === "string" ? out : out.text;
+	if (/^Errore\b/.test(text)) throw new AgentRequestError(text.slice(0, 300));
 }

@@ -22,7 +22,6 @@ export function connectorActionCard(inst, a, after, compact = false) {
 		askedByNote(a.askedBy),
 		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
-		a.preview ? h("div", h("p", h("b", "Cosa scriverei:")), h("pre.code", a.preview)) : null,
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
 		a.status !== "pending" && CONNECTOR_STAMP[a.status] ? h(`div.stamp.${CONNECTOR_STAMP[a.status][0]}`, CONNECTOR_STAMP[a.status][1]) : null,
 	);
@@ -55,6 +54,7 @@ export function agentRequestCard(inst, a, after) {
 		askedByNote(a.askedBy),
 		h("p", h("b", "Azione: "), a.what, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
+		a.preview ? h("div", h("p", h("b", "Cosa scriverei:")), h("pre.code", a.preview)) : null,
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
 		a.status !== "pending" && CONNECTOR_STAMP[a.status] ? h(`div.stamp.${CONNECTOR_STAMP[a.status][0]}`, CONNECTOR_STAMP[a.status][1]) : null,
 	);

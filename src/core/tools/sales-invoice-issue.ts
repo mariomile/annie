@@ -58,6 +58,8 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 		return complete(env, target, ctx, []);
 	}
 	if (args.confirm !== undefined && typeof args.confirm !== "boolean") return "Errore: la conferma è sì o no.";
+	// Approved for another agente on another day (ADR 0108): the date, the number and the magazzino would not be the ones the approver read.
+	if (args.day !== undefined && args.day !== day) return `Errore: l'approvazione è arrivata un giorno diverso da quello dell'anteprima (${String(args.day)}): data, numero e magazzino non sarebbero quelli letti, non l'ho emessa. Va chiesta di nuovo.`;
 	const checked = await ready(env, target, day);
 	if (typeof checked === "string") return checked;
 	const preview = (show: (text: string) => string) => [
@@ -72,7 +74,11 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	if (args.version !== undefined && args.version !== version) return `Errore: la bozza ${target.id} è cambiata da quando è stata chiesta l'approvazione: non l'ho emessa. Va chiesta di nuovo.`;
 	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088);
 	// another agente's turn hands this exact call, with what it will write, to the approvers.
-	const notPerson = requirePersonFor(ctx, `emetto la ${docWord(target.type)}`, ctx.origin === "person" ? undefined : { args: { op: "issue", draft: target.id, confirm: true, version }, preview: preview((text) => text).join("\n") });
+	const notPerson = requirePersonFor(
+		ctx,
+		`emetto la ${docWord(target.type)}`,
+		ctx.origin === "person" ? undefined : { args: { op: "issue", draft: target.id, confirm: true, version, day }, preview: [...preview((text) => text), `Data: ${day}. Approvata un altro giorno non la emetto: va chiesta di nuovo.`].join("\n"), undo: { op: "remove", draft: target.id } },
+	);
 	if (notPerson !== undefined) return notPerson;
 	const due = dueOf(target, day);
 	const marker = env.marker(ctx);
