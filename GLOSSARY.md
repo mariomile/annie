@@ -52,6 +52,10 @@ _Avoid_: anagrafica unica, CRM condiviso, subject ledger (nel testo per le perso
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Se il collega è occupato, il risultato lo dice e la risposta può metterci di più. Vedi ADR 0042 e 0109.
 _Avoid_: chat tra bot, handoff, delega
 
+**Richiesta tra agenti da approvare**:
+Un passo che un agente chiede a un altro e che serve il sì di una persona: la chiamata esatta aspetta un approvatore dell'agente che la fa, in Approvazioni e nelle chat; approvata parte una volta, e l'esito torna all'agente che l'ha chiesta. Il testo dell'agente che chiede non è mai l'approvazione. Vedi ADR 0108.
+_Avoid_: escalation, delega dell'approvazione
+
 **Automazione**:
 Un indirizzo segreto di un agente che un altro servizio chiama (il modulo del sito, Stripe, Zapier): ogni chiamata fa partire l'agente con la sua istruzione e i dati ricevuti, per la persona che l'ha creata e nella sua conversazione. Vedi ADR 0060.
 _Avoid_: webhook (nei testi per le persone), trigger, integrazione

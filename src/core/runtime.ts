@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { AuditLog } from "./audit.ts";
 import { recordTurn, UsageLedger } from "./usage.ts";
 import { SerialQueue } from "./serial-queue.ts";
+import { AgentAsks, AgentRequestStore } from "./agent-requests.ts";
 import { ConnectorActionStore } from "./connector-actions.ts";
 import type { AnnieTool, DurableEngine, EngineImage, EngineReply, EngineSession, EngineRunEvent, EngineRunState, TurnUsage } from "./engine.ts";
 import { RunStore, isActiveRun, runId, runRequestId, type RunRecord, type RunEvent, type RunFilter } from "./run-store.ts";
@@ -38,7 +39,7 @@ import { OrderStore } from "./order-store.ts";
 import { StockStore } from "./stock-store.ts";
 import { RecurringStore } from "./recurring-invoice-store.ts";
 import { SalesInvoiceStore } from "./sales-invoice-store.ts";
-import { connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, tenantDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
+import { agentAsksFile, agentRequestsDir, connectorActionsDir, customToolsDir, engineDir, googleActionsDir, instanceDir, lockFile, outboxDir, proposalsDir, schedulesDir, tenantDir, watchesDir, webActionsDir, workspaceDir } from "./paths.ts";
 import { GoogleActionStore } from "./google-actions.ts";
 import { WebActionStore } from "./web-actions.ts";
 import { ProposalStore } from "./proposals.ts";
@@ -179,6 +180,16 @@ export class AnnieRuntime {
 	/** Calls of connector tools that change something, waiting for (or past) a decision (ADR 0025). */
 	connectorActions(tenant: string, instance: string): ConnectorActionStore {
 		return new ConnectorActionStore(connectorActionsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** Steps other agenti asked for, waiting for (or past) one of this instance's approvers (ADR 0108). */
+	agentRequests(tenant: string, instance: string): AgentRequestStore {
+		return new AgentRequestStore(agentRequestsDir(this.options.dataDir, tenantId(tenant), instanceId(instance)));
+	}
+
+	/** What other agenti last asked this instance, per conversation (ADR 0108). */
+	agentAsks(tenant: string, instance: string): AgentAsks {
+		return new AgentAsks(agentAsksFile(this.options.dataDir, tenantId(tenant), instanceId(instance)));
 	}
 
 	/** The tools proposti of an instance. */

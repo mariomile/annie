@@ -19,6 +19,7 @@ export function connectorActionCard(inst, a, after, compact = false) {
 	const el = h(
 		"article.card.pad.dossier",
 		h("header", h("div", h("h2", a.reason), h("small.dossier-meta", `${a.connectorName} · ${fmt.time(a.proposedAt)}`)), a.status === "pending" ? h(a.destructive ? "span.chip.bad" : "span.chip.accent", a.destructive ? "Può cancellare o sovrascrivere" : "In attesa") : null),
+		askedByNote(a.askedBy),
 		h("p", h("b", "Azione: "), a.toolTitle, " ", h("span.mono.muted", a.tool)),
 		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
 		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
@@ -37,6 +38,38 @@ export function connectorActionCard(inst, a, after, compact = false) {
 		el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), compact ? null : h("span.muted", `Se la approvi, Annie la fa una volta sola, con questi valori, su ${a.connectorName}.`)));
 	}
 	return compact ? el : decisionCard(el, inst, a.status === "pending");
+}
+
+/** Which agente asked, and its words shown as a quote: a request to read, never an approval (ADR 0108). */
+export function askedByNote(askedBy) {
+	if (!askedBy) return null;
+	return h("div", h("p", h("b", "La chiede l'agente "), `«${askedBy.name}»`, askedBy.request ? ", con le sue parole:" : "."), askedBy.request ? h("blockquote", h("pre.code", askedBy.request)) : null);
+}
+
+/** A step another agente asked for, waiting for one of this agente's approvers: approve runs exactly that call, once. */
+export function agentRequestCard(inst, a, after) {
+	const el = h(
+		"article.card.pad.dossier",
+		h("header", h("div", h("h2", `Richiesta dell'agente «${a.askedBy.name}»`), h("small.dossier-meta", `${inst.name} · ${fmt.time(a.proposedAt)}`)), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+		askedByNote(a.askedBy),
+		h("p", h("b", "Azione: "), a.what, " ", h("span.mono.muted", a.tool)),
+		a.shown.length ? h("table.ledger", h("tbody", a.shown.map(([k, v]) => h("tr", h("td.mono", k), h("td", h("pre.code", v)))))) : h("p.muted", "Nessun dato."),
+		a.result ? h("details", h("summary", "Dettagli"), h("pre.code", a.result.error ?? a.result.text)) : null,
+		a.status !== "pending" && CONNECTOR_STAMP[a.status] ? h(`div.stamp.${CONNECTOR_STAMP[a.status][0]}`, CONNECTOR_STAMP[a.status][1]) : null,
+	);
+	if (a.status === "pending") {
+		const decide = async (decision) => {
+			try {
+				const { request } = await api(`/api/instances/${inst.id}/agent-requests/${a.id}/decision`, { method: "POST", body: { decision } });
+				toast(request.status === "done" ? "Fatto" : request.status === "rejected" ? "Richiesta rifiutata" : request.status === "failed" ? "Non è stata fatta: vedi i dettagli" : request.status === "uncertain" ? "Esito incerto: controlla prima di rifarla" : request.status === "expired" ? "La richiesta era scaduta" : `Richiesta ${request.status}`, request.status !== "done" && request.status !== "rejected");
+				after();
+			} catch (error) {
+				toast(error.message, true);
+			}
+		};
+		el.append(h("div.actions", h("button.btn.accent", { onclick: () => decide("approved") }, "Approva"), h("button.btn.danger", { onclick: () => decide("rejected") }, "Rifiuta"), h("span.muted", `Se la approvi, ${inst.name} la fa una volta sola, con questi valori; l'esito torna a «${a.askedBy.name}».`)));
+	}
+	return decisionCard(el, inst, a.status === "pending");
 }
 
 // ---------- Google: scrivere con approvazione ----------

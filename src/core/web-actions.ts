@@ -1,4 +1,5 @@
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
+import type { AskedBy } from "./agent-requests.ts";
 import { CookieJar, checkedUrl, pageText, WebFetchRefused, type WebFetchOptions, webFetch } from "./web-fetch.ts";
 import { FormRefused, formBody, formFingerprint, pageForms, type WebForm } from "./web-forms.ts";
 
@@ -28,6 +29,8 @@ export type WebAction = {
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	/** The person whose private conversation asked for it ("channel:userId"): they may decide. */
 	readonly requester?: string;
+	/** Another agente asked for it, in this agente's conversation with it (ADR 0108): shown on the card. */
+	readonly askedBy?: AskedBy;
 	readonly proposedAt: string;
 	/** The conversation was told it expired undecided. */
 	readonly expiryTold?: true;
@@ -62,7 +65,7 @@ export class WebActionStore {
 	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
-	async propose(input: Pick<WebAction, "pageUrl" | "form" | "action" | "values" | "button" | "shown" | "fingerprint" | "reason" | "thread" | "requester">, now = new Date(), key?: string): Promise<WebAction> {
+	async propose(input: Pick<WebAction, "pageUrl" | "form" | "action" | "values" | "button" | "shown" | "fingerprint" | "reason" | "thread" | "requester" | "askedBy">, now = new Date(), key?: string): Promise<WebAction> {
 		const id = this.queue.idFor(key);
 		if (key !== undefined) {
 			const existing = await this.get(id, now);

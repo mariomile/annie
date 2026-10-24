@@ -19,7 +19,8 @@ import { CONNECTOR_CATALOG, type CatalogEntry } from "../connectors/catalog.ts";
 import { type ConnectorStatus, CONNECTOR_ID, type ConnectorStore, connectorEgressName, type McpConnector } from "../connectors/mcp.ts";
 import { type McpOAuth, McpOAuthError } from "../connectors/mcp-oauth.ts";
 import { attachmentNote } from "../core/attachment-note.ts";
-import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
+import { decideAgentRequest, decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, OWNER, type Approver } from "../core/approvals.ts";
+import { type AgentRequest, AgentRequestError, type AgentRequestResult } from "../core/agent-requests.ts";
 import { type ConnectorAction, ConnectorActionError, type ConnectorActionResult } from "../core/connector-actions.ts";
 import { documentKind, documentLabel } from "../core/documents.ts";
 import { recordingLabel } from "../core/recordings.ts";
@@ -191,6 +192,8 @@ export type WebAppOptions = {
 	readonly sendWebAction?: (instanceId: string) => (action: WebAction) => Promise<WebActionResult>;
 	/** Runs an approved connector call on the instance's live connection (ADR 0025). */
 	readonly runConnectorAction?: (instanceId: string) => (action: ConnectorAction) => Promise<ConnectorActionResult>;
+	/** Runs another agente's request an approver approved, with the instance's own tools (ADR 0108). */
+	readonly runAgentRequest?: (instanceId: string) => (request: AgentRequest) => Promise<AgentRequestResult>;
 	/** The WhatsApp number of each instance that has one: its webhook. */
 	readonly whatsappHooks?: ReadonlyMap<string, WhatsAppAdapter>;
 	/** The phone number of each instance that has one: its webhook (ADR 0012). */
@@ -1061,6 +1064,27 @@ export function createWebApp(options: WebAppOptions): Server {
 		} catch (error) {
 			if (error instanceof NotAnApprover) throw new HttpError(403, "Questa richiesta la decide chi l'ha fatta o un approvatore");
 			if (error instanceof ConnectorActionError) throw new HttpError(404, "Richiesta inesistente");
+			throw error;
+		}
+	});
+	// --- steps other agenti asked for (ADR 0108): only this agente's approvers see and decide them ---
+	route("GET", "/api/instances/:id/agent-requests", "person", async ({ person, params }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		if (!(await mayDecideAll(p, params[0] as string))) return { requests: [] };
+		return { requests: await runtime.agentRequests(tenantId, params[0] as string).list() };
+	});
+	route("POST", "/api/instances/:id/agent-requests/:rid/decision", "person", async ({ person, params, req }) => {
+		const p = person as Person;
+		await instanceAccess(p, params[0] as string);
+		const body = (await readJson(req)) as { decision?: string };
+		if (body.decision !== "approved" && body.decision !== "rejected") throw new HttpError(400, "decision: approved | rejected");
+		if (options.runAgentRequest === undefined) throw new HttpError(501, "Le richieste tra agenti non sono disponibili su questo server");
+		try {
+			return { request: await decideAgentRequest(runtime, tenantId, params[0] as string, params[1] as string, body.decision, approverOf(p), options.runAgentRequest(params[0] as string)) };
+		} catch (error) {
+			if (error instanceof NotAnApprover) throw new HttpError(403, "Questa richiesta la decide solo chi approva per questo agente");
+			if (error instanceof AgentRequestError) throw new HttpError(404, "Richiesta inesistente");
 			throw error;
 		}
 	});
@@ -2045,13 +2069,15 @@ export function createWebApp(options: WebAppOptions): Server {
 		let pendingApprovals = 0;
 		for (const r of visible) {
 			const approver = await mayDecideAll(p, r.id);
-			const [web, connectors, google, proposals, practices] = await Promise.all([
+			const [web, connectors, google, proposals, practices, agentRequests] = await Promise.all([
 				runtime.webActions(tenantId, r.id).list(),
 				runtime.connectorActions(tenantId, r.id).list(),
 				runtime.googleActions(tenantId, r.id).list(),
 				approver ? runtime.proposals(tenantId, r.id).list() : [],
 				approver ? (options.segreterie?.get(r.id)?.practices.list() ?? []) : [],
+				approver ? runtime.agentRequests(tenantId, r.id).list() : [],
 			]);
+			pendingApprovals += agentRequests.filter((a) => a.status === "pending").length;
 			pendingApprovals += [...web, ...connectors].filter((a) => a.status === "pending" && (approver || a.requester === `web:${p.id}`)).length;
 			pendingApprovals += google.filter((a) => a.status === "pending" && a.personId === p.id).length;
 			pendingApprovals += proposals.filter((a) => a.status === "pending").length;

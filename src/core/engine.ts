@@ -157,4 +157,9 @@ export type ToolContext = {
 	 * gate (requirePersonFor) never takes for a person's.
 	 */
 	readonly origin?: TurnOrigin;
+	/**
+	 * Told by requirePersonFor when another agente's turn reaches a step that needs a person's
+	 * yes (`what`, as in the refusal): the call can then go to this agente's approvers (ADR 0108).
+	 */
+	readonly needsPerson?: (what: string) => void;
 };

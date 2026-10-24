@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { type AgentRequest, type AgentRequestResult, agentRequestReport } from "./agent-requests.ts";
 import { type ConnectorAction, type ConnectorActionResult, connectorActionReport } from "./connector-actions.ts";
 import { customToolName, type ToolProposal, toolEgressName } from "./proposals.ts";
 import type { AnnieRuntime } from "./runtime.ts";
@@ -155,4 +156,53 @@ export async function decideConnectorAction(
 		log(`mcp: outcome of ${action.id} not passed on: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	return action;
+}
+
+/**
+ * Approve or reject a step another agente asked for (ADR 0108). Only this agente's approvers
+ * decide: nobody of the asking agente's people, and the asker's words never. Approving runs the
+ * call once with its bound arguments; the outcome goes to the asker's conversation.
+ */
+export async function decideAgentRequest(
+	runtime: AnnieRuntime,
+	tenant: string,
+	instance: string,
+	id: string,
+	decision: "approved" | "rejected",
+	by: Approver,
+	run: (request: AgentRequest) => Promise<AgentRequestResult>,
+	log: (message: string) => void = console.error,
+): Promise<AgentRequest> {
+	const audit = runtime.audit(tenant);
+	if (!(await isApprover(runtime, tenant, instance, by))) {
+		await audit.append({ type: "user.denied", instanceId: instance, channel: by.channel, userId: by.userId, action: `agent_request.${decision}`, actionId: id });
+		throw new NotAnApprover(`${by.channel}:${by.userId} cannot decide agent request ${id} of ${tenant}/${instance}`);
+	}
+	const { action, changed } = await runtime.agentRequests(tenant, instance).decide(id, decision, by, async (running) => {
+		await audit.append({ type: "agent_request.approved", instanceId: instance, actionId: id, tool: running.tool, from: running.askedBy.id, by: `${by.channel}:${by.userId}` });
+		return run(running);
+	});
+	if (!changed) return action;
+	// What happened is settled: telling the asker may fail, the decision stands.
+	try {
+		await audit.append({ type: `agent_request.${action.status}`, instanceId: instance, actionId: id, tool: action.tool, from: action.askedBy.id, by: `${by.channel}:${by.userId}` });
+		await tellAgentRequestOutcome(runtime, tenant, instance, action);
+	} catch (error) {
+		log(`agenti: outcome of ${action.id} not passed on: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	return action;
+}
+
+/** The outcome, as a notice in the asking agente's conversation: another agente's turn, never a person's. */
+export async function tellAgentRequestOutcome(runtime: Pick<AnnieRuntime, "registry" | "submitNotice">, tenant: string, instance: string, request: AgentRequest): Promise<void> {
+	const self = await runtime.registry.getInstance(tenant, instance);
+	// An asker deleted meanwhile: NotFound, nothing to tell.
+	await runtime.registry.getInstance(tenant, request.askedBy.id);
+	await runtime.submitNotice(tenant, request.askedBy.id, {
+		...request.origin,
+		messageId: `agent-request:${instance}:${request.id}:${request.status}`,
+		text: agentRequestReport(request, { id: self.id, name: self.name }),
+		event: { source: "agent_request", from: instance, actionId: request.id },
+		origin: "agent",
+	});
 }

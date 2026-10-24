@@ -52,7 +52,7 @@ import { providerModels } from "./core/adapters/pi-durable-models.ts";
 import { ChatModels } from "./core/chat-models.ts";
 import { LocalProviders, type CliRunner } from "./core/local-providers.ts";
 import { MODEL_COMMAND } from "./model-command.ts";
-import { decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, webActionReport } from "./core/approvals.ts";
+import { decideAgentRequest, decideConnectorAction, decideToolProposal, decideWebAction, isApprover, NotAnApprover, tellAgentRequestOutcome, webActionReport } from "./core/approvals.ts";
 import { CONNECTOR_ACTION_LIMITS, type ConnectorAction, ConnectorActionError, connectorActionReport, fitsInChat } from "./core/connector-actions.ts";
 import { sendWebAction, type WebAction, WEB_ACTIONS_CONNECTOR } from "./core/web-actions.ts";
 import { type GoogleAction, type GoogleActionResult, googleActionReport, googleActionTitle } from "./core/google-actions.ts";
@@ -64,7 +64,7 @@ import { checkedUrl, publicAddress, WebFetchRefused } from "./core/web-fetch.ts"
 import { readPage } from "./core/watches.ts";
 import { skillMenuEntry } from "./core/skills.ts";
 import { webHostAllowed } from "./core/policy.ts";
-import type { DurableEngine } from "./core/engine.ts";
+import type { AnnieTool, DurableEngine } from "./core/engine.ts";
 import { EgressDenied, NotFound, UserNotAllowed } from "./core/errors.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "./core/ids.ts";
 import { readJsonFile, updateJsonFile } from "./core/locked-json.ts";
@@ -112,7 +112,8 @@ import { type RecurringEnv, sweepRecurring } from "./core/tools/recurring-invoic
 import { salesEnvOf } from "./core/tools/sales-invoice-env.ts";
 import { createTimesheetTools } from "./core/tools/timesheet-tools.ts";
 import { createAgentTools } from "./core/tools/agent-tools.ts";
-import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, relayAgentAnswer } from "./core/agent-messages.ts";
+import { AGENT_CHANNEL, AGENT_LIMITS, AgentRate, agentThreadId, relayAgentAnswer } from "./core/agent-messages.ts";
+import { type AgentRequest, agentRequestCard, agentRequestFitsInChat, agentRequestReport, askedByIn, askedByLines, runAgentRequest, withAgentRequests } from "./core/agent-requests.ts";
 import { AgentChannel } from "./channels/agents.ts";
 import { runtimeActivity, viewerOf } from "./core/agent-activity.ts";
 import { createMemoryTools } from "./core/tools/memory-tools.ts";
@@ -209,6 +210,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	const localProviders = config.localProviders ? new LocalProviders(tenant, join(tenantDir(config.dataDir, toTenantId(tenant)), "local-providers"), options.localProviderRunner) : undefined;
 	await localProviders?.detect();
 	const connections = new Map<string, McpConnections>();
+	// Each instance's own tools, as built: what an approved request of another agente runs (ADR 0108).
+	const instanceTools = new Map<string, readonly AnnieTool[]>();
 	// One scanner of each instance's invoices, shared by its tools and the recurring invoices' sweep: one cache.
 	const scanners = new Map<string, InvoiceScanner>();
 	const scannerOf = (tenantId: string, instanceId: string): InvoiceScanner => {
@@ -727,6 +730,8 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 						const channel = agentChannels.get(to);
 						if (channel === undefined) throw new Error("non è attivo");
 						const me = await runtime.registry.getInstance(record.tenantId, record.id);
+						// Who asked and in which words, as the system saw them leave: the card of a step that needs a yes shows it (ADR 0108).
+						runtime.agentAsks(record.tenantId, to).record(agentThreadId(me.id, origin), { id: me.id, name: me.name }, text);
 						await channel.ask({ from: { id: me.id, name: me.name }, origin, text, messageId: key }).catch((error: unknown) => {
 							// Its owner took the permission back since agent_list: say it plainly, the audit has the details.
 							throw error instanceof UserNotAllowed || error instanceof EgressDenied ? new Error("non accetta più messaggi da te") : error;
@@ -769,6 +774,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					actions: {
 						store: runtime.webActions(record.tenantId, record.id),
 						requester: (thread) => runtime.participant(record.tenantId, record.id, thread),
+						askedBy: (thread) => askedByIn(runtime.agentAsks(record.tenantId, record.id), thread),
 						onProposed: (action) => notifyWebAction(record.id, action),
 					},
 				}),
@@ -848,7 +854,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				})),
 				...(await mcp.connect(await connectorStore(record.id).list())),
 			];
-			return { tools: readOnlyInBriefs(tools, isBriefThread), close: () => mcp.close() };
+			instanceTools.set(record.id, tools);
+			// Another agente's step that needs a yes goes to this agente's approvers (ADR 0108).
+			const asked = withAgentRequests(tools, {
+				store: runtime.agentRequests(record.tenantId, record.id),
+				asks: runtime.agentAsks(record.tenantId, record.id),
+				reachable: () => approversReachable(record.id),
+				proposed: (request) => notifyAgentRequest(record.id, request),
+				record: async (event) => {
+					await runtime.audit(record.tenantId).append({ ...event, instanceId: record.id });
+				},
+			});
+			return { tools: readOnlyInBriefs(asked, isBriefThread), close: () => mcp.close() };
 		},
 	});
 
@@ -1043,7 +1060,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		// Everything that leaves except hidden fields: page defaults and the button pressed too.
 		const values = action.shown.map(([k, v]) => `${k}: ${v.length > 300 ? `${v.slice(0, 300)}[...]` : v}`);
 		const long = action.shown.some(([, v]) => v.length > 300);
-		const text = `Azione sul web da approvare · richiesta ${action.id}\n\n${action.reason}\n\nPagina: ${action.pageUrl}\nInvio a: ${action.action}\n\n${values.length > 0 ? values.join("\n") : "(nessun campo compilato)"}${long ? "\n\nAlcuni valori sono lunghi: leggili interi e decidi nella console web (Approvazioni)." : ""}\n\nScade fra 24 ore.`;
+		const text = `Azione sul web da approvare · richiesta ${action.id}${askedByLines(action.askedBy)}\n\n${action.reason}\n\nPagina: ${action.pageUrl}\nInvio a: ${action.action}\n\n${values.length > 0 ? values.join("\n") : "(nessun campo compilato)"}${long ? "\n\nAlcuni valori sono lunghi: leggili interi e decidi nella console web (Approvazioni)." : ""}\n\nScade fra 24 ore.`;
 		const buttons = long
 			? [{ label: "Rifiuta", data: `web:${action.id}:rejected` }]
 			: [
@@ -1070,6 +1087,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	async function proposeConnectorAction(instance: string, input: Parameters<NonNullable<McpConnectionsOptions["actions"]>["propose"]>[0]): Promise<string> {
 		try {
 			const requester = input.thread === undefined ? undefined : runtime.participant(tenant, instance, input.thread);
+			const askedBy = askedByIn(runtime.agentAsks(tenant, instance), input.thread);
 			const action = await runtime.connectorActions(tenant, instance).propose(
 				{
 					connectorId: input.connector.id,
@@ -1082,6 +1100,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					destructive: input.destructive,
 					...(input.thread === undefined ? {} : { thread: input.thread }),
 					...(requester === undefined ? {} : { requester }),
+					...(askedBy === undefined ? {} : { askedBy }),
 				},
 				new Date(),
 				input.callId,
@@ -1105,7 +1124,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		const values = action.shown.map(([k, v]) => `${k}: ${v.length > 300 ? `${v.slice(0, 300)}[...]` : v}`);
 		const expires = new Date(Date.parse(action.proposedAt) + CONNECTOR_ACTION_LIMITS.ttlMs).toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 		const long = "\n\nÈ lunga: si legge intera e si approva solo dalla console web (Approvazioni), da chi l'ha chiesta o da un approvatore. Da qui puoi rifiutarla.";
-		const body = (shown: string[]) => `${action.connectorName}: azione da approvare · richiesta ${action.id}\n\n${action.reason}\n\nAzione: ${action.toolTitle} (${action.tool})${action.destructive ? ", può cancellare o sovrascrivere" : ""}\n\n${shown.length > 0 ? shown.join("\n") : "(nessun dato)"}${fits ? "" : long}\n\nScade il ${expires}.`;
+		const body = (shown: string[]) => `${action.connectorName}: azione da approvare · richiesta ${action.id}${askedByLines(action.askedBy)}\n\n${action.reason}\n\nAzione: ${action.toolTitle} (${action.tool})${action.destructive ? ", può cancellare o sovrascrivere" : ""}\n\n${shown.length > 0 ? shown.join("\n") : "(nessun dato)"}${fits ? "" : long}\n\nScade il ${expires}.`;
 		const text = fits ? body(values) : body(values.slice(0, 10).concat(values.length > 10 ? [`(e altri ${values.length - 10} dati)`] : []));
 		const buttons = fits
 			? [
@@ -1175,8 +1194,63 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		}
 	}
 
+	/**
+	 * Whether one of the instance's approvers can see a request (ADR 0108): the owner or a web
+	 * approver in the console's Approvazioni, or an approver on a chat the instance has.
+	 */
+	async function approversReachable(instance: string): Promise<boolean> {
+		const record = await runtime.registry.getInstance(tenant, instance);
+		const everyone = await people.list();
+		if (everyone.some((p) => p.role === "owner" || (record.approvers?.web ?? []).includes(p.id))) return true;
+		return [telegrams.get(instance), whatsapps.get(instance)].some((adapter) => adapter !== undefined && (record.approvers?.[adapter.name] ?? []).length > 0);
+	}
+
+	/** The card of another agente's request: to the instance's approvers' chats (the console lists it too). */
+	async function notifyAgentRequest(instance: string, request: AgentRequest): Promise<void> {
+		const record = await runtime.registry.getInstance(tenant, instance);
+		const fits = agentRequestFitsInChat(request);
+		const text = agentRequestCard(request, record.name, fits);
+		const buttons = fits
+			? [
+					{ label: "Approva", data: `agent:${request.id}:approved` },
+					{ label: "Rifiuta", data: `agent:${request.id}:rejected` },
+				]
+			: [{ label: "Rifiuta", data: `agent:${request.id}:rejected` }];
+		for (const adapter of [telegrams.get(instance), whatsapps.get(instance)]) {
+			if (adapter === undefined) continue;
+			for (const chat of new Set(record.approvers?.[adapter.name] ?? [])) {
+				if ((request.notified ?? []).includes(`${adapter.name}:${chat}`)) continue;
+				try {
+					await adapter.send({ tenantId: tenant, instanceId: instance, channel: adapter.name, threadId: chat, idempotencyKey: `agent-request:${request.id}:${chat}`, text, buttons });
+					await runtime.agentRequests(tenant, instance).markNotified(request.id, `${adapter.name}:${chat}`);
+				} catch (error) {
+					log(`annie: agent request card for ${request.id} to ${adapter.name} ${chat} not sent: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+		}
+	}
+
+	/** Runs an approved request of another agente with the instance's own tools, as they are now. */
+	const runAgentRequestFor = (instance: string) => (request: AgentRequest) => runAgentRequest(instanceTools.get(instance), request);
+
+	async function onAgentRequestTap(instance: string, adapter: ChannelAdapter, action: InboundAction, id: string, decision: "approved" | "rejected"): Promise<void> {
+		const pending = await runtime.agentRequests(tenant, instance).get(id);
+		if (pending === undefined) return;
+		if (decision === "approved" && !agentRequestFitsInChat(pending)) return; // only from the console
+		try {
+			const decided = await decideAgentRequest(runtime, tenant, instance, id, decision, { channel: adapter.name, userId: action.userId }, runAgentRequestFor(instance), log);
+			const mine = decided.decidedBy?.channel === adapter.name && decided.decidedBy.userId === action.userId;
+			const word = { rejected: "rifiutata", expired: "scaduta", done: "approvata e fatta", failed: "approvata, ma non è riuscita", uncertain: "approvata, esito incerto" }[decided.status as string] ?? decided.status;
+			await adapter.send({ tenantId: tenant, instanceId: instance, channel: adapter.name, threadId: action.threadId, idempotencyKey: `decision:${action.actionId}`, text: `Richiesta ${id}: ${word}${mine || decided.status === "expired" ? "" : " (decisa in precedenza)"}.` });
+		} catch (error) {
+			if (!(error instanceof NotAnApprover)) throw error;
+		}
+	}
+
 	async function onApprovalTap(instance: string, adapter: ChannelAdapter, action: InboundAction): Promise<void> {
 		if (action.data.startsWith("board:")) return onBoardTap(instance, adapter, action);
+		const agentRequest = /^agent:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
+		if (agentRequest !== null) return onAgentRequestTap(instance, adapter, action, agentRequest[1] as string, agentRequest[2] as "approved" | "rejected");
 		const mcpAction = /^mcp:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
 		if (mcpAction !== null) return onConnectorActionTap(instance, adapter, action, mcpAction[1] as string, mcpAction[2] as "approved" | "rejected");
 		const web = /^web:([0-9a-f]{12}):(approved|rejected)$/.exec(action.data);
@@ -1313,7 +1387,15 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			if (action.thread !== undefined) await runtime.submitNotice(tenant, record.id, { ...action.thread, messageId: `connector-action:${action.id}`, text: connectorActionReport(action), event: { source: "connector_action", actionId: action.id } }).catch(() => {});
 		}
 	}
+	// And for a step another agente asked for: its asker is told it is not known whether it happened.
+	for (const record of await runtime.registry.listInstances(tenant)) {
+		for (const request of await runtime.agentRequests(tenant, record.id).settleInterrupted()) {
+			await runtime.audit(tenant).append({ type: "agent_request.uncertain", instanceId: record.id, actionId: request.id, tool: request.tool, from: request.askedBy.id });
+			await tellAgentRequestOutcome(runtime, tenant, record.id, request).catch(() => {});
+		}
+	}
 	for (const record of conversational) {
+		for (const request of await runtime.agentRequests(tenant, record.id).list()) if (request.status === "pending") await notifyAgentRequest(record.id, request);
 		for (const proposal of await runtime.proposals(tenant, record.id).list()) if (proposal.status === "pending") await notifyApprovers(record.id, proposal);
 		for (const action of await runtime.connectorActions(tenant, record.id).list()) if (action.status === "pending") await notifyConnectorAction(record.id, action);
 		for (const action of await runtime.webActions(tenant, record.id).list()) if (action.status === "pending") await notifyWebAction(record.id, action);
@@ -1332,15 +1414,18 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await tellExpiredIn(record.id, "connector_action", runtime.connectorActions(tenant, record.id), connectorActionReport, now);
 			await tellExpiredIn(record.id, "web_action", runtime.webActions(tenant, record.id), webActionReport, now);
 			await tellExpiredIn(record.id, "google_action", runtime.googleActions(tenant, record.id), googleActionReport, now);
+			// Another agente's request: the agente that asked is told, in its own conversation (ADR 0108).
+			await tellExpiredIn(record.id, "agent_request", runtime.agentRequests(tenant, record.id), (request) => agentRequestReport(request, record), now, (request) => tellAgentRequestOutcome(runtime, tenant, record.id, request));
 		}
 	}
 
 	async function tellExpiredIn<A extends { id: string; proposedAt: string; thread?: { channel: string; threadId: string } }>(
 		instance: string,
-		type: "connector_action" | "web_action" | "google_action",
+		type: "connector_action" | "web_action" | "google_action" | "agent_request",
 		store: { expiredUntold(now: Date): Promise<A[]>; claimExpired(id: string, now: Date): Promise<A | undefined> },
 		report: (action: A) => string,
 		now: Date,
+		tell: (action: A) => Promise<unknown> = (action) => runtime.submitNotice(tenant, instance, { ...(action.thread as { channel: string; threadId: string }), messageId: `${type.replace("_", "-")}:${action.id}:expired`, text: report(action), event: { source: type, actionId: action.id } }),
 	): Promise<void> {
 		let expired: A[];
 		try {
@@ -1358,7 +1443,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			let reason: string | undefined = stale ? "stale" : action.thread === undefined ? "no_conversation" : undefined;
 			if (reason === undefined && action.thread !== undefined) {
 				try {
-					await runtime.submitNotice(tenant, instance, { ...action.thread, messageId: `${type.replace("_", "-")}:${action.id}:expired`, text: report(action), event: { source: type, actionId: action.id } });
+					await tell(action);
 					told = true;
 				} catch (error) {
 					reason = error instanceof Error ? error.name : "error";
@@ -1622,6 +1707,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		...(config.images === undefined ? {} : { images: { host: new URL(config.images.url).host, maxPerDay: config.images.maxPerDay } }),
 		sendWebAction: sendForInstance,
 		runConnectorAction,
+		runAgentRequest: runAgentRequestFor,
 		...(computer === undefined ? {} : { computer: { reset: (id: string) => computer.reset(computerKey(tenant, id)), check: () => computer.check() } }),
 		screens,
 		...(desktop === undefined
