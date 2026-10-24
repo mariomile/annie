@@ -124,10 +124,10 @@ const golds = await loadJsonl<GoldRow>(join(root, "gold/labels.jsonl"));
 const goldById = new Map(golds.map((g) => [g.id, g]));
 const checks = await loadChecks(root);
 
-// Preflight: the checks themselves are tried on the gold and on no-op drafts before anything is scored.
+// Preflight: the checks themselves are tried on no-op drafts before anything is scored (the gold drafts are scored below).
 const preflightRows = cases.flatMap((c) => {
 	const g = goldById.get(c.id);
-	return g?.draft ? [{ id: c.id, gold: goldDraftInput(c, { ...g, draft: g.draft }) }] : [];
+	return g?.draft ? [{ id: c.id, draft: goldDraftInput(c, { ...g, draft: g.draft }) }] : [];
 });
 const violations = preflight(checks, preflightRows);
 if (violations.length > 0) {
