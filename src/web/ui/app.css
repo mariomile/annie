@@ -76,7 +76,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
 body {
 	background: var(--bg);
 	color: var(--fg);
@@ -108,7 +108,8 @@ a:hover { text-decoration-color: currentColor; }
 kbd { font: 500 10.5px/1 var(--mono); padding: 3px 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--fg-3); }
 
 /* ---------- shell ---------- */
-.shell { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); min-height: 100vh; min-height: 100dvh; }
+/* The window is the app frame: the rail never moves, only main scrolls, so a scroll past the top cannot drag the chrome down like a web page. */
+.shell { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
 .rail {
 	position: sticky; top: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; gap: 2px; min-width: 0;
 	padding: 10px 8px 8px; border-right: 1px solid var(--border); background: var(--bg-2); overflow: hidden;
@@ -222,7 +223,7 @@ button.who-id .icon { color: var(--fg-3); }
 a.btn { text-decoration: none; }
 
 .topbar { display: none; }
-main { min-width: 0; }
+main { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 main.is-page { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 48px) 64px; animation: fade 0.22s var(--ease); }
 @keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 /* Page header: a quiet path in the toolbar row, then the title with its actions on the same line. */
@@ -574,7 +575,7 @@ table.ledger td pre.code { white-space: pre-wrap; overflow-wrap: anywhere; margi
 pre.code { margin: 0; padding: 12px 14px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; overflow: auto; max-height: 360px; font: 12.5px/1.6 var(--mono); white-space: pre; }
 
 /* ---------- chat ---------- */
-main.is-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
+main.is-chat { height: 100%; display: flex; flex-direction: column; }
 .conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .chat-split { flex: 1; min-height: 0; display: flex; }
 .chat-split > .conversation { min-width: 0; }
