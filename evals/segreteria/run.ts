@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import { buildDraft } from "../../src/segreteria/draft.ts";
 import { extractLead } from "../../src/segreteria/extract.ts";
 import { classifyInbound, isValidSender } from "../../src/segreteria/classify.ts";
-import { loadChecks, runDeterministicChecks } from "../../src/segreteria/checks.ts";
+import { loadChecks, runDeterministicChecks, type DraftCheckInput } from "../../src/segreteria/checks.ts";
+import { preflight } from "./preflight.ts";
 import type { MissingField } from "../../src/core/practice.ts";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -73,10 +74,66 @@ function requestLabels(requests: GoldRow["requests"]): string[] {
 	return requests.map((r) => (typeof r === "string" ? r : r.productOrService ?? JSON.stringify(r)));
 }
 
+/** The draft run.ts builds from the gold of a case, with the expectations the checks read. */
+function goldDraftInput(c: CaseRow, g: GoldRow & { draft: NonNullable<GoldRow["draft"]> }): DraftCheckInput {
+	const reqs = requestLabels(g.requests);
+	const leadForDraft = {
+		fullName: (g.lead?.fullName as string | null) ?? "Cliente",
+		title: (g.lead?.title as never) ?? null,
+		company: (g.lead?.company as string | null) ?? null,
+		email: (g.lead?.email as string | null) ?? null,
+		phone: (g.lead?.phone as string | null) ?? null,
+		productOrService: (g.lead?.productOrService as string | null) ?? "la richiesta",
+		quantity: (g.lead?.quantity as string | null) ?? null,
+		urgency: (g.lead?.urgency as string | null) ?? null,
+		vatNumber: (g.lead?.vatNumber as string | null) ?? null,
+		originalLanguage: (g.lead?.originalLanguage as "it" | "en" | "it+en" | "other") ?? "it",
+		missingFields: (g.draft.mustAsk ?? []) as MissingField[],
+		source: "email" as const,
+		rawSubject: c.email.subject,
+		rawSnippet: "",
+		receivedAt: c.email.receivedAt,
+		mailMessageId: c.email.messageId,
+	};
+	const built = buildDraft(leadForDraft, {
+		mustAsk: (g.draft.mustAsk ?? []) as MissingField[],
+		requests: reqs,
+		allowedAmounts: g.draft.allowedAmounts,
+		language: g.draft.language ?? (leadForDraft.originalLanguage === "en" ? "en" : "it"),
+	});
+	return {
+		subject: built.subject,
+		body: built.body,
+		language: built.language,
+		mustAsk: g.draft.mustAsk,
+		mustNotAskVatNumber: g.draft.mustNotAskVatNumber,
+		mustNotInventPrices: g.draft.mustNotInventPrices ?? true,
+		allowedAmounts: g.draft.allowedAmounts,
+		mustMention: g.draft.mustMention,
+		mustNotMention: g.draft.mustNotMention,
+		mustListItemsAsBullets: g.draft.mustListItemsAsBullets,
+		requestCount: reqs.length,
+		expectedSalutationContains: g.draft.expectedSalutationContains,
+		customerEmail: (g.lead?.email as string | null) ?? null,
+		piiCheck: g.draft.piiCheck ?? true,
+	};
+}
+
 const cases = await loadJsonl<CaseRow>(join(root, "dataset/cases.jsonl"));
 const golds = await loadJsonl<GoldRow>(join(root, "gold/labels.jsonl"));
 const goldById = new Map(golds.map((g) => [g.id, g]));
 const checks = await loadChecks(root);
+
+// Preflight: the checks themselves are tried on the gold and on no-op drafts before anything is scored.
+const preflightRows = cases.flatMap((c) => {
+	const g = goldById.get(c.id);
+	return g?.draft ? [{ id: c.id, gold: goldDraftInput(c, { ...g, draft: g.draft }) }] : [];
+});
+const violations = preflight(checks, preflightRows);
+if (violations.length > 0) {
+	console.error(`eval:segreteria preflight failed, nothing scored:\n${violations.join("\n")}`);
+	process.exit(1);
+}
 
 let checkFails = 0;
 let schemaFails = 0;
@@ -138,47 +195,7 @@ for (const c of cases) {
 	}
 
 	if (g.draft) {
-		const reqs = requestLabels(g.requests);
-		const leadForDraft = {
-			fullName: (g.lead?.fullName as string | null) ?? "Cliente",
-			title: (g.lead?.title as never) ?? null,
-			company: (g.lead?.company as string | null) ?? null,
-			email: (g.lead?.email as string | null) ?? null,
-			phone: (g.lead?.phone as string | null) ?? null,
-			productOrService: (g.lead?.productOrService as string | null) ?? "la richiesta",
-			quantity: (g.lead?.quantity as string | null) ?? null,
-			urgency: (g.lead?.urgency as string | null) ?? null,
-			vatNumber: (g.lead?.vatNumber as string | null) ?? null,
-			originalLanguage: (g.lead?.originalLanguage as "it" | "en" | "it+en" | "other") ?? "it",
-			missingFields: (g.draft.mustAsk ?? []) as MissingField[],
-			source: "email" as const,
-			rawSubject: c.email.subject,
-			rawSnippet: "",
-			receivedAt: c.email.receivedAt,
-			mailMessageId: c.email.messageId,
-		};
-		const built = buildDraft(leadForDraft, {
-			mustAsk: (g.draft.mustAsk ?? []) as MissingField[],
-			requests: reqs,
-			allowedAmounts: g.draft.allowedAmounts,
-			language: g.draft.language ?? (leadForDraft.originalLanguage === "en" ? "en" : "it"),
-		});
-		const fails = runDeterministicChecks(checks, {
-			subject: built.subject,
-			body: built.body,
-			language: built.language,
-			mustAsk: g.draft.mustAsk,
-			mustNotAskVatNumber: g.draft.mustNotAskVatNumber,
-			mustNotInventPrices: g.draft.mustNotInventPrices ?? true,
-			allowedAmounts: g.draft.allowedAmounts,
-			mustMention: g.draft.mustMention,
-			mustNotMention: g.draft.mustNotMention,
-			mustListItemsAsBullets: g.draft.mustListItemsAsBullets,
-			requestCount: reqs.length,
-			expectedSalutationContains: g.draft.expectedSalutationContains,
-			customerEmail: (g.lead?.email as string | null) ?? null,
-			piiCheck: g.draft.piiCheck ?? true,
-		});
+		const fails = runDeterministicChecks(checks, goldDraftInput(c, { ...g, draft: g.draft }));
 		if (fails.length) {
 			checkFails += fails.length;
 			report.push({ id: c.id, checkFails: fails });
