@@ -79,7 +79,8 @@ export function providerModels(id: string): readonly ModelInfo[] {
  * transcript, so a new process after a crash continues exactly where the old one was.
  *
  * - "conta fino a N" / "count to N" → calls the slow_counter tool with n = N
- * - "/tool <name> <json args>" → calls that tool (for tests and development)
+ * - "/tool <name> <json args>" → calls that tool (for tests and development); also when it is
+ *   the whole request of another agente's message (agent_message), so a test can drive both sides
  * - after a tool result → "Fatto. <tool output>", and "[N immagini]" when it shows pictures
  * - anything else → echoes the message, saying which pictures came with it
  */
@@ -105,7 +106,8 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	const said = last?.role === "user" ? userText(last.content) : "";
 	const text = personText(said);
 	// A note the gateway adds after the person's words (a spoken reply, ADR 0020) is not part of a command.
-	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec(text.replace(/\n\n\[[^\]]*\]\s*$/, "").trim());
+	const asked = /^\[Messaggio dall'agente [^\n]*\n<<<richiesta di \S+ ([0-9a-f]+)>>>\n([\s\S]*?)\n<<<fine richiesta di \S+ \1>>>/.exec(text)?.[2];
+	const direct = /^\/tool\s+([\w-]+)\s*([\s\S]*)$/.exec((asked ?? text.replace(/\n\n\[[^\]]*\]\s*$/, "")).trim());
 	if (direct?.[1] !== undefined) {
 		let args: Record<string, unknown> = {};
 		try {

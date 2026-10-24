@@ -18,6 +18,7 @@
  * number of the year among the company's own invoices in the workspace. An invoice issued and not
  * finished (a crash, a PDF or a mark that failed) is completed by issuing it again.
  */
+import { createHash } from "node:crypto";
 import type { ToolContext } from "../engine.ts";
 import { FatturaWriteError, fatturaFileName, fatturaXml } from "../fattura-pa-writer.ts";
 import { QUOTES_BROKEN } from "../quote-store.ts";
@@ -59,17 +60,19 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 	if (args.confirm !== undefined && typeof args.confirm !== "boolean") return "Errore: la conferma è sì o no.";
 	const checked = await ready(env, target, day);
 	if (typeof checked === "string") return checked;
-	if (args.confirm !== true) {
-		return [
-			`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
-			fenced(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
-			...stockPreview(env, target, day, env.marker(ctx)),
-			...ddtPreview(target, day),
-			"Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì.",
-		].join("\n");
-	}
-	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088).
-	const notPerson = requirePersonFor(ctx, `emetto la ${docWord(target.type)}`);
+	const preview = (show: (text: string) => string) => [
+		`Emetterei questa ${docWord(target.type)} con la data di oggi: prende il prossimo numero e il file XML va in ${ISSUED_FOLDER}. Una volta emessa non si cancella più, si può solo stornare con una nota di credito.`,
+		show(invoiceLines(target, salesTotals(target), dueOf(target, day), day).join("\n")),
+		...stockPreview(env, target, day, env.marker(ctx)),
+		...ddtPreview(target, day),
+	];
+	if (args.confirm !== true) return [...preview(fenced), "Ripeti a chi ti scrive i dati del riquadro e chiedi conferma: la emetto solo dopo il suo sì."].join("\n");
+	// Approved for another agente (ADR 0108): the draft the approver read, not one changed since.
+	const version = versionOf(target);
+	if (args.version !== undefined && args.version !== version) return `Errore: la bozza ${target.id} è cambiata da quando è stata chiesta l'approvazione: non l'ho emessa. Va chiesta di nuovo.`;
+	// The yes is a person's own message, never a notice, a schedule or another agente (ADR 0088);
+	// another agente's turn hands this exact call, with what it will write, to the approvers.
+	const notPerson = requirePersonFor(ctx, `emetto la ${docWord(target.type)}`, ctx.origin === "person" ? undefined : { args: { op: "issue", draft: target.id, confirm: true, version }, preview: preview((text) => text).join("\n") });
 	if (notPerson !== undefined) return notPerson;
 	const due = dueOf(target, day);
 	const marker = env.marker(ctx);
@@ -89,6 +92,11 @@ export async function issue(env: SalesEnv, args: Record<string, unknown>, ctx: T
 		issueCall: ctx.callId,
 	}));
 	return complete(env, inv, ctx, []);
+}
+
+/** A draft's fingerprint: an approval issues the draft as it was read, and no other. */
+function versionOf(draft: SalesInvoice): string {
+	return createHash("sha256").update(JSON.stringify(draft)).digest("hex").slice(0, 16);
 }
 
 /** sales_invoices op finish: the invoice a number names, issued and not complete, completed with its own number. */

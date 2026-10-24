@@ -11,7 +11,7 @@
  * stand for the person's yes. A turn whose origin is not known counts as not a person's.
  */
 import { AGENT_CHANNEL } from "./agent-messages.ts";
-import type { ToolContext } from "./engine.ts";
+import type { PersonCall, ToolContext } from "./engine.ts";
 
 export const TURN_ORIGINS = ["person", "notice", "scheduled", "agent"] as const;
 export type TurnOrigin = (typeof TURN_ORIGINS)[number];
@@ -28,12 +28,13 @@ const FROM: Readonly<Record<"notice" | "scheduled", string>> = {
  * undefined when the turn is a person's: the confirmed step may go on. Otherwise the refusal to
  * give the model; `what` is the step in the first person, lower case («emetto la fattura»). The
  * preview (no confirm) still works. A turn whose origin is not known is refused too, neutrally.
+ * `call`: the confirmed call and its preview, for another agente's turn (ADR 0108).
  */
-export function requirePersonFor(ctx: Pick<ToolContext, "origin" | "needsPerson">, what: string): string | undefined {
+export function requirePersonFor(ctx: Pick<ToolContext, "origin" | "needsPerson">, what: string, call?: PersonCall): string | undefined {
 	if (ctx.origin === "person") return undefined;
 	if (ctx.origin === "agent") {
 		// The call may go to this agente's approvers instead (ADR 0108): the refusal stands for the turn.
-		ctx.needsPerson?.(what);
+		ctx.needsPerson?.(what, call);
 		return `Non ${what} su richiesta di un altro agente: lo conferma solo chi ti scrive, nella sua conversazione con me. Non riprovarlo qui.`;
 	}
 	const why = ctx.origin === undefined ? "non so da dove nasce questo turno" : FROM[ctx.origin];

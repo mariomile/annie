@@ -1,13 +1,17 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { agentThreadId } from "../src/core/agent-messages.ts";
-import { AgentAsks, type AgentRequest, AgentRequestStore, agentRequestCard, agentRequestReport, runAgentRequest, withAgentRequests } from "../src/core/agent-requests.ts";
+import { AgentAsks, type AgentRequest, AgentRequestStore, agentRequestCard, agentRequestFitsInChat, agentRequestReport, runAgentRequest, withAgentRequests } from "../src/core/agent-requests.ts";
 import { decideAgentRequest, NotAnApprover, OWNER } from "../src/core/approvals.ts";
 import type { AuditEvent } from "../src/core/audit.ts";
 import type { AnnieTool, ToolContext } from "../src/core/engine.ts";
 import { requirePersonFor } from "../src/core/turn-origin.ts";
+import { instanceId, tenantId } from "../src/core/ids.ts";
+import { instanceDir } from "../src/core/paths.ts";
+import { isIssued } from "../src/core/sales-invoices.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
 import { FAUX_MODEL, runtimeWithInstance, tempDataDir } from "./helpers.ts";
 
@@ -73,6 +77,29 @@ describe("richieste tra agenti che chiedono un sì (ADR 0108)", () => {
 		// The same call again (a rerun) is the same request, not a second one.
 		await wrapped!.execute({ iban: "IT00X" }, ctxFor());
 		expect(await d.store.list()).toHaveLength(1);
+	});
+
+	it("a tool with a preview hands over its confirmed call: that call is what waits, and the card shows what it will write", async () => {
+		const d = deps();
+		const tool: AnnieTool = {
+			name: "issue_tool",
+			description: "Emette",
+			parameters: { type: "object", properties: {} },
+			replaySafe: true,
+			execute: async (_args, ctx) => requirePersonFor(ctx, "emetto la fattura", { args: { op: "issue", draft: "BZ-0001", confirm: true }, preview: "Fattura a Delta Servizi Srl\nTotale 1.220,00 €" }) ?? "Emessa",
+		};
+		const [wrapped] = withAgentRequests([tool], { store: d.store, asks: d.asks, reachable: d.reachable, proposed: d.onProposed, record: d.record });
+		expect(String(await wrapped!.execute({ op: "draft", quote: "4" }, ctxFor()))).toMatch(/^Richiesta [0-9a-f]{12} pronta/);
+		const request = d.proposed[0]!;
+		expect(request).toMatchObject({ args: { op: "issue", draft: "BZ-0001", confirm: true }, preview: "Fattura a Delta Servizi Srl\nTotale 1.220,00 €" });
+		expect(agentRequestCard(request, "Ops", agentRequestFitsInChat(request))).toContain("Cosa scriverei:\nFattura a Delta Servizi Srl\nTotale 1.220,00 €");
+		// Too long to read in a chat: approved in the console, and the card says so without the preview.
+		const long = { ...request, preview: "x".repeat(2_000) };
+		expect(agentRequestFitsInChat(long)).toBe(false);
+		expect(agentRequestCard(long, "Ops", false)).not.toContain("Cosa scriverei");
+		await expect(d.store.propose({ tool: "t", args: {}, what: "w", preview: "x".repeat(8_001), askedBy: { id: "a", name: "A" }, thread: THREAD, origin: ORIGIN })).rejects.toThrow(/anteprima/);
+		// Approved, it runs outside A's conversation: as a person's, with the confirmed call.
+		expect(await runAgentRequest([tool], request)).toEqual({ text: "Emessa" });
 	});
 
 	it("a person's turn, or an agente in a stanza, is not touched", async () => {
@@ -197,6 +224,104 @@ describe("richieste tra agenti nella console", () => {
 			expect(notices).toHaveBeenCalledTimes(1);
 			expect(notices.mock.calls[0]![1]).toBe("helper");
 			expect((await api("/api/instances/annie/agent-requests/nope/decision", { decision: "approved" })).status).toBe(404);
+		} finally {
+			await annie.stop();
+		}
+	});
+});
+
+describe("Vendite chiede ad Amministrazione la fattura di un preventivo accettato (ADR 0108)", () => {
+	it("B's sales_invoices escalates the issue with its preview; A's approver gets 403, B's approver issues it once, A hears only the outcome", async () => {
+		const dataDir = tempDataDir();
+		const config = loadAnnieConfig({ ANNIE_DATA_DIR: dataDir, ANNIE_MODEL_PROVIDER: "faux", ANNIE_WEB_PORT: "1" });
+		const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 3_600_000, log: () => {} });
+		const until = async (check: () => Promise<boolean>, what: string) => {
+			for (const start = Date.now(); !(await check()); ) {
+				if (Date.now() - start > 20_000) throw new Error(`timed out: ${what}`);
+				await new Promise((r) => setTimeout(r, 30));
+			}
+		};
+		try {
+			const base = `http://127.0.0.1:${(annie.server.address() as AddressInfo).port}`;
+			const login = async (link: string) => {
+				const res = await fetch(`${base}/api/login`, { method: "POST", headers: { "x-annie": "1" }, body: JSON.stringify({ token: link.split("#")[1] }) });
+				const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0] as string;
+				// biome-ignore lint: test
+				return async (path: string, body?: unknown, method = body === undefined ? "GET" : "POST"): Promise<any> => {
+					const r = await fetch(`${base}${path}`, { method, headers: { cookie, "x-annie": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+					return { status: r.status, ...((await r.json()) as object) };
+				};
+			};
+			const owner = await login(annie.ownerLink as string);
+			const tenant = config.tenantId;
+			await owner("/api/instances", { id: "vendite", name: "Vendite" });
+			await owner("/api/instances", { id: "amministrazione", name: "Amministrazione" });
+			expect((await owner("/api/instances/amministrazione/agents", { from: ["vendite"] }, "PUT")).from).toEqual(["vendite"]);
+			// Anna approves for Vendite only.
+			const { link, person } = await owner("/api/people", { name: "Anna", role: "member" });
+			const everyone = ((await owner("/api/people")).people as { id: string }[]).map((p) => p.id);
+			expect((await owner("/api/instances/vendite/settings", { webPeople: everyone, webApprovers: [person.id] }, "PUT")).status).toBe(200);
+			const anna = await login(link);
+
+			// Amministrazione's register: the company, an accepted quote, the numbering already said.
+			const now = new Date();
+			const year = now.getFullYear();
+			const today = now.toISOString().slice(0, 10);
+			annie.runtime.invoices(tenant, "amministrazione").setCompany({ vat: "IT00000010017", name: "Beta Studio Srl", cf: "00000010017", address: "Via Roma 1, 20121 Milano MI", regime: "ordinario", ibans: ["IT51X0000000000000000000001"], by: "test:u", at: now.toISOString() });
+			const dir = instanceDir(dataDir, tenantId(tenant), instanceId("amministrazione"));
+			mkdirSync(dir, { recursive: true });
+			const quote = { number: `${year}-004`, base: `${year}-004`, revision: 0, date: today, validDays: 30, customer: { name: "Delta Servizi Srl", vat: "00000020016", address: "Via Verdi 2, 00184 Roma RM" }, lines: [{ description: "Sito web", quantity: "1", price: "1000", vat: 22 }], terms: "Bonifico a 60 giorni fine mese", status: "accepted", file: `preventivi/Preventivo-${year}-004.pdf`, by: "test:u", at: now.toISOString() };
+			writeFileSync(join(dir, "quotes.json"), JSON.stringify({ next: { [year]: 10 }, quotes: [quote] }));
+			const sales = annie.runtime.salesInvoices(tenant, "amministrazione");
+			sales.update("seed", (s) => ({ ...s, settings: { by: "test:u", at: now.toISOString(), lastBefore: { [year]: 0 } } }));
+
+			// Vendite asks; the dev model of Amministrazione runs the tool the request names (found first with tool_search, ADR 0100).
+			const thread = (await owner("/api/instances/vendite/threads", {})).thread;
+			const entries = async () => (await owner(`/api/instances/vendite/threads/${thread.id}`)).entries as { from: string; text?: string }[];
+			const said = async (marker: string) => (await entries()).filter((e) => e.text?.includes(marker)).at(-1)?.text;
+			await owner(`/api/instances/vendite/threads/${thread.id}/messages`, { text: `/tool agent_message ${JSON.stringify({ agent: "amministrazione", message: '/tool tool_search {"query":"sales_invoices"}' })}` });
+			await until(async () => (await said("[Risposta dell'agente «Amministrazione»")) !== undefined, "the tool loaded");
+			const ask = `/tool sales_invoices ${JSON.stringify({ op: "draft", quote: `${year}-004`, recipient_code: "ZZZ0001", vat: 22 })}`;
+			await owner(`/api/instances/vendite/threads/${thread.id}/messages`, { text: `/tool agent_message ${JSON.stringify({ agent: "amministrazione", message: ask })}` });
+			let request: AgentRequest | undefined;
+			await until(async () => (request = (await owner("/api/instances/amministrazione/agent-requests")).requests[0]) !== undefined, "the agent request")
+			const pending = request as AgentRequest;
+			const draftId = sales.read().invoices[0]?.id;
+			expect(pending).toMatchObject({ status: "pending", tool: "sales_invoices", what: "emetto la fattura", args: { op: "issue", draft: draftId, confirm: true, version: expect.any(String) }, askedBy: { id: "vendite", name: "Vendite", request: ask } });
+			expect(pending.preview).toContain("Emetterei questa fattura");
+			expect(pending.preview).toContain("Delta Servizi Srl");
+			expect(pending.preview).toContain("Sito web");
+			expect(sales.read().invoices.filter(isIssued)).toHaveLength(0);
+			// Vendite's conversation got B's answer: it waits, with no invoice data.
+			await until(async () => (await said("[Risposta dell'agente «Amministrazione»"))?.includes("pronta") === true, "B's answer");
+			const answer = (await said("[Risposta dell'agente «Amministrazione»")) as string;
+			expect(answer).toContain(`Richiesta ${pending.id} pronta`);
+			expect(answer).not.toMatch(/1\.?220|Delta/);
+
+			// Anna approves for Vendite and may write to Amministrazione, but does not approve for it.
+			expect((await anna(`/api/instances/amministrazione/agent-requests/${pending.id}/decision`, { decision: "approved" })).status).toBe(404);
+			expect((await owner("/api/instances/amministrazione/settings", { webPeople: everyone }, "PUT")).status).toBe(200);
+			expect((await anna("/api/instances/amministrazione/agent-requests")).requests).toEqual([]);
+			expect((await anna(`/api/instances/amministrazione/agent-requests/${pending.id}/decision`, { decision: "approved" })).status).toBe(403);
+			expect(sales.read().invoices.filter(isIssued)).toHaveLength(0);
+
+			const decided = await owner(`/api/instances/amministrazione/agent-requests/${pending.id}/decision`, { decision: "approved" });
+			expect(decided.request).toMatchObject({ status: "done" });
+			const issued = sales.read().invoices.filter(isIssued);
+			expect(issued).toHaveLength(1);
+			expect(issued[0]).toMatchObject({ id: draftId, number: "1" });
+			expect((await owner(`/api/instances/amministrazione/agent-requests/${pending.id}/decision`, { decision: "approved" })).request.decidedAt).toBe(decided.request.decidedAt);
+			expect(sales.read().invoices.filter(isIssued)).toHaveLength(1);
+
+			// The outcome reaches Vendite's conversation: done, with no number nor amount.
+			await until(async () => (await said("[Esito della tua richiesta all'agente «Amministrazione»")) !== undefined, "the outcome notice");
+			const outcome = (await said("[Esito della tua richiesta all'agente «Amministrazione»")) as string;
+			expect(outcome).toContain("Approvata da una persona che approva per «Amministrazione» e fatta");
+			expect(outcome).not.toMatch(/1\.?220|Delta/);
+
+			const audit = await annie.runtime.audit(tenant).read();
+			const types = audit.filter((e) => e.instanceId === "amministrazione").map((e) => e.type);
+			expect(types).toEqual(expect.arrayContaining(["agent_request.proposed", "user.denied", "agent_request.approved", "agent_request.done", "sales_invoices.changed"]));
 		} finally {
 			await annie.stop();
 		}

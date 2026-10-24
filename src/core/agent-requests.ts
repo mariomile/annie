@@ -5,7 +5,7 @@ import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
 import { AGENT_CHANNEL, AGENT_LIMITS, fencedAgentRequest, type Origin, parseAgentThread } from "./agent-messages.ts";
 import type { AuditEvent } from "./audit.ts";
 import { shownArgs } from "./connector-actions.ts";
-import type { AnnieTool, ToolContext } from "./engine.ts";
+import type { AnnieTool, PersonCall, ToolContext } from "./engine.ts";
 import { readJsonFile, updateJsonFile } from "./locked-json.ts";
 import { oneLine } from "./plain-text.ts";
 
@@ -25,6 +25,8 @@ export type AgentRequest = {
 	readonly shown: readonly (readonly [string, string])[];
 	/** The step, in B's first person («cambio la numerazione delle fatture»), from the tool's own gate. */
 	readonly what: string;
+	/** What it will write, as the tool previews it for a person (an invoice's lines and totals): read by the approver. */
+	readonly preview?: string;
 	/** The agente that asked, and what it wrote (data, never instructions). */
 	readonly askedBy: AskedBy;
 	/** B's conversation with A (channel agente). */
@@ -63,6 +65,8 @@ export const AGENT_REQUEST_LIMITS = {
 	maxArgsChars: 20_000,
 	/** Every value is shown whole to the approver: longer ones are refused, never cut. */
 	maxValueChars: 5_000,
+	/** The preview is shown whole too: a longer one is refused, never cut. */
+	maxPreviewChars: 8_000,
 	/** A chat card longer than this is approved in the console. */
 	maxCardChars: 1_500,
 	maxResultChars: 8_000,
@@ -78,7 +82,7 @@ export class AgentRequestStore {
 	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
-	async propose(input: Pick<AgentRequest, "tool" | "args" | "what" | "askedBy" | "thread" | "origin">, now = new Date(), key?: string): Promise<AgentRequest> {
+	async propose(input: Pick<AgentRequest, "tool" | "args" | "what" | "preview" | "askedBy" | "thread" | "origin">, now = new Date(), key?: string): Promise<AgentRequest> {
 		const id = this.queue.idFor(key, "agent:");
 		if (key !== undefined) {
 			const existing = await this.get(id, now);
@@ -88,6 +92,7 @@ export class AgentRequestStore {
 		if (JSON.stringify(input.args).length > L.maxArgsChars) throw new AgentRequestError(`i dati dell'azione superano ${L.maxArgsChars} caratteri`);
 		const shown = shownArgs(input.args);
 		if (shown.some(([k, v]) => v.length > L.maxValueChars || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(k))) throw new AgentRequestError(`un dato è troppo lungo o ha caratteri di controllo nel nome`);
+		if (input.preview !== undefined && input.preview.length > L.maxPreviewChars) throw new AgentRequestError(`l'anteprima di quello che scriverei supera ${L.maxPreviewChars} caratteri`);
 		const request = input.askedBy.request === undefined ? undefined : input.askedBy.request.slice(0, AGENT_LIMITS.maxChars);
 		const askedBy = { id: input.askedBy.id, name: oneLine(input.askedBy.name, 80), ...(request === undefined ? {} : { request }) };
 		return this.queue.add({ ...input, askedBy, shown, id, status: "pending", proposedAt: now.toISOString() }, now);
@@ -167,7 +172,9 @@ export type AgentRequestDeps = {
 /**
  * The tools of agente B, with another agente's step that needs a yes sent to B's approvers: a
  * call in a conversation on the channel agente whose tool refused it through requirePersonFor
- * becomes a request waiting for one of them. Elsewhere (a stanza, a person's turn) nothing changes.
+ * becomes a request waiting for one of them: the call made, or the confirmed one the tool handed
+ * over with its preview (requirePersonFor's `call`). Elsewhere (a stanza, a person's turn) nothing
+ * changes.
  */
 export function withAgentRequests(tools: readonly AnnieTool[], deps: AgentRequestDeps): AnnieTool[] {
 	return tools.map((tool) => ({
@@ -176,21 +183,21 @@ export function withAgentRequests(tools: readonly AnnieTool[], deps: AgentReques
 			const thread = ctx.thread;
 			const asked = ctx.origin === "agent" && thread?.channel === AGENT_CHANNEL ? parseAgentThread(thread.threadId) : undefined;
 			if (asked === undefined || thread === undefined) return tool.execute(args, ctx);
-			let what: string | undefined;
+			let needed: { what: string; call?: PersonCall } | undefined;
 			const out = await tool.execute(args, {
 				...ctx,
-				needsPerson: (w) => {
-					what ??= w;
+				needsPerson: (what, call) => {
+					needed ??= { what, ...(call === undefined ? {} : { call }) };
 				},
 			});
-			if (what === undefined) return out;
-			const step = what;
-			return ctx.step("agent-request", () => escalate(tool.name, args, step, asked, thread, ctx, deps));
+			if (needed === undefined) return out;
+			const { what, call } = needed;
+			return ctx.step("agent-request", () => escalate(tool.name, call?.args ?? args, what, call?.preview, asked, thread, ctx, deps));
 		},
 	}));
 }
 
-async function escalate(tool: string, args: Record<string, unknown>, what: string, asked: { from: string; origin: Origin }, thread: { channel: string; threadId: string }, ctx: ToolContext, deps: AgentRequestDeps): Promise<string> {
+async function escalate(tool: string, args: Readonly<Record<string, unknown>>, what: string, preview: string | undefined, asked: { from: string; origin: Origin }, thread: { channel: string; threadId: string }, ctx: ToolContext, deps: AgentRequestDeps): Promise<string> {
 	const askedBy = askedByIn(deps.asks, thread) ?? { id: asked.from, name: asked.from };
 	if (!(await deps.reachable())) {
 		await deps.record({ type: "agent_request.unreachable", tool, from: asked.from });
@@ -198,7 +205,7 @@ async function escalate(tool: string, args: Record<string, unknown>, what: strin
 	}
 	let request: AgentRequest;
 	try {
-		request = await deps.store.propose({ tool, args, what, askedBy, thread, origin: asked.origin }, new Date(), ctx.callId);
+		request = await deps.store.propose({ tool, args, what, ...(preview === undefined ? {} : { preview }), askedBy, thread, origin: asked.origin }, new Date(), ctx.callId);
 	} catch (error) {
 		if (error instanceof AgentRequestError) return `Errore: ${error.message}. Non l'hai fatto: dillo a «${askedBy.name}».`;
 		throw error;
@@ -225,8 +232,8 @@ export function askedByLines(askedBy: AskedBy | undefined): string {
 }
 
 /** Whether a card in a chat can show it all: long values, or many, are approved in the console. */
-export function agentRequestFitsInChat(request: Pick<AgentRequest, "shown">): boolean {
-	const size = request.shown.reduce((n, [k, v]) => n + k.length + v.length + 3, 0);
+export function agentRequestFitsInChat(request: Pick<AgentRequest, "shown" | "preview">): boolean {
+	const size = request.shown.reduce((n, [k, v]) => n + k.length + v.length + 3, request.preview?.length ?? 0);
 	return request.shown.every(([, v]) => v.length <= 300) && size <= AGENT_REQUEST_LIMITS.maxCardChars;
 }
 
@@ -236,7 +243,8 @@ export function agentRequestCard(request: AgentRequest, self: string, fits: bool
 	const listed = fits ? values : values.slice(0, 10).concat(values.length > 10 ? [`(e altri ${values.length - 10} dati)`] : []);
 	const expires = new Date(Date.parse(request.proposedAt) + AGENT_REQUEST_LIMITS.ttlMs).toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 	const long = fits ? "" : "\n\nÈ lunga: si legge intera e si approva solo dalla console web (Approvazioni). Da qui puoi rifiutarla.";
-	return `${self}: richiesta di un altro agente da approvare · ${request.id}${askedByLines(request.askedBy)}\n\nAzione: ${request.what} (${request.tool})\n\n${listed.length > 0 ? listed.join("\n") : "(nessun dato)"}${long}\n\nScade il ${expires}.`;
+	const preview = request.preview === undefined || !fits ? "" : `\n\nCosa scriverei:\n${request.preview}`;
+	return `${self}: richiesta di un altro agente da approvare · ${request.id}${askedByLines(request.askedBy)}\n\nAzione: ${request.what} (${request.tool})\n\n${listed.length > 0 ? listed.join("\n") : "(nessun dato)"}${preview}${long}\n\nScade il ${expires}.`;
 }
 
 /** What A is told: the outcome only (what B's tool answered stays with B's approvers), A's words fenced as data. */
@@ -256,13 +264,16 @@ export function agentRequestReport(request: AgentRequest, self: { readonly id: s
 	return `${head} Approvata da una persona che approva per «${self.name}» e fatta. ${tell}${yours}`;
 }
 
-/** Runs an approved request's tool, once, as the approver's own act: a person's yes for exactly these arguments. */
+/**
+ * Runs an approved request's tool, once, as the approver's own act: a person's yes for exactly
+ * these arguments. Outside B's conversation with A (no thread), so no tool takes it for A's turn.
+ */
 export async function runAgentRequest(tools: readonly AnnieTool[] | undefined, request: AgentRequest, signal: AbortSignal = new AbortController().signal): Promise<AgentRequestResult> {
 	const tool = tools?.find((t) => t.name === request.tool);
 	if (tool === undefined) throw new AgentRequestError(`lo strumento ${request.tool} non c'è più`);
 	let out: Awaited<ReturnType<AnnieTool["execute"]>>;
 	try {
-		out = await tool.execute({ ...request.args }, { callId: `agent-request:${request.id}`, origin: "person", thread: request.thread, signal, progress: () => {}, step: (_key, work) => work() });
+		out = await tool.execute({ ...request.args }, { callId: `agent-request:${request.id}`, origin: "person", signal, progress: () => {}, step: (_key, work) => work() });
 	} catch (error) {
 		throw new AgentRequestUncertain(error instanceof Error ? error.message : String(error));
 	}

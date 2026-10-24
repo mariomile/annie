@@ -6,6 +6,9 @@
  * and the courtesy PDF beside it; the list of a year with its totals. Nothing is sent to the SdI
  * and nothing is mailed: the person uploads the file, or mails it with the approval flow.
  * Another agente gets only the year's counts and totals; the audit only the op and a count.
+ * Another agente's request for an invoice, in its conversation with this one, goes to this
+ * agente's approvers (ADR 0108): the draft is made and its issue waits for their yes; the agente
+ * that asked hears only the outcome.
  */
 import type { AnnieTool, ToolContext } from "../engine.ts";
 import { todayIn } from "../italian-calendar.ts";
@@ -14,7 +17,7 @@ import { nextSeq, type SalesBook } from "../sales-invoice-store.ts";
 import { salesTotals } from "../sales-invoice-sums.ts";
 import { type IssuedInvoice, invoiceNumber, isIssued, SALES_LIMITS, type SalesInvoice, SalesInvoiceError, salesAgentReads } from "../sales-invoices.ts";
 import { WorkspaceError } from "../workspace.ts";
-import { creditNote, draft, lowNumberNote, readLastNumber } from "./sales-invoice-draft.ts";
+import { creditNote, DRAFT_CHECKED, draft, lowNumberNote, readLastNumber } from "./sales-invoice-draft.ts";
 import { dueOf, filesSay, findIssued, namedDraft, type SalesEnv, type SalesEnvOptions, type SalesStores, salesEnvOf } from "./sales-invoice-env.ts";
 import { finish, issue } from "./sales-invoice-issue.ts";
 import { agentListAnswer, briefLine, fenced, invoiceLines, listAnswer } from "./sales-invoice-render.ts";
@@ -24,6 +27,9 @@ export type { SalesEvent } from "./sales-invoice-env.ts";
 
 const SALES_OPS = ["draft", "credit_note", "show", "list", "issue", "finish", "remove", "settings"] as const;
 type Op = (typeof SALES_OPS)[number];
+
+/** A draft's data only a person's word sets (they are saved for the next invoices too, or replace a draft). */
+const PERSON_ONLY = ["last_number", "bollo_to_client", "ritenuta", "replace", "new_customer"] as const;
 
 /** The stores, who is who, the audit, and (tests) the clock and the PDF maker: what builds the env (sales-invoice-env.ts salesEnvOf). */
 export type SalesToolsOptions = SalesStores & {
@@ -133,10 +139,11 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 				const op = args.op as Op;
 				// Another agente's request is not the person's word: the year's counts and totals only.
 				const agent = isAgentTurn(ctx);
+				const day = todayIn(timeZone, now());
+				if (agent && op === "draft" && ctx.needsPerson !== undefined) return await forApprovers(args, ctx, day);
 				if (agent && !salesAgentReads(args)) {
 					return "Errore: a un altro agente non preparo, non emetto e non mostro fatture: posso dare solo quante sono e i totali dell'anno. Il resto lo chiede chi ti scrive, nella sua conversazione.";
 				}
-				const day = todayIn(timeZone, now());
 				try {
 					switch (op) {
 						case "draft":
@@ -164,6 +171,32 @@ export function createSalesInvoiceTools(options: SalesToolsOptions): AnnieTool[]
 			},
 		},
 	];
+
+	/**
+	 * Another agente asks for an invoice (ADR 0108): the draft is made as for a person, and its
+	 * issue (the preview, the confirmed call) goes to this agente's approvers through
+	 * requirePersonFor. What the draft says stays here: the model, which answers the agente, hears
+	 * only that it waits or that it cannot be made. What a person alone says (the numbering, the
+	 * bollo, the ritenuta, a draft to replace) is not taken from another agente.
+	 */
+	async function forApprovers(args: Record<string, unknown>, ctx: ToolContext, day: string): Promise<string> {
+		const cannot = "Errore: questa fattura non la posso preparare su richiesta di un altro agente: mancano dati o qualcosa va controllato. La prepara una persona che ti segue, nella sua conversazione con te. Rispondi all'agente che te l'ha chiesta solo questo, senza dettagli della fattura.";
+		if (PERSON_ONLY.some((k) => args[k] !== undefined)) return cannot;
+		try {
+			if (env.book().invoices.find((i) => i.callId === ctx.callId) === undefined) {
+				if ((await draft(env, args, ctx, day, { check: true })) !== DRAFT_CHECKED) return cannot;
+				await draft(env, args, ctx, day);
+			}
+			const made = env.book().invoices.find((i) => i.callId === ctx.callId);
+			if (made === undefined || isIssued(made)) return cannot;
+			let asked = false;
+			const answer = await issue(env, { op: "issue", draft: made.id, confirm: true }, { ...ctx, needsPerson: (what, call) => ((asked = true), ctx.needsPerson?.(what, call)) }, day);
+			return asked ? answer : cannot;
+		} catch (error) {
+			if (error instanceof SalesInvoiceError || error instanceof WorkspaceError) return cannot;
+			throw error;
+		}
+	}
 
 	function show(args: Record<string, unknown>, day: string): string {
 		const book = env.book();

@@ -137,6 +137,9 @@ export type AnnieTool = {
 	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 };
 
+/** The confirmed call a tool hands to the approvers in place of the one made, with what it will write (ADR 0108). */
+export type PersonCall = { readonly args: Readonly<Record<string, unknown>>; readonly preview: string };
+
 export type ToolContext = {
 	/**
 	 * Run `work` at most once per call and key, durably: if the process dies after the
@@ -160,6 +163,8 @@ export type ToolContext = {
 	/**
 	 * Told by requirePersonFor when another agente's turn reaches a step that needs a person's
 	 * yes (`what`, as in the refusal): the call can then go to this agente's approvers (ADR 0108).
+	 * A tool with a preview gives `call` too: the exact confirmed call to run once approved (in
+	 * place of the one made), and the preview the approver reads (what will be written).
 	 */
-	readonly needsPerson?: (what: string) => void;
+	readonly needsPerson?: (what: string, call?: PersonCall) => void;
 };
