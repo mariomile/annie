@@ -12,7 +12,7 @@ export type RemoteComputerOptions = {
 const API_TIMEOUT_MS = 60_000;
 
 /**
- * A cell's computers in Annie Cloud (ADR 0015): the control plane runs them on micro-VMs and
+ * A cell's computers in Owni Cloud (ADR 0015): the control plane runs them on micro-VMs and
  * holds the provider's token; the cell only asks, for its own tenant, with a token derived from
  * its secret. The control plane names each computer after the tenant and the cell's key, so a
  * cell can reach no other tenant's computers whatever key it sends.

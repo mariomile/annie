@@ -365,7 +365,7 @@ describe("VIES client", () => {
 			["INVALID_INPUT", "INVALID_INPUT", "il VIES rifiuta questo numero (il suo Stato membro ha regole più strette)"],
 			["SERVICE_UNAVAILABLE", "SERVICE_UNAVAILABLE", "il VIES non è disponibile in questo momento"],
 			["IP_BLOCKED", "BLOCKED", "il VIES rifiuta per ora le richieste di questo server: riprova più tardi"],
-			["SOMETHING_NEW", "OTHER", "il VIES ha risposto con un errore che Annie non conosce"],
+			["SOMETHING_NEW", "OTHER", "il VIES ha risposto con un errore che Owni non conosce"],
 		];
 		for (const [userError, code, message] of table) {
 			const fake = fakeVies({ [url("IT", "00000500157")]: { ...failing(userError), isValid: true } });
@@ -682,7 +682,7 @@ describe("VIES configuration", () => {
 		expect(() => loadAnnieConfig({ ...base, ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER: "5" })).toThrow("ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER set without ANNIE_VAT_CHECK=1");
 	});
 
-	it("reaches the cells of Annie Cloud", () => {
+	it("reaches the cells of Owni Cloud", () => {
 		const passed = /const passed = \[([^\]]*)\]/.exec(readFileSync("src/main/cloud.ts", "utf8"))?.[1] ?? "";
 		for (const name of ["ANNIE_VAT_CHECK", "ANNIE_VAT_CHECK_URL", "ANNIE_VAT_CHECK_MAX_PER_DAY", "ANNIE_VAT_CHECK_MAX_PER_DAY_SERVER"]) expect(passed).toContain(`"${name}"`);
 	});

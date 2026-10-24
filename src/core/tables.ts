@@ -204,7 +204,7 @@ function joinSheets(sheets: Sheet[], notes: string[]): { rows: string[][]; names
 	const rows = [["Foglio", ...first.header]];
 	for (const p of same) {
 		for (const r of p.rows) {
-			if (rows.length > TABLE_LIMITS.maxRows + 1) throw new TableError(`i fogli insieme hanno più di ${italianCount(TABLE_LIMITS.maxRows)} righe: per tabelle così grandi serve il computer di Annie`);
+			if (rows.length > TABLE_LIMITS.maxRows + 1) throw new TableError(`i fogli insieme hanno più di ${italianCount(TABLE_LIMITS.maxRows)} righe: per tabelle così grandi serve il computer di Owni`);
 			rows.push([p.name, ...r]);
 		}
 	}
@@ -265,7 +265,7 @@ class Table {
 	constructor(all: string[][], labelFrom = 0) {
 		let source = all.filter((r) => filledCells(r) > 0);
 		if (source.length === 0) throw new TableError("il foglio è vuoto");
-		if (source.length > TABLE_LIMITS.maxRows + 1) throw new TableError(`la tabella ha più di ${italianCount(TABLE_LIMITS.maxRows)} righe: per una tabella così grande serve il computer di Annie`);
+		if (source.length > TABLE_LIMITS.maxRows + 1) throw new TableError(`la tabella ha più di ${italianCount(TABLE_LIMITS.maxRows)} righe: per una tabella così grande serve il computer di Owni`);
 		const { at, hasHeader } = findHeader(source);
 		if (at > 0) this.notes.push(`Ho saltato ${at === 1 ? "la prima riga" : `le prime ${at} righe`}, sopra l'intestazione (un titolo o i dati del conto).`);
 		source = source.slice(at);

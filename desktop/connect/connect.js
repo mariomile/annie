@@ -6,7 +6,7 @@ const error = document.querySelector("#error");
 const button = form.querySelector("button");
 const local = document.querySelector("#locale");
 
-// The app reloads this page when Annie on this computer is ready or did not start.
+// The app reloads this page when Owni on this computer is ready or did not start.
 const state = await invoke("state");
 document.querySelector(state.starting ? "#avvio" : "#collega").hidden = false;
 if (state.current) input.value = state.current;

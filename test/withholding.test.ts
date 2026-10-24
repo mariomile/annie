@@ -84,7 +84,7 @@ const r20 = (amount: string): Ritenuta[] => [{ amount }];
 /**
  * R0 (C3, Nov 2025, paid Dec 2025: 2025's), R5 (C3, Dec 2025, paid Jan 2026: 2026's), R1 (C1, Dec
  * 2025, no payment data, paid Jan 2026), R2 (C1, March), NC1 (C1 credit note, used in April), R3
- * (C2, an agent's 23% on 50%), S-1 (C2, issued by Annie and its XML: once), R6 (C3, the bank says
+ * (C2, an agent's 23% on 50%), S-1 (C2, issued by Owni and its XML: once), R6 (C3, the bank says
  * gross), R7 (C1, the bank says less), R8 (C1, open, no payment data), P1 (C2, no ritenuta), RC
  * (C2, only a contribution withheld: RT03).
  */
@@ -116,7 +116,7 @@ const PAID: Record<string, string> = {
 	RC: "2026-03-01T10:00:00.000Z",
 };
 
-/** Annie's own S-1 to Cliente Due: 1.500 € with the 20% ritenuta, as the sales store keeps it. */
+/** Owni's own S-1 to Cliente Due: 1.500 € with the 20% ritenuta, as the sales store keeps it. */
 function sale(o: { number?: string; date?: string; price?: string; ritenuta?: boolean } = {}): SalesInvoice {
 	const marker = { by: "test:u", at: NOW.toISOString() };
 	const date = o.date ?? "2026-07-01";
@@ -276,12 +276,12 @@ describe("ritenute: the rules and their sources", () => {
 });
 
 describe("ritenute: the documents, each once", () => {
-	it("the XML's DatiRitenuta and Annie's own invoices, the same invoice once, contributions apart", async () => {
+	it("the XML's DatiRitenuta and Owni's own invoices, the same invoice once, contributions apart", async () => {
 		const s = await setup();
 		const { docs } = withheldDocs([sale()], await s.registerNow(), dayOf);
 		const by = (n: string) => docs.find((d) => d.number === n);
 		expect(docs.map((d) => d.number).sort()).toEqual(["NC1", "R0", "R1", "R2", "R3", "R5", "R6", "R7", "R8", "S-1"]);
-		// S-1 is Annie's: from the sales store, not its XML.
+		// S-1 is Owni's: from the sales store, not its XML.
 		expect(docs.filter((d) => d.number === "S-1")).toHaveLength(1);
 		expect(by("S-1")).toMatchObject({ source: "sales", ritenuta: 30_000n, compensi: 150_000n, total: 183_000n, net: 153_000n, paidOn: "2026-07-20", inRegister: true });
 		expect(by("R3")).toMatchObject({ ritenuta: 11_500n, rate: "23", causale: "R" });
@@ -290,7 +290,7 @@ describe("ritenute: the documents, each once", () => {
 		expect(by("R8")?.paidOn).toBeUndefined();
 	});
 
-	it("an XML with a ritenuta and Annie's invoice not issued as XML yet: the sales one alone, without a paid mark to read", async () => {
+	it("an XML with a ritenuta and Owni's invoice not issued as XML yet: the sales one alone, without a paid mark to read", async () => {
 		const s = await setup({ sales: [sale({ number: "S-9", date: "2026-07-02" })] });
 		const { docs } = withheldDocs([sale({ number: "S-9", date: "2026-07-02" })], await s.registerNow(), dayOf);
 		expect(docs.find((d) => d.number === "S-9")).toMatchObject({ inRegister: false, partly: false });
@@ -487,7 +487,7 @@ describe("ritenute: the CU", () => {
 
 	it("an invoice of December paid in January explains the CU of the year before", async () => {
 		const s = await setup();
-		// Cliente Tre certified R0 and R5 in 2025, R5 by its date: Annie counts it in 2026.
+		// Cliente Tre certified R0 and R5 in 2025, R5 by its date: Owni counts it in 2026.
 		const answer = await s.run({ op: "record_cu", client: "Cliente Tre", year: 2025, gross: 800, withheld: 160 });
 		expect(answer).toContain("Non torna: la CU dice 60,00 € di ritenute in più delle mie (100,00 € su 1 fattura pagata nel 2025).");
 		expect(answer).toContain("La differenza si spiega con le fatture nel riquadro.");
@@ -525,7 +525,7 @@ describe("ritenute: the CU", () => {
 		expect(byName.split("\n")[0]).toBe("Errore: nelle mie fatture non c'è nessun cliente con questo nome (nel riquadro): dammi la partita IVA del cliente come la scrive la CU.");
 		expect(inside(byName)).toBe("Studio Sconosciuto");
 		expect(s.store.read().cus).toHaveLength(0);
-		// Without Cliente Tre's invoices, its partita IVA is a client Annie has nothing of: saved by it.
+		// Without Cliente Tre's invoices, its partita IVA is a client Owni has nothing of: saved by it.
 		const { "f/r0.xml": _r0, "f/r5.xml": _r5, "f/r6.xml": _r6, ...noTre } = FILES;
 		const t = await setup({ files: noTre, now: LATER });
 		const byVat = await t.run({ op: "record_cu", client: `P.IVA IT ${CLIENT3.vat}`, year: 2026, gross: 100, withheld: 20 });
@@ -652,9 +652,9 @@ describe("ritenute: the brief", () => {
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "cu_list", compact: true }, fresh()))).toContain("Mancano 3 CU");
 		expect(String(await briefed?.execute({ op: "summary", year: 2026 }, fresh()))).toContain("Trattenute dai clienti");
-		expect(String(await briefed?.execute({ op: "record_cu", client: "Cliente Uno", gross: 1, withheld: 0 }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
-		expect(String(await briefed?.execute({ op: "cu_remove", id: "CU-0001" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
-		expect(String(await briefed?.execute({ op: "export" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "record_cu", client: "Cliente Uno", gross: 1, withheld: 0 }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
+		expect(String(await briefed?.execute({ op: "cu_remove", id: "CU-0001" }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
+		expect(String(await briefed?.execute({ op: "export" }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(existsSync(join(s.dir, "withholding.json"))).toBe(false);
 		expect(existsSync(join(s.root, "ritenute"))).toBe(false);
 		expect(withholdingCallReads({ op: "check_payment" })).toBe(true);

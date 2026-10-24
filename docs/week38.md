@@ -1,15 +1,15 @@
 # Settimana 38: registrazioni lunghe trascritte con i tempi
 
-Branch `week-38`. Annie capiva i vocali fino a cinque minuti; una riunione registrata, una chiamata o un video restavano un file. Ora `audio_transcribe` trascrive registrazioni di qualunque durata (fino a 180 minuti di default), a pezzi di dieci minuti, con il minuto di ogni passaggio e, con Mistral, le voci distinte. La trascrizione va in `trascrizioni/` e Annie ne fa il riassunto o il verbale. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0033](adr/0033-registrazioni-lunghe.md).
+Branch `week-38`. Owni capiva i vocali fino a cinque minuti; una riunione registrata, una chiamata o un video restavano un file. Ora `audio_transcribe` trascrive registrazioni di qualunque durata (fino a 180 minuti di default), a pezzi di dieci minuti, con il minuto di ogni passaggio e, con Mistral, le voci distinte. La trascrizione va in `trascrizioni/` e Owni ne fa il riassunto o il verbale. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0033](adr/0033-registrazioni-lunghe.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Fammi il verbale»** con l'MP3 o l'M4A della riunione: Annie trascrive, legge tutto e scrive decisioni, chi fa cosa e scadenze, citando i minuti.
-- **Un vocale di venti minuti** su Telegram o WhatsApp non è più rifiutato: diventa una registrazione, Annie lo trascrive e risponde.
-- **Il video della riunione** mandato dalla chat o dalla console: Annie trascrive solo il sonoro, che pesa una frazione del video.
+- **«Fammi il verbale»** con l'MP3 o l'M4A della riunione: Owni trascrive, legge tutto e scrive decisioni, chi fa cosa e scadenze, citando i minuti.
+- **Un vocale di venti minuti** su Telegram o WhatsApp non è più rifiutato: diventa una registrazione, Owni lo trascrive e risponde.
+- **Il video della riunione** mandato dalla chat o dalla console: Owni trascrive solo il sonoro, che pesa una frazione del video.
 - **«Cosa ha detto il cliente sul prezzo?»**: la frase con il suo minuto, [12:40].
-- **Chi parla**: con Mistral le voci sono distinte (Voce 1, Voce 2); il servizio non sa i nomi, e in una registrazione lunga le numera di nuovo in ogni pezzo, cosa che il file e Annie dicono.
-- **Oltre i 20 MB** che una chat lascia scaricare, Annie dice come mandarla (M4A o MP3 a qualità più bassa, o divisa).
+- **Chi parla**: con Mistral le voci sono distinte (Voce 1, Voce 2); il servizio non sa i nomi, e in una registrazione lunga le numera di nuovo in ogni pezzo, cosa che il file e Owni dicono.
+- **Oltre i 20 MB** che una chat lascia scaricare, Owni dice come mandarla (M4A o MP3 a qualità più bassa, o divisa).
 
 ## Cosa funziona (verificato dai test)
 
@@ -33,4 +33,4 @@ Due revisori: sicurezza e standard, con file costruiti apposta e ffmpeg; specifi
 - **Media (uso).** I video su Telegram e WhatsApp erano ignorati; la descrizione prometteva i tempi anche ai servizi che non li danno; «l'ora» sembrava un orario; il resto della trascrizione si rileggeva dall'inizio (ora c'è l'offset); mancava come mandare la trascrizione (`file_send`) e di avvisare che ci vuole qualche minuto.
 - **Bassa (uso).** «1 minuti», il prefisso del messaggio nel titolo, «pezzo di dieci minuti» anche quando il pezzo è più corto, messaggio d'errore in inglese.
 
-Lasciato: la nota con formato e durata nella casella della console la scrive la console (`app.js`), che riceve già `recording` dal caricamento e la userà con il lavoro sulla console; fino ad allora lì il file arriva come «File caricato» e Annie lo riconosce dall'estensione.
+Lasciato: la nota con formato e durata nella casella della console la scrive la console (`app.js`), che riceve già `recording` dal caricamento e la userà con il lavoro sulla console; fino ad allora lì il file arriva come «File caricato» e Owni lo riconosce dall'estensione.

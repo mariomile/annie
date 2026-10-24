@@ -1,8 +1,8 @@
 # Settimana 66: budget e obiettivi
 
-Branch `week-66`. La persona fissa limiti di spesa e obiettivi di incasso, e Annie li segue dai registri che ci sono già, con una stima a fine periodo e un avviso nel brief quando un limite si avvicina o un obiettivo resta indietro. Le scelte sono nell'[ADR 0086](adr/0086-budget-e-obiettivi.md).
+Branch `week-66`. La persona fissa limiti di spesa e obiettivi di incasso, e Owni li segue dai registri che ci sono già, con una stima a fine periodo e un avviso nel brief quando un limite si avvicina o un obiettivo resta indietro. Le scelte sono nell'[ADR 0086](adr/0086-budget-e-obiettivi.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Metti un budget di 300 € al mese per il software»**: salvato, anche su un fornitore o su tutte le spese.
 - **«Quanto ho speso per il software questo mese rispetto al budget?»**: speso, percentuale, cosa resta e la stima a fine mese.

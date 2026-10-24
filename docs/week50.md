@@ -1,13 +1,13 @@
 # Settimana 50: preventivi
 
-Branch `week-50`. Annie fa i preventivi: numerati, con l'IVA calcolata senza errori, in PDF o Word con la carta intestata dell'azienda. Le scelte sono nell'[ADR 0055](adr/0055-preventivi.md).
+Branch `week-50`. Owni fa i preventivi: numerati, con l'IVA calcolata senza errori, in PDF o Word con la carta intestata dell'azienda. Le scelte sono nell'[ADR 0055](adr/0055-preventivi.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Fammi un preventivo per Rossi Srl: 3 giornate a 500 €, trasferta 120 €, IVA 22%»**: il PDF pronto con totali, validità e riquadro per l'accettazione, mandato in chat da inoltrare.
 - **«Rifai il 12 con lo sconto del 10%»** o **«aggiungi 2 ore»**: una revisione con lo stesso numero.
 - **«Quali preventivi sono ancora aperti?»**: i primi 15 con la scadenza e il totale aperto.
-- **«Il 12 è stato accettato»**: annotato, e Annie propone di ricordare la fattura.
+- **«Il 12 è stato accettato»**: annotato, e Owni propone di ricordare la fattura.
 - **Forfettario, ritenuta, rivalsa INPS o cassa, acconto, prezzi IVA inclusa**: gestiti quando la persona li dice; l'aliquota la sceglie sempre lei.
 - **«La mia azienda è in via Roma 1, tel. …, regime forfettario»**: i dati vanno nella carta intestata.
 

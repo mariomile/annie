@@ -1,5 +1,5 @@
 /**
- * Who the suppliers are and what Annie knows of each, read from the registers and never written:
+ * Who the suppliers are and what Owni knows of each, read from the registers and never written:
  * the cards the person made, the suppliers of the invoices received (scadenzario), of the
  * expenses and of the renewals, grouped by the clients' rule (party-groups.ts): partita IVA or
  * codice fiscale first, then the name. A renewal without a provider goes to the one supplier

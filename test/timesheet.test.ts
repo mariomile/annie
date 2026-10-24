@@ -763,7 +763,7 @@ describe("timesheet: another agente, the brief, the store", () => {
 		expect(await s.run({ op: "status" }, agent())).toContain("il timer è personale");
 		expect(await s.run({ op: "set_rate" }, agent())).toContain("Tariffe orarie");
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		expect(String(await briefed?.execute({ op: "start", client: "Rossi" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "start", client: "Rossi" }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await briefed?.execute({ op: "to_quote", client: "Rossi", vat: 22 }, fresh()))).toContain("legge soltanto");
 		expect(String(await briefed?.execute({ op: "summary", compact: true }, fresh()))).toContain("Niente da segnalare sulle ore");
 		expect(String(await briefed?.execute({ op: "status" }, fresh()))).toBe("Nessun timer avviato.");
@@ -1322,7 +1322,7 @@ describe("timesheet in the app", () => {
 	}, 60_000);
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

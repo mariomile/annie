@@ -86,7 +86,7 @@ async function until(check: () => Promise<boolean>, timeoutMs = 30_000): Promise
 	}
 }
 
-describe("Annie Cloud control plane (cells as local processes)", () => {
+describe("Owni Cloud control plane (cells as local processes)", () => {
 	it("sign up by email, land in your own cell, get an answer", async () => {
 		const c = await cloud();
 		const started = Date.now();
@@ -254,7 +254,7 @@ describe("Annie Cloud control plane (cells as local processes)", () => {
 	}, 180_000);
 });
 
-/** A Stripe that answers like the real one for what Annie asks, and records each call. */
+/** A Stripe that answers like the real one for what Owni asks, and records each call. */
 async function fakeStripe() {
 	const calls: { method: string; path: string; form: Record<string, string>; auth: string }[] = [];
 	/** Subscriptions as Stripe has them: tests change them, then send the event. */
@@ -305,7 +305,7 @@ async function verifyFor(c: Awaited<ReturnType<typeof cloudAt>>, email: string, 
 	return { mail, answer: await home("/api/verify", { method: "POST", body: JSON.stringify({ token, ...(purpose === undefined ? {} : { purpose }) }) }) };
 }
 
-describe("Annie Cloud subscriptions (Stripe, faked)", () => {
+describe("Owni Cloud subscriptions (Stripe, faked)", () => {
 	it("after the trial the cell stays asleep and the person is sent to subscribe; what Stripe says, asked again, opens it", async () => {
 		const stripe = await fakeStripe();
 		const billing = new StripeBilling({ secretKey: "sk_test_annie", webhookSecret: WEBHOOK_SECRET, price: "price_flat", trialDays: 0, apiBase: stripe.base });
@@ -353,7 +353,7 @@ describe("Annie Cloud subscriptions (Stripe, faked)", () => {
 		stripe.subscriptions.set("sub_2", { id: "sub_2", customer: "cus_2", status: "canceled", metadata: { tenant } });
 		await home("/stripe/webhook", signed({ type: "customer.subscription.deleted", created: 150, object: { id: "sub_2" } }));
 		expect((await c.cp.status())[0]?.billing).toMatchObject({ state: "active", subscription: "active" });
-		// The event says what changed; Stripe says how it stands: a late payment keeps Annie on, cancellation ends it.
+		// The event says what changed; Stripe says how it stands: a late payment keeps Owni on, cancellation ends it.
 		stripe.subscriptions.set("sub_1", { id: "sub_1", customer: "cus_1", status: "past_due", metadata: { tenant } });
 		await home("/stripe/webhook", signed({ type: "customer.subscription.updated", created: 300, object: { id: "sub_1", status: "active" } }));
 		expect((await c.cp.status())[0]?.billing).toMatchObject({ state: "past_due", subscription: "past_due" });

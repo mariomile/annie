@@ -213,7 +213,7 @@ describe("quotes op send", () => {
 		expect(proposals).toEqual([]);
 	});
 
-	it("from a phone or without a mail account: the text and a mailto link to copy, the file in the chat; file_send only for Annie", async () => {
+	it("from a phone or without a mail account: the text and a mailto link to copy, the file in the chat; file_send only for Owni", async () => {
 		const { mail, proposals } = quoteMail("la posta si usa solo dalle conversazioni della console, con l'account di chi scrive");
 		for (const q of [quotes(mail), quotes()]) {
 			await q.run({ ...CREATE, email: "a@b.example" });

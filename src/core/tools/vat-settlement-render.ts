@@ -190,7 +190,7 @@ function deadlineRow(d: Deadline, today: string): string {
 	return `• ${capitalized(whenText(d))}: ${vatDeadlineWhat(d)}, ${amount}, codice ${d.code}.`;
 }
 
-/** «se non l'hai già pagato»; an acconto of a year before Annie kept the IVA «se non l'hai già versato». */
+/** «se non l'hai già pagato»; an acconto of a year before Owni kept the IVA «se non l'hai già versato». */
 const notYet = (d: Deadline) => (d.beforeSetup === true ? "se non l'hai già versato" : "se non l'hai già pagato");
 
 /** «, tolto il credito confermato»: a first period of a year with the credit the person said taken off. */
@@ -296,7 +296,7 @@ export function vatCsv(v: CsvView): { readonly csv: string; readonly rows: numbe
 		const tax = d.rows.reduce((n, r) => n + r.tax, 0n);
 		const what = `${d.credit ? "Nota di credito" : "Fattura"} ${d.number ?? "senza numero"}, ${partyName(d.party)}`;
 		const notes = [
-			d.side === "sale" && d.source === "sales" ? "fattura emessa con Annie" : undefined,
+			d.side === "sale" && d.source === "sales" ? "fattura emessa con Owni" : undefined,
 			d.rows.some((r) => r.esigibilita === "S") ? "split payment" : undefined,
 			d.rows.some((r) => r.natura?.startsWith("N6") === true) && !d.integration ? "reverse charge" : undefined,
 			d.rows.some((r) => r.esigibilita === "D") ? "IVA differita" : undefined,

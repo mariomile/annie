@@ -55,7 +55,7 @@ describe("TOTP (RFC 6238)", () => {
 	});
 
 	it("builds an otpauth URI authenticator apps understand", () => {
-		const uri = otpauthUri("JBSWY3DPEHPK3PXP", "Anna Rossi", "Annie");
-		expect(uri).toBe("otpauth://totp/Annie:Anna%20Rossi?secret=JBSWY3DPEHPK3PXP&issuer=Annie&algorithm=SHA1&digits=6&period=30");
+		const uri = otpauthUri("JBSWY3DPEHPK3PXP", "Anna Rossi", "Owni");
+		expect(uri).toBe("otpauth://totp/Owni:Anna%20Rossi?secret=JBSWY3DPEHPK3PXP&issuer=Owni&algorithm=SHA1&digits=6&period=30");
 	});
 });

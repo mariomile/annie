@@ -357,7 +357,7 @@ describe("the brief, the agents, the file", () => {
 		expect(inside(week)).toContain("• OR-0001 a Beta Forniture Srl: inviato 15 giorni fa (19 ottobre), non ancora arrivato; Beta Forniture Srl consegna in 10 giorni.");
 		expect(BRIEF_INSTRUCTION).toContain("orders (list)");
 		const [guarded] = readOnlyInBriefs([s.tool], async () => true);
-		expect(await guarded?.execute({ op: "create", supplier: "Beta" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await guarded?.execute({ op: "create", supplier: "Beta" }, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 	});
 
 	it("another agente gets counts only; the audit has op and count; the CSV is made inert", async () => {

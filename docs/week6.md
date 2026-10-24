@@ -4,7 +4,7 @@ Branch `week-6` (parte da `main` dopo il merge delle settimane 4 e 5). Vocabolar
 
 ## Perché
 
-Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel codice. Per un owner che vuole un'Annie per reparto (acquisti, vendite, amministrazione) serviva un passaggio tecnico. Era il primo punto della lista «Dopo» in [`stato-e-todo.md`](stato-e-todo.md).
+Fino alla settimana 5 una nuova Istanza si creava solo da configurazione o nel codice. Per un owner che vuole un Owni per reparto (acquisti, vendite, amministrazione) serviva un passaggio tecnico. Era il primo punto della lista «Dopo» in [`stato-e-todo.md`](stato-e-todo.md).
 
 ## Cosa funziona (verificato dai test)
 

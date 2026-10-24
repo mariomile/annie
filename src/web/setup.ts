@@ -1,6 +1,6 @@
 /**
- * «Primi passi» (ADR 0019): the owner's own words about who uses Annie, kept as one block after the
- * default instructions, so what Annie can do stays said and saving again replaces the block.
+ * «Primi passi» (ADR 0019): the owner's own words about who uses Owni, kept as one block after the
+ * default instructions, so what Owni can do stays said and saving again replaces the block.
  */
 export const ABOUT_HEADING = "Informazioni su chi ti usa:";
 export const ABOUT_MAX = 2000;

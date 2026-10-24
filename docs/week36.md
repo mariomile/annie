@@ -1,8 +1,8 @@
 # Settimana 36: grafici
 
-Branch `week-36`. Annie dava i numeri come elenchi. Ora `chart_create` disegna un grafico a barre, a linee o a torta e lo manda in chat come una foto, su Telegram, WhatsApp o nella console, oppure lo salva per metterlo in un Word o in un PDF con `document_create`. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0030](adr/0030-grafici.md).
+Branch `week-36`. Owni dava i numeri come elenchi. Ora `chart_create` disegna un grafico a barre, a linee o a torta e lo manda in chat come una foto, su Telegram, WhatsApp o nella console, oppure lo salva per metterlo in un Word o in un PDF con `document_create`. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0030](adr/0030-grafici.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Fammi un grafico del fatturato di quest'anno»**: barre per mese con gli importi in «€ 12,5 mila», il mese migliore e l'ultimo scritti sopra, e se lo chiedi la linea dell'obiettivo.
 - **«Come sono andate le visite nell'ultimo anno?»**: una linea con le date in italiano e il valore finale.

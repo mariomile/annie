@@ -212,7 +212,7 @@ describe("voice messages", () => {
 				for (const start = Date.now(); replies.length < n && Date.now() - start < 10_000; ) await new Promise((r) => setTimeout(r, 30));
 				return replies.join(" ");
 			};
-			// Off by default: nothing goes to the service, Annie is told.
+			// Off by default: nothing goes to the service, Owni is told.
 			expect((await voiceNote("wamid.1")).status).toBe(200);
 			expect(await answered(1)).toContain("non è attiva per questa istanza");
 			expect(service.received).toHaveLength(0);

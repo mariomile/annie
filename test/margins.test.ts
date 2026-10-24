@@ -568,7 +568,7 @@ describe("agents, audit, fences, CSV and the brief", () => {
 		expect(marginCallReads({ op: "export" })).toBe(false);
 		expect(marginCallReads({ op: "ranking", compact: true })).toBe(true);
 		const [guarded] = readOnlyInBriefs([s.tool], async () => true);
-		expect(await guarded?.execute({ op: "export" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await guarded?.execute({ op: "export" }, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 	});
 
 	it("the brief: last week's voci below cost or the threshold, once per voce per week, three at most; a run again says its own again", async () => {

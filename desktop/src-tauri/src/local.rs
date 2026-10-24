@@ -1,4 +1,4 @@
-//! Annie on this computer (docs/desktop.md, «Annie sul Mac»): the app starts the server it
+//! Owni on this computer (docs/desktop.md, «Owni sul Mac»): the app starts the server it
 //! carries (Node next to the app's executable, the compiled server in its resources), waits for
 //! it, and signs the owner in. Nothing leaves the computer but the calls to the model.
 
@@ -15,7 +15,7 @@ const PORT: u16 = 47821;
 /// The first start creates the data folder: a slow disk may need a while.
 const WAIT: Duration = Duration::from_secs(90);
 
-/// What the app carries to run Annie by itself. Absent in a build without it (`pnpm dev`).
+/// What the app carries to run Owni by itself. Absent in a build without it (`pnpm dev`).
 #[derive(Clone)]
 pub struct Bundle {
     node: PathBuf,
@@ -68,7 +68,7 @@ pub fn start(bundle: &Bundle, data: &Path, log: &Path) -> Result<Running, String
         .stdout(out)
         .stderr(err)
         .spawn()
-        .map_err(|e| format!("Annie non parte su questo computer: {e}"))?;
+        .map_err(|e| format!("Owni non parte su questo computer: {e}"))?;
     let origin = Url::parse(&format!("http://127.0.0.1:{port}/")).map_err(|e| e.to_string())?;
     let mut running = Running { child, origin };
     let since = Instant::now();
@@ -78,13 +78,13 @@ pub fn start(bundle: &Bundle, data: &Path, log: &Path) -> Result<Running, String
         }
         if let Ok(Some(_)) = running.child.try_wait() {
             return Err(format!(
-                "Annie si è fermata appena partita: i dettagli sono in {}",
+                "Owni si è fermata appena partita: i dettagli sono in {}",
                 log.display()
             ));
         }
         if since.elapsed() > WAIT {
             return Err(format!(
-                "Annie non risponde ancora: i dettagli sono in {}",
+                "Owni non risponde ancora: i dettagli sono in {}",
                 log.display()
             ));
         }
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn only_the_carried_server_receives_the_local_helper_and_loopback_mode() {
         use std::ffi::OsStr;
-        let helper = PathBuf::from("/Applications/Annie.app/Contents/MacOS/annie-computer-use");
+        let helper = PathBuf::from("/Applications/Owni.app/Contents/MacOS/annie-computer-use");
         let bundle = Bundle {
             node: PathBuf::from("/node"),
             server: PathBuf::from("/server"),

@@ -1,4 +1,4 @@
-# Annie: one tenant per container. Data lives in the /data volume.
+# Owni: one tenant per container. Data lives in the /data volume.
 FROM node:22.22.0-bookworm-slim
 
 ENV NODE_ENV=production \
@@ -10,7 +10,7 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.17.1 --activate
 
 # Screenshots of web pages (web_screenshot) need Chromium: docker build --build-arg WITH_BROWSER=1 .
-# Without it the image is ~400 MB lighter and Annie still reads pages (web_read).
+# Without it the image is ~400 MB lighter and Owni still reads pages (web_read).
 ARG WITH_BROWSER=
 RUN if [ -n "$WITH_BROWSER" ]; then apt-get update && apt-get install -y --no-install-recommends chromium fonts-liberation && rm -rf /var/lib/apt/lists/*; fi
 ENV ANNIE_CHROMIUM_PATH=${WITH_BROWSER:+/usr/bin/chromium}

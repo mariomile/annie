@@ -1,14 +1,14 @@
 # Settimana 49: solleciti di pagamento
 
-Branch `week-49`. Annie prepara e manda i solleciti ai clienti che non hanno pagato, sempre con l'approvazione di chi la usa. Le scelte sono nell'[ADR 0054](adr/0054-solleciti-di-pagamento.md).
+Branch `week-49`. Owni prepara e manda i solleciti ai clienti che non hanno pagato, sempre con l'approvazione di chi la usa. Le scelte sono nell'[ADR 0054](adr/0054-solleciti-di-pagamento.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Chi non mi ha ancora pagato?»**: le fatture scadute da incassare, con i solleciti già mandati.
 - **«Prepara un sollecito per Gamma»**: oggetto e testo pronti, al netto delle note di credito, con i giorni di ritardo e l'IBAN dell'azienda; il livello sale da solo (promemoria, secondo sollecito, sollecito formale).
 - **«Mandalo»** dalla console: una card di approvazione per cliente; dopo l'invio il sollecito è annotato nello scadenzario.
 - **Dal telefono**: un messaggio per cliente da copiare, o un link che apre la posta già compilata.
-- **«L'ho mandato io»**: Annie lo annota.
+- **«L'ho mandato io»**: Owni lo annota.
 - **«Aggiungi le 40 € e gli interessi all'8%»**: conti esatti e scritti nel sollecito.
 - **«La mia azienda ha IBAN … e firmo Anna Bianchi»**: da lì i solleciti usano quell'IBAN e quella firma.
 

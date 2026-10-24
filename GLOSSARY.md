@@ -1,15 +1,15 @@
-# Annie
+# Owni
 
 Piattaforma open source di agenti sempre attivi per aziende attente a privacy e controllo dei processi: ogni cliente ha i suoi agenti, che parlano con le persone sui canali, usano i sistemi dell'azienda e non fanno nulla di irreversibile senza un'approvazione.
 
 ## Chi
 
 **Owner**:
-Chi gestisce un tenant: in self-host chi installa Annie (Buildrs o l'IT del cliente), in Annie Cloud chi si registra. Crea istanze e decide cosa possono raggiungere.
+Chi gestisce un tenant: in self-host chi installa Owni (Buildrs o l'IT del cliente), in Owni Cloud chi si registra. Crea istanze e decide cosa possono raggiungere.
 _Avoid_: admin, superuser
 
 **Operatore**:
-Chi gestisce Annie Cloud per tutti i tenant (Buildrs). Non legge le conversazioni nel lavoro normale; può entrare in una cella come owner solo lasciando traccia nell'audit della cella, e non se l'owner ha la verifica in due passaggi.
+Chi gestisce Owni Cloud per tutti i tenant (Buildrs). Non legge le conversazioni nel lavoro normale; può entrare in una cella come owner solo lasciando traccia nell'audit della cella, e non se l'owner ha la verifica in due passaggi.
 _Avoid_: admin, owner
 
 **Tenant**:
@@ -81,11 +81,11 @@ Il link con cui una persona entra nella console web. È la sua chiave: chi lo ha
 _Avoid_: password, invito
 
 **Console**:
-Le pagine web di Annie, per l'owner e le persone. Si apre dal browser o si installa come app (sulla schermata Home o sul desktop, a schermo intero); senza rete l'app mostra solo che è offline, mai dati salvati.
+Le pagine web di Owni, per l'owner e le persone. Si apre dal browser o si installa come app (sulla schermata Home o sul desktop, a schermo intero); senza rete l'app mostra solo che è offline, mai dati salvati.
 _Avoid_: dashboard, PWA (nei testi per le persone)
 
 **Primi passi**:
-La pagina che l'owner trova aprendo la console finché non ha provato Annie: i passi che la rendono utile (modello, istruzioni, primo messaggio, telefono, web, team, app), ciascuno «fatto» quando le impostazioni vere lo dicono. Si nascondono per istanza, in quel browser, e si ritrovano in Impostazioni.
+La pagina che l'owner trova aprendo la console finché non ha provato Owni: i passi che la rendono utile (modello, istruzioni, primo messaggio, telefono, web, team, app), ciascuno «fatto» quando le impostazioni vere lo dicono. Si nascondono per istanza, in quel browser, e si ritrovano in Impostazioni.
 _Avoid_: onboarding, wizard, setup
 
 **Verifica in due passaggi**:
@@ -95,27 +95,27 @@ _Avoid_: MFA, OTP (nei testi per le persone)
 ## Dove gira
 
 **Self-host**:
-Annie installata dal cliente sul suo server, gestita dall'Owner.
+Owni installata dal cliente sul suo server, gestita dall'Owner.
 _Avoid_: on-prem (nei testi per le persone)
 
-**Annie Cloud**:
-Annie offerta come servizio da Buildrs: ogni tenant ha la sua cella, con dati in Unione Europea.
+**Owni Cloud**:
+Owni offerta come servizio da Buildrs: ogni tenant ha la sua cella, con dati in Unione Europea.
 _Avoid_: SaaS, versione online
 
 **Cella**:
-L'ambiente isolato di un tenant in Annie Cloud: lo stesso Annie del self-host, con il suo disco e separato dagli altri tenant, che si spegne quando non lavora.
+L'ambiente isolato di un tenant in Owni Cloud: lo stesso Owni del self-host, con il suo disco e separato dagli altri tenant, che si spegne quando non lavora.
 _Avoid_: container, pod, istanza (un'istanza è un agente, dentro la cella)
 
 **Control plane**:
-La parte di Annie Cloud comune a tutti i tenant: registrazione, pagamento, smistamento dei messaggi alla cella giusta, risveglio delle celle. Inoltra i messaggi senza conservarli.
+La parte di Owni Cloud comune a tutti i tenant: registrazione, pagamento, smistamento dei messaggi alla cella giusta, risveglio delle celle. Inoltra i messaggi senza conservarli.
 _Avoid_: backend, piattaforma
 
 **Periodo di prova**:
-I primi giorni di un tenant in Annie Cloud, gratuiti. Finiti senza abbonamento, la cella resta spenta con i dati intatti.
+I primi giorni di un tenant in Owni Cloud, gratuiti. Finiti senza abbonamento, la cella resta spenta con i dati intatti.
 _Avoid_: trial, freemium, piano gratuito
 
 **Abbonamento**:
-Quello che un tenant paga ogni mese per Annie Cloud dopo la prova: una quota fissa e, se previsto, il consumo del modello.
+Quello che un tenant paga ogni mese per Owni Cloud dopo la prova: una quota fissa e, se previsto, il consumo del modello.
 _Avoid_: piano, licenza, subscription
 
 ## Conversazioni
@@ -137,7 +137,7 @@ Una conversazione della console fra una persona e da 2 a 5 agenti: la persona ch
 _Avoid_: gruppo (è di Telegram e WhatsApp), room
 
 **Chiamata**:
-Una telefonata al numero Twilio di un'istanza, a turni: la persona parla, Annie risponde a voce. Il thread è il numero di chi chiama, quindi una chiamata continua la conversazione delle precedenti.
+Una telefonata al numero Twilio di un'istanza, a turni: la persona parla, Owni risponde a voce. Il thread è il numero di chi chiama, quindi una chiamata continua la conversazione delle precedenti.
 _Avoid_: sessione vocale
 
 **Risposta**:
@@ -170,31 +170,31 @@ Una foto o un'immagine che l'istanza guarda: quelle che le persone mandano in un
 _Avoid_: allegato (è qualunque file), media, vision
 
 **Documento**:
-Un PDF, Word, Excel, PowerPoint o OpenDocument nel workspace, di solito mandato da una persona. Annie ne legge il testo con `file_read`: pagine, fogli e diapositive restano distinti, la formattazione no. Una scansione non ha testo da leggere. Vedi ADR 0026.
+Un PDF, Word, Excel, PowerPoint o OpenDocument nel workspace, di solito mandato da una persona. Owni ne legge il testo con `file_read`: pagine, fogli e diapositive restano distinti, la formattazione no. Una scansione non ha testo da leggere. Vedi ADR 0026.
 _Avoid_: allegato (è qualunque file), file binario
 
 **Scansione**:
-Un PDF fatto di immagini delle pagine, senza testo: lo scanner dell'ufficio, un fax, una foto salvata in PDF. Annie ne guarda le pagine con `image_view` e legge da sé. Vedi ADR 0028.
-_Avoid_: OCR (Annie non fa OCR, guarda), PDF immagine
+Un PDF fatto di immagini delle pagine, senza testo: lo scanner dell'ufficio, un fax, una foto salvata in PDF. Owni ne guarda le pagine con `image_view` e legge da sé. Vedi ADR 0028.
+_Avoid_: OCR (Owni non fa OCR, guarda), PDF immagine
 
 **Documento creato**:
-Un file Word, Excel o PDF che Annie scrive nel workspace con `document_create`, partendo da Markdown o da un CSV: un preventivo, una lettera, un listino, un report. Lo manda con `file_send`. Vedi ADR 0029.
+Un file Word, Excel o PDF che Owni scrive nel workspace con `document_create`, partendo da Markdown o da un CSV: un preventivo, una lettera, un listino, un report. Lo manda con `file_send`. Vedi ADR 0029.
 _Avoid_: export, report (il report di ricerca è un'altra cosa, ADR 0022), template
 
 **Grafico**:
-Un'immagine PNG a barre, a linee o a torta che Annie disegna con `chart_create` da numeri o da un CSV, in `grafici/`: la manda in chat come una foto o la mette in un documento. Vedi ADR 0030.
+Un'immagine PNG a barre, a linee o a torta che Owni disegna con `chart_create` da numeri o da un CSV, in `grafici/`: la manda in chat come una foto o la mette in un documento. Vedi ADR 0030.
 _Avoid_: chart, plot, diagramma
 
 **Domanda a una tabella**:
-Una richiesta che Annie fa con `table_query` a un CSV, un Excel o un foglio OpenDocument del workspace: filtri, gruppi, totali, medie, classifiche, calcolati in codice e mai a mente. La risposta può essere salvata in un CSV per un grafico o un documento. Vedi ADR 0031.
+Una richiesta che Owni fa con `table_query` a un CSV, un Excel o un foglio OpenDocument del workspace: filtri, gruppi, totali, medie, classifiche, calcolati in codice e mai a mente. La risposta può essere salvata in un CSV per un grafico o un documento. Vedi ADR 0031.
 _Avoid_: query, analisi dati, pivot
 
 **Calcolo**:
-L'aritmetica che Annie fa con `calculate` (un preventivo, l'IVA, uno sconto, una divisione), riga per riga e con i nomi, al centesimo. Vedi ADR 0031.
+L'aritmetica che Owni fa con `calculate` (un preventivo, l'IVA, uno sconto, una divisione), riga per riga e con i nomi, al centesimo. Vedi ADR 0031.
 _Avoid_: calcolatrice, eval, formula
 
 **Registrazione**:
-Un file audio o video più lungo di un vocale (una riunione, una chiamata, una lezione) che Annie tiene nel workspace e trascrive con `audio_transcribe`, a pezzi di dieci minuti. Vedi ADR 0033.
+Un file audio o video più lungo di un vocale (una riunione, una chiamata, una lezione) che Owni tiene nel workspace e trascrive con `audio_transcribe`, a pezzi di dieci minuti. Vedi ADR 0033.
 _Avoid_: audio lungo, file vocale, recording
 
 **Trascrizione**:
@@ -206,7 +206,7 @@ Quello che fa `file_search`: le parole chiave della domanda cercate dentro il te
 _Avoid_: ricerca full-text, indice, grep
 
 **Lista**:
-Un elenco che Annie tiene per chi le scrive (la spesa, le cose da fare, i regali), con voci da fare e fatte, numerate come le mostra `list_show`. Di una persona sola, o condivisa con tutti quelli che scrivono all'istanza quando lo chiedono; in un gruppo solo le condivise. Vedi ADR 0038.
+Un elenco che Owni tiene per chi le scrive (la spesa, le cose da fare, i regali), con voci da fare e fatte, numerate come le mostra `list_show`. Di una persona sola, o condivisa con tutti quelli che scrivono all'istanza quando lo chiedono; in un gruppo solo le condivise. Vedi ADR 0038.
 _Avoid_: checklist, todo, elenco puntato
 
 **Meteo**:
@@ -226,7 +226,7 @@ Il servizio della Commissione europea che dice se un numero IVA è attivo per gl
 _Avoid_: registro delle partite IVA, anagrafe tributaria
 
 **Scadenza fine mese**:
-Una scadenza di fattura come «60 gg d.f.f.m.»: Annie conta i giorni dalla data fattura e poi va all'ultimo giorno del mese; alcuni gestionali contano invece a mesi, e `date_calc` dà anche quella data quando è diversa. Una scadenza festiva non viene spostata. Vedi ADR 0048.
+Una scadenza di fattura come «60 gg d.f.f.m.»: Owni conta i giorni dalla data fattura e poi va all'ultimo giorno del mese; alcuni gestionali contano invece a mesi, e `date_calc` dà anche quella data quando è diversa. Una scadenza festiva non viene spostata. Vedi ADR 0048.
 _Avoid_: fine mese commerciale, scadenza a 30 giorni come mese
 
 **Partita IVA da ricontrollare**:
@@ -234,7 +234,7 @@ Una partita IVA scritta dal cliente in una mail che non supera il controllo form
 _Avoid_: partita IVA inesistente, partita IVA non attiva
 
 **Fattura elettronica**:
-Il file XML FatturaPA che passa dallo SdI, a volte firmato come `.xml.p7m`; Annie lo legge come un documento e ne fa un riepilogo in italiano, senza verificare la firma. La scadenza che conta è quella scritta in fattura. Vedi ADR 0052.
+Il file XML FatturaPA che passa dallo SdI, a volte firmato come `.xml.p7m`; Owni lo legge come un documento e ne fa un riepilogo in italiano, senza verificare la firma. La scadenza che conta è quella scritta in fattura. Vedi ADR 0052.
 _Avoid_: e-fattura, XML della fattura, fattura digitale
 
 **Scadenzario**:
@@ -242,7 +242,7 @@ L'elenco delle rate delle fatture elettroniche del workspace, da pagare o da inc
 _Avoid_: agenda dei pagamenti, prima nota
 
 **Sollecito**:
-La mail che chiede a un cliente di pagare fatture scadute, in tre livelli: promemoria, secondo sollecito, sollecito formale (costituzione in mora). Annie la prepara con `invoices` op `reminder`, la manda solo dopo l'approvazione e la annota nello scadenzario. Vedi ADR 0054.
+La mail che chiede a un cliente di pagare fatture scadute, in tre livelli: promemoria, secondo sollecito, sollecito formale (costituzione in mora). Owni la prepara con `invoices` op `reminder`, la manda solo dopo l'approvazione e la annota nello scadenzario. Vedi ADR 0054.
 _Avoid_: diffida, recupero crediti
 
 **Preventivo**:
@@ -250,7 +250,7 @@ L'offerta numerata a un cliente, con righe, IVA, validità e riquadro per l'acce
 _Avoid_: offerta, quotazione
 
 **Allegato**:
-Un file del workspace mandato con una mail di Annie (preventivo, fattura, documento). La card di approvazione mostra percorso e dimensione; all'approvazione il file deve essere identico a quello chiesto. Vedi ADR 0056.
+Un file del workspace mandato con una mail di Owni (preventivo, fattura, documento). La card di approvazione mostra percorso e dimensione; all'approvazione il file deve essere identico a quello chiesto. Vedi ADR 0056.
 _Avoid_: attachment
 
 **Spesa**:
@@ -266,7 +266,7 @@ Un costo o un contratto che torna a ogni periodo (abbonamento, polizza, dominio,
 _Avoid_: renewal, subscription
 
 **Voce di cassa**:
-Un movimento che la persona dice ad Annie per la previsione di cassa, registrato con `cashflow` (C-NNNN): entrata o uscita, importo, data, una volta o ricorrente (ogni N mesi o ogni N giorni), fino a quando. Serve per quello che non sta in fatture, rinnovi o spese: tasse e F24, prelievi, rate di prestiti, entrate senza fattura. Vedi ADR 0065.
+Un movimento che la persona dice a Owni per la previsione di cassa, registrato con `cashflow` (C-NNNN): entrata o uscita, importo, data, una volta o ricorrente (ogni N mesi o ogni N giorni), fino a quando. Serve per quello che non sta in fatture, rinnovi o spese: tasse e F24, prelievi, rate di prestiti, entrate senza fattura. Vedi ADR 0065.
 _Avoid_: cashflow item, movimento (per la voce)
 
 **Profilo fiscale**:
@@ -274,7 +274,7 @@ Come è tassata una persona nel regime forfettario, salvato con `taxes`: coeffic
 _Avoid_: tax profile, regime (per il profilo)
 
 **Scheda cliente**:
-Quello che la persona dice ad Annie di un cliente, salvato con `clients` (CL-NNNN): nome, partita IVA o codice fiscale, referenti con canale preferito, note, etichette e ricontatti. Fatturato, incassato, solleciti, preventivi e ore non stanno nella scheda: si leggono dai loro registri. Vedi ADR 0071.
+Quello che la persona dice a Owni di un cliente, salvato con `clients` (CL-NNNN): nome, partita IVA o codice fiscale, referenti con canale preferito, note, etichette e ricontatti. Fatturato, incassato, solleciti, preventivi e ore non stanno nella scheda: si leggono dai loro registri. Vedi ADR 0071.
 _Avoid_: CRM, anagrafica, contatto (per la scheda)
 
 **Ricontatto**:
@@ -282,31 +282,31 @@ Un cliente da risentire in un giorno, registrato su una scheda cliente (FU-NNNN)
 _Avoid_: follow-up, task (per il ricontatto)
 
 **Fattura in uscita**:
-Una fattura elettronica che Annie prepara per la persona con `sales_invoices`: prima una bozza (BZ-NNNN) senza numero, poi, dopo il sì, il numero dell'anno, l'XML in `fatture/emesse/` e la copia di cortesia in PDF. Non viene mandata allo SdI: la persona la carica sul portale. Vedi ADR 0072.
+Una fattura elettronica che Owni prepara per la persona con `sales_invoices`: prima una bozza (BZ-NNNN) senza numero, poi, dopo il sì, il numero dell'anno, l'XML in `fatture/emesse/` e la copia di cortesia in PDF. Non viene mandata allo SdI: la persona la carica sul portale. Vedi ADR 0072.
 _Avoid_: invoice, fattura emessa (per la bozza)
 
 **Liquidazione IVA**:
-Il conto che chi è in regime ordinario fa ogni mese o trimestre: IVA delle fatture emesse meno quella detraibile delle fatture ricevute, più il credito o il saldo che passa dal periodo prima. Se è a debito si versa con l'F24. Annie la stima con `vat_settlement`. Vedi ADR 0077.
+Il conto che chi è in regime ordinario fa ogni mese o trimestre: IVA delle fatture emesse meno quella detraibile delle fatture ricevute, più il credito o il saldo che passa dal periodo prima. Se è a debito si versa con l'F24. Owni la stima con `vat_settlement`. Vedi ADR 0077.
 _Avoid_: VAT settlement, dichiarazione (per la liquidazione periodica)
 
 **Estratto conto**:
-Il file con i movimenti del conto che la banca dà (CSV, Excel o CAMT.053). Annie lo legge con `bank_statement` e spiega ogni movimento; l'abbinamento a una fattura, una spesa, un rinnovo o un F24 è sicuro o debole (solo l'importo) e cambia gli altri registri solo dopo un sì. Vedi ADR 0078.
+Il file con i movimenti del conto che la banca dà (CSV, Excel o CAMT.053). Owni lo legge con `bank_statement` e spiega ogni movimento; l'abbinamento a una fattura, una spesa, un rinnovo o un F24 è sicuro o debole (solo l'importo) e cambia gli altri registri solo dopo un sì. Vedi ADR 0078.
 _Avoid_: bank statement, movimenti bancari (per il file)
 
 **Margine**:
-Nell'andamento dell'attività, gli incassi meno le spese dello stesso periodo, per cassa. Per il forfettario, tolte le tasse stimate, è quanto «ti resta in tasca»; per l'ordinario Annie dice solo quanto resta dopo l'IVA, prima di IRPEF e contributi. Lo calcola `business_report`. Vedi ADR 0080.
+Nell'andamento dell'attività, gli incassi meno le spese dello stesso periodo, per cassa. Per il forfettario, tolte le tasse stimate, è quanto «ti resta in tasca»; per l'ordinario Owni dice solo quanto resta dopo l'IVA, prima di IRPEF e contributi. Lo calcola `business_report`. Vedi ADR 0080.
 _Avoid_: profitto, utile (per il margine per cassa)
 
 **Ritenuta d'acconto**:
-La parte del compenso (di solito il 20% dell'imponibile; per gli agenti il 23% sul 50% o sul 20% delle provvigioni) che il cliente sostituto d'imposta trattiene e versa allo Stato con l'F24, codice 1040, entro il 16 del mese dopo il pagamento. Per chi è in regime ordinario è un credito nella dichiarazione dell'anno in cui il cliente paga; nel forfettario non c'è. Annie la segue con `withholding`, leggendo le fatture in uscita e gli XML del workspace.
+La parte del compenso (di solito il 20% dell'imponibile; per gli agenti il 23% sul 50% o sul 20% delle provvigioni) che il cliente sostituto d'imposta trattiene e versa allo Stato con l'F24, codice 1040, entro il 16 del mese dopo il pagamento. Per chi è in regime ordinario è un credito nella dichiarazione dell'anno in cui il cliente paga; nel forfettario non c'è. Owni la segue con `withholding`, leggendo le fatture in uscita e gli XML del workspace.
 _Avoid_: withholding tax, trattenuta (per la ritenuta)
 
 **CU (Certificazione Unica)**:
-Il documento con cui il cliente certifica, entro il 16 marzo dell'anno dopo, i compensi pagati e le ritenute trattenute. La persona dice ad Annie i due importi, Annie li salva (CU-NNNN, da togliere con lo stesso codice se detta per sbaglio) e li confronta con le sue fatture, spiegando la differenza quando può. L'anno della CU è quello dei pagamenti: la CU 2026 certifica i compensi del 2025.
+Il documento con cui il cliente certifica, entro il 16 marzo dell'anno dopo, i compensi pagati e le ritenute trattenute. La persona dice a Owni i due importi, Owni li salva (CU-NNNN, da togliere con lo stesso codice se detta per sbaglio) e li confronta con le sue fatture, spiegando la differenza quando può. L'anno della CU è quello dei pagamenti: la CU 2026 certifica i compensi del 2025.
 _Avoid_: certificazione dei compensi, 770 (per la CU)
 
 **Agenda fiscale**:
-Tutte le scadenze di chi ha la partita IVA in una lista sola, in ordine di data: gli F24 di tasse e IVA, le CU, i rinnovi, le fatture da pagare e le scadenze di legge (dichiarazioni, LIPE, diritto camerale, bollo). Annie non la salva: la legge ogni volta dai registri e la può esportare in un file .ics. Vedi ADR 0083.
+Tutte le scadenze di chi ha la partita IVA in una lista sola, in ordine di data: gli F24 di tasse e IVA, le CU, i rinnovi, le fatture da pagare e le scadenze di legge (dichiarazioni, LIPE, diritto camerale, bollo). Owni non la salva: la legge ogni volta dai registri e la può esportare in un file .ics. Vedi ADR 0083.
 _Avoid_: scadenziario fiscale, calendario delle tasse (per l'agenda fiscale)
 
 **Listino**:
@@ -314,23 +314,23 @@ L'elenco di quello che la persona vende, servizi e prodotti, ognuno una voce con
 _Avoid_: catalogo, tariffario (per il listino)
 
 **Scheda del fornitore**:
-Quello che Annie sa di chi la persona paga (FO-NNNN): note, referenti e IBAN o partita IVA solo come li dice la persona; spesa, fatture aperte, giorni di pagamento e abbonamenti letti ogni volta dai registri. Un IBAN da pagare diverso da quelli già pagati si verifica per telefono prima di pagare. Vedi ADR 0085.
+Quello che Owni sa di chi la persona paga (FO-NNNN): note, referenti e IBAN o partita IVA solo come li dice la persona; spesa, fatture aperte, giorni di pagamento e abbonamenti letti ogni volta dai registri. Un IBAN da pagare diverso da quelli già pagati si verifica per telefono prima di pagare. Vedi ADR 0085.
 _Avoid_: anagrafica fornitore, vendor (per la scheda del fornitore)
 
 **Budget**:
-Un limite di spesa che la persona si dà (BU-NNNN) su una categoria, un fornitore o tutte le spese, per mese, trimestre o anno; o un obiettivo di fatturato o incassato. Annie lo segue dai registri e avvisa una volta quando passa l'80% e il 100%. Vedi ADR 0086.
+Un limite di spesa che la persona si dà (BU-NNNN) su una categoria, un fornitore o tutte le spese, per mese, trimestre o anno; o un obiettivo di fatturato o incassato. Owni lo segue dai registri e avvisa una volta quando passa l'80% e il 100%. Vedi ADR 0086.
 _Avoid_: tetto di spesa, target (per il budget)
 
 **Fattura ricorrente**:
-Un canone che la persona fattura sempre allo stesso cliente (RI-NNNN) ogni mese, bimestre, trimestre, semestre o anno; Annie ne prepara la bozza a ogni periodo e avvisa, l'emissione resta della persona. Vedi ADR 0087.
+Un canone che la persona fattura sempre allo stesso cliente (RI-NNNN) ogni mese, bimestre, trimestre, semestre o anno; Owni ne prepara la bozza a ogni periodo e avvisa, l'emissione resta della persona. Vedi ADR 0087.
 _Avoid_: abbonamento (per i canoni che fattura la persona: gli abbonamenti che paga sono i rinnovi)
 
 **Origine del turno**:
-Da dove nasce un turno di Annie: un messaggio della persona, un avviso, un'attività programmata o un altro agente. Le azioni che non si annullano si confermano solo nei turni della persona. Vedi ADR 0088.
+Da dove nasce un turno di Owni: un messaggio della persona, un avviso, un'attività programmata o un altro agente. Le azioni che non si annullano si confermano solo nei turni della persona. Vedi ADR 0088.
 _Avoid_: mittente (per l'origine)
 
 **Articolo di magazzino**:
-Una cosa che la persona tiene in magazzino (MG-NNNN), con la sua unità, il minimo sotto cui avvisare e i movimenti (carico, scarico, rettifica) da cui Annie ricava quanto ne resta e quanto vale al costo medio. Vedi ADR 0089.
+Una cosa che la persona tiene in magazzino (MG-NNNN), con la sua unità, il minimo sotto cui avvisare e i movimenti (carico, scarico, rettifica) da cui Owni ricava quanto ne resta e quanto vale al costo medio. Vedi ADR 0089.
 _Avoid_: prodotto (per l'articolo; il prezzo è la voce del listino)
 
 **Prezzo d'acquisto**:
@@ -338,11 +338,11 @@ Quanto la persona paga un prodotto a un fornitore, letto dalle righe delle sue f
 _Avoid_: costo (per il prezzo d'acquisto; il costo medio è quello del magazzino)
 
 **Margini**:
-Quanto la persona guadagna davvero su un prodotto o un cliente: il ricavo senza IVA delle fatture emesse meno il costo della merce venduta, al costo medio del magazzino al momento di ogni vendita. Un costo trovato solo dal nome è una stima, mai una perdita. Annie li ricava ogni volta dai registri, senza salvarli. Vedi ADR 0091.
+Quanto la persona guadagna davvero su un prodotto o un cliente: il ricavo senza IVA delle fatture emesse meno il costo della merce venduta, al costo medio del magazzino al momento di ogni vendita. Un costo trovato solo dal nome è una stima, mai una perdita. Owni li ricava ogni volta dai registri, senza salvarli. Vedi ADR 0091.
 _Avoid_: utile, guadagno netto (i margini non tolgono spese e tasse; quello è l'andamento dell'attività)
 
 **Ordine al fornitore**:
-Quello che la persona ordina a un fornitore (OR-NNNN), riga per riga sugli articoli del magazzino, con il prezzo atteso. È una bozza finché la persona non dice di averlo mandato; arriva in parte o tutto secondo le ricevute: le righe delle fatture caricate, la merce arrivata con la bolla, quella già in magazzino. Annie non lo manda mai. Vedi ADR 0092.
+Quello che la persona ordina a un fornitore (OR-NNNN), riga per riga sugli articoli del magazzino, con il prezzo atteso. È una bozza finché la persona non dice di averlo mandato; arriva in parte o tutto secondo le ricevute: le righe delle fatture caricate, la merce arrivata con la bolla, quella già in magazzino. Owni non lo manda mai. Vedi ADR 0092.
 _Avoid_: acquisto (per l'ordine; l'acquisto è la fattura ricevuta), bolla (la bolla è come arriva la merce, non l'ordine)
 
 **DDT (documento di trasporto)**:
@@ -354,11 +354,11 @@ La fattura (tipo TD24) che a fine mese raccoglie i DDT di vendita di un cliente 
 _Avoid_: fattura riepilogativa
 
 **Appuntamento**:
-Un cliente che viene per uno o più servizi in un giorno e a un'ora, con la sua durata e, se ci sono, la risorsa che lo fa (una persona, una poltrona, un ponte). Fissato, fatto, disdetto o non presentato; non si cancella mai. Si fattura quando è fatto, segnato fatturato solo all'emissione. Non è una scadenza dell'agenda fiscale né un promemoria di Annie. Vedi ADR 0094.
+Un cliente che viene per uno o più servizi in un giorno e a un'ora, con la sua durata e, se ci sono, la risorsa che lo fa (una persona, una poltrona, un ponte). Fissato, fatto, disdetto o non presentato; non si cancella mai. Si fattura quando è fatto, segnato fatturato solo all'emissione. Non è una scadenza dell'agenda fiscale né un promemoria di Owni. Vedi ADR 0094.
 _Avoid_: prenotazione (per il dato salvato; «prenotare» va bene come verbo), evento (quello è il calendario Google)
 
 **Personale**:
-Le persone che lavorano nell'attività (PE-NNNN, mai detto), con ruolo, ore del contratto, la settimana solita, ferie e permessi dell'anno, e se c'è la risorsa degli appuntamenti che sono. Non sono utenti di Annie né agenti del board. Ha il primo e l'ultimo giorno in forza; chi se ne va si archivia, non si cancella. Si aggiunge solo quando è detta nuova, o quando se ne dice qualcosa e nessuno ha quel nome. Vedi ADR 0095.
+Le persone che lavorano nell'attività (PE-NNNN, mai detto), con ruolo, ore del contratto, la settimana solita, ferie e permessi dell'anno, e se c'è la risorsa degli appuntamenti che sono. Non sono utenti di Owni né agenti del board. Ha il primo e l'ultimo giorno in forza; chi se ne va si archivia, non si cancella. Si aggiunge solo quando è detta nuova, o quando se ne dice qualcosa e nessuno ha quel nome. Vedi ADR 0095.
 _Avoid_: dipendenti (per il dato salvato; va bene come parola), utenti, membri
 
 **Assenza**:
@@ -370,7 +370,7 @@ Le ore in cui una persona del personale lavora in un giorno: dalla settimana sol
 _Avoid_: orario (quello è dell'attività), slot
 
 **Download**:
-Un file del web salvato da Annie nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
+Un file del web salvato da Owni nel workspace, sotto `download/`, con `web_download`: per leggerlo tutto o mandarlo. Solo dai siti consentiti, fino a 20 MB. Vedi ADR 0027.
 _Avoid_: allegato, scaricamento
 
 **Task programmato**:
@@ -406,15 +406,15 @@ La pagina web che un'istanza tiene aperta per una conversazione, dove clicca e s
 _Avoid_: computer, automazione del browser, agente web
 
 **Immagine su richiesta**:
-Un'immagine che Annie crea da una descrizione o ritoccando una foto che le hanno mandato, con il servizio di immagini dell'operatore, solo nelle istanze dove l'owner lo consente. Arriva in chat e resta in `immagini/` del workspace.
+Un'immagine che Owni crea da una descrizione o ritoccando una foto che le hanno mandato, con il servizio di immagini dell'operatore, solo nelle istanze dove l'owner lo consente. Arriva in chat e resta in `immagini/` del workspace.
 _Avoid_: AI art, generazione
 
 **Report di ricerca**:
-Il file Markdown che Annie scrive quando le chiedono di approfondire un tema: più ricerche, le pagine migliori dei siti consentiti, e un testo dove ogni fatto rimanda a una fonte numerata del suo dossier. L'elenco delle fonti lo scrive il codice, non il modello.
+Il file Markdown che Owni scrive quando le chiedono di approfondire un tema: più ricerche, le pagine migliori dei siti consentiti, e un testo dove ogni fatto rimanda a una fonte numerata del suo dossier. L'elenco delle fonti lo scrive il codice, non il modello.
 _Avoid_: deep research, ricerca profonda
 
 **Richiesta Google**:
-Una mail, una risposta, una bozza o un evento che Annie prepara sul Google di chi le scrive dalla console, e che succede solo quando quella persona la approva dalla card in chat o in Approvazioni. Una volta sola; l'esito torna nella conversazione.
+Una mail, una risposta, una bozza o un evento che Owni prepara sul Google di chi le scrive dalla console, e che succede solo quando quella persona la approva dalla card in chat o in Approvazioni. Una volta sola; l'esito torna nella conversazione.
 _Avoid_: azione Google, automazione
 
 **Azione sul web**:
@@ -422,11 +422,11 @@ L'invio di un modulo di un sito consentito che l'istanza chiede e che parte solo
 _Avoid_: automazione, bot, compilazione automatica
 
 **Computer**:
-La macchina di un'istanza, separata dalla cella, senza rete e senza segreti, dove l'istanza esegue comandi su copie dei file del workspace e rimette lì quelli che produce. Un container sul server di Annie o una micro-VM su Fly.io; in Annie Cloud sempre una micro-VM, raggiunta attraverso il control plane. La accende l'owner; i suoi file restano finché l'owner non la azzera.
+La macchina di un'istanza, separata dalla cella, senza rete e senza segreti, dove l'istanza esegue comandi su copie dei file del workspace e rimette lì quelli che produce. Un container sul server di Owni o una micro-VM su Fly.io; in Owni Cloud sempre una micro-VM, raggiunta attraverso il control plane. La accende l'owner; i suoi file restano finché l'owner non la azzera.
 _Avoid_: sandbox (è quella dei tool proposti), VM, server
 
 **Schermo**:
-Il desktop Linux di un agente, con Firefox, dove l'agente guarda lo schermo, clicca, scrive e apre programmi attraverso Cua. Un container sul server di Annie, senza internet se l'operatore non sceglie altrimenti, oppure un desktop che gira altrove e che tutti gli agenti che lo usano condividono. Lo accende l'owner agente per agente. Quello che l'agente fa sullo schermo non passa dalle approvazioni, e con internet il suo browser non segue i siti consentiti: prima di inviare o pagare chiede in chat. Nella console, accanto alla chat, il pannello Schermo mostra l'ultima schermata che l'agente ha preso in quella conversazione (ADR 0067).
+Il desktop Linux di un agente, con Firefox, dove l'agente guarda lo schermo, clicca, scrive e apre programmi attraverso Cua. Un container sul server di Owni, senza internet se l'operatore non sceglie altrimenti, oppure un desktop che gira altrove e che tutti gli agenti che lo usano condividono. Lo accende l'owner agente per agente. Quello che l'agente fa sullo schermo non passa dalle approvazioni, e con internet il suo browser non segue i siti consentiti: prima di inviare o pagare chiede in chat. Nella console, accanto alla chat, il pannello Schermo mostra l'ultima schermata che l'agente ha preso in quella conversazione (ADR 0067).
 _Avoid_: computer (è il terminale senza rete), browser (è quello della cella), desktop remoto, VNC
 
 **Brief del mattino**:
@@ -469,11 +469,11 @@ Il messaggio a un approvatore con la pratica, la bozza e i pulsanti Approva, Mod
 _Avoid_: notifica (quando ha pulsanti), card
 
 **Connettore in un clic**:
-Un servizio del catalogo (Notion, Linear, Jira, Stripe, GitHub e altri) che l'owner collega dalla pagina Connettori entrando con il suo account, o incollando un token. L'accesso resta sul server di Annie e si rinnova da solo; quando non si rinnova il connettore è «Da collegare». Vedi ADR 0024.
+Un servizio del catalogo (Notion, Linear, Jira, Stripe, GitHub e altri) che l'owner collega dalla pagina Connettori entrando con il suo account, o incollando un token. L'accesso resta sul server di Owni e si rinnova da solo; quando non si rinnova il connettore è «Da collegare». Vedi ADR 0024.
 _Avoid_: integrazione, plugin, app
 
 **Azione di un connettore**:
-Una chiamata a uno strumento di un servizio collegato che cambia qualcosa (crea, modifica, cancella). Annie la prepara come richiesta; parte, una volta, solo quando chi l'ha chiesta o un approvatore la approva. Gli strumenti che il servizio indica come di sola lettura partono subito. Vedi ADR 0025.
+Una chiamata a uno strumento di un servizio collegato che cambia qualcosa (crea, modifica, cancella). Owni la prepara come richiesta; parte, una volta, solo quando chi l'ha chiesta o un approvatore la approva. Gli strumenti che il servizio indica come di sola lettura partono subito. Vedi ADR 0025.
 _Avoid_: tool call, operazione
 
 **Richiesta scaduta**:

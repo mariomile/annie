@@ -54,9 +54,9 @@ describe("skill: names and files", () => {
 		expect(text).toContain("\nPassi\n[Fine della skill]");
 	});
 
-	it("keeps names unique, Annie's commands free, and the limits", () => {
+	it("keeps names unique, Owni's commands free, and the limits", () => {
 		const store = new SkillStore(tempDataDir());
-		expect(() => store.save({ name: "modello", description: "x", body: "y", by: "a" }, () => true)).toThrow(/comando di Annie/);
+		expect(() => store.save({ name: "modello", description: "x", body: "y", by: "a" }, () => true)).toThrow(/comando di Owni/);
 		expect(() => store.save({ name: "a", description: "", body: "y", by: "a" }, () => true)).toThrow(/quando usarla/);
 		expect(() => store.save({ name: "a", description: "x", body: " ", by: "a" }, () => true)).toThrow(/vuote/);
 		expect(() => store.save({ name: "a", description: "x".repeat(SKILL_LIMITS.description + 1), body: "y", by: "a" }, () => true)).toThrow(/troppo lunga/);
@@ -120,7 +120,7 @@ describe("skill in a conversation", () => {
 		const { runtime, send } = await withSkills();
 		await send(from("anna", "t1", save({ name: "Chiusura mese", description: "Quando chiedono di chiudere il mese", steps: "1. Fatture scadute" }), "1"));
 		await send(from("anna", "t1", "/attiva-skill", "2"));
-		const wrapped = "[Stanza «Conti»: sei Annie.]\n\n@annie /chiusura-mese ottobre";
+		const wrapped = "[Stanza «Conti»: sei Owni.]\n\n@annie /chiusura-mese ottobre";
 		expect(await send({ ...from("anna", "s1", wrapped, "3"), command: "/chiusura-mese ottobre" })).toContain("1. Fatture scadute");
 		// The person's words are no command: nothing runs, whatever the text around them says.
 		expect(await send({ ...from("anna", "s1", "/chiusura-mese ottobre", "5"), command: "cosa ne pensi?" })).not.toContain("1. Fatture scadute");
@@ -180,10 +180,10 @@ describe("skill in a conversation", () => {
 		};
 		const runtime = new AnnieRuntime({ dataDir: tempDataDir(), engine });
 		await runtime.registry.createTenant({ id: "acme", name: "acme" });
-		await runtime.registry.createInstance("acme", { id: "ops", name: "Ops", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: [] }, instructions: "Sei Annie." });
+		await runtime.registry.createInstance("acme", { id: "ops", name: "Ops", model: FAUX_MODEL, egress: { modelProviders: ["faux"], channels: [] }, instructions: "Sei Owni." });
 		await runtime.openInstance("acme", "ops");
 		const now = seen[0] as () => string;
-		expect(now()).toMatch(/^Sei Annie\.\n\nSkill:/);
+		expect(now()).toMatch(/^Sei Owni\.\n\nSkill:/);
 		expect(now()).not.toContain("Le skill che hai");
 		runtime.skills("acme", "ops").save({ name: "reclamo", description: "Quando un cliente si lamenta", body: "Passi", by: "owner" }, () => true);
 		expect(now()).toContain("- reclamo: Quando un cliente si lamenta");

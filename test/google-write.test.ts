@@ -148,7 +148,7 @@ const tool = (name: string, args: unknown) => `/tool ${name} ${JSON.stringify(ar
 const rawOf = (call: Call | undefined) => Buffer.from((JSON.parse(call?.body ?? "{}").raw ?? JSON.parse(call?.body ?? "{}").message?.raw) as string, "base64url").toString("utf8");
 
 describe("Google: scrivere con approvazione", () => {
-	it("with ANNIE_GOOGLE_WRITE Annie asks to compose mail and edit events; an account granted only reading reads, and is asked to reconnect to write", async () => {
+	it("with ANNIE_GOOGLE_WRITE Owni asks to compose mail and edit events; an account granted only reading reads, and is asked to reconnect to write", async () => {
 		const { annie, base } = await boot();
 		const owner = await client(base, annie.ownerLink as string);
 		const { url, done } = await connect(base, owner, "readonly");
@@ -201,7 +201,7 @@ describe("Google: scrivere con approvazione", () => {
 		const sent = google.writes()[0];
 		expect(JSON.parse(sent?.body ?? "{}").threadId).toBe("t1");
 		expect(rawOf(sent)).toContain("In-Reply-To: <abc@cliente.example>\r\nReferences: <abc@cliente.example>\r\n");
-		// The outcome notice lands in the thread on its own: wait for it, or the next reply() could take it for Annie's answer.
+		// The outcome notice lands in the thread on its own: wait for it, or the next reply() could take it for Owni's answer.
 		await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${replyAction.id}`));
 		await reply(owner, thread.id, tool("google_mail_send", { to: ["luca@example.com"], subject: "Bozza", body: "Da rivedere", draft: true, reason: "Bozza per Luca" }));
 		const draft = (await owner("/api/instances/annie/google-actions")).actions.find((a: { kind: string }) => a.kind === "mail.draft");
@@ -246,7 +246,7 @@ describe("Google: scrivere con approvazione", () => {
 		expect((await luca(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "approved" })).status).toBe(404);
 		expect((await owner(`/api/instances/annie/google-actions/${action.id}/decision`, { decision: "rejected" })).action.status).toBe("rejected");
 		expect(google.writes()).toEqual([]);
-		// Annie hears it, so she does not keep waiting for it.
+		// Owni hears it, so she does not keep waiting for it.
 		expect(await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${action.id}`))).toContain("rifiutata");
 		expect(annie.runtime.googleActions("default", "annie")).toBeDefined();
 	});
@@ -394,7 +394,7 @@ describe("Google: scrivere con approvazione", () => {
 		writeFileSync(join(root, "contratti", "c.pdf"), "");
 		for (const a of [changed, gone]) {
 			const out = (await owner(`/api/instances/annie/google-actions/${a.id}/decision`, { decision: "approved" })).action;
-			expect(out).toMatchObject({ status: "failed", result: { error: expect.stringMatching(/^Non inviata: il file [bc]\.pdf è cambiato dopo la richiesta\. Chiedi ad Annie di prepararla di nuovo\.$/) } });
+			expect(out).toMatchObject({ status: "failed", result: { error: expect.stringMatching(/^Non inviata: il file [bc]\.pdf è cambiato dopo la richiesta\. Chiedi a Owni di prepararla di nuovo\.$/) } });
 		}
 		expect(google.writes()).toHaveLength(1);
 		for (const a of [changed, gone]) await annieSays(owner, thread.id, (t) => t.includes(`Esito della richiesta ${a.id}`));

@@ -253,7 +253,7 @@ export function ruleItems(a: Applies, from: string, to: string): AgendaItem[] {
 	return out;
 }
 
-/** The bollo of the fatture in uscita issued with Annie, by the quarter of their date: 2,00 € each that bears it. */
+/** The bollo of the fatture in uscita issued with Owni, by the quarter of their date: 2,00 € each that bears it. */
 export function bolloOf(sales: readonly SalesInvoice[], today: string): (year: number) => (quarter: 1 | 2 | 3 | 4) => QuarterBollo {
 	const issued = sales.filter(isIssued).filter((i) => salesTotals(i).bollo.due);
 	return (year) => (quarter) => {
@@ -264,7 +264,7 @@ export function bolloOf(sales: readonly SalesInvoice[], today: string): (year: n
 	};
 }
 
-/** The bollo's F24 from `from` to `to`, on the invoices issued with Annie. */
+/** The bollo's F24 from `from` to `to`, on the invoices issued with Owni. */
 export function bolloItems(sales: readonly SalesInvoice[], today: string, from: string, to: string): AgendaItem[] {
 	const of = bolloOf(sales, today);
 	const out: AgendaItem[] = [];

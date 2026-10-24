@@ -1,18 +1,18 @@
 # Pagine scansionate
 
-Con la settimana 32 Annie legge il testo dei PDF (ADR 0026). Una scansione però non ha testo: una ricevuta fotografata dallo scanner dell'ufficio, un contratto firmato e scansionato, un bando pubblicato come immagine. Annie diceva «è una scansione» e mandava al computer, che non tutte le istanze hanno.
+Con la settimana 32 Owni legge il testo dei PDF (ADR 0026). Una scansione però non ha testo: una ricevuta fotografata dallo scanner dell'ufficio, un contratto firmato e scansionato, un bando pubblicato come immagine. Owni diceva «è una scansione» e mandava al computer, che non tutte le istanze hanno.
 
 ## Decisione
 
-Annie guarda la pagina invece di leggerla: `image_view` con il percorso di un PDF e `page` dà al modello l'immagine della pagina, e il modello legge da sé quello che c'è scritto. Niente OCR nel server, niente dipendenze, niente servizi esterni: i modelli che Annie usa vedono le immagini e leggono il testo stampato meglio di un OCR classico, anche le tabelle e la scrittura a mano.
+Owni guarda la pagina invece di leggerla: `image_view` con il percorso di un PDF e `page` dà al modello l'immagine della pagina, e il modello legge da sé quello che c'è scritto. Niente OCR nel server, niente dipendenze, niente servizi esterni: i modelli che Owni usa vedono le immagini e leggono il testo stampato meglio di un OCR classico, anche le tabelle e la scrittura a mano.
 
 ## Come funziona
 
 - **Quali immagini.** La pagina viene percorsa come per il testo (moduli annidati compresi, immagini inline comprese), tenendo conto della posizione di ogni immagine. Le immagini vanno al modello dall'alto in basso, al massimo 4 per pagina: una scansione divisa in strisce arriva intera. Quelle molto più piccole della principale (un timbro, una riga) restano fuori e sono contate.
 - **Formati.** Un JPEG va al modello così com'è nel file, con le dimensioni lette dal JPEG stesso. Le scansioni in bianco e nero da fax (CCITT gruppo 4 e gruppo 3 a una dimensione) sono decodificate qui, identiche pixel per pixel a quelle originali (verificato contro Pillow). Le immagini grezze (grigio a 1, 2, 4, 8 e 16 bit, RGB a 8 e 16, CMYK a 8, tavolozze, un solo inchiostro) diventano PNG. I filtri generali LZW e RunLength ora si leggono anche nel testo; i predittori PNG tengono conto dei pixel di più byte.
-- **Orientamento.** Una pagina con `/Rotate` o un'immagine disegnata girata: il modello lo sa dal testo («ruotala di 90° in senso orario»). Le righe salvate dal basso sono rimesse a posto nei PNG; in un JPEG Annie lo dice.
+- **Orientamento.** Una pagina con `/Rotate` o un'immagine disegnata girata: il modello lo sa dal testo («ruotala di 90° in senso orario»). Le righe salvate dal basso sono rimesse a posto nei PNG; in un JPEG Owni lo dice.
 - **Note.** `file_read` su una scansione indica `image_view` con `page`; `web_read` aggiunge che prima va salvato con `web_download`. Il risultato di `image_view` dice quante pagine ci sono, di annotare quello che serve prima di passare alla prossima (le immagini più vecchie escono dalla conversazione) e che il contenuto sono dati.
-- **Non supportati.** JBIG2, JPEG 2000 e il fax misto: Annie dà il comando esatto per il computer (`pdftoppm`) e, senza computer, chiede una foto della pagina. Lo stesso per una pagina senza immagini (testo disegnato come figure).
+- **Non supportati.** JBIG2, JPEG 2000 e il fax misto: Owni dà il comando esatto per il computer (`pdftoppm`) e, senza computer, chiede una foto della pagina. Lo stesso per una pagina senza immagini (testo disegnato come figure).
 
 ## Limiti
 

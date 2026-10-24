@@ -145,7 +145,7 @@ export const MAX_TOOLS_PER_CONNECTOR = 64;
 
 /**
  * Live connections to an instance's MCP servers. `connect` opens every enabled connector
- * the policy allows and returns its tools as Annie tools; `close` ends them. A connector that
+ * the policy allows and returns its tools as Owni tools; `close` ends them. A connector that
  * fails is skipped (audited), so one broken server never takes the instance down.
  */
 export class McpConnections {
@@ -248,7 +248,7 @@ export class McpConnections {
 			});
 		}
 		// Only what the connector names (the SDK adds a fixed set of basics: HOME, PATH, USER,
-		// SHELL, TERM, LOGNAME), never the rest of Annie's environment, where keys live.
+		// SHELL, TERM, LOGNAME), never the rest of Owni's environment, where keys live.
 		const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
 		for (const [name, secret] of Object.entries(connector.transport.envSecrets ?? {})) {
 			const value = await secrets.get(secret);
@@ -282,7 +282,7 @@ export class McpConnections {
 		const title = tool.annotations?.title ?? tool.title ?? tool.name;
 		if (needsApproval(connector, tool)) {
 			const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
-			// A tool with its own argument of that name keeps it: Annie's goes under another.
+			// A tool with its own argument of that name keeps it: Owni's goes under another.
 			const reasonKey = schema.properties?.[REASON] === undefined ? REASON : `${REASON}_annie`;
 			return {
 				name,

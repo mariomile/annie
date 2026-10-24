@@ -222,7 +222,7 @@ describe("web_submit in an instance", () => {
 		const { actions } = await api("/api/instances/annie/web-actions");
 		expect(actions).toHaveLength(1);
 		expect(actions[0]).toMatchObject({ status: "pending", values: { name: "Mario", email: "m@example.com" }, action: `${s.base}/send` });
-		// Approving sends it, once; the outcome is a new message for Annie in the same chat.
+		// Approving sends it, once; the outcome is a new message for Owni in the same chat.
 		const decided = await api(`/api/instances/annie/web-actions/${actions[0].id}/decision`, { decision: "approved" });
 		expect(decided.action).toMatchObject({ status: "done", result: { status: 200, title: "Grazie" } });
 		expect(await reply("", 1)).toMatch(/Esito della richiesta [0-9a-f]{12}[\s\S]*Messaggio ricevuto/);

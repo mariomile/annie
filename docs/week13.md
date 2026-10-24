@@ -1,4 +1,4 @@
-# Settimana 13: Annie su WhatsApp
+# Settimana 13: Owni su WhatsApp
 
 Branch `week-13`. Fase 4 del [piano](piano-cloud.md).
 
@@ -31,4 +31,4 @@ Due revisori separati. Corretti:
 | Gruppi | la Cloud API lavora con chat individuali |
 | Nomi utente WhatsApp | chi scrive è riconosciuto dal numero; chi usa un nome utente al posto del numero non passerebbe l'elenco «Chi può scrivere» |
 | Dati in UE | i messaggi passano da Meta: da verificare l'archiviazione locale della Cloud API |
-| Costi | Meta fa pagare le conversazioni secondo il suo listino, a parte dall'abbonamento ad Annie |
+| Costi | Meta fa pagare le conversazioni secondo il suo listino, a parte dall'abbonamento a Owni |

@@ -94,7 +94,7 @@ describe("deferred tools (ADR 0100)", () => {
 		});
 	});
 
-	describe("the tools Annie really gets", () => {
+	describe("the tools Owni really gets", () => {
 		const realTools = async () => {
 			const tools = new Map<string, AnnieTool>();
 			const engine: DurableEngine = {

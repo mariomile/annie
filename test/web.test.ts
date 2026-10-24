@@ -173,7 +173,7 @@ describe("web console", () => {
 		expect((await anna("/api/me")).status).toBe(401);
 	});
 
-	it("refuses changes without the X-Annie header (cross-site requests)", async () => {
+	it("refuses changes without the X-Owni header (cross-site requests)", async () => {
 		const h = await setup();
 		const res = await fetch(`${h.base}/api/login`, { method: "POST", body: JSON.stringify({ token: h.anna.token }) });
 		expect(res.status).toBe(403);
@@ -188,7 +188,7 @@ describe("web console", () => {
 		await waitFor(() => entries.length === 2 || (void anna(`/api/instances/ops/threads/${thread.id}`).then((r) => (entries = r.body.entries ?? [])), false));
 		expect(entries.map((e) => [e.from, e.text])).toEqual([
 			["person", "ciao annie"],
-			["annie", "Annie (modello locale di sviluppo): hai scritto «ciao annie»"],
+			["annie", "Owni (modello locale di sviluppo): hai scritto «ciao annie»"],
 		]);
 		expect((await anna("/api/instances/ops/threads")).body.threads[0].title).toBe("ciao annie");
 		const luca = await h.as(h.luca.token);
@@ -252,7 +252,7 @@ describe("web console", () => {
 		let entries: any[] = [];
 		await waitFor(() => entries.length === 2 || (void anna(`/api/instances/ops/threads/${thread.id}`).then((r) => (entries = r.body.entries ?? [])), false));
 		expect(entries[0]).toMatchObject({ from: "person", text: "", images: [photo] });
-		expect(entries[1].text).toBe(`Annie (modello locale di sviluppo): hai scritto «[Immagine nel workspace: ${photo}]» e mandato 1 immagine (image/png, 20 byte)`);
+		expect(entries[1].text).toBe(`Owni (modello locale di sviluppo): hai scritto «[Immagine nel workspace: ${photo}]» e mandato 1 immagine (image/png, 20 byte)`);
 		expect((await anna("/api/instances/ops/threads")).body.threads[0].title).toBe("Foto");
 		const inline = await anna(`/api/instances/ops/files/raw?path=${encodeURIComponent(photo)}&inline=1`);
 		expect(inline.headers.get("content-type")).toBe("image/png");
@@ -412,7 +412,7 @@ describe("web console: two-factor login", () => {
 });
 
 describe("web console: memoria", () => {
-	it("each person sees and edits what Annie remembers about them; shared facts are the owner's to edit", async () => {
+	it("each person sees and edits what Owni remembers about them; shared facts are the owner's to edit", async () => {
 		const h = await setup();
 		const store = h.runtime.memory("acme", "ops");
 		store.add({ about: `web:${h.anna.person.id}`, text: "Anna preferisce il tu", source: "annie" });
@@ -453,7 +453,7 @@ describe("web console: automazioni", () => {
 		expect(automation.path).toBe(`/hooks/automazione/ops/${automation.id}`);
 		expect(JSON.stringify((await anna("/api/instances/ops/automations")).body)).not.toMatch(/tokenHash|token/);
 		expect((await luca("/api/instances/ops/automations")).body.automations).toEqual([]);
-		// The other service: no session, no X-Annie header, the token as a bearer.
+		// The other service: no session, no X-Owni header, the token as a bearer.
 		const hook = (auth: string, body = "nome=Anna&messaggio=Vorrei+un+preventivo") => fetch(`${h.base}${automation.path}`, { method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" }, body });
 		expect((await hook("Bearer sbagliato")).status).toBe(404);
 		const header = await fetch(`${h.base}${automation.path}`, { method: "POST", headers: { "x-annie-token": token, "idempotency-key": "evt_9" }, body: "{}" });

@@ -40,7 +40,7 @@ export type ParkedMessage = {
 
 /**
  * What the adapter remembers per number, kept by the app across restarts: when the person last
- * wrote (so Annie knows whether WhatsApp lets her write freely), what waits for them, and whether
+ * wrote (so Owni knows whether WhatsApp lets her write freely), what waits for them, and whether
  * they were already told something waits since they last wrote.
  */
 export type WhatsAppWindow = {
@@ -107,7 +107,7 @@ export type WhatsAppAdapterOptions = WhatsAppCredentials & {
 	readonly log?: (message: string) => void;
 	/** May this person's files be downloaded? Files of strangers should not. */
 	readonly mayDownload?: (userId: string) => Promise<boolean>;
-	/** Voice messages to text; without it Annie is told transcription is off. */
+	/** Voice messages to text; without it Owni is told transcription is off. */
 	readonly transcribe?: Transcribe;
 	/** Without it every message is sent as is, and outside the window Meta drops it (logged). */
 	readonly window?: WhatsAppWindow;
@@ -124,7 +124,7 @@ const MAX_BUTTON_TITLE = 20;
 const MAX_BUTTON_ID = 256;
 const MAX_CAPTION = 1024;
 const MAX_INTERACTIVE_BODY = 1024;
-/** Largest file Annie downloads from a chat. */
+/** Largest file Owni downloads from a chat. */
 const MAX_DOWNLOAD = 20 * 1024 * 1024;
 /** Free-form messages are allowed this long after the person's last one; a little less, to be safe. */
 const WINDOW_MS = 24 * 3_600_000 - 10 * 60_000;
@@ -252,7 +252,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 				if (change?.field !== "messages" || change.value?.metadata?.phone_number_id !== this.options.phoneNumberId) continue;
 				for (const status of list(change.value.statuses)) {
 					if (status?.status !== "failed") continue;
-					const reason = list(status.errors).map((e) => (e?.code === OUTSIDE_WINDOW ? "outside the 24-hour window, the person must write to Annie first" : `${e?.code ?? "?"} ${e?.title ?? ""}`.trim())).join("; ");
+					const reason = list(status.errors).map((e) => (e?.code === OUTSIDE_WINDOW ? "outside the 24-hour window, the person must write to Owni first" : `${e?.code ?? "?"} ${e?.title ?? ""}`.trim())).join("; ");
 					this.options.log?.(`whatsapp: message ${status.id ?? "?"} to ${status.recipient_id ?? "?"} not delivered: ${reason || "no reason given"}`);
 				}
 				for (const message of list(change.value.messages)) {
@@ -329,7 +329,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
 	/** Upload, then send as a picture or a document. A file cannot wait for the window: outside it, it is refused. */
 	async sendFile(file: OutboundFile): Promise<void> {
-		if (await this.windowClosed(file.threadId)) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Annie first");
+		if (await this.windowClosed(file.threadId)) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Owni first");
 		const form = new FormData();
 		form.set("messaging_product", "whatsapp");
 		// A JPEG or PNG up to 5 MB shows in the chat as a picture; anything else is a document.
@@ -468,7 +468,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 				// Meta busy now: an error, so Meta delivers again. Anything else is said, not dropped.
 				if (!(error instanceof ChannelRefused) || error.retryable) throw error;
 				this.options.log?.(`whatsapp: voice of ${message.id} not downloaded: ${error.message}`);
-				// Over 20 MB is a recording, not a voice note: said with what to do when Annie could transcribe it.
+				// Over 20 MB is a recording, not a voice note: said with what to do when Owni could transcribe it.
 				text = this.options.transcribe === undefined ? "[Messaggio vocale troppo grande o non disponibile.]" : RECORDING_TOO_LARGE;
 			}
 		}
@@ -512,7 +512,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 			const code = payload.error?.code ?? response.status;
 			// Meta's words, never the request: the token stays out of logs.
 			const detail = String(payload.error?.message ?? "").slice(0, 200);
-			if (code === OUTSIDE_WINDOW) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Annie first");
+			if (code === OUTSIDE_WINDOW) throw new ChannelRefused("WhatsApp: outside the 24-hour window, the person must write to Owni first");
 			// Rate limits and Meta's own outages are a "not now"; the rest is a no.
 			throw new ChannelRefused(`WhatsApp ${method} ${path.split("?")[0]}: ${code} ${detail}`.trim(), RETRYABLE.has(code) || response.status === 429 || response.status >= 500);
 		}

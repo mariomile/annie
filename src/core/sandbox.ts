@@ -38,7 +38,7 @@ const MAX_OUTPUT = 100_000;
 const MAX_FETCH_BYTES = 10 * 1024 * 1024;
 const MAX_CONCURRENT_FETCHES = 4;
 
-const RUNNER = `// Annie sandbox runner. Written by Annie; do not edit.
+const RUNNER = `// Owni sandbox runner. Written by Owni; do not edit.
 import { registerHooks } from "node:module";
 // Some OS runtimes add their own variables even with env: {}. Tools see no ambient values.
 for (const name of Object.keys(process.env)) delete process.env[name];
@@ -51,7 +51,7 @@ registerHooks({ resolve(specifier, context, next) { if (specifier.startsWith("da
 const builtin = process.getBuiltinModule;
 const lock = (name, value) => Object.defineProperty(process, name, { value, writable: false, configurable: false, enumerable: false });
 lock("getBuiltinModule", (id) => (allowed(id) ? builtin(id) : refuse(id)));
-// The permission model does not cover signals: no way to reach another process, Annie included.
+// The permission model does not cover signals: no way to reach another process, Owni included.
 for (const name of ["kill", "_kill", "_debugProcess", "_debugEnd", "dlopen", "binding", "_linkedBinding", "setuid", "setgid", "seteuid", "setegid", "setgroups", "initgroups"]) {
   lock(name, () => { throw new Error("process." + name + " is not allowed in the sandbox"); });
 }

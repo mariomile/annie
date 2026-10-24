@@ -90,14 +90,14 @@ describe("files people send on Telegram", () => {
 		connectChannel(runtime, bot, { tenantId: "acme", instanceId: "ops" });
 		await bot.pollOnce();
 		await waitFor(() => api.texts.length === 1);
-		expect(api.texts[0]).toBe("Annie (modello locale di sviluppo): hai scritto «Ecco il listino\n\n[File caricato nel workspace: uploads/7_1-listino ottobre.csv]»");
+		expect(api.texts[0]).toBe("Owni (modello locale di sviluppo): hai scritto «Ecco il listino\n\n[File caricato nel workspace: uploads/7_1-listino ottobre.csv]»");
 		const files = await runtime.workspace("acme", "ops").list();
 		expect(files.map((f) => f.path)).toEqual(["uploads/7_1-listino ottobre.csv"]);
 		expect((await runtime.workspace("acme", "ops").read(files[0]!.path)).toString()).toBe("listino,prezzo\nA,10\n");
 		await runtime.close();
 	});
 
-	it("a PDF someone sends is noted as a document Annie can read with file_read", async () => {
+	it("a PDF someone sends is noted as a document Owni can read with file_read", async () => {
 		const dataDir = tempDataDir();
 		const runtime = new AnnieRuntime({ dataDir, engine: piDurableEngine });
 		await runtime.registry.createTenant({ id: "acme", name: "acme" });

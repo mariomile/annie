@@ -1,5 +1,5 @@
 /**
- * The Markdown Annie writes, as blocks for the documents she makes (ADR 0029): headings, paragraphs,
+ * The Markdown Owni writes, as blocks for the documents she makes (ADR 0029): headings, paragraphs,
  * lists, tables, quotes, code, rules, pictures and page breaks, with bold, italic, code and links
  * inside. Not all of CommonMark: what a letter, a quote or a report needs. A single line break in a
  * paragraph stays a line break, as in an address.

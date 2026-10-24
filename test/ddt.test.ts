@@ -149,7 +149,7 @@ describe("issuing a DDT", () => {
 		expect(other).toContain("è di un altro cliente");
 	});
 
-	it("the first DDT of the year asks the last number before Annie, the person's word only", async () => {
+	it("the first DDT of the year asks the last number before Owni, the person's word only", async () => {
 		const s = setup({ askFirst: true });
 		await s.run({ op: "create", client: "Rossi Prova Srl", lines: PAPER_AND_TONER, transport: "mittente" });
 		expect(await s.run({ op: "issue", ddt: "DT-0001", confirm: true })).toContain("È il primo DDT che emetti con me nel 2026: qual è il numero dell'ultimo DDT che hai fatto quest'anno?");
@@ -166,7 +166,7 @@ describe("issuing a DDT", () => {
 		expect(text).toContain("Fatto: ho emesso il DDT n. 12/2026");
 	});
 
-	it("the numbering: the last number before Annie, «12» or «12/2026», the person's word only; annulled keeps its number", async () => {
+	it("the numbering: the last number before Owni, «12» or «12/2026», the person's word only; annulled keeps its number", async () => {
 		const s = setup({ askFirst: true });
 		expect(await s.run({ op: "settings", last_number: 40 }, fresh(undefined, "notice"))).toContain("Non cambio la numerazione dei DDT");
 		const set = await s.run({ op: "settings", last_number: 40 });
@@ -364,7 +364,7 @@ describe("the brief and the routing", () => {
 		expect(ddtCallReads({ op: "list" })).toBe(true);
 		expect(ddtCallReads({ op: "issue" })).toBe(false);
 		const [guarded] = readOnlyInBriefs([s.tool], async () => true);
-		expect(String(await guarded?.execute({ op: "create", client: "Rossi Prova Srl", lines: PAPER_AND_TONER }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await guarded?.execute({ op: "create", client: "Rossi Prova Srl", lines: PAPER_AND_TONER }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await guarded?.execute({ op: "list", compact: true }, fresh()))).toBe("DDT: niente da segnalare.");
 		expect(s.tool.description).toContain("«fammi il DDT per Rossi: 10 risme e 2 toner» → create");
 	});

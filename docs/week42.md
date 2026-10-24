@@ -1,8 +1,8 @@
 # Settimana 42: cambi delle valute
 
-Branch `week-42`. Fatture in dollari, fornitori svizzeri, preventivi in sterline: Annie faceva i conti ma non aveva i cambi. Ora `exchange_rate` usa i tassi di riferimento ufficiali della BCE, oggi o alla data di una fattura, per uno o più importi, con l'elenco delle valute e l'andamento in un periodo. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0040](adr/0040-cambi.md).
+Branch `week-42`. Fatture in dollari, fornitori svizzeri, preventivi in sterline: Owni faceva i conti ma non aveva i cambi. Ora `exchange_rate` usa i tassi di riferimento ufficiali della BCE, oggi o alla data di una fattura, per uno o più importi, con l'elenco delle valute e l'andamento in un periodo. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0040](adr/0040-cambi.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Quanto fanno 1.250 dollari in euro?»**: una riga con il risultato e una con il cambio BCE e la data.
 - **«Il cambio del dollaro alla data della fattura, 25 dicembre»**: il cambio del 24, perché il 25 la BCE è chiusa, detto in chiaro.
@@ -49,6 +49,6 @@ Due revisori: sicurezza e standard; specifiche e uso, con richieste vere provate
 
 - L'andamento funziona anche con le valute entrate nell'euro (lev, lira): ogni giorno usa il cambio pubblicato o quello fisso.
 - Il totale di importi in centesimi si arrotonda ai centesimi; yen, won, corona islandese, fiorino, lira e peseta si scrivono senza decimali.
-- Se le due date cadono sullo stesso giorno pubblicato, Annie lo dice invece di rispondere «invariato».
+- Se le due date cadono sullo stesso giorno pubblicato, Owni lo dice invece di rispondere «invariato».
 - Dopo le 18:00 il file del giorno si richiede al più ogni ora fino a mezzanotte, così una pubblicazione tardiva non va persa.
 - `MAX_MONEY` scende a 9e13, il limite dei centesimi esatti.

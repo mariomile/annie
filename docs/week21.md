@@ -1,6 +1,6 @@
-# Settimana 21: Annie vede foto e immagini
+# Settimana 21: Owni vede foto e immagini
 
-Branch `week-21`. Decisione: [ADR 0016](adr/0016-immagini-al-modello.md). È la prima funzione dopo le fasi del [piano cloud](piano-cloud.md): una foto mandata ad Annie su Telegram, WhatsApp o nella console web arriva al modello, che la vede. Le immagini del workspace (un grafico fatto con il computer, una foto di ieri) le riapre con il tool `image_view`.
+Branch `week-21`. Decisione: [ADR 0016](adr/0016-immagini-al-modello.md). È la prima funzione dopo le fasi del [piano cloud](piano-cloud.md): una foto mandata a Owni su Telegram, WhatsApp o nella console web arriva al modello, che la vede. Le immagini del workspace (un grafico fatto con il computer, una foto di ieri) le riapre con il tool `image_view`.
 
 ## Cosa funziona (verificato dai test)
 

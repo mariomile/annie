@@ -219,7 +219,7 @@ describe("Telegram adapter (mocked fetch)", () => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 
 		const sent = api.calls.filter((c) => c.method === "sendMessage");
-		expect(sent).toEqual([{ method: "sendMessage", body: { chat_id: "42", text: "Annie (modello locale di sviluppo): hai scritto «ciao annie»" } }]);
+		expect(sent).toEqual([{ method: "sendMessage", body: { chat_id: "42", text: "Owni (modello locale di sviluppo): hai scritto «ciao annie»" } }]);
 		await runtime.close();
 	});
 });

@@ -114,7 +114,7 @@ export async function viewApprovals(main) {
 			);
 	}
 	mount(main, 
-		head(agentLabel(inst), h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Annie prepara sul tuo Google, le azioni sui servizi collegati (Notion, Linear, GitHub…) che cambiano qualcosa, le bozze della segreteria, i moduli che Annie chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
+		head(agentLabel(inst), h("h1", "Approvazioni"), "Tutto ciò che aspetta una tua decisione: le mail e gli eventi che Owni prepara sul tuo Google, le azioni sui servizi collegati (Notion, Linear, GitHub…) che cambiano qualcosa, le bozze della segreteria, i moduli che Owni chiede di inviare e i tool che scrive da sola, spenti finché un approvatore non li legge e li approva."),
 		h(
 			"div.stack",
 			drafts,
@@ -123,7 +123,7 @@ export async function viewApprovals(main) {
 			pendingAgent,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingGoogle.length || pendingConnector.length || pendingAgent.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
+			drafts.length || pendingGoogle.length || pendingConnector.length || pendingAgent.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Owni prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Owni propone qui e su Telegram o WhatsApp."),
 			decidedGoogle.length || decidedConnector.length || decidedAgent.length || decidedActions.length || decided.length ? [h("h3.section-title", "Decisi"), decidedGoogle, decidedConnector, decidedAgent, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);

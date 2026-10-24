@@ -1,13 +1,13 @@
 # Settimana 72: ordini ai fornitori
 
-Branch `week-72`. Annie dice cosa riordinare, prepara le bozze d'ordine per fornitore, ne fa il documento, e segue l'arrivo della merce, con la bolla o con la fattura, senza caricarla due volte. Non manda mai un ordine. Le scelte sono nell'[ADR 0092](adr/0092-ordini-ai-fornitori.md).
+Branch `week-72`. Owni dice cosa riordinare, prepara le bozze d'ordine per fornitore, ne fa il documento, e segue l'arrivo della merce, con la bolla o con la fattura, senza caricarla due volte. Non manda mai un ordine. Le scelte sono nell'[ADR 0092](adr/0092-ordini-ai-fornitori.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Cosa devo riordinare?», «cosa sta per finire?»**: gli articoli sotto il minimo o che ci arrivano prima della consegna, con il ritmo delle vendite, quanti ordinarne (a confezioni intere) e da chi, contando quello che è già ordinato.
 - **«Fammi l'ordine per Beta», «prepara gli ordini»**: le bozze, una per fornitore, mostrate prima; ogni riga dice perché, e un fornitore che costa almeno il 5% in meno. «Ordina a Beta Forniture 50 cartucce» fa subito la bozza.
 - **«Fammi il PDF dell'ordine»**: il documento in `ordini/`, anche in Word o senza prezzi. Lo manda la persona.
-- **«Ho mandato l'ordine venerdì»**: segnato inviato; se Annie non sa in quanti giorni consegna il fornitore lo dice, e «Beta consegna in 10 giorni» lo salva.
+- **«Ho mandato l'ordine venerdì»**: segnato inviato; se Owni non sa in quanti giorni consegna il fornitore lo dice, e «Beta consegna in 10 giorni» lo salva.
 - **«È arrivata la merce di Beta»**: la carica con la bolla al prezzo dell'ordine; quella già in magazzino la segna soltanto. La fattura che arriva dopo la paga invece di caricarla di nuovo.
 - **«È arrivato l'ordine di Beta?»**: gli ordini che aspetta, cosa è arrivato e cosa manca.
 - **Nel brief**: gli ordini in ritardo e quanti articoli riordinare.

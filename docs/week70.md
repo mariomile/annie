@@ -1,8 +1,8 @@
 # Settimana 70: prezzi d'acquisto
 
-Branch `week-70`. Annie legge le righe delle fatture dei fornitori: quanto paghi ogni prodotto, chi te lo vende meno caro, quali prezzi sono aumentati, e la fattura del fornitore che carica la merce in magazzino dopo il sì della persona. Le scelte sono nell'[ADR 0090](adr/0090-prezzi-d-acquisto.md).
+Branch `week-70`. Owni legge le righe delle fatture dei fornitori: quanto paghi ogni prodotto, chi te lo vende meno caro, quali prezzi sono aumentati, e la fattura del fornitore che carica la merce in magazzino dopo il sì della persona. Le scelte sono nell'[ADR 0090](adr/0090-prezzi-d-acquisto.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Quanto pago la carta A4 da Beta?»**: l'ultimo prezzo senza IVA, con gli sconti della fattura già divisi sulle righe.
 - **«Chi me la vende meno cara?»**: tutti i fornitori che l'hanno venduta, nella stessa unità, ognuno con la sua descrizione.

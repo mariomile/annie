@@ -279,7 +279,7 @@ describe("the desktop's tools", () => {
 		expect(broken.events).toEqual([{ type: "desktop.failed" }]);
 	});
 
-	it("a Mac app that Annie refuses to control is named to the model, whole, and is not an operator failure", async () => {
+	it("a Mac app that Owni refuses to control is named to the model, whole, and is not an operator failure", async () => {
 		const message = "Computer Use non controlla «Terminal», che è un terminale: non ho fatto nulla. Se serve, deve usarla la persona";
 		const blocked = tools(fakeDesktop({ fail: new DesktopError(message) }));
 		const asks: [string, Record<string, unknown>][] = [
@@ -381,7 +381,7 @@ async function dockerDesktop(network: "none" | "internet" = "none", spacesOption
 }
 
 describe("the Docker desktop (Cua's image)", () => {
-	it("one container per agente from the pinned image, on an internal network, with its own token and VNC password; Annie waits for it, then speaks MCP", async () => {
+	it("one container per agente from the pinned image, on an internal network, with its own token and VNC password; Owni waits for it, then speaks MCP", async () => {
 		const { docker, spaces, desktop } = await dockerDesktop("none", { healthyAfter: 2 });
 		expect(desktop.network).toBe("none");
 		const state = await desktop.call("k", "get_desktop_state", { max_image_dimension: 1280 });
@@ -433,7 +433,7 @@ describe("the Docker desktop (Cua's image)", () => {
 		expect(spaces.calls).toEqual([]);
 	});
 
-	it("after a restart of Annie the running desktop is used as it is, with the token Docker keeps for it", async () => {
+	it("after a restart of Owni the running desktop is used as it is, with the token Docker keeps for it", async () => {
 		const { docker, spaces, make } = await dockerDesktop();
 		await make().call("k", "click", { x: 1, y: 1 });
 		await make().call("k", "click", { x: 2, y: 2 });
@@ -565,8 +565,8 @@ describe("the desktop's settings", () => {
 		expect(() => loadDesktopConfig({ ANNIE_DESKTOP: "remote", ANNIE_DESKTOP_URL: "http://schermo.example", ANNIE_DESKTOP_TOKEN: "t" })).toThrow("https");
 		expect(() => loadDesktopConfig({ ANNIE_DESKTOP: "docker", ANNIE_DESKTOP_TOKEN: "t" })).toThrow("without ANNIE_DESKTOP=remote");
 		expect(loadAnnieConfig({ ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux", ANNIE_DESKTOP: "docker" }).desktop).toMatchObject({ kind: "docker" });
-		// Never in a cell of Annie Cloud: no Docker socket there, and a shared screen would mix tenants.
-		expect(() => loadDesktopConfig({ ANNIE_DESKTOP: "remote", ANNIE_DESKTOP_URL: "https://schermo.example", ANNIE_DESKTOP_TOKEN: "t", ANNIE_CELL_SECRET: "s" })).toThrow("Annie Cloud");
+		// Never in a cell of Owni Cloud: no Docker socket there, and a shared screen would mix tenants.
+		expect(() => loadDesktopConfig({ ANNIE_DESKTOP: "remote", ANNIE_DESKTOP_URL: "https://schermo.example", ANNIE_DESKTOP_TOKEN: "t", ANNIE_CELL_SECRET: "s" })).toThrow("Owni Cloud");
 	});
 
 	it("pnpm annie check asks the desktop", async () => {
@@ -630,7 +630,7 @@ describe("the desktop in an agente", () => {
 		expect((await api(screen)).screen).toBeNull();
 	}, 30_000);
 
-	it("the owner turns the screen on from the console; Annie looks at it from the chat and sees the picture", async () => {
+	it("the owner turns the screen on from the console; Owni looks at it from the chat and sees the picture", async () => {
 		const fake = fakeDesktop();
 		const { api } = await annie(fake.desktop);
 		expect(await api("/api/desktop")).toEqual({ status: 200, available: true, network: "none", shared: false });

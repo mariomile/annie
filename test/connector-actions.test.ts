@@ -81,7 +81,7 @@ async function boot(url: string) {
 const NOTE = (text: string) => `/tool demo__create_note ${JSON.stringify({ text, annie_reason: "Segno la nota che mi hai chiesto" })}`;
 
 describe("connector tools that change something wait for a person (ADR 0025)", () => {
-	it("read-only tools run at once; a write is asked, approved once and run once, without Annie's reason", async () => {
+	it("read-only tools run at once; a write is asked, approved once and run once, without Owni's reason", async () => {
 		const d = await demo();
 		const { annie, api, chat } = await boot(d.url);
 		const status = (await api("/api/instances/annie/connectors")).connectors[0].status;
@@ -160,7 +160,7 @@ describe("connector tools that change something wait for a person (ADR 0025)", (
 		const { reply } = await chat(api);
 		await reply(NOTE("dimenticata"));
 		const later = new Date(Date.now() + 24 * 3600_000 + 60_000);
-		// Count Annie's replies before the sweep, which may answer quickly.
+		// Count Owni's replies before the sweep, which may answer quickly.
 		const told = reply("", 1);
 		await new Promise((r) => setTimeout(r, 200));
 		await annie.scheduler.tick(later);
@@ -176,7 +176,7 @@ describe("connector tools that change something wait for a person (ADR 0025)", (
 		expect(d.notes).toEqual([]);
 	});
 
-	it("a request that expired long ago (Annie was off) is closed without a notice", async () => {
+	it("a request that expired long ago (Owni was off) is closed without a notice", async () => {
 		const d = await demo();
 		const { annie, api, chat } = await boot(d.url);
 		const { reply } = await chat(api);
@@ -217,7 +217,7 @@ describe("connector tools that change something wait for a person (ADR 0025)", (
 describe("connector action store", () => {
 	const input = { connectorId: "demo", connectorName: "Demo", tool: "create_note", toolTitle: "Crea una nota", args: { text: "x" }, reason: "r", destructive: true, server: "https://demo.example/mcp" };
 
-	it("a call left running when Annie stopped is uncertain, and is never run again", async () => {
+	it("a call left running when Owni stopped is uncertain, and is never run again", async () => {
 		const store = new ConnectorActionStore(mkdtempSync(join(tmpdir(), "ca-")));
 		const action = await store.propose(input);
 		let runs = 0;

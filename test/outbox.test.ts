@@ -9,7 +9,7 @@ import { connectChannel } from "../src/gateway.ts";
 import { runtimeWithInstance, tempDataDir, waitFor } from "./helpers.ts";
 import { kill9, spawnFixture, type Worker } from "./processes.ts";
 
-const ANSWER = "Annie (modello locale di sviluppo): hai scritto «ciao»";
+const ANSWER = "Owni (modello locale di sviluppo): hai scritto «ciao»";
 const outboxOf = (dataDir: string) => join(dataDir, "tenants", "acme", "instances", "ops", "outbox");
 
 function outboxEntries(dataDir: string): OutboxEntry[] {

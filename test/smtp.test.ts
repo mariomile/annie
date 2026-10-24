@@ -89,17 +89,17 @@ async function fakeSmtp(options: { starttls?: boolean; auth?: string; refuseLogi
 	return { port: (server.address() as AddressInfo).port, log, mails };
 }
 
-const mail = { to: "anna@example.com", subject: "Il tuo link per entrare in Annie", text: "Apri questo link:\n\nhttps://annie.example.it/verify#abc\n" };
+const mail = { to: "anna@example.com", subject: "Il tuo link per entrare in Owni", text: "Apri questo link:\n\nhttps://annie.example.it/verify#abc\n" };
 
 describe("SMTP mailer", () => {
 	it("sends over STARTTLS with AUTH PLAIN, the text in UTF-8, the password never in an error", async () => {
 		const smtp = await fakeSmtp({ starttls: true, auth: "PLAIN LOGIN" });
-		await new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "segreto", from: "Annie <accesso@annie.example.it>", ca: cert }).send(mail);
+		await new SmtpMailer({ host: "localhost", port: smtp.port, security: "starttls", user: "u", password: "segreto", from: "Owni <accesso@annie.example.it>", ca: cert }).send(mail);
 		expect(smtp.log.map((l) => l.split(" ")[0])).toEqual(["EHLO", "STARTTLS", "EHLO", "AUTH", "MAIL", "RCPT", "DATA", "QUIT"]);
 		expect(smtp.log).toContain("RCPT TO:<anna@example.com>");
 		expect(smtp.log).toContain("MAIL FROM:<accesso@annie.example.it>");
 		const [sent] = smtp.mails;
-		expect(sent).toContain("Subject: Il tuo link per entrare in Annie");
+		expect(sent).toContain("Subject: Il tuo link per entrare in Owni");
 		const body = (sent ?? "").split("\r\n\r\n")[1]?.replace(/\r\n/g, "") ?? "";
 		expect(Buffer.from(body, "base64").toString("utf8")).toContain("https://annie.example.it/verify#abc");
 		// Wrong password: the error says so without what was sent.
@@ -137,12 +137,12 @@ describe("SMTP mailer", () => {
 	});
 
 	it("encodes a non-ASCII subject and sender name; parses the service URL", () => {
-		const text = message("Annie Città <a@b.example>", { to: "c@d.example", subject: "Il tuo accesso è pronto", text: ".riga che inizia con un punto" }, new Date("2026-10-16T10:00:00Z"));
+		const text = message("Owni Città <a@b.example>", { to: "c@d.example", subject: "Il tuo accesso è pronto", text: ".riga che inizia con un punto" }, new Date("2026-10-16T10:00:00Z"));
 		expect(text).toContain(`Subject: =?UTF-8?B?${Buffer.from("Il tuo accesso è pronto").toString("base64")}?=`);
 		expect(text).toContain("From: =?UTF-8?B?");
 		expect(text).toContain("Date: Fri, 16 Oct 2026 10:00:00 +0000");
 		expect(parseSmtpUrl("smtps://user%40x:p%3Ass@smtp.example.eu", "a@b.example")).toEqual({ host: "smtp.example.eu", port: 465, security: "tls", user: "user@x", password: "p:ss", from: "a@b.example" });
-		expect(parseSmtpUrl("smtp://smtp.example.eu", "Annie <a@b.example>")).toMatchObject({ port: 587, security: "starttls" });
+		expect(parseSmtpUrl("smtp://smtp.example.eu", "Owni <a@b.example>")).toMatchObject({ port: 587, security: "starttls" });
 		expect(() => parseSmtpUrl("http://x", "a@b.example")).toThrow(/smtps/);
 		expect(() => parseSmtpUrl("smtps://x", "a@b.example\r\nBcc: z")).toThrow(/MAIL_FROM/);
 	});

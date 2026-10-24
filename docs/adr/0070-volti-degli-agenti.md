@@ -4,7 +4,7 @@ Con più agenti, la console li distingueva solo per nome ed emoji: un selettore 
 
 ## Decisione
 
-- **Ogni agente ha un volto disegnato dal suo ID** (`face()` in `src/web/ui/app.js`): un corpo morbido (tondo, quadrato, uovo o largo), un colore fra otto, occhi a punto, alti o larghi, e un dettaglio (antenna, guance, sopracciglia, o niente). Ogni tratto ha il suo hash, quindi lo stesso ID dà sempre lo stesso volto, ovunque e su ogni dispositivo, senza salvare niente. Annie, l'agente principale, resta nel bianco e nero della console e segue il tema.
+- **Ogni agente ha un volto disegnato dal suo ID** (`face()` in `src/web/ui/app.js`): un corpo morbido (tondo, quadrato, uovo o largo), un colore fra otto, occhi a punto, alti o larghi, e un dettaglio (antenna, guance, sopracciglia, o niente). Ogni tratto ha il suo hash, quindi lo stesso ID dà sempre lo stesso volto, ovunque e su ogni dispositivo, senza salvare niente. Owni, l'agente principale, resta nel bianco e nero della console e segue il tema.
 - **Dove compare**: nella barra laterale, nella pagina Agenti, sopra il saluto della chat vuota (grande, con la luce del suo colore dietro), accanto al nome nelle risposte, nelle stanze e sulle schede della board.
 - **Il volto dice che sta pensando**: mentre la risposta arriva, gli occhi si guardano intorno e il corpo ondeggia, con «Ricercatore sta pensando…» accanto. Nelle stanze ci sono i volti degli agenti presenti. Da fermi sbattono le palpebre ogni tanto, ognuno con il suo tempo. Con «riduci movimento» non si muove niente.
 - **La barra laterale elenca gli agenti** (volto, nome, a cosa serve) al posto del menu a tendina; un tocco apre le chat di quell'agente.

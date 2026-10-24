@@ -85,7 +85,7 @@ export function setup(o: { askFirst?: boolean } = {}) {
 	const store = new DdtStore(dir);
 	const sales = new SalesInvoiceStore(dir);
 	sales.update("seed", (state) => ({ ...state, settings: { ...MARK, lastBefore: { 2026: 0 } } }));
-	// The last DDT before Annie said already (none), unless the test is about asking it.
+	// The last DDT before Owni said already (none), unless the test is about asking it.
 	if (!o.askFirst) store.update("seed", (state) => ({ ...state, settings: { ...MARK, lastBefore: { 2026: 0 } } }));
 	const clients = { read: () => ({ cards: [ROSSI, VERDI], nextCard: 3, nextFollowUp: 1, calls: [], broken: false }) };
 	const priceList = { read: () => ({ items: LISTINO, broken: false }) as never };

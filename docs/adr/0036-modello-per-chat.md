@@ -1,6 +1,6 @@
 # Il modello di ogni chat
 
-Con [ADR 0032](0032-qualsiasi-modello.md) l'owner sceglie il modello dell'istanza, uno per tutte le chat. Su Grok, ChatGPT o Claude chi scrive cambia modello dalla chat: uno veloce per una domanda al volo, uno che ragiona per un conto difficile, uno che guarda le foto. Annie è l'alternativa che non lega a un modello, quindi anche qui si sceglie chat per chat.
+Con [ADR 0032](0032-qualsiasi-modello.md) l'owner sceglie il modello dell'istanza, uno per tutte le chat. Su Grok, ChatGPT o Claude chi scrive cambia modello dalla chat: uno veloce per una domanda al volo, uno che ragiona per un conto difficile, uno che guarda le foto. Owni è l'alternativa che non lega a un modello, quindi anche qui si sceglie chat per chat.
 
 ## Decisione
 
@@ -22,5 +22,5 @@ Con [ADR 0032](0032-qualsiasi-modello.md) l'owner sceglie il modello dell'istanz
 ## Conseguenze
 
 - La spesa di una chat dipende dal modello scelto: l'elenco mostra il prezzo di ognuno, e un membro sceglie solo fra i provider che l'owner ha permesso.
-- Il modello si allinea a ogni messaggio: un cambio mentre Annie sta già lavorando può valere per il resto di quel turno. È accettato: la scelta è della chat, e il turno successivo la usa comunque. Costa una scrittura in più nella base dati per messaggio.
+- Il modello si allinea a ogni messaggio: un cambio mentre Owni sta già lavorando può valere per il resto di quel turno. È accettato: la scelta è della chat, e il turno successivo la usa comunque. Costa una scrittura in più nella base dati per messaggio.
 - Su Telegram e WhatsApp si sceglie con il comando `/modello` ([ADR 0037](0037-modello-dai-canali.md)).

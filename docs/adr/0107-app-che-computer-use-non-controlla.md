@@ -1,6 +1,6 @@
 # 0107: App che Computer Use non controlla
 
-Il componente nativo di Computer Use ([desktop.md](../desktop.md)) manda clic, testo, tasti, scorrimenti e trascinamenti a qualsiasi app e manda al modello l'intero schermo. Con un terminale davanti, il modello poteva scrivere comandi che aggirano il computer isolato di Annie (`computer_run`, [ADR 0002](0002-tool-proposti-sandbox-e-approvazione.md)) e le sue approvazioni. Con un gestore di password o una richiesta di password di macOS visibile, vedeva e poteva digitare segreti.
+Il componente nativo di Computer Use ([desktop.md](../desktop.md)) manda clic, testo, tasti, scorrimenti e trascinamenti a qualsiasi app e manda al modello l'intero schermo. Con un terminale davanti, il modello poteva scrivere comandi che aggirano il computer isolato di Owni (`computer_run`, [ADR 0002](0002-tool-proposti-sandbox-e-approvazione.md)) e le sue approvazioni. Con un gestore di password o una richiesta di password di macOS visibile, vedeva e poteva digitare segreti.
 
 ## Decisione
 

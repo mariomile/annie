@@ -11,7 +11,7 @@ afterEach(async () => { for (const close of closers.splice(0).reverse()) await c
 
 describe("the local Mac's separate permission boundary", () => {
 	it("requires explicit local opt-in, a private server and an absolute helper path", () => {
-		const env = { ANNIE_DESKTOP: "local", ANNIE_LOCAL_PROVIDERS: "1", ANNIE_LOCAL_DESKTOP_HELPER: "/Applications/Annie.app/Contents/MacOS/annie-computer" };
+		const env = { ANNIE_DESKTOP: "local", ANNIE_LOCAL_PROVIDERS: "1", ANNIE_LOCAL_DESKTOP_HELPER: "/Applications/Owni.app/Contents/MacOS/annie-computer" };
 		expect(loadDesktopConfig(env)).toEqual({ kind: "local", helperPath: env.ANNIE_LOCAL_DESKTOP_HELPER });
 		for (const patch of [{ ANNIE_LOCAL_PROVIDERS: "" }, { ANNIE_WEB_HOST: "0.0.0.0" }, { ANNIE_PUBLIC_URL: "https://annie.example" }, { ANNIE_CELL_SECRET: "cell" }, { ANNIE_LOCAL_DESKTOP_HELPER: "./helper" }]) {
 			expect(() => loadDesktopConfig({ ...env, ...patch })).toThrow();

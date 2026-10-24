@@ -25,7 +25,7 @@ const EMPTY: Book = { nextDdt: 1, next: {}, ddts: [], alerts: [], calls: [] };
 /** The seam the fatture in uscita are given: the DDTs read, marked billed by an invoice issued, and to bill again after a credit note for the wrong customer. */
 export type DdtLink = Pick<DdtStore, "read" | "markBilled" | "release">;
 
-/** The number the next DDT of `year` takes: after the counter and the last number said before Annie. */
+/** The number the next DDT of `year` takes: after the counter and the last number said before Owni. */
 export function nextDdtSeq(state: Pick<DdtState, "next" | "settings">, year: number): number {
 	return Math.max(state.next[String(year)] ?? 1, (state.settings?.lastBefore?.[String(year)] ?? 0) + 1);
 }
@@ -74,7 +74,7 @@ export class DdtStore {
 
 	/**
 	 * The draft `id` issued on `day`: its number under the lock, after the counter and the last
-	 * number said before Annie, never before the date of a DDT of the year issued already. The DDT
+	 * number said before Owni, never before the date of a DDT of the year issued already. The DDT
 	 * `callId` issued already, when there is one (a call run again).
 	 */
 	issue(id: string, callId: string, day: string, marker: Marker): IssuedDdt {

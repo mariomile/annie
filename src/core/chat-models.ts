@@ -27,7 +27,7 @@ export class ChatModels {
 		private readonly runtime: AnnieRuntime,
 		private readonly tenant: string,
 		private readonly catalog: {
-			/** The models of a provider Annie offers. */
+			/** The models of a provider Owni offers. */
 			readonly models: (provider: string) => readonly ModelInfo[];
 			/** Providers whose key the operator gave the server. */
 			readonly serverModelKeys: readonly string[];

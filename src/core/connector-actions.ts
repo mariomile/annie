@@ -4,7 +4,7 @@ import type { AskedBy } from "./agent-requests.ts";
 import { oneLine } from "./plain-text.ts";
 
 /**
- * A tool of a connector that changes something (ADR 0025): Annie asks, a person approves the
+ * A tool of a connector that changes something (ADR 0025): Owni asks, a person approves the
  * exact call, and only then it runs, once. The tools a server marks read-only run at once; the
  * others wait here, like forms to send (ADR 0011) and Google writes (ADR 0021).
  */
@@ -22,7 +22,7 @@ export type ConnectorAction = {
 	readonly args: Readonly<Record<string, unknown>>;
 	/** The arguments as the approver reads them. */
 	readonly shown: readonly (readonly [string, string])[];
-	/** Why, in Annie's words. */
+	/** Why, in Owni's words. */
 	readonly reason: string;
 	/** The server says it can delete or overwrite (destructiveHint). */
 	readonly destructive: boolean;
@@ -121,7 +121,7 @@ export class ConnectorActionStore {
 
 	/** At start: a call left running by a dead process may or may not have reached the service. */
 	settleInterrupted(): Promise<ConnectorAction[]> {
-		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Annie si è riavviata mentre la faceva", uncertain: true } }));
+		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Owni si è riavviata mentre la faceva", uncertain: true } }));
 	}
 
 	markNotified(id: string, chat: string): Promise<void> {
@@ -141,7 +141,7 @@ export function fitsInChat(action: Pick<ConnectorAction, "shown" | "reason">): b
 	return action.shown.every(([, v]) => v.length <= 300) && size <= CONNECTOR_ACTION_LIMITS.maxCardChars;
 }
 
-/** What Annie is told after the decision. What the service answered is fenced as data. */
+/** What Owni is told after the decision. What the service answered is fenced as data. */
 export function connectorActionReport(action: ConnectorAction): string {
 	// The tool's name and title come from the service: the header carries only the owner's name for it.
 	const head = `[Esito della richiesta ${action.id} su ${action.connectorName}]`;

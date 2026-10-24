@@ -1,13 +1,13 @@
 # Settimana 47: fatture elettroniche
 
-Branch `week-47`. Annie legge le fatture elettroniche dello SdI, XML o firmate `.p7m`, ovunque legge i documenti: le mandi in chat, le trova nel workspace o sul web, e ne fa un riepilogo in italiano che dice chi, quanto, quando e come pagare. Le scelte sono nell'[ADR 0052](adr/0052-fatture-elettroniche.md).
+Branch `week-47`. Owni legge le fatture elettroniche dello SdI, XML o firmate `.p7m`, ovunque legge i documenti: le mandi in chat, le trova nel workspace o sul web, e ne fa un riepilogo in italiano che dice chi, quanto, quando e come pagare. Le scelte sono nell'[ADR 0052](adr/0052-fatture-elettroniche.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Leggimi questa fattura»** con un `.xml.p7m` su Telegram: «Fattura n. 2026/0153 del 15/10/2026 da Alfa Forniture S.r.l. a Beta Ristorazione Srl, totale 1.253,50 €, scadenza 30/11/2026», poi righe, IVA, IBAN.
-- **Una nota di credito**: Annie dice che gli importi sono a favore del cliente, non da pagare.
+- **Una nota di credito**: Owni dice che gli importi sono a favore del cliente, non da pagare.
 - **La parcella di un avvocato a un Comune**: ritenuta d'acconto, cassa forense, split payment spiegati, e «Da pagare: 840,00 €».
-- **Una scadenza che non torna con i giorni**: vale quella scritta in fattura, e Annie dice la differenza.
+- **Una scadenza che non torna con i giorni**: vale quella scritta in fattura, e Owni dice la differenza.
 - **«Trova la fattura con questo IBAN»**: `file_search` cerca anche nei riepiloghi delle fatture.
 - **Un PDF, un Word o un Excel firmati (.p7m)**: letti come il documento che contengono.
 

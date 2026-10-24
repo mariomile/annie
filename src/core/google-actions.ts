@@ -14,7 +14,7 @@ export type { MailDraft };
 export { validAddress };
 
 /**
- * A write to a person's Google account that Annie asked for (ADR 0021): a mail sent or saved as
+ * A write to a person's Google account that Owni asked for (ADR 0021): a mail sent or saved as
  * a draft, an event created, changed or deleted. It waits for the person whose account it is,
  * nobody else, and is done at most once (the shared action queue, as web actions, ADR 0011).
  */
@@ -51,7 +51,7 @@ export type GoogleAction = {
 	readonly personId: string;
 	/** Their Google address when asked: done only with that same account. */
 	readonly account: string;
-	/** Why, in Annie's words. */
+	/** Why, in Owni's words. */
 	readonly reason: string;
 	readonly mail?: MailDraft;
 	readonly event?: EventDraft;
@@ -132,7 +132,7 @@ export class GoogleActionStore {
 
 	/** At start: a write left running by a dead process may or may not have reached Google. */
 	settleInterrupted(): Promise<GoogleAction[]> {
-		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Annie si è riavviata mentre lo faceva", uncertain: true } }));
+		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Owni si è riavviata mentre lo faceva", uncertain: true } }));
 	}
 }
 
@@ -168,7 +168,7 @@ export function instant(time: EventTime): number {
 /**
  * The action as the console shows it: the attachments in `mail.attachments`, whole paths and sizes
  * on one line each, which the card shows in a row of its own (never contents). The reason is
- * Annie's text: capped, without invisible format characters, and unable to pass for that row.
+ * Owni's text: capped, without invisible format characters, and unable to pass for that row.
  */
 export function cardView(action: GoogleAction): GoogleAction {
 	const reason = oneLine(withoutAttachmentWords(action.reason), GOOGLE_ACTION_LIMITS.maxReason);
@@ -183,7 +183,7 @@ function withAttachments(mail: MailDraft | undefined): string {
 	return n === 0 ? "" : n === 1 ? ", con 1 allegato" : `, con ${n} allegati`;
 }
 
-/** The action in one line, for the card and for Annie. */
+/** The action in one line, for the card and for Owni. */
 export function googleActionTitle(action: Pick<GoogleAction, "kind" | "mail" | "event" | "current">): string {
 	switch (action.kind) {
 		case "mail.send":
@@ -201,7 +201,7 @@ export function googleActionTitle(action: Pick<GoogleAction, "kind" | "mail" | "
 
 /**
  * Decide a Google action: only the person whose account it is, from the console. Approving does
- * it once with `run`; the outcome, or the refusal, goes back to the conversation for Annie.
+ * it once with `run`; the outcome, or the refusal, goes back to the conversation for Owni.
  */
 export async function decideGoogleAction(
 	runtime: AnnieRuntime,
@@ -267,7 +267,7 @@ const DONE: Record<GoogleActionKind, string> = {
 };
 
 /**
- * What Annie is told after the decision. Errors can carry what Google said: fenced as data. The
+ * What Owni is told after the decision. Errors can carry what Google said: fenced as data. The
  * recipients of a mail come from the request (for a payment reminder, maybe from an invoice file):
  * they go in a fence of their own too. `reminded`: what became of the record of a sent payment
  * reminder (decideGoogleAction).

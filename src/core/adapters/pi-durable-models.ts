@@ -30,7 +30,7 @@ import { subscriptionProvider } from "../model-providers.ts";
 import type { LocalProviders } from "../local-providers.ts";
 import { localCliProvider } from "./pi-durable-local-cli.ts";
 
-/** pi-ai's factory for each provider Annie offers (MODEL_PROVIDERS), and the local model. */
+/** pi-ai's factory for each provider Owni offers (MODEL_PROVIDERS), and the local model. */
 const FACTORIES: Readonly<Record<string, () => Provider>> = {
 	anthropic: anthropicProvider,
 	openai: openaiProvider,
@@ -85,7 +85,7 @@ export function providerModels(id: string): readonly ModelInfo[] {
  * - anything else → echoes the message, saying which pictures came with it
  */
 function createDevModel(): Provider {
-	const faux = fauxProvider({ provider: DEV_PROVIDER, models: [{ id: DEV_MODEL_ID, name: "Annie dev (deterministic)" }] });
+	const faux = fauxProvider({ provider: DEV_PROVIDER, models: [{ id: DEV_MODEL_ID, name: "Owni dev (deterministic)" }] });
 	// Faux responses are consumed one per request; this step re-queues itself forever.
 	const step = (context: { messages: Message[] }): AssistantMessage => {
 		faux.appendResponses([step]);
@@ -125,7 +125,7 @@ function respond(messages: readonly Message[]): AssistantMessage {
 	}
 	// Pictures of earlier messages still in the request: old ones should have left it.
 	const earlier = messages.filter((m) => m !== last && m.role !== "assistant" && typeof m.content !== "string" && m.content.some((c) => c.type === "image")).length;
-	return fauxAssistantMessage(`Annie (modello locale di sviluppo): hai scritto «${text}${said.includes(MEMORY_NOTE_MARKER) ? said.slice(said.indexOf(MEMORY_NOTE_MARKER)) : ""}»${last?.role === "user" ? imagesSeen(last.content) : ""}${earlier === 0 ? "" : ` [${earlier} ${earlier === 1 ? "messaggio precedente" : "messaggi precedenti"} con immagini]`}`);
+	return fauxAssistantMessage(`Owni (modello locale di sviluppo): hai scritto «${text}${said.includes(MEMORY_NOTE_MARKER) ? said.slice(said.indexOf(MEMORY_NOTE_MARKER)) : ""}»${last?.role === "user" ? imagesSeen(last.content) : ""}${earlier === 0 ? "" : ` [${earlier} ${earlier === 1 ? "messaggio precedente" : "messaggi precedenti"} con immagini]`}`);
 }
 
 /** The pictures of a message as the model received them: how many, of which type and size. */

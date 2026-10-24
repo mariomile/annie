@@ -1,4 +1,4 @@
-/** Subscription inference through official CLIs; Annie alone executes requested tools. */
+/** Subscription inference through official CLIs; Owni alone executes requested tools. */
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -144,9 +144,9 @@ function failureEvents(stdout: string): FailureDetails {
 	return failures;
 }
 
-const BRIDGE = "You are Annie's inference engine. The transcript below is the complete conversation, including system instructions, tool declarations, prior assistant tool calls and tool results. Continue it faithfully. Return only the requested JSON object. To use an Annie tool, return its name and JSON-encoded arguments in toolCalls; Annie executes it after its own authorization checks and sends its result in the next request. Never execute native CLI tools, commands, file operations, browser operations, or MCP tools. Use only the Annie tools declared in the transcript. A final user-facing answer goes in text with an empty toolCalls array. When requesting tools text may be empty. Images are attached in transcript order.";
+const BRIDGE = "You are Owni's inference engine. The transcript below is the complete conversation, including system instructions, tool declarations, prior assistant tool calls and tool results. Continue it faithfully. Return only the requested JSON object. To use an Owni tool, return its name and JSON-encoded arguments in toolCalls; Owni executes it after its own authorization checks and sends its result in the next request. Never execute native CLI tools, commands, file operations, browser operations, or MCP tools. Use only the Owni tools declared in the transcript. A final user-facing answer goes in text with an empty toolCalls array. When requesting tools text may be empty. Images are attached in transcript order.";
 function schema(names: string[]) {
-	return { type: "object", additionalProperties: false, required: ["text", "toolCalls"], properties: { text: { type: "string" }, toolCalls: { type: "array", maxItems: 16, items: { type: "object", additionalProperties: false, required: ["name", "arguments"], properties: { name: { type: "string", ...(names.length === 0 ? {} : { enum: names }) }, arguments: { type: "string", description: "A JSON object encoded as a string, matching the named Annie tool's parameters" } } } } } };
+	return { type: "object", additionalProperties: false, required: ["text", "toolCalls"], properties: { text: { type: "string" }, toolCalls: { type: "array", maxItems: 16, items: { type: "object", additionalProperties: false, required: ["name", "arguments"], properties: { name: { type: "string", ...(names.length === 0 ? {} : { enum: names }) }, arguments: { type: "string", description: "A JSON object encoded as a string, matching the named Owni tool's parameters" } } } } } };
 }
 async function cliRequest(id: string, model: string, context: TranscriptContext, dir: string) {
 	const tools = new Map<string, Tool>();
@@ -201,7 +201,7 @@ export function codexInferenceCatalog(model: string, cache?: unknown): Record<st
 	const cached = model === "default" ? models.filter((m) => m.visibility !== "hide").sort((a, b) => Number(a.priority ?? 100) - Number(b.priority ?? 100))[0] : models.find((m) => m.slug === model);
 	const slug = typeof cached?.slug === "string" ? cached.slug : model === "default" ? "gpt-5.5" : model;
 	return {
-		slug, display_name: slug, description: "Annie subscription inference", default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "medium", description: "Standard reasoning" }], visibility: "list", supported_in_api: true, priority: 0, support_verbosity: false, default_verbosity: null, truncation_policy: { mode: "bytes", limit: 10_000 }, context_window: 200_000,
+		slug, display_name: slug, description: "Owni subscription inference", default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "medium", description: "Standard reasoning" }], visibility: "list", supported_in_api: true, priority: 0, support_verbosity: false, default_verbosity: null, truncation_policy: { mode: "bytes", limit: 10_000 }, context_window: 200_000,
 		...(cached ?? {}),
 		shell_type: "disabled", apply_patch_tool_type: null, experimental_supported_tools: [], node_repl_disabled: true, tool_mode: "direct", include_skills_usage_instructions: false, include_plugin_usage_instructions: false, include_apps_usage_instructions: false, supports_search_tool: false, supports_experimental_context: false, model_messages: { instructions_template: BRIDGE },
 	};
@@ -224,7 +224,7 @@ function parseResponse(id: string, stdout: string, tools: ReadonlyMap<string, To
 		for (const line of stdout.split("\n").filter((s) => s.trim() !== "")) {
 			const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: string }; usage?: { input_tokens?: number; output_tokens?: number } };
 			if (event.type === "error" || event.type === "turn.failed") throw inferenceFailure(failureDetails(event));
-			if (event.item !== undefined && ["command_execution", "mcp_tool_call", "web_search", "file_change"].includes(event.item.type ?? "")) throw new LocalProviderError("La CLI ha tentato uno strumento esterno ad Annie. Aggiorna la CLI e riprova.");
+			if (event.item !== undefined && ["command_execution", "mcp_tool_call", "web_search", "file_change"].includes(event.item.type ?? "")) throw new LocalProviderError("La CLI ha tentato uno strumento esterno a Owni. Aggiorna la CLI e riprova.");
 			if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") finalText = event.item.text;
 			if (event.usage !== undefined) { inputTokens = event.usage.input_tokens ?? 0; outputTokens = event.usage.output_tokens ?? 0; }
 		}

@@ -14,7 +14,7 @@ import { romeDayKey } from "../core/usage.ts";
 import type { CellProvider } from "./provider.ts";
 
 /**
- * The control plane of Annie Cloud (ADR 0007): sign-up by email link, one cell per tenant,
+ * The control plane of Owni Cloud (ADR 0007): sign-up by email link, one cell per tenant,
  * requests routed by host name (`<tenant>.<domain>`) to the tenant's cell, idle cells stopped
  * and woken for their next task. It forwards requests without keeping them; conversations,
  * files and secrets of a tenant live only in its cell.
@@ -22,7 +22,7 @@ import type { CellProvider } from "./provider.ts";
 
 export type ControlPlaneOptions = {
 	readonly dataDir: string;
-	/** Annie Cloud's domain: the sign-up page lives here, each tenant at `<tenant>.<domain>`. */
+	/** Owni Cloud's domain: the sign-up page lives here, each tenant at `<tenant>.<domain>`. */
 	readonly domain: string;
 	readonly publicScheme: "http" | "https";
 	/** Port in public links, when it is not the scheme's default (local development). */
@@ -36,7 +36,7 @@ export type ControlPlaneOptions = {
 	readonly web: { readonly host: string; readonly port: number };
 	/** How often to check idle and due cells; 0: only when `tick` is called. */
 	readonly tickMs: number;
-	/** Subscriptions through Stripe (ADR 0010); without it Annie Cloud is free to use. */
+	/** Subscriptions through Stripe (ADR 0010); without it Owni Cloud is free to use. */
 	readonly billing?: StripeBilling;
 	/** The instances' computers on micro-VMs (ADR 0015), which cells reach through here; none without it. */
 	readonly computer?: ComputerProvider;
@@ -72,7 +72,7 @@ export type TenantStatus = {
 	readonly nextWakeAt: string | null;
 	/** Estimated model spend (list prices), as of `readAt`; null if never read. */
 	readonly spend: { readonly todayUsd: number; readonly monthUsd: number; readonly lastMonthUsd: number; readonly readAt: string } | null;
-	/** Trial or subscription; null when Annie Cloud runs without billing. */
+	/** Trial or subscription; null when Owni Cloud runs without billing. */
 	readonly billing: (Access & { readonly subscription: string | null }) | null;
 };
 
@@ -128,7 +128,7 @@ export type TenantComputer = { readonly tenant: string; readonly key: string; re
 const EMPTY: State = { accounts: [], cells: [], links: [] };
 const LINK_TTL_MS = 30 * 60 * 1000;
 const LINKS_PER_IP_HOUR = 20;
-const SLEEPING = { error: "Annie dorme: entra dal link di accesso per svegliarla" };
+const SLEEPING = { error: "Owni dorme: entra dal link di accesso per svegliarla" };
 const CELL_TIMEOUT_MS = 5_000;
 const LINKS_PER_HOUR = 5;
 const MAX_BODY = 64 * 1024;
@@ -195,8 +195,8 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		const forBilling = body.purpose === "billing" && billing !== undefined;
 		await options.mailer.send({
 			to: email,
-			subject: forBilling ? "Il tuo abbonamento ad Annie" : "Entra in Annie",
-			text: `Per ${forBilling ? "gestire l'abbonamento ad Annie" : "entrare in Annie"} apri questo link entro 30 minuti:\n\n${publicUrl(options.domain)}/verify${forBilling ? "?per=abbonamento" : ""}#${token}\n\nSe non l'hai chiesto tu, ignora questa mail.`,
+			subject: forBilling ? "Il tuo abbonamento a Owni" : "Entra in Owni",
+			text: `Per ${forBilling ? "gestire l'abbonamento a Owni" : "entrare in Owni"} apri questo link entro 30 minuti:\n\n${publicUrl(options.domain)}/verify${forBilling ? "?per=abbonamento" : ""}#${token}\n\nSe non l'hai chiesto tu, ignora questa mail.`,
 		});
 	}
 
@@ -416,7 +416,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 
 	/**
 	 * A Stripe event says which subscription changed; what it is now we ask Stripe, so events that
-	 * arrive late or out of order cannot leave a wrong status. Only Annie's own subscription counts:
+	 * arrive late or out of order cannot leave a wrong status. Only Owni's own subscription counts:
 	 * a second one (two Checkout pages paid) is reported, never allowed to override a live one.
 	 */
 	async function applyEvent(event: StripeEvent): Promise<void> {
@@ -533,7 +533,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	jobSweeper.unref();
 
 	/**
-	 * The computers of Annie Cloud (ADR 0015): a cell asks for its own tenant, with a token derived
+	 * The computers of Owni Cloud (ADR 0015): a cell asks for its own tenant, with a token derived
 	 * from its secret; its keys are named again under the tenant, so no cell reaches another
 	 * tenant's computer. The provider's token stays here. A suspended tenant runs nothing. A
 	 * command starts with one request and is waited for with others of at most 25 seconds, so a
@@ -547,7 +547,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 		if (cell === undefined || !sameSecret(given, computerToken(cell.secret))) return send(res, 404, { error: "Not found" });
 		const op = url.pathname.slice("/internal/computer/".length);
 		// A cell still set up for computers after they were switched off here: it is told, not left guessing.
-		if (computer === undefined) return op === "check" ? send(res, 200, { problem: "Annie Cloud non offre il computer" }) : send(res, 404, { error: "Not found" });
+		if (computer === undefined) return op === "check" ? send(res, 200, { problem: "Owni Cloud non offre il computer" }) : send(res, 404, { error: "Not found" });
 		if (suspended(tenant)) return send(res, 402, { error: "il periodo di prova è finito: il computer riparte con l'abbonamento" });
 		try {
 			if (op === "check" && req.method === "GET") {
@@ -555,7 +555,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 				if (computerCheck === undefined || Date.now() - computerCheck.at > 60_000) {
 					const problem = await computer.check();
 					if (problem !== undefined) log(`cloud: computers not ready: ${problem}`);
-					computerCheck = { at: Date.now(), problem: problem === undefined ? undefined : "il computer di Annie Cloud non è disponibile ora" };
+					computerCheck = { at: Date.now(), problem: problem === undefined ? undefined : "il computer di Owni Cloud non è disponibile ora" };
 				}
 				return send(res, 200, { problem: computerCheck.problem });
 			}
@@ -688,7 +688,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 	 */
 	function googleCallback(res: ServerResponse, url: URL): void {
 		const tenant = /^([a-z0-9]{1,63})~/.exec(url.searchParams.get("state") ?? "")?.[1];
-		if (tenant === undefined || !read().accounts.some((a) => a.tenant === tenant)) return send(res, 404, { error: "Collegamento non valido: riprova dalla tua Annie" });
+		if (tenant === undefined || !read().accounts.some((a) => a.tenant === tenant)) return send(res, 404, { error: "Collegamento non valido: riprova dalla tua Owni" });
 		res.writeHead(302, { location: `${publicUrl(`${tenant}.${options.domain}`)}/#/google?${googleReturnQuery(url)}`, "cache-control": "no-store" });
 		res.end();
 	}
@@ -712,7 +712,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			await ensureRunning(tenant);
 		} catch (error) {
 			log(`cloud: cell ${tenant} did not start: ${error instanceof Error ? error.message : String(error)}`);
-			return send(res, 503, { error: "Annie si sta svegliando: riprova tra qualche secondo" });
+			return send(res, 503, { error: "Owni si sta svegliando: riprova tra qualche secondo" });
 		}
 		const target = new URL(await options.provider.baseUrl(tenant));
 		open.set(tenant, (open.get(tenant) ?? 0) + 1);
@@ -727,7 +727,7 @@ export async function startControlPlane(options: ControlPlaneOptions): Promise<C
 			answer.pipe(res);
 		});
 		upstream.on("error", () => {
-			if (!res.headersSent) send(res, 502, { error: "Annie non risponde: riprova tra poco" });
+			if (!res.headersSent) send(res, 502, { error: "Owni non risponde: riprova tra poco" });
 			else res.destroy();
 		});
 		res.once("close", () => {

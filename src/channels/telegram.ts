@@ -30,7 +30,7 @@ export type TelegramAdapterOptions = {
 	readonly webhook?: { readonly url: string; readonly secretToken: string };
 	/** The bot's commands, for the menu Telegram shows next to the message box. Set on start. */
 	readonly commands?: readonly TelegramCommand[];
-	/** Voice messages to text; without it Annie is told transcription is off. */
+	/** Voice messages to text; without it Owni is told transcription is off. */
 	readonly transcribe?: Transcribe;
 };
 
@@ -342,7 +342,7 @@ export class TelegramAdapter implements ChannelAdapter {
 			privateThread: message.chat.type === "private",
 			messageId: `${message.chat.id}:${message.message_id}`,
 			...(attachments.length === 0 ? {} : { attachments }),
-			// The person spoke, and Annie understood: a song sent as audio, or a voice not transcribed, is not a question to answer aloud.
+			// The person spoke, and Owni understood: a song sent as audio, or a voice not transcribed, is not a question to answer aloud.
 			...(message.voice !== undefined && text.startsWith(TRANSCRIBED) ? { voice: true } : {}),
 		});
 	}

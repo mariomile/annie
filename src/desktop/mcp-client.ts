@@ -3,7 +3,7 @@
  * with `initialize` first, the session id the server mints echoed on every later request, the
  * tool list asked once, tool calls with a time limit. Replies are JSON; an event stream is read
  * too, for servers that answer that way. Connectors keep the full SDK (src/connectors/mcp.ts):
- * here a few requests to a daemon Annie starts herself need no transport of their own.
+ * here a few requests to a daemon Owni starts herself need no transport of their own.
  */
 
 export type McpContent = { readonly type: "text"; readonly text: string } | { readonly type: "image"; readonly data: string; readonly mimeType: string } | { readonly type: string; readonly [field: string]: unknown };

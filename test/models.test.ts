@@ -10,7 +10,7 @@ import { ConfigError, loadAnnieConfig, loadTelegramConfig } from "../src/main/co
 import { tempDataDir } from "./helpers.ts";
 
 describe("model providers", () => {
-	it("every provider Annie offers is built by the adapter and has its default model", () => {
+	it("every provider Owni offers is built by the adapter and has its default model", () => {
 		for (const p of MODEL_PROVIDERS) {
 			expect(createProvider(p.id).id).toBe(p.id);
 			expect(providerModels(p.id).map((m) => m.id)).toContain(p.defaultModel);
@@ -51,7 +51,7 @@ describe("an old thread after the model changes", () => {
 describe("model configuration", () => {
 	const base = { ANNIE_WEB_PORT: "1" };
 
-	it("any offered provider runs Annie with its own key variable and default model", () => {
+	it("any offered provider runs Owni with its own key variable and default model", () => {
 		expect(() => loadAnnieConfig({ ...base, ANNIE_MODEL_PROVIDER: "google" })).toThrow(/GEMINI_API_KEY/);
 		const config = loadAnnieConfig({ ...base, ANNIE_MODEL_PROVIDER: "google", GEMINI_API_KEY: "g-key" });
 		expect(config).toMatchObject({ modelProvider: "google", modelId: "gemini-3.5-flash" });
@@ -115,7 +115,7 @@ describe("choosing the model from the console", () => {
 		expect(put).toMatchObject({ status: 200, model: { provider: "xai", modelId: "grok-4.7" } });
 		const record = await annie.runtime.registry.getInstance("default", "annie");
 		expect(record.model).toEqual({ provider: "xai", modelId: "grok-4.7" });
-		// Added to what the owner already allowed: other parts of Annie may use those.
+		// Added to what the owner already allowed: other parts of Owni may use those.
 		expect(record.egress.modelProviders).toEqual(["faux", "xai"]);
 		expect(await annie.runtime.secrets("default").get(modelApiKeySecret("xai"))).toBe("xai-secret-123");
 		const listed = await api("/api/instances/annie/model");

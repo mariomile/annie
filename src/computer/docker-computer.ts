@@ -144,8 +144,8 @@ export class DockerComputerProvider implements ComputerProvider {
 	}
 
 	/**
-	 * At boot: computers left running by a previous run of Annie (a crash, a kill) are stopped;
-	 * they start again, with their files, at their next command. One Annie per Docker host.
+	 * At boot: computers left running by a previous run of Owni (a crash, a kill) are stopped;
+	 * they start again, with their files, at their next command. One Owni per Docker host.
 	 */
 	async stopLeftovers(): Promise<number> {
 		const filters = encodeURIComponent(JSON.stringify({ label: [LABEL] }));

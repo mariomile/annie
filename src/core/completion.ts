@@ -2,7 +2,7 @@ import type { ModelSelection } from "./registry.ts";
 
 /**
  * One-shot model calls (extraction, drafting, judging), outside any durable conversation.
- * Annie code depends on this interface only; the Pi implementation lives in
+ * Owni code depends on this interface only; the Pi implementation lives in
  * src/core/adapters/pi-durable-completion.ts.
  */
 export interface ModelClient {

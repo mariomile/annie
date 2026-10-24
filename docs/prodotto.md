@@ -2,7 +2,7 @@
 
 Stato al 15 ottobre 2026: tutte le voci sono fatte sul branch `week-5`, con le riserve indicate. Restano le verifiche che richiedono i segreti di Mario (vedi [`stato-e-todo.md`](stato-e-todo.md)).
 
-Annie è «pronta al 100%» quando ognuna di queste voci è vera e verificata da un test o da una prova documentata. Vocabolario: [`GLOSSARY.md`](../GLOSSARY.md). Decisioni: [`adr/`](adr/).
+Owni è «pronta al 100%» quando ognuna di queste voci è vera e verificata da un test o da una prova documentata. Vocabolario: [`GLOSSARY.md`](../GLOSSARY.md). Decisioni: [`adr/`](adr/).
 
 ## 1. Un solo processo
 
@@ -40,4 +40,4 @@ Annie è «pronta al 100%» quando ognuna di queste voci è vera e verificata da
 
 - ~~WhatsApp~~: dal 16 ottobre 2026 è un canale come Telegram (Cloud API di Meta, settimana 13, [week13.md](week13.md)).
 - Invio di mail o azioni irreversibili senza approvazione.
-- ~~Multi-tenant cloud con billing~~: dal 16 ottobre 2026 è in programma come Annie Cloud, una cella per tenant ([piano](piano-cloud.md)).
+- ~~Multi-tenant cloud con billing~~: dal 16 ottobre 2026 è in programma come Owni Cloud, una cella per tenant ([piano](piano-cloud.md)).

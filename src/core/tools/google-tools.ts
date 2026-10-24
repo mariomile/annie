@@ -12,7 +12,7 @@ type Thread = { readonly channel: string; readonly threadId: string };
 /**
  * Tools on the Google account of the person in the conversation. Only that person's own console
  * threads reach their account: a shared chat or another channel never does, so nobody can read
- * someone else's mail by writing to Annie. Reading is immediate; writing (ADR 0021) only asks,
+ * someone else's mail by writing to Owni. Reading is immediate; writing (ADR 0021) only asks,
  * and happens once the person approves the exact request.
  */
 export function createGoogleTools(options: {

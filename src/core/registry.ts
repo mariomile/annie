@@ -32,7 +32,7 @@ export type InstanceRecord = {
 	/** Channel → user IDs who may approve this instance's actions (tools proposti). Missing: nobody. */
 	readonly approvers?: AllowedUsers;
 	readonly instructions?: string;
-	/** Face and voice of the agente (ADR 0041); missing: Annie as she is. */
+	/** Face and voice of the agente (ADR 0041); missing: Owni as she is. */
 	readonly persona?: Persona;
 	readonly createdAt: string;
 };

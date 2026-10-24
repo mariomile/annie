@@ -502,7 +502,7 @@ function serialize(w: Writer, pictures: { name: string; object: ReturnType<typeo
 	});
 	objects[1] = Buffer.from(`<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(" ")}] /Count ${kids.length} >>`, "latin1");
 	const date = input.now.toISOString().replace(/[-:T]/g, "").slice(0, 14);
-	const info = add(`<< /Producer (Annie) /CreationDate (D:${date}Z)${input.title === undefined || input.title === "" ? "" : ` /Title ${unicodeString(input.title)}`} >>`);
+	const info = add(`<< /Producer (Owni) /CreationDate (D:${date}Z)${input.title === undefined || input.title === "" ? "" : ` /Title ${unicodeString(input.title)}`} >>`);
 	const chunks: Buffer[] = [Buffer.from("%PDF-1.7\n%\xe2\xe3\xcf\xd3\n", "latin1")];
 	let offset = chunks[0]?.length as number;
 	const offsets: number[] = [];

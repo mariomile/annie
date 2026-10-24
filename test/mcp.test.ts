@@ -75,7 +75,7 @@ describe("MCP connectors", () => {
 		await h.runtime.close();
 	});
 
-	it("a stdio connector gets only the environment it names, never Annie's", async () => {
+	it("a stdio connector gets only the environment it names, never Owni's", async () => {
 		process.env.ANNIE_SHOULD_NOT_LEAK = "leak";
 		const h = await setup(
 			[{ id: "local", name: "Local", transport: { type: "stdio", command: join(import.meta.dirname, "..", "node_modules", ".bin", "tsx"), args: [join(import.meta.dirname, "fixtures", "mcp-demo-server.ts"), "stdio"], envSecrets: { DEMO_TOKEN: "connector.local.token" } }, enabled: true }],
@@ -84,7 +84,7 @@ describe("MCP connectors", () => {
 		await h.runtime.secrets("acme").set("connector.local.token", "tok-1");
 		await h.say("/tool local__whoami {}", "1");
 		await waitFor(() => h.replies.length === 1, 20_000);
-		// The SDK passes a fixed set of basics (HOME, PATH, USER, ...); nothing else of Annie's.
+		// The SDK passes a fixed set of basics (HOME, PATH, USER, ...); nothing else of Owni's.
 		expect(text(h.replies[0])).toBe("Fatto. env:tok-1 leak:none");
 		await h.runtime.close();
 	});

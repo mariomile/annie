@@ -501,7 +501,7 @@ describe("weather configuration", () => {
 		}
 	});
 
-	it("reaches the cells of Annie Cloud", () => {
+	it("reaches the cells of Owni Cloud", () => {
 		const passed = /const passed = \[([^\]]*)\]/.exec(readFileSync("src/main/cloud.ts", "utf8"))?.[1] ?? "";
 		for (const name of ["ANNIE_WEATHER", "ANNIE_WEATHER_URL", "ANNIE_WEATHER_GEOCODING_URL", "ANNIE_WEATHER_API_KEY", "ANNIE_WEATHER_MAX_PER_DAY"]) expect(passed).toContain(`"${name}"`);
 	});

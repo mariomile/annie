@@ -74,7 +74,7 @@ export function isRecording(seconds: number | undefined, transcribe: Transcribe 
 	return transcribe !== undefined && tooLong(seconds, transcribe.maxSeconds ?? DEFAULT_MESSAGE_SECONDS);
 }
 
-/** Said when a recording or a video is over the 20 MB a chat lets Annie download. */
+/** Said when a recording or a video is over the 20 MB a chat lets Owni download. */
 export const RECORDING_TOO_LARGE = "[Registrazione oltre i 20 MB che posso ricevere. Chiedi di mandarla in M4A o MP3 a qualità più bassa (circa un'ora di voce sta in 20 MB a 32-48 kbps) o divisa in parti.]";
 
 export function transcriber(config: TranscriberConfig, fetchImpl: typeof fetch = fetch): Transcribe {
@@ -140,7 +140,7 @@ function segmentsOf(value: unknown): TranscriptSegment[] {
 /** How a transcribed voice message starts: only these ask for a spoken reply (ADR 0020). */
 export const TRANSCRIBED = "[Messaggio vocale, trascritto]";
 
-/** How a voice message reaches Annie: its words, marked as transcribed; or why there are none. */
+/** How a voice message reaches Owni: its words, marked as transcribed; or why there are none. */
 export async function voiceText(clip: VoiceClip, transcribe: Transcribe | undefined, log?: (message: string) => void): Promise<string> {
 	if (transcribe === undefined) return "[Messaggio vocale: su questo server la trascrizione non è attiva. Chiedi di scrivere il messaggio.]";
 	try {

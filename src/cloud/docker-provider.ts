@@ -2,7 +2,7 @@ import { request } from "node:http";
 import type { CellProvider, CellStatus } from "./provider.ts";
 
 export type DockerCellOptions = {
-	/** The Annie image (the repository's Dockerfile). */
+	/** The Owni image (the repository's Dockerfile). */
 	readonly image: string;
 	/** Docker Engine API socket. */
 	readonly socketPath?: string;

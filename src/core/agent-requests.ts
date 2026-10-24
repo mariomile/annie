@@ -126,10 +126,10 @@ export class AgentRequestStore {
 
 	/** At start: a step left running by a dead process may or may not have happened. */
 	settleInterrupted(): Promise<AgentRequest[]> {
-		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Annie si è riavviata mentre la faceva", uncertain: true } }));
+		return this.queue.settleInterrupted((a) => ({ ...a, status: "uncertain", result: { error: "Owni si è riavviata mentre la faceva", uncertain: true } }));
 	}
 
-	/** Decided, and the asking agente not told yet (the notice failed, or Annie stopped first): within a day. */
+	/** Decided, and the asking agente not told yet (the notice failed, or Owni stopped first): within a day. */
 	async outcomeUntold(now = new Date()): Promise<AgentRequest[]> {
 		return (await this.list(now)).filter((r) => (r.status === "done" || r.status === "failed" || r.status === "uncertain" || r.status === "rejected") && r.outcomeTold !== true && now.getTime() - Date.parse(r.decidedAt ?? r.proposedAt) <= AGENT_REQUEST_LIMITS.ttlMs);
 	}

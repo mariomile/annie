@@ -225,7 +225,7 @@ export class BoardWork {
 
 	/**
 	 * The scadenze come due (ADR 0074): once per scadenza, from 9 in Rome on its day (or the first
-	 * sweep after, if Annie was off), an open scheda due today or late is told to whoever is on it:
+	 * sweep after, if Owni was off), an open scheda due today or late is told to whoever is on it:
 	 * the agente working on it, in its conversation, and the console of the person it is with, or of
 	 * who created it, or the owners. A scadenza moved is told again when it comes. Returns how many.
 	 */

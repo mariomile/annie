@@ -61,7 +61,7 @@ describe("schede that come back (ADR 0069)", () => {
 		// Same tick again: nothing more.
 		expect(await run("2026-10-19T07:00:40Z")).toBe(0);
 		store.update(card?.id as string, { status: "fatto" }, { kind: "person", id: "p_anna" });
-		// Annie off for two weeks: one scheda, and the next time is the one after now.
+		// Owni off for two weeks: one scheda, and the next time is the one after now.
 		expect(await run("2026-11-05T12:00:00Z")).toBe(1);
 		expect(routines.get(r.id)?.next).toBe("2026-11-09T08:00:00.000Z");
 	});

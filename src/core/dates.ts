@@ -16,7 +16,7 @@ export const MAX_AMOUNT = 100_000;
 /** More than 40 years of working days: a typo, and a long loop. */
 const MAX_WORKING_DAYS = 10_000;
 /** Holidays and working days before HOLIDAYS_SINCE would be wrong: refused with this reason. */
-export const NO_HOLIDAYS = `il calendario dei festivi di Annie vale dal ${HOLIDAYS_SINCE}: per gli anni prima i festivi erano diversi`;
+export const NO_HOLIDAYS = `il calendario dei festivi di Owni vale dal ${HOLIDAYS_SINCE}: per gli anni prima i festivi erano diversi`;
 
 /** Weekdays as getUTCDay numbers them, written and without accents. */
 const WEEKDAY_NAMES = ["domenica", "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"];

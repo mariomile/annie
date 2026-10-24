@@ -568,7 +568,7 @@ describe("business report: the brief, another agente, the export, the audit", ()
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "summary", compact: true }, fresh()))).toBe(BRIEF_NOTHING);
 		expect(String(await briefed?.execute({ op: "trend", months: 2 }, fresh()))).toContain("• ottobre 2026");
-		expect(String(await briefed?.execute({ op: "export" }, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "export" }, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(existsSync(join(s.root, "report"))).toBe(false);
 		expect(businessCallReads({ op: "summary" })).toBe(true);
 		expect(businessCallReads({ op: "export" })).toBe(false);

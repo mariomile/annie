@@ -1,8 +1,8 @@
 # Settimana 61: andamento dell'attività
 
-Branch `week-61`. Annie mette insieme i numeri che ha già (fatture, incassi, spese, ore, preventivi, tasse) e dice come sta andando l'attività: quanto è entrato, quanto è uscito, il margine, quanto resta dopo le tasse stimate, e come cambia rispetto al mese o all'anno prima. Legge soltanto. Le scelte sono nell'[ADR 0080](adr/0080-andamento-dell-attivita.md).
+Branch `week-61`. Owni mette insieme i numeri che ha già (fatture, incassi, spese, ore, preventivi, tasse) e dice come sta andando l'attività: quanto è entrato, quanto è uscito, il margine, quanto resta dopo le tasse stimate, e come cambia rispetto al mese o all'anno prima. Legge soltanto. Le scelte sono nell'[ADR 0080](adr/0080-andamento-dell-attivita.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Come sta andando l'attività?»**: il mese fin qui e l'anno fin qui, con fatturato, incassato, spese, margine, tasse da accantonare e quanto resta, ore e preventivi, e cosa c'è ancora da incassare.
 - **«Ottobre rispetto a settembre?»**, **«rispetto all'anno scorso?»**: le tre differenze più grandi, poi le altre.

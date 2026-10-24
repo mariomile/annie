@@ -1,4 +1,4 @@
-//! Annie on the desktop (docs/desktop.md): one window on the person's Annie server, an icon in
+//! Owni on the desktop (docs/desktop.md): one window on the person's Owni server, an icon in
 //! the tray or menu bar, and a shortcut that brings it up from anywhere. The console is the
 //! server's own; the app adds only what a browser tab cannot do. The Mac app also carries a
 //! server of its own (local.rs), used until the person connects another one.
@@ -24,7 +24,7 @@ const MAIN: &str = "main";
 #[derive(Default)]
 struct Current(Mutex<Option<Url>>);
 
-/// Annie on this computer: what the app carries, and how far it got starting it.
+/// Owni on this computer: what the app carries, and how far it got starting it.
 struct Local {
     bundle: Option<local::Bundle>,
     phase: Mutex<Phase>,
@@ -62,7 +62,7 @@ async fn connect(app: AppHandle, input: String) -> Result<(), String> {
     open_main(&app, Page::Server(server.start)).map_err(|e| e.to_string())
 }
 
-/// Back to Annie on this computer, from the connect page.
+/// Back to Owni on this computer, from the connect page.
 #[tauri::command]
 fn use_local(app: AppHandle) -> Result<(), String> {
     settings::save(&settings_file(&app)?, &settings::Settings { server: None })?;
@@ -82,7 +82,7 @@ fn use_local(app: AppHandle) -> Result<(), String> {
     }
 }
 
-/// What the connect page shows: the connected server, whether this computer can run Annie,
+/// What the connect page shows: the connected server, whether this computer can run Owni,
 /// and how starting it went.
 #[tauri::command]
 fn state(app: AppHandle) -> serde_json::Value {
@@ -169,7 +169,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed && *shortcut == summon() {
-                        // From another app: hide only when Annie is already in front.
+                        // From another app: hide only when Owni is already in front.
                         match main_window(app) {
                             Some(w) if w.is_focused().unwrap_or(false) => {
                                 let _ = w.hide();
@@ -207,14 +207,14 @@ pub fn run() {
                 None => open_main(&handle, Page::Connect)?,
             }
             tray(&handle)?;
-            // Another app may hold the shortcut: Annie still works from the tray.
+            // Another app may hold the shortcut: Owni still works from the tray.
             if let Err(error) = handle.global_shortcut().register(summon()) {
                 eprintln!("annie: shortcut not registered: {error}");
             }
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing hides: Annie stays in the tray, ready for the shortcut. Esci quits.
+            // Closing hides: Owni stays in the tray, ready for the shortcut. Esci quits.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == MAIN {
                     api.prevent_close();
@@ -239,7 +239,7 @@ pub fn run() {
         });
 }
 
-/// Ctrl+Shift+Space (⌘⇧Space on a Mac): Annie from any app.
+/// Ctrl+Shift+Space (⌘⇧Space on a Mac): Owni from any app.
 fn summon() -> Shortcut {
     let command = if cfg!(target_os = "macos") {
         Modifiers::SUPER
@@ -269,7 +269,7 @@ fn open_main(app: &AppHandle, page: Page) -> tauri::Result<()> {
     }
     let guard = app.clone();
     let window = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::External(url))
-        .title("Annie")
+        .title("Owni")
         .inner_size(1180.0, 800.0)
         .min_inner_size(380.0, 520.0)
         .visible(false)
@@ -317,7 +317,7 @@ fn open_viewer(app: &AppHandle, page: Url) -> tauri::Result<()> {
     let label = format!("view-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let guard = app.clone();
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(page))
-        .title("Annie")
+        .title("Owni")
         .inner_size(960.0, 720.0)
         .on_navigation(move |target| allowed(&guard, target))
         .build()?;
@@ -383,7 +383,7 @@ fn toggle(app: &AppHandle) {
 }
 
 fn tray(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Apri Annie", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Apri Owni", true, None::<&str>)?;
     let chat = MenuItem::with_id(app, "chat", "Nuova chat", true, None::<&str>)?;
     let change = MenuItem::with_id(app, "server", "Cambia server…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
@@ -399,7 +399,7 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
     TrayIconBuilder::with_id("annie")
-        .tooltip("Annie")
+        .tooltip("Owni")
         .icon(
             app.default_window_icon()
                 .cloned()

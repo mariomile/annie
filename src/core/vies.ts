@@ -197,7 +197,7 @@ function viesError(code: string, country: EuVatCountry): ViesError {
 			return new ViesError("BLOCKED", "il VIES rifiuta per ora le richieste di questo server: riprova più tardi");
 		default:
 			// The code is not echoed: it is the service's text, and an unknown one tells the person nothing.
-			return new ViesError("OTHER", "il VIES ha risposto con un errore che Annie non conosce");
+			return new ViesError("OTHER", "il VIES ha risposto con un errore che Owni non conosce");
 	}
 }
 

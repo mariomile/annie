@@ -57,7 +57,7 @@ export async function proposeMail(mail: MailRequests, proposal: MailProposal): P
 /** The first words the person reads where no mail can go (a phone, an account not linked). */
 export const NO_MAIL_HERE = "Da qui non posso mandare mail.";
 
-/** What Annie is told first where no mail can go: why, and that nothing left. */
+/** What Owni is told first where no mail can go: why, and that nothing left. */
 export function noMailFor(why: string, recorded = false): string {
 	return `Non posso inviare mail da qui (${why}): niente è stato inviato${recorded ? " né annotato" : ""}.`;
 }

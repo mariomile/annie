@@ -298,7 +298,7 @@ describe("Docker computer, its limits and its life", () => {
 		const fill = await computer.run("k", "head -c 17000000 /dev/zero > grande.bin", { timeoutS: 10 });
 		expect(fill.diskFull).toBe(true);
 		await expect(computer.put("k", [{ path: "a.txt", data: Buffer.from("a") }])).rejects.toThrow("disco del computer è pieno");
-		// While full, each command runs under a tiny file size limit, so Annie can still clean up.
+		// While full, each command runs under a tiny file size limit, so Owni can still clean up.
 		const next = await computer.run("k", "rm grande.bin", { timeoutS: 10 });
 		expect(docker.calls.filter((c) => c.path.endsWith("/exec")).at(-2)?.body.Cmd[2]).toMatch(/^ulimit -f 2048; timeout/);
 		expect(next.diskFull).toBe(false);
@@ -469,7 +469,7 @@ describe("computer_run", () => {
 		expect(docker.calls).toHaveLength(0);
 	});
 
-	it("Annie Cloud's cells get no computer settings of their own: no Docker, no Fly token, only the control plane's computers", () => {
+	it("Owni Cloud's cells get no computer settings of their own: no Docker, no Fly token, only the control plane's computers", () => {
 		const source = readFileSync("src/main/cloud.ts", "utf8");
 		const passed = /const passed = \[([^\]]*)\]/.exec(source)?.[1] ?? "";
 		expect(passed).not.toMatch(/COMPUTER|DOCKER|FLY/);
@@ -485,7 +485,7 @@ describe("computer_run", () => {
 });
 
 describe("the computer in an instance", () => {
-	it("the owner turns it on and resets it from the console; Annie runs a command from the chat", async () => {
+	it("the owner turns it on and resets it from the console; Owni runs a command from the chat", async () => {
 		const docker = await fakeDocker();
 		const computer = provider(docker.socketPath);
 		closers.push(() => computer.close());

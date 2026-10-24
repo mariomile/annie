@@ -16,7 +16,7 @@ export async function finishConnector() {
 		}
 		if (done.cancelled) return toast(error === "access_denied" ? "Accesso annullato: il connettore resta da collegare" : "Il servizio non ha completato l'accesso: riprova con «Collega»", true);
 		const st = done.status;
-		toast(st?.connected ? `Collegato: Annie ha ${st.tools.length} nuovi strumenti` : `Accesso riuscito, ma il servizio non risponde${st?.error ? `: ${st.error}` : ""}`, !st?.connected);
+		toast(st?.connected ? `Collegato: Owni ha ${st.tools.length} nuovi strumenti` : `Accesso riuscito, ma il servizio non risponde${st?.error ? `: ${st.error}` : ""}`, !st?.connected);
 	} catch (e) {
 		toast(e.message, true);
 	}

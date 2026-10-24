@@ -15,5 +15,5 @@ export function createComputerProvider(config: ComputerConfig, context: { readon
 
 /** What the computers are, for the log and `pnpm annie check`. */
 export function computerLabel(config: ComputerConfig): string {
-	return { docker: "Docker", fly: "Fly", cloud: "Annie Cloud" }[config.kind];
+	return { docker: "Docker", fly: "Fly", cloud: "Owni Cloud" }[config.kind];
 }

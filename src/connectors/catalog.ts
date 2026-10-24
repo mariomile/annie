@@ -1,19 +1,19 @@
 /**
  * Well-known MCP servers the owner adds in one click (ADR 0024). Each is a remote server over
- * Streamable HTTP, run by the company that makes the service; Annie only connects to it.
+ * Streamable HTTP, run by the company that makes the service; Owni only connects to it.
  *
  * - "oauth": the owner signs in on the service's page (MCP authorization, dynamic registration).
  * - "token": the owner pastes a personal token, sent as `Authorization: Bearer …`.
  * - "none": public, nothing to sign in to.
  *
  * Addresses checked on 2026-10-17 against the vendors' published endpoints; services whose MCP
- * server takes only pre-approved apps (Asana, Vercel) are left out until they take Annie. A service
+ * server takes only pre-approved apps (Asana, Vercel) are left out until they take Owni. A service
  * that moves its endpoint shows up as «Non collegato» and is fixed here.
  */
 export type CatalogEntry = {
 	readonly id: string;
 	readonly name: string;
-	/** What Annie can do with it, in Italian, one line. */
+	/** What Owni can do with it, in Italian, one line. */
 	readonly description: string;
 	readonly url: string;
 	readonly auth: "oauth" | "token" | "none";
@@ -36,7 +36,7 @@ export const CONNECTOR_CATALOG: readonly CatalogEntry[] = [
 		url: "https://api.githubcopilot.com/mcp/",
 		auth: "token",
 		tokenHelp:
-			"Su GitHub apri Settings, Developer settings, Personal access tokens, Fine-grained tokens, e crea un token: scegli una scadenza, solo i repository che servono e, nei permessi, lettura (o scrittura, se vuoi che Annie apra issue) su Contents, Issues e Pull requests.",
+			"Su GitHub apri Settings, Developer settings, Personal access tokens, Fine-grained tokens, e crea un token: scegli una scadenza, solo i repository che servono e, nei permessi, lettura (o scrittura, se vuoi che Owni apra issue) su Contents, Issues e Pull requests.",
 		category: "sviluppo",
 	},
 	{ id: "sentry", name: "Sentry", description: "Errori e problemi delle vostre app, da Sentry.", url: "https://mcp.sentry.dev/mcp", auth: "oauth", category: "sviluppo" },

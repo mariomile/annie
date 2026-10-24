@@ -70,7 +70,7 @@ export function render() {
 				},
 			}, icon("menu")),
 			// With more agenti, the open one: who a new chat goes to.
-			state.instances.length > 1 && state.instance ? h("b.topbar-who", face(state.instance, 22), state.instance.name) : h("b", "Annie"),
+			state.instances.length > 1 && state.instance ? h("b.topbar-who", face(state.instance, 22), state.instance.name) : h("b.topbar-brand", h("img", { src: "/icon.svg", alt: "", width: "20", height: "20" }), "Owni"),
 			h("button.icon-btn", { "aria-label": "Nuova chat", title: "Nuova chat", onclick: () => go("chat") }, icon("compose")),
 		),
 		h("div.scrim", { onclick: closeRailOnPhone }),
@@ -185,7 +185,7 @@ export function renderRail() {
 		rail,
 		h(
 			"div.rail-top",
-			h("a.brand", { href: "#/chat", "aria-label": "Annie", title: "Annie", onclick: closeRailOnPhone }, h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Annie")),
+			h("a.brand", { href: "#/chat", "aria-label": "Owni", title: "Owni", onclick: closeRailOnPhone }, h("img", { src: "/icon.svg", alt: "", width: "22", height: "22" }), h("b", "Owni")),
 			h("button.icon-btn.collapse", { "aria-label": "Chiudi la barra laterale", "aria-controls": "rail", "aria-expanded": "true", title: "Chiudi la barra laterale", onclick: toggleRail }, icon("sidebar")),
 		),
 		h(

@@ -2,7 +2,7 @@
 	"name": "annie-desktop",
 	"private": true,
 	"type": "module",
-	"description": "Annie as a desktop app: a Tauri 2 window on an Annie server (docs/desktop.md).",
+	"description": "Owni as a desktop app: a Tauri 2 window on an Owni server (docs/desktop.md).",
 	"scripts": {
 		"dev": "tauri dev --no-dev-server",
 		"build": "tauri build",

@@ -75,7 +75,7 @@ export function cleanName(name: string): string {
 export function withPersona(instructions: string | undefined, name: string, persona: Persona | undefined): string | undefined {
 	const lines: string[] = [];
 	const own = cleanName(name);
-	if (persona?.named === true && own !== "" && own.toLowerCase() !== "annie") lines.push(`Il tuo nome è «${own}»: presentati con questo nome, non come Annie (Annie è la piattaforma su cui lavori), e parla di te al maschile o al femminile come si addice al nome.`);
+	if (persona?.named === true && own !== "" && own.toLowerCase() !== "owni") lines.push(`Il tuo nome è «${own}»: presentati con questo nome, non come Owni (Owni è la piattaforma su cui lavori), e parla di te al maschile o al femminile come si addice al nome.`);
 	if (persona?.tagline !== undefined) lines.push(`Il tuo compito: ${persona.tagline}`);
 	if (persona?.tone !== undefined && persona.tone !== "naturale") lines.push(TONE_LINES[persona.tone]);
 	if (lines.length === 0) return instructions;

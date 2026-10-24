@@ -1,5 +1,5 @@
 /**
- * L'agenda fiscale: every deadline Annie knows, in one calendar, read only. Each register keeps its
+ * L'agenda fiscale: every deadline Owni knows, in one calendar, read only. Each register keeps its
  * own rules and is asked through its own pure functions (fiscal-agenda-sources.ts): the F24 of the
  * forfettario and the INPS instalments (taxes), the F24 of the IVA (vat_settlement), the CU
  * (withholding), the renewals, the invoices to pay (the scadenzario); the yearly deadlines no
@@ -12,7 +12,7 @@
  * - Past deadlines only where the source tracks payment (the IVA's paid marks, the scadenzario's,
  *   the renewals waiting for the person's word): «scaduto, non segnato pagato», up to
  *   AGENDA_LIMITS.overdueDays ago in the default window, or inside the period asked. A deadline of a
- *   source that does not track payment is never said once gone: Annie does not know.
+ *   source that does not track payment is never said once gone: Owni does not know.
  * - The same deadline from two sources is said once (`dedup`): the one with an amount, then the one
  *   that tracks payment (the IVA annual saldo the taxes' plain dates and the liquidazione both know).
  * - The brief's line says only what no other brief line says (`brief`): the generic deadlines, the

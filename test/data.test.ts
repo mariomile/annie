@@ -252,7 +252,7 @@ describe("questions to a table", () => {
 		expect(r.notes).toContain("Ho lasciato fuori l'ultima riga: è la somma delle altre.");
 	});
 
-	it("reads a sheet Annie made herself with document_create", () => {
+	it("reads a sheet Owni made herself with document_create", () => {
 		const made = makeDocument({ format: "xlsx", text: "| Mese | Ricavi |\n|---|---|\n| Gennaio | € 1.000,00 |\n| Febbraio | € 2.500,50 |", name: "x", pictures: [], now: Date.UTC(2026, 9, 17) });
 		const r = queryTable("ricavi.xlsx", made.data, { aggregates: [{ op: "sum", column: "Ricavi" }, { op: "max", column: "Ricavi" }] });
 		expect(r.rows).toEqual([["3.500,50 €", "2.500,50 €"]]);

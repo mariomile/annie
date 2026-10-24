@@ -1,8 +1,8 @@
 # Settimana 59: liquidazione IVA
 
-Branch `week-59`. Per chi è in regime ordinario Annie calcola l'IVA da versare ogni mese o trimestre dalle fatture emesse e ricevute, dice quando scade l'F24 e con che codice, stima l'acconto di dicembre e mette gli F24 dell'IVA nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0077](adr/0077-liquidazione-iva.md).
+Branch `week-59`. Per chi è in regime ordinario Owni calcola l'IVA da versare ogni mese o trimestre dalle fatture emesse e ricevute, dice quando scade l'F24 e con che codice, stima l'acconto di dicembre e mette gli F24 dell'IVA nella previsione di cassa. Sempre come stima da verificare con il commercialista. Le scelte sono nell'[ADR 0077](adr/0077-liquidazione-iva.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Liquido l'IVA ogni trimestre»**: la periodicità, detta una volta.
 - **«Quanta IVA devo versare questo mese?»**: IVA delle fatture emesse meno quella delle ricevute, il credito che passa, gli interessi del trimestrale, la scadenza e il codice tributo.
@@ -15,7 +15,7 @@ Branch `week-59`. Per chi è in regime ordinario Annie calcola l'IVA da versare 
 
 ## Cosa funziona (verificato dai test)
 
-`test/vat-settlement.test.ts`: mensile e trimestrale con interessi, anche sul 4º trimestre, saldi fino a 25,82 € portati avanti, credito detto e confermato, scadenze del 16, del 20 agosto e del 16 marzo spostate ai giorni lavorativi, acconto storico, analitico e previsionale con il minimo di 103,29 €, acconti non segnati pagati, fatture emesse con Annie e in XML contate una volta, note di credito emesse e ricevute, scissione dei pagamenti, inversione contabile, IVA per cassa, data di ricezione, detraibilità parziale, forfettario rifiutato, ipotesi anche su periodi futuri, F24 scaduti e pagati in ritardo, previsione di cassa con voci e spese e nomi da prezzo, brief che non scrive, canale agenti, CSV con celle ostili, file rovinato, audit senza dati. Restano verdi i test di tasse, previsione di cassa, spese e rinnovi, che ora usano i moduli condivisi `money-input.ts` e gli arrotondamenti di `quote-sums.ts`.
+`test/vat-settlement.test.ts`: mensile e trimestrale con interessi, anche sul 4º trimestre, saldi fino a 25,82 € portati avanti, credito detto e confermato, scadenze del 16, del 20 agosto e del 16 marzo spostate ai giorni lavorativi, acconto storico, analitico e previsionale con il minimo di 103,29 €, acconti non segnati pagati, fatture emesse con Owni e in XML contate una volta, note di credito emesse e ricevute, scissione dei pagamenti, inversione contabile, IVA per cassa, data di ricezione, detraibilità parziale, forfettario rifiutato, ipotesi anche su periodi futuri, F24 scaduti e pagati in ritardo, previsione di cassa con voci e spese e nomi da prezzo, brief che non scrive, canale agenti, CSV con celle ostili, file rovinato, audit senza dati. Restano verdi i test di tasse, previsione di cassa, spese e rinnovi, che ora usano i moduli condivisi `money-input.ts` e gli arrotondamenti di `quote-sums.ts`.
 
 ## Revisioni
 

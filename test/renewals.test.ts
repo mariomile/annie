@@ -875,7 +875,7 @@ describe("renewals: another agente, the brief, the store", () => {
 		expect(await s.run({ op: "list" }, agent())).toContain("1 rinnovo attivo");
 		expect(await s.run({ op: "summary" }, agent())).toContain("Costo: 480,00 € all'anno");
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		for (const args of [CANVA, { op: "paid", id: "R-0001" }, { op: "export" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		for (const args of [CANVA, { op: "paid", id: "R-0001" }, { op: "export" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await briefed?.execute({ op: "upcoming", compact: true }, fresh()))).toContain("Niente da segnalare sui rinnovi");
 		expect(s.store.read().renewals).toHaveLength(1);
 		expect(existsSync(join(s.root, "rinnovi"))).toBe(false);
@@ -990,7 +990,7 @@ describe("renewals in the app", () => {
 	}, 60_000);
 });
 
-/** An Annie with the faux model, and a way to send a message and read the reply. */
+/** An Owni with the faux model, and a way to send a message and read the reply. */
 async function boot(config: ReturnType<typeof loadAnnieConfig>) {
 	const annie: RunningAnnie = await startAnnie({ ...config, web: { ...config.web, port: 0 } }, { schedulerIntervalMs: 60_000, log: () => {} });
 	closers.push(() => annie.stop());

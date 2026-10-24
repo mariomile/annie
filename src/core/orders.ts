@@ -2,7 +2,7 @@
  * Gli ordini ai fornitori: what the person orders from a supplier (OR-0001, never given twice),
  * line by line on the articles of the magazzino, each with its quantity in the article's unit and
  * the price expected (the last price paid to that supplier, or the one said). An order is a draft
- * until the person says it went out («sent»: Annie never sends it), then the goods that arrive
+ * until the person says it went out («sent»: Owni never sends it), then the goods that arrive
  * with the invoices received loaded into the magazzino mark it received in part or in full; it
  * can be cancelled. Kept per instance in `orders.json` (order-store.ts); what to reorder in
  * order-suggest.ts, the link to the invoices received in order-receive.ts.

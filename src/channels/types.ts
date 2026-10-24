@@ -1,5 +1,5 @@
 /**
- * Channel adapters connect Annie to the places people talk to it. The core never imports
+ * Channel adapters connect Owni to the places people talk to it. The core never imports
  * this module: the gateway (src/gateway.ts) passes normalized messages between the two.
  *
  * Implemented: telegram, whatsapp (Meta Cloud API), phone (Twilio, calls one turn at a time),

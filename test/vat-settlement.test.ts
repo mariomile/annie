@@ -771,7 +771,7 @@ describe("vat: the tool", () => {
 		expect([vatAgentReads({ op: "period" }), vatAgentReads({ op: "calendar" }), vatAgentReads({ op: "export" })]).toEqual([true, true, false]);
 		expect([vatCallReads({ op: "calendar" }), vatCallReads({ op: "period" })]).toEqual([true, false]);
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
-		for (const args of [{ op: "mark_paid", period: "settembre", amount: 1 }, { op: "set_credit", amount: 1 }, { op: "export" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Annie legge soltanto");
+		for (const args of [{ op: "mark_paid", period: "settembre", amount: 1 }, { op: "set_credit", amount: 1 }, { op: "export" }]) expect(String(await briefed?.execute(args, fresh()))).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(String(await briefed?.execute({ op: "calendar", compact: true }, fresh()))).toContain("IVA: F24 IVA di settembre 2026");
 		expect(s.store.read().paid).toEqual([]);
 		expect(BRIEF_INSTRUCTION).toMatch(/\n9\. Chiama ognuno di questi tool con l'op tra parentesi e compact true, e riporta la sua riga solo se segnala qualcosa: [^\n]*\bvat_settlement \(calendar\)[,.]/);

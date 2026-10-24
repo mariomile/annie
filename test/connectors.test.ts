@@ -255,7 +255,7 @@ describe("HubSpot adapter (mocked fetch)", () => {
 		reject = true;
 		await crm.updateLeadStatus("acme", "501", "discarded", "scartata da commerciale");
 		expect(logs[0]).toContain('hs_lead_status "UNQUALIFIED" rejected');
-		expect((api.calls.at(-1)?.body as { properties: { hs_note_body: string } }).properties.hs_note_body).toBe("Annie: pratica scartata dal commerciale. scartata da commerciale");
+		expect((api.calls.at(-1)?.body as { properties: { hs_note_body: string } }).properties.hs_note_body).toBe("Owni: pratica scartata dal commerciale. scartata da commerciale");
 	});
 });
 

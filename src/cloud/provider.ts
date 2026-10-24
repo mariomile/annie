@@ -1,6 +1,6 @@
 /**
- * Where the cells of Annie Cloud run (ADR 0007). The control plane only knows this interface;
- * a provider runs each cell (the same Annie as self-host) with its own volume, isolated from the
+ * Where the cells of Owni Cloud run (ADR 0007). The control plane only knows this interface;
+ * a provider runs each cell (the same Owni as self-host) with its own volume, isolated from the
  * other cells: a container on one server today (ADR 0008), a micro-VM later.
  */
 export interface CellProvider {
@@ -14,7 +14,7 @@ export interface CellProvider {
 	destroy(id: string): Promise<void>;
 	status(id: string): Promise<CellStatus>;
 	list(): Promise<string[]>;
-	/** Where the control plane reaches the cell's web server: 127.0.0.1 for a cell on this host, its https domain on a platform (Railway), where the cell guards itself as a self-hosted Annie does. */
+	/** Where the control plane reaches the cell's web server: 127.0.0.1 for a cell on this host, its https domain on a platform (Railway), where the cell guards itself as a self-hosted Owni does. */
 	baseUrl(id: string): Promise<string>;
 }
 

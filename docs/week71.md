@@ -1,8 +1,8 @@
 # Settimana 71: margini
 
-Branch `week-71`. Annie dice quanto la persona guadagna davvero su ogni prodotto e su ogni cliente, quali prodotti rendono di più e su quali ci perde, se il listino regge con i costi di adesso, e cosa cambierebbe con un prezzo o un costo diverso. Legge soltanto: le fatture emesse, il magazzino, il listino e i prezzi d'acquisto. Le scelte sono nell'[ADR 0091](adr/0091-margini.md).
+Branch `week-71`. Owni dice quanto la persona guadagna davvero su ogni prodotto e su ogni cliente, quali prodotti rendono di più e su quali ci perde, se il listino regge con i costi di adesso, e cosa cambierebbe con un prezzo o un costo diverso. Legge soltanto: le fatture emesse, il magazzino, il listino e i prezzi d'acquisto. Le scelte sono nell'[ADR 0091](adr/0091-margini.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Quanto guadagno sul toner?»**: venduti, incassato e costato senza IVA, guadagnato e la percentuale, al costo medio del magazzino a ogni vendita; le vendite stimate, i resi e le righe lasciate fuori si dicono.
 - **«Quali prodotti mi rendono di più? Su quali ci perdo?»**: la classifica in euro e in percentuale, i migliori, i peggiori o solo quelli in perdita.

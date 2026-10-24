@@ -14,7 +14,7 @@
  *    with their DDTs), the DDTs of a fattura differita marked billed (sales-ddt.ts);
  * 5. the invoice marked finished; then the audit (op and count), and the invoice marked audited,
  *    so an audit a crash left out is written on the next run, and never twice.
- * The number comes after the store's counter, the last number said before Annie and the highest
+ * The number comes after the store's counter, the last number said before Owni and the highest
  * number of the year among the company's own invoices in the workspace. An invoice issued and not
  * finished (a crash, a PDF or a mark that failed) is completed by issuing it again.
  */
@@ -116,7 +116,7 @@ export async function finish(env: SalesEnv, args: Record<string, unknown>, ctx: 
 	return complete(env, inv, ctx, []);
 }
 
-/** Why the number differs from the one the draft said: other invoices issued meanwhile, the last number before Annie said, the year, the way of writing it. */
+/** Why the number differs from the one the draft said: other invoices issued meanwhile, the last number before Owni said, the year, the way of writing it. */
 function numberNote(env: SalesEnv, inv: IssuedInvoice): string | undefined {
 	const expected = inv.expected;
 	if (expected === undefined || expected === inv.number) return undefined;

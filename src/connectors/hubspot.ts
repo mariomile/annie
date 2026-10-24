@@ -35,9 +35,9 @@ const API = "https://api.hubapi.com";
 const NOTE_TO_CONTACT = 202;
 
 const STATUS_NOTE: Record<LeadStatus, string> = {
-	replied: "Annie: risposta inviata al cliente (approvata su Telegram).",
-	discarded: "Annie: pratica scartata dal commerciale.",
-	error: "Annie: errore nella pratica.",
+	replied: "Owni: risposta inviata al cliente (approvata su Telegram).",
+	discarded: "Owni: pratica scartata dal commerciale.",
+	error: "Owni: errore nella pratica.",
 };
 
 /**
@@ -137,7 +137,7 @@ export function contactProperties(lead: LeadUpsert): Record<string, string> {
 
 function leadNote(lead: LeadUpsert): string {
 	return [
-		`Annie: richiesta di preventivo ricevuta per email («${lead.rawSubject}»).`,
+		`Owni: richiesta di preventivo ricevuta per email («${lead.rawSubject}»).`,
 		`Prodotto/servizio: ${lead.productOrService ?? "non indicato"}.`,
 		`Dati mancanti: ${lead.missingFields.length > 0 ? lead.missingFields.map((f) => (f === "vatNumberInvalid" ? "P.IVA da ricontrollare" : f)).join(", ") : "nessuno"}.`,
 		`Bozza di risposta in attesa di approvazione su Telegram.`,

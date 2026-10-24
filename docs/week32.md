@@ -1,13 +1,13 @@
-# Settimana 32: Annie legge PDF, Word, Excel e PowerPoint
+# Settimana 32: Owni legge PDF, Word, Excel e PowerPoint
 
-Branch `week-32`. Fino a ieri un preventivo in PDF o un listino in Excel mandato ad Annie finiva nel workspace e lei rispondeva «è un file binario». Ora `file_read` ne legge il testo: PDF, Word, Excel, PowerPoint e OpenDocument, senza chiavi, servizi esterni o dipendenze nuove. Chi manda un documento su Telegram, WhatsApp o nella console vede Annie leggerlo e rispondere sul contenuto. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0026](adr/0026-documenti.md).
+Branch `week-32`. Fino a ieri un preventivo in PDF o un listino in Excel mandato a Owni finiva nel workspace e lei rispondeva «è un file binario». Ora `file_read` ne legge il testo: PDF, Word, Excel, PowerPoint e OpenDocument, senza chiavi, servizi esterni o dipendenze nuove. Chi manda un documento su Telegram, WhatsApp o nella console vede Owni leggerlo e rispondere sul contenuto. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0026](adr/0026-documenti.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **Manda un documento e chiedi**: «quanto è il totale?», «riassumi il contratto», «quali clienti hanno ordinato più di 1.000 €?». Il modello riceve il testo con pagine, fogli, diapositive e tabelle distinte.
 - **I valori come li vede la persona**: in Excel 12,50 €, 10%, 01/07 e 09:30, non 12.5, 0.1 e 46204. In Word intestazione, piè di pagina (spesso c'è la partita IVA), note, elenchi e link. In PowerPoint le tabelle per righe e i numeri dei grafici.
-- **Estratti conto e bollette**: i PDF protetti contro la copia ma che si aprono senza password si leggono. Quelli con una password di apertura no, e Annie lo dice.
-- **Scansioni**: Annie dice quali pagine non hanno testo e propone il computer (pagine in immagini, poi le guarda) o una foto.
+- **Estratti conto e bollette**: i PDF protetti contro la copia ma che si aprono senza password si leggono. Quelli con una password di apertura no, e Owni lo dice.
+- **Scansioni**: Owni dice quali pagine non hanno testo e propone il computer (pagine in immagini, poi le guarda) o una foto.
 - **Documenti lunghi**: a pezzi, tagliati a fine riga, con il punto dove riprendono (il foglio e la sua prima riga, la pagina).
 - **Vecchi formati**: per `.doc`, `.xls`, `.ppt` e RTF una risposta che dice cosa fare.
 
@@ -19,7 +19,7 @@ Branch `week-32`. Fino a ieri un preventivo in PDF o un listino in Excel mandato
 - La lettura nel worker: un tempo scaduto e un file che non è un documento danno il motivo, un documento vero il testo.
 - `file_read`: intestazione, recinto dei dati, pezzi con `offset` che finiscono a fine riga e dicono dove riprendono, fine del file, vecchi formati (`test/workspace-tools.test.ts`).
 - Un PDF mandato su Telegram è annunciato come documento; il caricamento nella console dice al modello che è un Word (`test/web.test.ts`).
-- Nel browser: un PDF caricato nella chat della console diventa la nota «Documento PDF … Leggilo con file_read» e Annie ne legge le due pagine, senza errori in console.
+- Nel browser: un PDF caricato nella chat della console diventa la nota «Documento PDF … Leggilo con file_read» e Owni ne legge le due pagine, senza errori in console.
 
 ## Review indipendente
 

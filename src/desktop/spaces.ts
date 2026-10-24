@@ -4,7 +4,7 @@ import type { McpHttpClient } from "./mcp-client.ts";
 
 /**
  * One Cua desktop as its daemon (cua-spacesd) offers it over MCP: a tool is checked against the
- * daemon's list before it is called, so an image older or newer than the one Annie expects is
+ * daemon's list before it is called, so an image older or newer than the one Owni expects is
  * said plainly; replies become text and checked pictures.
  */
 export class Spaces {
@@ -27,7 +27,7 @@ export class Spaces {
 		return { text: text.slice(0, DESKTOP_LIMITS.maxTextChars), images, ...(result.structuredContent === undefined ? {} : { structured: result.structuredContent }) };
 	}
 
-	/** The tools Annie needs that this desktop does not offer. */
+	/** The tools Owni needs that this desktop does not offer. */
 	async missing(signal?: AbortSignal): Promise<string[]> {
 		const offered = await this.client.listTools(signal);
 		return DESKTOP_TOOLS.filter((tool) => !offered.includes(tool));

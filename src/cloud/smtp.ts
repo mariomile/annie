@@ -15,7 +15,7 @@ export type SmtpOptions = {
 	readonly security: "tls" | "starttls" | "plain";
 	readonly user?: string;
 	readonly password?: string;
-	/** "Annie <accesso@example.it>" */
+	/** "Owni <accesso@example.it>" */
 	readonly from: string;
 	readonly timeoutMs?: number;
 	/** Trusted CA in place of the system's: only for a test server. */

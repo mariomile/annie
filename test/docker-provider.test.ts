@@ -118,7 +118,7 @@ describe("Docker cell provider", () => {
 	});
 });
 
-// With a Docker daemon and the Annie image: ANNIE_TEST_DOCKER_IMAGE=annie:local pnpm vitest run test/docker-provider.test.ts
+// With a Docker daemon and the Owni image: ANNIE_TEST_DOCKER_IMAGE=annie:local pnpm vitest run test/docker-provider.test.ts
 const image = process.env.ANNIE_TEST_DOCKER_IMAGE;
 describe.skipIf(image === undefined)("Docker cell provider, real daemon", () => {
 	it("sign up through the control plane into a container cell, sleep, wake with the data still there", async () => {

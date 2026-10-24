@@ -122,7 +122,7 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		expect(view).toMatch(/\[\d+\] campo di testo: Cerca/);
 		expect(view).toMatch(/\[\d+\] scelta: Mese \(valori: gen, feb\)/);
 		expect(view).not.toContain("dalle 9 alle 13");
-		// The image from another host never loaded, and Annie is told.
+		// The image from another host never loaded, and Owni is told.
 		expect(view).toContain("Bloccato quello che la pagina voleva caricare da siti non consentiti: localhost:1");
 
 		const clicked = await say(`/tool web_click {"element":${ref(view, "Mostra orari")}}`);
@@ -161,7 +161,7 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		expect(sent).toContain("(ora: «Mario»)");
 		expect(s.hits.filter((h) => h.startsWith("POST"))).toEqual([]);
 
-		expect(await say(`/tool web_type {"element":${ref(sent, "campo password")},"text":"segreto"}`)).toContain("Annie non scrive password");
+		expect(await say(`/tool web_type {"element":${ref(sent, "campo password")},"text":"segreto"}`)).toContain("Owni non scrive password");
 		expect(await say(`/tool web_click {"element":80}`)).toContain("non c'è l'elemento 80");
 	}, 90_000);
 
@@ -251,7 +251,7 @@ describe.skipIf(!chromium)("the browser with clicks (ADR 0014)", () => {
 		const say = await chat();
 		const panel = `/api/instances/annie/threads/${say.threadId}/browser`;
 		expect(await api(panel)).toMatchObject({ browser: { open: false }, available: true });
-		// The person opens a page the owner did not allow: refused with Annie's words, nothing opens.
+		// The person opens a page the owner did not allow: refused with Owni's words, nothing opens.
 		const refused = await api(panel, { url: `${s.base}/` });
 		expect(refused.status).toBe(400);
 		expect(refused.error).toBe("127.0.0.1 non è tra i siti che questo agente può leggere");

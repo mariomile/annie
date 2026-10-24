@@ -485,7 +485,7 @@ describe("purchase_prices", () => {
 		expect(purchaseCallReads({ op: "increases", compact: true })).toBe(true);
 		expect(purchaseCallReads({ op: "export" })).toBe(false);
 		const [guarded] = readOnlyInBriefs([s.tool], async () => true);
-		expect(await guarded?.execute({ op: "export" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await guarded?.execute({ op: "export" }, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(BRIEF_INSTRUCTION).toContain("purchase_prices (increases)");
 	});
 

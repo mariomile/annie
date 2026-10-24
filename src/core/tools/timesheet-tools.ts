@@ -97,7 +97,7 @@ const DESCRIPTION = [
 	"mark_billed: ids, or client (exactly as the tool writes it) + period; with ref the entries to bill and those in a preventivo get that invoice number; without ref only entries to bill are marked, nothing already billed changes. mark_unbilled: ids, or client + period (+ ref: only the entries with it). Repeat hours and amounts as given, never compute them yourself.",
 ].join(" ");
 
-const NO_PERSON = "Errore: qui non so chi sta scrivendo (una conversazione di gruppo, o un compito fuori da una conversazione): il timer è personale, quindi qui non lo avvio, non lo fermo e non lo guardo. Chi lavora lo usi nella sua conversazione con Annie; le ore già fatte si possono registrare anche qui (op log).";
+const NO_PERSON = "Errore: qui non so chi sta scrivendo (una conversazione di gruppo, o un compito fuori da una conversazione): il timer è personale, quindi qui non lo avvio, non lo fermo e non lo guardo. Chi lavora lo usi nella sua conversazione con Owni; le ore già fatte si possono registrare anche qui (op log).";
 
 /**
  * Ore di lavoro (timesheet.ts): recorded from a sentence or a timer, listed, summed per period,

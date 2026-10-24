@@ -1,5 +1,5 @@
 /**
- * What the letters Annie writes for the person's customers share: payment reminders
+ * What the letters Owni writes for the person's customers share: payment reminders
  * (reminder-text.ts) and quotes sent by mail (quote-send.ts).
  */
 

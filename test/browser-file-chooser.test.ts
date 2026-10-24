@@ -74,7 +74,7 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		it(`refuses a person's click that opens a file chooser: ${name}`, async () => {
 			const { base, sessions, browser } = await start();
 			await sessions.open("k", browser, `${base}/${name}`, guard);
-			await expect(sessions.clickAt("k", 150 / 1280, 150 / 800, guard, { person: true })).rejects.toMatchObject({ kind: "no-files", message: "Annie non carica file sui siti" });
+			await expect(sessions.clickAt("k", 150 / 1280, 150 / 800, guard, { person: true })).rejects.toMatchObject({ kind: "no-files", message: "Owni non carica file sui siti" });
 			// The session stays usable after a refusal.
 			await sessions.open("k", browser, `${base}/plain`, guard);
 			expect((await sessions.clickAt("k", 150 / 1280, 150 / 800, guard)).title).toBe("cliccato");
@@ -93,7 +93,7 @@ describe.skipIf(!available)("no file uploads, in real Chromium", () => {
 		expect(await sessions.type("a", view.elements[0]?.ref as number, "x", false, guard)).toMatchObject({ failed: true });
 	}, 60_000);
 
-	const LATE = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
+	const LATE = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Owni non carica file sui siti.";
 	const at = { top: [150 / 1280, 150 / 800], below: [150 / 1280, 350 / 800], lowest: [150 / 1280, 550 / 800] } as const;
 
 	it("a site's first refused chooser is reported as it opens, own or late, with the page's host", async () => {

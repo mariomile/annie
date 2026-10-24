@@ -1,18 +1,18 @@
 # Settimana 73: DDT e fattura differita
 
-Branch `week-73`. Annie fa i DDT della merce che la persona spedisce, scarica il magazzino quando li emette, e a fine mese prepara la fattura differita che li raccoglie, senza scaricare due volte. Non manda mai un DDT. Le scelte sono nell'[ADR 0093](adr/0093-ddt-e-fattura-differita.md).
+Branch `week-73`. Owni fa i DDT della merce che la persona spedisce, scarica il magazzino quando li emette, e a fine mese prepara la fattura differita che li raccoglie, senza scaricare due volte. Non manda mai un DDT. Le scelte sono nell'[ADR 0093](adr/0093-ddt-e-fattura-differita.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Fammi il DDT per Rossi: 10 risme e 2 toner»**: la bozza, con le voci del listino o testo libero; causale vendita se non è detta (conto visione, reso, riparazione, omaggio…), il trasporto chiesto prima di emetterlo.
 - **«Emettilo»**: prende il numero del 2026 («12/2026») dopo il sì, e scarica gli articoli del magazzino; prima dice cosa scarica.
 - **«Stampa il DDT»**: il PDF (o il Word) in `ddt/`. Lo manda la persona.
 - **«Annulla il DDT 12»**: prima lo mostra e chiede se la merce è partita lo stesso; annullato, il numero resta, e se la merce non è partita la rimette in magazzino.
-- **«Rossi mi ha reso 2 toner»**: il reso dal DDT da cui torna (Annie propone l'ultimo con quella merce), o con il DDT del cliente; se quella merce è già fatturata, propone la nota di credito.
+- **«Rossi mi ha reso 2 toner»**: il reso dal DDT da cui torna (Owni propone l'ultimo con quella merce), o con il DDT del cliente; se quella merce è già fatturata, propone la nota di credito.
 - **«Lo porta il corriere BRT»**, **«con la data di domani»**: il trasporto e la data del DDT.
 - **«Quali DDT non ho ancora fatturato?»**: per cliente e mese, con quelli già in una bozza di fattura.
 - **«Fai la fattura differita di ottobre per Rossi»**: la bozza TD24 con tutti i DDT di vendita di ottobre del cliente (i conto visione se il cliente tiene la merce), al netto dei resi; i prezzi dal listino e quelli che mancano chiesti merce per merce, poi proposti per il listino; nell'XML i DatiDDT; va emessa entro il 15 del mese dopo, e la sua IVA va nel mese dei DDT.
-- **Una fattura dettata con merce già partita con un DDT**: Annie lo dice prima e propone di farla differita di quel DDT, così non scarica due volte.
+- **Una fattura dettata con merce già partita con un DDT**: Owni lo dice prima e propone di farla differita di quel DDT, così non scarica due volte.
 - **Nel brief**: i DDT dei mesi passati ancora da fatturare, dal più vecchio, con quelli in ritardo e la scadenza del 15, e le bozze di DDT ferme.
 - **«Numera i DDT come 12»**, **«l'ultimo DDT che ho fatto era il 40»**: la numerazione.
 

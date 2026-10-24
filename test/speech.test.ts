@@ -268,7 +268,7 @@ describe("in an instance", () => {
 		expect(spoken[0]?.caption).toContain("arriverà come messaggio vocale");
 		written("Grazie");
 		expect((await replies(1)).map((s) => s.method)).toEqual(["sendMessage"]);
-		// What Annie sends by herself in that chat is not read aloud.
+		// What Owni sends by herself in that chat is not read aloud.
 		voiceNote();
 		await replies(1);
 		await annie.runtime.sendMessage("default", "annie", { channel: "telegram", threadId: "7", text: "Promemoria: chiama Rossi", key: "r1" });

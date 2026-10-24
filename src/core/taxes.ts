@@ -72,7 +72,7 @@ export const IVS_ACCONTO_FIRST_PERCENT = 50n;
 /** Ricavi limits, by cash: past 85.000 € the forfettario ends the next year; past 100.000 € it ends at once, in the same year (L. 190/2014, art. 1, commi 54 e 71, as amended by L. 197/2022). */
 export const LIMIT_CENTS = 8_500_000n;
 export const HARD_LIMIT_CENTS = 10_000_000n;
-/** Annie warns from this share of the 85.000 € limit, in percent; the brief again at each of the next bands. */
+/** Owni warns from this share of the 85.000 € limit, in percent; the brief again at each of the next bands. */
 export const LIMIT_WARN_PERCENT = 80n;
 export const LIMIT_BANDS = [80n, 90n, 100n] as const;
 /** The brief says a limit band when the incassi of these last days crossed it (past 100.000 € it says it every day until the end of the year). */
@@ -262,7 +262,7 @@ export function rateFor(profile: Pick<TaxProfile, "rate" | "startYear">, year: n
  * Words that say an ATECO group, tried in this order: the specific ones first («agente di
  * commercio» is an intermediary, «commercio ambulante» a street trader, not commerce at large).
  * Phrases and whole folded words only. Some words fit no group with certainty (a developer, a
- * graphic designer, an artisan): Annie asks for the ATECO code or the coefficient.
+ * graphic designer, an artisan): Owni asks for the ATECO code or the coefficient.
  */
 const GROUP_WORDS: readonly (readonly [Group, readonly string[]])[] = [
 	["intermediari", ["agente di commercio", "agenti di commercio", "procacciatore", "procacciatrice", "intermediario", "intermediaria", "intermediari", "rappresentante di commercio", "agente plurimandatario", "agente monomandatario"]],

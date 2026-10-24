@@ -551,7 +551,7 @@ describe("listino: who may change it", () => {
 		expect(priceListCallReads({ op: "price_change" })).toBe(false);
 		const [briefed] = readOnlyInBriefs([s.tool], async () => true);
 		expect(String(await briefed?.execute({ op: "find", query: "sito base" }, fresh()))).toContain("1.500,00 €");
-		expect(String(await briefed?.execute({ op: "add", name: "Y", price: 1, vat: 22 }, fresh()))).toContain("Annie legge soltanto");
+		expect(String(await briefed?.execute({ op: "add", name: "Y", price: 1, vat: 22 }, fresh()))).toContain("Owni legge soltanto");
 		expect(s.tool.description).toContain("price_list is the prices the person sells at, purchase_prices what they pay, stock the quantities.");
 	});
 

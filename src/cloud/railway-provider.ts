@@ -5,7 +5,7 @@ import type { CellProvider, CellStatus } from "./provider.ts";
 export type RailwayCellOptions = {
 	/** An account or workspace token (Authorization: Bearer). Never logged. */
 	readonly token: string;
-	/** A public image of Annie, e.g. ghcr.io/<owner>/annie:latest (built by .github/workflows/image.yml). */
+	/** A public image of Owni, e.g. ghcr.io/<owner>/annie:latest (built by .github/workflows/image.yml). */
 	readonly image: string;
 	/** Where the control plane keeps which Railway project is which cell. */
 	readonly dataDir: string;
@@ -42,13 +42,13 @@ const GQL = {
 
 /**
  * Cells on Railway: one project per tenant (its own private network and volume), one service
- * from Annie's image with a volume on /data, in the EU region, with Railway's serverless mode on.
+ * from Owni's image with a volume on /data, in the EU region, with Railway's serverless mode on.
  *
  * Railway puts a service to sleep by itself after minutes without outbound traffic and wakes it
  * on the next request, so "stopped" here means stopped for the control plane: it stops talking
  * to the cell and lets Railway put it to sleep; `start` wakes it with a request, retrying while
  * the cold start answers 502. The control plane reaches a cell on its Railway domain, like any
- * self-hosted Annie behind https: the cell's own login and cell secret guard it.
+ * self-hosted Owni behind https: the cell's own login and cell secret guard it.
  *
  * `serviceCreate` with an image may deploy at once, before variables and volume exist: that
  * first deploy cannot start (no configuration) and the first `start` deploys again with all of it.

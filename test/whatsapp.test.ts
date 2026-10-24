@@ -20,7 +20,7 @@ const PHONE_ID = "1098765432101";
 const APP_SECRET = "0123456789abcdef0123456789abcdef";
 const TOKEN = "EAAGtesttoken0123456789abcdef";
 
-/** Meta's Graph API as Annie uses it: every call recorded; a number told apart by its id. */
+/** Meta's Graph API as Owni uses it: every call recorded; a number told apart by its id. */
 async function fakeGraph(options: { refuse?: { code: number; message: string } } = {}) {
 	const calls: { method: string; path: string; auth: string; body: any }[] = [];
 	const server: Server = createServer((req, res) => {
@@ -91,7 +91,7 @@ describe("WhatsApp adapter", () => {
 		wa.onAction(async (a) => void taps.push(a));
 		await wa.handleWebhook(
 			delivery([
-				{ from: "393331234567", id: "wamid.1", type: "text", text: { body: "Ciao Annie" } },
+				{ from: "393331234567", id: "wamid.1", type: "text", text: { body: "Ciao Owni" } },
 				{ from: "393331234567", id: "wamid.2", type: "document", document: { id: "media-in-1", filename: "preventivo.pdf", caption: "Guarda qui" } },
 				{ from: "393331234567", id: "wamid.3", type: "interactive", interactive: { type: "button_reply", button_reply: { id: "tool:0123456789ab:approved", title: "Approva" } } },
 				{ from: "393331234567", id: "wamid.4", type: "sticker", sticker: { id: "x", animated: true } },
@@ -101,7 +101,7 @@ describe("WhatsApp adapter", () => {
 		);
 		await wa.handleWebhook(delivery([{ from: "393331234567", id: "wamid.5", type: "text", text: { body: "altro numero" } }], "999"));
 		expect(inbound.map((m) => [m.text, m.threadId, m.privateThread, m.messageId])).toEqual([
-			["Ciao Annie", "393331234567", true, "wamid.1"],
+			["Ciao Owni", "393331234567", true, "wamid.1"],
 			["Guarda qui", "393331234567", true, "wamid.2"],
 			["Lo scontrino", "393331234567", true, "wamid.6"],
 			["", "393331234567", true, "wamid.7"],
@@ -178,7 +178,7 @@ describe("WhatsApp adapter", () => {
 		const statuses = delivery([]);
 		(statuses.entry?.[0]?.changes?.[0]?.value as { statuses?: unknown[] }).statuses = [{ id: "wamid.out1", status: "failed", recipient_id: "393331234567", errors: [{ code: 131047, title: "Re-engagement message" }] }];
 		await wa.handleWebhook(statuses);
-		expect(logs).toEqual(["whatsapp: message wamid.out1 to 393331234567 not delivered: outside the 24-hour window, the person must write to Annie first"]);
+		expect(logs).toEqual(["whatsapp: message wamid.out1 to 393331234567 not delivered: outside the 24-hour window, the person must write to Owni first"]);
 		const base = { tenantId: "default", instanceId: "annie", channel: "whatsapp", threadId: "393331234567", idempotencyKey: "k" };
 		await wa.sendFile({ ...base, name: "Preventivo.PDF", data: new Uint8Array([1]) });
 		expect(graph.calls.find((c) => c.path === `/${PHONE_ID}/media`)?.body).toContain("application/pdf");
@@ -345,7 +345,7 @@ describe("WhatsApp in an instance", () => {
 		await new Promise((r) => setTimeout(r, 300));
 		expect(graph.sent()).toHaveLength(answers);
 		// The template is set from the console, checked, and comes back; empty removes it.
-		expect((await api("/api/instances/annie/whatsapp", { templateName: "Annie Aggiornamento", templateLanguage: "it" }, "PUT")).status).toBe(400);
+		expect((await api("/api/instances/annie/whatsapp", { templateName: "Owni Aggiornamento", templateLanguage: "it" }, "PUT")).status).toBe(400);
 		expect((await api("/api/instances/annie/whatsapp", { templateName: "annie_aggiornamento", templateLanguage: "it" }, "PUT")).whatsapp.template).toEqual({ name: "annie_aggiornamento", language: "it" });
 		expect((await api("/api/instances/annie/whatsapp", { templateName: "", templateLanguage: "" }, "PUT")).whatsapp.template).toBeNull();
 		// When the person last wrote is kept on disk, for after a restart.

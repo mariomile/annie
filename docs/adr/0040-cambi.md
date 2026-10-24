@@ -1,6 +1,6 @@
 # Cambi delle valute: i tassi di riferimento della BCE
 
-Una piccola impresa riceve fatture in dollari, paga fornitori in franchi svizzeri, fa preventivi in sterline. «Quanto fanno 1.250 dollari in euro?», «il cambio del dollaro alla data della fattura», «com'è andata la sterlina questo mese?». Annie faceva i conti con `calculate`, ma senza un cambio: il modello avrebbe dovuto inventarlo.
+Una piccola impresa riceve fatture in dollari, paga fornitori in franchi svizzeri, fa preventivi in sterline. «Quanto fanno 1.250 dollari in euro?», «il cambio del dollaro alla data della fattura», «com'è andata la sterlina questo mese?». Owni faceva i conti con `calculate`, ma senza un cambio: il modello avrebbe dovuto inventarlo.
 
 ## Decisione
 
@@ -18,7 +18,7 @@ Un tool, `exchange_rate`, sui tassi di riferimento dell'euro della Banca Central
   - Le criptovalute: dice che non sono valute e rimanda alla ricerca sul web.
   - Le vecchie valute dell'euro (lira, marco, franco francese, peseta, kuna, lev): usa il cambio fisso irrevocabile.
 - **Tre file della BCE.** Il giorno, gli ultimi 90 giorni, la storia dal 1999 (solo per date più vecchie), tenuti in memoria.
-  - Il file del giorno resta finché basta. Dopo le 16:00 di Francoforte, se non ha ancora il cambio di oggi, si riprova ogni 5 minuti fino alle 18:00, poi al più ogni ora fino a mezzanotte; intanto Annie dice che la BCE oggi non ha pubblicato.
+  - Il file del giorno resta finché basta. Dopo le 16:00 di Francoforte, se non ha ancora il cambio di oggi, si riprova ogni 5 minuti fino alle 18:00, poi al più ogni ora fino a mezzanotte; intanto Owni dice che la BCE oggi non ha pubblicato.
   - Un download fallito non si ripete per 2 minuti.
 - **Acceso dall'operatore.** Con `ANNIE_EXCHANGE_RATES=1`, come il meteo (ADR 0039). Dal server non esce nessun dato di chi scrive, solo la richiesta di un file pubblico, ma vale il principio dell'architettura: niente in uscita senza una configurazione esplicita. Così un server senza rete non ha un tool che fallisce.
 - **Formattazione condivisa.** Numeri, importi e date all'italiana sono in `src/core/italian-format.ts`, usato da calcoli, meteo e cambi.
@@ -41,7 +41,7 @@ Un tool, `exchange_rate`, sui tassi di riferimento dell'euro della Banca Central
 
 ## Condizioni d'uso
 
-La BCE pubblica i tassi a solo scopo informativo e sconsiglia di usarli per operazioni di mercato: Annie cita «BCE» e, una volta per conversazione o quando si parla di pagamenti, ricorda che banche e carte applicano il loro cambio.
+La BCE pubblica i tassi a solo scopo informativo e sconsiglia di usarli per operazioni di mercato: Owni cita «BCE» e, una volta per conversazione o quando si parla di pagamenti, ricorda che banche e carte applicano il loro cambio.
 
 ## Alternative scartate
 

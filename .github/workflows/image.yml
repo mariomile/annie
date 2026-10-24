@@ -1,7 +1,7 @@
 name: Image
 # Builds the Dockerfile and checks that the container answers, on a PR or a push to main that
 # touches what goes into the images; on main it also publishes ghcr.io/<owner>/annie (the image
-# Annie Cloud cells run, docs/runbook.md 6c and 6d) and ghcr.io/<owner>/annie-computer:fly (the
+# Owni Cloud cells run, docs/runbook.md 6c and 6d) and ghcr.io/<owner>/annie-computer:fly (the
 # computers' micro-VMs, runbook 6j). Run it by hand ("Run workflow" on main) to publish after
 # other changes: the builds are most of the Actions minutes, so they don't run on every change.
 on:

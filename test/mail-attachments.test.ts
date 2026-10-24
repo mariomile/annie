@@ -291,7 +291,7 @@ describe("mail attachments: what may be attached", () => {
 		await expect(readAttachments(workspace, q.map((a) => ({ ...a, name: "q.exe" })))).rejects.toThrow(/non consentito/);
 	});
 
-	it("the card: the files with whole paths and sizes, and Annie's reason apart, capped, without invisible characters, unable to fake them", async () => {
+	it("the card: the files with whole paths and sizes, and Owni's reason apart, capped, without invisible characters, unable to fake them", async () => {
 		const { workspace } = workspaceWith({ "privato/buste-paga/Preventivo-2026-012.pdf": PDF, "f/B-70.xml": XML });
 		const attachments = await attachFiles(workspace, ["privato/buste-paga/Preventivo-2026-012.pdf", "f/B-70.xml"]);
 		expect(attachmentsLine(attachments)).toBe("Allegati: privato/buste-paga/Preventivo-2026-012.pdf (3 KB), f/B-70.xml (1 KB)");

@@ -46,8 +46,8 @@ type Inspect = { State?: { Running?: boolean }; Config?: { Labels?: Record<strin
 /**
  * A desktop per agente as a container of Cua's image on this Docker host (ADR 0045). It sits on
  * its own Docker network: internal (no internet) unless the operator chose otherwise, with
- * traffic between containers off when Annie creates it, so desktops do not see each other.
- * Annie reaches Cua's daemon at the container's address on that network, with a token made
+ * traffic between containers off when Owni creates it, so desktops do not see each other.
+ * Owni reaches Cua's daemon at the container's address on that network, with a token made
  * for that container; the VNC password is random too, and no port is published on the host.
  */
 export class DockerDesktopProvider implements DesktopProvider {
@@ -108,7 +108,7 @@ export class DockerDesktopProvider implements DesktopProvider {
 	}
 
 	/**
-	 * At boot: desktops left running by a previous run of Annie are stopped, those already stopped
+	 * At boot: desktops left running by a previous run of Owni are stopped, those already stopped
 	 * removed (nothing in them is kept: a desktop starts afresh). They start again at their next action.
 	 */
 	async stopLeftovers(): Promise<number> {
@@ -181,7 +181,7 @@ export class DockerDesktopProvider implements DesktopProvider {
 			info = undefined;
 		}
 		if (info === undefined) {
-			// The secrets live in the container's settings: after a restart Annie reads them back from Docker.
+			// The secrets live in the container's settings: after a restart Owni reads them back from Docker.
 			const env = [`CUA_ENV_TOKEN=${randomBytes(32).toString("hex")}`, `VNC_PW=${randomBytes(12).toString("hex")}`, `VNC_RESOLUTION=${RESOLUTION}`];
 			try {
 				await this.api("POST", `/containers/create?name=${name(key)}`, { ...spec, Env: env, Labels: { [LABEL]: key, [SPEC_LABEL]: hash } }, [201]);
@@ -227,7 +227,7 @@ export class DockerDesktopProvider implements DesktopProvider {
 			const found = (await this.api("GET", `/networks/${network}`, undefined, [200, 404])) as { Internal?: boolean; Options?: Record<string, string> } | undefined;
 			if (found !== undefined) {
 				if ((found.Internal === true) !== internal) throw new Error(`desktop: the Docker network ${network} ${internal ? "reaches the internet" : "is internal"}, and ANNIE_DESKTOP_NETWORK says ${internal ? "no internet" : "internet"}: remove it or fix it`);
-				// Made by someone else (Docker Compose, so that Annie can join it): desktops may then reach each other.
+				// Made by someone else (Docker Compose, so that Owni can join it): desktops may then reach each other.
 				if (found.Options?.["com.docker.network.bridge.enable_icc"] !== "false") this.options.log?.(`desktop: warning: the Docker network ${network} lets containers talk to each other (com.docker.network.bridge.enable_icc is not "false"): one agente's screen can reach another's, kept apart only by their tokens and VNC passwords`);
 				return;
 			}

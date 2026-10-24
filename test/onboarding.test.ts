@@ -44,7 +44,7 @@ describe("primi passi", () => {
 		expect((await api("/api/instances/annie/setup")).setup).toEqual(nothingDone);
 		await api("/api/instances/annie/settings", "PUT", { about: "Assistente di Studio Rossi." });
 		const instructions = (await api("/api/instances/annie/settings")).settings.instructions as string;
-		// Added to what Annie can do, not in its place.
+		// Added to what Owni can do, not in its place.
 		expect(instructions).toContain("watch_");
 		expect(instructions.endsWith("Informazioni su chi ti usa:\nAssistente di Studio Rossi.")).toBe(true);
 		const thread = (await api("/api/instances/annie/threads", "POST", {})).thread;
@@ -79,7 +79,7 @@ describe("primi passi", () => {
 
 	it("an old copy of the default instructions is still the default; the owner's own text counts", async () => {
 		const { annie, api } = await boot();
-		await annie.runtime.registry.updateInstance("default", "annie", { instructions: "Sei Annie, l'assistente sempre attiva di un'azienda italiana. Puoi: cose di una versione vecchia." });
+		await annie.runtime.registry.updateInstance("default", "annie", { instructions: "Sei Owni, l'assistente sempre attiva di un'azienda italiana. Puoi: cose di una versione vecchia." });
 		expect((await api("/api/instances/annie/setup")).setup.instructions).toBe(false);
 		await annie.runtime.registry.updateInstance("default", "annie", { instructions: "Sei il centralino della pizzeria Da Mario." });
 		expect((await api("/api/instances/annie/setup")).setup.instructions).toBe(true);
@@ -92,7 +92,7 @@ describe("primi passi", () => {
 		expect((await api("/api/instances/annie/setup")).setup.channel).toBe(true);
 	});
 
-	it("a new instance with the owner's words keeps what Annie can do", async () => {
+	it("a new instance with the owner's words keeps what Owni can do", async () => {
 		const { api } = await boot();
 		await api("/api/instances", "POST", { id: "vendite", name: "Vendite", instructions: "Segui i clienti del negozio." });
 		const instructions = (await api("/api/instances/vendite/settings")).settings.instructions as string;

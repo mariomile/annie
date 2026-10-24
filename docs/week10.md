@@ -1,4 +1,4 @@
-# Settimana 10: Annie legge il web
+# Settimana 10: Owni legge il web
 
 Branch `week-10`. Decisione: [ADR 0009](adr/0009-navigazione-web-in-sola-lettura.md). Mario ha scelto di iniziare la Fase 3 dalla navigazione web.
 
@@ -9,7 +9,7 @@ Branch `week-10`. Decisione: [ADR 0009](adr/0009-navigazione-web-in-sola-lettura
 - **Siti consentiti**: in Impostazioni l'owner li elenca per istanza; vuoto vuol dire nessuno, `*` tutti i siti pubblici. Il cambio finisce nell'audit (quanti siti, se c'è `*`, mai l'elenco).
 - **Mai dentro una rete**: loopback, reti private, link-local, CGNAT, multicast, metadati del cloud e le loro forme IPv6 sono rifiutati, sull'indirizzo a cui ci si connette davvero e dopo ogni redirect (un redirect verso `169.254.169.254` è rifiutato anche con `*`). Solo http e https, niente credenziali nell'indirizzo.
 - **Immagine Docker**: Chromium facoltativo con `--build-arg WITH_BROWSER=1`; senza, gli screenshot rispondono che non sono disponibili.
-- **Ordine dei messaggi nella console** (`test/web-channel.test.ts`). Bug trovato dalla suite sotto carico: il messaggio di una persona veniva scritto dopo averlo passato ad Annie, e una risposta molto veloce poteva finire nella conversazione prima della domanda. Ora le scritture di un thread vanno una alla volta; il test fallisce senza la correzione.
+- **Ordine dei messaggi nella console** (`test/web-channel.test.ts`). Bug trovato dalla suite sotto carico: il messaggio di una persona veniva scritto dopo averlo passato a Owni, e una risposta molto veloce poteva finire nella conversazione prima della domanda. Ora le scritture di un thread vanno una alla volta; il test fallisce senza la correzione.
 - **Immagine pubblicata con Chromium**: il job che pubblica su GHCR costruisce con `WITH_BROWSER=1` e controlla che il container risponda. (La pubblicazione senza artifact è su `main` dalla PR #9.)
 
 ## Review indipendente

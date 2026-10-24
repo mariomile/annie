@@ -1,6 +1,6 @@
 # Risposte a voce
 
-Chi manda un vocale ad Annie su Telegram o WhatsApp di solito ha le mani occupate: in macchina, in negozio, al cantiere. Una risposta scritta lo costringe a fermarsi e leggere. Gli assistenti con cui Annie viene confrontata (Grok, ChatGPT) rispondono a voce.
+Chi manda un vocale a Owni su Telegram o WhatsApp di solito ha le mani occupate: in macchina, in negozio, al cantiere. Una risposta scritta lo costringe a fermarsi e leggere. Gli assistenti con cui Owni viene confrontata (Grok, ChatGPT) rispondono a voce.
 
 ## Come funziona
 

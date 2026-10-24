@@ -90,7 +90,7 @@ function findEndOfDirectory(data: Buffer): number {
 }
 
 /**
- * A ZIP of the given files, for the Office files Annie writes (ADR 0029). Pictures, already
+ * A ZIP of the given files, for the Office files Owni writes (ADR 0029). Pictures, already
  * compressed, are stored as they are; the rest is deflated. A fixed date (1 January 1980), so the
  * same files always give the same bytes.
  */

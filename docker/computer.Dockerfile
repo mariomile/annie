@@ -1,5 +1,5 @@
 # The instances' computers (ADR 0013): docker build -f docker/computer.Dockerfile -t annie-computer:latest docker
-# Annie runs it with no network, read-only except /work and /tmp: commands as uid 1000, the
+# Owni runs it with no network, read-only except /work and /tmp: commands as uid 1000, the
 # container itself idles as nobody. The tools here are all a computer has: it cannot install
 # anything at run time. A custom image keeps uid 1000, /work owned by it, sh, timeout, du and chmod.
 #

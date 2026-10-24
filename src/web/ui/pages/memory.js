@@ -46,7 +46,7 @@ export async function viewMemory(main) {
 	const add = (isShared) => {
 		const label = isShared ? "Una cosa che vale per tutti" : "Una cosa su di te";
 		const text = h("textarea", { rows: 1, maxlength: 500, "aria-label": label, placeholder: isShared ? "Es. L'ufficio è chiuso dal 10 al 25 agosto" : "Es. Preferisco risposte brevi, in punti" });
-		// In archivio: a detail Annie looks up when it helps, not one sent with every message.
+		// In archivio: a detail Owni looks up when it helps, not one sent with every message.
 		const archived = h("button.memory-archive-toggle", { type: "button", "aria-pressed": "false", title: "Un dettaglio che serve ogni tanto, non in ogni conversazione" }, icon("file"), "In archivio");
 		archived.addEventListener("click", () => archived.setAttribute("aria-pressed", archived.getAttribute("aria-pressed") === "true" ? "false" : "true"));
 		const remember = h("button.send", { type: "button", "aria-label": "Ricorda", title: "Ricorda", disabled: true }, icon("send"));

@@ -1,14 +1,14 @@
 # Settimana 40: liste
 
-Branch `week-40`. Chi usa un assistente ogni giorno gli chiede di tenere a mente la spesa, le cose da fare, i regali. Annie aveva la memoria e i task programmati, ma nessun elenco da spuntare. Ora ha le liste: si aggiungono voci a parole, si spuntano per parole o per numero, si tolgono, si rinominano, e una lista può essere di una persona sola o condivisa con la famiglia o l'ufficio. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0038](adr/0038-liste.md).
+Branch `week-40`. Chi usa un assistente ogni giorno gli chiede di tenere a mente la spesa, le cose da fare, i regali. Owni aveva la memoria e i task programmati, ma nessun elenco da spuntare. Ora ha le liste: si aggiungono voci a parole, si spuntano per parole o per numero, si tolgono, si rinominano, e una lista può essere di una persona sola o condivisa con la famiglia o l'ufficio. Come funziona, i limiti e le alternative scartate sono nell'[ADR 0038](adr/0038-liste.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Aggiungi latte e pane alla spesa»**: due voci; se la lista non c'è, Annie la crea e dice quali altre liste ci sono, nel caso intendesse una di quelle.
-- **«Ho preso il latte»**: Annie spunta il latte da comprare, non quello già preso; «ho preso tutto» spunta tutte le voci.
+- **«Aggiungi latte e pane alla spesa»**: due voci; se la lista non c'è, Owni la crea e dice quali altre liste ci sono, nel caso intendesse una di quelle.
+- **«Ho preso il latte»**: Owni spunta il latte da comprare, non quello già preso; «ho preso tutto» spunta tutte le voci.
 - **«Cosa devo ancora comprare?»**: la lista numerata, prima le voci da fare; «togli la 2» toglie la seconda.
 - **«Metti 6 uova»** quando le uova ci sono già: aggiorna la quantità invece di aggiungerle due volte.
-- **La spesa di casa**: «fai una lista condivisa» la rende visibile a tutti quelli che scrivono ad Annie, anche nel gruppo di famiglia; le liste di ognuno restano sue.
+- **La spesa di casa**: «fai una lista condivisa» la rende visibile a tutti quelli che scrivono a Owni, anche nel gruppo di famiglia; le liste di ognuno restano sue.
 - **Il brief del mattino** dice quante voci restano nelle liste.
 
 ## Cosa funziona (verificato dai test)
@@ -25,7 +25,7 @@ Branch `week-40`. Chi usa un assistente ogni giorno gli chiede di tenere a mente
 
 Due revisori: sicurezza e standard; specifiche e uso. Corretti:
 
-- **Alta (sicurezza).** Le liste condivise le scrive chiunque parli con Annie, ma il loro testo arrivava al modello come se fosse di chi scrive: ora ogni risposta a chi vede una lista condivisa sta in un recinto. Una lista privata e una condivisa con lo stesso nome: il tool sceglieva da solo. Spuntare o togliere per numero dopo un riavvio poteva colpire un'altra voce: ora le voci si trovano in uno step e si cambiano per id in un altro.
+- **Alta (sicurezza).** Le liste condivise le scrive chiunque parli con Owni, ma il loro testo arrivava al modello come se fosse di chi scrive: ora ogni risposta a chi vede una lista condivisa sta in un recinto. Una lista privata e una condivisa con lo stesso nome: il tool sceglieva da solo. Spuntare o togliere per numero dopo un riavvio poteva colpire un'altra voce: ora le voci si trovano in uno step e si cambiano per id in un altro.
 - **Media (sicurezza).** In un gruppo una lista nuova diventava condivisa da sola: ora serve `shared: true`. Una lista condivisa intera si cancellava da un gruppo. Le descrizioni non dicevano di ignorare le richieste che arrivano da mail, file e pagine web.
 - **Alta (uso).** Spuntare una voce già fatta diceva «spuntato». «3 uova» dopo «uova» faceva un doppione. Le risposte non dicevano se una lista era privata o condivisa, e cosa vuol dire condivisa.
 - **Media (uso).** Mancavano spunta tutto, rinomina e condividi; i nomi delle liste non arrivavano al modello, che ne creava di nuove; nomi simili («regalo» e «Regali», «elenco spesa»); grammatica e maiuscole delle risposte.

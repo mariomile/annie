@@ -56,7 +56,7 @@ export function createWatchTools(options: WatchToolsOptions): AnnieTool[] {
 			async execute(args, ctx) {
 				if (ctx.thread === undefined) return "Errore: una sentinella va creata in una conversazione.";
 				const thread = ctx.thread;
-				// Annie never calls first: what a sentinella sees would only be heard at the next call.
+				// Owni never calls first: what a sentinella sees would only be heard at the next call.
 				if (thread.channel === "phone") return "Errore: al telefono non posso creare sentinelle, perché non chiamo per prima. Chiedi alla persona di farlo su Telegram, WhatsApp o nella console.";
 				// It writes by itself for someone: in a group there is nobody it acts for, so it would never write.
 				if (threadPerson({ createdBy: { kind: "instance" }, ...thread }) === undefined) return "Errore: le sentinelle si creano in una chat privata con la persona da avvisare (o nella console), non in un gruppo.";

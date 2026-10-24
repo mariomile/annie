@@ -28,7 +28,7 @@ import { marginCallReads } from "./margins.ts";
 
 /**
  * The brief del mattino: a task programmato of the person, in their own console thread, that
- * reads their calendar and mail (read only) and what Annie remembers about them.
+ * reads their calendar and mail (read only) and what Owni remembers about them.
  */
 export const BRIEF_INSTRUCTION = `Prepara il brief del mattino per la persona di questa conversazione. Breve, in punti:
 1. Gli impegni di oggi dal suo calendario (google_calendar_events da adesso a fine giornata).
@@ -150,7 +150,7 @@ const READS: ReadonlyMap<string, (args: Record<string, unknown>) => boolean> = n
 
 /**
  * The brief reads mail written by anyone: in its thread every tool that writes, sends or
- * remembers refuses, so nothing a mail says can make Annie act. The person acts from another chat.
+ * remembers refuses, so nothing a mail says can make Owni act. The person acts from another chat.
  */
 export function readOnlyInBriefs(tools: readonly AnnieTool[], isBriefThread: (thread: { channel: string; threadId: string }) => Promise<boolean>): AnnieTool[] {
 	return tools.map((tool) =>
@@ -160,7 +160,7 @@ export function readOnlyInBriefs(tools: readonly AnnieTool[], isBriefThread: (th
 					...tool,
 					execute: async (args, ctx) => {
 						if (READS.get(tool.name)?.(args) === true) return tool.execute(args, ctx);
-						if (ctx.thread !== undefined && (await isBriefThread(ctx.thread))) return "Errore: nella chat del brief del mattino Annie legge soltanto. Per agire, scrivile in un'altra conversazione.";
+						if (ctx.thread !== undefined && (await isBriefThread(ctx.thread))) return "Errore: nella chat del brief del mattino Owni legge soltanto. Per agire, scrivile in un'altra conversazione.";
 						return tool.execute(args, ctx);
 					},
 				},

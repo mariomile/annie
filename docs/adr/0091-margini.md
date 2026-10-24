@@ -1,6 +1,6 @@
 # Margini
 
-Con il listino (ADR 0084), il magazzino (ADR 0089) e i prezzi d'acquisto (ADR 0090) Annie sapeva a quanto la persona vende, quanto ha in magazzino e quanto paga, ma non quanto ci guadagna: «quanto guadagno sul toner?», «su cosa ci perdo?», «quanto mi rende Rossi?», «il listino è ancora giusto?» non avevano risposta.
+Con il listino (ADR 0084), il magazzino (ADR 0089) e i prezzi d'acquisto (ADR 0090) Owni sapeva a quanto la persona vende, quanto ha in magazzino e quanto paga, ma non quanto ci guadagna: «quanto guadagno sul toner?», «su cosa ci perdo?», «quanto mi rende Rossi?», «il listino è ancora giusto?» non avevano risposta.
 
 ## Decisione
 
@@ -12,7 +12,7 @@ Con il listino (ADR 0084), il magazzino (ADR 0089) e i prezzi d'acquisto (ADR 00
 - **Acquisti per nome (M3)**: per un articolo i prezzi d'acquisto vengono dai codici e dalle descrizioni già confermati; per nome solo con le stesse parole in tutte e due le direzioni (mai una dentro l'altra) e un prodotto solo. Se più prodotti comprati hanno quel nome, si dice e non se ne sceglie nessuno.
 - **Le stime non sono mai perdite**: un costo trovato solo dal nome è una «stima, da verificare»; una perdita su quel costo è «forse», mai «in perdita», e il brief non la dice.
 - **Percentuali**: il margine sul prezzo, in decimi arrotondati per difetto. Il 100% è solo un margine senza costo, una perdita non diventa mai zero, e un margine minimo si dice «quasi niente, meno dello 0,1%».
-- **Controllo del listino** (`price_check`): ogni voce legata a un articolo contro il costo medio di adesso (senza, l'ultimo acquisto), segnata sotto la soglia (20%, o quella detta dalla persona) o in perdita, con il prezzo che la riporta alla soglia, arrotondato per eccesso, anche a confezioni e IVA inclusa. Se quel prezzo non si riesce a calcolare, la riga resta e lo dice. Annie offre di aggiornare il listino, ma i prezzi li cambia `price_list` dopo la sua anteprima.
+- **Controllo del listino** (`price_check`): ogni voce legata a un articolo contro il costo medio di adesso (senza, l'ultimo acquisto), segnata sotto la soglia (20%, o quella detta dalla persona) o in perdita, con il prezzo che la riporta alla soglia, arrotondato per eccesso, anche a confezioni e IVA inclusa. Se quel prezzo non si riesce a calcolare, la riga resta e lo dice. Owni offre di aggiornare il listino, ma i prezzi li cambia `price_list` dopo la sua anteprima.
 - **Simulazione** (`what_if`): un prezzo o un costo cambiato, in percentuale o in euro, sulle stesse quantità vendute. È solo un calcolo: non cambia niente.
 - **Brief**: il lunedì e per tutta la settimana, le voci vendute la settimana prima sotto costo o sotto la soglia, ognuna una volta a settimana, tre al massimo fra tutti i brief; oltre, quante ne restano. Le voci già dette si ricordano in `margins.json` dell'istanza, con la copia `.bak`.
 - **CSV** (`export`): una riga per voce venduta in `margini/` del workspace, con gli importi come numeri e le celle protette dalle formule.

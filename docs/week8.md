@@ -1,4 +1,4 @@
-# Settimana 8: Annie Cloud apribile su un server
+# Settimana 8: Owni Cloud apribile su un server
 
 Branch `week-8`. Piano: [`piano-cloud.md`](piano-cloud.md). Decisione: [ADR 0008](adr/0008-celle-container-prima-delle-micro-vm.md).
 

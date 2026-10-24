@@ -8,7 +8,7 @@ import { createDemoServer } from "./mcp-demo-server.ts";
  * The demo MCP server behind OAuth, as the MCP authorization spec has it, all on one loopback
  * port: protected resource metadata, authorization server metadata, dynamic registration, a
  * token endpoint with PKCE and refresh. The sign-in page is not served: a test reads the state
- * and challenge from the address Annie sends the owner to, and comes back with a code.
+ * and challenge from the address Owni sends the owner to, and comes back with a code.
  */
 export type OAuthMcp = {
 	readonly base: string;

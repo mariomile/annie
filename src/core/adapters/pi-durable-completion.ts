@@ -36,10 +36,10 @@ export function createPiCompletionClient(options: PiCompletionOptions): ModelCli
 						return [];
 					},
 					async modify() {
-						throw new Error("Annie credentials are read-only; manage them in the tenant secret store");
+						throw new Error("Owni credentials are read-only; manage them in the tenant secret store");
 					},
 					async delete() {
-						throw new Error("Annie credentials are read-only; manage them in the tenant secret store");
+						throw new Error("Owni credentials are read-only; manage them in the tenant secret store");
 					},
 				},
 				authContext: { env: async () => undefined, fileExists: async () => false },

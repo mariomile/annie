@@ -1,11 +1,11 @@
 # Settimana 54: rinnovi e abbonamenti
 
-Branch `week-54`. Annie tiene il conto di assicurazioni, domini, software, affitti, utenze e contratti che si rinnovano, avvisa prima della scadenza e della data entro cui disdire, e dice quanto costano all'anno e al mese. Le scelte sono nell'[ADR 0064](adr/0064-rinnovi-e-abbonamenti.md).
+Branch `week-54`. Owni tiene il conto di assicurazioni, domini, software, affitti, utenze e contratti che si rinnovano, avvisa prima della scadenza e della data entro cui disdire, e dice quanto costano all'anno e al mese. Le scelte sono nell'[ADR 0064](adr/0064-rinnovi-e-abbonamenti.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Ricordami che l'assicurazione dell'auto scade il 12 marzo, 480 euro l'anno»**: Annie la registra e avvisa un mese prima.
-- **«Canva 12 euro al mese con la carta»**: si paga da solo, quindi Annie non lo segnala mai come scaduto.
+- **«Ricordami che l'assicurazione dell'auto scade il 12 marzo, 480 euro l'anno»**: Owni la registra e avvisa un mese prima.
+- **«Canva 12 euro al mese con la carta»**: si paga da solo, quindi Owni non lo segnala mai come scaduto.
 - **«Il contratto della fibra si rinnova da solo, disdetta 30 giorni prima»**, **«disdetta 3 mesi prima»**: la data entro cui disdire, al momento giusto.
 - **«Cosa scade nei prossimi 60 giorni?»**: da disdire, da pagare, che si rinnova da solo, con il totale di tutti gli addebiti.
 - **«Quanto spendo di abbonamenti al mese?»**: per categoria, all'anno e al mese.

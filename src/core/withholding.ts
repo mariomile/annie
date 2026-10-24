@@ -3,7 +3,7 @@
  * the clients (sostituti d'imposta) withheld on the invoices they paid, read from the registers that
  * already have it (the fatture in uscita and the FatturaPA XML of the workspace) and never writing
  * them; whether a client paid the net or the gross; the CU the person received, kept in
- * `withholding.json` (withholding-store.ts), compared with Annie's figures. A forfettario's
+ * `withholding.json` (withholding-store.ts), compared with Owni's figures. A forfettario's
  * invoices bear no ritenuta: nothing here applies to them.
  *
  * The rules with their sources in withholding-rules.ts, the documents in withholding-docs.ts, the

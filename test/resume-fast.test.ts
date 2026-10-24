@@ -43,7 +43,7 @@ describe("resume with a fast model", () => {
 		second.onReply((reply) => replies.push(reply));
 		expect(await second.resume("acme", "ops")).toEqual({ pending: 1, undelivered: 0, reattached: 1 });
 		await waitFor(() => replies.length === 1);
-		expect(replies[0]).toMatchObject({ threadId: "1", status: "answered", text: "Annie (modello locale di sviluppo): hai scritto «ciao»" });
+		expect(replies[0]).toMatchObject({ threadId: "1", status: "answered", text: "Owni (modello locale di sviluppo): hai scritto «ciao»" });
 
 		// A second resume() does not answer again.
 		await second.resume("acme", "ops");

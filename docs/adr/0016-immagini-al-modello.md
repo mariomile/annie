@@ -1,6 +1,6 @@
 # Le immagini al modello: foto dai canali e dal workspace
 
-Fino alla settimana 20 una foto mandata ad Annie si perdeva: su Telegram e WhatsApp non arrivava, sul web era un file come un altro. Ora Annie vede le foto che le persone le mandano e può riaprire le immagini del workspace.
+Fino alla settimana 20 una foto mandata a Owni si perdeva: su Telegram e WhatsApp non arrivava, sul web era un file come un altro. Ora Owni vede le foto che le persone le mandano e può riaprire le immagini del workspace.
 
 ## Come funziona
 

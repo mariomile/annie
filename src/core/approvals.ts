@@ -62,7 +62,7 @@ export async function decideToolProposal(
 }
 
 /**
- * Approve or reject a form Annie asked to send (ADR 0011). The person whose private
+ * Approve or reject a form Owni asked to send (ADR 0011). The person whose private
  * conversation asked for it may decide, or an approver of the instance. Approving sends it once,
  * with `send`; the outcome goes back to the conversation for the instance to report.
  */

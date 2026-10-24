@@ -203,7 +203,7 @@ describe("the brief, the file, routing", () => {
 		expect(staffCallReads({ op: "absence" })).toBe(false);
 		expect(staffCallReads({ op: "export" })).toBe(false);
 		const [gated] = readOnlyInBriefs([s.tool], async () => true);
-		expect(await gated?.execute(giulia, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await gated?.execute(giulia, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 	});
 
 	it("a file that does not read: one quiet line in the brief, never written over; a booking says so", async () => {
@@ -228,7 +228,7 @@ describe("the brief, the file, routing", () => {
 		expect(await s.run({ op: "absence", person: "Paolo", kind: "ferie", from: "domani" })).toContain("non trovo questa persona");
 	});
 
-	it("routing: the instructions and the description keep staff apart from appointments, agents and Annie's users", () => {
+	it("routing: the instructions and the description keep staff apart from appointments, agents and Owni's users", () => {
 		const s = setup();
 		// Kept short: the instructions only route, the examples live in the description.
 		expect(s.tool.description).toContain("protocol only the certificate's number: never a diagnosis, never ask for one");
@@ -237,6 +237,6 @@ describe("the brief, the file, routing", () => {
 		expect(s.tool.description).toContain("«sabato Giulia fa 9-13»");
 		expect(s.tool.description).toContain("«Giulia è in ferie dal 3 al 14 agosto»");
 		expect(s.tool.description).toContain("«malattia del figlio» (reason congedo malattia figlio)");
-		expect(s.tool.description).toContain("not the people who use Annie");
+		expect(s.tool.description).toContain("not the people who use Owni");
 	});
 });

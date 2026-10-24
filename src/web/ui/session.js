@@ -54,7 +54,7 @@ export async function enter() {
 	}, 30_000);
 	// After the first paint: the steps never hold the console up.
 	await refreshSetup();
-	// An owner who has not tried Annie yet lands on the steps when opening the console without a page in mind.
+	// An owner who has not tried Owni yet lands on the steps when opening the console without a page in mind.
 	if (landing && (location.hash === "" || location.hash === "#/") && state.setup && !state.setup.tried && state.setupLeft > 0) history.replaceState(null, "", "#/inizia");
 	render();
 }
@@ -72,8 +72,8 @@ function unreachable() {
 		$app,
 		h(
 			"div.empty",
-			h("b", navigator.onLine ? "Non riesco a raggiungere Annie" : "Sei offline"),
-			navigator.onLine ? "Il server non risponde: riprovo da sola tra qualche secondo." : "Annie si riapre da sola appena torna la rete.",
+			h("b", navigator.onLine ? "Non riesco a raggiungere Owni" : "Sei offline"),
+			navigator.onLine ? "Il server non risponde: riprovo da sola tra qualche secondo." : "Owni si riapre da sola appena torna la rete.",
 			h("p", h("button.btn", { onclick: retry }, "Riprova")),
 		),
 	);
@@ -159,7 +159,7 @@ function connectEvents() {
 		if (state.onEntry?.(event)) return;
 		state.unread.add(event.threadId);
 		const { view, rest } = route();
-		if (view !== "chat" || rest[0] !== event.threadId) toast("Nuova risposta di Annie");
+		if (view !== "chat" || rest[0] !== event.threadId) toast("Nuova risposta di Owni");
 		renderRail();
 		void refreshThreads().then(renderRail);
 	});

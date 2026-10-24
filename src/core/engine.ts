@@ -3,7 +3,7 @@ import type { TurnOrigin } from "./turn-origin.ts";
 import type { LocalProviders } from "./local-providers.ts";
 
 /**
- * The durable execution engine behind an instance. Annie code depends on this
+ * The durable execution engine behind an instance. Owni code depends on this
  * interface only; the Pi Durable implementation lives in src/core/adapters/.
  */
 export interface DurableEngine {

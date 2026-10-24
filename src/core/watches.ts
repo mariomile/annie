@@ -532,7 +532,7 @@ async function deliver(target: WatchTarget, watch: Watch, now: Date, log: (messa
 		});
 	} catch (error) {
 		if (error instanceof UserNotAllowed || error instanceof EgressDenied) {
-			const reason = error instanceof UserNotAllowed ? "la persona per cui lavora non può più scrivere ad Annie" : "il canale della conversazione non è più consentito";
+			const reason = error instanceof UserNotAllowed ? "la persona per cui lavora non può più scrivere a Owni" : "il canale della conversazione non è più consentito";
 			log(`watches: ${target.tenantId}/${target.instanceId} watch ${watch.id} stopped: ${error.name}`);
 			await target.store.update({ ...rest, nextCheckAt: null, disabledReason: reason });
 			return false;

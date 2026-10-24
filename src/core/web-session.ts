@@ -47,7 +47,7 @@ export type Guard = { readonly hostAllowed: (host: string) => boolean; readonly 
 /** What a page may load in all, per screenshot or per page of a browser session. */
 export type Budget = { requests: number; bytes: number };
 
-/** What the routing refused or is still doing, told to Annie after each action. */
+/** What the routing refused or is still doing, told to Owni after each action. */
 export type Traffic = { sends: Set<string>; hosts: Set<string>; files: Set<string>; overBudget: boolean; inflight: number };
 
 /** Each list of refused things stays short: a page cannot grow it without end. */
@@ -125,7 +125,7 @@ export async function guardContext(context: BrowserContext, guard: () => Guard, 
 			}
 			budget.bytes -= answer.bytes.length;
 			const type = answer.contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-			// A link to a file (a PDF, a spreadsheet): the browser does not download, Annie is told.
+			// A link to a file (a PDF, a spreadsheet): the browser does not download, Owni is told.
 			if (traffic !== undefined && request.isNavigationRequest() && answer.status < 300 && type !== "" && !/^(text\/(html|plain)|application\/xhtml\+xml)$/.test(type)) {
 				noted(traffic.files, `${clean(type).slice(0, 60)} ${clean(target).slice(0, 200)}`);
 				// 204 to a navigation: the browser stays on the page it was on.
@@ -136,7 +136,7 @@ export async function guardContext(context: BrowserContext, guard: () => Guard, 
 		} catch (error) {
 			if (error instanceof WebFetchRefused && traffic !== undefined) {
 				noted(traffic.hosts, clean(host));
-				// A link to a site that is not allowed: the page stays, and Annie is told.
+				// A link to a site that is not allowed: the page stays, and Owni is told.
 				if (request.isNavigationRequest()) return route.fulfill({ status: 204 });
 			}
 			return route.abort("blockedbyclient");
@@ -441,8 +441,8 @@ export class BrowseError extends Error {
 	}
 }
 
-const NO_FILES = "Annie non carica file sui siti";
-const LATE_CHOOSER = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Annie non carica file sui siti.";
+const NO_FILES = "Owni non carica file sui siti";
+const LATE_CHOOSER = "La pagina ha provato da sola ad aprire la scelta di un file: rifiutata, Owni non carica file sui siti.";
 
 /** A page that stopped answering a read: its session is closed. */
 class Hung extends Error {}
@@ -517,7 +517,7 @@ export class BrowseSessions {
 	private readonly profiles = new Map<string, Promise<Profile>>();
 	private readonly clearing = new Map<string, Promise<void>>();
 	private readonly uncleared = new Set<string>();
-	/** Why a conversation's browser is gone, so Annie can say it, and the late file choosers the agente has not heard of yet. */
+	/** Why a conversation's browser is gone, so Owni can say it, and the late file choosers the agente has not heard of yet. */
 	private readonly closed = new Map<string, { readonly why: string; choosers: number[] }>();
 
 	constructor(
@@ -575,7 +575,7 @@ export class BrowseSessions {
 	type(key: string, ref: number, text: string, submit: boolean, guard: Guard, options: ViewOptions = {}): Promise<View> {
 		return this.act(key, guard, options, true, async (s) => {
 			const { selector, live } = await this.target(s, ref);
-			if (live.type === "password") throw new BrowseError("Annie non scrive password: non entra negli account");
+			if (live.type === "password") throw new BrowseError("Owni non scrive password: non entra negli account");
 			if (live.type === "checkbox" || live.type === "radio") throw new BrowseError(`l'elemento ${ref} è una casella: si seleziona con web_click`);
 			if (live.tag === "select") {
 				const forms = this.privateForms(s);
@@ -954,7 +954,7 @@ export class BrowseSessions {
 			session = { key, scope, thread, owner, profile, humanFlag, privateAttr, privateBinding, privateValues: new Set(), privateEdit: undefined, control: "agent", humanAction: false, context, page, flag, traffic, budget, guard: current, attr: undefined, elements: new Map(), timer: undefined, used: Date.now(), busy: false, queue: Promise.resolve(), version: 0, picture: undefined, shown: { url: "about:blank", title: "" }, movedByPerson: false, choosers: this.closed.get(key)?.choosers ?? [] };
 			const started = session;
 			if (!(await this.allowed(started, true)) || (profile !== undefined && !profile.active)) throw new BrowseError("accesso al browser revocato", "denied");
-			// Annie uploads no files (ADR 0103): the chooser itself is the one place where it is refused.
+			// Owni uploads no files (ADR 0103): the chooser itself is the one place where it is refused.
 			// The audit hears of the first one per site of this browser: a page that retries in a loop is one line, not thousands.
 			const told = new Set<string>();
 			page.on("filechooser", () => {
@@ -1155,7 +1155,7 @@ export class BrowseSessions {
 	}
 }
 
-/** A view as Annie reads it: what the page chose goes in the fence, our sentences outside. */
+/** A view as Owni reads it: what the page chose goes in the fence, our sentences outside. */
 export function describeView(view: View, fence: (text: string) => string): string {
 	const list = view.elements.map((e) => `[${e.ref}] ${e.kind}${e.label ? `: ${e.label}` : ""}${e.href ? ` → ${e.href}` : ""}${e.value ? ` (ora: «${e.value}»)` : ""}`).join("\n");
 	const body = fence([`URL: ${view.url}${view.title ? `\nTitolo: ${view.title}` : ""}`, view.text, list ? `Elementi (web_click, web_type con il numero):\n${list}` : "", view.details.join("\n")].filter(Boolean).join("\n\n"));

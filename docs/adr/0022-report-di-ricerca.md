@@ -1,6 +1,6 @@
 # Report di ricerca con le fonti
 
-Dalla settimana 22 Annie cerca sul web e apre le pagine trovate, una alla volta. Per una domanda che chiede di approfondire («fammi il punto sugli incentivi per le pompe di calore», «confronta tre gestionali per uno studio») il modello doveva fare decine di chiamate, e le fonti che citava erano quelle che ricordava di aver letto. Gli assistenti con cui Annie viene confrontata fanno ricerche approfondite che finiscono in un report con le fonti.
+Dalla settimana 22 Owni cerca sul web e apre le pagine trovate, una alla volta. Per una domanda che chiede di approfondire («fammi il punto sugli incentivi per le pompe di calore», «confronta tre gestionali per uno studio») il modello doveva fare decine di chiamate, e le fonti che citava erano quelle che ricordava di aver letto. Gli assistenti con cui Owni viene confrontata fanno ricerche approfondite che finiscono in un report con le fonti.
 
 ## Come funziona
 

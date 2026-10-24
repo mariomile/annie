@@ -33,8 +33,8 @@ export function googleSection() {
 			mount(box, 
 				h("h3.section-title", "Google"),
 				h("p", h("span.chip.ok", "Collegato"), " ", account.email),
-				h("p.muted", write && account.canWrite ? `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Può preparare mail ed eventi, che partono solo quando li approvi tu.` : `Annie legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
-				write && !account.canWrite ? h("p", "Per far preparare ad Annie mail ed eventi (che approvi tu), ricollega Google lasciando spuntati tutti i permessi.") : null,
+				h("p.muted", write && account.canWrite ? `Owni legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Può preparare mail ed eventi, che partono solo quando li approvi tu.` : `Owni legge ${what} quando glielo chiedi dalla console, o nel brief del mattino. Non invia mail e non cambia eventi.`),
+				write && !account.canWrite ? h("p", "Per far preparare a Owni mail ed eventi (che approvi tu), ricollega Google lasciando spuntati tutti i permessi.") : null,
 				h(
 					"div.actions",
 					write && !account.canWrite ? h("button.btn.accent", { onclick: () => void connectGoogle() }, "Ricollega Google") : null,
@@ -55,7 +55,7 @@ export function googleSection() {
 		}
 		mount(box, 
 			h("h3.section-title", "Google"),
-			h("p", write ? `Collega Google: Annie potrà leggere ${what} quando glielo chiedi dalla console, e preparare mail ed eventi che partono solo dopo la tua approvazione.` : `Collega Google: Annie potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
+			h("p", write ? `Collega Google: Owni potrà leggere ${what} quando glielo chiedi dalla console, e preparare mail ed eventi che partono solo dopo la tua approvazione.` : `Collega Google: Owni potrà leggere ${what}, solo leggere, quando glielo chiedi dalla console.`),
 			h("div.actions", h("button.btn.accent", { onclick: () => void connectGoogle() }, "Collega Google")),
 		);
 	};

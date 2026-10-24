@@ -1,8 +1,8 @@
 # Settimana 58: fatture in uscita
 
-Branch `week-58`. Annie prepara la fattura elettronica: da un preventivo accettato, dalle ore non fatturate o da quello che le detti, con numerazione, IVA o forfettario, bollo, cassa e ritenuta, e la emette solo dopo il sì. Il file XML è pronto da caricare sul portale dell'Agenzia delle Entrate, con la copia di cortesia in PDF. Le scelte sono nell'[ADR 0072](adr/0072-fatture-in-uscita.md).
+Branch `week-58`. Owni prepara la fattura elettronica: da un preventivo accettato, dalle ore non fatturate o da quello che le detti, con numerazione, IVA o forfettario, bollo, cassa e ritenuta, e la emette solo dopo il sì. Il file XML è pronto da caricare sul portale dell'Agenzia delle Entrate, con la copia di cortesia in PDF. Le scelte sono nell'[ADR 0072](adr/0072-fatture-in-uscita.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
 - **«Fammi la fattura a Rossi per il preventivo 4»**: la bozza con le righe del preventivo; il preventivo poi risulta fatturato.
 - **«Fattura a Beta le ore di ottobre»**: le ore non fatturate diventano righe, e dopo l'emissione sono segnate con la fattura.

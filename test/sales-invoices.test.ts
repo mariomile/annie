@@ -79,7 +79,7 @@ const quote = (o: Partial<Quote> = {}): Quote => ({
 
 const entry = (n: number, minutes: number, extra: Partial<WorkEntry> = {}): WorkEntry => ({ id: `O-2026-000${n}`, date: `2026-10-0${n}`, client: "Delta Servizi Srl", minutes, billable: true, rate: "50", description: `Sviluppo ${n}`, by: "test:u", at: NOW.toISOString(), ...extra });
 
-/** `askFirst`: leave the last number before Annie unsaid, so the first draft of the year asks it. */
+/** `askFirst`: leave the last number before Owni unsaid, so the first draft of the year asks it. */
 type Setup = { company?: Company | null; quotes?: Quote[]; entries?: WorkEntry[]; cards?: ClientCard[]; real?: boolean; askFirst?: boolean };
 
 function setup(o: Setup = {}) {
@@ -94,7 +94,7 @@ function setup(o: Setup = {}) {
 	const quotes = new QuoteStore(dir);
 	const timesheet = new TimesheetStore(dir, { now: () => clock.now });
 	const store = new SalesInvoiceStore(dir);
-	// The last number before Annie said already (none), unless the test is about asking it.
+	// The last number before Owni said already (none), unless the test is about asking it.
 	if (o.askFirst !== true) store.update("seed", (state) => ({ ...state, settings: { by: "test:u", at: NOW.toISOString(), lastBefore: { 2026: 0, 2027: 0 } } }));
 	const scanner = new InvoiceScanner(workspace, { read: async (_name, data) => documentFattura(data) });
 	const pdf = { fails: false };
@@ -734,7 +734,7 @@ describe("who may ask", () => {
 		expect(await s.run({ ...call.args }, fresh("approved-late"))).toContain("l'approvazione è arrivata un giorno diverso da quello dell'anteprima (2026-10-18)");
 		expect(isIssued(s.last())).toBe(false);
 		s.at(NOW.toISOString());
-		// The invoice and its record name who said yes, not Annie.
+		// The invoice and its record name who said yes, not Owni.
 		await s.run({ ...call.args }, { ...fresh("approved"), approvedBy: "test:boss" });
 		expect(s.last()).toMatchObject({ id: made.id, number: "1", issued: { by: "test:boss" } });
 		expect(s.events.at(-1)).toEqual({ type: "sales_invoices.changed", op: "issue", count: 1, by: "test:boss" });
@@ -839,7 +839,7 @@ describe("review fixes", () => {
 	const PROF: Company = { ...ORDINARIO, name: "Kevin Wojtq", cf: "KWJXQZ75C10F205V" };
 	const OMEGA = { customer: "Omega Srl", vat_number: "00000030015", address: "Corso Italia 9, 10121 Torino TO", recipient_code: "ZZZ0002" };
 
-	it("S1: asks once the last number before Annie and goes on from it", async () => {
+	it("S1: asks once the last number before Owni and goes on from it", async () => {
 		const s = setup({ askFirst: true });
 		const asked = await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 });
 		expect(asked).toContain("È la prima fattura che fai con me quest'anno: qual è il numero dell'ultima fattura che hai emesso nel 2026? (se nessuna, parto da 1)");
@@ -847,7 +847,7 @@ describe("review fixes", () => {
 		const { inv } = await s.issued({ ...DELTA, lines: [line("A", 100)], vat: 22, last_number: 41 });
 		expect(inv.number).toBe("42");
 		expect(s.store.read().settings?.lastBefore).toEqual({ 2026: 41 });
-		// Once Annie issued that year, the starting number is not said again.
+		// Once Owni issued that year, the starting number is not said again.
 		expect(await s.run({ op: "settings", last_number: 50 })).toContain("Non ho cambiato niente");
 		expect(await s.run({ op: "draft", ...DELTA, lines: [line("B", 100)], vat: 22 })).toContain("Bozza pronta");
 	});
@@ -955,7 +955,7 @@ describe("review fixes", () => {
 
 	it("U7: the description sends the totals per customer to clients and gives the person's words", () => {
 		const s = setup();
-		for (const words of ["«quanto ho fatturato quest'anno / a Rossi?» → clients", "only the invoices issued with Annie", "«fammi la fattura a Rossi per il preventivo 4»", "«cambia il prezzo della riga 2 a 900»", "«sì, il bollo lo paga il cliente»"]) expect(s.tool.description).toContain(words);
+		for (const words of ["«quanto ho fatturato quest'anno / a Rossi?» → clients", "only the invoices issued with Owni", "«fammi la fattura a Rossi per il preventivo 4»", "«cambia il prezzo della riga 2 a 900»", "«sì, il bollo lo paga il cliente»"]) expect(s.tool.description).toContain(words);
 	});
 
 	it("U8: the brief reads the invoices' compact line, within the instruction's limit", async () => {
@@ -1059,7 +1059,7 @@ describe("second pass", () => {
 		expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 100)], vat: 22 })).toContain("l'ultima fattura del 2026 è la 5");
 	});
 
-	it("N4: in January, after a year issued all with Annie and no other invoice this year, does not ask", async () => {
+	it("N4: in January, after a year issued all with Owni and no other invoice this year, does not ask", async () => {
 		const run = async (iso: string) => {
 			const s = setup({ askFirst: true });
 			await s.run({ op: "settings", last_number: 0 });

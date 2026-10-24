@@ -1,6 +1,6 @@
 # Settimana 27: report di ricerca con le fonti
 
-Branch `week-27`. Decisione: [ADR 0022](adr/0022-report-di-ricerca.md). Quando le chiedono di approfondire un tema, Annie fa più ricerche insieme, legge le pagine migliori dei siti consentiti e scrive un report in Markdown con le fonti numerate, che salva nel workspace e manda in chat. Serve la ricerca sul web della settimana 22 ([chiavi](chiavi.md) §13); i test usano un Brave finto e pagine locali.
+Branch `week-27`. Decisione: [ADR 0022](adr/0022-report-di-ricerca.md). Quando le chiedono di approfondire un tema, Owni fa più ricerche insieme, legge le pagine migliori dei siti consentiti e scrive un report in Markdown con le fonti numerate, che salva nel workspace e manda in chat. Serve la ricerca sul web della settimana 22 ([chiavi](chiavi.md) §13); i test usano un Brave finto e pagine locali.
 
 ## Cosa funziona (verificato dai test)
 

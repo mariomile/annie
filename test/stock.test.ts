@@ -393,7 +393,7 @@ describe("il magazzino: sottoscorta, elenco, togliere, file", () => {
 		const [tool] = createStockTools({ workspace: new Workspace(s.root), store, timeZone: "Europe/Rome", whoIs: () => "test:u", now: () => NOW });
 		if (tool === undefined) throw new Error("no tool");
 		const [guarded] = readOnlyInBriefs([tool], async () => true);
-		expect(await guarded?.execute({ op: "add_item", item: "Viti" }, fresh())).toContain("nella chat del brief del mattino Annie legge soltanto");
+		expect(await guarded?.execute({ op: "add_item", item: "Viti" }, fresh())).toContain("nella chat del brief del mattino Owni legge soltanto");
 		expect(await guarded?.execute({ op: "list" }, fresh())).toContain("Il magazzino è vuoto");
 		expect(tool.description).toContain("price_list is the prices, stock the quantities.");
 		expect(tool.description).toContain("an adjustment, the history stays as it was");

@@ -1,6 +1,6 @@
 import type { MailAttachment } from "./mail-attachments.ts";
 
-/** A mail Annie asks to send or save as a draft (google-actions.ts), as the person approves it. */
+/** A mail Owni asks to send or save as a draft (google-actions.ts), as the person approves it. */
 export type MailDraft = {
 	readonly to: readonly string[];
 	readonly cc: readonly string[];

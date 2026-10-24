@@ -218,13 +218,13 @@ describe("the board (ADR 0050)", () => {
 	it("the tools: the agente lists, creates from a chat, and moves only its own schede, never to «Fatto»", async () => {
 		const { work, store, posts } = setup();
 		const agents = async () => [
-			{ id: "annie", name: "Annie" },
+			{ id: "annie", name: "Owni" },
 			{ id: "ricerca", name: "Ricercatore" },
 		];
 		const tool = (self: string, name: string) => createBoardTools({ subjects: noSubjects, self, store, work, agents, personOf: (t) => (t.channel === "web" && t.threadId.startsWith("chat") ? "p_anna" : undefined) }).find((t) => t.name === name) as { execute: (a: Record<string, unknown>, c: never) => Promise<string> };
 		expect(await tool("annie", "board_list").execute({}, ctx())).toBe("Nessuna scheda.");
 		expect(await tool("annie", "board_summary").execute({}, ctx("chat1"))).toMatch(/^La board è vuota/);
-		// From Anna's conversation with Annie: the scheda goes to Ricercatore, who starts at once.
+		// From Anna's conversation with Owni: the scheda goes to Ricercatore, who starts at once.
 		expect(await tool("annie", "board_create").execute({ title: "Fornitori carta", description: "Tre preventivi", assignee: "Ricercatore" }, ctx("chat1"))).toBe("Scheda #1 creata e assegnata a Ricercatore: parte quando una persona la avvia dalla board.");
 		expect(posts).toEqual([]);
 		await work.startWaiting(store.get("1")?.id as string, "p_anna", anna);
@@ -239,7 +239,7 @@ describe("the board (ADR 0050)", () => {
 		expect(await tool("annie", "board_create").execute({ title: "x", assignee: "Ignoto" }, ctx("chat1"))).toMatch(/^Errore: nessun agente «Ignoto»/);
 		const listed = await tool("ricerca", "board_list").execute({ mine: true }, ctx());
 		expect(listed).toMatch(/<<<dalla board [0-9a-f]+: .*>>>\n#1 \[In corso\] Fornitori carta: assegnata a Ricercatore\n<<<fine board/);
-		// Annie may comment, not move a scheda of Ricercatore.
+		// Owni may comment, not move a scheda of Ricercatore.
 		expect(await tool("annie", "board_update").execute({ card: "1", status: "da_fare" }, ctx())).toMatch(/non è assegnata a te/);
 		expect(await tool("annie", "board_update").execute({ card: "#1", comment: "Va bene anche usata" }, ctx())).toBe("Scheda #1: commento aggiunto.");
 		// In its work conversation, Ricercatore needs no number.
@@ -248,7 +248,7 @@ describe("the board (ADR 0050)", () => {
 		expect(await tool("ricerca", "board_update").execute({ status: "fatto" }, ctx(threadId))).toMatch(/^Errore: Solo una persona/);
 		const shown = await tool("ricerca", "board_show").execute({}, ctx(threadId));
 		expect(shown).toContain("Tre preventivi nel file");
-		expect(shown).toContain("Annie: Va bene anche usata");
+		expect(shown).toContain("Owni: Va bene anche usata");
 		expect(await tool("ricerca", "board_show").execute({}, ctx("altro"))).toMatch(/non trovata/);
 		// From Telegram there is no console person: assigned, it waits.
 		expect(await tool("annie", "board_create").execute({ title: "Più tardi", assignee: "ricerca" }, { ...(ctx() as object), thread: { channel: "telegram", threadId: "7" } } as never)).toMatch(/parte quando una persona la avvia/);
@@ -501,7 +501,7 @@ describe("the board (ADR 0050)", () => {
 			const card = await work.create({ title: "Fornitori carta", assignee: "ricerca", checklist: ["Trovare tre fornitori", "Chiedere i prezzi"] }, anna, "p_anna");
 			expect(posts[0]?.text).toMatch(/Lista di controllo \(spunta ogni voce con board_update check_done quando è fatta\):\n1\. \[ \] Trovare tre fornitori\n2\. \[ \] Chiedere i prezzi/);
 			const agents = async () => [
-				{ id: "annie", name: "Annie" },
+				{ id: "annie", name: "Owni" },
 				{ id: "ricerca", name: "Ricercatore" },
 			];
 			const tool = (self: string, name: string) => createBoardTools({ subjects: noSubjects, self, store, work, agents, personOf: () => "p_anna" }).find((t) => t.name === name) as { execute: (a: Record<string, unknown>, c: never) => Promise<string> };

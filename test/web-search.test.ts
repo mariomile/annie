@@ -78,7 +78,7 @@ describe("web search", () => {
 		expect(allow("acme")).toBe(true);
 	});
 
-	it("is configured with a key; Italy and Italian by default; cells of Annie Cloud get it", () => {
+	it("is configured with a key; Italy and Italian by default; cells of Owni Cloud get it", () => {
 		const base = { ANNIE_DATA_DIR: tempDataDir(), ANNIE_MODEL_PROVIDER: "faux" };
 		expect(loadAnnieConfig(base).webSearch).toBeUndefined();
 		expect(loadAnnieConfig({ ...base, ANNIE_SEARCH_API_KEY: KEY }).webSearch).toEqual({ url: "https://api.search.brave.com/res/v1/web/search", apiKey: KEY, country: "IT", language: "it", maxPerDay: 200 });

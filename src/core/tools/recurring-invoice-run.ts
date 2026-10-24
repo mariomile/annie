@@ -173,7 +173,7 @@ function lineArgs(l: RecurringLine): Record<string, unknown> {
 	return Object.fromEntries(Object.entries(l).filter(([, v]) => v !== undefined));
 }
 
-/** A ToolContext for the instance's own work: the marker says Annie, its steps run once (the sales store keeps the call id). */
+/** A ToolContext for the instance's own work: the marker says Owni, its steps run once (the sales store keeps the call id). */
 const ownContext = (callId: string, signal: AbortSignal): ToolContext => ({ callId, step: async (_key, work) => work(), progress: () => {}, signal });
 
 /** Whether this period's draft could be made now, saving nothing: undefined when it could, else what is missing (the builder's own words). */

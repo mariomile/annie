@@ -1,12 +1,12 @@
 # Settimana 55: previsione di cassa
 
-Branch `week-55`. Annie mette in fila sul conto i soldi che devono entrare e uscire, da fatture, rinnovi, preventivi accettati, spese e voci della persona, e dice quanti ce ne saranno, quando si rischia di andare in rosso e cosa succede se si compra qualcosa o un cliente paga tardi. Le scelte sono nell'[ADR 0065](adr/0065-previsione-di-cassa.md).
+Branch `week-55`. Owni mette in fila sul conto i soldi che devono entrare e uscire, da fatture, rinnovi, preventivi accettati, spese e voci della persona, e dice quanti ce ne saranno, quando si rischia di andare in rosso e cosa succede se si compra qualcosa o un cliente paga tardi. Le scelte sono nell'[ADR 0065](adr/0065-previsione-di-cassa.md).
 
-## Cosa cambia per chi usa Annie
+## Cosa cambia per chi usa Owni
 
-- **«Ho 8.400 euro sul conto»**: il punto di partenza. Se il saldo è di qualche giorno fa, Annie lo porta a oggi con le fatture incassate e le spese registrate dopo, e lo dice.
+- **«Ho 8.400 euro sul conto»**: il punto di partenza. Se il saldo è di qualche giorno fa, Owni lo porta a oggi con le fatture incassate e le spese registrate dopo, e lo dice.
 - **«Quanti soldi avrò a fine mese?»**: il saldo finale, il punto più basso e il giorno, le entrate e le uscite più grandi, e da dove vengono i numeri.
-- **«F24 a giugno 2.300»**, **«stipendio il 27»**, **«rata del prestito 350 euro ogni mese»**, **«ogni 15 giorni»**: le voci che non stanno altrove. Se assomiglia a un rinnovo o a una voce già registrata, Annie chiede prima di aggiungerla.
+- **«F24 a giugno 2.300»**, **«stipendio il 27»**, **«rata del prestito 350 euro ogni mese»**, **«ogni 15 giorni»**: le voci che non stanno altrove. Se assomiglia a un rinnovo o a una voce già registrata, Owni chiede prima di aggiungerla.
 - **«Se compro un computer da 2.000 € a novembre ce la faccio?»**: la risposta prudente, senza contare fatture in ritardo e preventivi.
 - **«Se Rossi paga con 60 giorni di ritardo?»**, **«se Gamma non paga?»**: come cambia il punto più basso.
 - **«Avvisami se vado sotto i 2.000»**: lo dice il brief del mattino.
