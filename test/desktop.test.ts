@@ -279,6 +279,18 @@ describe("the desktop's tools", () => {
 		expect(broken.events).toEqual([{ type: "desktop.failed" }]);
 	});
 
+	it("a Mac app that Annie refuses to control is named to the model, whole, and is not an operator failure", async () => {
+		const message = "Computer Use non controlla «Terminal», che è un terminale: non ho fatto nulla. Se serve, deve usarla la persona";
+		const blocked = tools(fakeDesktop({ fail: new DesktopError(message) }));
+		const asks: [string, Record<string, unknown>][] = [
+			["desktop_look", {}], ["desktop_click", { x: 1, y: 1 }], ["desktop_type", { text: "ls" }], ["desktop_key", { key: "enter" }],
+			["desktop_scroll", { direction: "down" }], ["desktop_drag", { from_x: 1, from_y: 1, to_x: 2, to_y: 2 }], ["desktop_open", { app: "Terminal" }],
+		];
+		for (const [name, args] of asks) expect(await blocked.tool(name).execute(args, ctxWithSteps().ctx), name).toBe(`Errore: ${message}.`);
+		expect(blocked.events).toEqual([]);
+		expect(blocked.logs).toEqual([]);
+	});
+
 	it("do not run in the morning brief's chat", async () => {
 		const fake = fakeDesktop();
 		const [guarded] = readOnlyInBriefs([tools(fake).tool("desktop_click")], async () => true);
