@@ -19,7 +19,8 @@ export type ActivityDeps = {
 
 const LINE_MAX = 100;
 const oneLine = (text: string) => {
-	const line = text.replace(/\s+/g, " ").trim();
+	// One line, and no «» or control characters to close the quotes the line goes in.
+	const line = text.replace(/[\p{Cc}«»]/gu, " ").replace(/\s+/g, " ").trim();
 	return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}…` : line;
 };
 
@@ -75,5 +76,15 @@ export function runtimeActivity(options: {
 		cardVisibleTo: async (card, person) => (await options.board?.work.visibleTo(card, person)) === true,
 		thread: async (agent, threadId) => options.channel(agent)?.thread(threadId),
 	});
-	return (agent, viewer) => read(agent, viewer);
+	// One agente deleted or with an unreadable runs.json must not break the list of the others.
+	return (agent, viewer) => read(agent, viewer).catch(() => ({ busy: false, doing: "" }));
+}
+
+/**
+ * Who an agente asks for, from the conversation it works in: the console person of a console chat
+ * (`personOf`), nobody in any other (Telegram, another agente), so it sees only its own schede.
+ */
+export function viewerOf(self: string, thread: { readonly channel: string; readonly threadId: string } | undefined, personOf: (threadId: string) => string | undefined): Viewer {
+	const person = thread?.channel === "web" ? personOf(thread.threadId) : undefined;
+	return { agent: self, ...(person === undefined ? {} : { person }) };
 }

@@ -1,8 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { type RunningAnnie, startAnnie } from "../src/app.ts";
+import { BoardStore } from "../src/core/board.ts";
+import { instanceId as toInstanceId, tenantId as toTenantId } from "../src/core/ids.ts";
+import { instanceDir, tenantDir } from "../src/core/paths.ts";
 import { romeDayKey } from "../src/core/usage.ts";
 import { proxyToken } from "../src/web/compare.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
@@ -128,7 +131,8 @@ describe("pnpm start (startAnnie)", () => {
 	});
 
 	it("agenti (ADR 0041): created with a face and a tone, listed with what they do, changed in Impostazioni", async () => {
-		const { annie, base } = await boot(tempDataDir());
+		const dataDir = tempDataDir();
+		const { annie, base } = await boot(dataDir);
 		const api = await client(base, annie.ownerLink as string);
 		const created = await api("/api/instances", { id: "ricerca", name: "Ricercatore", persona: { emoji: "🔎", tagline: "Cerca e confronta fornitori", tone: "conciso" } });
 		expect(created.instance).toMatchObject({ id: "ricerca", name: "Ricercatore", emoji: "🔎", tagline: "Cerca e confronta fornitori" });
@@ -154,6 +158,18 @@ describe("pnpm start (startAnnie)", () => {
 		expect(seen.map((a) => a.id)).toEqual(["ricerca"]);
 		expect(seen[0]?.schedules).toBe(0);
 		expect((await api("/api/agents")).agents[1].schedules).toBe(1);
+		// Who is doing what (ADR 0109): a scheda In corso on ricerca shows to the owner and to the member who may talk to it, as number and title only.
+		const board = new BoardStore(tenantDir(dataDir, toTenantId("default")));
+		const made = board.create({ title: "Fornitori carta", description: "Cliente Rossi SpA, 12.000 euro", assignee: "ricerca" }, { kind: "person", id: "owner-x" });
+		board.update(made.id, { status: "in_corso" }, { kind: "person", id: "owner-x" });
+		const mine = (await api("/api/agents")).agents[1];
+		expect(mine).toMatchObject({ busy: false, doing: "#1 Fornitori carta" });
+		expect(JSON.stringify(mine)).not.toMatch(/Rossi/);
+		expect((await member("/api/agents")).agents[0]).toMatchObject({ id: "ricerca", busy: false, doing: "#1 Fornitori carta" });
+		// A runs.json that cannot be read leaves that agente idle; the page still loads.
+		writeFileSync(join(instanceDir(dataDir, toTenantId("default"), toInstanceId("ricerca")), "runs.json"), "{rotto");
+		const broken = (await api("/api/agents")).agents as { id: string; busy: boolean }[];
+		expect(broken.map((a) => [a.id, a.busy])).toEqual([["annie", false], ["ricerca", false]]);
 		const settings = (await api("/api/instances/ricerca/settings")).settings;
 		expect(settings.name).toBe("Ricercatore");
 		expect(settings.persona).toEqual({ emoji: "🧭", tone: "formale", named: true });
