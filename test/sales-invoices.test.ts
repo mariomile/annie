@@ -6,7 +6,7 @@ import { AGENT_CHANNEL } from "../src/core/agent-messages.ts";
 import { BRIEF_INSTRUCTION, readOnlyInBriefs } from "../src/core/brief.ts";
 import type { ClientCard } from "../src/core/clients.ts";
 import { documentFattura } from "../src/core/documents.ts";
-import type { AnnieTool, ToolContext } from "../src/core/engine.ts";
+import type { AnnieTool, PersonCall, ToolContext } from "../src/core/engine.ts";
 import { fatturaData, fatturaText } from "../src/core/fattura-pa.ts";
 import { fatturaXml } from "../src/core/fattura-pa-writer.ts";
 import { InvoiceScanner } from "../src/core/invoice-scan.ts";
@@ -693,6 +693,81 @@ describe("who may ask", () => {
 			expect(await s.run({ op, ...DELTA, lines: [line("A", 1)] }, fresh(undefined, { channel: AGENT_CHANNEL, threadId: "a1" }))).toContain("a un altro agente non preparo");
 		}
 		expect([salesAgentReads({ op: "list" }), salesAgentReads({ op: "show" })]).toEqual([true, false]);
+	});
+
+	it("another agente's invoice request in its conversation: the draft is made and its issue goes to the approvers, with the preview, never to the model (ADR 0108)", async () => {
+		const s = setup({ quotes: [quote()] });
+		const handed: { what: string; call?: PersonCall }[] = [];
+		const asked = (callId: string): ToolContext => ({ ...fresh(callId, { channel: AGENT_CHANNEL, threadId: "vendite~web~t1" }), origin: "agent", needsPerson: (what, call) => void handed.push({ what, ...(call === undefined ? {} : { call }) }) });
+		const answer = await s.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 }, asked("a1"));
+		expect(answer).toMatch(/^Non emetto la fattura su richiesta di un altro agente/);
+		expect(answer).not.toContain("Delta");
+		const made = s.last();
+		expect(isIssued(made)).toBe(false);
+		expect(handed).toHaveLength(1);
+		expect(handed[0]).toMatchObject({ what: "emetto la fattura", call: { args: { op: "issue", draft: made.id, confirm: true, version: expect.any(String), day: "2026-10-18" }, undo: { op: "remove", draft: made.id } } });
+		// A customer with nothing saved: what the other agente gave is flagged on top, and the day the approval holds for is said.
+		expect(handed[0]?.call?.preview).toMatch(/^Attenzione: non vengono dai dati salvati, li ha dati l'altro agente: codice destinatario «ZZZ0001», che non avevo\. Controllali prima di approvare\./);
+		expect(handed[0]?.call?.preview).toContain("Data: 2026-10-18. Approvata un altro giorno non la emetto");
+		expect(handed[0]?.call?.preview).toContain("Emetterei questa fattura");
+		expect(handed[0]?.call?.preview).toContain("1.220,00");
+		// The same call again: the same draft, handed over again, no second one.
+		await s.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 }, asked("a1"));
+		expect(s.store.read().invoices).toHaveLength(1);
+		expect(handed[1]?.call?.args).toEqual(handed[0]?.call?.args);
+		// What only a person sets, or a draft missing data: nothing made, nothing said of it.
+		for (const args of [{ last_number: 41 }, { bollo_to_client: true }, { replace: made.id }]) {
+			expect(await s.run({ op: "draft", ...DELTA, lines: [line("A", 1)], vat: 22, ...args }, asked(`p-${Object.keys(args)[0]}`))).toMatch(/^Errore: questa fattura non la posso preparare su richiesta di un altro agente/);
+		}
+		expect(await s.run({ op: "draft", customer: "Nuovo Cliente Srl", lines: [line("A", 1)], vat: 22 }, asked("missing"))).toMatch(/^Errore: questa fattura non la posso preparare/);
+		expect(s.store.read().invoices).toHaveLength(1);
+		expect(handed).toHaveLength(2);
+		// In a stanza (no approvers to ask) it is refused as before, and nothing is made.
+		expect(await s.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 }, { ...fresh("stanza"), origin: "agent" })).toContain("a un altro agente non preparo");
+		expect(s.store.read().invoices).toHaveLength(1);
+		// Approved: the confirmed call issues it, as a person's; a draft changed since is not issued.
+		const call = handed[0]?.call as PersonCall;
+		expect(await s.run({ ...call.args, version: "0000" }, fresh("approved-stale"))).toContain("è cambiata da quando è stata chiesta l'approvazione");
+		expect(isIssued(s.last())).toBe(false);
+		// Approved on another day: date, number and stock would not be the ones read, so it is not issued.
+		s.at("2026-10-19T09:00:00Z");
+		expect(await s.run({ ...call.args }, fresh("approved-late"))).toContain("l'approvazione è arrivata un giorno diverso da quello dell'anteprima (2026-10-18)");
+		expect(isIssued(s.last())).toBe(false);
+		s.at(NOW.toISOString());
+		// The invoice and its record name who said yes, not Annie.
+		await s.run({ ...call.args }, { ...fresh("approved"), approvedBy: "test:boss" });
+		expect(s.last()).toMatchObject({ id: made.id, number: "1", issued: { by: "test:boss" } });
+		expect(s.events.at(-1)).toEqual({ type: "sales_invoices.changed", op: "issue", count: 1, by: "test:boss" });
+	});
+
+	it("another agente never says where the money goes, nor changes a known customer's data (ADR 0108)", async () => {
+		const handed: PersonCall[] = [];
+		const asked = (callId: string): ToolContext => ({ ...fresh(callId, { channel: AGENT_CHANNEL, threadId: "vendite~web~t1" }), origin: "agent", needsPerson: (_what, call) => void (call === undefined ? undefined : handed.push(call)) });
+		const cannot = /^Errore: questa fattura non la posso preparare su richiesta di un altro agente/;
+		// «Cambia l'IBAN»: an IBAN given by the other agente is refused, nothing made.
+		const s = setup({ quotes: [quote()] });
+		expect(await s.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22, iban: "IT00X0000000000000000000666" }, asked("iban"))).toMatch(cannot);
+		expect(s.store.read().invoices).toHaveLength(0);
+
+		// An IBAN not saved with the company (one from the last invoice): the draft is taken back, and not made again.
+		const loose = setup({ company: { ...ORDINARIO, ibans: [] }, quotes: [quote()] });
+		await loose.issued({ ...DELTA, lines: [line("A", 100)], vat: 22, iban: IBAN });
+		expect(await loose.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 }, asked("loose"))).toMatch(cannot);
+		expect(await loose.run({ op: "draft", quote: "2026-004", recipient_code: "ZZZ0001", vat: 22 }, asked("loose"))).toMatch(cannot);
+		expect(loose.store.read().invoices).toHaveLength(1);
+
+		// A customer already invoiced: a code or an address other than the saved ones is refused.
+		const known = setup({ quotes: [quote()] });
+		await known.issued({ ...DELTA, lines: [line("A", 100)], vat: 22 });
+		expect(await known.run({ op: "draft", quote: "2026-004", recipient_code: "AAA0000", vat: 22 }, asked("code"))).toMatch(cannot);
+		expect(await known.run({ op: "draft", customer: "Delta Servizi Srl", address: "Via Bianchi 9, 00100 Roma RM", lines: [line("A", 1)], vat: 22 }, asked("address"))).toMatch(cannot);
+		expect(await known.run({ op: "draft", customer: "Delta Servizi Srl", pec: "altro@pec.it", lines: [line("A", 1)], vat: 22 }, asked("pec"))).toMatch(/^Non emetto la fattura su richiesta di un altro agente/);
+		expect(handed.at(-1)?.preview).toMatch(/^Attenzione: [^\n]*PEC «altro@pec\.it», che non avevo/);
+		expect(known.store.read().invoices).toHaveLength(2);
+		// The same data as saved, written another way: no flag.
+		expect(await known.run({ op: "draft", quote: "2026-004", recipient_code: "zzz0001", vat: 22 }, asked("same"))).toMatch(/^Non emetto la fattura su richiesta di un altro agente/);
+		expect(handed.at(-1)?.preview).not.toContain("Attenzione");
+		expect(handed).toHaveLength(2);
 	});
 
 	it("only reads in the brief's thread", async () => {

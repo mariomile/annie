@@ -25,8 +25,8 @@ import type { TaxStore } from "../tax-store.ts";
 import type { TimesheetStore } from "../timesheet-store.ts";
 import type { Workspace } from "../workspace.ts";
 
-/** What changed, for the audit: the op and how many, never customers, amounts, numbers or lines. */
-export type SalesEvent = { readonly type: "sales_invoices.changed"; readonly op: "draft" | "credit_note" | "issue" | "remove" | "settings"; readonly count: number };
+/** What changed, for the audit: the op and how many, never customers, amounts, numbers or lines; `by`: the approver of another agente's request (ADR 0108). */
+export type SalesEvent = { readonly type: "sales_invoices.changed"; readonly op: "draft" | "credit_note" | "issue" | "remove" | "settings"; readonly count: number; readonly by?: string };
 
 /** The stores and seams the tool is given (SalesToolsOptions adds the clock, the PDF maker, who is who and the audit). */
 export type SalesStores = {
@@ -67,7 +67,8 @@ export type SalesEnvOptions = SalesStores & {
 export function salesEnvOf(options: SalesEnvOptions): SalesEnv {
 	const { whoIs, record, now: clock, make, ...stores } = options;
 	const now = clock ?? (() => new Date());
-	const who = (ctx: ToolContext) => (ctx.thread === undefined ? "annie" : (whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
+	// The approver of another agente's request is who said yes (ADR 0108); outside a conversation, Annie herself.
+	const who = (ctx: ToolContext) => ctx.approvedBy ?? (ctx.thread === undefined ? "annie" : (whoIs(ctx.thread) ?? `${ctx.thread.channel}:${ctx.thread.threadId}`));
 	return {
 		...stores,
 		now,
@@ -76,7 +77,7 @@ export function salesEnvOf(options: SalesEnvOptions): SalesEnv {
 		audit: async (ctx, op, count) => {
 			// Its own step: an audit that failed is written on the rerun, after the change it records.
 			await ctx.step(`audit-${op}`, async () => {
-				await record?.({ type: "sales_invoices.changed", op, count });
+				await record?.({ type: "sales_invoices.changed", op, count, ...(ctx.approvedBy === undefined ? {} : { by: ctx.approvedBy }) });
 				return true;
 			});
 		},

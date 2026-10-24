@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AnnieTool } from "../engine.ts";
 import { type EgressPolicy, webHostAllowed } from "../policy.ts";
+import type { AskedBy } from "../agent-requests.ts";
 import { readForm, type WebAction, WebActionError, WEB_ACTIONS_CONNECTOR, type WebActionStore } from "../web-actions.ts";
 import { DocumentError, type DocumentText, documentExtension, documentKind, documentLabel, documentPartsLabel, documentSectionAt, oldFormatAdvice } from "../documents.ts";
 import { imageType } from "../images.ts";
@@ -52,6 +53,8 @@ export type WebToolsOptions = {
 		readonly store: WebActionStore;
 		/** The person a private conversation is with ("channel:userId"), who may approve. */
 		readonly requester: (thread: { channel: string; threadId: string }) => string | undefined;
+		/** The agente that asked, in a conversation with another agente (ADR 0108). */
+		readonly askedBy?: (thread: { channel: string; threadId: string }, inputs: (() => Promise<readonly string[]>) | undefined) => Promise<AskedBy | undefined>;
 		/** Show the card to whoever may decide. */
 		readonly onProposed: (action: WebAction) => Promise<void>;
 	};
@@ -362,8 +365,9 @@ function submitTool(actions: NonNullable<WebToolsOptions["actions"]>, policyOf: 
 					// Builds what would be sent, refusing unknown, hidden and out-of-choice values.
 					const { shown } = formBody(form, values, button);
 					const requester = ctx.thread === undefined ? undefined : actions.requester(ctx.thread);
+					const askedBy = ctx.thread === undefined ? undefined : await actions.askedBy?.(ctx.thread, ctx.inputs);
 					const action = await actions.store.propose(
-						{ pageUrl: page, form: form.index, action: form.action, values, button, shown, fingerprint: formFingerprint(form), reason: String(args.reason), ...(ctx.thread === undefined ? {} : { thread: ctx.thread }), ...(requester === undefined ? {} : { requester }) },
+						{ pageUrl: page, form: form.index, action: form.action, values, button, shown, fingerprint: formFingerprint(form), reason: String(args.reason), ...(ctx.thread === undefined ? {} : { thread: ctx.thread }), ...(requester === undefined ? {} : { requester }), ...(askedBy === undefined ? {} : { askedBy }) },
 						new Date(),
 						ctx.callId,
 					);

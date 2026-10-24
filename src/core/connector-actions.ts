@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { ActionQueue, type QueuedStatus } from "./action-queue.ts";
+import type { AskedBy } from "./agent-requests.ts";
 import { oneLine } from "./plain-text.ts";
 
 /**
@@ -29,6 +30,8 @@ export type ConnectorAction = {
 	readonly thread?: { readonly channel: string; readonly threadId: string };
 	/** The person whose private conversation asked for it ("channel:userId"): they may decide. */
 	readonly requester?: string;
+	/** Another agente asked for it, in this agente's conversation with it (ADR 0108): shown on the card. */
+	readonly askedBy?: AskedBy;
 	readonly proposedAt: string;
 	/** The conversation was told it expired undecided. */
 	readonly expiryTold?: true;
@@ -75,7 +78,7 @@ export class ConnectorActionStore {
 	}
 
 	/** `key` (the tool call's) makes a rerun return the same request instead of a second one. */
-	async propose(input: Pick<ConnectorAction, "connectorId" | "connectorName" | "server" | "tool" | "toolTitle" | "args" | "reason" | "destructive" | "thread" | "requester">, now = new Date(), key?: string): Promise<ConnectorAction> {
+	async propose(input: Pick<ConnectorAction, "connectorId" | "connectorName" | "server" | "tool" | "toolTitle" | "args" | "reason" | "destructive" | "thread" | "requester" | "askedBy">, now = new Date(), key?: string): Promise<ConnectorAction> {
 		const id = this.queue.idFor(key, "mcp:");
 		if (key !== undefined) {
 			const existing = await this.get(id, now);

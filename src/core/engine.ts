@@ -137,6 +137,13 @@ export type AnnieTool = {
 	execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 };
 
+/**
+ * The confirmed call a tool hands to the approvers in place of the one made, with what it will
+ * write (ADR 0108). `undo`: the call of the same tool, run as a person's, that takes back what the
+ * request left (a draft) when it is rejected or expires.
+ */
+export type PersonCall = { readonly args: Readonly<Record<string, unknown>>; readonly preview: string; readonly undo?: Readonly<Record<string, unknown>> };
+
 export type ToolContext = {
 	/**
 	 * Run `work` at most once per call and key, durably: if the process dies after the
@@ -157,4 +164,18 @@ export type ToolContext = {
 	 * gate (requirePersonFor) never takes for a person's.
 	 */
 	readonly origin?: TurnOrigin;
+	/**
+	 * Told by requirePersonFor when another agente's turn reaches a step that needs a person's
+	 * yes (`what`, as in the refusal): the call can then go to this agente's approvers (ADR 0108).
+	 * A tool with a preview gives `call` too: the exact confirmed call to run once approved (in
+	 * place of the one made), and the preview the approver reads (what will be written).
+	 */
+	readonly needsPerson?: (what: string, call?: PersonCall) => void;
+	/**
+	 * The messages the turn answers, by request id ("channel:messageId"), oldest first: read only
+	 * by who needs them (the card of another agente's request shows its words, ADR 0108).
+	 */
+	readonly inputs?: () => Promise<readonly string[]>;
+	/** Set only on the run of another agente's request a person approved: who said yes ("channel:userId"), for the records. */
+	readonly approvedBy?: string;
 };

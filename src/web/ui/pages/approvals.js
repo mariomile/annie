@@ -1,6 +1,6 @@
 // Approvals page, with the connector and Google action cards.
 import { agentLabel, api, emptyNote, fmt, go, h, head, mount, needInstance, state, store, toast } from "../common.js";
-import { connectorActionCard, decisionCard, googleActionCard } from "../cards.js";
+import { agentRequestCard, askedByNote, connectorActionCard, decisionCard, googleActionCard } from "../cards.js";
 import { refreshCounters } from "../session.js";
 import { render } from "../shell.js";
 
@@ -50,6 +50,7 @@ export async function viewApprovals(main) {
 		const el = h(
 			"article.card.pad.dossier",
 			h("header", h("div", h("h2", `${inst.name} vuole inviare un modulo a `, h("span.mono", new URL(a.action).host)), h("small.dossier-meta", `Modulo da inviare · ${fmt.time(a.proposedAt)}`)), a.status === "pending" ? h("span.chip.accent", "In attesa") : null),
+			askedByNote(a.askedBy),
 			h("p", a.reason),
 			h("p", h("b", "Pagina: "), h("span.mono", a.pageUrl)),
 			h("p", h("b", "Invio a: "), h("span.mono", a.action)),
@@ -78,6 +79,9 @@ export async function viewApprovals(main) {
 	const afterConnector = () => setTimeout(() => void refreshCounters().then(render), 600);
 	const pendingConnector = connectorActions.filter((a) => a.status === "pending").map((a) => connectorActionCard(inst, a, afterConnector));
 	const decidedConnector = connectorActions.filter((a) => a.status !== "pending").reverse().slice(0, 20).map((a) => connectorActionCard(inst, a, afterConnector));
+	const { requests: agentRequests } = await api(`/api/instances/${inst.id}/agent-requests`).catch(() => ({ requests: [] }));
+	const pendingAgent = agentRequests.filter((a) => a.status === "pending").map((a) => agentRequestCard(inst, a, afterConnector));
+	const decidedAgent = agentRequests.filter((a) => a.status !== "pending").reverse().slice(0, 20).map((a) => agentRequestCard(inst, a, afterConnector));
 	const { actions: googleActions } = await api(`/api/instances/${inst.id}/google-actions`).catch(() => ({ actions: [] }));
 	const afterGoogle = () => setTimeout(() => void refreshCounters().then(render), 600);
 	const pendingGoogle = googleActions.filter((a) => a.status === "pending").map((a) => googleActionCard(inst, a, afterGoogle));
@@ -116,10 +120,11 @@ export async function viewApprovals(main) {
 			drafts,
 			pendingGoogle,
 			pendingConnector,
+			pendingAgent,
 			pendingActions.map(actionCard),
 			pending.map(card),
-			drafts.length || pendingGoogle.length || pendingConnector.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
-			decidedGoogle.length || decidedConnector.length || decidedActions.length || decided.length ? [h("h3.section-title", "Decisi"), decidedGoogle, decidedConnector, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
+			drafts.length || pendingGoogle.length || pendingConnector.length || pendingAgent.length || pendingActions.length || pending.length ? null : emptyNote("div.card.empty", "Niente da approvare", "Le mail e gli eventi che Annie prepara per te compaiono qui e in chat; le azioni sui servizi collegati, le bozze della segreteria, i moduli da inviare e i tool che Annie propone qui e su Telegram o WhatsApp."),
+			decidedGoogle.length || decidedConnector.length || decidedAgent.length || decidedActions.length || decided.length ? [h("h3.section-title", "Decisi"), decidedGoogle, decidedConnector, decidedAgent, decidedActions.slice(0, 20).map(actionCard), decided.map(card)] : null,
 		),
 	);
 }
