@@ -56,7 +56,7 @@ import type { SegreteriaService } from "../segreteria/service.ts";
 import { type BrowserState, MAX_TYPED, PRESS_KEYS, type PressKey } from "../core/web-session.ts";
 import { type PeopleStore, type Person, publicPerson, type SessionStore } from "./auth.ts";
 import { WebChannel, type WebEntry, type WebEvent } from "./channel.ts";
-import { boardRoutes } from "./board-routes.ts";
+import { type BoardSubjects, boardRoutes } from "./board-routes.ts";
 import { teamRoutes } from "./team-routes.ts";
 import { type Ctx, type Handler, HttpError, MAX_JSON, type Route, readBody, readJson, STREAMED } from "./http.ts";
 import { screenRoutes } from "./screen-routes.ts";
@@ -230,7 +230,7 @@ export type WebAppOptions = {
 	/** Delete an agente for good (ADR 0046); never the general one, nor a segreteria. */
 	readonly deleteInstance?: { readonly main: string; readonly run: (id: string) => Promise<void> };
 	/** The board (ADR 0050). */
-	readonly board?: { readonly store: BoardStore; readonly work: BoardWork; readonly routines?: RoutineStore };
+	readonly board?: { readonly store: BoardStore; readonly work: BoardWork; readonly routines?: RoutineStore; readonly subjects: BoardSubjects };
 	readonly log?: (message: string) => void;
 };
 

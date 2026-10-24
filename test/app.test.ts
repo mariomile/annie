@@ -6,6 +6,7 @@ import { type RunningAnnie, startAnnie } from "../src/app.ts";
 import { BoardStore } from "../src/core/board.ts";
 import { instanceId as toInstanceId, tenantId as toTenantId } from "../src/core/ids.ts";
 import { instanceDir, tenantDir } from "../src/core/paths.ts";
+import { partyKeys, SubjectLedger } from "../src/core/subjects.ts";
 import { romeDayKey } from "../src/core/usage.ts";
 import { proxyToken } from "../src/web/compare.ts";
 import { loadAnnieConfig } from "../src/main/config.ts";
@@ -281,6 +282,37 @@ describe("pnpm start (startAnnie)", () => {
 		await api("/api/instances", { id: "vendite", name: "Vendite 2" });
 		expect((await api("/api/instances/vendite/schedules")).schedules).toEqual([]);
 		expect((await api("/api/instances/vendite/telegram")).telegram.connected).toBe(false);
+	});
+
+	it("chi segue cosa (ADR 0110): the owner sees it on the scheda, a scheda or an agente deleted takes its part away", async () => {
+		const dataDir = tempDataDir();
+		const { annie, base } = await boot(dataDir);
+		const api = await client(base, annie.ownerLink as string);
+		await api("/api/instances", { id: "vendite", name: "Vendite" });
+		await api("/api/instances", { id: "acquisti", name: "Acquisti" });
+		const send = (method: string, path: string, body?: unknown, cookie = api.cookie) =>
+			// biome-ignore lint: test
+			fetch(`${base}${path}`, { method, headers: { "x-annie": "1", "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(async (r) => ({ status: r.status, ...((await r.json()) as any) }));
+		const ledger = new SubjectLedger(join(dataDir, "tenants", "default"));
+		const keys = partyKeys({ name: "Alfa srl" });
+		ledger.sync("vendite", "quotes", []);
+		ledger.sync("acquisti", "orders", []);
+		ledger.sync("vendite", "quotes", [{ id: "2026-004", keys, f: "a" }]);
+		ledger.sync("acquisti", "orders", [{ id: "OR-0003", keys, f: "b" }]);
+		const { card } = await api("/api/board", { title: "Offerta Alfa" });
+		ledger.link("vendite", card, ["2026-004"]);
+
+		const seen = await api(`/api/board/${card.id}/subjects`);
+		expect(seen.linked).toMatchObject([{ agent: "Vendite", kind: "preventivo", id: "2026-004", card: card.n }]);
+		expect(seen.others).toMatchObject([{ agent: "Acquisti", kind: "ordine", id: "OR-0003" }]);
+		const { link } = await api("/api/people", { name: "Anna", role: "member" });
+		const member = await client(base, link);
+		expect((await send("GET", `/api/board/${card.id}/subjects`, undefined, member.cookie)).status).toBe(403);
+
+		expect((await send("DELETE", `/api/board/${card.id}`)).ok).toBe(true);
+		expect(ledger.list().some((e) => e.card !== undefined)).toBe(false);
+		expect((await send("DELETE", "/api/instances/acquisti", { confirm: "Acquisti" })).status).toBe(200);
+		expect(ledger.list().map((e) => `${e.agent} ${e.id}`)).toEqual(["vendite 2026-004"]);
 	});
 
 	it("schede that come back (ADR 0069): set from the board, made at their time and started with who set them", async () => {

@@ -44,6 +44,10 @@ _Avoid_: routine, ricorrenza (nel testo per le persone)
 Il giorno, a Roma, entro cui una scheda va fatta. La board dice «scade oggi» o «in ritardo di 3 giorni»; l'agente la riceve con la scheda. Diversa dallo scadenzario, che riguarda le fatture. Vedi ADR 0073.
 _Avoid_: deadline, due date (nel testo per le persone)
 
+**Registro di chi segue cosa**:
+Il registro del tenant che dice quale agente ha quale record (cliente, fornitore, preventivo, ordine, appuntamento, fattura, DDT), con ID, tipo, scheda collegata e ultima modifica, senza nomi né contenuti. Serve ad avvisare quando due agenti seguono lo stesso cliente o fornitore. Non è un'anagrafica comune: i record restano nei registri di ogni agente. Vedi ADR 0110.
+_Avoid_: anagrafica unica, CRM condiviso, subject ledger (nel testo per le persone)
+
 **Messaggio tra agenti**:
 Una richiesta che un agente manda a un altro con `agent_message`, solo se l'owner ha permesso al secondo di ricevere messaggi dal primo. La risposta torna dopo, nella conversazione da cui era partita la domanda. Al più tre agenti in fila, senza giri. Se il collega è occupato, il risultato lo dice e la risposta può metterci di più. Vedi ADR 0042 e 0109.
 _Avoid_: chat tra bot, handoff, delega

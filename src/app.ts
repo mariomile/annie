@@ -129,7 +129,8 @@ import { BoardStore } from "./core/board.ts";
 import { RoutineStore, runRoutines } from "./core/board-routines.ts";
 import { createBoardTools } from "./core/tools/board-tools.ts";
 import { approveFromChat, startBoard } from "./app/board.ts";
-import { registerTools } from "./app/register-tools.ts";
+import { registerTools, subjectStoresOf } from "./app/register-tools.ts";
+import { cardSubjects, SubjectLedger } from "./core/subjects.ts";
 import { PeopleStore, SessionStore } from "./web/auth.ts";
 import { WebChannel } from "./web/channel.ts";
 import { RoomStore, Rooms } from "./web/rooms.ts";
@@ -393,6 +394,10 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 	};
 	// Google: one account per person, a client per instance and person (the fetch is the instance's).
 	const board = new BoardStore(tenantDir(config.dataDir, toTenantId(tenant)));
+	// Il registro di chi segue cosa (ADR 0110): which agente has which client, supplier, order, quote.
+	const subjects = new SubjectLedger(tenantDir(config.dataDir, toTenantId(tenant)));
+	const agentName = async (id: string) => (await runtime.registry.getInstance(tenant, id).catch(() => undefined))?.name ?? id;
+	const cardShown = (id: string) => board.get(id) !== undefined;
 	const routines = new RoutineStore(tenantDir(config.dataDir, toTenantId(tenant)));
 	const googleAccounts = config.google === undefined ? undefined : new GoogleAccounts(tenantDir(config.dataDir, toTenantId(tenant)), new TenantSecrets(config.dataDir, toTenantId(tenant)));
 	const googleClients = new Map<string, GoogleClient>();
@@ -647,7 +652,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 				...createChartTools({ workspace: runtime.workspace(record.tenantId, record.id), sendFile: (f) => runtime.sendFile(record.tenantId, record.id, f) }),
 				...createDataTools({ workspace: runtime.workspace(record.tenantId, record.id) }),
 				...createDateTools({ timeZone: config.timeZone }),
-				...registerTools({ runtime, record, config, mail, quotes, expenses, schedules, invoiceScanner, isBriefThread, recurringEnv }),
+				...registerTools({ runtime, record, config, mail, quotes, expenses, schedules, invoiceScanner, isBriefThread, recurringEnv, subjects: { ledger: subjects, agentName, cardShown, log } }),
 				...(transcribePiece === undefined || config.transcription === undefined
 					? []
 					: createRecordingTools({
@@ -702,6 +707,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 					work: boardWork,
 					agents: async () => (await runtime.registry.listInstances(record.tenantId)).filter((r) => r.id !== segreteriaId).map((r) => ({ id: r.id, name: r.name })),
 					personOf: (thread) => (thread.channel === "web" ? WebChannel.ownerOf(thread.threadId) : undefined),
+					subjects: cardSubjects({ ledger: subjects, agent: record.id, stores: subjectStoresOf(runtime, record.tenantId, record.id), agentName, cardShown }),
 				}),
 				...createAgentTools({
 					self: record.id,
@@ -1499,6 +1505,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 		await forgetAgente(id);
 		await runtime.removeInstance(tenant, id);
 		board.unassignAgent(id);
+		subjects.forgetAgent(id);
 		routines.pauseAgent(id);
 		const warn = (what: string) => (error: unknown) => log(`annie: deleting ${id}: ${what} not removed: ${error instanceof Error ? error.message : String(error)}`);
 		await browseSessions.closeScope(`${record.tenantId}/${record.id}`).catch(warn("browsers"));
@@ -1741,7 +1748,7 @@ export async function startAnnie(config: AnnieConfig, options: AnnieOptions = {}
 			await runtime.resume(tenant, record.id);
 		},
 		deleteInstance: { main: config.instanceId, run: deleteAgente },
-		board: { store: board, work: boardWork, routines },
+		board: { store: board, work: boardWork, routines, subjects: { ledger: subjects, agentName } },
 		log,
 	});
 	await new Promise<void>((resolve, reject) => {
